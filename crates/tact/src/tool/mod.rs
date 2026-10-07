@@ -36,8 +36,6 @@ use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde_json::Value;
 use tact_protocol::AgentUpdate;
-#[cfg(test)]
-use tact_protocol::ToolVisualKind;
 
 use crate::{
     ToolSpec, background::SharedBackgroundManager, memory::MemoryManager, task::SharedTaskManager,
@@ -84,7 +82,7 @@ use load_skill::LoadSkillTool;
 use memory::SaveMemoryTool;
 #[cfg(test)]
 use read_file::ReadFileTool;
-pub use registry::{subagent_toolset, toolset};
+pub use registry::{subagent_toolset, toolset, toolset_with_memory};
 // Re-exported so `crate::agent::tool_dispatch` can do per-invocation resource
 // resolution for worktree-isolated `spawn_subagent` calls without naming the
 // private `subagent` module.
@@ -106,7 +104,7 @@ use write_file::WriteFileTool;
 /// teammates, and worktrees.
 #[derive(Clone)]
 pub struct ToolContext {
-    /// Shared with the TUI in interactive mode so `/skill-reload` updates
+    /// Shared with the TUI in interactive mode so `/skill reload` updates
     /// `load_skill` / system-prompt skill summaries without restarting.
     pub skill_registry: crate::skill::SharedSkillRegistry,
     /// Claude Code plugin `SubagentStart` command hooks, stamped at dispatch
@@ -163,12 +161,28 @@ pub struct ToolContext {
 
 impl ToolContext {
     pub fn for_invocation(&self, tool_id: &str) -> Self {
+        self.for_invocation_with_redaction(tool_id, crate::security::RedactionLevel::Off)
+    }
+
+    /// [`Self::for_invocation`] plus live-output redaction at `level`.
+    ///
+    /// Streaming is redacted separately from the final result because the two
+    /// leaks happen at different times: the live view is what the user watches
+    /// while a command is still running, and the assembled result is what the
+    /// transcript and the session store keep.
+    pub fn for_invocation_with_redaction(
+        &self,
+        tool_id: &str,
+        level: crate::security::RedactionLevel,
+    ) -> Self {
         let mut context = self.clone();
-        context.progress_reporter = ToolProgressReporter::new(tool_id, self.ui_tx.clone());
+        context.progress_reporter =
+            ToolProgressReporter::new(tool_id, self.ui_tx.clone()).with_stream_redaction(level);
         context
     }
 }
 
+#[allow(clippy::double_must_use)] // async_trait generates #[must_use] on Pin<Box<dyn Future>> which is already #[must_use]
 #[async_trait]
 pub trait Tool: Send + Sync {
     fn metadata(&self) -> &'static ToolMetadata;
@@ -334,7 +348,7 @@ pub(crate) fn copy_tool_spec(spec: &ToolSpec) -> ToolSpec {
 pub use metadata::{
     ArgumentSummaryPolicy, DetailPolicy, IntoToolCallResult, LiveOutputPolicy, OutputPolicy,
     PermissionPolicy, PermissionPromptPolicy, PopupPolicy, ResourcePolicy, TaskOperation,
-    ToolCallResult, ToolDomain, ToolEffect, ToolMetadata, ToolPresentation,
+    ToolCallResult, ToolDomain, ToolEffect, ToolMetadata, ToolPresentation, patch_target_paths,
 };
 pub use path::{safe_path, safe_path_allow_missing};
 pub use progress::ToolProgressReporter;
@@ -354,24 +368,8 @@ mod tests {
 
     struct EchoTool;
 
-    pub const ECHO_METADATA: ToolMetadata = ToolMetadata {
-        name: "echo",
-        description: "Echo text with a prefix.",
-        permission: PermissionPolicy::Read,
-        permission_prompt: PermissionPromptPolicy::Json,
-        resources: ResourcePolicy::Independent,
-        domain: ToolDomain::Generic,
-        presentation: ToolPresentation {
-            visual_kind: ToolVisualKind::Generic,
-            display_name: "echo",
-            live_output: LiveOutputPolicy::Standard,
-            detail: DetailPolicy::Result,
-            popup: PopupPolicy::None,
-            compact_result_to_meta: false,
-        },
-        output: OutputPolicy::KeepInline,
-        argument_summary: ArgumentSummaryPolicy::Json,
-    };
+    pub const ECHO_METADATA: ToolMetadata =
+        ToolMetadata::read_json("echo", "Echo text with a prefix.", "echo");
 
     #[async_trait]
     impl Tool for EchoTool {

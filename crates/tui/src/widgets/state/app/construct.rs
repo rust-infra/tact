@@ -151,11 +151,36 @@ impl App {
             spinner_frame: 0,
             loading_idx: None,
             language: Language::English,
+            ui_config_path: None,
+            // Shown by default: the switch exists to silence a noisy hook, so
+            // a fresh install (and every test) behaves as it did before it.
+            hook_output: true,
             flash_msg: None,
             copy_flash_at: None,
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
         }
+    }
+
+    /// Adopt the configured `[ui] language` at startup.
+    ///
+    /// A method rather than an `App::new` parameter because neither the test
+    /// harness nor the headless loop has a config file to read, so a parameter
+    /// they would all pass `"en"` for says nothing — and the components'
+    /// snapshots still get refreshed, since this goes through
+    /// [`Self::apply_language`].
+    ///
+    /// An unrecognized name falls back *with a warning*: silently reading
+    /// `language = "jp"` as English would look like the config had said so.
+    pub(crate) fn set_configured_language(&mut self, configured: &str) {
+        let language = Language::parse(configured).unwrap_or_else(|| {
+            tracing::warn!(
+                language = %configured,
+                "unknown [ui] language; falling back to English (expected \"en\" or \"zh\")"
+            );
+            Language::English
+        });
+        self.apply_language(language);
     }
 
     /// Open the `@` file picker starting at the project root. The picker lists

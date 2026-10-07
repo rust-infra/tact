@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use sqlx::Row;
 
-use crate::store::sqlite::{PoolRef, open_pool};
+use crate::store::sqlite::{PoolRef, now_millis, open_pool};
 use crate::task::{TaskRecord, TaskStatus, TaskUpdate};
 
 use super::TaskStore;
@@ -305,23 +305,13 @@ fn row_to_task(row: &sqlx::sqlite::SqliteRow) -> Result<TaskRecord> {
     })
 }
 
-fn now_millis() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::task::TaskUpdate;
 
     fn temp_db(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("tact-taskstore-test-{name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("tact.db")
+        crate::store::test_support::temp_db("tact-taskstore-test", name)
     }
 
     #[tokio::test]

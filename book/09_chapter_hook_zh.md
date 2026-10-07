@@ -1,7 +1,5 @@
 # Agent 生命周期钩子（Agent Lifecycle Hooks）
 
-> 语言：[中文](./09_chapter_hook_zh.md) · [English](./09_chapter_hook.md)
-
 本章说明 Tact 如何在工具执行前后注入自定义逻辑：调用前检查或改写 tool 输入，完成后改写输出，以及（通过注册 API）在会话开始前准备状态。
 
 Hooks 是 **agent 循环**与**工具调度器**之间的扩展点。它们顺序执行，可通过返回 `HookControl::Block` **否决**操作。
@@ -27,7 +25,7 @@ Hooks 把这些关注点移出核心调度器，仍在流水线可预测的位�
 
 | Hook | 注册 | 今天是否调用 | 可否变更 | 可否否决 |
 |------|------|--------------|----------|----------|
-| `SessionStart` | `Agent::session_start` | 是 — 每会话一次，初始化后（`dispatch_session_start_hooks`） | 对 `LoopState`（`Agent`）只读 | 是 |
+| `SessionStart` | `Agent::session_start` | 是 — 每会话一次，初始化后（`dispatch_session_start_hooks`）；它收集的 context 在第一轮之前被记录 | `&mut SessionStartContext`（追加注入的 context） | 是 |
 | `UserPromptSubmit` | `Agent::user_prompt_submit` | 是 — 用户回合消息进入 `agent_loop` 时 | prompt 文本（追加 `additionalContext`） | 是 |
 | `PreToolUse` | `Agent::pre_tool` | 是 — 权限检查之前，按 tool 顺序 | `ToolUse` 输入（`name`、`input` JSON） | 是 |
 | `PostToolUse` | `Agent::post_tool` | 是 — 每个 tool 完成后，随结果流入 | `ToolResult` content | 是 |
@@ -54,6 +52,7 @@ Hooks 把这些关注点移出核心调度器，仍在流水线可预测的位�
 ```rust
 pub enum HookControl {
     Continue,
+    Allow,
     Block(String),
 }
 ```
@@ -61,7 +60,10 @@ pub enum HookControl {
 | 结果 | 含义 |
 |------|------|
 | `Continue` | 运行同类型下一个 hook，然后继续流水线。 |
+| `Allow` | hook 自行回答了审批询问（Codex 的 `permissionDecision: "allow"`）。只有 `PreToolUse` 与 `PermissionRequest` 会对它采取行动；其余事件把它当作 `Continue`。 |
 | `Block(reason)` | 立即停止 hook 链；该 tool 步骤视为失败，原因为 `reason`。 |
+
+**block 永远优先。** 宏在遇到 `Allow` 后仍继续扫描，因此后面的 hook 依然可以拒绝，而拒绝不会被另一个 hook 的批准撤销——与权限规则一致的 `deny > allow` 优先级。对于没有询问可回答的事件，`Allow` 是无操作而非错误，因此同一个 hook 文件可以服务多个事件。
 
 对 `PreToolUse`，block 会跳过执行与权限提示——模型仍会收到解释为何被拦的 `ToolResult`。
 
@@ -73,7 +75,7 @@ pub enum HookControl {
 
 ## 4. Hooks 在轮次流水线中的位置
 
-Hooks 包裹 [任务与工具调度](./11_chapter_task.md)（英文）所述的并行核心：
+Hooks 包裹 [任务与工具调度](./11_chapter_task_zh.md)（英文）所述的并行核心：
 
 ```text
 对 assistant 消息中每个 ToolUse（Phase 1 — 顺序）：
@@ -119,10 +121,22 @@ Hooks 以 trait object 存在 agent 上：
 ```rust
 pub enum Hook {
     SessionStart(Box<dyn SessionStartFn>),
+    UserPromptSubmit(Box<dyn UserPromptSubmitFn>),
     PreToolUse(Box<dyn PreToolUseFn>),
+    PermissionRequest(Box<dyn PermissionRequestFn>),
     PostToolUse(Box<dyn PostToolUseFn>),
+    Interrupt(Box<dyn InterruptFn>),
+    Stop(Box<dyn StopFn>),
+    SessionEnd(Box<dyn SessionEndFn>),
+    PreCompact(Box<dyn PreCompactFn>),
+    PostCompact(Box<dyn PostCompactFn>),
+    PostToolUseFailure(Box<dyn PostToolUseFailureFn>),
+    Notification(Box<dyn NotificationFn>),
+    TaskCompleted(Box<dyn TaskCompletedFn>),
 }
 ```
+
+13 个变体。`HookTypes` 是同一枚举的 strum discriminant（`#[strum_discriminants(name(HookTypes))]`），供 `hooks_by_type` / `invoke_hooks!` 过滤用——所以**新增一个 hook 事件只需给 `Hook` 加一个变体**，过滤与分发自动跟上。`SubagentStart` / `SubagentStop` 不在这里（见 §2）。
 
 可直接注册闭包——任何签名正确的 `Send + Sync` 异步闭包都实现对应 trait。
 
@@ -160,14 +174,80 @@ Hooks 按注册顺序追加到 `Agent.hooks`，每次调用按该顺序执行。
 
 同类型多个 hook 组合：全部须 `Continue`，除非某个 `Block`（首个 block 生效）。
 
-### Claude Code 插件命令 hook
+### 命令 hook
 
-已安装的 marketplace 插件可通过 `.codex-plugin/plugin.json`（`"hooks": "./hooks/hooks.json"`）声明命令 hook。`apply_plugin_hooks`（`crates/tact/src/plugin/hooks.rs`）在 `interactive.rs` / `headless.rs` 中把它们注册到 `Agent` 上，覆盖十三个映射事件：
+hook 来自七处，且**所有匹配的 hook 都会运行**——高层不会取代低层，与 Codex 叠加 user / project / managed 的方式一致：
 
-- `SessionStart` — matcher 与 `"startup"` 匹配；`systemPrompt` 输出仅记录日志、**不应用**（v1）。
+| 来源 | 路径 | `${PLUGIN_ROOT}` | `${PLUGIN_DATA}` |
+|---|---|---|---|
+| 管理员托管 | `/etc/tact/hooks.json` | 该文件所在目录 | 该文件所在目录 |
+| user 文件 | `~/.tact/hooks.json` | 该文件所在目录 | `~/.tact` |
+| project 文件 | `<workdir>/.tact/hooks.json` | 该文件所在目录 | `<workdir>/.tact` |
+| 已安装插件 | bundle 的 `hooks/hooks.json`，或 manifest 内联 `hooks` 映射 | bundle 根 | 该插件的数据目录 |
+| user 配置 | `~/.tact/config.toml` 的 `[hooks]` 表 | 该文件所在目录 | `~/.tact` |
+| project 配置 | `<workdir>/config.toml` 的 `[hooks]` 表 | 该文件所在目录 | `<workdir>/.tact` |
+| project 配置 | `<workdir>/.tact/config.toml` 的 `[hooks]` 表 | 该文件所在目录 | `<workdir>/.tact` |
+
+注册顺序即上表顺序——位于既有 Rust 闭包之后——托管文件在最前（作用域最宽，而 `SessionStart` 上下文按注册顺序拼接，因此管理员的简报为整个会话定调），随后是插件、user 文件、project 文件，然后是 `config.toml` 的各张表。顺序只影响这段拼接，因此此前存在的任何来源都不会被打乱。
+
+**托管文件凭其权限受信，而不是凭一个开关。** 审核闸门存在的原因是：插件包是下载来的内容，project 文件是仓库内容。而一个只有 `root` 能写的文件两者都不是：信任决策已由文件系统做出，再要求用户在 Tact 的存储里重做一遍只是形式主义。因此收集器只在托管文件**属主为 root**且**组与他人均不可写**时才接纳它；否则——包括在任何无法确定属主的平台上——它与其他所有来源一样走审核。这刻意是一个**属性**而非 Codex 的 `bypass_trust` 开关：开关让任何人都有办法关掉闸门，而这个属性无法被「写不了这个文件的人」打开，并且在权限一旦不再是管理员专属时自动失效。
+
+**`[hooks]` 表是第三种写法，而不是第三套机制。** 它反序列化进 JSON 文件用的同一个 `HooksFile`，因此字段、校验与审核都是同一份实现：
+
+```toml
+# ~/.tact/config.toml
+[[hooks.PreToolUse]]
+matcher = "bash"
+[[hooks.PreToolUse.hooks]]
+type = "command"
+command = "policy.sh"
+timeout = 5
+```
+
+每个声明了 `[hooks]` 的配置文件都成为**它自己的**一个来源，并以路径作为标签——绝不合并，尽管配置加载器会合并这些文件的其它取值。hook 是按身份审核的，而审核必须点名它来自哪个文件；合并还会让「只批准这个文件的 hook」变得不可能。由于收集器复用了同一个加载器，所有既有性质原样成立：条目一开始处于**未审核**状态，未审核**绝不注册**，因此仓库附带的 `config.toml` 无法仅凭被克隆就执行任何东西。没有 `[hooks]` 表的文件完全不产生来源，而格式错误的文件会被警告并跳过，与格式错误的 `hooks.json` 完全一致。
+
+文件名用 `hooks.json`（Codex 的），不是 `.hooks.json`：从 `bm hook install --harness codex` 拷出来的文件可以原样使用。Tact 依然不读 `~/.codex/`。
+
+条目声明两种**类型**之一，而下游的一切都是共享的：同样的输出归一化、同样的决策契约（`decision` / `hookSpecificOutput` / 裸 `exit 2`）、同样的 `additionalContextLimit`。
+
+| `type` | 运行什么 | 字段 |
+|---|---|---|
+| `"command"`（或缺省） | 一条 shell 命令，JSON payload 走 stdin | `command`、`timeout`、`async` 等 |
+| `"mcp_tool"` | **已连接 MCP server** 上的一个工具 —— 经由 agent 用的同一个 `MCPToolRouter` 抵达 | `server`、`tool`、`arguments` |
+
+```json
+{ "type": "mcp_tool", "server": "policy", "tool": "gate",
+  "arguments": { "path": "secrets/.env" } }
+```
+
+第二种类型的意义在于：策略可以住在那个已经持有集成工具的 MCP server 里，返回与 shell 脚本相同的 `{"decision": …}` / `{"hookSpecificOutput": …}` 形状 —— 而不是写一个脚本，再用它所用的语言重新实现 payload、决策契约与 `additionalContext` 解析。回答 `{"decision":"block","reason":…}` 的工具会阻断；回答 `additionalContext` 的会注入上下文。
+
+`arguments` 是**静态**的：hook payload 刻意不合并进去。一个输入随事件漂移的工具调用会让被审核的定义变成谎言，而定义正是用户批准的东西。
+
+server 不可达、工具不存在或工具报错，都会被上报并**继续** —— 与所有其他 hook 失败一致：hook 不能靠自身损坏来中止循环。
+
+由于身份哈希与审核列表都读取这份定义，一个 `mcp_tool` 条目以 `mcp_tool <server>/<tool> <arguments>` 标识。若对（不存在的）`command` 求哈希，同一来源里的每个 `mcp_tool` 条目都会得到同一个身份 —— 批准一个就等于批准其余全部，修改 `tool` 或 `arguments` 也不会让批准失效，而且审核界面会在本该显示定义的地方显示一行空白。缺少 `server` 或 `tool` 的条目会被上报为无法运行，而不是静默失效。
+
+### 运行前的审核
+
+hook 文件是可执行的配置，而仓库可以附带 `.tact/hooks.json`——所以克隆一个仓库绝不能执行它的命令。每个 hook 定义默认处于**未审核**状态，未审核的 hook **绝不注册**：文件会被读取，然后被拒绝。这是 Codex 的 `trusted_hash` 模型，配上 Tact 自己的存储。
+
+- **身份**就是定义本身：来源标签、事件、matcher 与命令，用 SHA-256 哈希。改动命令即作废此前的批准。
+- **存储**是 `~/.tact/hooks-state.json`（`{"version":1,"trusted":{hash:描述}}`）。它刻意不是 `config.toml`：手改配置不该能授予执行权。无法解析的存储等同空存储，于是所有 hook 回到待审核。
+- **审核**用 `tact-ui hooks list`（看有哪些、状态如何），随后 `tact-ui hooks trust --all` 或 `tact-ui hooks trust --source <label>`；`tact-ui hooks forget --all` 撤销全部。同一套审核也能在 hook 实际触发的地方完成：TUI 里的 `/hooks list`、`/hooks trust --all`、`/hooks trust --source <标签>`、`/hooks forget --all`，措辞完全一致；`/hooks list` 仅在空闲时可执行，因为 driver 会把非 fast 命令串行排到进行中的 turn 之后。TUI 写法同样要求显式的 `--all` / `--source`，没有“全部批准”的捷径。
+- **生效**发生在 hook 注册时，所以批准从下一次会话开始起作用；正在运行的会话保留它启动时的决定。
+- **告知读者**从不省略：未审核的 hook 会在 TUI 里走 `AgentUpdate::Info` 通道，headless 下走 stderr（`[hooks] …`）——与 MCP 加载报告相同的两条通道。
+
+输出契约以 **Codex**（`codex-rs/hooks`）为准：`decision` / `reason`、`hookSpecificOutput.additionalContext`、`suppressOutput`、`continue` 与 `command` handler 才是 Tact 建模并遵守的部分。只属于 Claude 的输出有意不实现——这里没有 `systemPrompt` 处理，因为没有插件能合法发出它（Claude 的 SessionStart 文档列的是 `additionalContext` / `initialUserMessage` / `watchPaths` / `sessionTitle` / `reloadSkills`，而 Codex 的 schema 恰好只有 `hookEventName` + `additionalContext`）。
+
+已安装的 marketplace 插件可通过 `.codex-plugin/plugin.json`（`"hooks": "./hooks/hooks.json"`）声明命令 hook。`apply_plugin_hooks_with_report`（`crates/tact/src/plugin/hooks.rs`）在 `session_bootstrap::bootstrap_session` 中把**已审核**的那些注册到 `Agent` 上（两个前端共用同一次注册），覆盖十五个映射事件中的十三个（`SubagentStart` / `SubagentStop` 改由 `plugin_subagent_*_hooks` 构建 `ToolContext` 闭包）：
+
+- `SessionStart` — matcher 与真实的 `source`（`startup` / `resume` / `compact`）匹配；`additionalContext`（JSON，或纯 stdout —— 参考实现 `basic-memory` 插件正是以这种形式打印它的简报）会在第一轮之前被记录为一条合成的 `<hook-context>` user 消息；`continue: false` 会跳过这一轮（该 schema 里没有 `decision`）。
 - `UserPromptSubmit` — matcher 匹配 prompt 文本；`additionalContext` 输出追加到用户 prompt。
-- `PreToolUse` — matcher 匹配工具名；`additionalContext` 以 `_hook_context` 加入工具输入；`block` 阻止执行。
-- `PostToolUse` — matcher 匹配工具名；`suppressOutput` 清空结果；`block` 使其变为失败。
+- `PreToolUse` — matcher 匹配工具名；`additionalContext` 会记录为下一轮请求之前的对话上下文；`block` 阻止执行，而 `permissionDecision: "allow"` 会在不询问的情况下执行该调用。
+- `PermissionRequest` — 只在 Tact **即将询问审批**时运行（matcher 匹配工具名），因此一个只负责批准的策略 hook 不必为无需审批的调用付出代价：`allow` 跳过询问，`block` 带理由拒绝，其余把决定留给用户。
+- `Interrupt` — 仅观测，matcher 匹配字面量 `interrupt`；用户取消（`/cancel`）时每轮触发一次，用于记日志或冲刷。
+- `PostToolUse` — matcher 匹配工具名；`additionalContext` 会记录为下一轮请求之前的对话上下文；`suppressOutput` 清空结果；`block` 使其变为失败。
 - `PostToolUseFailure` — matcher 匹配工具名；仅观测（`tool_name`、`tool_input`、`tool_use_id`、`error`）。
 - `Notification` — matcher 匹配通知类型（`permission_prompt`）；仅观测（`notification_type`、`title`、`message`）。
 - `TaskCompleted` — matcher 忽略（对齐）；仅观测（`task_description` = 最后一条 assistant 消息）。
@@ -178,11 +258,24 @@ Hooks 按注册顺序追加到 `Agent.hooks`，每次调用按该顺序执行。
 - `PreCompact` — matcher 匹配 trigger 字符串（`auto`/`manual`/`recovery`/`command`）；`block` 否决压缩。
 - `PostCompact` — matcher 匹配 trigger 字符串；仅观测。
 
-每条 hook 是一个 shell 命令（Unix 用 `sh -c`，`commandWindows` 暂不处理），注入 `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PROJECT_DIR` 环境变量，stdin 输入 Claude 输入 JSON（`session_id`、`transcript_path`、`cwd`、`hook_event_name` 及事件字段），stdout 输出 JSON 同时兼容新版 `decision` / `reason` / `additionalContext` 与旧版 `hookSpecificOutput` 格式。`timeout` 默认 60s，`async: true` 即发即忘。失败（非零退出、超时、非法 JSON）仅告警并 **继续**——绝不阻塞 agent 循环（fail-open，与 Claude Code 一致）。
+每条 hook 是一个 shell 命令（Unix 用 `sh -c`，`commandWindows` 暂不处理），注入 `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PROJECT_DIR` 环境变量，stdin 输入 Claude 输入 JSON（`session_id`、`transcript_path`、`cwd`、`hook_event_name` 及事件字段），stdout 输出 JSON 同时兼容新版 `decision` / `reason` / `additionalContext` 与旧版 `hookSpecificOutput` 格式。`timeout` 默认 60s，`async: true` 即发即忘，`additionalContextLimit` 以 token 为单位限制单个 hook 能注入多少上下文——作用在上下文产生处，而不是看会话还能装多少。
+
+**`exit 2` 是最简单的阻断契约。** 理由是 hook 的 **stderr** 文本，而它阻断什么按事件区分，与 Codex 的定义一致：
+
+| 事件 | `exit 2` 的含义 |
+|---|---|
+| `PreToolUse`、`PermissionRequest` | 阻断，`stderr` 即理由 |
+| `PostToolUse` | 该 tool 结果变为携带 `stderr` 的失败 |
+| `Stop`、`SubagentStop`、`UserPromptSubmit` | 携 `stderr` 作为下一轮 prompt 继续 |
+| 其余事件 | fail-open，但仍会上报 |
+
+JSON 决定永远优先于裸 `exit 2`：打印了决定的 hook 已经表明了意图，只有**什么都没决定**的 hook 才回退到退出码。`additionalContext` 与 `systemMessage` 算附加而非决定，因此可以与 `exit 2` 并存。
+
+其余所有失败——超时、启动失败、非 `2` 的非零退出、看着像 JSON 却解析失败——仍然只告警、显示 `[plugin hook <Event> failed] …` 并 **继续**（fail-open，与 Claude Code 一致）。
 
 插件 hook 在既有 Rust 闭包之后按声明顺序执行；`Block` 短路。
 
-堆叠多个插件时该顺序是确定的。插件按 `<marketplace>/<plugin>` 键序访问——即 `installed.json` 的 `BTreeMap` 顺序，字典序，**不是**安装时间；同一插件内部按 hooks 文件（或 manifest 内联映射）中该事件 matcher 的声明顺序。没有 priority 字段：跨插件顺序由该键固定，你能控制的是单个插件内部的声明顺序。
+堆叠多个来源时该顺序是确定的。插件按 `<marketplace>/<plugin>` 键序访问——即 `installed.json` 的 `BTreeMap` 顺序，字典序，**不是**安装时间；同一插件内部按 hooks 文件（或 manifest 内联映射）中该事件 matcher 的声明顺序。没有 priority 字段：跨插件顺序由该键固定，你能控制的是单个插件内部的声明顺序。
 
 ---
 
@@ -242,19 +335,60 @@ PreparedState::Run | Resolved(blocked message)
 
 ---
 
-## 10. SessionStart（当前 API）
+## 10. SessionStart
 
 `Agent::session_start` 接受签名如下的 hooks：
 
 ```rust
-Fn(&LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + '_>>
+Fn(&LoopState, &mut SessionStartContext) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + '_>>
 ```
 
-预期调用点是**每个会话一次**，在 `agent_loop` 中第一次 LLM 请求之前（`ensure_session` 之后、主 `loop` 体之前）。
+它们**每会话运行一次，且发生在第一轮**——不在启动时。插件 hook 是一个子进程，可能要跑好几秒（参考实现 `basic-memory` 的 hook 实测热启动约 8 秒、`uv` 缓存冷启动约 100 秒），在首帧之前等它会让每次启动都变慢。`AgentRuntime::session_start_hooks_pending` 保证这组 hook 只跑一次，而它们之间是**并发**执行的，收集到的内容仍按注册顺序排列。
 
-截至本文写作时，**`agent_loop` 尚未调用 `invoke_hooks!(SessionStart, …)`**。今天可以注册 session hooks，但要接上调用才会运行。PreToolUse 与 PostToolUse 已完全生效。
+hook 收集到的 context 落在 `AgentRuntime::pending_session_context` 上，而不是直接进入对话：`dispatch_session_start_hooks` 发生在 `ensure_session` 之前，此时 `push_message` 会让 context 非空、从而抑制历史恢复。`agent_loop` 在**本轮预压缩之后**、本轮用户消息之前把它取走，每个片段各记为一条合成的 `<hook-context>` user 消息，携带 `MessageKind::HookContext`。必须在压缩之后：`build_compacted_history` 只保留真实 user turn，早于压缩注入的 cell 会被它伴随的那次压缩直接丢掉。
 
-接上后，session hooks 适合一次性 setup：预热缓存、校验工作区不变量或注入遥测 context。
+超过约 2,500 token 的片段会全文写到 `<temp_dir>/hook_outputs/<session>/`，模型看到的则是头尾预览加一句 `Full hook output saved to: <path>`（Codex 的 `HookOutputSpiller` 及其默认上限）；TUI 仍显示 hook 的完整文本，并把整块渲染成一个**带竖条的容器**：header 行是 `▎ ⌁ hook context · <来源>`，正文前 8 行每一行（含空行）前置 accent 的 `▎ `，超过就补一行 `▎ … N more lines · [󰜼 Open]`，双击 header 或这行尾巴用只读 popup 看全文。这一块形状不是装饰：`<hook-context>` 标记在渲染前就被剥掉，注入的内容与 Tact 自己的 markdown 通知同为 `SystemMarkdown`，没有容器读者无法分辨哪一段来自插件（长文本里一行标签会滚出视野）。整块与**工具块同列**（`LogItemKind::HookContext` / `HookStatus` 的 `log_indent()` 都是 `LOG_TOOL_BLOCK_INDENT`），竖条因此与工具卡的边框齐平。注意是 `LOG_TOOL_BLOCK_INDENT` 而不是 `LOG_TOOL_INDENT`：后者属于工具卡**覆盖掉的空白占位行**，屏幕上根本不存在这一列，按它对齐会让竖条停在每条工具行左边 4 列。header 因此**不写行数、也不写展开提示**：它与工具块同缩进，窄面板里"块名 / 来源 / 行数 / 手势"四个字段放不下，而行数是唯一能推出来的那个（隐藏了多少行由尾巴行给出，没被截断时正文全在屏上）——留着它要多花 11 列，60 列宽就会把 header 折成两行；手势词则归尾巴行所有（用 `[Open]`，与折叠的工具块 meta 行同一个定义 `collapsed_action_text`，两处不会各写一份），header 再写一遍就是同一个手势的第二种拼法。**截断只在渲染层**——模型拿到的文本一字未改。竖条是**行属性**（`LogItem::gutter`），不是写进文本的前缀：正文那块由 `MarkdownCell` 的 `Gutter` 绘制（并把自身 2 列从布局宽度中扣掉），header 与"还有 N 行"这两行是普通文本行，由宿主在**折行那一步**给每一视觉行插入竖条并同样扣掉 2 列——写进文本的 `▎` 只标记第一个视觉行，窄面板一折行左轨就破一个洞。popup 走 `LogItem::popup_source`（带它的行在鼠标层是控件，单击不选区）。live 路径（`record_hook_context` 发 `AgentUpdate::HookContext`）与重载路径（`load_history` 按标记识别）共用 `App::append_hook_context_markdown`，两条路的形状不会分叉。
+
+整块（进度行与上下文块）还受 `[ui] hook_output`（默认 `true`，`/hook-output` 翻转）控制：门设在**行进入日志的那一刻**，关掉就是一行都不进——只影响显示，hook 照跑、stdout 照进模型；进度行的**完成**那一半也必须先看这个开关，否则会给开头被跳过的行补上一行孤儿。见 [Ch 21](./21_chapter_config_zh.md) §5。
+
+插件这条路径还会补齐 Codex 的 `session-start.command.input` 在 Claude 基础字段之外要求的两个字段——`model` 与 `permission_mode`（后者用 Tact 映射过去的 Claude Code 词汇：`default` / `plan` / `acceptEdits`）。插件自己的 `statusMessage` 则由**两种 hook 共用的 runner**（`run_command_hook` / `run_mcp_tool_hook`）抛给 UI，因此每个事件都有进度行，而不是只有 SessionStart：hook 开始时发一次 `AgentUpdate::HookStatus`（`elapsed_ms: None`），返回后再发同一个 `id`（`elapsed_ms: Some(..)`），TUI 按 id 找到那一行**原地改写**成 muted + 耗时，而不是留下一句永远成立的 "Loading"。来源取自 `HookCommand::source`——它在准入处（`admit_trusted`）被盖章，`#[serde(skip)]` 保证 hooks 文件不能自己写这个名字，它也不进 `hook_definition_hash`。`async` 型 hook 不开进度行：调用在子进程结束前就返回，没人能合上那一行。不删行的原因与工具卡一致：日志的物理索引是选区与卡片的键。id 由 `AgentRuntime::hook_status_seq`（`AtomicU64`）发放，因为 SessionStart 的多个 hook 是并发跑的。
+
+这个时机与「一片段一条消息」的规则与 Codex 一致：它的 `SessionStart` 处理把每个 `additionalContext` 各记为一条 `developer` 角色消息，而它的 start hooks 也跑在 `run_pre_sampling_compact` 之后。Tact 的消息模型只有 user/assistant，所以改由 `<hook-context>` 标记来承载来源信息 —— 而且与内存中的 kind 不同，这些标记在重新加载后依然存在。**来源本身也写在标记上**：`<hook-context source="plugin codex">`，因为正文之外没有第二个落点，而读者需要知道是哪个 hook 说的（`HookContextChunk` 把 label 从注册侧一路带到注入点；无法写成裸属性值的 label 直接丢弃，不转义）。stdout 看起来像 JSON 却解析失败时，按失败的 hook 处理而非注入，与 Codex 的 `looks_like_json` 检查一致。
+
+matcher 匹配的是**真实的** `source`：全新会话是 `startup`，`ensure_session` 恢复了历史则是 `resume`，而压缩重新排队这批 hook 时是 `compact`。最后一种正是插件在上下文被摘要掉之后重新定位的手段——参考实现 `basic-memory` 插件就是这样请求一份需要人工撰写的 checkpoint——代价是每次压缩多跑一次 hook，与 Codex 完全一致。
+
+`SessionStart` hook 返回 `continue: false` 会**跳过这一轮**：`agent_loop` 在用户消息入队之前就返回，与 Codex 的 `return Ok(None)` 一致；读者看到的是它的 `stopReason`。那个 schema 里没有 `decision: block`，所以它不是停止会话的手段。
+
+### hook 的 payload
+
+每个事件 stdin 上的 payload 都带齐了 Codex 各 schema 要求的字段，照着那些 schema 写的插件不会再读到 `null`：
+
+| 字段 | 值 |
+|---|---|
+| `session_id` | 当前会话 id |
+| `cwd`、`hook_event_name` | 同以前 |
+| `model` | `Agent::model()`——当前模型，会跟随 `/model` |
+| `permission_mode` | Claude Code 词汇：`default` / `plan` / `acceptEdits` |
+| `turn_id` | `Agent::turns_taken` |
+| `transcript_path` | **`null`**——Tact 把会话放在 SQLite，只在压缩时才写 transcript，因此没有单一的活动文件（Codex 指向它的 rollout 文件）。此前这里报的是 transcripts **目录**，而插件会照着去打开它。 |
+| `tool_use_id` | `PreToolUse` / `PostToolUse` 上有：被标注的那次调用 |
+
+失败的 hook（非零退出、超时、命令起不来）是 fail-open 的，而且从这次改动起**可见**：agent 会发出 `[plugin hook <Event> failed] <error>`，因为单靠 `tracing::warn!` 只会写进一个默认会话永远不会写的日志文件。
+
+### 哪些事件会把 `additionalContext` 带进对话
+
+Codex 一共只有四条这样的通道——`SessionStart` / `SubagentStart`（两者共用一个 outcome 类型）、`UserPromptSubmit`、`PreToolUse`、`PostToolUse`——Tact 现在覆盖同一集合：
+
+| 事件 | context 的去处 |
+|---|---|
+| `SessionStart` | 第一轮用户消息之前的一条 `<hook-context>` 消息 |
+| `PreToolUse` / `PostToolUse` | 下一轮请求之前的一条 `<hook-context>` 消息，与它所标注的工具调用相邻 |
+| `SubagentStart` | 追加到子代理的 system prompt（Claude Code 语义） |
+| `UserPromptSubmit` | 追加到 prompt 文本本身 |
+
+其余九个事件只承担控制/观察职责；它们的 `additionalContext` 也不是 Codex 定义的通道。特别地，`PreToolUse` 的 context **不会**写进工具参数——早先那个 `tool_use.input["_hook_context"]` 键没有任何读取者，于是 context 消失、字段还泄漏进了权限检查与工具本身能看到的内容里。
+
+session hooks 也适合一次性 setup：预热缓存、校验工作区不变量或注入遥测 context。
 
 ---
 
@@ -280,14 +414,29 @@ Fn(&LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + '_>>
 | `crates/tact/src/agent/mod.rs` | `pre_tool`、`post_tool`、`session_start`、`hooks_by_type` |
 | `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call` 中的 PreToolUse / PostToolUse 调用 |
 | `crates/tact/src/permission/mod.rs` | PreToolUse 之后运行；与 hooks 分离 |
+| `crates/tact/src/plugin/hooks.rs` | `collect_hook_sources` / `collect_hook_sources_with` / `config_hook_paths`（**七个**来源，即 §6 表）、`HooksFile::{from_file, from_toml_file}`、`admit_trusted`、`HookTrust`、`survey_hooks`、`trust_hooks`、`run_hook`（按 `HookCommand::kind` 分发）、`run_command_hook`、`run_mcp_tool_hook`、`definition_text`、`build_payload` |
+| `crates/tact-ui/src/session_bootstrap.rs` | `apply_plugin_hooks_with_report` 的调用点（两个前端共用），以及 `plugin_subagent_start_hooks` / `plugin_subagent_stop_hooks` 到 `ToolContext` 的打戳 |
+| `crates/tact-ui/src/hooks_cli.rs` | `tact-ui hooks list` / `trust` / `forget` 及其渲染函数 |
+| `crates/tui/src/handlers/hooks.rs` | `/hooks list` / `trust` / `forget` —— 解析与空闲门控；实际工作由 driver 执行 |
+| `crates/tact-ui/src/driver.rs` | `UserCommand::Hooks{List,Trust,Forget}` → `survey_hooks` / `trust_hooks` / `forget_hook_trust`，经 `Info` / `MdInfo` 通道上报 |
 | `docs/state_machines.md` | Hook 控制枚举与流水线摘要 |
+
+---
+
+## 13. 有意留下的缺口
+
+| 缺口 | 原因 |
+|-----|-----|
+| `SessionStart` 的 `clear` / `fork` 来源 | Codex 会上报它们，但 Tact 没有清空历史的命令、也没有会话 fork，因此这两个变体会不可达。词表是 `startup` / `resume` / `compact`——Tact 真正区分的那三个。 |
+
+| `bypass_trust` | Codex 用来「不经审核直接运行 hook」的开关。Tact 为真正需要它的场景提供了**效果**——管理员托管的 `/etc/tact/hooks.json` 不经审核即运行，因为只有管理员能写它——但没有提供这个开关，因为一个能关掉审核闸门的标志，任何能编辑配置文件的人都能设，其中也包括随仓库下发的配置。两种更窄的形态被权衡后否决：一是 `--bypass-trust` 一次性命令行标志，它不可组合（每次调用都得重复，而一旦被做成别名就变成永久的），并且不留下「到底批准过哪些定义」的记录——而 `trust` 恰好写出这份记录，`forget --all` 可撤销它；二是带启动提示的、有作用域的 opt-in，它仍然是一个「任何能写配置的人都能设」的开关，而那条提示只有设它的人自己会读到。等价做法仍是 `tact-ui hooks trust --all` / `trust --source <标签>`，它是显式的、可审计的、且按来源限定作用域。 |
 
 ---
 
 ## Related Docs
 
-- [权限模型](./10_chapter_permission.md) — 流水线中紧接 PreToolUse 之后（英文）
-- [任务与工具调度](./11_chapter_task.md) — hooks 所包裹的三阶段 tool 流水线（英文）
+- [权限模型](./10_chapter_permission_zh.md) — 流水线中紧接 PreToolUse 之后（英文）
+- [任务与工具调度](./11_chapter_task_zh.md) — hooks 所包裹的三阶段 tool 流水线（英文）
 - [工具系统](./07_chapter_tool_zh.md) — 原生工具与 dispatch
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — Hook Engine 章节
 - [Tool Rendering](../docs/tool_rendering.md) — TUI 中 blocked/failed 步骤如何显示

@@ -11,7 +11,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span, Text},
-    widgets::{Paragraph, Scrollbar, ScrollbarState},
+    widgets::Paragraph,
 };
 use syntect::easy::HighlightLines;
 use syntect::highlighting::ThemeSet;
@@ -175,24 +175,6 @@ pub fn prepare_diff_popup(popup: &mut DiffPopup, theme: &Theme) {
     }
 }
 
-/// Bottom-border hints for the tool popup. Every key is real for this popup —
-/// `handle_overlay_key` routes Esc / y / j-k here (unlike `g`/`G`, which the
-/// code / mermaid / dag / subagent popups own).
-const TOOL_POPUP_FOOTER: &[super::FooterHint] = &[
-    super::FooterHint {
-        key: "y",
-        label: " copy ",
-    },
-    super::FooterHint {
-        key: "Esc",
-        label: " close ",
-    },
-    super::FooterHint {
-        key: "j/k",
-        label: " scroll ",
-    },
-];
-
 pub fn render_diff_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> PopupMouseSurface {
     let mut surface = PopupMouseSurface::default();
     let code_bg = ctx.theme.code_block_bg();
@@ -228,11 +210,11 @@ pub fn render_diff_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
             ctx.theme,
             &popup.title,
             popup.tool_name.as_deref(),
-            Some(TOOL_POPUP_FOOTER),
+            Some(super::COPY_SCROLL_CLOSE),
             ctx.copy_flash.then_some(ctx.messages.popup_copy_done),
         );
         frame.render_widget(Paragraph::new(body), inner);
-        surface.diff_popup_area = popup_area;
+        surface.popup_area = popup_area;
         surface.body_area = body_area;
         return surface;
     };
@@ -335,19 +317,14 @@ pub fn render_diff_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
         ctx.theme,
         &title,
         popup.tool_name.as_deref(),
-        Some(TOOL_POPUP_FOOTER),
+        Some(super::COPY_SCROLL_CLOSE),
         ctx.copy_flash.then_some(ctx.messages.popup_copy_done),
     );
     frame.render_widget(Paragraph::new(text), inner);
 
-    let scrollbar =
-        Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
-    let mut state = ScrollbarState::new(total)
-        .viewport_content_length(content_height)
-        .position(scroll);
-    frame.render_stateful_widget(scrollbar, popup_area, &mut state);
+    super::render_popup_scrollbar(frame, popup_area, total, content_height, scroll);
 
-    surface.diff_popup_area = popup_area;
+    surface.popup_area = popup_area;
     surface.body_area = body_area;
     surface.hit_rows = hit_rows;
     surface

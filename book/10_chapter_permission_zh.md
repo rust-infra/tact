@@ -1,8 +1,6 @@
 # 权限模型（Permission Model）
 
-> 语言：[中文](./10_chapter_permission_zh.md) · [English](./10_chapter_permission.md)
-
-本章说明 Tact 如何决定每个工具调用是否可执行：按风险做意图分类、三种权限模式、会话内 allowlist，以及通过 TUI 的交互式审批。每个 native 与 MCP 工具都会在 `Agent::execute_tool_call` 的 Phase 1 经过同一道关卡——在 `PreToolUse` hook 之后、并行执行之前。Hook 顺序见 [Agent 生命周期 Hook](./09_chapter_hook_zh.md)。
+本章说明 Tact 如何决定每个工具调用能不能执行：先按风险给这次调用定级，再看当前的权限模式、会话内的允许清单，必要时弹出 TUI 交互式审批。每个 native 与 MCP 工具都要在 `Agent::execute_tool_call` 的 Phase 1 过同一道关卡——位置在 `PreToolUse` hook 之后、并行执行之前。Hook 顺序见 [Agent 生命周期 Hook](./09_chapter_hook_zh.md)。
 
 ---
 
@@ -12,7 +10,7 @@
 
 > 给定此工具名与输入，我们应 **允许**、**拒绝**，还是 **询问用户**？
 
-它 **不** 执行工具。它分类意图、应用当前模式与 allowlist，并返回 `PermissionDecision`。`crates/tact/src/agent/tool_dispatch.rs` 中的 agent 将其转为调度工具，或合成一条被拦截的 `ToolResult`。
+它 **不** 执行工具。它只做两件事：给这次调用定级，再套用当前模式与允许清单，然后返回 `PermissionDecision`。`crates/tact/src/agent/tool_dispatch.rs` 中的 agent 将其转为调度工具，或合成一条被拦截的 `ToolResult`。
 
 | 层级 | 职责 |
 |------|------|
@@ -21,7 +19,7 @@
 | `tool_dispatch.rs` | 通过 TUI `RequestSelect` 或 headless `ask_user(risk)` 处理 `Ask` |
 | `bash` 工具 + `shell.rs` | 在执行时硬拦截一部分危险 shell 命令 |
 
-Shell 命令有 **两层** 防护：高风险模式触发权限提示；更小的一组在 `bash` 工具内即被拒绝，即使用户已批准。
+Shell 命令有 **两层** 防护：一层是权限提示，命中高风险模式就会弹；另一层更硬——一小批最危险的命令直接写死在 `bash` 工具里，就算用户已经点了批准也照样拒绝。
 
 ### 权限与沙箱
 
@@ -39,47 +37,46 @@ Sandbox    = 执行边界   （运行中的命令能访问什么？）
 
 ---
 
-## 2. 意图分类
+## 2. 风险定级
 
 ### 核心类型
 
 ```rust
-pub enum CapabilitySource { Native, Mcp }
-
 pub enum CapabilityRisk { Read, Write, High }
-
-pub struct CapabilityIntent {
-    pub source: CapabilitySource,
-    pub server: Option<String>,  // MCP server 段（若有）
-    pub tool: String,              // 解析后的短工具名
-    pub risk: CapabilityRisk,
-}
 ```
 
-`normalize_capability(tool_name, tool_input)` 是唯一入口。它解析工具名，再调用 `classify_risk()`。
+Tact 里没有一个单独存着"意图"的对象，也没有一张按工具名硬编码的 `classify_risk` 表。风险是每个工具**自己在元数据里声明**出来的：`ToolMetadata.permission` 是一份 `PermissionPolicy`，由它读这次调用的输入算出风险：
 
-### Native 与 MCP 工具名
+```rust
+metadata.permission.resolve(&tool_use.input)   // → CapabilityRisk
+```
 
-| 模式 | 示例 | 解析结果 |
-|------|------|----------|
-| Native | `read_file` | `source = Native`，`tool = "read_file"` |
-| MCP | `mcp__demo__db__query` | `source = Mcp`，`server = Some("demo__db")`，`tool = "query"` |
+预检对每个已解析调用取风险的来源（`crates/tact/src/agent/tool_dispatch.rs`）：
 
-MCP 名使用前缀 `mcp__`，随后 `server__tool`，以 **最右侧** 的 `__` 分割（因此 server ID 可含下划线）。
+| 解析结果 | 风险来源 |
+|----------|----------|
+| `ResolvedTool::Native { metadata }` | `metadata.permission.resolve(&input)` |
+| `ResolvedTool::Mcp { server, tool }` | server 条目的 `tools.<name>.risk` / `default_tool_risk`；静默条目保持 **High** |
+| `ResolvedTool::McpResource` / `McpPrompt` | Tact 自己的资源 / prompt 工具，没有 server 条目能声明它们，因此由 `[mcp]` 的 `resource_*_risk` / `prompt_*_risk` 决定，默认 High |
+| `ResolvedTool::Unknown` | **High** |
+
+### 工具名与 MCP 名
+
+工具名只用于**匹配规则与显示**（`mcp__demo__db__query` → server `demo__db`、tool `query`，以**最右侧**的 `__` 分割，因此 server ID 可含下划线）。定级不读工具名——名字只是一段普通字符串，风险是工具自己声明出来的数据。
 
 ### 风险规则
 
-分类是启发式的——基于工具名前缀，对 `bash` 则基于命令字符串：
+`PermissionPolicy` 七个变体，`resolve` 是唯一的分类入口（`crates/tact/src/tool/metadata.rs`）：
 
 | 风险 | 规则 |
 |------|------|
-| **Read** | 使用 `PermissionPolicy::Read` 的工具（如 `read_file`）；可证明只读的 shell 命令（见 [§7](#7-shell-高风险检测)） |
-| **Write** | 使用 `PermissionPolicy::Write` 的工具；无法证明只读的 shell 工具命令（`bash` / `background_run` / `worktree_run`） |
-| **High** | 使用 `PermissionPolicy::High` 的工具（如 `spawn_subagent`）；以 `sudo ` 或 `su ` 开头的 shell 命令 |
+| **Read** | `Read`（无路径目标的元数据类工具，如 `sleep`、`load_skill`）；`ReadPath { path_field }` 目标不敏感时（`read_file` / `read_image`）；`ShellCommand` 且命令**可证明只读**（见 [§7](#7-shell-高风险检测)） |
+| **Write** | `Write`；`WritePath { path_field }` 目标不敏感时（`write_file` / `edit_file`）；`PatchPaths` 目标不敏感时；`ShellCommand` 但命令无法证明只读 |
+| **High** | `High`（如 `spawn_subagent`）；`ReadPath` / `WritePath` / `PatchPaths` 命中敏感目标时；`ShellCommand` 的命令串提到敏感路径（`sensitive::classify_command` 命中），或以 `sudo ` / `su ` 开头 |
 
 `shell.rs` 另有执行期硬拦截列表，即使权限已批准也会拒绝部分危险命令（见 [§7](#7-shell-高风险检测)）。
 
-MCP 工具使用各自的 metadata / 默认值；dispatch 关卡将未知工具视为 **High**。
+表中四个**目标感知**变体（`ReadPath` / `WritePath` / `PatchPaths` / `ShellCommand`）的逐例展开、每一步由谁决定、以及两个 `allow` 配置的分工，见 [§13](#13-四个目标感知策略的逐例流程)。
 
 ---
 
@@ -120,50 +117,51 @@ pub enum PermissionMode {
 
 | 模式 | 标签 | 行为 |
 |------|------|------|
-| `Default` | `default - ask for writes` | Read 允许；Write 询问（除非 settings/allowlist 命中）；High 询问，除非命中 settings **allow** 规则 |
+| `Default` | `default - ask for writes` | Read 允许；Write 询问（除非 settings/allowlist 命中）；High 询问，除非命中 settings **allow** 规则**或会话内 allowlist 已覆盖该确切工具与输入** |
 | `Plan` | `plan - read only` | Read 允许（含可证明只读的 shell 命令——`ls`、`grep`、`git status` 等）；Write 与 High **拒绝**且不提示 |
 | `Auto` | `auto - allow non-high operations` | 所有风险自动批准（含 High） |
 
 ### `PermissionManager::check()` 中的决策顺序
 
-检查按此固定顺序执行：
+在这之前，`tool_dispatch` 会先跑**敏感目标守卫**（§12）。命中 `Credential` 档的调用会在那里直接被拒，根本走不到下面这套判断顺序；命中 `Secret` 档的则被升级成 `High`，从第 2 步开始走。
+
+检查按这个固定顺序执行（后文把这条顺序简称为"阶梯"）：
 
 ```text
 1. Read risk?                         → Allow（所有模式）
 2. Plan mode + non-Read?              → Deny
 3. Auto mode?                         → Allow（所有风险）
-4. Settings deny rule?                → Deny
-5. Settings allow rule?               → Allow（含 High）
-6. Settings ask rule（非 High）?      → Ask
-7. High risk（无 Deny/Allow 规则）?   → Ask（跳过会话内 allowlist）
-8. 会话内 always_allowed 命中?        → Allow
-9. Default                            → Ask
+4. Settings deny rule?                     → Deny
+5. Settings allow rule?                    → Allow（含 High）
+6. Settings ask rule（非 High）?           → Ask
+7. Server-policy auto-approve?             → Allow
+8. High risk + 会话内 always_allowed 命中? → Allow
+9. High risk（没有任何允许）?              → Ask
+10. 会话内 always_allowed 命中?            → Allow
+11. Default                                → Ask
 ```
 
 ```mermaid
-flowchart TD
-    TC["ToolUse { name, input }"] --> Risk["PermissionPolicy::resolve()"]
-    Risk -- Read --> Allow["Allow"]
-    Risk -- Write / High --> Plan{"Plan mode?"}
-
-    Plan -- Yes --> Deny["Deny"]
-    Plan -- No --> Auto{"Auto mode?"}
-
-    Auto -- Yes --> Allow
-    Auto -- No --> Settings{"Settings rule?"}
-
-    Settings -- Deny --> Deny
-    Settings -- Allow --> Allow
-    Settings -- Ask / none --> High{"High risk?"}
-
-    High -- Yes --> Ask["Ask user"]
-    High -- No --> AllowList{"always_allowed_tools?"}
-
-    AllowList -- Yes --> Allow
-    AllowList -- No --> Ask
+graph TD
+    a_risk[PermissionPolicy::resolve] --> b_risk{风险等级 Read?}
+    b_risk -->|Read| o1[Allow]
+    b_risk -->|Write / High| c_plan{Plan mode?}
+    c_plan -->|Yes| o2[Deny]
+    c_plan -->|No| d_auto{Auto mode?}
+    d_auto -->|Yes| o3[Allow]
+    d_auto -->|No| e_settings{Settings rule?}
+    e_settings -->|Deny| o4[Deny]
+    e_settings -->|Allow| o5[Allow]
+    e_settings -->|Ask / none| f_high{High risk?}
+    f_high -->|No| o6[Ask]
+    f_high -->|Yes| g_list{always_allowed_tools?}
+    g_list -->|Yes| o7[Allow]
+    g_list -->|No| o8[Ask]
 ```
 
-**High 与 allowlist：** 会话内裸名 allowlist（`allow_tool`）**不能**绕过 High——仍会 `Ask`。匹配的项目 settings **allow** 规则（含「Always allow this tool」经 `allow_tool_with_input` 持久化的规则）**可以**按输入模式放行 High。
+**High 与 allowlist：** High 首次无论如何都会询问。一旦有允许覆盖**该确切工具与输入**——裸名 `allow_tool`，或「Always allow this tool」写入的输入感知规则——High 就与其他风险一样被放行。计划模式与显式的 `deny`/`ask` 规则仍然先判定，所以"记住允许"放宽的只是"要不要问一下"，并不会放宽模式和规则。匹配的项目 settings **allow** 规则在第 5 步就能到达 High，甚至早于查询 allowlist。
+
+全新的非交互会话仍然拒绝 High：`always_allowed_tools` 既不预置、也不从 settings 读取，列表里只会出现在提示框上被用户点过"允许"的条目——而非交互场景根本不弹提示框，所以这个列表始终是空的。
 
 ---
 
@@ -171,15 +169,42 @@ flowchart TD
 
 ### 会话内 allowlist
 
-`PermissionManager` 持有 `always_allowed_tools: Vec<String>`。构造时（`try_new`）预置 `"read_file"`。
+`PermissionManager` 持有 `always_allowed_tools: Vec<String>`。构造时是**空的**。
 
-用户在 TUI 选择 **「Always allow this tool」** 时，`allow_tool(tool_name)` 追加精确工具名（如 `edit_file`、`bash`）。此后对该名的 **Write** 风险调用会跳过 Default 模式提示。
+它以前预置 `"read_file"`。在 `read_file` 始终被判为 `Read` 时这条没有作用；但一旦敏感目标能把它升级为 `High`，它就等于放行 `read_file` 的**任意**输入，`.env` 也不例外——因为列表里的裸名匹配所有输入。没人点过"允许"的条目，不该有本事越过这道守卫，所以那行预置已经删掉了。
 
-allowlist **仅内存**——不会持久化到 SQLite 或 TOML 跨会话。
+用户在 TUI 选择 **「Always allow this tool」** 时，`tool_dispatch` 调用的是 `allow_tool_with_input(name, policy, input)`——针对那次确切调用的**输入感知**规则，而不是裸工具名。有 settings 存储时它被持久化进项目的 `.tact/settings.json`；没有则落进内存列表。两种情况都会让此后匹配该工具**且**输入的调用跳过询问，且**任何**风险都适用，包括 **High**。
+
+（裸名形式 `allow_tool(name)` 仍然存在，仍然授权任意输入，现在它也覆盖 High。全新会话的列表是空的，所以没有真实点击就不会有任何授权。）
+
+**「Always allow this pattern」是更宽的一档，也是最需要看清楚的一档。** 它按 prompt 的种类记录两种前缀规则：
+
+- **命令前缀**（`bash(command:^cargo test)`）——**程序 + 子命令**。匹配时先把命令按 `;`、`&&`、`||`、`|`、`&`、换行**分段**，要求**每一段**都以该前缀开头，否则不匹配。这条分段规则是它安全的前提：glob 的 `*` 能跨 `;`，所以 `bash(command:cargo test *)` 会连 `cargo test; rm -rf ~` 一起放行，而且 `deny` 规则也匹配整串、于是 `rm` 那条永远轮不到。前缀规则不可能覆盖链式命令，两者都不会发生。
+- **路径前缀**（`edit_file(path:@docs)`）——**目录**。按**路径分量**比较，所以 `@src` 覆盖 `src/lib.rs`、不覆盖 `srcx/lib.rs`（字符串前缀会在这里出错）。记的是**父目录**（`docs/usage.md` → `@docs`，`src/adapters/mcp/server.rs` → `@src/adapters/mcp`），即"这个目录"；单个文件由精确档覆盖。要更大范围（`@src` 整个源码树）可以手写，但默认给的是窄的那档。
+
+两个标记各自独立：`^` 只用于命令、`@` 只用于路径，解析时一眼能分清。
+
+**命令前缀被拒绝的情形**：复合命令；含命令替换（`$(…)`、反引号）；程序是解释器或万能壳（`sh`/`python`/`node`/`env`/`xargs`/`find`/`sed`/`awk` …）；破坏性命令（`rm`/`dd`/`chmod` …）；程序名不是裸名（含 `/` 或 `=`）；不足两个词；第二个词是选项（`git -c`、`npm --prefix`）。
+
+**路径前缀被拒绝的情形**：工作区根下的单个文件（精确档已覆盖）；绝对路径、`~` 开头、含 `..`（那是敏感目标守卫的地界，规则不该绕过去）；首分量是点目录（`.git` 里是 hook，`.tact` 里就是这些规则自己所在的 settings）。
+
+**这些都不生成选项**——弹窗直接少一项，而不是给一个点了不生效的按钮。选项出现时，弹窗会**先把要记录的规则原文显示出来**。
+
+**两种前缀都是 token 化的**（比较 token，不做 glob），因此 token 里可以出现 `)`——规则以最后一个 `)` 结束，`rfind` 已经定位到它。这一点让前缀档能表达 glob 档表达不了的规则：任何含 `)` 或 `:` 的命令（`git commit -m "fix: thing"`、`python3 -c "print(1)"`）在精确档下都无法生成规则，在前缀档下只要前两个词干净就没问题。glob 档的限制保持不变——含 `)` 的模式从文件里读回来分不清哪个是规则的结束符。
+
+代价也要说清楚：`cargo test`、`npm run build` 这类前缀等价于信任该项目的构建配置（`build.rs`、`postinstall` 都会跑任意代码）。这是这一档存在的意义所在，也正因如此弹窗必须先展示规则、再由用户点。
+
+**「Allow for this session」是它的内存版。** 走同一个 `PermissionRule::generate`，因此窄度完全一致，区别只在规则只进内存列表、**绝不写入** settings 文件——会话结束即消失。宽度不变这一点是它安全的前提：对一条普通命令的点击不会顺带放行 `sudo`，它缩短的是**时间**范围而不是**匹配**范围。规则窄化不了时它同样什么都不记，并复用「记不住」那句提示。
+
+（弹窗选项的顺序刻意**追加**而非插入：`Deny` 保持索引 1、「Always allow this tool」保持索引 2，因为位置是肌肉记忆。）
+
+**「Always allow」有时会记不住。** 当无法表达比整工具更窄的规则时——字段缺失、不是字符串、或值里含规则文法定界符（`(`、`)`、`:`，模式被嵌在 `tool(field:pattern)` 里）——`PermissionRule::generate` 返回 `None`。旧行为是退回**裸规则**，而任何含冒号的 `bash` 命令（`git commit -m "fix: thing"`）都会走到那条路，于是点一次就授权了此后所有 shell 命令、且跨会话。现在这次点击只批准当前调用，并由 `AllowOutcome::NotNarrowable` 让 `tool_dispatch` 明确告诉用户"这条记不住"——否则一个点了没反应的按钮，用户会以为它已经生效了。
+
+allowlist **仅内存**——不会持久化到 SQLite 或 TOML 跨会话；「Allow for this session」走的正是这条路径。只有 settings 规则那种形式能跨重启存活。
 
 ### 连续拒绝
 
-每次用户 **Deny** 使 `consecutive_denials` 加一。Allow once 与 always-allow 将其重置为零。
+每次用户 **Deny** 使 `consecutive_denials` 加一。Allow once、always-allow 与会话档都将其重置为零。
 
 达到 `max_consecutive_denials`（默认 **3**）次拒绝后，`should_suggest_plan_mode()` 返回 true。非交互模式下 `ask_user()` 向 stderr 打印提示：
 
@@ -198,7 +223,7 @@ allowlist **仅内存**——不会持久化到 SQLite 或 TOML 跨会话。
 ```rust
 AgentUpdate::RequestSelect {
     prompt,      // 例如 "Allow bash: {\"command\":\"npm test\"}"
-    options,     // ["Allow once", "Deny", "Always allow this tool"]
+    options,     // ["Allow once", "Deny", "Always allow this tool", "Allow for this session"]
     respond,     // 回 agent 的 oneshot channel
 }
 ```
@@ -209,7 +234,8 @@ TUI（`crates/tui/src/widgets/state/app/agent.rs`）切换到 `InputMode::Select
 |----------|------|------------|
 | Allow once | 0 | 运行工具；在 `StepFinished` 上设置 `permission_label = "Allow once"` |
 | Deny | 1（默认） | `PreparedState::Resolved`；`StepFailed` 附带 deny 消息 |
-| Always allow this tool | 2 | `allow_tool(name)`；运行工具；`permission_label = "Always allow this tool"` |
+| Always allow this tool | 2 | `allow_tool_with_input(name, policy, input)`；运行工具；`permission_label = "Always allow this tool"` |
+| Allow for this session | 3 | `allow_tool_for_session(name, policy, input)`；运行工具；`permission_label = "Allow for this session"` |
 
 `permission_label` 附加到 `StepResult`，并在 TUI 工具 meta 行显示。见 [Tool Rendering](../docs/tool_rendering.md)。
 
@@ -235,7 +261,7 @@ pub fn is_high_risk_shell_command(command: &str) -> bool;
 pub fn validate_shell_command(command: &str) -> Result<()>;
 ```
 
-`is_high_risk_shell_command` 将命令小写并检查被拦截子串：
+`is_high_risk_shell_command` 是**执行层**的一道门（唯一的调用方是 `validate_shell_command`），不是风险分类器——把两者混起来，会误以为 `sudo` 弹窗是因为下面这张表，其实是因为 `PermissionPolicy::ShellCommand` 里有 `sudo `/`su ` 前缀判定。它把命令转成小写、检查被拦的子串，命中就在 spawn 之前拒绝，即使用户已经批准：
 
 | 模式 | 效果 |
 |------|------|
@@ -256,6 +282,8 @@ pub fn validate_shell_command(command: &str) -> Result<()>;
    - `sed` — 仅 `sed -n {N|M,N}p` 打印行区间形式
 
 白名单与选项规则镜像 OpenAI Codex 的 `is_known_safe_command`（`codex-rs/shell-command/src/command_safety/is_safe_command.rs`）。分类器刻意保守：漏判只多一次审批提示，误判则会在 plan mode 下静默执行变更——因此任何含糊输入一律归为 **Write**。最终效果：plan mode 下 `ls`、`grep -rn x .`、`git status` 无需提示即可运行；`cargo test`、管道、重定向与未知程序仍被拒绝。
+
+**白名单证明的是程序不能写入，不是它的输出可以公开。** 以前允许词首 `~`，理由是「波浪号展开只是替换家目录，而白名单里的程序对展开结果依然只读」——这话本身没错，但它回答的不是我们关心的问题：`cat` 确实只读，可 `cat ~/.ssh/id_ed25519` 打印出来的是私钥。该命令被归为 **Read**，而 `check_with_auto` 对 `Read` 的放行发生在 plan mode 与一切 settings 规则之前，于是在所有模式下静默执行，headless 也一样。§12 堵住它：敏感扫描在 `is_read_only_shell_command` **之前**运行，因此任何提到凭据路径的命令都是 `High`（或被拒绝），无论其程序多么可证明只读。
 
 ### 两层
 
@@ -283,8 +311,8 @@ sequenceDiagram
     end
 ```
 
-1. **权限层** — `classify_risk` 用 `is_high_risk_shell_command` 标记 High risk → 始终 `Ask`（只读 bash 除外）。
-2. **执行层** — `bash` 与 `background_run` 在 spawn 前调用 `validate_shell_command`。被拦截的命令即使用户已批准也会失败。
+1. **权限层** — `PermissionPolicy::ShellCommand::resolve` 先跑敏感命令扫描（`sensitive::classify_command`），再查 `sudo ` / `su ` 前缀，命中即 **High** → 始终 `Ask`；可证明只读的命令归 **Read**（直接放行）；其余归 **Write**。
+2. **执行层** — `bash` 与 `background_run` 在 spawn 前调用 `validate_shell_command` → `is_high_risk_shell_command`。被拦截的命令即使用户已批准也会失败。
 
 无害的破坏性路径可在执行层通过但仍可能提示：例如 `rm -rf ./build` 通过 `validate_shell_command` 但分类为 **Write**，Default 模式会先询问。
 
@@ -294,19 +322,22 @@ sequenceDiagram
 
 ## 8. 工具流水线中的集成
 
-权限在 `execute_tool_call`（`crates/tact/src/agent/tool_dispatch.rs`）的 **Phase 1** 运行，严格在 hook 之后：
+权限阶梯在 `execute_tool_call`（`crates/tact/src/agent/tool_dispatch.rs`）的 **Phase 1** 运行，严格在 hook 之后；而**风险分类与敏感目标守卫在 hook 之前**——`Credential` 命中在那个位置就被拒绝，碰不到 hook、规则与模式（逐项顺序见 [§13.1](#131-固定检查点)）：
 
 ```text
 For each ToolUse (sequential):
   stats · cancel check
   StepAdded / StepStarted
-  PreToolUse hooks          ← 可变更 input 或 Block
-  PermissionManager::check  ← 本章
+  PermissionPolicy::resolve(input)   ← 声明风险（内置注册表）
+  sensitive guard (Scanner)          ← Credential → 拒绝；Secret → High（§12.2）
+  PreToolUse hooks                   ← 可变更 input 或 Block
+  PermissionManager::check           ← 本章
   Ask → RequestSelect (if needed)
   PreparedState::Run | Resolved
 
 Phase 2: parallel waves (no permission re-check)
 Phase 3: build ToolResult blocks in model order
+  └─ 结果脱敏（单一收口，早于 PostToolUse 读它 — §12.3）
 ```
 
 ```mermaid
@@ -357,6 +388,33 @@ mode = "default"   # "default" | "plan" | "auto"
 
 定义于 `PermissionTomlConfig`（`crates/tact/src/config/types.rs`）。省略时默认 `"default"`。
 
+### JSON（`.tact/settings.json` 里的 `permissions`）
+
+规则与两个安全小节共用同一份宽容文档，安全配置因此只有一个归宿：
+
+```jsonc
+{
+  "permissions": {
+    "allow": ["bash(command:cargo test *)"],
+    "ask":   ["web_fetch"],
+    "deny":  ["read_file(path:~/.ssh/**)"],
+    "sensitive_paths": {
+      "enabled": true,               // 默认 true；即使没有 settings 文件也生效
+      "extra":  ["*.vault"],         // 追加进注册表，恒为 Secret 档
+      "allow":  ["~/.ssh/config"]    // 完全豁免守卫
+    },
+    "redaction": {
+      "enabled": true,               // 设成 false 就是关掉脱敏，文档里写明了这个开关
+      "level": "basic",              // "off" | "basic" | "credential"
+      "extra_patterns": ["MYCO-[0-9a-f]{32}"],
+      "basic_only_paths": ["**/fixtures/**"]
+    }
+  }
+}
+```
+
+每个字段都可选，每个畸形值都退化为默认值。`level` 未设置**或拼错**时解析为 `basic`，绝不是 `off`：拼错不该静默关掉脱敏。含 `/` 的模式是路径 glob（`**/fixtures/**`），以 `~/` 开头的是家目录相对，其余匹配最后一段路径名。
+
 ### CLI
 
 `--permission-mode` / `-m` 通过 `config/resolve.rs` → `ResolvedConfig.permission_mode` 覆盖 TOML。
@@ -374,15 +432,21 @@ mode = "default"   # "default" | "plan" | "auto"
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/permission/mod.rs` | `CapabilityRisk`、`PermissionManager`、`normalize_capability`、分类启发式 |
+| `crates/tact/src/permission/mod.rs` | `CapabilityRisk`、`PermissionMode`、`PermissionManager`（`check` / `check_with_auto` / `ask_user` / `allow_tool_with_input`）、`PermissionDecision`、`AllowOutcome`、`format_permission_prompt` |
+| `crates/tact/src/security/sensitive.rs` | 敏感路径注册表、两个档位、`Scanner`、`classify_command`、`refusal_text` |
+| `crates/tact/src/security/redact.rs` | `redact`、`level_for_call`、`StreamRedactor` |
+| `crates/tact/src/security/mod.rs` | `SecurityConfig` 解析与 global+project 合并 |
 | `crates/tact/src/shell.rs` | 共享高风险 shell 模式；执行时 `validate_shell_command` 拦截 |
 | `crates/tact/src/agent/tool_dispatch.rs` | 预检权限；`RequestSelect` 处理；`StepFinished` 上的 `permission_label` |
 | `crates/tact/src/agent/mod.rs` | `AgentRuntime.permission_manager` |
-| `crates/tact/src/tool/bash.rs` | spawn shell 前调用 `validate_shell_command` |
+| `crates/tact/src/tool/metadata.rs` | `PermissionPolicy`（`Read` / `Write` / `High` / `ReadPath` / `WritePath` / `PatchPaths` / `ShellCommand`）与其 `resolve` 分类入口、`PermissionPromptPolicy::PatchTarget` |
+| `crates/tact/src/tool/readonly_shell.rs` | `is_read_only_shell_command` — `ShellCommand` 的只读白名单 |
+| `crates/tact/src/tool/progress.rs` | `ToolProgressReporter`——实时输出脱敏及其 flush |
+| `crates/tact/src/tool/bash.rs` | spawn shell 前调用 `validate_shell_command`；并 flush 脱敏器 |
 | `crates/tact/src/background.rs` | 后台 shell 命令同样校验 |
 | `crates/tact/src/tool/subagent.rs` | 子 agent 用 `Default` 模式；继承 `ui_tx` |
 | `crates/tact-ui/src/permission.rs` | `permission_mode_from_config()` |
-| `crates/tact-ui/src/headless.rs`、`interactive.rs` | 会话启动时构造 `PermissionManager` |
+| `crates/tact-ui/src/session_bootstrap.rs` | `bootstrap_session` 里构造 `PermissionManager`（`try_new_with_settings`）；headless / 交互共用 |
 | `crates/tact/src/config/types.rs` | `[permission] mode` TOML schema |
 | `crates/tui/src/widgets/state/app/agent.rs` | 处理 `AgentUpdate::RequestSelect` |
 | `crates/protocol/src/lib.rs` | `AgentUpdate::RequestSelect`、`StepResult.permission_label` |
@@ -398,6 +462,285 @@ mode = "default"   # "default" | "plan" | "auto"
 | Headless 下 High 仍需 Auto 或 settings allow | 非交互 `ask_user` 会放行 Write/Read 的 Ask，但对 High 仍 deny，除非 settings allow 已先返回 Allow |
 | `PlanStep.need_approval` 已弃用 | 字段标记 `#[deprecated(since = "0.19.0")]`；用 `PlanStep::new()` — 权限由 `PermissionManager` 驱动 |
 | 权限与 hook 重叠 | 两者均可拦截工具；hook 先运行，`Block` 时跳过权限 |
+| 风险与守卫在 hook 之前算定 | 第 2 步 `resolve` 与第 3 步守卫读的是 `PreToolUse` **之前**的 input，而 `check_with_auto` 读**之后**的 `tool_use.input`。于是改写 input 的 hook 能影响 settings 规则的匹配，却改变不了本次调用的风险档位与守卫结论（§13.1） |
+| 守卫是只看名字的经验规则 | §12 只拦得住**字面出现**的敏感名（含解释器 `-c` 里的绝对路径）；名字根本不出现的读取——环境变量的值、argv、stdin（`printenv`），或文件名本身人畜无害（`cat notes/passwords-2026.txt`）——只能靠脱敏兜底。真正的边界是 `crates/tact/src/sandbox/`——**仅 Linux 且默认关闭**（macOS 上返回 `SandboxDegradation`，`[tools] sandbox = false`） |
+| MCP 的输入不被守卫扫描 | 第三方工具的路径参数不做分类（其**结果**仍按 `Basic` 脱敏）。MCP 工具默认 `High`，风险可按工具声明 |
+| 脱敏是模式匹配 | 可以被关掉（`redaction.enabled = false`），且测试 fixture 里的假密钥会和真密钥一样被脱敏 |
+
+---
+
+## 12. 敏感路径与密钥脱敏
+
+权限阶梯回答的是「agent 可不可以做这件事」，至于*一次已经批准的读取会返回什么内容*，它管不着——私钥就是从这儿漏出去的：`cat ~/.ssh/id_ed25519` 是可证明只读的命令，于是被判 `Read`，于是在还没轮到 plan mode 判断之前就已经放行了。`crates/tact/src/security/` 里的两套机制堵住它。
+
+### 12.1 背景：一次静默的私钥读取
+
+起因是一次 `~/.ssh` 事故：`bash "cat ~/.ssh/id_ed25519"` 在**所有**模式下静默执行，headless 也一样，私钥内容进了上下文与会话库。要回答的问题是"agent 为什么能读到私钥，以及现在是什么拦住了它"。当时有三个各自独立的事实（2026-09-30）：
+
+1. **文件工具本来够不着家目录。** `safe_path` 会 canonicalize 并拒绝任何逃出 workspace 的路径，而 `~` 根本不展开——`read_file("~/.ssh/id_ed25519")` 找的是工作区下名为 `~` 的目录，绝对路径则被判逃逸。**所以洞不在 `read_file`，在 `bash`。**
+2. **`bash` 够得着，而且被自动放行。** `cat` 在只读白名单里，`split_plain_command` 明确接受词首 `~`，理由写在注释里：「波浪号展开无害——它只是替换家目录，而白名单里的程序对展开结果依然只读」。这句话就是 bug：`cat` 对**文件**只读没错，文件的**内容**才是秘密。于是该命令归 `Read`，而 `check_with_auto` 第 1 条在 plan mode 与一切 settings 规则之前就放行。`cat ~/.netrc`、`grep -r token ~/.aws` 同一条路径。
+3. **结果返回的路上没有脱敏。** 工具返回什么，会话库与 transcript 就原样存什么——当时工具结果的这条路径上没有任何秘密扫描器。`cat ~/.claude/settings.json` 会泄漏一个仍有效的 `ANTHROPIC_AUTH_TOKEN`。
+
+前两条事实直接决定了修复的位置，第三条决定了还需要第二套机制：
+
+| 既有事实 | 对设计的约束 |
+|------------|--------------|
+| `Read` 在 plan mode **之前**就放行 | 把守卫挂在风险阶梯上，对读类工具完全无效——它必须放在更早的位置判定，或者干脆给它一个单独的结局：直接拒绝（§13.1 的第 3 步） |
+| settings 的 `allow` 规则能压过 `High` 的询问 | 任何表达成「风险 = High」的东西离永久批准只有一次点击。对 `.env` 可以接受，对 `id_ed25519` 不行 → 分成"拒"与"问"两档，`Credential` 要解封必须去改文件 |
+| 文件工具够不着家目录，且 `safe_path` 本就拒绝 | 守卫只需覆盖**工作区内**路径；家目录的匹配是 `bash` 的事（§13.2 第 4 行） |
+
+那句"波浪号无害"的注释**今天仍在代码里**（`readonly_shell.rs` 的模块注释）。它不再是最后结论——守卫不是改写只读分类器，而是加在它**之前**：敏感扫描先跑，之后才轮到白名单。
+
+同一个改动还修掉三处同类缺陷——都是"一次看起来窄的点击，授予了很宽的权限"：
+
+- `always_allowed_tools` 曾预置 `read_file`。在 `read_file` 恒为 `Read` 时它毫无作用；一旦敏感目标能把它升到 `High`，这个**没人授予过**的条目就成了放行 `.env` 的通行证。预置已删除（§5）。
+- `apply_patch` 的提示策略声明了一个输入里**不存在**的 `path` 字段，于是「Always allow」退回裸规则：一次点击永久授权此后**所有**补丁。为此新增 `PermissionPromptPolicy::PatchTarget`（§13.4）。
+- 裸规则回退还会在值里含 `(`/`)`/`:` 时触发，而 `bash` 跑 `git commit -m "fix: thing"` 正好含冒号——一次点击就持久化了一条**不看输入**的 `bash` 规则，等于授权此后的**每条** shell 命令。现在 `generate_key` 返回 `None`，这次点击只批准当前调用（§5）。
+
+边界与代价在当时就写明了，也是 §12.4 的内容：两者都不是沙箱；`Auto` 模式仍然放行 `Secret` 档；MCP 的输入不做扫描；脱敏可以关掉，而且会误伤含假密钥的 fixture。这套设计也不打算做到"事后可以装作没看过"——原始字节可能仍然留在 agent 写下的文件、hook 输出或 MCP server 自己的日志里。
+
+### 12.2 守卫：两个档位，两种结果
+
+`sensitive::RULES` 是一张有序的注册表，列出那些**文件本身就是秘密**的路径——也就是说，这类文件只要内容被读出来就等于泄密，跟里面具体写了什么无关。**先匹配者胜**，所以窄例外必须排在被它挖出洞的目录 glob 之前（`~/.ssh/config` 排在 `~/.ssh/**` 之上）。命中 `EXEMPT_NAMES` 的文件名（`*.pub`、`*.crt`、`*.cer`、`*.der`，以及 `*.example` / `*.sample` / `*.template` / `*.dist` 占位文件）最先排除。
+
+| 档位 | 含义 | 决策 | 怎么解封 |
+|------|------|------|--------|
+| `Credential` | 文件**本身就是**秘密：私钥、token 存储、`~/.netrc`、`~/.ssh/**`、`~/.aws/**`、`~/.kube/**`、`~/.gnupg/**`、`~/.config/{gh,gcloud,heroku,op}/**`、`*.pem` / `*.key` / `*.p12` / `*.keystore` / `*.kdbx`、`id_*`、`*_rsa`、`*.tfstate`、`credentials.json`、`secrets.{json,yml,toml}`、仓库内的 `.npmrc` / `.pypirc` / `.pgpass` / `.netrc`，以及携带 `env` token 的 agent 宿主配置（`~/.claude/settings.json`、`~/.codex/auth.json`、`~/.tact/settings.json`） | **拒绝**——在预检直接拒，不弹窗 | `permissions.sensitive_paths.allow`，需要改文件 |
+| `Secret` | 读取**可能**泄露，但用户往往确实需要：`.env` / `.env.*` / `*.env` / `.envrc`、`~/.ssh/{config,known_hosts}`、`~/.bash_history` 等 | **询问**——升级为 `High`，走普通阶梯 | 普通规则与「always allow」 |
+
+`Credential` 刻意**不让** TUI 的「Always allow」按钮绕过：点一下就解除的拒绝，等于没有拒绝。要解封只能去编辑 `.tact/settings.json`。
+
+关键在于位置。守卫在 `preflight_tool_calls` 中于 `PreToolUse` **之前**、`PermissionManager::check` 之前运行，因此 `Auto` 模式、已持久化的 `allow` 规则、会话内 always-allow、`PermissionRequest` hook 都碰不到凭据文件。`Secret` 档完全不需要特例——它变成 `High`，于是 plan mode 拒绝、Default 询问、headless 拒绝，用户规则照常组合。
+
+| 工具 | 策略 | 扫描什么 |
+|------|------|----------|
+| `read_file`、`read_image` | `ReadPath { path_field }` | 路径（绝对路径或以 `~` 开头时跳过——`safe_path` 本来就会拒绝，在必然报错前弹窗只是噪音） |
+| `edit_file`、`write_file` | `WritePath { path_field }` | 路径 |
+| `apply_patch` | `PatchPaths` | 每个 `+++ b/<path>` / `+++ <path>` 头，复用调度器同一套提取（**注意**：`apply_patch` 当前没有任何 toolset 注册它，这一行只在它被重新接线后生效——见 [工具系统](./07_chapter_tool_zh.md) §5） |
+| `bash`、`background_run`、`worktree_run` | `ShellCommand { command_field }` | 命令字符串的词元，且**先于**只读分类器 |
+
+`classify_command` 先去掉引号再切分（因此 `~/.ss"h"/id_rsa` 会还原成 shell 实际传入的词元），并按 shell 元字符切分，这也是重定向目标（`> .env`）能被抓到的原因。不含 `.` 与 `/` 的裸词只与 `BARE_SECRET_NAMES` 比对——否则像 `"foo_rsa"` 这样的 grep 模式会换来一次拒绝。它**不**解析命令替换、变量，或 `python -c`。
+
+拒绝文案会点明路径、类别以及怎么解封，因为它同时被人和模型读到：
+
+```text
+Refused: ~/.ssh/id_ed25519 is credential material (private-key). Reading it is
+not something this agent does. If the user asked for this, they can permit the
+path in .tact/settings.json under permissions.sensitive_paths.allow.
+```
+
+### 12.3 脱敏：兜底
+
+守卫只看名字——这一点它自己也不否认。只要一次读取里**字面出现**了敏感路径，它就能拦住——解释器里的绝对路径也算（`python -c "print(open('/home/me/.ssh/id_ed25519').read())"` 会被判 `Credential`，因为引号先被删掉、路径词元完整保留）。它拦不住的是名字根本不出现的情况：秘密来自环境变量的**值**、argv 或 stdin（`printenv ANTHROPIC_AUTH_TOKEN`），或者文件名本身人畜无害（`cat notes/passwords-2026.txt`）。脱敏就是这些情况下仍然成立的那部分。
+
+| 级别 | 作用于 | 规则 |
+|------|--------|------|
+| `Basic` | **所有**工具结果 | 高置信度、低误报的形状：私钥块、`sk-…` / `sk-ant-…`、`AKIA` / `ASIA`、`ghp_…` / `github_pat_…`、`xox[baprs]-…`、`glpat-…`、`AIza…`、JWT、`Bearer …`、`https://user:pass@` |
+| `Credential` | 被守卫判为敏感的那次调用的结果 | `Basic` 之外追加结构感知规则：`.netrc` 的 `password …`、dotenv/INI/TOML 的 `API_KEY=…`、JSON 的 `"token": "…"`、npmrc 的 `_authToken=`、`authorized_keys` |
+
+之所以要分级：如果不管什么场合都按"键 = 值"的规则打码，用户自己的源码和测试 fixture 也会被改写，模型就会对着一堆 `[redacted:value]` 去分析本来写着 `token = "abc"` 的代码。标记只带类别、绝不含值的前缀；键名保留，形状仍可读（`API_KEY=[redacted:value]`）。
+
+| 脱敏 | 不脱敏 | 原因 |
+|------|--------|------|
+| 工具**结果**（原生与 MCP）——在 `run_tool_waves` 的单一收口处，于 `PostToolUse` hook 读取之前，因此 hook、TUI 步骤详情、transcript 与会话存储看到的是同一个字符串 | 工具**调用**输入 / `arg_full` | 模型自己发出的 `tool_use` 块必须逐字节原样回传，否则下一次请求就是非法请求。若模型已经输出过秘密，事后再抹掉这次回声也补不回来 |
+| `bash` / `background_run` 的实时输出 | hook 的 stdout | hook 是用户自己写的 |
+
+实时输出单独一遍处理，因为两次泄露发生在不同时刻：实时视图是命令还在跑时用户正在看的东西。`StreamRedactor` 只输出**完整行**，因此行内锚定的模式总能看全自己的输入；而私钥块一旦出现 `-----BEGIN … PRIVATE KEY` 就整段压掉——它是多行的，没法一行一行地扣住不放。跨两个 chunk 的秘密永远不会被完整显示。状态放在 `ToolProgressReporter` 里，位于 `report(&self)` 所需的互斥锁之后，`flush()` 在每条退出路径上释放尾部。
+
+```mermaid
+sequenceDiagram
+    participant A as Agent
+    participant G as sensitive::Scanner
+    participant P as PermissionManager
+    participant T as Tool
+    participant R as redact
+
+    A->>G: classify(tool target)
+    alt Credential 档
+        G-->>A: Hit
+        A-->>A: 拒绝，StepFailed（先于 hook 与规则）
+    else Secret 档
+        G-->>A: Hit
+        A->>P: check(risk = High)
+        P-->>A: Ask / Deny / Allow
+    else 无命中
+        A->>P: check(声明的风险)
+    end
+    A->>T: execute
+    T-->>A: ExecResult
+    A->>R: redact(content, level_for_call)
+    R-->>A: 脱敏文本 → hook、TUI、transcript、存储
+```
+
+### 12.4 这不是什么
+
+两者都不是沙箱。它们都只是同一个进程里按名字和模式做的判断，只要刻意绕一下就能避开。真正的执行边界在 `crates/tact/src/sandbox/`（bwrap），而它目前**只支持 Linux**——macOS 上会返回 `SandboxDegradation::new("no sandbox implementation for this platform yet")`——而且**默认关闭**（`[tools] sandbox = false`）。这次的设计只是把可能出问题的面缩小了一些，并没有划出一条真正的边界。
+
+---
+
+## 13. 四个目标感知策略的逐例流程
+
+§2 的规则表把四种「目标决定风险」的策略压成了一行说明。这一节把它们拆成可对照的例子，并标出每一步由谁决定——包括两个都叫 `allow`、但位置和效果完全不同的配置。
+
+### 13.1 固定检查点
+
+每个 native 调用都按这个顺序走（`crates/tact/src/agent/tool_dispatch.rs` 的预检）：
+
+| # | 检查点 | 决定者 | 备注 |
+|---|--------|--------|------|
+| 1 | 解析工具 → `ToolMetadata` | `ToolRouter::resolve` | 解析失败即 `ResolvedTool::Unknown` → `High` |
+| 2 | 声明风险 | `PermissionPolicy::resolve(input)` | 只查**内置**注册表，不读配置 |
+| 3 | 敏感目标守卫 | `PermissionPolicy::sensitive(input, &Scanner)` | 用**配置化** Scanner；`Credential` → 拒绝 |
+| 4 | `PreToolUse` hook | 用户脚本 | 可 `Block`，也可**改写 input** |
+| 5 | 权限阶梯 | `PermissionManager::check_with_auto` | §4 那 11 条顺序；读 mode / settings / allowlist |
+| 6 | `Ask` 的出口 | TUI `RequestSelect` 或 headless `ask_user` | §6 |
+| 7 | 执行 | 工具自身（Phase 2 并行 wave） | 不再复查权限 |
+| 8 | 实时输出脱敏 | `StreamRedactor` | 级别在本 wave 开始前算好 |
+| 9 | 结果脱敏 | `redact(level_for_call(…))` | 单一收口，早于 `PostToolUse` |
+| 10 | `PostToolUse` / TUI / transcript / 会话存储 | — | 都读第 9 步之后的同一个字符串 |
+
+```mermaid
+graph TD
+    a[工具调用] --> b[2. resolve input 内置表]
+    b --> c{3. 守卫命中?}
+    c -->|Credential| r1[拒绝 StepFailed 加 Resolved 跳过 4 到 6]
+    c -->|Secret| d[risk 改为 High]
+    c -->|无命中| d2[保持第 2 步的风险]
+    d --> e[4. PreToolUse hook]
+    d2 --> e
+    e --> f{5. 阶梯}
+    f -->|Allow| g[7. 执行]
+    f -->|Deny| r2[Permission denied]
+    f -->|Ask| h[6. RequestSelect 或 ask_user]
+    h --> g
+    g --> i[8. 实时脱敏] --> j[9. 结果脱敏] --> k[10. hook TUI 存储]
+```
+
+两条容易记错的顺序：
+
+- **第 3 步在 hook 之前。** 所以 `Credential` 命中无法被 `PermissionRequest` hook、`Auto` 模式、已持久化的 `permissions.allow` 规则或 TUI 的「Always allow」碰到——它们全在它之后。
+- **第 2 步就已经可能升到 `High`。** `resolve` 走的是内置注册表：`ReadPath` 的目标命中 `.env` 时，它返回的不是 `Read` 而是 `High`。因此第 3 步的 `Secret` 档通常只是确认这个结论；它真正独占的作用有三点：(a) 决定"拒"还是"问"，(b) 让 `extra` 这类用户自加的模式也能升档，(c) 把结果的脱敏级别提到 `Credential`。
+
+下面每个例子统一按 `第 2 步（内置）→ 第 3 步（配置化）→ 阶梯（Default 模式）` 读。阶梯那一列用规则名而不是编号，避免和检查点编号混淆。
+
+### 13.2 `ReadPath` —— `read_file` / `read_image`
+
+```rust
+// crates/tact/src/tool/{read_file,read_image}.rs，经 ToolMetadata::path_read
+permission: PermissionPolicy::ReadPath { path_field: "path" }      // read_file
+permission: PermissionPolicy::ReadPath { path_field: "file_path" } // read_image
+```
+
+| 调用 | 第 2 步 | 第 3 步 | 阶梯（Default） | 结果脱敏级别 |
+|------|---------|---------|-----------------|--------------|
+| `read_file(path: "src/main.rs")` | `Read` | 无命中 | Allow（Read 在阶梯最前放行，plan mode 也允许） | `Basic` |
+| `read_file(path: ".env")` | **`High`** | `Secret` | Ask；plan / headless → Deny | `Credential` |
+| `read_file(path: "config/secrets.json")` | **`High`** | `Credential` | 到不了——第 3 步已结束 | 无结果 |
+| `read_file(path: "/etc/passwd")` | `Read` | 跳过 | Allow，随后 `safe_path` 报错 | — |
+
+- 第 1 行是 `CapabilityRisk::Read` 的全部意义：`check_with_auto` 的第一条就放行，**早于 plan mode 与一切 settings 规则**。
+- 第 2 行升到 `Credential` 脱敏，所以 `.env` 里的 `API_KEY=…` 会被打码成 `API_KEY=[redacted:value]`；不加档的话它只是普通文本。
+- 第 3 行模型收到失败的 tool result，文案同时写给它和用户（TUI 的 meta 行则显示 `Refused: credential-store`，来自 `permission_label`）：
+
+```text
+Refused: config/secrets.json is credential material (credential-store). Reading it is not
+something this agent does. If the user asked for this, they can permit the path in
+.tact/settings.json under permissions.sensitive_paths.allow.
+```
+
+- 第 4 行是**刻意的分工**：守卫只对工作区相对的目标提问（`target_is_workspace_relative`），绝对路径与 `~` 开头一律跳过，因为 `safe_path` 本来就会拒绝（canonicalize 之后要求仍在工作区内）。为 home 下的秘密负责的是 `bash`——它没有工作区边界可跳，见 §13.5。
+
+### 13.3 `WritePath` —— `write_file` / `edit_file`
+
+```rust
+permission: PermissionPolicy::WritePath { path_field: "path" }
+```
+
+同样的三段判定，只是低档从 `Read` 变成 `Write`：
+
+| 调用 | 第 2 步 | 第 3 步 | 阶梯（Default） |
+|------|---------|---------|-----------------|
+| `edit_file(path: "src/main.rs", …)` | `Write` | 无命中 | Ask（「Always allow」记住 `edit_file(path:src/main.rs)`） |
+| `write_file(path: ".env", …)` | **`High`** | `Secret` | Ask；plan / headless → Deny |
+| `write_file(path: "config/secrets.yaml", …)` | **`High`** | `Credential` | **拒绝** |
+
+- 第 3 行是这套设计的真实代价：**仓库里没法新建名为 `secrets.yaml` / `credentials.json` / `*.pem` / `*.key` 的文件**，即使内容只是占位符。`Name` scope 的规则在任何目录都生效，这是有意的（仓库里藏着 `_authToken` 的 `.npmrc` 是真实泄露），代价是这类文件名在 agent 手里等于写不进去。
+- 第 2 与第 3 行的差别就是两档的分界：`.env` 该问（用户可能正是在配环境），`secrets.yaml` 该拒。
+
+### 13.4 `PatchPaths` —— `apply_patch`
+
+`PatchPaths` 没有 path 字段——目标写在补丁头里，所以策略自己从 `+++ b/<path>` / `+++ <path>` 提取（`extract_patch_paths`），并且**与调度器的资源预留、「Always allow」生成规则共用同一份提取**：三者不可能对"这个补丁碰了哪些文件"产生分歧。`/dev/null` 被跳过（那是删除，不是要碰的文件）。
+
+```text
+apply_patch(patch: "--- a/src/main.rs\n+++ b/src/main.rs\n@@ …")  → Write      → Ask
+apply_patch(patch: "…\n+++ b/.env\n@@ …")                         → High（内置）→ Secret → Ask
+apply_patch(patch: "…\n+++ b/keys/server.pem\n@@ …")              → High（内置）→ Credential → 拒绝
+apply_patch(patch: "…\n+++ secrets.json\n@@ …")                   → 同样命中（裸 `+++ ` 形式也算）
+```
+
+「Always allow」在这个变体上多一道限制：`PermissionPromptPolicy::PatchTarget` 只在补丁**恰好涉及一个文件**时才生成输入感知规则（`*<path>*`），多文件时 `generate_key` 返回 `None`，这次点击只批准当前调用，并由 `AllowOutcome::NotNarrowable` 明说——用其中一个路径生成的规则会静默授权其余文件。
+
+> **接线状态：** `crates/tact/src/tool/apply_patch.rs` 今天**没有被编译**（`crates/tact/src/tool/mod.rs` 里没有 `mod apply_patch;`），也没有任何 toolset 注册它。上面的判定是策略本身的行为、由测试覆盖；要在真实调用里看到它们，得先把工具接回来——见 [工具系统](./07_chapter_tool_zh.md) §5。
+
+### 13.5 `ShellCommand` —— `bash` / `background_run` / `worktree_run`
+
+```rust
+permission: PermissionPolicy::ShellCommand { command_field: "command" }
+```
+
+这个变体的 `resolve` 内部**有顺序**，而顺序本身就是设计：
+
+```text
+1. sensitive::classify_command(cmd)（内置注册表）命中? → High   ← 永远最先跑
+2. 以 "sudo " / "su " 开头?                          → High
+3. is_read_only_shell_command(cmd)（§7 的白名单）?     → Read
+4. 其余                                              → Write
+```
+
+第 1 步排在只读分类器**之前**，就是为了落实一句话：命令本身只读，不代表它读出来的内容安全。
+
+| 命令 | 第 2 步 | 第 3 步 | 阶梯（Default） |
+|------|---------|---------|-----------------|
+| `cat src/main.rs` | `Read`（可证明只读） | 无命中 | Allow（plan mode 也允许） |
+| `npm test` | `Write` | 无命中 | Ask |
+| `cat .env` | `High`（内置命中） | `Secret` | Ask；plan / headless → Deny |
+| `cat ~/.ssh/id_ed25519` | `High` | `Credential` | **第 3 步拒绝**，hook 与阶梯都不参与 |
+| `sudo ls` | `High` | 无命中 | Ask（永不自动放行） |
+| `ls; rm -rf /` | `Write`（元字符 → 不是 Read） | 无命中 | Ask；即使批准，执行层 `validate_shell_command` 仍会拦 |
+
+- 第 4 行是这次安全设计的起点：命令可证明只读**从不等于**内容无害，所以敏感扫描必须先跑。
+- 第 6 行是两层防护的第二层：权限批的是"这条命令可以跑"，`is_high_risk_shell_command` 在执行前仍然可以说"不"。
+
+### 13.6 对照表、`allow` 的两种含义、盲区
+
+四个变体只是「低档是什么」和「目标从哪里读」不同：
+
+| 变体 | 工具 | 低档 | 目标来源 | 命中后 |
+|------|------|------|----------|--------|
+| `ReadPath` | `read_file` / `read_image` | `Read` | 输入里的 path 字段 | `Secret` → 问；`Credential` → 拒 |
+| `WritePath` | `write_file` / `edit_file` | `Write` | 输入里的 path 字段 | 同上 |
+| `PatchPaths` | `apply_patch`（未接线） | `Write` | 补丁头的 `+++` 行（可能多个） | 同上 |
+| `ShellCommand` | `bash` / `background_run` / `worktree_run` | `Read`（仅可证明只读）或 `Write` | 命令字符串的词元 | 同上 |
+
+**两个 `allow` 名字相近、位置与效果都不同**，这是最容易配错的地方。以 `read_file(path: "config/secrets.json")` 为例：
+
+| 配置 | 第 3 步守卫 | 第 2 步风险 | 阶梯 | 实际结果 |
+|------|-------------|-------------|------|----------|
+| 什么都不配 | `Credential` | `High` | 到不了 | **拒绝**（`permissions.allow` 与「Always allow」都到不了这里） |
+| `sensitive_paths.allow: ["config/secrets.json"]` | 放行 | 仍是 `High` | Ask（High 且无任何允许） | 不再拒绝，但**仍要问一次** |
+| 上一条 + `permissions.allow: ["read_file(path:config/secrets.json)"]` | 放行 | `High` | Allow（settings allow 规则含 High） | 静默执行 |
+
+- 第二行是 `resolve` 的内置扫描**不读配置**的直接后果：`sensitive_paths.allow` 解除的是"拒绝"，不是"风险"。同理，把 `enabled` 设成 `false` 也不会让内置表上的路径变成静默放行，只会让它们从"拒"退回"问"——配置能做的只有放松，默认值永远是最严的那一档。
+- 第三行必须两条都写，因为守卫在阶梯之前：`permissions.allow` 规则再强也穿不过第 3 步。
+- 另外，`sensitive_paths.allow` 会把这次调用的脱敏从 `Credential` 降回 `Basic`（`level_for_call` 的 `call_is_sensitive` 来自同一个 `sensitive()`），所以解封之后只剩形状规则兜底。
+
+**盲区。** 四个变体都只看得见**词元里拼写出来的名字**：
+
+- 运行时才拼出来的路径——命令替换 `$(…)`、变量拼接：`classify_command` 不做求值。（注意：把路径**整段写出来**的形式，包括 `python -c` 里的绝对路径，其实抓得到——引号被删、`(`/`)` 是分隔符，路径词元完整保留。）
+- 不以文件名形式出现的秘密：环境变量的值、argv、stdin（`printenv`、`op read op://…`）。
+- 名字人畜无害的文件：`cat notes/passwords-2026.txt`——注册表不认识它，`Basic` 脱敏也只认得形状像密钥的内容。
+
+这三条就是 §12.3 那层兜底存在的理由，也是 §12.4「这不是沙箱」的具体含义。
 
 ---
 
@@ -405,7 +748,7 @@ mode = "default"   # "default" | "plan" | "auto"
 
 - [任务与工具调度](./11_chapter_task_zh.md) — 权限所在的三阶段流水线
 - [子 Agent](./12_chapter_subagent_zh.md) — `spawn_subagent` 为 High 风险、独立 `PermissionManager`、继承 `ui_tx`
-- [Agent 生命周期 Hook](./09_chapter_hook_zh.md) — PreToolUse 紧接在权限检查之前
+- [Agent 生命周期 Hook](./09_chapter_hook_zh.md) — PreToolUse 紧接在权限检查之前；但敏感目标守卫更早，见 [§13.1](#131-固定检查点)
 - [ARCHITECTURE.md](../ARCHITECTURE.md#3-permission-system) — 架构图与模式表
 - [docs/state_machines.md](../docs/state_machines.md) — 权限决策状态机
 - [docs/tool_rendering.md](../docs/tool_rendering.md) — `permission_label` 在 TUI 中的展示

@@ -403,6 +403,24 @@ impl App {
             AgentUpdate::MdInfo(msg) => {
                 self.append_system_markdown(msg);
             }
+            // Hook-injected context: the same markdown body as `MdInfo`, but
+            // labelled. The `<hook-context>` framing is stripped before it
+            // reaches the log, so the label is what keeps a hook's output from
+            // reading as a notice Tact wrote itself.
+            AgentUpdate::HookContext { source, text } => {
+                self.append_hook_context_markdown(source.as_deref(), &text);
+            }
+            // A plugin hook's own progress line: shown while the subprocess
+            // runs, rewritten in place once it returns. The row keeps its index
+            // — only its styling and the measured time change.
+            AgentUpdate::HookStatus {
+                id,
+                source,
+                message,
+                elapsed_ms,
+            } => {
+                self.apply_hook_status(id, source.as_deref(), &message, elapsed_ms);
+            }
             // Pre-rendered Markdown for a modal read-out (`/stats`,
             // `/background`): unlike `MdInfo` it does not join the log, so
             // opening a listing does not push the conversation off screen.
@@ -915,12 +933,13 @@ mod lifecycle_tests {
 
     use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
     use tact_protocol::{
-        AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus,
-        TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, ToolOutputChunk,
+        AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, TaskSnapshot,
+        TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, ToolOutputChunk,
         ToolPresentationInfo,
     };
     use tokio::sync::mpsc::unbounded_channel;
 
+    use crate::test_fixtures::StepCall;
     use crate::widgets::state::app::extensions::MAX_PLUGIN_FAILURE_DETAIL_CHARS;
     use crate::{
         render::test_harness::render_log_panel_text,
@@ -1367,14 +1386,9 @@ mod lifecycle_tests {
             tool_id,
             HashMap::from([("command".to_string(), "long-command".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: tool_id.to_string(),
-            tool_name: "bash".into(),
-            arg_summary: "long-command".into(),
-            arg_full: "long-command".into(),
-            presentation: ToolPresentationInfo::generic("bash"),
-        });
+        app.handle_agent_update(
+            StepCall::new(0, tool_id.to_string(), "bash", "long-command").started(),
+        );
     }
 
     #[test]
@@ -1491,14 +1505,11 @@ mod lifecycle_tests {
             tool_id,
             HashMap::from([("command".to_string(), "cargo build".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: tool_id.to_string(),
-            tool_name: "background_run".into(),
-            arg_summary: "cargo build".into(),
-            arg_full: "cargo build".into(),
-            presentation: background_presentation(),
-        });
+        app.handle_agent_update(
+            StepCall::new(0, tool_id.to_string(), "background_run", "cargo build")
+                .presentation(background_presentation())
+                .started(),
+        );
     }
 
     #[test]
@@ -1506,21 +1517,13 @@ mod lifecycle_tests {
         let mut app = make_app();
         seed_running_background(&mut app, "bg1");
 
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "bg1".into(),
-            result: StepResult {
-                tool: "background_run".into(),
-                arg_summary: "cargo build".into(),
-                arg_full: Some("cargo build".into()),
-                status: StepStatus::Success,
-                message: "Background task 018f3a2c started: cargo build".into(),
-                detail: None,
-                duration_us: Some(1200),
-                permission_label: None,
-                presentation: background_presentation(),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "bg1", "background_run", "cargo build")
+                .message("Background task 018f3a2c started: cargo build")
+                .duration_us(1200)
+                .presentation(background_presentation())
+                .finished(),
+        );
 
         assert_eq!(
             app.tools_mut().active.len(),
@@ -1568,29 +1571,8 @@ mod lifecycle_tests {
             "bash1",
             HashMap::from([("command".to_string(), "ls".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 1,
-            tool_id: "bash1".into(),
-            tool_name: "bash".into(),
-            arg_summary: "ls".into(),
-            arg_full: "ls".into(),
-            presentation: ToolPresentationInfo::generic("bash"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 1,
-            tool_id: "bash1".into(),
-            result: StepResult {
-                tool: "bash".into(),
-                arg_summary: "ls".into(),
-                arg_full: Some("ls".into()),
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: None,
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("bash"),
-            },
-        });
+        app.handle_agent_update(StepCall::new(1, "bash1", "bash", "ls").started());
+        app.handle_agent_update(StepCall::new(1, "bash1", "bash", "ls").finished());
 
         let ids: Vec<Option<String>> = app
             .tools_mut()
@@ -1732,21 +1714,13 @@ mod lifecycle_tests {
         });
         let live_rows = app.tools_mut().active[0].output.visual_rows(false);
 
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "b1".into(),
-            result: StepResult {
-                tool: "bash".into(),
-                arg_summary: "long-command".into(),
-                arg_full: Some("long-command".into()),
-                status: StepStatus::Success,
-                message: "live line".into(),
-                detail: Some("live line\n".into()),
-                duration_us: Some(100),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("bash"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "b1", "bash", "long-command")
+                .message("live line")
+                .detail("live line\n")
+                .duration_us(100)
+                .finished(),
+        );
         let completed_rows = app.tools_mut().blocks[0].output.visual_rows(false);
         let collapsed = app.tools_mut().blocks[0].output.layout.detail_collapsed;
         app.handle_agent_update(AgentUpdate::ToolProgress {
@@ -2045,10 +2019,15 @@ mod lifecycle_tests {
 
     #[test]
     fn task_stats_row_draws_exactly_what_it_stores_as_raw() {
-        // The row is clickable and selectable through `raw` byte offsets, so the
-        // drawn glyphs must stay column-for-column identical to `raw`. The copy
-        // affordance comes from the shared button component — this pins the
-        // coupling that its padding and the row's gap have to keep.
+        // The row is clickable through `raw` byte offsets, so the drawn glyphs
+        // must stay column-for-column identical to `raw`. The copy affordance
+        // comes from the shared button component — this pins the coupling that
+        // its padding and the row's gap have to keep.
+        //
+        // The centering pad is *not* part of this: it is baked into the wrapped
+        // line by the render pass (`stats_line::stats_row_pad`) and subtracted
+        // again by the click path, so `raw` keeps its own shape. The row takes
+        // no selection, which is why nothing re-wraps `raw` to draw an overlay.
         let mut app = make_app();
         app.last_prompt_elapsed_secs = Some(5);
         app.add_task_stats_block();
@@ -2145,29 +2124,13 @@ mod lifecycle_tests {
             "tool_read_1",
             HashMap::from([("path".to_string(), "main.rs".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "tool_read_1".into(),
-            tool_name: "read_file".into(),
-            arg_summary: "main.rs".into(),
-            arg_full: "main.rs".into(),
-            presentation: ToolPresentationInfo::generic("read_file"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "tool_read_1".into(),
-            result: StepResult {
-                tool: "read_file".into(),
-                arg_summary: "main.rs".into(),
-                arg_full: None,
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some("file body".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("read_file"),
-            },
-        });
+        app.handle_agent_update(StepCall::new(0, "tool_read_1", "read_file", "main.rs").started());
+        app.handle_agent_update(
+            StepCall::new(0, "tool_read_1", "read_file", "main.rs")
+                .no_arg_full()
+                .detail("file body")
+                .finished(),
+        );
 
         assert_eq!(app.plan_mut().steps[0].output.as_deref(), Some("ok"));
     }
@@ -2195,14 +2158,11 @@ mod lifecycle_tests {
         let mut app = make_app();
         // Started without a query (action not yet populated), then failed with
         // the query carried on the failure: the failed card title must show it.
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "ws_1".into(),
-            tool_name: "web_search".into(),
-            arg_summary: String::new(),
-            arg_full: String::new(),
-            presentation: tact_protocol::ToolPresentationInfo::generic("web_search"),
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "ws_1", "web_search", String::new())
+                .presentation(tact_protocol::ToolPresentationInfo::generic("web_search"))
+                .started(),
+        );
         app.handle_agent_update(AgentUpdate::StepFailed {
             idx: 0,
             tool_id: "ws_1".into(),
@@ -2246,6 +2206,33 @@ mod lifecycle_tests {
                 .items
                 .last()
                 .is_some_and(|item| item.raw.contains("Cancelling"))
+        );
+    }
+
+    #[test]
+    fn hook_context_update_is_labelled_but_md_info_is_not() {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::HookContext {
+            source: Some("plugin demo".into()),
+            text: "brief body".into(),
+        });
+        app.handle_agent_update(AgentUpdate::MdInfo("plain notice".into()));
+
+        let raws: Vec<&str> = app.log.items.iter().map(|item| item.raw.as_str()).collect();
+        assert!(
+            raws.iter().any(|raw| raw.contains("brief body")),
+            "the hook body is kept: {raws:?}"
+        );
+        assert!(
+            raws.iter().any(|raw| raw.contains("plain notice")),
+            "MdInfo still renders unlabelled: {raws:?}"
+        );
+        assert_eq!(
+            raws.iter()
+                .filter(|raw| raw.contains(app.msgs().hook_context_label))
+                .count(),
+            1,
+            "only the hook cell is labelled: {raws:?}"
         );
     }
 
@@ -2478,30 +2465,13 @@ mod lifecycle_tests {
             "t1",
             HashMap::from([("path".to_string(), "a.rs".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "t1".into(),
-            tool_name: "read_file".into(),
-            arg_summary: "a.rs".into(),
-            arg_full: "a.rs".into(),
-            presentation: ToolPresentationInfo::generic("read_file"),
-        });
+        app.handle_agent_update(StepCall::new(0, "t1", "read_file", "a.rs").started());
         assert!(matches!(app.status, Status::Executing { .. }));
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "t1".into(),
-            result: StepResult {
-                tool: "read_file".into(),
-                arg_summary: "a.rs".into(),
-                arg_full: None,
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: None,
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("read_file"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "t1", "read_file", "a.rs")
+                .no_arg_full()
+                .finished(),
+        );
         assert!(
             !matches!(app.status, Status::Done),
             "single step finish should not mark task done"

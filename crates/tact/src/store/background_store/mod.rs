@@ -12,6 +12,7 @@ use async_trait::async_trait;
 use crate::background::BackgroundTaskRecord;
 
 /// Storage backend contract for the background manager.
+#[allow(clippy::double_must_use)] // async_trait generates #[must_use] on Pin<Box<dyn Future>> which is already #[must_use]
 #[async_trait]
 pub trait BackgroundStore: Send + Sync {
     /// Inserts or replaces a record by id.

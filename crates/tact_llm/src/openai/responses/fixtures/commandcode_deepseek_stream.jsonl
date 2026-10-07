@@ -1,0 +1,68 @@
+event: response.created
+data: {"type":"response.created","response":{"created_at":1791340978,"id":"resp_compat_1","max_output_tokens":64,"model":"deepseek/deepseek-v4.1-flash","object":"response","output":[],"service_tier":"default","status":"in_progress","caching":{"type":"disabled"},"store":false,"reasoning":{"effort":"high"}},"sequence_number":0}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"created_at":1791340978,"id":"resp_compat_1","max_output_tokens":64,"model":"deepseek/deepseek-v4.1-flash","object":"response","output":[],"service_tier":"default","status":"in_progress","caching":{"type":"disabled"},"store":false,"reasoning":{"effort":"high"}},"sequence_number":1}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[],"status":"in_progress"},"sequence_number":2}
+
+event: response.reasoning_summary_part.added
+data: {"type":"response.reasoning_summary_part.added","item_id":"rs_1","output_index":0,"summary_index":0,"part":{"type":"summary_text"},"sequence_number":3}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","summary_index":0,"delta":"We","item_id":"rs_1","output_index":0,"sequence_number":4}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","summary_index":0,"delta":" need answer. User","item_id":"rs_1","output_index":0,"sequence_number":5}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","summary_index":0,"delta":" asks \"Say hi in one","item_id":"rs_1","output_index":0,"sequence_number":6}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","summary_index":0,"delta":" word.\" Need one","item_id":"rs_1","output_index":0,"sequence_number":7}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","summary_index":0,"delta":" word. Lik","item_id":"rs_1","output_index":0,"sequence_number":8}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","summary_index":0,"delta":"ely \"Hi\". Must be","item_id":"rs_1","output_index":0,"sequence_number":9}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","summary_index":0,"delta":" one word. Final","item_id":"rs_1","output_index":0,"sequence_number":10}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","summary_index":0,"delta":".","item_id":"rs_1","output_index":0,"sequence_number":11}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","summary_index":0,"delta":" ","item_id":"rs_1","output_index":0,"sequence_number":12}
+
+event: response.reasoning_summary_text.done
+data: {"type":"response.reasoning_summary_text.done","summary_index":0,"item_id":"rs_1","output_index":0,"text":"We need answer. User asks \"Say hi in one word.\" Need one word. Likely \"Hi\". Must be one word. Final. ","sequence_number":13}
+
+event: response.reasoning_summary_part.done
+data: {"type":"response.reasoning_summary_part.done","item_id":"rs_1","output_index":0,"summary_index":0,"part":{"type":"summary_text","text":"We need answer. User asks \"Say hi in one word.\" Need one word. Likely \"Hi\". Must be one word. Final. "},"sequence_number":14}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"We need answer. User asks \"Say hi in one word.\" Need one word. Likely \"Hi\". Must be one word. Final. "}],"status":"completed"},"sequence_number":15}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","role":"assistant","content":[],"status":"in_progress","id":"msg_1","phase":"final_answer"},"sequence_number":16}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","content_index":0,"item_id":"msg_1","output_index":1,"part":{"type":"output_text","text":""},"sequence_number":17}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","content_index":0,"delta":"Hi","item_id":"msg_1","output_index":1,"sequence_number":18}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","content_index":0,"item_id":"msg_1","output_index":1,"text":"Hi","sequence_number":19}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","content_index":0,"item_id":"msg_1","output_index":1,"part":{"type":"output_text","text":"Hi"},"sequence_number":20}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}],"status":"completed","id":"msg_1","phase":"final_answer"},"sequence_number":21}
+
+event: response.completed
+data: {"type":"response.completed","response":{"created_at":1791340978,"id":"resp_compat_1","max_output_tokens":64,"model":"deepseek/deepseek-v4.1-flash","object":"response","output":[{"id":"rs_1","type":"reasoning","summary":[{"type":"summary_text","text":"We need answer. User asks \"Say hi in one word.\" Need one word. Likely \"Hi\". Must be one word. Final. "}],"status":"completed"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":"Hi"}],"status":"completed","id":"msg_1","phase":"final_answer"}],"service_tier":"default","status":"completed","usage":{"input_tokens":36,"output_tokens":32,"total_tokens":68,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":31}},"caching":{"type":"disabled"},"store":false,"reasoning":{"effort":"high"}},"sequence_number":22}

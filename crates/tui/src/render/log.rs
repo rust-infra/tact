@@ -1,6 +1,7 @@
 use ratatui::{
     Frame,
     layout::Rect,
+    style::Style,
     text::{Line, Span},
     widgets::Borders,
 };
@@ -55,6 +56,15 @@ pub(crate) fn render_log_panel_with_borders(
         .state()
         .buffer
         .as_str();
+    // While a task is in flight the kit draws the live stats line on the Log's
+    // last content row; the viewport gives that row up so no log line hides
+    // behind it. Read straight off the field — `render_ctx()` would borrow the
+    // whole `App` against `prepare_log_frame`'s `&mut app.log_scroll`.
+    let reserve = agent_tui_kit::render::stats_line::live_stats_reserve(
+        area,
+        borders,
+        app.task_start_time.is_some(),
+    );
     prepare_log_frame(
         &mut app.log_scroll,
         &app.log,
@@ -64,6 +74,7 @@ pub(crate) fn render_log_panel_with_borders(
         messages,
         area,
         borders,
+        reserve,
     );
     let ctx = app.render_ctx();
     let output = render_log_panel_pure(frame, area, &ctx, borders);
@@ -100,6 +111,7 @@ fn prepare_log_frame(
     messages: agent_tui_kit::i18n::Messages,
     area: Rect,
     borders: Borders,
+    reserve: u16,
 ) {
     let top = u16::from(borders.contains(Borders::TOP));
     let bottom = u16::from(borders.contains(Borders::BOTTOM));
@@ -114,7 +126,10 @@ fn prepare_log_frame(
     // │                     │  ← area.y + area.height - 2 (内容区最后一行)
     // └─────────────────────┘  ← area.y + area.height - 1 (下边框，占 1 行)
     // area.height.saturating_sub(top+bottom) = 内容区可用行数 = visible_height
-    log_scroll.height = area.height.saturating_sub(top + bottom);
+    // `reserve` is the live stats line's row: it is *inside* the box, on the
+    // content area's last row, so it comes out of the scrollable height while
+    // the border stays where it is.
+    log_scroll.height = area.height.saturating_sub(top + bottom + reserve);
     let visible_height = log_scroll.height as usize;
     // 两行做两件事：
     // 和 `height` 同样的 `saturating_sub`：
@@ -234,8 +249,49 @@ fn prepare_log_frame(
                 if super::cells::separator::is_task_end_separator(&log.items[phys_idx].raw) {
                     vec![Line::default()]
                 } else {
+                    let item = &log.items[phys_idx];
                     let indent = log_indent_at(log, phys_idx) as usize;
-                    wrap_line(&line, wrap_width.saturating_sub(indent).max(1))
+                    // A row that wears a bar pays for it out of the same budget
+                    // the indent comes from, and gets the bar on **every** row
+                    // it wraps into: the bar is the container's left rail, so a
+                    // continuation without it is a hole in the rail. A Markdown
+                    // row does this itself (`MarkdownCell::with_gutter`); this
+                    // is the text-row half of the same rule.
+                    let gutter = item.gutter;
+                    let gutter_cols = gutter.map_or(0, |g| g.cols()) as usize;
+                    // A task-stats row is centered like the live band that
+                    // preceded it, and the pad is baked **into the line only**:
+                    // `raw` is what the `⎘` byte mapping reads, so padding it
+                    // would shift that hit test. The click path recomputes the
+                    // same pad through `stats_line::stats_row_pad`.
+                    let pad = if crate::widgets::state::is_task_stats_line(&item.raw) {
+                        agent_tui_kit::render::stats_line::stats_row_pad(
+                            wrap_width,
+                            indent as u16,
+                            unicode_width::UnicodeWidthStr::width(item.raw.as_str()),
+                        ) as usize
+                    } else {
+                        0
+                    };
+                    let mut wrapped = wrap_line(
+                        &line,
+                        wrap_width.saturating_sub(indent + gutter_cols + pad).max(1),
+                    );
+                    if pad > 0 && !wrapped.is_empty() {
+                        // `render_line` gives a bg-less span the row's surface
+                        // colour, so plain spaces are enough here.
+                        wrapped[0].spans.insert(0, Span::raw(" ".repeat(pad)));
+                    }
+                    if let Some(gutter) = gutter {
+                        let bar = Span::styled(
+                            gutter.glyph,
+                            Style::default().fg(gutter.color).bg(theme.bg),
+                        );
+                        for line in &mut wrapped {
+                            line.spans.insert(0, bar.clone());
+                        }
+                    }
+                    wrapped
                 }
             } else {
                 // The stream row uses the same reply indent as its TextCell.

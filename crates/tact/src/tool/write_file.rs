@@ -36,7 +36,7 @@ const SINGLE_WRITE_THRESHOLD: usize = 256 * 1024;
 pub const WRITE_FILE_METADATA: ToolMetadata = ToolMetadata {
     name: "write_file",
     description: "Write content to file.",
-    permission: PermissionPolicy::Write,
+    permission: PermissionPolicy::WritePath { path_field: "path" },
     permission_prompt: PermissionPromptPolicy::Path { field: "path" },
     resources: ResourcePolicy::WritePath { field: "path" },
     domain: ToolDomain::Generic,

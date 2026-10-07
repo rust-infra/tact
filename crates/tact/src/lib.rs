@@ -34,6 +34,7 @@ pub mod plugin;
 pub mod prompt;
 pub mod recovery;
 pub mod sandbox;
+pub(crate) mod security;
 pub(crate) mod shell;
 pub mod skill;
 pub mod stats;

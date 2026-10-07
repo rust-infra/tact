@@ -5,8 +5,9 @@ use std::time::Duration;
 use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
 
 use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
+use crate::test_fixtures::StepCall;
 use crate::widgets::state::{
-    App, CodeBlock, CodePopup, DiffPopup, InputMode, LogItemKind, PopupTextSelection,
+    App, CodeBlock, CodePopup, DiffPopup, InputMode, LogItemKind, PopupTextSelection, SurfaceId,
     ThinkingBlock, ThinkingPopup,
 };
 
@@ -189,7 +190,39 @@ fn full_frame_slash_command_no_match_shows_hint() {
     );
 }
 
-/// Seed a long slash list: the built-in commands plus `count` skill entries.
+/// The popup must show the syntax that follows a subcommand, not just its name:
+/// `/mcp auth` is useless advice without `<server>`.
+#[test]
+fn full_frame_slash_popup_completes_subcommands_with_their_syntax() {
+    let mut app = make_app();
+    app.input_mode = InputMode::Insert;
+    app.input = "/mcp ".into();
+    app.input_cursor = app.input.len();
+    app.slash_command.active = true;
+    app.slash_command.start_pos = 0;
+
+    let text = render_app_text(&mut app, 100, 30);
+
+    for expected in ["/mcp auth", "/mcp login", "/mcp list", "<server>"] {
+        assert!(text.contains(expected), "missing {expected} in:\n{text}");
+    }
+}
+
+/// Index of the `skill-<n>` candidate in the `/skill ` popup.
+///
+/// Derived from the live candidate list rather than hardcoded: the built-in
+/// subcommands come first, so a new one shifts every skill down and a magic
+/// index silently starts asserting about the wrong row.
+fn skill_row(app: &App, n: usize) -> usize {
+    app.slash_candidates()
+        .iter()
+        .position(|candidate| candidate.path == format!("skill skill-{n:02}"))
+        .expect("seeded skill is offered under /skill")
+}
+
+/// Seed a long slash list: the two built-in skill subcommands plus `count`
+/// skill entries — which is where a long list lives now that skills are not
+/// first-level entries.
 fn seed_slash_skills(app: &mut App, count: usize) {
     use crate::widgets::state::SkillEntry;
     app.skills_data = (0..count)
@@ -201,10 +234,11 @@ fn seed_slash_skills(app: &mut App, count: usize) {
         .collect();
 }
 
+/// Open the popup on `/skill `, the level that carries the many entries.
 fn open_slash_popup(app: &mut App) {
     app.input_mode = InputMode::Insert;
-    app.input = "/".into();
-    app.input_cursor = 1;
+    app.input = "/skill ".into();
+    app.input_cursor = app.input.len();
     app.slash_command.active = true;
     app.slash_command.start_pos = 0;
     app.slash_command.selected = 0;
@@ -216,16 +250,15 @@ fn slash_popup_long_list_scrolls_selected_into_view() {
     open_slash_popup(&mut app);
     seed_slash_skills(&mut app, 40);
 
-    // The filtered list is 18 builtins + 40 skills; skill-30 sits at index 48.
-    app.slash_command.selected = 48;
+    app.slash_command.selected = skill_row(&app, 30);
     let text = render_app_text(&mut app, 100, 30);
 
     assert!(
-        text.contains("/skill-30"),
+        text.contains("skill-30"),
         "deep selection must be visible after scrolling, got:\n{text}"
     );
     assert!(
-        !text.contains("/theme"),
+        !text.contains("/skill list"),
         "the top of the list must have scrolled out of view, got:\n{text}"
     );
 }
@@ -240,19 +273,19 @@ fn slash_popup_long_list_keeps_selected_visible_on_short_terminal() {
     // clamped to what actually fits, so the selected row must never land
     // below the popup border (previously the anchor was off-screen and the
     // list appeared frozen / "did not scroll").
-    app.slash_command.selected = 48;
+    app.slash_command.selected = skill_row(&app, 30);
     let text = render_app_text(&mut app, 100, 13);
 
     assert!(
-        text.contains("/skill-30"),
+        text.contains("skill-30"),
         "selected row must stay visible on a short terminal, got:\n{text}"
     );
 
     // The very last item must also be reachable on a short terminal.
-    app.slash_command.selected = 57;
+    app.slash_command.selected = skill_row(&app, 39);
     let text = render_app_text(&mut app, 100, 13);
     assert!(
-        text.contains("/skill-39"),
+        text.contains("skill-39"),
         "last item must be reachable on a short terminal, got:\n{text}"
     );
 }
@@ -265,14 +298,14 @@ fn slash_popup_scroll_window_moves_with_selection() {
 
     let top = render_app_text(&mut app, 100, 30);
     assert!(
-        top.contains("/theme"),
-        "top of list shows the first command, got:\n{top}"
+        top.contains("/skill list"),
+        "top of list shows the first entry, got:\n{top}"
     );
 
-    app.slash_command.selected = 48;
+    app.slash_command.selected = skill_row(&app, 30);
     let deep = render_app_text(&mut app, 100, 30);
     assert!(
-        deep.contains("/skill-30") && !deep.contains("/theme"),
+        deep.contains("skill-30") && !deep.contains("/skill list"),
         "moving the selection deep into the list must scroll the window, got:\n{deep}"
     );
 }
@@ -285,14 +318,14 @@ fn slash_popup_records_and_clears_mouse_area() {
 
     let _ = render_app_text(&mut app, 100, 30);
     assert!(
-        !app.mouse.slash_popup_area.is_empty(),
+        !app.mouse.area(SurfaceId::SlashPopup).is_empty(),
         "active slash popup must record its area for mouse-wheel routing"
     );
 
     app.slash_command.active = false;
     let _ = render_app_text(&mut app, 100, 30);
     assert!(
-        app.mouse.slash_popup_area.is_empty(),
+        app.mouse.area(SurfaceId::SlashPopup).is_empty(),
         "closed slash popup must clear its mouse area"
     );
 }
@@ -376,14 +409,14 @@ fn select_popup_records_and_clears_mouse_area() {
 
     let _ = render_app_text(&mut app, 100, 30);
     assert!(
-        !app.mouse.select_popup_area.is_empty(),
+        !app.mouse.area(SurfaceId::SelectPopup).is_empty(),
         "active select popup must record its area for mouse-wheel routing"
     );
 
     app.input_mode = InputMode::Normal;
     let _ = render_app_text(&mut app, 100, 30);
     assert!(
-        app.mouse.select_popup_area.is_empty(),
+        app.mouse.area(SurfaceId::SelectPopup).is_empty(),
         "closed select popup must clear its mouse area"
     );
 }
@@ -396,8 +429,18 @@ fn select_popup_shows_navigation_footer_hint() {
     let text = render_app_text(&mut app, 100, 30);
 
     assert!(
-        text.contains("↑↓/j/k"),
-        "select popup must show the j/k navigation hint in its footer, got:\n{text}"
+        text.contains("↑↓"),
+        "select popup must show the arrow navigation hint in its footer, got:\n{text}"
+    );
+    // A local pick is filterable, so `j`/`k` are filter characters here and
+    // must not be advertised as navigation.
+    assert!(
+        !text.contains("↑↓/j/k"),
+        "a filterable select must not advertise j/k as navigation, got:\n{text}"
+    );
+    assert!(
+        text.contains("a-z") && (text.contains("Filter") || text.contains("筛选")),
+        "select popup footer must offer the filter, got:\n{text}"
     );
     assert!(
         text.contains("Enter") && text.contains("Esc"),
@@ -432,6 +475,128 @@ fn select_popup_multi_shows_toggle_footer_hint() {
     );
 }
 
+/// The `/model` list is not a renderer of its own: `start_model_picker` builds
+/// a `SelectPopup` and `SelectPopupWidget` renders it through the shared
+/// `ListPopup`. This pins that path, marker and band included.
+#[test]
+fn model_picker_renders_through_the_shared_list_popup() {
+    use crate::widgets::state::{ModelTarget, SelectKind};
+
+    let mut app = make_app();
+    app.input_mode = InputMode::Select;
+    app.select_kind = SelectKind::ModelPick(ModelTarget::Main);
+    // Exactly what `start_model_picker` builds: the current model carries `*`.
+    app.select.set_local(
+        "Select model".into(),
+        vec!["model-a".into(), "model-b *".into(), "model-c".into()],
+        1,
+        false,
+    );
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+
+    // The current-model marker survives the migration.
+    let focused = cell_at(buf, "model-b *");
+    assert_eq!(focused.fg, app.theme.fg, "the focused row is theme.fg");
+    assert_eq!(focused.bg, app.theme.highlight, "on theme.highlight");
+
+    // And the band is the component's row-wide one, not a per-glyph patch.
+    let area = app.mouse.area(SurfaceId::SelectPopup);
+    assert!(
+        !area.is_empty(),
+        "the model picker must record its mouse area"
+    );
+    let y = row_y(buf, "model-b *");
+    for x in (area.x + 1)..area.right() - 1 {
+        assert_eq!(
+            buf[(x, y)].bg,
+            app.theme.highlight,
+            "the focused model row's band must span the popup (x={x})"
+        );
+    }
+}
+
+/// Typing narrows the model list: the rows the filter hides must be gone, and
+/// the filter itself must be on screen.
+#[test]
+fn model_picker_filter_hides_the_rows_that_do_not_match() {
+    use crate::widgets::state::{ModelTarget, SelectKind};
+
+    let mut app = make_app();
+    app.input_mode = InputMode::Select;
+    app.select_kind = SelectKind::ModelPick(ModelTarget::Main);
+    app.select.set_local(
+        "Select model".into(),
+        vec![
+            "kimi-k2.5".into(),
+            "kimi-for-coding".into(),
+            "claude-sonnet".into(),
+        ],
+        0,
+        false,
+    );
+
+    let unfiltered = render_popup_only(&mut app, 100, 30, |f, area, app| {
+        super::render_select_popup(f, area, app)
+    });
+    for model in ["kimi-k2.5", "kimi-for-coding", "claude-sonnet"] {
+        assert!(unfiltered.contains(model), "unfiltered list misses {model}");
+    }
+    // An empty filter line says what it is: a magnifier and a grey placeholder,
+    // not a bare `>` that reads as another row of the list.
+    assert!(
+        unfiltered.contains('\u{1f50d}'),
+        "the filter line needs a search icon:\n{unfiltered}"
+    );
+    assert!(
+        unfiltered.contains(app.msgs().select_filter_placeholder),
+        "an empty filter line needs its placeholder:\n{unfiltered}"
+    );
+
+    for c in "cod".chars() {
+        app.select.push_query(c);
+    }
+    let filtered = render_popup_only(&mut app, 100, 30, |f, area, app| {
+        super::render_select_popup(f, area, app)
+    });
+
+    assert!(
+        filtered.contains('\u{1f50d}') && filtered.contains("cod"),
+        "the filter line must show what is being filtered on:\n{filtered}"
+    );
+    assert!(
+        !filtered.contains(app.msgs().select_filter_placeholder),
+        "the placeholder must give way to the query:\n{filtered}"
+    );
+    assert!(
+        filtered.contains("kimi-for-coding"),
+        "the match must stay:\n{filtered}"
+    );
+    for hidden in ["kimi-k2.5", "claude-sonnet"] {
+        assert!(
+            !filtered.contains(hidden),
+            "the filter must hide {hidden}:\n{filtered}"
+        );
+    }
+
+    // A filter that matches nothing says so, instead of claiming the list is
+    // empty.
+    app.select.clear_query();
+    app.select.push_query('z');
+    let empty = render_popup_only(&mut app, 100, 30, |f, area, app| {
+        super::render_select_popup(f, area, app)
+    });
+    assert!(
+        empty.contains(app.msgs().select_no_match),
+        "a filter matching nothing must say so:\n{empty}"
+    );
+}
+
 #[test]
 fn full_frame_file_picker_lists_options() {
     let mut app = make_app();
@@ -445,6 +610,121 @@ fn full_frame_file_picker_lists_options() {
     assert!(
         text.contains("Attach file") || text.contains("main.rs"),
         "file picker should list paths, got:\n{text}"
+    );
+}
+
+/// Render one list popup into its own buffer: no status bar or input box noise,
+/// so a row assertion is about the popup and nothing else.
+fn render_popup_only(
+    app: &mut App,
+    width: u16,
+    height: u16,
+    draw: fn(&mut ratatui::Frame, ratatui::layout::Rect, &mut App),
+) -> String {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| {
+            let area = frame.area();
+            draw(frame, area, app);
+        })
+        .expect("draw");
+    buffer_text(terminal.backend().buffer())
+}
+
+fn render_palette_only(app: &mut App, width: u16, height: u16) -> String {
+    render_popup_only(app, width, height, |f, area, app| {
+        super::render_command_palette(f, area, app)
+    })
+}
+
+fn render_file_picker_only(app: &mut App, width: u16, height: u16) -> String {
+    render_popup_only(app, width, height, |f, area, app| {
+        super::render_file_picker(f, area, app)
+    })
+}
+
+#[test]
+fn command_palette_long_list_scrolls_selected_into_view() {
+    let mut app = make_app();
+    app.input_mode = InputMode::Palette;
+    let quit = app
+        .palette_commands()
+        .iter()
+        .position(|(cmd, _)| cmd == "quit")
+        .expect("the palette lists quit");
+
+    // Short terminal: the frame fits two rows, so the window has to move.
+    app.palette_selected = quit;
+    let text = render_palette_only(&mut app, 100, 8);
+
+    assert!(
+        text.contains("quit"),
+        "the focused command must stay inside the popup:\n{text}"
+    );
+    assert!(
+        !text.contains("🎨"),
+        "the first command must have scrolled out of view:\n{text}"
+    );
+}
+
+#[test]
+fn command_palette_records_and_clears_mouse_area() {
+    let mut app = make_app();
+    app.input_mode = InputMode::Palette;
+
+    let _ = render_app_text(&mut app, 100, 30);
+    assert!(
+        !app.mouse.area(SurfaceId::PalettePopup).is_empty(),
+        "an open palette must record its area for mouse-wheel routing"
+    );
+
+    app.input_mode = InputMode::Normal;
+    let _ = render_app_text(&mut app, 100, 30);
+    assert!(
+        app.mouse.area(SurfaceId::PalettePopup).is_empty(),
+        "a closed palette must clear its mouse area"
+    );
+}
+
+#[test]
+fn file_picker_long_list_scrolls_selected_into_view() {
+    let mut app = make_app();
+    app.input_mode = InputMode::FilePicker;
+    app.file_picker.options = (0..30).map(|i| format!("file-{i:02}.rs")).collect();
+    app.file_picker.current_dir = app.work_dir.clone();
+    app.file_picker.base_dir = app.work_dir.clone();
+    app.file_picker.selected = 25;
+
+    let text = render_file_picker_only(&mut app, 100, 12);
+
+    assert!(
+        text.contains("file-25.rs"),
+        "the focused file must stay inside the popup:\n{text}"
+    );
+    assert!(
+        !text.contains("file-00.rs"),
+        "the first file must have scrolled out of view:\n{text}"
+    );
+}
+
+#[test]
+fn file_picker_records_and_clears_mouse_area() {
+    let mut app = make_app();
+    app.input_mode = InputMode::FilePicker;
+    app.file_picker.options = vec!["src/main.rs".into()];
+
+    let _ = render_app_text(&mut app, 100, 30);
+    assert!(
+        !app.mouse.area(SurfaceId::FilePickerPopup).is_empty(),
+        "an open file picker must record its area for mouse-wheel routing"
+    );
+
+    app.input_mode = InputMode::Normal;
+    let _ = render_app_text(&mut app, 100, 30);
+    assert!(
+        app.mouse.area(SurfaceId::FilePickerPopup).is_empty(),
+        "a closed file picker must clear its mouse area"
     );
 }
 
@@ -467,7 +747,7 @@ fn tool_popup_bottom_border_names_the_tool_and_its_keys() {
     seed_diff_popup(&mut app);
 
     let terminal = render_main_area_terminal(&mut app, 100, 30);
-    let area = app.mouse.diff_popup_area;
+    let area = app.mouse.area(SurfaceId::DiffPopup);
     assert!(!area.is_empty(), "tool popup must have rendered");
 
     // Read the bottom border row itself: the tool id belongs there, not on the
@@ -764,7 +1044,7 @@ fn thinking_popup_selection_reverses_selected_body_text_only() {
             .contains(Modifier::REVERSED)
     );
     assert!(
-        !buffer[(app.mouse.thinking_popup_area.x, row.screen_y)]
+        !buffer[(app.mouse.area(SurfaceId::ThinkingPopup).x, row.screen_y)]
             .modifier
             .contains(Modifier::REVERSED)
     );
@@ -964,7 +1244,7 @@ fn session_stats_popup_renders_gfm_table() {
 fn main_area_loading_spinner_when_executing() {
     use std::collections::HashMap;
 
-    use tact_protocol::{AgentUpdate, PlanStep, ToolPresentationInfo};
+    use tact_protocol::{AgentUpdate, PlanStep};
 
     let mut app = make_app();
     app.status = crate::widgets::state::Status::Executing {
@@ -977,14 +1257,7 @@ fn main_area_loading_spinner_when_executing() {
         "bash1",
         HashMap::from([("command".to_string(), "sleep 1".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "bash1".into(),
-        tool_name: "bash".into(),
-        arg_summary: "sleep 1".into(),
-        arg_full: "sleep 1".into(),
-        presentation: ToolPresentationInfo::generic("bash"),
-    });
+    app.handle_agent_update(StepCall::new(0, "bash1", "bash", "sleep 1").started());
     app.append_blank(LogItemKind::SystemTool);
     app.loading_idx = Some(app.log.items.len().saturating_sub(1));
 
@@ -1000,7 +1273,7 @@ fn main_area_loading_spinner_when_executing() {
 fn open_diff_popup_after_edit_file_step_uses_git_diff() {
     use std::{collections::HashMap, process::Command};
 
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
+    use tact_protocol::{AgentUpdate, PlanStep};
 
     let tmp = std::env::temp_dir().join(format!("tact-edit-popup-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
@@ -1037,29 +1310,14 @@ fn open_diff_popup_after_edit_file_step_uses_git_diff() {
             ("new_text".to_string(), "fn new() {}".into()),
         ]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "edit_popup".into(),
-        tool_name: "edit_file".into(),
-        arg_summary: path.clone(),
-        arg_full: path.clone(),
-        presentation: ToolPresentationInfo::generic("edit_file"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "edit_popup".into(),
-        result: StepResult {
-            tool: "edit_file".into(),
-            arg_summary: path.clone(),
-            arg_full: Some(path.clone()),
-            status: StepStatus::Success,
-            message: "wrote".into(),
-            detail: Some("fn new() {}".into()),
-            duration_us: Some(100),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("edit_file"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "edit_popup", "edit_file", path.clone()).started());
+    app.handle_agent_update(
+        StepCall::new(0, "edit_popup", "edit_file", path.clone())
+            .message("wrote")
+            .detail("fn new() {}")
+            .duration_us(100)
+            .finished(),
+    );
 
     let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);
@@ -1193,7 +1451,7 @@ fn diff_popup_no_diff_mode_shows_line_numbers_and_syntax() {
 fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
     use std::{collections::HashMap, process::Command};
 
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
+    use tact_protocol::{AgentUpdate, PlanStep};
 
     let tmp = std::env::temp_dir().join(format!("tact-edit-popup-mp-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
@@ -1231,29 +1489,14 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
             ("new_text".to_string(), "a - b".into()),
         ]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "edit_calc".into(),
-        tool_name: "edit_file".into(),
-        arg_summary: path.clone(),
-        arg_full: path.clone(),
-        presentation: ToolPresentationInfo::generic("edit_file"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "edit_calc".into(),
-        result: StepResult {
-            tool: "edit_file".into(),
-            arg_summary: path.clone(),
-            arg_full: Some(path.clone()),
-            status: StepStatus::Success,
-            message: "wrote".into(),
-            detail: Some("fn add(a: i32, b: i32) -> i32 {\n    a - b\n}".into()),
-            duration_us: Some(100),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("edit_file"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "edit_calc", "edit_file", path.clone()).started());
+    app.handle_agent_update(
+        StepCall::new(0, "edit_calc", "edit_file", path.clone())
+            .message("wrote")
+            .detail("fn add(a: i32, b: i32) -> i32 {\n    a - b\n}")
+            .duration_us(100)
+            .finished(),
+    );
 
     let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);
@@ -1285,7 +1528,7 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
 fn open_diff_popup_after_read_file_step_finish() {
     use std::collections::HashMap;
 
-    use tact_protocol::{AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo};
+    use tact_protocol::{AgentUpdate, PlanStep};
 
     let mut app = make_app();
     let file = std::env::temp_dir().join(format!("tact-popup-{}.rs", std::process::id()));
@@ -1298,29 +1541,13 @@ fn open_diff_popup_after_read_file_step_finish() {
         "read_popup",
         HashMap::from([("path".to_string(), path.clone())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "read_popup".into(),
-        tool_name: "read_file".into(),
-        arg_summary: path.clone(),
-        arg_full: path.clone(),
-        presentation: ToolPresentationInfo::generic("read_file"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "read_popup".into(),
-        result: StepResult {
-            tool: "read_file".into(),
-            arg_summary: path.clone(),
-            arg_full: Some(path.clone()),
-            status: StepStatus::Success,
-            message: "ok".into(),
-            detail: Some("fn popup_real_path() {}".into()),
-            duration_us: Some(100),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("read_file"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "read_popup", "read_file", path.clone()).started());
+    app.handle_agent_update(
+        StepCall::new(0, "read_popup", "read_file", path.clone())
+            .detail("fn popup_real_path() {}")
+            .duration_us(100)
+            .finished(),
+    );
 
     let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
     app.open_diff_popup(phys_idx);
@@ -1388,6 +1615,54 @@ fn tasks_dag_popup_renders_mermaid_markdown() {
     );
 }
 
+/// Buffer-level background check for the `/tasks-dag` overlay.
+///
+/// It is the newest popup drawn through the kit's `ScrollableTextPopup`
+/// skeleton, and the log behind it is full of wide (CJK / box-drawing) glyphs —
+/// exactly the case where a cell "restored" by a narrower repaint keeps a stale
+/// style. Every cell of the popup rect must therefore carry `theme.bg`, not just
+/// the rows that happen to hold text (see `docs/tui_rendering.md` and the
+/// no-shadow rule in `AGENTS.md`).
+#[test]
+fn tasks_dag_popup_paints_the_theme_background_over_its_whole_rect() {
+    use tact_protocol::{TaskSnapshot, TaskStatusSnapshot};
+
+    let mut app = make_app();
+    // Seed the log with wide glyphs so a leave-behind would be visible.
+    app.handle_agent_update(tact_protocol::AgentUpdate::StreamChunk(
+        "│ ── 中文宽字符 ── │\n".repeat(4),
+    ));
+    app.task_panel_mut().apply_snapshot(vec![TaskSnapshot {
+        id: 1,
+        subject: "root".into(),
+        status: TaskStatusSnapshot::Pending,
+        owner: String::new(),
+        blocks: vec![2],
+        blocked_by: Vec::new(),
+        ..Default::default()
+    }]);
+    app.open_task_dag_popup();
+
+    let terminal = render_main_area_terminal(&mut app, 100, 30);
+    let area = app.mouse.area(SurfaceId::TaskDagPopup);
+    assert!(!area.is_empty(), "the overlay must have rendered");
+
+    let buffer = terminal.backend().buffer();
+    let theme_bg = app.theme.bg;
+    let mut wrong = Vec::new();
+    for y in area.top()..area.bottom() {
+        for x in area.left()..area.right() {
+            if buffer[(x, y)].bg != theme_bg {
+                wrong.push(format!("({x},{y}) bg={:?}", buffer[(x, y)].bg));
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "every cell of the popup must carry the theme background; offenders: {wrong:?}"
+    );
+}
+
 #[test]
 fn popup_footer_swaps_the_copy_hint_for_the_confirmation_after_a_copy() {
     let mut app = make_app();
@@ -1407,7 +1682,7 @@ fn popup_footer_swaps_the_copy_hint_for_the_confirmation_after_a_copy() {
     // A copy landed: the footer confirms instead of offering the key.
     app.copy_text("fn main() {}");
     let terminal = render_main_area_terminal(&mut app, 100, 30);
-    let area = app.mouse.code_popup_area;
+    let area = app.mouse.area(SurfaceId::CodePopup);
     assert!(!area.is_empty(), "code popup must have rendered");
     let buffer = terminal.backend().buffer();
     let bottom: String = (0..buffer.area.width)
@@ -1445,6 +1720,241 @@ fn popup_footer_swaps_the_copy_hint_for_the_confirmation_after_a_copy() {
         assert_eq!(
             cell.bg, theme.bg,
             "the footer row keeps the popup background"
+        );
+    }
+}
+
+// ===== Popups must draw with the theme, not with literals =====
+//
+// Regression: the slash popup (and the palette, the file picker and the select
+// popup) styled their rows with `Color::White` / `Color::Cyan` /
+// `Color::DarkGray`. Under a light theme the popup's own background is white
+// (`Theme::bg`), so every unselected row was white-on-white — the command list
+// was invisible, and the highlighted row came out in Dark's cyan while the
+// theme's accent is blue. The colors now come from `Theme`.
+
+/// Row index of the first row whose flattened text contains `needle`.
+fn row_y(buf: &ratatui::buffer::Buffer, needle: &str) -> u16 {
+    for y in 0..buf.area.height {
+        let row: String = (0..buf.area.width)
+            .map(|x| buf[(x, y)].symbol().to_string())
+            .collect();
+        if row.contains(needle) {
+            return y;
+        }
+    }
+    panic!("{needle:?} not found in:\n{}", buffer_text(buf));
+}
+
+/// The style of the cell where `needle` starts: scans the buffer cell by cell
+/// so a wide glyph (emoji, CJK) earlier in the row cannot shift the answer.
+fn cell_at<'a>(buf: &'a ratatui::buffer::Buffer, needle: &str) -> &'a ratatui::buffer::Cell {
+    let width = buf.area.width;
+    for y in 0..buf.area.height {
+        for x in 0..width {
+            let mut candidate = String::new();
+            for dx in 0..needle.chars().count() as u16 {
+                if let Some(cell) = buf.cell((x + dx, y)) {
+                    candidate.push_str(cell.symbol());
+                }
+            }
+            if candidate == needle {
+                return &buf[(x, y)];
+            }
+        }
+    }
+    panic!("{needle:?} not found in:\n{}", buffer_text(buf));
+}
+
+fn light_app() -> App {
+    use agent_tui_kit::theme::{Theme, ThemeName};
+    let mut app = make_app();
+    app.theme = Theme::from(ThemeName::Light);
+    app
+}
+
+#[test]
+fn slash_popup_rows_take_their_colors_from_the_theme() {
+    let mut app = light_app();
+    // The command list, not the `/skill ` subcommands: this is the surface the
+    // regression was reported on.
+    app.input_mode = InputMode::Insert;
+    app.input = "/".into();
+    app.input_cursor = 1;
+    app.slash_command.active = true;
+    app.slash_command.start_pos = 0;
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+
+    assert_eq!(
+        cell_at(buf, "/theme").fg,
+        app.theme.accent,
+        "the highlighted row is the theme's accent"
+    );
+    assert_eq!(
+        cell_at(buf, "/model").fg,
+        app.theme.fg,
+        "an unselected row is the theme's foreground — white here would be \
+         white-on-white, because the popup background is `theme.bg`"
+    );
+    assert_ne!(cell_at(buf, "/model").fg, ratatui::style::Color::White);
+}
+
+#[test]
+fn command_palette_selected_row_is_legible_on_a_light_theme() {
+    let mut app = light_app();
+    app.input_mode = InputMode::Palette;
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+
+    let selected = cell_at(buf, "theme");
+    assert_eq!(
+        selected.fg, app.theme.fg,
+        "the selected palette row puts `theme.fg` on `theme.highlight`"
+    );
+    assert_eq!(selected.bg, app.theme.highlight);
+}
+
+#[test]
+fn file_picker_selected_row_is_legible_on_a_light_theme() {
+    let mut app = light_app();
+    app.input_mode = InputMode::FilePicker;
+    app.file_picker.options = vec!["src/main.rs".into(), "Cargo.toml".into()];
+    app.file_picker.current_dir = app.work_dir.clone();
+    app.file_picker.base_dir = app.work_dir.clone();
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+
+    assert_eq!(
+        cell_at(buf, "main.rs").fg,
+        app.theme.fg,
+        "the selected file row must not use a literal white"
+    );
+}
+
+#[test]
+fn select_popup_rows_and_empty_hint_take_their_colors_from_the_theme() {
+    let mut app = light_app();
+    open_select_popup(&mut app, 3);
+
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+
+    assert_eq!(
+        cell_at(buf, "model-00").fg,
+        app.theme.fg,
+        "the selected option is `theme.fg` over `theme.highlight`"
+    );
+
+    // And the empty state is muted, not a literal gray.
+    let mut app = light_app();
+    open_select_popup(&mut app, 0);
+    let backend = TestBackend::new(100, 30);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+    let empty = app.msgs().select_empty;
+    assert_eq!(cell_at(buf, empty).fg, app.theme.muted);
+}
+
+/// The invariant the literals broke, over every built-in theme: no popup row
+/// may be painted in the popup's own background color.
+#[test]
+fn no_theme_draws_a_popup_row_in_its_own_background_color() {
+    use agent_tui_kit::theme::{Theme, ThemeName};
+
+    let mut unreadable = Vec::new();
+    // `next()` cycles the full set; `ThemeName::all()` is private to the kit.
+    let mut name = ThemeName::Dark;
+    loop {
+        let theme = Theme::from(name);
+        let mut app = make_app();
+        app.theme = theme;
+        app.input_mode = InputMode::Insert;
+        app.input = "/".into();
+        app.input_cursor = 1;
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+
+        let backend = TestBackend::new(100, 30);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| super::test_harness::draw_full_ui(frame, frame.area(), &mut app))
+            .expect("draw");
+        let buf = terminal.backend().buffer();
+
+        let row = cell_at(buf, "/model");
+        if row.fg == theme.bg {
+            unreadable.push(format!("{name:?}: fg={:?} on bg={:?}", row.fg, theme.bg));
+        }
+
+        name = name.next();
+        if name == ThemeName::Dark {
+            break;
+        }
+    }
+    assert!(
+        unreadable.is_empty(),
+        "popup rows painted in the popup background:\n{}",
+        unreadable.join("\n")
+    );
+}
+
+/// The scrollbar is drawn over the *popup* rect, not the body.
+///
+/// Four popups reach the bar through
+/// `agent_tui_kit::render::popups::render_popup_scrollbar`, so a wrong rect here
+/// moves the bar inward in all of them at once. `popup_inner` has already
+/// excluded the border, so the bar's column is the last column of `popup_area`
+/// and one past the body's right edge.
+#[test]
+fn the_popup_scrollbar_uses_the_popup_column_not_the_body_column() {
+    let popup_area = ratatui::layout::Rect::new(5, 2, 12, 6);
+    let backend = TestBackend::new(30, 12);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| {
+            agent_tui_kit::render::popups::render_popup_scrollbar(frame, popup_area, 40, 6, 0);
+        })
+        .expect("draw");
+    let buf = terminal.backend().buffer();
+
+    let bar_col = popup_area.right() - 1;
+    let painted = (popup_area.y..popup_area.bottom())
+        .filter(|y| buf[(bar_col, *y)].symbol() != " ")
+        .count();
+    assert!(
+        painted > 0,
+        "the bar drew nothing in the popup's right column"
+    );
+
+    // Nothing may land in the column just outside the popup.
+    for y in popup_area.y..popup_area.bottom() {
+        assert_eq!(
+            buf[(popup_area.right(), y)].symbol(),
+            " ",
+            "the bar spilled past the popup at row {y}"
         );
     }
 }

@@ -1,28 +1,12 @@
 use std::sync::Arc;
 
-use tact::{
-    Agent, AgentSystemPrompt,
-    background::{BackgroundManager, SharedBackgroundManager},
-    config::CliArgs,
-    consts::TactPath,
-    hook::HookControl,
-    mcp::load_mcp_router_with_report,
-    memory::memory_manager,
-    permission::{PermissionManager, settings::PermissionSettings},
-    store::DynSessionStore,
-    subagent::{SharedSubagentManager, SubagentManager},
-    task::{SharedTaskManager, TaskManager},
-    team::{SharedTeammateManager, TeammateManager},
-    tool::{ToolContext, toolset},
-    worktree::{SharedWorktreeManager, WorktreeManager},
-};
-use tact_llm::get_llm_client;
+use tact::{Agent, config::CliArgs, consts::TactPath, store::DynSessionStore};
 use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate};
 
 use crate::{
     account,
     driver::run_command_loop_with_account,
-    permission::permission_mode_from_config,
+    session_bootstrap::{Notices, UiWiring, bootstrap_session, open_session},
     session_lock::{SessionLockGuard, SessionLockRegistry},
 };
 
@@ -32,26 +16,8 @@ pub async fn run_interactive(
     session_store: DynSessionStore,
     lock_registry: Arc<SessionLockRegistry>,
 ) -> anyhow::Result<()> {
-    let root_dir = tact_path.workdir().display().to_string();
-    let session_id = if let Some(ref id) = args.session {
-        id.clone()
-    } else if args.resume_last {
-        let sessions = session_store.list_sessions(Some(&root_dir)).await?;
-        sessions
-            .into_iter()
-            .next()
-            .map(|s| s.id)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
-    } else {
-        uuid::Uuid::new_v4().to_string()
-    };
-
-    session_store
-        .ensure_session_row(&session_id, &root_dir, "")
-        .await?;
-    let session_lock = SessionLockGuard::acquire(session_store.clone(), &session_id).await?;
-    lock_registry.register(session_lock.clone()).await;
-    session_store.touch_session(&session_id, &root_dir).await?;
+    let (session_id, session_lock) =
+        open_session(&args, &tact_path, &session_store, lock_registry.as_ref()).await?;
 
     let run_result = run_interactive_locked(
         args,
@@ -123,13 +89,14 @@ async fn run_interactive_locked(
     let agent_session_store = session_store.clone();
 
     let theme = tact::config::settings().ui.theme.clone();
+    let language = tact::config::settings().ui.language.clone();
     let model_context_window = tact::config::settings().agent.model_context_window;
     let model_name = tact::config::settings().agent.model.clone();
     let model_max_tokens = tact::config::settings().agent.max_tokens;
     let model_thinking_budget = tact::config::settings().agent.thinking_budget;
     let account_enabled = account::is_supported();
     let tui_ui_responder = ui_responder.clone();
-    let tui_handle = tokio::spawn(Box::pin(async move {
+    let mut tui_handle = tokio::spawn(Box::pin(async move {
         let account_rx = if account_enabled {
             Some(account_rx)
         } else {
@@ -148,6 +115,9 @@ async fn run_interactive_locked(
             pending_ui: tui_ui_responder,
             history_save_tx,
             theme,
+            language,
+            ui_config_path: tact::config::settings().config_path.clone(),
+            hook_output: tact::config::settings().ui.hook_output,
             model_context_window,
             model_name,
             model_max_tokens,
@@ -208,7 +178,19 @@ async fn run_interactive_locked(
     // task). Instead the error is delivered into the running TUI as an
     // `AgentUpdate::Error`, the user quits normally, and `run_tui` restores
     // the terminal.
-    let driver = match build_agent_for_interactive(
+    //
+    // Raced against the TUI, because this is the slowest thing that happens
+    // after the UI appears: connecting MCP servers is a handshake per server,
+    // and a remote one can spend seconds on OAuth discovery before it fails.
+    // Awaiting it unconditionally made `q` look broken — the TUI printed its
+    // bye line and restored the terminal immediately, and then the process sat
+    // there until the last server finished connecting, with nothing on screen
+    // to say why. A user who quits during startup has nothing left to drive, so
+    // the build is dropped instead of waited out. That is safe: every MCP
+    // transport kills its child on drop, and the session simply ends with no
+    // agent, which is also why the session-id / stats lines below are skipped
+    // on this path — there is no agent to summarise.
+    let mut build = Box::pin(build_agent_for_interactive(
         tact_path,
         agent_tx.clone(),
         agent_skill_registry,
@@ -216,23 +198,36 @@ async fn run_interactive_locked(
         agent_session_store,
         work_dir,
         ui_responder,
-    )
-    .await
-    {
-        Ok(agent) => Some(tokio::spawn(run_command_loop_with_account(
-            agent,
-            user_cmd_rx,
-            image_work_dir,
-            Some(account_tx),
-        ))),
-        Err(err) => {
-            // Deliver the failure into the already-running TUI instead of
-            // propagating it past the raw-mode boundary. The TUI shows the
-            // error and the user quits normally (restoring the terminal).
-            let _ = agent_tx.send(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                "startup failed: {err:#}"
-            ))));
-            None
+    ));
+    let driver = tokio::select! {
+        // `biased`, so a build that is *already* finished is always used: the
+        // default random choice would occasionally drop a just-built agent
+        // because the TUI happened to become ready in the same poll, and the
+        // stats below would go missing for no reason the user could see.
+        biased;
+        built = &mut build => match built {
+            Ok(agent) => Some(tokio::spawn(run_command_loop_with_account(
+                agent,
+                user_cmd_rx,
+                image_work_dir,
+                Some(account_tx),
+            ))),
+            Err(err) => {
+                // Deliver the failure into the already-running TUI instead of
+                // propagating it past the raw-mode boundary. The TUI shows the
+                // error and the user quits normally (restoring the terminal).
+                let _ = agent_tx.send(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                    "startup failed: {err:#}"
+                ))));
+                None
+            }
+        },
+        tui = &mut tui_handle => {
+            // Quit while the agent was still being built. `run_tui` has already
+            // restored the terminal and printed its goodbye, so the only thing
+            // left to do is to stop waiting for a build nobody will use.
+            tui??;
+            return Ok(());
         }
     };
 
@@ -260,11 +255,13 @@ async fn run_interactive_locked(
     Ok(())
 }
 
-/// Run the deferred, fallible startup steps needed to construct the main agent:
-/// LLM client, permission setup, session managers, MCP server connect, native
-/// toolset, tool context, and the session-start hooks. Invoked after the TUI is
-/// already visible; any error is surfaced in the TUI rather than propagated
-/// through the raw-mode boundary (see the caller).
+/// Run the deferred, fallible startup steps needed to construct the main agent.
+///
+/// Invoked after the TUI is already visible; any error is surfaced in the TUI
+/// rather than propagated through the raw-mode boundary (see the caller). The
+/// steps themselves are shared with headless — see
+/// [`crate::session_bootstrap`]; this only says where their notices go and
+/// which channel the agent may talk back on.
 async fn build_agent_for_interactive(
     tact_path: TactPath,
     agent_tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>,
@@ -274,101 +271,19 @@ async fn build_agent_for_interactive(
     work_dir: std::path::PathBuf,
     ui_responder: tact::ui_responder::UiResponder,
 ) -> anyhow::Result<Agent> {
-    let client = get_llm_client().await?;
-    let mode = permission_mode_from_config();
-    let settings = PermissionSettings::load(&tact_path);
-    let permission_manager = PermissionManager::try_new_with_settings(mode, settings)?;
-    let task_manager =
-        SharedTaskManager::new(TaskManager::new(&tact_path.session_db_path()).await?);
-    let background_manager =
-        SharedBackgroundManager::new(BackgroundManager::new(&tact_path.session_db_path()).await?);
-    let teammate_manager =
-        SharedTeammateManager::new(TeammateManager::new(&tact_path.session_db_path()).await?);
-    let worktree_manager = SharedWorktreeManager::new(
-        WorktreeManager::new(&tact_path.session_db_path(), work_dir.clone()).await?,
-    );
-    let subagent_manager =
-        SharedSubagentManager::new(SubagentManager::new(&tact_path.session_db_path()).await?);
-    // Memory is user-global (`~/.tact/memory`) so it persists across projects.
-    // Project-local `.tact/memory` is only the fallback when `$HOME` is unset.
-    let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager(
-        TactPath::home_memory_dir().unwrap_or_else(|| tact_path.memory_dir()),
-    )?));
-    let (mcp_router, mcp_report) = load_mcp_router_with_report().await?;
-    // MCP problems are collected, never fatal (one broken server must not stop
-    // startup), so surface them here — otherwise a typo'd command or an
-    // ignored override would be silent. A clean load emits nothing.
-    for line in mcp_report.notice_lines() {
-        let _ = agent_tx.send(AgentUpdate::Info(line));
-    }
-
-    let mut tools = toolset();
-    // Annotate `spawn_subagent` with the current subagent skill-card catalog
-    // so the main agent can discover valid `skill:` names.
-    tact::tool::annotate_spawn_subagent_skill_catalog(&mut tools);
-    // Opt-in sandbox, resolved once: it is constant for the session lifetime, so
-    // the bash description below can state the sandbox semantics truthfully.
-    // A switch that cannot be honoured degrades to unsandboxed and is announced.
-    let (sandbox, sandbox_degraded) =
-        tact::sandbox::resolve(tact::config::settings().tools.sandbox, &work_dir);
-    if let Some(degraded) = &sandbox_degraded {
-        let _ = agent_tx.send(AgentUpdate::Info(degraded.reason.clone()));
-    }
-    if sandbox.is_some() {
-        tools.set_tool_description("bash", tact::tool::SANDBOXED_BASH_DESCRIPTION);
-    }
-    let tool_context = ToolContext {
-        skill_registry: skill_registry.clone(),
-        subagent_start_hooks: tact::plugin::plugin_subagent_start_hooks(tact_path.workdir())?,
-        subagent_stop_hooks: tact::plugin::plugin_subagent_stop_hooks(tact_path.workdir())?,
-        memory_manager,
+    // One clone for the notices: the wiring below takes the original channel.
+    let notices = Notices::Ui(agent_tx.clone());
+    bootstrap_session(
+        &tact_path,
         work_dir,
-        task_manager,
-        background_manager,
-        teammate_manager,
-        worktree_manager,
-        subagent_manager,
-        ui_tx: Some(agent_tx.clone()),
-        ui_responder,
-        progress_reporter: tact::tool::ToolProgressReporter::default(),
-        cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        bash_timeout_secs: tact::config::settings().tools.bash_timeout_secs,
-        bash_nice: tact::config::settings().tools.bash_nice,
-        sandbox,
-        sandbox_degraded,
-        session_id: None,
-        session_store: None,
-        permission_snapshot: None,
-        subagent_results: None,
-    };
-
-    // Responses compaction routing depends on the effective provider: OpenAI
-    // uses native `/responses/compact`, DeepSeek (including an OpenAI entry
-    // pointed at a DeepSeek endpoint) falls back to local summary compaction.
-    let provider_kind = if tact_llm::is_deepseek() {
-        tact_llm::ProviderKind::DeepSeek
-    } else {
-        tact_llm::get_provider().provider
-    };
-    let mut agent = Agent::new(
-        client.clone(),
-        tool_context,
-        tools,
-        mcp_router,
-        permission_manager,
-        AgentSystemPrompt::Dynamic,
+        skill_registry,
+        session_id,
+        session_store,
+        Some(UiWiring {
+            tx: agent_tx,
+            responder: ui_responder,
+        }),
+        notices,
     )
-    .with_ui_channel(agent_tx)
-    .with_session(session_id, session_store)
-    .with_provider_kind(provider_kind)
-    .with_session_start(|_at| Box::pin(async move { Ok(HookControl::Continue) }))
-    .with_pre_tool(|_at, _tool_use| Box::pin(async move { Ok(HookControl::Continue) }))
-    .with_post_tool(tact::hook::rtk_filter::create_rtk_post_tool_hook());
-    // Claude plugin command hooks (SessionStart / UserPromptSubmit /
-    // PreToolUse / PostToolUse) from every installed plugin.
-    agent = tact::plugin::apply_plugin_hooks(agent, tact_path.workdir())?;
-    // SessionStart hooks fire once per session, right after initialization.
-    agent.dispatch_session_start_hooks().await?;
-
-    Ok(agent)
+    .await
 }

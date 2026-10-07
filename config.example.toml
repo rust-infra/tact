@@ -201,8 +201,20 @@ mode = "default"
 # Max entries in the system-prompt project structure snapshot (default: 80)
 # snapshot_max_items = 80
 
-# Truncate old tool results in context (default: true)
+# Truncate old tool results in context (default: false — opt in).
+#
+# Off by default since 2026-07-24: the stub pass invalidates the prompt prefix
+# cache on providers with automatic prefix caching, and `read_file` returns
+# bounded pages of its own, so the pass costs more than it saves. Set `true` to
+# enable it; `--no-micro-compact` can only force it off.
 # micro_compact_enabled = true
+
+# Enable Tact's persistent memory (default: true).
+#
+# When false: no memory block or memory guidance is injected into the system
+# prompt, and `save_memory` is not registered. Files under `~/.tact/memory`
+# are never deleted.
+# memory_enabled = true
 
 # How many request bodies `token_usages` keeps per session (default: 1).
 #
@@ -263,12 +275,27 @@ mode = "default"
 # Theme name, or "auto" for terminal/system detection.
 theme = "ink"     # ink | ink-light | retro | brutal | nord | dark | auto
 
+# UI language. Written by `/lang` when you accept its "save to config?" step.
+# "en" | "zh"; "english" / "cn" / "chinese" are accepted too, and an
+# unrecognized value falls back to English with a warning. No CLI flag —
+# unlike the theme (chosen per terminal) a language belongs to the person.
+# language = "en"
+
 # User-attached images (`@file.png`, `![alt](path)`).
 # Requires a vision-capable model/endpoint; compress only reduces tokens.
 # Text-only OpenAI-compatible APIs reject image_url (HTTP 400).
 # vision_image.compress = true       # downscale + JPEG (default); false = send original
 # vision_image.max_edge = 1280       # longest edge in px (256–4096)
 # vision_image.jpeg_quality = 80     # JPEG quality 1–100 (when compress = true)
+
+# Draw hook-injected content in the log: a hook's progress line and the block of
+# context it injects (default: true). Written by `/hook-output` when you accept
+# its persist step; readable here like any other [ui] preference.
+#
+# Display only. A hook still runs, and its stdout still reaches the model as a
+# `<hook-context>` message — this decides whether the TUI draws it. To stop a
+# hook from running, use `/hooks` (or `[hooks]`), not this.
+# hook_output = false
 
 # ---------------------------------------------------------------------------
 # Voice input (macOS-first; independent of LLM providers)
@@ -296,6 +323,9 @@ api_key = ""
 # Keyboard shortcut to start/stop voice recording (optional; mouse-only when unset).
 # Format: "ctrl+<char>" — one letter, digit, or symbol after ctrl+.
 # Only an exact match toggles voice; other keys still reach the input box.
+# Must not be one of the built-in global shortcuts (ctrl+c / ctrl+h / ctrl+t /
+# ctrl+l / ctrl+?) — those are handled first and consume the key, so a binding on
+# one of them could never fire. Startup refuses such a config and names the key.
 # Examples: "ctrl+g", "ctrl+r", "ctrl+,"
 # voice_keybind = "ctrl+g"
 
@@ -351,3 +381,114 @@ api_key = ""
 # Per-server override: `auth.clientName` in mcp.json, e.g.
 #   { "mcpServers": { "figma": { "url": "...", "auth": { "type": "oauth", "clientName": "Codex" } } } }
 # oauth_client_name = "Codex"
+
+# Risk for Tact's OWN resource and prompt tools. They belong to Tact rather than
+# to any server, so a server entry's `tools.<name>.risk` cannot address them and
+# these four keys do. Same vocabulary: read | write | high. All default to
+# "high", so nothing changes until you declare otherwise. Listing and fetching
+# are separate keys because a listing returns metadata while a fetch returns
+# third-party content — declaring "read" for a fetch key bypasses plan mode, the
+# same trade the native read_file makes.
+#
+# resource_list_risk = "write"   # list_mcp_resources, list_mcp_resource_templates
+# resource_read_risk = "high"    # read_mcp_resource
+# prompt_list_risk = "write"     # list_mcp_prompts
+# prompt_get_risk = "high"       # get_mcp_prompt
+
+# Per-entry tool policy lives in `.mcp.json` (not here) — Codex's own field
+# names, honoured per server. All are optional; an entry that declares none
+# exposes every tool, uses the 60s handshake ceiling, and asks before each call:
+#
+#   {
+#     "mcpServers": {
+#       "basic-memory": {
+#         "command": "/Users/me/.local/bin/basic-memory",
+#         "args": ["mcp"],
+#         # Handshake budget for this server. `_ms` is the millisecond alias;
+#         # seconds wins when both are present. Tact's default stays 60s rather
+#         # than Codex's 10s, so an entry that works today cannot start timing
+#         # out after an upgrade. Raise it for a slow launcher (a cold `uvx`
+#         # measured ~100s).
+#         "startup_timeout_sec": 120,
+#         # Only these tools reach the agent (21 tools ≈ 8.7k tokens of schema
+#         # on every request; these four recall tools ≈ 2.8k).
+#         "enabled_tools": ["search_notes", "read_note", "build_context", "recent_activity"],
+#         # Deny list, applied after `enabled_tools`: a name in both is hidden.
+#         "disabled_tools": ["delete_note"],
+#         # Budget for ONE `tools/call` on this server. Absent keeps Tact's 600s
+#         # ceiling. The timeout error names whichever budget was applied.
+#         "tool_timeout_sec": 120,
+#         # Copy these variables out of Tact's OWN environment into the child, so
+#         # a credential does not have to be written into this file. Both Codex
+#         # spellings work: ["TOKEN"] or [{"name": "TOKEN", "source": "local"}].
+#         # A literal `env` entry of the same name wins. An unset variable fails
+#         # this server by name; `source: "remote"` is refused (no remote stdio
+#         # executor here), and on a `url` entry `env_vars` is reported as
+#         # unmodelled because there is no child process to receive it.
+#         "env_vars": ["GITHUB_TOKEN"],
+#         # "auto" skips the default approval prompt for these tools. It is an
+#         # auto-approve, not a lower risk: plan mode still blocks, and an
+#         # explicit deny/ask rule in .tact/settings.json still wins.
+#         "default_tools_approval_mode": "prompt",
+#         # Tact's OWN field (Codex has no per-tool risk). Risk for this
+#         # server's tools that declare none of their own; absent means "high",
+#         # which is what every MCP tool resolved to before this existed.
+#         #   read  — allowed in every mode, INCLUDING plan mode. This is the
+#         #           plan-mode bypass, so declare it only for a tool that
+#         #           genuinely cannot write. Never inferred.
+#         #   write — same as a native writing tool: plan mode blocks it, and
+#         #           one "always allow" then sticks. The tier to pick when a
+#         #           tool must work unattended.
+#         #   high  — plan mode blocks it, every call asks, and a non-
+#         #           interactive run denies it outright.
+#         "default_tool_risk": "write",
+#         "tools": {
+#           "search_notes": { "approval_mode": "auto", "risk": "read" },
+#           # Result budget for one tool; an oversized result is spilled to
+#           # .tact/tool-results/ with a preview instead of filling the context.
+#           "build_context": { "output_token_limit": 4000 }
+#         }
+#       }
+#     }
+#   }
+#
+# Hidden tools are never silent: `tact-ui mcp list` prints a "Filtered tools"
+# section and `tact-ui mcp get <name>` prints a `hidden` line. `mcp get` also
+# prints each tool's effective risk, marked `(declared)` or `(default)`, and
+# marks a tool the server itself calls read-only as "(server-declared
+# read-only)" — that hint is evidence for writing `risk`, never applied on its
+# own: rmcp says clients should never base tool decisions on annotations from
+# untrusted servers, and a read-only tool that also declares an open world is
+# an egress path, not a safe one.
+# `omit_tools_from` has no Tact equivalent, and `env_vars` has none on a `url`
+# entry: both are reported as unmodelled rather than silently ignored.
+
+# ---------------------------------------------------------------------------
+# Command hooks, declared inline.
+#
+# The same hooks `~/.tact/hooks.json` holds, in Tact's own config file. The two
+# spellings share one type, so every field — `type`, `matcher`, `timeout`,
+# `additionalContextLimit`, and the `mcp_tool` kind below — means the same thing
+# in both. Each file that declares `[hooks]` is its own source, labelled with its
+# path: a hook is reviewed by identity, so these are never merged, and a
+# repository-supplied `.tact/config.toml` cannot execute anything by being cloned
+# — every entry starts unreviewed and only runs after
+# `tact-ui hooks trust --source <path>`.
+#
+# [[hooks.PreToolUse]]
+# matcher = "bash"
+# [[hooks.PreToolUse.hooks]]
+# type = "command"
+# command = "policy.sh"
+# timeout = 5
+#
+# A hook can also be a tool on a connected MCP server, returning the same
+# {"decision": …} / {"hookSpecificOutput": …} shapes a script would:
+#
+# [[hooks.PreToolUse]]
+# [[hooks.PreToolUse.hooks]]
+# type = "mcp_tool"
+# server = "policy"
+# tool = "gate"
+# [hooks.PreToolUse.hooks.arguments]
+# path = "secrets/.env"

@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use crate::task::{TaskRecord, TaskUpdate};
 
 /// Storage backend contract for the task manager.
+#[allow(clippy::double_must_use)] // async_trait generates #[must_use] on Pin<Box<dyn Future>> which is already #[must_use]
 #[async_trait]
 pub trait TaskStore: Send + Sync {
     /// Creates a new task and returns the stored record with its assigned id.

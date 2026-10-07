@@ -15,7 +15,7 @@ use crate::{
         AccountState, BackgroundPanelState, CodeBlock, CodePopup, FocusedPanel, HistoryEntry,
         InputMode, LogCoordinator, LogScroll, MermaidBlock, MermaidPopup, MouseState, PlanPanel,
         SelectPopup, SkillEntry, Status, StatusBarState, StreamState, SubagentPanelState,
-        SubagentPopup, SystemPromptPopup, TaskPanelState, ThinkingState, ToolState,
+        SubagentPopup, SystemPromptPopup, TaskDagPopup, TaskPanelState, ThinkingState, ToolState,
     },
     theme::Theme,
 };
@@ -76,6 +76,8 @@ pub struct RenderCtx<'a> {
     pub mermaid_popup: Option<&'a MermaidPopup>,
     pub system_prompt_popup: Option<&'a SystemPromptPopup>,
     pub subagent_popup: Option<&'a SubagentPopup>,
+    /// Pre-rendered `/tasks-dag` overlay; `None` while it is closed.
+    pub task_dag_popup: Option<&'a TaskDagPopup>,
     /// Task history rows for the history panel.
     pub task_history: &'a [HistoryEntry],
     /// Selection popup state (permission / model pickers).

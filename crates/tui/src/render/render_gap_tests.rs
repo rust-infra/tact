@@ -2,14 +2,12 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use tact_protocol::{
-    AccountUpdate, AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk,
-    ToolPresentationInfo,
-};
+use tact_protocol::{AccountUpdate, AgentUpdate, PlanStep, ThinkingChunk, ToolPresentationInfo};
 
 use super::test_harness::{
     make_app, render_app_text, render_log_panel_text, render_main_area_text,
 };
+use crate::test_fixtures::StepCall;
 use crate::widgets::state::{App, InputMode, Status};
 
 #[test]
@@ -30,29 +28,14 @@ fn seed_write_file_finished(app: &mut App, path: &str, content: &str) {
         "wf1",
         HashMap::from([("path".to_string(), path.to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "wf1".into(),
-        tool_name: "write_file".into(),
-        arg_summary: path.into(),
-        arg_full: path.into(),
-        presentation: ToolPresentationInfo::generic("write_file"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "wf1".into(),
-        result: StepResult {
-            tool: "write_file".into(),
-            arg_summary: path.into(),
-            arg_full: Some(path.into()),
-            status: StepStatus::Success,
-            message: "written".into(),
-            detail: Some(content.into()),
-            duration_us: Some(50),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("write_file"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "wf1", "write_file", path).started());
+    app.handle_agent_update(
+        StepCall::new(0, "wf1", "write_file", path)
+            .message("written")
+            .detail(content)
+            .duration_us(50)
+            .finished(),
+    );
 }
 
 fn seed_bash_finished(app: &mut App, command: &str, output: &str) {
@@ -62,29 +45,13 @@ fn seed_bash_finished(app: &mut App, command: &str, output: &str) {
         "bash1",
         HashMap::from([("command".to_string(), command.to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "bash1".into(),
-        tool_name: "bash".into(),
-        arg_summary: command.into(),
-        arg_full: command.into(),
-        presentation: ToolPresentationInfo::generic("bash"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "bash1".into(),
-        result: StepResult {
-            tool: "bash".into(),
-            arg_summary: command.into(),
-            arg_full: Some(command.into()),
-            status: StepStatus::Success,
-            message: "ok".into(),
-            detail: Some(output.into()),
-            duration_us: Some(100),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("bash"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "bash1", "bash", command).started());
+    app.handle_agent_update(
+        StepCall::new(0, "bash1", "bash", command)
+            .detail(output)
+            .duration_us(100)
+            .finished(),
+    );
 }
 
 fn open_last_tool_popup(app: &mut App) {
@@ -482,37 +449,13 @@ fn plan_steps_track_multiple_steps_with_one_running() {
         "r2",
         HashMap::from([("path".to_string(), "b.txt".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "r1".into(),
-        tool_name: "read_file".into(),
-        arg_summary: "a.txt".into(),
-        arg_full: "a.txt".into(),
-        presentation: ToolPresentationInfo::generic("read_file"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "r1".into(),
-        result: StepResult {
-            tool: "read_file".into(),
-            arg_summary: "a.txt".into(),
-            arg_full: None,
-            status: StepStatus::Success,
-            message: "ok".into(),
-            detail: None,
-            duration_us: Some(1),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("read_file"),
-        },
-    });
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 1,
-        tool_id: "r2".into(),
-        tool_name: "read_file".into(),
-        arg_summary: "b.txt".into(),
-        arg_full: "b.txt".into(),
-        presentation: ToolPresentationInfo::generic("read_file"),
-    });
+    app.handle_agent_update(StepCall::new(0, "r1", "read_file", "a.txt").started());
+    app.handle_agent_update(
+        StepCall::new(0, "r1", "read_file", "a.txt")
+            .no_arg_full()
+            .finished(),
+    );
+    app.handle_agent_update(StepCall::new(1, "r2", "read_file", "b.txt").started());
 
     assert_eq!(
         app.plan_mut().steps.len(),
@@ -538,14 +481,7 @@ fn plan_panel_lists_failed_step_description() {
         "fail1",
         HashMap::from([("path".to_string(), "nope.txt".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "fail1".into(),
-        tool_name: "read_file".into(),
-        arg_summary: "nope.txt".into(),
-        arg_full: "nope.txt".into(),
-        presentation: ToolPresentationInfo::generic("read_file"),
-    });
+    app.handle_agent_update(StepCall::new(0, "fail1", "read_file", "nope.txt").started());
     app.handle_agent_update(AgentUpdate::StepFailed {
         idx: 0,
         tool_id: "fail1".into(),
@@ -780,29 +716,14 @@ fn full_frame_edit_file_tool_shows_in_log() {
             ("new_text".to_string(), "fn new()".to_string()),
         ]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "edit1".into(),
-        tool_name: "edit_file".into(),
-        arg_summary: "lib.rs".into(),
-        arg_full: "lib.rs".into(),
-        presentation: ToolPresentationInfo::generic("edit_file"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "edit1".into(),
-        result: StepResult {
-            tool: "edit_file".into(),
-            arg_summary: "lib.rs".into(),
-            arg_full: Some("lib.rs".into()),
-            status: StepStatus::Success,
-            message: "patched".into(),
-            detail: Some("- fn old()\n+ fn new()".into()),
-            duration_us: Some(200),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("edit_file"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "edit1", "edit_file", "lib.rs").started());
+    app.handle_agent_update(
+        StepCall::new(0, "edit1", "edit_file", "lib.rs")
+            .message("patched")
+            .detail("- fn old()\n+ fn new()")
+            .duration_us(200)
+            .finished(),
+    );
 
     let text = render_app_text(&mut app, 120, 30);
 
@@ -831,29 +752,13 @@ fn full_frame_read_file_tool_shows_in_log() {
         "read1",
         HashMap::from([("path".to_string(), "lib.rs".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "read1".into(),
-        tool_name: "read_file".into(),
-        arg_summary: "lib.rs".into(),
-        arg_full: "lib.rs".into(),
-        presentation: ToolPresentationInfo::generic("read_file"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "read1".into(),
-        result: StepResult {
-            tool: "read_file".into(),
-            arg_summary: "lib.rs".into(),
-            arg_full: Some("lib.rs".into()),
-            status: StepStatus::Success,
-            message: "ok".into(),
-            detail: Some("body-one\nbody-two\nbody-three".into()),
-            duration_us: Some(200),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("read_file"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "read1", "read_file", "lib.rs").started());
+    app.handle_agent_update(
+        StepCall::new(0, "read1", "read_file", "lib.rs")
+            .detail("body-one\nbody-two\nbody-three")
+            .duration_us(200)
+            .finished(),
+    );
 
     let text = render_app_text(&mut app, 120, 30);
 
@@ -882,29 +787,14 @@ fn full_frame_write_file_tool_shows_in_log() {
         "w1",
         HashMap::from([("path".to_string(), "lib.rs".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "w1".into(),
-        tool_name: "write_file".into(),
-        arg_summary: "lib.rs".into(),
-        arg_full: "lib.rs".into(),
-        presentation: ToolPresentationInfo::generic("write_file"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "w1".into(),
-        result: StepResult {
-            tool: "write_file".into(),
-            arg_summary: "lib.rs".into(),
-            arg_full: Some("lib.rs".into()),
-            status: StepStatus::Success,
-            message: "wrote".into(),
-            detail: Some("wrote-one\nwrote-two\nwrote-three".into()),
-            duration_us: Some(200),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("write_file"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "w1", "write_file", "lib.rs").started());
+    app.handle_agent_update(
+        StepCall::new(0, "w1", "write_file", "lib.rs")
+            .message("wrote")
+            .detail("wrote-one\nwrote-two\nwrote-three")
+            .duration_us(200)
+            .finished(),
+    );
 
     let text = render_app_text(&mut app, 120, 30);
 
@@ -933,37 +823,28 @@ fn full_frame_cardless_tool_result_is_openable() {
         "t1",
         HashMap::<String, String>::new(),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "t1".into(),
-        tool_name: "task_list".into(),
-        arg_summary: String::new(),
-        arg_full: String::new(),
-        presentation: ToolPresentationInfo {
-            visual_kind: tact_protocol::ToolVisualKind::Task,
-            display_name: "📋 Task".into(),
-            ..ToolPresentationInfo::generic("task_list")
-        },
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "t1".into(),
-        result: StepResult {
-            tool: "task_list".into(),
-            arg_summary: String::new(),
-            arg_full: None,
-            status: StepStatus::Success,
-            message: "2 tasks".into(),
-            detail: Some("[1] pending  wire the parser\n[2] in_progress  run the suite".into()),
-            duration_us: Some(200),
-            permission_label: None,
-            presentation: ToolPresentationInfo {
+    app.handle_agent_update(
+        StepCall::new(0, "t1", "task_list", String::new())
+            .presentation(ToolPresentationInfo {
                 visual_kind: tact_protocol::ToolVisualKind::Task,
                 display_name: "📋 Task".into(),
                 ..ToolPresentationInfo::generic("task_list")
-            },
-        },
-    });
+            })
+            .started(),
+    );
+    app.handle_agent_update(
+        StepCall::new(0, "t1", "task_list", String::new())
+            .no_arg_full()
+            .message("2 tasks")
+            .detail("[1] pending  wire the parser\n[2] in_progress  run the suite")
+            .duration_us(200)
+            .presentation(ToolPresentationInfo {
+                visual_kind: tact_protocol::ToolVisualKind::Task,
+                display_name: "📋 Task".into(),
+                ..ToolPresentationInfo::generic("task_list")
+            })
+            .finished(),
+    );
 
     let text = render_app_text(&mut app, 120, 30);
 
@@ -1091,6 +972,54 @@ fn copy_flash_persists_within_its_window() {
     assert!(
         app.copy_flash_at.is_some(),
         "a fresh confirmation must stay on screen"
+    );
+}
+
+/// The startup output is three blocks — banner, welcome/mode hints, then
+/// everything else — and the log is a single scrolling column, so the
+/// separation has to be written as rows.
+///
+/// Regression: with one trailing row the first system line to land after
+/// startup (a `/theme` or `/model` write, a plugin briefing, the restored
+/// session) sat flush against "Current mode: …" and read as part of the banner.
+#[test]
+fn startup_banner_separates_itself_from_what_follows() {
+    let mut app = make_app();
+    app.add_startup_banner();
+    app.add_system_message("✓ Saved theme = \"gruvbox-dark\" to config".into());
+
+    let rows: Vec<String> = app.log.items.iter().map(|item| item.raw.clone()).collect();
+    let hint = app.msgs().startup_mode_hint;
+    let hint_at = rows
+        .iter()
+        .position(|row| row == hint)
+        .expect("the mode hint is in the log");
+
+    for gap in 1..=2 {
+        assert!(
+            rows[hint_at + gap].is_empty(),
+            "row {gap} after the mode hint must be blank, got {:?}",
+            rows[hint_at + gap]
+        );
+    }
+    assert!(
+        rows[hint_at + 3].contains("Saved theme"),
+        "the next message starts after the gap, got {:?}",
+        rows[hint_at + 3]
+    );
+
+    // And the banner is its own block too: two rows under the tagline, then the
+    // welcome.
+    let welcome = app.msgs().startup_welcome;
+    let welcome_at = rows
+        .iter()
+        .position(|row| row == welcome)
+        .expect("the welcome is in the log");
+    assert!(
+        rows[welcome_at - 1].is_empty() && rows[welcome_at - 2].is_empty(),
+        "the banner must be followed by two blank rows, got {:?} / {:?}",
+        rows[welcome_at - 2],
+        rows[welcome_at - 1]
     );
 }
 

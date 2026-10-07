@@ -278,6 +278,34 @@ fn spawn_wakeup_task(
 ///
 /// This wrapper discards any account-related updates; tests that need to
 /// observe them should use [`run_command_loop_with_account`].
+/// Fetches one MCP prompt and renders it as the text of a user turn.
+///
+/// Split out from the command arm so the fetch-and-render path is reachable
+/// without running a turn: the arm is then three lines, and this is the one
+/// place the router, the renderer and the two error messages meet.
+async fn render_mcp_prompt(
+    agent: &Agent,
+    server: &str,
+    name: &str,
+    arguments: std::collections::BTreeMap<String, String>,
+) -> Result<String, String> {
+    if name.is_empty() {
+        return Err(
+            "/mcp prompt needs a prompt name: /mcp prompt <server> <name> [key=value ...]"
+                .to_string(),
+        );
+    }
+    agent
+        .mcp_router
+        .get_prompt(
+            server,
+            name,
+            tact::mcp::prompt_arguments_from_pairs(arguments),
+        )
+        .await
+        .map_err(|error| format!("MCP prompt {server}/{name} failed: {error:#}"))
+}
+
 pub async fn handle_user_command(agent: &mut Agent, cmd: UserCommand, image_work_dir: &Path) {
     handle_user_command_with_account(agent, cmd, image_work_dir, None).await;
 }
@@ -336,7 +364,9 @@ async fn handle_user_command_with_account(
                                     "[Stop hook] continuation limit reached; stopping: {reason}"
                                 )));
                             }
-                            Ok(HookControl::Continue) | Err(_) => {}
+                            // An `allow` from a Stop hook means "nothing
+                            // to add", the same as `continue`.
+                            Ok(HookControl::Continue | HookControl::Allow) | Err(_) => {}
                         }
                         if let Some(last) = agent.runtime.context.last() {
                             let text = extract_text(&last.content);
@@ -478,6 +508,78 @@ async fn handle_user_command_with_account(
                 ))),
             }
         }
+        UserCommand::McpPrompts { server } => {
+            // Live view, like `McpList`: the router the agent already holds.
+            match agent.mcp_router.list_prompts(server.as_deref()).await {
+                Ok(listing) => agent.emit_update(AgentUpdate::MdInfo(listing)),
+                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                    format!("MCP prompts failed: {error:#}"),
+                ))),
+            }
+        }
+        UserCommand::RunMcpPrompt {
+            server,
+            name,
+            arguments,
+        } => match render_mcp_prompt(agent, &server, &name, arguments).await {
+            // A prompt is a *starting message*, so it is submitted as one: the
+            // ordinary task path, with the same rendering the `get_mcp_prompt`
+            // tool returns. Nothing downstream learns a new turn shape.
+            Ok(messages) => {
+                Box::pin(handle_user_command_with_account(
+                    agent,
+                    UserCommand::SubmitTask(messages),
+                    image_work_dir,
+                    account_tx,
+                ))
+                .await;
+            }
+            Err(message) => {
+                agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(message)));
+            }
+        },
+        UserCommand::HooksList => match tact::plugin::survey_hooks(image_work_dir) {
+            // The same wording `tact-ui hooks list` uses: two surfaces naming
+            // the same hooks must not describe them differently.
+            Ok(report) => agent.emit_update(AgentUpdate::MdInfo(
+                crate::hooks_cli::render_hooks_listing(&report),
+            )),
+            Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                "Hooks list failed: {error:#}"
+            )))),
+        },
+        UserCommand::HooksTrust { all, source } => {
+            match tact::plugin::trust_hooks(image_work_dir, all, source.as_deref()) {
+                Ok(approved) if approved.is_empty() => agent.emit_update(AgentUpdate::Info(
+                    "Nothing to approve: every configured hook has already been reviewed."
+                        .to_string(),
+                )),
+                Ok(approved) => {
+                    let mut lines = vec![format!("Approved {} hook(s):", approved.len())];
+                    lines.extend(approved.iter().map(|hook| format!("  {}", hook.describe())));
+                    // Hooks are registered when the agent is built, so an
+                    // approval that only takes effect next session must say so.
+                    lines.push(
+                        "They run from the next session onward. Revoke with /hooks forget --all."
+                            .to_string(),
+                    );
+                    agent.emit_update(AgentUpdate::Info(lines.join("\n")));
+                }
+                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                    format!("Hooks trust failed: {error:#}"),
+                ))),
+            }
+        }
+        UserCommand::HooksForget => match tact::plugin::forget_hook_trust() {
+            Ok(()) => agent.emit_update(AgentUpdate::Info(
+                "Forgot every hook approval. No hook runs until it is reviewed again with \
+                 /hooks trust --all."
+                    .to_string(),
+            )),
+            Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                "Hooks forget failed: {error:#}"
+            )))),
+        },
         _ => {}
     }
 }
@@ -560,6 +662,39 @@ mod tests {
             }
         }
         assert!(saw_complete, "SubmitTask should clear cancel and complete");
+    }
+
+    #[tokio::test]
+    async fn running_an_mcp_prompt_names_a_missing_prompt_name() {
+        // The TUI forwards an incomplete `/mcp prompt` on purpose (see the
+        // spec's note on arity); naming the missing piece is the driver's job,
+        // because only the driver can also say "no such prompt".
+        install_test_config();
+        let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), None);
+
+        let error = super::render_mcp_prompt(&agent, "bm", "", std::collections::BTreeMap::new())
+            .await
+            .expect_err("an empty name cannot be fetched");
+        assert!(error.contains("needs a prompt name"), "{error}");
+    }
+
+    #[tokio::test]
+    async fn running_an_mcp_prompt_on_an_unknown_server_names_it() {
+        // An empty router is the honest case here: the fetch must not look like
+        // a prompt that composed nothing.
+        install_test_config();
+        let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), None);
+
+        let error = super::render_mcp_prompt(
+            &agent,
+            "nope",
+            "getting_started",
+            std::collections::BTreeMap::new(),
+        )
+        .await
+        .expect_err("an unknown server is an error, not an empty prompt");
+        assert!(error.contains("nope"), "{error}");
+        assert!(error.contains("getting_started"), "{error}");
     }
 
     #[tokio::test]
@@ -718,6 +853,61 @@ mod tests {
             }
         }
         assert!(saw_md, "McpList must emit MdInfo with the server listing");
+    }
+
+    #[tokio::test]
+    async fn hooks_list_emits_the_review_listing() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(&mut agent, UserCommand::HooksList, &work_dir).await;
+
+        let mut rendered = None;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::MdInfo(md) = update {
+                rendered = Some(md);
+            }
+        }
+        // Both wordings come from `hooks_cli::render_hooks_listing`, so the
+        // assertion holds whether or not this machine has hooks configured —
+        // what it pins is that `/hooks list` reaches the loader and is shown,
+        // rather than being silently dropped by the driver.
+        let text = rendered.expect("HooksList must emit MdInfo");
+        assert!(
+            text.contains("hook(s) configured") || text.contains("No command hooks configured"),
+            "unexpected listing: {text}"
+        );
+    }
+
+    #[tokio::test]
+    async fn hooks_trust_without_a_selector_reports_the_refusal() {
+        // `trust_hooks` bails *before* touching the review store, so this is the
+        // one trust path a test can exercise without writing the developer's
+        // real `~/.tact/hooks-state.json`.
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::HooksTrust {
+                all: false,
+                source: None,
+            },
+            &work_dir,
+        )
+        .await;
+
+        let mut message = None;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::Error(kind) = update {
+                message = Some(kind.to_string());
+            }
+        }
+        let message = message.expect("a refusal must be reported, not swallowed");
+        assert!(message.contains("Hooks trust failed"), "{message}");
+        assert!(message.contains("--source"), "{message}");
     }
 
     #[tokio::test(flavor = "multi_thread")]

@@ -26,6 +26,14 @@ impl App {
     /// Without this the caller reports "Copied" off a clipboard nobody can
     /// paste from.
     fn write_system_clipboard(&mut self, text: &str) -> bool {
+        // Tests: the pasteboard is process-global and this binary runs its
+        // tests in parallel threads, where two of them touching it at once
+        // crashes the process. Take the shared guard unless the caller already
+        // holds it — the copy tests do, so that their write is not raced by
+        // another test's — because `std::sync::Mutex` is not reentrant.
+        #[cfg(test)]
+        let _clipboard =
+            (!crate::clipboard_lock::held_by_this_thread()).then(crate::clipboard_lock::take);
         if self.system_clipboard.is_none() {
             self.system_clipboard = Clipboard::new().ok();
         }
@@ -191,17 +199,17 @@ impl App {
     /// Returns `true` if an overlay was active (click is consumed).
     pub(crate) fn close_overlay_on_outside_click(&mut self, column: u16, row: u16) -> bool {
         let area = if self.thinking_mut().popup.is_some() {
-            Some(self.mouse.thinking_popup_area)
+            Some(self.mouse.area(SurfaceId::ThinkingPopup))
         } else if self.tools_mut().popup.is_some() {
-            Some(self.mouse.diff_popup_area)
+            Some(self.mouse.area(SurfaceId::DiffPopup))
         } else if self.code_popup.is_some() {
-            Some(self.mouse.code_popup_area)
+            Some(self.mouse.area(SurfaceId::CodePopup))
         } else if self.mermaid_popup.is_some() {
-            Some(self.mouse.mermaid_popup_area)
+            Some(self.mouse.area(SurfaceId::MermaidPopup))
         } else if self.task_dag_popup.is_some() {
-            Some(self.mouse.task_dag_popup_area)
+            Some(self.mouse.area(SurfaceId::TaskDagPopup))
         } else if self.has_subagent_popup() {
-            Some(self.mouse.subagent_popup_area)
+            Some(self.mouse.area(SurfaceId::SubagentPopup))
         } else {
             None
         };
@@ -315,7 +323,7 @@ impl App {
     /// preserves scroll / selection).
     pub(crate) fn close_subagent_popup(&mut self) {
         self.active_subagent_popup = None;
-        self.mouse.subagent_popup_area = Rect::default();
+        self.mouse.clear_area(SurfaceId::SubagentPopup);
         self.mouse.popup_text_body_area = Rect::default();
         self.mouse.popup_text_hit_rows.clear();
         self.mouse.popup_text_drag_origin = None;
@@ -447,7 +455,9 @@ impl App {
         self.log.remove_msg(idx);
     }
 
-    /// Sentinel row — rendered as a full-width rule with frozen elapsed label.
+    /// Sentinel row — rendered as a plain full-width rule. The seconds it
+    /// freezes are shown by the task-stats row (`add_task_stats_block`) and by
+    /// the bottom bar's turn segment, never by the rule itself.
     pub(crate) fn add_task_end_separator(&mut self) {
         let secs = if let Some(start) = self.task_start_time.take() {
             let s = chrono::Local::now()
@@ -508,7 +518,7 @@ impl App {
     /// Close the thinking popup.
     pub(crate) fn close_thinking_popup(&mut self) {
         self.thinking_mut().popup = None;
-        self.mouse.thinking_popup_area = Rect::default();
+        self.mouse.clear_area(SurfaceId::ThinkingPopup);
         self.mouse.popup_text_body_area = Rect::default();
         self.mouse.popup_text_hit_rows.clear();
         self.mouse.popup_text_drag_origin = None;
@@ -841,7 +851,7 @@ impl App {
     /// Close the file content popup.
     pub(crate) fn close_diff_popup(&mut self) {
         self.tools_mut().popup = None;
-        self.mouse.diff_popup_area = Rect::default();
+        self.mouse.clear_area(SurfaceId::DiffPopup);
         self.mouse.popup_text_body_area = Rect::default();
         self.mouse.popup_text_hit_rows.clear();
         self.mouse.popup_text_drag_origin = None;
@@ -938,7 +948,7 @@ impl App {
     /// Close the Mermaid source popup.
     pub(crate) fn close_mermaid_popup(&mut self) {
         self.mermaid_popup = None;
-        self.mouse.mermaid_popup_area = Rect::default();
+        self.mouse.clear_area(SurfaceId::MermaidPopup);
     }
 
     /// Copy the Mermaid fence body to the clipboard.
@@ -997,12 +1007,13 @@ mod tests {
         ToolPresentationInfo, ToolVisualKind,
     };
 
+    use crate::test_fixtures::StepCall;
     use crate::{
         render::test_harness::make_app,
         widgets::{
             state::{
                 App, DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection, SubagentPopup,
-                ThinkingPopup,
+                SurfaceId, ThinkingPopup,
             },
             tool_widget::{ToolPhase, ToolWidget},
         },
@@ -1028,29 +1039,17 @@ mod tests {
             tool_id,
             HashMap::from([("prompt".to_string(), "do it".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: tool_id.into(),
-            tool_name: "spawn_subagent".into(),
-            arg_summary: "do it".into(),
-            arg_full: "do it".into(),
-            presentation: subagent_presentation(),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: tool_id.into(),
-            result: StepResult {
-                tool: "spawn_subagent".into(),
-                arg_summary: "do it".into(),
-                arg_full: Some("do it".into()),
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some(format!("summary for {tool_id}")),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: subagent_presentation(),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, tool_id, "spawn_subagent", "do it")
+                .presentation(subagent_presentation())
+                .started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, tool_id, "spawn_subagent", "do it")
+                .detail(format!("summary for {tool_id}"))
+                .presentation(subagent_presentation())
+                .finished(),
+        );
         app.tools_mut().blocks.last().unwrap().phys_idx
     }
 
@@ -1076,7 +1075,8 @@ mod tests {
     fn close_diff_popup_clears_mouse_state_before_reopen() {
         let mut app = make_app();
         app.tools_mut().popup = Some(inline_popup("old"));
-        app.mouse.diff_popup_area = Rect::new(5, 5, 20, 10);
+        app.mouse
+            .set_area(SurfaceId::DiffPopup, Rect::new(5, 5, 20, 10));
         app.mouse.popup_text_body_area = Rect::new(6, 6, 18, 7);
         app.mouse.popup_text_hit_rows = vec![PopupHitRow {
             screen_y: 6,
@@ -1090,7 +1090,7 @@ mod tests {
         app.close_diff_popup();
         app.tools_mut().popup = Some(inline_popup("new"));
 
-        assert_eq!(app.mouse.diff_popup_area, Rect::default());
+        assert_eq!(app.mouse.area(SurfaceId::DiffPopup), Rect::default());
         assert_eq!(app.mouse.popup_text_body_area, Rect::default());
         assert!(app.mouse.popup_text_hit_rows.is_empty());
         assert!(app.mouse.popup_text_drag_origin.is_none());
@@ -1151,7 +1151,8 @@ mod tests {
     fn close_thinking_popup_clears_selectable_mouse_state() {
         let mut app = make_app();
         app.thinking_mut().popup = Some(thinking_popup(Some(PopupTextSelection::new(0, 5))));
-        app.mouse.thinking_popup_area = Rect::new(5, 5, 20, 10);
+        app.mouse
+            .set_area(SurfaceId::ThinkingPopup, Rect::new(5, 5, 20, 10));
         app.mouse.popup_text_body_area = Rect::new(6, 6, 18, 7);
         app.mouse.popup_text_hit_rows = vec![PopupHitRow {
             screen_y: 6,
@@ -1165,7 +1166,7 @@ mod tests {
         app.close_thinking_popup();
 
         assert!(app.thinking_mut().popup.is_none());
-        assert_eq!(app.mouse.thinking_popup_area, Rect::default());
+        assert_eq!(app.mouse.area(SurfaceId::ThinkingPopup), Rect::default());
         assert_eq!(app.mouse.popup_text_body_area, Rect::default());
         assert!(app.mouse.popup_text_hit_rows.is_empty());
         assert!(app.mouse.popup_text_drag_origin.is_none());
@@ -1206,14 +1207,11 @@ mod tests {
         let command = "cargo test --workspace --all-targets -- -D warnings";
         let mut presentation = ToolPresentationInfo::generic("background_run");
         presentation.keep_live = true;
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "bg1".into(),
-            tool_name: "background_run".into(),
-            arg_summary: command.into(),
-            arg_full: command.into(),
-            presentation,
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "bg1", "background_run", command)
+                .presentation(presentation)
+                .started(),
+        );
         app.handle_agent_update(AgentUpdate::BackgroundTaskFinished {
             tool_id: "bg1".into(),
             success: true,
@@ -1244,29 +1242,19 @@ mod tests {
         // missing from the popup entirely (the drawn error card keeps the error
         // first on purpose — that is what the preview shows).
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "b1".into(),
-            tool_name: "bash".into(),
-            arg_summary: "cargo build".into(),
-            arg_full: "cargo build --release".into(),
-            presentation: ToolPresentationInfo::generic("bash"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "b1".into(),
-            result: StepResult {
-                tool: "bash".into(),
-                arg_summary: "cargo build".into(),
-                arg_full: Some("cargo build --release".into()),
-                status: StepStatus::Failed,
-                message: "command failed".into(),
-                detail: Some("error: linker failed".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("bash"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "b1", "bash", "cargo build")
+                .arg_full("cargo build --release")
+                .started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "b1", "bash", "cargo build")
+                .arg_full("cargo build --release")
+                .status(StepStatus::Failed)
+                .message("command failed")
+                .detail("error: linker failed")
+                .finished(),
+        );
 
         let output = app.tools_mut().blocks[0].output.clone();
         let popup = app.popup_from_tool_output(&output).expect("failed popup");
@@ -1282,29 +1270,15 @@ mod tests {
         // popup that opens from the hint must also carry *what the call was*,
         // and the hint's line count must count that line too.
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "t1".into(),
-            tool_name: "task_create".into(),
-            arg_summary: "# Task.1 · fix the popup".into(),
-            arg_full: "# Task.1 · fix the popup".into(),
-            presentation: ToolPresentationInfo::generic("task_create"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "t1".into(),
-            result: StepResult {
-                tool: "task_create".into(),
-                arg_summary: "# Task.1 · fix the popup".into(),
-                arg_full: Some("# Task.1 · fix the popup".into()),
-                status: StepStatus::Success,
-                message: "created task 1".into(),
-                detail: Some("created task 1\nsubject: fix the popup".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("task_create"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "t1", "task_create", "# Task.1 · fix the popup").started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "t1", "task_create", "# Task.1 · fix the popup")
+                .message("created task 1")
+                .detail("created task 1\nsubject: fix the popup")
+                .finished(),
+        );
 
         let output = app.tools_mut().blocks[0].output.clone();
         assert!(output.layout.detail_collapsed);
@@ -1324,29 +1298,15 @@ mod tests {
     #[test]
     fn ask_user_popup_opens_with_the_question() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "a1".into(),
-            tool_name: "ask_user".into(),
-            arg_summary: "Which database should I use?".into(),
-            arg_full: "Which database should I use?".into(),
-            presentation: ToolPresentationInfo::generic("ask_user"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "a1".into(),
-            result: StepResult {
-                tool: "ask_user".into(),
-                arg_summary: "Which database should I use?".into(),
-                arg_full: Some("Which database should I use?".into()),
-                status: StepStatus::Success,
-                message: "User selected: B".into(),
-                detail: Some("User selected: B\nthe long note".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("ask_user"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "a1", "ask_user", "Which database should I use?").started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "a1", "ask_user", "Which database should I use?")
+                .message("User selected: B")
+                .detail("User selected: B\nthe long note")
+                .finished(),
+        );
 
         let output = app.tools_mut().blocks[0].output.clone();
         let popup = app.popup_from_tool_output(&output).expect("ask popup");
@@ -1359,29 +1319,18 @@ mod tests {
     #[test]
     fn json_input_tool_popup_does_not_repeat_its_argument() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "m1".into(),
-            tool_name: "save_memory".into(),
-            arg_summary: r#"{"name":"tabs"}"#.into(),
-            arg_full: r#"{"name":"tabs","content":"use tabs","type":"user"}"#.into(),
-            presentation: ToolPresentationInfo::generic("save_memory"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "m1".into(),
-            result: StepResult {
-                tool: "save_memory".into(),
-                arg_summary: r#"{"name":"tabs"}"#.into(),
-                arg_full: Some(r#"{"name":"tabs","content":"use tabs"}"#.into()),
-                status: StepStatus::Success,
-                message: "Saved memory 'tabs'".into(),
-                detail: Some("Saved memory 'tabs'\npath: memory/tabs.md".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("save_memory"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "m1", "save_memory", r#"{"name":"tabs"}"#)
+                .arg_full(r#"{"name":"tabs","content":"use tabs","type":"user"}"#)
+                .started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "m1", "save_memory", r#"{"name":"tabs"}"#)
+                .arg_full(r#"{"name":"tabs","content":"use tabs"}"#)
+                .message("Saved memory 'tabs'")
+                .detail("Saved memory 'tabs'\npath: memory/tabs.md")
+                .finished(),
+        );
 
         let output = app.tools_mut().blocks[0].output.clone();
         let popup = app.popup_from_tool_output(&output).expect("memory popup");
@@ -1454,13 +1403,11 @@ mod clipboard_tests {
     /// The clipboard is global and every test here writes it, so they take
     /// turns instead of racing each other (cargo runs tests in parallel
     /// threads, and the very race this module guards against makes a
-    /// concurrent reader see an empty clipboard).
-    static CLIPBOARD: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn take_clipboard() -> std::sync::MutexGuard<'static, ()> {
-        CLIPBOARD
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    /// concurrent reader see an empty clipboard). Holding it across the write
+    /// *and* the read-back is why this test module takes the guard itself: the
+    /// copy path only takes it when its caller has not.
+    fn take_clipboard() -> crate::clipboard_lock::ClipboardGuard {
+        crate::clipboard_lock::take()
     }
 
     /// This machine must have a clipboard we can write and read at all —
@@ -1522,6 +1469,11 @@ mod clipboard_tests {
     }
 
     /// True when `arboard` itself round-trips `text` on this machine.
+    ///
+    /// Gated with its only caller: on a platform whose clipboard takes the text
+    /// the Linux-only test never runs, and an unguarded helper would then be
+    /// dead code under `-D warnings`.
+    #[cfg(target_os = "linux")]
     fn native_round_trips(text: &str) -> bool {
         let Ok(mut probe) = arboard::Clipboard::new() else {
             return false;

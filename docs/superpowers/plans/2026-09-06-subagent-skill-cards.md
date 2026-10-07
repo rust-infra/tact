@@ -86,7 +86,7 @@ pub skill: Option<String>,
 
 ## T4 文档同步（双语）
 
-- `book/12_chapter_subagent.md` / `_zh.md`：
+- `book/12_chapter_subagent_zh.md` / `_zh.md`：
   - §2 结构体代码块 + 字段表：补 `skill` 行；
   - 原 §2.1 位置新增小节「Subagent skill cards」：目录 `~/.tact/subagent/`、frontmatter、
     正文即角色、spawn 拼装示例、与主 agent skill 隔离说明（两端结构对齐）；

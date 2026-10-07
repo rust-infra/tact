@@ -217,6 +217,20 @@ const TOOL_RESULTS_SUBDIR: &str = "tool-results";
 /// its root — instead of the bare `mcp.json` that used to live here.
 const MCP_CONFIG_FILE: &str = ".mcp.json";
 
+/// Lifecycle-hook declaration file, read from `.tact/` at both project and user
+/// scope — the Codex `hooks.json` schema in Tact's own directory.
+///
+/// Deliberately the bare name, not `.hooks.json`: the ecosystem's file is
+/// `hooks.json`, and a user copying one out of `bm hook install --harness codex`
+/// should not have to rename it.
+const HOOKS_FILE: &str = "hooks.json";
+
+/// The hook review store, user-global next to the plugin and OAuth state.
+///
+/// Separate from `config.toml` so a hand-edited (or repository-supplied) config
+/// cannot silently grant execution.
+const HOOKS_STATE_FILE: &str = "hooks-state.json";
+
 /// User-global MCP support directory under `~/.tact/`, holding per-server
 /// OAuth credential files at `<MCP_DIR>/<MCP_OAUTH_DIR>/<server>.json`.
 const MCP_DIR: &str = "mcp";
@@ -316,6 +330,42 @@ impl TactPath {
     /// read from the plugin cache instead).
     pub fn mcp_config_path(&self) -> PathBuf {
         self.tact_dir().join(MCP_CONFIG_FILE)
+    }
+
+    /// `<workdir>/.tact/hooks.json` — project-scoped lifecycle hooks.
+    ///
+    /// A repository can ship this file, which is exactly why every hook it
+    /// declares must be reviewed before it runs (`HookTrust`).
+    pub fn hooks_path(&self) -> PathBuf {
+        self.tact_dir().join(HOOKS_FILE)
+    }
+
+    /// `$HOME/.tact/hooks.json` — user-global lifecycle hooks.
+    pub fn home_hooks_path() -> Option<PathBuf> {
+        Self::home_tact_dir().map(|dir| dir.join(HOOKS_FILE))
+    }
+
+    /// `$HOME/.tact/hooks-state.json` — the hook review decisions.
+    pub fn home_hooks_state_path() -> Option<PathBuf> {
+        Self::home_tact_dir().map(|dir| dir.join(HOOKS_STATE_FILE))
+    }
+
+    /// The administrator-managed hooks file, on platforms that have one.
+    ///
+    /// Outside the user's home on purpose: the review gate exists because a
+    /// plugin bundle is downloaded and a project file is repository content, and
+    /// a file that only the administrator can write needs neither. See
+    /// `plugin::hooks`'s ownership check — that property, not a switch, is what
+    /// makes this source trusted.
+    pub fn managed_hooks_path() -> Option<PathBuf> {
+        #[cfg(unix)]
+        {
+            Some(PathBuf::from("/etc/tact").join(HOOKS_FILE))
+        }
+        #[cfg(not(unix))]
+        {
+            None
+        }
     }
 
     /// `<workdir>/.tact/tool-results`

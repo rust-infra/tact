@@ -22,6 +22,25 @@ pub fn truncate_chars_with_ellipsis(s: &str, max_chars: usize) -> String {
     }
 }
 
+/// Truncate a string to at most `max` display columns, appending `…` when cut.
+pub fn truncate_to_width(s: &str, max: usize) -> String {
+    if UnicodeWidthStr::width(s) <= max {
+        return s.to_string();
+    }
+    let mut out = String::new();
+    let mut width = 0;
+    for c in s.chars() {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        if width + cw > max.saturating_sub(1) {
+            break;
+        }
+        out.push(c);
+        width += cw;
+    }
+    out.push('…');
+    out
+}
+
 pub fn indent_rect(area: Rect, cols: u16) -> Rect {
     if cols == 0 {
         return area;
@@ -394,5 +413,15 @@ mod wrap_tests {
                 .add_modifier
                 .contains(Modifier::BOLD)
         );
+    }
+
+    #[test]
+    fn truncate_to_width_appends_ellipsis_for_cjk() {
+        assert_eq!(truncate_to_width("abc", 5), "abc");
+        assert_eq!(truncate_to_width("abcdef", 4), "abc…");
+        // CJK wide chars count as two columns; truncation targets `max` cols.
+        assert_eq!(truncate_to_width("中文abc", 5), "中文…");
+        assert_eq!(truncate_to_width("中文abc", 6), "中文a…");
+        assert_eq!(truncate_to_width("中文abc", 7), "中文abc");
     }
 }

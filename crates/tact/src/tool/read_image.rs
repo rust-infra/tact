@@ -3,14 +3,9 @@ use base64::Engine as _;
 use image::GenericImageView;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 
-use crate::tool::{
-    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
-    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolCallResult, ToolContext, ToolDomain,
-    ToolMetadata, ToolPresentation, safe_path,
-};
+use crate::tool::{ToolCallResult, ToolContext, ToolMetadata, safe_path};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadImageInput {
@@ -18,24 +13,12 @@ pub struct ReadImageInput {
     pub file_path: String,
 }
 
-pub const READ_IMAGE_METADATA: ToolMetadata = ToolMetadata {
-    name: "read_image",
-    description: "Read a PNG/JPEG/WebP/GIF file and return the image itself to a vision model.",
-    permission: PermissionPolicy::Read,
-    permission_prompt: PermissionPromptPolicy::Path { field: "file_path" },
-    resources: ResourcePolicy::ReadPath { field: "file_path" },
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::FileRead,
-        display_name: "🌄 Read Image",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Path { field: "file_path" },
-};
+pub const READ_IMAGE_METADATA: ToolMetadata = ToolMetadata::path_read(
+    "read_image",
+    "Read a PNG/JPEG/WebP/GIF file and return the image itself to a vision model.",
+    "🌄 Read Image",
+    "file_path",
+);
 
 fn is_supported_image_ext(ext: &str) -> bool {
     matches!(
@@ -171,6 +154,7 @@ mod tests {
                 notifications_enabled: false,
                 max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
                 micro_compact_enabled: true,
+                memory_enabled: true,
                 skill_body_auto_inject: false,
                 skill_dirs: Vec::new(),
                 instruction_sources: crate::config::InstructionSources::default(),
@@ -178,11 +162,13 @@ mod tests {
             },
             ui: crate::config::UiSettings {
                 theme: "retro".to_string(),
+                language: "en".to_string(),
                 vision_image: crate::config::VisionImageSettings {
                     compress: crate::config::VisionImageSettings::DEFAULT_COMPRESS,
                     max_edge: crate::config::VisionImageSettings::DEFAULT_MAX_EDGE,
                     jpeg_quality: crate::config::VisionImageSettings::DEFAULT_JPEG_QUALITY,
                 },
+                hook_output: crate::config::UiSettings::DEFAULT_HOOK_OUTPUT,
             },
             tools: crate::config::ToolSettings {
                 bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,

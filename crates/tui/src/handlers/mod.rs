@@ -1,5 +1,6 @@
 // Input handlers — split by mode.
 mod file_picker;
+mod hooks;
 mod insert;
 mod mcp;
 mod mouse;
@@ -11,6 +12,7 @@ mod select;
 mod skills;
 
 use chrono::Local;
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 pub(crate) use file_picker::handle_file_picker_mode;
 pub(crate) use insert::{handle_insert_mode, insert_transcript};
 pub(crate) use mouse::handle_mouse_event;
@@ -21,7 +23,7 @@ pub(crate) use select::handle_select_mode;
 pub(crate) use skills::flush_pending_when_idle;
 use tact_protocol::UserCommand;
 
-use crate::widgets::state::{App, InputMode, SelectKind, Status};
+use crate::widgets::state::{App, InputMode, SelectKind, SlashCommand, Status};
 
 /// Whether the active sticky panel (task / subagent / background) currently accepts scroll
 /// input — the panel must be on screen and its sticky tab expanded.
@@ -51,6 +53,76 @@ pub(crate) fn scroll_active_sticky(app: &mut App, delta: isize) {
     } else {
         scroll.saturating_add(delta as usize)
     };
+}
+
+/// One global shortcut: the key it answers to after `Ctrl+`, and what it does.
+type GlobalShortcut = (char, fn(&mut App));
+
+/// The built-in global shortcuts — `Ctrl+<key>` — in one table.
+///
+/// Read twice on purpose: [`handle_global_shortcut`] dispatches on it, and
+/// [`is_global_shortcut`] lets the startup check refuse a `voice.voice_keybind`
+/// that names one of them. A second list of the same keys would drift the first
+/// time a shortcut is added, and the drift would be silent — the new shortcut
+/// would simply stay bindable by voice, where it can never fire.
+const GLOBAL_SHORTCUTS: &[GlobalShortcut] = &[
+    ('c', |app| app.should_quit = true),
+    ('h', |app| {
+        app.show_history = !app.show_history;
+        app.show_help = false;
+    }),
+    ('t', |app| app.toggle_theme()),
+    ('l', |app| app.toggle_language()),
+    ('?', |app| {
+        app.show_help = !app.show_help;
+        app.show_history = false;
+    }),
+];
+
+/// Global shortcuts, active in **any** input mode. Returns `true` when the key
+/// was consumed and the caller must not keep dispatching it.
+///
+/// Consuming is the point: the mode handlers below match on `KeyCode` alone, so
+/// an unconsumed `Ctrl+T` reached the insert handler and typed its letter — the
+/// theme switched *and* a `t` landed in the input box on every press. Same for
+/// `Ctrl+H` / `Ctrl+L` / `Ctrl+?` / `Ctrl+C`.
+///
+/// Consuming is also why a user binding may not name one of these keys: nothing
+/// dispatched after this function can ever see the event again.
+pub(crate) fn handle_global_shortcut(app: &mut App, key: &KeyEvent) -> bool {
+    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+        return false;
+    }
+    let KeyCode::Char(c) = key.code else {
+        return false;
+    };
+    match GLOBAL_SHORTCUTS.iter().find(|(k, _)| *k == c) {
+        Some((_, run)) => {
+            run(app);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Whether `Ctrl+<c>` is one of the built-in global shortcuts.
+pub(crate) fn is_global_shortcut(c: char) -> bool {
+    GLOBAL_SHORTCUTS.iter().any(|(k, _)| *k == c)
+}
+
+/// One built-in global shortcut as a `Ctrl+<KEY>` label — the same spelling the
+/// help panel uses for the voice binding.
+pub(crate) fn global_shortcut_label(c: char) -> String {
+    format!("Ctrl+{}", c.to_uppercase())
+}
+
+/// The built-in global shortcuts as labels, for error messages.
+pub(crate) fn global_shortcut_labels() -> String {
+    GLOBAL_SHORTCUTS
+        .iter()
+        .map(|(c, _)| global_shortcut_label(*c))
+        .collect::<Vec<_>>()
+        .join(" / ")
 }
 
 /// Returns the byte index of the previous char boundary before `cursor`.
@@ -250,57 +322,66 @@ pub(super) struct CommandExecOutcome {
     pub clear_input: bool,
 }
 
-/// True when `cmd` is a built-in palette entry (wins over same-named skills).
-pub(crate) fn is_builtin_palette_command(cmd: &str) -> bool {
-    crate::widgets::state::PALETTE_COMMANDS
-        .iter()
-        .any(|(name, _)| *name == cmd)
+impl CommandExecOutcome {
+    /// The command ran: clear the input box so the next message starts fresh.
+    fn handled() -> Self {
+        Self {
+            handled: true,
+            clear_input: true,
+        }
+    }
+
+    /// Nothing here answers to that name.
+    fn unhandled() -> Self {
+        Self {
+            handled: false,
+            clear_input: false,
+        }
+    }
 }
 
 /// Built-ins that take a subcommand / arguments: Enter should autocomplete
 /// `/{cmd} ` into the insert box instead of executing immediately.
 pub(crate) fn command_needs_args(cmd: &str) -> bool {
-    matches!(cmd, "plugin" | "mcp" | "subagent_cancel")
+    SlashCommand::from_name(cmd).is_some_and(SlashCommand::needs_args)
 }
 
 pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
-    // Built-ins always win so a skill named `cancel`/`help`/… cannot shadow them.
-    if !is_builtin_palette_command(cmd)
-        && let Some(outcome) = skills::handle_skill_command(app, cmd)
-    {
-        return outcome;
-    }
+    // A name that is not a built-in may still be a skill; built-ins always win
+    // so a skill named `cancel`/`help`/… cannot shadow them.
+    let Some(command) = SlashCommand::from_name(cmd) else {
+        return skills::handle_skill_command(app, cmd)
+            .unwrap_or_else(CommandExecOutcome::unhandled);
+    };
+    run_command(app, command)
+}
 
-    match cmd {
-        "theme" => {
-            app.toggle_theme();
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+/// Dispatch one built-in command.
+///
+/// The match has no `_` arm on purpose: it used to, and that is how a command
+/// could be listed in the palette and answered with `handled: false` — the
+/// failure surfaced only if a test happened to walk the list.
+fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
+    use SlashCommand as C;
+
+    match command {
+        C::Theme => {
+            start_theme_picker(app);
+            CommandExecOutcome::handled()
         }
-        "model" => {
+        C::Model => {
             crate::handlers::select::start_model_picker(app);
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "model-subagent" => {
+        C::ModelSubagent => {
             crate::handlers::select::start_subagent_model_picker(app);
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "permission" => {
+        C::Permission => {
             start_permission_picker(app);
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "view-system-prompt" => {
+        C::ViewSystemPrompt => {
             app.select.set_local(
                 "View system prompt".to_string(),
                 vec![
@@ -312,12 +393,9 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             );
             app.select_kind = SelectKind::ViewSystemPrompt;
             app.input_mode = InputMode::Select;
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "save" => {
+        C::Save => {
             let timestamp = Local::now().format("%Y%m%d_%H%M%S");
             let path = std::env::temp_dir().join(format!("agent_log_{timestamp}.txt"));
             if let Ok(mut file) = std::fs::File::create(&path) {
@@ -334,55 +412,33 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                 let msgs = app.msgs();
                 app.add_system_message(msgs.log_save_failed.to_string());
             }
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "quit" => {
+        C::Quit => {
             app.should_quit = true;
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "help" => {
+        C::Help => {
             app.show_help = !app.show_help;
             app.show_history = false;
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "history" => {
+        C::History => {
             app.show_history = !app.show_history;
             app.show_help = false;
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "skills" => {
-            show_skills_command(app);
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+        C::Skill => skills::handle_skill_builtin_command(app),
+        C::Plugin => plugin::handle_plugin_command(app),
+        C::Mcp => mcp::handle_mcp_command(app),
+        C::Hooks => hooks::handle_hooks_command(app),
+        C::HookOutput => {
+            // A boolean has no list to pick from, so this is the `Ctrl+T` shape
+            // rather than the `/theme` one: flip, write, report in one message.
+            app.toggle_hook_output();
+            CommandExecOutcome::handled()
         }
-        "skill-reload" => {
-            // Off-loop: the reload scans the filesystem; the loop reports the
-            // outcome via the background-task poll.
-            app.start_skills_reload(
-                crate::widgets::state::app::background::SkillsReloadSource::Command,
-            );
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
-        }
-        "plugin" => plugin::handle_plugin_command(app),
-        "mcp" => mcp::handle_mcp_command(app),
-        "cancel" => {
+        C::Cancel => {
             // Only cancel an in-flight task; Idle and Done have nothing to
             // abort. Queued (pending) messages are NOT touched — dropping
             // them is the `[Cancel]` button's job.
@@ -394,12 +450,9 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                     std::time::Instant::now(),
                 ));
             }
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "subagent_cancel" => {
+        C::SubagentCancel => {
             // Cancel a running background subagent: `/subagent_cancel <child-id>`.
             // The child-id comes from the `async_launched { id }` handle or
             // `check_subagent`. The driver flips the child's cooperative flag;
@@ -425,12 +478,9 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
                     .user_cmd_tx
                     .send(UserCommand::CancelSubagent { child_id });
             }
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "compact" => {
+        C::Compact => {
             // Only compact when idle; active tasks cannot be compacted
             // from slash since compact_history synchronously rewrites
             // the session context.
@@ -440,64 +490,43 @@ pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOu
             } else {
                 let _ = app.user_cmd_tx.send(UserCommand::Compact);
             }
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "balance" => {
+        C::Balance => {
             if app.account_rx.is_none() {
-                return CommandExecOutcome {
-                    handled: true,
-                    clear_input: true,
-                };
+                return CommandExecOutcome::handled();
             }
             let _ = app.user_cmd_tx.send(UserCommand::QueryBalance);
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "stats" => {
+        C::Stats => {
             let _ = app.user_cmd_tx.send(UserCommand::QueryStats);
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "tasks-dag" => {
+        C::TasksDag => {
             app.open_task_dag_popup();
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "background" => {
+        C::Background => {
             // `/background` lists all background tasks; `/background <id>`
             // shows one task (pretty JSON). The optional id comes from the
             // remaining input after the command token.
             let task_id = app.input.split_whitespace().nth(1).map(str::to_string);
             let _ = app.user_cmd_tx.send(UserCommand::QueryBackground(task_id));
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+            CommandExecOutcome::handled()
         }
-        "lang" => {
-            app.toggle_language();
-            CommandExecOutcome {
-                handled: true,
-                clear_input: true,
-            }
+        C::Lang => {
+            // Toggling is the whole choice with two languages, so `Ctrl+L` and
+            // `/lang` move the same way; `/lang` differs by asking whether the
+            // choice should outlive the session. Silent inside because that
+            // step speaks for both, exactly as `/theme`'s does.
+            select::start_language_toggle(app);
+            CommandExecOutcome::handled()
         }
-        _ => CommandExecOutcome {
-            handled: false,
-            clear_input: false,
-        },
     }
 }
 
-/// `/skills` output is plain markdown (heading + pipe table) appended as
+/// `/skill list` output is plain markdown (heading + pipe table) appended as
 /// whole-Markdown messages and rendered by `MarkdownCell`. Long lists are
 /// split into pages of [`SKILLS_PER_PAGE`] rows so each message stays
 /// readable and scrollable instead of one giant table.
@@ -518,7 +547,7 @@ fn show_skills_command(app: &mut App) {
         }
     }
 
-    // Trailing blank so the next `/skills` (or other system block) is not flush.
+    // Trailing blank so the next `/skill list` (or other system block) is not flush.
     app.add_new_line();
 
     if app.input_mode == crate::widgets::state::InputMode::Insert
@@ -624,6 +653,42 @@ pub(crate) fn reload_skills(
     Ok(SkillsSnapshot { description, data })
 }
 
+/// Open the `/theme` SelectPopup from the palette / slash command.
+///
+/// Twelve themes cycled one at a time meant up to eleven presses to reach the
+/// one you want, which is what the picker replaces; `Ctrl+T` still cycles for
+/// the "next one" case.
+pub(crate) fn start_theme_picker(app: &mut App) {
+    use crate::theme::ThemeName;
+    use crate::widgets::state::app::config::theme_label;
+
+    let msgs = app.msgs();
+    let current = app.theme.name;
+    let options: Vec<String> = ThemeName::all()
+        .iter()
+        .map(|name| {
+            let label = theme_label(&msgs, *name);
+            if *name == current {
+                format!("{label} *")
+            } else {
+                label.to_string()
+            }
+        })
+        .collect();
+    let selected = ThemeName::all()
+        .iter()
+        .position(|name| *name == current)
+        .unwrap_or(0);
+    app.select_kind = crate::widgets::state::SelectKind::ThemePick;
+    app.select.set_local(
+        msgs.theme_select_prompt.to_string(),
+        options,
+        selected,
+        true,
+    );
+    app.input_mode = InputMode::Select;
+}
+
 /// Open the `/permission` SelectPopup from palette / slash command.
 pub(crate) fn start_permission_picker(app: &mut App) {
     let msgs = app.msgs();
@@ -649,41 +714,28 @@ pub(crate) fn start_permission_picker(app: &mut App) {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
+    use strum::IntoEnumIterator;
 
-    use tact_protocol::{AgentUpdate, UserCommand};
-    use tokio::sync::mpsc::unbounded_channel;
+    use super::{
+        execute_palette_command, global_shortcut_labels, handle_global_shortcut,
+        is_global_shortcut, skills_list_markdown,
+    };
+    use crate::test_fixtures::TestApp;
+    use crate::widgets::state::{App, InputMode, SlashCommand, Status, Subcommand};
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+    use tact_protocol::UserCommand;
 
-    use super::{execute_palette_command, skills_list_markdown};
-    use crate::widgets::state::{App, Status};
-
-    fn make_app() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
-        let (agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
-        let (user_cmd_tx, user_cmd_rx) = unbounded_channel::<UserCommand>();
-        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
-        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
-        let (history_tx, _history_rx) = unbounded_channel::<(String, String)>();
-        drop(agent_tx);
-        let app = App::new(
-            agent_rx,
-            None,
-            plugin_rx,
-            plugin_tx,
-            user_cmd_tx.clone(),
-            PathBuf::from("."),
-            Vec::new(),
-            "test-session".to_string(),
-            history_tx,
-            "retro".to_string(),
-            String::new(),
-            Vec::new(),
-        );
-        (app, user_cmd_rx)
+    /// Runs `/skill <sub>` the way the input box does: the palette dispatches on
+    /// the command name alone, and the handler reads the subcommand from the
+    /// input, exactly like `/mcp list`.
+    fn run_skill_command(app: &mut App, sub: &str) -> super::CommandExecOutcome {
+        app.input = format!("/skill {sub}");
+        execute_palette_command(app, "skill")
     }
 
     #[test]
     fn palette_commands_are_all_handled() {
-        let (mut app, _user_cmd_rx) = make_app();
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
         let (_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
         app.account_rx = Some(account_rx);
         let cmds = app.palette_commands();
@@ -701,15 +753,107 @@ mod tests {
 
     #[test]
     fn unknown_command_is_not_handled() {
-        let (mut app, _user_cmd_rx) = make_app();
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
         let outcome = execute_palette_command(&mut app, "nonexistent");
         assert!(!outcome.handled);
         assert!(!outcome.clear_input);
     }
 
     #[test]
+    fn every_global_shortcut_is_consumed() {
+        // Consumption is what keeps `Ctrl+<char>` out of the mode handlers,
+        // which match on `KeyCode` alone and would type the letter.
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
+        let theme = app.theme.name;
+        let language = app.language;
+
+        for code in [
+            KeyCode::Char('c'),
+            KeyCode::Char('h'),
+            KeyCode::Char('t'),
+            KeyCode::Char('l'),
+            KeyCode::Char('?'),
+        ] {
+            assert!(
+                handle_global_shortcut(&mut app, &KeyEvent::new(code, KeyModifiers::CONTROL)),
+                "{code:?} + Ctrl must be consumed"
+            );
+        }
+
+        assert!(app.should_quit, "Ctrl+C asks to quit");
+        assert_ne!(app.theme.name, theme, "Ctrl+T cycles the theme");
+        assert_ne!(app.language, language, "Ctrl+L flips the language");
+        // Ctrl+H then Ctrl+? — the two panels are mutually exclusive, and the
+        // later one wins.
+        assert!(app.show_help, "Ctrl+? shows the help panel");
+        assert!(!app.show_history, "Ctrl+? hides the history panel");
+    }
+
+    #[test]
+    fn the_reserved_set_matches_the_dispatcher() {
+        // `is_global_shortcut` and `handle_global_shortcut` read one table, so
+        // this pins its contents: a key the dispatcher consumes must also be
+        // reported as reserved, or a voice binding on it would be accepted and
+        // then never fire.
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
+        let labels = global_shortcut_labels();
+
+        for c in ['c', 'h', 't', 'l', '?'] {
+            assert!(is_global_shortcut(c), "Ctrl+{c} must be reserved");
+            assert!(
+                handle_global_shortcut(
+                    &mut app,
+                    &KeyEvent::new(KeyCode::Char(c), KeyModifiers::CONTROL)
+                ),
+                "Ctrl+{c} must be consumed"
+            );
+            assert!(
+                labels.contains(&format!("Ctrl+{}", c.to_uppercase())),
+                "the message must name Ctrl+{c}: {labels}"
+            );
+        }
+
+        for c in ['g', 'r', ','] {
+            assert!(!is_global_shortcut(c), "Ctrl+{c} is not a global shortcut");
+            assert!(
+                !labels.contains(&format!("Ctrl+{}", c.to_uppercase())),
+                "the message must not claim Ctrl+{c}: {labels}"
+            );
+        }
+    }
+
+    #[test]
+    fn an_unbound_ctrl_key_is_left_to_the_mode_handler() {
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
+        let theme = app.theme.name;
+
+        let consumed = handle_global_shortcut(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        );
+
+        assert!(!consumed, "Ctrl+G is bound nowhere and must fall through");
+        assert_eq!(app.theme.name, theme);
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn a_plain_letter_is_left_to_the_mode_handler() {
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
+        let theme = app.theme.name;
+
+        let consumed = handle_global_shortcut(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('t'), KeyModifiers::NONE),
+        );
+
+        assert!(!consumed, "a bare `t` is text, not a shortcut");
+        assert_eq!(app.theme.name, theme);
+    }
+
+    #[test]
     fn cancel_command_leaves_queued_messages_alone() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Executing {
             current_step: 0,
             total: 1,
@@ -734,7 +878,7 @@ mod tests {
 
     #[test]
     fn cancel_command_idle_keeps_noop_flash() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Idle;
         app.queue_pending_message("stale".into(), "stale".into());
 
@@ -758,7 +902,7 @@ mod tests {
 
     #[test]
     fn subagent_cancel_without_args_shows_usage() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.input = "/subagent_cancel".into();
         app.input_cursor = app.input.len();
 
@@ -774,7 +918,7 @@ mod tests {
 
     #[test]
     fn subagent_cancel_with_id_sends_command() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.input = "/subagent_cancel child-123".into();
         app.input_cursor = app.input.len();
 
@@ -846,9 +990,144 @@ mod tests {
         assert!(md.is_empty(), "expected empty markdown, got:\n{md}");
     }
 
+    /// Expands a subcommand tree into one sample input per leaf: `/hooks trust
+    /// --source <label>` becomes `/hooks trust --source sample`.
+    fn sample_subcommand_inputs(
+        command: &str,
+        subs: &[Subcommand],
+        prefix: String,
+        out: &mut Vec<String>,
+    ) {
+        for sub in subs {
+            let path = if prefix.is_empty() {
+                sub.name.to_string()
+            } else {
+                format!("{prefix} {}", sub.name)
+            };
+            if sub.children.is_empty() {
+                let value = if sub.takes_value { " sample" } else { "" };
+                out.push(format!("/{command} {path}{value}"));
+            } else {
+                assert!(
+                    !sub.takes_value,
+                    "`{}` cannot both take a value and have subcommands",
+                    sub.name
+                );
+                sample_subcommand_inputs(command, sub.children, path, out);
+            }
+        }
+    }
+
+    /// Every subcommand the popup completes must actually run.
+    ///
+    /// The declaration in `SlashCommand::subcommands()` drives the completion;
+    /// the handlers still parse the tokens themselves. This walks the
+    /// declaration and dispatches a sample input for each leaf, so a subcommand
+    /// that is offered but not implemented — completing straight into the usage
+    /// hint — fails here instead of at the user's fingertips.
+    #[test]
+    fn every_declared_subcommand_has_a_handler() {
+        for command in SlashCommand::iter() {
+            let mut inputs = Vec::new();
+            sample_subcommand_inputs(
+                command.name(),
+                command.subcommands(),
+                String::new(),
+                &mut inputs,
+            );
+            assert_eq!(
+                inputs.is_empty(),
+                command.subcommands().is_empty(),
+                "{command:?} declares subcommands but expands to no sample input"
+            );
+            for input in inputs {
+                let (mut app, _rx) = TestApp::new().into_commands();
+                app.input = input.clone();
+
+                let _ = execute_palette_command(&mut app, command.name());
+
+                let hinted = app
+                    .flash_msg
+                    .as_ref()
+                    .is_some_and(|(message, _)| is_usage_text(message))
+                    || app.log.items.iter().any(|item| is_usage_text(&item.raw));
+                assert!(
+                    !hinted,
+                    "`{input}` is completable but reaches the usage hint"
+                );
+            }
+        }
+    }
+
+    /// The usage hints are the only localized strings every handler shares.
+    fn is_usage_text(text: &str) -> bool {
+        text.contains("Usage") || text.contains("用法")
+    }
+
+    #[test]
+    fn skill_command_lists_skills_and_clears_the_input() {
+        let (mut app, _rx) = TestApp::new().into_commands();
+        app.skills_data = vec![crate::widgets::state::SkillEntry {
+            name: "code-reviewer".into(),
+            description: "代码审查专家".into(),
+            body: String::new(),
+        }];
+
+        let outcome = run_skill_command(&mut app, "list");
+
+        assert!(outcome.handled);
+        assert!(outcome.clear_input, "the subcommand was consumed");
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("code-reviewer")),
+            "expected the skill table, got: {:?}",
+            app.log.items
+        );
+    }
+
+    #[test]
+    fn skill_command_reload_reports_the_rescan() {
+        let (mut app, _rx) = TestApp::new().into_commands();
+
+        let outcome = run_skill_command(&mut app, "reload");
+
+        assert!(outcome.handled);
+        assert!(outcome.clear_input);
+        // No reactor in a sync test, so the reload runs inline; the command's
+        // own report is what the user sees.
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("Reloaded")),
+            "expected a reload report, got: {:?}",
+            app.log.items
+        );
+    }
+
+    #[test]
+    fn bare_skill_command_offers_the_usage_and_keeps_the_input() {
+        // Same contract as bare `/mcp`: hand the user a runnable command
+        // instead of silently doing nothing.
+        for input in ["/skill", "/skill nonsense"] {
+            let (mut app, _rx) = TestApp::new().into_commands();
+            app.input = input.to_string();
+
+            let outcome = execute_palette_command(&mut app, "skill");
+
+            assert!(outcome.handled, "{input}");
+            assert!(!outcome.clear_input, "{input}");
+            assert_eq!(app.input, "/skill ", "{input}");
+            let (flash, _) = app.flash_msg.as_ref().expect("usage flash");
+            assert!(flash.contains("/skill list"), "{input}: {flash}");
+        }
+    }
+
     #[test]
     fn skills_command_adds_separators_around_list() {
-        let (mut app, _rx) = make_app();
+        let (mut app, _rx) = TestApp::new().into_commands();
         app.skills_data = vec![
             crate::widgets::state::SkillEntry {
                 name: "code-reviewer".into(),
@@ -862,7 +1141,7 @@ mod tests {
             },
         ];
         let before = app.log.items.len();
-        execute_palette_command(&mut app, "skills");
+        run_skill_command(&mut app, "list");
         let after_first = app.log.items.len();
         assert!(after_first > before);
         assert!(
@@ -873,7 +1152,7 @@ mod tests {
             app.log.items
         );
         // Second invocation must not glue flush to the previous block.
-        execute_palette_command(&mut app, "skills");
+        run_skill_command(&mut app, "list");
         let joined = app.log.items[after_first.saturating_sub(1)..]
             .iter()
             .map(|item| item.raw.as_str())
@@ -892,7 +1171,7 @@ mod tests {
 
     #[test]
     fn skills_command_paginates_long_lists() {
-        let (mut app, _rx) = make_app();
+        let (mut app, _rx) = TestApp::new().into_commands();
         app.skills_data = (0..40)
             .map(|i| crate::widgets::state::SkillEntry {
                 name: format!("skill-{i:02}"),
@@ -901,7 +1180,7 @@ mod tests {
             })
             .collect();
         let before = app.log.items.len();
-        execute_palette_command(&mut app, "skills");
+        run_skill_command(&mut app, "list");
         let raw = &app.log.items[before..];
 
         // 40 skills / 15 per page → 3 pages with numbered headings.
@@ -929,9 +1208,9 @@ mod tests {
     fn skills_command_output_reaches_middle_skills_when_scrolling() {
         // Regression for the reported symptom: with ~60 skills the old
         // logical-row scrolling never showed alphabetically-middle entries
-        // (lark-*) of the `/skills` table. Paginated pages + visual stepping
+        // (lark-*) of the `/skill list` table. Paginated pages + visual stepping
         // must make every row reachable.
-        let (mut app, _rx) = make_app();
+        let (mut app, _rx) = TestApp::new().into_commands();
         app.skills_data = (0..58)
             .map(|i| crate::widgets::state::SkillEntry {
                 name: if (20..=47).contains(&i) {
@@ -950,7 +1229,7 @@ mod tests {
         {
             entry.name = "lark-doc".into();
         }
-        execute_palette_command(&mut app, "skills");
+        run_skill_command(&mut app, "list");
         app.scroll_log_to_top();
 
         let viewport_height = 8usize;
@@ -970,13 +1249,13 @@ mod tests {
         }
         assert!(
             seen,
-            "lark-doc never visible while traversing /skills output"
+            "lark-doc never visible while traversing /skill list output"
         );
     }
 
     #[test]
     fn cancel_while_done_is_noop() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Done;
         let outcome = execute_palette_command(&mut app, "cancel");
         assert!(outcome.handled);
@@ -990,7 +1269,7 @@ mod tests {
 
     #[test]
     fn background_command_dispatches_list_all() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.input = "/background".into();
         let outcome = execute_palette_command(&mut app, "background");
         assert!(outcome.handled);
@@ -1003,7 +1282,7 @@ mod tests {
 
     #[test]
     fn background_command_forwards_task_id() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.input = "/background 018f3a2c".into();
         let outcome = execute_palette_command(&mut app, "background");
         assert!(outcome.handled);
@@ -1016,7 +1295,7 @@ mod tests {
 
     #[test]
     fn cancel_while_executing_dispatches() {
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Executing {
             current_step: 0,
             total: 1,
@@ -1030,22 +1309,114 @@ mod tests {
         ));
     }
 
+    /// `/theme` opens the picker (it used to cycle): twelve themes meant up to
+    /// eleven presses to reach the one you want.
     #[test]
-    fn theme_command_toggles_theme() {
+    fn theme_command_opens_a_picker_marked_at_the_current_theme() {
+        use crate::theme::ThemeName;
+        use crate::widgets::state::SelectKind;
+
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
+        assert_eq!(app.theme.name, ThemeName::Retro);
+
+        let outcome = execute_palette_command(&mut app, "theme");
+
+        assert!(outcome.handled);
+        assert!(matches!(app.select_kind, SelectKind::ThemePick));
+        assert!(matches!(app.input_mode, InputMode::Select));
+        assert_eq!(app.select.options.len(), ThemeName::all().len());
+        let labelled: Vec<(usize, &str)> = app
+            .select
+            .options
+            .iter()
+            .enumerate()
+            .map(|(i, o)| (i, o.as_str()))
+            .collect();
+        let marked: Vec<&(usize, &str)> = labelled
+            .iter()
+            .filter(|(_, label)| label.ends_with(" *"))
+            .collect();
+        assert_eq!(marked.len(), 1, "exactly one row is the current theme");
+        assert_eq!(
+            marked[0].0, app.select.selected,
+            "the picker opens on the current theme, not at the top"
+        );
+        assert_eq!(
+            marked[0].1.strip_suffix(" *").unwrap(),
+            crate::widgets::state::app::config::theme_label(&app.msgs(), ThemeName::Retro)
+        );
+    }
+
+    #[test]
+    fn confirming_the_theme_picker_applies_the_chosen_theme() {
         use crate::theme::ThemeName;
 
-        let (mut app, _user_cmd_rx) = make_app();
-        assert_eq!(app.theme.name, ThemeName::Retro);
-        let outcome = execute_palette_command(&mut app, "theme");
-        assert!(outcome.handled);
-        assert_ne!(app.theme.name, ThemeName::Retro);
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
+        execute_palette_command(&mut app, "theme");
+        let target = ThemeName::all()
+            .iter()
+            .position(|name| *name == ThemeName::Nord)
+            .expect("nord is a built-in theme");
+        app.select.selected = target;
+
+        crate::handlers::select::handle_select_mode(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Enter,
+                crossterm::event::KeyModifiers::empty(),
+            ),
+        );
+
+        assert_eq!(app.theme.name, ThemeName::Nord);
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(
+            app.log
+                .items
+                .iter()
+                .any(|item| item.raw.contains("Nord") || item.raw.contains("nord")),
+            "the switch is announced: {:?}",
+            app.log.items
+        );
+    }
+
+    #[test]
+    fn cancelling_the_theme_picker_keeps_the_theme() {
+        use crate::theme::ThemeName;
+
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
+        let before = app.theme.name;
+        execute_palette_command(&mut app, "theme");
+        app.select.selected = 0;
+
+        crate::handlers::select::handle_select_mode(
+            &mut app,
+            crossterm::event::KeyEvent::new(
+                crossterm::event::KeyCode::Esc,
+                crossterm::event::KeyModifiers::empty(),
+            ),
+        );
+
+        assert_eq!(app.theme.name, before, "Esc must not switch the theme");
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert_ne!(before, ThemeName::Dark, "the test needs a non-first theme");
+    }
+
+    /// `Ctrl+T` keeps the cheap "next one" path the picker replaces.
+    #[test]
+    fn ctrl_t_still_cycles_themes() {
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
+        let before = app.theme.name;
+
+        app.toggle_theme();
+
+        assert_ne!(app.theme.name, before);
     }
 
     #[test]
     fn builtin_command_wins_over_same_named_skill() {
         use crate::widgets::state::SkillEntry;
 
-        let (mut app, mut user_cmd_rx) = make_app();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.skills_data = vec![SkillEntry {
             name: "cancel".into(),
             description: "fake".into(),
@@ -1069,9 +1440,9 @@ mod tests {
 
     #[test]
     fn colliding_skill_omitted_from_palette_list() {
-        use crate::widgets::state::SkillEntry;
+        use crate::widgets::state::{SkillEntry, SlashCommand};
 
-        let (mut app, _rx) = make_app();
+        let (mut app, _rx) = TestApp::new().into_commands();
         app.skills_data = vec![SkillEntry {
             name: "help".into(),
             description: "skill help".into(),
@@ -1083,6 +1454,6 @@ mod tests {
             .filter(|(c, _)| c == "help")
             .collect();
         assert_eq!(help_rows.len(), 1, "builtin help only once: {help_rows:?}");
-        assert_eq!(help_rows[0].1, app.localize_cmd_desc("help"));
+        assert_eq!(help_rows[0].1, SlashCommand::Help.desc(app.msgs()));
     }
 }

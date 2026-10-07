@@ -17,6 +17,6 @@ pub mod render_md;
 pub mod renderable;
 pub mod selectable_text;
 pub mod slash_style;
+pub mod stats_line;
 pub mod sticky_host;
-pub mod task_panel;
 pub mod util;

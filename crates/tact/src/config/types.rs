@@ -3,6 +3,8 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tact_llm::{OpenAiProtocol, OpenAiReasoningEffort, ProviderInfo, ProviderKind};
 
+use crate::permission::CapabilityRisk;
+
 /// Top-level TOML config (`.tact/config.toml` or `config.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 #[serde(default)]
@@ -145,6 +147,13 @@ pub struct AgentTomlConfig {
     /// Enable micro-compaction of old tool results (default: true)
     pub micro_compact_enabled: Option<bool>,
 
+    /// Enable Tact's persistent memory (default: true).
+    ///
+    /// When false, no memory block or memory guidance is injected into the
+    /// system prompt and the `save_memory` tool is not registered. Files under
+    /// `~/.tact/memory` are never deleted by this switch.
+    pub memory_enabled: Option<bool>,
+
     /// How many ordinary LLM-call request bodies `token_usages` keeps per
     /// session (default: 1).
     ///
@@ -197,8 +206,24 @@ pub struct UiTomlConfig {
     /// Initial TUI theme name (e.g. "retro", "nord", "dark").
     pub theme: Option<String>,
 
+    /// Initial UI language ("en" | "zh").
+    ///
+    /// Written by `/lang`'s persist step, but readable from the file at
+    /// startup like any other `[ui]` preference — an interactive write the
+    /// next session cannot read would not be persistence.
+    pub language: Option<String>,
+
     /// Vision image attachment compression (user `@file` / markdown images).
     pub vision_image: VisionImageTomlConfig,
+
+    /// Render hook-injected content (a hook's progress line and the block of
+    /// context it injects) in the log (default: true).
+    ///
+    /// Display only: a hook still runs, and its stdout still reaches the model
+    /// as a `<hook-context>` message — the switch decides whether the TUI draws
+    /// it. Off is for readers who find a briefing between every turn noisy, not
+    /// for turning hooks off (`[hooks]` / `/hooks` do that).
+    pub hook_output: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -267,6 +292,34 @@ pub struct McpTomlConfig {
     /// `client_name` sent when Tact registers itself with an OAuth provider
     /// (`mcp.oauth_client_name`). Per-server `auth.clientName` overrides it.
     pub oauth_client_name: Option<String>,
+
+    /// Risk for Tact's own resource *listings* — `list_mcp_resources` and
+    /// `list_mcp_resource_templates` (`mcp.resource_list_risk`).
+    ///
+    /// These tools belong to Tact rather than to a server, which is why an
+    /// entry's `tools.<name>.risk` cannot address them and they need a key of
+    /// their own. Same vocabulary as there: `read` | `write` | `high`, default
+    /// `high`.
+    pub resource_list_risk: Option<String>,
+
+    /// Risk for `read_mcp_resource` (`mcp.resource_read_risk`).
+    ///
+    /// Separate from the listing key because the two acts are not the same: a
+    /// listing returns metadata, a read returns third-party content fetched over
+    /// the network.
+    pub resource_read_risk: Option<String>,
+
+    /// Risk for `list_mcp_prompts` (`mcp.prompt_list_risk`).
+    ///
+    /// The prompt tools belong to Tact for the same reason the resource tools
+    /// do, so they need their own keys too.
+    pub prompt_list_risk: Option<String>,
+
+    /// Risk for `get_mcp_prompt` (`mcp.prompt_get_risk`).
+    ///
+    /// Separate from the listing key for the resource pair's reason: a listing
+    /// returns metadata, a get returns server-authored content.
+    pub prompt_get_risk: Option<String>,
 }
 
 // ---------------------------------------------------------------------------
@@ -289,6 +342,18 @@ pub struct McpSettings {
     /// `mcp.oauth_client_name = "Tact"` to identify honestly and accept that
     /// allowlisting providers will refuse registration.
     pub oauth_client_name: String,
+
+    /// Risk for Tact's resource listings; `None` keeps `CapabilityRisk::High`.
+    pub resource_list_risk: Option<CapabilityRisk>,
+
+    /// Risk for `read_mcp_resource`; `None` keeps `CapabilityRisk::High`.
+    pub resource_read_risk: Option<CapabilityRisk>,
+
+    /// Risk for Tact's prompt listings; `None` keeps `CapabilityRisk::High`.
+    pub prompt_list_risk: Option<CapabilityRisk>,
+
+    /// Risk for `get_mcp_prompt`; `None` keeps `CapabilityRisk::High`.
+    pub prompt_get_risk: Option<CapabilityRisk>,
 }
 
 impl McpSettings {
@@ -304,6 +369,10 @@ impl Default for McpSettings {
         // provider, so the type's fallback must be the real default.
         Self {
             oauth_client_name: Self::DEFAULT_OAUTH_CLIENT_NAME.to_string(),
+            resource_list_risk: None,
+            resource_read_risk: None,
+            prompt_list_risk: None,
+            prompt_get_risk: None,
         }
     }
 }
@@ -357,6 +426,8 @@ pub struct AgentSettings {
     pub notifications_enabled: bool,
     pub snapshot_max_items: usize,
     pub micro_compact_enabled: bool,
+    /// Whether Tact's persistent memory is active (prompt + `save_memory`).
+    pub memory_enabled: bool,
     /// Request bodies kept per session in `token_usages` (see
     /// [`AgentTomlConfig::max_token_usage_bodies`]).
     pub max_token_usage_bodies: usize,
@@ -398,7 +469,15 @@ impl VisionImageSettings {
 #[derive(Debug, Clone)]
 pub struct UiSettings {
     pub theme: String,
+    pub language: String,
     pub vision_image: VisionImageSettings,
+    /// Whether the TUI renders hook-injected content (progress lines and the
+    /// context block). Display only — see `UiTomlConfig::hook_output`.
+    pub hook_output: bool,
+}
+
+impl UiSettings {
+    pub const DEFAULT_HOOK_OUTPUT: bool = true;
 }
 
 #[derive(Debug, Clone)]
@@ -506,6 +585,7 @@ mode = "auto"
 model_context_window = 500000
 snapshot_max_items = 120
 micro_compact_enabled = false
+memory_enabled = false
 max_token_usage_bodies = 3
 
 [ui]
@@ -529,6 +609,7 @@ vision_image.jpeg_quality = 75
         assert_eq!(cfg.agent.model_context_window, Some(500000));
         assert_eq!(cfg.agent.snapshot_max_items, Some(120));
         assert_eq!(cfg.agent.micro_compact_enabled, Some(false));
+        assert_eq!(cfg.agent.memory_enabled, Some(false));
         assert_eq!(cfg.agent.max_token_usage_bodies, Some(3));
         assert_eq!(cfg.ui.theme.as_deref(), Some("nord"));
         assert_eq!(cfg.ui.vision_image.compress, Some(false));

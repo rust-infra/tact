@@ -1,7 +1,5 @@
 # Bash 沙箱（Bash Sandbox）
 
-> 语言：[中文](./27_chapter_sandbox_zh.md) · [English](./27_chapter_sandbox.md)
-
 本章说明 Tact 可选的 **OS 级 shell 沙箱**：`config.toml` 里一个布尔开关，把 `bash` 工具的 `sh -c` 进程包进平台的沙箱实现（Linux 用 `bubblewrap`），使得被批准命令引入的第三方代码——`cargo` 构建脚本、`npm` 生命周期脚本、测试二进制、`make` 配方——读不到宿主 home，也写不到工作区之外。**网络**是刻意保持共享的：沙箱约束的是文件系统，不是连通性。
 
 实现在 `crates/tact/src/sandbox/`（`mod.rs` 负责解析，`bwrap.rs` 是 Linux 后端）；唯一的调用点是 `crates/tact/src/tool/bash.rs`。权限模型完全不动：沙箱回答的是*命令能触达什么*，而不是*它能不能运行*（见[权限模型](./10_chapter_permission_zh.md)）。
@@ -47,14 +45,14 @@ if sandbox.is_some() {
 ## 2. fail-open，但绝不静默
 
 ```mermaid
-flowchart TD
-    CFG["[tools] sandbox"] --> RESOLVE["sandbox::resolve(enabled, work_dir)"]
-    RESOLVE -->|"false"| OFF["(None, None)<br/>直接 sh -c，保持安静"]
-    RESOLVE -->|"true"| PLAT["resolve_platform"]
-    PLAT -->|Linux| PROBE["BwrapSandbox::probe<br/>bwrap &lt;policy&gt; -- /bin/true"]
-    PLAT -->|"其他系统"| NOIMPL["(None, Some(reason))<br/>该平台尚无实现"]
-    PROBE -->|ok| ON["(Some(BwrapSandbox), None)"]
-    PROBE -->|fail| BROKEN["(None, Some(reason))<br/>bwrap 缺失 / 不可用"]
+graph TD
+    a_cfg[tools.sandbox 配置] --> b_resolve[sandbox::resolve enabled, work_dir]
+    b_resolve -->|false| c_off[None, None — 直接 sh -c]
+    b_resolve -->|true| d_plat[resolve_platform]
+    d_plat -->|Linux| e_probe[BwrapSandbox::probe]
+    d_plat -->|其他系统| f_noimpl[None, Some reason — 该平台尚无实现]
+    e_probe -->|ok| g_on[Some BwrapSandbox, None]
+    e_probe -->|fail| h_broken[None, Some reason — bwrap 缺失 / 不可用]
 ```
 
 任何没能产出沙箱的路径都会产出一个**原因**（`SandboxDegradation.reason`），并且降级会通过两个渠道告知：

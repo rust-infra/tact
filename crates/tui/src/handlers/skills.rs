@@ -36,14 +36,6 @@ pub(super) fn find_skill<'a>(app: &'a App, cmd: &str) -> Option<&'a SkillEntry> 
     app.skills_data.iter().find(|s| s.name == cmd)
 }
 
-pub(crate) fn is_skill_command(app: &App, cmd: &str) -> bool {
-    find_skill(app, cmd).is_some()
-}
-
-pub(crate) fn skill_name_set(app: &App) -> std::collections::HashSet<&str> {
-    crate::render::slash_style::skill_name_set(&app.skills_data)
-}
-
 /// True when `$ARGUMENTS` is a bare placeholder at this position (not indexed,
 /// not a longer token like `$ARGUMENTS2`).
 fn is_bare_arguments_placeholder(after: &str) -> bool {
@@ -200,26 +192,119 @@ pub(crate) fn flush_pending_when_idle(app: &mut App) {
     }
 }
 
-/// Invoke `/skill-name` [args]: always runs (no equip step).
-pub(super) fn handle_skill_command(app: &mut App, cmd: &str) -> Option<CommandExecOutcome> {
-    // Borrow skill long enough to render the task, then drop before mutating `app`.
-    let (display, agent_task) = {
-        let skill = find_skill(app, cmd)?;
-        let args = skill_args_from_input(&app.input, &skill.name);
-        let display = if args.is_empty() {
-            format!("/{}", skill.name)
-        } else {
-            format!("/{} {}", skill.name, args)
-        };
-        let agent_task = format_skill_agent_task(skill, &args);
-        (display, agent_task)
+/// `/skill` — the built-in command: `/skill list` shows the table, `/skill
+/// reload` rescans the roots, `/skill <name> [args]` runs one skill.
+///
+/// Subcommand parsing lives in the command's own module, like `/mcp` and
+/// `/plugin`: the palette only ever knows the command name, and the input box
+/// holds the rest. Running a skill from here is the same code path as
+/// `/{name}` (see [`invoke_skill`]) — that keeps one implementation of
+/// `$ARGUMENTS` and one log line builder, with only the echo differing.
+pub(super) fn handle_skill_builtin_command(app: &mut App) -> CommandExecOutcome {
+    // Owned tokens: the arms below mutate `app`, and the input is what they
+    // read the subcommand from.
+    let parts: Vec<String> = app.input.split_whitespace().map(str::to_owned).collect();
+    let parts: Vec<&str> = parts.iter().map(String::as_str).collect();
+    match parts.as_slice() {
+        ["/skill", "list"] => {
+            // Purely local rendering (no agent round-trip), so unlike
+            // `/mcp list` this stays available while a task is in flight.
+            super::show_skills_command(app);
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
+        ["/skill", "reload"] => {
+            // Off-loop: the reload scans the filesystem; the loop reports the
+            // outcome via the background-task poll.
+            app.start_skills_reload(
+                crate::widgets::state::app::background::SkillsReloadSource::Command,
+            );
+            CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            }
+        }
+        // `list`/`reload` win a name collision, exactly as a built-in wins it
+        // at the first level.
+        ["/skill", name, ..] if find_skill(app, name).is_some() => {
+            let args = skill_args_from_subcommand_input(&app.input, name);
+            let slash_line = if args.is_empty() {
+                format!("/skill {name}")
+            } else {
+                format!("/skill {name} {args}")
+            };
+            invoke_skill(app, name, &args, &slash_line);
+            CommandExecOutcome {
+                handled: true,
+                clear_input: false,
+            }
+        }
+        _ => {
+            // Bare `/skill` (and any unknown subcommand) leaves the usage hint
+            // in the input box so the user can complete the command.
+            app.save_undo();
+            app.input = "/skill ".into();
+            app.input_cursor = app.input.len();
+            app.flash_msg = Some((app.msgs().skill_usage.to_owned(), std::time::Instant::now()));
+            CommandExecOutcome {
+                handled: true,
+                clear_input: false,
+            }
+        }
+    }
+}
+
+/// Args typed after `/skill <name>` (empty when there are none).
+///
+/// The name must be a whole token: `/skill demo-test x` gives nothing for the
+/// skill `demo`, the same guard [`skill_args_from_input`] applies to `/demo`.
+pub(super) fn skill_args_from_subcommand_input(input: &str, name: &str) -> String {
+    let Some(rest) = input.trim().strip_prefix("/skill") else {
+        return String::new();
+    };
+    let Some(after_name) = rest.trim_start().strip_prefix(name) else {
+        return String::new();
+    };
+    if !after_name.is_empty() && !after_name.starts_with(char::is_whitespace) {
+        return String::new();
+    }
+    after_name.trim().to_string()
+}
+
+/// Run one skill: build the `<skill>` task, submit it, and echo `slash_line`.
+///
+/// Shared by `/skill <name>` and `/{name}` so the two cannot drift; the caller
+/// owns the echo because that is the only difference between them.
+fn invoke_skill(app: &mut App, name: &str, args: &str, slash_line: &str) {
+    // Borrow the skill long enough to render the task, then drop before
+    // mutating `app`.
+    let Some(agent_task) = find_skill(app, name).map(|skill| format_skill_agent_task(skill, args))
+    else {
+        return;
     };
     app.slash_command.active = false;
 
-    if submit_user_task(app, display, agent_task) {
+    if submit_user_task(app, slash_line.to_owned(), agent_task) {
         app.input.clear();
         app.input_cursor = 0;
     }
+}
+
+/// Invoke `/skill-name` [args] (the direct form): always runs, no equip step.
+///
+/// `None` for a name no skill answers to, which is what lets the dispatcher
+/// fall through and send the text as a normal message.
+pub(super) fn handle_skill_command(app: &mut App, cmd: &str) -> Option<CommandExecOutcome> {
+    find_skill(app, cmd)?;
+    let args = skill_args_from_input(&app.input, cmd);
+    let slash_line = if args.is_empty() {
+        format!("/{cmd}")
+    } else {
+        format!("/{cmd} {args}")
+    };
+    invoke_skill(app, cmd, &args, &slash_line);
 
     Some(CommandExecOutcome {
         handled: true,
@@ -230,6 +315,7 @@ pub(super) fn handle_skill_command(app: &mut App, cmd: &str) -> Option<CommandEx
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_fixtures::TestApp;
 
     #[test]
     fn skill_args_strips_command_prefix() {
@@ -241,6 +327,93 @@ mod tests {
         assert_eq!(skill_args_from_input("/cod", "code-reviewer"), "");
         // Prefix skill must not steal args from a longer skill name.
         assert_eq!(skill_args_from_input("/demo-test x", "demo"), "");
+    }
+
+    #[test]
+    fn skill_args_from_the_skill_command_strips_the_whole_prefix() {
+        assert_eq!(
+            skill_args_from_subcommand_input("/skill code-reviewer fix auth", "code-reviewer"),
+            "fix auth"
+        );
+        assert_eq!(
+            skill_args_from_subcommand_input("/skill   code-reviewer   ", "code-reviewer"),
+            ""
+        );
+        assert_eq!(
+            skill_args_from_subcommand_input("/skill code-reviewer", "code-reviewer"),
+            ""
+        );
+        // A partial name is not the name.
+        assert_eq!(
+            skill_args_from_subcommand_input("/skill code", "code-reviewer"),
+            ""
+        );
+        // The name must be a whole token: `/skill demo-test x` gives `demo`
+        // nothing, exactly like the direct form.
+        assert_eq!(
+            skill_args_from_subcommand_input("/skill demo-test x", "demo"),
+            ""
+        );
+    }
+
+    #[test]
+    fn the_skill_command_runs_a_skill_with_args() {
+        use tokio::sync::mpsc::unbounded_channel;
+
+        use crate::widgets::state::App;
+
+        let (_agent_tx, agent_rx) = unbounded_channel::<tact_protocol::AgentUpdate>();
+        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel();
+        let (plugin_tx, _plugin_rx) = unbounded_channel();
+        let (_event_tx, plugin_event_rx) = unbounded_channel();
+        let (history_tx, _history_rx) = unbounded_channel();
+        let mut app = App::new(
+            agent_rx,
+            None,
+            plugin_event_rx,
+            plugin_tx,
+            user_cmd_tx,
+            std::path::PathBuf::from("."),
+            Vec::new(),
+            "test-session".to_string(),
+            history_tx,
+            "retro".to_string(),
+            String::new(),
+            Vec::new(),
+        );
+        app.skills_data = vec![SkillEntry {
+            name: "demo".into(),
+            description: "d".into(),
+            body: "Follow the checklist.".into(),
+        }];
+        app.input = "/skill demo fix auth".into();
+        app.input_cursor = app.input.len();
+
+        let outcome = handle_skill_builtin_command(&mut app);
+
+        assert!(outcome.handled);
+        assert!(app.input.is_empty(), "an invoked skill clears the input");
+        match user_cmd_rx.try_recv().expect("skill must submit a task") {
+            tact_protocol::UserCommand::SubmitTask(task) => {
+                assert!(task.contains("<skill name=\"demo\">"), "{task}");
+                assert!(task.contains("Follow the checklist."), "{task}");
+                assert!(task.contains("ARGUMENTS: fix auth"), "{task}");
+            }
+            other => panic!("expected SubmitTask, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_unknown_skill_name_gets_the_usage() {
+        let mut app = crate::render::test_harness::make_app();
+        app.input = "/skill nope".into();
+        app.input_cursor = app.input.len();
+
+        let outcome = handle_skill_builtin_command(&mut app);
+
+        assert!(outcome.handled);
+        assert_eq!(app.input, "/skill ", "the usage hint stays in the box");
+        assert!(app.flash_msg.is_some());
     }
 
     #[test]
@@ -316,37 +489,9 @@ mod tests {
 
     // ---- Codex-style queued submission (pending messages) ----
 
-    fn make_app_with_cmds() -> (App, tokio::sync::mpsc::UnboundedReceiver<UserCommand>) {
-        use std::path::PathBuf;
-
-        use tact_protocol::AgentUpdate;
-        use tokio::sync::mpsc::unbounded_channel;
-
-        let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
-        let (user_cmd_tx, user_cmd_rx) = unbounded_channel::<UserCommand>();
-        let (plugin_tx, _plugin_request_rx) = unbounded_channel();
-        let (_plugin_event_tx, plugin_rx) = unbounded_channel();
-        let (history_tx, _history_rx) = unbounded_channel();
-        let app = App::new(
-            agent_rx,
-            None,
-            plugin_rx,
-            plugin_tx,
-            user_cmd_tx,
-            PathBuf::from("."),
-            Vec::new(),
-            "test-session".to_string(),
-            history_tx,
-            "retro".to_string(),
-            String::new(),
-            Vec::new(),
-        );
-        (app, user_cmd_rx)
-    }
-
     #[test]
     fn submit_user_task_queues_when_busy() {
-        let (mut app, mut user_cmd_rx) = make_app_with_cmds();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Executing {
             current_step: 0,
             total: 1,
@@ -370,7 +515,7 @@ mod tests {
 
     #[test]
     fn submit_user_task_dispatches_when_idle() {
-        let (mut app, mut user_cmd_rx) = make_app_with_cmds();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Idle;
 
         let ok = submit_user_task(&mut app, "go".into(), "go".into());
@@ -386,7 +531,7 @@ mod tests {
 
     #[test]
     fn submit_user_task_counts_session_turn_and_resets_llm_counter() {
-        let (mut app, _user_cmd_rx) = make_app_with_cmds();
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Idle;
         // Stale per-task state from the previous turn must not leak.
         app.status_bar_mut().turn_llm = 7;
@@ -405,7 +550,7 @@ mod tests {
 
     #[test]
     fn queued_messages_each_count_as_a_session_turn() {
-        let (mut app, _user_cmd_rx) = make_app_with_cmds();
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Idle;
         let _ = submit_user_task(&mut app, "one".into(), "one".into());
         assert_eq!(app.status_bar_mut().turn_user, 1);
@@ -432,7 +577,7 @@ mod tests {
 
     #[test]
     fn flush_pending_when_idle_submits_all_queued_in_order() {
-        let (mut app, mut user_cmd_rx) = make_app_with_cmds();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Executing {
             current_step: 0,
             total: 1,
@@ -462,7 +607,7 @@ mod tests {
 
     #[test]
     fn flush_pending_fires_on_done_too() {
-        let (mut app, mut user_cmd_rx) = make_app_with_cmds();
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Executing {
             current_step: 0,
             total: 1,

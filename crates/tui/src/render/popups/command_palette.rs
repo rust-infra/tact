@@ -1,12 +1,8 @@
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::{Color, Style},
-    text::{Line, Span},
-    widgets::{Block, List, ListItem},
-};
+use ratatui::{Frame, layout::Rect, style::Style, text::Span};
 
-use crate::widgets::state::App;
+use agent_tui_kit::widgets::list_popup::{ListPopup, ListRow, SelectionStyle};
+
+use crate::widgets::state::{App, InputMode, SurfaceId};
 
 /// Map command name to emoji icon for palette display.
 fn cmd_emoji(cmd: &str, is_skill: bool) -> &'static str {
@@ -24,8 +20,7 @@ fn cmd_emoji(cmd: &str, is_skill: bool) -> &'static str {
         "balance" => "💰",
         "lang" => "🌐",
         "model" => "🧠",
-        "skills" => "📋",
-        "skill-reload" => "🔄",
+        "skill" => "📋",
         "plugin" => "🧩",
         "background" => "🖥",
         _ => "⚡",
@@ -39,7 +34,7 @@ fn cmd_category(cmd: &str, is_skill: bool) -> &'static str {
     }
     match cmd {
         "save" | "cancel" | "subagent_cancel" | "quit" => "  Actions",
-        "help" | "history" | "skills" | "skill-reload" | "plugin" | "background" => "  Tools",
+        "help" | "history" | "skill" | "plugin" | "background" => "  Tools",
         "theme" | "lang" | "balance" | "model" => "  Settings",
         _ => "",
     }
@@ -49,17 +44,19 @@ fn is_skill_cmd(app: &App, cmd: &str) -> bool {
     app.skills_data.iter().any(|s| s.name == cmd)
 }
 
-pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
-    let filter = app.cmd_line.to_lowercase();
+pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &mut App) {
+    if app.input_mode != InputMode::Palette {
+        // Called every frame; the hit area recorded while active must not
+        // outlive the popup (see `render_select_popup`).
+        app.mouse.clear_area(SurfaceId::PalettePopup);
+        return;
+    }
+
     let commands = app.palette_commands();
-    let filtered: Vec<(usize, &(String, String))> = commands
-        .iter()
-        .enumerate()
-        .filter(|(_, (cmd, desc))| {
-            filter.is_empty()
-                || cmd.to_lowercase().contains(&filter)
-                || desc.to_lowercase().contains(&filter)
-        })
+    let filtered: Vec<&(String, String)> = app
+        .palette_filtered()
+        .into_iter()
+        .map(|i| &commands[i])
         .collect();
 
     let msgs = app.msgs();
@@ -67,66 +64,62 @@ pub(crate) fn render_command_palette(frame: &mut Frame, area: Rect, app: &App) {
 
     // Dynamic width: 60% of terminal, clamped to [60, 120]
     let popup_width = ((area.width as f32 * 0.60) as u16).clamp(60, 120);
-    // Inner width after block borders (returned by render_list_popup_chrome)
+    // Inner width after block borders.
     let inner_width = popup_width.saturating_sub(2) as usize;
 
     let popup_height = (count + 6).min(area.height.saturating_sub(4)); // cap to not exceed terminal
-    let popup_area = super::centered_list_popup_area(area, popup_width, popup_height);
 
-    let inner = super::render_list_popup_chrome(
-        frame,
-        popup_area,
-        msgs.palette_title.replace("{}", &app.cmd_line),
-        app.theme.block_border_type(),
-        app.theme.bottom_bar_bg,
-    );
-
-    let items: Vec<ListItem> = if filtered.is_empty() {
-        vec![ListItem::new(Span::styled(
-            msgs.palette_empty,
-            Style::default().fg(Color::Gray),
-        ))]
-    } else {
-        let selected = app.palette_selected.min(filtered.len().saturating_sub(1));
-        let mut results: Vec<ListItem> = Vec::new();
-        let mut last_cat = "";
-        for (i, (_orig_idx, (cmd, desc))) in filtered.iter().enumerate() {
-            let skill = is_skill_cmd(app, cmd);
-            let cat = cmd_category(cmd, skill);
-            if !cat.is_empty() && cat != last_cat {
-                if !results.is_empty() || skill {
-                    results.push(ListItem::new(Line::from(Span::styled(
-                        cat,
-                        Style::default()
-                            .fg(Color::Rgb(100, 100, 120))
-                            .add_modifier(ratatui::style::Modifier::DIM),
-                    ))));
-                }
-                last_cat = cat;
+    // Rows are built item by item with a category header in front of the first
+    // command of each group. Headers are ordinary rows as far as the scroll
+    // window is concerned, so the focused item's *row* index is tracked
+    // alongside its item index.
+    let selected = app.palette_selected.min(filtered.len().saturating_sub(1));
+    let mut rows: Vec<ListRow<'_>> = Vec::new();
+    let mut selected_row = 0;
+    let mut last_cat = "";
+    for (i, (cmd, desc)) in filtered.iter().enumerate() {
+        let skill = is_skill_cmd(app, cmd);
+        let cat = cmd_category(cmd, skill);
+        if !cat.is_empty() && cat != last_cat {
+            if !rows.is_empty() || skill {
+                rows.push(ListRow::header(vec![Span::styled(
+                    cat,
+                    Style::default()
+                        .fg(app.theme.muted)
+                        .add_modifier(ratatui::style::Modifier::DIM),
+                )]));
             }
-
-            let is_selected = i == selected;
-            let emoji = cmd_emoji(cmd, skill);
-            let style = if is_selected {
-                Style::default().bg(app.theme.highlight).fg(Color::White)
-            } else {
-                Style::default().fg(app.theme.fg)
-            };
-            // Calculate available width for description
-            // Row format: "  {emoji}  {cmd:<14} {desc}"
-            // Overhead: "  " (2) + emoji (~2) + "  " (2) + cmd_pad + " " (1)
-            let cmd_width = cmd.chars().count().max(14);
-            let reserved = 2 + 2 + 2 + cmd_width + 1; // spaces + emoji + spaces + cmd + space
-            let max_desc = inner_width.saturating_sub(reserved).max(5);
-            let desc_short = truncate_chars(desc, max_desc);
-            let text = format!("  {emoji}  {cmd:<14} {desc_short}");
-            results.push(ListItem::new(Span::styled(text, style)));
+            last_cat = cat;
         }
-        results
-    };
 
-    let list = List::new(items).block(Block::default());
-    frame.render_widget(list, inner);
+        if i == selected {
+            selected_row = rows.len();
+        }
+
+        // Row format: "  {emoji}  {cmd:<14} {desc}"
+        // Overhead: "  " (2) + emoji (~2) + "  " (2) + cmd_pad + " " (1)
+        let cmd_width = cmd.chars().count().max(14);
+        let reserved = 2 + 2 + 2 + cmd_width + 1; // spaces + emoji + spaces + cmd + space
+        let max_desc = inner_width.saturating_sub(reserved).max(5);
+        let desc_short = truncate_chars(desc, max_desc);
+        let emoji = cmd_emoji(cmd, skill);
+        rows.push(ListRow::item(vec![Span::styled(
+            format!("  {emoji}  {cmd:<14} {desc_short}"),
+            Style::default().fg(app.theme.fg),
+        )]));
+    }
+
+    let title = msgs.palette_title.replace("{}", &app.cmd_line);
+    let popup = ListPopup::new(&app.theme, &rows, popup_width, popup_height)
+        .title(title)
+        .selected_row(selected_row)
+        .empty_text(msgs.palette_empty)
+        .selection(SelectionStyle::Highlight)
+        .bg(Some(app.theme.bottom_bar_bg));
+
+    app.mouse
+        .set_area(SurfaceId::PalettePopup, popup.layout(area).popup_area);
+    frame.render_widget(popup, area);
 }
 
 fn truncate_chars(s: &str, max: usize) -> String {

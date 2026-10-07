@@ -26,6 +26,8 @@ pub mod sqlite;
 pub mod subagent_store;
 pub mod task_store;
 pub mod team_store;
+#[cfg(test)]
+mod test_support;
 pub mod worktree_store;
 pub use session_store::{DynSessionStore, SessionLock, SessionStore, open_sqlite_session_store};
 

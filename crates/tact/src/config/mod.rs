@@ -17,7 +17,9 @@ mod types;
 use std::sync::{LazyLock, RwLock};
 
 use clap::Parser;
-pub use cli::{CliArgs, CliCommand, MarketplaceSubcommand, McpSubcommand, PluginSubcommand};
+pub use cli::{
+    CliArgs, CliCommand, HooksSubcommand, MarketplaceSubcommand, McpSubcommand, PluginSubcommand,
+};
 pub use instruction_sources::{InstructionSource, InstructionSources};
 pub use types::{
     AgentSettings, AgentTomlConfig, LlmSettings, LlmTomlConfig, McpSettings, McpTomlConfig,
@@ -329,6 +331,46 @@ pub fn update_subagent_reasoning_effort(effort: Option<OpenAiReasoningEffort>) {
     }
 }
 
+/// Persist `ui.theme` to the loaded config file.
+///
+/// `theme` is the canonical name (`ThemeName::as_str`). Without a config file
+/// the change stays session-only, which the caller reports as such — the same
+/// contract as the `persist_*_model` helpers.
+pub fn persist_theme(theme: &str) -> anyhow::Result<()> {
+    let settings = settings();
+    let path = settings
+        .config_path
+        .as_ref()
+        .ok_or_else(|| anyhow::anyhow!("no config file to update (session-only theme change)"))?;
+    persist::update_ui_theme_in_toml(path, theme)
+}
+
+/// Persist `ui.language` to the loaded config file.
+///
+/// `language` is the canonical name (`Language::as_str`, e.g. `"en"` / `"zh"`).
+/// Without a config file the choice stays session-only, reported as such by the
+/// caller — the same contract as [`persist_theme`].
+pub fn persist_language(language: &str) -> anyhow::Result<()> {
+    let settings = settings();
+    let path = settings.config_path.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("no config file to update (session-only language change)")
+    })?;
+    persist::update_ui_language_in_toml(path, language)
+}
+
+/// Persist `ui.hook_output` to the loaded config file.
+///
+/// Whether the TUI draws hook-injected content. Without a config file the
+/// choice stays session-only, reported as such by the caller — the same
+/// contract as [`persist_theme`].
+pub fn persist_hook_output(enabled: bool) -> anyhow::Result<()> {
+    let settings = settings();
+    let path = settings.config_path.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("no config file to update (session-only hook output change)")
+    })?;
+    persist::update_ui_hook_output_in_toml(path, enabled)
+}
+
 /// Persist `model` under the active `[llm.providers.<name>]` in the loaded config file.
 pub fn persist_active_provider_model(model: &str) -> anyhow::Result<()> {
     let settings = settings();
@@ -409,6 +451,7 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
     if args.list_sessions
         || matches!(args.command, Some(CliCommand::Plugin { .. }))
         || matches!(args.command, Some(CliCommand::Mcp { .. }))
+        || matches!(args.command, Some(CliCommand::Hooks { .. }))
         || matches!(args.command, Some(CliCommand::Upgrade { .. }))
     {
         install_without_llm(resolve::resolve_non_llm_settings(
@@ -428,6 +471,76 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 /// Call this at the very start of `main()`.
 pub fn init() -> anyhow::Result<CliArgs> {
     init_config()
+}
+
+/// Test-only helpers for code that reads the process-wide settings.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use std::sync::Once;
+
+    use tact_llm::{OpenAiProtocol, ProviderKind};
+
+    static INSTALL: Once = Once::new();
+
+    /// Installs a minimal resolved config once per process.
+    ///
+    /// [`super::settings`] panics without one and `Agent::new` reads it, so any
+    /// test that builds an agent starts here. Shared rather than duplicated
+    /// because several modules need it (`agent`, `plugin::hooks`, …).
+    pub(crate) fn install_default() {
+        INSTALL.call_once(|| {
+            super::install(super::types::ResolvedConfig {
+                llm: super::types::LlmSettings {
+                    provider: ProviderKind::OpenAi,
+                    protocol: OpenAiProtocol::default(),
+                    reasoning_effort: None,
+                    api_key: String::new(),
+                    base_url: String::new(),
+                    model: "mock-model".to_string(),
+                    models: Vec::new(),
+                    model_profiles: Default::default(),
+                    responses_compact_threshold: None,
+                },
+                agent: super::types::AgentSettings {
+                    model: "mock-model".to_string(),
+                    reasoning_effort: None,
+                    model_context_window: 500_000,
+                    max_tokens: 8192,
+                    thinking_budget: 0,
+                    snapshot_max_items: 80,
+                    notifications_enabled: false,
+                    max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
+                    micro_compact_enabled: true,
+                    memory_enabled: true,
+                    skill_body_auto_inject: false,
+                    skill_dirs: Vec::new(),
+                    instruction_sources: super::InstructionSources::default(),
+                    subagent: None,
+                },
+                ui: super::types::UiSettings {
+                    theme: "retro".to_string(),
+                    language: "en".to_string(),
+                    vision_image: super::types::VisionImageSettings {
+                        compress: super::types::VisionImageSettings::DEFAULT_COMPRESS,
+                        max_edge: super::types::VisionImageSettings::DEFAULT_MAX_EDGE,
+                        jpeg_quality: super::types::VisionImageSettings::DEFAULT_JPEG_QUALITY,
+                    },
+                    hook_output: super::types::UiSettings::DEFAULT_HOOK_OUTPUT,
+                },
+                tools: super::types::ToolSettings {
+                    bash_timeout_secs: super::types::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
+                    bash_nice: super::types::ToolSettings::DEFAULT_BASH_NICE,
+                    rtk_filter: false,
+                    sandbox: false,
+                },
+                voice: super::types::VoiceSettings::disabled_defaults(),
+                mcp: super::types::McpSettings::default(),
+                permission_mode: None,
+                tokio_console: false,
+                config_path: None,
+            });
+        });
+    }
 }
 
 #[cfg(test)]

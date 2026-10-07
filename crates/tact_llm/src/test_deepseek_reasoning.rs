@@ -15,6 +15,10 @@
 //!
 //!   cargo test -p tact_llm deepseek_reasoning -- --ignored --nocapture
 
+use crate::live_test_support::{
+    assistant_message, chat_completions, count_reasoning, date_tool, has_tool_calls,
+    keep_latest_reasoning_only, reasoning_of, strip_reasoning,
+};
 use serde_json::{Map, Value, json};
 
 fn skip_unless_api_key() -> Option<(String, String, String)> {
@@ -46,86 +50,6 @@ fn with_thinking(mut body: Value) -> Value {
     let obj = body.as_object_mut().expect("request body object");
     obj.extend(thinking_enabled());
     body
-}
-
-fn date_tool() -> Value {
-    json!({
-        "type": "function",
-        "function": {
-            "name": "get_date",
-            "description": "Get today's date as YYYY-mm-dd",
-            "parameters": {
-                "type": "object",
-                "properties": {},
-            }
-        }
-    })
-}
-
-async fn chat_completions(
-    api_key: &str,
-    base_url: &str,
-    body: &Value,
-) -> Result<(reqwest::StatusCode, Value), String> {
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(&url)
-        .bearer_auth(api_key)
-        .header("content-type", "application/json")
-        .json(body)
-        .send()
-        .await
-        .map_err(|e| format!("request failed: {e}"))?;
-    let status = resp.status();
-    let text = resp.text().await.unwrap_or_default();
-    let json: Value = serde_json::from_str(&text).unwrap_or_else(|_| json!({ "raw": text }));
-    Ok((status, json))
-}
-
-fn assistant_message(choice: &Value) -> Value {
-    choice["choices"][0]["message"].clone()
-}
-
-fn reasoning_of(msg: &Value) -> Option<&str> {
-    msg.get("reasoning_content")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-}
-
-fn has_tool_calls(msg: &Value) -> bool {
-    msg.get("tool_calls")
-        .and_then(|v| v.as_array())
-        .is_some_and(|a| !a.is_empty())
-}
-
-fn strip_reasoning(mut msg: Value) -> Value {
-    if let Some(obj) = msg.as_object_mut() {
-        obj.remove("reasoning_content");
-    }
-    msg
-}
-
-/// Keep `reasoning_content` only on the last assistant message that has it;
-/// strip it from every earlier assistant message.
-fn keep_latest_reasoning_only(messages: &mut [Value]) {
-    let last = messages.iter().rposition(|m| {
-        m.get("role").and_then(|r| r.as_str()) == Some("assistant") && reasoning_of(m).is_some()
-    });
-    for (i, msg) in messages.iter_mut().enumerate() {
-        if Some(i) != last
-            && let Some(obj) = msg.as_object_mut()
-        {
-            obj.remove("reasoning_content");
-        }
-    }
-}
-
-fn count_reasoning(messages: &[Value]) -> usize {
-    messages
-        .iter()
-        .filter(|m| reasoning_of(m).is_some())
-        .count()
 }
 
 /// Scenario 1+2: plain multi-turn with and without echoing `reasoning_content`.

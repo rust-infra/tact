@@ -4,6 +4,10 @@
 // Bridges Agent status updates and terminal events to the App state and
 // submodule render/handler functions.
 
+/// Test-only serialization of the process-global system clipboard.
+#[cfg(test)]
+mod clipboard_lock;
+
 mod handlers;
 pub(crate) mod i18n {
     pub(crate) use agent_tui_kit::i18n::*;
@@ -16,6 +20,9 @@ pub(crate) mod theme {
 mod theme_detection;
 
 mod widgets;
+
+#[cfg(any(test, feature = "test-support"))]
+mod test_fixtures;
 
 #[cfg(feature = "test-support")]
 pub mod test_support;
@@ -49,8 +56,9 @@ use tokio_stream::StreamExt;
 pub use crate::widgets::state::SkillEntry;
 use crate::{
     handlers::{
-        flush_pending_when_idle, handle_file_picker_mode, handle_insert_mode, handle_mouse_event,
-        handle_normal_mode, handle_overlay_key, handle_palette_mode, handle_select_mode,
+        flush_pending_when_idle, handle_file_picker_mode, handle_global_shortcut,
+        handle_insert_mode, handle_mouse_event, handle_normal_mode, handle_overlay_key,
+        handle_palette_mode, handle_select_mode,
     },
     render::{
         render_bottom_bar, render_command_palette, render_file_picker, render_input_box,
@@ -76,6 +84,33 @@ pub fn parse_voice_keybind(raw: &str) -> Option<(KeyModifiers, KeyCode)> {
     // crossterm represents Ctrl+char as KeyCode::Char(<lowercase char>).
     // Control modifier is checked separately during matching.
     Some((KeyModifiers::CONTROL, KeyCode::Char(ch)))
+}
+
+/// Why the configured `voice.voice_keybind` can never fire, if it names a key
+/// the global dispatcher already owns.
+///
+/// `Ctrl+C/H/T/L/?` are handled before any mode handler **and consume the
+/// event**, so a voice binding on one of them is dead on arrival: the user
+/// presses it, the theme flips (or the help panel opens) and recording never
+/// starts. Nothing about that is visible at runtime — hence a refusal at
+/// startup, before the terminal is touched, instead of a feature that looks
+/// broken.
+///
+/// The reserved set is read from the dispatcher's own table
+/// ([`handlers::is_global_shortcut`]) rather than restated here.
+fn voice_keybind_conflict(parsed: Option<(KeyModifiers, KeyCode)>) -> Option<String> {
+    let (_, KeyCode::Char(c)) = parsed? else {
+        return None;
+    };
+    handlers::is_global_shortcut(c).then(|| {
+        format!(
+            "voice.voice_keybind = \"ctrl+{c}\" is already taken by the built-in {} shortcut. \
+             Global shortcuts are handled first and consume the key, so voice recording could \
+             never start — pick another key ({} are reserved).",
+            handlers::global_shortcut_label(c),
+            handlers::global_shortcut_labels()
+        )
+    })
 }
 
 // ========== Main Loop ==========
@@ -128,6 +163,15 @@ pub struct TuiConfig {
     pub session_id: String,
     pub history_save_tx: UnboundedSender<(String, String)>,
     pub theme: String,
+    /// Configured UI language ("en" | "zh"); an unknown value falls back
+    /// to English with a warning, the same contract as `theme`.
+    pub language: String,
+    /// Config file `[ui]` preferences are written back to, or `None` when no
+    /// config file was loaded — the toggles then report "this session only".
+    pub ui_config_path: Option<PathBuf>,
+    /// Configured `[ui] hook_output`: whether the log draws hook-injected
+    /// content. Display only — the agent injects it either way.
+    pub hook_output: bool,
     pub model_context_window: usize,
     /// Configured model name, shown in the bottom bar before the first LLM call.
     pub model_name: String,
@@ -165,6 +209,9 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         session_id,
         history_save_tx,
         theme,
+        language,
+        ui_config_path,
+        hook_output,
         model_context_window,
         model_name,
         model_max_tokens,
@@ -178,6 +225,12 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         voice,
         voice_parsed_keybind,
     } = cfg;
+    // Refuse a dead voice binding before the terminal is touched: the global
+    // dispatcher runs first and consumes the key, so this is a config error, not
+    // a runtime surprise. See `voice_keybind_conflict`.
+    if let Some(conflict) = voice_keybind_conflict(voice_parsed_keybind) {
+        anyhow::bail!("{conflict}");
+    }
     // Enter raw mode, enable the alternate screen buffer, capture mouse events
     enable_raw_mode()?;
     let mut stdout = io::stdout();
@@ -207,6 +260,9 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_data,
     );
 
+    app.set_configured_language(&language);
+    app.set_ui_config_path(ui_config_path);
+    app.set_hook_output(hook_output);
     app.set_pending_ui(pending_ui);
     app.skill_registry = skill_registry;
     app.session_store = Some(session_store);
@@ -223,10 +279,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.status_bar_mut().model_reasoning_effort = tact::config::try_settings()
         .and_then(|s| s.agent.reasoning_effort)
         .map(|effort| effort.as_str().to_string());
-    app.add_startup_logo();
-    let msgs = app.msgs();
-    app.add_system_message(msgs.startup_welcome.to_string());
-    app.add_system_message(msgs.startup_mode_hint.to_string());
+    app.add_startup_banner();
 
     if voice.enabled {
         let missing_api_key = matches!(voice.provider, tact::config::VoiceProvider::OpenAi)
@@ -336,19 +389,12 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                 render_main_area(f, chunks[1], &mut app);
                 render_input_box(f, chunks[2], &mut app);
                 render_bottom_bar(f, chunks[3], &app);
-                if app.input_mode == InputMode::Palette {
-                    render_command_palette(f, chunks[1], &app);
-                }
-                // Rendered every frame: the function itself no-ops when the
-                // popup is inactive and is responsible for clearing the mouse
-                // hit area it records while active.
+                // The four list popups render every frame: each one no-ops when
+                // its popup is inactive and is responsible for clearing the
+                // mouse hit area it records while active.
+                render_command_palette(f, chunks[1], &mut app);
                 render_select_popup(f, chunks[1], &mut app);
-                if app.input_mode == InputMode::FilePicker {
-                    render_file_picker(f, chunks[1], &app);
-                }
-                // Rendered every frame: the function itself no-ops when the
-                // popup is inactive and is responsible for clearing the mouse
-                // hit area it records while active.
+                render_file_picker(f, chunks[1], &mut app);
                 render_slash_command_popup(f, chunks[1], &mut app);
             })?;
             // Clear dirty flag after painting; next frame only repaints when state changes.
@@ -386,36 +432,20 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                         app.dirty = true;
                 match event {
                     Event::Key(key) if key.kind == KeyEventKind::Press => {
-                        // Global shortcuts: active in any input mode
-                        if key.modifiers.contains(KeyModifiers::CONTROL) {
-                            match key.code {
-                                KeyCode::Char('c') => {
-                                    app.should_quit = true;
-                                }
-                                KeyCode::Char('h') => {
-                                    app.show_history = !app.show_history;
-                                    app.show_help = false;
-                                }
-                                KeyCode::Char('t') => {
-                                    app.toggle_theme();
-                                }
-                                KeyCode::Char('l') => {
-                                    app.toggle_language();
-                                }
-                                KeyCode::Char('?') => {
-                                    app.show_help = !app.show_help;
-                                    app.show_history = false;
-                                }
-                                _ => {}
-                            }
-                        }
+                        // Global shortcuts: active in any input mode, and they
+                        // *consume* the event — otherwise the same `Ctrl+<char>`
+                        // also reaches the mode handler and types its letter
+                        // (`Ctrl+T` switched the theme and inserted a `t`).
+                        let global_handled = handle_global_shortcut(&mut app, &key);
                         // Voice recording keybind: only consume the event on an
                         // exact match; otherwise fall through to normal dispatch.
                         let voice_key_handled =
                             app.voice_parsed_keybind.is_some_and(|(vk_mod, vk_code)| {
                                 key.modifiers.contains(vk_mod) && key.code == vk_code
                             });
-                        if voice_key_handled {
+                        if global_handled {
+                            // Already handled; nothing else to dispatch.
+                        } else if voice_key_handled {
                             app.toggle_voice_recording();
                         } else if app.slash_command.active
                             && matches!(app.input_mode, InputMode::Insert)
@@ -562,7 +592,7 @@ mod poll_timeout_tests {
 
 #[cfg(test)]
 mod voice_keybind_tests {
-    use super::parse_voice_keybind;
+    use super::{parse_voice_keybind, voice_keybind_conflict};
     use crossterm::event::{KeyCode, KeyModifiers};
 
     #[test]
@@ -603,5 +633,51 @@ mod voice_keybind_tests {
     #[test]
     fn parse_rejects_empty() {
         assert_eq!(parse_voice_keybind(""), None);
+    }
+
+    #[test]
+    fn a_binding_on_a_global_shortcut_is_refused() {
+        // `Ctrl+T` flips the theme and consumes the key, so voice would never
+        // start — the config is refused instead of looking broken.
+        let conflict =
+            voice_keybind_conflict(parse_voice_keybind("ctrl+t")).expect("ctrl+t must be refused");
+        assert!(
+            conflict.contains("ctrl+t"),
+            "message must name the key: {conflict}"
+        );
+        assert!(
+            conflict.contains("Ctrl+T"),
+            "message must name the shortcut it collides with: {conflict}"
+        );
+        for reserved in ["Ctrl+C", "Ctrl+H", "Ctrl+T", "Ctrl+L", "Ctrl+?"] {
+            assert!(
+                conflict.contains(reserved),
+                "message must list the reserved keys, missing {reserved}: {conflict}"
+            );
+        }
+    }
+
+    #[test]
+    fn every_reserved_key_is_refused() {
+        for c in ['c', 'h', 't', 'l', '?'] {
+            let raw = format!("ctrl+{c}");
+            assert!(
+                voice_keybind_conflict(parse_voice_keybind(&raw)).is_some(),
+                "{raw} must be refused"
+            );
+        }
+    }
+
+    #[test]
+    fn a_free_binding_is_accepted() {
+        for raw in ["ctrl+g", "ctrl+r", "ctrl+,"] {
+            assert_eq!(
+                voice_keybind_conflict(parse_voice_keybind(raw)),
+                None,
+                "{raw} is not a global shortcut and must be accepted"
+            );
+        }
+        // Unset (mouse-only) is the default and stays valid.
+        assert_eq!(voice_keybind_conflict(None), None);
     }
 }

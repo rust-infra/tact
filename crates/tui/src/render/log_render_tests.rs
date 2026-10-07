@@ -3,14 +3,14 @@
 use std::collections::HashMap;
 
 use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
-use tact_protocol::{
-    AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo,
-};
+use tact_protocol::{AgentUpdate, PlanStep, StepStatus, ThinkingChunk, ToolPresentationInfo};
 
 use super::log::render_log_panel;
 use super::test_harness::{
-    buffer_has_bg, buffer_has_modifier, make_app, render_log_panel_terminal, render_log_panel_text,
+    buffer_has_bg, buffer_has_modifier, buffer_text, make_app, render_log_panel_terminal,
+    render_log_panel_text,
 };
+use crate::test_fixtures::StepCall;
 use crate::widgets::state::{App, LogItemKind, LogSelection, Status};
 use crate::widgets::tool_widget::TOOL_HEADER_ROWS;
 use agent_tui_kit::widgets::button::Button;
@@ -35,29 +35,15 @@ fn seed_tall_subagent_tool(app: &mut App, line_count: usize) {
         "sub-tall",
         HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "sub-tall".into(),
-        tool_name: "spawn_subagent".into(),
-        arg_summary: "audit the repo".into(),
-        arg_full: "audit the repo".into(),
-        presentation: ToolPresentationInfo::generic("spawn_subagent"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "sub-tall".into(),
-        result: StepResult {
-            tool: "spawn_subagent".into(),
-            arg_summary: "audit the repo".into(),
-            arg_full: Some("audit the repo".into()),
-            status: StepStatus::Success,
-            message: "ok".into(),
-            detail: Some(output),
-            duration_us: Some(100),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("spawn_subagent"),
-        },
-    });
+    app.handle_agent_update(
+        StepCall::new(0, "sub-tall", "spawn_subagent", "audit the repo").started(),
+    );
+    app.handle_agent_update(
+        StepCall::new(0, "sub-tall", "spawn_subagent", "audit the repo")
+            .detail(output)
+            .duration_us(100)
+            .finished(),
+    );
 }
 
 fn line_column_of(rendered: &str, needle: &str) -> Option<usize> {
@@ -152,7 +138,7 @@ fn log_scroll_offset_hides_early_lines() {
 #[test]
 fn tall_markdown_cell_is_fully_traversable() {
     // Regression: a whole-Markdown message taller than the viewport (a long
-    // `/skills` table) used to be reachable only at its top/bottom; the
+    // `/skill list` table) used to be reachable only at its top/bottom; the
     // middle rows could never be scrolled into view.
     let mut app = make_app();
     let mut md = String::from("## Big table\n\n| Row | V |\n| --- | --- |\n");
@@ -272,9 +258,17 @@ fn log_task_end_separator_renders_solid_rule() {
         text.contains('─'),
         "task-end separator should render solid rule, got:\n{text}"
     );
+    // The frozen seconds stay in the sentinel (and reach the task-stats row),
+    // but the rule itself no longer draws them: the number is already on the
+    // stats row below and in the bottom bar's turn segment.
     assert!(
-        text.contains("Elapsed 01:05"),
-        "task-end separator should embed frozen elapsed, got:\n{text}"
+        !text.contains("Elapsed"),
+        "the rule must not draw an elapsed label, got:\n{text}"
+    );
+    assert_eq!(
+        app.last_prompt_elapsed_secs,
+        Some(65),
+        "the turn's wall clock must still be frozen for the stats row"
     );
 }
 
@@ -429,29 +423,14 @@ fn theme_change_repaints_existing_tool_title_rows() {
             format!("theme-probe-{i}"),
             HashMap::from([("command".to_string(), "echo hi".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: i,
-            tool_id: format!("theme-probe-{i}"),
-            tool_name: "bash".into(),
-            arg_summary: "echo hi".into(),
-            arg_full: "echo hi".into(),
-            presentation: ToolPresentationInfo::generic("bash"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: i,
-            tool_id: format!("theme-probe-{i}"),
-            result: StepResult {
-                tool: "bash".into(),
-                arg_summary: "echo hi".into(),
-                arg_full: Some("echo hi".into()),
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some("hi\n".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("bash"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(i, format!("theme-probe-{i}"), "bash", "echo hi").started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(i, format!("theme-probe-{i}"), "bash", "echo hi")
+                .detail("hi\n")
+                .finished(),
+        );
 
         // `toggle_theme` only changes `app.theme`; the blocks above are already
         // built and must still follow it.
@@ -549,14 +528,11 @@ fn running_background_card_shows_the_task_id() {
         "bg1",
         HashMap::from([("command".to_string(), "cargo build".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "bg1".into(),
-        tool_name: "background_run".into(),
-        arg_summary: "cargo build".into(),
-        arg_full: "cargo build".into(),
-        presentation,
-    });
+    app.handle_agent_update(
+        StepCall::new(0, "bg1", "background_run", "cargo build")
+            .presentation(presentation)
+            .started(),
+    );
     // What `background_run` sends once the task exists.
     app.handle_agent_update(AgentUpdate::ToolMeta {
         tool_id: "bg1".into(),
@@ -593,29 +569,13 @@ fn completed_command_renders_header_rows_only() {
         "bash-collapsed",
         HashMap::from([("command".to_string(), "cargo build".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "bash-collapsed".into(),
-        tool_name: "bash".into(),
-        arg_summary: "cargo build".into(),
-        arg_full: "cargo build".into(),
-        presentation: ToolPresentationInfo::generic("bash"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "bash-collapsed".into(),
-        result: StepResult {
-            tool: "bash".into(),
-            arg_summary: "cargo build".into(),
-            arg_full: Some("cargo build".into()),
-            status: StepStatus::Success,
-            message: "ok".into(),
-            detail: Some("Compiling tact\ndone\n".into()),
-            duration_us: Some(100),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("bash"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "bash-collapsed", "bash", "cargo build").started());
+    app.handle_agent_update(
+        StepCall::new(0, "bash-collapsed", "bash", "cargo build")
+            .detail("Compiling tact\ndone\n")
+            .duration_us(100)
+            .finished(),
+    );
 
     let block = app.tools().blocks.last().expect("tool block");
     assert_eq!(block.output.visual_rows(false), TOOL_HEADER_ROWS);
@@ -702,29 +662,14 @@ fn language_toggle_repaints_tool_card_chrome() {
         "bash-failed",
         HashMap::from([("command".to_string(), "false".to_string())]),
     )));
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "bash-failed".into(),
-        tool_name: "bash".into(),
-        arg_summary: "false".into(),
-        arg_full: "false".into(),
-        presentation: ToolPresentationInfo::generic("bash"),
-    });
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "bash-failed".into(),
-        result: StepResult {
-            tool: "bash".into(),
-            arg_summary: "false".into(),
-            arg_full: Some("false".into()),
-            status: StepStatus::Failed,
-            message: "exit 1".into(),
-            detail: Some("boom\n".into()),
-            duration_us: Some(1),
-            permission_label: None,
-            presentation: ToolPresentationInfo::generic("bash"),
-        },
-    });
+    app.handle_agent_update(StepCall::new(0, "bash-failed", "bash", "false").started());
+    app.handle_agent_update(
+        StepCall::new(0, "bash-failed", "bash", "false")
+            .status(StepStatus::Failed)
+            .message("exit 1")
+            .detail("boom\n")
+            .finished(),
+    );
 
     // The card is built while the UI is still English; only then does the
     // language change.
@@ -903,30 +848,18 @@ fn subagent_cancel_button_rect_matches_the_drawn_glyphs() {
     )));
     let mut presentation = ToolPresentationInfo::generic("spawn_subagent");
     presentation.keep_live = true;
-    app.handle_agent_update(AgentUpdate::StepStarted {
-        idx: 0,
-        tool_id: "sub-live".into(),
-        tool_name: "spawn_subagent".into(),
-        arg_summary: "audit the repo".into(),
-        arg_full: "audit the repo".into(),
-        presentation: presentation.clone(),
-    });
+    app.handle_agent_update(
+        StepCall::new(0, "sub-live", "spawn_subagent", "audit the repo")
+            .presentation(presentation.clone())
+            .started(),
+    );
     // What the async branch sends back while the child keeps running.
-    app.handle_agent_update(AgentUpdate::StepFinished {
-        idx: 0,
-        tool_id: "sub-live".into(),
-        result: StepResult {
-            tool: "spawn_subagent".into(),
-            arg_summary: "audit the repo".into(),
-            arg_full: Some("audit the repo".into()),
-            status: StepStatus::Success,
-            message: "async_launched { child-123 }".into(),
-            detail: None,
-            duration_us: Some(1),
-            permission_label: None,
-            presentation,
-        },
-    });
+    app.handle_agent_update(
+        StepCall::new(0, "sub-live", "spawn_subagent", "audit the repo")
+            .message("async_launched { child-123 }")
+            .presentation(presentation)
+            .finished(),
+    );
 
     let terminal = render_log_panel_terminal(&mut app, 100, 20);
     let buffer = terminal.backend().buffer();
@@ -944,4 +877,197 @@ fn subagent_cancel_button_rect_matches_the_drawn_glyphs() {
         "hit area must be exactly the glyphs, not a column wider"
     );
     assert!(Button::hit_test(*rect, col, row));
+}
+
+/// The live stats row is a *row of the panel*, not a log item: while a task is
+/// in flight the last content row carries the line the task-end block will
+/// freeze into the log, so the turn's numbers are readable without scrolling to
+/// the end of the turn.
+#[test]
+fn live_stats_row_sits_on_the_last_content_row_while_a_task_runs() {
+    let mut app = make_app();
+    app.add_system_message("task body".into());
+    app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
+    app.status_bar_mut().model_name = "deepseek-flash".into();
+    app.status_bar_mut().token_prompt = 60_826;
+    app.status_bar_mut().token_completion = 3_420;
+    app.status_bar_mut().token_total = 64_246;
+
+    let text = render_log_panel_text(&mut app, 120, 12);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines[10].contains(
+            "Task stats:⏱ 01:05 · deepseek-flash · 64246 tokens (prompt 60826 · completion 3420)"
+        ),
+        "the live line must be drawn on the last content row (10), got:\n{text}"
+    );
+    assert!(
+        lines[11].contains('─'),
+        "the box's bottom border stays below the live line, got:\n{text}"
+    );
+    assert!(
+        text.contains("task body"),
+        "the log keeps its own rows, got:\n{text}"
+    );
+}
+
+#[test]
+fn live_stats_row_is_absent_when_no_task_is_in_flight() {
+    let mut app = make_app();
+    app.add_system_message("task body".into());
+    app.status_bar_mut().model_name = "deepseek-flash".into();
+    app.status_bar_mut().token_total = 10;
+
+    let text = render_log_panel_text(&mut app, 120, 12);
+    assert!(
+        !text.contains("Task stats:"),
+        "idle must not spend a log row on live stats, got:\n{text}"
+    );
+}
+
+/// The live row comes out of the viewport, not out of the log: the newest log
+/// line must stay on screen above it.
+#[test]
+fn live_stats_row_takes_its_row_from_the_viewport_not_from_the_log() {
+    let mut app = make_app();
+    seed_many_numbered_lines(&mut app, 30);
+    app.task_start_time = Some(chrono::Local::now());
+    app.status_bar_mut().model_name = "mock-model".into();
+    app.log_scroll.visual_top = usize::MAX;
+
+    let text = render_log_panel_text(&mut app, 80, 12);
+    let lines: Vec<&str> = text.lines().collect();
+    assert!(
+        lines.iter().any(|line| line.contains("log-row-29")),
+        "the newest log row must stay visible above the live row, got:\n{text}"
+    );
+    assert!(
+        lines[10].contains("Task stats:"),
+        "the live row is the last content row, got:\n{text}"
+    );
+}
+
+/// Render invariant (AGENTS.md): the live row paints its own background across
+/// the whole row, so a shorter line leaves no residue in the tail.
+#[test]
+fn live_stats_row_paints_the_theme_bg_across_its_tail() {
+    let mut app = make_app();
+    app.add_system_message("task body".into());
+    app.task_start_time = Some(chrono::Local::now());
+    app.status_bar_mut().model_name = "m".into();
+
+    let terminal = render_log_panel_terminal(&mut app, 60, 12);
+    let buffer = terminal.backend().buffer();
+    let bg = app.theme.bg;
+    for x in 1..59 {
+        let cell = &buffer[(x, 10)];
+        assert_eq!(cell.bg, bg, "live row cell at x={x} must carry theme.bg");
+    }
+}
+
+/// The live row is a HUD on the turn boundary, not a log row: it is centered
+/// in the panel (the full-width rule above it is the boundary, and the clock
+/// that used to sit centered *in* that rule now sits centered under it).
+#[test]
+fn live_stats_row_is_centered_in_the_panel() {
+    let mut app = make_app();
+    app.add_system_message("task body".into());
+    app.task_start_time = Some(chrono::Local::now());
+    app.status_bar_mut().model_name = "mock-model".into();
+    app.status_bar_mut().token_total = 100;
+
+    let terminal = render_log_panel_terminal(&mut app, 120, 12);
+    let buffer = terminal.backend().buffer();
+    // Measure the padding between the two border columns, cell by cell (a wide
+    // glyph's continuation cell is blank, so char counting would be off).
+    let blank = |x: u16| buffer[(x, 10)].symbol().trim().is_empty();
+    let left = (1..119).take_while(|&x| blank(x)).count();
+    let right = (1..119).rev().take_while(|&x| blank(x)).count();
+
+    assert!(left > 0, "a centered row is not flush left");
+    assert!(
+        left.abs_diff(right) <= 1,
+        "the live row must be centered, got left={left} right={right}:\n{}",
+        buffer_text(buffer)
+    );
+}
+
+/// Padding `(left, right)` of the row carrying `Task stats:` in a buffer,
+/// measured inside the panel's two border columns.
+fn stats_row_padding(buffer: &ratatui::buffer::Buffer) -> (usize, usize) {
+    let row = (0..buffer.area.height)
+        .find(|&y| {
+            (1..buffer.area.width - 1)
+                .map(|x| buffer[(x, y)].symbol())
+                .collect::<String>()
+                .contains("Task stats:")
+        })
+        .expect("a stats row in the buffer");
+    let blank = |x: u16| buffer[(x, row)].symbol().trim().is_empty();
+    let left = (1..buffer.area.width - 1).take_while(|&x| blank(x)).count();
+    let right = (1..buffer.area.width - 1)
+        .rev()
+        .take_while(|&x| blank(x))
+        .count();
+    (left, right)
+}
+
+/// The frozen row — the task-end stats block written into the log — is centered
+/// like the live band it replaces. Its pad is baked into the *line* (never into
+/// `raw`, which the `⎘` byte mapping reads), so it re-centers whenever the
+/// panel width changes.
+#[test]
+fn frozen_stats_row_is_centered_like_the_live_row() {
+    let mut app = make_app();
+    app.add_system_message("task body".into());
+    app.last_prompt_elapsed_secs = Some(65);
+    app.status_bar_mut().model_name = "deepseek-flash".into();
+    app.status_bar_mut().token_total = 100;
+    app.add_task_end_separator();
+    app.add_task_stats_block();
+
+    let terminal = render_log_panel_terminal(&mut app, 120, 12);
+    let (left, right) = stats_row_padding(terminal.backend().buffer());
+    assert!(left > 0, "a centered row is not flush left");
+    assert!(
+        left.abs_diff(right) <= 1,
+        "the frozen row must be centered, got left={left} right={right}:\n{}",
+        buffer_text(terminal.backend().buffer())
+    );
+}
+
+/// The handoff: the frozen row written at task end says exactly what the live
+/// row was saying, because both come from `stats_line::task_stats_body`.
+#[test]
+fn the_live_row_hands_off_to_the_frozen_row() {
+    let mut app = make_app();
+    app.add_system_message("task body".into());
+    app.task_start_time = Some(chrono::Local::now() - chrono::Duration::seconds(65));
+    app.status_bar_mut().model_name = "deepseek-flash".into();
+    app.status_bar_mut().token_total = 100;
+
+    let live = render_log_panel_text(&mut app, 120, 12);
+    assert!(
+        live.lines()
+            .nth(10)
+            .is_some_and(|l| l.contains("Task stats:⏱ 01:05 · deepseek-flash · 100 tokens")),
+        "got:\n{live}"
+    );
+
+    app.last_prompt_elapsed_secs = Some(65);
+    app.task_start_time = None;
+    app.add_task_stats_block();
+
+    let frozen = render_log_panel_text(&mut app, 120, 12);
+    assert!(
+        frozen.contains("Task stats:⏱ 01:05 · deepseek-flash · 100 tokens"),
+        "the frozen row must repeat the live row's numbers, got:\n{frozen}"
+    );
+    assert!(
+        !frozen
+            .lines()
+            .nth(10)
+            .is_some_and(|l| l.contains("Task stats:")),
+        "the live row must be gone once the task ends, got:\n{frozen}"
+    );
 }

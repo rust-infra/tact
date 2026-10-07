@@ -17,22 +17,24 @@ mod file_picker;
 mod input_history;
 mod slash_command;
 
-mod task_dag;
 mod voice;
 
 pub(crate) use agent_tui_kit::state::account::AccountState;
 pub(crate) use file_picker::FilePicker;
 pub(crate) use input_history::InputHistory;
-pub(crate) use slash_command::SlashCommandState;
+pub(crate) use slash_command::{Candidate, SlashCommandState};
 
-pub(crate) use agent_tui_kit::state::log::{LogCoordinator, LogItemKind, SystemMsgStyle};
+pub(crate) use agent_tui_kit::state::log::{LogCoordinator, LogItem, LogItemKind, SystemMsgStyle};
 pub(crate) use agent_tui_kit::state::log_scroll::LogScroll;
 #[allow(unused_imports)] // PopupHitRow is re-exported for tui's test code (hit-row helpers)
 pub(crate) use agent_tui_kit::state::mouse_state::{
-    LogSelection, MouseState, PopupHitRow, PopupTextHit, TextPosition,
+    LogSelection, MouseState, PopupHitRow, PopupTextHit, SurfaceId, TextPosition,
 };
 pub(crate) use agent_tui_kit::state::select_popup::SelectPopup;
 pub(crate) use agent_tui_kit::state::selection::PopupTextSelection;
+pub(crate) use agent_tui_kit::state::task_dag::{
+    DEFAULT_DAG_RENDER_WIDTH, TaskDagPopup, render_task_dag_lines,
+};
 pub(crate) use agent_tui_kit::state::thinking::{
     ActiveThinkingBlock, ThinkingBlock, ThinkingPopup,
 };
@@ -44,41 +46,15 @@ pub(crate) use agent_tui_kit::state::ui_types::{
 pub use agent_tui_kit::state::ui_types::{HistoryEntry, SkillEntry};
 pub(crate) use app::messages::{find_task_stats_copy_button, is_task_stats_line};
 pub(crate) use app::pending::PendingMessage;
-pub(crate) use task_dag::{DEFAULT_DAG_RENDER_WIDTH, TaskDagPopup, render_task_dag_lines};
 pub(crate) use voice::{VoiceEventOutcome, VoicePhase, VoiceStartResult, VoiceState};
 
 // ========== Basic Types ==========
 
-/// Commands shown in the command palette (triggered by `/`).
-pub(crate) const PALETTE_COMMANDS: &[(&str, &str)] = &[
-    ("theme", "Toggle color theme"),
-    ("model", "Switch model for current provider"),
-    ("model-subagent", "Switch subagent model"),
-    ("permission", "Set permission mode (Default/Plan/Auto)"),
-    ("view-system-prompt", "View system prompt"),
-    ("save", "Save log to file"),
-    ("compact", "Compact conversation history"),
-    ("cancel", "Cancel current task"),
-    (
-        "subagent_cancel",
-        "Cancel a running subagent (usage: /subagent_cancel <child-id>)",
-    ),
-    ("quit", "Quit application"),
-    ("help", "Show help panel"),
-    ("history", "Show task history"),
-    ("skills", "List available skills"),
-    ("skill-reload", "Reload skills from disk"),
-    ("plugin", "Manage plugins and marketplaces"),
-    (
-        "mcp",
-        "Manage MCP servers (usage: /mcp auth <server> | /mcp list)",
-    ),
-    ("balance", "Query account balance (DeepSeek/Kimi)"),
-    ("lang", "Toggle language (EN/中文)"),
-    ("stats", "Show session statistics"),
-    ("tasks-dag", "Show task dependency DAG"),
-    ("background", "Check background task status"),
-];
+mod slash;
+
+pub(crate) use slash::SlashCommand;
+#[allow(unused_imports)] // Re-exported for tui's test code (the subcommand guard)
+pub(crate) use slash::Subcommand;
 
 /// Which agent a `/model` flow targets: the main agent or the configured
 /// subagent. The two-step model/effort/budget flow is expressed once and
@@ -128,6 +104,17 @@ pub(crate) enum SelectKind {
     ViewSystemPrompt,
     /// `/permission` picker — choose Default / Plan / Auto.
     PermissionModePick,
+    /// `/theme` picker — choose one of the built-in themes.
+    ThemePick,
+    /// `/theme` second step — offer to write `[ui] theme` to `config.toml`,
+    /// mirroring what `/model` asks before persisting.
+    PersistTheme { name: crate::theme::ThemeName },
+    /// `/lang` second step — offer to write `[ui] language` to `config.toml`.
+    ///
+    /// Separate from [`Self::PersistTheme`] rather than one "which `[ui]` key"
+    /// variant: the two write different spellings (a theme's canonical name vs
+    /// a locale tag) and report in their own words.
+    PersistLang { language: crate::i18n::Language },
 }
 
 /// A queued agent-originated select (`RequestSelect` / `RequestMultiSelect`)
@@ -284,6 +271,27 @@ pub struct App {
     pub(crate) loading_idx: Option<usize>,
     /// Current interface language.
     pub(crate) language: Language,
+    /// Config file a `[ui]` preference can be written back to, captured once at
+    /// startup by [`Self::set_ui_config_path`].
+    ///
+    /// Held here rather than re-read from the process-global settings on every
+    /// keystroke: `/theme`, `/lang`, `Ctrl+T` and `Ctrl+L` all need to know
+    /// whether there is a file to write, and they must all answer the same way.
+    /// `None` (the test default) means every one of them reports "this session
+    /// only" and nothing is written.
+    pub(crate) ui_config_path: Option<PathBuf>,
+    /// Whether hook-injected content is drawn in the log — a hook's progress
+    /// line (`LogItemKind::HookStatus`) and the block of context it injects
+    /// (`LogItemKind::HookContext`).
+    ///
+    /// Seeded once at startup from `[ui] hook_output` and flipped by
+    /// `/hook-output`. **Display only**: the agent still runs the hook and still
+    /// injects its stdout as a `<hook-context>` message, so turning this off
+    /// changes what the reader sees, never what the model gets. Gated at the
+    /// point the rows are appended, not in the renderer — a hidden row would
+    /// still take a physical index, and the log's indices are the key for
+    /// selection, cards and scroll anchors.
+    pub(crate) hook_output: bool,
     /// Brief status bar notification (auto-clears after 3s).
     pub(crate) flash_msg: Option<(String, std::time::Instant)>,
     /// When the last copy landed; drives the popup footer's `✓ Copied` flash

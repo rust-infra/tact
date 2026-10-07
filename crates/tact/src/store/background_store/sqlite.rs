@@ -2,11 +2,10 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use chrono::{DateTime, Utc};
 use sqlx::Row;
 
 use crate::background::{BackgroundTaskRecord, BackgroundTaskStatus};
-use crate::store::sqlite::{PoolRef, open_pool};
+use crate::store::sqlite::{PoolRef, from_millis, open_pool};
 
 use super::BackgroundStore;
 
@@ -85,10 +84,6 @@ impl SqliteBackgroundStore {
     }
 }
 
-fn from_millis(millis: i64) -> DateTime<Utc> {
-    DateTime::from_timestamp_millis(millis).unwrap_or_else(Utc::now)
-}
-
 fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> Result<BackgroundTaskRecord> {
     Ok(BackgroundTaskRecord {
         id: row.try_get("id")?,
@@ -164,12 +159,10 @@ impl BackgroundStore for SqliteBackgroundStore {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use chrono::Utc;
 
     fn temp_db(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join(format!("tact-bgstore-test-{name}"));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join("tact.db")
+        crate::store::test_support::temp_db("tact-bgstore-test", name)
     }
 
     fn record(id: &str, status: BackgroundTaskStatus) -> BackgroundTaskRecord {

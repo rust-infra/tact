@@ -1,3 +1,5 @@
+use agent_tui_kit::state::{clamp_step, contains_ignore_case};
+
 /// Lightweight file-picker popup state.
 ///
 /// Holds the current directory being browsed, a flat list of entries in that
@@ -91,24 +93,19 @@ impl FilePicker {
 
     pub(crate) fn refresh(&mut self) {
         let mut options = collect_entries(&self.current_dir, &self.base_dir);
-        if !self.query.is_empty() {
-            let query = self.query.to_lowercase();
-            options.retain(|e| e.to_lowercase().contains(&query));
-        }
+        // The same match rule every list popup uses — this picker filters by
+        // rebuilding its option list, but the rule itself is not its own.
+        options.retain(|entry| contains_ignore_case(entry, &self.query));
         self.options = options;
         self.selected = 0;
     }
 
     pub(crate) fn move_up(&mut self) {
-        if self.selected > 0 {
-            self.selected -= 1;
-        }
+        self.selected = clamp_step(self.options.len(), self.selected, -1);
     }
 
     pub(crate) fn move_down(&mut self) {
-        if self.selected + 1 < self.options.len() {
-            self.selected += 1;
-        }
+        self.selected = clamp_step(self.options.len(), self.selected, 1);
     }
 
     pub(crate) fn selected_path(&self) -> Option<&str> {

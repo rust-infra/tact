@@ -9,14 +9,20 @@ use ratatui::{
 use crate::{i18n::Messages, theme::Theme};
 
 /// Help widget, showing help text.
-pub struct HelpWidget<'a> {
+///
+/// `'a` is the borrowed-content lifetime (messages + theme, which outlive the
+/// frame); `'b` is the voice-label lifetime. They are deliberately separate:
+/// the label is usually a `String` built in the frame from the configured
+/// keybind, and a single shared lifetime would force the caller to leak it to
+/// reach `'a` (it did — see `book/26_chapter_issue_zh.md`, 2026-10-04).
+pub struct HelpWidget<'a, 'b> {
     msgs: &'a Messages,
     theme: &'a Theme,
     /// Optional voice keybind label (e.g. "Ctrl+G"), shown under Global shortcuts.
-    voice_keybind_label: Option<&'a str>,
+    voice_keybind_label: Option<&'b str>,
 }
 
-impl<'a> Widget for HelpWidget<'a> {
+impl Widget for HelpWidget<'_, '_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let msgs = self.msgs;
         let header_style = Style::default()
@@ -83,8 +89,8 @@ impl<'a> Widget for HelpWidget<'a> {
     }
 }
 
-impl<'a> HelpWidget<'a> {
-    pub fn new(msgs: &'a Messages, theme: &'a Theme, voice_keybind_label: Option<&'a str>) -> Self {
+impl<'a, 'b> HelpWidget<'a, 'b> {
+    pub fn new(msgs: &'a Messages, theme: &'a Theme, voice_keybind_label: Option<&'b str>) -> Self {
         HelpWidget {
             msgs,
             theme,

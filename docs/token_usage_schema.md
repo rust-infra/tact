@@ -323,10 +323,9 @@ These segments are droppable on narrow terminals. Push order on the row is
 `ctx > cache > turns > timing`. The row is **85–86 columns** with every segment
 populated (the `out` value moves it by one), enforced by
 `render::bar::render_tests::bottom_bar_fits_every_segment_in_100_columns`. Row 1
-drops in the reverse of its own push order — `elapsed > uptime > path`, i.e. the
-transient task clock goes first and the cwd last — pinned by
-`bottom_bar_drops_the_task_elapsed_before_uptime_and_path` and
-`bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns`.
+carries no task clock (2026-10-05 — the live one is the log's task-stats row);
+its droppables go `uptime > path`, pinned by
+`bottom_bar_drops_uptime_before_path` and `bottom_bar_fits_row_1_in_100_columns`.
 
 **Subagent tool-card display:** A subagent's model name and token total
 are shown on the tool card's meta row (e.g. `🤖 deepseek-v3 · ⚡ 4.2K`)
@@ -398,11 +397,47 @@ total wall-clock time spent in `rtk pipe`. Failed bash executions
 (`StepStatus::Failed`) are skipped entirely — they are neither filtered nor
 counted, so error output reaches the LLM intact.
 
+## Per-Turn Stats Line (TUI)
+
+The TUI's per-turn readout is one line:
+
+```
+Task stats:⏱ 00:45 · deepseek-flash · 64246 tokens (prompt 60826 · completion 3420 · cache 60032 · reasoning 1810)
+```
+
+Every part of it comes from state the bottom bar already holds — no extra
+collection: the clock from `task_start_time`, the model name and the four token
+counters from `StatusBarState` (written by `StatusBarComponent` on every
+`AgentUpdate::TokenUsage`, i.e. once per LLM call, so the numbers move during a
+turn and not only at its end).
+
+Two rows render that same line, and one builder produces both —
+`agent_tui_kit::render::stats_line::task_stats_body`:
+
+| Row | Where | When |
+|-----|-------|------|
+| **Live** | the Log panel's last content row, drawn by `render_log_panel_pure` (`render_live_stats_band`) | while a task is in flight (`ctx.task_start_time.is_some()`) |
+| **Frozen** | a real log row, appended by `App::add_task_stats_block` after the task-end separator | once, when the task ends |
+
+The live row is **not** a log item: it takes no physical index, so selection,
+cards and scroll anchors are untouched. It takes the row out of the Log
+viewport instead (`stats_line::live_stats_reserve`, one row, applied in
+`prepare_log_frame`), and it carries the `⎘` copy affordance only on the frozen
+row — a mid-turn copy would silently miss the streamed-but-unflushed text.
+
+The handoff is the point: the live row disappears exactly when the frozen row
+is written in the same place, so the numbers do not move, and an idle session
+pays no row for it.
+
 ## Code Locations
 
 | File | Role |
 |------|------|
 | `crates/protocol/src/lib.rs` | `TokenUsageInfo` struct definition. |
+| `crates/agent_tui_kit/src/render/stats_line.rs` | `task_stats_body` (shared builder), `live_stats_reserve` / `live_stats_row` (geometry), `render_live_stats_band`. |
+| `crates/tui/src/widgets/state/app/messages.rs` | `App::add_task_stats_block` — the frozen row. |
+| `crates/tui/src/render/log.rs` | `prepare_log_frame` — applies the live row's viewport reserve. |
+| `crates/tui/src/handlers/mouse.rs` | `below_log_viewport` — a click on a reserved row starts no selection. |
 | `crates/tact/src/stats.rs` | `SessionStats` — in-memory accumulation + summary display. |
 | `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait — `record_token_usage()`, `record_tool_schedule()`. |
 | `crates/tact/src/store/session_store/sqlite.rs` | SQLite `token_usages` table + `record_token_usage()` / `record_tool_schedule()` implementations. |

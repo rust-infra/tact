@@ -33,7 +33,7 @@ pub enum FocusedPanel {
 pub struct SkillEntry {
     pub name: String,
     pub description: String,
-    /// Markdown body after frontmatter (from disk at load / skill-reload time).
+    /// Markdown body after frontmatter (from disk at load / skill reload time).
     pub body: String,
 }
 

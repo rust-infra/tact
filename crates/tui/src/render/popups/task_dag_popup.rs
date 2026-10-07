@@ -1,47 +1,19 @@
-//! `/tasks-dag` scrollable Mermaid popup (rendered via ratatui-markdown).
+//! `/tasks-dag` overlay — app-layer wrapper.
+//!
+//! The kit owns the chrome, scroll window and scrollbar; this wrapper keeps the
+//! two things that are the app's: the re-render-on-width-change prepare step
+//! and the mouse hit-area write-back.
 
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::{Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Paragraph, Scrollbar, ScrollbarState, Wrap},
-};
+use ratatui::{Frame, layout::Rect};
 
-use crate::widgets::state::{App, render_task_dag_lines};
+use crate::widgets::state::{App, SurfaceId, render_task_dag_lines};
 
 pub(crate) fn render_task_dag_popup(frame: &mut Frame, area: Rect, app: &mut App) {
-    let popup_area = super::centered_popup_area(area);
-    let footer: &[super::FooterHint] = &[
-        super::FooterHint {
-            key: "y",
-            label: " copy ",
-        },
-        super::FooterHint {
-            key: "j/k",
-            label: " scroll ",
-        },
-        super::FooterHint {
-            key: "Esc",
-            label: " close ",
-        },
-    ];
-    let copy_done = app
-        .copy_flash_at
-        .is_some()
-        .then(|| app.msgs().popup_copy_done);
-    let inner = super::render_popup_chrome(
-        frame,
-        popup_area,
-        &app.theme,
-        " tasks-dag ",
-        None,
-        Some(footer),
-        copy_done,
-    );
-
-    // The mermaid layout depends on width; re-render when the popup width changes.
-    let width = inner.width as usize;
+    // Prepare: the mermaid layout depends on the popup's body width, so a cache
+    // built for another width is stale and must be rebuilt before the render.
+    let body =
+        agent_tui_kit::render::popups::scrollable_popup::ScrollableTextPopup::body_area(area);
+    let width = body.width as usize;
     if app
         .task_dag_popup
         .as_ref()
@@ -55,42 +27,8 @@ pub(crate) fn render_task_dag_popup(frame: &mut Frame, area: Rect, app: &mut App
         }
     }
 
-    let popup = match &app.task_dag_popup {
-        Some(p) => p,
-        None => return,
-    };
-    let total = popup.lines.len();
-    if total == 0 {
-        return;
-    }
-
-    let content_height = inner.height as usize;
-    let max_scroll = total.saturating_sub(1);
-    let scroll = (popup.scroll as usize).min(max_scroll);
-    let start_line = scroll;
-    let end_line = (scroll + content_height).min(total);
-
-    let mut text = Text::default();
-    text.push_line(Line::from(Span::styled(
-        format!("Tasks DAG ({} lines)", total),
-        Style::default()
-            .fg(app.theme.accent)
-            .add_modifier(Modifier::BOLD),
-    )));
-    text.push_line(Line::from(""));
-    text.lines
-        .extend(popup.lines[start_line..end_line].iter().cloned());
-
-    let para = Paragraph::new(text).wrap(Wrap { trim: false });
-
-    frame.render_widget(para, inner);
-
-    let scrollbar =
-        Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
-    let mut state = ScrollbarState::new(total)
-        .viewport_content_length(content_height)
-        .position(scroll);
-    frame.render_stateful_widget(scrollbar, popup_area, &mut state);
-
-    app.mouse.task_dag_popup_area = popup_area;
+    let surface = super::render_with_ctx(app, frame, area, |frame, area, ctx| {
+        agent_tui_kit::render::popups::task_dag_popup::render_task_dag_popup(frame, area, ctx)
+    });
+    super::record_popup_area(app, SurfaceId::TaskDagPopup, &surface);
 }

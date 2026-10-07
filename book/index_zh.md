@@ -1,21 +1,10 @@
 # Agent 开发教程（中文）
 
-> 语言：[中文](./index_zh.md) · [English](./index.md)
+本目录收集 Tact 及相关 agent 运行时的设计说明与动手教程。**本书只有中文版**：英文册已于
+2026-09-30 整体删除，`_zh.md` 后缀是历史命名，不再是「与英文成对」的意思。
 
-本目录收集 Tact 及相关 agent 运行时的设计说明与动手教程。英文为权威全文；中文章节与英文结构对齐，便于双开对照。
-
----
-
-## 中文命名约定
-
-| 类型 | 英文（权威） | 中文 |
-|------|--------------|------|
-| 首页 | `index.md` | `index_zh.md` |
-| 章节 | `NN_chapter_<slug>.md` | `NN_chapter_<slug>_zh.md` |
-
-示例：`05_chapter_compact.md` ↔ `05_chapter_compact_zh.md`。
-
-- 章内顶部有语言切换链接。
+`crates/` 的代码、注释、`ARCHITECTURE.md`、`docs/` 与 `docs/superpowers/` 仍为英文；只有本书
+是中文。
 
 ---
 
@@ -31,11 +20,11 @@
 | 4 | [系统提示](./04_chapter_prompt_zh.md) | 从 role / skills / guidelines / memory / 动态上下文组装系统提示，以及跨回合的缓存友好性 |
 | 5 | [上下文压缩](./05_chapter_compact_zh.md) | `micro_compact` stub、`compact_history` 摘要、transcript / 大输出落盘 |
 | 6 | [错误恢复](./06_chapter_recovery_zh.md) | `RecoveryState`、传输退避重试、prompt-too-long 压缩、输出截断续写 |
-| 7 | [工具系统](./07_chapter_tool_zh.md) | `Tool` trait、`ToolRouter`、`registry.rs`、`ToolContext`、路径安全、`#[tool]` 宏 |
+| 7 | [工具系统](./07_chapter_tool_zh.md) | `Tool` trait、`ToolRouter`、`registry.rs`、`ToolContext`、路径安全、`#[tool]` 宏；**§9 工具并行调度**（`ResourcePolicy`、冲突判定、waves/barriers） |
 | 8 | [MCP 协议与集成](./08_chapter_mcp_zh.md) | MCP 基础、协议流程、Tact 中的配置 / 握手 / 工具调用 / 动态更新 / 优雅关闭 |
 | 9 | [Agent 生命周期 Hooks](./09_chapter_hook_zh.md) | PreToolUse / PostToolUse、`HookControl`、注册 API、在工具管线中的位置 |
-| 10 | [权限模型](./10_chapter_permission_zh.md) | 能力风险分级、权限模式、白名单、TUI 审批流、shell 高风险检测 |
-| 11 | [任务与工具调度](./11_chapter_task_zh.md) | **工具**并行调度（waves/barriers）— 非 [Ch 19 持久任务](./19_chapter_persistent_tasks_zh.md) |
+| 10 | [权限模型](./10_chapter_permission_zh.md) | 能力风险分级、权限模式、白名单、TUI 审批流、shell 高风险检测、敏感路径守卫与脱敏（§12）、四个目标感知策略的逐例流程（§13） |
+| 11 | [任务与工具调度](./11_chapter_task_zh.md) | 一回合的三阶段流水线、权限 / hook 位置、`ToolScheduleSummary` 落库 — 非 [Ch 19 持久任务](./19_chapter_persistent_tasks_zh.md)；调度算法本身在 [Ch 7 §9](./07_chapter_tool_zh.md) |
 | 12 | [子 Agent](./12_chapter_subagent_zh.md) | `spawn_subagent` 工具：嵌套 `agent_loop`、受限工具集、静态 prompt、权限继承、摘要返回 |
 | 13 | [后台任务](./13_chapter_background_zh.md) | `background_run` / `check_background`、tokio spawn、超时、启动修复 |
 | 14 | [团队协作](./14_chapter_team_zh.md) | `.tact/team/` 队友名册、JSONL 收件箱、广播、计划审批 / 关机协议 |
@@ -52,61 +41,29 @@
 | 26 | [工程问题与优化日志](./26_chapter_issue_zh.md) | 已交付优化与 bugfix的倒序日志（现象 → 决策 → 指针） |
 | 27 | [Bash 沙箱](./27_chapter_sandbox_zh.md) | `bash` 的可选 OS 级沙箱：布尔开关、按平台选后端、bubblewrap 策略、降级与非覆盖范围 |
 
-英文目录与架构总览见 [index.md](./index.md)。
-
 ---
 
 ## 总览架构
 
 ```mermaid
-graph TB
-    subgraph UI
-        TUI[tact-ui TUI]
-    end
-
-    subgraph Runtime["tact runtime"]
-        Agent[Agent / agent_loop]
-        Prompt[System Prompt]
-        Dispatch[Tool Dispatch]
-        Permissions[Permission Manager]
-        Hooks[Pre/Post Tool Hooks]
-    end
-
-    subgraph Tools
-        Native[Native Tools]
-        MCP[MCP ToolRouter]
-    end
-
-    subgraph Providers
-        LLM[tact_llm → LLM APIs]
-    end
-
-    subgraph Store
-        SQLite[(SQLite Session Store)]
-        Files[(.tact/ Store)]
-    end
-
-    MCPSrv[MCP Servers]
-
-    TUI -->|user input| Agent
-    Agent -->|updates| TUI
-    Agent --> Prompt
-    Agent -->|stream| LLM
-    Agent --> Dispatch
-    Dispatch --> Hooks
-    Dispatch --> Permissions
-    Dispatch --> Native
-    Dispatch --> MCP
-    MCP --> MCPSrv
-    Agent -->|messages & tokens| SQLite
-    Agent -->|skills, memory, tasks| Files
+graph TD
+    tui[tact-ui] --> agent[Agent]
+    agent --> sp[System Prompt]
+    agent --> llm[tact_llm]
+    agent --> db[SQLite / .tact/]
+    agent --> dispatch[Dispatch]
+    dispatch --> hooks[Hooks]
+    hooks --> perms[Permissions]
+    perms --> native[Native 工具]
+    perms --> mcp[MCP Router]
+    mcp --> servers[MCP Servers]
 ```
 
 ---
 
 ## 如何阅读
 
-- **优先读 `_zh` 稿**；常量、代码地图以中英对齐为准。
+- 常量、代码地图与类型名保留英文原文，便于直接对照源码。
 - **运行时顺序**：第 1–11 章跟随 `agent_loop` 一回合；12–15 为工具族；**Ch 18** 收束主循环；**19** 深挖 TaskManager；**20** 幻觉模式；**21–22** 为启动与 UI；**24** 测试；**25** 协议状态机；**26** 为工程优化 / bugfix日志（有行为变更时按 `AGENTS.md` 追加）。
 - **压缩与恢复**：[上下文压缩](./05_chapter_compact_zh.md)、[错误恢复](./06_chapter_recovery_zh.md)。
 
@@ -114,7 +71,5 @@ graph TB
 
 ## 相关资源
 
-- 英文全书入口：[index.md](./index.md)
-- 思维导图：[mindmap.html](./mindmap.html)
 - 压缩调参：[docs/compaction.md](../docs/compaction.md)
 - 项目架构：[ARCHITECTURE.md](../ARCHITECTURE.md)

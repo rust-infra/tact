@@ -1,13 +1,11 @@
 # 持久化任务管理器
 
-> 语言：[中文](./19_chapter_persistent_tasks_zh.md) · [English](./19_chapter_persistent_tasks.md)
-
 本章涵盖 Tact 的 **durable 工作项跟踪器**：`task/` 模块、`.tact/tact.db` 中的 SQLite 存储，以及四个 agent 工具 `task_create`、`task_get`、`task_list`、`task_update`。
 
 这与以下 **不是** 同一概念：
 
-- [第 11 章 工具调度](./11_chapter_task.md) — 一个 LLM turn 内的并行 **工具** wave 执行
-- [第 12 章 Subagents](./12_chapter_subagent.md) — 生成嵌套 agent 的 `spawn_subagent` **工具**
+- [第 11 章 工具调度](./11_chapter_task_zh.md) — 一个 LLM turn 内的并行 **工具** wave 执行
+- [第 12 章 Subagents](./12_chapter_subagent_zh.md) — 生成嵌套 agent 的 `spawn_subagent` **工具**
 
 实现：`crates/tact/src/task/mod.rs`，工具封装在 `crates/tact/src/tool/task.rs`。
 
@@ -162,7 +160,6 @@ pub fn render_task_list(tasks: Vec<TaskRecord>) -> String;
 | `crates/tact/src/tool/mod.rs` | `ToolContext.task_manager` |
 | `crates/tact/src/tool/registry.rs` | `toolset()` 中的 `task_*` 工具 |
 
-
 ---
 
 ## 9. 当前缺口
@@ -170,7 +167,7 @@ pub fn render_task_list(tasks: Vec<TaskRecord>) -> String;
 | 缺口 | 详情 |
 |------|------|
 | **无 `task_delete` 工具** | Manager API 有软删除但无暴露工具（通过 update 用 `status: deleted`） |
-| **Owner 是不透明字符串** | 未链接 [Team](./14_chapter_team.md) roster 校验 |
+| **Owner 是不透明字符串** | 未链接 [Team](./14_chapter_team_zh.md) roster 校验 |
 | **无自动 unblock 规则** | 只有完成会清边；已删 blocker 留下陈旧边 |
 | **列表顺序固定为 id** | 无 priority 或 due date 字段 |
 | **第 1 章交叉链接曾误导** | 曾指向第 11 章调度 — 已在 store 章更正 |
@@ -180,7 +177,7 @@ pub fn render_task_list(tasks: Vec<TaskRecord>) -> String;
 ## 相关文档
 
 - [Store 与持久化](./01_chapter_store_zh.md) — `CollectionStore` / `Store` 支撑
-- [任务与工具调度](./11_chapter_task.md) — 无关的并行 tool wave
-- [Subagents](./12_chapter_subagent.md) — `spawn_subagent` 运行嵌套 agent；它跑完并**不会**完成任务记录
-- [团队协调](./14_chapter_team.md) — 可选 owner 命名约定
+- [任务与工具调度](./11_chapter_task_zh.md) — 无关的并行 tool wave
+- [Subagents](./12_chapter_subagent_zh.md) — `spawn_subagent` 运行嵌套 agent；它跑完并**不会**完成任务记录
+- [团队协调](./14_chapter_team_zh.md) — 可选 owner 命名约定
 - [Worktree 泳道](./15_chapter_worktree_zh.md) — worktree create 上可选 `task_id` 链接

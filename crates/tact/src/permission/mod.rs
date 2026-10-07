@@ -36,6 +36,24 @@ pub enum PermissionMode {
     Auto,
 }
 
+impl PermissionMode {
+    /// The mode's name in the Claude Code / plugin-hook vocabulary.
+    ///
+    /// Hook payloads carry this spelling, not Tact's (`Codex`'s
+    /// `hook_permission_mode` maps its approval policy onto the same set), so a
+    /// plugin that branches on `payload["permission_mode"]` reads a value it
+    /// recognizes. `Auto` allows everything but high-risk operations, which is
+    /// Claude's `acceptEdits` rather than its blanket `bypassPermissions`.
+    #[must_use]
+    pub fn hook_name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Plan => "plan",
+            Self::Auto => "acceptEdits",
+        }
+    }
+}
+
 impl fmt::Display for PermissionMode {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let label = match self {
@@ -53,6 +71,30 @@ pub enum PermissionBehavior {
     Allow,
     Deny,
     Ask,
+}
+
+/// What an "always allow this tool" gesture managed to record.
+///
+/// [`AllowOutcome::NotNarrowable`] exists so the UI can tell the user the
+/// approval will not stick. Silently doing nothing there was the previous
+/// behaviour of a *different* code path (the bare-rule fallback), which is how
+/// a `bash` command containing a `:` came to grant every future command.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AllowOutcome {
+    /// A rule was recorded — persisted to settings, or held in memory for this
+    /// session when no settings store exists.
+    Recorded,
+    /// No rule narrower than the whole tool could be expressed for this call,
+    /// so nothing was recorded. The call itself is still approved once; the
+    /// next identical call asks again.
+    NotNarrowable,
+}
+
+impl AllowOutcome {
+    #[must_use]
+    pub fn is_recorded(self) -> bool {
+        matches!(self, Self::Recorded)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -116,6 +158,14 @@ pub struct PermissionManager {
 #[derive(Clone)]
 pub struct PermissionSnapshot {
     pub mode: PermissionMode,
+    /// Rules the user granted *this session* ("Always allow this tool" with no
+    /// settings store to persist into).
+    ///
+    /// Deliberately empty at construction. `read_file` used to be seeded here,
+    /// which did nothing while `read_file` was always classified `Read` — but
+    /// once a sensitive target can escalate it to `High`, the seed let every
+    /// `read_file` input through, `.env` included. An allow-list entry nobody
+    /// granted must not be able to outrank the guard.
     pub always_allowed_tools: Vec<String>,
     pub settings: Option<settings::PermissionSettings>,
 }
@@ -129,7 +179,7 @@ impl PermissionManager {
     pub fn try_new(mode: PermissionMode) -> Result<Self> {
         Ok(Self {
             mode,
-            always_allowed_tools: vec!["read_file".to_string()],
+            always_allowed_tools: Vec::new(),
             consecutive_denials: 0,
             max_consecutive_denials: 3,
             settings: None,
@@ -147,7 +197,7 @@ impl PermissionManager {
     ) -> Result<Self> {
         Ok(Self {
             mode,
-            always_allowed_tools: vec!["read_file".to_string()],
+            always_allowed_tools: Vec::new(),
             consecutive_denials: 0,
             max_consecutive_denials: 3,
             settings: Some(settings),
@@ -156,6 +206,29 @@ impl PermissionManager {
 
     pub fn mode(&self) -> PermissionMode {
         self.mode
+    }
+
+    /// The sensitive-path guard this manager's settings describe.
+    ///
+    /// With no settings store the guard is still **on**, built from the
+    /// registry's defaults — an absent project directory must not mean absent
+    /// protection. `permissions.sensitive_paths.enabled = false` is the only
+    /// way to turn it off, and that has to be written down.
+    #[must_use]
+    pub fn scanner(&self) -> crate::security::sensitive::Scanner {
+        match &self.settings {
+            Some(settings) => settings.security_config().scanner(),
+            None => crate::security::sensitive::Scanner::builtin(),
+        }
+    }
+
+    /// The sensitive-path and redaction configuration in effect.
+    #[must_use]
+    pub fn security_config(&self) -> crate::security::SecurityConfig {
+        match &self.settings {
+            Some(settings) => settings.security_config().clone(),
+            None => crate::security::SecurityConfig::default(),
+        }
     }
 
     pub fn set_mode(&mut self, mode: PermissionMode) {
@@ -206,15 +279,36 @@ impl PermissionManager {
     ///    (including high-risk — user explicitly trusts the pattern).
     /// 6. Default mode + matching settings ask → ask (non-high only;
     ///    high-risk Ask/None still uses the high-risk ask path).
-    /// 7. Default mode + high risk (no Deny/Allow rule) → ask
-    ///    (skips the in-session always-allowed list).
-    /// 8. Default mode + in-session always-allowed → allow.
-    /// 9. Otherwise → ask.
+    /// 7. Default mode + server-policy auto-approve → allow.
+    /// 8. Default mode + high risk + in-session always-allowed (exact tool
+    ///    *and* input) → allow. A high-risk tool is still asked for the first
+    ///    time; this only honours an allow the user granted explicitly.
+    /// 9. Default mode + high risk, not allow-listed → ask.
+    /// 10. Default mode + in-session always-allowed → allow.
+    /// 11. Otherwise → ask.
     pub fn check(
         &mut self,
         tool_name: &str,
         risk: CapabilityRisk,
         input: &Value,
+    ) -> PermissionDecision {
+        self.check_with_auto(tool_name, risk, input, false)
+    }
+
+    /// [`Self::check`] plus the one policy that lives outside the permission
+    /// store: an MCP server entry's `approval_mode: "auto"`.
+    ///
+    /// Deliberately a *separate* switch rather than a lower risk: `Read` is
+    /// allowed before plan mode is consulted, so mapping a server policy onto
+    /// `Read` would let a write tool run in plan mode. `auto_approved` is
+    /// consulted after plan mode and after an explicit `deny` rule, so it can
+    /// only ever skip the *ask* step.
+    pub fn check_with_auto(
+        &mut self,
+        tool_name: &str,
+        risk: CapabilityRisk,
+        input: &Value,
+        auto_approved: bool,
     ) -> PermissionDecision {
         // 1. Read capabilities are always allowed.
         if risk == CapabilityRisk::Read {
@@ -255,30 +349,55 @@ impl PermissionManager {
                     tool_name
                 ));
             }
-            Some(settings::RuleAction::Ask) if risk != CapabilityRisk::High => {
+            // 7. An explicit local `ask` rule outranks the server's own entry —
+            //    including for a High-risk tool, where the rule would otherwise
+            //    fall through to the default high-risk prompt and let the
+            //    server's `auto` skip it.
+            Some(settings::RuleAction::Ask) if risk != CapabilityRisk::High || auto_approved => {
                 return PermissionDecision::ask(format!(
                     "Project permission rule requires confirmation: {}",
                     tool_name
                 ));
             }
+            // 6. The server entry opted this tool into `approval_mode: "auto"`.
+            //    Checked after deny and ask so that a server's own declaration
+            //    can skip the *default* prompt, never a local decision.
+            _ if auto_approved => {
+                self.consecutive_denials = 0;
+                return PermissionDecision::allow(format!(
+                    "Auto-approved by the MCP server entry: {tool_name}"
+                ));
+            }
             _ => {}
         }
 
-        // 7. High-risk without Deny/Allow: always ask (do not use always_allowed).
+        // 8. High-risk: ask, unless the user already allowed this exact tool
+        //    *and* input. The TUI offers "Always allow this tool" for every
+        //    risk, so a High tool that skipped the list here would record an
+        //    approval and then ignore it — the gesture would silently do
+        //    nothing whenever no settings store exists to persist it into.
+        //    Asking first, and honouring a granted allow afterwards, is what
+        //    the button promises. Plan mode above still blocks it.
         if risk == CapabilityRisk::High {
+            if self.is_always_allowed(tool_name, input) {
+                self.consecutive_denials = 0;
+                return PermissionDecision::allow(format!(
+                    "Always-allowed high-risk capability: {tool_name}"
+                ));
+            }
             return PermissionDecision::ask(format!(
                 "High-risk capability requires approval: {}",
                 tool_name
             ));
         }
 
-        // 8. Fallback: in-memory same-session always-allowed list.
+        // 10. Fallback: in-memory same-session always-allowed list.
         if self.is_always_allowed(tool_name, input) {
             self.consecutive_denials = 0;
             return PermissionDecision::allow(format!("Always allowed tool: {tool_name}"));
         }
 
-        // 9. Default: ask.
+        // 11. Default: ask.
         PermissionDecision::ask(format!("Default mode: asking user for {tool_name}"))
     }
 
@@ -350,6 +469,12 @@ impl PermissionManager {
     /// the remainder of the session.  This is strictly narrower than a
     /// bare tool name because matching requires both tool name and input.
     ///
+    /// When the call cannot be narrowed to a rule — see
+    /// [`PermissionRule::generate`] — nothing is recorded and
+    /// [`AllowOutcome::NotNarrowable`] is returned. **The caller must surface
+    /// that**: a click on "Always allow this tool" that silently does nothing
+    /// is indistinguishable from a bug.
+    ///
     /// **Persistence errors are logged as warnings and never convert an
     /// already-approved choice into a denial.**
     pub fn allow_tool_with_input(
@@ -357,9 +482,11 @@ impl PermissionManager {
         tool_name: &str,
         policy: PermissionPromptPolicy,
         input: &Value,
-    ) {
+    ) -> AllowOutcome {
         // Generate the narrowest parameter-aware rule.
-        let rule = settings::PermissionRule::generate(tool_name, policy, input);
+        let Some(rule) = settings::PermissionRule::generate(tool_name, policy, input) else {
+            return AllowOutcome::NotNarrowable;
+        };
         let rule_string = rule.to_rule_string();
 
         // When no settings store is available, add the generated rule
@@ -369,7 +496,7 @@ impl PermissionManager {
             if !self.always_allowed_tools.contains(&rule_string) {
                 self.always_allowed_tools.push(rule_string);
             }
-            return;
+            return AllowOutcome::Recorded;
         }
 
         // Persist to project settings — warn on failure, never deny.
@@ -382,6 +509,102 @@ impl PermissionManager {
                 e
             );
         }
+        AllowOutcome::Recorded
+    }
+
+    /// The program-level rule the popup's "always allow this program" choice
+    /// would record for this call, or `None` when that choice cannot be offered
+    /// at all.
+    ///
+    /// An associated function, not a method: the answer depends on the call and
+    /// not on any state the manager holds. Both the option's presence and the
+    /// rule the popup previews come from this one decision, so they cannot
+    /// disagree — a button that recorded something other than what it showed
+    /// would be worse than no button.
+    ///
+    /// See [`settings::PermissionRule::generate_prefix`] for what "cannot be
+    /// offered" covers: a non-command tool, a compound command, a command whose
+    /// segments cannot be enumerated, an interpreter or destructive program,
+    /// and anything narrower than two words.
+    #[must_use]
+    pub fn prefix_rule_for(
+        tool_name: &str,
+        policy: PermissionPromptPolicy,
+        input: &Value,
+    ) -> Option<settings::PermissionRule> {
+        settings::PermissionRule::generate_prefix(tool_name, policy, input)
+    }
+
+    /// Record the program-level rule for this call, persisting it.
+    ///
+    /// The wide end of the popup: `bash(command:^cargo test)` covers every
+    /// later `cargo test …` in every session. [`Self::prefix_rule_for`] gates
+    /// whether the choice is offered, so a `NotNarrowable` here means the call
+    /// changed between the prompt and the answer — record nothing and say so.
+    pub fn allow_tool_as_prefix(
+        &mut self,
+        tool_name: &str,
+        policy: PermissionPromptPolicy,
+        input: &Value,
+    ) -> AllowOutcome {
+        let Some(rule) = settings::PermissionRule::generate_prefix(tool_name, policy, input) else {
+            return AllowOutcome::NotNarrowable;
+        };
+        let rule_string = rule.to_rule_string();
+
+        if self.settings.is_none() {
+            if !self.always_allowed_tools.contains(&rule_string) {
+                self.always_allowed_tools.push(rule_string);
+            }
+            self.consecutive_denials = 0;
+            return AllowOutcome::Recorded;
+        }
+
+        if let Some(settings) = &mut self.settings
+            && let Err(e) = settings.persist_project_allow(&rule_string)
+        {
+            tracing::warn!(
+                "Failed to persist permission rule '{}': {}. The operation remains approved.",
+                rule_string,
+                e
+            );
+        }
+        self.consecutive_denials = 0;
+        AllowOutcome::Recorded
+    }
+
+    /// Record an approval for **this session only**, without persisting it.
+    ///
+    /// The in-memory twin of [`Self::allow_tool_with_input`]: the same rule
+    /// generation, and therefore the same narrowness, but the rule never
+    /// reaches the settings file.
+    ///
+    /// That narrowness is what makes this option safe to offer on a `bash`
+    /// command. The generated rule is keyed on the command the user was shown,
+    /// so a *different* command — a `sudo`, say — still asks. Recording a bare
+    /// tool name here instead would let one click on an ordinary command
+    /// approve every future shell command for the rest of the session, which is
+    /// exactly the regression that keeps [`Self::allow_tool`] out of the
+    /// high-risk path.
+    ///
+    /// A rule that cannot be narrowed records nothing and returns
+    /// [`AllowOutcome::NotNarrowable`]; the caller must surface that rather
+    /// than pretend the click worked.
+    pub fn allow_tool_for_session(
+        &mut self,
+        tool_name: &str,
+        policy: PermissionPromptPolicy,
+        input: &Value,
+    ) -> AllowOutcome {
+        let Some(rule) = settings::PermissionRule::generate(tool_name, policy, input) else {
+            return AllowOutcome::NotNarrowable;
+        };
+        let rule_string = rule.to_rule_string();
+        if !self.always_allowed_tools.contains(&rule_string) {
+            self.always_allowed_tools.push(rule_string);
+        }
+        self.consecutive_denials = 0;
+        AllowOutcome::Recorded
     }
 
     fn is_always_allowed(&self, tool_name: &str, input: &Value) -> bool {
@@ -415,11 +638,27 @@ pub fn format_permission_prompt(
         PermissionPromptPolicy::Command { field } => format!("Run command: {}", field_str(field)),
         PermissionPromptPolicy::Question { field } => format!("Ask user: {}", field_str(field)),
         PermissionPromptPolicy::Path { field } => format!("Allow {name} on {}?", field_str(field)),
+        PermissionPromptPolicy::PatchTarget { patch_field } => {
+            match crate::tool::patch_target_paths(field_str(patch_field)) {
+                paths if paths.is_empty() => format!("Allow {name}?"),
+                paths if paths.len() == 1 => format!("Allow {name} on {}?", paths[0]),
+                paths => format!(
+                    "Allow {name} on {} files? {}",
+                    paths.len(),
+                    paths.join(", ")
+                ),
+            }
+        }
         PermissionPromptPolicy::Json => format!("Allow {name}?"),
     }
 }
 
-/// MCP tools always start as High risk.
+/// The risk of an MCP tool whose entry declares none.
+///
+/// MCP tools always *start* as High risk: the tool is third-party, and its
+/// entry is what has to say otherwise — through `tools.<name>.risk` or the
+/// entry's `default_tool_risk`. Kept as the single named place that says "no
+/// declaration means High", so the fallback cannot drift.
 pub fn normalize_mcp_capability(_server: &str, _tool: &str) -> CapabilityRisk {
     CapabilityRisk::High
 }
@@ -550,11 +789,19 @@ mod tests {
     }
 
     #[test]
-    fn high_risk_requires_approval_even_for_allowed_tool() {
+    fn high_risk_is_allowed_only_after_an_explicit_allow() {
+        // The first call always asks; once the user grants the tool, the grant
+        // is honoured rather than recorded and ignored. A *bare* allow is the
+        // broadest form of that grant (every input), so it covers High too —
+        // mode and settings rules are what still gate it, and both are
+        // asserted elsewhere.
         let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        let asked = mgr.check("bash", CapabilityRisk::High, &Value::Null);
+        assert_eq!(asked.behavior, PermissionBehavior::Ask);
+
         mgr.allow_tool("bash");
         let decision = mgr.check("bash", CapabilityRisk::High, &Value::Null);
-        assert_eq!(decision.behavior, PermissionBehavior::Ask);
+        assert_eq!(decision.behavior, PermissionBehavior::Allow);
     }
 
     // ── Settings-aware tests ────────────────────────────────────
@@ -763,6 +1010,203 @@ mod tests {
             PermissionBehavior::Ask,
             "Different input with same tool must fall through to Ask"
         );
+    }
+
+    /// "Allow for this session" is the in-memory twin of "always allow this
+    /// tool": the same narrow rule, but it must never reach the settings file.
+    #[test]
+    fn session_allow_records_a_narrow_rule_and_never_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(&project_file, r#"{"permissions":{"allow":[]}}"#).unwrap();
+
+        let settings = PermissionSettings::load_from(&project_file, None);
+        let mut mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+
+        let shown = serde_json::json!({"command": "cargo test"});
+        let outcome = mgr.allow_tool_for_session(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &shown,
+        );
+        assert_eq!(outcome, AllowOutcome::Recorded);
+
+        // The call the user was shown is approved...
+        assert!(mgr.is_always_allowed("bash", &shown));
+        // ...but no tool-wide approval was recorded alongside it.
+        assert!(
+            !mgr.is_always_allowed("bash", &Value::Null),
+            "a session approval must not become a tool-wide one"
+        );
+
+        // An unrelated — here, high-risk — command still asks.
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::High,
+            &serde_json::json!({"command": "sudo rm -rf /var"}),
+        );
+        assert_eq!(
+            decision.behavior,
+            PermissionBehavior::Ask,
+            "an unrelated command must not ride on the session approval"
+        );
+
+        // And nothing reached the settings file.
+        let content = std::fs::read_to_string(&project_file).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let allow = doc
+            .pointer("/permissions/allow")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert!(
+            allow.is_empty(),
+            "a session-scoped approval must not touch the settings file: {allow:?}"
+        );
+    }
+
+    /// The wide end of the popup. A persisted program-level rule, and the one
+    /// thing it must still not do: cover a chained command.
+    #[test]
+    fn prefix_allow_persists_and_still_refuses_a_chained_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(&project_file, r#"{"permissions":{"allow":[]}}"#).unwrap();
+
+        let settings = PermissionSettings::load_from(&project_file, None);
+        let mut mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+
+        let outcome = mgr.allow_tool_as_prefix(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "cargo test --lib"}),
+        );
+        assert_eq!(outcome, AllowOutcome::Recorded);
+
+        let content = std::fs::read_to_string(&project_file).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let allow = doc
+            .pointer("/permissions/allow")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert_eq!(allow.len(), 1);
+        assert_eq!(allow[0].as_str(), Some("bash(command:^cargo test)"));
+
+        // The plain invocation is covered...
+        let allowed = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "cargo test --all-targets"}),
+        );
+        assert_eq!(allowed.behavior, PermissionBehavior::Allow);
+        // ...and the chained one is not.
+        let chained = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "cargo test; rm -rf /"}),
+        );
+        assert_eq!(chained.behavior, PermissionBehavior::Ask);
+    }
+
+    /// The popup offers one choice for both kinds of prompt, so the dispatch
+    /// has to produce a folder rule for a path and a program rule for a command.
+    #[test]
+    fn prefix_rule_for_dispatches_on_the_prompt_kind() {
+        let folder = PermissionManager::prefix_rule_for(
+            "edit_file",
+            PermissionPromptPolicy::Path { field: "path" },
+            &serde_json::json!({"path": "docs/usage.md"}),
+        )
+        .expect("a nested path should be offerable");
+        assert_eq!(folder.to_rule_string(), "edit_file(path:@docs)");
+
+        let program = PermissionManager::prefix_rule_for(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "cargo test"}),
+        )
+        .expect("a two-word command should be offerable");
+        assert_eq!(program.to_rule_string(), "bash(command:^cargo test)");
+
+        // A question prompt has neither a program nor a folder to name.
+        assert!(
+            PermissionManager::prefix_rule_for(
+                "ask_user",
+                PermissionPromptPolicy::Question { field: "question" },
+                &serde_json::json!({"question": "continue?"}),
+            )
+            .is_none()
+        );
+    }
+
+    /// What gates the option's presence is the same decision that produces the
+    /// rule the popup previews, so the two cannot drift apart.
+    #[test]
+    fn prefix_rule_for_gates_and_describes_the_choice() {
+        let rule = PermissionManager::prefix_rule_for(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "cargo test --lib"}),
+        )
+        .expect("a two-word command should be offerable");
+        assert_eq!(rule.to_rule_string(), "bash(command:^cargo test)");
+
+        // A chained command is not offerable at all — so the popup will not
+        // show a button that could only record nothing.
+        assert!(
+            PermissionManager::prefix_rule_for(
+                "bash",
+                PermissionPromptPolicy::Command { field: "command" },
+                &serde_json::json!({"command": "cargo test; rm -rf /"}),
+            )
+            .is_none()
+        );
+    }
+
+    /// Exact-match narrowness is the whole safety argument for offering the
+    /// session option on `bash`, so pin it: a longer command is a different
+    /// command, and a chained one is a different command twice over.
+    #[test]
+    fn session_allow_does_not_widen_to_a_longer_command() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        mgr.allow_tool_for_session(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "cargo test"}),
+        );
+
+        for other in [
+            "cargo test --lib",
+            "cargo test; rm -rf /tmp/x",
+            "cargo build",
+        ] {
+            assert!(
+                !mgr.is_always_allowed("bash", &serde_json::json!({"command": other})),
+                "{other} must not be covered by a rule for `cargo test`"
+            );
+        }
+    }
+
+    /// When no rule narrower than the whole tool can be built, the session
+    /// choice records nothing — it must not fall back to a bare allow, which is
+    /// how a `bash` command containing a `:` once granted every future command.
+    #[test]
+    fn session_allow_records_nothing_when_the_rule_cannot_be_narrowed() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        let outcome = mgr.allow_tool_for_session(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "git commit -m \"fix: thing\""}),
+        );
+        assert_eq!(outcome, AllowOutcome::NotNarrowable);
+        assert!(
+            !mgr.is_always_allowed("bash", &Value::Null),
+            "a refused rule must not leave a tool-wide approval behind"
+        );
+        assert!(mgr.rules().is_empty());
     }
 
     #[test]
@@ -1152,17 +1596,13 @@ mod tests {
         assert_eq!(snap.mode, PermissionMode::Plan);
         assert_eq!(
             snap.always_allowed_tools,
-            vec![
-                "read_file".to_string(),
-                "bash".to_string(),
-                "write_file".to_string(),
-            ]
+            vec!["bash".to_string(), "write_file".to_string()]
         );
         assert!(snap.settings.is_none());
 
         let restored = PermissionManager::from_snapshot(snap);
         assert_eq!(restored.mode(), PermissionMode::Plan);
-        assert_eq!(restored.rules(), &["read_file", "bash", "write_file"]);
+        assert_eq!(restored.rules(), &["bash", "write_file"]);
     }
 
     #[test]
@@ -1210,5 +1650,147 @@ mod tests {
         let parent = PermissionManager::try_new(PermissionMode::Auto).unwrap();
         let child = PermissionManager::from_snapshot(parent.snapshot());
         assert_eq!(child.mode(), PermissionMode::Auto);
+    }
+
+    // ── MCP server-entry auto-approval ───────────────────────────────────
+
+    #[test]
+    fn server_auto_approval_skips_the_default_high_risk_prompt() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+
+        // Without the policy a high-risk MCP tool asks…
+        let asked = mgr.check("mcp__demo__search", CapabilityRisk::High, &Value::Null);
+        assert_eq!(asked.behavior, PermissionBehavior::Ask);
+        assert_eq!(mgr.consecutive_denials, 0);
+
+        // …and with it, the prompt is skipped.
+        let allowed = mgr.check_with_auto(
+            "mcp__demo__search",
+            CapabilityRisk::High,
+            &Value::Null,
+            true,
+        );
+        assert_eq!(allowed.behavior, PermissionBehavior::Allow);
+        assert!(
+            allowed.reason.contains("MCP server entry"),
+            "{}",
+            allowed.reason
+        );
+    }
+
+    #[test]
+    fn a_high_risk_tool_honours_a_granted_always_allow() {
+        // The TUI offers "Always allow this tool" for every risk. With no
+        // settings store the grant lands in the in-memory list, which the
+        // High branch used to skip — so the click was recorded and then
+        // ignored, and the next identical call asked again.
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        let input = serde_json::json!({"query": "notes"});
+
+        let asked = mgr.check("mcp__demo__search", CapabilityRisk::High, &input);
+        assert_eq!(asked.behavior, PermissionBehavior::Ask);
+
+        mgr.allow_tool_with_input("mcp__demo__search", PermissionPromptPolicy::Json, &input);
+
+        let allowed = mgr.check("mcp__demo__search", CapabilityRisk::High, &input);
+        assert_eq!(allowed.behavior, PermissionBehavior::Allow);
+        assert!(
+            allowed.reason.contains("Always-allowed"),
+            "{}",
+            allowed.reason
+        );
+    }
+
+    #[test]
+    fn a_high_risk_tool_still_asks_when_nothing_was_ever_allowed() {
+        // The headless path depends on this: `ask_user` denies High, so the
+        // list must stay the only way in.
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        let decision = mgr.check("mcp__demo__search", CapabilityRisk::High, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Ask);
+    }
+
+    #[test]
+    fn a_granted_always_allow_does_not_unlock_plan_mode() {
+        // The grant relaxes the *prompt*, never the mode: plan mode is
+        // evaluated before the High branch.
+        let mut mgr = PermissionManager::try_new(PermissionMode::Plan).unwrap();
+        mgr.allow_tool("mcp__demo__write_note");
+        let decision = mgr.check("mcp__demo__write_note", CapabilityRisk::High, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Deny);
+    }
+
+    #[test]
+    fn an_explicit_deny_rule_still_outranks_a_granted_always_allow() {
+        let (_dir, mut mgr) =
+            mgr_with_project_settings(r#"{"permissions": {"deny": ["mcp__demo__write_note"]}}"#);
+        mgr.allow_tool("mcp__demo__write_note");
+        let decision = mgr.check("mcp__demo__write_note", CapabilityRisk::High, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Deny);
+    }
+
+    #[test]
+    fn server_auto_approval_does_not_unlock_plan_mode() {
+        // `Read` is allowed before plan mode is consulted, so a server policy
+        // must never be expressed as a lower risk.
+        let mut mgr = PermissionManager::try_new(PermissionMode::Plan).unwrap();
+        let decision = mgr.check_with_auto(
+            "mcp__demo__write_note",
+            CapabilityRisk::High,
+            &Value::Null,
+            true,
+        );
+        assert_eq!(decision.behavior, PermissionBehavior::Deny);
+    }
+
+    #[test]
+    fn an_explicit_deny_rule_outranks_server_auto_approval() {
+        let (_dir, mut mgr) =
+            mgr_with_project_settings(r#"{"permissions": {"deny": ["mcp__demo__write_note"]}}"#);
+
+        let decision = mgr.check_with_auto(
+            "mcp__demo__write_note",
+            CapabilityRisk::High,
+            &Value::Null,
+            true,
+        );
+        assert_eq!(decision.behavior, PermissionBehavior::Deny);
+    }
+
+    #[test]
+    fn an_explicit_ask_rule_outranks_server_auto_approval() {
+        let (_dir, mut mgr) =
+            mgr_with_project_settings(r#"{"permissions": {"ask": ["mcp__demo__write_note"]}}"#);
+
+        let decision = mgr.check_with_auto(
+            "mcp__demo__write_note",
+            CapabilityRisk::High,
+            &Value::Null,
+            true,
+        );
+        assert_eq!(decision.behavior, PermissionBehavior::Ask);
+    }
+
+    #[test]
+    fn a_server_auto_tool_still_asks_when_it_is_not_approved() {
+        let (_dir, mut mgr) =
+            mgr_with_project_settings(r#"{"permissions": {"allow": ["read_file"]}}"#);
+
+        // `auto_approved: false` is the unchanged path: no local rule matches a
+        // high-risk MCP tool, so it asks.
+        let decision = mgr.check_with_auto(
+            "mcp__demo__search",
+            CapabilityRisk::High,
+            &Value::Null,
+            false,
+        );
+        assert_eq!(decision.behavior, PermissionBehavior::Ask);
+    }
+
+    #[test]
+    fn check_keeps_the_old_behaviour_without_a_server_policy() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        let decision = mgr.check("mcp__demo__search", CapabilityRisk::High, &Value::Null);
+        assert_eq!(decision.behavior, PermissionBehavior::Ask);
     }
 }

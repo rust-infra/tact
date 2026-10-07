@@ -8,7 +8,6 @@ use ratatui::{
 use tact_protocol::BalanceEntry;
 
 use crate::{
-    i18n::Messages,
     state::{FocusedPanel, InputMode, Status},
     theme::Theme,
 };
@@ -27,36 +26,10 @@ const ICON_CACHE: &str = "▣";
 const ICON_TURNS: &str = "⟳";
 /// U+21C5 — LLM turns (agent-loop iterations) in the current task.
 const ICON_LLM_TURNS: &str = "⇅";
-/// Frozen last/average turn wall clock (same glyph as the live task elapsed
-/// drawn by `format_task_elapsed`).
+/// Frozen last/average turn wall clock.
 const ICON_ELAPSED: &str = "⏱";
 const SEP_ROW1: &str = " │ ";
 const SEP_ROW2: &str = "  ";
-
-/// Live task elapsed, rendered on bottom-bar row 1 while a task is in flight
-/// (empty string when no task is running, which is how the segment is omitted).
-///
-/// It moved there from the top status bar on 2026-09-14, next to the uptime it
-/// is the per-task counterpart of: row 1 carries the clocks that describe *this
-/// run* (`运行` for the process, `耗时` for the task), row 2 the token/ctx
-/// readouts and the frozen per-turn timing.
-///
-/// Derived-method migration of `App::format_task_elapsed` (design doc §2.2):
-/// pure function of the i18n label + task start time.
-pub fn format_task_elapsed(
-    msgs: &Messages,
-    task_start_time: Option<&chrono::DateTime<chrono::Local>>,
-) -> String {
-    let Some(start) = task_start_time else {
-        return String::new();
-    };
-    let secs = chrono::Local::now()
-        .signed_duration_since(*start)
-        .num_seconds()
-        .max(0);
-    let mm_ss = format!("{:02}:{:02}", secs / 60, secs % 60);
-    format!("⏱ {} {}", msgs.bottom_elapsed, mm_ss)
-}
 
 /// Format a quota number for display; `None` (no numeric cap) renders as `∞`.
 fn format_quota_value(value: Option<f64>) -> String {
@@ -297,9 +270,6 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             format!("{:02}:{:02}", m, s)
         }
     };
-    // Live task wall clock, shown next to the uptime it pairs with — and only
-    // while a task is in flight (`format_task_elapsed` returns `""` otherwise).
-    let task_elapsed = format_task_elapsed(msgs, ctx.task_start_time);
 
     #[allow(clippy::vec_init_then_push)]
     let mut row1_groups: Vec<DropGroup> = vec![
@@ -342,18 +312,6 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             ],
         },
     ];
-    // Task elapsed, immediately after the uptime. Pushed *after* it, i.e. as the
-    // last droppable of row 1, so on a narrow terminal the transient task clock
-    // is what goes first — then uptime, then the path.
-    if !task_elapsed.is_empty() {
-        row1_groups.push(DropGroup {
-            droppable: true,
-            spans: vec![
-                Span::styled(task_elapsed, secondary),
-                Span::styled(SEP_ROW1.to_string(), dim),
-            ],
-        });
-    }
     // Branch: ⎇ branchname
     row1_groups.push(DropGroup {
         droppable: false,

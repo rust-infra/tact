@@ -7,7 +7,7 @@
 
 use ratatui::{Frame, layout::Rect};
 
-use crate::widgets::state::App;
+use crate::widgets::state::{App, SurfaceId};
 
 pub(crate) use agent_tui_kit::render::sticky_host::STICKY_BORDER_ROWS;
 
@@ -39,7 +39,7 @@ pub(crate) fn sticky_tab_expanded(app: &App, tab: agent_tui_kit::state::StickyTa
 }
 
 pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
-    app.mouse.task_panel_area = area;
+    app.mouse.set_area(SurfaceId::TaskPanel, area);
     let ctx = app.render_ctx();
     let hit = agent_tui_kit::render::sticky_host::render_sticky_host(frame, area, &ctx);
     app.mouse.sticky_tab_areas.clear();

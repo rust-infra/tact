@@ -4,6 +4,7 @@
 
 pub mod button;
 pub mod help_widget;
+pub mod list_popup;
 pub mod popup_widget;
 pub mod select_popup_widget;
 pub mod tool_widget;

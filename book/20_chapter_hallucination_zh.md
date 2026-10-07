@@ -1,7 +1,5 @@
 # Agent 循环中的幻觉问题
 
-> 语言：[English](./20_chapter_hallucination.md) · [中文](./20_chapter_hallucination_zh.md)
-
 本章系统梳理编码 Agent 循环中的 **LLM 幻觉模式**——模型凭空编造不存在的文件、函数签名、对话历史或工具输出。理解这些模式对于构建健壮的 Agent 系统至关重要，因为 prompt 中的幻觉（不仅是输出）会**毒化后续回合**，使整个任务偏离轨道。
 
 相关代码位于 `crates/tact/src/compact/mod.rs`、`crates/tact/src/agent/mod.rs`（特别是 prompt 构建和压缩逻辑）以及 `tact_llm` provider 适配层。
@@ -86,15 +84,14 @@ sequenceDiagram
 6. 用户不得不解释压缩的幻觉来重置上下文
 
 ```mermaid
-flowchart RL
-    subgraph Prompt["发送给 LLM 的压缩 prompt"]
-        PromptText["总结本次对话..."] --> ContextInput["消息: 只有 'call compact tool' + 回应"]
-    end
-    Prompt --> LLM --> Output["幻觉输出: Python 搜索系统"]
-    Output --> Injected["作为真实历史注入上下文"]
-    Injected --> Agent["Agent 在虚构前提上行动"]
-    Agent --> Bash["find . -name '*.py' → 空"]
-    Agent --> Confused["Agent 困惑: '这是一个 Rust 项目...'"]
+graph TD
+    a_prompt[压缩 prompt 总结本次对话…] --> b_ctx[消息 只有 call compact tool + 回应]
+    b_ctx --> c_llm[LLM]
+    c_llm --> d_out[幻觉输出 Python 搜索系统]
+    d_out --> e_inj[作为真实历史注入上下文]
+    e_inj --> f_agent[Agent 在虚构前提上行动]
+    f_agent --> g_bash[find . -name *.py → 空]
+    f_agent --> h_confused[Agent 困惑 这是一个 Rust 项目…]
 ```
 
 ### 1.4 根因

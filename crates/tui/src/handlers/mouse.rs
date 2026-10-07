@@ -5,8 +5,8 @@ use tact_protocol::UserCommand;
 
 use super::{scroll_active_sticky, sticky_scrollable};
 use crate::widgets::state::{
-    App, FocusedPanel, LogSelection, PopupTextHit, PopupTextSelection, TextPosition, VoicePhase,
-    VoiceStartResult,
+    App, FocusedPanel, LogSelection, PopupTextHit, PopupTextSelection, SurfaceId, TextPosition,
+    VoicePhase, VoiceStartResult,
 };
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -17,8 +17,8 @@ pub(crate) struct MousePanelHit {
 
 fn panel_hit(app: &App, column: u16, row: u16) -> MousePanelHit {
     MousePanelHit {
-        in_log: point_in_rect(column, row, app.mouse.log_area),
-        in_task_panel: point_in_rect(column, row, app.mouse.task_panel_area),
+        in_log: app.mouse.hits(SurfaceId::Log, column, row),
+        in_task_panel: app.mouse.hits(SurfaceId::TaskPanel, column, row),
     }
 }
 
@@ -26,36 +26,80 @@ fn point_in_rect(column: u16, row: u16, area: ratatui::layout::Rect) -> bool {
     column >= area.x && column < area.x + area.width && row >= area.y && row < area.y + area.height
 }
 
+/// The list popup under `(column, row)`, if any.
+///
+/// One table (`SurfaceId::LIST_POPUPS`) instead of one `if` per popup: a new
+/// list popup costs a variant plus a hit-area write in its renderer, and can no
+/// longer be forgotten (the palette and the file picker were, for as long as
+/// they existed).
+///
+/// No `input_mode` check: a popup's renderer clears its area when it is not
+/// active, and a cleared surface has a zero-size rect no point can fall inside.
+/// The slash popup used to need a special case here precisely because activity
+/// was inferred from the mode rather than from the surface.
+fn list_popup_at(app: &App, column: u16, row: u16) -> Option<SurfaceId> {
+    SurfaceId::LIST_POPUPS
+        .iter()
+        .copied()
+        .find(|id| app.mouse.hits(*id, column, row))
+}
+
+/// Move the focused row of the list popup under the pointer by one step.
+///
+/// The `match` is exhaustive over the surfaces that own a cursor; a surface
+/// without one falls through to `None` (nothing to scroll) rather than being
+/// silently ignored by a `_` arm that would also swallow a new popup.
+fn scroll_list_popup(app: &mut App, popup: SurfaceId, delta: i32) -> bool {
+    match popup {
+        SurfaceId::SelectPopup => {
+            if delta < 0 {
+                app.select.move_up();
+            } else {
+                app.select.move_down();
+            }
+            true
+        }
+        SurfaceId::SlashPopup => {
+            app.step_slash_selection(delta);
+            true
+        }
+        SurfaceId::PalettePopup => {
+            app.step_palette_selection(delta);
+            true
+        }
+        SurfaceId::FilePickerPopup => {
+            if delta < 0 {
+                app.file_picker.move_up();
+            } else {
+                app.file_picker.move_down();
+            }
+            true
+        }
+        SurfaceId::Log
+        | SurfaceId::TaskPanel
+        | SurfaceId::CodePopup
+        | SurfaceId::MermaidPopup
+        | SurfaceId::ThinkingPopup
+        | SurfaceId::SubagentPopup
+        | SurfaceId::DiffPopup
+        | SurfaceId::TaskDagPopup => false,
+    }
+}
+
 /// Dispatch a mouse event (scroll, click, drag, resize).
 pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
     match mouse.kind {
         MouseEventKind::ScrollUp => {
-            if app.input_mode == crate::widgets::state::InputMode::Select
-                && point_in_rect(mouse.column, mouse.row, app.mouse.select_popup_area)
-            {
-                app.select.move_up();
-                return;
-            }
-            if app.slash_command.active
-                && point_in_rect(mouse.column, mouse.row, app.mouse.slash_popup_area)
-            {
-                app.step_slash_selection(-1);
+            if let Some(popup) = list_popup_at(app, mouse.column, mouse.row) {
+                scroll_list_popup(app, popup, -1);
                 return;
             }
             let hit = panel_hit(app, mouse.column, mouse.row);
             handle_mouse_scroll_up(app, hit);
         }
         MouseEventKind::ScrollDown => {
-            if app.input_mode == crate::widgets::state::InputMode::Select
-                && point_in_rect(mouse.column, mouse.row, app.mouse.select_popup_area)
-            {
-                app.select.move_down();
-                return;
-            }
-            if app.slash_command.active
-                && point_in_rect(mouse.column, mouse.row, app.mouse.slash_popup_area)
-            {
-                app.step_slash_selection(1);
+            if let Some(popup) = list_popup_at(app, mouse.column, mouse.row) {
+                scroll_list_popup(app, popup, 1);
                 return;
             }
             let hit = panel_hit(app, mouse.column, mouse.row);
@@ -215,11 +259,11 @@ fn handle_voice_button_click(app: &mut App) {
 fn handle_text_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
     app.mouse.popup_text_drag_origin = None;
     let popup_area = if app.thinking_mut().popup.is_some() {
-        app.mouse.thinking_popup_area
+        app.mouse.area(SurfaceId::ThinkingPopup)
     } else if app.has_subagent_popup() {
-        app.mouse.subagent_popup_area
+        app.mouse.area(SurfaceId::SubagentPopup)
     } else {
-        app.mouse.diff_popup_area
+        app.mouse.area(SurfaceId::DiffPopup)
     };
     let inside_popup = point_in_rect(mouse.column, mouse.row, popup_area);
     app.close_overlay_on_outside_click(mouse.column, mouse.row);
@@ -260,12 +304,32 @@ fn popup_text_hit(app: &App, column: u16, row: u16, clamp_vertical: bool) -> Opt
         .map(|hit_row| hit_row.hit(column))
 }
 
+/// True when `visual_row` falls below the drawn log viewport.
+///
+/// The Log panel's content area can be taller than the viewport: the live task
+/// stats row is drawn on its last content row, and the bottom border takes one
+/// more. Those rows own no log line, so a click or drag there must not resolve
+/// to whatever row happens to sit just below the viewport.
+fn below_log_viewport(app: &App, visual_base: usize, visual_row: usize) -> bool {
+    visual_row >= visual_base + app.log_scroll.height as usize
+}
+
 fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     app.focused_panel = FocusedPanel::Log;
     let visual_base = app.log_viewport_top();
-    let visual_row = visual_base + mouse.row.saturating_sub(app.mouse.log_area.y + 1) as usize;
+    let visual_row = visual_base
+        + mouse
+            .row
+            .saturating_sub(app.mouse.area(SurfaceId::Log).y + 1) as usize;
+    if below_log_viewport(app, visual_base, visual_row) {
+        app.mouse.log_selection = None;
+        app.mouse.dragging_log = false;
+        return;
+    }
     let line_idx = app.logical_from_visual(visual_row);
-    let col = mouse.column.saturating_sub(app.mouse.log_area.x + 1) as usize;
+    let col = mouse
+        .column
+        .saturating_sub(app.mouse.area(SurfaceId::Log).x + 1) as usize;
 
     let now = std::time::Instant::now();
     let pos = (mouse.column, mouse.row);
@@ -290,6 +354,26 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
         return;
     };
 
+    // A row carrying its own popup source is a control, not text: a
+    // double-click opens the full body it stands for (a hook block's header and
+    // its "more lines" tail both do this), and a single click must not leave an
+    // invisible selection behind on a row the reader cannot select.
+    if let Some(source) = app
+        .log
+        .items
+        .get(phys_idx)
+        .and_then(|item| item.popup_source.clone())
+    {
+        let title = app.log.items[phys_idx].raw.clone();
+        if app.mouse.click_count == 2 {
+            app.open_markdown_popup(title, source);
+        } else {
+            app.mouse.log_selection = None;
+            app.mouse.dragging_log = false;
+        }
+        return;
+    }
+
     // Whole-Markdown rows are cards: the MarkdownCell renderer draws no
     // selection overlay, so refuse to create an invisible selection here
     // (symmetric with rendering).
@@ -310,6 +394,16 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
         && byte < btn_end
     {
         app.copy_turn_ending_at_stats(phys_idx);
+        app.mouse.log_selection = None;
+        app.mouse.dragging_log = false;
+        return;
+    }
+
+    // A task-stats row is a HUD, not transcript text: it is centered by a pad
+    // baked into its line, which the selection overlay (it re-wraps `raw`) does
+    // not know about. Refuse the selection here, symmetric with rendering — the
+    // `⎘` button above is the only thing on the row that answers a click.
+    if crate::widgets::state::is_task_stats_line(&app.log.items[phys_idx].raw) {
         app.mouse.log_selection = None;
         app.mouse.dragging_log = false;
         return;
@@ -417,15 +511,27 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
 fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     if app.mouse.dragging_log && hit.in_log {
         let visual_base = app.log_viewport_top();
-        let visual_row = visual_base + mouse.row.saturating_sub(app.mouse.log_area.y + 1) as usize;
+        let visual_row = visual_base
+            + mouse
+                .row
+                .saturating_sub(app.mouse.area(SurfaceId::Log).y + 1) as usize;
+        if below_log_viewport(app, visual_base, visual_row) {
+            return;
+        }
         let line_idx = app.logical_from_visual(visual_row);
-        let col = mouse.column.saturating_sub(app.mouse.log_area.x + 1) as usize;
+        let col = mouse
+            .column
+            .saturating_sub(app.mouse.area(SurfaceId::Log).x + 1) as usize;
         if line_idx < app.total_log_lines()
             && let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
         {
             // Markdown cards carry no selection overlay: stop the selection at
-            // the last text row instead of extending invisibly into one.
-            if app.is_markdown_row(phys) {
+            // the last text row instead of extending invisibly into one. Same
+            // for a task-stats row, whose centering pad the overlay does not
+            // reproduce.
+            if app.is_markdown_row(phys)
+                || crate::widgets::state::is_task_stats_line(&app.log.items[phys].raw)
+            {
                 return;
             }
             if let Some(ref mut sel) = app.mouse.log_selection {
@@ -532,11 +638,10 @@ mod tests {
 
     use crossterm::event::KeyModifiers;
     use ratatui::layout::Rect;
-    use tact_protocol::{
-        AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo,
-    };
+    use tact_protocol::{AgentUpdate, PlanStep, ThinkingChunk, ToolPresentationInfo};
 
     use super::*;
+    use crate::test_fixtures::StepCall;
     use crate::{
         render::test_harness::make_app,
         widgets::{
@@ -589,7 +694,8 @@ mod tests {
             started_at: None,
             completed_at: None,
         }];
-        app.mouse.task_panel_area = Rect::new(0, 10, 40, 1);
+        app.mouse
+            .set_area(SurfaceId::TaskPanel, Rect::new(0, 10, 40, 1));
 
         // Click outside tab strip (x>=18) toggles expand when both tabs aren't shown.
         handle_mouse_event(&mut app, mouse_down(20, 10));
@@ -612,7 +718,8 @@ mod tests {
         app.task_panel_mut().expanded = false;
         app.background_panel_mut().apply_running(1);
         app.background_panel_mut().expanded = false;
-        app.mouse.task_panel_area = Rect::new(0, 10, 60, 1);
+        app.mouse
+            .set_area(SurfaceId::TaskPanel, Rect::new(0, 10, 60, 1));
         // Renderer populates these each frame; the test stands in for it.
         app.mouse.sticky_tab_areas = vec![
             (StickyTab::Tasks, Rect::new(0, 10, 7, 1)),
@@ -666,7 +773,8 @@ mod tests {
             started_at: None,
             finished_at: None,
         }];
-        app.mouse.task_panel_area = Rect::new(0, 10, 60, 1);
+        app.mouse
+            .set_area(SurfaceId::TaskPanel, Rect::new(0, 10, 60, 1));
         // Renderer populates these each frame; the test stands in for it.
         app.mouse.sticky_tab_areas = vec![
             (StickyTab::Tasks, Rect::new(0, 10, 7, 1)),
@@ -880,8 +988,9 @@ mod tests {
     fn app_with_selectable_tool_popup() -> App {
         let mut app = make_app();
         app.add_system_message("under the popup".into());
-        app.mouse.log_area = Rect::new(0, 0, 40, 20);
-        app.mouse.diff_popup_area = Rect::new(5, 5, 24, 8);
+        app.mouse.set_area(SurfaceId::Log, Rect::new(0, 0, 40, 20));
+        app.mouse
+            .set_area(SurfaceId::DiffPopup, Rect::new(5, 5, 24, 8));
         app.mouse.popup_text_body_area = Rect::new(6, 6, 22, 5);
         app.mouse.popup_text_hit_rows = vec![
             popup_hit_row(6, 10, 0, "alpha"),
@@ -907,8 +1016,9 @@ mod tests {
 
     fn app_with_selectable_thinking_popup() -> App {
         let mut app = make_app();
-        app.mouse.log_area = Rect::new(0, 0, 40, 20);
-        app.mouse.thinking_popup_area = Rect::new(5, 5, 24, 8);
+        app.mouse.set_area(SurfaceId::Log, Rect::new(0, 0, 40, 20));
+        app.mouse
+            .set_area(SurfaceId::ThinkingPopup, Rect::new(5, 5, 24, 8));
         app.mouse.popup_text_body_area = Rect::new(6, 6, 22, 5);
         app.mouse.popup_text_hit_rows = vec![
             popup_hit_row(6, 6, 0, "alpha"),
@@ -1131,7 +1241,8 @@ mod tests {
                 body: String::new(),
             })
             .collect();
-        app.mouse.slash_popup_area = Rect::new(20, 5, 60, 14);
+        app.mouse
+            .set_area(SurfaceId::SlashPopup, Rect::new(20, 5, 60, 14));
 
         handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
         assert_eq!(
@@ -1166,7 +1277,8 @@ mod tests {
             0,
             false,
         );
-        app.mouse.select_popup_area = Rect::new(20, 5, 60, 14);
+        app.mouse
+            .set_area(SurfaceId::SelectPopup, Rect::new(20, 5, 60, 14));
 
         handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
         assert_eq!(app.select.selected, 1, "wheel down must advance selection");
@@ -1179,6 +1291,64 @@ mod tests {
         assert_eq!(
             app.select.selected, 0,
             "wheel outside the select popup must not move selection"
+        );
+    }
+
+    #[test]
+    fn mouse_wheel_over_palette_popup_steps_selection() {
+        use crate::widgets::state::InputMode;
+
+        let mut app = make_app();
+        app.input_mode = InputMode::Palette;
+        app.mouse
+            .set_area(SurfaceId::PalettePopup, Rect::new(20, 5, 60, 14));
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
+        assert_eq!(
+            app.palette_selected, 1,
+            "wheel down must advance the palette selection"
+        );
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollUp, 30, 8));
+        assert_eq!(
+            app.palette_selected, 0,
+            "wheel up must move the palette selection back"
+        );
+
+        // Wheel outside the recorded popup rect must not move the selection.
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 1, 20));
+        assert_eq!(
+            app.palette_selected, 0,
+            "wheel outside the palette popup must not move selection"
+        );
+    }
+
+    #[test]
+    fn mouse_wheel_over_file_picker_steps_selection() {
+        use crate::widgets::state::InputMode;
+
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+        app.file_picker.options = vec!["a.rs".into(), "b.rs".into(), "c.rs".into()];
+        app.mouse
+            .set_area(SurfaceId::FilePickerPopup, Rect::new(20, 5, 60, 14));
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 30, 8));
+        assert_eq!(
+            app.file_picker.selected, 1,
+            "wheel down must advance the file-picker selection"
+        );
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollUp, 30, 8));
+        assert_eq!(
+            app.file_picker.selected, 0,
+            "wheel up must move the file-picker selection back"
+        );
+
+        handle_mouse_event(&mut app, mouse_event(MouseEventKind::ScrollDown, 1, 20));
+        assert_eq!(
+            app.file_picker.selected, 0,
+            "wheel outside the file-picker popup must not move selection"
         );
     }
 
@@ -1257,29 +1427,12 @@ mod tests {
             "b1",
             HashMap::from([("command".to_string(), "echo hi".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "b1".into(),
-            tool_name: "bash".into(),
-            arg_summary: "echo hi".into(),
-            arg_full: "echo hi".into(),
-            presentation: ToolPresentationInfo::generic("bash"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "b1".into(),
-            result: StepResult {
-                tool: "bash".into(),
-                arg_summary: "echo hi".into(),
-                arg_full: Some("echo hi".into()),
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some("hi\n".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("bash"),
-            },
-        });
+        app.handle_agent_update(StepCall::new(0, "b1", "bash", "echo hi").started());
+        app.handle_agent_update(
+            StepCall::new(0, "b1", "bash", "echo hi")
+                .detail("hi\n")
+                .finished(),
+        );
         app
     }
 
@@ -1313,6 +1466,39 @@ mod tests {
         let opened = app.tools_mut().popup.is_some();
         app.tools_mut().popup = None;
         opened
+    }
+
+    /// A hook block's header is a control: a double-click opens the whole body
+    /// (the log only holds the head of it), and a single click selects nothing.
+    #[test]
+    fn double_click_on_a_hook_header_opens_the_full_body() {
+        let mut app = make_app();
+        let body = (1..=20)
+            .map(|i| format!("line {i}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        app.append_hook_context_markdown(Some("plugin demo"), &body);
+
+        let terminal = crate::render::test_harness::render_log_panel_terminal(&mut app, 100, 40);
+        let (x, y) = glyph_origin(terminal.backend().buffer(), "hookcontext");
+
+        handle_log_click(&mut app, mouse_down(x, y));
+        assert!(app.system_prompt_popup.is_none(), "one click opens nothing");
+        assert!(
+            app.mouse.log_selection.is_none(),
+            "a control row must not start a selection"
+        );
+
+        handle_log_click(&mut app, mouse_down(x, y));
+        let popup = app
+            .system_prompt_popup
+            .as_ref()
+            .expect("double-click opens the read-out popup");
+        assert!(
+            popup.source.contains("line 20"),
+            "the popup carries the whole body, not the head: {}",
+            popup.source
+        );
     }
 
     /// Does a double-click at (`column`, `row`) open the Thinking card's popup?
@@ -1511,29 +1697,12 @@ mod tests {
             "b1",
             HashMap::from([("command".to_string(), "echo hi".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "b1".into(),
-            tool_name: "bash".into(),
-            arg_summary: "echo hi".into(),
-            arg_full: "echo hi".into(),
-            presentation: ToolPresentationInfo::generic("bash"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "b1".into(),
-            result: StepResult {
-                tool: "bash".into(),
-                arg_summary: "echo hi".into(),
-                arg_full: Some("echo hi".into()),
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some("hi\n".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("bash"),
-            },
-        });
+        app.handle_agent_update(StepCall::new(0, "b1", "bash", "echo hi").started());
+        app.handle_agent_update(
+            StepCall::new(0, "b1", "bash", "echo hi")
+                .detail("hi\n")
+                .finished(),
+        );
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         // The collapsed block is exactly the two header rows, and its one target
@@ -1622,29 +1791,12 @@ mod tests {
             "b1",
             HashMap::from([("command".to_string(), long_command.to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "b1".into(),
-            tool_name: "bash".into(),
-            arg_summary: long_command.into(),
-            arg_full: long_command.into(),
-            presentation: ToolPresentationInfo::generic("bash"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "b1".into(),
-            result: StepResult {
-                tool: "bash".into(),
-                arg_summary: long_command.into(),
-                arg_full: Some(long_command.into()),
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some("done\n".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("bash"),
-            },
-        });
+        app.handle_agent_update(StepCall::new(0, "b1", "bash", long_command).started());
+        app.handle_agent_update(
+            StepCall::new(0, "b1", "bash", long_command)
+                .detail("done\n")
+                .finished(),
+        );
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         let msgs = app.msgs();
@@ -1713,29 +1865,13 @@ mod tests {
                 ("new_text".to_string(), "fn new()".to_string()),
             ]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "e1".into(),
-            tool_name: "edit_file".into(),
-            arg_summary: "src/lib.rs".into(),
-            arg_full: "src/lib.rs".into(),
-            presentation: ToolPresentationInfo::generic("edit_file"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "e1".into(),
-            result: StepResult {
-                tool: "edit_file".into(),
-                arg_summary: "src/lib.rs".into(),
-                arg_full: Some("src/lib.rs".into()),
-                status: StepStatus::Success,
-                message: "edited".into(),
-                detail: Some("- fn old()\n+ fn new()".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("edit_file"),
-            },
-        });
+        app.handle_agent_update(StepCall::new(0, "e1", "edit_file", "src/lib.rs").started());
+        app.handle_agent_update(
+            StepCall::new(0, "e1", "edit_file", "src/lib.rs")
+                .message("edited")
+                .detail("- fn old()\n+ fn new()")
+                .finished(),
+        );
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         let msgs = app.msgs();
@@ -1774,29 +1910,12 @@ mod tests {
             "r1",
             HashMap::from([("path".to_string(), "src/lib.rs".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "r1".into(),
-            tool_name: "read_file".into(),
-            arg_summary: "src/lib.rs".into(),
-            arg_full: "src/lib.rs".into(),
-            presentation: ToolPresentationInfo::generic("read_file"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "r1".into(),
-            result: StepResult {
-                tool: "read_file".into(),
-                arg_summary: "src/lib.rs".into(),
-                arg_full: Some("src/lib.rs".into()),
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some("fn main() {}\nfn helper() {}".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("read_file"),
-            },
-        });
+        app.handle_agent_update(StepCall::new(0, "r1", "read_file", "src/lib.rs").started());
+        app.handle_agent_update(
+            StepCall::new(0, "r1", "read_file", "src/lib.rs")
+                .detail("fn main() {}\nfn helper() {}")
+                .finished(),
+        );
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         let msgs = app.msgs();
@@ -1845,29 +1964,19 @@ mod tests {
             "t1",
             HashMap::<String, String>::new(),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "t1".into(),
-            tool_name: "task_list".into(),
-            arg_summary: String::new(),
-            arg_full: String::new(),
-            presentation: task_presentation(),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "t1".into(),
-            result: StepResult {
-                tool: "task_list".into(),
-                arg_summary: String::new(),
-                arg_full: None,
-                status: StepStatus::Success,
-                message: "2 tasks".into(),
-                detail: Some("[1] pending  wire the parser\n[2] in_progress  run the suite".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: task_presentation(),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "t1", "task_list", String::new())
+                .presentation(task_presentation())
+                .started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "t1", "task_list", String::new())
+                .no_arg_full()
+                .message("2 tasks")
+                .detail("[1] pending  wire the parser\n[2] in_progress  run the suite")
+                .presentation(task_presentation())
+                .finished(),
+        );
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         let msgs = app.msgs();
@@ -1914,29 +2023,15 @@ mod tests {
             "s1",
             HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "s1".into(),
-            tool_name: "spawn_subagent".into(),
-            arg_summary: "audit the repo".into(),
-            arg_full: "audit the repo".into(),
-            presentation: ToolPresentationInfo::generic("spawn_subagent"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "s1".into(),
-            result: StepResult {
-                tool: "spawn_subagent".into(),
-                arg_summary: "audit the repo".into(),
-                arg_full: Some("audit the repo".into()),
-                status: StepStatus::Success,
-                message: "done".into(),
-                detail: Some("child summary".into()),
-                duration_us: Some(1),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("spawn_subagent"),
-            },
-        });
+        app.handle_agent_update(
+            StepCall::new(0, "s1", "spawn_subagent", "audit the repo").started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "s1", "spawn_subagent", "audit the repo")
+                .message("done")
+                .detail("child summary")
+                .finished(),
+        );
 
         let phys_idx = app.tools_mut().blocks.last().unwrap().phys_idx;
         assert!(
@@ -2009,7 +2104,7 @@ mod tests {
     /// `handle_mouse_event` clicks can resolve positions.
     fn app_with_clickable_log() -> App {
         let mut app = make_app();
-        app.mouse.log_area = Rect::new(0, 0, 40, 10);
+        app.mouse.set_area(SurfaceId::Log, Rect::new(0, 0, 40, 10));
         app
     }
 
@@ -2024,6 +2119,90 @@ mod tests {
 
         let expected = Some(LogSelection::span(0, 0, "你好世界".len()));
         assert_eq!(app.mouse.log_selection, expected);
+    }
+
+    /// The Log panel's content area is taller than its viewport once a row is
+    /// reserved (the live task-stats row sits on the last content row): a click
+    /// on a reserved row must not resolve to a line hidden just below the
+    /// viewport. One long message wraps over several visual rows, so row 4 is
+    /// still inside a *valid* logical line — the viewport bound is what stops
+    /// it.
+    #[test]
+    fn a_click_on_a_row_below_the_viewport_starts_no_selection() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("x".repeat(200));
+        let _ = crate::render::test_harness::render_log_panel_text(&mut app, 40, 10);
+        app.log_scroll.height = 4; // rows 1..=4 are the viewport; row 5 is reserved
+
+        handle_mouse_event(&mut app, mouse_down(1, 3));
+        assert!(
+            app.mouse.log_selection.is_some(),
+            "a row inside the viewport still selects"
+        );
+
+        handle_mouse_event(&mut app, mouse_down(1, 5));
+        assert!(
+            app.mouse.log_selection.is_none(),
+            "a reserved row owns no log line"
+        );
+        assert!(!app.mouse.dragging_log);
+    }
+
+    /// The `⎘` on a frozen stats row is centered with the row, and the click
+    /// that lands on the glyph must still copy the turn — which means the pad
+    /// the render baked into the line is subtracted on the way to the byte
+    /// offset. The click is aimed at the *drawn* glyph, not at column 1.
+    #[test]
+    fn a_click_on_the_centered_stats_button_copies_the_turn() {
+        let mut app = app_with_clickable_log();
+        app.add_user_message("the turn".into());
+        app.add_system_message("the answer".into());
+        app.last_prompt_elapsed_secs = Some(5);
+        app.add_task_stats_block();
+
+        let terminal = crate::render::test_harness::render_log_panel_terminal(&mut app, 40, 10);
+        let buffer = terminal.backend().buffer();
+        let (x, y) = (1..39)
+            .flat_map(|x| (1..9).map(move |y| (x, y)))
+            .find(|&(x, y)| buffer[(x, y)].symbol() == "⎘")
+            .expect("the ⎘ glyph on the frozen stats row");
+        assert!(
+            x > 1,
+            "the row is centered, so the glyph is not at column 1"
+        );
+
+        handle_mouse_event(&mut app, mouse_down(x, y));
+        assert!(
+            app.copy_flash_at.is_some(),
+            "a click on the centered ⎘ must copy the turn"
+        );
+    }
+
+    /// The rest of a stats row is a HUD, not text: it takes no selection, since
+    /// the overlay re-wraps `raw` and would draw the highlight where the baked
+    /// centering pad is not.
+    #[test]
+    fn a_click_on_a_stats_row_body_starts_no_selection() {
+        let mut app = app_with_clickable_log();
+        app.add_user_message("the turn".into());
+        app.add_system_message("the answer".into());
+        app.last_prompt_elapsed_secs = Some(5);
+        app.add_task_stats_block();
+
+        let terminal = crate::render::test_harness::render_log_panel_terminal(&mut app, 40, 10);
+        let buffer = terminal.backend().buffer();
+        let (_, y) = (1..39)
+            .flat_map(|x| (1..9).map(move |y| (x, y)))
+            .find(|&(x, y)| buffer[(x, y)].symbol() == "⎘")
+            .expect("the ⎘ glyph on the frozen stats row");
+
+        // Well past the button glyphs, still on the row.
+        handle_mouse_event(&mut app, mouse_down(30, y));
+        assert!(
+            app.mouse.log_selection.is_none(),
+            "a stats row is a HUD: it takes no selection"
+        );
+        assert!(!app.mouse.dragging_log);
     }
 
     #[test]
@@ -2087,18 +2266,26 @@ mod tests {
         app.log_scroll.visual_start = vec![0, 1, 2, 3];
 
         // Stats row is logical 2 (visual row 2 → mouse row 3). Raw row is
-        // `⎘  Task stats:⏱ 00:05`, drawn with this kind's 3-column indent, so
-        // the icon glyph itself is mouse column 4 and the button's byte range is
-        // the icon alone (bytes 0..3). A successful copy appends a notice row.
+        // `⎘  Task stats:⏱ 00:05`, drawn with this kind's 3-column indent plus
+        // the centering pad the row carries, so the icon glyph itself is mouse
+        // column 4 + pad and the button's byte range is the icon alone
+        // (bytes 0..3). A successful copy appends a notice row.
+        let raw = app.log.items.last().expect("stats row").raw.clone();
+        let pad = agent_tui_kit::render::stats_line::stats_row_pad(
+            app.mouse.area(SurfaceId::Log).width as usize - 2,
+            3,
+            unicode_width::UnicodeWidthStr::width(raw.as_str()),
+        );
+        let icon_col = 4 + pad;
         let before = app.log.items.len();
         // One column past the glyph is the separator gap, outside the range.
-        handle_mouse_event(&mut app, mouse_down(5, 3));
+        handle_mouse_event(&mut app, mouse_down(icon_col + 1, 3));
         assert_eq!(
             app.log.items.len(),
             before,
             "the gap after the icon is not the button"
         );
-        handle_mouse_event(&mut app, mouse_down(4, 3));
+        handle_mouse_event(&mut app, mouse_down(icon_col, 3));
         assert!(
             app.log.items.len() > before,
             "clicking the copy icon should copy this turn"

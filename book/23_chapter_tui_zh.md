@@ -1,7 +1,5 @@
 # 终端 UI（TUI）
 
-> 语言：[中文](./23_chapter_tui_zh.md) · [English](./23_chapter_tui.md)
-
 本章描述 `tui` crate：`tact-ui` 如何通过 async channel 接线 agent 循环，以及**渲染层**如何在每个 tick 将 `App` 状态转为 ratatui 帧。
 
 更多实现细节（扩展配方、性能分析）见 [docs/tui_rendering.md](../docs/tui_rendering.md)。
@@ -40,7 +38,7 @@ sequenceDiagram
 
 `AgentUpdate`、`UserCommand` 与 `AccountUpdate` 定义在 `tact_protocol`。`PluginRequest` 与 `PluginEvent` 定义在 `tact::plugin`；`tact-ui` 启动 worker，TUI 在渲染前 drain plugin event。
 
-**分层（2026-08）：** 可复用渲染面位于 `crates/agent_tui_kit`（设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`）。kit 只依赖 `tact_protocol` + ratatui；它拥有纯渲染函数（`render::bar` / `input` / `log` / `popups` / `task_panel` / `render_md` / `cells` …）、状态模型（`LogCoordinator`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`LogScroll` …）以及进出契约（`bridge::Command`、`AgentBridge`、`BridgeExtension`）。`crates/tui` 是 Tact 应用层：拥有 `App`、handlers、每帧 `prepare_*` 阶段（skill 样式、滚动缓存）以及应用层弹窗（palette、file picker、slash commands、task DAG）。
+**分层（2026-08）：** 可复用渲染面位于 `crates/agent_tui_kit`（设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`）。kit 只依赖 `tact_protocol` + ratatui；它拥有纯渲染函数（`render::bar` / `input` / `log` / `popups` / `task_panel` / `render_md` / `cells` …）、状态模型（`LogCoordinator`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`LogScroll` …）以及进出契约（`bridge::Command`、`AgentBridge`、`BridgeExtension`）。`crates/tui` 是 Tact 应用层：拥有 `App`、handlers、每帧 `prepare_*` 阶段（skill 样式、滚动缓存）以及应用层弹窗（palette、file picker、slash commands）。
 
 **组件注册表（whole-App 切换，2026-08-23）：** kit 的组件现在拥有 `App` 曾以裸字段保存的 UI 状态。`App` 持有 `ComponentRegistry`（`plan` / `thinking` / `stream` / `tools` / `status_bar` / `task_panel` / `subagent_panel` 组件），通过类型化访问器（`app.plan()` / `app.plan_mut()`，…）读写状态；共享的 `LogCoordinator` 仍由 shell 持有。`handle_agent_update` 流程为 `coordinator_prepass` → `dispatch_components`（注册表分发；stream outbox 携带解析后的 `StreamEvent`）→ `apply_stream_events`（仅 StreamChunk —— gap 检查会追加行）→ `shell_handle`（丰富 shell 行为：status/log 效果、tool 卡片生命周期、select 弹窗、thinking 卡片）→ `refresh_tail_scroll`。kit 组件认领 `TokenUsage`/`TurnStats`/`ModelInfo`（状态栏）、`ToolProgress`/`ToolMeta`（tool）、`StepAdded`（plan）、`TasksChanged`（task panel）、`SubagentsChanged`（subagent panel）与 `StreamChunk`（仅解析）。`ThinkingChunk` 与 `StepFinished`/`StepFailed` 留在 shell（它们与 log 锚定的生命周期纠缠）。
 
@@ -53,16 +51,19 @@ sequenceDiagram
 `crates/tact-ui/src/interactive.rs` 中的 `run_interactive`（由 `main.rs` 分发）：
 
 1. `tact::config::init()` — 设置 + LLM provider（[Ch 21](./21_chapter_config_zh.md)）。
-2. 打开 SQLite session store，resolve `session_id`（`--session`、`--resume-last` 或新 UUID）。`--resume-last` 与 `--list-sessions` 按当前工作目录的 `root_dir` 过滤 session，忽略其他项目行。`SessionLockGuard` 在争用前重试 `try_lock_session`。
-3. 用 `toolset()`、MCP router、managers 与 `with_ui_channel(agent_tx)` 构建 `Agent`。
-4. 在独立 tokio task 上 spawn `tui::run_tui(...)`。
-5. 循环 `user_cmd_rx` — 分发 `SubmitTask`、`Cancel`、`QueryBalance`。
+2. 打开 SQLite session store，resolve `session_id`（`--session`、`--resume-last` 或新 UUID）。`--resume-last` 与 `--list-sessions` 按当前工作目录的 `root_dir` 过滤 session，忽略其他项目行。`SessionLockGuard` 在争用前重试 `try_lock_session`。这一步连同建行、抢锁、注册、touch 一起由 `session_bootstrap::open_session` 完成，两个前端共用（它返回**已持有**的锁，何时释放由调用方决定）。
+3. 建好 channel / session store / skill registry 等，**先在独立 tokio task 上 spawn `tui::run_tui(...)`** —— 这些都不依赖 Agent，所以 TUI 先可见。
+4. **与 TUI 竞速**地跑 `build_agent_for_interactive(...)`。构建本身（`toolset()`、MCP router、五个 manager、`ToolContext`、`with_ui_channel(agent_tx)`）与 headless 共用 `crates/tact-ui/src/session_bootstrap.rs` 的 `bootstrap_session`；两个前端只在两处不同：启动提示的出口（`Notices`：stderr 或 `AgentUpdate::Info`），以及有没有 UI 通道（`UiWiring`）。构建期间用户退出（`q` / `/quit`）就**放弃构建**直接返回：这一步最慢的是逐个 MCP server 握手，远端 server 的 OAuth 发现可以耗掉数秒，无条件 await 会让 `q` 看起来像卡住。丢弃构建是安全的——每个 MCP transport 在 drop 时杀掉自己的子进程——代价是这条路不打印 session id / stats，因为根本没有 agent 可总结。
+5. 构建成功后 spawn driver task 跑 `user_cmd_rx` 循环 — 分发 `SubmitTask`、`Cancel`、`QueryBalance`。
+6. `tui_handle` 结束后等 driver 收尾（SessionEnd hook + `shutdown_mcp`），再打印 session id 与 stats。
 
 主题来自 `config::settings().ui.theme`（默认 `"ink"`）。
 
 ### Headless（`tact-ui headless "prompt"`）
 
 `crates/tact-ui/src/headless.rs` 中的 `run_headless`。无 TUI 运行单次 `agent_loop`，最终文本打印到 stdout，发送桌面通知。由于没有 live card，工具进度保持仅输出最终结果。使用 config 驱动的权限模式 — 与交互模式相同。
+
+agent 构建与交互模式共用 `session_bootstrap::bootstrap_session`（见上）。两处差异是刻意的：启动提示走 stderr（`Notices::Stderr`，另有交互模式不报的 `[permission: …]` 一行——TUI 的状态栏已经在显示权限模式），且没有 UI 通道（`ui: None`）。`ensure_session` 留在 headless 侧：它只有一次 `agent_loop`，必须在开跑前恢复历史；TUI 交给 `agent_loop` 自己做。
 
 ---
 
@@ -81,7 +82,7 @@ pub enum UserCommand {
 | 命令 | 来源 | `tui.rs` 中 handler |
 |------|------|---------------------|
 | **`SubmitTask`** | Insert 模式 Enter、slash 命令、`@` 文件选择器提交 —— **Planning/Executing 期间 Enter 改为排队**（Codex 风格"当前任务结束后提交"，见 §6.6） | 重置 `tool_use_counter`、清除 `cancel_flag`、`build_user_message`、`agent_loop`；仅 loop 成功且未取消时发出 `TaskComplete` |
-| **`Cancel`** | `/cancel`，或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环在下次检查时退出；下次 `SubmitTask` 清除 flag（[Ch 18](./18_chapter_agent_loop.md)） |
+| **`Cancel`** | `/cancel`，或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环在下次检查时退出；下次 `SubmitTask` 清除 flag（[Ch 18](./18_chapter_agent_loop_zh.md)） |
 | **`Compact`** | `/compact`（仅 idle 时） | `agent.compact_history(None)` → Responses provider 走原生 `/responses/compact`，其余 provider 走本地摘要（[Ch 5](./05_chapter_compact_zh.md)） |
 | **`QueryBalance`** | `/balance`（仅 DeepSeek/Kimi） | `account::query_once()` → `AccountUpdate` channel（[Ch 25](./25_chapter_protocol_zh.md)） |
 | **`QueryBackground`** | `/background` 或 `/background <id>` | `tool_context.background_manager.check(id)` → `MdInfo` 输出任务列表 / 单个任务 JSON（[Ch 13](./13_chapter_background_zh.md)） |
@@ -140,9 +141,9 @@ TUI 在 `crates/tui/src/widgets/state/app/agent.rs` → `handle_agent_update` �
 |--------|---------|
 | `StreamChunk` | 追加到活跃 assistant 文本 cell |
 | `ThinkingChunk` | Thinking card / preview |
-| `StepAdded` / `StepStarted` / `StepFinished` / `StepFailed` | 工具时间线（[Ch 11](./11_chapter_task.md)） |
+| `StepAdded` / `StepStarted` / `StepFinished` / `StepFailed` | 工具时间线（[Ch 11](./11_chapter_task_zh.md)） |
 | `ToolProgress` | 更新匹配 active tool 的 1→3 行 live tail |
-| `RequestSelect` | 权限 popup（[Ch 10](./10_chapter_permission.md)） |
+| `RequestSelect` | 权限 popup（[Ch 10](./10_chapter_permission_zh.md)） |
 | `TokenUsage` | 状态栏计数 |
 | `TurnStats` | 状态栏回合计数（当前任务的 LLM 回合；cap 携带但不渲染） |
 | `ModelInfo` | 模型名 / 限制显示 |
@@ -166,7 +167,7 @@ match agent.agent_loop(Some(task_message)).await {
 }
 ```
 
-见 [Ch 18 §7](./18_chapter_agent_loop.md#7-tui-integration)。
+见 [Ch 18 §7](./18_chapter_agent_loop_zh.md#7-tui-integration)。
 
 ---
 
@@ -193,26 +194,14 @@ match agent.agent_loop(Some(task_message)).await {
 渲染栈拆分为 `crates/agent_tui_kit/src/render/`（纯面板、状态模型、widgets）与 `crates/tui/src/render/` 应用层（入口点：每帧构建 `RenderCtx`、`prepare_*` 阶段、应用层弹窗）。对 agent 逻辑**只读**：handler 与 `handle_agent_update` 变更 `App`；render 函数读 `RenderCtx`（每帧由不相交的 `&` 借用构建一次）并写 ratatui `Buffer`。渲染代码唯一变更路径是显式 `Vec<RenderCommand>`，由 shell 在帧后 drain。
 
 ```mermaid
-flowchart TB
-    subgraph State
-        AgentRx[agent_rx drained]
-        App[App: messages, tools, scroll, popups]
-    end
-    subgraph Render
-        Bar[bar.rs status bars]
-        Layout[layout.rs main area]
-        Log[log.rs + log_column.rs]
-        Cells[cells/ Renderable units]
-        Input[input.rs]
-        Popups[popups/ overlays]
-    end
-    AgentRx --> App
-    App --> Bar
-    App --> Layout
-    Layout --> Log
-    Log --> Cells
-    App --> Input
-    App --> Popups
+graph TD
+    a_rx[agent_rx drained] --> b_app[App messages tools scroll popups]
+    b_app --> c_bar[bar.rs 状态栏]
+    b_app --> d_layout[layout.rs 主区]
+    b_app --> e_input[input.rs]
+    b_app --> f_popups[popups/ 浮层]
+    d_layout --> g_log[log.rs + log_column.rs]
+    g_log --> h_cells[cells/ Renderable units]
 ```
 
 ### 6.1 模块地图
@@ -223,24 +212,29 @@ flowchart TB
 | `render/layout.rs`（tui） | 主内容路由（history、help、log + 可选 sticky tasks、popups）——纯编排 |
 | `render/log.rs`（tui） | Log `prepare_log_frame` 缓存重建（应用层 skill 样式）；纯渲染已移入 kit |
 | `render/log_style.rs`（tui） | 共享 log 文本样式 + skill restyle |
-| `render/slash_style.rs`（tui） | 薄包装：注入 `PALETTE_COMMANDS` 内置命令集到 kit `slash_style` |
+| `render/slash_style.rs`（tui） | 薄包装：把 `widgets/state/slash.rs` 的 `SlashCommand` 内置命令集注入 kit `slash_style` |
 | `render/popups/`（tui） | 应用层弹窗：palette、file picker、slash commands、task DAG、help（voice 键位）+ 应用 mouse 命中区的 wrapper |
 | `agent_tui_kit::render/bar.rs` | 顶栏 + 底栏统计（纯 `&RenderCtx`） |
 | `agent_tui_kit::render/input.rs` | 多行输入框、pending block、palette 命令行（纯） |
 | `agent_tui_kit::render/log.rs` | Log 面板纯渲染（消费 wrap cache、scroll、overlays、scrollbar） |
 | `agent_tui_kit::render/log_column.rs` | Viewport 裁剪的 `Renderable` 合成器 |
-| `agent_tui_kit::render/task_panel.rs` | 持久任务 sticky body 格式化 + 单域渲染辅助 |
-| `agent_tui_kit::render/sticky_host.rs` | Log 下方三域 sticky host（`[Tasks] [Subagent] [Background]` tab；纯渲染并返回 tab 命中区） |
+| `agent_tui_kit::render/sticky_host.rs` | Log 下方三域 sticky host（`[Tasks] [Subagent] [Background]` tab；纯渲染并返回 tab 命中区），以及 sticky 方框/分隔线的唯一实现（原先 `render/task_panel.rs` 里那份副本已随模块删除） |
 | `agent_tui_kit::render/render_md.rs` | Markdown → ratatui `Line`s（`pulldown-cmark` + Mermaid 路由 + 宽度感知表格） |
 | `agent_tui_kit::render/pulldown.rs` | `pulldown-cmark` 事件循环 → ratatui `Line`s |
 | `agent_tui_kit::render/mermaid_sequence.rs` | 本地 Mermaid `sequenceDiagram` 渲染器（alias/activation/CJK 安全） |
 | `agent_tui_kit::render/renderable.rs` | `Renderable` trait |
 | `agent_tui_kit::render/util.rs` | `wrap_line`、tool 缩进常量 |
 | `agent_tui_kit::render/cells/` | `text`、`thinking`、`tool`、`code`、`separator`、`markdown` |
-| `agent_tui_kit::render/popups/` | 纯弹窗：thinking/diff/code/mermaid/system-prompt/subagent/history/select + chrome helpers |
+| `agent_tui_kit::render/popups/` | 纯弹窗：thinking/diff/code/mermaid/system-prompt/subagent/history/select/task-dag + `scrollable_popup` 骨架 + chrome helpers（含 `render_popup_scrollbar` 与 `COPY_SCROLL_CLOSE` / `SCROLL_CLOSE` 两组 footer 提示） |
 | `agent_tui_kit::widgets/` | `ToolWidget`、`HelpWidget`、`PopupWidget`、`SelectPopupWidget` |
 
-支撑部分：`agent_tui_kit::state/`（`LogCoordinator`、`LogScroll`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`PlanPanel`、`TaskPanelState`、`SubagentPanelState`、`BackgroundPanelState`、`MouseState`、弹窗状态 …）、`agent_tui_kit::theme` / `i18n`（颜色、`Messages` 字符串）；`crates/tui/src/widgets/state/` 持有 `App` 与应用层状态（`AccountState`、`VoiceState`、`FilePicker`、`SlashCommandState`、`InputHistory`、`TaskDagPopup`、`SelectKind`）。
+支撑部分：`agent_tui_kit::state/`（`LogCoordinator`、`LogScroll`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`PlanPanel`、`TaskPanelState`、`SubagentPanelState`、`BackgroundPanelState`、`MouseState`、`FilteredList`、`sticky_panel`（两个 sticky 面板共用的滚动窗口与时长标签）、`TaskDagPopup`、弹窗状态 …）、`agent_tui_kit::theme` / `i18n`（颜色、`Messages` 字符串）；`crates/tui/src/widgets/state/` 持有 `App` 与应用层状态（`AccountState`、`VoiceState`、`FilePicker`、`SlashCommandState`、`InputHistory`、`SelectKind`）。
+
+**弹窗侧的统一（2026-10-04）：** 三处「同一件事写多遍」各自收成一个类型／一张表。
+
+- **命中区 → 一张表。** `MouseState` 不再持有 13 个独立的 `*_area` 字段，而是 `areas: [Rect; SurfaceId::COUNT]`，由 `SurfaceId` 枚举索引（`Log` / `TaskPanel` / 各弹窗）；入口是 `set_area` / `clear_area` / `hits`。判定"这个弹窗此刻是否活跃"不再查 `input_mode`——渲染器在未激活时会 `clear_area`，零尺寸矩形天然不含任何点。`crates/tui/src/handlers/mouse.rs` 的 `ListPopupTarget` 被删除：命中阶梯遍历 `SurfaceId::LIST_POPUPS`，滚轮分派是对 `SurfaceId` 穷尽的 `match`。`PopupMouseSurface` 的 5 个按弹窗命名的字段（`code_popup_area` …）收成单一 `popup_area`——每次渲染只有一个弹窗作画，那 5 个字段实际是个"每次只用一个成员"的联合结构。`popup_text_body_area` / `popup_text_hit_rows` **刻意不进表**：thinking / diff / subagent 共用同一个文本选择槽（同时只会开一个），一个槽就是它的正确形状。
+- **列表状态 → `FilteredList`。** options + query + cursor 的规则（大小写不敏感子串、游标 clamp、以及"游标索引**原始** options 而非可见子集"）此前在 `SelectPopup` / `FilePicker` / palette / slash 各有一份。现在 `FilteredList` 持有它，`SelectPopup` 用 `Deref`/`DerefMut` 嵌入（`select.options` / `select.selected = x` 形式的调用点无需改动），palette / slash / FilePicker 共用自由函数 `contains_ignore_case` 与 `clamp_step`。FilePicker 的 options 是每次 `refresh` 从文件系统重建的**派生缓存**，所以它共享的是游标步进而非过滤器。
+- **chrome → 只有 kit 在画。** `ScrollableTextPopup` 新增 `body_area(area)`（需要"先按弹窗宽度渲染内容、再交给骨架"的调用者用它取得几何），`system_prompt_popup` / `mermaid_popup` 收进骨架；`TaskDagPopup` 状态与 `render_task_dag_lines` 从 `crates/tui` 下沉到 `agent_tui_kit::state::task_dag`，渲染器落在 kit，tui 只留"宽度变化时重建缓存"的 prepare 阶段。`crates/tui/src/render/popups/mod.rs` 现在只剩 `render_with_ctx`（构建 `RenderCtx`）与 `record_popup_area` / `record_text_popup`（应用命中区）两个 helper，不再转发 `render_popup_chrome`。App 层最后一个自己画边框的弹窗就此消失。
 
 ### 6.2 帧管线
 
@@ -373,14 +367,16 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 **顶栏**（`render_status_bar`）：输入模式、焦点面板标签（`FocusedPanel` 目前只有 `Log`，但每个状态分支都会渲染该槽位）、`Status`（Idle / Planning / Executing / Done）、`Idle` 下的主题/语言提示。覆盖：临时 `flash_msg`。`Executing` 时还会显示步骤标签（`正在执行步骤 4` / `Executing step 4`，2026-09-14 起不再带分母）与并行工具数（`并行中 1` / `running 1`）；`[████░░] n%` 进度条与实时任务耗时已于 2026-09-14 一并删除——进度条只是把步骤数用字符重画一遍，耗时则下移到第 1 行紧挨运行（见下），因此顶栏不再渲染任何自有数字。
 
 **底栏**（`render_bottom_bar`，始终 2 行）：
-- 第 1 行：权限模式、cwd、运行（`⊙ 运行 …` / `⊙ Up …`）、实时任务耗时（`⏱ 耗时 00:12` / `⏱ Elapsed 00:12`——紧跟在运行之后，因为描述*本次运行*的两只时钟该挨着读；无任务在跑时整段省略；作为本行最后一个可丢弃段推入，窄终端上它第一个被丢）、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。任务耗时在 **task-end 分隔线**上（不在底栏）。
+- 第 1 行：权限模式、cwd、运行（`⊙ 运行 …` / `⊙ Up …`）、git 分支（`⎇`）、可选账户（`¤ …`，DeepSeek / Kimi）。段落用 ` │ ` 连接。任务耗时**不在这条底栏上**：实时的那只在日志的 **task-stats 行**（`⏱ mm:ss`，见下），第 2 行的 `⏱` 是已结束回合的耗时。
 - 第 2 行：模型名、`输出`（即 `max_tokens` **原值**——请求真正发出去的那个数字：Responses 协议下是 `max_output_tokens`，chat completions / Anthropic 下是 `max_tokens`。即使对 effort 语义模型也**不扣** reasoning 份额：推理与正文的切分由服务端按次请求决定，所以这里报告的是"要了什么"，而不是猜出来的值——估算 reasoning 预留是压缩路径的职责，不是读数该做的事。见 2026-09-13 条目）、`think high`/`思考 high`（effort）或 `think 32K`/`思考 32K`（预算；两者互斥——effort 存在时绝不显示残留的旧预算）、`ctx` 用量（`ctx 4% 45K/1M`——百分比在前，绝对 used/window 在后；进度条已于 2026-09-12 去掉，因为它只是把百分比用字符又画了一遍）、`▣` 缓存命中率、回合计数（`⟳ 12` = 会话用户回合，以及 `⇅ 3` = 当前任务的 agent-loop 回合——任务的首次 LLM 调用前隐藏），以及回合耗时（`⏱ 02:05` = 上一完成回合，加 `均 01:45` = 会话平均；回合完成前不显示平均）。段落用两个空格连接。窄终端优先丢弃：回合耗时 → 回合计数 → 缓存 → ctx——即 `ctx` 存活最久。
 
-**第 2 行瘦身（2026-09-12）：** 新增回合段后第 2 行涨到约 138 列，普通终端已开始丢段。该行被压到 **90 列**，且不丢失任何独立信息（同日 ctx 调整后为 86 列）。遵循的规则是**一个值只留一种渲染**：(1) **删除** `∑ₜₒₖ {total}` 段——它读的是 `ctx` 段已渲染为 `used` 的同一个 `StatusBarState.token_total`（精确整数仍保留在任务 stats 块与 `/stats` 中）；(2) `max_out_token` → `out`；(3) `cache%` → 裸 `▣ 30%`；(4) 两个计数都去掉 `turns` 文字，只剩 `⟳ 12 ⇅ 3`。宽度预算由 `bottom_bar_fits_every_segment_in_100_columns` 锁定（85–86 列，随 `out` 取值浮动一位）；2026-09-14 新增到第 1 行的任务耗时另有预算测试（`bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns`）。
+**实时任务统计行（2026-10-05）：** 任务在跑时，`Task stats:⏱ mm:ss · model · N tokens (…)` 这一行不再只在回合结束时出现——kit 把它画在 Log 面板的**最后一行内容行**上（`render_log_panel_pure` → `stats_line::render_live_stats_band`），每秒（空闲 tick）与每次 LLM 调用（`TokenUsage`）重画；它占的那一行由 `prepare_log_frame` 从 Log 视口里扣掉（`stats_line::live_stats_reserve`，只有一行）。任务结束时该行消失，`App::add_task_stats_block` 在同一个位置写下冻结版，两者共用 `stats_line::task_stats_body` 一个 builder，所以读数不会跳。它不是 log item，不占 physical 索引，`⎘` 复制按钮只留在冻结行上（回合中途复制会漏掉尚未 flush 的流式文本）。**两行都居中**（共用 `stats_line::center_pad` 一条规则）——它们是回合边界上的 HUD，不是日志行：边界由上面那条全宽实线承担，原先居中在实线里的耗时现在居中在它们下面。冻结行的 pad 由 wrap pass 烘进它的**行文本**、绝不碰 `raw`（`⎘` 的命中是 `raw` 的字节偏移映射到渲染列），因此渲染与点击共用 `stats_line::stats_row_pad`，pad 随宽度变化重算。统计行不接受文本选区（与 markdown 行、带竖条行同一条规则：选区覆盖层是重新 wrap `raw` 画的）。详见 [§6.11](#611-log-消息模型) 与 `docs/token_usage_schema.md`。
+
+**第 2 行瘦身（2026-09-12）：** 新增回合段后第 2 行涨到约 138 列，普通终端已开始丢段。该行被压到 **90 列**，且不丢失任何独立信息（同日 ctx 调整后为 86 列）。遵循的规则是**一个值只留一种渲染**：(1) **删除** `∑ₜₒₖ {total}` 段——它读的是 `ctx` 段已渲染为 `used` 的同一个 `StatusBarState.token_total`（精确整数仍保留在任务 stats 块与 `/stats` 中）；(2) `max_out_token` → `out`；(3) `cache%` → 裸 `▣ 30%`；(4) 两个计数都去掉 `turns` 文字，只剩 `⟳ 12 ⇅ 3`。宽度预算由 `bottom_bar_fits_every_segment_in_100_columns` 锁定（85–86 列，随 `out` 取值浮动一位）；第 1 行的预算由 `bottom_bar_fits_row_1_in_100_columns` 管（2026-09-14 那条任务耗时的预算测试随该段一起在 2026-10-05 删除）。
 
 **ctx 恢复百分比、去掉进度条（2026-09-12，同日）：** 上面的瘦身一度删掉了 ctx 的 `pct%` 而保留 `■`/`·` 进度条。同日反转：进度条**删除**，百分比前置——`ctx [▍···] 45K/1M` → **`ctx 4% 45K/1M`**（24 → 17 → 14 列）。理由：进度条只是把百分比用字符又画了一遍，而只有 `45K/1M` 时读者得自己做除法才能回答"离自动压缩还有多远"。绝对 `used/window` 保留——比率无法替代它来自的两个计数。缓存 `▣` 段也移到紧接 `ctx` **之后**、回合计数**之前**，让两个会话级比率挨着读；push 顺序现为 `model → out → think → ctx → cache → turns → timing`，窄终端存活顺序为 `ctx > cache > 回合计数 > 回合耗时`。
 
-**回合计数与耗时（2026-09-12）：** `⟳` 统计本会话已派发的用户回合——在唯一派发入口（`handlers/skills.rs::dispatch_user_task`，同时服务排队刷新与 skill 派发）自增；断点续传时由 `load_history` 统计已持久化的 user 消息播种。`⇅` 统计当前任务的 agent-loop 迭代：agent 每次循环发一次 `AgentUpdate::TurnStats { turns_taken, max_turns }`（`crates/tact/src/agent/mod.rs`），kit 的 `StatusBarComponent` 存入状态，shell 在派发时重置。`max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**——只有 `spawn_subagent` 会设置 cap，主 agent 底栏永远不会显示。耗时在 `add_task_end_separator`（`widgets/state/app/popups.rs`）累计，这是唯一真正冻结 `task_start_time` 的位置；被取消的回合计入，合成分隔线（无 start time）不计入。运行中的实时耗时是上文那条独立的**第 1 行**段（`format_task_elapsed`，读 `ctx.task_start_time`，紧挨运行）：自 2026-09-14 起它落户在那里，顶栏不再显示任何时钟。它刻意不在冻结段同一行——第 1 行回答"本次运行花了多久"，第 2 行回答"已结束的回合各花多久"——且作为本行最后一个可丢弃段，列宽不足时它是第一个被丢的。
+**回合计数与耗时（2026-09-12）：** `⟳` 统计本会话已派发的用户回合——在唯一派发入口（`handlers/skills.rs::dispatch_user_task`，同时服务排队刷新与 skill 派发）自增；断点续传时由 `load_history` 统计已持久化的 user 消息播种。`⇅` 统计当前任务的 agent-loop 迭代：agent 每次循环发一次 `AgentUpdate::TurnStats { turns_taken, max_turns }`（`crates/tact/src/agent/mod.rs`），kit 的 `StatusBarComponent` 存入状态，shell 在派发时重置。`max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**——只有 `spawn_subagent` 会设置 cap，主 agent 底栏永远不会显示。耗时在 `add_task_end_separator`（`widgets/state/app/popups.rs`）累计，这是唯一真正冻结 `task_start_time` 的位置；被取消的回合计入，合成分隔线（无 start time）不计入。运行中的实时耗时**不在底栏**：2026-09-14 它一度落在第 1 行紧挨运行，2026-10-05 移到日志的 **task-stats 行**（见上），底栏与顶栏都不再显示任何实时时钟。第 2 行的 `⏱` 只回答"已结束的回合各花多久"（上一回合 + 会话平均），与实时那只钟互不相干。
 
 **输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；长行按字符边界软换行（`wrap_line`，CJK 双宽感知——`Paragraph` 保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（`caret_in_wrapped`）；CJK 感知光标宽度；无批准横幅（agent 的权限询问是 `RequestSelect` 更新，会以 `InputMode::Select` 打开选择弹窗）。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact/src/voice/`。
 
@@ -435,6 +431,8 @@ Tool/file 与 Thinking detail popup 支持鼠标左键文本选择。Mouse hit �
 
 Chrome 渲染为包裹弹窗内容区域的 ratatui `Block`。确保所有 overlay 无论内容如何，外观上都属于统一家族。
 
+**内容行同样取色自 theme（2026-10-01 修）：** chrome 只画框和背景，行内容由各弹窗自己画——而 palette / slash commands / file picker / select 曾用字面量 `Color::White`、`Color::Cyan`、`Color::DarkGray`。亮色主题下 `theme.bg` 是白，框内每一条未选中行就是白底白字**完全不可见**（选中行又是暗色主题的 cyan，而亮色主题 accent 是蓝）。现在一律用 `theme.fg` / `theme.muted` / `theme.accent`，选中行固定是 `bg(theme.highlight).fg(theme.fg)` 这个组合，`popup_scene_tests` 里有四个按亮色主题断言具体单元格 fg 的回归测试。file picker 的文件类型色（`.rs` 橙、`.py` 蓝等）仍是有意为之的字面色板，见该文件注释。
+
 **Dirty 渲染：** 仅当 `app.dirty`、`Status::Done` 或 `!tools.active.is_empty()` 时运行 `terminal.draw`。绘制后清除 `dirty`。
 
 **Caches**（`LogScroll`）：
@@ -459,9 +457,15 @@ Chrome 渲染为包裹弹窗内容区域的 ratatui `Block`。确保所有 overl
 
 ### 6.10 渲染中的主题与 i18n
 
-颜色来自 `theme.rs` 的 `Theme`（12 主题；config 默认 `ink`）。运行时 `Ctrl+T` 循环主题；主题变化时 cache 失效防止 stale styled 行。
+颜色来自 `theme.rs` 的 `Theme`（12 主题；config 默认 `ink`）。运行时 `/theme` 打开选择器（`SelectKind::ThemePick`，开在**当前主题**那一行，选中的行带 ` *` 标记），`Ctrl+T` 是「下一个」的快捷循环；选择器走 `App::apply_theme`（静默应用，随后由持久化步骤报告），`Ctrl+T` 走 `App::toggle_theme`（静默应用 + 直接写 `[ui] theme` + 一条消息说明结果）。两条路都会**落盘**：`Ctrl+T` 不问，因为每按一次都弹一个「要保存吗」等于把这个快捷键废掉。主题变化时 cache 失效防止 stale styled 行。
 
-UI 字符串集中在 `i18n.rs`（`English` / `Chinese`）；render 经 `app.msgs()` 取标签。`Ctrl+L` 切换语言。
+UI 字符串集中在 `crates/agent_tui_kit/src/i18n.rs`（`Language::English` / `Language::Chinese`，每种语言一份 `Messages`）；render 经 `app.msgs()` 取标签。`Ctrl+L` 切换语言，与 `Ctrl+T` 完全对称：走 `App::toggle_language`（静默应用 + 直接写 `[ui] language` + 一条消息）。`/lang` 则与 `/theme` 对称：先经 `App::apply_language` **静默**翻转，再打开「保存到配置？」第二步（`SelectKind::PersistLang`，默认选 `No`），由这一步负责说话——一次动作只该播报一次。接受保存时写 `[ui] language`，写进去的是 `Language::as_str()` 的 locale 标签（`en` / `zh`）而**不是**界面标签（`中文`）：后者是画给人看的，解析器读不回来。启动时 `App::set_configured_language` 读回 `[ui] language`，未知取值告警并回落英文。
+
+**「有没有配置文件可写」是启动时捕获的状态，不是每次按键都去读全局设置。** `App::ui_config_path` 由 `run_tui` 在 `App::new` 之后经 `App::set_ui_config_path` 写入（`TuiConfig::ui_config_path` 由 `interactive.rs` 从已解析的 `settings().config_path` 传入，和 `theme` / `language` 同一条路）；`App::ui_config_available()` 是 `/theme`、`/lang`、`/hook-output`、`Ctrl+T`、`Ctrl+L` 五条路共用的唯一判据。为 `None` 时五者都报「仅本次会话」且不碰磁盘。之所以不在按键处理里现场读 `try_settings()`：那是进程级全局，单测里会被别的测试装上又拆掉，于是主题测试会去写别人的临时配置文件——既不确定，也真的会写盘。
+
+`apply_language` 与 `toggle_language` 的分工不是风格问题：`self.language` 是**渲染**路径读的，而持有 `Messages` 快照的组件（thinking / stream / tools）在构造时就冻结了语言，所以两者都必须经 `apply_language` 把新快照推下去，否则日志里已存在的行会在旧语言的外壳里被重绘。`/lang` 之所以要拆出静默版，正是因为它的持久化步骤承担了播报。
+
+第三个 `[ui]` 偏好是 `/hook-output`（`[ui] hook_output`，布尔，默认 `true`；语义见 [Ch 21 §5](./21_chapter_config_zh.md)）：它走 `Ctrl+T` 那种形状——翻转 → 写盘 → **一条**消息说清「现在是开还是关」和「存了没存」——而不是 `/theme` 那种「先静默应用、再问要不要保存」。差别是信息结构上的：布尔没有列表可选，就没有 picker step 可以挂那个问题。`App::toggle_hook_output` 只改 `self.hook_output`（**不**回收日志里已经画出来的行，它管的是之后进日志的东西），再经 `App::persist_hook_output_choice` 落盘并播报。
 
 ### 6.11 Log 消息模型
 
@@ -474,6 +478,8 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | `LogItem::raw` | `String` | 纯文本：复制、hit test 与结构查找 |
 | `LogItem::kind` | `LogItemKind` | 显式来源、渲染模式、缩进与类别 metadata |
 | `LogItem::markdown_cell` | `Option<MarkdownCell>` | 整段 Markdown notice 的缓存 renderer |
+| `LogItem::popup_source` | `Option<String>` | 双击要打开的只读全文；带它的行在鼠标层是**控件**（双击开 popup、单击不产生选区），因此超长块不必在 log 里留第二份正文 |
+| `LogItem::gutter` | `Option<Gutter>` | 该行左缘要戴的竖条。是**行属性**而非 `line` 里的前缀：竖条属于该行折出的**每一个**视觉行，而写进文本的 `▎` 只标记第一个——窄面板一折行就在容器左轨上开一个洞 |
 
 `LogItemKind` 在行进入 TUI 时分配（`widgets/state/mod.rs`）；renderer 不再从 raw 前缀或缩进推断归属：
 
@@ -482,9 +488,15 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | `User` | `add_user_message` 产生的用户输入行 | 0 |
 | `AssistantMarkdown` | 流式或持久化的 assistant Markdown | `LOG_THINKING_INDENT + 1` |
 | `SystemPlain(style)` | 显式系统 / info 纯文本行 | `LOG_THINKING_INDENT + 1` |
-| `SystemMarkdown` | `/skills` / `MdInfo` 等整段 Markdown 系统提示 | `LOG_THINKING_INDENT + 1` |
+| `SystemMarkdown` | `/skill list` / `MdInfo` 等整段 Markdown 系统提示 | `LOG_THINKING_INDENT + 1` |
 | `SystemTool` | tool placeholder 与显式标记的 tool 行 | `LOG_TOOL_INDENT` |
 | `Thinking` | 为一个 direct Thinking card 保留的 blank placeholder 行 | `LOG_THINKING_INDENT` |
+| `HookStatus(u64)` | hook 的进度行，id 由 `AgentUpdate::HookStatus` 发放、回来时按 id 原地改写 | `LOG_TOOL_BLOCK_INDENT` |
+| `HookContext` | hook 注入上下文的 header / 竖条正文 / "还有 N 行"尾巴（整块共用一个 kind） | `LOG_TOOL_BLOCK_INDENT` |
+
+hook 块用的是 `LOG_TOOL_BLOCK_INDENT` 而不是 `LOG_TOOL_INDENT`：后者属于被工具卡覆盖掉的空白占位行，屏幕上根本没有这一列，按它对齐会让竖条停在每条工具行左边 4 列（详见 [第 9 章 §10](./09_chapter_hook_zh.md)）。
+
+这两个 hook kind 还受 `[ui] hook_output`（默认 `true`，`/hook-output` 翻转）门控——关掉就**一行都不进**日志。门设在行被 append 的那一刻（`App::append_hook_context_markdown` / `App::apply_hook_status`），而不是渲染层：上面这张表的 physical 索引是选区、卡片与滚动锚点的键，一行「画的时候跳过」仍然会占掉一个索引。参见 [Ch 21 §5](./21_chapter_config_zh.md)。
 
 `SystemMsgStyle` 是独立的视觉 metadata（`Default`、`Success`、`Error`、`Warning`、`Accent`）。只有调用方已经确认该行是 system 后，显式可见前缀才会用于选择颜色。
 
@@ -499,7 +511,9 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | **Tool blocks** | Blank placeholder 行（`SystemTool`） | 实际绘制为单个 `ToolCell`；placeholder 预留 scroll 高度 |
 | **Code blocks** | fence 关闭后 blank placeholder | `render_code_cards` overlay 绘制 card |
 | **Loading placeholder** | `app.loading_idx` 处一行 blank `SystemTool` | **Legacy：** 仅 `PlanGenerated` 到达时插入 — agent 今日不发，spinner overlay 通常 inactive |
-| **Task-end separator** | 魔法 raw `\x07tact-task-end\x1f{secs}` 的 sentinel 行 | 渲染为全宽强调色实线，居中嵌入 `耗时 MM:SS` / `Elapsed MM:SS` |
+| **Task-end separator** | 魔法 raw `\x07tact-task-end\x1f{secs}` 的 sentinel 行 | 渲染为全宽强调色实线（2026-10-05 起不再内嵌耗时——那一轮的墙钟时间由 task-stats 行与底栏第 2 行给出；raw 里的秒数仍保留，只是不画） |
+
+**实时任务统计行不是 log 行。** 上表最后一行说的是冻结版；任务在跑时，同一行文本由 kit 直接画在面板的最后一行内容行上（见 §6.6），既不进 `log_items[]` 也不占 physical 索引——选区、卡片与滚动锚点的键因此不受影响，Log 视口按 `stats_line::live_stats_reserve` 让出那一行。
 
 若干 **overlay 注册表** 按 physical 索引存元数据 — 不在 `log_items[]` 重复文本：
 
@@ -689,7 +703,15 @@ sequenceDiagram
 
 ## 7. 输入模式与主题
 
-`widgets/state/mod.rs` 中 `InputMode`：`Normal`、`Insert`、`Palette`、`Select`、`FilePicker`。Handler 在 `crates/tui/src/handlers/`。Normal 模式 `/` 打开 command palette；Insert 模式 `/` 打开 slash-command popup（同一命令列表，分组为 **Commands** 然后 **Skills**）。Palette 命令 `save` 将 log 写入 `std::env::temp_dir()/agent_log_{timestamp}.txt` 并在系统消息显示完整路径。
+`widgets/state/mod.rs` 中 `InputMode`：`Normal`、`Insert`、`Palette`、`Select`、`FilePicker`。Handler 在 `crates/tui/src/handlers/`。Normal 模式 `/` 打开 command palette；Insert 模式 `/` 打开 slash-command popup（同一份内置命令列表）。**skills 不在这份列表里**：每个已安装 skill 曾经都是一级条目，装几十个就把 `/mcp`、`/compact` 淹没，也让一级列表随安装变化；它们现在挂在 `/skill` 之下（`/skill ` 弹出 `list` / `reload` + 所有 skill，`/skill demo …` 运行），直接形式 `/demo` 仍可用但不再出现在任何列表里。
+
+**全局快捷键先于模式派发，并且必须消费事件**：`Ctrl+C/H/T/L/?` 由 `handlers::handle_global_shortcut` 处理，返回 `true` 时 `run_tui` 不再把同一个 `KeyEvent` 交给模式 handler。模式 handler 的兜底分支只匹配 `KeyCode::Char(c)`、不看修饰键，所以"顺带执行一下"会让 `Ctrl+T` 既切主题又打出一个 `t`；三个会写字符的分支（Insert 输入框、Palette `cmd_line`、FilePicker 过滤词）因此都带 `!CONTROL` 守卫——`Ctrl+<char>` 要么是已绑定的快捷键，要么什么都不是。新增全局快捷键时，处理与消费要一起做。
+
+消费还有第二个后果：**没有任何东西能派发到这些键之后**，所以用户绑定（`voice.voice_keybind`）不能指到它们。`run_tui` 在进入 raw mode **之前**就拒绝这种配置并指名冲突的键，而不是让语音"看起来坏了"。保留集由 `GLOBAL_SHORTCUTS` 这张表定义（`handle_global_shortcut` 与 `is_global_shortcut` 同读一张表），新增一个全局快捷键即自动为语音保留它，不存在第二份列表可漂移。
+
+内置命令的唯一来源是 `widgets/state/slash.rs` 的 `SlashCommand` 枚举：`ALL` 决定弹出列表的顺序，`name()` / `from_name()` 是用户输入的名字，`desc(msgs)` 是中英描述，`needs_args()` 决定回车是补全还是执行，`subcommands()` 是**子命令树**（每个节点带 `hint`——弹窗右列显示的后续语法 `<server>`、`--all | --source <label>`，刻意不做翻译，因为那是语法不是文案；以及 `takes_value` / `children`，决定回车是补全还是执行）。这些都是**穷尽匹配**——新增一个命令时，漏写名字、漏写描述、漏写处理分支都会编译失败。派发在 `handlers/mod.rs` 的 `run_command`（同样无 `_` 分支）：先按枚举解析，不中再交给 skill，因此内置名始终赢过同名 skill。
+
+`/balance` 是唯一按会话条件隐藏的命令（没有账户通道时不出现在列表里）；`/skill`、`/plugin`、`/mcp`、`/hooks`、`/subagent_cancel` 是五个需要参数的命令。**子命令补全**：`handlers/insert.rs` 与 `widgets/state/slash_command.rs` 共用 `App::slash_candidates()`，输入到子命令位置时弹窗列出下一层节点（`/skill `、`/plugin mar`、`/hooks trust --`、以及嵌套的 `/plugin marketplace `），Tab 逐层补全（`/plugin ma` ⭢ Tab `/plugin marketplace ` ⭢ Tab `/plugin marketplace list `），回车只补全**未完成**的候选——`takes_value` 或还有子节点的那种——完整的叶子直接执行。空格不再一律关闭弹窗：只有当后续无可补全项时才关（`/mcp auth ` 进入取值状态即关，`/skill ` 保持打开），这就是"复合命令"能逐层补全的原因。`slash_candidates` 命中取值、skill 参数或未知 token 时返回空列表（不打"无匹配"提示框）。**不覆盖**：子命令解析（`/skill list`、`/mcp auth <server>`、`/plugin marketplace list`、`/hooks trust --all`）仍在各自的 handler 模块里按字符串切——但声明与 handler 由 `every_declared_subcommand_has_a_handler` 对齐：它遍历 `subcommands()` 给每个叶子派发样例输入，任何"能被补全却只会打印用法"的子命令都会让它失败。Palette 命令 `save` 将 log 写入 `std::env::temp_dir()/agent_log_{timestamp}.txt` 并在系统消息显示完整路径。
 
 ### Slash skills
 
@@ -699,16 +721,18 @@ sequenceDiagram
 |------|------|
 | Slash popup Enter 于 **skill** | **立即 Invoke**（无额外 args，除非已输入） |
 | Slash popup **Tab** 于 skill | 仅自动补全到 `/name ` — 可加可选 args，再 Enter 运行 |
-| Slash popup Enter 于 **built-in** | 立即执行（`/quit`、`/cancel` …）；`/plugin` 仍只补全以便写子命令 |
-| Slash popup Enter 于 **built-in** | 立即执行（`/quit`、`/cancel` 等） |
+| Slash popup Enter 于 **built-in** | 立即执行（`/quit`、`/cancel` 等）；`/skill`、`/plugin` 只补全以便写子命令 |
+| Slash popup **Tab/Enter** 于**子命令** | 逐层补全：`/plugin ma` ⭢ Tab `/plugin marketplace ` ⭢ Tab `/plugin marketplace list `；带取值的候选（`/mcp auth`）只补到 `/mcp auth ` |
 | `/skill-name` 或 `/skill-name args` + Enter | **Invoke**：log 显示 slash 行；agent 收到 `<skill>` body（裸 `$ARGUMENTS` 替换，或有 args 时 append Claude 式 `ARGUMENTS:`） |
 | Palette Enter 于 skill | Insert 模式预填 `/name `（undo checkpoint 保留） |
-| `/skill-reload` | 重扫 root 到共享 registry（TUI + agent），失效 visual cache |
+| Palette Enter 于带子命令的内置命令（`/skill`、`/plugin`、`/mcp`、`/hooks`） | 预填 `/cmd ` **并直接打开子命令弹窗**（后续无可补全项时不开，如 `/subagent_cancel `） |
+| `/skill list` | 列出可用技能（纯本地渲染，任务进行中也可用） |
+| `/skill reload` | 重扫 root 到共享 registry（TUI + agent），失效 visual cache |
 | `/plugin …` | 排队安装、卸载、更新、列出、重载及 marketplace 操作；成功的 install/uninstall/update/reload 刷新共享 skills。`/plugin list` 渲染功能表（技能 / 命令 / 代理 / 钩子 / MCP） |
 
-输入框与用户 log 行经 `render/slash_style.rs` 高亮 `/skill-name`（accent+bold）与 args（`theme.fg`）。完整发现路径与 `$ARGUMENTS` 规则：[Ch 2](./02_chapter_skill.md)。与模型 mid-turn 调用 `load_skill` 分离。
+输入框与用户 log 行经 `render/slash_style.rs` 高亮 `/skill-name`（accent+bold）与 args（`theme.fg`）。完整发现路径与 `$ARGUMENTS` 规则：[Ch 2](./02_chapter_skill_zh.md)。与模型 mid-turn 调用 `load_skill` 分离。
 
-`theme.rs` 中十二个 built-in 主题：`dark`、`light`、`solarized-dark/light`、`gruvbox-dark`、`nord`、`retro`、`kawaii`、`japanese`、`brutal`、`ink`、`ink-light`。初始主题来自 config（[Ch 21](./21_chapter_config_zh.md)）；normal 模式 `Ctrl+T` 循环。
+`theme.rs` 中十二个 built-in 主题：`dark`、`light`、`solarized-dark/light`、`gruvbox-dark`、`nord`、`retro`、`kawaii`、`japanese`、`brutal`、`ink`、`ink-light`。初始主题来自 config（[Ch 21](./21_chapter_config_zh.md)）；`/theme` 选择、`Ctrl+T` 循环。选完会像 `/model` 一样问一句「将主题保存到配置文件？」（默认 **否**），选「是」写 `[ui] theme`（`tact::config::persist_theme`，`toml_edit` 只改这一行、保留行尾注释），没有配置文件或选「否」/Esc 时只对本次会话生效。
 
 ---
 
@@ -718,12 +742,12 @@ sequenceDiagram
 
 | 依赖 | 用途 |
 |------|------|
-| `get_skill_registry` | Skills（[Ch 2](./02_chapter_skill.md)） |
+| `get_skill_registry` | Skills（[Ch 2](./02_chapter_skill_zh.md)） |
 | `StoreRoot` + managers | Tasks、background、team、worktree |
-| `memory_manager` | Memory（[Ch 3](./03_chapter_memory.md)） |
-| `load_mcp_router` | MCP tools（[Ch 8](./08_chapter_mcp.md)） |
+| `memory_manager` | Memory（[Ch 3](./03_chapter_memory_zh.md)） |
+| `load_mcp_router` | MCP tools（[Ch 8](./08_chapter_mcp_zh.md)） |
 | `PermissionManager::try_new(PermissionMode::Default)` | **硬编码** — 见缺口 |
-| `open_sqlite_session_store` | Session + 输入历史（[Ch 1](./01_chapter_store.md)） |
+| `open_sqlite_session_store` | Session + 输入历史（[Ch 1](./01_chapter_store_zh.md)） |
 
 输入历史经 `history_save_tx` → `append_input_history` 异步追加。
 
@@ -733,7 +757,7 @@ DeepSeek/Kimi 启动时后台 task 查询一次余额并经 account channel 发�
 
 ## 9. 通知与配置
 
-桌面通知在 `Agent::emit_update` 内对 `TaskComplete` 与 `StepFailed` 触发，当 `config::settings().agent.notifications_enabled` 为 true（[Ch 17](./17_chapter_notify.md)）。
+桌面通知在 `Agent::emit_update` 内对 `TaskComplete` 与 `StepFailed` 触发，当 `config::settings().agent.notifications_enabled` 为 true（[Ch 17](./17_chapter_notify_zh.md)）。
 
 TUI 本身不对流式事件直接调用 notification API。
 
@@ -770,7 +794,7 @@ TUI 本身不对流式事件直接调用 notification API。
 
 | 缺口 | 详情 |
 |------|------|
-| **交互模式忽略 `permission_mode`** | TUI 始终 `PermissionMode::Default`；TOML/CLI `-m` 仅影响 headless（[Ch 10](./10_chapter_permission.md)） |
+| **交互模式忽略 `permission_mode`** | TUI 始终 `PermissionMode::Default`；TOML/CLI `-m` 仅影响 headless（[Ch 10](./10_chapter_permission_zh.md)） |
 | **`TaskComplete` 文本启发式** | 用 context 最后一条消息，非严格最后 assistant turn |
 | **无 live config reload** | UI 可循环主题；LLM/provider 变更需重启 |
 | **单 agent 实例** | 每 session driver 一个 in-flight `agent_loop`；无多路复用任务 |
@@ -782,9 +806,9 @@ TUI 本身不对流式事件直接调用 notification API。
 
 ## 相关文档
 
-- [Agent Main Loop](./18_chapter_agent_loop.md) — TUI 驱动内容
+- [Agent Main Loop](./18_chapter_agent_loop_zh.md) — TUI 驱动内容
 - [Configuration](./21_chapter_config_zh.md) — 主题与启动标志
 - [LLM Providers](./22_chapter_llm_zh.md) — 流式与余额 API
-- [Permission Model](./10_chapter_permission.md) — `RequestSelect` 流程
+- [Permission Model](./10_chapter_permission_zh.md) — `RequestSelect` 流程
 - [docs/tui_rendering.md](../docs/tui_rendering.md) — 扩展配方与性能分析
 - [docs/tool_rendering.md](../docs/tool_rendering.md) — tool block 渲染管线

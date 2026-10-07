@@ -54,39 +54,10 @@ pub(crate) fn handle_plugin_command(app: &mut App) -> CommandExecOutcome {
 
 #[cfg(test)]
 mod tests {
-    use std::path::PathBuf;
-
-    use tact::plugin::PluginRequest;
-    use tact_protocol::AgentUpdate;
-    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
-
     use super::{handle_plugin_command, parse_plugin_command};
-    use crate::{i18n::Language, widgets::state::App};
-
-    fn make_app() -> (App, UnboundedReceiver<PluginRequest>) {
-        let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
-        let (user_cmd_tx, _user_cmd_rx) = unbounded_channel();
-        let (plugin_tx, plugin_rx) = unbounded_channel();
-        let (_plugin_event_tx, plugin_event_rx) = unbounded_channel();
-        let (history_tx, _history_rx) = unbounded_channel();
-        (
-            App::new(
-                agent_rx,
-                None,
-                plugin_event_rx,
-                plugin_tx,
-                user_cmd_tx,
-                PathBuf::from("."),
-                Vec::new(),
-                "test-session".into(),
-                history_tx,
-                "retro".into(),
-                String::new(),
-                Vec::new(),
-            ),
-            plugin_rx,
-        )
-    }
+    use crate::i18n::Language;
+    use crate::test_fixtures::TestApp;
+    use tact::plugin::PluginRequest;
 
     #[test]
     fn parses_only_exact_plugin_forms() {
@@ -120,7 +91,7 @@ mod tests {
 
     #[test]
     fn update_plugin_command_queues_request() {
-        let (mut app, mut requests) = make_app();
+        let (mut app, mut requests) = TestApp::new().into_plugin_requests();
         app.input = "/plugin update demo".into();
 
         let outcome = handle_plugin_command(&mut app);
@@ -135,7 +106,7 @@ mod tests {
 
     #[test]
     fn uninstall_plugin_command_queues_request() {
-        let (mut app, mut requests) = make_app();
+        let (mut app, mut requests) = TestApp::new().into_plugin_requests();
         app.input = "/plugin uninstall demo".into();
 
         let outcome = handle_plugin_command(&mut app);
@@ -150,7 +121,7 @@ mod tests {
 
     #[test]
     fn valid_plugin_command_queues_request_and_reports_pending() {
-        let (mut app, mut requests) = make_app();
+        let (mut app, mut requests) = TestApp::new().into_plugin_requests();
         app.input = "/plugin list".into();
 
         let outcome = handle_plugin_command(&mut app);
@@ -168,7 +139,7 @@ mod tests {
 
     #[test]
     fn invalid_plugin_command_reports_usage_without_queueing() {
-        let (mut app, mut requests) = make_app();
+        let (mut app, mut requests) = TestApp::new().into_plugin_requests();
         app.input = "/plugin install demo".into();
 
         handle_plugin_command(&mut app);
@@ -184,7 +155,7 @@ mod tests {
 
     #[test]
     fn bare_plugin_keeps_input_for_subcommand_without_log_spam() {
-        let (mut app, mut requests) = make_app();
+        let (mut app, mut requests) = TestApp::new().into_plugin_requests();
         app.input = "/plugin".into();
 
         let outcome = handle_plugin_command(&mut app);
@@ -213,7 +184,7 @@ mod tests {
 
     #[test]
     fn plugin_feedback_uses_the_selected_language() {
-        let (mut app, _requests) = make_app();
+        let (mut app, _requests) = TestApp::new().into_plugin_requests();
         app.language = Language::Chinese;
         app.input = "/plugin list".into();
 

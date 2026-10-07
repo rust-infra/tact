@@ -14,11 +14,10 @@ use ratatui::{
     Frame,
     layout::Rect,
     style::{Modifier, Style},
-    text::{Line, Span, Text},
-    widgets::{Paragraph, Scrollbar, ScrollbarState, Wrap},
+    text::{Line, Span},
 };
 
-use super::PopupMouseSurface;
+use super::{FooterHint, PopupMouseSurface, scrollable_popup::ScrollableTextPopup};
 use crate::{render::ctx::RenderCtx, state::MermaidPopupView};
 
 /// Header line shown when the diagram cannot be rendered.
@@ -34,13 +33,12 @@ pub fn render_mermaid_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> P
     }
     let source = ctx.mermaid_blocks[popup.block_idx].source.clone();
 
-    let popup_area = super::centered_popup_area(area);
-    let inner = super::popup_inner(popup_area);
+    let body = ScrollableTextPopup::body_area(area);
 
     // Render the diagram first: we need to know whether it produced art before
-    // we can pick the effective view or size the scrollbar.
+    // we can pick the effective view.
     let diagram = (popup.view == MermaidPopupView::Diagram).then(|| {
-        crate::render::render_md::render_mermaid_block(&source, ctx.theme, inner.width as usize)
+        crate::render::render_md::render_mermaid_block(&source, ctx.theme, body.width as usize)
     });
     let (view, diagram_lines) = match diagram {
         // Requested diagram and it rendered.
@@ -52,20 +50,20 @@ pub fn render_mermaid_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> P
     };
     let fell_back = popup.view == MermaidPopupView::Diagram && diagram_lines.is_none();
 
-    let footer: &[super::FooterHint] = &[
-        super::FooterHint {
+    let footer: &[FooterHint] = &[
+        FooterHint {
             key: "Tab",
             label: view.toggled().toggle_label(),
         },
-        super::FooterHint {
+        FooterHint {
             key: "y",
             label: " copy ",
         },
-        super::FooterHint {
+        FooterHint {
             key: "j/k",
             label: " scroll ",
         },
-        super::FooterHint {
+        FooterHint {
             key: "Esc",
             label: " close ",
         },
@@ -75,62 +73,35 @@ pub fn render_mermaid_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> P
     } else {
         " mermaid (source) ".to_string()
     };
-    let inner = super::render_popup_chrome(
-        frame,
-        popup_area,
-        ctx.theme,
-        &title,
-        None,
-        Some(footer),
-        ctx.copy_flash.then_some(ctx.messages.popup_copy_done),
-    );
 
-    let content_height = inner.height as usize;
-
-    // Both views render into a `Vec<Line>`; only the body differs.
-    let body: Vec<Line<'static>> = match &diagram_lines {
-        Some(lines) => lines.clone(),
-        None => source
-            .lines()
-            .map(|line| {
-                Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(ctx.theme.fg),
-                ))
-            })
-            .collect(),
-    };
-    let total = body.len().max(1);
-
-    let max_scroll = total.saturating_sub(1);
-    let scroll = (popup.scroll as usize).min(max_scroll);
-    let end_line = (scroll + content_height).min(total);
-
-    let mut text = Text::default();
+    // Both views render into a `Vec<Line>`; only the body differs. The fallback
+    // note, when present, is the first content line so it scrolls with the
+    // source it describes.
+    let mut lines: Vec<Line<'static>> = Vec::new();
     if fell_back {
-        text.push_line(Line::from(Span::styled(
+        lines.push(Line::from(Span::styled(
             FALLBACK_NOTE,
             Style::default()
                 .fg(ctx.theme.accent)
                 .add_modifier(Modifier::BOLD),
         )));
     }
-    if body.is_empty() {
-        text.push_line(Line::from(""));
-    } else {
-        text.extend(body[scroll.min(body.len())..end_line].iter().cloned());
+    match &diagram_lines {
+        Some(rendered) => lines.extend(rendered.iter().cloned()),
+        None => lines.extend(source.lines().map(|line| {
+            Line::from(Span::styled(
+                line.to_string(),
+                Style::default().fg(ctx.theme.fg),
+            ))
+        })),
     }
 
-    let para = Paragraph::new(text).wrap(Wrap { trim: false });
-    frame.render_widget(para, inner);
+    let popup_area = ScrollableTextPopup::new(ctx.theme, &title, &lines)
+        .scroll(popup.scroll as usize)
+        .footer_hints(footer)
+        .copy_done(ctx.copy_flash.then_some(ctx.messages.popup_copy_done))
+        .render(frame, area);
 
-    let scrollbar =
-        Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
-    let mut state = ScrollbarState::new(total)
-        .viewport_content_length(content_height)
-        .position(scroll);
-    frame.render_stateful_widget(scrollbar, popup_area, &mut state);
-
-    surface.mermaid_popup_area = popup_area;
+    surface.popup_area = popup_area;
     surface
 }

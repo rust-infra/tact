@@ -38,6 +38,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
             notifications_enabled: false,
             max_token_usage_bodies: tact::store::session_store::MAX_TOKEN_USAGE_BODIES,
             micro_compact_enabled: true,
+            memory_enabled: true,
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
             instruction_sources: tact::config::InstructionSources::default(),
@@ -45,11 +46,13 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
         },
         ui: tact::config::UiSettings {
             theme: "retro".to_string(),
+            language: "en".to_string(),
             vision_image: tact::config::VisionImageSettings {
                 compress: tact::config::VisionImageSettings::DEFAULT_COMPRESS,
                 max_edge: tact::config::VisionImageSettings::DEFAULT_MAX_EDGE,
                 jpeg_quality: tact::config::VisionImageSettings::DEFAULT_JPEG_QUALITY,
             },
+            hook_output: tact::config::UiSettings::DEFAULT_HOOK_OUTPUT,
         },
         tools: tact::config::ToolSettings {
             bash_timeout_secs: tact::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,

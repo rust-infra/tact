@@ -11,7 +11,7 @@ Status: **implemented** — superseded in part by the
 > `used`), `max_out_token` → `out`, `▣ cache% 30%` → `▣ 30%`, `⟳ 12 turns` →
 > `⟳ 12`, and `⏱ 02:05 · avg 01:45` → `⏱ 02:05 avg 01:45`. The survival order in
 > §5 is therefore now `ctx > turns > cache > timing` (no `∑ₜₒₖ` slot). See
-> `book/26_chapter_issue.md` (2026-09-12, "Bottom-bar row 2 compacted to a
+> `book/26_chapter_issue_zh.md` (2026-09-12, "Bottom-bar row 2 compacted to a
 > 97-column budget") and the `bottom_bar_fits_every_segment_in_100_columns`
 > width-budget test. Everything else below still describes the shipped behavior.
 Date: 2026-09-12
@@ -204,9 +204,9 @@ Async tests must use timeouts; no unbounded `recv().await`.
 | Trigger | File |
 |---|---|
 | TUI bottom-bar display | `docs/token_usage_schema.md` (bottom-bar section — add the turn segments and the new drop order) |
-| TUI bottom bar | `book/23_chapter_tui.md` §6.6 + `book/23_chapter_tui_zh.md` §6.6 (keep structurally aligned) |
-| `AgentUpdate` variant list | `book/23_chapter_tui.md` / `_zh.md` update-routing tables (`TokenUsage` / `ModelInfo` row) |
-| Shipped user-visible change | `book/26_chapter_issue.md` + `book/26_chapter_issue_zh.md`, newest-first entry |
+| TUI bottom bar | `book/23_chapter_tui_zh.md` §6.6 + `book/23_chapter_tui_zh.md` §6.6 (keep structurally aligned) |
+| `AgentUpdate` variant list | `book/23_chapter_tui_zh.md` / `_zh.md` update-routing tables (`TokenUsage` / `ModelInfo` row) |
+| Shipped user-visible change | `book/26_chapter_issue_zh.md` + `book/26_chapter_issue_zh.md`, newest-first entry |
 
 ## Risks
 

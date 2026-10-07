@@ -257,25 +257,6 @@ pub fn render_input_box(
     cancel_area
 }
 
-/// Truncate a string to at most `max` display columns, appending `…` when cut.
-pub fn truncate_to_width(s: &str, max: usize) -> String {
-    if UnicodeWidthStr::width(s) <= max {
-        return s.to_string();
-    }
-    let mut out = String::new();
-    let mut width = 0;
-    for c in s.chars() {
-        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
-        if width + cw > max.saturating_sub(1) {
-            break;
-        }
-        out.push(c);
-        width += cw;
-    }
-    out.push('…');
-    out
-}
-
 /// Codex-style pending block: a hint line plus one `↳ message` row per queued
 /// message, drawn above the input box while the agent is busy. The hint row
 /// carries a clickable `[Cancel]` button (mouse) — the only way to drop the
@@ -303,7 +284,7 @@ fn render_pending_block(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Rect 
     } else {
         inner_width
     };
-    let hint_text = truncate_to_width(hint, hint_max);
+    let hint_text = super::util::truncate_to_width(hint, hint_max);
     let hint_width = UnicodeWidthStr::width(hint_text.as_str());
     let cancel_area = if can_show_cancel {
         Rect::new(
@@ -329,7 +310,7 @@ fn render_pending_block(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Rect 
         ));
     }
     for pending in ctx.pending_messages.iter().take(3) {
-        let text = truncate_to_width(&format!("↳ {}", pending.display), inner_width);
+        let text = super::util::truncate_to_width(&format!("↳ {}", pending.display), inner_width);
         lines.push(Line::from(Span::styled(
             text,
             Style::default()
@@ -372,15 +353,5 @@ mod tests {
         // CJK caret: "中文ab" wraps as ["中文", "ab"]; caret after "中文" (col 4).
         assert_eq!(caret_in_wrapped("中文ab", 4, 4), (0, 4));
         assert_eq!(caret_in_wrapped("中文ab", 4, 6), (1, 2));
-    }
-
-    #[test]
-    fn truncate_to_width_appends_ellipsis_for_cjk() {
-        assert_eq!(truncate_to_width("abc", 5), "abc");
-        assert_eq!(truncate_to_width("abcdef", 4), "abc…");
-        // CJK wide chars count as two columns; truncation targets `max` cols.
-        assert_eq!(truncate_to_width("中文abc", 5), "中文…");
-        assert_eq!(truncate_to_width("中文abc", 6), "中文a…");
-        assert_eq!(truncate_to_width("中文abc", 7), "中文abc");
     }
 }

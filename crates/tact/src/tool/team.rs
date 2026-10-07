@@ -1,12 +1,7 @@
-use crate::tool::{
-    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
-    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
-    ToolPresentation,
-};
+use crate::tool::ToolMetadata;
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 
 use crate::tool::ToolContext;
@@ -17,24 +12,11 @@ pub struct SpawnTeammateInput {
     pub role: String,
 }
 
-pub const SPAWN_TEAMMATE_METADATA: ToolMetadata = ToolMetadata {
-    name: "spawn_teammate",
-    description: "Create a named teammate.",
-    permission: PermissionPolicy::Write,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::SharedState { scope: "team" },
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "👥 Team Spawn",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const SPAWN_TEAMMATE_METADATA: ToolMetadata = ToolMetadata::team_write(
+    "spawn_teammate",
+    "Create a named teammate.",
+    "👥 Team Spawn",
+);
 
 #[tool]
 /// # Errors
@@ -49,24 +31,8 @@ pub async fn spawn_teammate(ctx: ToolContext, input: SpawnTeammateInput) -> Resu
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ListTeammatesInput {}
 
-pub const LIST_TEAMMATES_METADATA: ToolMetadata = ToolMetadata {
-    name: "list_teammates",
-    description: "List teammates.",
-    permission: PermissionPolicy::Read,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::Independent,
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "👥 Team List",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const LIST_TEAMMATES_METADATA: ToolMetadata =
+    ToolMetadata::read_json("list_teammates", "List teammates.", "👥 Team List");
 
 #[tool]
 /// # Errors
@@ -83,24 +49,11 @@ pub struct SendMessageInput {
     pub body: String,
 }
 
-pub const SEND_MESSAGE_METADATA: ToolMetadata = ToolMetadata {
-    name: "send_message",
-    description: "Send a message to a teammate inbox.",
-    permission: PermissionPolicy::Write,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::SharedState { scope: "team" },
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "✉️ Team Send",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const SEND_MESSAGE_METADATA: ToolMetadata = ToolMetadata::team_write(
+    "send_message",
+    "Send a message to a teammate inbox.",
+    "✉️ Team Send",
+);
 
 #[tool]
 /// # Errors
@@ -119,24 +72,11 @@ pub struct BroadcastInput {
     pub body: String,
 }
 
-pub const BROADCAST_METADATA: ToolMetadata = ToolMetadata {
-    name: "broadcast",
-    description: "Broadcast a message to all teammates.",
-    permission: PermissionPolicy::Write,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::SharedState { scope: "team" },
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "📢 Team Broadcast",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const BROADCAST_METADATA: ToolMetadata = ToolMetadata::team_write(
+    "broadcast",
+    "Broadcast a message to all teammates.",
+    "📢 Team Broadcast",
+);
 
 #[tool]
 /// # Errors
@@ -151,24 +91,8 @@ pub struct ReadInboxInput {
     pub owner: String,
 }
 
-pub const READ_INBOX_METADATA: ToolMetadata = ToolMetadata {
-    name: "read_inbox",
-    description: "Read a teammate inbox.",
-    permission: PermissionPolicy::Read,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::Independent,
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "📬 Team Inbox",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const READ_INBOX_METADATA: ToolMetadata =
+    ToolMetadata::read_json("read_inbox", "Read a teammate inbox.", "📬 Team Inbox");
 
 #[tool]
 /// # Errors
@@ -186,24 +110,11 @@ pub struct ProtocolInput {
     pub body: String,
 }
 
-pub const PLAN_APPROVAL_METADATA: ToolMetadata = ToolMetadata {
-    name: "plan_approval",
-    description: "Send a durable plan approval protocol message.",
-    permission: PermissionPolicy::Write,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::SharedState { scope: "team" },
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "✅ Team Approve",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const PLAN_APPROVAL_METADATA: ToolMetadata = ToolMetadata::team_write(
+    "plan_approval",
+    "Send a durable plan approval protocol message.",
+    "✅ Team Approve",
+);
 
 #[tool]
 /// # Errors
@@ -221,24 +132,11 @@ pub async fn plan_approval(ctx: ToolContext, input: ProtocolInput) -> Result<Str
         .await
 }
 
-pub const SHUTDOWN_REQUEST_METADATA: ToolMetadata = ToolMetadata {
-    name: "shutdown_request",
-    description: "Send a shutdown request protocol message.",
-    permission: PermissionPolicy::Write,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::SharedState { scope: "team" },
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "🔌 Shutdown Request",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const SHUTDOWN_REQUEST_METADATA: ToolMetadata = ToolMetadata::team_write(
+    "shutdown_request",
+    "Send a shutdown request protocol message.",
+    "🔌 Shutdown Request",
+);
 
 #[tool]
 /// # Errors
@@ -256,24 +154,11 @@ pub async fn shutdown_request(ctx: ToolContext, input: ProtocolInput) -> Result<
         .await
 }
 
-pub const SHUTDOWN_RESPONSE_METADATA: ToolMetadata = ToolMetadata {
-    name: "shutdown_response",
-    description: "Send a shutdown response protocol message.",
-    permission: PermissionPolicy::Write,
-    permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::SharedState { scope: "team" },
-    domain: ToolDomain::Generic,
-    presentation: ToolPresentation {
-        visual_kind: ToolVisualKind::Generic,
-        display_name: "🔌 Shutdown Response",
-        live_output: LiveOutputPolicy::Standard,
-        detail: DetailPolicy::Result,
-        popup: PopupPolicy::None,
-        compact_result_to_meta: false,
-    },
-    output: OutputPolicy::KeepInline,
-    argument_summary: ArgumentSummaryPolicy::Json,
-};
+pub const SHUTDOWN_RESPONSE_METADATA: ToolMetadata = ToolMetadata::team_write(
+    "shutdown_response",
+    "Send a shutdown response protocol message.",
+    "🔌 Shutdown Response",
+);
 
 #[tool]
 /// # Errors

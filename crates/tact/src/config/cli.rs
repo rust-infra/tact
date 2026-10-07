@@ -115,6 +115,45 @@ pub enum CliCommand {
         #[command(subcommand)]
         command: McpSubcommand,
     },
+    /// Review the command hooks that would run, and trust them
+    Hooks {
+        #[command(subcommand)]
+        command: HooksSubcommand,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum HooksSubcommand {
+    /// List every configured hook and whether it has been reviewed
+    ///
+    /// Reads installed plugins, `~/.tact/hooks.json` and `.tact/hooks.json`.
+    /// Nothing is executed and nothing is connected.
+    List,
+    /// Approve hooks so the next session runs them
+    ///
+    /// A hook definition that has not been approved is never registered, so a
+    /// repository that ships `.tact/hooks.json` cannot execute anything by
+    /// being cloned. Approving is keyed on the exact definition: editing a
+    /// command means it must be reviewed again.
+    ///
+    /// Examples: `tact-ui hooks trust --all`
+    ///           `tact-ui hooks trust --source ~/.tact/hooks.json`
+    Trust {
+        /// Approve every hook that still needs review
+        #[arg(long)]
+        all: bool,
+        /// Approve only this source, as `hooks list` names it
+        #[arg(long, value_name = "LABEL")]
+        source: Option<String>,
+    },
+    /// Forget every review decision
+    ///
+    /// Example: `tact-ui hooks forget --all`
+    Forget {
+        /// Required: revoking every approval is never implicit
+        #[arg(long)]
+        all: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -260,4 +299,51 @@ pub enum MarketplaceSubcommand {
         /// Marketplace name to remove
         name: String,
     },
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A top-level flag is accepted *before* the subcommand, and not after it.
+    ///
+    /// `--model` and its siblings are declared on `CliArgs` and none of them is
+    /// marked `global`, so the position is load-bearing for every documented
+    /// invocation — and it is what one README example had wrong
+    /// (`docs(readme): the example that puts a top-level flag after the
+    /// subcommand`). Pinned here rather than in a doc, because a doc does not
+    /// fail when it drifts.
+    #[test]
+    fn a_top_level_flag_belongs_before_the_subcommand() {
+        let before = CliArgs::parse_from(["tact-ui", "--model", "m", "headless", "p"]);
+        assert_eq!(before.model.as_deref(), Some("m"));
+        assert!(matches!(
+            before.command,
+            Some(CliCommand::Headless { ref prompt }) if prompt == "p"
+        ));
+
+        let after = CliArgs::try_parse_from(["tact-ui", "headless", "--model", "m", "p"]);
+        assert!(
+            after.is_err(),
+            "the top-level flags are not `global`: if this now parses, the form the \
+             README used to document works again and both should be updated together"
+        );
+    }
+
+    /// `--session` and `--resume-last` are alternatives, and `--list-sessions`
+    /// is a third thing that short-circuits before either is read.
+    #[test]
+    fn the_session_flags_parse_where_the_dispatcher_reads_them() {
+        let named = CliArgs::parse_from(["tact-ui", "--session", "abc", "headless", "p"]);
+        assert_eq!(named.session.as_deref(), Some("abc"));
+        assert!(!named.resume_last);
+        assert!(!named.list_sessions);
+
+        let resumed = CliArgs::parse_from(["tact-ui", "--resume-last", "headless", "p"]);
+        assert_eq!(resumed.session, None);
+        assert!(resumed.resume_last);
+
+        let listed = CliArgs::parse_from(["tact-ui", "--list-sessions"]);
+        assert!(listed.list_sessions);
+    }
 }

@@ -1,7 +1,5 @@
 # 桌面通知
 
-> 语言：[中文](./17_chapter_notify_zh.md) · [English](./17_chapter_notify.md)
-
 本章说明 Tact 如何在关键 agent 生命周期事件发生时发送 **原生桌面通知**——主要是任务完成和工具步骤失败。该模块小而平台相关：在 macOS 上完整实现，其他平台为 no-op。
 
 通知与 TUI 日志面板正交。即使终端未聚焦也会触发，因此长时间 headless 或后台会话可在 macOS 上提醒用户。
@@ -31,15 +29,13 @@ pub fn notify(title: &str, message: &str) -> Result<()>;
 ## 2. 平台行为
 
 ```mermaid
-flowchart TD
-    Call["notify(title, message)"] --> Enabled{"is_enabled()?"}
-    Enabled -- No --> Skip["Ok(()) — no-op"]
-    Enabled -- Yes --> OS{"target_os?"}
-
-    OS -- macOS --> Script["osascript -e display notification"]
-    Script --> Result["Ok 或 osascript 错误"]
-
-    OS -- other --> NoOp["Ok(()) — 静默跳过"]
+graph TD
+    a_call[notify title, message] --> b_enabled{is_enabled?}
+    b_enabled -->|No| c_skip[Ok — no-op]
+    b_enabled -->|Yes| d_os{target_os?}
+    d_os -->|macOS| e_script[osascript -e display notification]
+    d_os -->|其他| f_noop[Ok — 静默跳过]
+    e_script --> g_result[Ok 或 osascript 错误]
 ```
 
 ### macOS
@@ -163,5 +159,5 @@ Headless 运行设置 `ui_tx: None`，因此 `agent_loop` 从不向 TUI 发送 `
 
 ## 相关文档
 
-- [任务与工具调度](./11_chapter_task.md) — `StepFailed` 何时发出
+- [任务与工具调度](./11_chapter_task_zh.md) — `StepFailed` 何时发出
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — agent 更新流概览

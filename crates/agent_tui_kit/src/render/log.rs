@@ -19,9 +19,7 @@ use crate::{
     render::{
         cells::{
             code::render_code_cards,
-            separator::{
-                MessageSeparator, TaskEndSeparator, is_task_end_separator, task_end_elapsed_secs,
-            },
+            separator::{MessageSeparator, TaskEndSeparator, is_task_end_separator},
             text::TextCell,
             thinking::ThinkingCell,
             tool::ToolCell,
@@ -29,6 +27,7 @@ use crate::{
         ctx::RenderCtx,
         log_column::LogColumnRenderer,
         renderable::Renderable,
+        stats_line::{live_stats_row, render_live_stats_band},
         util::LOG_THINKING_INDENT,
     },
     state::{LogItemKind, find_thinking_at_logical, log_indent_at},
@@ -119,8 +118,17 @@ pub fn render_log_panel_pure(
         let phys_idx = ctx.log_scroll.visible_indices.get(logical_i).copied();
 
         // Compute the byte-range selection for this logical row, if any.
+        //
+        // A bared row is a container's rail (a hook block's header or its "… N
+        // more lines" tail) and is refused a selection at click time, so it must
+        // not paint one either: `TextCell`'s selection overlay re-wraps the raw
+        // text, which would drop the bar and widen the row by the gutter's
+        // columns. Refusing it here keeps the rail unbroken mid-drag.
         let selection_range = ctx.mouse.log_selection.and_then(|sel| {
             let phys = phys_idx?;
+            if ctx.log.items[phys].gutter.is_some() {
+                return None;
+            }
             sel.byte_range_for(phys, ctx.log.items[phys].raw.len())
         });
 
@@ -135,6 +143,8 @@ pub fn render_log_panel_pure(
                 LogItemKind::SystemPlain(_)
                 | LogItemKind::SystemMarkdown
                 | LogItemKind::SystemTool
+                | LogItemKind::HookStatus(_)
+                | LogItemKind::HookContext
                 | LogItemKind::Thinking => "system",
             };
 
@@ -303,19 +313,13 @@ pub fn render_log_panel_pure(
             continue;
         }
 
-        // Task-end rule: full-width line with centered elapsed label.
+        // Task-end rule: a full-width accent line. It draws no elapsed label —
+        // the turn's clock is the task-stats row right below it (and the bottom
+        // bar's turn segment), so the rule is only the turn boundary.
         if let Some(phys) = phys_idx
             && is_task_end_separator(&ctx.log.items[phys].raw)
         {
-            let raw = &ctx.log.items[phys].raw;
-            let msgs = &ctx.messages;
-            let sep = match task_end_elapsed_secs(raw) {
-                Some(secs) => {
-                    TaskEndSeparator::with_elapsed(ctx.theme.accent, msgs.bottom_elapsed, secs)
-                }
-                None => TaskEndSeparator::new(ctx.theme.accent),
-            };
-            renderer.push(vs_cache[logical_i], sep);
+            renderer.push(vs_cache[logical_i], TaskEndSeparator::new(ctx.theme.accent));
             logical_i += 1;
             continue;
         }
@@ -402,6 +406,16 @@ pub fn render_log_panel_pure(
     // left chrome because unchanged border cells are skipped by Buffer::diff. Force-emit the
     // left border every frame so those residues cannot persist.
     restamp_log_left_border(frame.buffer_mut(), area, borders, ctx.theme);
+
+    // Live task stats: while a task is in flight the panel's last content row
+    // carries the same line the task-end block will freeze into the log (the
+    // app reserved the row — see `stats_line::live_stats_reserve`), so the
+    // per-turn numbers are readable without scrolling to the end of the turn.
+    if ctx.task_start_time.is_some()
+        && let Some(row) = live_stats_row(area, borders)
+    {
+        render_live_stats_band(frame, row, ctx);
+    }
 
     LogRenderOutput {
         cancel_buttons,

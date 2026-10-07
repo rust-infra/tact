@@ -4,7 +4,7 @@ use ratatui::{
     widgets::Borders,
 };
 
-use crate::widgets::state::App;
+use crate::widgets::state::{App, SurfaceId};
 
 /// Main content area layout, switching between history, help, or the Log panel
 /// based on current display state. The Log panel is always single-column and
@@ -33,9 +33,9 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
     };
 
     if sticky_h == 0 {
-        app.mouse.task_panel_area = Rect::default();
+        app.mouse.clear_area(SurfaceId::TaskPanel);
         app.mouse.sticky_tab_areas.clear();
-        app.mouse.log_area = area;
+        app.mouse.set_area(SurfaceId::Log, area);
         app.log_scroll.height = area.height.saturating_sub(2);
         super::log::render_log_panel(frame, area, app);
     } else {
@@ -43,7 +43,7 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
             .direction(Direction::Vertical)
             .constraints([Constraint::Min(1), Constraint::Length(sticky_h)])
             .split(area);
-        app.mouse.log_area = chunks[0];
+        app.mouse.set_area(SurfaceId::Log, chunks[0]);
         // Log omits bottom border; sticky draws LEFT|RIGHT|BOTTOM to close the box.
         super::log::render_log_panel_with_borders(
             frame,
@@ -81,11 +81,10 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
 mod render_tests {
     use std::collections::HashMap;
 
-    use tact_protocol::{
-        AgentErrorKind, AgentUpdate, PlanStep, StepResult, StepStatus, ToolPresentationInfo,
-    };
+    use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep};
 
     use super::super::test_harness::{buffer_contains, make_app, render_app_text};
+    use crate::test_fixtures::StepCall;
     use crate::widgets::state::Status;
 
     #[test]
@@ -98,29 +97,14 @@ mod render_tests {
             "tool_read_1",
             HashMap::from([("path".to_string(), "main.rs".to_string())]),
         )));
-        app.handle_agent_update(AgentUpdate::StepStarted {
-            idx: 0,
-            tool_id: "tool_read_1".into(),
-            tool_name: "read_file".into(),
-            arg_summary: "main.rs".into(),
-            arg_full: "main.rs".into(),
-            presentation: ToolPresentationInfo::generic("read_file"),
-        });
-        app.handle_agent_update(AgentUpdate::StepFinished {
-            idx: 0,
-            tool_id: "tool_read_1".into(),
-            result: StepResult {
-                tool: "read_file".into(),
-                arg_summary: "main.rs".into(),
-                arg_full: None,
-                status: StepStatus::Success,
-                message: "ok".into(),
-                detail: Some("fn main() {}".into()),
-                duration_us: Some(1000),
-                permission_label: None,
-                presentation: ToolPresentationInfo::generic("read_file"),
-            },
-        });
+        app.handle_agent_update(StepCall::new(0, "tool_read_1", "read_file", "main.rs").started());
+        app.handle_agent_update(
+            StepCall::new(0, "tool_read_1", "read_file", "main.rs")
+                .no_arg_full()
+                .detail("fn main() {}")
+                .duration_us(1000)
+                .finished(),
+        );
         app.handle_agent_update(AgentUpdate::StreamChunk("Hello from mock.".into()));
         app.handle_agent_update(AgentUpdate::TaskComplete("Hello from mock.".into()));
 

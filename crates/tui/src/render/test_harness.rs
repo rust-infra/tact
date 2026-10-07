@@ -2,8 +2,6 @@
 
 #![allow(dead_code)]
 
-use std::path::PathBuf;
-
 use ratatui::{
     Frame, Terminal,
     backend::TestBackend,
@@ -11,36 +9,17 @@ use ratatui::{
     style::{Color, Modifier},
     widgets::ScrollbarState,
 };
-use tokio::sync::mpsc::unbounded_channel;
 
 use super::{
     log::render_log_panel, render_bottom_bar, render_command_palette, render_file_picker,
     render_input_box, render_main_area, render_select_popup, render_slash_command_popup,
     render_status_bar,
 };
-use crate::widgets::state::{App, InputMode};
+use crate::widgets::state::App;
 
 /// Build a minimal `App` for render tests (ink theme, empty log).
 pub fn make_app() -> App {
-    let (_agent_tx, agent_rx) = unbounded_channel();
-    let (user_cmd_tx, _user_cmd_rx) = unbounded_channel();
-    let (plugin_tx, _plugin_request_rx) = unbounded_channel();
-    let (_plugin_event_tx, plugin_rx) = unbounded_channel();
-    let (history_tx, _history_rx) = unbounded_channel();
-    App::new(
-        agent_rx,
-        None,
-        plugin_rx,
-        plugin_tx,
-        user_cmd_tx,
-        PathBuf::from("."),
-        Vec::new(),
-        "render-test".to_string(),
-        history_tx,
-        "ink".to_string(),
-        String::new(),
-        Vec::new(),
-    )
+    crate::test_fixtures::TestApp::with_identity("render-test", "ink").app
 }
 
 /// Flatten a ratatui buffer into plain text (one row per line).
@@ -119,19 +98,12 @@ pub fn draw_full_ui(frame: &mut Frame, size: Rect, app: &mut App) {
     render_input_box(frame, chunks[2], app);
     render_bottom_bar(frame, chunks[3], app);
 
-    if app.input_mode == InputMode::Palette {
-        render_command_palette(frame, chunks[1], app);
-    }
-    // Rendered every frame: the function itself no-ops when the popup is
-    // inactive and is responsible for clearing the mouse hit area it records
+    // The four list popups render every frame: each one no-ops when its popup
+    // is inactive and is responsible for clearing the mouse hit area it records
     // while active.
+    render_command_palette(frame, chunks[1], app);
     render_select_popup(frame, chunks[1], app);
-    if app.input_mode == InputMode::FilePicker {
-        render_file_picker(frame, chunks[1], app);
-    }
-    // Rendered every frame: the function itself no-ops when the popup is
-    // inactive and is responsible for clearing the mouse hit area it records
-    // while active.
+    render_file_picker(frame, chunks[1], app);
     render_slash_command_popup(frame, chunks[1], app);
 }
 

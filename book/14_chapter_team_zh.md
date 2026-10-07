@@ -1,7 +1,5 @@
 # 团队协调（Team Coordination）
 
-> 语言：[中文](./14_chapter_team_zh.md) · [English](./14_chapter_team.md)
-
 本章说明 Tact 的 **多 agent 团队原语**：具名 teammate 的持久 roster，以及支持点对点消息、广播与结构化协议请求（plan 审批、shutdown）的 SQLite backed inbox 系统。实现位于 `crates/tact/src/team.rs`，工具包装在 `crates/tact/src/tool/team.rs`。
 
 重要前提：目前是 **协调数据层**，非编排引擎。「Spawn」teammate 仅创建 roster 记录 —— 不会启动第二个 agent 进程。见 [当前缺口](#8-当前缺口)。
@@ -117,7 +115,7 @@ pub struct SharedTeammateManager {
 }
 ```
 
-每个公开方法委托给 async 门面。共享句柄在 `ToolContext.teammate_manager`，在 `tui.rs` 启动时构造一次：
+每个公开方法委托给 async 门面。共享句柄在 `ToolContext.teammate_manager`，在 `session_bootstrap::bootstrap_session` 里构造一次（headless 与交互两个前端共用）：
 
 ```rust
 let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&tact_path.session_db_path()).await?);
@@ -149,7 +147,7 @@ let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&tact_pat
 | `crates/tact/src/tool/team.rs` | 八个 `#[tool]` 包装 |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.teammate_manager` |
 | `crates/tact/src/tool/registry.rs` | `toolset()` 中的 team 工具 |
-| `crates/tact-ui/src/headless.rs`、`interactive.rs` | 启动时从 `tact.db` 构造 manager |
+| `crates/tact-ui/src/session_bootstrap.rs` | `bootstrap_session` 里从 `tact.db` 构造 manager；headless / 交互共用 |
 
 ---
 

@@ -1,0 +1,47 @@
+event: response.created
+data: {"type":"response.created","response":{"created_at":1791344853,"id":"resp_compat_1","max_output_tokens":128,"model":"deepseek/deepseek-v4.1-flash","object":"response","output":[],"thinking":{"type":"enabled"},"service_tier":"default","status":"in_progress","tools":[{"name":"ping","strict":false,"type":"function","description":"Ping the server. Takes no arguments.","parameters":{"type":"object","properties":{},"additionalProperties":false}}],"caching":{"type":"disabled"},"store":false},"sequence_number":0}
+
+event: response.in_progress
+data: {"type":"response.in_progress","response":{"created_at":1791344853,"id":"resp_compat_1","max_output_tokens":128,"model":"deepseek/deepseek-v4.1-flash","object":"response","output":[],"thinking":{"type":"enabled"},"service_tier":"default","status":"in_progress","tools":[{"name":"ping","strict":false,"type":"function","description":"Ping the server. Takes no arguments.","parameters":{"type":"object","properties":{},"additionalProperties":false}}],"caching":{"type":"disabled"},"store":false},"sequence_number":1}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","role":"assistant","content":[],"status":"in_progress","id":"msg_1","phase":"final_answer"},"sequence_number":2}
+
+event: response.content_part.added
+data: {"type":"response.content_part.added","content_index":0,"item_id":"msg_1","output_index":0,"part":{"type":"output_text","text":""},"sequence_number":3}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","content_index":0,"delta":"I","item_id":"msg_1","output_index":0,"sequence_number":4}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","content_index":0,"delta":"'ll call","item_id":"msg_1","output_index":0,"sequence_number":5}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","content_index":0,"delta":" the ping tool.","item_id":"msg_1","output_index":0,"sequence_number":6}
+
+event: response.output_text.done
+data: {"type":"response.output_text.done","content_index":0,"item_id":"msg_1","output_index":0,"text":"I'll call the ping tool.","sequence_number":7}
+
+event: response.content_part.done
+data: {"type":"response.content_part.done","content_index":0,"item_id":"msg_1","output_index":0,"part":{"type":"output_text","text":"I'll call the ping tool."},"sequence_number":8}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll call the ping tool."}],"status":"completed","id":"msg_1","phase":"commentary"},"sequence_number":9}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"call_id":"call_compat_1","name":"ping","type":"function_call","id":"item_1","status":"in_progress"},"sequence_number":10}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"","item_id":"item_1","output_index":1,"sequence_number":11}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","delta":"{}","item_id":"item_1","output_index":1,"sequence_number":12}
+
+event: response.function_call_arguments.done
+data: {"type":"response.function_call_arguments.done","item_id":"item_1","output_index":1,"arguments":"{}","sequence_number":13}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"arguments":"{}","call_id":"call_compat_1","name":"ping","type":"function_call","id":"item_1","status":"completed"},"sequence_number":14}
+
+event: response.completed
+data: {"type":"response.completed","response":{"created_at":1791344853,"id":"resp_compat_1","max_output_tokens":128,"model":"deepseek/deepseek-v4.1-flash","object":"response","output":[{"type":"message","role":"assistant","content":[{"type":"output_text","text":"I'll call the ping tool."}],"status":"completed","id":"msg_1","phase":"commentary"},{"arguments":"{}","call_id":"call_compat_1","name":"ping","type":"function_call","id":"item_1","status":"completed"}],"thinking":{"type":"enabled"},"service_tier":"default","status":"completed","tools":[{"name":"ping","strict":false,"type":"function","description":"Ping the server. Takes no arguments.","parameters":{"type":"object","properties":{},"additionalProperties":false}}],"usage":{"input_tokens":285,"output_tokens":27,"total_tokens":312,"input_tokens_details":{"cached_tokens":0},"output_tokens_details":{"reasoning_tokens":0}},"caching":{"type":"disabled"},"store":false},"sequence_number":15}

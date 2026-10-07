@@ -2,13 +2,13 @@
 
 use ratatui::{Frame, layout::Rect};
 
-use crate::widgets::state::{App, InputMode};
+use crate::widgets::state::{App, InputMode, SurfaceId};
 
 pub(crate) fn render_select_popup(frame: &mut Frame, area: Rect, app: &mut App) {
     if app.input_mode != InputMode::Select {
         // The wrapper runs every frame; clear the mouse hit area recorded
         // while the popup was active.
-        app.mouse.select_popup_area = Rect::default();
+        app.mouse.clear_area(SurfaceId::SelectPopup);
         return;
     }
     let popup_area = {
@@ -17,5 +17,5 @@ pub(crate) fn render_select_popup(frame: &mut Frame, area: Rect, app: &mut App) 
     };
     // Expose the popup rect so mouse-wheel scrolls over the list move the
     // selection instead of scrolling the log behind the popup.
-    app.mouse.select_popup_area = popup_area;
+    app.mouse.set_area(SurfaceId::SelectPopup, popup_area);
 }

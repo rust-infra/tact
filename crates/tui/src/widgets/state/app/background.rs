@@ -22,7 +22,7 @@ use crate::widgets::state::{App, SkillEntry};
 /// Why a skills reload was started — selects the completion message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum SkillsReloadSource {
-    /// `/skill-reload` palette command: reports both success and failure.
+    /// `/skill reload` palette command: reports both success and failure.
     Command,
     /// Plugin install/uninstall follow-up: only failures are reported.
     Plugin,

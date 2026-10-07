@@ -115,12 +115,78 @@ impl LogSelection {
     }
 }
 
+/// A screen surface the mouse routes against.
+///
+/// One key per hit-testable area, replacing a bag of independent `*_area`
+/// fields. Adding a surface used to cost four edits — a field, a renderer
+/// write, a hit-ladder arm and a scroll arm — and forgetting one was silent:
+/// the palette and the file picker scrolled the log behind them for as long as
+/// they existed. It is now one variant, and the array [`MouseState::areas`]
+/// makes the table exhaustive by construction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[repr(usize)]
+pub enum SurfaceId {
+    /// The Log panel (and the sticky strip's parent split).
+    Log,
+    /// The sticky task/subagent/background strip under the Log.
+    TaskPanel,
+    CodePopup,
+    MermaidPopup,
+    ThinkingPopup,
+    SubagentPopup,
+    DiffPopup,
+    TaskDagPopup,
+    SlashPopup,
+    SelectPopup,
+    PalettePopup,
+    FilePickerPopup,
+}
+
+impl SurfaceId {
+    /// Number of surfaces; also the length of [`MouseState::areas`].
+    pub const COUNT: usize = 12;
+
+    /// Every surface, in hit-test priority order: the most modal overlay first,
+    /// so a popup drawn over the log wins the point test.
+    ///
+    /// Kept in sync with the enum by `surface_ids_are_exhaustive` — a variant
+    /// missing here would be a surface no click could ever reach.
+    pub const HIT_ORDER: &'static [SurfaceId] = &[
+        SurfaceId::SelectPopup,
+        SurfaceId::SlashPopup,
+        SurfaceId::PalettePopup,
+        SurfaceId::FilePickerPopup,
+        SurfaceId::DiffPopup,
+        SurfaceId::ThinkingPopup,
+        SurfaceId::SubagentPopup,
+        SurfaceId::CodePopup,
+        SurfaceId::MermaidPopup,
+        SurfaceId::TaskDagPopup,
+        SurfaceId::TaskPanel,
+        SurfaceId::Log,
+    ];
+
+    /// The list surfaces a wheel scroll moves a cursor on, in hit order.
+    ///
+    /// A subset of [`SurfaceId::HIT_ORDER`]: a new list popup joins both tables
+    /// by adding its variant (plus `scroll_surface`'s exhaustive match), not by
+    /// remembering this one too.
+    pub const LIST_POPUPS: &'static [SurfaceId] = &[
+        SurfaceId::SelectPopup,
+        SurfaceId::SlashPopup,
+        SurfaceId::PalettePopup,
+        SurfaceId::FilePickerPopup,
+    ];
+}
+
 /// Mouse interaction state: manages panel areas, selection ranges, and drag flags.
 #[derive(Default)]
 pub struct MouseState {
-    pub log_area: Rect,
-    /// Sticky task progress strip under the Log (empty when hidden).
-    pub task_panel_area: Rect,
+    /// Hit rectangles of every routable surface, indexed by [`SurfaceId`].
+    ///
+    /// A plain array, not a map: `SurfaceId` is a closed enum, so lookup is an
+    /// index and a whole-table reset is a `fill`.
+    areas: [Rect; SurfaceId::COUNT],
     /// Whether the cursor is hovering over the task panel (used for keyboard scrolling).
     pub in_task_panel: bool,
     /// Which sticky domain (Tasks / Subagent) is currently active when the
@@ -132,18 +198,6 @@ pub struct MouseState {
     pub sticky_tab_areas: Vec<(StickyTab, Rect)>,
     pub log_selection: Option<LogSelection>,
     pub dragging_log: bool,
-    /// thinking popup area (used to determine if click is inside the popup).
-    pub thinking_popup_area: Rect,
-    /// diff popup area (used to determine if click is inside the popup).
-    pub diff_popup_area: Rect,
-    /// subagent popup area (used to determine if click is inside the popup).
-    pub subagent_popup_area: Rect,
-    /// slash-command popup area (used to route mouse-wheel scrolls to the
-    /// popup's selection list instead of the log behind it).
-    pub slash_popup_area: Rect,
-    /// selection popup area (used to route mouse-wheel scrolls to the popup's
-    /// option list instead of the log behind it).
-    pub select_popup_area: Rect,
     /// Cancel buttons for live async-subagent tool cards: `(child_id, rect)`.
     /// Refreshed every frame by the log renderer; a click sends
     /// `UserCommand::CancelSubagent { child_id }`.
@@ -154,17 +208,15 @@ pub struct MouseState {
     /// click may open the popup from.
     pub thinking_open_btn_areas: Vec<Rect>,
     /// Selectable body area inside the active text popup border.
+    ///
+    /// Deliberately *not* a [`SurfaceId`]: thinking / diff / subagent share one
+    /// text-selection surface because only one of them is ever open, so a
+    /// single slot is the honest shape.
     pub popup_text_body_area: Rect,
     /// Hit maps for rows currently visible in the active text popup body.
     pub popup_text_hit_rows: Vec<PopupHitRow>,
     /// Source grapheme where the active text-popup drag began.
     pub popup_text_drag_origin: Option<PopupTextHit>,
-    /// code block popup area (used to determine if click is inside the popup).
-    pub code_popup_area: Rect,
-    /// Mermaid source popup area.
-    pub mermaid_popup_area: Rect,
-    /// `/tasks-dag` popup area.
-    pub task_dag_popup_area: Rect,
     /// Double/triple click detection: time and position of the last left click.
     pub last_click_time: Option<std::time::Instant>,
     pub last_click_pos: Option<(u16, u16)>,
@@ -183,5 +235,100 @@ pub struct MouseState {
 impl MouseState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The rect recorded for `id` this frame (`Rect::default()` when the
+    /// surface is hidden — a zero-size rect no point can fall inside).
+    pub fn area(&self, id: SurfaceId) -> Rect {
+        self.areas[id as usize]
+    }
+
+    /// Record `id`'s rect for this frame.
+    pub fn set_area(&mut self, id: SurfaceId, rect: Rect) {
+        self.areas[id as usize] = rect;
+    }
+
+    /// Hide `id` for this frame.
+    ///
+    /// The renderers own this contract: each one records its rect while it is
+    /// drawn and clears it when it is not, so a surface's area is meaningful
+    /// even when a renderer is exercised on its own (the render tests do
+    /// exactly that). There is deliberately no frame-start wipe of the whole
+    /// table — a second mechanism would let the two disagree.
+    pub fn clear_area(&mut self, id: SurfaceId) {
+        self.areas[id as usize] = Rect::default();
+    }
+
+    /// Whether `(column, row)` falls inside `id`'s rect.
+    ///
+    /// A hidden surface has a zero-size rect, so this is also the "is it
+    /// active" test every hit ladder needs — no separate `input_mode` check.
+    pub fn hits(&self, id: SurfaceId, column: u16, row: u16) -> bool {
+        let area = self.area(id);
+        column >= area.x
+            && column < area.x + area.width
+            && row >= area.y
+            && row < area.y + area.height
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The enum's discriminants must stay a dense `0..COUNT` range: the
+    /// registry indexes by `id as usize`, so a gap or an off-by-one would
+    /// silently alias two surfaces onto one slot.
+    #[test]
+    fn surface_ids_are_dense_and_counted() {
+        let mut seen = [false; SurfaceId::COUNT];
+        for id in SurfaceId::HIT_ORDER {
+            let idx = *id as usize;
+            assert!(idx < SurfaceId::COUNT, "{id:?} is outside the table");
+            assert!(!seen[idx], "{id:?} is listed twice");
+            seen[idx] = true;
+        }
+        assert!(
+            seen.iter().all(|s| *s),
+            "HIT_ORDER must list every surface or a click can never reach it"
+        );
+    }
+
+    /// The list-popup table drives the wheel; an entry outside `HIT_ORDER`
+    /// would be a surface that never wins the point test anyway.
+    #[test]
+    fn list_popups_are_a_subset_of_the_hit_order() {
+        for id in SurfaceId::LIST_POPUPS {
+            assert!(SurfaceId::HIT_ORDER.contains(id), "{id:?} is not hittable");
+        }
+    }
+
+    /// A surface nobody recorded this frame must not swallow the pointer —
+    /// this is what lets the hit ladders drop their `input_mode` checks.
+    #[test]
+    fn a_cleared_surface_never_hits() {
+        let mut mouse = MouseState::new();
+        mouse.set_area(SurfaceId::PalettePopup, Rect::new(10, 10, 20, 8));
+        assert!(mouse.hits(SurfaceId::PalettePopup, 15, 12));
+
+        mouse.clear_area(SurfaceId::PalettePopup);
+        assert!(!mouse.hits(SurfaceId::PalettePopup, 15, 12));
+        assert!(
+            !mouse.hits(SurfaceId::PalettePopup, 15, 12),
+            "a cleared surface is invisible to the hit test"
+        );
+    }
+
+    /// The right/bottom edges are exclusive: a rect at x=10 w=20 covers 10..30,
+    /// so column 30 belongs to the surface behind it.
+    #[test]
+    fn hit_testing_uses_half_open_bounds() {
+        let mut mouse = MouseState::new();
+        mouse.set_area(SurfaceId::Log, Rect::new(10, 5, 20, 4));
+        assert!(mouse.hits(SurfaceId::Log, 10, 5), "top-left is inside");
+        assert!(mouse.hits(SurfaceId::Log, 29, 8), "last cell is inside");
+        assert!(!mouse.hits(SurfaceId::Log, 30, 8), "right edge is outside");
+        assert!(!mouse.hits(SurfaceId::Log, 29, 9), "bottom edge is outside");
+        assert!(!mouse.hits(SurfaceId::Log, 9, 5), "left edge is outside");
     }
 }

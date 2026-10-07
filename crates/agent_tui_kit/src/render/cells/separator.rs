@@ -5,7 +5,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, Widget},
 };
-use unicode_width::UnicodeWidthStr;
 
 use super::super::renderable::Renderable;
 
@@ -32,69 +31,24 @@ pub fn task_end_elapsed_secs(raw: &str) -> Option<i64> {
     raw.strip_prefix(&prefix)?.parse().ok()
 }
 
-fn format_mm_ss(total_secs: i64) -> String {
-    let secs = total_secs.max(0);
-    format!("{:02}:{:02}", secs / 60, secs % 60)
-}
-
 /// Full-width accent-colored rule appended after a completed task response.
-/// When `elapsed_label` is set (e.g. `"Elapsed 00:03"`), it is centered in the rule.
+///
+/// It is the turn *boundary* and nothing else: the frozen elapsed label that
+/// used to sit centered in it was dropped (2026-10-05) because the same number
+/// is drawn twice already — the task-stats row directly below it, and the
+/// bottom bar's turn segment. The `raw` sentinel still carries the seconds
+/// ([`task_end_separator_raw`]); only the rendering stopped showing them.
 pub struct TaskEndSeparator {
     fg: Color,
-    elapsed_label: Option<String>,
 }
 
 impl TaskEndSeparator {
     pub fn new(fg: Color) -> Self {
-        Self {
-            fg,
-            elapsed_label: None,
-        }
-    }
-
-    pub fn with_elapsed(fg: Color, label: &str, elapsed_secs: i64) -> Self {
-        Self {
-            fg,
-            elapsed_label: Some(format!("{label} {}", format_mm_ss(elapsed_secs))),
-        }
+        Self { fg }
     }
 
     fn solid_line(width: u16) -> String {
         "─".repeat(width as usize)
-    }
-
-    /// `──── Elapsed 00:03 ────` filling `width` columns.
-    fn ruled_with_label(width: u16, label: &str) -> String {
-        let padded = format!(" {label} ");
-        let label_w = UnicodeWidthStr::width(padded.as_str()) as u16;
-        if width == 0 {
-            return String::new();
-        }
-        if label_w >= width {
-            // Prefer showing the label; truncate by chars if needed.
-            let mut out = String::new();
-            for ch in padded.chars() {
-                let next = UnicodeWidthStr::width(out.as_str()) as u16
-                    + UnicodeWidthStr::width(ch.to_string().as_str()) as u16;
-                if next > width {
-                    break;
-                }
-                out.push(ch);
-            }
-            while (UnicodeWidthStr::width(out.as_str()) as u16) < width {
-                out.push(' ');
-            }
-            return out;
-        }
-        let remaining = width - label_w;
-        let left = remaining / 2;
-        let right = remaining - left;
-        format!(
-            "{}{}{}",
-            "─".repeat(left as usize),
-            padded,
-            "─".repeat(right as usize)
-        )
     }
 }
 
@@ -108,11 +62,7 @@ impl Renderable for TaskEndSeparator {
             return;
         }
         let style = Style::default().fg(self.fg);
-        let text = match &self.elapsed_label {
-            Some(label) => Self::ruled_with_label(area.width, label),
-            None => Self::solid_line(area.width),
-        };
-        let line = Line::from(Span::styled(text, style));
+        let line = Line::from(Span::styled(Self::solid_line(area.width), style));
         Paragraph::new(line).render(area, buf);
     }
 
@@ -176,27 +126,23 @@ mod render_tests {
         );
     }
 
+    /// The rule carries no elapsed label: the turn's clock lives on the
+    /// task-stats row below it (and the bottom bar's turn segment). Locked at
+    /// the cell level because the sentinel payload still holds the seconds —
+    /// nothing may start drawing them again by accident.
     #[test]
-    fn task_end_separator_embeds_elapsed_label() {
-        let sep = TaskEndSeparator::with_elapsed(Color::Gray, "Elapsed", 65);
+    fn task_end_separator_draws_no_elapsed_label() {
+        let sep = TaskEndSeparator::new(Color::Gray);
         let area = Rect::new(0, 0, 40, 1);
         let mut buf = Buffer::empty(area);
         sep.render(area, &mut buf);
         let text: String = (0..area.width)
             .map(|x| buf[(x, 0)].symbol().to_string())
             .collect();
-        assert!(
-            text.contains("Elapsed 01:05"),
-            "expected centered elapsed label, got: {text}"
-        );
-        assert!(
-            text.contains('─'),
-            "expected rule glyphs around label, got: {text}"
-        );
         assert_eq!(
-            UnicodeWidthStr::width(text.as_str()),
-            40,
-            "ruled line should fill width, got: {text}"
+            text,
+            "─".repeat(40),
+            "the task-end rule must be solid, got: {text}"
         );
     }
 

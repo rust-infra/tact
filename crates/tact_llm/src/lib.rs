@@ -12,7 +12,7 @@ pub mod convert;
 pub mod error;
 pub mod hook_select;
 pub mod inject;
-pub(crate) mod lock;
+pub mod lock;
 pub mod mock;
 pub mod models;
 pub mod openai;
@@ -23,6 +23,8 @@ pub mod provider_state;
 pub mod transport;
 pub mod types;
 
+#[cfg(test)]
+mod live_test_support;
 #[cfg(test)]
 mod test_deepseek_reasoning;
 #[cfg(test)]

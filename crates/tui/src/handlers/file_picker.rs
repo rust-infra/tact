@@ -48,7 +48,12 @@ pub(crate) fn handle_file_picker_mode(app: &mut App, key: KeyEvent) {
         KeyCode::Char('k') | KeyCode::Up => {
             app.file_picker.move_up();
         }
-        KeyCode::Char(c) => {
+        // Same rule as the insert box: an unbound `Ctrl+<char>` filters nothing.
+        KeyCode::Char(c)
+            if !key
+                .modifiers
+                .contains(crossterm::event::KeyModifiers::CONTROL) =>
+        {
             app.file_picker.push_query(c);
         }
         KeyCode::Backspace => {
@@ -110,6 +115,21 @@ mod tests {
         assert_eq!(app.file_picker.selected, 1);
         handle_file_picker_mode(&mut app, key(KeyCode::Up));
         assert_eq!(app.file_picker.selected, 0);
+    }
+
+    #[test]
+    fn an_unbound_ctrl_key_does_not_filter_the_picker() {
+        // Same rule as the insert box: `Ctrl+<char>` never becomes query text.
+        let mut app = make_app();
+        app.input_mode = InputMode::FilePicker;
+        set_picker(&mut app, &["a.rs", "b.rs"]);
+
+        handle_file_picker_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('g'), KeyModifiers::CONTROL),
+        );
+
+        assert_eq!(app.file_picker.query, "");
     }
 
     #[test]

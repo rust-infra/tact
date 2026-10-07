@@ -75,25 +75,9 @@ pub fn status_group(r: &SubagentRunSnapshot) -> u8 {
     }
 }
 
+/// The run's elapsed label; see [`super::sticky_panel::elapsed_label`].
 pub fn format_duration(started_at: Option<i64>, finished_at: Option<i64>) -> Option<String> {
-    let now_ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_millis() as i64;
-
-    let end = finished_at.unwrap_or(now_ms);
-    let start = started_at?;
-    if end <= start {
-        return None;
-    }
-    let secs = (end - start) / 1000;
-    if secs < 60 {
-        Some(format!("{}s", secs))
-    } else if secs < 3600 {
-        Some(format!("{}m {}s", secs / 60, secs % 60))
-    } else {
-        Some(format!("{}h {:02}m", secs / 3600, (secs % 3600) / 60))
-    }
+    super::sticky_panel::elapsed_label(started_at, finished_at)
 }
 
 fn short_id(child_id: &str) -> &str {
@@ -157,24 +141,7 @@ pub fn format_subagent_lines(
         all_lines.push(row_text(r));
     }
 
-    let total = all_lines.len();
-    if total <= max_visible {
-        return all_lines;
-    }
-    let scroll = scroll.min(total.saturating_sub(max_visible));
-    let mut visible: Vec<String> = all_lines
-        .iter()
-        .skip(scroll)
-        .take(max_visible)
-        .cloned()
-        .collect();
-    let remaining = total.saturating_sub(scroll + max_visible);
-    if remaining > 0 {
-        visible.push(format!("⋯ +{} more · scroll ▼", remaining));
-    } else if scroll > 0 {
-        visible.push("⋯ scroll ▲".into());
-    }
-    visible
+    super::sticky_panel::scroll_window(all_lines, scroll, max_visible)
 }
 
 pub fn format_sticky_title_line(

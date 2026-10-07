@@ -149,6 +149,7 @@ mode = "default"   # "default" | "plan" | "auto"
 model_context_window = 200000
 snapshot_max_items = 80
 micro_compact_enabled = false
+memory_enabled = true
 notifications_enabled = true
 
 [ui]
@@ -170,6 +171,7 @@ Optional agent settings (config file or CLI):
 | `snapshot_max_items` | `--snapshot-max-items` | `80` | Max entries in the system-prompt Project structure snapshot |
 | `model_context_window` | `--model-context-window` | `200000` | Model context window in tokens (80% auto-compact + TUI usage meter) |
 | `micro_compact_enabled` | `--no-micro-compact` | `false` | Stub old tool results before each LLM call when enabled |
+| `memory_enabled` | — | `true` | Inject `~/.tact/memory` + memory guidance and register `save_memory`; `false` disables both (files are kept) |
 
 ### 3. Run
 
@@ -181,7 +183,7 @@ tact-ui
 tact-ui headless "Fix all clippy warnings in src/ and run cargo test"
 
 # With specific model
-tact-ui headless --model "claude-sonnet-4-20250514" "Refactor the error handling in lib.rs"
+tact-ui --model "claude-sonnet-4-20250514" headless "Refactor the error handling in lib.rs"
 
 # Plan-only mode (review before execution)
 tact-ui -m plan headless "Add rate limiting to the API client"
@@ -261,7 +263,7 @@ Multi-turn conversation loop with progressive context management:
 
 The entry path reserves the incoming user turn before push, so a large prompt cannot overflow immediately after append. Failed `compact` tool calls leave history intact.
 
-Details: [`book/05_chapter_compact.md`](./book/05_chapter_compact.md) ([中文](./book/05_chapter_compact_zh.md)), [`docs/compaction.md`](./docs/compaction.md).
+Details: [`book/05_chapter_compact_zh.md`](./book/05_chapter_compact_zh.md), [`docs/compaction.md`](./docs/compaction.md).
 
 ### 🔧 Built-in Tools
 
@@ -311,7 +313,7 @@ Add another marketplace with `/plugin marketplace add <source>`. A source may be
 
 In the TUI, `/plugin list` and `/plugin marketplace list` render as titled tables (one row per plugin or marketplace). `/plugin reload` refreshes discovered plugin skills, and `/plugin uninstall` / `/plugin update` refresh them too so the plugin's skills change immediately.
 
-Tact owns marketplace state, checkouts, and revision-locked plugin caches under `~/.tact/plugins/`. It loads only `skills/*/SKILL.md` from an installed plugin; plugin hooks, agents, MCP servers, commands, LSPs, monitors, and executables are not loaded or run. Installed skills use `/plugin:skill` (for example `/superpowers:brainstorming`); standalone skills keep the unprefixed `/skill` form.
+Tact owns marketplace state, checkouts, and revision-locked plugin caches under `~/.tact/plugins/`. From an installed plugin it loads `skills/*/SKILL.md`, legacy `commands/*.md` slash commands, declared command hooks, and its MCP servers (`mcp.json` / `.mcp.json` at the plugin root, or the manifest's `mcpServers`). Declarative `agents/*.md` are not a feature, and LSPs, monitors, and executables are not loaded or run. Installed skills use `/plugin:skill` (for example `/superpowers:brainstorming`); standalone skills keep the unprefixed `/skill` form.
 
 ### 👥 Sub-agents & Team
 
@@ -381,7 +383,7 @@ The agent loop:
 8. Writes results back to the conversation history; a successful `compact` tool then rewrites context
 9. Continues until the model stops requesting tools (or recovery exhausts)
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./book/index.md) for chapter-length walkthroughs (compaction, recovery, tools, agent loop, bash sandbox).
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./book/index_zh.md) for chapter-length walkthroughs (compaction, recovery, tools, agent loop, bash sandbox).
 
 ---
 
@@ -481,6 +483,7 @@ mode = "default"                 # default | plan | auto
 model_context_window = 200000     # tokens; 80% auto-compact + TUI meter
 snapshot_max_items = 80
 micro_compact_enabled = false     # stub old tool results before each LLM call
+memory_enabled = true             # false: no memory prompt / guidance / save_memory
 notifications_enabled = true
 skill_body_auto_inject = false
 # skill_dirs = ["~/shared-skills", "./vendor/skills"]

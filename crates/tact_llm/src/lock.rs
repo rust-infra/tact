@@ -1,11 +1,16 @@
 //! Poison-tolerant lock accessors.
 //!
-//! The statics here (`PROVIDER`, `CREDENTIALS`, the models cache) hold
-//! snapshots and caches, not invariants a panic could tear. A panic elsewhere
-//! while one is held poisons the lock; `expect()` would then abort the process
-//! on the next unrelated read. These helpers recover the value instead — Rust
-//! guarantees it is still memory-safe, and at worst it is the previous
-//! snapshot, which is exactly what a re-read would have produced.
+//! The locks that use these — this crate's `PROVIDER` / `CREDENTIALS` / models
+//! cache, and `tact`'s registries and config snapshots — hold snapshots and
+//! caches, not invariants a panic could tear. A panic elsewhere while one is
+//! held poisons the lock; `expect()` would then abort the process on the next
+//! unrelated read. These helpers recover the value instead — Rust guarantees it
+//! is still memory-safe, and at worst it is the previous snapshot, which is
+//! exactly what a re-read would have produced.
+//!
+//! The traits live here rather than beside each caller because `tact` sits
+//! above this crate, so this is the lowest one that needs them; `tact`'s
+//! `utils::lock` re-exports this module rather than repeating it.
 
 use std::sync::{PoisonError, RwLock, RwLockReadGuard, RwLockWriteGuard};
 

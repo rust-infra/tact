@@ -1,12 +1,6 @@
 //! Thinking popup renderer (pure).
 
-use ratatui::{
-    Frame,
-    layout::Rect,
-    style::Style,
-    text::Line,
-    widgets::{Paragraph, Scrollbar, ScrollbarState},
-};
+use ratatui::{Frame, layout::Rect, style::Style, text::Line, widgets::Paragraph};
 
 use super::PopupMouseSurface;
 use crate::render::ctx::RenderCtx;
@@ -75,20 +69,7 @@ pub fn render_thinking_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
     }
 
     let popup_area = super::centered_popup_area(area);
-    let footer: &[super::FooterHint] = &[
-        super::FooterHint {
-            key: "y",
-            label: " copy ",
-        },
-        super::FooterHint {
-            key: "Esc",
-            label: " close ",
-        },
-        super::FooterHint {
-            key: "j/k",
-            label: " scroll ",
-        },
-    ];
+    let footer: &[super::FooterHint] = super::COPY_SCROLL_CLOSE;
     let inner = super::render_popup_chrome(
         frame,
         popup_area,
@@ -159,14 +140,9 @@ pub fn render_thinking_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
         hit_rows.push(display.hit_row(screen_y, body_area.x));
     }
 
-    let scrollbar =
-        Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
-    let mut state = ScrollbarState::new(total)
-        .viewport_content_length(content_height)
-        .position(scroll);
-    frame.render_stateful_widget(scrollbar, popup_area, &mut state);
+    super::render_popup_scrollbar(frame, popup_area, total, content_height, scroll);
 
-    surface.thinking_popup_area = popup_area;
+    surface.popup_area = popup_area;
     surface.body_area = body_area;
     surface.hit_rows = hit_rows;
     // The active popup's selection cache is updated by the host after the frame.

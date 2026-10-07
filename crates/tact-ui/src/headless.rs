@@ -1,26 +1,10 @@
 use std::sync::Arc;
 
-use tact::{
-    Agent, AgentSystemPrompt,
-    background::{BackgroundManager, SharedBackgroundManager},
-    config::CliArgs,
-    consts::TactPath,
-    extract_text,
-    mcp::load_mcp_router_with_report,
-    memory::memory_manager,
-    permission::{PermissionManager, settings::PermissionSettings},
-    store::DynSessionStore,
-    subagent::{SharedSubagentManager, SubagentManager},
-    task::{SharedTaskManager, TaskManager},
-    team::{SharedTeammateManager, TeammateManager},
-    tool::{ToolContext, toolset},
-    worktree::{SharedWorktreeManager, WorktreeManager},
-};
-use tact_llm::get_llm_client;
+use tact::{config::CliArgs, consts::TactPath, extract_text, store::DynSessionStore};
 
 use crate::{
-    permission::permission_mode_from_config,
-    session_lock::{SessionLockGuard, SessionLockRegistry},
+    session_bootstrap::{Notices, bootstrap_session, open_session},
+    session_lock::SessionLockRegistry,
     user_message::build_user_message,
 };
 
@@ -37,26 +21,8 @@ pub async fn run_headless(
         std::process::exit(1);
     }
 
-    let root_dir = tact_path.workdir().display().to_string();
-    let session_id = if let Some(ref id) = args.session {
-        id.clone()
-    } else if args.resume_last {
-        let sessions = session_store.list_sessions(Some(&root_dir)).await?;
-        sessions
-            .into_iter()
-            .next()
-            .map(|s| s.id)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
-    } else {
-        uuid::Uuid::new_v4().to_string()
-    };
-
-    session_store
-        .ensure_session_row(&session_id, &root_dir, "")
-        .await?;
-    let session_lock = SessionLockGuard::acquire(session_store.clone(), &session_id).await?;
-    lock_registry.register(session_lock.clone()).await;
-    session_store.touch_session(&session_id, &root_dir).await?;
+    let (session_id, session_lock) =
+        open_session(&args, &tact_path, &session_store, lock_registry.as_ref()).await?;
 
     eprintln!("[session: {session_id}]");
 
@@ -73,102 +39,21 @@ async fn run_headless_locked(
     session_store: DynSessionStore,
     session_id: String,
 ) -> anyhow::Result<()> {
-    let client = get_llm_client().await?;
-    let mode = permission_mode_from_config();
-    let settings = PermissionSettings::load(&tact_path);
-    let permission_manager = PermissionManager::try_new_with_settings(mode, settings)?;
-    eprintln!("[permission: {mode}]");
-
     let work_dir = tact_path.workdir().to_path_buf();
     let skill_registry = tact::skill::shared_skill_registry(tact_path.workdir())?;
-    let db_path = tact_path.session_db_path();
-    let task_manager = SharedTaskManager::new(TaskManager::new(&db_path).await?);
-    let background_manager = SharedBackgroundManager::new(BackgroundManager::new(&db_path).await?);
-    let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&db_path).await?);
-    let worktree_manager =
-        SharedWorktreeManager::new(WorktreeManager::new(&db_path, work_dir.clone()).await?);
-    let subagent_manager = SharedSubagentManager::new(SubagentManager::new(&db_path).await?);
-    // Memory is user-global (`~/.tact/memory`) so it persists across projects.
-    // Project-local `.tact/memory` is only the fallback when `$HOME` is unset.
-    let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager(
-        TactPath::home_memory_dir().unwrap_or_else(|| tact_path.memory_dir()),
-    )?));
-    let (mcp_router, mcp_report) = load_mcp_router_with_report().await?;
-    // Headless has no TUI channel; stderr keeps a broken server observable
-    // instead of silently missing its tools. A clean load prints nothing.
-    for line in mcp_report.notice_lines() {
-        eprintln!("[mcp] {line}");
-    }
-
-    let mut tools = toolset();
-    // Annotate `spawn_subagent` with the current subagent skill-card catalog
-    // so the main agent can discover valid `skill:` names.
-    tact::tool::annotate_spawn_subagent_skill_catalog(&mut tools);
-    // Opt-in sandbox, resolved once at startup. The switch is a boolean and the
-    // platform picks the implementation; if it cannot be honoured the session
-    // degrades to unsandboxed and says so on stderr (headless has no TUI).
-    let (sandbox, sandbox_degraded) =
-        tact::sandbox::resolve(tact::config::settings().tools.sandbox, &work_dir);
-    if let Some(degraded) = &sandbox_degraded {
-        eprintln!("[sandbox] {}", degraded.reason);
-    }
-    if sandbox.is_some() {
-        tools.set_tool_description("bash", tact::tool::SANDBOXED_BASH_DESCRIPTION);
-    }
-    let tool_context = ToolContext {
-        skill_registry: skill_registry.clone(),
-        subagent_start_hooks: tact::plugin::plugin_subagent_start_hooks(tact_path.workdir())?,
-        subagent_stop_hooks: tact::plugin::plugin_subagent_stop_hooks(tact_path.workdir())?,
-        memory_manager,
-        work_dir: work_dir.clone(),
-        task_manager,
-        background_manager,
-        teammate_manager,
-        worktree_manager,
-        subagent_manager,
-        ui_tx: None,
-        ui_responder: tact::ui_responder::UiResponder::new(),
-        progress_reporter: tact::tool::ToolProgressReporter::default(),
-        cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        bash_timeout_secs: tact::config::settings().tools.bash_timeout_secs,
-        bash_nice: tact::config::settings().tools.bash_nice,
-        sandbox,
-        sandbox_degraded,
-        session_id: None,
-        session_store: None,
-        permission_snapshot: None,
-        subagent_results: None,
-    };
-
-    // Responses compaction routing depends on the effective provider: OpenAI
-    // uses native `/responses/compact`, DeepSeek (including an OpenAI entry
-    // pointed at a DeepSeek endpoint) falls back to local summary compaction.
-    let provider_kind = if tact_llm::is_deepseek() {
-        tact_llm::ProviderKind::DeepSeek
-    } else {
-        tact_llm::get_provider().provider
-    };
-    let mut agent = Agent::new(
-        client.clone(),
-        tool_context,
-        tools,
-        mcp_router,
-        permission_manager,
-        AgentSystemPrompt::Dynamic,
+    // Everything from the LLM client to the hook pass is shared with the TUI;
+    // see `session_bootstrap`. Headless has no UI channel and no frame to
+    // protect, so its startup notices go to stderr.
+    let mut agent = bootstrap_session(
+        &tact_path,
+        work_dir.clone(),
+        skill_registry,
+        session_id.clone(),
+        session_store,
+        None,
+        Notices::Stderr,
     )
-    .with_session(session_id.clone(), session_store)
-    .with_provider_kind(provider_kind);
-
-    // RTK filter is opt-in — `with_post_tool` no-ops unless the
-    // `tools.rtk_filter` setting is enabled.
-    agent = agent.with_post_tool(tact::hook::rtk_filter::create_rtk_post_tool_hook());
-
-    // Claude plugin command hooks (SessionStart / UserPromptSubmit /
-    // PreToolUse / PostToolUse) from every installed plugin.
-    agent = tact::plugin::apply_plugin_hooks(agent, tact_path.workdir())?;
-
-    // SessionStart hooks fire once per session, before the first turn.
-    agent.dispatch_session_start_hooks().await?;
+    .await?;
 
     // Restore any prior messages for resumed sessions.
     agent.ensure_session().await?;
