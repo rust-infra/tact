@@ -14,6 +14,8 @@
 .openai
 .superpowers/
 .tact/
+# Obsidian workspace state for the book vault; editor-local, not source.
+/book/.obsidian/
 skills
 .qoder/
 .workbuddy-ai/
