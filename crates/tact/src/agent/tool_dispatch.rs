@@ -14,7 +14,7 @@ use crate::{
     hook::{HookControl, NotificationContext, ToolResult, ToolUse},
     invoke_hooks,
     mcp::MCPToolRouter,
-    permission::{CapabilityRisk, PermissionBehavior, format_permission_prompt},
+    permission::{CapabilityRisk, PermissionBehavior, PermissionManager, format_permission_prompt},
     tool::{
         ArgumentSummaryPolicy, DetailPolicy, OutputPolicy, TaskOperation, ToolDomain, ToolRouter,
     },
@@ -31,6 +31,7 @@ enum PermissionChoice {
     AllowOnce,
     AllowForSession,
     AlwaysAllow,
+    AlwaysAllowProgram,
     Deny,
 }
 
@@ -38,14 +39,34 @@ enum PermissionChoice {
 ///
 /// Indices are load-bearing — [`permission_choice_for`] is the only reader — so
 /// the list is stated once. `Deny` keeps index 1 and "always allow this tool"
-/// keeps index 2, because those positions are muscle memory; the new option is
-/// appended rather than inserted.
-const PERMISSION_OPTIONS: [&str; 4] = [
+/// keeps index 2, because those positions are muscle memory; every later option
+/// is appended rather than inserted.
+const PERMISSION_OPTIONS: [&str; 5] = [
     "Allow once",
     "Deny",
     "Always allow this tool",
     "Allow for this session",
+    "Always allow this program",
 ];
+
+/// The options to show, dropping the program-level one when no rule for it
+/// could be built.
+///
+/// Dropping the *last* entry is what keeps every other index stable. A disabled
+/// entry would be worse than an absent one: it advertises a gesture that
+/// records nothing, which is the shape of bug the "no rule could be narrowed"
+/// notice exists to prevent.
+fn permission_options(with_program_choice: bool) -> Vec<String> {
+    let count = if with_program_choice {
+        PERMISSION_OPTIONS.len()
+    } else {
+        PERMISSION_OPTIONS.len() - 1
+    };
+    PERMISSION_OPTIONS[..count]
+        .iter()
+        .map(|option| (*option).to_string())
+        .collect()
+}
 
 /// Which decision a popup selection means.
 ///
@@ -57,6 +78,7 @@ fn permission_choice_for(selection: Option<usize>) -> PermissionChoice {
         Some(0) => PermissionChoice::AllowOnce,
         Some(2) => PermissionChoice::AlwaysAllow,
         Some(3) => PermissionChoice::AllowForSession,
+        Some(4) => PermissionChoice::AlwaysAllowProgram,
         _ => PermissionChoice::Deny,
     }
 }
@@ -925,7 +947,7 @@ impl Agent {
                                         }
                                         _ => crate::tool::PermissionPromptPolicy::Json,
                                     };
-                                    let prompt = format_permission_prompt(
+                                    let mut prompt = format_permission_prompt(
                                         stable_name,
                                         permit_prompt,
                                         &tool_use.input,
@@ -953,11 +975,26 @@ impl Agent {
                                         }
                                     }
 
+                                    // The program-level choice is offered
+                                    // only when a rule for it can be built, and
+                                    // the popup then previews that exact rule:
+                                    // the gesture is worth nothing if the user
+                                    // cannot see how wide it is.
+                                    let prefix_rule = PermissionManager::prefix_rule_for(
+                                        stable_name,
+                                        permit_prompt,
+                                        &tool_use.input,
+                                    );
+
                                     let choice = if let Some(tx) = &self.runtime.ui_tx {
-                                        let options: Vec<String> = PERMISSION_OPTIONS
-                                            .iter()
-                                            .map(|option| (*option).to_string())
-                                            .collect();
+                                        if let Some(rule) = &prefix_rule {
+                                            prompt.push_str(&format!(
+                                                "\n\n\"Always allow this program\" would \
+                                                 record: {}",
+                                                rule.to_rule_string()
+                                            ));
+                                        }
+                                        let options = permission_options(prefix_rule.is_some());
                                         let responder = self.tool_context.ui_responder.clone();
                                         // No artificial timeout: the popup is guaranteed
                                         // to stay rendered (see
@@ -993,6 +1030,22 @@ impl Agent {
                                                 .runtime
                                                 .permission_manager
                                                 .allow_tool_for_session(
+                                                    stable_name,
+                                                    permit_prompt,
+                                                    &tool_use.input,
+                                                );
+                                            if !outcome.is_recorded() {
+                                                self.report_unrecorded_approval(stable_name);
+                                            }
+                                            PreparedState::Run
+                                        }
+                                        PermissionChoice::AlwaysAllowProgram => {
+                                            permission_label =
+                                                Some("Always allow this program".to_string());
+                                            let outcome = self
+                                                .runtime
+                                                .permission_manager
+                                                .allow_tool_as_prefix(
                                                     stable_name,
                                                     permit_prompt,
                                                     &tool_use.input,
@@ -1600,11 +1653,46 @@ mod tests {
             permission_choice_for(Some(3)),
             PermissionChoice::AllowForSession
         );
+        assert_eq!(
+            permission_choice_for(Some(4)),
+            PermissionChoice::AlwaysAllowProgram
+        );
 
         // A cancelled popup arrives as `None`, and an index past the end can
         // only come from a UI that disagrees with the list. Both deny.
         assert_eq!(permission_choice_for(None), PermissionChoice::Deny);
         assert_eq!(permission_choice_for(Some(99)), PermissionChoice::Deny);
+    }
+
+    /// The program-level choice is appended, never inserted, so gating it out
+    /// cannot move any index a user has learned.
+    #[test]
+    fn the_program_choice_is_appended_and_can_be_withheld() {
+        let offered = permission_options(true);
+        let withheld = permission_options(false);
+
+        assert_eq!(offered.len(), PERMISSION_OPTIONS.len());
+        assert_eq!(withheld.len(), PERMISSION_OPTIONS.len() - 1);
+        assert_eq!(withheld, offered[..withheld.len()].to_vec());
+        assert_eq!(
+            offered.last().map(String::as_str),
+            Some("Always allow this program")
+        );
+
+        // With the option withheld, no index the popup can produce reaches it —
+        // which is what makes offering it conditionally safe.
+        for index in 0..withheld.len() {
+            assert_ne!(
+                permission_choice_for(Some(index)),
+                PermissionChoice::AlwaysAllowProgram,
+                "index {index} is reachable without the program option"
+            );
+        }
+        assert_eq!(
+            permission_choice_for(Some(withheld.len())),
+            PermissionChoice::AlwaysAllowProgram,
+            "the withheld index is the one the option occupies when offered"
+        );
     }
 
     /// The list and the mapping must stay in step: every option index maps back
@@ -1616,6 +1704,7 @@ mod tests {
             PermissionChoice::Deny,
             PermissionChoice::AlwaysAllow,
             PermissionChoice::AllowForSession,
+            PermissionChoice::AlwaysAllowProgram,
         ];
         assert_eq!(PERMISSION_OPTIONS.len(), expected.len());
         for (index, choice) in expected.iter().enumerate() {
