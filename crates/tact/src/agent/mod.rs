@@ -5988,6 +5988,196 @@ mod tests {
         );
     }
 
+    /// The cancel flag can also flip *during* pre-flight: the driver sets it
+    /// from its own command loop while the agent awaits a hook or a permission
+    /// prompt, so calls earlier in the same turn are already resolved when the
+    /// remaining ones are stubbed out. Every call still needs exactly one
+    /// result — including the one the user just denied.
+    #[tokio::test]
+    async fn cancel_mid_preflight_answers_every_tool_use_once() {
+        ensure_config();
+        use crate::tool::test_support::test_context;
+        use tact_protocol::{AgentUpdate, UiResponse};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
+            .await
+            .unwrap();
+        store
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = test_context("cancel_mid_preflight_deny");
+        tool_context.ui_tx = Some(tx.clone());
+
+        // Two calls in one turn behind the usual leading text block, so the
+        // cancel lands after `t1` was already resolved.
+        let mock = MockClient::with_responder(|_request, idx| {
+            if idx > 0 {
+                return Ok((
+                    vec![make_text_block("done")],
+                    Some(StopReason::EndTurn),
+                    None,
+                ));
+            }
+            Ok((
+                vec![
+                    make_text_block("writing both files"),
+                    ContentBlock::ToolUse {
+                        id: "t1".to_string(),
+                        name: "write_file".to_string(),
+                        input: serde_json::json!({ "path": "a.txt", "content": "a" }),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "t2".to_string(),
+                        name: "write_file".to_string(),
+                        input: serde_json::json!({ "path": "b.txt", "content": "b" }),
+                    },
+                ],
+                Some(StopReason::ToolUse),
+                None,
+            ))
+        });
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx)
+        .with_session("session-1".to_string(), store.clone());
+
+        let flag = agent.tool_context.cancel_flag.clone();
+        let responder = agent.tool_context.ui_responder.clone();
+        tokio::spawn(async move {
+            while let Some(update) = rx.recv().await {
+                if let AgentUpdate::RequestSelect { request_id, .. } = update {
+                    // Deny `t1`, then cancel: the flag is first observed at the
+                    // top of the `t2` iteration, i.e. mid-pre-flight.
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    responder.respond(UiResponse::Select {
+                        request_id,
+                        choice: Some(1),
+                    });
+                    return;
+                }
+            }
+        });
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "write both")))
+            .await
+            .expect("a cancelled loop returns Ok");
+
+        let messages = store.load_session("session-1").await.unwrap();
+        let (uses, results) = tool_pairing(&messages);
+        assert_eq!(uses, vec!["t1".to_string(), "t2".to_string()]);
+        assert_eq!(results, uses, "each tool use must be answered exactly once");
+    }
+
+    /// As above, but the first call was *approved* before the cancel landed, so
+    /// it is still sitting in `PreparedState::Run` with no output. It has to be
+    /// answered as cancelled rather than indexed out of an empty output list.
+    #[tokio::test]
+    async fn cancel_mid_preflight_answers_an_approved_but_unrun_call() {
+        ensure_config();
+        use crate::tool::test_support::test_context;
+        use tact_protocol::{AgentUpdate, UiResponse};
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
+            .await
+            .unwrap();
+        store
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = test_context("cancel_mid_preflight_allow");
+        tool_context.ui_tx = Some(tx.clone());
+
+        let mock = MockClient::with_responder(|_request, idx| {
+            if idx > 0 {
+                return Ok((
+                    vec![make_text_block("done")],
+                    Some(StopReason::EndTurn),
+                    None,
+                ));
+            }
+            Ok((
+                vec![
+                    make_text_block("writing both files"),
+                    ContentBlock::ToolUse {
+                        id: "t1".to_string(),
+                        name: "write_file".to_string(),
+                        input: serde_json::json!({ "path": "a.txt", "content": "a" }),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "t2".to_string(),
+                        name: "write_file".to_string(),
+                        input: serde_json::json!({ "path": "b.txt", "content": "b" }),
+                    },
+                ],
+                Some(StopReason::ToolUse),
+                None,
+            ))
+        });
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx)
+        .with_session("session-1".to_string(), store.clone());
+
+        let flag = agent.tool_context.cancel_flag.clone();
+        let responder = agent.tool_context.ui_responder.clone();
+        tokio::spawn(async move {
+            while let Some(update) = rx.recv().await {
+                if let AgentUpdate::RequestSelect { request_id, .. } = update {
+                    // Allow `t1` once, then cancel.
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                    responder.respond(UiResponse::Select {
+                        request_id,
+                        choice: Some(0),
+                    });
+                    return;
+                }
+            }
+        });
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "write both")))
+            .await
+            .expect("a cancelled loop returns Ok");
+
+        let messages = store.load_session("session-1").await.unwrap();
+        let (uses, results) = tool_pairing(&messages);
+        assert_eq!(uses, vec!["t1".to_string(), "t2".to_string()]);
+        assert_eq!(results, uses, "each tool use must be answered exactly once");
+        assert_eq!(
+            tool_result_for(&messages, "t1").as_deref(),
+            Some("Cancelled by user"),
+            "an approved call the cancel caught before execution is answered, not run"
+        );
+    }
+
     /// A refusal is surfaced as an error, but the assistant message that asked
     /// for a tool is already persisted: it still has to be answered.
     #[tokio::test]

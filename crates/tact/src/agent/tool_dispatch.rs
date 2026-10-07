@@ -607,7 +607,13 @@ impl Agent {
     ) -> Result<(Vec<ContentBlock>, Option<String>)> {
         let preflight = self.preflight_tool_calls(content).await?;
         if preflight.cancelled {
-            return Ok((build_tool_results(preflight.prepared, vec![]), None));
+            // Nothing ran. A call approved before the flag flipped still needs
+            // a result — and `build_tool_results` indexes `outputs` by
+            // position, so an empty vec would panic on it. Every entry is
+            // answered as cancelled, which is what the wave-boundary cancel
+            // already writes for a call it approved but never started.
+            let outputs = (0..preflight.prepared.len()).map(|_| None).collect();
+            return Ok((build_tool_results(preflight.prepared, outputs), None));
         }
         let (outputs, manual_compact) = self.run_tool_waves(&preflight.prepared).await?;
         Ok((
@@ -1366,16 +1372,28 @@ impl Agent {
         Ok((outputs, manual_compact))
     }
 
+    /// Stub out every `ToolUse` in `content` that `prepared` has not answered
+    /// yet, each carrying `reason`.
+    ///
+    /// `prepared` holds one entry per *tool use* already handled, never per
+    /// content block, so what is left is the tail of the content's **tool
+    /// uses** — not the tail of `content`, which normally opens with the
+    /// assistant's text (or thinking) before its first call. Skipping by block
+    /// index would re-stub an already-handled call and answer its id twice.
     fn append_unexecuted_tool_uses(
         &mut self,
         prepared: &mut Vec<PreparedTool>,
         content: &[ContentBlock],
         reason: &str,
     ) {
-        for block in content.iter().skip(prepared.len()) {
-            let ContentBlock::ToolUse { id, name, input } = block else {
-                continue;
-            };
+        for (id, name, input) in content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::ToolUse { id, name, input } => Some((id, name, input)),
+                _ => None,
+            })
+            .skip(prepared.len())
+        {
             let step_idx = self.next_step_idx();
             self.emit_update(AgentUpdate::StepFailed {
                 idx: step_idx,
