@@ -72,14 +72,11 @@ wave[i] = max( wave[j] + 1  for every j < i that conflicts with i ), else 0
 
 Wave 按序执行；同一 wave 内工具并发运行。
 
-### Phase 3 — 后处理（串行）
+### Phase 3 — 结果组装与后处理
 
-所有 wave 完成后：
+`PostToolUse` hook、`StepFinished`、stats 与 recent files 都发生在 **Phase 2 的完成循环里**：每有一个 future 就绪就立即处理，因此波内按**完成顺序**（不是模型顺序）触发；`StepFinished` 携带 `step_idx`，UI 靠它归位。
 
-1. 运行 `PostToolUse` hook。
-2. 按模型原始顺序发出 `StepFinished` UI 事件。
-3. 更新 bookkeeping：recent files、stats、压缩触发。
-4. 将 tool results 追加到 `runtime.context`。
+所有 wave 结束后，`build_tool_results` 按 `prepared` 数组（模型原始顺序）把输出拼回 `ToolResult` 块，再追加到 `runtime.context`——provider 校验 `tool_use` / `tool_result` 的配对与次序，这一步的顺序就是契约。
 
 ---
 
@@ -91,14 +88,16 @@ Wave 按序执行；同一 wave 内工具并发运行。
 |------------------|----------|--------|
 | `ReadPath { field }` | 读 `input.<field>` 指向的路径 | `read_file`（`path`）、`read_image`（`file_path`） |
 | `WritePath { field }` | 写该路径 | `write_file`、`edit_file`（`path`） |
-| `SharedState { scope }` | 与同 scope 的其他调用互斥 | `task_*`（`task`）、team 消息族（`team`） |
-| `Independent` | 不触及工作区文件，可与任何工具并行 | `sleep`、`check_background`、`wait_background` |
-| `Barrier` | 效果无法界定，独占一波 | `bash`、`spawn_subagent`（不带 `worktree`）、未知工具 |
+| `SharedState { scope }` | 与同 scope 的其他调用互斥 | `task_create` / `task_update`（`task`）、team 消息族（`team`） |
+| `Independent` | 不触及工作区文件，可与任何工具并行 | `sleep`、`save_memory`、`check_background`、`wait_background`、`check_subagent`、`wait_subagent`、`cancel_subagent`、`load_skill`、`task_get`、`task_list`、`list_teammates`、`read_inbox`、`worktree_list` / `worktree_status` / `worktree_events` |
+| `Barrier` | 效果无法界定，独占一波 | `bash`、`ask_user`、`compact`、`background_run`、`worktree_run`、`worktree_create` / `worktree_remove`、`spawn_subagent`（不带 `worktree`）、未知工具 |
 | `PatchFiles { … }` | 从 patch 头解析目标路径 | `apply_patch`（模块与元数据仍在，但**当前没有任何 toolset 注册它**，见 §3 末） |
 
 路径规范化为绝对路径并 rooted 于 `work_dir`。两路径重叠当且仅当相等或一方为另一方祖先，因此对 `src/foo.rs` 的 write 与作用域为 `src/` 的 search 冲突。
 
 MCP 工具不走这套元数据：它们的资源由 `mcp_server_resources(server)` 在调度时按 server 名合成（见 §2）。
+
+逐工具的完整声明表、`overlap` 的路径分量语义、wave 算法的三条保证、以及各示例的逐项推导，见 [工具系统](./07_chapter_tool_zh.md) §9（工具侧视角）。
 
 ### 示例
 

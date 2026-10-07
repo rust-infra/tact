@@ -38,15 +38,16 @@ content (assistant ToolUse blocks)
 ┌──────────────────────────────────────────────────────────────┐
 │ Phase 2 — execution (parallel by wave)                         │
 │   schedule cleared tools into conflict-free waves;             │
-│   run each wave concurrently (join_all over shared borrows);   │
-│   barrier waves (bash/MCP) run solo                            │
+│   run each wave concurrently (FuturesUnordered over shared     │
+│   borrows); barrier waves run solo; MCP serializes per server  │
 └──────────────────────────────────────────────────────────────┘
         │
         ▼
 ┌──────────────────────────────────────────────────────────────┐
-│ Phase 3 — post-processing (sequential, &mut self)              │
+| Phase 3 — post-processing (sequential, &mut self)              │
 │   PostToolUse hook · StepFinished · bookkeeping (recent files, │
-│   compact) — replayed in the model's original tool order       │
+│   compact) — fired per-completion inside Phase 2; the final    │
+│   ToolResult blocks are rebuilt in the model's original order  │
 └──────────────────────────────────────────────────────────────┘
 ```
 
@@ -57,20 +58,36 @@ part worth overlapping.
 
 ## Conflict model & wave scheduling (`crates/tact/src/agent/tool_schedule.rs`)
 
-Each cleared tool is mapped to the workspace files it touches:
+Each cleared tool declares its footprint through its own metadata
+(`ToolMetadata.resources`, a `ResourcePolicy` in `crates/tact/src/tool/metadata.rs`);
+`ResourcePolicy::resolve(input, work_dir)` turns the policy plus the call's input
+into a concrete `ToolResources { reads, writes, barrier }`. The scheduler holds no
+tool-name table.
 
-| Tool | Resource | Mode |
+| `ResourcePolicy` | Resolved to | Users |
 |------|----------|------|
-| `read_file` | `input.path` | read |
-| `search_code` | `input.path` or workspace root | read (directory scope) |
-| `write_file`, `edit_file` | `input.path` | write |
-| `task_create`, `task_update`, `task_get`, `task_list` | `__tact_tasks__` | write (serialize with each other) |
-| `web_search`, `web_fetch`, `lsp`, `sleep`, `wait_background`, `check_background` | — | independent (never conflicts) |
-| **everything else** (`bash`, `apply_patch`, `spawn_subagent`, MCP, state mutations, unknown) | — | **barrier** (conflicts with all) |
+| `ReadPath { field }` | `reads = [work_dir/input[field]]` | `read_file` (`path`), `read_image` (`file_path`) |
+| `WritePath { field }` | `writes = [work_dir/input[field]]` | `write_file`, `edit_file` (`path`) |
+| `SharedState { scope }` | `writes = ["__tact_<scope>__"]` (synthetic marker) | `task_create` / `task_update` (`task`); `spawn_teammate` / `send_message` / `broadcast` / `plan_approval` / `shutdown_request` / `shutdown_response` (`team`) |
+| `Independent` | empty set — never conflicts | `sleep`, `save_memory`, `check_background`, `wait_background`, `check_subagent`, `wait_subagent`, `cancel_subagent`, `load_skill`, `task_get`, `task_list`, `list_teammates`, `read_inbox`, `worktree_list` / `worktree_status` / `worktree_events` |
+| `Barrier` | `barrier = true` | `bash`, `ask_user`, `compact`, `background_run`, `worktree_run`, `worktree_create` / `worktree_remove`, `spawn_subagent` (without `worktree`) |
+| `PatchFiles { … }` | target paths parsed from the patch headers | `apply_patch` (no toolset registers it today) |
+
+MCP tools bypass the metadata path entirely: `mcp_server_resources(server)`
+synthesizes a `__mcp__<server>` write marker at scheduling time, so tools on the
+same server serialize while different servers run in parallel. `read_mcp_resource`
+/ `get_mcp_prompt` scope to one server when the call names it; the listing tools
+(`list_mcp_resources`, `list_mcp_prompts`, templates) are barriers because a
+listing may touch every server.
+
+The one input-aware exception lives in `tool_resources_for`:
+`spawn_subagent { worktree: true }` resolves to `Independent` (the child gets its
+own worktree lane, so its file effects are scoped) instead of the static `Barrier`.
 
 Paths are normalised to absolute (lexically, rooted at `work_dir`). Two paths
 **overlap** when they are equal or one is an ancestor of the other (so a write
-to `src/foo.rs` conflicts with a search scoped to `src/`).
+to `src/foo.rs` conflicts with a search scoped to `src/`). `Path::starts_with`
+compares path *components*, so `src/foo` and `src/foobar` do not overlap.
 
 **Conflict:** two tools conflict if either is a barrier, or one writes a path
 the other reads or writes. Two pure reads never conflict.
@@ -83,9 +100,10 @@ wave[i] = max( wave[j] + 1  for every j < i that conflicts with i ),  else 0
 ```
 
 Tools sharing a wave run concurrently; waves run in ascending order. A barrier
-always lands alone in its own wave (so `bash` / MCP / subagents never run
-concurrently with anything), which is also why MCP's stateful `&mut self`
-router fits cleanly.
+always lands alone in its own wave (so `bash` / subagents / worktree lanes never
+run concurrently with anything), which is also why MCP's stateful `&mut self`
+router fits cleanly — same-server MCP calls serialize through a shared write
+marker.
 
 ### Example
 
@@ -102,8 +120,13 @@ Model returns, in order: `read A`, `read B`, `write A`, `read C`, `read A`.
 ### Safety stance: barrier-by-default
 
 Unknown tools default to a **barrier** (run solo), so adding a new tool never
-parallelises unsafely. Opting a tool into parallelism is an explicit edit to
-`tool_resources` in `tool_schedule.rs`. `bash` is intentionally a barrier.
+parallelises unsafely. Opting a tool into parallelism is an explicit edit to its
+own `ToolMetadata.resources`. `bash` is intentionally a barrier.
+
+A declared `ReadPath` / `WritePath` whose field is missing or not a string
+resolves to an *empty* set, i.e. `Independent` — the call will fail path
+validation once it runs, but it will run concurrently first. That is a known
+rough edge.
 
 ## Comparison with codex-cli
 
@@ -113,7 +136,7 @@ concurrently, but the safety model differs:
 | | codex-cli | tact |
 |---|-----------|------|
 | Trigger | model batches via `multi_tool_use.parallel`; request sets `parallel_tool_calls: true` | runtime schedules a turn's `ToolUse` blocks |
-| Eligibility | per-tool / per-MCP-server `supports_parallel_tool_calls` flag; serial by default | barrier-by-default + known-tool allowlist |
+| Eligibility | per-tool / per-MCP-server `supports_parallel_tool_calls` flag; serial by default | barrier-by-default + per-tool `ResourcePolicy` declaration |
 | Conflict detection | **none** — trusts the model not to batch dependent ops | path conflict graph + wave scheduling |
 | `bash`/shell | marked parallel-capable | **barrier** (runs solo) |
 

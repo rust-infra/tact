@@ -20,11 +20,11 @@
 | 4 | [系统提示](./04_chapter_prompt_zh.md) | 从 role / skills / guidelines / memory / 动态上下文组装系统提示，以及跨回合的缓存友好性 |
 | 5 | [上下文压缩](./05_chapter_compact_zh.md) | `micro_compact` stub、`compact_history` 摘要、transcript / 大输出落盘 |
 | 6 | [错误恢复](./06_chapter_recovery_zh.md) | `RecoveryState`、传输退避重试、prompt-too-long 压缩、输出截断续写 |
-| 7 | [工具系统](./07_chapter_tool_zh.md) | `Tool` trait、`ToolRouter`、`registry.rs`、`ToolContext`、路径安全、`#[tool]` 宏 |
+| 7 | [工具系统](./07_chapter_tool_zh.md) | `Tool` trait、`ToolRouter`、`registry.rs`、`ToolContext`、路径安全、`#[tool]` 宏；**§9 工具并行调度**（`ResourcePolicy`、冲突判定、waves/barriers） |
 | 8 | [MCP 协议与集成](./08_chapter_mcp_zh.md) | MCP 基础、协议流程、Tact 中的配置 / 握手 / 工具调用 / 动态更新 / 优雅关闭 |
 | 9 | [Agent 生命周期 Hooks](./09_chapter_hook_zh.md) | PreToolUse / PostToolUse、`HookControl`、注册 API、在工具管线中的位置 |
 | 10 | [权限模型](./10_chapter_permission_zh.md) | 能力风险分级、权限模式、白名单、TUI 审批流、shell 高风险检测 |
-| 11 | [任务与工具调度](./11_chapter_task_zh.md) | **工具**并行调度（waves/barriers）— 非 [Ch 19 持久任务](./19_chapter_persistent_tasks_zh.md) |
+| 11 | [任务与工具调度](./11_chapter_task_zh.md) | 一回合的三阶段流水线、权限 / hook 位置、`ToolScheduleSummary` 落库 — 非 [Ch 19 持久任务](./19_chapter_persistent_tasks_zh.md)；调度算法本身在 [Ch 7 §9](./07_chapter_tool_zh.md) |
 | 12 | [子 Agent](./12_chapter_subagent_zh.md) | `spawn_subagent` 工具：嵌套 `agent_loop`、受限工具集、静态 prompt、权限继承、摘要返回 |
 | 13 | [后台任务](./13_chapter_background_zh.md) | `background_run` / `check_background`、tokio spawn、超时、启动修复 |
 | 14 | [团队协作](./14_chapter_team_zh.md) | `.tact/team/` 队友名册、JSONL 收件箱、广播、计划审批 / 关机协议 |
