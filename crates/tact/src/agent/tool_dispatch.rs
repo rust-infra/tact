@@ -21,6 +21,46 @@ use crate::{
     utils::RwLockExt,
 };
 
+/// What the interactive permission popup's selection means.
+///
+/// A typed replacement for the `"allow_once"` strings this used to carry: the
+/// `match` on it is exhaustive, so a new option cannot silently fall through to
+/// whichever arm happened to be last.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PermissionChoice {
+    AllowOnce,
+    AllowForSession,
+    AlwaysAllow,
+    Deny,
+}
+
+/// The permission popup's options, in the order the popup shows them.
+///
+/// Indices are load-bearing — [`permission_choice_for`] is the only reader — so
+/// the list is stated once. `Deny` keeps index 1 and "always allow this tool"
+/// keeps index 2, because those positions are muscle memory; the new option is
+/// appended rather than inserted.
+const PERMISSION_OPTIONS: [&str; 4] = [
+    "Allow once",
+    "Deny",
+    "Always allow this tool",
+    "Allow for this session",
+];
+
+/// Which decision a popup selection means.
+///
+/// Anything unexpected denies, which is the only safe default: a cancelled
+/// popup arrives as `None`, and an out-of-range index can only come from a UI
+/// that disagrees with [`PERMISSION_OPTIONS`].
+fn permission_choice_for(selection: Option<usize>) -> PermissionChoice {
+    match selection {
+        Some(0) => PermissionChoice::AllowOnce,
+        Some(2) => PermissionChoice::AlwaysAllow,
+        Some(3) => PermissionChoice::AllowForSession,
+        _ => PermissionChoice::Deny,
+    }
+}
+
 /// A resolved tool — either native (with owned metadata copy) or MCP.
 enum ResolvedTool {
     Native {
@@ -914,11 +954,10 @@ impl Agent {
                                     }
 
                                     let choice = if let Some(tx) = &self.runtime.ui_tx {
-                                        let options = vec![
-                                            "Allow once".to_string(),
-                                            "Deny".to_string(),
-                                            "Always allow this tool".to_string(),
-                                        ];
+                                        let options: Vec<String> = PERMISSION_OPTIONS
+                                            .iter()
+                                            .map(|option| (*option).to_string())
+                                            .collect();
                                         let responder = self.tool_context.ui_responder.clone();
                                         // No artificial timeout: the popup is guaranteed
                                         // to stay rendered (see
@@ -930,28 +969,40 @@ impl Agent {
                                             .await
                                             .ok()
                                             .flatten();
-                                        match selection {
-                                            Some(0) => Some("allow_once"),
-                                            Some(2) => Some("always_allow"),
-                                            _ => Some("deny"),
-                                        }
+                                        permission_choice_for(selection)
                                     } else {
                                         let approved = self
                                             .runtime
                                             .permission_manager
                                             .ask_user(stable_name, risk)?;
                                         if approved {
-                                            Some("allow_once")
+                                            PermissionChoice::AllowOnce
                                         } else {
-                                            Some("deny")
+                                            PermissionChoice::Deny
                                         }
                                     };
                                     match choice {
-                                        Some("allow_once") => {
+                                        PermissionChoice::AllowOnce => {
                                             permission_label = Some("Allow once".to_string());
                                             PreparedState::Run
                                         }
-                                        Some("always_allow") => {
+                                        PermissionChoice::AllowForSession => {
+                                            permission_label =
+                                                Some("Allow for this session".to_string());
+                                            let outcome = self
+                                                .runtime
+                                                .permission_manager
+                                                .allow_tool_for_session(
+                                                    stable_name,
+                                                    permit_prompt,
+                                                    &tool_use.input,
+                                                );
+                                            if !outcome.is_recorded() {
+                                                self.report_unrecorded_approval(stable_name);
+                                            }
+                                            PreparedState::Run
+                                        }
+                                        PermissionChoice::AlwaysAllow => {
                                             permission_label =
                                                 Some("Always allow this tool".to_string());
                                             let outcome = self
@@ -963,20 +1014,11 @@ impl Agent {
                                                     &tool_use.input,
                                                 );
                                             if !outcome.is_recorded() {
-                                                // The gesture promised to be
-                                                // remembered; saying so when it
-                                                // cannot be is the difference
-                                                // between a limitation and a bug.
-                                                self.emit_update(AgentUpdate::Info(format!(
-                                                    "Approved {stable_name} for this call only — \
-                                                     no rule could be narrowed for it, and a \
-                                                     tool-wide rule would allow calls you were \
-                                                     not asked about."
-                                                )));
+                                                self.report_unrecorded_approval(stable_name);
                                             }
                                             PreparedState::Run
                                         }
-                                        _ => {
+                                        PermissionChoice::Deny => {
                                             let msg = format!(
                                                 "Permission denied by user for {}",
                                                 stable_name
@@ -1432,6 +1474,19 @@ impl Agent {
         self.append_unexecuted_tool_uses(&mut prepared, content, reason);
         build_tool_results(prepared, Vec::new())
     }
+
+    /// Tell the user that an "always allow"-family choice approved only the
+    /// call it was made on, because no rule narrower than the whole tool could
+    /// be built for it.
+    ///
+    /// The gesture promised to be remembered; saying so when it cannot be is
+    /// the difference between a limitation and a bug.
+    fn report_unrecorded_approval(&self, tool_name: &str) {
+        self.emit_update(AgentUpdate::Info(format!(
+            "Approved {tool_name} for this call only — no rule could be narrowed for it, and a \
+             tool-wide rule would allow calls you were not asked about."
+        )));
+    }
 }
 
 #[cfg(test)]
@@ -1527,6 +1582,50 @@ mod tests {
             })
             .next()
             .unwrap_or_else(|| "none".to_string())
+    }
+
+    // ── Permission popup choices ────────────────────────────────────────
+
+    /// The popup's indices are load-bearing — `request_select` answers with a
+    /// position — so the mapping is pinned rather than inferred from the list.
+    #[test]
+    fn permission_popup_indices_map_to_their_choices() {
+        assert_eq!(permission_choice_for(Some(0)), PermissionChoice::AllowOnce);
+        assert_eq!(permission_choice_for(Some(1)), PermissionChoice::Deny);
+        assert_eq!(
+            permission_choice_for(Some(2)),
+            PermissionChoice::AlwaysAllow
+        );
+        assert_eq!(
+            permission_choice_for(Some(3)),
+            PermissionChoice::AllowForSession
+        );
+
+        // A cancelled popup arrives as `None`, and an index past the end can
+        // only come from a UI that disagrees with the list. Both deny.
+        assert_eq!(permission_choice_for(None), PermissionChoice::Deny);
+        assert_eq!(permission_choice_for(Some(99)), PermissionChoice::Deny);
+    }
+
+    /// The list and the mapping must stay in step: every option index maps back
+    /// to the choice the label advertises, and exactly one of them denies.
+    #[test]
+    fn every_permission_option_maps_back_to_its_choice() {
+        let expected = [
+            PermissionChoice::AllowOnce,
+            PermissionChoice::Deny,
+            PermissionChoice::AlwaysAllow,
+            PermissionChoice::AllowForSession,
+        ];
+        assert_eq!(PERMISSION_OPTIONS.len(), expected.len());
+        for (index, choice) in expected.iter().enumerate() {
+            assert_eq!(
+                permission_choice_for(Some(index)),
+                *choice,
+                "option {index} ({}) does not round-trip",
+                PERMISSION_OPTIONS[index]
+            );
+        }
     }
 
     /// The refusal text, when pre-flight refused rather than denied.

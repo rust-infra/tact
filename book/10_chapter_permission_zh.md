@@ -177,13 +177,17 @@ graph TD
 
 （裸名形式 `allow_tool(name)` 仍然存在，仍然授权任意输入，现在它也覆盖 High。全新会话的列表是空的，所以没有真实点击就不会有任何授权。）
 
+**「Allow for this session」是它的内存版。** 走同一个 `PermissionRule::generate`，因此窄度完全一致，区别只在规则只进内存列表、**绝不写入** settings 文件——会话结束即消失。宽度不变这一点是它安全的前提：对一条普通命令的点击不会顺带放行 `sudo`，它缩短的是**时间**范围而不是**匹配**范围。规则窄化不了时它同样什么都不记，并复用「记不住」那句提示。
+
+（弹窗选项的顺序刻意**追加**而非插入：`Deny` 保持索引 1、「Always allow this tool」保持索引 2，因为位置是肌肉记忆。）
+
 **「Always allow」有时会记不住。** 当无法表达比整工具更窄的规则时——字段缺失、不是字符串、或值里含规则文法定界符（`(`、`)`、`:`，模式被嵌在 `tool(field:pattern)` 里）——`PermissionRule::generate` 返回 `None`。旧行为是退回**裸规则**，而任何含冒号的 `bash` 命令（`git commit -m "fix: thing"`）都会走到那条路，于是点一次就授权了此后所有 shell 命令、且跨会话。现在这次点击只批准当前调用，并由 `AllowOutcome::NotNarrowable` 让 `tool_dispatch` 明确告诉用户"这条记不住"——否则一个点了没反应的按钮，用户会以为它已经生效了。
 
-allowlist **仅内存**——不会持久化到 SQLite 或 TOML 跨会话。只有 settings 规则那种形式能跨重启存活。
+allowlist **仅内存**——不会持久化到 SQLite 或 TOML 跨会话；「Allow for this session」走的正是这条路径。只有 settings 规则那种形式能跨重启存活。
 
 ### 连续拒绝
 
-每次用户 **Deny** 使 `consecutive_denials` 加一。Allow once 与 always-allow 将其重置为零。
+每次用户 **Deny** 使 `consecutive_denials` 加一。Allow once、always-allow 与会话档都将其重置为零。
 
 达到 `max_consecutive_denials`（默认 **3**）次拒绝后，`should_suggest_plan_mode()` 返回 true。非交互模式下 `ask_user()` 向 stderr 打印提示：
 
@@ -202,7 +206,7 @@ allowlist **仅内存**——不会持久化到 SQLite 或 TOML 跨会话。只�
 ```rust
 AgentUpdate::RequestSelect {
     prompt,      // 例如 "Allow bash: {\"command\":\"npm test\"}"
-    options,     // ["Allow once", "Deny", "Always allow this tool"]
+    options,     // ["Allow once", "Deny", "Always allow this tool", "Allow for this session"]
     respond,     // 回 agent 的 oneshot channel
 }
 ```
@@ -214,6 +218,7 @@ TUI（`crates/tui/src/widgets/state/app/agent.rs`）切换到 `InputMode::Select
 | Allow once | 0 | 运行工具；在 `StepFinished` 上设置 `permission_label = "Allow once"` |
 | Deny | 1（默认） | `PreparedState::Resolved`；`StepFailed` 附带 deny 消息 |
 | Always allow this tool | 2 | `allow_tool_with_input(name, policy, input)`；运行工具；`permission_label = "Always allow this tool"` |
+| Allow for this session | 3 | `allow_tool_for_session(name, policy, input)`；运行工具；`permission_label = "Allow for this session"` |
 
 `permission_label` 附加到 `StepResult`，并在 TUI 工具 meta 行显示。见 [Tool Rendering](../docs/tool_rendering.md)。
 

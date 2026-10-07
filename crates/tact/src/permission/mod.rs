@@ -512,6 +512,40 @@ impl PermissionManager {
         AllowOutcome::Recorded
     }
 
+    /// Record an approval for **this session only**, without persisting it.
+    ///
+    /// The in-memory twin of [`Self::allow_tool_with_input`]: the same rule
+    /// generation, and therefore the same narrowness, but the rule never
+    /// reaches the settings file.
+    ///
+    /// That narrowness is what makes this option safe to offer on a `bash`
+    /// command. The generated rule is keyed on the command the user was shown,
+    /// so a *different* command — a `sudo`, say — still asks. Recording a bare
+    /// tool name here instead would let one click on an ordinary command
+    /// approve every future shell command for the rest of the session, which is
+    /// exactly the regression that keeps [`Self::allow_tool`] out of the
+    /// high-risk path.
+    ///
+    /// A rule that cannot be narrowed records nothing and returns
+    /// [`AllowOutcome::NotNarrowable`]; the caller must surface that rather
+    /// than pretend the click worked.
+    pub fn allow_tool_for_session(
+        &mut self,
+        tool_name: &str,
+        policy: PermissionPromptPolicy,
+        input: &Value,
+    ) -> AllowOutcome {
+        let Some(rule) = settings::PermissionRule::generate(tool_name, policy, input) else {
+            return AllowOutcome::NotNarrowable;
+        };
+        let rule_string = rule.to_rule_string();
+        if !self.always_allowed_tools.contains(&rule_string) {
+            self.always_allowed_tools.push(rule_string);
+        }
+        self.consecutive_denials = 0;
+        AllowOutcome::Recorded
+    }
+
     fn is_always_allowed(&self, tool_name: &str, input: &Value) -> bool {
         self.always_allowed_tools.iter().any(|allowed| {
             // Bare tool name match (legacy allow_tool).
@@ -915,6 +949,103 @@ mod tests {
             PermissionBehavior::Ask,
             "Different input with same tool must fall through to Ask"
         );
+    }
+
+    /// "Allow for this session" is the in-memory twin of "always allow this
+    /// tool": the same narrow rule, but it must never reach the settings file.
+    #[test]
+    fn session_allow_records_a_narrow_rule_and_never_persists() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(&project_file, r#"{"permissions":{"allow":[]}}"#).unwrap();
+
+        let settings = PermissionSettings::load_from(&project_file, None);
+        let mut mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+
+        let shown = serde_json::json!({"command": "cargo test"});
+        let outcome = mgr.allow_tool_for_session(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &shown,
+        );
+        assert_eq!(outcome, AllowOutcome::Recorded);
+
+        // The call the user was shown is approved...
+        assert!(mgr.is_always_allowed("bash", &shown));
+        // ...but no tool-wide approval was recorded alongside it.
+        assert!(
+            !mgr.is_always_allowed("bash", &Value::Null),
+            "a session approval must not become a tool-wide one"
+        );
+
+        // An unrelated — here, high-risk — command still asks.
+        let decision = mgr.check(
+            "bash",
+            CapabilityRisk::High,
+            &serde_json::json!({"command": "sudo rm -rf /var"}),
+        );
+        assert_eq!(
+            decision.behavior,
+            PermissionBehavior::Ask,
+            "an unrelated command must not ride on the session approval"
+        );
+
+        // And nothing reached the settings file.
+        let content = std::fs::read_to_string(&project_file).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let allow = doc
+            .pointer("/permissions/allow")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert!(
+            allow.is_empty(),
+            "a session-scoped approval must not touch the settings file: {allow:?}"
+        );
+    }
+
+    /// Exact-match narrowness is the whole safety argument for offering the
+    /// session option on `bash`, so pin it: a longer command is a different
+    /// command, and a chained one is a different command twice over.
+    #[test]
+    fn session_allow_does_not_widen_to_a_longer_command() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        mgr.allow_tool_for_session(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "cargo test"}),
+        );
+
+        for other in [
+            "cargo test --lib",
+            "cargo test; rm -rf /tmp/x",
+            "cargo build",
+        ] {
+            assert!(
+                !mgr.is_always_allowed("bash", &serde_json::json!({"command": other})),
+                "{other} must not be covered by a rule for `cargo test`"
+            );
+        }
+    }
+
+    /// When no rule narrower than the whole tool can be built, the session
+    /// choice records nothing — it must not fall back to a bare allow, which is
+    /// how a `bash` command containing a `:` once granted every future command.
+    #[test]
+    fn session_allow_records_nothing_when_the_rule_cannot_be_narrowed() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        let outcome = mgr.allow_tool_for_session(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "git commit -m \"fix: thing\""}),
+        );
+        assert_eq!(outcome, AllowOutcome::NotNarrowable);
+        assert!(
+            !mgr.is_always_allowed("bash", &Value::Null),
+            "a refused rule must not leave a tool-wide approval behind"
+        );
+        assert!(mgr.rules().is_empty());
     }
 
     #[test]
