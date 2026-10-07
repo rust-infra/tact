@@ -1111,6 +1111,37 @@ mod tests {
         assert_eq!(chained.behavior, PermissionBehavior::Ask);
     }
 
+    /// The popup offers one choice for both kinds of prompt, so the dispatch
+    /// has to produce a folder rule for a path and a program rule for a command.
+    #[test]
+    fn prefix_rule_for_dispatches_on_the_prompt_kind() {
+        let folder = PermissionManager::prefix_rule_for(
+            "edit_file",
+            PermissionPromptPolicy::Path { field: "path" },
+            &serde_json::json!({"path": "docs/usage.md"}),
+        )
+        .expect("a nested path should be offerable");
+        assert_eq!(folder.to_rule_string(), "edit_file(path:@docs)");
+
+        let program = PermissionManager::prefix_rule_for(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "cargo test"}),
+        )
+        .expect("a two-word command should be offerable");
+        assert_eq!(program.to_rule_string(), "bash(command:^cargo test)");
+
+        // A question prompt has neither a program nor a folder to name.
+        assert!(
+            PermissionManager::prefix_rule_for(
+                "ask_user",
+                PermissionPromptPolicy::Question { field: "question" },
+                &serde_json::json!({"question": "continue?"}),
+            )
+            .is_none()
+        );
+    }
+
     /// What gates the option's presence is the same decision that produces the
     /// rule the popup previews, so the two cannot drift apart.
     #[test]
