@@ -48,6 +48,25 @@
 
 ---
 
+## 1. 2026-10-07 — 远端 MCP 服务器不再为已缓存 token 重做 OAuth 元数据发现
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization（用户可见：`tact-ui mcp list` 与 TUI 启动的 MCP 阶段快约 40%，远端服务器每次连接省掉 3 次 HTTP 往返） |
+| **Related** | `crates/tact/src/mcp/remote.rs`（`stored_access_token_at`、`resolve_remote_auth`、`transport_config`） |
+
+**现象 / 动机：** 配上一个远端 OAuth 服务器（Canva，45 个工具）后，`tact-ui mcp list` 稳定在 3.5–3.7 s，冷启动（DNS + TLS）约 10 s。日志显示耗时几乎全在远端服务器上（stdio 的 `auto-memory` 只用 8 ms），其中 **1.73 s 是纯 OAuth 元数据发现**：`stored_access_token_at` 为了从磁盘读一个字符串，先建 `AuthorizationManager` 再调 `initialize_from_store()`，而 rmcp 在该调用里发现 `self.metadata.is_none()` 就去做 `discover_metadata()`——探测 MCP 端点拿 `WWW-Authenticate`、取 protected-resource metadata、再取 authorization-server metadata，三次往返。拿到的 token 随后只被塞进 `StreamableHttpClientTransportConfig::auth_header`（静态 bearer），manager 本身立刻丢弃。token 有效期 4 小时，每次连接都付这笔钱没有任何收益。
+
+**决策：** 先调 `manager.get_access_token()`，**再**决定是否需要 `initialize_from_store()`。`get_access_token()` 自身不联网——它只读 credential store，并按 rmcp 自己的规则（剩余 < 30 s 才算将过期）判断；而 `initialize_from_store()` 的职责只是配置*刷新*用的 client，所以未过期的 token 根本不需要它。token 过期时 `get_access_token()` 会因为 client 尚未配置而失败，正好作为"该走慢路径"的信号——过期 token 仍然照旧做发现并刷新，行为不变。这样既不新增依赖，也不复制 rmcp 的过期规则（`oauth2` 不是 `tact` 的直接依赖，`TokenResponse` trait 取不到，无法自己读 `expires_in`）。
+
+**改后行为：** 有可用缓存 token 时，远端服务器连接不再有任何元数据发现往返；`mcp list` 稳态从 ~3.6 s 降到 ~2.1 s。剩下的 ~2 s 是真正的 MCP 握手（`initialize` + `tools/list` 各一次往返，`tools/list` 载荷约 120 KB）。token 过期或缺失时仍走完整发现 + 刷新路径。副作用是收益：以前发现端点临时不可用会让连接失败（即便 token 仍有效），现在这种失败只在真正需要刷新时才会出现。
+
+**Verification:** 新增 `a_fresh_stored_token_is_used_without_touching_the_network`、`a_token_without_expiry_is_used_as_is`（URL 用 `example.invalid`，任何联网都会失败——返回 token 本身就是未联网的证据）、`an_expired_token_still_goes_through_the_oauth_manager`（过期 token 必须仍然报错，证明慢路径未被吞掉）；`undeclared_auth_still_uses_a_stored_credential` 仍绿。实跑 `tact-ui mcp list` 三次 2.04 / 2.13 / 2.23 s，`RUST_LOG=debug` 确认 `using stored OAuth access token` 紧跟在读取凭据之后（0.2 ms），日志中不再出现 `resource metadata discovery`。
+
+**Pointers:** `crates/tact/src/mcp/remote.rs`（`stored_access_token_at`）；rmcp 0.17.0 `src/transport/auth.rs`（`initialize_from_store` / `get_access_token` / `discover_metadata`）。
+
+---
+
 ## 1. 2026-10-07 — 兼容端点省略的必填字段不再中断 Responses 流
 
 | Field | Value |

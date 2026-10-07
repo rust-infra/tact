@@ -338,12 +338,14 @@ pub async fn resolve_remote_auth(
 /// `Ok(None)` means no usable credential exists: the file is absent, or the
 /// token is expired and cannot be refreshed.
 ///
-/// Note: rmcp re-discovers the authorization-server metadata before handing
-/// back a cached token, so a transient outage of the metadata (or protected
-/// resource metadata) endpoint makes the connection fail even though the
-/// stored token itself is still valid. That is rmcp's flow, not a choice made
-/// here; the error surfaces as a connection failure, and re-running once the
-/// endpoint is reachable succeeds.
+/// A token that still has time left is returned without touching the network.
+/// rmcp will not hand back a cached token until the manager has discovered the
+/// authorization metadata, and that discovery costs three round trips (probe
+/// the MCP endpoint for its `WWW-Authenticate`, fetch the protected-resource
+/// metadata, fetch the authorization-server metadata). It exists only to
+/// configure the *refresh* client, so a token that does not need refreshing
+/// should not pay for it — and [`McpRemoteConfig::transport_config`] uses the
+/// token *string* alone, dropping the manager immediately afterwards.
 async fn stored_access_token(server_name: &str, url: &str) -> Result<Option<String>> {
     let Some(path) = oauth_credential_path(server_name) else {
         return Ok(None);
@@ -367,6 +369,17 @@ async fn stored_access_token_at(
         .await
         .with_context(|| format!("failed to start OAuth manager for {server_name}"))?;
     manager.set_credential_store(store);
+
+    // Fast path: rmcp's own expiry rule, evaluated without
+    // `initialize_from_store` — the call that performs the discovery. A token
+    // with time left is returned here; an expired one cannot refresh yet (no
+    // client is configured before `initialize_from_store`) and fails, which is
+    // exactly the signal to fall through and pay for the discovery.
+    if let Ok(token) = manager.get_access_token().await {
+        tracing::debug!(mcp_server = %server_name, "using stored OAuth access token");
+        return Ok(Some(token));
+    }
+
     if !manager
         .initialize_from_store()
         .await
@@ -1225,6 +1238,92 @@ mod tests {
             .await
             .expect("probe")
             .is_none()
+        );
+    }
+
+    /// Writes a credential file in the on-disk shape `FileCredentialStore`
+    /// reads, so the tests exercise the real format rather than a hand-built
+    /// struct (which would need the `oauth2` types as a direct dependency).
+    async fn write_credentials(path: &Path, expires_in: Option<u64>, received_at: Option<u64>) {
+        let mut token = serde_json::json!({
+            "access_token": "stored-token",
+            "token_type": "bearer",
+            "refresh_token": "stored-refresh",
+        });
+        if let Some(expires_in) = expires_in {
+            token["expires_in"] = serde_json::json!(expires_in);
+        }
+        let mut credentials = serde_json::json!({
+            "client_id": "client",
+            "token_response": token,
+            "granted_scopes": [""],
+        });
+        if let Some(received_at) = received_at {
+            credentials["token_received_at"] = serde_json::json!(received_at);
+        }
+        tokio::fs::write(
+            path,
+            serde_json::to_vec_pretty(&credentials).expect("encode"),
+        )
+        .await
+        .expect("write");
+    }
+
+    fn epoch_secs_ago(seconds: u64) -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("clock after 1970")
+            .as_secs()
+            .saturating_sub(seconds)
+    }
+
+    #[tokio::test]
+    async fn a_fresh_stored_token_is_used_without_touching_the_network() {
+        // The point of the fast path: no metadata discovery. The URL is
+        // `.invalid`, so any network attempt (rmcp re-discovers the
+        // authorization metadata before returning a cached token) fails the
+        // call outright — a returned token is proof the network was skipped.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("hosted.json");
+        write_credentials(&path, Some(14_400), Some(epoch_secs_ago(0))).await;
+
+        assert_eq!(
+            stored_access_token_at(&path, "hosted", "https://example.invalid/mcp")
+                .await
+                .expect("a fresh token must not need the network"),
+            Some("stored-token".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn a_token_without_expiry_is_used_as_is() {
+        // Mirrors rmcp: credentials written before `token_received_at` was
+        // tracked are not treated as expired.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("hosted.json");
+        write_credentials(&path, None, None).await;
+
+        assert_eq!(
+            stored_access_token_at(&path, "hosted", "https://example.invalid/mcp")
+                .await
+                .expect("an undated token must not need the network"),
+            Some("stored-token".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn an_expired_token_still_goes_through_the_oauth_manager() {
+        // The fast path must not swallow the refresh: an expired token has to
+        // reach `AuthorizationManager`, which here fails on the `.invalid`
+        // host — the error is the evidence that discovery was attempted.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let path = dir.path().join("hosted.json");
+        write_credentials(&path, Some(60), Some(epoch_secs_ago(3_600))).await;
+
+        let outcome = stored_access_token_at(&path, "hosted", "https://example.invalid/mcp").await;
+        assert!(
+            outcome.is_err(),
+            "an expired token must go through the manager, not be handed back: {outcome:?}"
         );
     }
 
