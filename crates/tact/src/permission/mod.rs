@@ -512,6 +512,67 @@ impl PermissionManager {
         AllowOutcome::Recorded
     }
 
+    /// The program-level rule the popup's "always allow this program" choice
+    /// would record for this call, or `None` when that choice cannot be offered
+    /// at all.
+    ///
+    /// An associated function, not a method: the answer depends on the call and
+    /// not on any state the manager holds. Both the option's presence and the
+    /// rule the popup previews come from this one decision, so they cannot
+    /// disagree — a button that recorded something other than what it showed
+    /// would be worse than no button.
+    ///
+    /// See [`settings::PermissionRule::generate_prefix`] for what "cannot be
+    /// offered" covers: a non-command tool, a compound command, a command whose
+    /// segments cannot be enumerated, an interpreter or destructive program,
+    /// and anything narrower than two words.
+    #[must_use]
+    pub fn prefix_rule_for(
+        tool_name: &str,
+        policy: PermissionPromptPolicy,
+        input: &Value,
+    ) -> Option<settings::PermissionRule> {
+        settings::PermissionRule::generate_prefix(tool_name, policy, input)
+    }
+
+    /// Record the program-level rule for this call, persisting it.
+    ///
+    /// The wide end of the popup: `bash(command:^cargo test)` covers every
+    /// later `cargo test …` in every session. [`Self::prefix_rule_for`] gates
+    /// whether the choice is offered, so a `NotNarrowable` here means the call
+    /// changed between the prompt and the answer — record nothing and say so.
+    pub fn allow_tool_as_prefix(
+        &mut self,
+        tool_name: &str,
+        policy: PermissionPromptPolicy,
+        input: &Value,
+    ) -> AllowOutcome {
+        let Some(rule) = settings::PermissionRule::generate_prefix(tool_name, policy, input) else {
+            return AllowOutcome::NotNarrowable;
+        };
+        let rule_string = rule.to_rule_string();
+
+        if self.settings.is_none() {
+            if !self.always_allowed_tools.contains(&rule_string) {
+                self.always_allowed_tools.push(rule_string);
+            }
+            self.consecutive_denials = 0;
+            return AllowOutcome::Recorded;
+        }
+
+        if let Some(settings) = &mut self.settings
+            && let Err(e) = settings.persist_project_allow(&rule_string)
+        {
+            tracing::warn!(
+                "Failed to persist permission rule '{}': {}. The operation remains approved.",
+                rule_string,
+                e
+            );
+        }
+        self.consecutive_denials = 0;
+        AllowOutcome::Recorded
+    }
+
     /// Record an approval for **this session only**, without persisting it.
     ///
     /// The in-memory twin of [`Self::allow_tool_with_input`]: the same rule
@@ -1002,6 +1063,75 @@ mod tests {
         assert!(
             allow.is_empty(),
             "a session-scoped approval must not touch the settings file: {allow:?}"
+        );
+    }
+
+    /// The wide end of the popup. A persisted program-level rule, and the one
+    /// thing it must still not do: cover a chained command.
+    #[test]
+    fn prefix_allow_persists_and_still_refuses_a_chained_command() {
+        let dir = tempfile::tempdir().unwrap();
+        let project_file = dir.path().join(".tact/settings.json");
+        std::fs::create_dir_all(dir.path().join(".tact")).unwrap();
+        std::fs::write(&project_file, r#"{"permissions":{"allow":[]}}"#).unwrap();
+
+        let settings = PermissionSettings::load_from(&project_file, None);
+        let mut mgr =
+            PermissionManager::try_new_with_settings(PermissionMode::Default, settings).unwrap();
+
+        let outcome = mgr.allow_tool_as_prefix(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "cargo test --lib"}),
+        );
+        assert_eq!(outcome, AllowOutcome::Recorded);
+
+        let content = std::fs::read_to_string(&project_file).unwrap();
+        let doc: serde_json::Value = serde_json::from_str(&content).unwrap();
+        let allow = doc
+            .pointer("/permissions/allow")
+            .and_then(|v| v.as_array())
+            .unwrap();
+        assert_eq!(allow.len(), 1);
+        assert_eq!(allow[0].as_str(), Some("bash(command:^cargo test)"));
+
+        // The plain invocation is covered...
+        let allowed = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "cargo test --all-targets"}),
+        );
+        assert_eq!(allowed.behavior, PermissionBehavior::Allow);
+        // ...and the chained one is not.
+        let chained = mgr.check(
+            "bash",
+            CapabilityRisk::Write,
+            &serde_json::json!({"command": "cargo test; rm -rf /"}),
+        );
+        assert_eq!(chained.behavior, PermissionBehavior::Ask);
+    }
+
+    /// What gates the option's presence is the same decision that produces the
+    /// rule the popup previews, so the two cannot drift apart.
+    #[test]
+    fn prefix_rule_for_gates_and_describes_the_choice() {
+        let rule = PermissionManager::prefix_rule_for(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "cargo test --lib"}),
+        )
+        .expect("a two-word command should be offerable");
+        assert_eq!(rule.to_rule_string(), "bash(command:^cargo test)");
+
+        // A chained command is not offerable at all — so the popup will not
+        // show a button that could only record nothing.
+        assert!(
+            PermissionManager::prefix_rule_for(
+                "bash",
+                PermissionPromptPolicy::Command { field: "command" },
+                &serde_json::json!({"command": "cargo test; rm -rf /"}),
+            )
+            .is_none()
         );
     }
 
