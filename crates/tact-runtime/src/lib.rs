@@ -25,14 +25,24 @@ pub struct RunMachine {
 
 impl RunMachine {
     pub fn new(id: RunId) -> Self {
-        Self { id, state: RunState::Running, model_turns: 0 }
+        Self {
+            id,
+            state: RunState::Running,
+            model_turns: 0,
+        }
     }
 
-    pub fn id(&self) -> RunId { self.id }
+    pub fn id(&self) -> RunId {
+        self.id
+    }
 
-    pub fn state(&self) -> RunState { self.state }
+    pub fn state(&self) -> RunState {
+        self.state
+    }
 
-    pub fn model_turns(&self) -> u32 { self.model_turns }
+    pub fn model_turns(&self) -> u32 {
+        self.model_turns
+    }
 
     pub fn record_model_turn(&mut self) -> bool {
         if self.state != RunState::Running {

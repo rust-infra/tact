@@ -10,7 +10,7 @@ use super::{
     MAX_INPUT_HISTORY, MAX_TOKEN_USAGE_BODIES, MessageCountByPeriod, SessionSummary,
     process_identity::process_identity,
 };
-use super::{PoolRef, open_pool, SessionStore};
+use super::{PoolRef, SessionStore, open_pool};
 
 pub struct SqliteSessionStore {
     pool: PoolRef,

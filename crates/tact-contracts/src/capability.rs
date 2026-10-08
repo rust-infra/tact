@@ -1,8 +1,8 @@
 //! Capability descriptors and invocation values.
 
 use serde_json::Value;
-use strum_macros::Display;
 use std::path::PathBuf;
+use strum_macros::Display;
 
 /// Workspace resources touched by one invocation.
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
@@ -44,17 +44,28 @@ pub struct ToolImage {
 
 impl ToolCallResult {
     pub fn text(content: impl Into<String>) -> Self {
-        Self { content: content.into(), effects: Vec::new(), image: None }
+        Self {
+            content: content.into(),
+            effects: Vec::new(),
+            image: None,
+        }
     }
 
     pub fn text_image(content: impl Into<String>, image: ToolImage) -> Self {
-        Self { content: content.into(), effects: Vec::new(), image: Some(image) }
+        Self {
+            content: content.into(),
+            effects: Vec::new(),
+            image: Some(image),
+        }
     }
 }
 
 impl ToolResources {
     pub fn barrier() -> Self {
-        Self { barrier: true, ..Self::default() }
+        Self {
+            barrier: true,
+            ..Self::default()
+        }
     }
 
     pub fn independent() -> Self {

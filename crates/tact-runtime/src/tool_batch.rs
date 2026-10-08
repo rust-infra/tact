@@ -60,8 +60,14 @@ mod tests {
     #[test]
     fn conflicting_write_is_deferred() {
         let resources = vec![
-            ToolResources { writes: vec![PathBuf::from("a")], ..Default::default() },
-            ToolResources { reads: vec![PathBuf::from("a")], ..Default::default() },
+            ToolResources {
+                writes: vec![PathBuf::from("a")],
+                ..Default::default()
+            },
+            ToolResources {
+                reads: vec![PathBuf::from("a")],
+                ..Default::default()
+            },
         ];
         assert_eq!(schedule_waves(&resources), vec![0, 1]);
     }

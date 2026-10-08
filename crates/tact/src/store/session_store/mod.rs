@@ -5,8 +5,8 @@ use std::path::Path;
 use anyhow::Result;
 
 pub use tact_session::{
-    DynSessionStore, MAX_INPUT_HISTORY, MAX_TOKEN_USAGE_BODIES, MessageCountByPeriod,
-    SessionStore, SessionSummary, SessionLock, SqliteSessionStore,
+    DynSessionStore, MAX_INPUT_HISTORY, MAX_TOKEN_USAGE_BODIES, MessageCountByPeriod, SessionLock,
+    SessionStore, SessionSummary, SqliteSessionStore,
 };
 
 /// Preserve the pre-extraction nested path for downstream users.

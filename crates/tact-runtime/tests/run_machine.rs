@@ -1,4 +1,4 @@
-use tact_contracts::{run::{RunId, RunOutcome},};
+use tact_contracts::run::{RunId, RunOutcome};
 use tact_runtime::{RunMachine, RunState};
 
 #[test]
@@ -8,7 +8,10 @@ fn run_machine_completes_once_and_reports_progress() {
     machine.record_model_turn();
     assert_eq!(machine.model_turns(), 1);
     assert_eq!(machine.complete(), Ok(RunOutcome::Completed));
-    assert_eq!(machine.complete(), Err(tact_runtime::RunError::AlreadyTerminal));
+    assert_eq!(
+        machine.complete(),
+        Err(tact_runtime::RunError::AlreadyTerminal)
+    );
 }
 
 #[test]

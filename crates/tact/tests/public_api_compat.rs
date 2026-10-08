@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use serde_json::{Value, json};
 use tact::{
     Agent, AgentRuntime, AgentSystemPrompt, LoopState,
-    hook::{self, HookControl, HookContextChunk, SessionStartContext, ToolUse},
+    hook::{self, HookContextChunk, HookControl, SessionStartContext, ToolUse},
     mcp::MCPToolRouter,
     permission::{PermissionManager, PermissionMode},
     tool::{Tool, ToolCallResult, ToolContext, ToolMetadata, ToolRouter},
