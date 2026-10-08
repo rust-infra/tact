@@ -1884,6 +1884,16 @@ impl Agent {
             .collect()
     }
 
+    /// Returns the protocol-neutral declarations for native and connected MCP
+    /// tools. The legacy LLM-facing specs remain available separately while
+    /// hosts migrate discovery to the Plugin Protocol.
+    pub fn capability_declarations(&self) -> Vec<tact_protocol::CapabilityDeclaration> {
+        let mut declarations = self.tools.capability_declarations();
+        declarations.extend(self.mcp_router.capability_declarations());
+        declarations.sort_by(|left, right| left.name.cmp(&right.name));
+        declarations
+    }
+
     // TODO(compact): summarization input is a crude tail-truncation to 80k
     // chars of raw JSON; consider a smarter selection (e.g. drop tool-result
     // bodies first, keep user/assistant text).
