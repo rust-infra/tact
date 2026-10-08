@@ -7,12 +7,104 @@ use serde::{Serialize, de::DeserializeOwned};
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader, Lines};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
-use tact_protocol::{PluginRequestEnvelope, PluginResponseEnvelope};
+use tact_protocol::{
+    CapabilityDeclaration, PluginId, PluginRequest, PluginRequestEnvelope, PluginResponse,
+    PluginResponseEnvelope, ProtocolVersion, RequestId,
+};
 
 pub struct NodePluginProcess {
     child: Child,
     stdin: ChildStdin,
     stdout: Lines<BufReader<ChildStdout>>,
+}
+
+pub struct NodePluginHost {
+    pub plugin_id: PluginId,
+    pub protocol: ProtocolVersion,
+    pub capabilities: Vec<CapabilityDeclaration>,
+    process: NodePluginProcess,
+}
+
+impl NodePluginHost {
+    pub async fn start(
+        program: impl AsRef<std::path::Path>,
+        args: &[String],
+        plugin_id: PluginId,
+        protocol: ProtocolVersion,
+    ) -> Result<Self> {
+        let mut process = NodePluginProcess::spawn(program, args).await?;
+        let request_id = RequestId::from(format!("handshake-{}", plugin_id.as_str()));
+        let handshake = PluginRequestEnvelope {
+            protocol_version: protocol,
+            request_id: request_id.clone(),
+            plugin_id: plugin_id.clone(),
+            session_id: None,
+            run_id: None,
+            trajectory_id: None,
+            deadline: None,
+            request: PluginRequest::Handshake {
+                protocol_version: protocol,
+                features: vec![
+                    "capability_registration".into(),
+                    "events".into(),
+                    "cancel".into(),
+                ],
+            },
+        };
+        let response = process.request(&handshake).await?;
+        match response.response {
+            PluginResponse::HandshakeAccepted {
+                protocol_version, ..
+            } if protocol_version.compatible_with(protocol) => {}
+            PluginResponse::HandshakeAccepted { .. } => {
+                bail!("Node plugin protocol version is incompatible")
+            }
+            PluginResponse::Error { error } => bail!("Node plugin handshake failed: {error}"),
+            other => bail!("unexpected Node plugin handshake response: {other:?}"),
+        }
+        let registration = PluginRequestEnvelope {
+            protocol_version: protocol,
+            request_id: RequestId::from(format!("register-{}", plugin_id.as_str())),
+            plugin_id: plugin_id.clone(),
+            session_id: None,
+            run_id: None,
+            trajectory_id: None,
+            deadline: None,
+            request: PluginRequest::Register {
+                capabilities: Vec::new(),
+            },
+        };
+        let response = process.request(&registration).await?;
+        let capabilities = match response.response {
+            PluginResponse::Registered { capabilities } => capabilities,
+            PluginResponse::Error { error } => bail!("Node plugin registration failed: {error}"),
+            other => bail!("unexpected Node plugin registration response: {other:?}"),
+        };
+        Ok(Self {
+            plugin_id,
+            protocol,
+            capabilities,
+            process,
+        })
+    }
+
+    pub async fn request(&mut self, request: PluginRequest) -> Result<PluginResponse> {
+        let envelope = PluginRequestEnvelope {
+            protocol_version: self.protocol,
+            request_id: RequestId::from(uuid::Uuid::new_v4().to_string()),
+            plugin_id: self.plugin_id.clone(),
+            session_id: None,
+            run_id: None,
+            trajectory_id: None,
+            deadline: None,
+            request,
+        };
+        Ok(self.process.request(&envelope).await?.response)
+    }
+
+    pub async fn shutdown(&mut self) -> Result<()> {
+        self.process.shutdown().await
+    }
 }
 
 impl NodePluginProcess {
