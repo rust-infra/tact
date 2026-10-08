@@ -10,6 +10,7 @@ tact_llm = { path = "../tact_llm" }
 tact-contracts = { path = "../tact-contracts" }
 tact-runtime = { path = "../tact-runtime" }
 tact-session = { path = "../tact-session", features = ["test-support"] }
+tact-permission = { path = "../tact-permission" }
 tool_refactor_macros = { path = "../tool_refactor_macros" }
 anyhow = { workspace = true }
 async-openai = { workspace = true }

@@ -12,113 +12,15 @@
 
 pub mod settings;
 
-use std::fmt;
-
 use anyhow::Result;
 use serde_json::Value;
-use strum_macros::{Display, EnumString};
+use strum_macros::Display;
 
 use crate::tool::PermissionPromptPolicy;
 
 pub use tact_contracts::capability::CapabilityRisk;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
-#[strum(serialize_all = "snake_case")]
-pub enum PermissionMode {
-    Default,
-    Plan,
-    Auto,
-}
-
-impl PermissionMode {
-    /// The mode's name in the Claude Code / plugin-hook vocabulary.
-    ///
-    /// Hook payloads carry this spelling, not Tact's (`Codex`'s
-    /// `hook_permission_mode` maps its approval policy onto the same set), so a
-    /// plugin that branches on `payload["permission_mode"]` reads a value it
-    /// recognizes. `Auto` allows everything but high-risk operations, which is
-    /// Claude's `acceptEdits` rather than its blanket `bypassPermissions`.
-    #[must_use]
-    pub fn hook_name(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::Plan => "plan",
-            Self::Auto => "acceptEdits",
-        }
-    }
-}
-
-impl fmt::Display for PermissionMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            PermissionMode::Default => "default - ask for writes",
-            PermissionMode::Plan => "plan - read only",
-            PermissionMode::Auto => "auto - allow non-high operations",
-        };
-
-        write!(f, "{label}")
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PermissionBehavior {
-    Allow,
-    Deny,
-    Ask,
-}
-
-/// What an "always allow this tool" gesture managed to record.
-///
-/// [`AllowOutcome::NotNarrowable`] exists so the UI can tell the user the
-/// approval will not stick. Silently doing nothing there was the previous
-/// behaviour of a *different* code path (the bare-rule fallback), which is how
-/// a `bash` command containing a `:` came to grant every future command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum AllowOutcome {
-    /// A rule was recorded — persisted to settings, or held in memory for this
-    /// session when no settings store exists.
-    Recorded,
-    /// No rule narrower than the whole tool could be expressed for this call,
-    /// so nothing was recorded. The call itself is still approved once; the
-    /// next identical call asks again.
-    NotNarrowable,
-}
-
-impl AllowOutcome {
-    #[must_use]
-    pub fn is_recorded(self) -> bool {
-        matches!(self, Self::Recorded)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PermissionDecision {
-    pub behavior: PermissionBehavior,
-    pub reason: String,
-}
-
-impl PermissionDecision {
-    fn allow(reason: impl Into<String>) -> Self {
-        Self {
-            behavior: PermissionBehavior::Allow,
-            reason: reason.into(),
-        }
-    }
-
-    fn ask(reason: impl Into<String>) -> Self {
-        Self {
-            behavior: PermissionBehavior::Ask,
-            reason: reason.into(),
-        }
-    }
-
-    fn deny(reason: impl Into<String>) -> Self {
-        Self {
-            behavior: PermissionBehavior::Deny,
-            reason: reason.into(),
-        }
-    }
-}
+pub use tact_permission::{AllowOutcome, PermissionBehavior, PermissionDecision, PermissionMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 #[allow(dead_code)]

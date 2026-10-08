@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/tact-contracts",
+    "crates/tact-permission",
     "crates/tact-session",
     "crates/tact-runtime",
     "crates/protocol",

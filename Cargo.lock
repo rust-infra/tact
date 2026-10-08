@@ -4794,6 +4794,7 @@ dependencies = [
  "strum 0.27.2",
  "strum_macros 0.27.2",
  "tact-contracts",
+ "tact-permission",
  "tact-runtime",
  "tact-session",
  "tact_llm",
@@ -4819,6 +4820,15 @@ dependencies = [
  "serde_json",
  "strum 0.27.2",
  "strum_macros 0.27.2",
+]
+
+[[package]]
+name = "tact-permission"
+version = "1.1.33"
+dependencies = [
+ "strum 0.27.2",
+ "strum_macros 0.27.2",
+ "tact-contracts",
 ]
 
 [[package]]
