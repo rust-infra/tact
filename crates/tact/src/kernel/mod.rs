@@ -26,7 +26,7 @@ pub use error::KernelError;
 pub use event::{EventObserver, EventSubscription, EventTransport, RuntimeEventSink};
 pub use permission::{PermissionManagerService, PermissionResponder};
 pub use storage::{StorageNamespace, StorageServiceImpl};
-pub use trajectory::KernelTrajectoryRecorder;
+pub use trajectory::{KernelTrajectoryRecorder, SqliteTrajectoryService};
 
 #[cfg(test)]
 mod tests;
