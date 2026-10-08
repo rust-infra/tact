@@ -133,6 +133,11 @@ impl KernelError {
             false,
         )
     }
+
+    #[must_use]
+    pub fn storage(message: impl Into<String>) -> Self {
+        Self::new(ErrorCategory::StorageError, message, "storage", true)
+    }
 }
 
 impl From<ProtocolError> for KernelError {

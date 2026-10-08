@@ -25,7 +25,7 @@ pub use context::{
 pub use error::KernelError;
 pub use event::{EventObserver, EventSubscription, EventTransport, RuntimeEventSink};
 pub use permission::{PermissionManagerService, PermissionResponder};
-pub use storage::{StorageNamespace, StorageServiceImpl};
+pub use storage::{SqliteStorageService, StorageNamespace, StorageServiceImpl};
 pub use trajectory::{KernelTrajectoryRecorder, SqliteTrajectoryService};
 
 #[cfg(test)]
