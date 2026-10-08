@@ -8,7 +8,23 @@
 
 pub mod agent;
 pub mod biz;
+pub mod capability;
+pub mod envelope;
+pub mod error;
+pub mod ids;
+pub mod interaction;
+pub mod runtime;
 pub mod tool_output;
+
+pub use capability::{CapabilityDeclaration, CapabilityKind, CapabilityRisk};
+pub use envelope::{
+    PluginRequestEnvelope, PluginResponseEnvelope, ProtocolVersion, RequestEnvelope,
+    ResponseEnvelope,
+};
+pub use error::{ErrorCategory, ProtocolError};
+pub use ids::{PluginId, RequestId, RunId, SessionId, StepId, TrajectoryId};
+pub use interaction::{InteractionRequest, InteractionResponse};
+pub use runtime::{PluginRequest, PluginResponse, RuntimeCommand, RuntimeEvent};
 
 pub use agent::{
     AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus,

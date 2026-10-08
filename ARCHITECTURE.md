@@ -676,9 +676,42 @@ If you are reading older branches or notes, the following major evolutions have 
 - **Dynamic context** — Project structure snapshot with pruned walk, default 80 items, session-cached for KV stability.
 - **Bottom bar Cost timer** — retains last prompt duration until the next submission.
 
+## 15. Runtime Kernel and Plugin Boundary
+
+The runtime migration introduces a protocol-neutral Kernel boundary. The Kernel owns lifecycle, capability routing, permission checks, event transport, trajectory recording, cancellation, errors, and namespaced storage. Agent, Session, Chat, Tools, and Workflow use these services as extensions; TUI and future Web/Desktop clients consume Runtime events through View and Interaction adapters.
+
+```mermaid
+flowchart TB
+    K["Runtime Kernel<br/>Lifecycle / Capability Router / Permission<br/>Events / Trajectory / Storage / Cancellation"]
+    P["Plugin Protocol<br/>versioned envelopes + neutral events"]
+    RH["Rust Plugin Host"]
+    NH["Node.js Plugin Host"]
+    WH["WASM Plugin Host"]
+    E["Extension Capability API<br/>Agent / Session / Chat / Tools / Commands"]
+    V["Views / Interaction API"]
+    TUI["TUI"]
+    WEB["Web"]
+    DESK["Desktop"]
+    EXT["External Client"]
+    K --> P
+    P --> RH
+    P --> NH
+    P --> WH
+    RH --> E
+    NH --> E
+    WH --> E
+    E --> V
+    V --> TUI
+    V --> WEB
+    V --> DESK
+    V --> EXT
+```
+
+`crates/tact/src/kernel/` contains the initial service boundaries. `crates/tact/src/trajectory/` contains the execution fact model and ordered recorder. `crates/protocol/` contains language-neutral IDs, envelopes, capabilities, runtime events, commands, interactions, and errors. Existing AgentUpdate/UserCommand and TUI wiring remain compatibility paths until the later adapter migration removes them.
+
 ---
 
-## 15. Related Documents
+## 16. Related Documents
 
 | Document | Focus |
 |---|---|
