@@ -288,6 +288,12 @@ pub async fn bootstrap_session(
     )
     .with_session(session_id, session_store)
     .with_provider_kind(provider_kind);
+    let plugin_registry =
+        tact::plugin::PluginRegistry::new(tact_protocol::ProtocolVersion::CURRENT);
+    for manifest in tact::extensions::official_manifests(&agent) {
+        plugin_registry.register(manifest)?;
+    }
+    agent = agent.with_plugin_registry(plugin_registry);
     if let Some(wiring) = ui {
         agent = agent
             .with_ui_channel(wiring.tx)
@@ -330,12 +336,6 @@ mod tests {
             matches!(&update, AgentUpdate::Info(message) if message == "server demo did not answer"),
             "{update:?}"
         );
-        let plugin_registry =
-            tact::plugin::PluginRegistry::new(tact_protocol::ProtocolVersion::CURRENT);
-        for manifest in tact::extensions::official_manifests(&agent) {
-            plugin_registry.register(manifest)?;
-        }
-        agent = agent.with_plugin_registry(plugin_registry);
     }
 
     /// The permission mode is the one notice the two frontends do not share.
