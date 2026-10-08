@@ -3,6 +3,7 @@
 use std::collections::BTreeMap;
 use std::sync::{Arc, RwLock};
 
+use async_trait::async_trait;
 use tact_protocol::{CapabilityDeclaration, PluginId, ProtocolVersion};
 
 use crate::kernel::KernelError;
@@ -14,6 +15,20 @@ pub enum PluginState {
     Stopping,
     Stopped,
     Failed,
+}
+
+/// Common lifecycle boundary implemented by external and in-process hosts.
+#[async_trait]
+pub trait PluginHost: Send {
+    fn plugin_id(&self) -> &PluginId;
+    fn protocol(&self) -> ProtocolVersion;
+    fn capabilities(&self) -> &[CapabilityDeclaration];
+    fn state(&self) -> PluginState;
+    async fn request(
+        &mut self,
+        request: tact_protocol::PluginRequest,
+    ) -> anyhow::Result<tact_protocol::PluginResponse>;
+    async fn shutdown(&mut self) -> anyhow::Result<()>;
 }
 
 #[derive(Debug, Clone)]

@@ -12,6 +12,8 @@ use tact_protocol::{
     PluginResponseEnvelope, ProtocolVersion, RequestId,
 };
 
+use super::{PluginHost, PluginState};
+
 pub struct NodePluginProcess {
     child: Child,
     stdin: ChildStdin,
@@ -23,6 +25,7 @@ pub struct NodePluginHost {
     pub protocol: ProtocolVersion,
     pub capabilities: Vec<CapabilityDeclaration>,
     process: NodePluginProcess,
+    state: PluginState,
 }
 
 impl NodePluginHost {
@@ -80,11 +83,17 @@ impl NodePluginHost {
             PluginResponse::Error { error } => bail!("Node plugin registration failed: {error}"),
             other => bail!("unexpected Node plugin registration response: {other:?}"),
         };
+        for capability in &capabilities {
+            capability
+                .validate()
+                .map_err(|error| anyhow::anyhow!("invalid Node plugin capability: {error}"))?;
+        }
         Ok(Self {
             plugin_id,
             protocol,
             capabilities,
             process,
+            state: PluginState::Running,
         })
     }
 
@@ -103,7 +112,41 @@ impl NodePluginHost {
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
-        self.process.shutdown().await
+        self.state = PluginState::Stopping;
+        let result = self.process.shutdown().await;
+        self.state = if result.is_ok() {
+            PluginState::Stopped
+        } else {
+            PluginState::Failed
+        };
+        result
+    }
+}
+
+#[async_trait::async_trait]
+impl PluginHost for NodePluginHost {
+    fn plugin_id(&self) -> &PluginId {
+        &self.plugin_id
+    }
+
+    fn protocol(&self) -> ProtocolVersion {
+        self.protocol
+    }
+
+    fn capabilities(&self) -> &[CapabilityDeclaration] {
+        &self.capabilities
+    }
+
+    fn state(&self) -> PluginState {
+        self.state
+    }
+
+    async fn request(&mut self, request: PluginRequest) -> Result<PluginResponse> {
+        NodePluginHost::request(self, request).await
+    }
+
+    async fn shutdown(&mut self) -> Result<()> {
+        NodePluginHost::shutdown(self).await
     }
 }
 

@@ -11,12 +11,14 @@ use tact_protocol::{
 };
 
 use super::node::NodePluginProcess;
+use super::{PluginHost, PluginState};
 
 pub struct WasmPluginHost {
     pub plugin_id: PluginId,
     pub protocol: ProtocolVersion,
     pub capabilities: Vec<CapabilityDeclaration>,
     process: NodePluginProcess,
+    state: PluginState,
 }
 
 impl WasmPluginHost {
@@ -75,11 +77,17 @@ impl WasmPluginHost {
             PluginResponse::Error { error } => bail!("WASM plugin registration failed: {error}"),
             _ => bail!("WASM plugin returned an invalid registration response"),
         };
+        for capability in &capabilities {
+            capability
+                .validate()
+                .map_err(|error| anyhow::anyhow!("invalid WASM plugin capability: {error}"))?;
+        }
         Ok(Self {
             plugin_id,
             protocol,
             capabilities,
             process,
+            state: PluginState::Running,
         })
     }
 
@@ -101,6 +109,40 @@ impl WasmPluginHost {
     }
 
     pub async fn shutdown(&mut self) -> Result<()> {
-        self.process.shutdown().await
+        self.state = PluginState::Stopping;
+        let result = self.process.shutdown().await;
+        self.state = if result.is_ok() {
+            PluginState::Stopped
+        } else {
+            PluginState::Failed
+        };
+        result
+    }
+}
+
+#[async_trait::async_trait]
+impl PluginHost for WasmPluginHost {
+    fn plugin_id(&self) -> &PluginId {
+        &self.plugin_id
+    }
+
+    fn protocol(&self) -> ProtocolVersion {
+        self.protocol
+    }
+
+    fn capabilities(&self) -> &[CapabilityDeclaration] {
+        &self.capabilities
+    }
+
+    fn state(&self) -> PluginState {
+        self.state
+    }
+
+    async fn request(&mut self, request: PluginRequest) -> Result<PluginResponse> {
+        WasmPluginHost::request(self, request).await
+    }
+
+    async fn shutdown(&mut self) -> Result<()> {
+        WasmPluginHost::shutdown(self).await
     }
 }

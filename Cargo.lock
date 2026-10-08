@@ -4858,6 +4858,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "tact_plugin_node"
+version = "1.1.33"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde_json",
+ "tact",
+ "tact_protocol",
+ "tempfile",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
 name = "tact_protocol"
 version = "0.1.0"
 dependencies = [
