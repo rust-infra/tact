@@ -24,6 +24,7 @@ pub mod background;
 pub mod compact;
 pub mod config;
 pub mod consts;
+pub mod extensions;
 pub mod hook;
 pub mod kernel;
 pub mod mcp;
