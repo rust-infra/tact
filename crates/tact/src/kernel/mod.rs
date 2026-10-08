@@ -23,7 +23,7 @@ pub use context::{
     StorageService, TrajectoryService,
 };
 pub use error::KernelError;
-pub use event::{EventObserver, EventSubscription, EventTransport};
+pub use event::{EventObserver, EventSubscription, EventTransport, RuntimeEventSink};
 pub use permission::{PermissionManagerService, PermissionResponder};
 pub use storage::{StorageNamespace, StorageServiceImpl};
 pub use trajectory::KernelTrajectoryRecorder;

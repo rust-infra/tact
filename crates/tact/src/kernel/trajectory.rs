@@ -72,6 +72,10 @@ impl TrajectoryService for KernelTrajectoryRecorder {
             }
             RuntimeEvent::InteractionRequested { .. }
             | RuntimeEvent::InteractionResponded { .. } => TrajectoryEventType::Interaction,
+            RuntimeEvent::Text { .. } | RuntimeEvent::Notification { .. } => {
+                TrajectoryEventType::Message
+            }
+            RuntimeEvent::Error { .. } => TrajectoryEventType::Error,
             RuntimeEvent::PluginStarted { .. }
             | RuntimeEvent::PluginStopped { .. }
             | RuntimeEvent::Plugin { .. } => TrajectoryEventType::PluginLifecycle,

@@ -338,6 +338,8 @@ pub struct AgentRuntime {
     pub security: crate::security::sensitive::Scanner,
     pub stats: Arc<RwLock<SessionStats>>,
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    /// Protocol-neutral event sink used by non-TUI clients during migration.
+    pub runtime_event_sink: Option<Arc<dyn crate::kernel::RuntimeEventSink>>,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub session_store: Option<DynSessionStore>,
     /// Set together with [`Self::session_store`] via [`Agent::with_session`] at startup.
@@ -499,6 +501,7 @@ impl Agent {
                 security,
                 stats: Arc::new(RwLock::new(SessionStats::default())),
                 ui_tx: None,
+                runtime_event_sink: None,
                 cancel_flag,
                 session_store: None,
                 session_id: None,
@@ -806,6 +809,16 @@ impl Agent {
         self
     }
 
+    /// Attach a protocol-neutral Runtime event sink. Existing TUI updates are
+    /// still emitted until the View adapter migration is complete.
+    pub fn with_runtime_event_sink(
+        mut self,
+        sink: Arc<dyn crate::kernel::RuntimeEventSink>,
+    ) -> Self {
+        self.runtime.runtime_event_sink = Some(sink);
+        self
+    }
+
     /// Attach a session store with a fully initialized session id.
     ///
     /// Callers must create/resolve the id and persist the session row before
@@ -837,6 +850,44 @@ impl Agent {
             _ => {}
         }
 
+        if let Some(sink) = &self.runtime.runtime_event_sink {
+            let event = match &update {
+                AgentUpdate::StreamChunk(content) => Some(tact_protocol::RuntimeEvent::Text {
+                    run_id: None,
+                    role: "assistant".into(),
+                    content: content.clone(),
+                }),
+                AgentUpdate::Info(content) | AgentUpdate::MdInfo(content) => {
+                    Some(tact_protocol::RuntimeEvent::Notification {
+                        level: "info".into(),
+                        content: content.clone(),
+                    })
+                }
+                AgentUpdate::HookContext { text, .. } => {
+                    Some(tact_protocol::RuntimeEvent::Notification {
+                        level: "hook_context".into(),
+                        content: text.clone(),
+                    })
+                }
+                AgentUpdate::Error(error) => Some(tact_protocol::RuntimeEvent::Error {
+                    run_id: None,
+                    message: error.to_string(),
+                }),
+                AgentUpdate::TaskComplete(content) => {
+                    Some(tact_protocol::RuntimeEvent::Notification {
+                        level: "complete".into(),
+                        content: content.clone(),
+                    })
+                }
+                AgentUpdate::TaskCancelled => Some(tact_protocol::RuntimeEvent::Cancelled {
+                    run_id: tact_protocol::RunId::from("runtime"),
+                }),
+                _ => None,
+            };
+            if let Some(event) = event {
+                let _ = sink.emit(event);
+            }
+        }
         if let Some(tx) = &self.runtime.ui_tx {
             let _ = tx.send(update);
         }

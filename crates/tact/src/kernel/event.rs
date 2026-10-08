@@ -17,6 +17,10 @@ pub trait EventObserver: Send + Sync {
     async fn observe(&self, event: &RuntimeEvent) -> Result<(), KernelError>;
 }
 
+pub trait RuntimeEventSink: Send + Sync {
+    fn emit(&self, event: RuntimeEvent) -> Result<(), KernelError>;
+}
+
 pub struct EventSubscription {
     receiver: broadcast::Receiver<RuntimeEvent>,
 }
@@ -64,6 +68,19 @@ impl EventService for EventTransport {
         for observer in self.observers.iter() {
             observer.observe(&event).await?;
         }
+        self.sender.send(event).map(|_| ()).map_err(|error| {
+            KernelError::new(
+                tact_protocol::ErrorCategory::InternalError,
+                error.to_string(),
+                "event_transport",
+                true,
+            )
+        })
+    }
+}
+
+impl RuntimeEventSink for EventTransport {
+    fn emit(&self, event: RuntimeEvent) -> Result<(), KernelError> {
         self.sender.send(event).map(|_| ()).map_err(|error| {
             KernelError::new(
                 tact_protocol::ErrorCategory::InternalError,

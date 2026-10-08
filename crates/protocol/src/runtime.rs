@@ -106,6 +106,19 @@ pub enum RuntimeEvent {
     TimedOut {
         run_id: RunId,
     },
+    Text {
+        run_id: Option<RunId>,
+        role: String,
+        content: String,
+    },
+    Notification {
+        level: String,
+        content: String,
+    },
+    Error {
+        run_id: Option<RunId>,
+        message: String,
+    },
     Plugin {
         plugin_id: PluginId,
         origin: String,

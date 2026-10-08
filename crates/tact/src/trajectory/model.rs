@@ -24,6 +24,7 @@ pub enum TrajectoryEventType {
     Permission,
     PluginLifecycle,
     Interaction,
+    Message,
     Error,
     Retry,
     Cancellation,
