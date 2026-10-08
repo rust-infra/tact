@@ -58,6 +58,7 @@ async fn run_interactive_locked(
     let (plugin_tx, plugin_request_rx) = tokio::sync::mpsc::unbounded_channel();
     let (plugin_event_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel();
     let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+    let runtime_events = tact::kernel::EventTransport::new(256);
     // One broker is shared by the agent (registration/waiter) and the TUI
     // (snapshot/reconcile). This remains an in-process transport: no protocol
     // enum or channel type is embedded in `tact_protocol`.
@@ -96,6 +97,7 @@ async fn run_interactive_locked(
     let model_thinking_budget = tact::config::settings().agent.thinking_budget;
     let account_enabled = account::is_supported();
     let tui_ui_responder = ui_responder.clone();
+    let tui_runtime_events = runtime_events.clone();
     let mut tui_handle = tokio::spawn(Box::pin(async move {
         let account_rx = if account_enabled {
             Some(account_rx)
@@ -104,6 +106,7 @@ async fn run_interactive_locked(
         };
         tui::run_tui(tui::TuiConfig {
             agent_rx,
+            runtime_events: tui_runtime_events,
             account_rx,
             plugin_rx,
             plugin_tx,
@@ -198,6 +201,7 @@ async fn run_interactive_locked(
         agent_session_store,
         work_dir,
         ui_responder,
+        runtime_events,
     ));
     let driver = tokio::select! {
         // `biased`, so a build that is *already* finished is always used: the
@@ -270,6 +274,7 @@ async fn build_agent_for_interactive(
     session_store: DynSessionStore,
     work_dir: std::path::PathBuf,
     ui_responder: tact::ui_responder::UiResponder,
+    runtime_events: tact::kernel::EventTransport,
 ) -> anyhow::Result<Agent> {
     // One clone for the notices: the wiring below takes the original channel.
     let notices = Notices::Ui(agent_tx.clone());
@@ -282,7 +287,7 @@ async fn build_agent_for_interactive(
         Some(UiWiring {
             tx: agent_tx,
             responder: ui_responder,
-            runtime_events: tact::kernel::EventTransport::new(256),
+            runtime_events,
         }),
         notices,
     )

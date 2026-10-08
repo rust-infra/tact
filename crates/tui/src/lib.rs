@@ -154,6 +154,7 @@ pub(crate) fn on_poll_timeout(app: &mut App) {
 /// Configuration for launching the TUI.
 pub struct TuiConfig {
     pub agent_rx: UnboundedReceiver<AgentUpdate>,
+    pub runtime_events: tact::kernel::EventTransport,
     pub account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     pub plugin_rx: UnboundedReceiver<PluginEvent>,
     pub plugin_tx: UnboundedSender<PluginRequest>,
@@ -200,6 +201,7 @@ pub struct TuiConfig {
 pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     let TuiConfig {
         agent_rx,
+        runtime_events,
         account_rx,
         plugin_rx,
         plugin_tx,
@@ -259,6 +261,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_description,
         skills_data,
     );
+    let mut runtime_subscription = runtime_events.subscribe();
 
     app.set_configured_language(&language);
     app.set_ui_config_path(ui_config_path);
@@ -320,6 +323,30 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         // actual message array, causing mouse clicks to map to wrong lines.
         while let Ok(update) = app.agent_rx.try_recv() {
             app.handle_agent_update(update);
+        }
+        while let Ok(event) = runtime_subscription.try_recv() {
+            match event {
+                tact_protocol::RuntimeEvent::PluginStarted { plugin_id } => {
+                    app.handle_agent_update(AgentUpdate::Info(format!(
+                        "Plugin started: {plugin_id}"
+                    )));
+                }
+                tact_protocol::RuntimeEvent::PluginStopped { plugin_id } => {
+                    app.handle_agent_update(AgentUpdate::Info(format!(
+                        "Plugin stopped: {plugin_id}"
+                    )));
+                }
+                tact_protocol::RuntimeEvent::Plugin {
+                    plugin_id,
+                    event_type,
+                    ..
+                } => {
+                    app.handle_agent_update(AgentUpdate::Info(format!(
+                        "Plugin event {plugin_id}: {event_type}"
+                    )));
+                }
+                _ => {}
+            }
         }
         // Codex-style: messages queued while the agent was busy are submitted
         // automatically once the current task reaches Idle/Done.

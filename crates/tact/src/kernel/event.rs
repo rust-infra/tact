@@ -60,6 +60,10 @@ impl EventSubscription {
     pub async fn recv(&mut self) -> Result<RuntimeEvent, broadcast::error::RecvError> {
         self.receiver.recv().await
     }
+
+    pub fn try_recv(&mut self) -> Result<RuntimeEvent, broadcast::error::TryRecvError> {
+        self.receiver.try_recv()
+    }
 }
 
 #[async_trait]
