@@ -96,6 +96,7 @@ mod tests {
         use crate::widgets::state::InputMode;
         let mut app = make_app();
         app.thinking_mut().popup = Some(ThinkingPopup {
+            block_id: "test-thinking".into(),
             phys_idx: 0,
             title: "t".into(),
             scroll: 0,
@@ -135,6 +136,7 @@ mod tests {
     fn j_scrolls_thinking_popup() {
         let mut app = make_app();
         app.thinking_mut().popup = Some(ThinkingPopup {
+            block_id: "test-thinking".into(),
             phys_idx: 0,
             title: "t".into(),
             scroll: 0,
@@ -149,7 +151,7 @@ mod tests {
     fn g_jumps_code_popup_to_top() {
         let mut app = make_app();
         app.code_popup = Some(CodePopup {
-            block_idx: 0,
+            block_id: "test-code".into(),
             lang: "rs".into(),
             scroll: 10,
         });
@@ -173,16 +175,17 @@ mod mermaid_view_tests {
     #[test]
     fn tab_toggles_mermaid_popup_between_diagram_and_source() {
         let mut app = make_app();
-        app.open_mermaid_popup(0); // no blocks registered → no popup
+        app.open_mermaid_popup_at_physical_index(0); // no blocks registered → no popup
         assert!(app.mermaid_popup.is_none());
 
         app.mermaid_blocks
             .push(crate::widgets::state::MermaidBlock {
+                block_id: "test-mermaid".into(),
                 start_idx: 0,
                 end_idx: 1,
                 source: "sequenceDiagram\n  Alice->>Bob: Hello".into(),
             });
-        app.open_mermaid_popup(0);
+        app.open_mermaid_popup_at_physical_index(0);
         assert_eq!(
             app.mermaid_popup.as_ref().unwrap().view,
             MermaidPopupView::Diagram
@@ -205,6 +208,7 @@ mod mermaid_view_tests {
     fn tab_is_ignored_when_no_mermaid_popup_is_open() {
         let mut app = make_app();
         app.thinking_mut().popup = Some(crate::widgets::state::ThinkingPopup {
+            block_id: "test-thinking".into(),
             phys_idx: 0,
             title: "t".into(),
             scroll: 3,

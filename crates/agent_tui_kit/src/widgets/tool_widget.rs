@@ -499,6 +499,10 @@ impl ToolRenderOutput {
             msgs.tool_live_output_bottom.to_string()
         } else if matches!(self.phase, ToolPhase::Failed) {
             msgs.tool_error_card_bottom.to_string()
+        } else if matches!(self.visual_kind, tact_protocol::ToolVisualKind::Subagent) {
+            // Subagent cards open their transcript, not source code. Keep the
+            // footer wording identical to the other explicit Open affordances.
+            ButtonChrome::Brackets.wrap(msgs.tool_collapsed_output_action)
         } else {
             msgs.diff_card_bottom.to_string()
         }
@@ -1100,7 +1104,7 @@ impl ToolWidget {
     /// single retained line was rarely the one that mattered. The card is
     /// dropped entirely instead — the block is its two header rows, and the full
     /// text (command output, the read body, the written content, or the new text
-    /// behind the popup's git diff) stays one double-click away. While the tool
+    /// behind the popup's git diff) stays one stable-ID popup open away. While the tool
     /// runs the live card is unchanged, and failures keep their card so the
     /// error stays visible without a click.
     ///
@@ -1114,7 +1118,7 @@ impl ToolWidget {
     /// * every other kind (`Generic` / `Task` / `Sleep`) draws no card at all,
     ///   which left its result *unreachable* rather than merely collapsed — no
     ///   card, no popup, no click target. A multi-line result is a readout worth
-    ///   keeping one double-click away, and collapsing it costs no extra row.
+    ///   keeping one stable-ID popup open away, and collapsing it costs no extra row.
     ///   A one-line result is skipped: `sleep` / `save_memory` / `send_message`
     ///   answer with a confirmation the meta row already implies, and
     ///   `· 1 line · [󰜼 Open]` on all of them would be chrome that opens
@@ -1832,6 +1836,19 @@ mod tests {
     /// card: a running command keeps its live card, and the subagent — the
     /// transcript's entry point — keeps its summary card. Those two are now the
     /// only cards a successful tool can draw.
+    #[test]
+    fn successful_subagent_card_uses_open_footer_button() {
+        let msgs = test_msgs();
+        let output = ToolWidget::new()
+            .with_tool("spawn_subagent")
+            .with_arg_summary("audit the repo")
+            .with_phase(ToolPhase::Success)
+            .with_detail("child summary")
+            .build();
+
+        assert_eq!(output.card_bottom(&msgs), "[󰜼 Open]");
+        assert!(!output.card_bottom(&msgs).contains("Double-click"));
+    }
     #[test]
     fn collapse_spares_running_commands_and_subagents() {
         let live = ToolWidget::new()

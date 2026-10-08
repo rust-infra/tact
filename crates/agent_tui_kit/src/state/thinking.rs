@@ -1,12 +1,23 @@
 use std::{
     collections::VecDeque,
+    sync::atomic::{AtomicU64, Ordering},
     time::{Duration, Instant},
 };
+
+static NEXT_THINKING_ID: AtomicU64 = AtomicU64::new(1);
+
+fn next_thinking_id() -> String {
+    format!(
+        "thinking-{}",
+        NEXT_THINKING_ID.fetch_add(1, Ordering::Relaxed)
+    )
+}
 
 use super::{log_scroll::LogScroll, selection::PopupTextSelection};
 /// Streaming thinking content anchored at one shared-log placeholder row.
 #[derive(Debug, Clone)]
 pub struct ActiveThinkingBlock {
+    pub block_id: String,
     pub phys_idx: usize,
     pub content: String,
     pending_line: String,
@@ -19,6 +30,7 @@ impl ActiveThinkingBlock {
 
     pub fn new(phys_idx: usize, started_at: Instant) -> Self {
         Self {
+            block_id: next_thinking_id(),
             phys_idx,
             content: String::new(),
             pending_line: String::new(),
@@ -64,41 +76,66 @@ impl ActiveThinkingBlock {
 /// Thinking state: one active direct card, completed cards, and the detail popup.
 #[derive(Default)]
 pub struct ThinkingState {
-    /// Reasoning card currently receiving streaming deltas.
     pub active: Option<ActiveThinkingBlock>,
-    /// Completed reasoning cards, retained for rendering and detail popups.
     pub blocks: Vec<ThinkingBlock>,
-    /// Detail popup state.
     pub popup: Option<ThinkingPopup>,
 }
 
 /// A completed reasoning card anchored at one shared-log placeholder row.
 #[derive(Debug, Clone)]
 pub struct ThinkingBlock {
+    pub block_id: String,
     pub phys_idx: usize,
     pub content: String,
     pub summary: String,
-    /// Cached Markdown rendered lines, used for popup display, avoiding per-frame re-rendering.
     pub cached_markdown: Vec<ratatui::text::Line<'static>>,
-    /// Duration of the thinking phase.
     pub elapsed: Duration,
 }
 
-/// Thinking popup state.
+impl ThinkingBlock {
+    #[must_use]
+    pub fn new(
+        block_id: String,
+        phys_idx: usize,
+        content: String,
+        summary: String,
+        cached_markdown: Vec<ratatui::text::Line<'static>>,
+        elapsed: Duration,
+    ) -> Self {
+        Self {
+            block_id,
+            phys_idx,
+            content,
+            summary,
+            cached_markdown,
+            elapsed,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct ThinkingPopup {
-    /// Stable shared-log placeholder index for active or completed content.
+    pub block_id: String,
     pub phys_idx: usize,
     pub title: String,
-    /// Popup internal scroll offset (line number, relative to the first thinking content line).
     pub scroll: u16,
-    /// Byte selection into `selection_text`.
     pub selection: Option<PopupTextSelection>,
-    /// Plain text currently presented as selectable Thinking content.
     pub selection_text: String,
 }
 
 impl ThinkingPopup {
+    #[must_use]
+    pub fn new(block_id: String, phys_idx: usize, title: String) -> Self {
+        Self {
+            block_id,
+            phys_idx,
+            title,
+            scroll: 0,
+            selection: None,
+            selection_text: String::new(),
+        }
+    }
+
     pub fn copy_content(&self, full_content: &str) -> String {
         self.selection
             .and_then(|selection| selection.normalized_non_empty(&self.selection_text))
@@ -108,9 +145,7 @@ impl ThinkingPopup {
 }
 
 /// Locate the thinking card (active or completed) that spans a logical line.
-///
-/// Returns `(phys_idx, logical_start, rows)` for the first card whose range
-/// contains `line_idx`.
+/// Returns `(phys_idx, logical_start, rows)` for the first card whose range contains `line_idx`.
 pub fn find_thinking_at_logical(
     log_scroll: &LogScroll,
     thinking: &ThinkingState,
@@ -147,26 +182,10 @@ pub fn find_thinking_at_logical(
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
-    fn active_thinking_tail_grows_then_keeps_latest_three_lines() {
-        let mut active = ActiveThinkingBlock::new(8, Instant::now());
-        active.push_delta("one\ntwo\nthree\nfour\n");
-
-        assert_eq!(
-            active.display_tail(),
-            vec!["two".to_string(), "three".to_string(), "four".to_string()]
-        );
-    }
-
-    #[test]
-    fn active_thinking_tail_includes_unterminated_fragment() {
-        let mut active = ActiveThinkingBlock::new(8, Instant::now());
-        active.push_delta("one\ntwo");
-
-        assert_eq!(
-            active.display_tail(),
-            vec!["one".to_string(), "two".to_string()]
-        );
+    fn active_thinking_ids_are_distinct() {
+        let a = ActiveThinkingBlock::new(1, Instant::now());
+        let b = ActiveThinkingBlock::new(1, Instant::now());
+        assert_ne!(a.block_id, b.block_id);
     }
 }

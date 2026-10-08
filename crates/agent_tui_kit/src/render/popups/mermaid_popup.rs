@@ -28,10 +28,14 @@ pub fn render_mermaid_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> P
     let Some(popup) = &ctx.mermaid_popup else {
         return surface;
     };
-    if popup.block_idx >= ctx.mermaid_blocks.len() {
+    let Some(block) = ctx
+        .mermaid_blocks
+        .iter()
+        .find(|block| block.block_id == popup.block_id)
+    else {
         return surface;
-    }
-    let source = ctx.mermaid_blocks[popup.block_idx].source.clone();
+    };
+    let source = block.source.clone();
 
     let body = ScrollableTextPopup::body_area(area);
 

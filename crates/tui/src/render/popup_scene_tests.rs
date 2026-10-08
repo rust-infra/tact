@@ -56,6 +56,7 @@ fn render_thinking_popup_terminal(app: &mut App, width: u16, height: u16) -> Ter
 
 fn seed_code_popup(app: &mut App) {
     app.code_blocks.push(CodeBlock {
+        block_id: "test-code".into(),
         start_idx: 0,
         end_idx: 3,
         lang: "rust".into(),
@@ -63,7 +64,7 @@ fn seed_code_popup(app: &mut App) {
         styled: vec![Line::from("fn main() {}")],
     });
     app.code_popup = Some(CodePopup {
-        block_idx: 0,
+        block_id: "test-code".into(),
         lang: "rust".into(),
         scroll: 0,
     });
@@ -76,6 +77,7 @@ fn seed_thinking_popup(app: &mut App) {
         LogItemKind::Thinking,
     );
     app.thinking_mut().blocks.push(ThinkingBlock {
+        block_id: "test-thinking".into(),
         phys_idx: 0,
         content: "Deep reasoning line".into(),
         summary: "Deep reasoning line".into(),
@@ -83,6 +85,7 @@ fn seed_thinking_popup(app: &mut App) {
         elapsed: Duration::from_millis(10),
     });
     app.thinking_mut().popup = Some(ThinkingPopup {
+        block_id: "test-thinking".into(),
         phys_idx: 0,
         title: "Thinking title".into(),
         scroll: 0,
@@ -958,7 +961,7 @@ fn active_thinking_popup_uses_buffered_content() {
         "draft reasoning".into(),
     )));
     let phys_idx = app.thinking_mut().active.as_ref().unwrap().phys_idx;
-    app.open_thinking_popup(phys_idx);
+    app.open_thinking_popup_at_physical_index(phys_idx);
 
     assert_eq!(
         app.thinking_popup_content(),
@@ -977,7 +980,7 @@ fn active_thinking_popup_preserves_blank_lines() {
         "first line\n\nlast line".into(),
     )));
     let phys_idx = app.thinking_mut().active.as_ref().unwrap().phys_idx;
-    app.open_thinking_popup(phys_idx);
+    app.open_thinking_popup_at_physical_index(phys_idx);
 
     let text = render_thinking_popup_text(&mut app, 100, 30);
     let first = text.lines().position(|line| line.contains("first line"));
@@ -993,6 +996,7 @@ fn active_thinking_popup_preserves_blank_lines() {
 fn completed_thinking_popup_separates_adjacent_ordered_list_items() {
     let mut app = make_app();
     app.thinking_mut().blocks.push(ThinkingBlock {
+        block_id: "test-thinking".into(),
         phys_idx: 0,
         content: "1. first item\n2. second item".into(),
         summary: "second item".into(),
@@ -1000,6 +1004,7 @@ fn completed_thinking_popup_separates_adjacent_ordered_list_items() {
         elapsed: Duration::ZERO,
     });
     app.thinking_mut().popup = Some(ThinkingPopup {
+        block_id: "test-thinking".into(),
         phys_idx: 0,
         title: "Thinking".into(),
         scroll: 0,
@@ -1320,7 +1325,7 @@ fn open_diff_popup_after_edit_file_step_uses_git_diff() {
     );
 
     let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
-    app.open_diff_popup(phys_idx);
+    app.open_diff_popup_by_physical_index(phys_idx);
 
     let text = render_main_area_text(&mut app, 100, 30);
     let _ = std::fs::remove_dir_all(&tmp);
@@ -1499,7 +1504,7 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
     );
 
     let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
-    app.open_diff_popup(phys_idx);
+    app.open_diff_popup_by_physical_index(phys_idx);
 
     let text = render_main_area_text(&mut app, 100, 30);
     let _ = std::fs::remove_dir_all(&tmp);
@@ -1550,7 +1555,7 @@ fn open_diff_popup_after_read_file_step_finish() {
     );
 
     let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
-    app.open_diff_popup(phys_idx);
+    app.open_diff_popup_by_physical_index(phys_idx);
 
     assert_eq!(
         app.tools_mut()

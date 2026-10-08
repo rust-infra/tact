@@ -343,6 +343,7 @@ mod tests {
 
     fn completed_cell(msgs: &crate::i18n::Messages, theme: &Theme) -> ThinkingCell {
         let block = ThinkingBlock {
+            block_id: "test-thinking".into(),
             phys_idx: 0,
             content: "first\nlast".into(),
             summary: "last".into(),
@@ -375,6 +376,7 @@ mod tests {
         let theme = Theme::from(crate::theme::ThemeName::Dark);
         let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::English);
         let block = ThinkingBlock {
+            block_id: "test-thinking".into(),
             phys_idx: 0,
             content: "first\nlast".into(),
             summary: "last".into(),

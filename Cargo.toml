@@ -89,5 +89,6 @@ ratatui-markdown = { git = "https://github.com/celestia-island/ratatui-markdown"
 # backtraces useful without the per-type/per-variable blobs, and incremental
 # compilation is off because its caches dominate the target dir too.
 [profile.dev]
-debug = "line-tables-only"
+#debug = "line-tables-only"
+debug = false
 incremental = false

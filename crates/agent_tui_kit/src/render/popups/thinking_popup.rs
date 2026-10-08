@@ -46,7 +46,7 @@ pub fn render_thinking_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
         .thinking
         .active
         .as_ref()
-        .filter(|active| active.phys_idx == popup.phys_idx)
+        .filter(|active| active.block_id == popup.block_id)
     {
         let lines = active
             .content
@@ -58,7 +58,7 @@ pub fn render_thinking_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> 
         .thinking
         .blocks
         .iter()
-        .find(|block| block.phys_idx == popup.phys_idx)
+        .find(|block| block.block_id == popup.block_id)
     {
         (block.cached_markdown.clone(), block.content.lines().count())
     } else {

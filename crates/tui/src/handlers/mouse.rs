@@ -170,7 +170,10 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         app.clear_pending_messages();
         return;
     }
-    // Cancel button on a live async-subagent tool card.
+    if let Some(action) = app.mouse.open_action_at(mouse.column, mouse.row).cloned() {
+        app.open_action(action.target);
+        return;
+    }
     if let Some((child_id, _)) = app
         .mouse
         .subagent_cancel_btn_areas
@@ -193,7 +196,6 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         app.mouse.dragging_log = false;
     }
     if hit.in_task_panel && crate::render::task_panel::sticky_host_visible(app) {
-        use agent_tui_kit::state::StickyTab;
         let active = crate::render::task_panel::active_sticky_tab(app);
         let clicked = app
             .mouse
@@ -207,23 +209,15 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
             Some(tab) if tab != active => {
                 app.mouse.active_sticky_tab = tab;
                 app.mouse.in_task_panel = true;
-                match tab {
-                    StickyTab::Tasks => app.task_panel_mut().expanded = true,
-                    StickyTab::Subagent => app.subagent_panel_mut().expanded = true,
-                    StickyTab::Background => app.background_panel_mut().expanded = true,
-                }
+                crate::render::task_panel::set_sticky_expanded(app, tab, true);
                 app.dirty = true;
             }
             // Clicking the active tab (or anywhere else in the strip) toggles
             // the active domain's expansion.
             _ => {
-                let expanded = crate::render::task_panel::sticky_tab_expanded(app, active);
-                match active {
-                    StickyTab::Tasks => app.task_panel_mut().expanded = !expanded,
-                    StickyTab::Subagent => app.subagent_panel_mut().expanded = !expanded,
-                    StickyTab::Background => app.background_panel_mut().expanded = !expanded,
-                }
-                app.mouse.in_task_panel = !expanded;
+                crate::render::task_panel::toggle_sticky_expanded(app, active);
+                app.mouse.in_task_panel =
+                    !crate::render::task_panel::sticky_tab_expanded(app, active);
                 app.dirty = true;
             }
         }
@@ -355,7 +349,7 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     };
 
     // A row carrying its own popup source is a control, not text: a
-    // double-click opens the full body it stands for (a hook block's header and
+    // the Open affordance opens the full body it stands for (a hook block's header and
     // its "more lines" tail both do this), and a single click must not leave an
     // invisible selection behind on a row the reader cannot select.
     if let Some(source) = app
@@ -416,19 +410,33 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
         // A Thinking card draws text on rows that do not map to that text, so
         // nothing on it can be selected. Its footer `[Open]` button is the one
         // target, and the frame recorded where it drew those glyphs.
-        let on_button = app
+        let open_block_id = app
             .mouse
-            .thinking_open_btn_areas
-            .iter()
-            .any(|rect| point_in_rect(mouse.column, mouse.row, *rect));
+            .open_action_at(mouse.column, mouse.row)
+            .and_then(|action| {
+                let agent_tui_kit::render::log::OpenTarget::Thinking { block_id } = &action.target
+                else {
+                    return None;
+                };
+                let matches_card =
+                    app.thinking().active.as_ref().is_some_and(|active| {
+                        &active.block_id == block_id && active.phys_idx == thinking_phys
+                    }) || app.thinking().blocks.iter().any(|block| {
+                        &block.block_id == block_id && block.phys_idx == thinking_phys
+                    });
+                matches_card.then(|| block_id.clone())
+            });
+        let on_button = open_block_id.is_some();
         if on_button {
             if app.mouse.click_count == 1 {
                 app.mouse.last_click_card = Some(thinking_phys);
                 app.mouse.log_selection = None;
                 app.mouse.dragging_log = false;
-            } else if app.mouse.click_count == 2 && app.mouse.last_click_card == Some(thinking_phys)
+            } else if app.mouse.click_count == 2
+                && app.mouse.last_click_card == Some(thinking_phys)
+                && let Some(block_id) = open_block_id
             {
-                app.open_thinking_popup(thinking_phys);
+                app.open_thinking_popup_by_id(&block_id);
             }
         } else {
             app.mouse.last_click_card = None;
@@ -450,20 +458,22 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     }
 
     app.mouse.last_click_tool = None;
-    let code_hit = app.code_blocks.iter().enumerate().find(|(_, b)| {
-        app.phys_to_logical_fast(b.start_idx)
+    let code_hit = app.code_blocks.iter().enumerate().find_map(|(idx, b)| {
+        let hit = app
+            .phys_to_logical_fast(b.start_idx)
             .is_some_and(|si| line_idx >= si)
             && app
                 .phys_to_logical_fast(b.end_idx)
-                .is_some_and(|ei| line_idx < ei)
+                .is_some_and(|ei| line_idx < ei);
+        hit.then(|| (idx, b.block_id.clone()))
     });
-    if let Some((code_idx, _block)) = code_hit {
+    if let Some((code_idx, block_id)) = code_hit {
         if app.mouse.click_count == 1 {
             app.mouse.last_click_code = Some(code_idx);
             app.mouse.log_selection = None;
             app.mouse.dragging_log = false;
         } else if app.mouse.click_count == 2 && app.mouse.last_click_code == Some(code_idx) {
-            app.open_code_popup(code_idx);
+            app.open_code_popup_by_id(&block_id);
         } else if app.mouse.click_count >= 3 {
             handle_log_triple_click(app, line_idx, false);
         }
@@ -471,20 +481,22 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     }
 
     app.mouse.last_click_code = None;
-    let mermaid_hit = app.mermaid_blocks.iter().enumerate().find(|(_, b)| {
-        app.phys_to_logical_fast(b.start_idx)
+    let mermaid_hit = app.mermaid_blocks.iter().enumerate().find_map(|(idx, b)| {
+        let hit = app
+            .phys_to_logical_fast(b.start_idx)
             .is_some_and(|si| line_idx >= si)
             && app
                 .phys_to_logical_fast(b.end_idx)
-                .is_some_and(|ei| line_idx < ei)
+                .is_some_and(|ei| line_idx < ei);
+        hit.then(|| (idx, b.block_id.clone()))
     });
-    if let Some((mermaid_idx, _block)) = mermaid_hit {
+    if let Some((mermaid_idx, block_id)) = mermaid_hit {
         if app.mouse.click_count == 1 {
             app.mouse.last_click_mermaid = Some(mermaid_idx);
             app.mouse.log_selection = None;
             app.mouse.dragging_log = false;
         } else if app.mouse.click_count == 2 && app.mouse.last_click_mermaid == Some(mermaid_idx) {
-            app.open_mermaid_popup(mermaid_idx);
+            app.open_mermaid_popup_by_id(&block_id);
         } else if app.mouse.click_count >= 3 {
             handle_log_triple_click(app, line_idx, false);
         }
@@ -592,7 +604,7 @@ pub(crate) fn handle_log_triple_click(app: &mut App, line_idx: usize, expand_cod
     app.mouse.dragging_log = true;
 }
 
-/// Double-click on a tool's clickable text opens its detail popup: the detail
+/// Legacy double-click on a tool's clickable text opens its detail popup: the detail
 /// card when one is drawn, or the header text itself for a collapsed command
 /// (`col` counts from the block's left edge).
 pub(crate) fn handle_tool_block_click(
@@ -619,9 +631,9 @@ pub(crate) fn handle_tool_block_click(
             })
             .unwrap_or(false);
         if is_subagent {
-            app.open_subagent_popup(phys_idx);
+            app.open_subagent_popup_at_physical_index(phys_idx);
         } else {
-            app.open_diff_popup_at(phys_idx, relative_row, col);
+            app.open_diff_popup_at_physical_index(phys_idx, relative_row, col);
         }
         return;
     }
@@ -1025,6 +1037,7 @@ mod tests {
             popup_hit_row(7, 6, 6, "omega"),
         ];
         app.thinking_mut().popup = Some(ThinkingPopup {
+            block_id: "test-thinking".into(),
             phys_idx: 0,
             title: "thinking".into(),
             scroll: 0,
@@ -1458,7 +1471,7 @@ mod tests {
         panic!("{needle:?} is not drawn");
     }
 
-    /// Does a double-click at (`column`, `row`) open the collapsed block's popup?
+    /// Does the legacy double-click path open the collapsed block's popup?
     fn double_click_opens(app: &mut App, column: u16, row: u16) -> bool {
         app.tools_mut().popup = None;
         handle_log_click(app, mouse_down(column, row));
@@ -1468,7 +1481,7 @@ mod tests {
         opened
     }
 
-    /// A hook block's header is a control: a double-click opens the whole body
+    /// A hook block's header is a control: the legacy double-click path opens the whole body
     /// (the log only holds the head of it), and a single click selects nothing.
     #[test]
     fn double_click_on_a_hook_header_opens_the_full_body() {
@@ -1493,7 +1506,7 @@ mod tests {
         let popup = app
             .system_prompt_popup
             .as_ref()
-            .expect("double-click opens the read-out popup");
+            .expect("legacy double-click opens the read-out popup");
         assert!(
             popup.source.contains("line 20"),
             "the popup carries the whole body, not the head: {}",
@@ -1501,7 +1514,7 @@ mod tests {
         );
     }
 
-    /// Does a double-click at (`column`, `row`) open the Thinking card's popup?
+    /// Does the legacy double-click path open the Thinking card's popup?
     fn double_click_opens_thinking(app: &mut App, column: u16, row: u16) -> bool {
         app.thinking_mut().popup = None;
         handle_log_click(app, mouse_down(column, row));
@@ -1590,6 +1603,64 @@ mod tests {
                 "{ctx}: the card's title must stay inert"
             );
         }
+    }
+
+    #[test]
+    fn single_click_on_each_rendered_open_button_routes_to_its_popup() {
+        use crate::render::test_harness::render_main_area_terminal;
+
+        let click_first_open = |app: &mut App| {
+            let action = app
+                .mouse
+                .open_actions
+                .first()
+                .cloned()
+                .expect("renderer records an Open hitbox");
+            let x = action.rect.x + action.rect.width / 2;
+            let y = action.rect.y;
+            handle_mouse_event(app, mouse_down(x, y));
+        };
+
+        let mut collapsed = make_app();
+        collapsed.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "run",
+            "bash",
+            "single-tool",
+            HashMap::<String, String>::from([("command".into(), "echo hi".into())]),
+        )));
+        collapsed.handle_agent_update(StepCall::new(0, "single-tool", "bash", "echo hi").started());
+        collapsed.handle_agent_update(
+            StepCall::new(0, "single-tool", "bash", "echo hi")
+                .detail("hi\n")
+                .finished(),
+        );
+        let _ = render_main_area_terminal(&mut collapsed, 100, 20);
+        click_first_open(&mut collapsed);
+        assert!(collapsed.tools_mut().popup.is_some());
+
+        let mut subagent = make_app();
+        subagent.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "audit",
+            "spawn_subagent",
+            "single-subagent",
+            HashMap::<String, String>::from([("prompt".into(), "audit".into())]),
+        )));
+        subagent.handle_agent_update(
+            StepCall::new(0, "single-subagent", "spawn_subagent", "audit").started(),
+        );
+        subagent.handle_agent_update(
+            StepCall::new(0, "single-subagent", "spawn_subagent", "audit")
+                .detail("child output")
+                .finished(),
+        );
+        let _ = render_main_area_terminal(&mut subagent, 100, 20);
+        click_first_open(&mut subagent);
+        assert!(subagent.has_subagent_popup());
+
+        let mut thinking = app_with_thinking_card(crate::i18n::Language::English);
+        let _ = render_main_area_terminal(&mut thinking, 100, 20);
+        click_first_open(&mut thinking);
+        assert!(thinking.thinking_mut().popup.is_some());
     }
 
     /// A non-button click on a Thinking card must not leave a selection behind
@@ -1851,7 +1922,7 @@ mod tests {
     }
 
     /// A finished edit collapses exactly like a command: two header rows, the
-    /// hint as the only target, and the diff one double-click away.
+    /// hint as the only target, with the diff available through legacy double-click.
     #[test]
     fn double_click_collapsed_edit_hint_opens_diff_popup() {
         let mut app = make_app();
@@ -1900,7 +1971,7 @@ mod tests {
     }
 
     /// A finished read collapses exactly like a command: two header rows, the
-    /// hint as the only target, and the body one double-click away.
+    /// hint as the only target, with the body available through legacy double-click.
     #[test]
     fn double_click_collapsed_read_hint_opens_diff_popup() {
         let mut app = make_app();

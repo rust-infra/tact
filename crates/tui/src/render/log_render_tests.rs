@@ -687,7 +687,7 @@ fn language_toggle_repaints_tool_card_chrome() {
         (
             "card bottom",
             msgs.tool_error_card_bottom,
-            "Double-click for full error",
+            "Click for full error",
         ),
     ] {
         assert!(
@@ -732,6 +732,7 @@ fn log_scroll_from_code_card_to_plain_text_restores_theme_background() {
         app.add_system_message(format!("scroll-tail-{i}"));
     }
     app.code_blocks.push(CodeBlock {
+        block_id: "test-code".into(),
         start_idx: 0,
         end_idx: 3,
         lang: "rust".into(),

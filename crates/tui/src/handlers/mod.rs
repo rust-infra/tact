@@ -31,28 +31,14 @@ use crate::widgets::state::{App, InputMode, SelectKind, SlashCommand, Status};
 /// Shared by the keyboard (`normal`) and wheel (`mouse`) paths so the two can
 /// never disagree about what is scrollable.
 pub(crate) fn sticky_scrollable(app: &App) -> bool {
-    crate::render::task_panel::sticky_host_visible(app)
-        && crate::render::task_panel::sticky_tab_expanded(
-            app,
-            crate::render::task_panel::active_sticky_tab(app),
-        )
+    crate::render::task_panel::sticky_scrollable(app)
 }
 
 /// Scroll the active sticky domain's panel by `delta` rows (signed, clamped
 /// at zero).
 pub(crate) fn scroll_active_sticky(app: &mut App, delta: isize) {
-    use agent_tui_kit::state::StickyTab;
     let tab = crate::render::task_panel::active_sticky_tab(app);
-    let scroll = match tab {
-        StickyTab::Tasks => &mut app.task_panel_mut().scroll,
-        StickyTab::Subagent => &mut app.subagent_panel_mut().scroll,
-        StickyTab::Background => &mut app.background_panel_mut().scroll,
-    };
-    *scroll = if delta < 0 {
-        scroll.saturating_sub(delta.unsigned_abs())
-    } else {
-        scroll.saturating_add(delta as usize)
-    };
+    crate::render::task_panel::scroll_sticky(app, tab, delta);
 }
 
 /// One global shortcut: the key it answers to after `Ctrl+`, and what it does.

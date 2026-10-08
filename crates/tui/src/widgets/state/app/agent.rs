@@ -737,8 +737,11 @@ impl App {
                     start
                 }
             };
+            let block_id = format!("mermaid-{}", self.next_mermaid_block_id);
+            self.next_mermaid_block_id = self.next_mermaid_block_id.saturating_add(1);
             self.mermaid_blocks
                 .push(crate::widgets::state::MermaidBlock {
+                    block_id,
                     start_idx: start,
                     end_idx: start + row_count,
                     source,
@@ -773,7 +776,10 @@ impl App {
                     raw_placeholders,
                     LogItemKind::AssistantMarkdown,
                 );
+                let block_id = format!("code-{}", self.next_code_block_id);
+                self.next_code_block_id = self.next_code_block_id.saturating_add(1);
                 self.code_blocks.push(CodeBlock {
+                    block_id,
                     start_idx: start,
                     end_idx: start + placeholder_count,
                     lang,
@@ -1693,7 +1699,7 @@ mod lifecycle_tests {
         });
         let phys_idx = app.tools_mut().active[0].phys_idx;
 
-        app.open_diff_popup(phys_idx);
+        app.open_diff_popup_by_physical_index(phys_idx);
 
         let content = app
             .tools_mut()

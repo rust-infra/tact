@@ -7,6 +7,8 @@
 
 use std::time::Instant;
 
+use unicode_width::UnicodeWidthStr;
+
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -21,9 +23,9 @@ use crate::{
     render::renderable::Renderable,
     widgets::button::{Button, ButtonChrome, ButtonTheme},
     widgets::tool_widget::{
-        TOOL_HEADER_ROWS, ToolPhase, ToolRenderOutput, build_meta_text, collapsed_action_text,
-        collapsed_output_hint, meta_error, meta_suffixes, running_elapsed_us, tool_card_inner_rows,
-        tool_visual_rows,
+        TOOL_HEADER_ROWS, TOOL_META_ROW, ToolPhase, ToolRenderOutput, build_meta_text,
+        collapsed_action_text, collapsed_output_hint, meta_error, meta_suffixes,
+        running_elapsed_us, tool_card_inner_rows, tool_visual_rows,
     },
 };
 
@@ -46,6 +48,7 @@ pub struct ToolCell {
     detail_preview: Vec<ToolOutputLine>,
     detail_total_lines: usize,
     card_bottom: String,
+    is_subagent: bool,
     /// Template for the card-bottom line-count prefix (`" {}/{} lines | {} "`).
     card_progress_tmpl: &'static str,
     /// Meta-row hint for a collapsed command card (line count + how to open it).
@@ -129,6 +132,7 @@ impl ToolCell {
             detail_preview: output.detail_preview,
             detail_total_lines: output.detail_total_lines,
             card_bottom,
+            is_subagent: matches!(output.visual_kind, tact_protocol::ToolVisualKind::Subagent),
             card_progress_tmpl: msgs.tool_card_progress_tmpl,
             collapsed_output_hint,
             collapsed_action_label,
@@ -289,6 +293,45 @@ impl ToolCell {
         lines
     }
 
+    /// Screen rect of a collapsed tool's `[Open]` meta-row button.
+    pub fn collapsed_open_button_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
+        if self.collapsed_action.is_none() || skip_lines >= self.height(area.width) as usize {
+            return None;
+        }
+        let row =
+            crate::render::util::indent_rect(area, crate::render::util::LOG_TOOL_BLOCK_INDENT);
+        let action_width = UnicodeWidthStr::width(self.collapsed_action.as_deref()?) as u16;
+        let text_width = self.meta_line().width() as u16;
+        (action_width > 0 && text_width >= action_width && row.width >= action_width).then(|| {
+            Rect::new(
+                row.x + text_width - action_width,
+                row.y + TOOL_META_ROW.saturating_sub(skip_lines) as u16,
+                action_width,
+                1,
+            )
+        })
+    }
+
+    /// Returns `None` when the footer is clipped or the card is not a subagent.
+    pub fn subagent_open_button_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
+        if self.card_only
+            || !self.is_subagent
+            || !self.has_detail_card
+            || self.phase != ToolPhase::Success
+        {
+            return None;
+        }
+        let card_total = 1 + self.card_inner_rows() + 1;
+        let card_skip = skip_lines.saturating_sub(TOOL_HEADER_ROWS);
+        if card_skip >= card_total
+            || card_skip + (area.height as usize) < TOOL_HEADER_ROWS + card_total
+        {
+            return None;
+        }
+        let bottom_y = area.y + (TOOL_HEADER_ROWS + card_total - 1 - skip_lines) as u16;
+        let width = UnicodeWidthStr::width(self.card_bottom.as_str()) as u16;
+        (width > 0).then(|| Rect::new(area.x + 1, bottom_y, width, 1))
+    }
     fn card_bottom_text(&self) -> String {
         if self.detail_total_lines > self.detail_preview.len() {
             // The count prefix is chrome, so it is localized like the label it
@@ -768,7 +811,7 @@ mod tests {
         let cell = tool_cell(make_output(true, 3, 10));
         let bottom = cell.card_bottom_text();
         assert!(bottom.contains("3/10 lines"));
-        assert!(bottom.contains("Double-click for full code"));
+        assert!(bottom.contains("Click for full code"));
     }
 
     /// The overflow prefix is chrome, not a readout of the tool: it is drawn in
@@ -795,7 +838,7 @@ mod tests {
         );
         let bottom = cell.card_bottom_text();
         assert!(bottom.contains("3/10 行"), "{bottom:?}");
-        assert!(bottom.contains("双击查看完整代码"), "{bottom:?}");
+        assert!(bottom.contains("点击查看完整代码"), "{bottom:?}");
         assert!(!bottom.contains("lines"), "{bottom:?}");
     }
 

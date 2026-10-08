@@ -48,6 +48,8 @@ pub struct HistoryEntry {
 /// A completed LLM code block, rendered as a card overlay in the log panel.
 #[derive(Debug, Clone)]
 pub struct CodeBlock {
+    /// Stable identity used by popup state; independent of vector position.
+    pub block_id: String,
     /// First placeholder line index in messages (inclusive).
     pub start_idx: usize,
     /// One-past-last placeholder line index in messages.
@@ -62,10 +64,12 @@ pub struct CodeBlock {
 /// A successfully rendered Mermaid diagram spliced into the log as terminal art.
 ///
 /// Unlike [`CodeBlock`], there is no card chrome — `start_idx..end_idx` covers
-/// the diagram rows themselves. Double-click opens [`MermaidPopup`] so the
+/// the diagram rows themselves. The Open affordance opens [`MermaidPopup`] so the
 /// original fence body can be copied.
 #[derive(Debug, Clone)]
 pub struct MermaidBlock {
+    /// Stable identity used by popup state; independent of vector position.
+    pub block_id: String,
     /// First diagram line index in messages (inclusive).
     pub start_idx: usize,
     /// One-past-last diagram line index in messages.
@@ -77,7 +81,7 @@ pub struct MermaidBlock {
 /// Code block popup state (similar to ThinkingPopup / DiffPopup).
 #[derive(Debug, Clone)]
 pub struct CodePopup {
-    pub block_idx: usize,
+    pub block_id: String,
     pub lang: String,
     pub scroll: u16,
 }
@@ -112,7 +116,7 @@ impl MermaidPopupView {
     }
 }
 
-/// Mermaid popup (double-click a rendered diagram in the log).
+/// Mermaid popup opened from a rendered diagram's Open affordance.
 ///
 /// Opens on the rendered [`Diagram`](MermaidPopupView::Diagram) at the popup's
 /// width — wider than the log panel, so dense flowcharts stay readable — with
@@ -120,18 +124,18 @@ impl MermaidPopupView {
 /// copying.
 #[derive(Debug, Clone)]
 pub struct MermaidPopup {
-    pub block_idx: usize,
+    pub block_id: String,
     pub scroll: u16,
     /// Diagram vs. raw source (`Tab`).
     pub view: MermaidPopupView,
 }
 
 impl MermaidPopup {
-    /// Creates a popup for `block_idx`, opened on the rendered diagram.
+    /// Creates a popup for `block_id`, opened on the rendered diagram.
     #[must_use]
-    pub fn new(block_idx: usize) -> Self {
+    pub fn new(block_id: String) -> Self {
         Self {
-            block_idx,
+            block_id,
             scroll: 0,
             view: MermaidPopupView::default(),
         }
@@ -170,4 +174,9 @@ pub enum StickyTab {
     /// Running `background_run` tasks, derived from the live tool cards (no
     /// protocol snapshot drives this domain).
     Background,
+}
+
+impl StickyTab {
+    /// All sticky domains in their stable display order.
+    pub const ALL: [Self; 3] = [Self::Tasks, Self::Subagent, Self::Background];
 }

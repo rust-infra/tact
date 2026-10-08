@@ -420,7 +420,7 @@ impl App {
     }
 
     /// Append hook-injected context: a labelled header row, then the head of
-    /// the body behind a left bar, with the whole text one double-click away.
+    /// the body behind a left bar, with the whole text available from Open.
     ///
     /// The body renders through the same Markdown pipeline as
     /// [`Self::append_system_markdown`] — the caller has already stripped the

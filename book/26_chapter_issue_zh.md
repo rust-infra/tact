@@ -4,6 +4,23 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-08 — Open 按钮单击链路与代码弹窗稳定身份
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix / docs（用户可见：工具、子代理、思考卡片的 `[Open]` 单击入口与弹窗目标更稳定） |
+| **Related** | `crates/tui/src/handlers/mouse.rs`、`crates/tui/src/widgets/state/app/popups.rs`、`crates/agent_tui_kit/src/state/ui_types.rs` |
+
+**现象 / 动机：** Open affordance 已经由渲染器输出真实 hitbox，但直接单击的三条完整链路缺少集成覆盖；Code/Mermaid popup 仍用列表位置保存目标，列表重排后可能显示错误内容。界面文案和注释也仍把双击写成主入口。
+
+**决策：** 增加 collapsed tool、subagent、thinking 的真实单击测试；CodeBlock/MermaidBlock 与 popup 改用 App 内单调生成的稳定字符串 ID，物理索引入口保留为兼容包装；双击只作为 legacy compatibility，按钮文案统一为 Click/Open。
+
+**改后行为：** 单击渲染出的 `[Open]` hitbox 会直接打开对应 popup；Code/Mermaid 列表顺序变化不会重定向已打开 popup；过期 ID 只会安全 no-op，不会越界或显示其他 block。
+
+**Verification：** `cargo check --workspace` 通过；`cargo test -p tui` 的 646 个测试通过；授权本地监听后 `cargo test --workspace` 全部通过；新增单击路由与 Code popup 重排回归测试。
+
+**Pointers:** `docs/superpowers/plans/2026-10-08-tui-open-affordance-followups.md`、`docs/tui_rendering.md`。
+
 ---
 
 ## 0. 目的
