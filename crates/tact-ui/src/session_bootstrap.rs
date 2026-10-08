@@ -110,6 +110,7 @@ fn stderr_line(tag: &str, message: &str) -> String {
 pub struct UiWiring {
     pub tx: UnboundedSender<AgentUpdate>,
     pub responder: UiResponder,
+    pub runtime_events: tact::kernel::EventTransport,
 }
 
 /// Resolve (or start) this run's session, and take its lock.
@@ -263,7 +264,9 @@ pub async fn bootstrap_session(
     .with_session(session_id, session_store)
     .with_provider_kind(provider_kind);
     if let Some(wiring) = ui {
-        agent = agent.with_ui_channel(wiring.tx);
+        agent = agent
+            .with_ui_channel(wiring.tx)
+            .with_runtime_event_sink(Arc::new(wiring.runtime_events));
     }
     // RTK filter is opt-in — `with_post_tool` no-ops unless the
     // `tools.rtk_filter` setting is enabled.

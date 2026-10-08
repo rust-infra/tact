@@ -282,6 +282,7 @@ async fn build_agent_for_interactive(
         Some(UiWiring {
             tx: agent_tx,
             responder: ui_responder,
+            runtime_events: tact::kernel::EventTransport::new(256),
         }),
         notices,
     )
