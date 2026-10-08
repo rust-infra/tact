@@ -5,6 +5,7 @@ mod model;
 mod node;
 mod runtime;
 mod store;
+mod wasm;
 
 use anyhow::{Context, Result};
 pub use hooks::*;
@@ -18,6 +19,7 @@ use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
 };
+pub use wasm::*;
 
 use crate::consts::PluginHome;
 
