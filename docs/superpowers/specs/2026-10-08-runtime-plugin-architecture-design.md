@@ -1,0 +1,386 @@
+# Tact Runtime Kernel and Plugin Architecture Design
+
+## Status
+
+Approved design baseline for implementation planning.
+
+## Goal
+
+Evolve Tact into a minimal Runtime Kernel with a stable language-neutral Plugin Protocol, while preserving all current user-visible business capabilities. Agent, Session, Chat, Tools, Commands, and Workflow become replaceable extensions; TUI, Web, Desktop, and external clients become protocol-driven view and interaction adapters.
+
+The final code dependency graph must match this architecture:
+
+```text
+Runtime Kernel
+  -> Plugin Protocol
+  -> Rust / Node.js / WASM Plugin Hosts
+  -> Extension Capability API
+  -> Agent / Session / Chat / Tools / Commands
+  -> Views / Interaction API
+  -> TUI / Web / Desktop / External Client
+```
+
+The Kernel must not depend on TUI, Chat, a particular Agent implementation, or a plugin language.
+
+## Non-goals
+
+- Do not redesign the model-provider behavior, prompt semantics, or existing tool user experience as part of the architecture migration.
+- Do not remove existing capabilities merely to make the Kernel smaller.
+- Do not require all plugins to provide a custom UI for every client.
+- Do not expose Rust internal structs as the cross-language API.
+- Do not treat MCP as a permanent special case outside the Plugin Protocol.
+
+## Current implementation baseline
+
+The current workspace already contains most business capabilities:
+
+| Current area | Responsibility to preserve | Target owner |
+|---|---|---|
+| `crates/tact/src/agent/` | Streaming model loop, tool dispatch, compaction, recovery | Agent extension using Kernel services |
+| `crates/tact/src/tool/` | Native tools, metadata, tool effects, task/team/memory/worktree tools | Tools extensions through Capability Router |
+| `crates/tact/src/mcp/` | MCP discovery, connection, tool and prompt routing | Plugin Protocol adapter / external plugin host |
+| `crates/tact/src/permission/` | Permission modes, risk classification, user approval | Kernel Permission Engine |
+| `crates/tact/src/hook/` | Session, pre-tool, post-tool and lifecycle hooks | Event Handler capability |
+| `crates/tact/src/store/` | SQLite persistence, sessions, tasks, teams, worktrees, token usage | Kernel Storage plus extension namespaces |
+| `crates/tact/src/compact/` | Micro-compaction, transcript persistence, Codex-style recovery | Agent extension using Trajectory and Storage |
+| `crates/tact/src/ui_responder.rs` | Select, multi-select and user interaction requests | Kernel Interaction API |
+| `crates/protocol/` | Shared wire types and UI update types | Language-neutral Runtime / Plugin Protocol types |
+| `crates/tui/` | Ratatui event loop, state and rendering | TUI View Adapter |
+| `crates/tact-ui/` | CLI startup, host wiring, interactive and headless modes | Runtime host and client wiring |
+
+Existing behavior remains the acceptance baseline: streaming output, thinking and tool progress, permissions, compaction, recovery, MCP tools, hooks, sub-agents, teams, tasks, background work, memory, skills, worktrees, voice support, token usage, sessions, themes, internationalization, popups, command palette, headless execution, and all existing safety checks.
+
+## Target architecture
+
+### 1. Runtime Kernel
+
+The Kernel contains mechanisms that must be consistent for every extension and client:
+
+```text
+crates/tact/src/kernel/
+  lifecycle.rs       # plugin registration, start, stop, restart
+  capability.rs      # capability handles and invocation context
+  permission.rs      # centralized permission decisions
+  event.rs           # event transport, subscriptions, sequencing
+  trajectory.rs      # recording and querying execution facts
+  storage.rs         # namespaced storage facade
+  protocol.rs        # version negotiation and envelope validation
+  cancellation.rs    # cancellation tokens and deadlines
+  error.rs           # stable error categories and conversion
+  interaction.rs     # client-neutral user interaction requests
+```
+
+The Kernel owns no Chat message layout, TUI widget, Agent implementation, or concrete business tool. It provides the following services:
+
+- `PluginLifecycle`: manifest validation, dependency checks, startup, shutdown, restart, health and crash reporting.
+- `CapabilityRouter`: capability declaration, discovery, authorization and invocation.
+- `PermissionEngine`: uniform decisions for host and plugin capabilities.
+- `EventTransport`: publish, subscribe, sequence, replay and backpressure policy.
+- `TrajectoryRecorder`: append-only execution facts with stable IDs and ordering.
+- `MinimalStorage`: namespaced key/value and durable record access.
+- `CancellationService`: cancellation propagation and deadline enforcement.
+- `ErrorModel`: structured, serializable errors with retryability and origin.
+- `ProtocolVersioning`: major/minor negotiation and feature discovery.
+
+### 2. Plugin Protocol
+
+The protocol is the only stable boundary between the Kernel and a Plugin Host. It must be serializable over stdio, IPC, or an in-process transport and must not contain Rust-specific types.
+
+Core envelope fields:
+
+```text
+protocol_version
+request_id
+plugin_id
+session_id (optional)
+run_id (optional)
+trajectory_id (optional)
+deadline (optional)
+```
+
+Core messages:
+
+```rust
+enum PluginRequest {
+    Handshake(HandshakeRequest),
+    Register(RegisterRequest),
+    Invoke(InvokeRequest),
+    Subscribe(SubscribeRequest),
+    Cancel(CancelRequest),
+    InteractionResponse(InteractionResponse),
+    Shutdown,
+}
+
+enum PluginResponse {
+    HandshakeAccepted(HandshakeAccepted),
+    Registered(RegistrationResult),
+    Result(InvocationResult),
+    Event(RuntimeEvent),
+    Error(ProtocolError),
+}
+```
+
+The protocol must define:
+
+- manifest and capability discovery;
+- request/response correlation;
+- structured input and output values;
+- streaming event delivery;
+- cancellation and timeout;
+- protocol and capability version negotiation;
+- reconnect and replay from an event sequence;
+- plugin-originated events with origin metadata;
+- explicit error categories;
+- shutdown and crash semantics.
+
+`AgentUpdate`, `UserCommand`, and TUI-specific responder variants are migration inputs, not final protocol types. They are replaced by `RuntimeEvent`, `RuntimeCommand`, and `InteractionRequest`.
+
+### 3. Plugin Hosts
+
+Every host implements the same lifecycle and protocol contract:
+
+```text
+Plugin Host
+  discover -> validate -> handshake -> register -> serve -> drain -> stop
+```
+
+#### Rust Plugin Host
+
+The Rust host may support built-in in-process extensions first, but it must use the same manifest, capability registry, permission checks, events, and trajectory hooks as external hosts. In-process status must not create a privileged bypass.
+
+#### Node.js Plugin Host
+
+Node plugins run in an independent Node process connected through stdio RPC or IPC. The host owns process startup, environment setup, protocol transport, deadlines, cancellation, crash detection, restart policy and capability filtering. Node code never receives a Rust object reference.
+
+#### WASM Plugin Host
+
+WASM plugins run under a WASI/Wasmtime-style host boundary. File, network, process, clock and storage access are host functions mediated by capabilities and permissions. WASM must not access Runtime memory directly.
+
+### 4. Extension Capability API
+
+Capabilities are divided into contributions and services.
+
+Plugin contributions:
+
+```text
+Tool
+Command
+EventHandler
+App
+View
+```
+
+Kernel services:
+
+```text
+runs.start / runs.cancel
+sessions.read / sessions.write
+events.subscribe / events.publish
+trajectory.read / trajectory.append_plugin_event
+storage.get / storage.set
+permission.request
+interaction.request
+```
+
+All invocations follow one path:
+
+```text
+Plugin request
+  -> Capability Router
+  -> Permission Engine
+  -> Invocation Context
+  -> implementation
+  -> Runtime Event
+  -> Trajectory Recorder
+  -> response
+```
+
+Capabilities are named by semantic authority rather than implementation language, for example:
+
+```text
+filesystem.read
+filesystem.write
+network.request
+process.spawn
+session.read
+session.write
+trajectory.read
+```
+
+### 5. Official extensions
+
+Agent, Session, Chat, Tools, and Workflow are official extensions using the same API as third-party extensions.
+
+- **Agent** owns model calls, context construction, tool selection, streaming, retry, compaction and transport recovery.
+- **Session** owns session identity, resume, message association and session lifecycle.
+- **Chat** owns conversational input, message projection, chat commands and chat-specific interaction semantics.
+- **Tools** contribute filesystem, shell, task, team, memory, skill, worktree, background and other existing capabilities.
+- **Workflow** owns multi-step orchestration and future task graphs.
+
+The Kernel may ship default extensions for a complete product, but their APIs must remain replaceable and independently testable.
+
+### 6. Views and Interaction API
+
+Views consume structured Runtime events and submit Runtime commands or interaction responses. A View never calls Agent internals or tool handlers.
+
+```rust
+enum InteractionRequest {
+    Permission(PermissionRequest),
+    Select(SelectRequest),
+    Confirm(ConfirmRequest),
+    Input(InputRequest),
+}
+
+enum InteractionResponse {
+    Approved,
+    Rejected,
+    Selected(Vec<String>),
+    Text(String),
+    Cancelled,
+}
+```
+
+The adapters are:
+
+```text
+TUI             -> ratatui projection and input adapter
+Web             -> browser/API projection and input adapter
+Desktop         -> native/webview projection and input adapter
+External Client -> headless/API protocol client
+```
+
+All adapters must support the common minimum: start a run, observe progress, answer interaction requests, cancel a run, inspect results, and resume from a trajectory sequence.
+
+### 7. Trajectory
+
+Trajectory is a first-class Kernel capability and the source of truth for execution history. It is separate from transient EventBus delivery.
+
+```rust
+struct TrajectoryEvent {
+    trajectory_id: TrajectoryId,
+    run_id: RunId,
+    sequence: u64,
+    timestamp: DateTime<Utc>,
+    actor: ActorId,
+    event_type: TrajectoryEventType,
+    parent_step_id: Option<StepId>,
+    payload: JsonValue,
+    sensitivity: Sensitivity,
+}
+```
+
+Trajectory must record user input, model-call boundaries, tool calls and results, permission decisions, hook execution, plugin lifecycle, errors, retries, cancellation, timeout, compaction, recovery, and parent/child relationships for parallel work.
+
+The Kernel may reject plugin attempts to emit reserved host facts such as `permission.granted` or `tool.completed`. Plugins may append namespaced facts such as `plugin.<plugin_id>.progress`.
+
+Trajectory storage must support append, query by run/session, sequence-based resume, and replay. Sensitive payloads use the existing redaction/security policy before persistence.
+
+### 8. Storage
+
+The existing SQLite store remains the initial implementation. Access is exposed through a namespaced facade:
+
+```text
+runtime/
+sessions/
+trajectories/
+plugins/<plugin_id>/
+```
+
+Runtime-owned records cannot be written through a plugin namespace. Plugin data cannot be written into Runtime, Session, or Trajectory namespaces except through explicit capability methods.
+
+## Business-function preservation matrix
+
+The migration is complete only when the following behavior remains available through the new boundaries:
+
+| Capability | Final extension or service | Preservation requirement |
+|---|---|---|
+| Streaming agent loop | Agent extension | Same provider behavior, streamed text, thinking and stop/error handling |
+| Native tools | Tools extensions | Same names, metadata, permission/resource policies and typed effects |
+| MCP tools/prompts/resources | Plugin Protocol adapter | Same discovery, namespacing, routing and failures |
+| Hooks | EventHandler capability | Same lifecycle timing, mutation and veto semantics |
+| Permissions | Kernel Permission Engine | Same modes, risk decisions, prompts and fail-closed behavior |
+| Sessions/resume | Session extension + Storage | Same persistence, locking, resume and compatibility |
+| Compaction/recovery | Agent extension + Trajectory | Same compaction triggers, transcript behavior and transport recovery |
+| Tasks/teams/subagents | Tools/Workflow extensions | Same persistence, background execution and user-visible results |
+| Memory/skills/worktrees | Tools extensions | Same storage, prompt integration and safety checks |
+| Background processes | Tool/Workflow extension | Same cancellation, output and cleanup behavior |
+| Voice | Chat/View extension | Same recording/transcription integration where supported |
+| Token/balance statistics | Agent/Session projection | Same accounting and display data |
+| TUI rendering | TUI View Adapter | Same visual behavior and interaction outcomes |
+| Headless mode | External Client adapter | Same non-interactive execution and exit behavior |
+
+## Error, timeout and cancellation model
+
+Every invocation has a request ID and may have a deadline. Cancellation is propagated from client to extension to tool or plugin. The Kernel records request, cancellation and terminal outcome in Trajectory.
+
+Error categories are stable and serializable:
+
+```text
+InvalidRequest
+ProtocolMismatch
+CapabilityNotFound
+PermissionDenied
+Timeout
+Cancelled
+PluginUnavailable
+PluginCrashed
+ProviderError
+ToolError
+StorageError
+InternalError
+```
+
+Errors must identify origin and retryability. A plugin crash fails its in-flight calls and emits a lifecycle event; it must not terminate the Runtime or unrelated runs.
+
+## Migration strategy
+
+Migration is incremental in implementation order but final in dependency direction. No new feature may add a permanent Agent-to-TUI or MCP-special-case dependency.
+
+1. **Protocol foundation:** add neutral IDs, envelopes, Runtime events, commands, interactions, errors and capability declarations.
+2. **Kernel services:** extract permission, event transport, cancellation, storage facade and trajectory recording behind interfaces.
+3. **Unified capability routing:** adapt native tools and MCP tools to one registration and invocation path.
+4. **Agent and Session boundaries:** move Agent loop and Session lifecycle behind service interfaces; remove direct TUI channels.
+5. **Interaction and View adapters:** convert `ui_responder` and TUI wiring to the common interaction protocol; preserve all existing render behavior.
+6. **Rust extensions:** register built-in Agent, Session, Chat and Tools using the same protocol and permission path.
+7. **Node host:** add independent Node process transport and a minimal Chat plugin proving registration, run start, event subscription and interaction response.
+8. **WASM host:** add constrained execution and a minimal capability plugin.
+9. **Removal and verification:** delete old direct channels and special paths; verify dependency graph, business-function matrix and failure semantics.
+
+## Final module and crate shape
+
+The intended end state is:
+
+```text
+crates/
+  tact/                    # Runtime Kernel and host orchestration
+  tact_protocol/           # Language-neutral wire and domain types
+  tact_plugin_host/        # Lifecycle, transport and supervision
+  tact_plugin_node/        # Node.js host transport
+  tact_plugin_wasm/        # WASM host transport
+  tact_trajectory/         # Trajectory model, recorder, store, replay
+  tact_extensions/         # Official Agent/Session/Chat/Tools/Workflow
+  tact_ui/                 # Runtime host and external-client wiring
+  tui/                     # TUI View Adapter
+```
+
+The exact crate split may be delayed until interfaces stabilize, but the dependency direction is mandatory. A temporary module may remain in an existing crate only if it already obeys the final boundary and has a stated extraction task.
+
+## Verification and acceptance
+
+Architecture acceptance requires:
+
+- Kernel builds and runs without `tui`, `tact-ui`, Chat, or a specific Agent implementation.
+- Runtime can execute headlessly through the protocol.
+- Chat can be stopped, replaced, or run in multiple instances.
+- Rust, Node.js and WASM use the same protocol concepts and permission model.
+- Every capability invocation passes through the Capability Router and Permission Engine.
+- Every execution fact is available through Trajectory query and replay.
+- TUI, Web, Desktop and External Client use only Views / Interaction API.
+- Plugin crashes, timeouts, cancellation and reconnect do not corrupt unrelated runs.
+- Reserved host trajectory and permission facts cannot be forged by plugins.
+- Existing business-function preservation matrix passes.
+- The code dependency graph has no hidden Agent-to-TUI direct path and no MCP-only execution path.
+
+## Documentation synchronization
+
+Implementation work must update `ARCHITECTURE.md` to match the final dependency graph, add protocol and trajectory documentation under `docs/`, and add a newest-first user-visible migration entry to `book/26_chapter_issue_zh.md` if behavior or configuration changes are observable.
