@@ -55,8 +55,8 @@ fn architecture_public_constructor_and_builder_signatures_remain_available() {
         tokio::sync::mpsc::UnboundedSender<tact_protocol::AgentUpdate>,
     ) -> Agent = Agent::with_ui_channel;
     fn assert_agent_methods(agent: &mut Agent, content: &[tact_llm::ContentBlock]) {
-        let _ = agent.agent_loop(None);
-        let _ = agent.execute_tool_call(content);
+        std::mem::drop(agent.agent_loop(None));
+        std::mem::drop(agent.execute_tool_call(content));
     }
     let _ = assert_agent_methods as fn(&mut Agent, &[tact_llm::ContentBlock]);
 
@@ -64,8 +64,8 @@ fn architecture_public_constructor_and_builder_signatures_remain_available() {
     // hook implementations, even though the underlying type is `Agent`.
     fn accepts_loop_state(_: &LoopState) {}
     fn accepts_runtime(_: &AgentRuntime) {}
-    accepts_loop_state as fn(&LoopState);
-    accepts_runtime as fn(&AgentRuntime);
+    let _accepts_loop_state: fn(&LoopState) = accepts_loop_state;
+    let _accepts_runtime: fn(&AgentRuntime) = accepts_runtime;
 }
 
 #[tokio::test]
