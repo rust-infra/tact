@@ -709,6 +709,8 @@ flowchart TB
 
 `crates/tact/src/kernel/` contains the initial service boundaries. `crates/tact/src/trajectory/` contains the execution fact model and ordered recorder. `crates/protocol/` contains language-neutral IDs, envelopes, capabilities, runtime events, commands, interactions, and errors. Existing AgentUpdate/UserCommand and TUI wiring remain compatibility paths until the later adapter migration removes them.
 
+The Node.js process host is exposed by `crates/tact_plugin_node/`. The WASM host is exposed by `crates/tact_plugin_wasm/` and launches a configured Wasmtime CLI runner over the same stdio envelope protocol. When `host_calls` is negotiated, guest service requests are correlated through `HostCall` / `HostCallResult`; the host checks manifest grants and routes external capabilities through the Kernel permission boundary. The WASM runner receives explicit fuel, memory, and deadline limits, no preopened directories or inherited environment, and disabled WASI TCP/UDP.
+
 ---
 
 ## 16. Related Documents

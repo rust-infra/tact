@@ -27,6 +27,11 @@ pub enum PluginRequest {
     InteractionResponse {
         response: InteractionResponse,
     },
+    HostCallResult {
+        host_request_id: RequestId,
+        output: Option<serde_json::Value>,
+        error: Option<ProtocolError>,
+    },
     Shutdown,
 }
 
@@ -45,6 +50,11 @@ pub enum PluginResponse {
     },
     Event {
         event: RuntimeEvent,
+    },
+    HostCall {
+        host_request_id: RequestId,
+        capability: String,
+        input: serde_json::Value,
     },
     Error {
         error: ProtocolError,
@@ -145,7 +155,7 @@ impl RuntimeEvent {
         if origin != "plugin" {
             return Err("plugin event origin must be plugin".into());
         }
-        if plugin_id.contains('.') || plugin_id.contains(':') || plugin_id.contains('/') {
+        if plugin_id.contains(':') || plugin_id.contains('/') {
             return Err("plugin ID cannot contain namespace separators".into());
         }
         let prefix = format!("plugin.{plugin_id}.");

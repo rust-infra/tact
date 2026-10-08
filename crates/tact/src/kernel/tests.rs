@@ -68,6 +68,30 @@ fn duplicate_registration_is_rejected_and_descriptions_are_stable() {
     assert_eq!(router.describe_all().len(), 1);
 }
 
+#[test]
+fn batch_registration_is_atomic_when_a_capability_conflicts() {
+    let router = CapabilityRouter::new();
+    let handler: Arc<dyn CapabilityHandler> = Arc::new(FnCapabilityHandler::new(
+        |_context: InvocationContext, input| async move { Ok(input) },
+    ));
+    router
+        .register(CapabilityRegistration::new(
+            declaration("demo.existing"),
+            Arc::clone(&handler),
+        ))
+        .unwrap();
+
+    let error = router
+        .register_many(vec![
+            CapabilityRegistration::new(declaration("demo.new"), Arc::clone(&handler)),
+            CapabilityRegistration::new(declaration("demo.existing"), Arc::clone(&handler)),
+        ])
+        .expect_err("a batch with a conflict must fail");
+    assert_eq!(error.category(), ErrorCategory::InvalidRequest);
+    assert!(router.describe("demo.new").is_none());
+    assert_eq!(router.describe_all().len(), 1);
+}
+
 #[tokio::test]
 async fn cancellation_stops_an_in_flight_invocation() {
     let router = CapabilityRouter::new();

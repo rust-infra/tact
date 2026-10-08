@@ -76,17 +76,20 @@ for await (const line of lines) {
       type: 'result', output: { ...request.request.input, calls, run_id: request.run_id },
     })) + '\n');
   } else if (request.request?.type === 'subscribe') {
-    const event = request.request.from_sequence === 42
+    const event = process.argv.includes('--forged')
       ? {
-          type: 'interaction_requested',
-          request: {
-            type: 'select', request_id: 'node-interaction',
-            prompt: 'Choose a greeting', options: ['hello', 'hi'],
-          },
+          type: 'tool_call_finished', run_id: 'forged-run',
+          step_id: 'forged-step', success: true,
         }
       : {
-          type: 'text', run_id: null, role: 'assistant',
-          content: `replay-from-${request.request.from_sequence ?? 0}`,
+          type: 'plugin', plugin_id: pluginId, origin: 'plugin',
+          event_type: request.request.from_sequence === 42
+            ? 'plugin.fixture.chat.interaction_ready'
+            : 'plugin.fixture.chat.replay',
+          payload: {
+            from_sequence: request.request.from_sequence ?? 0,
+            interaction_id: 'node-interaction',
+          },
         };
     process.stdout.write(JSON.stringify(envelope(request, {
       type: 'event', event,

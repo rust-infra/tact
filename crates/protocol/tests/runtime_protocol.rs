@@ -46,6 +46,13 @@ fn plugin_events_require_namespaced_non_reserved_types() {
         payload: serde_json::json!({}),
     };
     assert!(good.validate_plugin_event("demo").is_ok());
+    let dotted_plugin = RuntimeEvent::Plugin {
+        plugin_id: PluginId::from("fixture.wasm"),
+        origin: "plugin".into(),
+        event_type: "plugin.fixture.wasm.progress".into(),
+        payload: serde_json::json!({}),
+    };
+    assert!(dotted_plugin.validate_plugin_event("fixture.wasm").is_ok());
     let wrong_owner = RuntimeEvent::Plugin {
         plugin_id: PluginId::from("demo"),
         origin: "plugin".into(),
@@ -112,4 +119,32 @@ fn nested_events_and_interactions_are_json_serializable() {
     assert!(json.contains("interaction_requested"));
     let decoded: PluginResponse = serde_json::from_str(&json).unwrap();
     assert!(matches!(decoded, PluginResponse::Event { .. }));
+}
+
+#[test]
+fn plugin_host_calls_round_trip_with_nested_correlation_ids() {
+    let request = PluginRequest::HostCallResult {
+        host_request_id: RequestId::from("host-call-1"),
+        output: Some(serde_json::json!({ "now": "123" })),
+        error: None,
+    };
+    let encoded = serde_json::to_string(&request).unwrap();
+    let decoded: PluginRequest = serde_json::from_str(&encoded).unwrap();
+    assert!(matches!(
+        decoded,
+        PluginRequest::HostCallResult { host_request_id, .. }
+            if host_request_id == RequestId::from("host-call-1")
+    ));
+
+    let response = PluginResponse::HostCall {
+        host_request_id: RequestId::from("host-call-2"),
+        capability: "clock.read".into(),
+        input: serde_json::Value::Null,
+    };
+    let encoded = serde_json::to_string(&response).unwrap();
+    let decoded: PluginResponse = serde_json::from_str(&encoded).unwrap();
+    assert!(matches!(
+        decoded,
+        PluginResponse::HostCall { capability, .. } if capability == "clock.read"
+    ));
 }

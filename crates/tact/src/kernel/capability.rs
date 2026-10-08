@@ -86,15 +86,38 @@ impl CapabilityRouter {
 
     /// Registers one capability. Names are unique within a Router.
     pub fn register(&self, registration: CapabilityRegistration) -> Result<(), KernelError> {
-        registration.declaration.validate().map_err(|message| {
-            KernelError::new(
-                tact_protocol::ErrorCategory::InvalidRequest,
-                message,
-                "kernel",
-                false,
-            )
-        })?;
-        let name = registration.declaration.name.clone();
+        self.register_many(vec![registration])
+    }
+
+    /// Atomically registers a set of capabilities. A conflict leaves the
+    /// existing registry unchanged and inserts none of the batch.
+    pub fn register_many(
+        &self,
+        registrations: Vec<CapabilityRegistration>,
+    ) -> Result<(), KernelError> {
+        let mut pending = BTreeMap::new();
+        for registration in registrations {
+            registration.declaration.validate().map_err(|message| {
+                KernelError::new(
+                    tact_protocol::ErrorCategory::InvalidRequest,
+                    message,
+                    "kernel",
+                    false,
+                )
+            })?;
+            let name = registration.declaration.name.clone();
+            if pending.contains_key(&name) {
+                return Err(KernelError::duplicate_capability(name));
+            }
+            pending.insert(
+                name,
+                RegisteredCapability {
+                    declaration: registration.declaration,
+                    handler: registration.handler,
+                },
+            );
+        }
+
         let mut capabilities = self.capabilities.write().map_err(|_| {
             KernelError::new(
                 tact_protocol::ErrorCategory::InternalError,
@@ -103,16 +126,13 @@ impl CapabilityRouter {
                 true,
             )
         })?;
-        if capabilities.contains_key(&name) {
-            return Err(KernelError::duplicate_capability(name));
+        if let Some(name) = pending
+            .keys()
+            .find(|name| capabilities.contains_key(name.as_str()))
+        {
+            return Err(KernelError::duplicate_capability(name.clone()));
         }
-        capabilities.insert(
-            name,
-            RegisteredCapability {
-                declaration: registration.declaration,
-                handler: registration.handler,
-            },
-        );
+        capabilities.extend(pending);
         Ok(())
     }
 

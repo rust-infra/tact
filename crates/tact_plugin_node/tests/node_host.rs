@@ -31,23 +31,42 @@ async fn start(args: &[&str]) -> NodePluginHost {
 
 #[tokio::test]
 async fn registers_chat_capability_and_invokes_it() {
-    let mut host = start(&[]).await;
+    let host = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
     assert!(
-        host.capabilities()
+        host.lock()
+            .await
+            .capabilities()
             .iter()
             .any(|capability| capability.name == "chat.echo")
     );
-    let response = host
-        .request(PluginRequest::Invoke {
-            capability: "chat.echo".into(),
-            input: json!({ "message": "hello" }),
-        })
+    let router = tact::kernel::CapabilityRouter::new();
+    NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
+    let runtime = RuntimeContext::new(router);
+    let context = runtime.invocation(
+        RequestId::from("echo-call"),
+        PluginId::from("fixture.chat"),
+        "test",
+    );
+    let output = runtime
+        .router()
+        .invoke("chat.echo", context, json!({ "message": "hello" }))
         .await
         .unwrap();
-    let PluginResponse::Result { output } = response else {
-        panic!("expected invocation result, got {response:?}");
-    };
     assert_eq!(output["message"], "hello");
+    host.lock().await.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn direct_invoke_requests_cannot_bypass_capability_router() {
+    let mut host = start(&[]).await;
+    let error = host
+        .request(PluginRequest::Invoke {
+            capability: "chat.echo".into(),
+            input: json!({ "message": "bypass" }),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.category(), ErrorCategory::PermissionDenied);
     host.stop().await.unwrap();
 }
 
@@ -83,12 +102,12 @@ async fn replays_events_from_requested_sequence() {
         .await
         .unwrap();
     let PluginResponse::Event {
-        event: RuntimeEvent::Text { content, .. },
+        event: RuntimeEvent::Plugin { payload, .. },
     } = response
     else {
         panic!("expected replay event, got {response:?}");
     };
-    assert_eq!(content, "replay-from-41");
+    assert_eq!(payload["from_sequence"], 41);
     host.stop().await.unwrap();
 }
 
@@ -104,8 +123,8 @@ async fn chat_plugin_can_answer_a_runtime_interaction() {
     assert!(matches!(
         event,
         PluginResponse::Event {
-            event: RuntimeEvent::InteractionRequested { .. }
-        }
+            event: RuntimeEvent::Plugin { ref event_type, .. }
+        } if event_type == "plugin.fixture.chat.interaction_ready"
     ));
     let response = host
         .request(PluginRequest::InteractionResponse {
@@ -121,6 +140,19 @@ async fn chat_plugin_can_answer_a_runtime_interaction() {
         PluginResponse::Result { output } if output["answered"] == true
     ));
     host.stop().await.unwrap();
+}
+
+#[tokio::test]
+async fn plugin_cannot_forge_host_runtime_events() {
+    let mut host = start(&["--forged"]).await;
+    let error = host
+        .request(PluginRequest::Subscribe {
+            from_sequence: Some(1),
+        })
+        .await
+        .unwrap_err();
+    assert_eq!(error.category(), ErrorCategory::InvalidRequest);
+    assert_eq!(host.state(), tact::plugin::PluginState::Failed);
 }
 
 #[tokio::test]
@@ -147,18 +179,19 @@ async fn denied_capability_never_reaches_node_process() {
         .unwrap_err();
     assert_eq!(error.category(), ErrorCategory::PermissionDenied);
 
-    let response = host
-        .lock()
-        .await
-        .request(PluginRequest::Invoke {
-            capability: "chat.echo".into(),
-            input: json!({ "message": "probe" }),
-        })
+    let allowed_router = tact::kernel::CapabilityRouter::new();
+    NodePluginHost::register_with_router(Arc::clone(&host), &allowed_router).unwrap();
+    let allowed_runtime = RuntimeContext::new(allowed_router);
+    let context = allowed_runtime.invocation(
+        RequestId::from("allowed-probe"),
+        PluginId::from("fixture.chat"),
+        "test",
+    );
+    let output = allowed_runtime
+        .router()
+        .invoke("chat.echo", context, json!({ "message": "probe" }))
         .await
         .unwrap();
-    let PluginResponse::Result { output } = response else {
-        panic!("expected probe result, got {response:?}");
-    };
     assert_eq!(output["calls"], 1, "only the explicit probe reached Node");
     host.lock().await.stop().await.unwrap();
 }
@@ -213,24 +246,32 @@ async fn invocation_publishes_events_and_persists_trajectory_facts() {
 
 #[tokio::test]
 async fn timeout_terminates_failed_host() {
-    let mut host = NodePluginHost::start_with_timeout(
-        "node",
-        &[fixture().display().to_string()],
+    let host = Arc::new(tokio::sync::Mutex::new(
+        NodePluginHost::start_with_timeout(
+            "node",
+            &[fixture().display().to_string()],
+            PluginId::from("fixture.chat"),
+            ProtocolVersion::CURRENT,
+            Duration::from_millis(40),
+        )
+        .await
+        .unwrap(),
+    ));
+    let router = tact::kernel::CapabilityRouter::new();
+    NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
+    let runtime = RuntimeContext::new(router);
+    let context = runtime.invocation(
+        RequestId::from("timeout-call"),
         PluginId::from("fixture.chat"),
-        ProtocolVersion::CURRENT,
-        Duration::from_millis(40),
-    )
-    .await
-    .unwrap();
-    let error = host
-        .request(PluginRequest::Invoke {
-            capability: "chat.slow".into(),
-            input: json!({}),
-        })
+        "test",
+    );
+    let error = runtime
+        .router()
+        .invoke("chat.slow", context, json!({}))
         .await
         .unwrap_err();
     assert_eq!(error.category(), ErrorCategory::Timeout);
-    assert_eq!(host.state(), tact::plugin::PluginState::Failed);
+    assert_eq!(host.lock().await.state(), tact::plugin::PluginState::Failed);
 }
 
 #[tokio::test]
@@ -257,65 +298,89 @@ async fn cancellation_terminates_only_the_plugin_host() {
 
 #[tokio::test]
 async fn malformed_response_fails_host_and_restart_recovers() {
-    let mut host = start(&[]).await;
-    let error = host
-        .request(PluginRequest::Invoke {
-            capability: "chat.malformed".into(),
-            input: json!({}),
-        })
+    let host = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
+    let router = tact::kernel::CapabilityRouter::new();
+    NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
+    let runtime = RuntimeContext::new(router);
+    let context = runtime.invocation(
+        RequestId::from("malformed-call"),
+        PluginId::from("fixture.chat"),
+        "test",
+    );
+    let error = runtime
+        .router()
+        .invoke("chat.malformed", context, json!({}))
         .await
         .unwrap_err();
     assert_eq!(error.category(), ErrorCategory::PluginCrashed);
-    assert_eq!(host.state(), tact::plugin::PluginState::Failed);
-    host.restart().await.unwrap();
-    let result = host
-        .request(PluginRequest::Invoke {
-            capability: "chat.echo".into(),
-            input: json!({ "after_restart": true }),
-        })
+    assert_eq!(host.lock().await.state(), tact::plugin::PluginState::Failed);
+    host.lock().await.restart().await.unwrap();
+    let context = runtime.invocation(
+        RequestId::from("after-restart"),
+        PluginId::from("fixture.chat"),
+        "test",
+    );
+    let result = runtime
+        .router()
+        .invoke("chat.echo", context, json!({ "after_restart": true }))
         .await
         .unwrap();
-    assert!(matches!(result, PluginResponse::Result { .. }));
-    host.stop().await.unwrap();
+    assert_eq!(result["after_restart"], true);
+    host.lock().await.stop().await.unwrap();
 }
 
 #[tokio::test]
 async fn plugin_crash_does_not_prevent_host_restart() {
-    let mut crashed = start(&[]).await;
-    let mut independent = start(&[]).await;
-    let error = crashed
-        .request(PluginRequest::Invoke {
-            capability: "chat.crash".into(),
-            input: json!({}),
-        })
+    let crashed = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
+    let independent = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
+    let crashed_router = tact::kernel::CapabilityRouter::new();
+    let independent_router = tact::kernel::CapabilityRouter::new();
+    NodePluginHost::register_with_router(Arc::clone(&crashed), &crashed_router).unwrap();
+    NodePluginHost::register_with_router(Arc::clone(&independent), &independent_router).unwrap();
+    let crashed_runtime = RuntimeContext::new(crashed_router);
+    let context = crashed_runtime.invocation(
+        RequestId::from("crash-call"),
+        PluginId::from("fixture.chat"),
+        "test",
+    );
+    let error = crashed_runtime
+        .router()
+        .invoke("chat.crash", context, json!({}))
         .await
         .unwrap_err();
     assert_eq!(error.category(), ErrorCategory::PluginCrashed);
-    assert_eq!(crashed.state(), tact::plugin::PluginState::Failed);
-    assert_eq!(independent.state(), tact::plugin::PluginState::Running);
-    assert!(matches!(
-        independent
-            .request(PluginRequest::Invoke {
-                capability: "chat.echo".into(),
-                input: json!({}),
-            })
-            .await
-            .unwrap(),
-        PluginResponse::Result { .. }
-    ));
-    crashed.restart().await.unwrap();
-    assert!(matches!(
-        crashed
-            .request(PluginRequest::Invoke {
-                capability: "chat.echo".into(),
-                input: json!({}),
-            })
-            .await
-            .unwrap(),
-        PluginResponse::Result { .. }
-    ));
-    crashed.stop().await.unwrap();
-    independent.stop().await.unwrap();
+    assert_eq!(
+        crashed.lock().await.state(),
+        tact::plugin::PluginState::Failed
+    );
+    assert_eq!(
+        independent.lock().await.state(),
+        tact::plugin::PluginState::Running
+    );
+    let independent_runtime = RuntimeContext::new(independent_router);
+    let context = independent_runtime.invocation(
+        RequestId::from("independent-call"),
+        PluginId::from("fixture.chat"),
+        "test",
+    );
+    independent_runtime
+        .router()
+        .invoke("chat.echo", context, json!({}))
+        .await
+        .unwrap();
+    crashed.lock().await.restart().await.unwrap();
+    let context = crashed_runtime.invocation(
+        RequestId::from("after-crash-restart"),
+        PluginId::from("fixture.chat"),
+        "test",
+    );
+    crashed_runtime
+        .router()
+        .invoke("chat.echo", context, json!({}))
+        .await
+        .unwrap();
+    crashed.lock().await.stop().await.unwrap();
+    independent.lock().await.stop().await.unwrap();
 }
 
 #[tokio::test]

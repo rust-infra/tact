@@ -6,6 +6,7 @@ members = [
     "crates/tact",
     "crates/tact-ui",
     "crates/tact_plugin_node",
+    "crates/tact_plugin_wasm",
     "crates/tact_llm",
     "crates/tool_refactor_macros",
 ]
