@@ -348,13 +348,14 @@ impl App {
         let (cached_markdown, _) = render_markdown_tui(&active.content, &self.theme);
         let new_rows = crate::render::cells::thinking::thinking_visual_rows(1);
         self.resize_thinking_placeholder_rows(active.phys_idx, old_rows, new_rows);
-        self.thinking_mut().blocks.push(ThinkingBlock {
-            phys_idx: active.phys_idx,
-            content: active.content,
+        self.thinking_mut().blocks.push(ThinkingBlock::new(
+            active.block_id.clone(),
+            active.phys_idx,
+            active.content,
             summary,
             cached_markdown,
-            elapsed: active.started_at.elapsed(),
-        });
+            active.started_at.elapsed(),
+        ));
     }
 
     /// Open a new thinking card at one shared-log placeholder row.

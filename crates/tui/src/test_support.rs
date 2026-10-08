@@ -73,7 +73,7 @@ impl TestApp {
         let Some(idx) = self.0.tools().blocks.last().map(|b| b.phys_idx) else {
             return false;
         };
-        self.0.open_diff_popup(idx);
+        self.0.open_diff_popup_by_physical_index(idx);
         self.0.tools_mut().popup.is_some()
     }
 
@@ -144,7 +144,7 @@ impl TestApp {
     }
 
     pub fn open_thinking_popup(&mut self, phys_idx: usize) -> bool {
-        self.0.open_thinking_popup(phys_idx);
+        self.0.open_thinking_popup_at_physical_index(phys_idx);
         self.0.thinking().popup.is_some()
     }
 

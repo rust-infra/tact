@@ -89,7 +89,11 @@ pub fn frame_hook_context(source: Option<&str>, body: &str) -> String {
 /// True when `text` is a hook-injected context cell (see
 /// [`HOOK_CONTEXT_OPEN_TAG`]).
 pub fn is_hook_context_text(text: &str) -> bool {
-    text.trim_start().starts_with(HOOK_CONTEXT_MARKER)
+    let trimmed = text.trim_start();
+    trimmed.starts_with(HOOK_CONTEXT_OPEN_TAG)
+        || trimmed
+            .strip_prefix(HOOK_CONTEXT_MARKER)
+            .is_some_and(|rest| rest.starts_with(' '))
 }
 
 /// The source recorded on a hook-context cell, when it carried one.
@@ -639,6 +643,15 @@ mod tests {
         assert_eq!(hook_context_source(&framed), None);
         assert_eq!(hook_context_body(&framed), "brief body");
         assert!(is_hook_context_text(&framed), "{framed}");
+    }
+
+    #[test]
+    fn malformed_hook_context_prefixes_are_plain_messages() {
+        for text in ["<hook-contextual>body", "<hook-context-malformed>body"] {
+            assert!(!is_hook_context_text(text), "{text}");
+            assert_eq!(hook_context_body(text), text);
+            assert_eq!(hook_context_source(text), None);
+        }
     }
 
     #[test]

@@ -7,6 +7,10 @@
 
 use ratatui::{Frame, layout::Rect};
 
+use agent_tui_kit::components::{
+    BackgroundPanelComponent, SubagentPanelComponent, TaskPanelComponent,
+};
+
 use crate::widgets::state::{App, SurfaceId};
 
 pub(crate) use agent_tui_kit::render::sticky_host::STICKY_BORDER_ROWS;
@@ -14,7 +18,9 @@ pub(crate) use agent_tui_kit::render::sticky_host::STICKY_BORDER_ROWS;
 /// True when any sticky domain (tasks, subagent overview, running background
 /// tasks) is visible.
 pub(crate) fn sticky_host_visible(app: &App) -> bool {
-    app.task_panel().visible || app.subagent_panel().visible || app.background_panel().visible
+    agent_tui_kit::state::StickyTab::ALL
+        .into_iter()
+        .any(|tab| sticky_domain(app, tab).visible())
 }
 
 /// Content rows inside the sticky host (excluding border). Collapsed = 1;
@@ -30,14 +36,103 @@ pub(crate) fn active_sticky_tab(app: &App) -> agent_tui_kit::state::StickyTab {
     agent_tui_kit::render::sticky_host::active_visible_tab(&ctx)
 }
 
-pub(crate) fn sticky_tab_expanded(app: &App, tab: agent_tui_kit::state::StickyTab) -> bool {
-    match tab {
-        agent_tui_kit::state::StickyTab::Tasks => app.task_panel().expanded,
-        agent_tui_kit::state::StickyTab::Subagent => app.subagent_panel().expanded,
-        agent_tui_kit::state::StickyTab::Background => app.background_panel().expanded,
+enum StickyDomain<'a> {
+    Tasks(&'a TaskPanelComponent),
+    Subagent(&'a SubagentPanelComponent),
+    Background(&'a BackgroundPanelComponent),
+}
+
+impl StickyDomain<'_> {
+    fn visible(self) -> bool {
+        match self {
+            Self::Tasks(panel) => panel.visible,
+            Self::Subagent(panel) => panel.visible,
+            Self::Background(panel) => panel.visible,
+        }
+    }
+
+    fn expanded(self) -> bool {
+        match self {
+            Self::Tasks(panel) => panel.expanded,
+            Self::Subagent(panel) => panel.expanded,
+            Self::Background(panel) => panel.expanded,
+        }
     }
 }
 
+enum StickyDomainMut<'a> {
+    Tasks(&'a mut TaskPanelComponent),
+    Subagent(&'a mut SubagentPanelComponent),
+    Background(&'a mut BackgroundPanelComponent),
+}
+
+impl<'a> StickyDomainMut<'a> {
+    fn set_expanded(self, expanded: bool) {
+        match self {
+            Self::Tasks(panel) => panel.expanded = expanded,
+            Self::Subagent(panel) => panel.expanded = expanded,
+            Self::Background(panel) => panel.expanded = expanded,
+        }
+    }
+
+    fn scroll_mut(self) -> &'a mut usize {
+        match self {
+            Self::Tasks(panel) => &mut panel.scroll,
+            Self::Subagent(panel) => &mut panel.scroll,
+            Self::Background(panel) => &mut panel.scroll,
+        }
+    }
+}
+
+fn sticky_domain(app: &App, tab: agent_tui_kit::state::StickyTab) -> StickyDomain<'_> {
+    match tab {
+        agent_tui_kit::state::StickyTab::Tasks => StickyDomain::Tasks(app.task_panel()),
+        agent_tui_kit::state::StickyTab::Subagent => StickyDomain::Subagent(app.subagent_panel()),
+        agent_tui_kit::state::StickyTab::Background => {
+            StickyDomain::Background(app.background_panel())
+        }
+    }
+}
+
+fn sticky_domain_mut(app: &mut App, tab: agent_tui_kit::state::StickyTab) -> StickyDomainMut<'_> {
+    match tab {
+        agent_tui_kit::state::StickyTab::Tasks => StickyDomainMut::Tasks(app.task_panel_mut()),
+        agent_tui_kit::state::StickyTab::Subagent => {
+            StickyDomainMut::Subagent(app.subagent_panel_mut())
+        }
+        agent_tui_kit::state::StickyTab::Background => {
+            StickyDomainMut::Background(app.background_panel_mut())
+        }
+    }
+}
+
+pub(crate) fn sticky_tab_expanded(app: &App, tab: agent_tui_kit::state::StickyTab) -> bool {
+    sticky_domain(app, tab).expanded()
+}
+
+pub(crate) fn sticky_scrollable(app: &App) -> bool {
+    sticky_host_visible(app) && sticky_tab_expanded(app, active_sticky_tab(app))
+}
+pub(crate) fn set_sticky_expanded(
+    app: &mut App,
+    tab: agent_tui_kit::state::StickyTab,
+    expanded: bool,
+) {
+    sticky_domain_mut(app, tab).set_expanded(expanded);
+}
+
+pub(crate) fn toggle_sticky_expanded(app: &mut App, tab: agent_tui_kit::state::StickyTab) {
+    let expanded = sticky_tab_expanded(app, tab);
+    set_sticky_expanded(app, tab, !expanded);
+}
+pub(crate) fn scroll_sticky(app: &mut App, tab: agent_tui_kit::state::StickyTab, delta: isize) {
+    let scroll = sticky_domain_mut(app, tab).scroll_mut();
+    *scroll = if delta < 0 {
+        scroll.saturating_sub(delta.unsigned_abs())
+    } else {
+        scroll.saturating_add(delta as usize)
+    };
+}
 pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
     app.mouse.set_area(SurfaceId::TaskPanel, area);
     let ctx = app.render_ctx();

@@ -56,7 +56,7 @@ fn seed_bash_finished(app: &mut App, command: &str, output: &str) {
 
 fn open_last_tool_popup(app: &mut App) {
     let phys_idx = app.tools_mut().blocks.last().expect("tool block").phys_idx;
-    app.open_diff_popup(phys_idx);
+    app.open_diff_popup_by_physical_index(phys_idx);
 }
 
 // --- P0: diff gutter, bash popup, inline cards ---
@@ -221,10 +221,15 @@ fn mermaid_popup_copy_uses_source_not_ascii() {
         "raw_messages should hold ASCII diagram, got: {ascii}"
     );
 
-    app.open_mermaid_popup(0);
+    app.open_mermaid_popup_at_physical_index(0);
     let popup = app.mermaid_popup.as_ref().expect("popup open");
     assert_eq!(
-        app.mermaid_blocks[popup.block_idx].source, "sequenceDiagram\n  Alice->>Bob: Hello",
+        app.mermaid_blocks
+            .iter()
+            .find(|block| block.block_id == popup.block_id)
+            .expect("popup block")
+            .source,
+        "sequenceDiagram\n  Alice->>Bob: Hello",
         "popup must point at Mermaid source"
     );
     // Exercise the copy path (system clipboard may or may not be available).
@@ -537,6 +542,7 @@ fn code_popup_scroll_skips_leading_lines() {
         .join("\n");
     let styled: Vec<Line<'static>> = content.lines().map(|l| Line::from(l.to_string())).collect();
     app.code_blocks.push(CodeBlock {
+        block_id: "test-code".into(),
         start_idx: 0,
         end_idx: styled.len(),
         lang: "rust".into(),
@@ -544,7 +550,7 @@ fn code_popup_scroll_skips_leading_lines() {
         styled,
     });
     app.code_popup = Some(CodePopup {
-        block_idx: 0,
+        block_id: "test-code".into(),
         lang: "rust".into(),
         scroll: 5,
     });
@@ -603,6 +609,7 @@ fn thinking_popup_scroll_shows_later_lines() {
         crate::widgets::state::LogItemKind::Thinking,
     );
     app.thinking_mut().blocks.push(ThinkingBlock {
+        block_id: "test-thinking".into(),
         phys_idx: 0,
         content: (1..=12)
             .map(|n| format!("reason-{n}"))
@@ -613,6 +620,7 @@ fn thinking_popup_scroll_shows_later_lines() {
         elapsed: Duration::from_millis(5),
     });
     app.thinking_mut().popup = Some(ThinkingPopup {
+        block_id: "test-thinking".into(),
         phys_idx: 0,
         title: "Thinking".into(),
         scroll: 6,
@@ -1059,7 +1067,7 @@ fn mermaid_popup_opens_on_rendered_diagram_not_source() {
     app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
     assert_eq!(app.mermaid_blocks.len(), 1);
 
-    app.open_mermaid_popup(0);
+    app.open_mermaid_popup_at_physical_index(0);
     let popup = app.mermaid_popup.as_ref().expect("popup open");
     assert_eq!(
         popup.view,
@@ -1085,7 +1093,7 @@ fn mermaid_popup_tab_switches_to_source_and_back() {
         "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
     ));
     app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
-    app.open_mermaid_popup(0);
+    app.open_mermaid_popup_at_physical_index(0);
 
     app.toggle_mermaid_popup_view();
     let source_text = render_main_area_text(&mut app, 100, 30);
@@ -1118,11 +1126,12 @@ fn mermaid_popup_falls_back_to_source_and_labels_unsupported_syntax() {
     let mut app = make_app();
     app.mermaid_blocks
         .push(crate::widgets::state::MermaidBlock {
+            block_id: "test-mermaid-0".into(),
             start_idx: 0,
             end_idx: 1,
             source: "flowchart TD\n    A[Start] --> B[Done]\n    style B fill:#ddffdd".into(),
         });
-    app.open_mermaid_popup(0);
+    app.open_mermaid_popup_at_physical_index(0);
 
     assert_eq!(
         app.mermaid_popup.as_ref().unwrap().view,
@@ -1149,11 +1158,12 @@ fn mermaid_popup_renders_diagram_at_wider_width_than_log() {
     let mut app = make_app();
     app.mermaid_blocks
         .push(crate::widgets::state::MermaidBlock {
+            block_id: "test-mermaid-1".into(),
             start_idx: 0,
             end_idx: 1,
             source: source.into(),
         });
-    app.open_mermaid_popup(0);
+    app.open_mermaid_popup_at_physical_index(0);
 
     let text = render_main_area_text(&mut app, 120, 30);
     assert!(
@@ -1173,11 +1183,12 @@ fn mermaid_popup_paints_theme_bg_across_its_area() {
     let mut app = make_app();
     app.mermaid_blocks
         .push(crate::widgets::state::MermaidBlock {
+            block_id: "test-mermaid-2".into(),
             start_idx: 0,
             end_idx: 1,
             source: "sequenceDiagram\n  Alice->>Bob: Hello".into(),
         });
-    app.open_mermaid_popup(0);
+    app.open_mermaid_popup_at_physical_index(0);
 
     let theme_bg = app.theme.bg;
     let terminal = crate::render::test_harness::render_main_area_terminal(&mut app, 100, 30);

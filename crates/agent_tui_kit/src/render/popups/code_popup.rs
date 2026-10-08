@@ -15,10 +15,13 @@ pub fn render_code_popup(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Popu
     let Some(popup) = &ctx.code_popup else {
         return surface;
     };
-    if popup.block_idx >= ctx.code_blocks.len() {
+    let Some(block) = ctx
+        .code_blocks
+        .iter()
+        .find(|block| block.block_id == popup.block_id)
+    else {
         return surface;
-    }
-    let block = &ctx.code_blocks[popup.block_idx];
+    };
     let raw_lines: Vec<&str> = block.content.lines().collect();
     let total = raw_lines.len();
     if total == 0 {

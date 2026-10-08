@@ -104,7 +104,7 @@ pub(crate) struct ToolBlock {
 | `StepFinished` | `agent.rs` | `ToolWidget::from_step_result().build()` → `finalize_tool_block` |
 | `StepFailed` | `agent.rs` | Rebuild output as `ToolPhase::Failed` or fallback system message |
 | `PlanGenerated` | `agent.rs` | **Legacy handler only** — agent does not emit; would call `cancel_all_active_tools()` |
-| Double-click tool row | `lib.rs` / `popups.rs` | Open `DiffPopup` from `detail_full` or file path |
+| Tool row / `[Open]` button | `lib.rs` / `popups.rs` | Open `DiffPopup` from `detail_full` or file path; the rendered button is the primary single-click affordance |
 
 `finalize_tool_block()` either resizes existing placeholder rows (normal path) or inserts new ones (no matching active entry).
 
@@ -146,7 +146,7 @@ Why two stages: `ToolWidget` needs `&Theme` and `&Messages`. `ToolCell` must liv
   ├─ Row 2  Meta      "⠋ Running · 1.2s"  or  "✓ Success · 21ms · 4 lines · [󰜼 Open]"
   └─ Card   (optional: drawn only for a running or failed tool, or a
              finished subagent — every other finished tool collapses to
-             the two rows above, its output one double-click away)
+             the two rows above, its output one stable-ID popup open affordance)
             ╭─ <card title> ──────────────────────╮
             │  preview rows (1 by default; 3 live) │
             ╰─ Double-click for full content ──────╯
@@ -209,7 +209,7 @@ is removed and carriage return replaces the current logical line.
 |---|---|---|
 | `Command`, `FileRead`, `FileEdit`, `FileWrite` | always (when there is detail) | They drew a card, so collapsing **saves** rows; the hint explains where the content went, whatever its size. `background_run` / `worktree_run` (`Command`) and `apply_patch` (`FileEdit`) follow for free. |
 | `Subagent` | never | It is the entry point of the transcript popup and the line it retains is the child's result summary. |
-| `Task`, `Sleep`, `Generic` | when the result has **more than one line** | These never drew a card, so their result was *unreachable* rather than collapsed — no card, no popup, no click target (`detail_full` stayed `None`). Collapsing costs no extra row and makes a multi-line readout (`task_list`, `read_inbox`, `worktree_status`, `load_skill`, `check_background`, `wait_background` with its output tail, and every MCP/plugin tool, which arrives as `Generic`) one double-click away. |
+| `Task`, `Sleep`, `Generic` | when the result has **more than one line** | These never drew a card, so their result was *unreachable* rather than collapsed — no card, no popup, no click target (`detail_full` stayed `None`). Collapsing costs no extra row and makes a multi-line readout (`task_list`, `read_inbox`, `worktree_status`, `load_skill`, `check_background`, `wait_background` with its output tail, and every MCP/plugin tool, which arrives as `Generic`) one stable-ID popup open affordance. |
 
 Two exclusions keep the hint meaningful rather than universal:
 
@@ -311,7 +311,7 @@ the terminal `StepResult.detail` becomes authoritative after completion.
 
 Centered modal styling (no drop shadow); scroll with `j`/`k`. Permission `RequestSelect` popups set `log_confirm = false` so approval text is not duplicated in the log.
 
-A collapsed finished tool (`ToolLayout.detail_collapsed`) draws no card, so its click target is the trailing `[󰜼 Open]` button on the meta row (`collapsed_action_cols(&msgs)` / `hits_collapsed_action(row, col, &msgs)`, measured in the locale the row is drawn in) — everything else in those two rows is inert. A tool that still draws a card (a finished subagent, a running or failed tool) opens only from a click inside that card. See §5 "Collapsed output".
+A collapsed finished tool (`ToolLayout.detail_collapsed`) draws no card, so its click target is the trailing `[󰜼 Open]` button on the meta row (`collapsed_action_cols(&msgs)` / `hits_collapsed_action(row, col, &msgs)`, measured in the locale the row is drawn in). The unified renderer also emits the exact clipped `OpenAction` hitbox with the stable `tool_id`; a single click inside that button opens the popup. Everything else in those two rows is inert. A tool that still draws a card (a finished subagent, a running or failed tool) opens from its rendered `[Open]` button; the legacy double-click path remains only for compatibility. See §5 "Collapsed output".
 
 Tool detail popups support left-button text selection over the visible body. Hit testing stores UTF-8-safe byte offsets into the original cached content, so line numbers, green diff gutters, borders, titles, and scrollbars are never selected or copied. Display cells map to complete extended grapheme clusters using Ratatui-compatible widths; forward and backward drags therefore include the whole visible grapheme under both endpoints, including combining and emoji sequences. Dragging above or below the body clamps to the first or last visible source boundary without changing popup scroll; scrolling otherwise preserves the current selection. Automatic drag-edge scrolling is intentionally out of scope.
 

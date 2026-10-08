@@ -219,11 +219,15 @@ pub struct App {
     pub(crate) workspace_dir: String,
     /// Completed LLM code block overlays.
     pub(crate) code_blocks: Vec<CodeBlock>,
+    /// Monotonic identity source for code block overlays.
+    pub(crate) next_code_block_id: u64,
     /// Code block popup preview (fullscreen independent scroll viewer).
     pub(crate) code_popup: Option<CodePopup>,
     /// Successfully rendered Mermaid diagrams (source retained for copy popup).
     pub(crate) mermaid_blocks: Vec<MermaidBlock>,
-    /// Mermaid source popup (double-click a rendered diagram).
+    /// Monotonic identity source for Mermaid diagrams.
+    pub(crate) next_mermaid_block_id: u64,
+    /// Mermaid source popup opened from the diagram's `[Open]` affordance.
     pub(crate) mermaid_popup: Option<MermaidPopup>,
     /// `/tasks-dag` Mermaid→Unicode dependency graph popup.
     pub(crate) task_dag_popup: Option<TaskDagPopup>,

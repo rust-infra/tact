@@ -258,7 +258,7 @@ Tool invocations are rendered as dedicated log rows (not plain `Info` text). Eac
 
 1. **Title row** — step number + tool name + argument summary (e.g. `2. bash (git status)`; truncated at 120 chars)
 2. **Meta row** — phase spinner / success or fail prefix, permission label, duration (live while running via `started_at`)
-3. **Detail card** (optional) — command output, file preview, or error text; double-click opens `DiffPopup` with full args when truncated
+3. **Detail card** (optional) — command output, file preview, or error text; its `[Open]` button opens `DiffPopup` with full args when truncated (double-click remains a compatibility path)
 
 Key types:
 

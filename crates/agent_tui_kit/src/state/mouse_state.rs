@@ -202,11 +202,8 @@ pub struct MouseState {
     /// Refreshed every frame by the log renderer; a click sends
     /// `UserCommand::CancelSubagent { child_id }`.
     pub subagent_cancel_btn_areas: Vec<(String, Rect)>,
-    /// Footer `[󰜼 Open]` button rects of the Thinking cards on screen, refreshed
-    /// every frame by the log renderer. A Thinking card draws text of its own
-    /// on rows that do not map to that text, so its button is the only glyph a
-    /// click may open the popup from.
-    pub thinking_open_btn_areas: Vec<Rect>,
+    /// Rendered `[Open]` actions for Thinking, subagent and collapsed tools.
+    pub open_actions: Vec<crate::render::log::OpenAction>,
     /// Selectable body area inside the active text popup border.
     ///
     /// Deliberately *not* a [`SurfaceId`]: thinking / diff / subagent share one
@@ -222,13 +219,13 @@ pub struct MouseState {
     pub last_click_pos: Option<(u16, u16)>,
     /// Consecutive click count (1=single, 2=double, 3=triple).
     pub click_count: u8,
-    /// Index of the thinking block hit by the last click (used for double-click popup open).
+    /// Legacy physical index used only to recognize a compatible double-click.
     pub last_click_card: Option<usize>,
-    /// Index of the diff block hit by the last click (used for double-click popup open).
+    /// Legacy physical index used only to recognize a compatible double-click.
     pub last_click_tool: Option<usize>,
-    /// Index of the code block hit by the last click (used for double-click popup open).
+    /// Legacy physical index used only to recognize a compatible double-click.
     pub last_click_code: Option<usize>,
-    /// Index of the Mermaid block hit by the last click (used for double-click popup open).
+    /// Legacy physical index used only to recognize a compatible double-click.
     pub last_click_mermaid: Option<usize>,
 }
 
@@ -259,7 +256,17 @@ impl MouseState {
         self.areas[id as usize] = Rect::default();
     }
 
-    /// Whether `(column, row)` falls inside `id`'s rect.
+    pub fn replace_open_actions(&mut self, actions: Vec<crate::render::log::OpenAction>) {
+        self.open_actions = actions;
+    }
+
+    /// Rectangles use half-open bounds, matching ratatui's layout convention.
+    pub fn open_action_at(&self, column: u16, row: u16) -> Option<&crate::render::log::OpenAction> {
+        self.open_actions
+            .iter()
+            .find(|action| action.hit_test(column, row))
+    }
+
     ///
     /// A hidden surface has a zero-size rect, so this is also the "is it
     /// active" test every hit ladder needs — no separate `input_mode` check.
@@ -319,7 +326,19 @@ mod tests {
         );
     }
 
-    /// The right/bottom edges are exclusive: a rect at x=10 w=20 covers 10..30,
+    #[test]
+    fn open_action_at_returns_only_matching_action() {
+        let mut mouse = MouseState::new();
+        mouse.replace_open_actions(vec![crate::render::log::OpenAction::new(
+            crate::render::log::OpenTarget::tool("tool-1"),
+            Rect::new(4, 3, 3, 2),
+        )]);
+        assert!(mouse.open_action_at(4, 3).is_some());
+        assert!(mouse.open_action_at(6, 4).is_some());
+        assert!(mouse.open_action_at(7, 4).is_none());
+        assert!(mouse.open_action_at(6, 5).is_none());
+    }
+
     /// so column 30 belongs to the surface behind it.
     #[test]
     fn hit_testing_uses_half_open_bounds() {

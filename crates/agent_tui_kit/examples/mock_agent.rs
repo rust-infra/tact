@@ -98,6 +98,7 @@ impl MockShell {
                         && !active.is_blank()
                     {
                         self.thinking.blocks.push(ThinkingBlock {
+                            block_id: "mock-thinking".into(),
                             phys_idx: active.phys_idx,
                             content: active.content.clone(),
                             summary: active.content.lines().next().unwrap_or("").to_string(),

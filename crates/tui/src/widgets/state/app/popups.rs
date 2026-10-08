@@ -1,4 +1,6 @@
+use agent_tui_kit::render::log::OpenTarget;
 use arboard::Clipboard;
+
 use base64::{Engine, engine::general_purpose::STANDARD as BASE64};
 use ratatui::{layout::Rect, style::Color, text::Line};
 
@@ -8,7 +10,14 @@ use crate::{
 };
 
 impl App {
-    /// Copy text via native clipboard → OSC 52 → internal buffer.
+    pub(crate) fn open_action(&mut self, target: OpenTarget) {
+        match target {
+            OpenTarget::Tool { tool_id } => self.open_diff_popup_by_id(&tool_id),
+            OpenTarget::Subagent { tool_id } => self.open_subagent_popup_by_id(&tool_id),
+            OpenTarget::Thinking { block_id } => self.open_thinking_popup_by_id(&block_id),
+        }
+    }
+
     pub(crate) fn copy_text(&mut self, text: &str) {
         self.copy_text_inner(text, true);
     }
@@ -263,43 +272,57 @@ impl App {
     /// id) so switching between concurrent subagents preserves each one's
     /// scroll / selection / cached layout. Re-opening a popup re-activates its
     /// existing entry rather than resetting it.
-    pub(crate) fn open_subagent_popup(&mut self, phys_idx: usize) {
-        let output = match self.tool_output_at(phys_idx) {
-            Some(o) if matches!(o.visual_kind, tact_protocol::ToolVisualKind::Subagent) => {
-                o.clone()
-            }
-            _ => return,
-        };
+    pub(crate) fn open_subagent_popup_at_physical_index(&mut self, phys_idx: usize) {
         let tool_id = self
-            .tools_mut()
+            .tools()
             .active
             .iter()
             .find(|a| a.phys_idx == phys_idx)
             .map(|a| a.tool_id.clone())
             .or_else(|| {
-                self.tools_mut()
+                self.tools()
                     .blocks
                     .iter()
                     .find(|b| b.phys_idx == phys_idx)
                     .map(|b| b.tool_id.clone())
             });
-        let Some(tool_id) = tool_id else {
+        if let Some(tool_id) = tool_id {
+            self.open_subagent_popup_by_id(&tool_id);
+        }
+    }
+
+    pub(crate) fn open_subagent_popup_by_id(&mut self, tool_id: &str) {
+        let output = self
+            .tools()
+            .active
+            .iter()
+            .find(|a| a.tool_id == tool_id)
+            .map(|a| a.output.clone())
+            .or_else(|| {
+                self.tools()
+                    .blocks
+                    .iter()
+                    .find(|b| b.tool_id == tool_id)
+                    .map(|b| b.output.clone())
+            });
+        let Some(output) =
+            output.filter(|o| matches!(o.visual_kind, tact_protocol::ToolVisualKind::Subagent))
+        else {
             return;
         };
         self.subagent_popups
-            .entry(tool_id.clone())
+            .entry(tool_id.to_string())
             .or_insert_with(|| crate::widgets::state::SubagentPopup {
                 title: output.title_raw.clone(),
                 scroll: 0,
-                tool_id: tool_id.clone(),
+                tool_id: tool_id.to_string(),
                 cached_markdown: None,
                 selection: None,
                 layout_cache: None,
             });
-        self.active_subagent_popup = Some(tool_id);
+        self.active_subagent_popup = Some(tool_id.to_string());
     }
 
-    /// The currently-visible subagent popup, if any.
     pub(crate) fn subagent_popup(&self) -> Option<&crate::widgets::state::SubagentPopup> {
         self.active_subagent_popup
             .as_ref()
@@ -485,37 +508,58 @@ impl App {
         );
     }
 
-    /// Open the thinking popup for active or completed content at `phys_idx`.
-    pub(crate) fn open_thinking_popup(&mut self, phys_idx: usize) {
-        let running = self
-            .thinking_mut()
+    pub(crate) fn open_thinking_popup_at_physical_index(&mut self, phys_idx: usize) {
+        let block_id = self
+            .thinking()
             .active
             .as_ref()
-            .is_some_and(|active| active.phys_idx == phys_idx);
-        let exists = running
-            || self
-                .thinking_mut()
-                .blocks
-                .iter()
-                .any(|block| block.phys_idx == phys_idx);
-        if exists {
-            let msgs = self.msgs();
-            let title = if running {
-                msgs.thinking_title_active
-            } else {
-                msgs.thinking_title_done
-            };
-            self.thinking_mut().popup = Some(ThinkingPopup {
-                phys_idx,
-                title: title.to_string(),
-                scroll: 0,
-                selection: None,
-                selection_text: String::new(),
+            .filter(|active| active.phys_idx == phys_idx)
+            .map(|active| active.block_id.clone())
+            .or_else(|| {
+                self.thinking()
+                    .blocks
+                    .iter()
+                    .find(|block| block.phys_idx == phys_idx)
+                    .map(|block| block.block_id.clone())
             });
+        if let Some(block_id) = block_id {
+            self.open_thinking_popup_by_id(&block_id);
         }
     }
 
-    /// Close the thinking popup.
+    pub(crate) fn open_thinking_popup_by_id(&mut self, block_id: &str) {
+        let running = self
+            .thinking()
+            .active
+            .as_ref()
+            .is_some_and(|active| active.block_id == block_id);
+        let phys_idx = self
+            .thinking()
+            .active
+            .as_ref()
+            .filter(|active| active.block_id == block_id)
+            .map(|active| active.phys_idx)
+            .or_else(|| {
+                self.thinking()
+                    .blocks
+                    .iter()
+                    .find(|block| block.block_id == block_id)
+                    .map(|block| block.phys_idx)
+            });
+        let Some(phys_idx) = phys_idx else { return };
+        let msgs = self.msgs();
+        let title = if running {
+            msgs.thinking_title_active
+        } else {
+            msgs.thinking_title_done
+        };
+        self.thinking_mut().popup = Some(ThinkingPopup::new(
+            block_id.to_string(),
+            phys_idx,
+            title.to_string(),
+        ));
+    }
+
     pub(crate) fn close_thinking_popup(&mut self) {
         self.thinking_mut().popup = None;
         self.mouse.clear_area(SurfaceId::ThinkingPopup);
@@ -627,17 +671,17 @@ impl App {
     }
 
     pub(crate) fn thinking_popup_content(&self) -> Option<String> {
-        let phys_idx = self.thinking().popup.as_ref()?.phys_idx;
+        let block_id = self.thinking().popup.as_ref()?.block_id.clone();
         self.thinking()
             .active
             .as_ref()
-            .filter(|active| active.phys_idx == phys_idx)
+            .filter(|active| active.block_id == block_id)
             .map(|active| active.content.clone())
             .or_else(|| {
                 self.thinking()
                     .blocks
                     .iter()
-                    .find(|block| block.phys_idx == phys_idx)
+                    .find(|block| block.block_id == block_id)
                     .map(|block| block.content.clone())
             })
     }
@@ -806,13 +850,43 @@ impl App {
         }
     }
 
-    /// Open a tool detail popup (file content or command output).
-    pub(crate) fn open_diff_popup(&mut self, phys_idx: usize) {
-        let Some(output) = self.tool_output_at(phys_idx) else {
-            return;
-        };
-        if let Some(popup) = self.popup_from_tool_output(output) {
+    pub(crate) fn open_diff_popup_by_id(&mut self, tool_id: &str) {
+        let output = self
+            .tools()
+            .active
+            .iter()
+            .find(|a| a.tool_id == tool_id)
+            .map(|a| &a.output)
+            .or_else(|| {
+                self.tools()
+                    .blocks
+                    .iter()
+                    .find(|b| b.tool_id == tool_id)
+                    .map(|b| &b.output)
+            });
+        if let Some(output) = output
+            && let Some(popup) = self.popup_from_tool_output(output)
+        {
             self.tools_mut().popup = Some(popup);
+        }
+    }
+
+    pub(crate) fn open_diff_popup_by_physical_index(&mut self, phys_idx: usize) {
+        let tool_id = self
+            .tools()
+            .active
+            .iter()
+            .find(|a| a.phys_idx == phys_idx)
+            .map(|a| a.tool_id.clone())
+            .or_else(|| {
+                self.tools()
+                    .blocks
+                    .iter()
+                    .find(|b| b.phys_idx == phys_idx)
+                    .map(|b| b.tool_id.clone())
+            });
+        if let Some(tool_id) = tool_id {
+            self.open_diff_popup_by_id(&tool_id);
         }
     }
 
@@ -823,7 +897,12 @@ impl App {
     /// a drawn detail card (its whole rectangle) and a collapsed command's
     /// collapsed command's `[󰜼 Open]` button — not its parameter row, and not the
     /// meta row's earlier text (success mark, duration, line count) either.
-    pub(crate) fn open_diff_popup_at(&mut self, phys_idx: usize, relative_row: usize, col: usize) {
+    pub(crate) fn open_diff_popup_at_physical_index(
+        &mut self,
+        phys_idx: usize,
+        relative_row: usize,
+        col: usize,
+    ) {
         let Some(output) = self.tool_output_at(phys_idx) else {
             return;
         };
@@ -832,7 +911,7 @@ impl App {
         let msgs = self.msgs();
         if output.layout.detail_collapsed {
             if output.hits_collapsed_action(relative_row, col, &msgs) {
-                self.open_diff_popup(phys_idx);
+                self.open_diff_popup_by_physical_index(phys_idx);
             }
             return;
         }
@@ -845,7 +924,7 @@ impl App {
         if relative_row < detail_card_start || relative_row >= total_height {
             return;
         }
-        self.open_diff_popup(phys_idx);
+        self.open_diff_popup_by_physical_index(phys_idx);
     }
 
     /// Close the file content popup.
@@ -897,10 +976,23 @@ impl App {
 
     /// Open the code block popup.
     pub(crate) fn open_code_popup(&mut self, block_idx: usize) {
-        if block_idx < self.code_blocks.len() {
-            let block = &self.code_blocks[block_idx];
+        let block_id = self
+            .code_blocks
+            .get(block_idx)
+            .map(|block| block.block_id.clone());
+        if let Some(block_id) = block_id {
+            self.open_code_popup_by_id(&block_id);
+        }
+    }
+
+    pub(crate) fn open_code_popup_by_id(&mut self, block_id: &str) {
+        if let Some(block) = self
+            .code_blocks
+            .iter()
+            .find(|block| block.block_id == block_id)
+        {
             self.code_popup = Some(CodePopup {
-                block_idx,
+                block_id: block_id.to_string(),
                 lang: block.lang.clone(),
                 scroll: 0,
             });
@@ -917,7 +1009,14 @@ impl App {
         let Some(popup) = &self.code_popup else {
             return;
         };
-        let text = self.code_blocks[popup.block_idx].content.clone();
+        let Some(block) = self
+            .code_blocks
+            .iter()
+            .find(|block| block.block_id == popup.block_id)
+        else {
+            return;
+        };
+        let text = block.content.clone();
         self.copy_text(&text);
     }
 
@@ -927,11 +1026,26 @@ impl App {
     ///
     /// Opens on the rendered diagram (re-laid out at the popup's wider width);
     /// `Tab` switches to the raw fence body.
-    pub(crate) fn open_mermaid_popup(&mut self, block_idx: usize) {
-        if block_idx < self.mermaid_blocks.len()
-            && !self.mermaid_blocks[block_idx].source.is_empty()
+    /// Compatibility wrapper for callers that still hold a physical index.
+    #[allow(dead_code)]
+    pub(crate) fn open_mermaid_popup_at_physical_index(&mut self, block_idx: usize) {
+        let block_id = self
+            .mermaid_blocks
+            .get(block_idx)
+            .map(|block| block.block_id.clone());
+        if let Some(block_id) = block_id {
+            self.open_mermaid_popup_by_id(&block_id);
+        }
+    }
+
+    pub(crate) fn open_mermaid_popup_by_id(&mut self, block_id: &str) {
+        if self
+            .mermaid_blocks
+            .iter()
+            .find(|block| block.block_id == block_id)
+            .is_some_and(|block| !block.source.is_empty())
         {
-            self.mermaid_popup = Some(MermaidPopup::new(block_idx));
+            self.mermaid_popup = Some(MermaidPopup::new(block_id.to_string()));
         }
     }
 
@@ -956,10 +1070,14 @@ impl App {
         let Some(popup) = &self.mermaid_popup else {
             return;
         };
-        if popup.block_idx >= self.mermaid_blocks.len() {
+        let Some(block) = self
+            .mermaid_blocks
+            .iter()
+            .find(|block| block.block_id == popup.block_id)
+        else {
             return;
-        }
-        let text = self.mermaid_blocks[popup.block_idx].source.clone();
+        };
+        let text = block.source.clone();
         self.copy_text(&text);
     }
 }
@@ -1012,8 +1130,8 @@ mod tests {
         render::test_harness::make_app,
         widgets::{
             state::{
-                App, DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection, SubagentPopup,
-                SurfaceId, ThinkingPopup,
+                App, CodeBlock, DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection,
+                SubagentPopup, SurfaceId, ThinkingPopup,
             },
             tool_widget::{ToolPhase, ToolWidget},
         },
@@ -1125,6 +1243,7 @@ mod tests {
 
     fn thinking_popup(selection: Option<PopupTextSelection>) -> ThinkingPopup {
         ThinkingPopup {
+            block_id: "test-thinking".into(),
             phys_idx: 0,
             title: "thinking".into(),
             scroll: 0,
@@ -1133,6 +1252,26 @@ mod tests {
         }
     }
 
+    #[test]
+    fn copying_a_stale_code_popup_is_a_noop() {
+        let mut app = make_app();
+        app.code_popup = Some(crate::widgets::state::CodePopup {
+            block_id: "missing-code".into(),
+            lang: "rust".into(),
+            scroll: 0,
+        });
+        app.copy_code_popup();
+        assert!(app.code_popup.is_some());
+    }
+    #[test]
+    fn copying_a_stale_mermaid_popup_is_a_noop() {
+        let mut app = make_app();
+        app.mermaid_popup = Some(crate::widgets::state::MermaidPopup::new(
+            "missing-mermaid".into(),
+        ));
+        app.copy_mermaid_popup();
+        assert!(app.mermaid_popup.is_some());
+    }
     #[test]
     fn thinking_popup_copy_content_prefers_non_empty_selection() {
         let popup = thinking_popup(Some(PopupTextSelection::new(6, 12)));
@@ -1341,25 +1480,72 @@ mod tests {
     }
 
     #[test]
+    fn physical_and_stable_subagent_open_paths_share_popup_state() {
+        let mut app = make_app();
+        let phys = push_subagent_card(&mut app, "same-tool");
+        app.open_subagent_popup_at_physical_index(phys);
+        app.subagent_popup_mut().expect("popup").scroll = 4;
+        app.close_subagent_popup();
+        app.open_subagent_popup_by_id("same-tool");
+        let popup = app.subagent_popup().expect("popup reopened by id");
+        assert_eq!(popup.tool_id, "same-tool");
+        assert_eq!(popup.scroll, 4);
+    }
+
+    #[test]
+    fn code_popup_identity_survives_block_reordering() {
+        let mut app = make_app();
+        app.code_blocks.push(CodeBlock {
+            block_id: "code-a".into(),
+            start_idx: 0,
+            end_idx: 1,
+            lang: "rust".into(),
+            content: "let original = true;".into(),
+            styled: Vec::new(),
+        });
+        app.code_blocks.push(CodeBlock {
+            block_id: "code-b".into(),
+            start_idx: 1,
+            end_idx: 2,
+            lang: "rust".into(),
+            content: "let other = true;".into(),
+            styled: Vec::new(),
+        });
+
+        app.open_code_popup_by_id("code-a");
+        app.code_blocks.swap(0, 1);
+
+        let popup = app.code_popup.as_ref().expect("code popup");
+        assert_eq!(popup.block_id, "code-a");
+        assert_eq!(
+            app.code_blocks
+                .iter()
+                .find(|block| block.block_id == popup.block_id)
+                .expect("stable block")
+                .content,
+            "let original = true;"
+        );
+    }
+    #[test]
     fn subagent_popups_keep_independent_scroll_per_tool_id() {
         let mut app = make_app();
         let phys_a = push_subagent_card(&mut app, "sa-1");
         let phys_b = push_subagent_card(&mut app, "sa-2");
 
         // Open A, scroll it.
-        app.open_subagent_popup(phys_a);
+        app.open_subagent_popup_at_physical_index(phys_a);
         assert_eq!(app.active_subagent_popup.as_deref(), Some("sa-1"));
         app.subagent_popup_mut().unwrap().scroll = 7;
 
         // Open B — the map now has two entries and B is active.
-        app.open_subagent_popup(phys_b);
+        app.open_subagent_popup_at_physical_index(phys_b);
         assert_eq!(app.subagent_popups.len(), 2);
         assert_eq!(app.active_subagent_popup.as_deref(), Some("sa-2"));
         assert_eq!(app.subagent_popup().unwrap().tool_id, "sa-2");
 
         // Re-open A — its scroll is preserved (not reset), because the map
         // keeps one popup entry per tool id.
-        app.open_subagent_popup(phys_a);
+        app.open_subagent_popup_at_physical_index(phys_a);
         assert_eq!(app.active_subagent_popup.as_deref(), Some("sa-1"));
         assert_eq!(app.subagent_popup().unwrap().scroll, 7);
 
@@ -1368,7 +1554,7 @@ mod tests {
         assert!(app.active_subagent_popup.is_none());
         assert!(!app.has_subagent_popup());
         assert_eq!(app.subagent_popups.len(), 2);
-        app.open_subagent_popup(phys_a);
+        app.open_subagent_popup_at_physical_index(phys_a);
         assert_eq!(app.subagent_popup().unwrap().scroll, 7);
     }
 

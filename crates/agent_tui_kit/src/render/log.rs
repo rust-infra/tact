@@ -38,22 +38,90 @@ use crate::{
     },
 };
 
-/// A rendered cancel button for a live async subagent tool card.
+fn tool_id_for_phys(ctx: &RenderCtx, phys_idx: usize) -> Option<String> {
+    ctx.tools
+        .active
+        .iter()
+        .find(|active| active.phys_idx == phys_idx)
+        .map(|active| active.tool_id.clone())
+        .or_else(|| {
+            ctx.tools
+                .blocks
+                .iter()
+                .find(|block| block.phys_idx == phys_idx)
+                .map(|block| block.tool_id.clone())
+        })
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SubagentCancelButton {
     pub child_id: String,
     pub rect: Rect,
 }
 
-/// What a Phase 3 frame drew that the host routes mouse clicks to.
+/// Target opened by a rendered `[Open]` affordance.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenTarget {
+    Thinking { block_id: String },
+    Subagent { tool_id: String },
+    Tool { tool_id: String },
+}
+
+impl OpenTarget {
+    #[must_use]
+    pub fn thinking(block_id: impl Into<String>) -> Self {
+        Self::Thinking {
+            block_id: block_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn subagent(tool_id: impl Into<String>) -> Self {
+        Self::Subagent {
+            tool_id: tool_id.into(),
+        }
+    }
+
+    #[must_use]
+    pub fn tool(tool_id: impl Into<String>) -> Self {
+        Self::Tool {
+            tool_id: tool_id.into(),
+        }
+    }
+}
+
+/// A target and hitbox emitted by the pure log renderer.
+///
+/// The rectangle is measured from the same clipped cell slice that is drawn in
+/// the frame. Hosts should route pointer events through [`OpenAction::hit_test`]
+/// rather than reconstructing coordinates from localized row text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OpenAction {
+    pub target: OpenTarget,
+    pub rect: Rect,
+}
+
+impl OpenAction {
+    #[must_use]
+    pub fn new(target: OpenTarget, rect: Rect) -> Self {
+        Self { target, rect }
+    }
+
+    #[must_use]
+    pub fn hit_test(&self, column: u16, row: u16) -> bool {
+        column >= self.rect.x
+            && column < self.rect.x.saturating_add(self.rect.width)
+            && row >= self.rect.y
+            && row < self.rect.y.saturating_add(self.rect.height)
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct LogRenderOutput {
     /// Cancel-button rects for live async subagent cards.
     pub cancel_buttons: Vec<SubagentCancelButton>,
-    /// Footer `[󰜼 Open]` button rects for the Thinking cards on screen. A
-    /// Thinking card's text and blank rows are not selectable, so these glyphs
-    /// are the only part of it that answers a click.
-    pub thinking_open_buttons: Vec<Rect>,
+    /// All rendered `[󰜼 Open]` affordances and their hitboxes.
+    pub open_actions: Vec<OpenAction>,
 }
 
 /// Phase 3: pure render — build cells from the caches and draw the panel.
@@ -100,7 +168,7 @@ pub fn render_log_panel_pure(
 
     let mut renderer = LogColumnRenderer::new().with_viewport(visual_scroll, visible_height);
     let mut cancel_buttons: Vec<SubagentCancelButton> = Vec::new();
-    let mut thinking_open_buttons: Vec<Rect> = Vec::new();
+    let mut open_actions: Vec<OpenAction> = Vec::new();
 
     // Track message categories for separator insertion
     let mut prev_category: Option<&'static str> = None;
@@ -203,8 +271,21 @@ pub fn render_log_panel_pure(
                     if let Some((cell_area, skip_lines)) =
                         renderer.cell_slice(vis_start, cell.height(inner.width) as usize, inner)
                         && let Some(rect) = cell.footer_button_rect(cell_area, skip_lines)
+                        && let Some(block_id) = ctx
+                            .thinking
+                            .active
+                            .as_ref()
+                            .filter(|active| active.phys_idx == thinking_phys)
+                            .map(|active| active.block_id.clone())
+                            .or_else(|| {
+                                ctx.thinking
+                                    .blocks
+                                    .iter()
+                                    .find(|block| block.phys_idx == thinking_phys)
+                                    .map(|block| block.block_id.clone())
+                            })
                     {
-                        thinking_open_buttons.push(rect);
+                        open_actions.push(OpenAction::new(OpenTarget::thinking(block_id), rect));
                     }
                     renderer.push(vis_start, cell);
                 }
@@ -264,8 +345,23 @@ pub fn render_log_panel_pure(
                     ctx.theme.block_border_type(),
                     msgs,
                 );
-                renderer.push(vis_start, card_cell);
-                // Live async subagent: draw a cancel button on the card's
+                if let Some((cell_area, skip_lines)) =
+                    renderer.cell_slice(vis_start, card_cell.height(inner.width) as usize, inner)
+                    && let Some(tool_id) = tool_id_for_phys(ctx, phys_idx)
+                {
+                    if let Some(tool_rect) =
+                        card_cell.collapsed_open_button_rect(cell_area, skip_lines)
+                    {
+                        open_actions.push(OpenAction::new(
+                            OpenTarget::tool(tool_id.clone()),
+                            tool_rect,
+                        ));
+                    }
+                    if let Some(rect) = card_cell.subagent_open_button_rect(cell_area, skip_lines) {
+                        open_actions.push(OpenAction::new(OpenTarget::subagent(tool_id), rect));
+                    }
+                }
+                renderer.push(vis_start, card_cell); // Live async subagent: draw a cancel button on the card's
                 // header row (right edge) and record its rect for the host's
                 // mouse routing.
                 if let Some(active) = ctx.tools.active.iter().find(|a| a.phys_idx == phys_idx)
@@ -419,7 +515,7 @@ pub fn render_log_panel_pure(
 
     LogRenderOutput {
         cancel_buttons,
-        thinking_open_buttons,
+        open_actions,
     }
 }
 

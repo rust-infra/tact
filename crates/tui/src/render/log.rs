@@ -12,10 +12,8 @@ use crate::{
     widgets::state::App,
 };
 
-use agent_tui_kit::{
-    render::log::render_log_panel_pure,
-    state::{LogCoordinator, LogScroll, SkillEntry, log_indent_at},
-};
+use agent_tui_kit::render::log::render_log_panel_pure;
+use agent_tui_kit::state::{LogCoordinator, LogScroll, SkillEntry, log_indent_at};
 
 /// Render the Log panel: wrapping, scrolling, and mouse selection.
 ///
@@ -88,12 +86,7 @@ pub(crate) fn render_log_panel_with_borders(
             .into_iter()
             .map(|btn| (btn.child_id, btn.rect)),
     );
-    // Same for the Thinking cards' footer buttons: they are the only glyphs on
-    // a card that answer a click, so the frame has to say where they are.
-    app.mouse.thinking_open_btn_areas.clear();
-    app.mouse
-        .thinking_open_btn_areas
-        .extend(output.thinking_open_buttons);
+    app.mouse.replace_open_actions(output.open_actions);
 }
 
 /// Phase 0-2: rebuild the scroll/layout caches (mutable). Runs once per frame

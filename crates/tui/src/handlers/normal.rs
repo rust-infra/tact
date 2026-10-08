@@ -117,7 +117,7 @@ pub(crate) fn handle_normal_mode(
                 .map(|active| active.phys_idx)
                 .or_else(|| app.thinking_mut().blocks.last().map(|block| block.phys_idx))
             {
-                app.open_thinking_popup(phys_idx);
+                app.open_thinking_popup_at_physical_index(phys_idx);
             }
         }
         KeyCode::Char('q') => {

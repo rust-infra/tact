@@ -78,13 +78,14 @@ impl ThinkingComponent {
                 if let Some(active) = self.state.active.take()
                     && !active.is_blank()
                 {
-                    self.state.blocks.push(ThinkingBlock {
-                        phys_idx: active.phys_idx,
-                        content: active.content.clone(),
-                        summary: active.content.lines().next().unwrap_or("").to_string(),
-                        cached_markdown: vec![Line::from(active.content.clone())],
-                        elapsed: std::time::Duration::from_millis(120),
-                    });
+                    self.state.blocks.push(ThinkingBlock::new(
+                        active.block_id.clone(),
+                        active.phys_idx,
+                        active.content.clone(),
+                        active.content.lines().next().unwrap_or("").to_string(),
+                        vec![Line::from(active.content.clone())],
+                        std::time::Duration::from_millis(120),
+                    ));
                 }
             }
         }

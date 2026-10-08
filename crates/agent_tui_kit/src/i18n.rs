@@ -79,7 +79,7 @@ pub struct Messages {
     /// The action is the **tail**, the same rule a collapsed tool card's meta row
     /// follows, so the cell splits it off by suffix match rather than searching.
     pub thinking_card_bottom: &'static str,
-    /// Label of the footer's button — what a double-click on the card opens.
+    /// Label of the footer's button — a single click opens the card popup.
     ///
     /// The card itself is the hit target, so unlike
     /// [`Self::tool_collapsed_output_action`] this one is *not* measured back
@@ -88,7 +88,7 @@ pub struct Messages {
     /// `ButtonChrome::Brackets`, so they are never part of this key.
     pub thinking_card_action: &'static str,
     pub diff_card_title: &'static str,  // "+{} {}"
-    pub diff_card_bottom: &'static str, // "Double-click for full code"
+    pub diff_card_bottom: &'static str, // "Click for full code"
     pub tool_error_card_title: &'static str,
     pub tool_error_card_bottom: &'static str,
     pub code_card_bottom: &'static str, // " Click for full code "
@@ -110,14 +110,14 @@ pub struct Messages {
     /// the collapsed text is one line (a background task's summary, say).
     pub tool_collapsed_output_hint_one: &'static str,
     /// Label of the button that opens a collapsed command's output — the whole
-    /// double-click target of that card, and the reason the line count left of
+    /// single-click target of that card, and the reason the line count left of
     /// it stays inert.
     ///
     /// The brackets around it come from `ButtonChrome::Brackets`, never from
     /// here: the row text wraps this label the same way the widget draws it, so
     /// the glyphs on screen and the glyphs the hit test measures cannot drift.
-    /// Keep it to a gesture glyph plus one short word — a Nerd Font double-tap
-    /// icon carrying "how", the word carrying "what".
+    /// Keep it to a gesture glyph plus one short word — the icon carries "how",
+    /// the word carries "what".
     pub tool_collapsed_output_action: &'static str,
     pub palette_title: &'static str,
     pub file_picker_title: &'static str,
@@ -464,13 +464,13 @@ impl Messages {
             thinking_card_title_active: " 🧠 Thinking ",
             thinking_card_title_done: " 🧠 Thought ",
             thinking_card_bottom: " ⏱ {} | ↕ {}/{} lines | {}",
-            // Nerd Font `md-gesture_double_tap` (U+F073C) for "how", the word
-            // for "what" — the same pair the collapsed tool card draws.
+            // Nerd Font gesture icon for "how", the word for "what" — the same
+            // pair the collapsed tool card draws.
             thinking_card_action: "󰜼 Open",
             diff_card_title: "+{} {}",
-            diff_card_bottom: " Double-click for full code ",
+            diff_card_bottom: " Click for full code ",
             tool_error_card_title: " Error ",
-            tool_error_card_bottom: " Double-click for full error ",
+            tool_error_card_bottom: " Click for full error ",
             code_card_bottom: " Click for full code ",
             tool_card_progress_tmpl: " {}/{} lines | {} ",
             code_card_progress_tmpl: " +{} lines | {}",
@@ -479,11 +479,11 @@ impl Messages {
             tool_phase_failed: "Failed",
             tool_meta_sep: " · ",
             tool_live_output_title: "Live output",
-            tool_live_output_bottom: " Double-click for buffered output ",
+            tool_live_output_bottom: " Click for buffered output ",
             tool_collapsed_output_hint: "{} lines · {}",
             tool_collapsed_output_hint_one: "{} line · {}",
-            // Nerd Font `md-gesture_double_tap` (U+F073C) for "how", the word
-            // for "what"; the brackets around it are the chrome's.
+            // The gesture icon says "how", the word says "what"; the brackets
+            // around it are the chrome's.
             tool_collapsed_output_action: "󰜼 Open",
             palette_title: " Palette /{} ",
             file_picker_title: " Attach file ",
@@ -785,9 +785,9 @@ impl Messages {
             // 与英文同一枚字形（`md-gesture_double_tap`，U+F073C），中文只换动词。
             thinking_card_action: "󰜼 打开",
             diff_card_title: "+{} {}",
-            diff_card_bottom: " 双击查看完整代码 ",
+            diff_card_bottom: " 点击查看完整代码 ",
             tool_error_card_title: " 错误 ",
-            tool_error_card_bottom: " 双击查看完整错误 ",
+            tool_error_card_bottom: " 点击查看完整错误 ",
             code_card_bottom: " 点击查看完整代码 ",
             tool_card_progress_tmpl: " {}/{} 行 | {} ",
             code_card_progress_tmpl: " +{} 行 | {}",
@@ -796,7 +796,7 @@ impl Messages {
             tool_phase_failed: "失败",
             tool_meta_sep: " · ",
             tool_live_output_title: "实时输出",
-            tool_live_output_bottom: " 双击查看已缓冲输出 ",
+            tool_live_output_bottom: " 点击查看已缓冲输出 ",
             tool_collapsed_output_hint: "{} 行 · {}",
             tool_collapsed_output_hint_one: "{} 行 · {}",
             // 与英文同一枚字形（`md-gesture_double_tap`，U+F073C），中文只换动词。
