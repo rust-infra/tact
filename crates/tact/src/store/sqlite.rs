@@ -9,17 +9,8 @@
 //! store holding it is dropped, so long test runs that create many
 //! temporary databases do not leak file descriptors.
 
-use std::collections::HashMap;
-use std::ops::Deref;
-use std::path::{Path, PathBuf};
-use std::str::FromStr;
-use std::sync::{LazyLock, Mutex};
-
-use crate::utils::LockExt;
-use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
-use sqlx::SqlitePool;
-use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqliteSynchronous};
+pub use tact_session::{PoolRef, open_pool};
 
 /// Now, in the milliseconds every domain store persists time in.
 ///
@@ -44,158 +35,17 @@ pub fn from_millis(millis: i64) -> DateTime<Utc> {
     DateTime::from_timestamp_millis(millis).unwrap_or_else(Utc::now)
 }
 
-/// One shared pool per database file, keyed by absolute path, together
-/// with the number of live [`PoolRef`] handles handed out for it.
-static POOLS: LazyLock<Mutex<HashMap<PathBuf, (SqlitePool, usize)>>> =
-    LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// A borrowed handle to the shared pool for one database file.
-///
-/// Dereferences to the underlying [`SqlitePool`]. Releases the registry's
-/// reference when dropped; the pool is closed once no store uses it.
-pub struct PoolRef {
-    pool: SqlitePool,
-    key: PathBuf,
-}
-
-impl Deref for PoolRef {
-    type Target = SqlitePool;
-
-    fn deref(&self) -> &Self::Target {
-        &self.pool
-    }
-}
-
-impl Drop for PoolRef {
-    fn drop(&mut self) {
-        let mut pools = POOLS.lock_recover();
-        if let Some((_, refs)) = pools.get_mut(&self.key) {
-            *refs -= 1;
-            if *refs == 0 {
-                pools.remove(&self.key);
-            }
-        }
-    }
-}
-
-/// Returns the shared pool for `path`, opening it on first use.
-///
-/// Creates the file (and its parent directory) when missing and sets a 5s
-/// busy timeout so concurrent writers from other processes wait instead of
-/// failing with SQLITE_BUSY.
-pub async fn open_pool(path: &Path) -> Result<PoolRef> {
-    let key = std::path::absolute(path)
-        .with_context(|| format!("failed to resolve absolute path for {}", path.display()))?;
-
-    if let Some(pool) = take_handle(&key) {
-        return Ok(pool);
-    }
-
-    let pool = open_new_pool(path).await?;
-
-    // If two callers raced on a fresh path, both open a pool; the first to
-    // insert wins and the loser's pool is dropped (connections close).
-    let mut pools = POOLS.lock_recover();
-    Ok(match pools.entry(key.clone()) {
-        std::collections::hash_map::Entry::Occupied(mut entry) => {
-            let (pool, refs) = entry.get_mut();
-            *refs += 1;
-            PoolRef {
-                pool: pool.clone(),
-                key,
-            }
-        }
-        std::collections::hash_map::Entry::Vacant(entry) => {
-            entry.insert((pool.clone(), 1));
-            PoolRef { pool, key }
-        }
-    })
-}
-
-/// Returns a handle for `key` and bumps its refcount, or `None` when the
-/// pool is not cached yet.
-fn take_handle(key: &Path) -> Option<PoolRef> {
-    let mut pools = POOLS.lock_recover();
-    let (pool, refs) = pools.get_mut(key)?;
-    *refs += 1;
-    Some(PoolRef {
-        pool: pool.clone(),
-        key: key.to_path_buf(),
-    })
-}
-
-async fn open_new_pool(path: &Path) -> Result<SqlitePool> {
-    if let Some(parent) = path.parent() {
-        tokio::fs::create_dir_all(parent)
-            .await
-            .context("failed to create database directory")?;
-    }
-    // sqlx may fail to open a non-existent database file in some environments;
-    // create an empty file first to ensure it's present.
-    if let Err(e) = tokio::fs::metadata(path).await
-        && e.kind() == std::io::ErrorKind::NotFound
-    {
-        tokio::fs::File::create(path)
-            .await
-            .context("failed to create database file")?;
-    }
-    // WAL lets readers (the TUI reading session history) proceed while a
-    // writer (the agent persisting a message) holds the lock, which matters
-    // because every domain store here shares one database file.
-    //
-    // Switching a database *into* WAL requires an exclusive lock that
-    // `busy_timeout` cannot wait on, so a concurrent opener can legitimately
-    // fail the switch. Fall back to the default rollback journal rather than
-    // refusing to start.
-    match connect_with_pragmas(path, SqliteJournalMode::Wal).await {
-        Ok(pool) => Ok(pool),
-        Err(error) => {
-            tracing::warn!(
-                error = %error,
-                db = %path.display(),
-                "sqlite rejected WAL mode; falling back to the default journal"
-            );
-            connect_with_pragmas(path, SqliteJournalMode::Delete).await
-        }
-    }
-}
-
-/// Opens a pool with the journal mode and durability level decided up front.
-///
-/// Both are set through the connection options (not a one-shot `PRAGMA`) so
-/// they apply to every connection the pool opens, not just the first.
-async fn connect_with_pragmas(path: &Path, journal: SqliteJournalMode) -> Result<SqlitePool> {
-    // `synchronous = NORMAL` is corruption-safe in WAL mode; the default FULL
-    // would fsync the WAL on every commit for no extra safety. Under a
-    // rollback journal NORMAL *can* corrupt on power loss, so keep FULL there.
-    let synchronous = if journal == SqliteJournalMode::Wal {
-        SqliteSynchronous::Normal
-    } else {
-        SqliteSynchronous::Full
-    };
-    let url = format!("sqlite:{}", path.display());
-    let options = SqliteConnectOptions::from_str(&url)
-        .with_context(|| format!("invalid sqlite url for {}", path.display()))?
-        .journal_mode(journal)
-        .synchronous(synchronous)
-        // Wait up to 5s for a concurrent writer (cross-process access to the
-        // same workdir) instead of failing with SQLITE_BUSY immediately.
-        .busy_timeout(std::time::Duration::from_secs(5));
-
-    SqlitePool::connect_with(options)
-        .await
-        .with_context(|| format!("failed to open sqlite database at {}", path.display()))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::ops::Deref;
+    use std::path::Path;
 
     use crate::store::session_store::SqliteSessionStore;
     use crate::store::task_store::SqliteTaskStore;
     use crate::store::team_store::SqliteTeamStore;
 
-    fn temp_dir(name: &str) -> PathBuf {
+    fn temp_dir(name: &str) -> std::path::PathBuf {
         let dir = std::env::temp_dir().join(format!("tact-pool-test-{name}"));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
@@ -206,13 +56,7 @@ mod tests {
     /// and open pools for their own temp dirs, so the global map is only
     /// inspected through this per-directory view.
     fn pool_count_under(dir: &Path) -> usize {
-        let dir = std::path::absolute(dir).unwrap();
-        POOLS
-            .lock()
-            .unwrap()
-            .keys()
-            .filter(|key| key.starts_with(&dir))
-            .count()
+        tact_session::pool_count_under(dir)
     }
 
     #[tokio::test]

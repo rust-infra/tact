@@ -111,7 +111,7 @@ pub async fn read_image(ctx: ToolContext, input: ReadImageInput) -> Result<ToolC
 
     Ok(ToolCallResult::text_image(
         envelope,
-        tact_llm::ImageSource {
+        tact_contracts::capability::ToolImage {
             type_: "base64".to_string(),
             media_type,
             data: b64,

@@ -356,7 +356,11 @@ async fn run_native_tool(
                         Ok(content) => ExecResult {
                             content,
                             status: StepStatus::Success,
-                            image: result.image,
+                            image: result.image.map(|image| tact_llm::ImageSource {
+                                type_: image.type_,
+                                media_type: image.media_type,
+                                data: image.data,
+                            }),
                         },
                         Err(error) => ExecResult {
                             content: format!("Error persisting large output: {error}"),
@@ -368,7 +372,11 @@ async fn run_native_tool(
                 OutputPolicy::KeepInline => ExecResult {
                     content: result.content,
                     status: StepStatus::Success,
-                    image: result.image,
+                    image: result.image.map(|image| tact_llm::ImageSource {
+                        type_: image.type_,
+                        media_type: image.media_type,
+                        data: image.data,
+                    }),
                 },
             }
         }

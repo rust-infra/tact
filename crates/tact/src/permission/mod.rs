@@ -20,13 +20,7 @@ use strum_macros::{Display, EnumString};
 
 use crate::tool::PermissionPromptPolicy;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
-#[strum(serialize_all = "snake_case")]
-pub enum CapabilityRisk {
-    Read,
-    Write,
-    High,
-}
+pub use tact_contracts::capability::CapabilityRisk;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
 #[strum(serialize_all = "snake_case")]

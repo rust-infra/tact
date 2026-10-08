@@ -10,10 +10,11 @@ use super::{
     MAX_INPUT_HISTORY, MAX_TOKEN_USAGE_BODIES, MessageCountByPeriod, SessionSummary,
     process_identity::process_identity,
 };
-use crate::store::sqlite::{PoolRef, open_pool};
+use super::{PoolRef, open_pool, SessionStore};
 
 pub struct SqliteSessionStore {
     pool: PoolRef,
+    token_usage_body_limit: usize,
 }
 
 impl SqliteSessionStore {
@@ -42,6 +43,13 @@ impl SqliteSessionStore {
     }
 
     pub async fn new(path: &Path) -> Result<Self> {
+        Self::new_with_token_usage_body_limit(path, MAX_TOKEN_USAGE_BODIES).await
+    }
+
+    pub async fn new_with_token_usage_body_limit(
+        path: &Path,
+        token_usage_body_limit: usize,
+    ) -> Result<Self> {
         let pool = open_pool(path).await?;
 
         sqlx::query(
@@ -161,7 +169,10 @@ impl SqliteSessionStore {
         .await
         .context("failed to create responses_states table")?;
 
-        Ok(Self { pool })
+        Ok(Self {
+            pool,
+            token_usage_body_limit,
+        })
     }
 
     fn now() -> DateTime<Utc> {
@@ -205,10 +216,8 @@ impl SqliteSessionStore {
     /// Request bodies to keep per session: `[agent] max_token_usage_bodies`,
     /// or [`MAX_TOKEN_USAGE_BODIES`] when no configuration is loaded (unit
     /// tests, embedded use).
-    fn token_usage_body_limit() -> usize {
-        crate::config::try_settings()
-            .map(|settings| settings.agent.max_token_usage_bodies)
-            .unwrap_or(MAX_TOKEN_USAGE_BODIES)
+    fn token_usage_body_limit(&self) -> usize {
+        self.token_usage_body_limit
     }
 
     /// Blank the body of the single ordinary call sitting at the newest-`keep`
@@ -288,7 +297,7 @@ fn str_to_role(s: &str) -> Result<Role> {
 }
 
 #[async_trait::async_trait]
-impl super::SessionStore for SqliteSessionStore {
+impl SessionStore for SqliteSessionStore {
     async fn create_session(&self, id: &str, root_dir: &str, ref_id: &str) -> Result<()> {
         let now = Self::now();
         sqlx::query(
@@ -853,7 +862,7 @@ impl super::SessionStore for SqliteSessionStore {
         .execute(&*self.pool)
         .await
         .context("failed to record token usage")?;
-        self.trim_token_usage_bodies(session_id, Self::token_usage_body_limit())
+        self.trim_token_usage_bodies(session_id, self.token_usage_body_limit())
             .await?;
         Ok(())
     }
@@ -1158,7 +1167,7 @@ mod tests {
     use tact_llm::{MessageContent, Role};
     use tempfile::TempDir;
 
-    use super::{super::SessionStore, SqliteSessionStore};
+    use super::{SessionStore, SqliteSessionStore};
 
     #[tokio::test]
     async fn test_session_round_trip_and_stats() {
@@ -1230,7 +1239,7 @@ mod tests {
         // Whatever `[agent] max_token_usage_bodies` resolves to (the fallback is
         // 1), the insert path keeps exactly that many ordinary bodies — the
         // configured default is asserted where it belongs, in the config tests.
-        let limit = SqliteSessionStore::token_usage_body_limit();
+        let limit = store.token_usage_body_limit();
         for call in 0..limit + 3 {
             let body = format!("body-{call}");
             store

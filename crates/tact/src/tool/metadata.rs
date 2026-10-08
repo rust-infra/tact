@@ -679,46 +679,7 @@ pub enum ArgumentSummaryPolicy {
     ReadOffsetLimit { path_field: &'static str },
 }
 
-// ---------------------------------------------------------------------------
-// Tool effects & structured results
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ToolEffect {
-    CompactHistory { focus: Option<String> },
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ToolCallResult {
-    pub content: String,
-    pub effects: Vec<ToolEffect>,
-    /// Optional image produced by the tool (e.g. `read_image`). When set, the
-    /// tool-dispatch layer emits a companion `ContentBlock::Image` alongside
-    /// the text `ToolResult`; the wire layer folds it into a following `user`
-    /// message (Chat Completions `role:tool` cannot carry an image).
-    #[allow(dead_code)]
-    pub image: Option<tact_llm::ImageSource>,
-}
-
-impl ToolCallResult {
-    pub fn text(content: impl Into<String>) -> Self {
-        Self {
-            content: content.into(),
-            effects: Vec::new(),
-            image: None,
-        }
-    }
-
-    /// A tool result carrying a text envelope plus an image block.
-    #[allow(dead_code)]
-    pub fn text_image(content: impl Into<String>, image: tact_llm::ImageSource) -> Self {
-        Self {
-            content: content.into(),
-            effects: Vec::new(),
-            image: Some(image),
-        }
-    }
-}
+pub use tact_contracts::capability::{ToolCallResult, ToolEffect};
 
 /// Trait for converting handler return values into `ToolCallResult`.
 pub trait IntoToolCallResult {

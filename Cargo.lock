@@ -4793,6 +4793,9 @@ dependencies = [
  "sqlx",
  "strum 0.27.2",
  "strum_macros 0.27.2",
+ "tact-contracts",
+ "tact-runtime",
+ "tact-session",
  "tact_llm",
  "tact_protocol",
  "tar",
@@ -4807,6 +4810,42 @@ dependencies = [
  "uuid",
  "walkdir",
  "wiremock",
+]
+
+[[package]]
+name = "tact-contracts"
+version = "1.1.33"
+dependencies = [
+ "serde_json",
+ "strum 0.27.2",
+ "strum_macros 0.27.2",
+]
+
+[[package]]
+name = "tact-runtime"
+version = "1.1.33"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde_json",
+ "tact-contracts",
+ "tokio",
+]
+
+[[package]]
+name = "tact-session"
+version = "1.1.33"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "serde_json",
+ "sqlx",
+ "tact_llm",
+ "tact_protocol",
+ "tempfile",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

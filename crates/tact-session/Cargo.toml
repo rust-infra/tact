@@ -1,0 +1,22 @@
+[package]
+name = "tact-session"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+sqlx = { workspace = true }
+serde_json = { workspace = true }
+tact_llm = { path = "../tact_llm" }
+tact_protocol = { path = "../protocol" }
+tokio = { workspace = true, features = ["fs", "sync", "time"] }
+tracing = { workspace = true }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+
+[features]
+test-support = []

@@ -1,5 +1,8 @@
 [workspace]
 members = [
+    "crates/tact-contracts",
+    "crates/tact-session",
+    "crates/tact-runtime",
     "crates/protocol",
     "crates/agent_tui_kit",
     "crates/tui",
