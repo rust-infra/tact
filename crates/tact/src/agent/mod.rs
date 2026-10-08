@@ -445,6 +445,8 @@ pub struct Agent {
     /// provider" — see [`Self::provider_kind`].
     provider_kind: Option<ProviderKind>,
     cached_tool_specs: Vec<ToolSpec>,
+    /// Runtime extensions registered for this agent/session.
+    pub runtime_plugins: crate::plugin::PluginRegistry,
 }
 
 impl Agent {
@@ -530,9 +532,19 @@ impl Agent {
             agent_settings: crate::config::settings().agent.clone(),
             provider_kind,
             cached_tool_specs: Vec::new(),
+            runtime_plugins: crate::plugin::PluginRegistry::new(
+                tact_protocol::ProtocolVersion::CURRENT,
+            ),
         };
         agent.rebuild_cached_tool_specs();
         agent
+    }
+
+    /// Attach the session's official and external runtime extension registry.
+    #[must_use]
+    pub fn with_plugin_registry(mut self, registry: crate::plugin::PluginRegistry) -> Self {
+        self.runtime_plugins = registry;
+        self
     }
 
     /// Override the provider kind used for Responses compaction routing

@@ -145,14 +145,10 @@ impl TrajectoryService for SqliteTrajectoryService {
                 | RuntimeEvent::ToolCallFinished { run_id, .. } => Some(run_id.clone()),
                 _ => None,
             })
-            .ok_or_else(|| {
-                KernelError::new(
-                    tact_protocol::ErrorCategory::InvalidRequest,
-                    "trajectory event has no run ID",
-                    "trajectory",
-                    false,
-                )
-            })?;
+            // Notifications and plugin lifecycle events can be emitted before
+            // a run exists. Keep them replayable in the runtime stream rather
+            // than dropping them or making startup depend on a synthetic run.
+            .unwrap_or_else(|| tact_protocol::RunId::from("runtime"));
         let trajectory_id = trajectory_id
             .cloned()
             .unwrap_or_else(|| tact_protocol::TrajectoryId::from(run_id.as_str()));

@@ -17,6 +17,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use tact::kernel::TrajectoryService;
 use tact::{
     Agent, AgentSystemPrompt,
     background::{BackgroundManager, SharedBackgroundManager},
@@ -178,6 +179,30 @@ pub async fn bootstrap_session(
     notices.permission_mode(mode);
 
     let db_path = tact_path.session_db_path();
+    // Runtime events are the single source for replayable execution history.
+    // Start the recorder before the agent can emit its first event so the
+    // SQLite trajectory contains the complete run, including startup hooks.
+    if let Some(wiring) = ui.as_ref() {
+        let event_transport = wiring.runtime_events.clone();
+        match tact::trajectory::SqliteTrajectoryRecorder::open(&db_path).await {
+            Ok(recorder) => {
+                let trajectory = tact::kernel::SqliteTrajectoryService::new(recorder);
+                let mut subscription = event_transport.subscribe();
+                tokio::spawn(async move {
+                    while let Ok(event) = subscription.recv().await {
+                        // Some UI-only notifications have no run ID. The
+                        // trajectory service assigns them to the runtime
+                        // stream so they remain replayable as well.
+                        let _ = trajectory.append(None, None, event).await;
+                    }
+                });
+            }
+            Err(error) => notices.notice(
+                "trajectory",
+                &format!("SQLite trajectory recorder unavailable: {error}"),
+            ),
+        }
+    }
     let task_manager = SharedTaskManager::new(TaskManager::new(&db_path).await?);
     let background_manager = SharedBackgroundManager::new(BackgroundManager::new(&db_path).await?);
     let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&db_path).await?);
@@ -305,6 +330,12 @@ mod tests {
             matches!(&update, AgentUpdate::Info(message) if message == "server demo did not answer"),
             "{update:?}"
         );
+        let plugin_registry =
+            tact::plugin::PluginRegistry::new(tact_protocol::ProtocolVersion::CURRENT);
+        for manifest in tact::extensions::official_manifests(&agent) {
+            plugin_registry.register(manifest)?;
+        }
+        agent = agent.with_plugin_registry(plugin_registry);
     }
 
     /// The permission mode is the one notice the two frontends do not share.
