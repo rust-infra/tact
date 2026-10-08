@@ -19,5 +19,5 @@ fn run_machine_cancellation_is_terminal() {
     let mut machine = RunMachine::new(RunId(4));
     assert_eq!(machine.cancel(), Ok(RunOutcome::Cancelled));
     assert_eq!(machine.state(), RunState::Cancelled);
-    assert_eq!(machine.record_model_turn(), false);
+    assert!(!machine.record_model_turn());
 }
