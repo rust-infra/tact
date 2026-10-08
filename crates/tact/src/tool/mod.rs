@@ -307,6 +307,37 @@ impl ToolRouter {
         specs
     }
 
+    /// Exposes native tools through the language-neutral capability registry.
+    /// The declaration is derived from the same metadata used by the legacy
+    /// agent dispatcher, so names and risk classification cannot drift.
+    pub fn capability_declarations(&self) -> Vec<tact_protocol::CapabilityDeclaration> {
+        self.tools
+            .values()
+            .map(|registered| {
+                let risk = match registered.metadata.permission {
+                    PermissionPolicy::Read | PermissionPolicy::ReadPath { .. } => {
+                        tact_protocol::CapabilityRisk::ReadOnly
+                    }
+                    PermissionPolicy::Write | PermissionPolicy::WritePath { .. } => {
+                        tact_protocol::CapabilityRisk::Medium
+                    }
+                    PermissionPolicy::High
+                    | PermissionPolicy::ShellCommand { .. }
+                    | PermissionPolicy::PatchPaths => tact_protocol::CapabilityRisk::High,
+                };
+                tact_protocol::CapabilityDeclaration {
+                    name: registered.metadata.name.to_string(),
+                    kind: tact_protocol::CapabilityKind::Tool,
+                    version: "1".into(),
+                    description: Some(registered.metadata.description.to_string()),
+                    input_schema: Some(registered.handler.input_schema()),
+                    output_schema: None,
+                    risk,
+                }
+            })
+            .collect()
+    }
+
     pub async fn call_result(
         &self,
         context: &ToolContext,
