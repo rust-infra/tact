@@ -2764,6 +2764,36 @@ impl MCPToolRouter {
             .collect()
     }
 
+    /// Exposes connected MCP tools through the shared capability declaration
+    /// model. The full MCP name remains stable and retains server namespacing.
+    pub fn capability_declarations(&self) -> Vec<tact_protocol::CapabilityDeclaration> {
+        self.clients
+            .iter()
+            .flat_map(|(server, client)| {
+                client.tool_specs.iter().map(move |spec| {
+                    let parsed = McpToolName::try_from(spec.name.as_str()).ok();
+                    let tool = parsed
+                        .as_ref()
+                        .map_or(spec.name.as_str(), |name| name.tool.as_str());
+                    let risk = match self.risk_for(server, tool) {
+                        CapabilityRisk::Read => tact_protocol::CapabilityRisk::ReadOnly,
+                        CapabilityRisk::Write => tact_protocol::CapabilityRisk::Medium,
+                        CapabilityRisk::High => tact_protocol::CapabilityRisk::High,
+                    };
+                    tact_protocol::CapabilityDeclaration {
+                        name: spec.name.clone(),
+                        kind: tact_protocol::CapabilityKind::Tool,
+                        version: "1".into(),
+                        description: spec.description.clone(),
+                        input_schema: Some(spec.input_schema.clone()),
+                        output_schema: None,
+                        risk,
+                    }
+                })
+            })
+            .collect()
+    }
+
     pub fn server_summaries(&self) -> Vec<(String, usize)> {
         let mut summaries = self
             .clients
