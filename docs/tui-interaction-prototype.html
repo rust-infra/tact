@@ -1,0 +1,290 @@
+<!doctype html>
+<html lang="zh-CN" data-theme="dark">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tact · TUI 原型</title>
+  <style>
+    :root {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+      color-scheme: dark;
+      --bg: #101413; --bar: #171d1b; --fg: #dce6df; --dim: #84958b;
+      --faint: #5c7065; --rule: #35473c; --select: #26392d;
+      --green: #9bd9ab; --yellow: #e7c579; --blue: #93bdd8; --red: #e2958c;
+    }
+    html[data-theme="light"] {
+      color-scheme: light;
+      --bg: #f4f7f2; --bar: #e9eee8; --fg: #1f2d25; --dim: #51675a;
+      --faint: #809184; --rule: #b8c8ba; --select: #d7ead8;
+      --green: #126d3f; --yellow: #8c590d; --blue: #245e85; --red: #a7423d;
+    }
+    * { box-sizing: border-box; }
+    html, body { width: 100%; height: 100%; margin: 0; }
+    body { background: var(--bg); color: var(--fg); }
+    button, textarea, input { font: inherit; }
+    button { cursor: pointer; }
+    button:focus-visible, textarea:focus-visible, input:focus-visible { outline: 1px solid var(--green); outline-offset: -1px; }
+    [hidden] { display: none !important; }
+    .screen { height: 100dvh; min-height: 420px; display: flex; flex-direction: column; overflow: hidden; }
+    .top, .bottom { flex: none; display: flex; align-items: center; gap: 2ch; min-height: 27px; padding: 0 2ch; background: var(--bar); white-space: nowrap; overflow: hidden; font-size: 12px; }
+    .top { border-bottom: 1px solid var(--rule); }
+    .bottom { border-top: 1px solid var(--rule); color: var(--dim); }
+    .brand { color: var(--green); font-weight: 700; }
+    .cwd { overflow: hidden; text-overflow: ellipsis; }
+    .branch { color: var(--dim); }
+    .stretch { flex: 1; }
+    .state { color: var(--yellow); }
+    .state.done { color: var(--green); }
+    .state.denied { color: var(--red); }
+    .head-btn, .link, .toggle, .command, .choice, .delivery-btn, .panel-action { border: 0; padding: 0; background: transparent; color: var(--dim); text-align: left; }
+    .head-btn:hover, .link:hover, .toggle:hover, .command:hover, .panel-action:hover { color: var(--green); }
+    .head-btn { white-space: nowrap; }
+    .main { flex: 1; min-height: 0; overflow: auto; scrollbar-color: var(--rule) transparent; }
+    .transcript { max-width: 116ch; min-height: 100%; padding: 21px 3ch 35px; font-size: 13px; line-height: 1.7; }
+    .turn { display: grid; grid-template-columns: 7ch minmax(0, 1fr); gap: 2ch; margin-bottom: 20px; }
+    .speaker { color: var(--dim); }
+    .speaker.user { color: var(--blue); }
+    .speaker.agent { color: var(--green); }
+    .turn-body { min-width: 0; overflow-wrap: anywhere; }
+    .turn-body p { margin: 0 0 10px; }
+    .muted { color: var(--dim); }
+    .fine { color: var(--faint); }
+    .ok { color: var(--green); }
+    .warn { color: var(--yellow); }
+    .error { color: var(--red); }
+    .tool-line { display: flex; align-items: baseline; gap: 1ch; min-height: 24px; margin-left: 1ch; }
+    .tool-line .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .tool-line .time { color: var(--faint); white-space: nowrap; }
+    .tool-line .link { color: var(--blue); white-space: nowrap; }
+    .tool-line .link:hover { text-decoration: underline; }
+    .tool-list { border-left: 1px solid var(--rule); margin: 5px 0 15px 1ch; padding-left: 1ch; }
+    .toggle { display: block; margin: 3px 0 13px 1ch; color: var(--dim); }
+    .running-output { border-left: 1px solid var(--yellow); margin: 2px 0 9px 3ch; padding-left: 2ch; color: var(--dim); white-space: pre-wrap; }
+    .approval { border-left: 2px solid var(--yellow); margin: 17px 0 13px; padding-left: 2ch; }
+    .approval.resolved { border-color: var(--rule); color: var(--dim); }
+    .approval-title { color: var(--yellow); font-weight: 700; }
+    .approval.resolved .approval-title { color: var(--dim); }
+    .approval .command-text { display: block; padding: 4px 0 2px; color: var(--fg); overflow-wrap: anywhere; }
+    .approval .command-text::before { content: '$ '; color: var(--faint); }
+    .choices { margin-top: 7px; }
+    .choice { display: block; width: min(100%, 75ch); padding: 2px 1ch; color: var(--fg); }
+    .choice::before { content: '  '; }
+    .choice.selected { background: var(--select); color: var(--green); }
+    .choice.selected::before { content: '› '; }
+    .choice:hover { background: var(--select); }
+    .choice small { color: var(--dim); font-size: 11px; }
+    .composer { flex: none; padding: 9px 3ch 8px; border-top: 1px solid var(--rule); }
+    .queue-list { max-width: 116ch; margin-bottom: 6px; color: var(--blue); font-size: 12px; }
+    .queue-list > div { display: flex; gap: 1ch; overflow-wrap: anywhere; }
+    .queue-list button { border: 0; background: transparent; color: var(--dim); cursor: pointer; }
+    .delivery { display: flex; align-items: center; gap: 1ch; margin-bottom: 7px; color: var(--dim); font-size: 12px; }
+    .delivery-btn { padding: 0 4px; }
+    .delivery-btn.active { color: var(--green); background: var(--select); }
+    .prompt-line { display: flex; align-items: start; gap: 1ch; max-width: 116ch; }
+    .prompt-char { padding-top: 2px; color: var(--green); font-weight: 700; }
+    textarea { flex: 1; min-width: 0; min-height: 28px; max-height: 110px; resize: vertical; padding: 2px 0; border: 0; outline: 0; background: transparent; color: var(--fg); font-size: 13px; line-height: 1.5; }
+    textarea::placeholder { color: var(--faint); }
+    textarea:focus-visible { outline: none; }
+    .bottom .right { margin-left: auto; }
+    .panel { max-width: 116ch; min-height: 100%; padding: 19px 3ch 30px; font-size: 13px; line-height: 1.7; }
+    .panel h2 { margin: 0 0 13px; font-size: 13px; font-weight: 700; color: var(--green); }
+    .panel h2::before { content: '── '; color: var(--rule); }
+    .panel h2::after { content: ' ─────────────────────────────────────────────'; color: var(--rule); font-weight: 400; }
+    .panel-row { display: flex; gap: 2ch; padding: 3px 0; }
+    .panel-row .label { min-width: 16ch; color: var(--dim); }
+    .panel pre { margin: 12px 0; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; }
+    .panel-action { color: var(--blue); margin: 8px 2ch 0 0; }
+    .panel-action.selected { color: var(--green); }
+    .diff-add { color: var(--green); }
+    .diff-del { color: var(--red); }
+    .view-open .composer { display: none; }
+    .palette-cover { position: fixed; inset: 0; display: flex; align-items: flex-start; justify-content: center; padding: min(14vh, 110px) 2ch 2ch; background: rgba(0, 0, 0, .58); }
+    .palette { width: min(76ch, 100%); border: 1px solid var(--green); background: var(--bg); padding: 1ch; font-size: 13px; }
+    .palette-title { color: var(--green); margin-bottom: 7px; }
+    .palette input { width: 100%; border: 0; border-bottom: 1px solid var(--rule); padding: 5px 0; outline: 0; background: transparent; color: var(--fg); }
+    .palette input:focus-visible { outline: none; }
+    .command { display: flex; width: 100%; justify-content: space-between; padding: 5px 1ch; color: var(--fg); }
+    .command.selected { background: var(--select); color: var(--green); }
+    .command small { color: var(--dim); }
+    @media (max-width: 720px) {
+      .top, .bottom { gap: 1ch; padding: 0 1ch; font-size: 11px; }
+      .branch, .top .secondary, .bottom .secondary { display: none; }
+      .transcript, .panel { padding: 13px 1ch 24px; font-size: 12px; }
+      .turn { grid-template-columns: 4ch minmax(0, 1fr); gap: 1ch; }
+      .composer { padding: 8px 1ch; }
+      .choice { width: 100%; }
+      .panel h2::after { content: ' ───'; }
+    }
+  </style>
+</head>
+<body>
+  <div class="screen" id="screen">
+    <div class="top">
+      <span class="brand">tact</span><span class="cwd">~/Projects/tact</span><span class="branch">⎇ tact-architecture</span>
+      <span class="stretch"></span><span class="state" id="status">● 等待批准</span>
+      <button class="head-btn secondary" data-open="tasks" title="任务视图">[任务]</button>
+      <button class="head-btn secondary" data-open="diff" title="变更视图">[变更]</button>
+      <button class="head-btn" id="cancelBtn" title="取消当前任务">[取消]</button>
+    </div>
+    <div class="main" id="main">
+      <div class="transcript" id="transcript">
+        <div class="turn"><span class="speaker user">你</span><div class="turn-body">修复恢复会话后，运行中的工具有时会留在界面上的问题。</div></div>
+        <div class="turn"><span class="speaker agent">Tact</span><div class="turn-body">
+          <p>我先核对工具生命周期和恢复路径，找到状态没有被清理的位置。</p>
+          <button class="toggle" id="toolToggle" aria-expanded="false">▸ 3 个操作 · 已完成</button>
+          <div class="tool-list" id="tools" hidden>
+            <div class="tool-line"><span class="ok">✓</span><span class="name">read_file  crates/tui/src/widgets/state/tool_state.rs</span><span class="time">12ms</span><button class="link" data-open="read">[打开]</button></div>
+            <div class="tool-line"><span class="ok">✓</span><span class="name">rg  StepFinished / StepFailed</span><span class="time">24ms</span><button class="link" data-open="search">[打开]</button></div>
+            <div class="tool-line"><span class="ok">✓</span><span class="name">apply_patch  crates/tui/src/widgets/state/agent.rs</span><span class="time">31ms</span><button class="link" data-open="diff">[diff]</button></div>
+          </div>
+          <p>恢复路径只重建完成记录，未清除同一 ID 的活动工具。我已补上清理，接下来验证相关测试。</p>
+          <div id="approvalSlot"></div>
+          <div id="resultSlot"></div>
+        </div></div>
+        <div id="extraTurns"></div>
+      </div>
+      <div class="panel" id="panel" hidden></div>
+    </div>
+    <div class="composer">
+      <div class="queue-list" id="queueList" hidden></div>
+      <div class="delivery" id="delivery" hidden><span>运行中消息</span><button class="delivery-btn active" data-delivery="steer">[引导当前轮次]</button><button class="delivery-btn" data-delivery="followup">[完成后发送]</button></div>
+      <div class="prompt-line"><span class="prompt-char">❯</span><textarea id="input" rows="1" aria-label="输入消息" placeholder="输入消息…"></textarea></div>
+    </div>
+    <div class="bottom"><span id="mode">default</span><span>gpt-6.1-sol</span><span>ctx 46k/200k</span><span class="secondary">cache 72%</span><span class="right" id="footerRight">tact-architecture</span></div>
+  </div>
+  <div class="palette-cover" id="paletteCover" hidden><div class="palette" role="dialog" aria-label="命令"><div class="palette-title">┌ 命令</div><input id="paletteInput" placeholder="/ 搜索命令"><div id="paletteList"></div></div></div>
+  <script>
+    const $ = (selector) => document.querySelector(selector);
+    const state = { phase: 'waiting', view: null, choice: 0, delivery: 'steer', queued: [], steering: [], reviewed: false, timer: null, theme: 'dark' };
+    const command = 'cargo test -p tui --lib tool_state';
+    const escapeHtml = (value) => value.replace(/[&<>"']/g, (char) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[char]);
+    const scrollEnd = () => requestAnimationFrame(() => { $('#main').scrollTop = $('#main').scrollHeight; });
+    const commands = [
+      ['tasks', '/tasks', '任务'], ['diff', '/diff', '审阅变更'], ['usage', '/usage', '用量'],
+      ['theme', '/theme', '明暗主题'], ['help', '/help', '按键'], ['reset', '/reset', '重置演示']
+    ];
+    function phase(next) {
+      state.phase = next;
+      const labels = { waiting: '● 等待批准', running: '⠋ 正在验证', done: '✓ 已完成', denied: '× 已拒绝', cancelled: '× 已取消' };
+      $('#status').textContent = labels[next];
+      $('#status').className = 'state ' + (next === 'done' ? 'done' : next === 'denied' || next === 'cancelled' ? 'denied' : '');
+      $('#cancelBtn').hidden = next === 'done' || next === 'denied' || next === 'cancelled';
+      $('#delivery').hidden = next !== 'running';
+      if (state.view === 'tasks') showView('tasks');
+    }
+    function approval() {
+      state.choice = 0;
+      $('#approvalSlot').innerHTML = '<div class="approval"><div class="approval-title">◆ 请求权限 · 在沙箱外运行命令</div><div>原因：相关测试需要绑定本地端口。</div><span class="command-text">' + command + '</span><div class="choices"><button class="choice selected" data-choice="0">1 仅允许这次</button><button class="choice" data-choice="1">2 本会话允许同类命令 <small>cargo test *</small></button><button class="choice" data-choice="2">3 拒绝并继续</button></div></div>';
+      $('#resultSlot').innerHTML = '';
+      phase('waiting'); scrollEnd();
+    }
+    function selectChoice(index) {
+      state.choice = Math.max(0, Math.min(2, index));
+      document.querySelectorAll('.choice').forEach((button) => button.classList.toggle('selected', Number(button.dataset.choice) === state.choice));
+    }
+    function decide(index) {
+      if (state.phase !== 'waiting') return;
+      if (index === 2) {
+        $('#approvalSlot').innerHTML = '<div class="approval resolved"><div class="approval-title">× 已拒绝 · ' + command + '</div></div>';
+        $('#resultSlot').innerHTML = '<p class="muted">命令未执行。我可以继续静态检查，或等待其他验证方式。</p>';
+        phase('denied'); return;
+      }
+      $('#approvalSlot').innerHTML = '<div class="approval resolved"><div class="approval-title">✓ 已批准 · ' + (index === 0 ? '仅这次' : '本会话同类命令') + '</div><span class="command-text">' + command + '</span></div>';
+      $('#resultSlot').innerHTML = '<div class="tool-list"><div class="tool-line"><span class="warn">⠋</span><span class="name">bash  ' + command + '</span><button class="link" data-finish="true">[完成模拟运行]</button></div><div class="running-output">running 12 tests…\ntest tool_state::restores_finished_tool ... ok</div></div>';
+      phase('running'); scrollEnd(); clearTimeout(state.timer); state.timer = setTimeout(finish, 8000);
+    }
+    function finish() {
+      if (state.phase !== 'running') return;
+      clearTimeout(state.timer);
+      $('#resultSlot').innerHTML = '<div class="tool-list"><div class="tool-line"><span class="ok">✓</span><span class="name">bash  ' + command + '</span><span class="time">12 passed</span><button class="link" data-open="test">[输出]</button></div></div><p>验证完成：12 项通过，0 项失败。恢复后的活动工具状态已正确清理。</p>';
+      phase('done');
+      state.steering.forEach((text) => appendTurn('Tact', '已将引导纳入当前轮次：' + text, '引导'));
+      state.queued.forEach((text) => { appendTurn('你', text, '完成后发送'); appendTurn('Tact', '收到，我会继续处理这条后续消息。'); });
+      state.steering = []; state.queued = []; renderQueue(); scrollEnd();
+    }
+    function appendTurn(speaker, text, note = '') {
+      const entry = document.createElement('div'); entry.className = 'turn';
+      entry.innerHTML = '<span class="speaker ' + (speaker === '你' ? 'user' : 'agent') + '"></span><div class="turn-body"><div></div><small class="fine"></small></div>';
+      entry.querySelector('.speaker').textContent = speaker; entry.querySelector('.turn-body div').textContent = text;
+      entry.querySelector('small').textContent = note; $('#extraTurns').append(entry);
+    }
+    function renderQueue() {
+      $('#queueList').hidden = state.queued.length === 0;
+      $('#queueList').innerHTML = state.queued.map((text, i) => '<div>↳ 等待完成 ' + (i + 1) + ': ' + escapeHtml(text) + ' <button data-remove="' + i + '">[撤回]</button></div>').join('');
+    }
+    function send() {
+      const field = $('#input'); const text = field.value.trim(); if (!text) return;
+      const commandEntry = commands.find((entry) => entry[1] === text);
+      if (commandEntry) { field.value = ''; runCommand(commandEntry[0]); return; }
+      if (state.phase === 'running' && state.delivery === 'followup') { state.queued.push(text); renderQueue(); }
+      else if (state.phase === 'running') { state.steering.push(text); appendTurn('你', text, '引导 · 当前轮次'); }
+      else { appendTurn('你', text); appendTurn('Tact', state.phase === 'waiting' ? '当前命令仍在等待批准。' : '收到，我会结合当前结果继续处理。'); }
+      field.value = ''; scrollEnd();
+    }
+    function showView(kind) {
+      state.view = kind; $('#screen').classList.add('view-open'); $('#transcript').hidden = true; $('#panel').hidden = false;
+      const title = { tasks: '任务', diff: '文件变更', usage: '用量', read: '读取结果', search: '搜索结果', test: '命令输出', help: '按键' }[kind];
+      $('#footerRight').textContent = title + ' · Esc 返回';
+      let body = '';
+      if (kind === 'tasks') body = '<div class="panel-row"><span class="ok">✓</span>定位恢复路径 <span class="fine">tool_state.rs</span></div><div class="panel-row"><span class="ok">✓</span>清理活动工具状态 <span class="fine">agent.rs</span></div><div class="panel-row"><span class="' + (state.phase === 'done' ? 'ok' : state.phase === 'waiting' || state.phase === 'running' ? 'warn' : 'error') + '">' + (state.phase === 'done' ? '✓' : state.phase === 'waiting' || state.phase === 'running' ? '○' : '×') + '</span>验证相关测试 <span class="fine">' + (state.phase === 'done' ? '12 passed' : state.phase === 'waiting' ? '等待批准' : state.phase === 'running' ? '运行中' : '未完成') + '</span></div>';
+      if (kind === 'diff') body = '<div class="panel-row"><span class="warn">M</span> crates/tui/src/widgets/state/agent.rs <span class="ok">+6 −1</span></div><pre><span class="fine">@@ restore_tool_blocks @@</span>\n<span class="diff-del">- self.tools.blocks = restored;</span>\n<span class="diff-add">+ let finished_ids = restored.iter()</span>\n<span class="diff-add">+     .filter_map(|block| block.finished_tool_id())</span>\n<span class="diff-add">+     .collect::&lt;HashSet&lt;_&gt;&gt;();</span>\n<span class="diff-add">+ self.tools.active.retain(|tool| !finished_ids.contains(&tool.tool_id));</span>\n<span class="diff-add">+ self.tools.blocks = restored;</span></pre><button class="panel-action ' + (state.reviewed ? 'selected' : '') + '" data-reviewed="true">[' + (state.reviewed ? '已审阅' : '标记已审阅') + ']</button>';
+      if (kind === 'usage') body = '<div class="panel-row"><span class="label">model</span>gpt-6.1-sol</div><div class="panel-row"><span class="label">context</span>46,216 / 200,000  (23%)</div><div class="panel-row"><span class="label">input</span>38,412 tokens</div><div class="panel-row"><span class="label">output</span>7,804 tokens</div><div class="panel-row"><span class="label">cache read</span>72%</div>';
+      if (kind === 'read') body = '<pre>pub struct ActiveTool {\n    pub tool_id: String,\n    pub started_at: Instant,\n    pub live_output: ToolOutputBuffer,\n}</pre>';
+      if (kind === 'search') body = '<pre>agent.rs:218  StepFinished(index, tool_id, result)\nagent.rs:251  StepFailed(index, tool_id, error)\nagent.rs:302  restore_tool_blocks(&mut self.tools)</pre>';
+      if (kind === 'test') body = '<pre>$ ' + command + '\n   Finished test profile\n   Running 12 tests\n\ntest result: ok. 12 passed; 0 failed</pre>';
+      if (kind === 'help') body = '<pre>Enter          发送消息 / 确认选项\nShift+Enter    换行\n↑ / ↓          移动审批或命令选项\n1 / 2 / 3      直接选择审批项\n/              命令面板\nEsc            返回会话\n?              按键</pre>';
+      $('#panel').innerHTML = '<h2>' + title + '</h2>' + body; $('#main').scrollTop = 0;
+    }
+    function closeView() { state.view = null; $('#screen').classList.remove('view-open'); $('#panel').hidden = true; $('#transcript').hidden = false; $('#footerRight').textContent = 'tact-architecture'; $('#input').focus(); scrollEnd(); }
+    function renderPalette(query = '') {
+      const matches = commands.filter((entry) => (entry[1] + entry[2]).toLowerCase().includes(query.toLowerCase()));
+      $('#paletteList').innerHTML = matches.map((entry, i) => '<button class="command ' + (i === 0 ? 'selected' : '') + '" data-command="' + entry[0] + '"><span>' + entry[1] + '</span><small>' + entry[2] + '</small></button>').join('');
+    }
+    function openPalette() { $('#paletteCover').hidden = false; $('#paletteInput').value = ''; renderPalette(); $('#paletteInput').focus(); }
+    function closePalette() { $('#paletteCover').hidden = true; $('#input').focus(); }
+    function runCommand(key) {
+      closePalette();
+      if (key === 'theme') { state.theme = state.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = state.theme; return; }
+      if (key === 'reset') { reset(); return; }
+      showView(key);
+    }
+    function reset() {
+      clearTimeout(state.timer); state.queued = []; state.steering = []; state.reviewed = false;
+      $('#extraTurns').innerHTML = ''; renderQueue(); closeView(); approval();
+    }
+    document.addEventListener('click', (event) => {
+      const open = event.target.closest('[data-open]'); if (open) { showView(open.dataset.open); return; }
+      const choice = event.target.closest('[data-choice]'); if (choice) { decide(Number(choice.dataset.choice)); return; }
+      const delivery = event.target.closest('[data-delivery]'); if (delivery) { state.delivery = delivery.dataset.delivery; document.querySelectorAll('.delivery-btn').forEach((button) => button.classList.toggle('active', button === delivery)); return; }
+      const remove = event.target.closest('[data-remove]'); if (remove) { state.queued.splice(Number(remove.dataset.remove), 1); renderQueue(); return; }
+      const commandButton = event.target.closest('[data-command]'); if (commandButton) { runCommand(commandButton.dataset.command); return; }
+      if (event.target.closest('[data-finish]')) { finish(); return; }
+      if (event.target.closest('[data-reviewed]')) { state.reviewed = true; showView('diff'); return; }
+      if (event.target === $('#paletteCover')) closePalette();
+    });
+    $('#toolToggle').addEventListener('click', () => { const open = $('#tools').hidden; $('#tools').hidden = !open; $('#toolToggle').setAttribute('aria-expanded', String(open)); $('#toolToggle').textContent = open ? '▾ 3 个操作 · 已完成' : '▸ 3 个操作 · 已完成'; });
+    $('#cancelBtn').addEventListener('click', () => { if (state.phase !== 'waiting' && state.phase !== 'running') return; clearTimeout(state.timer); $('#approvalSlot').innerHTML = '<div class="approval resolved"><div class="approval-title">× 任务已取消</div></div>'; $('#resultSlot').innerHTML = ''; phase('cancelled'); });
+    $('#input').addEventListener('keydown', (event) => { if (event.key === 'Enter' && !event.shiftKey && !event.isComposing) { event.preventDefault(); send(); } if (event.key === '/' && !event.target.value) { event.preventDefault(); openPalette(); } });
+    $('#paletteInput').addEventListener('input', (event) => renderPalette(event.target.value));
+    $('#paletteInput').addEventListener('keydown', (event) => {
+      const items = [...document.querySelectorAll('.command')]; let index = items.findIndex((item) => item.classList.contains('selected'));
+      if (items.length === 0) return;
+      if (event.key === 'ArrowDown' || event.key === 'ArrowUp') { event.preventDefault(); index = (index + (event.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; items.forEach((item, i) => item.classList.toggle('selected', i === index)); }
+      if (event.key === 'Enter' && items[index]) { event.preventDefault(); runCommand(items[index].dataset.command); }
+    });
+    document.addEventListener('keydown', (event) => {
+      if (event.key === 'Escape') { if (!$('#paletteCover').hidden) closePalette(); else if (state.view) closeView(); return; }
+      if (event.target === $('#input') || event.target === $('#paletteInput')) return;
+      if (event.key === '/') { event.preventDefault(); openPalette(); }
+      if (event.key === '?') showView('help');
+      if (state.phase === 'waiting' && !state.view) {
+        if (event.key === 'ArrowDown') selectChoice(state.choice + 1);
+        if (event.key === 'ArrowUp') selectChoice(state.choice - 1);
+        if (event.key === 'Enter') decide(state.choice);
+        if (['1', '2', '3'].includes(event.key)) decide(Number(event.key) - 1);
+      }
+    });
+    approval();
+  </script>
+</body>
+</html>
