@@ -141,7 +141,7 @@ impl TaskStatusSnapshot {
     }
 }
 
-/// Why a [`AgentUpdate::TasksChanged`] was emitted.
+/// Why a task-list change was emitted (`tact_view::AgentUpdate::TasksChanged`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TasksChangeReason {

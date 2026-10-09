@@ -1,8 +1,8 @@
 //! Shared protocol types between the agent runtime and the TUI.
 //!
-//! [`agent`] defines the runtime messages ([`AgentUpdate`] / [`UserCommand`])
-//! exchanged over channels; [`biz`] defines account / quota structures carried
-//! inside those messages.
+//! [`agent`] defines the serializable payloads carried by Runtime events;
+//! [`biz`] defines account / quota structures. The Rust view-model and
+//! view-command types live in the `tact_view` crate, not here.
 //!
 //! State machine transitions: [book/25_chapter_protocol_zh.md](../book/25_chapter_protocol_zh.md).
 

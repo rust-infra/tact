@@ -4,6 +4,23 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-09 — 交互与视图的迁移类型移出 Plugin Protocol
+
+| Field | Value |
+|-------|-------|
+| **Type** | refactor（API 可见：新增 `tact_view` crate，`tact_protocol` 少了一批类型） |
+| **Related** | `crates/tact_view`、`crates/tact_protocol`、`crates/tact_extensions/src/ui_responder.rs`、`crates/tui/src/lib.rs`、`crates/tact_extensions/src/tool/mod.rs`；`ARCHITECTURE.md` §0、`docs/trajectory.md` |
+
+**现象 / 动机：** spec §2 把 `AgentUpdate`、`UserCommand`、`UiResponse` 一类标为 "migration inputs, not final protocol types"，但运行时仍以 `RuntimeEvent::ViewUpdate { update: AgentUpdate }` 透传视图模型，交互 waiter 还是索引型 `UiResponse`，两个类型都留在 `tact_protocol` 里——于是"协议"里装的是 Rust 视图模型，而不是中立值。
+
+**决策：** 分三步把这条线清干净并各自提交：(1) `UiResponder` 的 waiter 改为协议 `InteractionResponse`，按 `RequestId` 定位；(2) 删除 `UiResponse` 与 `UserCommand::UiResponse`，TUI 选择弹窗 / headless loop / `respond_ui` / `cancel_task` 直接构造 `InteractionResponse`；(3) `RuntimeEvent` 用结构化视图事件（`StepAdded/StepStarted/StepFinished/StepFailed/ToolMeta/Info/MdInfo/HookContext/HookStatus/PopupMarkdown/TaskComplete/TasksChanged/BackgroundTaskFinished/SubagentFinished/SubagentsChanged`）替掉 `ViewUpdate` 透传，并把 `AgentUpdate`/`UserCommand`/`AgentErrorKind` 与 `runtime_events_for` 投影一起移到新的 View 契约 crate `tact_view`。
+
+**改后行为：** Runtime 协议只承载结构化中立值；视图模型与视图命令在 `tact_view`，由扩展层产出、View 消费；`tact_protocol` 不再导出任何迁移类型。
+
+**Verification：** `./scripts/check-rust.sh`（fmt + clippy `-D warnings` + workspace 测试）全绿；`rg "AgentUpdate|UserCommand|UiResponse|ViewUpdate" crates/tact_protocol/src` 只剩文档措辞。
+
+**Pointers:** `crates/tact_view/src/lib.rs`、`crates/tact_protocol/src/runtime.rs::RuntimeEvent`、`docs/superpowers/specs/2026-10-08-runtime-plugin-architecture-design.md` §2。
+
 ## 1. 2026-10-09 — crate 分类对齐 Runtime 分层架构
 
 | Field | Value |

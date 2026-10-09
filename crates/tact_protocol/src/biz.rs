@@ -2,7 +2,7 @@
 //!
 //! Account balance and subscription quota structures returned by LLM provider
 //! APIs (DeepSeek, Moonshot, Kimi Code). These are not agent-runtime messages
-//! themselves, but they are carried inside [`AgentUpdate`](crate::agent::AgentUpdate)
+//! themselves, but they are carried inside `tact_view::AgentUpdate`
 //! and rendered by the TUI.
 
 use serde::{Deserialize, Serialize};
