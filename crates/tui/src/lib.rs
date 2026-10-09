@@ -549,14 +549,136 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
 
 /// Projects protocol events into the current TUI view model.
 ///
-/// This is an adapter boundary: the TUI consumes `RuntimeEvent`; the
-/// `AgentUpdate` projection remains local to the view until its widgets are
-/// converted to protocol state directly.
+/// This is an adapter boundary: the TUI consumes structured `RuntimeEvent`s and
+/// projects them onto the widgets' view model.
 fn runtime_event_to_agent_updates(event: tact_protocol::RuntimeEvent) -> Vec<AgentUpdate> {
     use tact_protocol::RuntimeEvent;
 
     match event {
-        RuntimeEvent::ViewUpdate { update, .. } => vec![update],
+        RuntimeEvent::Text { role, content, .. } if role == "assistant" => {
+            vec![AgentUpdate::StreamChunk(content)]
+        }
+        RuntimeEvent::Thinking { chunk, .. } => vec![AgentUpdate::ThinkingChunk(chunk)],
+        RuntimeEvent::ToolProgress {
+            tool_id, chunks, ..
+        } => vec![AgentUpdate::ToolProgress { tool_id, chunks }],
+        RuntimeEvent::ModelInfo { params, .. } => vec![AgentUpdate::ModelInfo(params)],
+        RuntimeEvent::TokenUsage { usage, .. } => vec![AgentUpdate::TokenUsage(usage)],
+        RuntimeEvent::TurnStats {
+            turns_taken,
+            max_turns,
+            ..
+        } => vec![AgentUpdate::TurnStats {
+            turns_taken,
+            max_turns,
+        }],
+        RuntimeEvent::StepAdded { step, .. } => vec![AgentUpdate::StepAdded(step)],
+        RuntimeEvent::StepStarted {
+            idx,
+            tool_id,
+            tool_name,
+            arg_summary,
+            arg_full,
+            presentation,
+            ..
+        } => vec![AgentUpdate::StepStarted {
+            idx,
+            tool_id,
+            tool_name,
+            arg_summary,
+            arg_full,
+            presentation,
+        }],
+        RuntimeEvent::StepFinished {
+            idx,
+            tool_id,
+            result,
+            ..
+        } => vec![AgentUpdate::StepFinished {
+            idx,
+            tool_id,
+            result,
+        }],
+        RuntimeEvent::StepFailed {
+            idx,
+            tool_id,
+            arg_summary,
+            error,
+            ..
+        } => vec![AgentUpdate::StepFailed {
+            idx,
+            tool_id,
+            arg_summary,
+            error,
+        }],
+        RuntimeEvent::TaskComplete { content, .. } => vec![AgentUpdate::TaskComplete(content)],
+        RuntimeEvent::Info { content, .. } => vec![AgentUpdate::Info(content)],
+        RuntimeEvent::MdInfo { content, .. } => vec![AgentUpdate::MdInfo(content)],
+        RuntimeEvent::HookContext { source, text, .. } => {
+            vec![AgentUpdate::HookContext { source, text }]
+        }
+        RuntimeEvent::HookStatus {
+            id,
+            source,
+            message,
+            elapsed_ms,
+            ..
+        } => vec![AgentUpdate::HookStatus {
+            id,
+            source,
+            message,
+            elapsed_ms,
+        }],
+        RuntimeEvent::PopupMarkdown { title, source, .. } => {
+            vec![AgentUpdate::PopupMarkdown { title, source }]
+        }
+        RuntimeEvent::TasksChanged { tasks, reason, .. } => {
+            vec![AgentUpdate::TasksChanged { tasks, reason }]
+        }
+        RuntimeEvent::ToolMeta {
+            tool_id,
+            model,
+            token_usage,
+            task_id,
+            ..
+        } => vec![AgentUpdate::ToolMeta {
+            tool_id,
+            model,
+            token_usage,
+            task_id,
+        }],
+        RuntimeEvent::BackgroundTaskFinished {
+            tool_id,
+            success,
+            message,
+            output,
+            ..
+        } => vec![AgentUpdate::BackgroundTaskFinished {
+            tool_id,
+            success,
+            message,
+            output,
+        }],
+        RuntimeEvent::SubagentFinished {
+            tool_id,
+            child_id,
+            success,
+            summary,
+            ..
+        } => vec![AgentUpdate::SubagentFinished {
+            tool_id,
+            child_id,
+            success,
+            summary,
+        }],
+        RuntimeEvent::SubagentsChanged { runs, .. } => vec![AgentUpdate::SubagentsChanged { runs }],
+        RuntimeEvent::Cancelled { .. } => vec![AgentUpdate::TaskCancelled],
+        RuntimeEvent::Error { message, .. } => {
+            vec![AgentUpdate::Error(tact_protocol::AgentErrorKind::Other(
+                message,
+            ))]
+        }
+        RuntimeEvent::Notification { content, .. } => vec![AgentUpdate::Info(content)],
         RuntimeEvent::InteractionRequested { request } => match request {
             tact_protocol::InteractionRequest::Select {
                 request_id,
@@ -782,9 +904,10 @@ mod runtime_event_tests {
 
     #[test]
     fn runtime_text_events_project_to_stream_updates() {
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ViewUpdate {
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::Text {
             run_id: Some(tact_protocol::RunId::from("run-1")),
-            update: tact_protocol::AgentUpdate::StreamChunk("hello".into()),
+            role: "assistant".into(),
+            content: "hello".into(),
         });
 
         assert!(matches!(
@@ -795,9 +918,9 @@ mod runtime_event_tests {
 
     #[test]
     fn runtime_completion_notification_projects_to_done_update() {
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ViewUpdate {
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::TaskComplete {
             run_id: None,
-            update: tact_protocol::AgentUpdate::TaskComplete("finished".into()),
+            content: "finished".into(),
         });
 
         assert!(matches!(
@@ -815,9 +938,9 @@ mod runtime_event_tests {
             reasoning_effort: Some("low".into()),
             extra_body: None,
         };
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ViewUpdate {
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ModelInfo {
             run_id: None,
-            update: tact_protocol::AgentUpdate::ModelInfo(params),
+            params,
         });
 
         assert!(matches!(
@@ -850,12 +973,10 @@ mod runtime_event_tests {
 
     #[test]
     fn runtime_popup_notification_projects_to_modal_content() {
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ViewUpdate {
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::PopupMarkdown {
             run_id: None,
-            update: tact_protocol::AgentUpdate::PopupMarkdown {
-                title: "Session stats".into(),
-                source: "Turns: 3".into(),
-            },
+            title: "Session stats".into(),
+            source: "Turns: 3".into(),
         });
 
         assert!(matches!(
@@ -867,17 +988,14 @@ mod runtime_event_tests {
 
     #[test]
     fn runtime_view_update_projects_rich_tool_cards_to_the_tui_adapter() {
-        let update = tact_protocol::AgentUpdate::StepStarted {
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::StepStarted {
+            run_id: Some(tact_protocol::RunId::from("run-view")),
             idx: 7,
             tool_id: "tool-view".into(),
             tool_name: "write_file".into(),
             arg_summary: "a.txt".into(),
             arg_full: "a.txt: content".into(),
             presentation: tact_protocol::ToolPresentationInfo::generic("Write File"),
-        };
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ViewUpdate {
-            run_id: Some(tact_protocol::RunId::from("run-view")),
-            update,
         });
 
         assert!(matches!(

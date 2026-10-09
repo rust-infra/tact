@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde_json::Value;
-use tact_protocol::{AgentUpdate, RunId, RuntimeEvent, StepId, TrajectoryId};
+use tact_protocol::{RunId, RuntimeEvent, StepId, TrajectoryId};
 
 use tact::redact::{RedactionConfig, RedactionLevel};
 
@@ -131,7 +131,21 @@ impl TrajectoryService for KernelTrajectoryRecorder {
             | RuntimeEvent::TokenUsage { run_id, .. }
             | RuntimeEvent::TurnStats { run_id, .. }
             | RuntimeEvent::ToolProgress { run_id, .. }
-            | RuntimeEvent::ViewUpdate { run_id, .. } => run_id.clone(),
+            | RuntimeEvent::StepAdded { run_id, .. }
+            | RuntimeEvent::StepStarted { run_id, .. }
+            | RuntimeEvent::StepFinished { run_id, .. }
+            | RuntimeEvent::StepFailed { run_id, .. }
+            | RuntimeEvent::TaskComplete { run_id, .. }
+            | RuntimeEvent::Info { run_id, .. }
+            | RuntimeEvent::MdInfo { run_id, .. }
+            | RuntimeEvent::HookContext { run_id, .. }
+            | RuntimeEvent::HookStatus { run_id, .. }
+            | RuntimeEvent::PopupMarkdown { run_id, .. }
+            | RuntimeEvent::TasksChanged { run_id, .. }
+            | RuntimeEvent::ToolMeta { run_id, .. }
+            | RuntimeEvent::BackgroundTaskFinished { run_id, .. }
+            | RuntimeEvent::SubagentFinished { run_id, .. }
+            | RuntimeEvent::SubagentsChanged { run_id, .. } => run_id.clone(),
             _ => None,
         }) {
             Some(run_id) => run_id,
@@ -170,23 +184,23 @@ impl TrajectoryService for KernelTrajectoryRecorder {
             RuntimeEvent::Text { .. } | RuntimeEvent::Notification { .. } => {
                 TrajectoryEventType::Message
             }
-            RuntimeEvent::ViewUpdate { update, .. } => match update {
-                AgentUpdate::StepAdded(_)
-                | AgentUpdate::StepStarted { .. }
-                | AgentUpdate::StepFinished { .. }
-                | AgentUpdate::StepFailed { .. }
-                | AgentUpdate::ToolProgress { .. }
-                | AgentUpdate::ToolMeta { .. }
-                | AgentUpdate::BackgroundTaskFinished { .. }
-                | AgentUpdate::SubagentFinished { .. } => TrajectoryEventType::ToolCall,
-                AgentUpdate::RequestSelect { .. } | AgentUpdate::RequestMultiSelect { .. } => {
-                    TrajectoryEventType::Interaction
-                }
-                AgentUpdate::TaskCancelled => TrajectoryEventType::Cancellation,
-                AgentUpdate::Error(_) => TrajectoryEventType::Error,
-                _ => TrajectoryEventType::Message,
-            },
-            RuntimeEvent::Error { .. } => TrajectoryEventType::Error,
+            RuntimeEvent::StepAdded { .. }
+            | RuntimeEvent::StepStarted { .. }
+            | RuntimeEvent::StepFinished { .. }
+            | RuntimeEvent::ToolMeta { .. }
+            | RuntimeEvent::BackgroundTaskFinished { .. }
+            | RuntimeEvent::SubagentFinished { .. }
+            | RuntimeEvent::SubagentsChanged { .. } => TrajectoryEventType::ToolCall,
+            RuntimeEvent::TaskComplete { .. }
+            | RuntimeEvent::Info { .. }
+            | RuntimeEvent::MdInfo { .. }
+            | RuntimeEvent::HookContext { .. }
+            | RuntimeEvent::HookStatus { .. }
+            | RuntimeEvent::PopupMarkdown { .. }
+            | RuntimeEvent::TasksChanged { .. } => TrajectoryEventType::Message,
+            RuntimeEvent::StepFailed { .. } | RuntimeEvent::Error { .. } => {
+                TrajectoryEventType::Error
+            }
             RuntimeEvent::PluginStarted { .. }
             | RuntimeEvent::PluginStopped { .. }
             | RuntimeEvent::Plugin { .. } => TrajectoryEventType::PluginLifecycle,
@@ -264,7 +278,21 @@ impl TrajectoryService for SqliteTrajectoryService {
                 | RuntimeEvent::TokenUsage { run_id, .. }
                 | RuntimeEvent::TurnStats { run_id, .. }
                 | RuntimeEvent::ToolProgress { run_id, .. }
-                | RuntimeEvent::ViewUpdate { run_id, .. } => run_id.clone(),
+                | RuntimeEvent::StepAdded { run_id, .. }
+                | RuntimeEvent::StepStarted { run_id, .. }
+                | RuntimeEvent::StepFinished { run_id, .. }
+                | RuntimeEvent::StepFailed { run_id, .. }
+                | RuntimeEvent::TaskComplete { run_id, .. }
+                | RuntimeEvent::Info { run_id, .. }
+                | RuntimeEvent::MdInfo { run_id, .. }
+                | RuntimeEvent::HookContext { run_id, .. }
+                | RuntimeEvent::HookStatus { run_id, .. }
+                | RuntimeEvent::PopupMarkdown { run_id, .. }
+                | RuntimeEvent::TasksChanged { run_id, .. }
+                | RuntimeEvent::ToolMeta { run_id, .. }
+                | RuntimeEvent::BackgroundTaskFinished { run_id, .. }
+                | RuntimeEvent::SubagentFinished { run_id, .. }
+                | RuntimeEvent::SubagentsChanged { run_id, .. } => run_id.clone(),
                 _ => None,
             })
             // Notifications and plugin lifecycle events can be emitted before
@@ -332,23 +360,21 @@ fn event_type(event: &RuntimeEvent) -> TrajectoryEventType {
         RuntimeEvent::Text { .. } | RuntimeEvent::Notification { .. } => {
             TrajectoryEventType::Message
         }
-        RuntimeEvent::ViewUpdate { update, .. } => match update {
-            AgentUpdate::StepAdded(_)
-            | AgentUpdate::StepStarted { .. }
-            | AgentUpdate::StepFinished { .. }
-            | AgentUpdate::StepFailed { .. }
-            | AgentUpdate::ToolProgress { .. }
-            | AgentUpdate::ToolMeta { .. }
-            | AgentUpdate::BackgroundTaskFinished { .. }
-            | AgentUpdate::SubagentFinished { .. } => TrajectoryEventType::ToolCall,
-            AgentUpdate::RequestSelect { .. } | AgentUpdate::RequestMultiSelect { .. } => {
-                TrajectoryEventType::Interaction
-            }
-            AgentUpdate::TaskCancelled => TrajectoryEventType::Cancellation,
-            AgentUpdate::Error(_) => TrajectoryEventType::Error,
-            _ => TrajectoryEventType::Message,
-        },
-        RuntimeEvent::Error { .. } => TrajectoryEventType::Error,
+        RuntimeEvent::StepAdded { .. }
+        | RuntimeEvent::StepStarted { .. }
+        | RuntimeEvent::StepFinished { .. }
+        | RuntimeEvent::ToolMeta { .. }
+        | RuntimeEvent::BackgroundTaskFinished { .. }
+        | RuntimeEvent::SubagentFinished { .. }
+        | RuntimeEvent::SubagentsChanged { .. } => TrajectoryEventType::ToolCall,
+        RuntimeEvent::TaskComplete { .. }
+        | RuntimeEvent::Info { .. }
+        | RuntimeEvent::MdInfo { .. }
+        | RuntimeEvent::HookContext { .. }
+        | RuntimeEvent::HookStatus { .. }
+        | RuntimeEvent::PopupMarkdown { .. }
+        | RuntimeEvent::TasksChanged { .. } => TrajectoryEventType::Message,
+        RuntimeEvent::StepFailed { .. } | RuntimeEvent::Error { .. } => TrajectoryEventType::Error,
         RuntimeEvent::PluginStarted { .. }
         | RuntimeEvent::PluginStopped { .. }
         | RuntimeEvent::Plugin { .. } => TrajectoryEventType::PluginLifecycle,

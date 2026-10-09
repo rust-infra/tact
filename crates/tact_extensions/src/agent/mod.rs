@@ -874,161 +874,6 @@ impl Agent {
         self.mcp_router.disconnect_all().await;
     }
 
-    fn runtime_events_for_update(&self, update: &AgentUpdate) -> Vec<tact_protocol::RuntimeEvent> {
-        use tact_protocol::{InteractionRequest, RuntimeEvent};
-
-        let run_id = self.runtime.current_run_id.clone();
-        match update {
-            AgentUpdate::StreamChunk(content) => vec![RuntimeEvent::Text {
-                run_id,
-                role: "assistant".into(),
-                content: content.clone(),
-            }],
-            AgentUpdate::ThinkingChunk(chunk) => vec![RuntimeEvent::Thinking {
-                run_id,
-                chunk: chunk.clone(),
-            }],
-            AgentUpdate::ToolProgress { tool_id, chunks } => vec![RuntimeEvent::ToolProgress {
-                run_id,
-                tool_id: tool_id.clone(),
-                chunks: chunks.clone(),
-            }],
-            AgentUpdate::ModelInfo(params) => vec![RuntimeEvent::ModelInfo {
-                run_id,
-                params: params.clone(),
-            }],
-            AgentUpdate::TokenUsage(usage) => vec![RuntimeEvent::TokenUsage {
-                run_id,
-                usage: usage.clone(),
-            }],
-            AgentUpdate::TurnStats {
-                turns_taken,
-                max_turns,
-            } => vec![RuntimeEvent::TurnStats {
-                run_id,
-                turns_taken: *turns_taken,
-                max_turns: *max_turns,
-            }],
-            AgentUpdate::StepFailed { tool_id, error, .. } => vec![RuntimeEvent::Error {
-                run_id,
-                message: format!("{tool_id}: {error}"),
-            }],
-            AgentUpdate::Error(error) => vec![RuntimeEvent::Error {
-                run_id,
-                message: error.to_string(),
-            }],
-            AgentUpdate::RequestSelect {
-                request_id,
-                prompt,
-                options,
-                ..
-            } => vec![RuntimeEvent::InteractionRequested {
-                request: InteractionRequest::Select {
-                    request_id: tact_protocol::RequestId::from(request_id.to_string()),
-                    prompt: prompt.clone(),
-                    options: options.clone(),
-                },
-            }],
-            AgentUpdate::RequestMultiSelect {
-                request_id,
-                prompt,
-                options,
-            } => vec![RuntimeEvent::InteractionRequested {
-                request: InteractionRequest::MultiSelect {
-                    request_id: tact_protocol::RequestId::from(request_id.to_string()),
-                    prompt: prompt.clone(),
-                    options: options.clone(),
-                },
-            }],
-            AgentUpdate::TaskComplete(content) => vec![
-                RuntimeEvent::Notification {
-                    level: "complete".into(),
-                    content: content.clone(),
-                },
-                RuntimeEvent::RunFinished {
-                    run_id: run_id.unwrap_or_else(|| RunId::from("runtime")),
-                    success: true,
-                },
-            ],
-            AgentUpdate::TaskCancelled => vec![RuntimeEvent::Cancelled {
-                run_id: run_id.unwrap_or_else(|| RunId::from("runtime")),
-            }],
-            AgentUpdate::Info(content) => {
-                vec![RuntimeEvent::Notification {
-                    level: "info".into(),
-                    content: content.clone(),
-                }]
-            }
-            AgentUpdate::MdInfo(content) => vec![RuntimeEvent::Notification {
-                level: "md_info".into(),
-                content: content.clone(),
-            }],
-            AgentUpdate::HookContext { source, text } => vec![RuntimeEvent::Notification {
-                level: "hook_context".into(),
-                content: source
-                    .as_ref()
-                    .map_or_else(|| text.clone(), |source| format!("{source}: {text}")),
-            }],
-            AgentUpdate::HookStatus {
-                source,
-                message,
-                elapsed_ms,
-                ..
-            } => vec![RuntimeEvent::Notification {
-                level: "hook_status".into(),
-                content: format!(
-                    "{}{} ({elapsed_ms:?}ms)",
-                    source.as_deref().unwrap_or("hook"),
-                    message
-                ),
-            }],
-            AgentUpdate::PopupMarkdown { title, source } => vec![RuntimeEvent::Notification {
-                level: "popup_markdown".into(),
-                content: format!("{title}\n{source}"),
-            }],
-            AgentUpdate::TasksChanged { tasks, reason } => vec![RuntimeEvent::Notification {
-                level: "tasks_changed".into(),
-                content: format!("{} tasks {reason:?}", tasks.len()),
-            }],
-            AgentUpdate::ToolMeta {
-                tool_id,
-                model,
-                task_id,
-                ..
-            } => vec![RuntimeEvent::Notification {
-                level: "tool_meta".into(),
-                content: format!("{tool_id}: model={model:?}, task_id={task_id:?}"),
-            }],
-            AgentUpdate::BackgroundTaskFinished {
-                tool_id,
-                success,
-                message,
-                ..
-            } => vec![RuntimeEvent::Notification {
-                level: "background_task_finished".into(),
-                content: format!("{tool_id}: success={success}; {message}"),
-            }],
-            AgentUpdate::SubagentFinished {
-                tool_id,
-                child_id,
-                success,
-                summary,
-            } => vec![RuntimeEvent::Notification {
-                level: "subagent_finished".into(),
-                content: format!("{tool_id}: child={child_id}, success={success}; {summary}"),
-            }],
-            AgentUpdate::SubagentsChanged { runs } => vec![RuntimeEvent::Notification {
-                level: "subagents_changed".into(),
-                content: format!("{} subagent runs changed", runs.len()),
-            }],
-            // CapabilityRouter owns ToolCallStarted / ToolCallFinished so the
-            // protocol stream has one authoritative invocation lifecycle.
-            AgentUpdate::StepAdded(_)
-            | AgentUpdate::StepStarted { .. }
-            | AgentUpdate::StepFinished { .. } => Vec::new(),
-        }
-    }
-
     pub fn emit_update(&self, update: AgentUpdate) {
         // Desktop notifications for key lifecycle events
         match &update {
@@ -1042,17 +887,13 @@ impl Agent {
             _ => {}
         }
 
-        if let Some(sink) = &self.runtime.runtime_event_sink {
-            for event in self.runtime_events_for_update(&update) {
-                let _ = sink.emit(event);
-            }
-            self.tool_context
-                .view_updates
-                .set_run_id(self.runtime.current_run_id.clone());
-            let _ = self.tool_context.view_updates.emit(update);
-        } else {
-            let _ = self.tool_context.view_updates.emit(update);
-        }
+        // One emission path: the view emitter projects the update into
+        // structured Runtime events when a runtime sink is attached, and falls
+        // back to the in-process View channel otherwise.
+        self.tool_context
+            .view_updates
+            .set_run_id(self.runtime.current_run_id.clone());
+        let _ = self.tool_context.view_updates.emit(update);
     }
 
     /// Load persisted history into an empty context.
@@ -6208,7 +6049,7 @@ mod tests {
         }));
 
         let events = sink.0.lock().unwrap();
-        assert_eq!(events.len(), 12);
+        assert_eq!(events.len(), 6);
         assert!(matches!(
             &events[0],
             tact_protocol::RuntimeEvent::Text { run_id: Some(run_id), role, content }
@@ -6216,64 +6057,23 @@ mod tests {
         ));
         assert!(matches!(
             &events[1],
-            tact_protocol::RuntimeEvent::ViewUpdate {
-                update: AgentUpdate::StreamChunk(content), ..
-            } if content == "answer"
-        ));
-        assert!(matches!(
-            &events[2],
             tact_protocol::RuntimeEvent::Thinking { .. }
         ));
         assert!(matches!(
-            &events[3],
-            tact_protocol::RuntimeEvent::ViewUpdate {
-                update: AgentUpdate::ThinkingChunk(_),
-                ..
-            }
-        ));
-        assert!(matches!(
-            &events[4],
+            &events[2],
             tact_protocol::RuntimeEvent::ToolProgress { .. }
         ));
         assert!(matches!(
-            &events[5],
-            tact_protocol::RuntimeEvent::ViewUpdate {
-                update: AgentUpdate::ToolProgress { .. },
-                ..
-            }
-        ));
-        assert!(matches!(
-            &events[6],
+            &events[3],
             tact_protocol::RuntimeEvent::TokenUsage { .. }
         ));
         assert!(matches!(
-            &events[7],
-            tact_protocol::RuntimeEvent::ViewUpdate {
-                update: AgentUpdate::TokenUsage(_),
-                ..
-            }
-        ));
-        assert!(matches!(
-            &events[8],
+            &events[4],
             tact_protocol::RuntimeEvent::TurnStats { .. }
         ));
         assert!(matches!(
-            &events[9],
-            tact_protocol::RuntimeEvent::ViewUpdate {
-                update: AgentUpdate::TurnStats { .. },
-                ..
-            }
-        ));
-        assert!(matches!(
-            &events[10],
+            &events[5],
             tact_protocol::RuntimeEvent::ModelInfo { .. }
-        ));
-        assert!(matches!(
-            &events[11],
-            tact_protocol::RuntimeEvent::ViewUpdate {
-                update: AgentUpdate::ModelInfo(_),
-                ..
-            }
         ));
     }
 
@@ -6301,12 +6101,7 @@ mod tests {
 
         assert!(matches!(
             sink.0.lock().unwrap().as_slice(),
-            [
-                tact_protocol::RuntimeEvent::Text { content, .. },
-                tact_protocol::RuntimeEvent::ViewUpdate {
-                    update: AgentUpdate::StreamChunk(view_text), ..
-                }
-            ] if content == "answer" && view_text == "answer"
+            [tact_protocol::RuntimeEvent::Text { content, .. }] if content == "answer"
         ));
         assert!(ui_rx.try_recv().is_err());
     }
@@ -6375,10 +6170,9 @@ mod tests {
             .unwrap()
             .iter()
             .filter_map(|event| match event {
-                tact_protocol::RuntimeEvent::ViewUpdate {
-                    update: AgentUpdate::StreamChunk(text),
-                    ..
-                } => Some(text.as_str()),
+                tact_protocol::RuntimeEvent::Text { content, role, .. } if role == "assistant" => {
+                    Some(content.as_str())
+                }
                 _ => None,
             })
             .collect::<String>();

@@ -102,8 +102,10 @@ impl ViewUpdateEmitter {
             (state.runtime_sink.clone(), state.run_id.clone())
         };
         if let Some(sink) = runtime_sink {
-            sink.emit(tact_protocol::RuntimeEvent::ViewUpdate { run_id, update })
-                .is_ok()
+            for event in tact_protocol::runtime_events_for(&update, run_id) {
+                let _ = sink.emit(event);
+            }
+            true
         } else {
             #[cfg(any(test, feature = "test-support"))]
             if let Some(tx) = self
@@ -508,9 +510,8 @@ mod tests {
         assert!(emitter.emit(AgentUpdate::Info("through protocol".into())));
         assert!(matches!(
             subscription.try_recv(),
-            Ok(tact_protocol::RuntimeEvent::ViewUpdate {
-                update: AgentUpdate::Info(message), ..
-            }) if message == "through protocol"
+            Ok(tact_protocol::RuntimeEvent::Info { content, .. })
+                if content == "through protocol"
         ));
     }
 

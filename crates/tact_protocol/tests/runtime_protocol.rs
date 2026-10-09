@@ -203,8 +203,9 @@ fn agent_streaming_events_round_trip_as_runtime_messages() {
 }
 
 #[test]
-fn runtime_view_update_round_trips_rich_tool_card_data() {
-    let update = tact_protocol::AgentUpdate::StepStarted {
+fn runtime_step_started_round_trips_rich_tool_card_data() {
+    let event = tact_protocol::RuntimeEvent::StepStarted {
+        run_id: Some(tact_protocol::RunId::from("run-view")),
         idx: 3,
         tool_id: "call-3".into(),
         tool_name: "write_file".into(),
@@ -220,18 +221,13 @@ fn runtime_view_update_round_trips_rich_tool_card_data() {
             keep_live: false,
         },
     };
-    let event = tact_protocol::RuntimeEvent::ViewUpdate {
-        run_id: Some(tact_protocol::RunId::from("run-view")),
-        update,
-    };
 
     let json = serde_json::to_value(&event).unwrap();
     let decoded: tact_protocol::RuntimeEvent = serde_json::from_value(json).unwrap();
     assert!(matches!(
         decoded,
-        tact_protocol::RuntimeEvent::ViewUpdate {
-            update: tact_protocol::AgentUpdate::StepStarted { idx: 3, tool_id, presentation, .. },
-            ..
-        } if tool_id == "call-3" && presentation.visual_kind == tact_protocol::ToolVisualKind::FileWrite
+        tact_protocol::RuntimeEvent::StepStarted { idx: 3, tool_id, presentation, .. }
+            if tool_id == "call-3"
+                && presentation.visual_kind == tact_protocol::ToolVisualKind::FileWrite
     ));
 }
