@@ -110,6 +110,41 @@ migration needs; (c) is the honest fallback if the design cost is not worth the
 benefit — and it is a legitimate end state, because a View owning its own command
 vocabulary is not the same thing as a legacy *protocol* type.
 
+### Third blocker, found while building the pilot: the command path has no runtime to invoke through
+
+Even option (a) cannot be piloted before this is solved. `Agent` does **not**
+expose a `CapabilityRouter` — no `pub fn router`, no `runtime.router` — and the
+dispatcher reaches only `agent.runtime.{cancel_flag, stats, session_id, context,
+permission_manager}`. The router is built in `tact_ui::session_bootstrap` and
+handed to the *extensions* at registration; it is never on the command path.
+
+So making a slash command invoke a capability needs, first:
+
+1. the `RuntimeContext` (or at least its router) threaded from `session_bootstrap`
+   through the driver to the dispatch site — i.e. a structural change to how the
+   TUI dispatches commands, which is Task 9's subject ("Convert UI responder and
+   TUI to View / Interaction adapters"), not a side effect of this migration; and
+2. an invocation identity for a user-initiated command (request id, actor,
+   deadline), which nothing assigns today because the TUI is not a plugin.
+
+### Therefore
+
+Three blockers now stand between `UserCommand` and its replacement: **no owner**
+(who does `SetModel` belong to), **no state access** (the Agent owns its MCP
+router by value, and the rendering lives in the binary crate), and **no runtime
+on the command path**. Each is structural, and together they make this a
+spec-then-plan job of its own — not a slice of the removal work, and not
+something a pilot can validate.
+
+That strengthens option **(c)**: the TUI owning a private command vocabulary is
+not the same defect as a legacy *protocol* type crossing a crate boundary, and
+on this evidence the cost of removing it is a re-architecture of command
+dispatch. Recommendation: **take (c)** — delete the redundant
+`Runtime(RuntimeCommand)` nesting, keep the app commands as the View's own
+vocabulary, and record the decision in `ARCHITECTURE.md`. Revisit only if a
+Web/Desktop View needs the command set to be shared, which is the first use case
+that genuinely requires it.
+
 ## How a command's output reaches the user
 
 Today `QueryStats` / `McpList` / `HooksList` render by pushing `PopupMarkdown`
