@@ -112,7 +112,26 @@ commands as **capability invocations**, not as enum variants — which makes thi
 "another ~180-reference sweep" understated it; the 179 references are the easy
 part.
 
-### Production consumers of `AgentUpdate`
+### Sketch: where those 19 commands belong
+
+Grounded in `tact_ui/src/driver.rs`, which today dispatches them in one large
+`match`. The architecture already answers this (§4: `Command` is a plugin
+contribution; Task 10: Chat owns commands) — the work is to move each variant to
+the home it already has rather than to invent one:
+
+| Today | End state |
+|---|---|
+| `SubmitTask`, `Runtime(RuntimeCommand::StartRun)` | `RuntimeCommand::StartRun` — one path, not two |
+| `Cancel`, `Runtime(CancelRun)` | `RuntimeCommand::CancelRun` |
+| `QueryBalance`, `QueryStats`, `QueryBackground`, `HooksList`, `HooksTrust`, `HooksForget`, `McpList`, `McpPrompts`, `RunMcpPrompt`, `McpAuth` | `Command` capabilities (read-only ones can stay `Risk::ReadOnly`) |
+| `SetModel`, `SetThinkingBudget`, `SetReasoningEffort`, `SetPermissionMode` | `Command` capabilities owned by the config extension |
+| `CancelSubagent` | `Command` capability owned by Tools |
+| `SubagentFinishedNotification` | **not a command at all** — it is a `RuntimeEvent` travelling on the command channel |
+
+That last row is worth fixing first: it is a notification crossing a boundary it
+should not, it is self-contained, and it does not need the capability design to
+land. It is the one genuinely small, safe slice of this direction.
+
 
 | File | refs |
 |---|---|
