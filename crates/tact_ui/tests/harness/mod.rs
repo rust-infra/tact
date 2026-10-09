@@ -8,7 +8,7 @@ use std::sync::{
 
 use tact_extensions::permission::PermissionMode;
 use tact_llm::{ContentBlock, MockClient, StopReason};
-use tact_protocol::{AgentUpdate, TokenUsageInfo, UiResponse, UserCommand};
+use tact_protocol::{AgentUpdate, TokenUsageInfo, UserCommand};
 use tact_ui::{
     driver::run_command_loop,
     test_support::{
@@ -87,14 +87,11 @@ pub fn wire_permission_responder(
         while let Some(update) = agent_rx.recv().await {
             match update {
                 AgentUpdate::RequestSelect { request_id, .. } => {
-                    ui_responder.handle_response(UiResponse::Select { request_id, choice });
+                    ui_responder.respond_by_index(request_id, choice);
                 }
                 AgentUpdate::RequestMultiSelect { request_id, .. } => {
                     // Map single harness choice → one-element multi selection (or cancel).
-                    ui_responder.handle_response(UiResponse::MultiSelect {
-                        request_id,
-                        choices: choice.map(|i| vec![i]),
-                    });
+                    ui_responder.respond_multi_by_index(request_id, choice.map(|i| vec![i]));
                 }
                 other => {
                     let _ = collect_tx.send(other);
@@ -484,14 +481,11 @@ pub fn wire_permission_responder_with_choices(
             match update {
                 AgentUpdate::RequestSelect { request_id, .. } => {
                     let choice = choices.next().unwrap_or(None);
-                    ui_responder.handle_response(UiResponse::Select { request_id, choice });
+                    ui_responder.respond_by_index(request_id, choice);
                 }
                 AgentUpdate::RequestMultiSelect { request_id, .. } => {
                     let choice = choices.next().unwrap_or(None);
-                    ui_responder.handle_response(UiResponse::MultiSelect {
-                        request_id,
-                        choices: choice.map(|i| vec![i]),
-                    });
+                    ui_responder.respond_multi_by_index(request_id, choice.map(|i| vec![i]));
                 }
                 other => {
                     let _ = collect_tx.send(other);
@@ -608,15 +602,12 @@ pub fn wire_permission_responder_with_counter(
                 AgentUpdate::RequestSelect { request_id, .. } => {
                     counter_clone.fetch_add(1, Ordering::Relaxed);
                     let choice = choices.next().unwrap_or(None);
-                    ui_responder.handle_response(UiResponse::Select { request_id, choice });
+                    ui_responder.respond_by_index(request_id, choice);
                 }
                 AgentUpdate::RequestMultiSelect { request_id, .. } => {
                     counter_clone.fetch_add(1, Ordering::Relaxed);
                     let choice = choices.next().unwrap_or(None);
-                    ui_responder.handle_response(UiResponse::MultiSelect {
-                        request_id,
-                        choices: choice.map(|i| vec![i]),
-                    });
+                    ui_responder.respond_multi_by_index(request_id, choice.map(|i| vec![i]));
                 }
                 other => {
                     let _ = collect_tx.send(other);

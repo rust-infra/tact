@@ -68,7 +68,7 @@ pub(crate) enum ModelTarget {
 /// Why the select popup is open (agent permission vs `/model` flow).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SelectKind {
-    /// Agent `RequestSelect` — confirm emits a `UiResponse` on the command channel.
+    /// Agent `RequestSelect` — confirm emits an `InteractionResponse` on the command channel.
     Agent,
     /// `/model` first step — choose a model before applying either value.
     /// `target` selects the main agent or the subagent flow.

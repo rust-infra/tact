@@ -163,7 +163,7 @@ pub struct HeadlessApp {
     auto_select: Option<usize>,
     capture_frames: bool,
     /// Direct route for auto-confirmed select responses. The driver owns the
-    /// same shared registry, so `handle_response` reaches the waiting tool.
+    /// same shared registry, so `respond` reaches the waiting tool.
     ui_responder: Option<tact_extensions::ui_responder::UiResponder>,
 }
 
@@ -228,19 +228,21 @@ impl HeadlessApp {
 
     /// Deliver a select response to the waiting tool: directly through the
     /// shared responder when wired, else on the App's command channel.
-    fn deliver_response(&self, response: Option<tact_protocol::UiResponse>) {
+    fn deliver_response(&self, response: Option<tact_protocol::InteractionResponse>) {
         let Some(response) = response else {
             return;
         };
         match &self.ui_responder {
             Some(responder) => {
-                let _ = responder.handle_response(response);
+                let _ = responder.respond(response);
             }
             None => {
                 let _ = self
                     .inner
                     .user_cmd_tx
-                    .send(tact_protocol::UserCommand::UiResponse(response));
+                    .send(tact_protocol::UserCommand::Runtime(
+                        tact_protocol::RuntimeCommand::RespondInteraction { response },
+                    ));
             }
         }
     }

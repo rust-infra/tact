@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tact_protocol::{UiResponse, UserCommand};
+use tact_protocol::{InteractionResponse, RequestId, UserCommand};
 
 use crate::i18n::Language;
 use crate::widgets::state::app::config::theme_label;
@@ -149,9 +149,9 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                 match std::mem::replace(&mut app.select_kind, SelectKind::Agent) {
                     SelectKind::Agent => {
                         if let Some(id) = request_id {
-                            app.respond_ui(UiResponse::MultiSelect {
-                                request_id: id,
-                                choices: Some(idxs),
+                            app.respond_ui(InteractionResponse::Selected {
+                                request_id: RequestId::from(id.to_string()),
+                                values: chosen.clone(),
                             });
                         }
                         if log_confirm {
@@ -182,9 +182,9 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
             match std::mem::replace(&mut app.select_kind, SelectKind::Agent) {
                 SelectKind::Agent => {
                     if let Some(id) = request_id {
-                        app.respond_ui(UiResponse::Select {
-                            request_id: id,
-                            choice: Some(idx),
+                        app.respond_ui(InteractionResponse::Selected {
+                            request_id: RequestId::from(id.to_string()),
+                            values: vec![chosen.clone()],
                         });
                     }
                     if log_confirm {
@@ -1157,7 +1157,7 @@ mod tests {
     fn seed_select(app: &mut App) -> tokio::sync::mpsc::UnboundedReceiver<UserCommand> {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         // Swap in an observable command channel so tests can assert the
-        // UiResponse the confirm/cancel path emits.
+        // InteractionResponse the confirm/cancel path emits.
         app.user_cmd_tx = tx;
         app.select_kind = SelectKind::Agent;
         app.input_mode = InputMode::Select;

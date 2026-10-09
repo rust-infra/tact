@@ -10,7 +10,7 @@
 //! 2. records the request metadata plus a pending oneshot for that id,
 //! 3. emits a pure-data `RequestSelect` / `RequestMultiSelect` carrying the id,
 //! 4. awaits the answer, which arrives via [`UiResponder::respond`] (or the
-//!    backwards-compatible [`UiResponder::handle_response`] wrapper) from the
+//!    protocol `InteractionResponse`) from the
 //!    TUI or the command driver.
 //!
 //! The pending map is also exposed as an ordered [`UiResponder::snapshot`]. In
@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::utils::LockExt;
-use tact_protocol::{AgentUpdate, UiResponse};
+use tact_protocol::AgentUpdate;
 #[cfg(any(test, feature = "test-support"))]
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
@@ -305,60 +305,53 @@ impl UiResponder {
         }
     }
 
-    /// Backwards-compatible wrapper used by tests and other in-process callers.
+    /// Answer a pending select by option index.
     ///
-    /// Bridges the legacy index-based response to the protocol value-based
-    /// waiter, using the pending request's options to recover the value. A
-    /// response whose variant does not match the pending request kind is
-    /// refused rather than silently re-interpreted.
-    pub fn handle_response(&self, response: UiResponse) -> bool {
-        let (kind, options) = {
-            let pending = self.inner.pending.lock_recover();
-            let Some(entry) = pending.get(&response.request_id()) else {
-                return false;
-            };
-            (entry.request.kind, entry.request.options.clone())
-        };
-        let matches = matches!(
-            (kind, &response),
-            (PendingUiRequestKind::Select, UiResponse::Select { .. })
-                | (
-                    PendingUiRequestKind::MultiSelect,
-                    UiResponse::MultiSelect { .. }
-                )
-        );
-        if !matches {
+    /// Test-support helper: production Views produce a protocol
+    /// [`tact_protocol::InteractionResponse`] directly, so this exists only so
+    /// integration tests can keep expressing a choice as an index.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn respond_by_index(&self, request_id: u64, choice: Option<usize>) -> bool {
+        let Some(options) = self.pending_options(request_id) else {
             return false;
-        }
-        let interaction = match response {
-            UiResponse::Select { request_id, choice } => {
-                let request_id = tact_protocol::RequestId::from(request_id.to_string());
-                match choice.and_then(|index| options.get(index).cloned()) {
-                    Some(value) => tact_protocol::InteractionResponse::Selected {
-                        request_id,
-                        values: vec![value],
-                    },
-                    None => tact_protocol::InteractionResponse::Cancelled { request_id },
-                }
-            }
-            UiResponse::MultiSelect {
-                request_id,
-                choices,
-            } => {
-                let request_id = tact_protocol::RequestId::from(request_id.to_string());
-                match choices {
-                    Some(indices) => tact_protocol::InteractionResponse::Selected {
-                        request_id,
-                        values: indices
-                            .into_iter()
-                            .filter_map(|index| options.get(index).cloned())
-                            .collect(),
-                    },
-                    None => tact_protocol::InteractionResponse::Cancelled { request_id },
-                }
-            }
         };
-        self.respond(interaction)
+        let request_id = tact_protocol::RequestId::from(request_id.to_string());
+        let response = match choice.and_then(|index| options.get(index).cloned()) {
+            Some(value) => tact_protocol::InteractionResponse::Selected {
+                request_id,
+                values: vec![value],
+            },
+            None => tact_protocol::InteractionResponse::Cancelled { request_id },
+        };
+        self.respond(response)
+    }
+
+    /// Answer a pending multi-select by option indices.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn respond_multi_by_index(&self, request_id: u64, choices: Option<Vec<usize>>) -> bool {
+        let Some(options) = self.pending_options(request_id) else {
+            return false;
+        };
+        let request_id = tact_protocol::RequestId::from(request_id.to_string());
+        let response = match choices {
+            Some(indices) => tact_protocol::InteractionResponse::Selected {
+                request_id,
+                values: indices
+                    .into_iter()
+                    .filter_map(|index| options.get(index).cloned())
+                    .collect(),
+            },
+            None => tact_protocol::InteractionResponse::Cancelled { request_id },
+        };
+        self.respond(response)
+    }
+
+    fn pending_options(&self, request_id: u64) -> Option<Vec<String>> {
+        self.inner
+            .pending
+            .lock_recover()
+            .get(&request_id)
+            .map(|entry| entry.request.options.clone())
     }
 
     fn send_request_hint(&self, update: AgentUpdate) -> bool {
@@ -485,7 +478,7 @@ fn multi_index(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tact_protocol::{RuntimeEvent, UserCommand};
+    use tact_protocol::RuntimeEvent;
     use tokio::sync::mpsc::unbounded_channel;
 
     #[derive(Default)]
@@ -524,10 +517,7 @@ mod tests {
         assert_eq!(prompt, "Pick toppings");
         assert_eq!(options, vec!["a", "b"]);
 
-        responder.handle_response(UiResponse::MultiSelect {
-            request_id,
-            choices: Some(vec![0]),
-        });
+        responder.respond_multi_by_index(request_id, Some(vec![0]));
         assert_eq!(handle.await.unwrap(), Ok(Some(vec![0])));
     }
 
@@ -548,10 +538,7 @@ mod tests {
         let AgentUpdate::RequestSelect { request_id, .. } = rx.recv().await.unwrap() else {
             panic!("expected RequestSelect");
         };
-        responder.handle_response(UiResponse::Select {
-            request_id,
-            choice: None,
-        });
+        responder.respond_by_index(request_id, None);
         assert_eq!(handle.await.unwrap(), Ok(None));
     }
 
@@ -649,29 +636,12 @@ mod tests {
         assert_ne!(id1, id2);
 
         // Answer both so the spawned tasks finish.
-        a.handle_response(UiResponse::Select {
-            request_id: id1,
-            choice: None,
-        });
-        a.handle_response(UiResponse::Select {
-            request_id: id2,
-            choice: None,
-        });
+        a.respond_by_index(id1, None);
+        a.respond_by_index(id2, None);
         h1.await.unwrap().unwrap();
         h2.await.unwrap().unwrap();
     }
 
-    #[test]
-    fn ui_response_request_id_accessor() {
-        let resp = UserCommand::UiResponse(UiResponse::Select {
-            request_id: 7,
-            choice: Some(1),
-        });
-        let UserCommand::UiResponse(resp) = resp else {
-            panic!("expected UiResponse");
-        };
-        assert_eq!(resp.request_id(), 7);
-    }
     #[test]
     fn snapshot_orders_pending_requests_and_clears_on_respond() {
         let responder = UiResponder::new();
@@ -758,10 +728,7 @@ mod tests {
         };
         // The hint and the snapshot are both live; reconcile can use either.
         assert_eq!(responder.snapshot()[0].request_id, request_id);
-        responder.handle_response(UiResponse::Select {
-            request_id,
-            choice: Some(0),
-        });
+        responder.respond_by_index(request_id, Some(0));
         assert_eq!(handle.await.unwrap().unwrap(), Some(0));
     }
     #[tokio::test]
@@ -823,10 +790,7 @@ mod tests {
                 if prompt == "Choose"
         ));
         assert!(rx.try_recv().is_err());
-        responder.handle_response(UiResponse::Select {
-            request_id,
-            choice: Some(1),
-        });
+        responder.respond_by_index(request_id, Some(1));
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_millis(200), task)
                 .await
@@ -869,10 +833,7 @@ mod tests {
                 request: tact_protocol::InteractionRequest::Select { prompt, .. }
             } if prompt == "Select through Runtime"
         )));
-        responder.handle_response(UiResponse::Select {
-            request_id: pending.request_id,
-            choice: Some(0),
-        });
+        responder.respond_by_index(pending.request_id, Some(0));
         assert_eq!(
             tokio::time::timeout(std::time::Duration::from_millis(200), task)
                 .await

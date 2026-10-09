@@ -6568,7 +6568,7 @@ mod tests {
     async fn cancel_mid_preflight_answers_every_tool_use_once() {
         ensure_config();
         use crate::tool::test_support::test_context;
-        use tact_protocol::{AgentUpdate, UiResponse};
+        use tact_protocol::AgentUpdate;
 
         let dir = tempfile::tempdir().unwrap();
         let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
@@ -6634,10 +6634,7 @@ mod tests {
                     // Deny `t1`, then cancel: the flag is first observed at the
                     // top of the `t2` iteration, i.e. mid-pre-flight.
                     flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                    responder.handle_response(UiResponse::Select {
-                        request_id,
-                        choice: Some(1),
-                    });
+                    responder.respond_by_index(request_id, Some(1));
                     return;
                 }
             }
@@ -6661,7 +6658,7 @@ mod tests {
     async fn cancel_mid_preflight_answers_an_approved_but_unrun_call() {
         ensure_config();
         use crate::tool::test_support::test_context;
-        use tact_protocol::{AgentUpdate, UiResponse};
+        use tact_protocol::AgentUpdate;
 
         let dir = tempfile::tempdir().unwrap();
         let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
@@ -6724,10 +6721,7 @@ mod tests {
                 if let AgentUpdate::RequestSelect { request_id, .. } = update {
                     // Allow `t1` once, then cancel.
                     flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                    responder.handle_response(UiResponse::Select {
-                        request_id,
-                        choice: Some(0),
-                    });
+                    responder.respond_by_index(request_id, Some(0));
                     return;
                 }
             }

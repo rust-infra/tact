@@ -114,10 +114,6 @@ pub async fn run_command_loop_with_account(
                 let _ = view_updates.emit(AgentUpdate::Info("Cancelling...".into()));
             }
             UserCommand::Runtime(_) => {}
-            UserCommand::UiResponse(response) => {
-                // Legacy index-based response; bridged to the protocol waiter.
-                ui_responder.handle_response(response);
-            }
             UserCommand::Cancel => {
                 cancel_flag.store(true, Ordering::Relaxed);
                 let _ = view_updates.emit(AgentUpdate::Info("Cancelling...".into()));

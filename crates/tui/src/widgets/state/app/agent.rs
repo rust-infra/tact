@@ -5,7 +5,7 @@ use ratatui::{
 };
 use tact_protocol::{
     AgentErrorKind, AgentUpdate, InteractionResponse, PlanStep, RequestId, RuntimeCommand,
-    StepResult, TaskSnapshot, TasksChangeReason, ThinkingChunk, UiResponse, UserCommand,
+    StepResult, TaskSnapshot, TasksChangeReason, ThinkingChunk, UserCommand,
 };
 
 use agent_tui_kit::{Ctx, PendingQueue, components::tool::ToolEvent, state::StreamEvent};
@@ -171,35 +171,7 @@ impl App {
     }
 
     /// Answer a UI request through the protocol command path.
-    pub(crate) fn respond_ui(&self, response: UiResponse) {
-        let response = match response {
-            UiResponse::Select { request_id, choice } => choice
-                .and_then(|index| self.select.options.get(index).cloned())
-                .map(|value| InteractionResponse::Selected {
-                    request_id: RequestId::from(request_id.to_string()),
-                    values: vec![value],
-                })
-                .unwrap_or_else(|| InteractionResponse::Cancelled {
-                    request_id: RequestId::from(request_id.to_string()),
-                }),
-            UiResponse::MultiSelect {
-                request_id,
-                choices,
-            } => choices
-                .map(|indices| {
-                    let values = indices
-                        .into_iter()
-                        .filter_map(|index| self.select.options.get(index).cloned())
-                        .collect();
-                    InteractionResponse::Selected {
-                        request_id: RequestId::from(request_id.to_string()),
-                        values,
-                    }
-                })
-                .unwrap_or_else(|| InteractionResponse::Cancelled {
-                    request_id: RequestId::from(request_id.to_string()),
-                }),
-        };
+    pub(crate) fn respond_ui(&self, response: InteractionResponse) {
         let _ = self
             .user_cmd_tx
             .send(UserCommand::Runtime(RuntimeCommand::RespondInteraction {
@@ -211,18 +183,9 @@ impl App {
     /// `None` first so the permission waiter is not left hanging.
     pub(crate) fn cancel_task(&mut self) {
         if let Some(request_id) = self.select.request_id {
-            let response = if self.select.multi {
-                UiResponse::MultiSelect {
-                    request_id,
-                    choices: None,
-                }
-            } else {
-                UiResponse::Select {
-                    request_id,
-                    choice: None,
-                }
-            };
-            self.respond_ui(response);
+            self.respond_ui(InteractionResponse::Cancelled {
+                request_id: RequestId::from(request_id.to_string()),
+            });
         }
         if let Some(run_id) = self.runtime_run_id.clone() {
             let _ = self
@@ -2378,10 +2341,7 @@ mod lifecycle_tests {
         assert_eq!(app.select.request_id, Some(request_id));
         assert!(matches!(app.input_mode, InputMode::Select));
 
-        responder.handle_response(tact_protocol::UiResponse::Select {
-            request_id,
-            choice: Some(0),
-        });
+        responder.respond_by_index(request_id, Some(0));
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, None);
         assert!(matches!(app.input_mode, InputMode::Normal));
@@ -2421,10 +2381,7 @@ mod lifecycle_tests {
         assert_eq!(app.select.request_id, Some(first));
         assert_eq!(app.select.prompt, "first");
 
-        responder.handle_response(tact_protocol::UiResponse::Select {
-            request_id: first,
-            choice: Some(0),
-        });
+        responder.respond_by_index(first, Some(0));
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, Some(second));
         assert_eq!(app.select.prompt, "second");

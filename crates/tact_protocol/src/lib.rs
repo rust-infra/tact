@@ -31,7 +31,7 @@ pub use agent::{
     AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus,
     SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot,
     TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolDetailKind, ToolPopupKind,
-    ToolPresentationInfo, ToolVisualKind, UiResponse, UserCommand,
+    ToolPresentationInfo, ToolVisualKind, UserCommand,
 };
 pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,

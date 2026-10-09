@@ -149,7 +149,7 @@ fn format_headless_question(question: &str, options: &[String], multi: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use tact_protocol::{AgentUpdate, UiResponse};
+    use tact_protocol::AgentUpdate;
     use tokio::sync::mpsc::unbounded_channel;
 
     use super::*;
@@ -227,10 +227,7 @@ mod tests {
                     !log_confirm,
                     "selection renders on tool meta, not a system line"
                 );
-                responder.handle_response(UiResponse::Select {
-                    request_id,
-                    choice: Some(1),
-                });
+                responder.respond_by_index(request_id, Some(1));
             }
             other => panic!("expected RequestSelect, got {other:?}"),
         }
@@ -269,10 +266,7 @@ mod tests {
             } => {
                 assert_eq!(prompt, "Pick toppings");
                 assert_eq!(options.len(), 3);
-                responder.handle_response(UiResponse::MultiSelect {
-                    request_id,
-                    choices: Some(vec![0, 2]),
-                });
+                responder.respond_multi_by_index(request_id, Some(vec![0, 2]));
             }
             other => panic!("expected RequestMultiSelect, got {other:?}"),
         }
@@ -304,10 +298,7 @@ mod tests {
 
         match rx.recv().await.expect("RequestSelect") {
             AgentUpdate::RequestSelect { request_id, .. } => {
-                responder.handle_response(UiResponse::Select {
-                    request_id,
-                    choice: None,
-                });
+                responder.respond_by_index(request_id, None);
             }
             other => panic!("expected RequestSelect, got {other:?}"),
         }
