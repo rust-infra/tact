@@ -257,12 +257,28 @@ Do the `tact_view` move first (it is a pure relocation, compiler-checked, and
 ### Task 3 tail: delete the legacy channel
 
 An **atomic sweep** — the channel's payload type and every assertion that reads
-it are coupled, so there is no green intermediate state. Measured 2026-10-09:
+it are coupled, so there is no green intermediate state.
 
-- **22** declarations of `UnboundedSender<AgentUpdate>`: `tool/mod.rs` (5),
-  `ui_responder.rs` (4), `tool/progress.rs` (2), `tool/subagent_ui.rs` (2),
-  `agent/mod.rs` (1), `background.rs` (1), `tact_ui/tests…/test_support.rs` (7).
-- **168** test assertions/patterns reading `AgentUpdate` off that channel.
+**Attempted 2026-10-09 and reverted.** A codemod handled the bulk (66 payload /
+declaration sites, 70 tuple-pattern assertions) in scope
+`tact_extensions` + `tact_ui`, and the first compile still produced **85 errors**.
+They fell into five classes, which is the real worklist:
+
+1. **23** `RequestSelect` / `RequestMultiSelect` sites — re-expressions, not
+   renames (nested `InteractionRequest`, `u64` → `RequestId`).
+2. **~20** leftovers in eight files whose `use tact_view::AgentUpdate;` the
+   codemod removed while the file still names the type: `tool/mod.rs`,
+   `tool/ask_user.rs`, `tool/bash.rs`, `tool/write_file.rs`, `tool/task.rs`,
+   `tool/subagent_ui.rs`, `task/mod.rs`, `subagent.rs`, `background_run.rs`.
+   These are the "is there a UI channel?" plumbing, not assertions.
+3. **14** struct patterns that now need `..` (they omit `run_id`).
+4. **15** `RuntimeEvent` initializers in tests that need `run_id: None`.
+5. **3** duplicate imports where the codemod added one the file already had.
+
+A first-scope mistake is worth recording too: applying the codemod to
+`crates/` wholesale also rewrote `tui`, `agent_tui_kit` and `tact_view`, which
+must not change here (`tact_view` defines the type; the other two are Task 4).
+The scope is `tact_extensions` + `tact_ui` only.
 
 Order that stays green inside each crate pair:
 
@@ -270,31 +286,13 @@ Order that stays green inside each crate pair:
    path (`ViewUpdateEmitter::legacy`, `UiResponder::legacy_tx`,
    `ToolProgressReporter::ui_tx`, `ToolContext::ui_tx`,
    `Agent::with_ui_channel`).
-2. Rewrite the test patterns. Most are regex-able because their bindings are
-   bare identifiers:
-   `AgentUpdate::Info(msg)` → `RuntimeEvent::Info { content: msg, .. }`, and the
-   same for `MdInfo`, `Error`, `StreamChunk` (→ `Text { content, .. }`),
-   `StepAdded` (→ `StepAdded { step, .. }`), `TokenUsage`, `ModelInfo`,
-   `TaskComplete`, `ThinkingChunk` (→ `Thinking { chunk, .. }`).
-   Struct patterns (`TurnStats`, `HookStatus`, `StepStarted`) only need `..`.
-
-   **But 23 of the 168 are not renames.** `RequestSelect` /
-   `RequestMultiSelect` (16 + 7 sites) have no direct counterpart: the protocol
-   expresses them as `RuntimeEvent::InteractionRequested { request:
-   InteractionRequest::Select { .. } }`, and the request id changes type —
-   `AgentUpdate` carries a `u64`, the protocol carries a `RequestId` string.
-   Every one of those assertions has to be re-expressed, not substituted.
-
-   That type change also *removes a latent bug*: the reverse projection parses
-   the protocol id back with `request_id.as_str().parse::<u64>().ok()` and
-   `unwrap_or_default()`, so a non-numeric request id silently produces **no**
-   legacy hint at all. Tests that read the legacy channel would see nothing;
-   after the sweep they read the protocol id directly.
+2. Rewrite the test patterns, select-class by hand.
 3. Then the channel is gone and `Agent::with_ui_channel` becomes a sink fixture.
 
 `tui` (277) is Task 4 and has to follow, because it still reads the legacy view
 model internally — that is a View's own business and can stay; what must go is
 crossing the crate boundary with it.
+
 
 
 ### Task 4: Switch the TUI to `RuntimeEvent`
