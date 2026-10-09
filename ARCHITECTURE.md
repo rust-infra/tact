@@ -15,7 +15,7 @@ above them.
 
 | Directory | Package | Responsibility |
 |---|---|---|
-| `crates/tact` | `tact` | **Runtime Kernel** — capability router, permission boundary, event transport, minimal storage, cancellation / timeout / error, plugin registry, payload redaction. Depends on `tact_protocol` only. |
+| `crates/tact` | `tact` | **Runtime Kernel** — capability router, the permission decision (`permission.rs`: mode/risk/rules/allow-list ordering) plus the sensitive-path and security policy it consults (`security/`), event transport, minimal storage, cancellation / timeout / error, plugin registry, payload redaction. Depends on `tact_protocol` only. |
 | `crates/tact_protocol` | `tact_protocol` | **Plugin Protocol** — language-neutral IDs, envelopes, capability declarations, structured runtime events / commands, interactions, error categories, and the shared payload types. `serde` only. |
 | `crates/tact_view` | `tact_view` | **View contract** — the Rust view-model types a View adapter renders (`AgentUpdate`, `UserCommand`, `AgentErrorKind`) and the `runtime_events_for` projection onto the structured protocol events. These are deliberately outside `tact_protocol`. |
 | `crates/tact_trajectory` | `tact_trajectory` | **Trajectory** — execution-fact model, in-memory and SQLite recorders, ordered replay. Implements the Kernel's `TrajectoryService`. |

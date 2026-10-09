@@ -4,6 +4,23 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-09 — 权限决策与安全策略下沉到 Kernel
+
+| Field | Value |
+|-------|-------|
+| **Type** | refactor（结构：Kernel 现在持有权限决策本身） |
+| **Related** | `crates/tact/src/{permission.rs,security/*}`、`crates/tact_extensions/src/permission/*`、`crates/tact_extensions/src/security/mod.rs`；`ARCHITECTURE.md` §0 |
+
+**现象 / 动机：** spec §1 要求 Kernel 里是"集中式权限决策"（`permission.rs`），但决策逻辑此前在扩展 crate：Kernel 只有 `PermissionService` 边界 trait，`check_with_auto` 的 read→plan→auto→rules→risk→allow-list 顺序属于扩展。敏感路径分类与 `SecurityConfig` 也在扩展（`crates/tact_extensions/src/security/`），而它们正是权限决策要咨询的策略。
+
+**决策：** 把决策与它所咨询的策略一起搬进 Kernel：`tact::permission` 现在拥有 `CapabilityRisk`/`PermissionMode`/`PermissionBehavior`/`PermissionDecision`/`RuleAction`、`PermissionRules` trait、`DecisionInput` 与 `decide()`（逻辑逐字搬移，顺序不变）；`tact::security` 拥有敏感路径注册表与 `SecurityConfig`。扩展侧 `PermissionManager::check_with_auto` 改为委托 `tact::decide`，自己只保留有状态的 mode/allow-list/denial 计数与设置持久化，`PermissionSettings` 实现 Kernel 的 `PermissionRules` trait 提供规则；两处旧路径用 re-export 保持可用。
+
+**改后行为：** 决策不再属于扩展层——Kernel 拥有判定顺序，宿主只需提供已加载规则。
+
+**Verification：** `./scripts/check-rust.sh` 全绿；扩展侧 129 个权限测试与 Kernel 侧敏感路径测试在搬移后原样通过。
+
+**Pointers:** `crates/tact/src/permission.rs::{decide, PermissionRules}`、`crates/tact/src/security/sensitive.rs`、`docs/superpowers/specs/2026-10-08-runtime-plugin-architecture-design.md` §1。
+
 ## 1. 2026-10-09 — 补齐内核服务名、存储命名空间归属与轨迹事实
 
 | Field | Value |
