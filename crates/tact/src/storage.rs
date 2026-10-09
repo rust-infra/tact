@@ -8,7 +8,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use sqlx::SqlitePool;
 
-use super::{KernelError, StorageService};
+use super::KernelError;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct StorageNamespace(String);
@@ -178,6 +178,13 @@ impl StorageService for SqliteStorageService {
         .map_err(|error| KernelError::storage(error.to_string()))?;
         Ok(())
     }
+}
+/// Namespaced storage boundary supplied by a Runtime host.
+#[async_trait::async_trait]
+pub trait StorageService: Send + Sync {
+    async fn get(&self, namespace: &str, key: &str) -> Result<Option<Value>, KernelError>;
+
+    async fn set(&self, namespace: &str, key: &str, value: Value) -> Result<(), KernelError>;
 }
 
 #[cfg(test)]

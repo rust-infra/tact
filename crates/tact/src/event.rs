@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use tact_protocol::RuntimeEvent;
 use tokio::sync::broadcast;
 
-use super::{EventService, KernelError};
+use super::KernelError;
 
 #[derive(Clone)]
 pub struct EventTransport {
@@ -119,4 +119,13 @@ impl RuntimeEventSink for EventTransport {
             )
         })
     }
+}
+
+/// Event delivery supplied by a Runtime host.
+///
+/// The trait deliberately takes protocol values rather than a concrete event
+/// bus. Remote hosts can implement it by serializing the same value over IPC.
+#[async_trait::async_trait]
+pub trait EventService: Send + Sync {
+    async fn publish(&self, event: RuntimeEvent) -> Result<(), KernelError>;
 }

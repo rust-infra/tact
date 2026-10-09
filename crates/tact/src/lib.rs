@@ -17,11 +17,14 @@ pub mod context;
 pub mod error;
 pub mod event;
 pub mod interaction;
+pub mod lifecycle;
 pub mod paths;
-pub mod plugin;
+pub mod permission;
+pub mod protocol;
 pub mod redact;
 pub mod sqlite;
 pub mod storage;
+pub mod trajectory;
 
 mod cancellation;
 
@@ -30,16 +33,15 @@ pub use capability::{
     CapabilityFuture, CapabilityHandler, CapabilityRegistration, CapabilityRouter,
     FnCapabilityHandler,
 };
-pub use context::{
-    EventService, InvocationContext, PermissionService, RuntimeContext, RuntimeServices,
-    StorageService, TrajectoryService,
-};
+pub use context::{InvocationContext, RuntimeContext, RuntimeServices};
 pub use error::KernelError;
-pub use event::{EventObserver, EventSubscription, EventTransport, RuntimeEventSink};
+pub use event::{EventObserver, EventService, EventSubscription, EventTransport, RuntimeEventSink};
 pub use interaction::{InteractionBroker, InteractionService, InteractionSubscription};
-pub use plugin::{PluginRegistry, PluginState, RuntimePluginManifest};
+pub use lifecycle::{PluginRegistry, PluginState, RuntimePluginManifest};
+pub use permission::PermissionService;
 pub use redact::{RedactionConfig, RedactionLevel};
-pub use storage::{SqliteStorageService, StorageNamespace, StorageServiceImpl};
+pub use storage::{SqliteStorageService, StorageNamespace, StorageService, StorageServiceImpl};
+pub use trajectory::TrajectoryService;
 
 #[cfg(test)]
 mod interaction_tests;

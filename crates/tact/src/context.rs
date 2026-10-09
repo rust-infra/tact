@@ -5,66 +5,18 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use serde_json::Value;
 use tact_protocol::{
-    CapabilityDeclaration, InteractionRequest, InteractionResponse, PluginId, RequestId, RunId,
-    RuntimeEvent, SessionId, TrajectoryId,
+    CapabilityDeclaration, PluginId, RequestId, RunId, RuntimeEvent, SessionId, TrajectoryId,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::{CancellationService, CapabilityRouter, KernelError};
+use crate::{EventService, PermissionService, StorageService, TrajectoryService};
 
 /// Event delivery supplied by a Runtime host.
 ///
 /// The trait deliberately takes protocol values rather than a concrete event
 /// bus. Remote hosts can implement it by serializing the same value over IPC.
-#[async_trait]
-pub trait EventService: Send + Sync {
-    async fn publish(&self, event: RuntimeEvent) -> Result<(), KernelError>;
-}
-
-/// Append-only execution facts supplied by a Runtime host.
-#[async_trait]
-pub trait TrajectoryService: Send + Sync {
-    async fn append(
-        &self,
-        trajectory_id: Option<&TrajectoryId>,
-        run_id: Option<&RunId>,
-        event: RuntimeEvent,
-    ) -> Result<(), KernelError>;
-}
-
-/// Permission boundary shared by native and remote capabilities.
-///
-/// Task 3 supplies the policy implementation. The Kernel only knows that an
-/// invocation must be authorized before its handler runs.
-#[async_trait]
-pub trait PermissionService: Send + Sync {
-    async fn check(
-        &self,
-        declaration: &CapabilityDeclaration,
-        context: &InvocationContext,
-        input: &Value,
-    ) -> Result<(), KernelError>;
-
-    async fn request(
-        &self,
-        _request: InteractionRequest,
-        _context: &InvocationContext,
-    ) -> Result<InteractionResponse, KernelError> {
-        Err(KernelError::permission_denied(
-            "permission interaction is not available",
-        ))
-    }
-}
-
-/// Namespaced storage boundary supplied by a Runtime host.
-#[async_trait]
-pub trait StorageService: Send + Sync {
-    async fn get(&self, namespace: &str, key: &str) -> Result<Option<Value>, KernelError>;
-
-    async fn set(&self, namespace: &str, key: &str, value: Value) -> Result<(), KernelError>;
-}
-
 /// The services visible to one invocation.
 #[derive(Clone)]
 pub struct RuntimeServices {

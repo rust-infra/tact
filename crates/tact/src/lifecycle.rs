@@ -1,4 +1,4 @@
-//! Plugin registry: which extensions exist and what state they are in.
+//! Plugin lifecycle: which extensions exist and what state they are in.
 //!
 //! The Kernel owns the *record* of a plugin — its manifest, declared
 //! capabilities, and lifecycle state — so permission, capability routing, and
@@ -39,14 +39,9 @@ impl RuntimePluginManifest {
                 false,
             ));
         }
-        if self.protocol.major != supported.major || self.protocol.minor > supported.minor {
-            return Err(KernelError::new(
-                tact_protocol::ErrorCategory::ProtocolMismatch,
-                "plugin protocol version is not supported",
-                "plugin",
-                false,
-            ));
-        }
+        // Version negotiation is a Kernel primitive shared by every host, so
+        // the registry delegates to it rather than re-checking major/minor.
+        crate::protocol::negotiate(self.protocol, supported)?;
         for capability in &self.capabilities {
             capability.validate().map_err(|message| {
                 KernelError::new(
