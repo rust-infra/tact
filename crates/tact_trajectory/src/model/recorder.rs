@@ -92,4 +92,9 @@ impl TrajectoryRecorder {
             })
             .unwrap_or_default())
     }
+
+    /// Every fact recorded for `trajectory_id`, in sequence order.
+    pub fn replay(&self, trajectory_id: &TrajectoryId) -> Result<Vec<TrajectoryEvent>, String> {
+        self.query(trajectory_id, 0)
+    }
 }

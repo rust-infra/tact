@@ -20,5 +20,6 @@ pub fn manifest() -> RuntimePluginManifest {
             output_schema: None,
             risk: CapabilityRisk::Medium,
         }],
+        dependencies: Vec::new(),
     }
 }

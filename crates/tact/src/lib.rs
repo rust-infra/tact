@@ -39,14 +39,16 @@ pub use context::{InvocationContext, RuntimeContext, RuntimeServices};
 pub use error::KernelError;
 pub use event::{EventObserver, EventService, EventSubscription, EventTransport, RuntimeEventSink};
 pub use interaction::{InteractionBroker, InteractionService, InteractionSubscription};
-pub use lifecycle::{PluginRegistry, PluginState, RuntimePluginManifest};
+pub use lifecycle::{PluginHealth, PluginRegistry, PluginState, RuntimePluginManifest};
 pub use permission::{
     CapabilityRisk, DecisionInput, PermissionBehavior, PermissionDecision, PermissionMode,
     PermissionRules, PermissionService, RuleAction, decide,
 };
 pub use redact::{RedactionConfig, RedactionLevel};
 pub use security::{SecurityConfig, SensitivePathsConfig, sensitive};
-pub use storage::{SqliteStorageService, StorageNamespace, StorageService, StorageServiceImpl};
+pub use storage::{
+    SqliteStorageService, StorageNamespace, StorageOperation, StorageService, StorageServiceImpl,
+};
 pub use trajectory::TrajectoryService;
 
 #[cfg(test)]

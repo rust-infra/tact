@@ -59,6 +59,7 @@ async fn in_process_host_invokes_through_the_capability_router() {
         version: "1.0.0".into(),
         protocol: ProtocolVersion::CURRENT,
         capabilities: vec![declaration()],
+        dependencies: Vec::new(),
     };
     let mut host = InProcessPluginHost::new(manifest, router, runtime);
 

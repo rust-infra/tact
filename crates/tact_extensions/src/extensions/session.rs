@@ -222,5 +222,6 @@ pub fn manifest() -> RuntimePluginManifest {
         version: env!("CARGO_PKG_VERSION").into(),
         protocol: ProtocolVersion::CURRENT,
         capabilities: vec![read_capability(), write_capability()],
+        dependencies: Vec::new(),
     }
 }

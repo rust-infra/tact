@@ -1,3 +1,10 @@
+// Proving `Send` for the `AgentExecutor::run` future walks the whole
+// `tokio::select!` → `Agent::agent_loop` coroutine chain, which is deeper than
+// rustc's default recursion limit of 128. Without this the crate trips
+// `recursion_depth_exceeding_limit`, a `future_incompatible` lint that becomes
+// a hard error in a later release.
+#![recursion_limit = "256"]
+
 //! Tact — the agent runtime crate.
 //!
 //! This crate implements the core agent loop: it manages conversation context,

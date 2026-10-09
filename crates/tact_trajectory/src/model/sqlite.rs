@@ -129,6 +129,11 @@ impl SqliteTrajectoryRecorder {
         .context("query trajectory events")?;
         rows.into_iter().map(Row::into_event).collect()
     }
+
+    /// Every fact recorded for `trajectory_id`, in sequence order.
+    pub async fn replay(&self, trajectory_id: &TrajectoryId) -> Result<Vec<TrajectoryEvent>> {
+        self.query(trajectory_id, 0).await
+    }
 }
 
 #[derive(sqlx::FromRow)]

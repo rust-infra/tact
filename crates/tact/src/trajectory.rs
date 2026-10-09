@@ -47,4 +47,14 @@ pub trait TrajectoryService: Send + Sync {
             false,
         ))
     }
+
+    /// Every fact recorded for `trajectory_id`, in sequence order: the whole
+    /// trajectory from the beginning, as a client reading history back wants
+    /// it. Sequence-based resume is [`TrajectoryService::query`].
+    async fn replay(
+        &self,
+        trajectory_id: &TrajectoryId,
+    ) -> Result<Vec<TrajectoryEvent>, KernelError> {
+        self.query(trajectory_id, 0).await
+    }
 }

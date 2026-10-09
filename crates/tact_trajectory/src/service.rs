@@ -468,6 +468,17 @@ mod tests {
         assert_eq!(facts.len(), 3);
         assert!(facts.windows(2).all(|w| w[0].sequence < w[1].sequence));
         assert_eq!(facts[0].event_type, TrajectoryEventType::RunLifecycle);
+
+        // `replay` is the whole trajectory, so it starts at sequence 0.
+        let replayed = service.replay(&trajectory).await.expect("replay facts");
+        assert_eq!(
+            replayed
+                .iter()
+                .map(|fact| fact.sequence)
+                .collect::<Vec<_>>(),
+            facts.iter().map(|fact| fact.sequence).collect::<Vec<_>>()
+        );
+        assert!(replayed[0].sequence == 0);
     }
 
     #[tokio::test]

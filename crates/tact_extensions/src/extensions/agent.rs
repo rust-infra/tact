@@ -228,5 +228,8 @@ pub fn manifest() -> RuntimePluginManifest {
         version: env!("CARGO_PKG_VERSION").into(),
         protocol: ProtocolVersion::CURRENT,
         capabilities: vec![run_capability(), cancel_capability()],
+        // A run dispatches tool capabilities through the router, so the Tools
+        // extension must be registered before this one.
+        dependencies: vec![PluginId::from("tact.tools")],
     }
 }
