@@ -563,6 +563,11 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     ctx.subagent_manager
         .register_cancel_handle(&child_id, cancel_flag.clone());
 
+    // The child was built from `ctx.clone()`, so without this it would emit
+    // through the parent's emitter and its live stream would be
+    // indistinguishable from the parent's own output.
+    crate::tool::subagent_ui::wire_child_to_parent_card(&ctx, &mut subagent);
+
     // Resume reuses a finished child session: hold its process lock for the
     // duration of the follow-up run so two runs can't operate on it at once.
     let lock = if input.resume.is_some() {

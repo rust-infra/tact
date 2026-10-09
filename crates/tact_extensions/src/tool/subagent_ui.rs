@@ -3,7 +3,7 @@
 use tact_protocol::{RuntimeEvent, ToolOutputChunk};
 use tokio::sync::mpsc::UnboundedSender;
 
-use crate::tool::ToolProgressReporter;
+use crate::tool::{ToolContext, ToolProgressReporter, ViewUpdateEmitter};
 
 /// Blank-line pad a structural UI block.
 ///
@@ -179,6 +179,41 @@ pub fn tagged_ui_channel_with_progress(
         }
     });
     tx
+}
+
+/// Forwards protocol events into a channel — the child-to-parent wire.
+struct ChannelEventSink(UnboundedSender<RuntimeEvent>);
+
+impl tact::RuntimeEventSink for ChannelEventSink {
+    fn emit(&self, event: RuntimeEvent) -> Result<(), tact::KernelError> {
+        let _ = self.0.send(event);
+        Ok(())
+    }
+}
+
+/// Route a child agent's live output to the parent's tool card.
+///
+/// A child is built from `Agent::new(client, ctx.clone(), ..)`, so by default it
+/// emits through the **parent's** emitter and its stream is indistinguishable
+/// from the parent's own — which is why a running subagent showed a status and
+/// no live output. This gives it its own emitter wired into
+/// [`tagged_ui_channel_with_progress`]: stream, steps and thinking become
+/// `ToolProgress` on the parent card, interaction prompts still reach the
+/// parent's responder, and the child's own events keep the child's run id
+/// (its `emit_update` stamps it).
+pub fn wire_child_to_parent_card(parent: &ToolContext, child: &mut crate::Agent) {
+    let parent_emitter = parent.view_updates.clone();
+    let (to_parent_tx, mut to_parent_rx) = tokio::sync::mpsc::unbounded_channel();
+    tokio::spawn(async move {
+        while let Some(event) = to_parent_rx.recv().await {
+            let _ = parent_emitter.emit_runtime_event(event);
+        }
+    });
+
+    let tagged = tagged_ui_channel_with_progress(to_parent_tx, parent.progress_reporter.clone());
+    let emitter = ViewUpdateEmitter::default();
+    emitter.set_runtime_sink(std::sync::Arc::new(ChannelEventSink(tagged)));
+    child.tool_context.view_updates = emitter;
 }
 
 #[cfg(test)]

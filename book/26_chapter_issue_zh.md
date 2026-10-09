@@ -4,6 +4,23 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-09 — 子代理卡片现在有实时输出
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix（用户可见：运行中的子代理卡片从「只有状态」变为「实时流」） |
+| **Related** | `crates/tact_extensions/src/tool/{subagent.rs,subagent_ui.rs,mod.rs}` |
+
+**现象 / 动机：** 运行子代理时卡片不刷新、看不到实时流。排查发现：转发器 `subagent_ui::tagged_ui_channel_with_progress`（把子代理的流/步骤/思考转成父卡的 `ToolProgress`）**在生产里从来没有调用者**——`git grep` 在 HEAD 与迁移前提交 `a54096de^` 都只命中它自己文件内的测试；同时 `subagent_ui` 模块被 `#[cfg(any(test, feature = "test-support"))]` 门控。而 `tool/subagent.rs` 用 `Agent::new(client, ctx.clone(), ..)` 建子代理，子代理因此**继承父级的 emitter**，其输出被当作父自己的输出上行——所以只有完成时的 `SubagentsChanged` / `SubagentFinished` 快照，没有流。
+
+**决策：** 解除 `subagent_ui` 的 cfg 门控，新增 `wire_child_to_parent_card(&ToolContext, &mut Agent)`：给子代理**自己的** `ViewUpdateEmitter`，其 sink 写入 `tagged_ui_channel_with_progress` 返回的通道；转发器把流/步骤/思考变成父卡上的 `ToolProgress`，交互请求（权限等）仍沿父级 responder 上行。`tool/subagent.rs` 在建好子代理后立即调用它。
+
+**改后行为：** 子代理运行期间父卡实时刷新；子代理自身事件仍用自己的 `run_id`（由它的 `emit_update` 盖章），而父卡上的 `ToolProgress` 用父的 `run_id`。
+
+**Verification：** `./scripts/check-rust.sh` 退出 0；`cargo test --workspace` **2857 passed / 0 failed**（与改动前逐项一致——`subagent_ui` 的映射单测已存在，覆盖了转发逻辑本身）。**渲染实时性需人工目视确认**：仓库没有「整段子代理会话端到端渲染」的测试，而本次改动改变了输出去向（主日志 → 父卡）。
+
+**Pointers:** `crates/tact_extensions/src/tool/subagent_ui.rs::{tagged_ui_channel_with_progress, wire_child_to_parent_card}`。
+
 ## 1. 2026-10-09 — `AgentUpdate` 类型删除，View 事件路径端到端走协议事件
 
 | Field | Value |

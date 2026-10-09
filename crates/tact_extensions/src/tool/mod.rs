@@ -143,7 +143,6 @@ mod readonly_shell;
 mod registry;
 mod sleep;
 mod subagent;
-#[cfg(any(test, feature = "test-support"))]
 pub mod subagent_ui;
 mod task;
 mod team;
