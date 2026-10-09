@@ -425,13 +425,13 @@ pub fn runtime_events_for(update: &AgentUpdate, run_id: Option<RunId>) -> Vec<Ru
                 content: content.clone(),
             },
             RuntimeEvent::RunFinished {
-                run_id: run_id.unwrap_or_else(|| tact_protocol::RunId::from("runtime")),
+                // Not fabricated: a turn that never started a run reports the
+                // end of a turn, not the end of some synthetic run.
+                run_id: run_id.clone(),
                 success: true,
             },
         ],
-        AgentUpdate::TaskCancelled => vec![RuntimeEvent::Cancelled {
-            run_id: run_id.unwrap_or_else(|| tact_protocol::RunId::from("runtime")),
-        }],
+        AgentUpdate::TaskCancelled => vec![RuntimeEvent::Cancelled { run_id }],
         AgentUpdate::Info(content) => vec![RuntimeEvent::Info {
             run_id,
             content: content.clone(),
@@ -783,6 +783,49 @@ mod tests {
                 }
                 other => panic!("unexpected {other:?}"),
             }
+        }
+    }
+
+    /// A turn that never started a run must not be attributed to one:
+    /// fabricating a shared id merges unrelated turns under the same identity.
+    #[test]
+    fn a_run_less_turn_does_not_invent_a_run_id() {
+        let finished = runtime_events_for(&AgentUpdate::TaskComplete("done".into()), None);
+        match finished.as_slice() {
+            [
+                RuntimeEvent::TaskComplete {
+                    run_id: None,
+                    content,
+                },
+                RuntimeEvent::RunFinished {
+                    run_id: None,
+                    success: true,
+                },
+            ] if content == "done" => {}
+            other => panic!("unexpected {other:?}"),
+        }
+
+        let cancelled = runtime_events_for(&AgentUpdate::TaskCancelled, None);
+        match cancelled.as_slice() {
+            [RuntimeEvent::Cancelled { run_id: None }] => {}
+            other => panic!("unexpected {other:?}"),
+        }
+
+        // A turn that did run keeps the identity it really has.
+        let run = tact_protocol::RunId::from("run-1");
+        let with_run = runtime_events_for(&AgentUpdate::TaskComplete("done".into()), Some(run));
+        match with_run.as_slice() {
+            [
+                RuntimeEvent::TaskComplete {
+                    run_id: Some(first),
+                    ..
+                },
+                RuntimeEvent::RunFinished {
+                    run_id: Some(second),
+                    success: true,
+                },
+            ] if first.as_str() == "run-1" && second.as_str() == "run-1" => {}
+            other => panic!("unexpected {other:?}"),
         }
     }
 }

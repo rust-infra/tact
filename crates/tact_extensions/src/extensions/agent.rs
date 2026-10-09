@@ -215,7 +215,7 @@ impl CapabilityHandler for AgentCancelHandler {
         let _ = context
             .events()
             .publish(tact_protocol::RuntimeEvent::Cancelled {
-                run_id: request.run_id,
+                run_id: Some(request.run_id),
             })
             .await;
         Ok(json!({"cancelled": true}))

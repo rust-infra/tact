@@ -142,13 +142,23 @@ Audit result (2026-10-09, all 25 variants compared field by field):
       `InteractionRequest::Select` now carries `log_confirm` (`#[serde(default)]`),
       both legs pass it through, and regression tests on each leg were verified to
       fail against the old behaviour.
-- [ ] Finding 2 — **open.** `AgentUpdate::TaskComplete` and `TaskCancelled` have
-      no run id, so the mapping fabricates `RunId::from("runtime")` for
-      `RuntimeEvent::RunFinished` / `Cancelled`. Two runs without a run id would
-      share that synthetic identity, which is exactly what sequence-based
-      trajectory replay keys on. Decide between: (a) make `RunFinished` /
-      `Cancelled` take `Option<RunId>`, (b) emit them only when a run id exists,
-      or (c) keep the sentinel but make it unique per run.
+- [x] Finding 2 — **View layer closed; recorder layer still open.** `TaskComplete`
+      / `TaskCancelled` carry no run id, and the mapping used to fabricate
+      `RunId::from("runtime")` for `RunFinished` / `Cancelled`. Option (a) was
+      taken: both variants now carry `Option<RunId>`, so a turn that never
+      started a run says so instead of borrowing a shared synthetic identity.
+      `tact_view::tests::a_run_less_turn_does_not_invent_a_run_id` pins it and was
+      verified to fail when the fabrication is reintroduced.
+- [ ] Finding 2b — **open, discovered while fixing 2.** The fabrication has a
+      second, deeper home: `TrajectoryService::append`
+      (`crates/tact_trajectory/src/service.rs`) still substitutes
+      `RunId::new("runtime")` when neither the caller nor the event supplies a
+      run, and then derives `trajectory_id` from it — so every run-less fact of a
+      session lands in **one** synthetic trajectory named `runtime`, and
+      `query_by_run("runtime")` conflates unrelated turns. Fixing it is a
+      trajectory-keying decision (make `TrajectoryEvent.run_id` optional, or
+      require a caller-supplied identity, or bucket run-less facts under the
+      session trajectory), so it needs an explicit choice.
 - [x] Non-finding: `AgentUpdate::Error(AgentErrorKind)` looked lossy
       (`to_string()`), but `AgentErrorKind` is a single-variant enum
       (`Other(String)`) today, so nothing is dropped.

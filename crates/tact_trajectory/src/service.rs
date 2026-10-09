@@ -131,10 +131,11 @@ impl TrajectoryService for KernelTrajectoryRecorder {
         event: RuntimeEvent,
     ) -> Result<(), KernelError> {
         let run_id = match supplied_run_id.cloned().or_else(|| match &event {
-            RuntimeEvent::RunStarted { run_id }
-            | RuntimeEvent::RunFinished { run_id, .. }
-            | RuntimeEvent::Cancelled { run_id }
-            | RuntimeEvent::TimedOut { run_id }
+            RuntimeEvent::RunStarted { run_id } => Some(run_id.clone()),
+            RuntimeEvent::RunFinished { run_id, .. } | RuntimeEvent::Cancelled { run_id } => {
+                run_id.clone()
+            }
+            RuntimeEvent::TimedOut { run_id }
             | RuntimeEvent::ModelCallStarted { run_id, .. }
             | RuntimeEvent::ModelCallFinished { run_id, .. }
             | RuntimeEvent::ToolCallStarted { run_id, .. }
@@ -300,10 +301,11 @@ impl TrajectoryService for SqliteTrajectoryService {
         let run_id = run_id
             .cloned()
             .or_else(|| match &event {
-                RuntimeEvent::RunStarted { run_id }
-                | RuntimeEvent::RunFinished { run_id, .. }
-                | RuntimeEvent::Cancelled { run_id }
-                | RuntimeEvent::TimedOut { run_id }
+                RuntimeEvent::RunStarted { run_id } => Some(run_id.clone()),
+                RuntimeEvent::RunFinished { run_id, .. } | RuntimeEvent::Cancelled { run_id } => {
+                    run_id.clone()
+                }
+                RuntimeEvent::TimedOut { run_id }
                 | RuntimeEvent::ModelCallStarted { run_id, .. }
                 | RuntimeEvent::ModelCallFinished { run_id, .. }
                 | RuntimeEvent::ToolCallStarted { run_id, .. }
@@ -454,7 +456,7 @@ mod tests {
                 content: "first".into(),
             },
             RuntimeEvent::RunFinished {
-                run_id: run.clone(),
+                run_id: Some(run.clone()),
                 success: true,
             },
         ];

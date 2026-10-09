@@ -571,7 +571,9 @@ fn apply_runtime_event(app: &mut App, event: tact_protocol::RuntimeEvent) {
             app.runtime_run_id = Some(run_id);
         }
         tact_protocol::RuntimeEvent::RunFinished { run_id, .. } => {
-            if app.runtime_run_id.as_ref() == Some(&run_id) {
+            // A turn that ended without a run must not clear the identity of a
+            // run that is still current.
+            if app.runtime_run_id == run_id {
                 app.runtime_run_id = None;
             }
         }
@@ -853,7 +855,7 @@ mod runtime_event_tests {
         apply_runtime_event(
             &mut app,
             tact_protocol::RuntimeEvent::RunFinished {
-                run_id,
+                run_id: Some(run_id),
                 success: true,
             },
         );

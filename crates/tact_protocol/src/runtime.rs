@@ -70,7 +70,9 @@ pub enum RuntimeEvent {
         run_id: RunId,
     },
     RunFinished {
-        run_id: RunId,
+        /// `None` when the turn ended without ever starting a run, so the
+        /// fact is not attributed to a run it does not belong to.
+        run_id: Option<RunId>,
         success: bool,
     },
     ModelCallStarted {
@@ -119,7 +121,8 @@ pub enum RuntimeEvent {
         response: InteractionResponse,
     },
     Cancelled {
-        run_id: RunId,
+        /// `None` when the turn was cancelled before it started a run.
+        run_id: Option<RunId>,
     },
     /// History was compacted. `trigger` names what asked for it
     /// (`user` / `auto` / `recovery`); `focus` is the optional user focus.
