@@ -59,6 +59,9 @@ pub mod utils;
 pub mod voice;
 pub mod worktree;
 
+/// Builders for the protocol events a host or the Agent emits.
+pub mod runtime_event;
+
 pub use agent::{Agent, AgentRuntime, AgentSystemPrompt};
 pub use tact_llm::Tool as ToolSpec;
 use tact_llm::{ContentBlock, LlmProvider, MessageContent};

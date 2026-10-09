@@ -1,12 +1,14 @@
 //! Interactive-mode command driver: bridges `UserCommand` from the TUI to `Agent`.
 
 use std::{path::Path, sync::atomic::Ordering};
+use tact_extensions::runtime_event;
+use tact_protocol::RuntimeEvent;
 
 use tact_extensions::background::SharedBackgroundManager;
 use tact_extensions::{Agent, extract_text, hook::HookControl, utils::RwLockExt};
 use tact_llm::{Message, Role};
 use tact_protocol::{AccountUpdate, RuntimeCommand};
-use tact_view::{AgentErrorKind, AgentUpdate, UserCommand};
+use tact_view::{AgentErrorKind, UserCommand};
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
@@ -88,9 +90,11 @@ pub async fn run_command_loop_with_account(
         match cmd {
             UserCommand::Runtime(RuntimeCommand::StartRun { run_id, input }) => {
                 let Some(task) = input.get("message").and_then(|value| value.as_str()) else {
-                    let _ = view_updates.emit(AgentUpdate::Error(AgentErrorKind::Other(
-                        "Runtime StartRun requires a string `message`".into(),
-                    )));
+                    let _ = view_updates.emit_runtime_event(runtime_event::error(
+                        AgentErrorKind::Other(
+                            "Runtime StartRun requires a string `message`".into(),
+                        ),
+                    ));
                     continue;
                 };
                 if let Some(handle) = active.take() {
@@ -112,12 +116,12 @@ pub async fn run_command_loop_with_account(
             }
             UserCommand::Runtime(RuntimeCommand::CancelRun { .. }) => {
                 cancel_flag.store(true, Ordering::Relaxed);
-                let _ = view_updates.emit(AgentUpdate::Info("Cancelling...".into()));
+                let _ = view_updates.emit_runtime_event(runtime_event::info("Cancelling..."));
             }
             UserCommand::Runtime(_) => {}
             UserCommand::Cancel => {
                 cancel_flag.store(true, Ordering::Relaxed);
-                let _ = view_updates.emit(AgentUpdate::Info("Cancelling...".into()));
+                let _ = view_updates.emit_runtime_event(runtime_event::info("Cancelling..."));
             }
             UserCommand::CancelSubagent { child_id } => {
                 if subagent_manager.request_cancel(&child_id) {
@@ -127,11 +131,11 @@ pub async fn run_command_loop_with_account(
                         &subagent_manager,
                     )
                     .await;
-                    let _ = view_updates.emit(AgentUpdate::Info(format!(
+                    let _ = view_updates.emit_runtime_event(runtime_event::info(format!(
                         "Cancelling subagent {child_id}..."
                     )));
                 } else {
-                    let _ = view_updates.emit(AgentUpdate::Info(format!(
+                    let _ = view_updates.emit_runtime_event(runtime_event::info(format!(
                         "No running subagent {child_id} to cancel"
                     )));
                 }
@@ -143,7 +147,8 @@ pub async fn run_command_loop_with_account(
                 // read-out popup, like /background: a snapshot is not
                 // conversation.
                 let stats_text = stats.read_recover().summary();
-                let _ = view_updates.emit(AgentUpdate::PopupMarkdown {
+                let _ = view_updates.emit_runtime_event(RuntimeEvent::PopupMarkdown {
+                    run_id: None,
                     title: "Session Statistics".to_string(),
                     source: stats_text,
                 });
@@ -210,8 +215,8 @@ pub async fn run_command_loop_with_account(
     // The parent is exiting: request cancellation and persist Cancelled for
     // every live child before detached tasks can be dropped by runtime shutdown.
     if subagent_manager.cancel_all_and_persist().await > 0 {
-        let _ = view_updates.emit(AgentUpdate::Info(
-            "Cancelling background subagents (parent exiting)...".into(),
+        let _ = view_updates.emit_runtime_event(runtime_event::info(
+            "Cancelling background subagents (parent exiting)...",
         ));
     }
 
@@ -244,15 +249,16 @@ async fn query_background(
             // single-task pretty JSON) aligned and copyable. Shown in the popup
             // rather than the log: this is a read-out, not part of the
             // conversation.
-            let _ = view_updates.emit(AgentUpdate::PopupMarkdown {
+            let _ = view_updates.emit_runtime_event(RuntimeEvent::PopupMarkdown {
+                run_id: None,
                 title: "⚙️ Background Tasks".to_string(),
                 source: format!("```text\n{output}\n```"),
             });
         }
         Err(err) => {
-            let _ = view_updates.emit(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                "Background check failed: {err}"
-            ))));
+            let _ = view_updates.emit_runtime_event(runtime_event::error(AgentErrorKind::Other(
+                format!("Background check failed: {err}"),
+            )));
         }
     }
 }
@@ -345,7 +351,7 @@ async fn handle_user_command_with_account(
             // of the endpoint heuristic.
             if task_message.has_images() && !tact_extensions::config::supports_vision() {
                 let model = tact_llm::get_provider().model;
-                agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                agent.emit_update(runtime_event::error(AgentErrorKind::Other(format!(
                     "Image attachments are not supported by {model}. \
                      The current model does not accept image input."
                 ))));
@@ -369,14 +375,14 @@ async fn handle_user_command_with_account(
                                 if stop_continuations < MAX_STOP_CONTINUATIONS =>
                             {
                                 stop_continuations += 1;
-                                agent.emit_update(AgentUpdate::Info(format!(
+                                agent.emit_update(runtime_event::info(format!(
                                     "[Stop hook] continuing: {reason}"
                                 )));
                                 task_message = Some(Message::new_text(Role::User, reason));
                                 continue;
                             }
                             Ok(HookControl::Block(reason)) => {
-                                agent.emit_update(AgentUpdate::Info(format!(
+                                agent.emit_update(runtime_event::info(format!(
                                     "[Stop hook] continuation limit reached; stopping: {reason}"
                                 )));
                             }
@@ -386,11 +392,11 @@ async fn handle_user_command_with_account(
                         }
                         if let Some(last) = agent.runtime.context.last() {
                             let text = extract_text(&last.content);
-                            agent.emit_update(AgentUpdate::TaskComplete(text));
+                            agent.emit_update(runtime_event::task_complete(text));
                         }
                         // TaskCompleted hooks fire once per completed user task.
                         if let Err(error) = agent.dispatch_task_completed_hooks().await {
-                            agent.emit_update(AgentUpdate::Info(format!(
+                            agent.emit_update(runtime_event::info(format!(
                                 "[TaskCompleted hook failed] {error}"
                             )));
                         }
@@ -399,17 +405,19 @@ async fn handle_user_command_with_account(
                         // Cancelled: clear TUI busy state (Planning/Executing) so
                         // queued (pending) messages are flushed rather than waiting
                         // on a stale busy state.
-                        agent.emit_update(AgentUpdate::TaskCancelled);
+                        agent.emit_update(runtime_event::task_cancelled());
                     }
                     Err(e) => {
-                        agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
+                        agent.emit_update(runtime_event::error(AgentErrorKind::Other(
+                            e.to_string(),
+                        )));
                     }
                 }
                 break;
             }
         }
         UserCommand::Compact => {
-            agent.emit_update(AgentUpdate::Info("[compacting]".into()));
+            agent.emit_update(runtime_event::info("[compacting]"));
             if let Err(error) = agent
                 .compact_history_with_trigger(
                     tact_extensions::compact::CompactTrigger::Command,
@@ -417,11 +425,11 @@ async fn handle_user_command_with_account(
                 )
                 .await
             {
-                agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                agent.emit_update(runtime_event::error(AgentErrorKind::Other(format!(
                     "Compaction failed: {error}"
                 ))));
             } else {
-                agent.emit_update(AgentUpdate::Info("Compaction complete.".into()));
+                agent.emit_update(runtime_event::info("Compaction complete."));
             }
         }
         UserCommand::QueryBalance => {
@@ -492,24 +500,24 @@ async fn handle_user_command_with_account(
             let result = stream_auth_progress(
                 tact_extensions::mcp::authorize_server(&server, &mut notify),
                 line_rx,
-                |line| agent.emit_update(AgentUpdate::Info(line)),
+                |line| agent.emit_update(runtime_event::info(line)),
             )
             .await;
             match result {
                 Ok(()) => {
-                    agent.emit_update(AgentUpdate::Info(format!(
+                    agent.emit_update(runtime_event::info(format!(
                         "Authorized MCP server {server}; reloading MCP servers..."
                     )));
                     let report = agent.reload_mcp_router().await;
                     for line in report.notice_lines() {
-                        agent.emit_update(AgentUpdate::Info(line));
+                        agent.emit_update(runtime_event::info(line));
                     }
-                    agent.emit_update(AgentUpdate::Info(format!(
+                    agent.emit_update(runtime_event::info(format!(
                         "MCP reload complete ({} server(s) connected)",
                         report.connected.len()
                     )));
                 }
-                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                Err(error) => agent.emit_update(runtime_event::error(AgentErrorKind::Other(
                     format!("MCP authorization failed for {server}: {error:#}"),
                 ))),
             }
@@ -519,10 +527,10 @@ async fn handle_user_command_with_account(
             // Never reload here — a reconnect would drop live stdio children
             // and duplicate remote dials just to print a table.
             match tact_extensions::mcp::describe_servers(&agent.mcp_router.server_summaries()) {
-                Ok(views) => agent.emit_update(AgentUpdate::MdInfo(
+                Ok(views) => agent.emit_update(runtime_event::md_info(
                     crate::mcp_cli::render_live_listing(&views),
                 )),
-                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                Err(error) => agent.emit_update(runtime_event::error(AgentErrorKind::Other(
                     format!("MCP list failed: {error:#}"),
                 ))),
             }
@@ -530,8 +538,8 @@ async fn handle_user_command_with_account(
         UserCommand::McpPrompts { server } => {
             // Live view, like `McpList`: the router the agent already holds.
             match agent.mcp_router.list_prompts(server.as_deref()).await {
-                Ok(listing) => agent.emit_update(AgentUpdate::MdInfo(listing)),
-                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                Ok(listing) => agent.emit_update(runtime_event::md_info(listing)),
+                Err(error) => agent.emit_update(runtime_event::error(AgentErrorKind::Other(
                     format!("MCP prompts failed: {error:#}"),
                 ))),
             }
@@ -554,22 +562,22 @@ async fn handle_user_command_with_account(
                 .await;
             }
             Err(message) => {
-                agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(message)));
+                agent.emit_update(runtime_event::error(AgentErrorKind::Other(message)));
             }
         },
         UserCommand::HooksList => match tact_extensions::plugin::survey_hooks(image_work_dir) {
             // The same wording `tact-ui hooks list` uses: two surfaces naming
             // the same hooks must not describe them differently.
-            Ok(report) => agent.emit_update(AgentUpdate::MdInfo(
+            Ok(report) => agent.emit_update(runtime_event::md_info(
                 crate::hooks_cli::render_hooks_listing(&report),
             )),
-            Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+            Err(error) => agent.emit_update(runtime_event::error(AgentErrorKind::Other(format!(
                 "Hooks list failed: {error:#}"
             )))),
         },
         UserCommand::HooksTrust { all, source } => {
             match tact_extensions::plugin::trust_hooks(image_work_dir, all, source.as_deref()) {
-                Ok(approved) if approved.is_empty() => agent.emit_update(AgentUpdate::Info(
+                Ok(approved) if approved.is_empty() => agent.emit_update(runtime_event::info(
                     "Nothing to approve: every configured hook has already been reviewed."
                         .to_string(),
                 )),
@@ -582,20 +590,20 @@ async fn handle_user_command_with_account(
                         "They run from the next session onward. Revoke with /hooks forget --all."
                             .to_string(),
                     );
-                    agent.emit_update(AgentUpdate::Info(lines.join("\n")));
+                    agent.emit_update(runtime_event::info(lines.join("\n")));
                 }
-                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
+                Err(error) => agent.emit_update(runtime_event::error(AgentErrorKind::Other(
                     format!("Hooks trust failed: {error:#}"),
                 ))),
             }
         }
         UserCommand::HooksForget => match tact_extensions::plugin::forget_hook_trust() {
-            Ok(()) => agent.emit_update(AgentUpdate::Info(
+            Ok(()) => agent.emit_update(runtime_event::info(
                 "Forgot every hook approval. No hook runs until it is reviewed again with \
                  /hooks trust --all."
                     .to_string(),
             )),
-            Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+            Err(error) => agent.emit_update(runtime_event::error(AgentErrorKind::Other(format!(
                 "Hooks forget failed: {error:#}"
             )))),
         },
@@ -656,7 +664,7 @@ mod tests {
         let (agent, _) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
 
         agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
-        agent.emit_update(AgentUpdate::Info("Cancelling...".into()));
+        agent.emit_update(tact_extensions::runtime_event::info("Cancelling..."));
 
         assert!(agent.runtime.cancel_flag.load(Ordering::Relaxed));
         let update = agent_rx.try_recv().expect("expected Cancelling info");

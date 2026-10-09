@@ -27,6 +27,7 @@
 //! Failures (non-zero exit, timeout, invalid JSON) never block the agent
 //! loop — they log a warning and continue.
 
+use crate::runtime_event;
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -34,6 +35,7 @@ use std::{
     sync::Arc,
     time::Duration,
 };
+use tact_protocol::RuntimeEvent;
 
 use anyhow::{Context, Result};
 use regex::Regex;
@@ -41,8 +43,6 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
 use tracing::warn;
-
-use tact_view::AgentUpdate;
 
 use crate::{
     compact::CompactTrigger,
@@ -502,7 +502,8 @@ fn open_hook_status(
     let agent = agent?;
     let message = command.status_message.as_deref()?;
     let id = agent.next_hook_status_id();
-    agent.emit_update(AgentUpdate::HookStatus {
+    agent.emit_update(RuntimeEvent::HookStatus {
+        run_id: None,
         id,
         source: command.source.clone(),
         message: message.to_string(),
@@ -525,7 +526,8 @@ fn close_hook_status(
     let (Some(agent), Some((id, started_at))) = (agent, opened) else {
         return;
     };
-    agent.emit_update(AgentUpdate::HookStatus {
+    agent.emit_update(RuntimeEvent::HookStatus {
+        run_id: None,
         id,
         source: command.source.clone(),
         message: command.status_message.clone().unwrap_or_default(),
@@ -563,7 +565,7 @@ fn finish_hook_output(
     if let Some(message) = &output.system_message
         && let Some(agent) = agent
     {
-        agent.emit_update(AgentUpdate::Info(message.clone()));
+        agent.emit_update(runtime_event::info(message.clone()));
     }
 }
 
@@ -575,7 +577,7 @@ fn finish_hook_output(
 fn report_hook_failure(input: &HookRunInput, agent: Option<&crate::Agent>, detail: &str) {
     warn!("plugin hook command failed (continuing): {detail}");
     if let Some(agent) = agent {
-        agent.emit_update(AgentUpdate::Info(format!(
+        agent.emit_update(runtime_event::info(format!(
             "[plugin hook {} failed] {detail}",
             input.hook_event_name
         )));
@@ -2406,6 +2408,7 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
+    use tact_view::AgentUpdate;
 
     #[test]
     fn parses_inline_manifest_hooks() {

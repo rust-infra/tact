@@ -7,13 +7,13 @@ use std::{
     path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering},
 };
+use tact_protocol::RuntimeEvent;
 
 use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_llm::{ApiKeyProvider, Client, Message, Role, get_llm_client};
 use tact_protocol::ToolVisualKind;
-use tact_view::AgentUpdate;
 use tool_refactor_macros::tool;
 use tracing::warn;
 
@@ -667,7 +667,8 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             }
             // The parent View owns the card that stays live while this child
             // runs, so the completion projection returns there.
-            let _ = view_updates.emit(AgentUpdate::SubagentFinished {
+            let _ = view_updates.emit_runtime_event(RuntimeEvent::SubagentFinished {
+                run_id: None,
                 tool_id: tool_id.clone(),
                 child_id: child_id.clone(),
                 success: succeeded,

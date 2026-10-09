@@ -1,4 +1,5 @@
 use std::sync::{Arc, Mutex};
+use tact_protocol::RuntimeEvent;
 
 use tact_protocol::{ToolOutputChunk, ToolOutputStream};
 use tact_view::AgentUpdate;
@@ -71,13 +72,17 @@ impl ToolProgressReporter {
         }
     }
 
-    fn emit(&self, update: AgentUpdate) {
+    fn emit_runtime_event(&self, event: RuntimeEvent) {
         if let Some(view_updates) = &self.view_updates {
-            let _ = view_updates.emit(update);
+            let _ = view_updates.emit_runtime_event(event);
         } else {
             #[cfg(any(test, feature = "test-support"))]
             if let Some(tx) = &self.ui_tx {
-                let _ = tx.send(update);
+                // A harness that has not migrated still reads the legacy view
+                // model, so project back for it.
+                for update in tact_view::runtime_event_to_agent_updates(event) {
+                    let _ = tx.send(update);
+                }
             }
         }
     }
@@ -108,7 +113,8 @@ impl ToolProgressReporter {
             // empty batch would just churn the renderer.
             return;
         }
-        self.emit(AgentUpdate::ToolProgress {
+        self.emit_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: self.tool_id.clone(),
             chunks,
         });
@@ -132,7 +138,8 @@ impl ToolProgressReporter {
         let Some(text) = tail.filter(|t| !t.is_empty()) else {
             return;
         };
-        self.emit(AgentUpdate::ToolProgress {
+        self.emit_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: self.tool_id.clone(),
             chunks: vec![ToolOutputChunk { stream, text }],
         });
@@ -168,8 +175,8 @@ impl ToolProgressReporter {
     /// `background_run` sends a `BackgroundTaskFinished` carrying the output
     /// tail — so the redaction state and the channel stay in one place instead
     /// of being reimplemented per tool.
-    pub fn send(&self, update: AgentUpdate) {
-        self.emit(update);
+    pub fn send(&self, event: RuntimeEvent) {
+        self.emit_runtime_event(event);
     }
 
     /// Redact a complete, final piece of text at the level this reporter

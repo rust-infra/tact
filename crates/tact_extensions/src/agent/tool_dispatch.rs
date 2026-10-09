@@ -3,16 +3,17 @@
 //! After Task 5, all semantic decisions flow through typed metadata instead of
 //! matching native tool-name strings.
 
+use crate::runtime_event;
 use std::{
     collections::HashSet,
     sync::{Arc, Mutex},
 };
+use tact_protocol::RuntimeEvent;
 
 use anyhow::Result;
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use tact_llm::ContentBlock;
 use tact_protocol::{PluginId, RequestId, RunId, StepResult, StepStatus, ToolPresentationInfo};
-use tact_view::AgentUpdate;
 
 use super::Agent;
 use crate::{
@@ -766,7 +767,7 @@ impl Agent {
                 .entry(name.clone())
                 .or_insert(0) += 1;
             if self.cancel_requested() {
-                self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
+                self.emit_update(runtime_event::info("Cancelled by user"));
                 self.append_unexecuted_tool_uses(&mut prepared, content, TOOL_CANCELLED_MSG);
                 return Ok(Preflight {
                     prepared,
@@ -797,13 +798,14 @@ impl Agent {
                     },
                     Ok(None) | Err(_) => {
                         let msg = format!("unknown tool: {name}");
-                        self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep::new(
+                        self.emit_update(runtime_event::step_added(tact_protocol::PlanStep::new(
                             name.clone(),
                             name.clone(),
                             id.clone(),
                             input.as_object().cloned().unwrap_or_default(),
                         )));
-                        self.emit_update(AgentUpdate::StepStarted {
+                        self.emit_update(RuntimeEvent::StepStarted {
+                            run_id: None,
                             idx: step_idx,
                             tool_id: id.clone(),
                             tool_name: name.clone(),
@@ -811,7 +813,8 @@ impl Agent {
                             arg_full: String::new(),
                             presentation: ToolPresentationInfo::generic(name.clone()),
                         });
-                        self.emit_update(AgentUpdate::StepFailed {
+                        self.emit_update(RuntimeEvent::StepFailed {
+                            run_id: None,
                             idx: step_idx,
                             tool_id: id.clone(),
                             arg_summary: String::new(),
@@ -846,13 +849,14 @@ impl Agent {
                 _ => ToolPresentationInfo::generic(name.clone()),
             };
 
-            self.emit_update(AgentUpdate::StepAdded(tact_protocol::PlanStep::new(
+            self.emit_update(runtime_event::step_added(tact_protocol::PlanStep::new(
                 step_description,
                 name.clone(),
                 id.clone(),
                 input.as_object().cloned().unwrap_or_default(),
             )));
-            self.emit_update(AgentUpdate::StepStarted {
+            self.emit_update(RuntimeEvent::StepStarted {
+                run_id: None,
                 idx: step_idx,
                 tool_id: id.clone(),
                 tool_name: name.clone(),
@@ -910,7 +914,8 @@ impl Agent {
                 && hit.tier == crate::security::sensitive::Tier::Credential
             {
                 let msg = crate::security::sensitive::refusal_text(hit);
-                self.emit_update(AgentUpdate::StepFailed {
+                self.emit_update(RuntimeEvent::StepFailed {
+                    run_id: None,
                     idx: step_idx,
                     tool_id: id.clone(),
                     arg_summary: String::new(),
@@ -957,7 +962,8 @@ impl Agent {
                         PermissionBehavior::Allow => PreparedState::Run,
                         PermissionBehavior::Deny => {
                             let msg = format!("Permission denied: {}", decision.reason);
-                            self.emit_update(AgentUpdate::StepFailed {
+                            self.emit_update(RuntimeEvent::StepFailed {
+                                run_id: None,
                                 idx: step_idx,
                                 tool_id: id.clone(),
                                 arg_summary: String::new(),
@@ -977,7 +983,7 @@ impl Agent {
                                     Err(error) => {
                                         // Fail-open, like every other hook failure:
                                         // a broken policy hook must not block work.
-                                        self.emit_update(AgentUpdate::Info(format!(
+                                        self.emit_update(runtime_event::info(format!(
                                             "[PermissionRequest hook failed] {error}"
                                         )));
                                         HookControl::Continue
@@ -993,7 +999,8 @@ impl Agent {
                                     let msg = format!(
                                         "Permission denied by PermissionRequest hook: {reason}"
                                     );
-                                    self.emit_update(AgentUpdate::StepFailed {
+                                    self.emit_update(RuntimeEvent::StepFailed {
+                                        run_id: None,
                                         idx: step_idx,
                                         tool_id: id.clone(),
                                         arg_summary: String::new(),
@@ -1025,12 +1032,12 @@ impl Agent {
                                     match invoke_hooks!(Notification, self, &notification) {
                                         Ok(HookControl::Continue | HookControl::Allow) => {}
                                         Ok(HookControl::Block(reason)) => {
-                                            self.emit_update(AgentUpdate::Info(format!(
+                                            self.emit_update(runtime_event::info(format!(
                                                 "[Notification hook blocked] {reason}"
                                             )));
                                         }
                                         Err(error) => {
-                                            self.emit_update(AgentUpdate::Info(format!(
+                                            self.emit_update(runtime_event::info(format!(
                                                 "[Notification hook failed] {error}"
                                             )));
                                         }
@@ -1137,7 +1144,8 @@ impl Agent {
                                                 "Permission denied by user for {}",
                                                 stable_name
                                             );
-                                            self.emit_update(AgentUpdate::StepFailed {
+                                            self.emit_update(RuntimeEvent::StepFailed {
+                                                run_id: None,
                                                 idx: step_idx,
                                                 tool_id: id.clone(),
                                                 arg_summary: String::new(),
@@ -1160,7 +1168,8 @@ impl Agent {
                 }
                 Ok(HookControl::Block(reason)) => {
                     let msg = format!("Tool blocked by PreToolUse hook: {reason}");
-                    self.emit_update(AgentUpdate::StepFailed {
+                    self.emit_update(RuntimeEvent::StepFailed {
+                        run_id: None,
                         idx: step_idx,
                         tool_id: id.clone(),
                         arg_summary: String::new(),
@@ -1170,7 +1179,8 @@ impl Agent {
                 }
                 Err(error) => {
                     let msg = format!("PreToolUse hook failed: {error}");
-                    self.emit_update(AgentUpdate::StepFailed {
+                    self.emit_update(RuntimeEvent::StepFailed {
+                        run_id: None,
                         idx: step_idx,
                         tool_id: id.clone(),
                         arg_summary: String::new(),
@@ -1282,7 +1292,7 @@ impl Agent {
 
         for wave in super::tool_schedule::waves_grouped(&resources) {
             if self.cancel_requested() {
-                self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
+                self.emit_update(runtime_event::info("Cancelled by user"));
                 return Ok((outputs, manual_compact));
             }
             let mut futures = FuturesUnordered::new();
@@ -1398,12 +1408,12 @@ impl Agent {
                     match invoke_hooks!(PostToolUseFailure, self, &tool_use, error_text.as_str()) {
                         Ok(HookControl::Continue | HookControl::Allow) => {}
                         Ok(HookControl::Block(reason)) => {
-                            self.emit_update(AgentUpdate::Info(format!(
+                            self.emit_update(runtime_event::info(format!(
                                 "[PostToolUseFailure hook blocked] {reason}"
                             )));
                         }
                         Err(error) => {
-                            self.emit_update(AgentUpdate::Info(format!(
+                            self.emit_update(runtime_event::info(format!(
                                 "[PostToolUseFailure hook failed] {error}"
                             )));
                         }
@@ -1448,7 +1458,8 @@ impl Agent {
                     _ => ToolPresentationInfo::generic(prep_name.clone()),
                 };
 
-                self.emit_update(AgentUpdate::StepFinished {
+                self.emit_update(RuntimeEvent::StepFinished {
+                    run_id: None,
                     idx: prep_step_idx,
                     tool_id: prep_id,
                     result: StepResult {
@@ -1542,7 +1553,8 @@ impl Agent {
             .skip(prepared.len())
         {
             let step_idx = self.next_step_idx();
-            self.emit_update(AgentUpdate::StepFailed {
+            self.emit_update(RuntimeEvent::StepFailed {
+                run_id: None,
                 idx: step_idx,
                 tool_id: id.clone(),
                 arg_summary: String::new(),
@@ -1587,7 +1599,7 @@ impl Agent {
     /// The gesture promised to be remembered; saying so when it cannot be is
     /// the difference between a limitation and a bug.
     fn report_unrecorded_approval(&self, tool_name: &str) {
-        self.emit_update(AgentUpdate::Info(format!(
+        self.emit_update(runtime_event::info(format!(
             "Approved {tool_name} for this call only — no rule could be narrowed for it, and a \
              tool-wide rule would allow calls you were not asked about."
         )));

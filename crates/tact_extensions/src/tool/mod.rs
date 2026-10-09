@@ -535,6 +535,7 @@ mod tests {
         test_support::{install_skill, test_context, write_workspace_file},
         *,
     };
+    use crate::runtime_event;
 
     #[test]
     fn view_update_emitter_uses_the_runtime_event_transport() {
@@ -543,7 +544,7 @@ mod tests {
         let emitter = ViewUpdateEmitter::default();
         emitter.set_runtime_sink(Arc::new(transport));
 
-        assert!(emitter.emit(AgentUpdate::Info("through protocol".into())));
+        assert!(emitter.emit_runtime_event(runtime_event::info("through protocol")));
         assert!(matches!(
             subscription.try_recv(),
             Ok(tact_protocol::RuntimeEvent::Info { content, .. })

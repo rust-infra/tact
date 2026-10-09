@@ -31,6 +31,7 @@ use std::{
     },
     time::{Duration, Instant},
 };
+use tact_protocol::RuntimeEvent;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
@@ -521,7 +522,8 @@ impl BackgroundProgressSink {
     }
 
     fn send_finished(&self, success: bool, message: &str, output: &str) {
-        self.reporter.send(AgentUpdate::BackgroundTaskFinished {
+        self.reporter.send(RuntimeEvent::BackgroundTaskFinished {
+            run_id: None,
             tool_id: self.reporter.tool_id().to_string(),
             success,
             message: message.to_string(),

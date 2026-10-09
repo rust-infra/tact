@@ -16,7 +16,7 @@ use tact_llm::{
     MessageKind, OpenAiReasoningEffort, ProviderConversationState, ProviderKind,
     ProviderStateUpdate, RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
 };
-use tact_protocol::{RunId, TokenUsageInfo};
+use tact_protocol::{RunId, RuntimeEvent, TokenUsageInfo};
 use tact_view::AgentUpdate;
 
 use crate::{
@@ -46,6 +46,7 @@ use crate::{
         RecoveryState, backoff_delay, classify_error, classify_llm_error, continuation_message,
         error_summary,
     },
+    runtime_event,
     stats::SessionStats,
     store::DynSessionStore,
     subagent::SubagentResult,
@@ -618,13 +619,13 @@ impl Agent {
             return;
         }
         for (server, refresh) in &report.changed {
-            self.emit_update(AgentUpdate::Info(format!(
+            self.emit_update(runtime_event::info(format!(
                 "[mcp] {server} changed its tool list: {}",
                 refresh.describe()
             )));
         }
         for (server, reason) in &report.failed {
-            self.emit_update(AgentUpdate::Info(format!(
+            self.emit_update(runtime_event::info(format!(
                 "[mcp] {server} announced a tool-list change that could not be read: {reason}"
             )));
         }
@@ -753,7 +754,7 @@ impl Agent {
         if let Some(msg) =
             Self::ensure_max_tokens_gt_thinking_budget(&mut self.agent_settings.max_tokens, budget)
         {
-            self.emit_update(AgentUpdate::Info(msg));
+            self.emit_update(runtime_event::info(msg));
         }
         self.emit_model_status();
     }
@@ -799,7 +800,7 @@ impl Agent {
     fn emit_model_status(&self) {
         let model_name = self.agent_settings.model.clone();
         let budget = self.thinking_budget();
-        self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
+        self.emit_update(runtime_event::model_info(tact_protocol::ModelCallParams {
             model: model_name,
             max_tokens: self.max_tokens(),
             thinking_budget: (budget > 0).then_some(budget as u32),
@@ -875,26 +876,29 @@ impl Agent {
         self.mcp_router.disconnect_all().await;
     }
 
-    pub fn emit_update(&self, update: AgentUpdate) {
+    /// Emits a protocol event to the View, attributed to this run.
+    ///
+    /// The producer leaves `run_id` empty; the emitter owns the identity.
+    pub fn emit_update(&self, event: RuntimeEvent) {
         // Desktop notifications for key lifecycle events
-        match &update {
-            AgentUpdate::TaskComplete(text) => {
-                let summary = text.chars().take(200).collect::<String>();
+        match &event {
+            RuntimeEvent::TaskComplete { content, .. } => {
+                let summary = content.chars().take(200).collect::<String>();
                 let _ = crate::notifications::notify_task_complete(&summary);
             }
-            AgentUpdate::StepFailed { idx, error, .. } => {
+            RuntimeEvent::StepFailed { idx, error, .. } => {
                 let _ = crate::notifications::notify_step_failed(*idx, error);
             }
             _ => {}
         }
 
-        // One emission path: the view emitter projects the update into
-        // structured Runtime events when a runtime sink is attached, and falls
-        // back to the in-process View channel otherwise.
+        // One emission path: the view emitter attributes the event to the run
+        // and projects it, falling back to the in-process View channel when no
+        // runtime sink is attached.
         self.tool_context
             .view_updates
             .set_run_id(self.runtime.current_run_id.clone());
-        let _ = self.tool_context.view_updates.emit(update);
+        let _ = self.tool_context.view_updates.emit_runtime_event(event);
     }
 
     /// Emits a structured Runtime fact that has no View projection.
@@ -1212,7 +1216,7 @@ impl Agent {
             // Codex's `continue: false` on `SessionStart`: the turn does not run
             // at all, rather than running with a notice in the log.
             if let HookControl::Block(reason) = self.dispatch_session_start_hooks().await? {
-                self.emit_update(AgentUpdate::Info(format!(
+                self.emit_update(runtime_event::info(format!(
                     "[SessionStart hook stopped the turn] {reason}"
                 )));
                 return Ok(());
@@ -1227,7 +1231,7 @@ impl Agent {
             .map(estimate_message_tokens)
             .unwrap_or(0);
         if self.auto_compact_due(incoming_tokens) {
-            self.emit_update(AgentUpdate::Info("[auto compact]".into()));
+            self.emit_update(runtime_event::info("[auto compact]"));
             self.compact_history(None).await?;
         }
 
@@ -1245,7 +1249,7 @@ impl Agent {
             match apply_user_prompt_hooks(self, &mut message).await? {
                 HookControl::Continue | HookControl::Allow => {}
                 HookControl::Block(reason) => {
-                    self.emit_update(AgentUpdate::Info(format!(
+                    self.emit_update(runtime_event::info(format!(
                         "[User prompt blocked by hook] {reason}"
                     )));
                     return Ok(());
@@ -1262,18 +1266,19 @@ impl Agent {
             // Turn cap: bounds a runaway subagent. Count a turn per loop
             // iteration (one LLM call) and stop once the cap is exceeded.
             self.turns_taken += 1;
-            self.emit_update(AgentUpdate::TurnStats {
+            self.emit_update(RuntimeEvent::TurnStats {
+                run_id: None,
                 turns_taken: self.turns_taken,
                 max_turns: self.max_turns,
             });
             if let Some(max) = self.max_turns
                 && self.turns_taken > max
             {
-                self.emit_update(AgentUpdate::Info(format!("max_turns ({max}) reached")));
+                self.emit_update(runtime_event::info(format!("max_turns ({max}) reached")));
                 return Ok(());
             }
             if self.cancel_requested() {
-                self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
+                self.emit_update(runtime_event::info("Cancelled by user"));
                 self.dispatch_interrupt_hooks().await?;
                 return Ok(());
             }
@@ -1290,7 +1295,7 @@ impl Agent {
             }
             // Turn already in context — no incoming reservation.
             if self.auto_compact_due(0) {
-                self.emit_update(AgentUpdate::Info("[auto compact]".into()));
+                self.emit_update(runtime_event::info("[auto compact]"));
                 self.compact_history(None).await?;
             }
 
@@ -1301,7 +1306,7 @@ impl Agent {
                 &mut self.agent_settings.max_tokens,
                 thinking_budget,
             ) {
-                self.emit_update(AgentUpdate::Info(msg));
+                self.emit_update(runtime_event::info(msg));
             }
 
             // Re-inject any background subagent results that finished while we
@@ -1349,7 +1354,7 @@ impl Agent {
             .with_thinking(self.thinking_config())
             .with_reasoning_effort(self.agent_settings.reasoning_effort);
 
-            self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
+            self.emit_update(runtime_event::model_info(tact_protocol::ModelCallParams {
                 model: model_name,
                 max_tokens: request.max_tokens,
                 thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
@@ -1387,7 +1392,7 @@ impl Agent {
                                     < MAX_COMPACT_ATTEMPTS =>
                             {
                                 self.runtime.recovery_state.compact_attempts += 1;
-                                self.emit_update(AgentUpdate::Info(format!(
+                                self.emit_update(runtime_event::info(format!(
                                     "[Recovery] compact ({}/{}): context too large",
                                     self.runtime.recovery_state.compact_attempts,
                                     MAX_COMPACT_ATTEMPTS
@@ -1415,7 +1420,7 @@ impl Agent {
                                         .collect::<Vec<_>>()
                                         .join(": "),
                                 );
-                                self.emit_update(AgentUpdate::Info(format!(
+                                self.emit_update(runtime_event::info(format!(
                                     "[Recovery] backoff ({}/{}): retrying in {:.1}s — {summary}",
                                     self.runtime.recovery_state.transport_attempts,
                                     MAX_TRANSPORT_ATTEMPTS,
@@ -1519,7 +1524,7 @@ impl Agent {
                     self.push_message(Message::new_blocks(Role::User, tool_result.clone()))
                         .await?;
                     if let Some(focus) = manual_compact {
-                        self.emit_update(AgentUpdate::Info("[manual compact]".into()));
+                        self.emit_update(runtime_event::info("[manual compact]"));
                         self.compact_history_with_trigger(
                             CompactTrigger::Manual,
                             Some(focus.as_str()),
@@ -1529,7 +1534,7 @@ impl Agent {
                 }
 
                 self.runtime.recovery_state.continuation_attempts += 1;
-                self.emit_update(AgentUpdate::Info(format!(
+                self.emit_update(runtime_event::info(format!(
                     "[Recovery] continue ({}/{}): output truncated",
                     self.runtime.recovery_state.continuation_attempts, MAX_CONTINUATION_ATTEMPTS
                 )));
@@ -1556,7 +1561,7 @@ impl Agent {
                         "Model refused this request (stop_reason=refusal). Try rephrasing, \
                          or switch to another model with different safety filters."
                             .to_string();
-                    self.emit_update(AgentUpdate::Info(info_msg));
+                    self.emit_update(runtime_event::info(info_msg));
                     self.abandon_pending_tools(&content, tool_dispatch::TOOL_REFUSED_MSG)
                         .await?;
                     return Err(anyhow::anyhow!(
@@ -1564,7 +1569,7 @@ impl Agent {
                     ));
                 }
                 Some(StopReason::Unknown(raw)) => {
-                    self.emit_update(AgentUpdate::Info(format!(
+                    self.emit_update(runtime_event::info(format!(
                         "Unrecognized stop_reason={raw:?}; treating as end of turn"
                     )));
                     self.abandon_pending_tools(&content, tool_dispatch::TOOL_UNKNOWN_STOP_MSG)
@@ -1593,7 +1598,7 @@ impl Agent {
             }
 
             if self.cancel_requested() {
-                self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
+                self.emit_update(runtime_event::info("Cancelled by user"));
                 self.abandon_pending_tools(&content, tool_dispatch::TOOL_CANCELLED_MSG)
                     .await?;
                 return Ok(());
@@ -1604,7 +1609,7 @@ impl Agent {
                 .await?;
 
             if let Some(focus) = manual_compact {
-                self.emit_update(AgentUpdate::Info("[manual compact]".into()));
+                self.emit_update(runtime_event::info("[manual compact]"));
                 self.compact_history_with_trigger(CompactTrigger::Manual, Some(focus.as_str()))
                     .await?;
             }
@@ -1861,7 +1866,8 @@ impl Agent {
             Message::new_text(Role::User, framed).with_kind(MessageKind::HookContext),
         )
         .await?;
-        self.emit_update(AgentUpdate::HookContext {
+        self.emit_update(RuntimeEvent::HookContext {
+            run_id: None,
             source: chunk.source.clone(),
             text: chunk.text.clone(),
         });
@@ -1882,7 +1888,7 @@ impl Agent {
         match invoke_hooks!(TaskCompleted, self)? {
             HookControl::Continue | HookControl::Allow => Ok(()),
             HookControl::Block(reason) => {
-                self.emit_update(AgentUpdate::Info(format!(
+                self.emit_update(runtime_event::info(format!(
                     "[TaskCompleted hook blocked] {reason}"
                 )));
                 Ok(())
@@ -1902,7 +1908,7 @@ impl Agent {
         match invoke_hooks!(Interrupt, self)? {
             HookControl::Continue | HookControl::Allow => Ok(()),
             HookControl::Block(reason) => {
-                self.emit_update(AgentUpdate::Info(format!("[Interrupt hook] {reason}")));
+                self.emit_update(runtime_event::info(format!("[Interrupt hook] {reason}")));
                 Ok(())
             }
         }
@@ -1914,7 +1920,7 @@ impl Agent {
         match invoke_hooks!(SessionEnd, self)? {
             HookControl::Continue | HookControl::Allow => Ok(()),
             HookControl::Block(reason) => {
-                self.emit_update(AgentUpdate::Info(format!(
+                self.emit_update(runtime_event::info(format!(
                     "[SessionEnd hook blocked] {reason}"
                 )));
                 Ok(())
@@ -1981,7 +1987,7 @@ impl Agent {
         match invoke_hooks!(PreCompact, self, trigger)? {
             HookControl::Continue | HookControl::Allow => {}
             HookControl::Block(reason) => {
-                self.emit_update(AgentUpdate::Info(format!(
+                self.emit_update(runtime_event::info(format!(
                     "[PreCompact hook vetoed compaction] {reason}"
                 )));
                 return Ok(());
@@ -2014,7 +2020,7 @@ impl Agent {
             match invoke_hooks!(PostCompact, self, trigger)? {
                 HookControl::Continue | HookControl::Allow => {}
                 HookControl::Block(reason) => {
-                    self.emit_update(AgentUpdate::Info(format!(
+                    self.emit_update(runtime_event::info(format!(
                         "[PostCompact hook blocked] {reason}"
                     )));
                 }
@@ -2042,7 +2048,7 @@ impl Agent {
             messages: self.runtime.context.clone(),
             max_tokens: self.max_tokens(),
         });
-        self.emit_update(AgentUpdate::Info("[native compact]".into()));
+        self.emit_update(runtime_event::info("[native compact]"));
 
         let mut retry_attempt = 0;
         let response = loop {
@@ -2096,7 +2102,7 @@ impl Agent {
         // id is retained inside the provider state and SQLite metadata.
         let item_count = candidate_state.input_items.len();
         let compaction_id = candidate_state.compaction_id.unwrap_or_default();
-        self.emit_update(AgentUpdate::Info(format!(
+        self.emit_update(runtime_event::info(format!(
             "[responses compacted: items={item_count}, id={}]",
             compact_id_display(&compaction_id)
         )));
@@ -2123,7 +2129,7 @@ impl Agent {
     ) -> Result<()> {
         let tact_path = crate::consts::TactPath::new(&self.tool_context.work_dir);
         let transcript_path = write_transcript(&tact_path, &self.runtime.context).await?;
-        self.emit_update(AgentUpdate::Info(format!(
+        self.emit_update(runtime_event::info(format!(
             "[transcript saved: {}]",
             transcript_path.display()
         )));
@@ -2259,7 +2265,7 @@ impl Agent {
         // reserve from the observed `reasoning_tokens`, because DeepSeek / Kimi K3
         // count reasoning inside the same `max_tokens` envelope and would starve
         // the summary text otherwise.
-        self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
+        self.emit_update(runtime_event::model_info(tact_protocol::ModelCallParams {
             model: model_name.clone(),
             max_tokens: summary_max_tokens,
             thinking_budget: None,
@@ -2329,14 +2335,14 @@ impl Agent {
             // Every attempt announces its exact request envelope: the printed
             // `max_tokens` is verbatim what the provider receives, split into the
             // summary text budget and the reasoning reserve.
-            self.emit_update(AgentUpdate::Info(format!(
+            self.emit_update(runtime_event::info(format!(
                 "[compact summary {stage}/{total_stages}] request model={model_name} max_tokens={attempt_max_tokens} (text {summary_text_max_tokens} + reasoning {attempt_reserve}), reasoning_effort={}, input {request_chars} chars",
                 attempt_effort.map_or("provider-default", OpenAiReasoningEffort::as_str),
             )));
             match self.runtime.client.create_message(&request, None).await {
                 Ok(response) => {
                     let truncated = matches!(response.stop_reason, Some(StopReason::MaxTokens));
-                    self.emit_update(AgentUpdate::Info(format!(
+                    self.emit_update(runtime_event::info(format!(
                         "[compact summary {stage}/{total_stages}] response {}",
                         compact_response_note(
                             response.stop_reason.as_ref(),
@@ -2385,7 +2391,7 @@ impl Agent {
                         };
                         attempt_max_tokens =
                             summary_text_max_tokens.saturating_add(attempt_reserve);
-                        self.emit_update(AgentUpdate::Info(format!(
+                        self.emit_update(runtime_event::info(format!(
                             "[compact continue {continuation_attempt}/{MAX_COMPACT_SUMMARY_ATTEMPTS}] summary truncated ({}), next attempt max_tokens={attempt_max_tokens}",
                             compact_truncation_note(
                                 usage.as_ref().map(|usage| usage.reasoning_tokens),
@@ -2396,7 +2402,7 @@ impl Agent {
                     }
                     blocks_all.extend(response.blocks);
                     if truncated {
-                        self.emit_update(AgentUpdate::Info(format!(
+                        self.emit_update(runtime_event::info(format!(
                             "[compact fallback] summary still truncated at stage {stage}/{total_stages}; using the best-effort partial summary"
                         )));
                     }
@@ -2594,7 +2600,7 @@ impl Agent {
         *attempt += 1;
         let delay = backoff_delay(attempt.saturating_sub(1));
         let summary = error_summary(&error.to_string());
-        self.emit_update(AgentUpdate::Info(format!(
+        self.emit_update(runtime_event::info(format!(
             "[compact retry {attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s — {summary}",
             delay.as_secs_f64()
         )));
@@ -6056,15 +6062,16 @@ mod tests {
         .with_runtime_event_sink(sink.clone());
         agent.runtime.current_run_id = Some(tact_protocol::RunId::from("run-events"));
 
-        agent.emit_update(AgentUpdate::StreamChunk("answer".into()));
-        agent.emit_update(AgentUpdate::ThinkingChunk(
+        agent.emit_update(runtime_event::text("answer"));
+        agent.emit_update(runtime_event::thinking(
             tact_protocol::ThinkingChunk::Delta("reasoning".into()),
         ));
-        agent.emit_update(AgentUpdate::ToolProgress {
+        agent.emit_update(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: "tool-1".into(),
             chunks: vec![tact_protocol::ToolOutputChunk::stderr("warning")],
         });
-        agent.emit_update(AgentUpdate::TokenUsage(TokenUsageInfo {
+        agent.emit_update(runtime_event::token_usage(TokenUsageInfo {
             prompt: 10,
             completion: 5,
             total: 15,
@@ -6072,11 +6079,12 @@ mod tests {
             prompt_cache_miss_tokens: 8,
             reasoning_tokens: 1,
         }));
-        agent.emit_update(AgentUpdate::TurnStats {
+        agent.emit_update(RuntimeEvent::TurnStats {
+            run_id: None,
             turns_taken: 2,
             max_turns: Some(10),
         });
-        agent.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
+        agent.emit_update(runtime_event::model_info(tact_protocol::ModelCallParams {
             model: "test-model".into(),
             max_tokens: 100,
             thinking_budget: Some(20),
@@ -6133,7 +6141,7 @@ mod tests {
         .with_runtime_event_sink(sink.clone());
         agent.runtime.current_run_id = Some(tact_protocol::RunId::from("run-no-duplicate"));
 
-        agent.emit_update(AgentUpdate::StreamChunk("answer".into()));
+        agent.emit_update(runtime_event::text("answer"));
 
         assert!(matches!(
             sink.0.lock().unwrap().as_slice(),
