@@ -69,6 +69,47 @@ queue drain and turn exit". Its place on the command queue is deliberate
 ordering, not a misplaced event, and an earlier plan revision was wrong to
 propose converting it. Only its name is misleading.
 
+## The blocker this proposal first missed: capabilities cannot reach live state
+
+Probing the smallest slice (`mcp.list`) showed the mapping table above is
+optimistic. Two couplings it does not account for:
+
+1. **The state lives in the Agent, by value.** `Agent::mcp_router` is
+   `pub mcp_router: MCPToolRouter` — not shared — and `reload_mcp_router(&mut self)`
+   replaces it. The driver's own comment for `/mcp` says it: *"Live view: describe
+   what the agent's **current** router holds."* A capability that captured a clone
+   at registration would go stale, and one that captured an `Arc<RwLock<…>>`
+   would need the Agent to stop owning its router outright.
+2. **The rendering lives in the binary crate.** `/mcp`'s table is produced by
+   `tact_ui::mcp_cli::render_live_listing`, which `tact_extensions` cannot call.
+   The same split will apply to `/background`, `/hooks` and `/stats`.
+
+So a command is not "a capability that does what the match arm did" — it is
+state access **plus** presentation, and neither half is in the extension today.
+
+### Options for state access (pick one before implementing)
+
+- **(a) Data in the invocation input.** The caller — which already holds the live
+  state — passes it: `invoke("mcp.list", ctx, json!({"servers": [...]}))`, and the
+  capability stays pure (describe + emit + ack). Cheapest, no new ownership
+  question, but it makes the capability's input a projection of app state and
+  only helps for read-only commands.
+- **(b) Shared state service.** The Agent hands the extension an
+  `Arc<RwLock<MCPToolRouter>>` (or a narrower read-only handle) and the capability
+  reads it. Honest for long-lived state, but changes who owns the router and must
+  be done per-subsystem (MCP, tasks, config, hooks).
+- **(c) Keep those commands where they are.** Accept that *app* commands are the
+  TUI's own vocabulary and only the `Runtime(RuntimeCommand)` nesting is
+  redundant — i.e. unwrap the one row that is genuinely protocol and leave the 19
+  app commands as an enum the TUI owns. This contradicts spec §2's "UserCommand is
+  replaced by RuntimeCommand", but it is the reading under which the View keeps a
+  private command vocabulary, exactly as it keeps a private rendering model.
+
+**(a) is the recommendation for the read-only group**; (b) is what a full
+migration needs; (c) is the honest fallback if the design cost is not worth the
+benefit — and it is a legitimate end state, because a View owning its own command
+vocabulary is not the same thing as a legacy *protocol* type.
+
 ## How a command's output reaches the user
 
 Today `QueryStats` / `McpList` / `HooksList` render by pushing `PopupMarkdown`
