@@ -2378,10 +2378,10 @@ mod lifecycle_tests {
         assert_eq!(app.select.request_id, Some(request_id));
         assert!(matches!(app.input_mode, InputMode::Select));
 
-        assert!(responder.respond(tact_protocol::UiResponse::Select {
+        responder.handle_response(tact_protocol::UiResponse::Select {
             request_id,
             choice: Some(0),
-        }));
+        });
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, None);
         assert!(matches!(app.input_mode, InputMode::Normal));
@@ -2421,10 +2421,10 @@ mod lifecycle_tests {
         assert_eq!(app.select.request_id, Some(first));
         assert_eq!(app.select.prompt, "first");
 
-        assert!(responder.respond(tact_protocol::UiResponse::Select {
+        responder.handle_response(tact_protocol::UiResponse::Select {
             request_id: first,
             choice: Some(0),
-        }));
+        });
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, Some(second));
         assert_eq!(app.select.prompt, "second");

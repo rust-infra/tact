@@ -1452,13 +1452,16 @@ thinking_budget = {thinking_budget}
         else {
             panic!("expected Runtime interaction response")
         };
-        assert!(responder.respond_interaction(response));
+        assert!(responder.respond(response));
         match waiter.try_recv() {
-            Ok(UiResponse::Select {
+            Ok(tact_protocol::InteractionResponse::Selected {
                 request_id: id,
-                choice: Some(0),
-            }) => assert_eq!(id, request_id),
-            other => panic!("expected broker Select response, got {other:?}"),
+                values,
+            }) => {
+                assert_eq!(id.as_str(), request_id.to_string());
+                assert_eq!(values, vec!["Allow once".to_string()]);
+            }
+            other => panic!("expected broker Selected response, got {other:?}"),
         }
         assert!(responder.snapshot().is_empty());
     }
@@ -1486,13 +1489,12 @@ thinking_budget = {thinking_budget}
         else {
             panic!("expected protocol cancellation response")
         };
-        assert!(responder.respond_interaction(response));
+        assert!(responder.respond(response));
         match waiter.try_recv() {
-            Ok(UiResponse::Select {
-                request_id: id,
-                choice: None,
-            }) => assert_eq!(id, request_id),
-            other => panic!("expected cancelled broker Select response, got {other:?}"),
+            Ok(tact_protocol::InteractionResponse::Cancelled { request_id: id }) => {
+                assert_eq!(id.as_str(), request_id.to_string());
+            }
+            other => panic!("expected cancelled broker response, got {other:?}"),
         }
         match user_rx.try_recv() {
             Ok(UserCommand::Cancel) => {}

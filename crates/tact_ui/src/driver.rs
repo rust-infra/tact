@@ -107,7 +107,7 @@ pub async fn run_command_loop_with_account(
                 }));
             }
             UserCommand::Runtime(RuntimeCommand::RespondInteraction { response }) => {
-                let _ = ui_responder.respond_interaction(response);
+                let _ = ui_responder.respond(response);
             }
             UserCommand::Runtime(RuntimeCommand::CancelRun { .. }) => {
                 cancel_flag.store(true, Ordering::Relaxed);
@@ -115,11 +115,8 @@ pub async fn run_command_loop_with_account(
             }
             UserCommand::Runtime(_) => {}
             UserCommand::UiResponse(response) => {
-                // Never await the in-flight task: the agent may be blocked
-                // waiting for exactly this answer. A stale response (already
-                // answered/withdrawn) is harmless; `respond` returns false and
-                // must not affect any other pending request.
-                ui_responder.respond(response);
+                // Legacy index-based response; bridged to the protocol waiter.
+                ui_responder.handle_response(response);
             }
             UserCommand::Cancel => {
                 cancel_flag.store(true, Ordering::Relaxed);
@@ -724,8 +721,8 @@ mod tests {
                 .await
                 .expect("protocol response timed out")
                 .unwrap(),
-            tact_protocol::UiResponse::Select { request_id: id, choice: Some(1) }
-                if id == request_id
+            tact_protocol::InteractionResponse::Selected { request_id: id, values }
+                if id.as_str() == request_id.to_string() && values == vec!["Deny".to_string()]
         ));
 
         drop(command_tx);

@@ -82,7 +82,7 @@ pub enum PendingUiRequestKind {
 
 struct PendingEntry {
     request: PendingUiRequest,
-    tx: oneshot::Sender<UiResponse>,
+    tx: oneshot::Sender<tact_protocol::InteractionResponse>,
 }
 
 /// Removes the pending entry if the waiting future is dropped/aborted before
@@ -143,7 +143,7 @@ impl UiResponder {
         prompt: String,
         options: Vec<String>,
         log_confirm: bool,
-    ) -> (u64, oneshot::Receiver<UiResponse>) {
+    ) -> (u64, oneshot::Receiver<tact_protocol::InteractionResponse>) {
         self.register(PendingUiRequestKind::Select, prompt, options, log_confirm)
     }
 
@@ -152,7 +152,7 @@ impl UiResponder {
         &self,
         prompt: String,
         options: Vec<String>,
-    ) -> (u64, oneshot::Receiver<UiResponse>) {
+    ) -> (u64, oneshot::Receiver<tact_protocol::InteractionResponse>) {
         self.register(PendingUiRequestKind::MultiSelect, prompt, options, false)
     }
 
@@ -174,8 +174,11 @@ impl UiResponder {
     /// Returns `false` when the id is unknown (already answered, withdrawn, or
     /// stale). Callers should treat that as a no-op and log it; it must not
     /// affect any other pending request.
-    pub fn respond(&self, response: UiResponse) -> bool {
-        let request_id = response.request_id();
+    pub fn respond(&self, response: tact_protocol::InteractionResponse) -> bool {
+        let request_id = interaction_request_id(&response);
+        let Ok(request_id) = request_id.parse::<u64>() else {
+            return false;
+        };
         let entry = self.inner.pending.lock_recover().remove(&request_id);
         match entry {
             Some(entry) => {
@@ -183,90 +186,6 @@ impl UiResponder {
                 true
             }
             None => false,
-        }
-    }
-
-    /// Adapts a client-neutral interaction response to the legacy index based
-    /// waiter while the in-process tools finish migrating to protocol values.
-    pub fn respond_interaction(&self, response: tact_protocol::InteractionResponse) -> bool {
-        use tact_protocol::InteractionResponse;
-
-        let request_id = match &response {
-            InteractionResponse::Approved { request_id }
-            | InteractionResponse::Rejected { request_id }
-            | InteractionResponse::Selected { request_id, .. }
-            | InteractionResponse::Text { request_id, .. }
-            | InteractionResponse::Cancelled { request_id } => request_id,
-        };
-        let Ok(request_id) = request_id.as_str().parse::<u64>() else {
-            return false;
-        };
-        let Some((kind, options)) = self
-            .inner
-            .pending
-            .lock_recover()
-            .get(&request_id)
-            .map(|entry| (entry.request.kind, entry.request.options.clone()))
-        else {
-            return false;
-        };
-
-        match (kind, response) {
-            (PendingUiRequestKind::Select, InteractionResponse::Selected { values, .. }) => {
-                let choice = values
-                    .first()
-                    .and_then(|value| options.iter().position(|option| option == value));
-                choice.is_some_and(|choice| {
-                    self.respond(UiResponse::Select {
-                        request_id,
-                        choice: Some(choice),
-                    })
-                })
-            }
-            (PendingUiRequestKind::MultiSelect, InteractionResponse::Selected { values, .. }) => {
-                let choices = values
-                    .iter()
-                    .map(|value| options.iter().position(|option| option == value))
-                    .collect::<Option<Vec<_>>>();
-                choices.is_some_and(|choices| {
-                    self.respond(UiResponse::MultiSelect {
-                        request_id,
-                        choices: Some(choices),
-                    })
-                })
-            }
-            (PendingUiRequestKind::Select, InteractionResponse::Approved { .. }) => options
-                .iter()
-                .position(|option| option.eq_ignore_ascii_case("allow"))
-                .is_some_and(|choice| {
-                    self.respond(UiResponse::Select {
-                        request_id,
-                        choice: Some(choice),
-                    })
-                }),
-            (PendingUiRequestKind::Select, InteractionResponse::Rejected { .. }) => options
-                .iter()
-                .position(|option| option.eq_ignore_ascii_case("deny"))
-                .is_some_and(|choice| {
-                    self.respond(UiResponse::Select {
-                        request_id,
-                        choice: Some(choice),
-                    })
-                }),
-            (PendingUiRequestKind::Select, InteractionResponse::Cancelled { .. }) => {
-                self.respond(UiResponse::Select {
-                    request_id,
-                    choice: None,
-                })
-            }
-            (PendingUiRequestKind::MultiSelect, InteractionResponse::Cancelled { .. }) => self
-                .respond(UiResponse::MultiSelect {
-                    request_id,
-                    choices: None,
-                }),
-            (_, InteractionResponse::Text { .. })
-            | (PendingUiRequestKind::MultiSelect, InteractionResponse::Approved { .. })
-            | (PendingUiRequestKind::MultiSelect, InteractionResponse::Rejected { .. }) => false,
         }
     }
 
@@ -324,7 +243,7 @@ impl UiResponder {
         if !self.send_request_hint(AgentUpdate::RequestSelect {
             request_id,
             prompt,
-            options,
+            options: options.clone(),
             log_confirm,
         }) {
             // UI already gone: drop the pending waiter so the receiver resolves
@@ -333,8 +252,7 @@ impl UiResponder {
             return Err(UiRequestError::Closed);
         }
         match rx.await {
-            Ok(UiResponse::Select { choice, .. }) => Ok(choice),
-            Ok(_) => Err(UiRequestError::Mismatched),
+            Ok(response) => select_index(response, &options),
             Err(_) => Err(UiRequestError::Closed),
         }
     }
@@ -376,21 +294,71 @@ impl UiResponder {
         if !self.send_request_hint(AgentUpdate::RequestMultiSelect {
             request_id,
             prompt,
-            options,
+            options: options.clone(),
         }) {
             self.withdraw(request_id);
             return Err(UiRequestError::Closed);
         }
         match rx.await {
-            Ok(UiResponse::MultiSelect { choices, .. }) => Ok(choices),
-            Ok(_) => Err(UiRequestError::Mismatched),
+            Ok(response) => multi_index(response, &options),
             Err(_) => Err(UiRequestError::Closed),
         }
     }
 
     /// Backwards-compatible wrapper used by tests and other in-process callers.
-    pub fn handle_response(&self, response: UiResponse) {
-        let _ = self.respond(response);
+    ///
+    /// Bridges the legacy index-based response to the protocol value-based
+    /// waiter, using the pending request's options to recover the value. A
+    /// response whose variant does not match the pending request kind is
+    /// refused rather than silently re-interpreted.
+    pub fn handle_response(&self, response: UiResponse) -> bool {
+        let (kind, options) = {
+            let pending = self.inner.pending.lock_recover();
+            let Some(entry) = pending.get(&response.request_id()) else {
+                return false;
+            };
+            (entry.request.kind, entry.request.options.clone())
+        };
+        let matches = matches!(
+            (kind, &response),
+            (PendingUiRequestKind::Select, UiResponse::Select { .. })
+                | (
+                    PendingUiRequestKind::MultiSelect,
+                    UiResponse::MultiSelect { .. }
+                )
+        );
+        if !matches {
+            return false;
+        }
+        let interaction = match response {
+            UiResponse::Select { request_id, choice } => {
+                let request_id = tact_protocol::RequestId::from(request_id.to_string());
+                match choice.and_then(|index| options.get(index).cloned()) {
+                    Some(value) => tact_protocol::InteractionResponse::Selected {
+                        request_id,
+                        values: vec![value],
+                    },
+                    None => tact_protocol::InteractionResponse::Cancelled { request_id },
+                }
+            }
+            UiResponse::MultiSelect {
+                request_id,
+                choices,
+            } => {
+                let request_id = tact_protocol::RequestId::from(request_id.to_string());
+                match choices {
+                    Some(indices) => tact_protocol::InteractionResponse::Selected {
+                        request_id,
+                        values: indices
+                            .into_iter()
+                            .filter_map(|index| options.get(index).cloned())
+                            .collect(),
+                    },
+                    None => tact_protocol::InteractionResponse::Cancelled { request_id },
+                }
+            }
+        };
+        self.respond(interaction)
     }
 
     fn send_request_hint(&self, update: AgentUpdate) -> bool {
@@ -445,7 +413,7 @@ impl UiResponder {
         prompt: String,
         options: Vec<String>,
         log_confirm: bool,
-    ) -> (u64, oneshot::Receiver<UiResponse>) {
+    ) -> (u64, oneshot::Receiver<tact_protocol::InteractionResponse>) {
         let request_id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
         let request = PendingUiRequest {
@@ -460,6 +428,57 @@ impl UiResponder {
             .lock_recover()
             .insert(request_id, PendingEntry { request, tx });
         (request_id, rx)
+    }
+}
+
+fn interaction_request_id(response: &tact_protocol::InteractionResponse) -> &str {
+    use tact_protocol::InteractionResponse;
+    match response {
+        InteractionResponse::Approved { request_id }
+        | InteractionResponse::Rejected { request_id }
+        | InteractionResponse::Selected { request_id, .. }
+        | InteractionResponse::Text { request_id, .. }
+        | InteractionResponse::Cancelled { request_id } => request_id.as_str(),
+    }
+}
+
+/// Maps a client-neutral single-select response back to an option index.
+fn select_index(
+    response: tact_protocol::InteractionResponse,
+    options: &[String],
+) -> Result<Option<usize>, UiRequestError> {
+    use tact_protocol::InteractionResponse;
+    match response {
+        InteractionResponse::Selected { values, .. } => Ok(values
+            .first()
+            .and_then(|value| options.iter().position(|option| option == value))),
+        InteractionResponse::Approved { .. } => Ok(options
+            .iter()
+            .position(|option| option.eq_ignore_ascii_case("allow"))),
+        InteractionResponse::Rejected { .. } => Ok(options
+            .iter()
+            .position(|option| option.eq_ignore_ascii_case("deny"))),
+        InteractionResponse::Cancelled { .. } => Ok(None),
+        InteractionResponse::Text { .. } => Err(UiRequestError::Mismatched),
+    }
+}
+
+/// Maps a client-neutral multi-select response back to option indices.
+fn multi_index(
+    response: tact_protocol::InteractionResponse,
+    options: &[String],
+) -> Result<Option<Vec<usize>>, UiRequestError> {
+    use tact_protocol::InteractionResponse;
+    match response {
+        InteractionResponse::Selected { values, .. } => {
+            let indices = values
+                .iter()
+                .map(|value| options.iter().position(|option| option == value))
+                .collect::<Option<Vec<_>>>();
+            indices.map(Some).ok_or(UiRequestError::Mismatched)
+        }
+        InteractionResponse::Cancelled { .. } => Ok(None),
+        _ => Err(UiRequestError::Mismatched),
     }
 }
 
@@ -588,10 +607,10 @@ mod tests {
         let AgentUpdate::RequestSelect { request_id, .. } = rx.recv().await.unwrap() else {
             panic!("expected RequestSelect");
         };
-        // Wrong variant for a single-select request.
-        responder.handle_response(UiResponse::MultiSelect {
-            request_id,
-            choices: Some(vec![0]),
+        // Wrong variant for a single-select request, at the protocol level.
+        responder.respond(tact_protocol::InteractionResponse::Text {
+            request_id: tact_protocol::RequestId::from(request_id.to_string()),
+            value: "unexpected".into(),
         });
         assert_eq!(handle.await.unwrap(), Err(UiRequestError::Mismatched));
     }
@@ -669,17 +688,21 @@ mod tests {
         assert_eq!(snapshot[0].kind, PendingUiRequestKind::Select);
         assert_eq!(snapshot[1].kind, PendingUiRequestKind::MultiSelect);
 
-        assert!(responder.respond(UiResponse::Select {
-            request_id: id1,
-            choice: Some(1),
-        }));
+        assert!(
+            responder.respond(tact_protocol::InteractionResponse::Selected {
+                request_id: tact_protocol::RequestId::from(id1.to_string()),
+                values: vec!["b".into()],
+            })
+        );
         assert_eq!(responder.snapshot().len(), 1);
 
         // A second response for the same id is stale and must not affect id2.
-        assert!(!responder.respond(UiResponse::Select {
-            request_id: id1,
-            choice: Some(0),
-        }));
+        assert!(
+            !responder.respond(tact_protocol::InteractionResponse::Selected {
+                request_id: tact_protocol::RequestId::from(id1.to_string()),
+                values: vec!["a".into()],
+            })
+        );
         assert_eq!(responder.snapshot()[0].request_id, id2);
     }
 
@@ -693,14 +716,15 @@ mod tests {
         );
 
         assert!(
-            responder.respond_interaction(tact_protocol::InteractionResponse::Selected {
+            responder.respond(tact_protocol::InteractionResponse::Selected {
                 request_id: tact_protocol::RequestId::from(request_id.to_string()),
                 values: vec!["Deny".into()],
             })
         );
         assert!(matches!(
             receiver.try_recv(),
-            Ok(UiResponse::Select { request_id: id, choice: Some(1) }) if id == request_id
+            Ok(tact_protocol::InteractionResponse::Selected { request_id: id, values })
+                if id.as_str() == request_id.to_string() && values == vec!["Deny".to_string()]
         ));
     }
 
@@ -734,7 +758,7 @@ mod tests {
         };
         // The hint and the snapshot are both live; reconcile can use either.
         assert_eq!(responder.snapshot()[0].request_id, request_id);
-        responder.respond(UiResponse::Select {
+        responder.handle_response(UiResponse::Select {
             request_id,
             choice: Some(0),
         });
@@ -799,7 +823,7 @@ mod tests {
                 if prompt == "Choose"
         ));
         assert!(rx.try_recv().is_err());
-        responder.respond(UiResponse::Select {
+        responder.handle_response(UiResponse::Select {
             request_id,
             choice: Some(1),
         });
@@ -845,7 +869,7 @@ mod tests {
                 request: tact_protocol::InteractionRequest::Select { prompt, .. }
             } if prompt == "Select through Runtime"
         )));
-        responder.respond(UiResponse::Select {
+        responder.handle_response(UiResponse::Select {
             request_id: pending.request_id,
             choice: Some(0),
         });

@@ -6634,7 +6634,7 @@ mod tests {
                     // Deny `t1`, then cancel: the flag is first observed at the
                     // top of the `t2` iteration, i.e. mid-pre-flight.
                     flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                    responder.respond(UiResponse::Select {
+                    responder.handle_response(UiResponse::Select {
                         request_id,
                         choice: Some(1),
                     });
@@ -6724,7 +6724,7 @@ mod tests {
                 if let AgentUpdate::RequestSelect { request_id, .. } = update {
                     // Allow `t1` once, then cancel.
                     flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                    responder.respond(UiResponse::Select {
+                    responder.handle_response(UiResponse::Select {
                         request_id,
                         choice: Some(0),
                     });

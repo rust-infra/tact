@@ -233,7 +233,9 @@ impl HeadlessApp {
             return;
         };
         match &self.ui_responder {
-            Some(responder) => responder.handle_response(response),
+            Some(responder) => {
+                let _ = responder.handle_response(response);
+            }
             None => {
                 let _ = self
                     .inner
