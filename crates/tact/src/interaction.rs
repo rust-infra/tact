@@ -25,10 +25,17 @@ pub trait InteractionService: Send + Sync {
     ) -> Result<InteractionResponse, KernelError>;
 }
 
+/// A pending interaction: the request the client still has to answer, plus the
+/// oneshot that resolves the waiting invocation.
+struct PendingEntry {
+    request: InteractionRequest,
+    sender: oneshot::Sender<InteractionResponse>,
+}
+
 #[derive(Clone)]
 pub struct InteractionBroker {
     requests: broadcast::Sender<InteractionRequest>,
-    pending: Arc<Mutex<HashMap<RequestId, oneshot::Sender<InteractionResponse>>>>,
+    pending: Arc<Mutex<HashMap<RequestId, PendingEntry>>>,
 }
 
 pub struct InteractionSubscription {
@@ -73,8 +80,30 @@ impl InteractionBroker {
             .pending
             .lock()
             .ok()
-            .and_then(|mut pending| pending.remove(request_id));
+            .and_then(|mut pending| pending.remove(request_id))
+            .map(|entry| entry.sender);
         sender.is_some_and(|sender| sender.send(response).is_ok())
+    }
+
+    /// Ordered snapshot of the requests still waiting for an answer.
+    ///
+    /// This is the authoritative source a client reconciles from: a lost
+    /// broadcast hint cannot lose a request, because the full request stays in
+    /// the pending map until it is answered or withdrawn.
+    #[must_use]
+    pub fn snapshot(&self) -> Vec<InteractionRequest> {
+        let mut pending: Vec<InteractionRequest> = self
+            .pending
+            .lock()
+            .map(|pending| {
+                pending
+                    .values()
+                    .map(|entry| entry.request.clone())
+                    .collect()
+            })
+            .unwrap_or_default();
+        pending.sort_by_key(|request| request_request_id(request).clone());
+        pending
     }
 
     #[must_use]
@@ -119,7 +148,13 @@ impl InteractionService for InteractionBroker {
                     false,
                 ));
             }
-            pending.insert(request_id.clone(), sender);
+            pending.insert(
+                request_id.clone(),
+                PendingEntry {
+                    request: request.clone(),
+                    sender,
+                },
+            );
         }
         let _guard = PendingRequestGuard {
             broker: self.clone(),
