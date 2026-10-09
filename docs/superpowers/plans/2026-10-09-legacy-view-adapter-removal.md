@@ -235,13 +235,22 @@ Do the `tact_view` move first (it is a pure relocation, compiler-checked, and
 
 ### Task 3: Give the Agent one emission path
 
-- [ ] `ViewUpdateEmitter`: delete `legacy(tx)` / the `AgentUpdate` channel; keep
-      only the `RuntimeEventSink` path.
-- [ ] `UiResponder`: delete `legacy_tx`, `set_legacy_sender`, and its two other
-      call sites (lines ~215, ~272); keep the runtime-event sink.
-- [ ] `Agent::with_ui_channel`: delete; rewrite the 10 test call sites to
-      `with_runtime_event_sink` + a captured sink fixture.
-- [ ] Delete `tool_context.ui_tx`.
+- [x] `ViewUpdateEmitter`: the legacy `AgentUpdate` channel is no longer used by
+      any producer. **Landed:** every emission site in the Agent, `tool_dispatch`,
+      the tool helpers, `plugin/hooks` and the command driver builds a
+      `RuntimeEvent` through `crate::runtime_event` (which leaves `run_id` empty)
+      and hands it to the emitter, which attributes it via
+      `RuntimeEvent::with_run_id`. `emit_update`,
+      `ToolProgressReporter::emit`/`send` and the direct `ViewUpdateEmitter`
+      calls take protocol events now; production references drop 247 → 170
+      (`tact_extensions`) and 65 → 28 (`tact_ui`), and no `emit(AgentUpdate::…)`
+      call site is left.
+- [x] The precondition is in place: `RuntimeEvent::with_run_id` matches all 41
+      variants exhaustively, so attributing an event can no longer silently drop
+      the run id on a variant nobody classified.
+- [ ] Still to do: delete the legacy channel itself (`ViewUpdateEmitter::legacy`,
+      `UiResponder::legacy_tx`, `Agent::with_ui_channel`, `tool_context.ui_tx`),
+      which is what the tests in Task 5 read.
 
 **Verify:** `cargo test -p tact_extensions --lib`.
 
