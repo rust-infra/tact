@@ -277,8 +277,12 @@ it are coupled, so there is no green intermediate state.
      brace in `subagent_ui.rs` three times, appending `.. }` there instead. Prefer
      per-line edits taken from rustc's own `help:` suggestions over brace walking.
 
-So the order is: hand-rewrite the 23 select sites → mechanical codemod → per-line
-compiler fixes. Never a single automated pass.
+So this is **one pass, not a sequence**: the channel's type and every reader of
+it change together, and the select sites are simply the part of that pass that
+needs a human rather than a regex. (An earlier draft of this note said "do the
+select sites first"; that is wrong — they cannot be converted while the channel
+still carries the legacy type. Do them *during* the pass, first among the manual
+work, while the surrounding mechanical edits are already applied.)
 
 **Third attempt** replaced the brace walker with an applier for rustc's own
 `N - old` / `N + new` suggestions, which is safe but slow: it converges
