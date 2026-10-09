@@ -317,6 +317,28 @@ Do the `tact_view` move first (it is a pure relocation, compiler-checked, and
 
 ### Task 3 tail: delete the legacy channel
 
+**LANDED** (`refactor(runtime): carry protocol events on the in-process
+channel`). The brief that worked is the one below; a subagent with a fresh
+context finished it after this session failed three times. Verified independently
+afterwards: `./scripts/check-rust.sh` exit 0, `cargo test --workspace` 2862
+passed / 0 failed (bit-identical to the baseline), `tact_view` and
+`agent_tui_kit` untouched, `tui` touched only at its test-support bridge.
+`tact_extensions` 160 → 2 references (both doc prose), `tact_ui` 27 → 0.
+
+Corrections the subagent proved, which this section had wrong:
+
+- Two **production** `ViewUpdateEmitter::emit(AgentUpdate::…)` callers survived
+  the earlier migration (`task::emit_tasks_changed`, `subagent::emit_subagents_changed_view`),
+  so `emit` was deleted here, not in the test pass.
+- It is a **payload swap, not a deletion**: the App still speaks its own view
+  model, so exactly one projection must survive at the harness boundary
+  (`tui/src/test_support.rs`) or `tact_ui/src/headless_session.rs` cannot
+  compile. "Delete the reverse projection" is Task 4/5 language.
+- The per-file inventory was stale: `tact_ui/src/driver.rs` has 15 references
+  (all `#[cfg(test)]`), not 53, and `crates/tact_ui/tests/**` holds 126 that the
+  table did not list at all.
+- Counts were low: 24 payload-type sites and 31 select sites, not 22 and 23.
+
 An **atomic sweep** — the channel's payload type and every assertion that reads
 it are coupled, so there is no green intermediate state.
 
