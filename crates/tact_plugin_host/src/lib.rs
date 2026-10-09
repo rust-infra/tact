@@ -8,11 +8,13 @@
 //! language-specific layers rather than two copies of a supervision protocol.
 
 mod host;
+mod inprocess;
 mod process;
 mod runtime;
 mod transport;
 
 pub use host::PluginHost;
+pub use inprocess::InProcessPluginHost;
 pub use process::PluginProcess;
 pub use runtime::{HostCallService, StdioPluginHost};
 pub use transport::make_envelope;
