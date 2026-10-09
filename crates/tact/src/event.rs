@@ -16,8 +16,9 @@ pub struct EventTransport {
     observers: Arc<Vec<Arc<dyn EventObserver>>>,
     /// Durable facts behind [`EventTransport::replay_from`]. The broadcast
     /// channel only carries live delivery, so replaying a sequence needs the
-    /// recorder; a host that installs none gets an explicit failure.
-    replay_source: Option<Arc<dyn TrajectoryService>>,
+    /// recorder; a host that installs none gets an explicit failure. It is a
+    /// lock because the recorder usually starts after the transport does.
+    replay_source: Arc<RwLock<Option<Arc<dyn TrajectoryService>>>>,
 }
 
 #[async_trait]
@@ -40,7 +41,7 @@ impl EventTransport {
         Self {
             sender: Arc::new(RwLock::new(Some(sender))),
             observers: Arc::new(Vec::new()),
-            replay_source: None,
+            replay_source: Arc::new(RwLock::new(None)),
         }
     }
 
@@ -50,14 +51,21 @@ impl EventTransport {
         Self {
             sender: Arc::new(RwLock::new(Some(sender))),
             observers: Arc::new(observers),
-            replay_source: None,
+            replay_source: Arc::new(RwLock::new(None)),
         }
     }
 
     /// Installs the durable recorder [`EventTransport::replay_from`] reads.
+    pub fn set_replay_source(&self, source: Arc<dyn TrajectoryService>) {
+        if let Ok(mut slot) = self.replay_source.write() {
+            *slot = Some(source);
+        }
+    }
+
+    /// Builder form of [`EventTransport::set_replay_source`].
     #[must_use]
-    pub fn with_replay_source(mut self, source: Arc<dyn TrajectoryService>) -> Self {
-        self.replay_source = Some(source);
+    pub fn with_replay_source(self, source: Arc<dyn TrajectoryService>) -> Self {
+        self.set_replay_source(source);
         self
     }
 
@@ -117,7 +125,7 @@ impl EventTransport {
         trajectory_id: &TrajectoryId,
         from_sequence: u64,
     ) -> Result<Vec<TrajectoryEvent>, KernelError> {
-        let Some(source) = self.replay_source.as_ref() else {
+        let Some(source) = self.replay_source.read().ok().and_then(|slot| slot.clone()) else {
             return Err(KernelError::new(
                 ErrorCategory::CapabilityNotFound,
                 "event replay requires a trajectory source",

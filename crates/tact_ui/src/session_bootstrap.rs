@@ -122,8 +122,13 @@ async fn start_trajectory_recorder(
 ) {
     match tact_trajectory::SqliteTrajectoryRecorder::open(db_path).await {
         Ok(recorder) => {
-            let trajectory =
-                tact_trajectory::SqliteTrajectoryService::with_redaction(recorder, redaction);
+            let trajectory = std::sync::Arc::new(
+                tact_trajectory::SqliteTrajectoryService::with_redaction(recorder, redaction),
+            );
+            // Live delivery and replay must read the same recorder, or a client
+            // that reconnects from a sequence would see a different history
+            // than the one that was persisted.
+            event_transport.set_replay_source(trajectory.clone());
             let mut subscription = event_transport.subscribe();
             tokio::spawn(async move {
                 // A lagged broadcast window must not end recording: the writer
@@ -429,7 +434,16 @@ mod tests {
         .expect("trajectory recorder did not persist the event");
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].run_id, Some(run_id));
+        assert_eq!(events[0].run_id, Some(run_id.clone()));
+
+        // A client that reconnects resumes through the transport, so the same
+        // recorder the subscriber writes to has to answer replay.
+        let replayed = transport
+            .replay_from(&tact_protocol::TrajectoryId::from(run_id.as_str()), 0)
+            .await
+            .expect("the trajectory recorder is installed as the replay source");
+        assert_eq!(replayed.len(), 1);
+        assert_eq!(replayed[0].run_id, Some(run_id));
     }
 
     /// A secret a tool printed must not reach the durable trajectory verbatim.
