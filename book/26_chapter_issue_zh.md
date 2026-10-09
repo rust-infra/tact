@@ -4,6 +4,23 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-09 — 补齐内核服务名、存储命名空间归属与轨迹事实
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（能力可见：新增 4 个内核服务能力名；轨迹新增 Compaction/Recovery/Retry 事实与父子步骤） |
+| **Related** | `crates/tact/src/services.rs`、`crates/tact/src/trajectory.rs`、`crates/tact_protocol/src/runtime.rs`、`crates/tact_trajectory/src/{service,model/*}.rs`、`crates/tact_extensions/src/extensions/{agent,session}.rs`；`ARCHITECTURE.md` |
+
+**现象 / 动机：** 对照 spec 逐条核对时发现三处未对齐。(1) §4 列了 12 个内核服务能力名，实际只有 8 个：缺 `runs.start`、`runs.cancel`、`sessions.write`、`events.subscribe`。(2) §8 要求 Runtime/Session/Trajectory 命名空间不能被插件写、插件数据只能落在自己命名空间，但 `storage.*` 能力只校验了命名空间"名字"是否合法。(3) §7 要求轨迹记录压缩/恢复/重试与并行工作的父子关系，但 `TrajectoryEventType::{Compaction,Recovery,Retry}` 无人产出、`parent_step_id` 恒为 `None`，且没有按 run 查询的入口。
+
+**决策：** (1) 补 4 个能力名：`agent.run` 更名 `runs.start`；新增 `runs.cancel`（置协作取消标志并发 `Cancelled` 事件，`AgentExecutor` 增加带默认实现的 `cancel`）；Session 扩展新增 `sessions.write`（写调用方自己的会话）；内核新增 `events.subscribe`（按序号重放调用方自己的事件）。(2) `StorageNamespace` 暴露 owner 与是否 Runtime 所有，`storage.get/set` 拒绝非自己命名空间与 Runtime 命名空间（后者仅 `tact.*` 扩展可用）。(3) `RuntimeEvent` 新增 `Compaction{trigger,focus}`、`Recovery{attempt,reason}`、`Retry{attempt,reason}`，agent loop 在压缩成功 / 溢出恢复 / 退避重试处发射；`Text{role:"user"}` 归类为 `UserInput`；`trajectory.read` 支持按 `run_id` 查询；`ToolCallStarted/Finished` 携带 `parent_step_id`，subagent 的子调用记录其 spawn 步骤为父。
+
+**已知偏差（未做，非验收项）：** §4「能力按语义权威命名」在本仓库未落地。该条隐含"一个权威一个能力"（`filesystem.read` 同时服务 `read_file`/`read_image`），而当前是"一个工具一个能力"且 router 要求能力名唯一；合并会让 LLM 工具分发失去逐工具 handler，属另一次能力模型重构，超出本次范围。
+
+**Verification：** `./scripts/check-rust.sh` 全绿；新增测试 `runs_cancel_capability_requests_cancellation`、`session_write_capability_appends_and_scopes_to_the_invocation`、`events_subscribe_replays_from_the_callers_sequence`、`storage_refuses_namespaces_the_caller_does_not_own`、`typed_facts_classify_compaction_recovery_retry_and_user_input`、`nested_tool_call_records_its_parent_step`。
+
+**Pointers:** `docs/superpowers/specs/2026-10-08-runtime-plugin-architecture-design.md` §4/§7/§8。
+
 ## 1. 2026-10-09 — 交互与视图的迁移类型移出 Plugin Protocol
 
 | Field | Value |
