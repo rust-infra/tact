@@ -36,8 +36,22 @@ pub fn register_official_manifests(
     registry: &PluginRegistry,
     agent: &Agent,
 ) -> Result<(), tact::KernelError> {
-    for manifest in official_manifests(agent) {
+    register_in_order(registry, official_manifests(agent))
+}
+
+/// Registers each manifest in order and then marks it serving.
+///
+/// The in-process Rust host serves an extension the moment it is registered, so
+/// the registry must not report it as merely declared: `state` and `health`
+/// would otherwise understate what is actually live.
+fn register_in_order(
+    registry: &PluginRegistry,
+    manifests: Vec<RuntimePluginManifest>,
+) -> Result<(), tact::KernelError> {
+    for manifest in manifests {
+        let id = manifest.id.clone();
         registry.register(manifest)?;
+        registry.start(&id)?;
     }
     Ok(())
 }
@@ -60,12 +74,24 @@ mod tests {
     #[test]
     fn official_manifests_register_in_dependency_order() {
         let registry = PluginRegistry::new(tact_protocol::ProtocolVersion::CURRENT);
-        for manifest in ordered_manifests(Vec::new()) {
-            registry
-                .register(manifest)
-                .expect("the official order satisfies every declared dependency");
-        }
+        register_in_order(&registry, ordered_manifests(Vec::new()))
+            .expect("the official order satisfies every declared dependency");
         assert_eq!(registry.manifests().len(), 5);
+
+        // Registered means serving for the in-process host, and every official
+        // extension must report that.
+        let health = registry.health_all();
+        assert_eq!(health.len(), 5);
+        assert!(
+            health.iter().all(|plugin| plugin.is_healthy()),
+            "every official extension is serving: {health:?}"
+        );
+        assert!(
+            health
+                .iter()
+                .all(|plugin| plugin.state == tact::PluginState::Running),
+            "registration starts the in-process extension: {health:?}"
+        );
     }
 
     #[test]

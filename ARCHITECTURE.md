@@ -749,7 +749,27 @@ flowchart TB
 
 The Kernel is `crates/tact` itself: capability routing, permission boundary, events, minimal storage, cancellation, interactions, the plugin registry, and payload redaction, depending only on `crates/tact_protocol`. Execution facts live in `crates/tact_trajectory` (model, in-memory and SQLite recorders, ordered replay) and implement the Kernel's `TrajectoryService`. Shared host machinery — lifecycle, stdio transport, supervision — is `crates/tact_plugin_host`; `crates/tact_plugin_node` and `crates/tact_plugin_wasm` are the language-specific entry points above it, and neither depends on the extension crate. `crates/tact_protocol` holds the language-neutral IDs, envelopes, capabilities, runtime events, commands, interactions, and errors. Interactive and headless hosts attach the SQLite trajectory subscriber before the Agent starts. The TUI consumes Runtime events for run lifecycle, streaming, status, popups, and select requests; it sends Runtime start, cancel, and interaction-response commands.
 
-Rich tool-card lifecycle details and specialized Tact slash commands still use the in-process `AgentUpdate` / `UserCommand` adapter. Official Agent, Chat, Session, Tools, and Workflow manifests register through `PluginRegistry`; Agent/Chat, Session, and Workflow capabilities register through `CapabilityRouter`, while native and MCP tool handlers are installed through the same router for each execution wave.
+Rich tool-card lifecycle details and specialized Tact slash commands still use the in-process `AgentUpdate` / `UserCommand` adapter. Official Agent, Chat, Session, Tools, and Workflow manifests register through `PluginRegistry` and are marked serving (`Running`) as they register — the in-process host serves an extension the moment it is registered, so `state` / `health` report what is actually live; Agent/Chat, Session, and Workflow capabilities register through `CapabilityRouter`, while native and MCP tool handlers are installed through the same router for each execution wave.
+
+### Declared but not yet consumed
+
+The Kernel exposes a few interfaces that **no production path calls today**. They
+exist because the architecture plan specifies them as extension points; do not
+read their presence as "this is wired":
+
+| Interface | Consumer today | Who it is for |
+|---|---|---|
+| `StorageService::{delete, list, transaction}` | none (no capability exposes them; `storage.get` / `storage.set` are the registered ones) | a host or plugin managing its own `plugins/<id>` namespace |
+| `PluginRegistry::{discover, health, health_all, unregister}` | none (`start` *is* called, by `register_official_manifests`) | a host that scans for, supervises, or uninstalls plugins |
+| `EventTransport::close` | none | a host shutting its event transport down before exit |
+| `TrajectoryService::replay` | none (`query` serves resume) | a caller replaying a whole trajectory rather than resuming a sequence |
+
+`EventTransport::replay_from` used to be on this list and was a real defect
+rather than an unused extension point: the acceptance item "a disconnected
+client reconnects from a Trajectory sequence" depends on it, and it answered
+`CapabilityNotFound` because nothing installed a replay source. It is now wired
+by `start_trajectory_recorder`.
+
 
 Native tools, namespaced MCP tools, and the MCP prompt/resource commands now register as `CapabilityRouter` handlers. Agent keeps its existing sequential hook, permission, and resource preflight during migration, then presents a one-use approval ticket to the router before execution. Typed tool effects and output metadata survive the adapter response.
 
