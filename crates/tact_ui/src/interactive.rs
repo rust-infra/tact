@@ -237,6 +237,11 @@ async fn run_interactive_locked(
             // restored the terminal and printed its goodbye, so the only thing
             // left to do is to stop waiting for a build nobody will use.
             tui??;
+            // This host owns the Runtime transport: closing it here is what
+            // tells the TUI subscription and the trajectory recorder that no
+            // further fact will arrive (the abandoned build is dropped on
+            // return, which would only make that true by accident).
+            runtime_events.close();
             return Ok(());
         }
     };
@@ -262,6 +267,12 @@ async fn run_interactive_locked(
         );
     }
 
+    // The host is done: the TUI loop has exited and the driver task (with the
+    // agent that held the transport's other clones) has shut down, so nothing
+    // will publish again. Closing ends the live channel explicitly — the
+    // trajectory recorder's subscription stops there instead of waiting on a
+    // publisher that will never come.
+    runtime_events.close();
     Ok(())
 }
 

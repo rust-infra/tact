@@ -5,7 +5,9 @@ pub(crate) mod tool_schedule;
 
 use std::{
     collections::VecDeque,
+    future::Future,
     path::Path,
+    pin::Pin,
     sync::{Arc, Mutex, RwLock},
 };
 
@@ -1189,8 +1191,46 @@ impl Agent {
     ///    dispatches tool-use blocks (native or MCP) → applies permissions →
     ///    writes results back.  Continues until the LLM returns a stop reason
     ///    other than `ToolUse` or an unrecoverable error occurs.
+    ///
+    /// Wraps `agent_loop_inner` to bracket the turn with the Runtime's run
+    /// lifecycle: the loop body opens a run, and this half closes it on every
+    /// exit path, success or failure.
+    ///
+    /// `run_id` is the identity this call *created*: `None` when the call
+    /// joined a run that was already open, because that run's own call owns
+    /// its end fact.
     #[tracing::instrument(skip(self), name = "agent_loop")]
     pub async fn agent_loop(&mut self, user_turn_message: Option<Message>) -> Result<()> {
+        // The run this turn belongs to, before the inner loop can start one of
+        // its own. Only a call that *changed* the identity started a run, so
+        // it is the only one that may close it: a turn that joined a run that
+        // was already open leaves that run's end fact to its owner.
+        let before = self.runtime.current_run_id.clone();
+        // The loop's future is type-erased before it is awaited. This wrapper
+        // is one coroutine frame deeper than the loop used to be, and a caller
+        // that proves `Send` for the task driving the agent (tact_ui's driver)
+        // walks every frame of it: erasing the inner future cuts that walk at
+        // the box instead of pushing those callers past rustc's recursion
+        // limit — the problem the crate root note describes.
+        let result = {
+            let inner: Pin<Box<dyn Future<Output = Result<()>> + Send + '_>> =
+                Box::pin(self.agent_loop_inner(user_turn_message));
+            inner.await
+        };
+        let run_id = if self.runtime.current_run_id != before {
+            self.runtime.current_run_id.clone()
+        } else {
+            None
+        };
+        self.emit_runtime_fact(tact_protocol::RuntimeEvent::RunFinished {
+            run_id,
+            success: result.is_ok(),
+        });
+        result
+    }
+
+    /// The body of [`Self::agent_loop`], without the run-lifecycle bracket.
+    async fn agent_loop_inner(&mut self, user_turn_message: Option<Message>) -> Result<()> {
         let next_run_id = self.runtime.next_run_id.take().or_else(|| {
             (user_turn_message.is_some() || self.runtime.current_run_id.is_none())
                 .then(|| RunId::from(uuid::Uuid::new_v4().to_string()))
@@ -1245,6 +1285,10 @@ impl Agent {
         // instead of being buried in history.
         self.inject_pending_session_context().await?;
         if let Some(mut message) = user_turn_message {
+            // Taken before the hooks below may append their own context: the
+            // trajectory records the text the user sent, not what a plugin
+            // added to it.
+            let user_text = user_turn_text(&message);
             // UserPromptSubmit hooks may append context to the user prompt
             // (Claude Code `additionalContext`). Runs before the message is
             // pushed so hooks see the raw prompt; a Block drops the turn.
@@ -1256,6 +1300,16 @@ impl Agent {
                     )));
                     return Ok(());
                 }
+            }
+            // Once per turn, for the turn that is actually sent: a blocked
+            // prompt never became model input, so no `UserInput` fact is
+            // written for it.
+            if let Some(content) = user_text {
+                self.emit_runtime_fact(RuntimeEvent::Text {
+                    run_id: self.runtime.current_run_id.clone(),
+                    role: "user".into(),
+                    content,
+                });
             }
             self.push_message(message).await?;
         }
@@ -2699,6 +2753,30 @@ impl Agent {
             .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))
             .map(|manager| manager.load_memory_prompt())
     }
+}
+
+/// The text a user turn carries, for the trajectory's `UserInput` fact.
+///
+/// Joins every text block of the message; `None` when the message carries no
+/// text at all, so a tool-result cell pushed back into the loop, an
+/// image-only attachment, or a system-generated `Summary` / `HookContext`
+/// cell never records as something the human typed.
+fn user_turn_text(message: &Message) -> Option<String> {
+    if message.role != Role::User || message.kind() != MessageKind::Normal {
+        return None;
+    }
+    let text = match &message.content {
+        MessageContent::Text { content } => content.clone(),
+        MessageContent::Blocks { content } => content
+            .iter()
+            .filter_map(|block| match block {
+                ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    };
+    (!text.trim().is_empty()).then_some(text)
 }
 
 /// Extracts a mutable text target from a user message for prompt hooks.
@@ -6193,6 +6271,250 @@ mod tests {
             Some(tact_protocol::RuntimeEvent::RunStarted { run_id: event_run_id })
                 if event_run_id == run_id
         ));
+    }
+
+    /// A turn that opens a run must close it: the View tracks the active run
+    /// from this pair, and the Trajectory records the run as unfinished
+    /// without it.
+    #[tokio::test]
+    async fn agent_loop_closes_the_run_it_started_with_run_finished() {
+        ensure_config();
+        let sink = Arc::new(CapturedRuntimeEvents::default());
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![(vec![], Some(StopReason::EndTurn))])),
+            test_context("agent_runtime_run_finished"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".into()),
+        )
+        .with_runtime_event_sink(sink.clone());
+        let requested_run_id = tact_protocol::RunId::from("requested-agent-run-finished");
+        agent.runtime.next_run_id = Some(requested_run_id.clone());
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "start")))
+            .await
+            .expect("a clean turn succeeds");
+
+        let events = sink.0.lock().unwrap();
+        let started = events.iter().find_map(|event| match event {
+            tact_protocol::RuntimeEvent::RunStarted { run_id } => Some(run_id.clone()),
+            _ => None,
+        });
+        assert_eq!(
+            started,
+            Some(requested_run_id.clone()),
+            "precondition: the turn opens the requested run, got {events:?}"
+        );
+        let finished = events.iter().find_map(|event| match event {
+            tact_protocol::RuntimeEvent::RunFinished { run_id, success } => {
+                Some((run_id.clone(), *success))
+            }
+            _ => None,
+        });
+        assert_eq!(
+            finished,
+            Some((Some(requested_run_id), true)),
+            "the run is closed with its own identity and its outcome, got {events:?}"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(tact_protocol::RuntimeEvent::RunFinished { .. })
+            ),
+            "the end fact is the last one the turn emits, got {events:?}"
+        );
+    }
+
+    /// The trajectory's `UserInput` fact: exactly one user-role `Text` per
+    /// turn, carrying the prompt and attributed to the run it belongs to.
+    #[tokio::test]
+    async fn agent_loop_records_the_user_prompt_once_as_a_user_text_fact() {
+        ensure_config();
+        let sink = Arc::new(CapturedRuntimeEvents::default());
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![(vec![], Some(StopReason::EndTurn))])),
+            test_context("agent_runtime_user_text"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".into()),
+        )
+        .with_runtime_event_sink(sink.clone());
+        let requested_run_id = tact_protocol::RunId::from("requested-user-text-run");
+        agent.runtime.next_run_id = Some(requested_run_id.clone());
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "what is 2+2?")))
+            .await
+            .expect("a clean turn succeeds");
+
+        let user_texts: Vec<_> = sink
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                tact_protocol::RuntimeEvent::Text {
+                    run_id,
+                    role,
+                    content,
+                } if role == "user" => Some((run_id.clone(), content.clone())),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            user_texts,
+            vec![(Some(requested_run_id), "what is 2+2?".to_string())],
+            "one `UserInput` fact per turn, carrying the prompt"
+        );
+    }
+
+    /// The failure path is the one the wrapper must not swallow: the caller
+    /// still sees `Err`, and the run is closed as unsuccessful rather than
+    /// left open.
+    #[tokio::test]
+    async fn agent_loop_returns_a_failed_turn_unchanged_and_closes_it_as_unsuccessful() {
+        ensure_config();
+        let sink = Arc::new(CapturedRuntimeEvents::default());
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![(
+                vec![make_text_block("I cannot help with that.")],
+                Some(StopReason::Refusal),
+            )])),
+            test_context("agent_runtime_run_finished_failure"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".into()),
+        )
+        .with_runtime_event_sink(sink.clone());
+        let requested_run_id = tact_protocol::RunId::from("requested-failing-run");
+        agent.runtime.next_run_id = Some(requested_run_id.clone());
+
+        let result = agent
+            .agent_loop(Some(Message::new_text(Role::User, "unsafe request")))
+            .await;
+
+        let error = result.expect_err("a refusal is still surfaced as an error");
+        assert!(
+            error.to_string().contains("refusal"),
+            "the returned error is the inner loop's, got: {error}"
+        );
+        assert!(matches!(
+            sink.0.lock().unwrap().last(),
+            Some(tact_protocol::RuntimeEvent::RunFinished {
+                run_id: Some(run_id),
+                success: false,
+            }) if run_id == &requested_run_id
+        ));
+    }
+
+    /// A turn that joins a run someone else owns (a continuation with no new
+    /// user message) must not close that run: `RunFinished` would otherwise
+    /// end a run that is still going.
+    #[tokio::test]
+    async fn agent_loop_joining_an_open_run_does_not_close_it() {
+        ensure_config();
+        let sink = Arc::new(CapturedRuntimeEvents::default());
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![(vec![], Some(StopReason::EndTurn))])),
+            test_context("agent_runtime_open_run"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".into()),
+        )
+        .with_runtime_event_sink(sink.clone());
+        let requested_run_id = tact_protocol::RunId::from("requested-open-run");
+        agent.runtime.next_run_id = Some(requested_run_id.clone());
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "start")))
+            .await
+            .expect("the opening turn succeeds");
+        sink.0.lock().unwrap().clear();
+
+        agent
+            .agent_loop(None)
+            .await
+            .expect("a continuation turn succeeds");
+
+        let events = sink.0.lock().unwrap();
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, tact_protocol::RuntimeEvent::RunStarted { .. })),
+            "a continuation starts no run, got {events:?}"
+        );
+        assert!(
+            matches!(
+                events.last(),
+                Some(tact_protocol::RuntimeEvent::RunFinished {
+                    run_id: None,
+                    success: true
+                })
+            ),
+            "the joined run is left open, so the fact is unattributed, got {events:?}"
+        );
+        assert_eq!(agent.runtime.current_run_id, Some(requested_run_id));
+    }
+
+    /// The `UserInput` rule in isolation: no text, or a cell that is not a
+    /// real human turn, records nothing.
+    #[test]
+    fn user_turn_text_skips_everything_that_is_not_a_human_prompt() {
+        assert_eq!(
+            user_turn_text(&Message::new_text(Role::User, "hello")),
+            Some("hello".to_string())
+        );
+        assert_eq!(
+            user_turn_text(&Message::new_blocks(
+                Role::User,
+                vec![make_text_block("first"), make_text_block("second"),]
+            )),
+            Some("first\nsecond".to_string()),
+            "every text block is recorded, joined"
+        );
+        assert_eq!(
+            user_turn_text(&Message::new_blocks(
+                Role::User,
+                vec![ContentBlock::ToolResult {
+                    tool_use_id: "t1".to_string(),
+                    content: "output".to_string(),
+                }]
+            )),
+            None,
+            "a tool result is not something the user typed"
+        );
+        assert_eq!(
+            user_turn_text(&Message::new_blocks(Role::User, vec![])),
+            None,
+            "no text, no fact"
+        );
+        assert_eq!(
+            user_turn_text(&Message::new_text(Role::User, "   \n").with_kind(MessageKind::Summary)),
+            None,
+            "a compaction handoff is not a human turn"
+        );
+        assert_eq!(
+            user_turn_text(&Message::new_text(Role::Assistant, "answer")),
+            None,
+            "only the user role records user input"
+        );
     }
 
     #[tokio::test]
