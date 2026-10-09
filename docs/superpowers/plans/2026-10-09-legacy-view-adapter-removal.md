@@ -280,6 +280,14 @@ it are coupled, so there is no green intermediate state.
 So the order is: hand-rewrite the 23 select sites → mechanical codemod → per-line
 compiler fixes. Never a single automated pass.
 
+**Third attempt** replaced the brace walker with an applier for rustc's own
+`N - old` / `N + new` suggestions, which is safe but slow: it converges
+72 → 65 errors over three rounds and then stops, because rustc renders most of
+its fixes in the marker form (`| +++`) that has no self-contained `+` line. It
+also damaged lines where a suggestion's `+` text is not a whole line. Conclusion
+unchanged: the mechanical part is easy, the last stretch is hand work, and the
+hand work must start with the select sites.
+
 A first-scope mistake is worth recording too: applying the codemod to `crates/`
 wholesale also rewrote `tui`, `agent_tui_kit` and `tact_view`, which must not
 change here (`tact_view` defines the type; the other two are Task 4). The scope
