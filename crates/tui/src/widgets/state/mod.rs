@@ -7,7 +7,7 @@ use tact::{
     plugin::{PluginEvent, PluginRequest},
     skill::SharedSkillRegistry,
 };
-use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, AgentUpdate, RunId, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{i18n::Language, theme::Theme};
@@ -160,6 +160,7 @@ pub struct App {
     pub(crate) plugin_rx: UnboundedReceiver<PluginEvent>,
     pub(crate) plugin_tx: UnboundedSender<PluginRequest>,
     pub(crate) user_cmd_tx: UnboundedSender<UserCommand>,
+    pub(crate) runtime_run_id: Option<RunId>,
     pub(crate) task_history: Vec<HistoryEntry>,
     pub(crate) theme: Theme,
     // Scroll

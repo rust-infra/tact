@@ -4,8 +4,8 @@ use ratatui::{
     widgets::ScrollbarState,
 };
 use tact_protocol::{
-    AgentErrorKind, AgentUpdate, PlanStep, StepResult, TaskSnapshot, TasksChangeReason,
-    ThinkingChunk, UiResponse, UserCommand,
+    AgentErrorKind, AgentUpdate, InteractionResponse, PlanStep, RequestId, RuntimeCommand,
+    StepResult, TaskSnapshot, TasksChangeReason, ThinkingChunk, UiResponse, UserCommand,
 };
 
 use agent_tui_kit::{Ctx, PendingQueue, components::tool::ToolEvent, state::StreamEvent};
@@ -164,16 +164,41 @@ impl App {
         self.dirty = true;
     }
 
-    /// Answer a UI request through the in-process broker when available; fall
-    /// back to the legacy `UserCommand::UiResponse` transport otherwise.
+    /// Answer a UI request through the protocol command path.
     pub(crate) fn respond_ui(&self, response: UiResponse) {
-        if let Some(ui) = &self.pending_ui {
-            if !ui.respond(response) {
-                tracing::warn!("stale UI response for unknown request id");
-            }
-        } else {
-            let _ = self.user_cmd_tx.send(UserCommand::UiResponse(response));
-        }
+        let response = match response {
+            UiResponse::Select { request_id, choice } => choice
+                .and_then(|index| self.select.options.get(index).cloned())
+                .map(|value| InteractionResponse::Selected {
+                    request_id: RequestId::from(request_id.to_string()),
+                    values: vec![value],
+                })
+                .unwrap_or_else(|| InteractionResponse::Cancelled {
+                    request_id: RequestId::from(request_id.to_string()),
+                }),
+            UiResponse::MultiSelect {
+                request_id,
+                choices,
+            } => choices
+                .map(|indices| {
+                    let values = indices
+                        .into_iter()
+                        .filter_map(|index| self.select.options.get(index).cloned())
+                        .collect();
+                    InteractionResponse::Selected {
+                        request_id: RequestId::from(request_id.to_string()),
+                        values,
+                    }
+                })
+                .unwrap_or_else(|| InteractionResponse::Cancelled {
+                    request_id: RequestId::from(request_id.to_string()),
+                }),
+        };
+        let _ = self
+            .user_cmd_tx
+            .send(UserCommand::Runtime(RuntimeCommand::RespondInteraction {
+                response,
+            }));
     }
 
     /// Cancel the current task. If an agent select is open, answer it with
@@ -193,7 +218,13 @@ impl App {
             };
             self.respond_ui(response);
         }
-        let _ = self.user_cmd_tx.send(UserCommand::Cancel);
+        if let Some(run_id) = self.runtime_run_id.clone() {
+            let _ = self
+                .user_cmd_tx
+                .send(UserCommand::Runtime(RuntimeCommand::CancelRun { run_id }));
+        } else {
+            let _ = self.user_cmd_tx.send(UserCommand::Cancel);
+        }
         // Broker mode: the response above removed the pending entry; reconcile
         // now so the popup disappears immediately instead of on the next tick.
         self.reconcile_pending_ui();
@@ -939,9 +970,9 @@ mod lifecycle_tests {
 
     use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
     use tact_protocol::{
-        AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, TaskSnapshot,
-        TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, ToolOutputChunk,
-        ToolPresentationInfo,
+        AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, RunId, RuntimeCommand,
+        TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, ToolOutputChunk,
+        ToolPresentationInfo, UserCommand,
     };
     use tokio::sync::mpsc::unbounded_channel;
 
@@ -2626,5 +2657,21 @@ mod lifecycle_tests {
                 .len(),
             2
         );
+    }
+
+    #[test]
+    fn cancel_with_an_active_run_emits_a_protocol_command() {
+        let mut app = make_app();
+        let (tx, mut rx) = unbounded_channel();
+        app.user_cmd_tx = tx;
+        app.runtime_run_id = Some(RunId::from("run-cancel"));
+
+        app.cancel_task();
+
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(UserCommand::Runtime(RuntimeCommand::CancelRun { run_id }))
+                if run_id.as_str() == "run-cancel"
+        ));
     }
 }

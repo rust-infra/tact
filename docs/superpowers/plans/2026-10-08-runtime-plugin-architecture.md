@@ -194,11 +194,11 @@
 - Produces Agent and Session extension entry points that consume `RuntimeContext` and return protocol events/results.
 - Removes direct Agent dependencies on TUI channels and concrete responder types.
 
-- [ ] Move model loop output to RuntimeEvent/EventTransport while preserving streaming, thinking, tool progress, stop reasons, and error handling.
-- [ ] Route compaction, transcript persistence, provider recovery, sub-agents, and background work through Kernel services.
-- [ ] Preserve session locking, resume semantics, token usage, and existing SQLite records.
-- [ ] Test normal run, cancellation, compaction, transport recovery, resume, sub-agents, and headless execution.
-- [ ] Run focused tests one invocation at a time: `cargo test -p tact --lib agent::`, then `cargo test -p tact --lib extensions::`.
+- [x] Move model loop output to RuntimeEvent/EventTransport while preserving streaming, thinking, tool progress, stop reasons, and error handling.
+- [x] Route compaction, transcript persistence, provider recovery, sub-agents, and background work through Kernel services.
+- [x] Preserve session locking, resume semantics, token usage, and existing SQLite records.
+- [x] Test normal run, cancellation, compaction, transport recovery, resume, sub-agents, and headless execution.
+- [x] Run focused tests one invocation at a time: `cargo test -p tact --lib agent::`, then `cargo test -p tact --lib extensions::`.
 
 ### Task 9: Convert UI responder and TUI to View / Interaction adapters
 
@@ -217,11 +217,11 @@
 - Produces client-neutral `InteractionRequest` and `InteractionResponse`.
 - TUI consumes RuntimeEvent and emits RuntimeCommand without calling Agent methods.
 
-- [ ] Convert select, multi-select, confirm, input, permission, popup, stream, and completion flows to neutral interactions.
-- [ ] Preserve every existing TUI rendering and key-binding outcome, including tool cards, popups, themes, i18n, scroll behavior, and bottom-bar usage data.
-- [ ] Keep headless mode as an External Client adapter with deterministic responses and exit codes.
-- [ ] Test interaction ordering, cancellation, TUI event projection, and headless behavior with bounded timeouts.
-- [ ] Run `cargo test -p tui --lib` followed by `cargo test -p tact-ui --lib` sequentially.
+- [x] Convert select, multi-select, confirm, input, permission, popup, stream, and completion flows to neutral interactions.
+- [x] Preserve every existing TUI rendering and key-binding outcome, including tool cards, popups, themes, i18n, scroll behavior, and bottom-bar usage data.
+- [x] Keep headless mode as an External Client adapter with deterministic responses and exit codes.
+- [x] Test interaction ordering, cancellation, TUI event projection, and headless behavior with bounded timeouts.
+- [x] Run `cargo test -p tui --lib` followed by `cargo test -p tact-ui --lib` sequentially.
 
 ### Task 10: Register official Agent, Session, Chat, Tools, and Workflow extensions
 

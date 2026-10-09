@@ -29,6 +29,7 @@ tracing = { workspace = true }
 syntect = { workspace = true }
 unicode-segmentation = { workspace = true }
 unicode-width = { workspace = true }
+uuid = { workspace = true }
 
 [build-dependencies]
 toml = { workspace = true }

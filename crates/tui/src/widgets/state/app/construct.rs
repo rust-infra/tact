@@ -98,6 +98,7 @@ impl App {
             plugin_rx,
             plugin_tx,
             user_cmd_tx,
+            runtime_run_id: None,
             task_history: Vec::new(),
             theme,
             log_scroll: LogScroll::new(),

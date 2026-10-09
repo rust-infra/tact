@@ -584,6 +584,18 @@ mod tests {
     use crate::widgets::state::{App, InputMode, Status};
     use tact_protocol::UserCommand;
 
+    fn runtime_task(command: UserCommand) -> String {
+        match command {
+            UserCommand::Runtime(tact_protocol::RuntimeCommand::StartRun { input, .. }) => input
+                .get("message")
+                .and_then(serde_json::Value::as_str)
+                .expect("StartRun message")
+                .to_owned(),
+            UserCommand::SubmitTask(task) => task,
+            other => panic!("expected Runtime StartRun, got {other:?}"),
+        }
+    }
+
     #[test]
     fn an_unbound_ctrl_key_types_nothing() {
         // The reported bug: `Ctrl+T` toggled the theme *and* typed a `t`, because
@@ -755,10 +767,7 @@ mod tests {
         let cmd = user_cmd_rx
             .try_recv()
             .expect("expected no-match slash Enter to submit task");
-        match cmd {
-            UserCommand::SubmitTask(task) => assert_eq!(task, "/zzzzzz"),
-            other => panic!("expected SubmitTask, got {:?}", other),
-        }
+        assert_eq!(runtime_task(cmd), "/zzzzzz");
         assert!(!app.slash_command.active);
     }
 
@@ -824,10 +833,7 @@ mod tests {
         let cmd = user_cmd_rx
             .try_recv()
             .expect("expected short input to submit even when model_context_window is tiny");
-        match cmd {
-            UserCommand::SubmitTask(task) => assert_eq!(task, "hello world"),
-            other => panic!("expected SubmitTask, got {:?}", other),
-        }
+        assert_eq!(runtime_task(cmd), "hello world");
     }
 
     #[test]
@@ -988,7 +994,6 @@ mod tests {
     #[test]
     fn slash_popup_enter_on_skill_runs_immediately() {
         use crate::widgets::state::SkillEntry;
-        use tact_protocol::UserCommand;
 
         let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
@@ -1014,16 +1019,12 @@ mod tests {
         let cmd = user_cmd_rx
             .try_recv()
             .expect("popup Enter on skill should SubmitTask");
-        match cmd {
-            UserCommand::SubmitTask(task) => {
-                assert!(
-                    task.contains("<skill name=\"demo\">"),
-                    "expected skill wrapper, got: {task}"
-                );
-                assert!(task.contains("Follow the checklist."));
-            }
-            other => panic!("expected SubmitTask, got {other:?}"),
-        }
+        let task = runtime_task(cmd);
+        assert!(
+            task.contains("<skill name=\"demo\">"),
+            "expected skill wrapper, got: {task}"
+        );
+        assert!(task.contains("Follow the checklist."));
     }
 
     /// Types `input` one key at a time, exactly as the input box would.
@@ -1226,14 +1227,10 @@ mod tests {
 
         assert!(matches!(app.status, Status::Planning));
         assert!(app.input.is_empty());
-        match user_cmd_rx.try_recv().expect("SubmitTask") {
-            UserCommand::SubmitTask(task) => {
-                assert!(task.contains("<skill name=\"demo\">"));
-                assert!(task.contains("Follow the checklist."));
-                assert!(!task.contains("ARGUMENTS:"));
-            }
-            other => panic!("expected SubmitTask, got {other:?}"),
-        }
+        let task = runtime_task(user_cmd_rx.try_recv().expect("StartRun"));
+        assert!(task.contains("<skill name=\"demo\">"));
+        assert!(task.contains("Follow the checklist."));
+        assert!(!task.contains("ARGUMENTS:"));
         assert!(
             app.log.items.iter().any(|item| item.raw.contains("/demo")),
             "user bubble should show slash command"
@@ -1261,12 +1258,8 @@ mod tests {
         );
 
         assert!(matches!(app.status, Status::Planning));
-        match user_cmd_rx.try_recv().expect("SubmitTask") {
-            UserCommand::SubmitTask(task) => {
-                assert!(task.contains("ARGUMENTS: fix auth"));
-            }
-            other => panic!("expected SubmitTask, got {other:?}"),
-        }
+        let task = runtime_task(user_cmd_rx.try_recv().expect("StartRun"));
+        assert!(task.contains("ARGUMENTS: fix auth"));
         assert!(
             app.log
                 .items

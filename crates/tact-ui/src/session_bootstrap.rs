@@ -14,7 +14,7 @@
 //!   agent the `UiResponder` its prompts are answered through; headless has
 //!   neither.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use tact::kernel::TrajectoryService;
@@ -114,6 +114,33 @@ pub struct UiWiring {
     pub runtime_events: tact::kernel::EventTransport,
 }
 
+fn runtime_event_transport(ui: Option<&UiWiring>) -> tact::kernel::EventTransport {
+    ui.map(|wiring| wiring.runtime_events.clone())
+        .unwrap_or_else(|| tact::kernel::EventTransport::new(256))
+}
+
+async fn start_trajectory_recorder(
+    db_path: &Path,
+    event_transport: &tact::kernel::EventTransport,
+    notices: &Notices,
+) {
+    match tact::trajectory::SqliteTrajectoryRecorder::open(db_path).await {
+        Ok(recorder) => {
+            let trajectory = tact::kernel::SqliteTrajectoryService::new(recorder);
+            let mut subscription = event_transport.subscribe();
+            tokio::spawn(async move {
+                while let Ok(event) = subscription.recv().await {
+                    let _ = trajectory.append(None, None, event).await;
+                }
+            });
+        }
+        Err(error) => notices.notice(
+            "trajectory",
+            &format!("SQLite trajectory recorder unavailable: {error}"),
+        ),
+    }
+}
+
 /// Resolve (or start) this run's session, and take its lock.
 ///
 /// Both frontends do this as their first act, and the steps are not separable:
@@ -180,29 +207,10 @@ pub async fn bootstrap_session(
 
     let db_path = tact_path.session_db_path();
     // Runtime events are the single source for replayable execution history.
-    // Start the recorder before the agent can emit its first event so the
-    // SQLite trajectory contains the complete run, including startup hooks.
-    if let Some(wiring) = ui.as_ref() {
-        let event_transport = wiring.runtime_events.clone();
-        match tact::trajectory::SqliteTrajectoryRecorder::open(&db_path).await {
-            Ok(recorder) => {
-                let trajectory = tact::kernel::SqliteTrajectoryService::new(recorder);
-                let mut subscription = event_transport.subscribe();
-                tokio::spawn(async move {
-                    while let Ok(event) = subscription.recv().await {
-                        // Some UI-only notifications have no run ID. The
-                        // trajectory service assigns them to the runtime
-                        // stream so they remain replayable as well.
-                        let _ = trajectory.append(None, None, event).await;
-                    }
-                });
-            }
-            Err(error) => notices.notice(
-                "trajectory",
-                &format!("SQLite trajectory recorder unavailable: {error}"),
-            ),
-        }
-    }
+    // Start the recorder before the agent can emit its first event so both UI
+    // and headless runs persist the complete stream, including startup hooks.
+    let runtime_events = runtime_event_transport(ui.as_ref());
+    start_trajectory_recorder(&db_path, &runtime_events, &notices).await;
     let task_manager = SharedTaskManager::new(TaskManager::new(&db_path).await?);
     let background_manager = SharedBackgroundManager::new(BackgroundManager::new(&db_path).await?);
     let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&db_path).await?);
@@ -295,10 +303,9 @@ pub async fn bootstrap_session(
     }
     agent = agent.with_plugin_registry(plugin_registry);
     if let Some(wiring) = ui {
-        agent = agent
-            .with_ui_channel(wiring.tx)
-            .with_runtime_event_transport(wiring.runtime_events);
+        agent = agent.with_ui_channel(wiring.tx);
     }
+    agent = agent.with_runtime_event_transport(runtime_events);
     // RTK filter is opt-in — `with_post_tool` no-ops unless the
     // `tools.rtk_filter` setting is enabled.
     agent = agent.with_post_tool(tact::hook::rtk_filter::create_rtk_post_tool_hook());
@@ -352,6 +359,64 @@ mod tests {
             rx.try_recv().is_err(),
             "the UI path must not repeat what its status bar already shows"
         );
+    }
+
+    #[tokio::test]
+    async fn headless_bootstrap_keeps_a_protocol_event_transport() {
+        let transport = runtime_event_transport(None);
+        let mut subscription = transport.subscribe();
+        transport
+            .publish(tact_protocol::RuntimeEvent::Notification {
+                level: "info".into(),
+                content: "headless event".into(),
+            })
+            .unwrap();
+
+        let event =
+            tokio::time::timeout(std::time::Duration::from_millis(200), subscription.recv())
+                .await
+                .expect("headless event was not delivered")
+                .unwrap();
+        assert!(matches!(
+            event,
+            tact_protocol::RuntimeEvent::Notification { content, .. }
+                if content == "headless event"
+        ));
+    }
+
+    #[tokio::test]
+    async fn headless_runtime_events_are_persisted_to_the_trajectory() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("session.db");
+        let transport = runtime_event_transport(None);
+        start_trajectory_recorder(&db_path, &transport, &Notices::Stderr).await;
+        let run_id = tact_protocol::RunId::from("headless-run");
+        transport
+            .publish(tact_protocol::RuntimeEvent::RunStarted {
+                run_id: run_id.clone(),
+            })
+            .unwrap();
+
+        let recorder = tact::trajectory::SqliteTrajectoryRecorder::open(&db_path)
+            .await
+            .unwrap();
+        let events = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let events = recorder
+                    .query(&tact_protocol::TrajectoryId::from(run_id.as_str()), 0)
+                    .await
+                    .unwrap();
+                if !events.is_empty() {
+                    break events;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("trajectory recorder did not persist the event");
+
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0].run_id, run_id);
     }
 
     /// The stderr format a headless operator reads.

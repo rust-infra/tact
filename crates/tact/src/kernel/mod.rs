@@ -9,6 +9,7 @@ mod capability;
 mod context;
 mod error;
 mod event;
+mod interaction;
 mod permission;
 mod storage;
 mod trajectory;
@@ -24,9 +25,13 @@ pub use context::{
 };
 pub use error::KernelError;
 pub use event::{EventObserver, EventSubscription, EventTransport, RuntimeEventSink};
+pub use interaction::{InteractionBroker, InteractionService, InteractionSubscription};
 pub use permission::{PermissionManagerService, PermissionResponder};
 pub use storage::{SqliteStorageService, StorageNamespace, StorageServiceImpl};
 pub use trajectory::{KernelTrajectoryRecorder, SqliteTrajectoryService};
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod interaction_tests;

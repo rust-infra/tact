@@ -5,7 +5,7 @@ use std::{path::Path, sync::atomic::Ordering};
 use tact::background::SharedBackgroundManager;
 use tact::{Agent, extract_text, hook::HookControl, utils::RwLockExt};
 use tact_llm::{Message, Role};
-use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, RuntimeCommand, UserCommand};
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
@@ -85,6 +85,39 @@ pub async fn run_command_loop_with_account(
         let Some(cmd) = cmd else { break };
 
         match cmd {
+            UserCommand::Runtime(RuntimeCommand::StartRun { run_id, input }) => {
+                let Some(task) = input.get("message").and_then(serde_json::Value::as_str) else {
+                    if let Some(tx) = &ui_tx {
+                        let _ = tx.send(AgentUpdate::Error(AgentErrorKind::Other(
+                            "Runtime StartRun requires a string `message`".into(),
+                        )));
+                    }
+                    continue;
+                };
+                if let Some(handle) = active.take() {
+                    agent = Some(handle.await.expect("runtime start task join panicked"));
+                }
+                pending_subagent_wakeup = false;
+                let work_dir = image_work_dir.clone();
+                let mut task_agent = agent.take().expect("agent available for runtime start");
+                task_agent.runtime.next_run_id = Some(run_id);
+                let task = task.to_string();
+                active = Some(tokio::spawn(async move {
+                    handle_user_command(&mut task_agent, UserCommand::SubmitTask(task), &work_dir)
+                        .await;
+                    task_agent
+                }));
+            }
+            UserCommand::Runtime(RuntimeCommand::RespondInteraction { response }) => {
+                let _ = ui_responder.respond_interaction(response);
+            }
+            UserCommand::Runtime(RuntimeCommand::CancelRun { .. }) => {
+                cancel_flag.store(true, Ordering::Relaxed);
+                if let Some(tx) = &ui_tx {
+                    let _ = tx.send(AgentUpdate::Info("Cancelling...".into()));
+                }
+            }
+            UserCommand::Runtime(_) => {}
             UserCommand::UiResponse(response) => {
                 // Never await the in-flight task: the agent may be blocked
                 // waiting for exactly this answer. A stale response (already
@@ -619,7 +652,7 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use tact_llm::{ContentBlock, MockClient, StopReason};
-    use tact_protocol::{AgentUpdate, UserCommand};
+    use tact_protocol::{AgentUpdate, RunId, RuntimeCommand, UserCommand};
 
     use crate::test_support::{build_test_agent, install_test_config};
 
@@ -641,6 +674,108 @@ mod tests {
         assert!(agent.runtime.cancel_flag.load(Ordering::Relaxed));
         let update = agent_rx.try_recv().expect("expected Cancelling info");
         assert!(matches!(update, AgentUpdate::Info(msg) if msg.contains("Cancelling")));
+    }
+
+    #[tokio::test]
+    async fn runtime_cancel_command_cancels_its_active_run() {
+        install_test_config();
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let cancel_flag = agent.runtime.cancel_flag.clone();
+        let (command_tx, command_rx) = crate::test_support::user_command_channels();
+        let driver = tokio::spawn(super::run_command_loop(agent, command_rx, work_dir));
+
+        command_tx
+            .send(UserCommand::Runtime(RuntimeCommand::CancelRun {
+                run_id: RunId::from("run-command-cancel"),
+            }))
+            .unwrap();
+        tokio::time::timeout(std::time::Duration::from_millis(200), async {
+            while !cancel_flag.load(Ordering::Relaxed) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("Runtime cancel command was not applied");
+
+        drop(command_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(1), driver)
+            .await
+            .expect("driver did not shut down")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn runtime_interaction_response_reaches_the_pending_waiter() {
+        install_test_config();
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let responder = agent.tool_context.ui_responder.clone();
+        let (request_id, waiter) = responder.register_select(
+            "Permission".into(),
+            vec!["Allow".into(), "Deny".into()],
+            false,
+        );
+        let (command_tx, command_rx) = crate::test_support::user_command_channels();
+        let driver = tokio::spawn(super::run_command_loop(agent, command_rx, work_dir));
+
+        command_tx
+            .send(UserCommand::Runtime(RuntimeCommand::RespondInteraction {
+                response: tact_protocol::InteractionResponse::Selected {
+                    request_id: tact_protocol::RequestId::from(request_id.to_string()),
+                    values: vec!["Deny".into()],
+                },
+            }))
+            .unwrap();
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), waiter)
+                .await
+                .expect("protocol response timed out")
+                .unwrap(),
+            tact_protocol::UiResponse::Select { request_id: id, choice: Some(1) }
+                if id == request_id
+        ));
+
+        drop(command_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(1), driver)
+            .await
+            .expect("driver did not shut down")
+            .unwrap();
+    }
+
+    #[tokio::test]
+    async fn runtime_start_command_preserves_the_requested_run_id() {
+        install_test_config();
+        let mock = MockClient::new(vec![(vec![text_block("done")], Some(StopReason::EndTurn))]);
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        let transport = tact::kernel::EventTransport::new(8);
+        let mut events = transport.subscribe();
+        let agent = agent.with_runtime_event_transport(transport);
+        let (command_tx, command_rx) = crate::test_support::user_command_channels();
+        let driver = tokio::spawn(super::run_command_loop(agent, command_rx, work_dir));
+        let run_id = RunId::from("run-start-command");
+
+        command_tx
+            .send(UserCommand::Runtime(RuntimeCommand::StartRun {
+                run_id: run_id.clone(),
+                input: serde_json::json!({"message": "go"}),
+            }))
+            .unwrap();
+        let event = tokio::time::timeout(std::time::Duration::from_secs(1), events.recv())
+            .await
+            .expect("Runtime run event timed out")
+            .unwrap();
+        assert!(matches!(
+            event,
+            tact_protocol::RuntimeEvent::RunStarted { run_id: actual } if actual == run_id
+        ));
+
+        drop(command_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(2), driver)
+            .await
+            .expect("driver did not shut down")
+            .unwrap();
     }
 
     #[tokio::test]

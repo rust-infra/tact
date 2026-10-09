@@ -10,7 +10,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::tool_output::ToolOutputChunk;
+use crate::{runtime::RuntimeCommand, tool_output::ToolOutputChunk};
 
 /// Execution status of a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -543,6 +543,8 @@ pub enum UserCommand {
     /// Answer a pending [`AgentUpdate::RequestSelect`] / [`RequestMultiSelect`]
     /// (see [`UiResponse`]). Routed by the driver to the shared responder.
     UiResponse(UiResponse),
+    /// Client-neutral command emitted by a View adapter during migration.
+    Runtime(RuntimeCommand),
 }
 
 /// A single step in the execution plan.

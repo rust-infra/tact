@@ -109,11 +109,18 @@ pub struct UiResponder {
 struct UiResponderInner {
     pending: Mutex<HashMap<u64, PendingEntry>>,
     next_id: AtomicU64,
+    runtime_event_sink: Mutex<Option<Arc<dyn crate::kernel::RuntimeEventSink>>>,
 }
 
 impl UiResponder {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Routes prompt wake-ups through the protocol event stream when a Runtime
+    /// host is attached. The snapshot remains the authoritative UI state.
+    pub fn set_runtime_event_sink(&self, sink: Arc<dyn crate::kernel::RuntimeEventSink>) {
+        *self.inner.runtime_event_sink.lock_recover() = Some(sink);
     }
 
     /// Register a single-select request and return its id plus the waiter.
@@ -170,6 +177,90 @@ impl UiResponder {
         }
     }
 
+    /// Adapts a client-neutral interaction response to the legacy index based
+    /// waiter while the in-process tools finish migrating to protocol values.
+    pub fn respond_interaction(&self, response: tact_protocol::InteractionResponse) -> bool {
+        use tact_protocol::InteractionResponse;
+
+        let request_id = match &response {
+            InteractionResponse::Approved { request_id }
+            | InteractionResponse::Rejected { request_id }
+            | InteractionResponse::Selected { request_id, .. }
+            | InteractionResponse::Text { request_id, .. }
+            | InteractionResponse::Cancelled { request_id } => request_id,
+        };
+        let Ok(request_id) = request_id.as_str().parse::<u64>() else {
+            return false;
+        };
+        let Some((kind, options)) = self
+            .inner
+            .pending
+            .lock_recover()
+            .get(&request_id)
+            .map(|entry| (entry.request.kind, entry.request.options.clone()))
+        else {
+            return false;
+        };
+
+        match (kind, response) {
+            (PendingUiRequestKind::Select, InteractionResponse::Selected { values, .. }) => {
+                let choice = values
+                    .first()
+                    .and_then(|value| options.iter().position(|option| option == value));
+                choice.is_some_and(|choice| {
+                    self.respond(UiResponse::Select {
+                        request_id,
+                        choice: Some(choice),
+                    })
+                })
+            }
+            (PendingUiRequestKind::MultiSelect, InteractionResponse::Selected { values, .. }) => {
+                let choices = values
+                    .iter()
+                    .map(|value| options.iter().position(|option| option == value))
+                    .collect::<Option<Vec<_>>>();
+                choices.is_some_and(|choices| {
+                    self.respond(UiResponse::MultiSelect {
+                        request_id,
+                        choices: Some(choices),
+                    })
+                })
+            }
+            (PendingUiRequestKind::Select, InteractionResponse::Approved { .. }) => options
+                .iter()
+                .position(|option| option.eq_ignore_ascii_case("allow"))
+                .is_some_and(|choice| {
+                    self.respond(UiResponse::Select {
+                        request_id,
+                        choice: Some(choice),
+                    })
+                }),
+            (PendingUiRequestKind::Select, InteractionResponse::Rejected { .. }) => options
+                .iter()
+                .position(|option| option.eq_ignore_ascii_case("deny"))
+                .is_some_and(|choice| {
+                    self.respond(UiResponse::Select {
+                        request_id,
+                        choice: Some(choice),
+                    })
+                }),
+            (PendingUiRequestKind::Select, InteractionResponse::Cancelled { .. }) => {
+                self.respond(UiResponse::Select {
+                    request_id,
+                    choice: None,
+                })
+            }
+            (PendingUiRequestKind::MultiSelect, InteractionResponse::Cancelled { .. }) => self
+                .respond(UiResponse::MultiSelect {
+                    request_id,
+                    choices: None,
+                }),
+            (_, InteractionResponse::Text { .. })
+            | (PendingUiRequestKind::MultiSelect, InteractionResponse::Approved { .. })
+            | (PendingUiRequestKind::MultiSelect, InteractionResponse::Rejected { .. }) => false,
+        }
+    }
+
     /// Remove a pending request without answering it. The waiter observes a
     /// closed channel, which callers map to cancellation/denial.
     pub fn withdraw(&self, request_id: u64) -> bool {
@@ -197,15 +288,15 @@ impl UiResponder {
             responder: self.clone(),
             request_id,
         };
-        if ui_tx
-            .send(AgentUpdate::RequestSelect {
+        if !self.send_request_hint(
+            ui_tx,
+            AgentUpdate::RequestSelect {
                 request_id,
                 prompt,
                 options,
                 log_confirm,
-            })
-            .is_err()
-        {
+            },
+        ) {
             // UI already gone: drop the pending waiter so the receiver resolves
             // immediately instead of hanging until `shutdown`.
             self.withdraw(request_id);
@@ -234,14 +325,14 @@ impl UiResponder {
             responder: self.clone(),
             request_id,
         };
-        if ui_tx
-            .send(AgentUpdate::RequestMultiSelect {
+        if !self.send_request_hint(
+            ui_tx,
+            AgentUpdate::RequestMultiSelect {
                 request_id,
                 prompt,
                 options,
-            })
-            .is_err()
-        {
+            },
+        ) {
             self.withdraw(request_id);
             return Err(UiRequestError::Closed);
         }
@@ -255,6 +346,36 @@ impl UiResponder {
     /// Backwards-compatible wrapper used by tests and other in-process callers.
     pub fn handle_response(&self, response: UiResponse) {
         let _ = self.respond(response);
+    }
+
+    fn send_request_hint(&self, ui_tx: &UnboundedSender<AgentUpdate>, update: AgentUpdate) -> bool {
+        let Some(sink) = self.inner.runtime_event_sink.lock_recover().clone() else {
+            return ui_tx.send(update).is_ok();
+        };
+        let request = match update {
+            AgentUpdate::RequestSelect {
+                request_id,
+                prompt,
+                options,
+                ..
+            } => tact_protocol::InteractionRequest::Select {
+                request_id: tact_protocol::RequestId::from(request_id.to_string()),
+                prompt,
+                options,
+            },
+            AgentUpdate::RequestMultiSelect {
+                request_id,
+                prompt,
+                options,
+            } => tact_protocol::InteractionRequest::MultiSelect {
+                request_id: tact_protocol::RequestId::from(request_id.to_string()),
+                prompt,
+                options,
+            },
+            _ => return false,
+        };
+        sink.emit(tact_protocol::RuntimeEvent::InteractionRequested { request })
+            .is_ok()
     }
 
     /// Drop every pending waiter, unblocking any in-flight `request_*` call
@@ -292,8 +413,18 @@ impl UiResponder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tact_protocol::UserCommand;
+    use tact_protocol::{RuntimeEvent, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;
+
+    #[derive(Default)]
+    struct CapturedEvents(std::sync::Mutex<Vec<RuntimeEvent>>);
+
+    impl crate::kernel::RuntimeEventSink for CapturedEvents {
+        fn emit(&self, event: RuntimeEvent) -> Result<(), crate::kernel::KernelError> {
+            self.0.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
 
     #[tokio::test]
     async fn multi_select_routes_response_by_request_id() {
@@ -499,6 +630,27 @@ mod tests {
         assert_eq!(responder.snapshot()[0].request_id, id2);
     }
 
+    #[test]
+    fn protocol_selection_response_routes_by_request_id_and_value() {
+        let responder = UiResponder::new();
+        let (request_id, mut receiver) = responder.register_select(
+            "Permission".into(),
+            vec!["Allow".into(), "Deny".into()],
+            false,
+        );
+
+        assert!(
+            responder.respond_interaction(tact_protocol::InteractionResponse::Selected {
+                request_id: tact_protocol::RequestId::from(request_id.to_string()),
+                values: vec!["Deny".into()],
+            })
+        );
+        assert!(matches!(
+            receiver.try_recv(),
+            Ok(UiResponse::Select { request_id: id, choice: Some(1) }) if id == request_id
+        ));
+    }
+
     #[tokio::test]
     async fn withdraw_removes_snapshot_and_unblocks_waiter() {
         let responder = UiResponder::new();
@@ -562,6 +714,49 @@ mod tests {
         assert!(
             responder.snapshot().is_empty(),
             "aborting the waiter must withdraw its pending entry"
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_event_sink_replaces_legacy_select_hint() {
+        let responder = UiResponder::new();
+        let events = Arc::new(CapturedEvents::default());
+        responder.set_runtime_event_sink(events.clone());
+        let (tx, mut rx) = unbounded_channel::<AgentUpdate>();
+        let task = tokio::spawn({
+            let responder = responder.clone();
+            async move {
+                responder
+                    .request_select(&tx, "Choose".into(), vec!["a".into(), "b".into()], false)
+                    .await
+            }
+        });
+
+        tokio::time::timeout(std::time::Duration::from_millis(200), async {
+            while responder.snapshot().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("select request did not register");
+        let request_id = responder.snapshot()[0].request_id;
+        assert!(matches!(
+            events.0.lock().unwrap().as_slice(),
+            [RuntimeEvent::InteractionRequested { request: tact_protocol::InteractionRequest::Select { prompt, .. } }]
+                if prompt == "Choose"
+        ));
+        assert!(rx.try_recv().is_err());
+        responder.respond(UiResponse::Select {
+            request_id,
+            choice: Some(1),
+        });
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            Some(1)
         );
     }
 }

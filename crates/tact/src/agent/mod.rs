@@ -347,6 +347,8 @@ pub struct AgentRuntime {
     /// Stable identity for one agent loop. Tool calls within a turn share it
     /// so EventTransport and Trajectory can correlate their lifecycle facts.
     pub current_run_id: Option<RunId>,
+    /// Optional identity supplied by a Runtime `StartRun` command.
+    pub next_run_id: Option<RunId>,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub session_store: Option<DynSessionStore>,
     /// Set together with [`Self::session_store`] via [`Agent::with_session`] at startup.
@@ -513,6 +515,7 @@ impl Agent {
                 runtime_event_sink: None,
                 runtime_event_service: None,
                 current_run_id: None,
+                next_run_id: None,
                 cancel_flag,
                 session_store: None,
                 session_id: None,
@@ -849,6 +852,9 @@ impl Agent {
     ) -> Self {
         let event_sink: Arc<dyn crate::kernel::RuntimeEventSink> = Arc::new(transport.clone());
         let event_service: Arc<dyn crate::kernel::EventService> = Arc::new(transport);
+        self.tool_context
+            .ui_responder
+            .set_runtime_event_sink(event_sink.clone());
         self.runtime.runtime_event_sink = Some(event_sink);
         self.runtime.runtime_event_service = Some(event_service);
         self
@@ -951,12 +957,16 @@ impl Agent {
             AgentUpdate::TaskCancelled => vec![RuntimeEvent::Cancelled {
                 run_id: run_id.unwrap_or_else(|| RunId::from("runtime")),
             }],
-            AgentUpdate::Info(content) | AgentUpdate::MdInfo(content) => {
+            AgentUpdate::Info(content) => {
                 vec![RuntimeEvent::Notification {
                     level: "info".into(),
                     content: content.clone(),
                 }]
             }
+            AgentUpdate::MdInfo(content) => vec![RuntimeEvent::Notification {
+                level: "md_info".into(),
+                content: content.clone(),
+            }],
             AgentUpdate::HookContext { source, text } => vec![RuntimeEvent::Notification {
                 level: "hook_context".into(),
                 content: source
@@ -1041,7 +1051,10 @@ impl Agent {
                 let _ = sink.emit(event);
             }
         }
-        if let Some(tx) = &self.runtime.ui_tx {
+        if let Some(tx) = &self.runtime.ui_tx
+            && (self.runtime.runtime_event_sink.is_none()
+                || !runtime_event_replaces_view_update(&update))
+        {
             let _ = tx.send(update);
         }
     }
@@ -1324,8 +1337,15 @@ impl Agent {
     ///    other than `ToolUse` or an unrecoverable error occurs.
     #[tracing::instrument(skip(self), name = "agent_loop")]
     pub async fn agent_loop(&mut self, user_turn_message: Option<Message>) -> Result<()> {
-        if user_turn_message.is_some() || self.runtime.current_run_id.is_none() {
-            self.runtime.current_run_id = Some(RunId::from(uuid::Uuid::new_v4().to_string()));
+        let next_run_id = self.runtime.next_run_id.take().or_else(|| {
+            (user_turn_message.is_some() || self.runtime.current_run_id.is_none())
+                .then(|| RunId::from(uuid::Uuid::new_v4().to_string()))
+        });
+        if let Some(run_id) = next_run_id {
+            self.runtime.current_run_id = Some(run_id.clone());
+            if let Some(sink) = &self.runtime.runtime_event_sink {
+                let _ = sink.emit(tact_protocol::RuntimeEvent::RunStarted { run_id });
+            }
         }
         self.runtime.recovery_state = RecoveryState::default();
         self.runtime.interrupt_hooks_fired = false;
@@ -2778,6 +2798,25 @@ impl Agent {
             .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))
             .map(|manager| manager.load_memory_prompt())
     }
+}
+
+fn runtime_event_replaces_view_update(update: &AgentUpdate) -> bool {
+    matches!(
+        update,
+        AgentUpdate::StreamChunk(_)
+            | AgentUpdate::ThinkingChunk(_)
+            | AgentUpdate::ToolProgress { .. }
+            | AgentUpdate::ModelInfo(_)
+            | AgentUpdate::TokenUsage(_)
+            | AgentUpdate::TurnStats { .. }
+            | AgentUpdate::TaskComplete(_)
+            | AgentUpdate::TaskCancelled
+            | AgentUpdate::Info(_)
+            | AgentUpdate::MdInfo(_)
+            | AgentUpdate::PopupMarkdown { .. }
+            | AgentUpdate::RequestSelect { .. }
+            | AgentUpdate::RequestMultiSelect { .. }
+    )
 }
 
 /// Extracts a mutable text target from a user message for prompt hooks.
@@ -6196,6 +6235,67 @@ mod tests {
         assert!(matches!(
             &events[5],
             tact_protocol::RuntimeEvent::ModelInfo { .. }
+        ));
+    }
+
+    #[test]
+    fn runtime_backed_stream_updates_are_not_sent_twice_to_the_view_channel() {
+        ensure_config();
+        let sink = Arc::new(CapturedRuntimeEvents::default());
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            test_context("agent_runtime_view_channel"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".into()),
+        )
+        .with_ui_channel(ui_tx)
+        .with_runtime_event_sink(sink.clone());
+        agent.runtime.current_run_id = Some(tact_protocol::RunId::from("run-no-duplicate"));
+
+        agent.emit_update(AgentUpdate::StreamChunk("answer".into()));
+
+        assert!(matches!(
+            sink.0.lock().unwrap().as_slice(),
+            [tact_protocol::RuntimeEvent::Text { content, .. }] if content == "answer"
+        ));
+        assert!(ui_rx.try_recv().is_err());
+    }
+
+    #[tokio::test]
+    async fn agent_loop_publishes_run_started_with_its_run_identity() {
+        ensure_config();
+        let sink = Arc::new(CapturedRuntimeEvents::default());
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![(vec![], Some(StopReason::EndTurn))])),
+            test_context("agent_runtime_run_started"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".into()),
+        )
+        .with_runtime_event_sink(sink.clone());
+        let requested_run_id = tact_protocol::RunId::from("requested-agent-run");
+        agent.runtime.next_run_id = Some(requested_run_id.clone());
+
+        let _ = agent
+            .agent_loop(Some(Message::new_text(Role::User, "start")))
+            .await;
+
+        let run_id = agent.runtime.current_run_id.as_ref().unwrap();
+        assert_eq!(run_id, &requested_run_id);
+        assert!(matches!(
+            sink.0.lock().unwrap().first(),
+            Some(tact_protocol::RuntimeEvent::RunStarted { run_id: event_run_id })
+                if event_run_id == run_id
         ));
     }
 

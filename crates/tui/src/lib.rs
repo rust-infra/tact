@@ -325,28 +325,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
             app.handle_agent_update(update);
         }
         while let Ok(event) = runtime_subscription.try_recv() {
-            match event {
-                tact_protocol::RuntimeEvent::PluginStarted { plugin_id } => {
-                    app.handle_agent_update(AgentUpdate::Info(format!(
-                        "Plugin started: {plugin_id}"
-                    )));
-                }
-                tact_protocol::RuntimeEvent::PluginStopped { plugin_id } => {
-                    app.handle_agent_update(AgentUpdate::Info(format!(
-                        "Plugin stopped: {plugin_id}"
-                    )));
-                }
-                tact_protocol::RuntimeEvent::Plugin {
-                    plugin_id,
-                    event_type,
-                    ..
-                } => {
-                    app.handle_agent_update(AgentUpdate::Info(format!(
-                        "Plugin event {plugin_id}: {event_type}"
-                    )));
-                }
-                _ => {}
-            }
+            apply_runtime_event(&mut app, event);
         }
         // Codex-style: messages queued while the agent was busy are submitted
         // automatically once the current task reaches Idle/Done.
@@ -563,6 +542,123 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     Ok(())
 }
 
+/// Projects protocol events into the current TUI view model.
+///
+/// This is an adapter boundary: the TUI consumes `RuntimeEvent`; the
+/// `AgentUpdate` projection remains local to the view until its widgets are
+/// converted to protocol state directly.
+fn runtime_event_to_agent_updates(event: tact_protocol::RuntimeEvent) -> Vec<AgentUpdate> {
+    use tact_protocol::RuntimeEvent;
+
+    match event {
+        RuntimeEvent::Text { role, content, .. } if role == "assistant" => {
+            vec![AgentUpdate::StreamChunk(content)]
+        }
+        RuntimeEvent::Thinking { chunk, .. } => vec![AgentUpdate::ThinkingChunk(chunk)],
+        RuntimeEvent::ToolProgress {
+            tool_id, chunks, ..
+        } => vec![AgentUpdate::ToolProgress { tool_id, chunks }],
+        RuntimeEvent::ModelInfo { params, .. } => vec![AgentUpdate::ModelInfo(params)],
+        RuntimeEvent::TokenUsage { usage, .. } => vec![AgentUpdate::TokenUsage(usage)],
+        RuntimeEvent::TurnStats {
+            turns_taken,
+            max_turns,
+            ..
+        } => vec![AgentUpdate::TurnStats {
+            turns_taken,
+            max_turns,
+        }],
+        RuntimeEvent::Cancelled { .. } => vec![AgentUpdate::TaskCancelled],
+        RuntimeEvent::Notification { level, content } if level == "complete" => {
+            vec![AgentUpdate::TaskComplete(content)]
+        }
+        RuntimeEvent::Notification { level, content } if level == "md_info" => {
+            vec![AgentUpdate::MdInfo(content)]
+        }
+        RuntimeEvent::Notification { level, content } if level == "popup_markdown" => {
+            let (title, source) = if let Some((title, source)) = content.split_once('\n') {
+                (title.to_owned(), source.to_owned())
+            } else {
+                (String::new(), content)
+            };
+            vec![AgentUpdate::PopupMarkdown { title, source }]
+        }
+        RuntimeEvent::Notification { level, content } if level == "info" => {
+            vec![AgentUpdate::Info(content)]
+        }
+        RuntimeEvent::InteractionRequested { request } => match request {
+            tact_protocol::InteractionRequest::Select {
+                request_id,
+                prompt,
+                options,
+            } => request_id
+                .as_str()
+                .parse::<u64>()
+                .ok()
+                .map(|request_id| {
+                    vec![AgentUpdate::RequestSelect {
+                        request_id,
+                        prompt,
+                        options,
+                        log_confirm: false,
+                    }]
+                })
+                .unwrap_or_default(),
+            tact_protocol::InteractionRequest::MultiSelect {
+                request_id,
+                prompt,
+                options,
+            } => request_id
+                .as_str()
+                .parse::<u64>()
+                .ok()
+                .map(|request_id| {
+                    vec![AgentUpdate::RequestMultiSelect {
+                        request_id,
+                        prompt,
+                        options,
+                    }]
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
+fn apply_runtime_event(app: &mut App, event: tact_protocol::RuntimeEvent) {
+    match event {
+        tact_protocol::RuntimeEvent::PluginStarted { plugin_id } => {
+            app.handle_agent_update(AgentUpdate::Info(format!("Plugin started: {plugin_id}")));
+        }
+        tact_protocol::RuntimeEvent::PluginStopped { plugin_id } => {
+            app.handle_agent_update(AgentUpdate::Info(format!("Plugin stopped: {plugin_id}")));
+        }
+        tact_protocol::RuntimeEvent::Plugin {
+            plugin_id,
+            event_type,
+            ..
+        } => {
+            app.handle_agent_update(AgentUpdate::Info(format!(
+                "Plugin event {plugin_id}: {event_type}"
+            )));
+        }
+        tact_protocol::RuntimeEvent::RunStarted { run_id } => {
+            app.runtime_run_id = Some(run_id);
+        }
+        tact_protocol::RuntimeEvent::RunFinished { run_id, .. } => {
+            if app.runtime_run_id.as_ref() == Some(&run_id) {
+                app.runtime_run_id = None;
+            }
+        }
+        event => {
+            for update in runtime_event_to_agent_updates(event) {
+                app.handle_agent_update(update);
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod poll_timeout_tests {
     use super::{on_poll_timeout, should_repaint};
@@ -706,5 +802,116 @@ mod voice_keybind_tests {
         }
         // Unset (mouse-only) is the default and stays valid.
         assert_eq!(voice_keybind_conflict(None), None);
+    }
+}
+
+#[cfg(test)]
+mod runtime_event_tests {
+    use super::{apply_runtime_event, runtime_event_to_agent_updates};
+
+    #[test]
+    fn runtime_text_events_project_to_stream_updates() {
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::Text {
+            run_id: Some(tact_protocol::RunId::from("run-1")),
+            role: "assistant".into(),
+            content: "hello".into(),
+        });
+
+        assert!(matches!(
+            updates.as_slice(),
+            [tact_protocol::AgentUpdate::StreamChunk(text)] if text == "hello"
+        ));
+    }
+
+    #[test]
+    fn runtime_completion_notification_projects_to_done_update() {
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::Notification {
+            level: "complete".into(),
+            content: "finished".into(),
+        });
+
+        assert!(matches!(
+            updates.as_slice(),
+            [tact_protocol::AgentUpdate::TaskComplete(text)] if text == "finished"
+        ));
+    }
+
+    #[test]
+    fn runtime_model_info_projects_to_status_update() {
+        let params = tact_protocol::ModelCallParams {
+            model: "model-a".into(),
+            max_tokens: 128,
+            thinking_budget: Some(16),
+            reasoning_effort: Some("low".into()),
+            extra_body: None,
+        };
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ModelInfo {
+            run_id: None,
+            params,
+        });
+
+        assert!(matches!(
+            updates.as_slice(),
+            [tact_protocol::AgentUpdate::ModelInfo(info)] if info.model == "model-a"
+        ));
+    }
+
+    #[test]
+    fn runtime_select_interaction_projects_to_wake_up_hint() {
+        let updates =
+            runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::InteractionRequested {
+                request: tact_protocol::InteractionRequest::Select {
+                    request_id: tact_protocol::RequestId::from("42"),
+                    prompt: "Approve?".into(),
+                    options: vec!["Allow".into(), "Deny".into()],
+                },
+            });
+
+        assert!(matches!(
+            updates.as_slice(),
+            [tact_protocol::AgentUpdate::RequestSelect {
+                request_id: 42,
+                prompt,
+                options,
+                ..
+            }] if prompt == "Approve?" && options.len() == 2
+        ));
+    }
+
+    #[test]
+    fn runtime_popup_notification_projects_to_modal_content() {
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::Notification {
+            level: "popup_markdown".into(),
+            content: "Session stats\nTurns: 3".into(),
+        });
+
+        assert!(matches!(
+            updates.as_slice(),
+            [tact_protocol::AgentUpdate::PopupMarkdown { title, source }]
+                if title == "Session stats" && source == "Turns: 3"
+        ));
+    }
+
+    #[test]
+    fn run_lifecycle_events_track_the_active_run_for_cancel_commands() {
+        let mut app = crate::render::test_harness::make_app();
+        let run_id = tact_protocol::RunId::from("run-view-1");
+
+        apply_runtime_event(
+            &mut app,
+            tact_protocol::RuntimeEvent::RunStarted {
+                run_id: run_id.clone(),
+            },
+        );
+        assert_eq!(app.runtime_run_id, Some(run_id.clone()));
+
+        apply_runtime_event(
+            &mut app,
+            tact_protocol::RuntimeEvent::RunFinished {
+                run_id,
+                success: true,
+            },
+        );
+        assert!(app.runtime_run_id.is_none());
     }
 }

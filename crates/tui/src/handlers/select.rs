@@ -978,6 +978,7 @@ mod tests {
 
     use super::*;
     use crate::render::test_harness::make_app;
+    use tact_protocol::{InteractionResponse, RuntimeCommand};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
@@ -1393,11 +1394,10 @@ thinking_budget = {thinking_budget}
 
         assert!(matches!(app.input_mode, InputMode::Normal));
         match rx.try_recv() {
-            Ok(UserCommand::UiResponse(UiResponse::Select {
-                request_id: 1,
-                choice: Some(1),
-            })) => {}
-            other => panic!("expected Select response, got {other:?}"),
+            Ok(UserCommand::Runtime(RuntimeCommand::RespondInteraction {
+                response: InteractionResponse::Selected { request_id, values },
+            })) if request_id.as_str() == "1" && values == ["Deny"] => {}
+            other => panic!("expected protocol Select response, got {other:?}"),
         }
         assert!(
             app.log.items.iter().any(|item| {
@@ -1428,6 +1428,12 @@ thinking_budget = {thinking_budget}
 
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
+        let UserCommand::Runtime(RuntimeCommand::RespondInteraction { response }) =
+            user_rx.try_recv().unwrap()
+        else {
+            panic!("expected Runtime interaction response")
+        };
+        assert!(responder.respond_interaction(response));
         match waiter.try_recv() {
             Ok(UiResponse::Select {
                 request_id: id,
@@ -1436,10 +1442,6 @@ thinking_budget = {thinking_budget}
             other => panic!("expected broker Select response, got {other:?}"),
         }
         assert!(responder.snapshot().is_empty());
-        assert!(
-            user_rx.try_recv().is_err(),
-            "broker mode must not fall back to UserCommand::UiResponse"
-        );
     }
 
     #[test]
@@ -1460,6 +1462,12 @@ thinking_budget = {thinking_budget}
 
         app.cancel_task();
 
+        let UserCommand::Runtime(RuntimeCommand::RespondInteraction { response }) =
+            user_rx.try_recv().unwrap()
+        else {
+            panic!("expected protocol cancellation response")
+        };
+        assert!(responder.respond_interaction(response));
         match waiter.try_recv() {
             Ok(UiResponse::Select {
                 request_id: id,
@@ -1482,11 +1490,10 @@ thinking_budget = {thinking_budget}
 
         assert!(matches!(app.input_mode, InputMode::Normal));
         match rx.try_recv() {
-            Ok(UserCommand::UiResponse(UiResponse::Select {
-                request_id: 1,
-                choice: None,
-            })) => {}
-            other => panic!("expected cancelled Select response, got {other:?}"),
+            Ok(UserCommand::Runtime(RuntimeCommand::RespondInteraction {
+                response: InteractionResponse::Cancelled { request_id },
+            })) if request_id.as_str() == "1" => {}
+            other => panic!("expected protocol cancellation response, got {other:?}"),
         }
     }
 
@@ -1509,11 +1516,10 @@ thinking_budget = {thinking_budget}
         // Confirm the first → emits Select(1) and dequeues the second.
         handle_select_mode(&mut app, key(KeyCode::Enter));
         match rx.try_recv() {
-            Ok(UserCommand::UiResponse(UiResponse::Select {
-                request_id: 1,
-                choice: Some(_),
-            })) => {}
-            other => panic!("expected first Select response, got {other:?}"),
+            Ok(UserCommand::Runtime(RuntimeCommand::RespondInteraction {
+                response: InteractionResponse::Selected { request_id, .. },
+            })) if request_id.as_str() == "1" => {}
+            other => panic!("expected first protocol Select response, got {other:?}"),
         }
         assert_eq!(app.select.request_id, Some(2), "second select dequeued");
         assert!(matches!(app.input_mode, InputMode::Select));
@@ -1521,11 +1527,10 @@ thinking_budget = {thinking_budget}
         // Confirm the second → emits Select(2) and returns to Normal.
         handle_select_mode(&mut app, key(KeyCode::Enter));
         match rx.try_recv() {
-            Ok(UserCommand::UiResponse(UiResponse::Select {
-                request_id: 2,
-                choice: Some(_),
-            })) => {}
-            other => panic!("expected second Select response, got {other:?}"),
+            Ok(UserCommand::Runtime(RuntimeCommand::RespondInteraction {
+                response: InteractionResponse::Selected { request_id, .. },
+            })) if request_id.as_str() == "2" => {}
+            other => panic!("expected second protocol Select response, got {other:?}"),
         }
         assert!(matches!(app.input_mode, InputMode::Normal));
         assert!(app.pending_agent_selects.is_empty());

@@ -175,7 +175,14 @@ fn dispatch_user_task(app: &mut App, display_text: String, agent_task: String) -
     app.status_bar_mut().turn_user += 1;
     app.status_bar_mut().turn_llm = 0;
     app.status_bar_mut().turn_llm_cap = None;
-    let _ = app.user_cmd_tx.send(UserCommand::SubmitTask(agent_task));
+    let run_id = tact_protocol::RunId::from(uuid::Uuid::new_v4().to_string());
+    app.runtime_run_id = Some(run_id.clone());
+    let _ = app.user_cmd_tx.send(UserCommand::Runtime(
+        tact_protocol::RuntimeCommand::StartRun {
+            run_id,
+            input: serde_json::json!({"message": agent_task}),
+        },
+    ));
     true
 }
 
@@ -317,6 +324,16 @@ mod tests {
     use super::*;
     use crate::test_fixtures::TestApp;
 
+    fn runtime_task(command: UserCommand) -> Option<String> {
+        match command {
+            UserCommand::Runtime(tact_protocol::RuntimeCommand::StartRun { input, .. }) => {
+                input.get("message")?.as_str().map(str::to_owned)
+            }
+            UserCommand::SubmitTask(task) => Some(task),
+            _ => None,
+        }
+    }
+
     #[test]
     fn skill_args_strips_command_prefix() {
         assert_eq!(
@@ -393,14 +410,11 @@ mod tests {
 
         assert!(outcome.handled);
         assert!(app.input.is_empty(), "an invoked skill clears the input");
-        match user_cmd_rx.try_recv().expect("skill must submit a task") {
-            tact_protocol::UserCommand::SubmitTask(task) => {
-                assert!(task.contains("<skill name=\"demo\">"), "{task}");
-                assert!(task.contains("Follow the checklist."), "{task}");
-                assert!(task.contains("ARGUMENTS: fix auth"), "{task}");
-            }
-            other => panic!("expected SubmitTask, got {other:?}"),
-        }
+        let task = runtime_task(user_cmd_rx.try_recv().expect("skill must submit a task"))
+            .expect("expected Runtime StartRun");
+        assert!(task.contains("<skill name=\"demo\">"), "{task}");
+        assert!(task.contains("Follow the checklist."), "{task}");
+        assert!(task.contains("ARGUMENTS: fix auth"), "{task}");
     }
 
     #[test]
@@ -523,9 +537,11 @@ mod tests {
         assert!(ok);
         assert!(app.pending_messages.is_empty());
         assert!(matches!(app.status, Status::Planning));
-        match user_cmd_rx.try_recv().expect("SubmitTask") {
-            UserCommand::SubmitTask(task) => assert_eq!(task, "go"),
-            other => panic!("expected SubmitTask, got {other:?}"),
+        match user_cmd_rx.try_recv().expect("StartRun") {
+            UserCommand::Runtime(tact_protocol::RuntimeCommand::StartRun { input, .. }) => {
+                assert_eq!(input["message"], "go")
+            }
+            other => panic!("expected Runtime StartRun, got {other:?}"),
         }
     }
 
@@ -598,7 +614,7 @@ mod tests {
         assert!(app.pending_messages.is_empty(), "queue drained by flush");
         let mut tasks = Vec::new();
         while let Ok(cmd) = user_cmd_rx.try_recv() {
-            if let UserCommand::SubmitTask(task) = cmd {
+            if let Some(task) = runtime_task(cmd) {
                 tasks.push(task);
             }
         }
@@ -618,9 +634,6 @@ mod tests {
         flush_pending_when_idle(&mut app);
 
         assert!(app.pending_messages.is_empty());
-        assert!(matches!(
-            user_cmd_rx.try_recv(),
-            Ok(UserCommand::SubmitTask(_))
-        ));
+        assert!(user_cmd_rx.try_recv().ok().and_then(runtime_task).is_some());
     }
 }

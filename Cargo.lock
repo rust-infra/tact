@@ -5462,6 +5462,7 @@ dependencies = [
  "tracing",
  "unicode-segmentation",
  "unicode-width",
+ "uuid",
 ]
 
 [[package]]
