@@ -115,6 +115,26 @@ pub enum RuntimeEvent {
     Cancelled {
         run_id: RunId,
     },
+    /// History was compacted. `trigger` names what asked for it
+    /// (`user` / `auto` / `recovery`); `focus` is the optional user focus.
+    Compaction {
+        run_id: Option<RunId>,
+        trigger: String,
+        focus: Option<String>,
+    },
+    /// A failed attempt was recovered (compaction on overflow, continuation on
+    /// truncation). `attempt` is 1-based.
+    Recovery {
+        run_id: Option<RunId>,
+        attempt: u32,
+        reason: String,
+    },
+    /// A transient failure was retried after a backoff. `attempt` is 1-based.
+    Retry {
+        run_id: Option<RunId>,
+        attempt: u32,
+        reason: String,
+    },
     TimedOut {
         run_id: RunId,
     },

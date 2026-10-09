@@ -161,6 +161,27 @@ fn trajectory_read() -> CapabilityRegistration {
         CapabilityRisk::ReadOnly,
         "Read facts from a trajectory sequence",
         |context, input| async move {
+            // `run_id` returns every fact of a run; `trajectory_id` +
+            // `from_sequence` resumes one trajectory from a sequence.
+            if let Some(run_id) = input.get("run_id").and_then(Value::as_str) {
+                let run_id = tact_protocol::RunId::new(run_id).map_err(|error| {
+                    KernelError::new(
+                        ErrorCategory::InvalidRequest,
+                        error,
+                        "kernel_service",
+                        false,
+                    )
+                })?;
+                let facts = context.trajectory().query_by_run(&run_id).await?;
+                return serde_json::to_value(facts).map_err(|error| {
+                    KernelError::new(
+                        ErrorCategory::InternalError,
+                        error.to_string(),
+                        "kernel_service",
+                        false,
+                    )
+                });
+            }
             let id = string_field(&input, "trajectory_id")?;
             let trajectory_id = TrajectoryId::new(id).map_err(|error| {
                 KernelError::new(
@@ -331,6 +352,20 @@ mod tests {
             Ok(())
         }
 
+        async fn query_by_run(
+            &self,
+            run_id: &RunId,
+        ) -> Result<Vec<tact_protocol::TrajectoryEvent>, KernelError> {
+            Ok(self
+                .facts
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|fact| &fact.run_id == run_id)
+                .cloned()
+                .collect())
+        }
+
         async fn query(
             &self,
             _trajectory_id: &TrajectoryId,
@@ -419,12 +454,19 @@ mod tests {
             .router()
             .invoke(
                 "trajectory.read",
-                context,
+                context.clone(),
                 json!({"trajectory_id": "runtime", "from_sequence": 0}),
             )
             .await
             .expect("trajectory.read");
         assert_eq!(facts.as_array().map(Vec::len), Some(1));
+
+        let by_run = runtime
+            .router()
+            .invoke("trajectory.read", context, json!({"run_id": "runtime"}))
+            .await
+            .expect("trajectory.read by run");
+        assert_eq!(by_run.as_array().map(Vec::len), Some(1));
     }
 
     #[tokio::test]

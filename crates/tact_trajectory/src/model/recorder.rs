@@ -53,6 +53,25 @@ impl TrajectoryRecorder {
         Ok(event)
     }
 
+    /// Every fact recorded for `run_id`, across trajectories, in
+    /// (trajectory, sequence) order.
+    pub fn query_by_run(&self, run_id: &RunId) -> Result<Vec<TrajectoryEvent>, String> {
+        let events = self
+            .events
+            .lock()
+            .map_err(|_| "trajectory lock poisoned".to_string())?;
+        let mut facts: Vec<TrajectoryEvent> = events
+            .values()
+            .flatten()
+            .filter(|event| &event.run_id == run_id)
+            .cloned()
+            .collect();
+        facts.sort_by(|a, b| {
+            (a.trajectory_id.as_str(), a.sequence).cmp(&(b.trajectory_id.as_str(), b.sequence))
+        });
+        Ok(facts)
+    }
+
     pub fn query(
         &self,
         trajectory_id: &TrajectoryId,

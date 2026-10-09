@@ -102,6 +102,20 @@ impl KernelTrajectoryRecorder {
 
 #[async_trait]
 impl TrajectoryService for KernelTrajectoryRecorder {
+    async fn query_by_run(
+        &self,
+        run_id: &tact_protocol::RunId,
+    ) -> Result<Vec<tact_protocol::TrajectoryEvent>, KernelError> {
+        self.recorder.query_by_run(run_id).map_err(|error| {
+            KernelError::new(
+                tact_protocol::ErrorCategory::StorageError,
+                error,
+                "trajectory",
+                true,
+            )
+        })
+    }
+
     async fn query(
         &self,
         trajectory_id: &tact_protocol::TrajectoryId,
@@ -145,7 +159,10 @@ impl TrajectoryService for KernelTrajectoryRecorder {
             | RuntimeEvent::ToolMeta { run_id, .. }
             | RuntimeEvent::BackgroundTaskFinished { run_id, .. }
             | RuntimeEvent::SubagentFinished { run_id, .. }
-            | RuntimeEvent::SubagentsChanged { run_id, .. } => run_id.clone(),
+            | RuntimeEvent::SubagentsChanged { run_id, .. }
+            | RuntimeEvent::Compaction { run_id, .. }
+            | RuntimeEvent::Recovery { run_id, .. }
+            | RuntimeEvent::Retry { run_id, .. } => run_id.clone(),
             _ => None,
         }) {
             Some(run_id) => run_id,
@@ -166,6 +183,9 @@ impl TrajectoryService for KernelTrajectoryRecorder {
                 TrajectoryEventType::RunLifecycle
             }
             RuntimeEvent::Cancelled { .. } => TrajectoryEventType::Cancellation,
+            RuntimeEvent::Compaction { .. } => TrajectoryEventType::Compaction,
+            RuntimeEvent::Recovery { .. } => TrajectoryEventType::Recovery,
+            RuntimeEvent::Retry { .. } => TrajectoryEventType::Retry,
             RuntimeEvent::TimedOut { .. } => TrajectoryEventType::Timeout,
             RuntimeEvent::ModelCallStarted { .. }
             | RuntimeEvent::ModelCallFinished { .. }
@@ -181,6 +201,7 @@ impl TrajectoryService for KernelTrajectoryRecorder {
             }
             RuntimeEvent::InteractionRequested { .. }
             | RuntimeEvent::InteractionResponded { .. } => TrajectoryEventType::Interaction,
+            RuntimeEvent::Text { role, .. } if role == "user" => TrajectoryEventType::UserInput,
             RuntimeEvent::Text { .. } | RuntimeEvent::Notification { .. } => {
                 TrajectoryEventType::Message
             }
@@ -237,6 +258,20 @@ impl TrajectoryService for KernelTrajectoryRecorder {
 
 #[async_trait]
 impl TrajectoryService for SqliteTrajectoryService {
+    async fn query_by_run(
+        &self,
+        run_id: &tact_protocol::RunId,
+    ) -> Result<Vec<tact_protocol::TrajectoryEvent>, KernelError> {
+        self.recorder.query_by_run(run_id).await.map_err(|error| {
+            KernelError::new(
+                tact_protocol::ErrorCategory::StorageError,
+                error.to_string(),
+                "trajectory",
+                true,
+            )
+        })
+    }
+
     async fn query(
         &self,
         trajectory_id: &tact_protocol::TrajectoryId,
@@ -292,7 +327,10 @@ impl TrajectoryService for SqliteTrajectoryService {
                 | RuntimeEvent::ToolMeta { run_id, .. }
                 | RuntimeEvent::BackgroundTaskFinished { run_id, .. }
                 | RuntimeEvent::SubagentFinished { run_id, .. }
-                | RuntimeEvent::SubagentsChanged { run_id, .. } => run_id.clone(),
+                | RuntimeEvent::SubagentsChanged { run_id, .. }
+                | RuntimeEvent::Compaction { run_id, .. }
+                | RuntimeEvent::Recovery { run_id, .. }
+                | RuntimeEvent::Retry { run_id, .. } => run_id.clone(),
                 _ => None,
             })
             // Notifications and plugin lifecycle events can be emitted before
@@ -341,6 +379,9 @@ fn event_type(event: &RuntimeEvent) -> TrajectoryEventType {
             TrajectoryEventType::RunLifecycle
         }
         RuntimeEvent::Cancelled { .. } => TrajectoryEventType::Cancellation,
+        RuntimeEvent::Compaction { .. } => TrajectoryEventType::Compaction,
+        RuntimeEvent::Recovery { .. } => TrajectoryEventType::Recovery,
+        RuntimeEvent::Retry { .. } => TrajectoryEventType::Retry,
         RuntimeEvent::TimedOut { .. } => TrajectoryEventType::Timeout,
         RuntimeEvent::ModelCallStarted { .. }
         | RuntimeEvent::ModelCallFinished { .. }
@@ -357,6 +398,7 @@ fn event_type(event: &RuntimeEvent) -> TrajectoryEventType {
         RuntimeEvent::InteractionRequested { .. } | RuntimeEvent::InteractionResponded { .. } => {
             TrajectoryEventType::Interaction
         }
+        RuntimeEvent::Text { role, .. } if role == "user" => TrajectoryEventType::UserInput,
         RuntimeEvent::Text { .. } | RuntimeEvent::Notification { .. } => {
             TrajectoryEventType::Message
         }
@@ -415,5 +457,51 @@ mod tests {
         assert_eq!(facts.len(), 3);
         assert!(facts.windows(2).all(|w| w[0].sequence < w[1].sequence));
         assert_eq!(facts[0].event_type, TrajectoryEventType::RunLifecycle);
+    }
+
+    #[tokio::test]
+    async fn typed_facts_classify_compaction_recovery_retry_and_user_input() {
+        let service = KernelTrajectoryRecorder::new(TrajectoryRecorder::default());
+        let trajectory = TrajectoryId::from("trajectory-facts-test");
+        let run = RunId::from("run-facts-test");
+        let events = vec![
+            RuntimeEvent::Compaction {
+                run_id: Some(run.clone()),
+                trigger: "auto".into(),
+                focus: None,
+            },
+            RuntimeEvent::Recovery {
+                run_id: Some(run.clone()),
+                attempt: 1,
+                reason: "context too large".into(),
+            },
+            RuntimeEvent::Retry {
+                run_id: Some(run.clone()),
+                attempt: 1,
+                reason: "transient".into(),
+            },
+            RuntimeEvent::Text {
+                run_id: Some(run.clone()),
+                role: "user".into(),
+                content: "hello".into(),
+            },
+        ];
+        for event in events {
+            service
+                .append(Some(&trajectory), Some(&run), event)
+                .await
+                .expect("append fact");
+        }
+        let facts = service.query(&trajectory, 0).await.expect("query facts");
+        let types: Vec<_> = facts.iter().map(|fact| fact.event_type.clone()).collect();
+        assert_eq!(
+            types,
+            vec![
+                TrajectoryEventType::Compaction,
+                TrajectoryEventType::Recovery,
+                TrajectoryEventType::Retry,
+                TrajectoryEventType::UserInput,
+            ]
+        );
     }
 }

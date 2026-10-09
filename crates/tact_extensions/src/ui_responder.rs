@@ -346,6 +346,7 @@ impl UiResponder {
         self.respond(response)
     }
 
+    #[cfg(any(test, feature = "test-support"))]
     fn pending_options(&self, request_id: u64) -> Option<Vec<String>> {
         self.inner
             .pending

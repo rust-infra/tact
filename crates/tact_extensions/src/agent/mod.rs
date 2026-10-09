@@ -897,6 +897,16 @@ impl Agent {
         let _ = self.tool_context.view_updates.emit(update);
     }
 
+    /// Emits a structured Runtime fact that has no View projection.
+    ///
+    /// The Runtime stream is the durable boundary: the human notice is emitted
+    /// through the view channel, while the trajectory records the typed fact.
+    fn emit_runtime_fact(&self, event: tact_protocol::RuntimeEvent) {
+        if let Some(sink) = &self.runtime.runtime_event_sink {
+            let _ = sink.emit(event);
+        }
+    }
+
     /// Load persisted history into an empty context.
     ///
     /// Session id and store must already be set via [`Self::with_session`];
@@ -1382,6 +1392,11 @@ impl Agent {
                                     self.runtime.recovery_state.compact_attempts,
                                     MAX_COMPACT_ATTEMPTS
                                 )));
+                                self.emit_runtime_fact(tact_protocol::RuntimeEvent::Recovery {
+                                    run_id: self.runtime.current_run_id.clone(),
+                                    attempt: self.runtime.recovery_state.compact_attempts,
+                                    reason: "context too large".into(),
+                                });
                                 self.compact_history_with_trigger(CompactTrigger::Recovery, None)
                                     .await?;
                                 continue;
@@ -1406,6 +1421,11 @@ impl Agent {
                                     MAX_TRANSPORT_ATTEMPTS,
                                     delay.as_secs_f64()
                                 )));
+                                self.emit_runtime_fact(tact_protocol::RuntimeEvent::Retry {
+                                    run_id: self.runtime.current_run_id.clone(),
+                                    attempt: self.runtime.recovery_state.transport_attempts,
+                                    reason: summary.clone(),
+                                });
                                 tokio::time::sleep(delay).await;
                                 continue;
                             }
@@ -1972,6 +1992,11 @@ impl Agent {
         if result.is_ok() {
             self.runtime.session_start_source = SessionStartSource::Compact;
             self.runtime.session_start_hooks_pending = true;
+            self.emit_runtime_fact(tact_protocol::RuntimeEvent::Compaction {
+                run_id: self.runtime.current_run_id.clone(),
+                trigger: trigger.as_str().to_string(),
+                focus: focus.map(str::to_string),
+            });
         }
 
         // PostCompact hooks run once, only after a successful compaction.

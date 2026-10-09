@@ -25,6 +25,16 @@ pub trait TrajectoryService: Send + Sync {
     /// A host that installed a durable recorder overrides this; the default is
     /// a named "not available" failure so a plugin that asks to read facts from
     /// a recorder-less runtime gets an explicit error rather than empty data.
+    /// Returns every recorded fact for `run_id`, across trajectories.
+    async fn query_by_run(&self, _run_id: &RunId) -> Result<Vec<TrajectoryEvent>, KernelError> {
+        Err(KernelError::new(
+            tact_protocol::ErrorCategory::CapabilityNotFound,
+            "trajectory run query is not available",
+            "trajectory",
+            false,
+        ))
+    }
+
     async fn query(
         &self,
         _trajectory_id: &TrajectoryId,

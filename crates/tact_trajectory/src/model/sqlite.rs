@@ -95,6 +95,22 @@ impl SqliteTrajectoryRecorder {
         })
     }
 
+    /// Every fact recorded for `run_id`, across trajectories, in
+    /// (trajectory, sequence) order.
+    pub async fn query_by_run(&self, run_id: &RunId) -> Result<Vec<TrajectoryEvent>> {
+        let rows = sqlx::query_as::<_, Row>(
+            "SELECT trajectory_id, run_id, sequence, timestamp, actor, event_type,
+                    parent_step_id, payload, sensitivity
+             FROM trajectory_events WHERE run_id = ?
+             ORDER BY trajectory_id ASC, sequence ASC",
+        )
+        .bind(run_id.as_str())
+        .fetch_all(&self.pool)
+        .await
+        .context("query trajectory events by run")?;
+        rows.into_iter().map(Row::into_event).collect()
+    }
+
     pub async fn query(
         &self,
         trajectory_id: &TrajectoryId,
