@@ -344,9 +344,11 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         // Done state transitions to Idle after 2s timeout; must keep rendering to check
         // the clock.
         if should_repaint(&app) {
-            // Advance spinner frame when in an active state
+            // Advance the animation tick when in an active state. Monotonic —
+            // the wrap belongs to each animation, not to the counter (see
+            // `App::spinner_frame`).
             if !matches!(app.status, Status::Idle | Status::Done) {
-                app.spinner_frame = (app.spinner_frame + 1) % 10;
+                app.spinner_frame = app.spinner_frame.wrapping_add(1);
             }
             terminal.draw(|f| {
                 let size = f.area();

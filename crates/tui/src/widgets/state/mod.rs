@@ -269,8 +269,14 @@ pub struct App {
     pub(crate) skill_registry: SharedSkillRegistry,
     /// Shared session store used to inspect persisted request payloads.
     pub(crate) session_store: Option<tact::store::DynSessionStore>,
-    /// Spinner animation frame (0-9) for typing/loading indicator.
-    pub(crate) spinner_frame: u8,
+    /// Animation tick, advanced once per painted frame in an active state.
+    ///
+    /// **Monotonic, not `% 10`.** The tool/loading spinners only need a frame
+    /// index and take `% LEN` themselves; the live stats mascot needs a counter
+    /// longer than one animation cycle, so the wrap lives at each consumer.
+    /// Wrapping at `u32` is ~20 years of 150 ms frames — never observed, and a
+    /// wrap would only be a one-column jump.
+    pub(crate) spinner_frame: u32,
     /// Loading placeholder index in messages (spinner row while waiting for output).
     pub(crate) loading_idx: Option<usize>,
     /// Current interface language.

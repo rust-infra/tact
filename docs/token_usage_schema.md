@@ -429,12 +429,47 @@ The handoff is the point: the live row disappears exactly when the frozen row
 is written in the same place, so the numbers do not move, and an idle session
 pays no row for it.
 
+### The mascot on the live row
+
+The live row is **centered**, which leaves it two blank runs — the padding on
+either side of the text. A mascot walks those runs while the task is in flight:
+
+```
+···󰔰     Task stats:⏱ 00:45 · deepseek-flash · 64246 tokens (…)     󰶢···
+```
+
+- **Why the padding.** Every other column of that row is a digit. The mascot is
+  drawn on the row the band already painted and only inside
+  `[1, pad - 2]` / `[width - pad + 1, width - 2]`, so it can never cover a
+  number, and it never forces the text to move.
+- **Both sides, mirror phase.** The right mascot is the left one reflected:
+  the same distance in from its own edge, travelling the other way, so the two
+  walk in together and turn together.
+- **The turn is a glyph swap.** A terminal cannot mirror a glyph, so the return
+  leg swaps to the same-family glyph that faces the other way
+  (`md-transfer_right` / `md-transfer_left`). Both advance exactly one column —
+  verified against the font's advances — which is what keeps the geometry exact.
+- **No runway, no mascot.** Below `MASCOT_MIN_RUNWAY` (4 columns) nothing is
+  drawn. That is the whole degrade path: a narrow row *is* a row with no padding
+  to give away, so there is no second branch. A row whose text overflows has
+  `pad = 0` and therefore no mascot.
+- **One clock.** It is driven by `RenderCtx::spinner_frame` — the same tick as
+  the tool spinner and the loading placeholder, so everything on screen animates
+  in step. That counter is **monotonic** (the host no longer wraps it at 10);
+  each animation takes its own modulo, and the mascot needs the longer range for
+  its ping-pong.
+- The color is `theme.warning`, not `theme.accent`: the row's text is `accent`,
+  and a critter in the same red reads as part of the sentence.
+
+Only the **live** row carries it. The frozen row is a log row and stays still —
+a mascot on a finished turn would be animation that lies.
+
 ## Code Locations
 
 | File | Role |
 |------|------|
 | `crates/protocol/src/lib.rs` | `TokenUsageInfo` struct definition. |
-| `crates/agent_tui_kit/src/render/stats_line.rs` | `task_stats_body` (shared builder), `live_stats_reserve` / `live_stats_row` (geometry), `render_live_stats_band`. |
+| `crates/agent_tui_kit/src/render/stats_line.rs` | `task_stats_body` (shared builder), `live_stats_reserve` / `live_stats_row` (geometry), `render_live_stats_band`, `mascot_step` / `mascot_cells` (the mascot). |
 | `crates/tui/src/widgets/state/app/messages.rs` | `App::add_task_stats_block` — the frozen row. |
 | `crates/tui/src/render/log.rs` | `prepare_log_frame` — applies the live row's viewport reserve. |
 | `crates/tui/src/handlers/mouse.rs` | `below_log_viewport` — a click on a reserved row starts no selection. |

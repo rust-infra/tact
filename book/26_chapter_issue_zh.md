@@ -4,6 +4,32 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-10 — 实时任务统计行的两侧留白里放一只会走动的吉祥物
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature（用户可见：任务在跑时，实时统计行两侧各出现一只吉祥物来回走动，掉头时换成朝另一侧的字形；文字与数字一格不动） |
+| **Related** | `crates/agent_tui_kit/src/render/stats_line.rs`（`mascot_step` / `mascot_cells` / `MASCOT_RIGHT` / `MASCOT_LEFT` / `MASCOT_MIN_RUNWAY`）、`crates/agent_tui_kit/src/render/{ctx,bar,log}.rs`（tick 语义）、`crates/tui/src/lib.rs`、`crates/tui/src/widgets/state/mod.rs`、`crates/tui/src/render/log_render_tests.rs`；Ch 23 §6.6、Ch 26 2026-10-05 条 |
+
+**现象 / 动机：** 任务跑着的时候，实时统计行是**全屏唯一不动的东西**——工具行有 `⠋` 转圈、thinking 卡片有时间轴、底栏有 spinner，只有这一行是一串静止的数字。用户的原话是「这里可以加一个动画，用于表示当前正在处理中？」。
+
+**决策：** 在实时统计行的**两侧留白**里各放一只吉祥物，来回走动，掉头时**换成朝另一侧的同族字形**（`md-transfer_right` 󰔰 / `md-transfer_left` 󰶢）。要点：
+
+- **只动留白，不动文字。** 那一行每个格子都是数字，横穿就会吃掉读数；这一行是**居中**的，两侧留白天然是两条跑道，只落在 `[1, pad-2]` 与 `[width-pad+1, width-2]` 内。
+- **两侧镜像位相。** 右只是左只的镜像（离自己那侧的边一样远、朝反方向走），两只同时往里、同时掉头。
+- **掉头 = 换字形。** 终端**不能镜像字形**（一个码位一个字形，没有 transform）；同族里朝另一侧的字形 advance 与 `0` 完全相同（查过字体度量）→ 正好 1 列宽，跑道数学精确，绝不挤动文字。
+- **没有跑道就没有吉祥物。** 留白 < 4 列整只不画——窄行就是没有留白可给的行使，因此不需要第二个降级分支；文字溢出时 `pad = 0`，自动没有。
+- **同一个时钟。** 复用 `RenderCtx::spinner_frame`，与工具行 spinner 同一拍。因此把 `App::spinner_frame` 与 `RenderCtx::spinner_frame` 从 `u8`（宿主已 `% 10`）改成**单调 `u32`**：转圈类动效自己取模，吉祥物的往返需要比一个动画周期更长的计数。`bar.rs` 原本**没有**取模、直接拿宿主的值索引 `SPINNER_FRAMES`，这次补上（否则单调计数会立刻越界 panic）。
+- **颜色用 `theme.warning`**：那一行的文字已经是 `theme.accent` 红，同色的吉祥物会读成句子的一部分。
+
+**改后行为：** 任务在跑时，实时统计行的两侧留白各有一只吉祥物在走（如 `···󰔰     Task stats:⏱ 00:45 · …     󰶢···`），掉头时换字形，回合结束与那一行一起消失。窄终端（留白 < 4 列）与文字溢出的行没有吉祥物，其余行为一字不变。frozen 行**不画**——那是已经结束的回合，动画会撒谎。
+
+**Verification：** 纯函数用例 6 条（往返不跳端点、掉头恰在两端、两只朝向永远相反、任何 tick × 任何宽度都不碰文字列、留白不足返回 `None`、退化跑道 0/1 列与计数器回绕不 panic）+ 缓冲区用例 `the_live_row_walks_a_mascot_on_both_paddings`（恰好两只、都在文字区间之外、朝向相反、背景仍是 `theme.bg`）。既有 `stats_row_padding` 改为把吉祥物字形视为空白——否则「居中」用例会去过量吉祥物的位置，**用例仍会通过但测的东西已经变了**。推送门四个包全绿。
+
+**Pointers:** `docs/superpowers/specs/2026-10-10-live-stats-mascot-design.md`、可视稿 `docs/design/live-stats-activity.html`（7 组图标 × 3 种朝向 × 3 条跑道 × 3 档速度的对比板）、`docs/token_usage_schema.md` § Per-Turn Stats Line → "The mascot on the live row"、Ch 23 §6.6。
+
+---
+
 ## 1. 2026-10-09 — 持久记忆对齐 Claude：按仓库切分、只注入索引、`load_memory` 按需读
 
 | Field | Value |

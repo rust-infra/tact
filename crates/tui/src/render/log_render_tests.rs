@@ -13,7 +13,18 @@ use super::test_harness::{
 use crate::test_fixtures::StepCall;
 use crate::widgets::state::{App, LogItemKind, LogSelection, Status};
 use crate::widgets::tool_widget::TOOL_HEADER_ROWS;
+use agent_tui_kit::render::stats_line::{MASCOT_LEFT, MASCOT_RIGHT};
 use agent_tui_kit::widgets::button::Button;
+
+/// Is this a mascot glyph rather than row ink? The live stats row spends its
+/// padding on a walking critter (`stats_line::mascot_cells`), so anything that
+/// measures that row's *text* has to skip these.
+fn is_mascot_glyph(cell: &ratatui::buffer::Cell) -> bool {
+    matches!(
+        cell.symbol().chars().next(),
+        Some(MASCOT_LEFT | MASCOT_RIGHT)
+    )
+}
 
 fn seed_many_numbered_lines(app: &mut App, count: usize) {
     for i in 0..count {
@@ -1004,13 +1015,74 @@ fn stats_row_padding(buffer: &ratatui::buffer::Buffer) -> (usize, usize) {
                 .contains("Task stats:")
         })
         .expect("a stats row in the buffer");
-    let blank = |x: u16| buffer[(x, row)].symbol().trim().is_empty();
+    // The mascot walks this row's padding, so it is decoration, not ink.
+    // Counting it would make this measure where the critters stand instead of
+    // whether the text is centered.
+    let blank = |x: u16| {
+        let cell = &buffer[(x, row)];
+        cell.symbol().trim().is_empty() || is_mascot_glyph(cell)
+    };
     let left = (1..buffer.area.width - 1).take_while(|&x| blank(x)).count();
     let right = (1..buffer.area.width - 1)
         .rev()
         .take_while(|&x| blank(x))
         .count();
     (left, right)
+}
+
+/// The mascot (decision 2026-10-10: both paddings, glyph swap at the turn)
+/// walks the blank columns either side of the live line. It is drawn on the row
+/// the band already painted, and never on a column the text uses.
+#[test]
+fn the_live_row_walks_a_mascot_on_both_paddings() {
+    let mut app = make_app();
+    app.add_system_message("task body".into());
+    app.task_start_time = Some(chrono::Local::now());
+    app.status_bar_mut().model_name = "mock-model".into();
+    app.spinner_frame = 6;
+
+    let terminal = render_log_panel_terminal(&mut app, 100, 12);
+    let buffer = terminal.backend().buffer();
+    let row = 10;
+
+    let mascots: Vec<u16> = (1..99)
+        .filter(|&x| is_mascot_glyph(&buffer[(x, row)]))
+        .collect();
+    assert_eq!(
+        mascots.len(),
+        2,
+        "one mascot per padding, got {mascots:?} in:\n{}",
+        buffer_text(buffer)
+    );
+
+    // Where the text actually is: the row's ink, mascots excluded.
+    let ink: Vec<u16> = (1..99)
+        .filter(|&x| {
+            let cell = &buffer[(x, row)];
+            !cell.symbol().trim().is_empty() && !is_mascot_glyph(cell)
+        })
+        .collect();
+    let (first, last) = (ink[0], *ink.last().expect("row ink"));
+    assert!(
+        mascots[0] < first && mascots[1] > last,
+        "the mascots must stand outside the text ({}..{last}), got {mascots:?}",
+        first
+    );
+
+    assert_ne!(
+        buffer[(mascots[0], row)].symbol(),
+        buffer[(mascots[1], row)].symbol(),
+        "mirror phase: the two face their own direction of travel"
+    );
+
+    let bg = app.theme.bg;
+    for x in mascots {
+        assert_eq!(
+            buffer[(x, row)].bg,
+            bg,
+            "the mascot paints on the row's own background"
+        );
+    }
 }
 
 /// The frozen row — the task-end stats block written into the log — is centered

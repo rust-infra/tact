@@ -1,0 +1,824 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Tact · 实时任务统计行的「处理中」动画 — 设计方案</title>
+<style>
+  :root{
+    --page-bg:#f7f7f5;
+    --page-fg:#1d1d1f;
+    --page-dim:#6b6b70;
+    --card:#ffffff;
+    --line:#e3e3df;
+    --chip:#f0f0ec;
+
+    /* Japanese theme (the theme in the screenshot) */
+    --bg:#191e2d;
+    --fg:#e6dcc8;
+    --accent:#c83c28;
+    --muted:#808080;
+    --border:#322d28;
+    --success:#64a046;
+    --warning:#d2a032;
+    --highlight:#3c5078;
+    --think:#8c8cdc;
+    --think-fg:#b4b4c8;
+    --bar:#232837;
+    --note:#f0c020;
+  }
+  *{box-sizing:border-box}
+  body{
+    margin:0;padding:32px 24px 72px;
+    background:var(--page-bg);color:var(--page-fg);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB",sans-serif;
+    font-size:14px;line-height:1.6;
+  }
+  .wrap{max-width:1220px;margin:0 auto}
+  h1{font-size:22px;margin:0 0 6px;letter-spacing:-.01em}
+  h2{font-size:15px;margin:34px 0 12px;letter-spacing:.02em;text-transform:none}
+  .sub{color:var(--page-dim);margin:0 0 4px}
+  .rule{height:1px;background:var(--line);margin:22px 0}
+  .mono{font-family:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,"PingFang SC",monospace}
+
+  /* ── controls ── */
+  .controls{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:14px 0 12px}
+  .seg{display:inline-flex;background:var(--chip);border-radius:9px;padding:3px;gap:2px}
+  .seg button{
+    border:0;background:transparent;font:inherit;font-size:12.5px;color:var(--page-dim);
+    padding:5px 11px;border-radius:7px;cursor:pointer;white-space:nowrap;
+  }
+  .seg button[aria-pressed="true"]{background:#fff;color:var(--page-fg);box-shadow:0 1px 2px rgba(0,0,0,.10)}
+  .seg button:hover{color:var(--page-fg)}
+  .hint{color:var(--page-dim);font-size:12.5px}
+
+  /* ── terminal mock ── */
+  .term{
+    background:var(--bg);border-radius:10px;padding:10px 0 0;
+    font-family:"JetBrainsMono NFM","JetBrainsMonoNL NFM","Hack Nerd Font Mono","0xProto Nerd Font Mono",ui-monospace,SFMono-Regular,Menlo,"PingFang SC",monospace;
+    font-size:12.5px;line-height:1.5;
+    box-shadow:0 6px 22px rgba(20,20,30,.16);
+    overflow:hidden;
+  }
+  .trow{white-space:pre;overflow:hidden;padding:0 14px;color:var(--fg)}
+  .trow.dim{color:var(--muted)}
+  .tbar{background:var(--bar);color:var(--fg);padding:3px 14px;font-size:12px}
+  .tbar .acc{color:var(--accent)}
+  .tbar .dim{color:var(--muted)}
+  .rail{color:var(--accent)}
+  .think{color:var(--think)}
+  .thinkfg{color:var(--think-fg)}
+  .ok{color:var(--success)}
+  .warn{color:var(--warning)}
+  .link{color:var(--accent)}
+  .cmd{color:var(--fg)}
+  .num{color:var(--accent)}
+
+  /* log panel: a bordered box, the stats row is its last content row */
+  .panel{border:1px solid var(--border);border-radius:8px;margin:4px 10px 0;overflow:hidden}
+  .panel .trow{padding:0 12px}
+
+  /* the stats row — centered, exactly like center_pad() */
+  .srow{position:relative;text-align:center;white-space:pre;overflow:hidden;color:var(--accent)}
+  .srow .txt{position:relative;z-index:1}
+  .srow .ovl{position:absolute;inset:0;z-index:0;pointer-events:none}
+  .srow .ovl.sweep{
+    background:linear-gradient(90deg,transparent 0%,rgba(60,80,120,.55) 35%,rgba(120,150,200,.95) 50%,rgba(60,80,120,.55) 65%,transparent 100%);
+    background-size:34% 100%;background-repeat:no-repeat;
+    animation:sweep 2.4s linear infinite;
+  }
+  @keyframes sweep{from{background-position:-60% 0}to{background-position:160% 0}}
+  .srow .btn{font-weight:700;text-decoration:underline}
+  .srow.frozen{color:var(--accent)}
+
+  /* annotation echoing the yellow arrow in the screenshot */
+  .anno{
+    position:absolute;left:14px;top:50%;transform:translateY(-50%);
+    color:var(--note);z-index:2;font-size:12.5px;letter-spacing:.02em;pointer-events:none;
+  }
+  .anno .tail{font-size:15px}
+
+  .inputbox{position:relative;margin:6px 10px 0;border:1px solid var(--border);border-radius:8px;height:44px}
+  .inputbox .title,.inputbox .voice{
+    position:absolute;top:-9px;background:var(--bg);padding:0 6px;font-size:12.5px;color:var(--accent);
+  }
+  .inputbox .title{left:10px}
+  .inputbox .voice{right:10px}
+  .inputbox .ph{padding:8px 14px;color:var(--muted);font-size:12.5px}
+  .bottom{margin-top:8px;background:var(--bg);color:var(--accent);padding:2px 14px 10px;font-size:12px}
+
+  /* ── comparison strip ── */
+  .strip{
+    background:var(--bg);border-radius:10px;padding:8px 0;box-shadow:0 6px 22px rgba(20,20,30,.16);
+    font-family:"JetBrainsMono NFM","JetBrainsMonoNL NFM","Hack Nerd Font Mono","0xProto Nerd Font Mono",ui-monospace,SFMono-Regular,Menlo,"PingFang SC",monospace;
+    font-size:12.5px;line-height:1.5;
+  }
+  .sub3{font-size:13.5px;font-weight:600;margin:20px 0 8px;letter-spacing:.01em}
+  .badge{
+    display:inline-block;font-size:11px;font-weight:600;letter-spacing:.02em;margin-left:8px;vertical-align:1px;
+    background:#e8f2e4;color:#2f6b1f;border-radius:5px;padding:2px 7px;
+  }
+  .preset{
+    font:inherit;font-size:11.5px;font-weight:500;margin-left:8px;vertical-align:1px;cursor:pointer;
+    background:var(--chip);color:var(--page-dim);border:0;border-radius:6px;padding:3px 9px;
+  }
+  .preset:hover{color:var(--page-fg)}
+  .strip .row{display:flex;align-items:center}
+  .strip .lbl{
+    flex:0 0 128px;padding-left:14px;color:var(--muted);font-size:11.5px;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;white-space:nowrap;
+  }
+  .strip .lbl b{color:var(--fg);font-weight:600}
+  .strip .srow{flex:1 1 auto}
+  .strip .row+.row{margin-top:2px}
+
+  /* ── marquee demo ── */
+  .mqrow{display:flex;align-items:center}
+  .mqrow+.mqrow{margin-top:2px}
+  .mqrow .lbl{
+    flex:0 0 128px;padding-left:14px;color:var(--muted);font-size:11.5px;
+    font-family:-apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;white-space:nowrap;
+  }
+  .mqrow .lbl b{color:var(--fg);font-weight:600}
+  .mqwrap{flex:1 1 auto;display:flex;justify-content:center}
+  /* the panel bounds: dashed edges = 终端左右边界，越界即被裁 */
+  .mq{
+    position:relative;overflow:hidden;height:1.5em;white-space:pre;
+    color:var(--accent); /* 与 render_live_stats_band 一致：整行都是 theme.accent */
+    width:calc(var(--cols,78) * 1ch);
+    border-left:1px dashed rgba(230,220,200,.22);border-right:1px dashed rgba(230,220,200,.22);
+  }
+  .mq .mqtxt{position:absolute;top:0;white-space:pre}
+  .mq .mqtxt.center{position:static;display:block;text-align:center}
+  /* 吉祥物：文字一动不动，图标在跑道上来回 */
+  .mq .txt2{position:absolute;left:0;right:0;text-align:center;white-space:pre}
+  .mq .mascot{position:absolute;top:0;white-space:pre;color:var(--warning);z-index:2}
+  .mq .lane{position:absolute;left:0;right:0;top:1.5em;border-top:1px dashed rgba(230,220,200,.12)}
+  input[type=range]{vertical-align:middle;width:230px;accent-color:var(--accent)}
+  .mqout{color:var(--page-dim);font-size:12.5px;margin:6px 0 0}
+  .mqout code{font-size:11.5px}
+
+  /* ── frames ── */
+  .frames{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
+  .fchip{
+    width:30px;height:34px;display:flex;align-items:center;justify-content:center;
+    background:var(--bg);border-radius:6px;color:var(--accent);
+    font-family:ui-monospace,Menlo,monospace;font-size:15px;
+    border:1px solid transparent;transition:border-color .12s;
+  }
+  .fchip.on{border-color:var(--note)}
+  .fchip.cap{width:auto;padding:0 8px;font-size:11px;color:var(--muted);background:transparent}
+
+  /* ── notes ── */
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+  .card h3{margin:0 0 8px;font-size:13.5px;letter-spacing:.01em}
+  .card h3 .tag{
+    display:inline-block;font-size:10.5px;font-weight:600;letter-spacing:.04em;
+    background:var(--chip);color:var(--page-dim);border-radius:5px;padding:2px 6px;margin-left:6px;vertical-align:1px;
+  }
+  .card h3 .tag.rec{background:#e8f2e4;color:#2f6b1f}
+  .card ul{margin:0;padding-left:18px}
+  .card li{margin:4px 0}
+  code{
+    font-family:ui-monospace,Menlo,monospace;font-size:12px;
+    background:var(--chip);border-radius:4px;padding:1px 5px;
+  }
+  .kv{color:var(--page-dim)}
+  .no{color:#a33}
+  .yes{color:#2f6b1f}
+  footer{color:var(--page-dim);font-size:12px;margin-top:28px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>实时任务统计行的「处理中」动画</h1>
+  <p class="sub">目标：Log 面板底部那一行 <code>Task stats:⏱ 02:50 · deepseek-flash · 256460 tokens …</code>（截图里黄色箭头指的位置）在任务跑着的时候动起来，任务结束就停。</p>
+  <p class="sub">下面 5 个方案都在实时跑，帧率与 TUI 一致（150 ms / 帧，10 帧一轮 = 1.5 s）。后面两节是「同一行的两种运动」：<b>字跑</b>（跑马灯）和<b>图标跑</b>（可爱吉祥物在留白里来回）—— 它们改的是位置，不只是样式，所以单独放。</p>
+
+  <h2>对比：同一行，五种动法</h2>
+  <div class="strip" id="strip">
+    <div class="row" data-variant="a"><span class="lbl"><b>A</b> 前缀·点阵</span><span class="srow" data-srow data-variant="a"></span></div>
+    <div class="row" data-variant="b"><span class="lbl"><b>B</b> 呼吸·计时器</span><span class="srow" data-srow data-variant="b"></span></div>
+    <div class="row" data-variant="c"><span class="lbl"><b>C</b> 灯带·跑马</span><span class="srow" data-srow data-variant="c"></span></div>
+    <div class="row" data-variant="d"><span class="lbl"><b>D</b> 心跳·圆点</span><span class="srow" data-srow data-variant="d"></span></div>
+    <div class="row" data-variant="ab"><span class="lbl"><b>★ A+B</b> 推荐</span><span class="srow" data-srow data-variant="ab"></span></div>
+  </div>
+
+  <h2>完整上下文</h2>
+  <div class="controls">
+    <div class="seg" id="segVariant">
+      <button data-v="a">A 前缀·点阵</button>
+      <button data-v="b">B 呼吸·计时器</button>
+      <button data-v="c">C 灯带·跑马</button>
+      <button data-v="d">D 心跳·圆点</button>
+      <button data-v="ab" aria-pressed="true">★ A+B 推荐</button>
+    </div>
+    <div class="seg" id="segPhase">
+      <button data-p="live" aria-pressed="true">运行中</button>
+      <button data-p="frozen">已结束（交接）</button>
+    </div>
+    <div class="seg" id="segPlay">
+      <button data-play="1" aria-pressed="true">播放</button>
+      <button data-play="0">暂停</button>
+    </div>
+    <span class="hint" id="tick">frame 0</span>
+  </div>
+  <p class="hint" id="phaseHint" style="margin:2px 0 8px"></p>
+
+  <div class="term">
+    <div class="tbar"><span class="acc">tact</span> <span class="dim">·</span> main <span class="dim">·</span> <span class="acc">Japanese</span> <span class="dim">·</span> ~/Projects/tact</div>
+
+    <div class="panel">
+      <div class="trow"><span class="think">▎</span> <span class="think">Thought</span></div>
+      <div class="trow thinkfg">Let me go.</div>
+      <div class="trow dim">○ 13.5s  ⧉ 1/139 Lines  <span class="link">[ Open ]</span></div>
+      <div class="trow">好问题 — 我先核实当前真实行为，而不是凭印象回答。</div>
+      <div class="trow"><span class="num">1. ⚡ Bash</span>  <span class="cmd">cd /Users/rg/Projects/tact &amp;&amp; sed -n 2487,2545p crates/tact/src/agent/mod.rs</span></div>
+      <div class="trow dim">   <span class="ok">✓ Success</span> · 11.83ms · 61 lines · <span class="link">[ Open ]</span></div>
+      <div class="trow"><span class="num">2. ⚡ Bash</span>  <span class="cmd">cd /Users/rg/Projects/tact &amp;&amp; grep -rn -i "memory" crates/tact/src/prompt/*.md crates/tact/src/prompt/mod.rs | head -20</span></div>
+      <div class="trow dim">   <span class="ok">✓ Success</span> · 8.84ms · 22 lines · <span class="link">[ Open ]</span></div>
+      <div class="trow"><span class="think">▎</span> <span class="think">Thought</span></div>
+      <div class="trow thinkfg">Let me do that.</div>
+      <div class="trow dim">○ 7.4s  ⧉ 1/55 Lines  <span class="link">[ Open ]</span></div>
+      <div class="trow">让我用实证方式回答，而不是凭代码下结论 — 把 memory_enabled=false 时完整的 system prompt 抓出来看。</div>
+      <div class="trow"><span class="num">5. ⚡ Bash</span>  <span class="cmd">cd /Users/rg/Projects/tact &amp;&amp; cargo test -p tact --lib dump_prompt_with_memory_off 2>&amp;1 | grep -E "panicked|assert|…</span></div>
+      <div class="trow dim">   <span class="ok">✓ Success</span> · 43.72ms · 4 lines · <span class="link">[ Open ]</span></div>
+
+      <div class="srow" id="mockRow" data-srow data-variant="ab" data-handoff="1">
+        <span class="anno">动画加在这里 <span class="tail">➜</span></span>
+        <span class="txt"></span>
+      </div>
+    </div>
+
+    <div class="inputbox">
+      <span class="title">❯ Input (Shift/Alt+Enter=newline)</span>
+      <span class="voice">⏺ Voice</span>
+      <div class="ph">Type a task and press Enter…</div>
+    </div>
+    <div class="bottom">? Task list · Ctrl+C 中断 · Ctrl+T 主题 · /help</div>
+  </div>
+
+  <h2>同一行的两种运动：字跑 / 图标跑</h2>
+  <p class="hint" style="margin:0 0 10px">这一行只有<b>一条宽度轴</b> —— 它同时决定「放得下（两侧有留白）」和「放不下（得滚字）」，所以滑杆只有一根。虚线是终端左右边界。</p>
+  <div class="controls">
+    <span class="hint">面板宽度</span>
+    <input type="range" id="colsRange" min="56" max="150" value="130">
+    <span class="hint" id="colsOut">130 列</span>
+    <div class="seg" id="segSpeed">
+      <button data-s="1" aria-pressed="true">1 列/帧 · 6.7 列/s</button>
+      <button data-s="2">2 列/帧 · 13 列/s</button>
+      <button data-s="4">4 列/帧 · 26.7 列/s</button>
+    </div>
+    <span class="hint">内容 <b id="widthOut">—</b> 列</span>
+  </div>
+  <p class="hint" style="margin:0 0 14px">拖到 <b>87 列以下</b> → 文字开始滚，留白被吃光，图标就没地方跑了。</p>
+
+  <h3 class="sub3">① 字跑 —— 跑马灯（只在放不下时启用）</h3>
+  <div class="strip">
+    <div class="mqrow"><span class="lbl"><b>E</b> 滚动走马</span><span class="mqwrap"><span class="mq" id="rowE"></span></span></div>
+    <div class="mqrow"><span class="lbl"><b>F</b> 往返漂移</span><span class="mqwrap"><span class="mq" id="rowF"></span></span></div>
+  </div>
+  <p class="mqout" id="mqOutE"></p>
+  <p class="mqout" id="mqOutF"></p>
+
+  <h3 class="sub3">② 图标跑 —— 文字一动不动，可爱的吉祥物在留白里来回跑
+    <span class="badge">定案：方向对 + R1 两侧 + 成对字形翻转 · 已实现</span>
+    <button class="preset" id="preset">↺ 回到定案</button>
+  </h3>
+  <div class="controls">
+    <div class="seg" id="segIcons">
+      <button data-i="animal">动物 · 对称</button>
+      <button data-i="animalside">动物 · 侧视</button>
+      <button data-i="motion">跑动</button>
+      <button data-i="sparkle">闪光</button>
+      <button data-i="uni">纯 Unicode 兜底</button>
+      <button data-i="ascii">ASCII 鱼（自带镜像）</button>
+      <button data-i="dirs" aria-pressed="true">方向对（真掉头）</button>
+    </div>
+    <div class="seg" id="segLane">
+      <button data-l="both" aria-pressed="true">R1 留白 · 两侧</button>
+      <button data-l="left">R1 留白 · 单侧</button>
+      <button data-l="row2">R2 专用 · +1 行</button>
+    </div>
+    <div class="seg" id="segDir">
+      <button data-d="pair" aria-pressed="true">朝向：成对字形翻转</button>
+      <button data-d="trail">朝向：尾迹指方向</button>
+      <button data-d="turn">朝向：转身帧</button>
+    </div>
+  </div>
+  <div class="strip">
+    <div class="mqrow"><span class="lbl"><b>G</b> 单只往返</span><span class="mqwrap"><span class="mq" id="rowG"></span></span></div>
+    <div class="mqrow"><span class="lbl"><b>H</b> 两只对跑</span><span class="mqwrap"><span class="mq" id="rowH"></span></span></div>
+    <div class="mqrow"><span class="lbl"><b>I</b> 带尾迹</span><span class="mqwrap"><span class="mq" id="rowI"></span></span></div>
+    <div class="mqrow"><span class="lbl"><b>J</b> 蹦跳</span><span class="mqwrap"><span class="mq" id="rowJ"></span></span></div>
+  </div>
+  <p class="mqout" id="mascotOut"></p>
+  <p class="mqout" id="mascotOut2"></p>
+
+  <h2>帧表 <span class="hint" id="frameLabel"></span></h2>
+  <div class="frames" id="frames"></div>
+
+  <div class="rule"></div>
+
+  <h2>实现说明</h2>
+  <div class="grid">
+
+    <div class="card">
+      <h3>动画挂在哪 <span class="tag rec">已定</span></h3>
+      <ul>
+        <li>唯一位置：<code>render_live_stats_band</code>（<code>agent_tui_kit/src/render/stats_line.rs:143</code>）。它只在 <code>ctx.task_start_time.is_some()</code> 时被调用（<code>render/log.rs:510</code>）——「处理中」的判定是现成的，不用新增状态。</li>
+        <li>帧号现成：<code>ctx.spinner_frame</code>，非 Idle/Done 每帧 <code>+1 % 10</code>（<code>tui/src/lib.rs:348</code>），active 状态 poll 超时 150 ms（<code>tui/src/lib.rs:414</code>）。</li>
+        <li><b>零额外唤醒</b>：不需要新定时器、不需要新 repaint 理由。</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>字形现成 <span class="tag">复用</span></h3>
+      <ul>
+        <li><code>TOOL_RUNNING_SPINNER</code>（<code>widgets/tool_widget.rs:24</code>）：<span class="mono">⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏</span>，与工具行、loading 占位同一套。</li>
+        <li>用户在同一个界面里已经学过这套「正在跑」的词汇 —— 新增的动效不需要教学成本。</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>不能做的事 <span class="tag">硬约束</span></h3>
+      <ul>
+        <li class="no">不要把动画字形塞进 <code>task_stats_body</code>。它是 live 行与 frozen 行的<b>唯一来源</b>，frozen 行的 <code>raw</code> 必须与绘制行逐字形一致（选择/点击映射依赖它）。动画只在 live 分支拼前缀，body 原样。</li>
+        <li class="no">frozen 行不画转圈：那是已经结束的回合，转圈会撒谎。</li>
+        <li class="no">C 方案的行尾仍必须是 <code>theme.bg</code>（AGENTS.md：每个渲染单元把自己整块 area 刷成自己的 bg）。</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>代价</h3>
+      <ul>
+        <li><b>A / D</b>：前缀占 2 列 → 回合结束交接时整行居中位置左移 1 列。<code>center_pad</code> 的 ±1 已在 <code>log_render_tests</code> 容差内。要完全不动就把前缀压成 1 列（字形后不留空格）。</li>
+        <li><b>B</b>：不改布局，只改 <code>⏱ mm:ss</code> 的 fg（accent ↔ 暗一档的 accent），交接时逐格一致。</li>
+        <li><b>C</b>：唯一真正新增绘制单位的方案（一行 per-cell bg 带），也最容易被误读成「选中高亮」——建议做成可选，不进默认。</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>跑马灯的实现代价 <span class="tag">唯一要新增状态</span></h3>
+      <ul>
+        <li><b>需要一个新的单调计数</b>：<code>spinner_frame</code> 是 <code>% 10</code>，按列推进太短。在同一个地方（<code>tui/src/lib.rs:348</code>）加一个 <code>App</code> 字段、plumb 进 <code>RenderCtx</code> —— 一行改动，但确实是本组唯一的新状态。<b>跑马灯和吉祥物共用这一个 tick</b>，不会各加一个。</li>
+        <li><b>溢出判定顺带修一个静默裁切</b>：现在行宽超过面板时 <code>center_pad</code> 算出 0，尾部 token 明细被切掉、没人看得见。按 <code>UnicodeWidthStr::width(前缀 + body) &gt; area.width</code> 分流，溢出才跑。</li>
+        <li>frozen 行仍然是静态日志行（不跑），所以溢出场景下它照样被裁 —— 要彻底解决得让 frozen 行折行，那是另一件事。</li>
+        <li>交接瞬间会跳：跑马灯停在中途，frozen 行回到居中（A/B 只差 1 列，跑马灯可能差几十列）。</li>
+        <li>动的是<b>位置</b>不是字形 → 与 A/B 正交、可叠加，但叠起来很吵。</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>吉祥物：跑得起来的前提 <span class="tag">关键取舍</span></h3>
+      <ul>
+        <li><b>跑道只有两个来源</b>：<b>R1</b> 文字两侧的留白（0 行成本，窄终端自然消失）；<b>R2</b> 统计行上方多留 1 行（全宽跑道，代价是任务在飞时少一行日志）。</li>
+        <li><b>两侧一起跑是白送的</b>：R1 的左右两条留白<b>本来就是空的</b>，同一个 <code>pos</code> 镜像到右边（<code>cols-1-iconW-pos</code>）就多一只，0 行成本。右跑道默认用「第二只」（<code>set.pair[1]</code>：猫在左、狗在右）。</li>
+        <li>左右两条跑道是<b>断开的</b> —— 中间隔着文字，两只永远不碰面。这是设计的一部分，不是缺陷：图标横穿文字就会吃掉数字。镜像位相让它们同时往里、同时掉头，看起来是一对而不是各跑各的。</li>
+        <li><b>R1 的短跑道反而更可爱</b>：19 列、来回 5.4 s，节奏刚好；R2 的 121 列要 36 s 一趟，不加速就像在爬。<b>宽跑道 ≠ 更好看</b>。</li>
+        <li><b>R2 有个白送的好处</b>：图标行在文字行<b>上方</b>，frozen 行接手时落在文字行上 → 文字一格都不动，比 A/B 的 1 列位移更干净。</li>
+        <li>图标绝不横穿文字：那一行的每个格子都是数字，压过去就是吃掉读数。所以跑道只能是留白或专用行。</li>
+        <li><b>「蹦跳」只能是字形交替</b>：这一行只有 1 行高，真的上下跳要 2 行跑道（即 R2 再 +1 行）。所以 J 那一行是两只交替出现，看起来像在蹦，其实没动高度。</li>
+        <li><b>走位要按「步」算，不能按列</b>：一帧走 N 列时，<code>pos = tick * N</code> 会直接<b>跳过端点</b> —— 图标永远碰不到尽头，转身帧几乎不触发（实测 4 列/帧时 24 帧只命中 1 次）。正确做法是先算单程步数 <code>ceil((L-1)/N)</code>，再把位置夹到端点；改完三档速度都能稳定命中（6/30）。</li>
+        <li><b>方向翻转的真相</b>（把字形放大到 52px 逐个看过，不是猜的）：终端<b>不能镜像字形</b>（一个码位一个字形，全库带 <code>_mirrored</code> 的只有几个像素方块和火焰）。但动物<b>不是「只有一个朝向」那么简单</b>：
+          <br>· <b>对称的动物根本不用翻</b>：<code>md-cat</code> <code>md-dog</code> <code>md-panda</code> <code>md-penguin</code> <code>md-rabbit</code> <code>md-turtle</code> <code>md-butterfly</code> <code>md-bee</code> <code>md-bug</code> <code>md-owl</code> <code>md-cow</code> <code>md-sheep</code> 都是正面/俯视 → 来回跑都自然。<b>「动物 · 对称」那一组就是答案。</b>
+          <br>· <b>侧视的动物天生分左右两拨</b>：朝右 <code>md-dog_side</code> 󰩄、<code>md-fish</code> 󰈺、<code>md-run</code>；朝左 <code>md-bird</code> 󱗆、<code>md-duck</code> 󰇥、<code>md-dolphin</code> 󱢴、<code>md-snail</code> 󱙷、<code>md-horse</code>、<code>md-unicorn</code> 󱗂、<code>md-elephant</code>、<code>md-rodent</code>。右向一只 + 左向一只 = <b>真朝向掉头</b>（「动物 · 侧视」那一组）。
+          <br>· 剩下的（<code>md-run</code> 那族、非对称符号）没有左向字形 → 自动退回尾迹。</li>
+        <li>字形<b>全部取自本机 Nerd Font 的真实 cmap</b>（JetBrainsMonoNFM / HackNFM / 0xProtoNFM），不是猜的码位；实测每个图标的 advance 与 <code>0</code> 完全相同 → <b>正好 1 列宽</b>，不会挤动文字。</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>吉祥物的风险</h3>
+      <ul>
+        <li class="no"><b>字体覆盖</b>：PUA 图标没有 Nerd Font 就是豆腐块。Tact 已经在用 <code>󰜼</code>（<code>[󰜼 Open]</code> 按钮），所以 Nerd Font 事实上已是既成要求 —— 但那是<b>可点击的按钮</b>，一个装饰性吉祥物渲染成豆腐更难看。</li>
+        <li>兜底：<code>纯 Unicode</code> 那组（<span class="mono">✦ ♥ ★ ✿ ☾</span>）任何字体都有；<code>ASCII 鱼</code>（<span class="mono">&#62;&#60;(((°&#62;</span>）连方向翻转都是白送的，零字体风险。</li>
+        <li>建议做成配置（<code>[ui] stats_mascot = "cat" | "off"</code>），默认 <code>off</code> 或 <code>unicode</code>；不要默认开一个可能变豆腐的 PUA 字形。</li>
+        <li>别用 emoji（🐱）：宽度 2，会把跑道数学和文字对齐一起搞乱。</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>跑马灯的 UX 代价</h3>
+      <ul>
+        <li>计时器和 token 数变成移动靶，一眼读不全 —— 而这一行存在的意义就是「不用翻日志就能看数」。</li>
+        <li>正在用鼠标翻上面的日志时，底部一直在动是干扰。</li>
+        <li>所以：<b>E（滚动）只在溢出时启用</b>，是功能性的不是装饰性的；<b>F（往返漂移）不建议进默认</b>，它只是「看起来在跑」，代价是读数变累。</li>
+        <li>想要「跑马灯的感觉」又不想付这个代价 → 用 <b>C（灯带跑马）</b>：字不动、光在跑，零新增状态、零信息损失。</li>
+        <li>如果目标其实只是「溢出不丢信息」：更省事的办法是让这一行在溢出时<b>折成 2 行</b>（<code>LIVE_STATS_ROWS</code> 1→2）—— 静止、可读、零动效。跑马灯是「就是想要它动」才选的方案。</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>推荐 <span class="tag rec">A + B</span></h3>
+      <ul>
+        <li>前缀转圈说「在跑」，计时器呼吸说「还活着」，两者共用同一个 <code>spinner_frame</code>，不新增任何状态或定时器。</li>
+        <li>单独用 D（只跳一个点）偏弱；单独用 C 信息噪声大。</li>
+        <li>备选 A′：live 行把 <code>⏱</code> 换成 spinner 字形（同槽位）。更省列，但打破 <code>Task stats:⏱</code> 的形态一致，且 <code>the_live_row_hands_off_to_the_frozen_row</code> 的断言要改。</li>
+      </ul>
+    </div>
+
+    <div class="card">
+      <h3>要一起改的测试 / 文档 <span class="tag">push 时一次做完</span></h3>
+      <ul>
+        <li>测试：<code>render/log_render_tests.rs</code> 的 4 个 live/frozen 用例；A/B 不动 body，现有断言不会红，另加一条「live 行带前缀、frozen 行不带」。</li>
+        <li>文档：AGENTS.md 触发表「TUI bottom-bar / token / cache display」→ <code>docs/token_usage_schema.md</code> + 对应 book 章节；用户可见行为变化 → <code>book/26_chapter_issue_zh.md</code> 新增一条。</li>
+      </ul>
+    </div>
+
+  </div>
+
+  <footer>设计稿 · 2026-10-10 · 主题 Japanese（bg #191E2D / accent #C83C28）· 帧率与 TUI 一致：150 ms，10 帧一轮</footer>
+</div>
+
+<script>
+(function(){
+  const BRAILLE = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+  const T = {bg:'#191e2d', accent:'#c83c28', dimAccent:'#5d1c13',
+             warning:'#d2a032', success:'#64a046', highlight:'#3c5078'};
+
+  const NAMES = {
+    a:'A 前缀·点阵', b:'B 呼吸·计时器', c:'C 整行·流光', d:'D 心跳·圆点', ab:'A+B 组合（推荐）'
+  };
+
+  let frame = 0, playing = true, variant = 'ab', phase = 'live', elapsed = 170;
+  // 单调 tick：跑马灯要用长计数，spinner_frame 只有 0..9
+  let tick = 0, marqueeCols = 130, marqueeSpeed = 1;
+  const GAP = 8; // 两遍文本之间的间隔列数
+
+  function hex2rgb(h){h=h.replace('#','');return [parseInt(h.slice(0,2),16),parseInt(h.slice(2,4),16),parseInt(h.slice(4,6),16)];}
+  function rgb2hex(c){return '#'+c.map(v=>Math.round(v).toString(16).padStart(2,'0')).join('');}
+  function mix(a,b,t){const A=hex2rgb(a),B=hex2rgb(b);return rgb2hex(A.map((v,i)=>v+(B[i]-v)*t));}
+  // 呼吸：10 帧一条正弦，量化成离散色阶（终端没有透明度，只有 fg 颜色）
+  function breathColor(f){const t=(1-Math.cos(2*Math.PI*f/10))/2;return mix(T.accent,T.dimAccent,t);}
+  // 心跳：0-4 亮起，5-9 落回
+  function beatColor(f){const t=f<5?f/4:(9-f)/4;return mix(T.accent,T.dimAccent,t);}
+
+  function mmss(s){const m=Math.floor(s/60),x=s%60;return String(m).padStart(2,'0')+':'+String(x).padStart(2,'0');}
+
+  const BODY = () =>
+    'Task stats:<span class="clk" style="color:inherit">⏱ ' + mmss(elapsed) + '</span>' +
+    ' · deepseek-flash · 256460 tokens (prompt 256360 · completion 100)';
+
+  function rowHTML(v, frozen){
+    const body = BODY();
+    if (frozen) return '<span class="txt"><span class="btn">⎘</span>  ' + body + '</span>';
+    if (v === 'a')  return '<span class="txt"><span style="color:'+T.accent+'">'+BRAILLE[frame]+' </span>'+body+'</span>';
+    if (v === 'b')  return '<span class="txt">'+body.replace('class="clk" style="color:inherit"','class="clk" style="color:'+breathColor(frame)+'"')+'</span>';
+    if (v === 'd')  return '<span class="txt"><span style="color:'+beatColor(frame)+'">● </span>'+body+'</span>';
+    if (v === 'ab') return '<span class="txt"><span style="color:'+T.accent+'">'+BRAILLE[frame]+' </span>'+body.replace('class="clk" style="color:inherit"','class="clk" style="color:'+breathColor(frame)+'"')+'</span>';
+    if (v === 'c')  return '<span class="ovl sweep" style="animation-play-state:'+(playing?'running':'paused')+'"></span><span class="txt">'+body+'</span>';
+    return body;
+  }
+
+  function liveTextPlain(){
+    return BRAILLE[frame] + ' Task stats:⏱ ' + mmss(elapsed) +
+      ' · deepseek-flash · 256460 tokens (prompt 256360 · completion 100)';
+  }
+  function liveTextHTML(){
+    return '<span style="color:'+T.accent+'">'+BRAILLE[frame]+' </span>Task stats:' +
+      '<span class="clk" style="color:'+breathColor(frame)+'">⏱ '+mmss(elapsed)+'</span>' +
+      ' · deepseek-flash · 256460 tokens (prompt 256360 · completion 100)';
+  }
+  // 终端列宽：⏱ 占 2 列，其余 1 列
+  function textCols(s){ return [...s].reduce((a,ch)=>a+(ch === '⏱' ? 2 : 1), 0); }
+
+  function renderMarquee(){
+    const cols = marqueeCols, w = textCols(liveTextPlain());
+    document.getElementById('widthOut').textContent = w;
+    document.getElementById('colsOut').textContent = cols + ' 列';
+    document.querySelectorAll('.mq').forEach(m => m.style.setProperty('--cols', cols));
+
+    // E — 滚动走马：只在放不下的时候跑
+    const e = document.getElementById('rowE'), outE = document.getElementById('mqOutE');
+    if (w <= cols){
+      e.innerHTML = '<span class="mqtxt center">' + liveTextHTML() + '</span>';
+      outE.innerHTML = '放得下（富余 <b>' + (cols - w) + '</b> 列）→ <b>静止居中</b>。没有可揭示的信息就不该跑 —— 这一行的职责是「一眼读完」。';
+    } else {
+      const period = w + GAP, shift = (tick * marqueeSpeed) % period;
+      e.innerHTML = '<span class="mqtxt" style="left:' + (-shift) + 'ch">' +
+        liveTextHTML() + ' '.repeat(GAP) + liveTextHTML() + ' '.repeat(GAP) + '</span>';
+      outE.innerHTML = '溢出 <b>' + (w - cols) + '</b> 列 → 开始跑（右→左，周期 ' + period +
+        ' 列 ≈ ' + ((period / marqueeSpeed) * 0.15).toFixed(1) + ' s）。两遍文本首尾相接，行里永远有字，不出现空档。';
+    }
+
+    // F — 往返漂移：只在富余里晃，不裁字
+    const f = document.getElementById('rowF'), outF = document.getElementById('mqOutF');
+    const slack = cols - w;
+    if (slack < 12){
+      f.innerHTML = '<span class="mqtxt center">' + liveTextHTML() + '</span>';
+      outF.innerHTML = '富余只有 <b>' + Math.max(slack, 0) + '</b> 列 → 没地方漂，退回静止居中（面板要到 <b>' +
+        (w + 12) + '</b> 列以上才看得到漂移）。';
+    } else {
+      const amp = slack / 2 - 2, off = amp * Math.sin(2 * Math.PI * tick / 40);
+      f.innerHTML = '<span class="mqtxt" style="left:' + (slack / 2 + off) + 'ch">' + liveTextHTML() + '</span>';
+      outF.innerHTML = '在富余里往返 <b>±' + amp.toFixed(0) + '</b> 列（周期 6 s）—— 不裁字、不丢信息，但计时器一直在动，读数变累。';
+    }
+  }
+
+  // ── 吉祥物：字形全部取自本机 Nerd Font 的真实 cmap（不是猜的码位）──
+  // 实测 JetBrainsMonoNFM / HackNFM / 0xProtoNFM 里每个图标的 advance 都与 '0' 完全相同，
+  // 所以图标就是 1 列宽，跑道数学是准的。
+  //  `left` = 真正朝左的另一个字形（不是镜像，是同族的左向版）。
+  //  只有箭头/手/换向这一族有；动物全库只有单一朝向 —— 查遍 cmap 确认过。
+  const ICON_SETS = {
+    // 对称（正面/俯视）的动物：来回跑都自然，根本不需要翻转
+    animal:{ label:'动物队 · 对称（不用翻转）', mirror:false, sym:true,
+      one:[{g:'󰄛'}], pair:[{g:'󰄛'},{g:'󰏚'}], trail:{g:'󰾡'}, hop:[{g:'󰤇'},{g:'󱖉'}] },
+    // 侧视的动物分左右两拨，配上就真的有朝向（dog_side 朝右 / bird 朝左）
+    animalside:{ label:'动物队 · 侧视（真朝向）', mirror:true,
+      one:[{g:'󰩄',left:'󱗆'}], pair:[{g:'󰩄',left:'󱗆'},{g:'󰈺',left:'󱢴'}],
+      trail:{g:'󰈺',left:'󱢴'}, hop:[{g:'󰩄',left:'󱗆'},{g:'󰈺',left:'󱢴'}] },
+    motion:{ label:'跑动', mirror:false,
+      one:[{g:'󰜎'}], pair:[{g:'󰜎'},{g:'󰑮'}], trail:{g:'󰶳'}, hop:[{g:'󰷺'},{g:'󱝁'}] },
+    sparkle:{ label:'闪光', mirror:false, sym:true,
+      one:[{g:'󰫢'}], pair:[{g:'󰫢'},{g:'󱕅'}], trail:{g:'󰋑'}, hop:[{g:'󰹦'},{g:'󰛓'}] },
+    uni:{ label:'纯 Unicode 兜底', mirror:true,
+      one:[{g:'➤',left:'◀'}], pair:[{g:'♥'},{g:'★'}], trail:{g:'❋'}, hop:[{g:'✶',left:'✧'}] },
+    ascii:{ label:'ASCII 鱼（自带镜像）', mirror:true,
+      one:[{g:'><(((°>',w:7,left:'<°)))><'}],
+      pair:[{g:'><(((°>',w:7,left:'<°)))><'},{g:'><>',w:3,left:'<><'}],
+      trail:{g:'°'}, hop:[{g:'><>',w:3,left:'<><'}] },
+    dirs:{ label:'方向对（箭头/手，真掉头）', mirror:true,
+      one:[{g:'󰔰',left:'󰶢'}],                       // md-transfer_right / _left
+      pair:[{g:'󰔰',left:'󰶢'},{g:'󰁔',left:'󰁍'}],      // transfer_right + arrow_right
+      trail:{g:'󰋇',left:'󰩔'},                        // hand_pointing_right / _left
+      hop:[{g:'󰅂',left:'󰅁'}] },                      // chevron_right / _left
+  };
+  const TURN_GLYPH = '󱦙';   // md-rotate_360：到端点插一帧「转身」
+  //  lane: 'both' 左右留白都用 | 'left' 只用左边 | 'row2' 统计行上方专用跑道
+  //  初始 = 定案（方向对 + R1 两侧 + 成对字形翻转）
+  let iconSet = 'dirs', lane = 'both', dirMode = 'pair';
+
+  function mascotGeometry(){
+    const cols = marqueeCols, w = textCols(liveTextPlain());
+    return { cols, w, pad: Math.max(0, Math.floor((cols - w) / 2)) };
+  }
+  function twinOf(icon){ return icon.left || icon.flip || null; }
+  // 只有「成对翻转」模式下才换字形；其余模式用尾迹/转身帧表达方向
+  function glyphOf(icon, dir){
+    const twin = twinOf(icon);
+    return (dir < 0 && dirMode === 'pair' && twin) ? twin : icon.g;
+  }
+  // 方向感知的尾迹：往右跑时点甩在左边，往左跑时甩在右边
+  //  `map` 用来把左侧跑道的列映射到右侧那条（镜像），不传就是原样
+  function trailHTML(start, pos, dir, len, iconW, map){
+    let html = '';
+    [[1, .5], [2, .66], [3, .8]].forEach(([d, t]) => {
+      const c = start + pos - dir * d;
+      if (c >= start && c + 1 <= start + len + iconW - 1){
+        const col = map ? map(c) : c;
+        html += '<span class="mascot" style="left:' + col + 'ch;color:' + mix(T.warning, T.bg, t) + '">·</span>';
+      }
+    });
+    return html;
+  }
+  // 可爱不起来的真正原因通常是「跑道太长」：来回一趟十几秒，看着犯困
+  function paceNote(secs){
+    return +secs > 10
+      ? ' <b>⚠ 节奏偏慢</b>：跑道太长，一个来回 ' + secs + ' s 会看着犯困 —— 调到 4 列/帧，或改用 R1 的短跑道。'
+      : ' <b>节奏刚好</b>：短跑道来回快，看起来才像在撒欢。';
+  }
+
+  function renderMascotRow(id, behavior){
+    const box = document.getElementById(id);
+    const set = ICON_SETS[iconSet];
+    const { cols, pad } = mascotGeometry();
+    const lane2 = lane === 'row2';
+    const both = lane === 'both';
+    box.style.setProperty('--cols', cols);
+    box.style.height = lane2 ? '3em' : '1.5em';
+
+    const icons = behavior === 'pair' ? set.pair
+      : behavior === 'trail' ? [set.trail]
+      : behavior === 'hop' ? set.hop : set.one;
+    const iconW = icons[0].w || 1;
+    // 右边那条跑道用「第二只」（有 pair 就用 pair[1]：猫在左、狗在右）
+    const rightIcon = set.pair[1] || icons[0];
+    const rightW = rightIcon.w || 1;
+
+    const start = 1;
+    const len = lane2 ? Math.max(0, cols - 2 - iconW) : Math.max(0, pad - 2);
+    // 左跑道列 c ↔ 右跑道的镜像列（pos 相同 → 两只同时往里、同时掉头）
+    const mirror = c => cols - 1 - iconW - (c - start);
+
+    // 文字永远静止、居中 —— 这是整节的立论
+    let html = (lane2 ? '<span class="lane"></span>' : '') +
+      '<span class="txt2" style="top:' + (lane2 ? '1.5em' : '0') + '">' + liveTextHTML() + '</span>';
+
+    if (len < 4){
+      const bob = icons[tick % icons.length];
+      html += '<span class="mascot" style="left:' + start + 'ch">' + glyphOf(bob, 1) + '</span>';
+      if (both) html += '<span class="mascot" style="left:' + (cols - 2 - rightW) + 'ch">' + glyphOf(rightIcon, -1) + '</span>';
+      return { html, len, pad, iconW, stuck:true, both };
+    }
+
+    const L = len - iconW + 1;
+    // 按「步」走而不是按列：一帧走 N 列时，直接 tick*N 会跳过端点，
+    // 图标永远碰不到尽头 → 转身帧几乎不触发。先算单程步数，再夹到端点。
+    const legSteps = Math.max(1, Math.ceil((L - 1) / marqueeSpeed));
+    const P = 2 * legSteps;
+    const s = tick % P;
+    const fwd = s <= legSteps;
+    const pos = fwd ? Math.min(s * marqueeSpeed, L - 1)
+                    : Math.max(0, (P - s) * marqueeSpeed);
+    const dir = fwd ? 1 : -1;
+
+    const atEnd = pos <= 1 || pos >= L - 2;
+    const turning = dirMode === 'turn' && atEnd;
+    const hasTwin = !!twinOf(icons[0]);
+    // 「成对翻转」模式下，这一组没有镜像字形就自动退回尾迹 —— 否则方向就丢了
+    const showTrail = dirMode === 'trail' || (dirMode === 'pair' && !hasTwin);
+
+    const one = (ic, col, d) =>
+      '<span class="mascot" style="left:' + col + 'ch">' + (turning ? TURN_GLYPH : glyphOf(ic, d)) + '</span>';
+
+    if (behavior === 'pair'){
+      const a = icons[0], b = icons[1] || icons[0];
+      const wB = b.w || 1, colB = Math.max(0, len - wB - pos);
+      html += one(a, start + pos, 1);
+      html += '<span class="mascot" style="left:' + (start + colB) + 'ch">' + glyphOf(b, -1) + '</span>';
+      if (showTrail){
+        html += trailHTML(start, pos, 1, len, iconW);
+        html += trailHTML(start, colB, -1, len, iconW);
+      }
+      // 两侧模式：整行镜像到右边那条跑道（一对变两对，左右对称）
+      if (both){
+        html += one(rightIcon, mirror(start + pos), -1);
+        html += '<span class="mascot" style="left:' + mirror(start + colB) + 'ch">' + glyphOf(b, 1) + '</span>';
+        if (showTrail){
+          html += trailHTML(start, pos, -1, len, iconW, mirror);
+          html += trailHTML(start, colB, 1, len, iconW, mirror);
+        }
+      }
+    } else if (behavior === 'trail'){
+      const ic = icons[0];
+      html += trailHTML(start, pos, dir, len, iconW);
+      html += one(ic, start + pos, dir);
+      if (both){
+        html += trailHTML(start, pos, -dir, len, iconW, mirror);
+        html += one(rightIcon, mirror(start + pos), -dir);
+      }
+    } else {
+      const ic = behavior === 'hop' ? icons[Math.floor(tick / 2) % icons.length] : icons[0];
+      if (showTrail) html += trailHTML(start, pos, dir, len, iconW);
+      html += one(ic, start + pos, dir);
+      if (both){
+        if (showTrail) html += trailHTML(start, pos, -dir, len, iconW, mirror);
+        html += one(rightIcon, mirror(start + pos), -dir);
+      }
+    }
+    return { html, len, pad, iconW, stuck:false, hasTwin, both };
+  }
+
+  function renderMascot(){
+    const rows = [['rowG', 'one'], ['rowH', 'pair'], ['rowI', 'trail'], ['rowJ', 'hop']];
+    let first = null;
+    rows.forEach(([id, b]) => {
+      const r = renderMascotRow(id, b);
+      document.getElementById(id).innerHTML = r.html;
+      if (!first) first = r;
+    });
+    const { cols, w, pad } = mascotGeometry();
+    const o1 = document.getElementById('mascotOut');
+    const o2 = document.getElementById('mascotOut2');
+    const secs = ((2 * (first.len - 1)) / marqueeSpeed * 0.15).toFixed(1);
+    if (first.stuck){
+      o1.innerHTML = '⚠ <b>跑不起来</b>：内容 ' + w + ' 列 ≥ 面板 ' + cols + ' 列，两侧留白被吃光（pad=' + pad +
+        '）→ 图标只能停在最左原地闪。<b>切到 R2</b>，或把宽度拉到 ' + (w + 8) + ' 列以上。';
+    } else if (lane === 'both'){
+      o1.innerHTML = 'R1 <b>两侧跑道</b>：左边 ' + pad + ' 列 + 右边 ' + pad + ' 列，各留 ' + first.len +
+        ' 列可用。同一个 <code>pos</code> 镜像到右边 → 两只<b>同时往里、同时掉头</b>，一个来回 ≈ ' + secs +
+        ' s。<b>0 行成本</b>：两条跑道本来就是空的，中间的文字一格不动。';
+    } else if (lane === 'row2'){
+      o1.innerHTML = 'R2 专用跑道：统计行<b>上方多留 1 行</b>，整行 ' + cols + ' 列都是跑道（' + first.len +
+        ' 列可用），一个来回 ≈ ' + secs + ' s。代价：任务在飞时少一行日志。' + paceNote(secs);
+    } else {
+      o1.innerHTML = 'R1 单侧跑道：文字两侧各有 <b>' + pad + '</b> 列空白，只用左边那条（' + first.len +
+        ' 列可用），一个来回 ≈ ' + secs + ' s。<b>零行成本</b>，因为那本来就是空的。' + paceNote(secs);
+    }
+    const set = ICON_SETS[iconSet];
+    const pairNote = first.hasTwin
+      ? '朝向 = <b>成对字形翻转</b>：这一组有真正朝左的同族字形（<b>不是镜像</b> —— 终端做不到镜像），掉头时换字形，这是真掉头。'
+      : (set.sym
+        ? '朝向 = <b>成对字形翻转</b>，但这一组是<b>对称</b>字形（正面/俯视）→ <b>根本不需要翻转</b>，来回跑都自然。动物队挑对称的就是这个原因。'
+        : '朝向 = <b>成对字形翻转</b>，但这一组既没有左向字形、也不对称 → 自动退回尾迹指方向，否则方向就丢了。');
+    const dirNote = {
+      pair: pairNote,
+      trail: '朝向 = <b>尾迹指方向</b>：字形不变，靠身后的点表示往哪走。任何图标集都能用，零新字形。',
+      turn: '朝向 = <b>转身帧</b>：到端点插一帧 <span class="mono">' + TURN_GLYPH + '</span>（md-rotate_360），读起来就是掉头。',
+    }[dirMode];
+    o2.innerHTML = dirNote + (lane === 'row2'
+      ? ' 跑道用 R2：图标行在文字行<b>上方</b>，frozen 行接手时落在文字行上 → <b>文字一格都不动</b>。'
+      : ' 图标 1 列宽（实测 Nerd Font 图标与 <code>0</code> 同宽）→ 不会挤动文字。左右两条跑道是<b>断开的</b>：中间隔着文字，所以两只各跑各的，永远不碰面（也不需要碰面）。');
+  }
+
+  function render(){
+    document.querySelectorAll('[data-srow]').forEach(el=>{
+      const frozen = el.dataset.handoff === '1' && phase === 'frozen';
+      const anno = el.querySelector('.anno');
+      el.innerHTML = (anno && !frozen ? anno.outerHTML : '') + rowHTML(el.dataset.variant, frozen);
+      el.classList.toggle('frozen', frozen);
+    });
+    document.getElementById('tick').textContent = 'frame ' + frame + (playing ? '' : ' · 暂停');
+    document.getElementById('phaseHint').textContent = phase === 'frozen'
+      ? 'frozen 行（回合已结束）：动画停止、前缀消失，整行左移 1 列 —— 数字不动。这一行是日志行，不该转圈。'
+      : 'live 行（任务在跑）：只在 render_live_stats_band 里加动效，task_stats_body 一个字都不改。';
+    renderFrames();
+    renderMarquee();
+    renderMascot();
+  }
+
+  function renderFrames(){
+    const box = document.getElementById('frames');
+    const lbl = document.getElementById('frameLabel');
+    let chips = [];
+    if (variant === 'a' || variant === 'ab'){
+      lbl.textContent = 'TOOL_RUNNING_SPINNER · 10 帧 · 150 ms/帧 · 1.5 s 一圈';
+      chips = BRAILLE.map((g,i)=>[g, T.accent]);
+    } else if (variant === 'b'){
+      lbl.textContent = '⏱ 的 fg 在 accent ↔ 暗一档之间呼吸 · 10 帧一轮';
+      chips = BRAILLE.map((_,i)=>['⏱', breathColor(i)]);
+    } else if (variant === 'd'){
+      lbl.textContent = '● 的 fg 心跳 · 4 帧亮起 / 5 帧落回';
+      chips = BRAILLE.map((_,i)=>['●', beatColor(i)]);
+    } else {
+      lbl.textContent = '整行 bg 带（theme.highlight）横向扫过 · CSS/背景色实现，不占帧';
+      chips = BRAILLE.map((_,i)=>['▁', T.accent]);
+    }
+    const cap = variant === 'c'
+      ? '背景带位置由 CSS 驱动，与 frame 无关'
+      : '黄框 = 当前帧（frame ' + frame + '）';
+    box.innerHTML = chips.map((c,i)=>
+      '<div class="fchip'+(i===frame?' on':'')+'" style="color:'+c[1]+'">'+c[0]+'</div>'
+    ).join('') + '<span class="fchip cap">' + cap + '</span>';
+  }
+
+  // 与 TUI 完全一致：150 ms 一帧，active 状态才推进
+  setInterval(()=>{ if(!playing) return; frame = (frame + 1) % 10; tick++; render(); }, 150);
+  // 计时器每秒走一格
+  setInterval(()=>{ if(!playing || phase === 'frozen') return; elapsed += 1; render(); }, 1000);
+
+  document.getElementById('segVariant').addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    variant = b.dataset.v;
+    [...e.currentTarget.children].forEach(x=>x.setAttribute('aria-pressed', String(x===b)));
+    document.getElementById('mockRow').dataset.variant = variant;
+    render();
+  });
+  document.getElementById('segPhase').addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    phase = b.dataset.p;
+    [...e.currentTarget.children].forEach(x=>x.setAttribute('aria-pressed', String(x===b)));
+    render();
+  });
+  document.getElementById('colsRange').addEventListener('input', e=>{
+    marqueeCols = +e.target.value; render();
+  });
+  document.getElementById('segIcons').addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    iconSet = b.dataset.i;
+    [...e.currentTarget.children].forEach(x=>x.setAttribute('aria-pressed', String(x===b)));
+    render();
+  });
+  document.getElementById('segLane').addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    lane = b.dataset.l;
+    [...e.currentTarget.children].forEach(x=>x.setAttribute('aria-pressed', String(x===b)));
+    render();
+  });
+  // 定案组合（Rg 2026-10-10 选定，已按此实现）：方向对 + R1 两侧 + 成对字形翻转。
+  // 这是唯一一组「掉头」真的能看见的配置 —— md-transfer_right/left 是真正朝左的同族字形。
+  document.getElementById('preset').addEventListener('click', ()=>{
+    iconSet = 'dirs'; lane = 'both'; dirMode = 'pair'; marqueeSpeed = 1;
+    const press = (sel, attr, val) => document.querySelectorAll(sel + ' button').forEach(b=>
+      b.setAttribute('aria-pressed', String(b.dataset[attr] === val)));
+    press('#segIcons','i','dirs'); press('#segLane','l','both');
+    press('#segDir','d','pair'); press('#segSpeed','s','1');
+    render();
+  });
+  document.getElementById('segDir').addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    dirMode = b.dataset.d;
+    [...e.currentTarget.children].forEach(x=>x.setAttribute('aria-pressed', String(x===b)));
+    render();
+  });
+  document.getElementById('segSpeed').addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    marqueeSpeed = +b.dataset.s;
+    [...e.currentTarget.children].forEach(x=>x.setAttribute('aria-pressed', String(x===b)));
+    render();
+  });
+  document.getElementById('segPlay').addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    playing = b.dataset.play === '1';
+    [...e.currentTarget.children].forEach(x=>x.setAttribute('aria-pressed', String(x===b)));
+    render();
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
