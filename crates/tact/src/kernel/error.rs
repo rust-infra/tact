@@ -11,7 +11,11 @@ use tact_protocol::{ErrorCategory, PluginId, ProtocolError, RequestId};
 /// every adapter boundary.
 #[derive(Debug, Clone)]
 pub struct KernelError {
-    protocol: ProtocolError,
+    // Boxed: `ProtocolError` carries a message, an origin, an optional
+    // `details` JSON value and two IDs, so an unboxed `Err` variant is large
+    // enough that every `Result<_, KernelError>` in the Kernel pays for it.
+    // The wire representation is unchanged.
+    protocol: Box<ProtocolError>,
 }
 
 impl KernelError {
@@ -23,13 +27,15 @@ impl KernelError {
         retryable: bool,
     ) -> Self {
         Self {
-            protocol: ProtocolError::new(category, message, origin, retryable),
+            protocol: Box::new(ProtocolError::new(category, message, origin, retryable)),
         }
     }
 
     #[must_use]
     pub fn from_protocol(error: ProtocolError) -> Self {
-        Self { protocol: error }
+        Self {
+            protocol: Box::new(error),
+        }
     }
 
     #[must_use]
@@ -39,7 +45,7 @@ impl KernelError {
 
     #[must_use]
     pub fn into_protocol_error(self) -> ProtocolError {
-        self.protocol
+        *self.protocol
     }
 
     #[must_use]

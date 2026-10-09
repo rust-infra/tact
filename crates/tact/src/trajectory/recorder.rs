@@ -13,6 +13,13 @@ pub struct TrajectoryRecorder {
 }
 
 impl TrajectoryRecorder {
+    /// Appends one fact.
+    ///
+    /// `too_many_arguments` is allowed because this is the recorder's stable
+    /// positional contract, mirroring the spec's `TrajectoryEvent` fields one
+    /// for one; collapsing them into a struct would only move the parameter
+    /// list here without changing the API a caller writes.
+    #[allow(clippy::too_many_arguments)]
     pub fn append(
         &self,
         trajectory_id: TrajectoryId,

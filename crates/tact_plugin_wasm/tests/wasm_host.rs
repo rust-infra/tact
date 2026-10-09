@@ -118,17 +118,11 @@ async fn instantiates_with_limits_and_routes_declared_calls() {
         .iter()
         .filter_map(|value| value.as_str())
         .collect::<Vec<_>>();
-    assert!(
-        args.iter()
-            .any(|arg| *arg == "fuel=100000,max-memory-size=33554432,timeout=2000ms")
-    );
-    assert!(
-        args.iter()
-            .any(|arg| {
-                *arg == "inherit-env=false,inherit-stdin=true,inherit-stdout=true,inherit-stderr=true,inherit-network=false,allow-ip-name-lookup=false,tcp=false,udp=false"
-            })
-    );
-    assert!(!args.iter().any(|arg| *arg == "--dir"));
+    assert!(args.contains(&"fuel=100000,max-memory-size=33554432,timeout=2000ms"));
+    assert!(args.contains(
+        &"inherit-env=false,inherit-stdin=true,inherit-stdout=true,inherit-stderr=true,inherit-network=false,allow-ip-name-lookup=false,tcp=false,udp=false"
+    ));
+    assert!(!args.contains(&"--dir"));
     host.drop_instance().await.unwrap();
     assert_eq!(host.state(), PluginState::Stopped);
 }

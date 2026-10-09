@@ -111,7 +111,7 @@ impl InteractionService for InteractionBroker {
                     true,
                 )
             })?;
-            if pending.contains_key(&request_id) {
+            if pending.contains_key(request_id) {
                 return Err(KernelError::new(
                     ErrorCategory::InvalidRequest,
                     "interaction request ID is already pending",

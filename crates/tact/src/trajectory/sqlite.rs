@@ -37,6 +37,10 @@ impl SqliteTrajectoryRecorder {
         })
     }
 
+    /// Appends one durable fact. The argument list mirrors
+    /// [`super::TrajectoryRecorder::append`] positionally, so the same
+    /// `too_many_arguments` allowance applies.
+    #[allow(clippy::too_many_arguments)]
     pub async fn append(
         &self,
         trajectory_id: TrajectoryId,

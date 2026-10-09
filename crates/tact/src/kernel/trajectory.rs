@@ -182,7 +182,7 @@ impl TrajectoryService for KernelTrajectoryRecorder {
                 "runtime".to_string(),
                 event_type,
                 None::<StepId>,
-                Value::from(payload),
+                payload,
                 Sensitivity::Internal,
             )
             .map(|_| ())
