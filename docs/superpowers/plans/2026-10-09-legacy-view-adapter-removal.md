@@ -237,14 +237,14 @@ Do the `tact_view` move first (it is a pure relocation, compiler-checked, and
 
 - [x] `ViewUpdateEmitter`: the legacy `AgentUpdate` channel is no longer used by
       any producer. **Landed:** every emission site in the Agent, `tool_dispatch`,
-      the tool helpers, `plugin/hooks` and the command driver builds a
-      `RuntimeEvent` through `crate::runtime_event` (which leaves `run_id` empty)
-      and hands it to the emitter, which attributes it via
-      `RuntimeEvent::with_run_id`. `emit_update`,
-      `ToolProgressReporter::emit`/`send` and the direct `ViewUpdateEmitter`
-      calls take protocol events now; production references drop 247 → 170
-      (`tact_extensions`) and 65 → 28 (`tact_ui`), and no `emit(AgentUpdate::…)`
-      call site is left.
+      the tool helpers, `plugin/hooks`, `ToolContext::emit_view_event` (the point
+      the first pass missed) and the command driver builds a `RuntimeEvent`
+      through `crate::runtime_event` (which leaves `run_id` empty) and hands it to
+      the emitter, which attributes it via `RuntimeEvent::with_run_id`. No
+      `emit_update(AgentUpdate::…)` / `.emit(AgentUpdate::…)` /
+      `emit_view_update(…)` call site is left; `tact_extensions` drops to 160
+      references and `tact_ui` to 27, and what remains is the test-only legacy
+      channel plus the View's own model.
 - [x] The precondition is in place: `RuntimeEvent::with_run_id` matches all 41
       variants exhaustively, so attributing an event can no longer silently drop
       the run id on a variant nobody classified.
