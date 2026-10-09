@@ -133,6 +133,8 @@ should not, it is self-contained, and it does not need the capability design to
 land. It is the one genuinely small, safe slice of this direction.
 
 
+### Production consumers of `AgentUpdate`
+
 | File | refs |
 |---|---|
 | `crates/tui/src/widgets/state/app/agent.rs` | 115 |
