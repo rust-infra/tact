@@ -148,3 +148,56 @@ fn plugin_host_calls_round_trip_with_nested_correlation_ids() {
         PluginResponse::HostCall { capability, .. } if capability == "clock.read"
     ));
 }
+
+#[test]
+fn agent_streaming_events_round_trip_as_runtime_messages() {
+    let events = vec![
+        RuntimeEvent::Thinking {
+            run_id: Some(RunId::from("run-1")),
+            chunk: ThinkingChunk::Delta("reasoning".into()),
+        },
+        RuntimeEvent::ToolProgress {
+            run_id: Some(RunId::from("run-1")),
+            tool_id: "tool-1".into(),
+            chunks: vec![ToolOutputChunk::stderr("warning")],
+        },
+        RuntimeEvent::ModelInfo {
+            run_id: Some(RunId::from("run-1")),
+            params: ModelCallParams {
+                model: "test-model".into(),
+                max_tokens: 100,
+                thinking_budget: Some(20),
+                reasoning_effort: Some("low".into()),
+                extra_body: None,
+            },
+        },
+        RuntimeEvent::TokenUsage {
+            run_id: Some(RunId::from("run-1")),
+            usage: TokenUsageInfo {
+                prompt: 10,
+                completion: 5,
+                total: 15,
+                prompt_cache_hit_tokens: 2,
+                prompt_cache_miss_tokens: 8,
+                reasoning_tokens: 1,
+            },
+        },
+        RuntimeEvent::TurnStats {
+            run_id: Some(RunId::from("run-1")),
+            turns_taken: 2,
+            max_turns: Some(10),
+        },
+        RuntimeEvent::InteractionRequested {
+            request: InteractionRequest::MultiSelect {
+                request_id: RequestId::from("choose-many"),
+                prompt: "Pick items".into(),
+                options: vec!["one".into(), "two".into()],
+            },
+        },
+    ];
+    for event in events {
+        let encoded = serde_json::to_value(&event).unwrap();
+        let decoded: RuntimeEvent = serde_json::from_value(encoded.clone()).unwrap();
+        assert_eq!(serde_json::to_value(decoded).unwrap(), encoded);
+    }
+}

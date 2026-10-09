@@ -774,7 +774,10 @@ impl Agent {
         let (outputs, manual_compact) = self
             .run_tool_waves(
                 &preflight.prepared,
-                RunId::from(uuid::Uuid::new_v4().to_string()),
+                self.runtime
+                    .current_run_id
+                    .clone()
+                    .unwrap_or_else(|| RunId::from(uuid::Uuid::new_v4().to_string())),
             )
             .await?;
         Ok((

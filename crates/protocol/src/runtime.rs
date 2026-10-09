@@ -1,6 +1,7 @@
 use crate::{
-    CapabilityDeclaration, InteractionRequest, InteractionResponse, PluginId, ProtocolError,
-    ProtocolVersion, RequestId, RunId, StepId, TrajectoryId,
+    CapabilityDeclaration, InteractionRequest, InteractionResponse, ModelCallParams, PluginId,
+    ProtocolError, ProtocolVersion, RequestId, RunId, StepId, ThinkingChunk, TokenUsageInfo,
+    ToolOutputChunk, TrajectoryId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -124,6 +125,28 @@ pub enum RuntimeEvent {
     Notification {
         level: String,
         content: String,
+    },
+    Thinking {
+        run_id: Option<RunId>,
+        chunk: ThinkingChunk,
+    },
+    ToolProgress {
+        run_id: Option<RunId>,
+        tool_id: String,
+        chunks: Vec<ToolOutputChunk>,
+    },
+    ModelInfo {
+        run_id: Option<RunId>,
+        params: ModelCallParams,
+    },
+    TokenUsage {
+        run_id: Option<RunId>,
+        usage: TokenUsageInfo,
+    },
+    TurnStats {
+        run_id: Option<RunId>,
+        turns_taken: u32,
+        max_turns: Option<u32>,
     },
     Error {
         run_id: Option<RunId>,

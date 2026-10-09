@@ -54,6 +54,11 @@ impl TrajectoryService for KernelTrajectoryRecorder {
             | RuntimeEvent::ModelCallFinished { run_id, .. }
             | RuntimeEvent::ToolCallStarted { run_id, .. }
             | RuntimeEvent::ToolCallFinished { run_id, .. } => Some(run_id.clone()),
+            RuntimeEvent::Thinking { run_id, .. }
+            | RuntimeEvent::ModelInfo { run_id, .. }
+            | RuntimeEvent::TokenUsage { run_id, .. }
+            | RuntimeEvent::TurnStats { run_id, .. }
+            | RuntimeEvent::ToolProgress { run_id, .. } => run_id.clone(),
             _ => None,
         }) {
             Some(run_id) => run_id,
@@ -75,12 +80,15 @@ impl TrajectoryService for KernelTrajectoryRecorder {
             }
             RuntimeEvent::Cancelled { .. } => TrajectoryEventType::Cancellation,
             RuntimeEvent::TimedOut { .. } => TrajectoryEventType::Timeout,
-            RuntimeEvent::ModelCallStarted { .. } | RuntimeEvent::ModelCallFinished { .. } => {
-                TrajectoryEventType::ModelCall
-            }
-            RuntimeEvent::ToolCallStarted { .. } | RuntimeEvent::ToolCallFinished { .. } => {
-                TrajectoryEventType::ToolCall
-            }
+            RuntimeEvent::ModelCallStarted { .. }
+            | RuntimeEvent::ModelCallFinished { .. }
+            | RuntimeEvent::Thinking { .. }
+            | RuntimeEvent::ModelInfo { .. }
+            | RuntimeEvent::TokenUsage { .. }
+            | RuntimeEvent::TurnStats { .. } => TrajectoryEventType::ModelCall,
+            RuntimeEvent::ToolCallStarted { .. }
+            | RuntimeEvent::ToolCallFinished { .. }
+            | RuntimeEvent::ToolProgress { .. } => TrajectoryEventType::ToolCall,
             RuntimeEvent::PermissionRequested { .. } | RuntimeEvent::PermissionResolved { .. } => {
                 TrajectoryEventType::Permission
             }
@@ -143,6 +151,11 @@ impl TrajectoryService for SqliteTrajectoryService {
                 | RuntimeEvent::ModelCallFinished { run_id, .. }
                 | RuntimeEvent::ToolCallStarted { run_id, .. }
                 | RuntimeEvent::ToolCallFinished { run_id, .. } => Some(run_id.clone()),
+                RuntimeEvent::Thinking { run_id, .. }
+                | RuntimeEvent::ModelInfo { run_id, .. }
+                | RuntimeEvent::TokenUsage { run_id, .. }
+                | RuntimeEvent::TurnStats { run_id, .. }
+                | RuntimeEvent::ToolProgress { run_id, .. } => run_id.clone(),
                 _ => None,
             })
             // Notifications and plugin lifecycle events can be emitted before
@@ -191,12 +204,15 @@ fn event_type(event: &RuntimeEvent) -> TrajectoryEventType {
         }
         RuntimeEvent::Cancelled { .. } => TrajectoryEventType::Cancellation,
         RuntimeEvent::TimedOut { .. } => TrajectoryEventType::Timeout,
-        RuntimeEvent::ModelCallStarted { .. } | RuntimeEvent::ModelCallFinished { .. } => {
-            TrajectoryEventType::ModelCall
-        }
-        RuntimeEvent::ToolCallStarted { .. } | RuntimeEvent::ToolCallFinished { .. } => {
-            TrajectoryEventType::ToolCall
-        }
+        RuntimeEvent::ModelCallStarted { .. }
+        | RuntimeEvent::ModelCallFinished { .. }
+        | RuntimeEvent::Thinking { .. }
+        | RuntimeEvent::ModelInfo { .. }
+        | RuntimeEvent::TokenUsage { .. }
+        | RuntimeEvent::TurnStats { .. } => TrajectoryEventType::ModelCall,
+        RuntimeEvent::ToolCallStarted { .. }
+        | RuntimeEvent::ToolCallFinished { .. }
+        | RuntimeEvent::ToolProgress { .. } => TrajectoryEventType::ToolCall,
         RuntimeEvent::PermissionRequested { .. } | RuntimeEvent::PermissionResolved { .. } => {
             TrajectoryEventType::Permission
         }

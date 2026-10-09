@@ -7,7 +7,8 @@ const INLINE_LINE_LIMIT_CHARS: usize = 10_000;
 const TRUNCATION_MARKER: &str = "\n[output truncated]";
 
 /// Origin of an incremental tool-output fragment.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolOutputStream {
     Stdout,
     Stderr,
@@ -25,7 +26,7 @@ impl ToolOutputStream {
 }
 
 /// One ordered text fragment in a tool-progress batch.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolOutputChunk {
     pub stream: ToolOutputStream,
     pub text: String,

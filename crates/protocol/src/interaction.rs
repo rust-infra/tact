@@ -14,6 +14,11 @@ pub enum InteractionRequest {
         prompt: String,
         options: Vec<String>,
     },
+    MultiSelect {
+        request_id: RequestId,
+        prompt: String,
+        options: Vec<String>,
+    },
     Confirm {
         request_id: RequestId,
         prompt: String,

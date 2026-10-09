@@ -96,7 +96,7 @@ pub struct StepResult {
 }
 
 /// Parameters for a model API call.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ModelCallParams {
     pub model: String,
     pub max_tokens: u32,
@@ -124,7 +124,7 @@ impl fmt::Display for AgentErrorKind {
 impl std::error::Error for AgentErrorKind {}
 
 /// Token usage info returned from an LLM API call.
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct TokenUsageInfo {
     pub prompt: u32,
     pub completion: u32,
@@ -414,7 +414,8 @@ pub enum AgentUpdate {
 /// Producers emit `Started` once, zero or more `Delta` fragments, then `Finished`.
 /// Adapters that only expose deltas (e.g. OpenAI `reasoning_content`) must synthesize
 /// `Started` / `Finished` around the delta stream.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "text", rename_all = "snake_case")]
 pub enum ThinkingChunk {
     /// A new thinking block is opening (title / region start).
     Started,

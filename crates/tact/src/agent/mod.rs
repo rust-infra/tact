@@ -16,7 +16,7 @@ use tact_llm::{
     MessageKind, OpenAiReasoningEffort, ProviderConversationState, ProviderKind,
     ProviderStateUpdate, RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
 };
-use tact_protocol::{AgentUpdate, TokenUsageInfo};
+use tact_protocol::{AgentUpdate, RunId, TokenUsageInfo};
 
 use crate::{
     ToolSpec,
@@ -344,6 +344,9 @@ pub struct AgentRuntime {
     /// is installed, kernel tool lifecycle events are broadcast and recorded
     /// by the session's trajectory subscriber.
     pub runtime_event_service: Option<Arc<dyn crate::kernel::EventService>>,
+    /// Stable identity for one agent loop. Tool calls within a turn share it
+    /// so EventTransport and Trajectory can correlate their lifecycle facts.
+    pub current_run_id: Option<RunId>,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub session_store: Option<DynSessionStore>,
     /// Set together with [`Self::session_store`] via [`Agent::with_session`] at startup.
@@ -509,6 +512,7 @@ impl Agent {
                 ui_tx: None,
                 runtime_event_sink: None,
                 runtime_event_service: None,
+                current_run_id: None,
                 cancel_flag,
                 session_store: None,
                 session_id: None,
@@ -868,6 +872,157 @@ impl Agent {
         self.mcp_router.disconnect_all().await;
     }
 
+    fn runtime_events_for_update(&self, update: &AgentUpdate) -> Vec<tact_protocol::RuntimeEvent> {
+        use tact_protocol::{InteractionRequest, RuntimeEvent};
+
+        let run_id = self.runtime.current_run_id.clone();
+        match update {
+            AgentUpdate::StreamChunk(content) => vec![RuntimeEvent::Text {
+                run_id,
+                role: "assistant".into(),
+                content: content.clone(),
+            }],
+            AgentUpdate::ThinkingChunk(chunk) => vec![RuntimeEvent::Thinking {
+                run_id,
+                chunk: chunk.clone(),
+            }],
+            AgentUpdate::ToolProgress { tool_id, chunks } => vec![RuntimeEvent::ToolProgress {
+                run_id,
+                tool_id: tool_id.clone(),
+                chunks: chunks.clone(),
+            }],
+            AgentUpdate::ModelInfo(params) => vec![RuntimeEvent::ModelInfo {
+                run_id,
+                params: params.clone(),
+            }],
+            AgentUpdate::TokenUsage(usage) => vec![RuntimeEvent::TokenUsage {
+                run_id,
+                usage: usage.clone(),
+            }],
+            AgentUpdate::TurnStats {
+                turns_taken,
+                max_turns,
+            } => vec![RuntimeEvent::TurnStats {
+                run_id,
+                turns_taken: *turns_taken,
+                max_turns: *max_turns,
+            }],
+            AgentUpdate::StepFailed { tool_id, error, .. } => vec![RuntimeEvent::Error {
+                run_id,
+                message: format!("{tool_id}: {error}"),
+            }],
+            AgentUpdate::Error(error) => vec![RuntimeEvent::Error {
+                run_id,
+                message: error.to_string(),
+            }],
+            AgentUpdate::RequestSelect {
+                request_id,
+                prompt,
+                options,
+                ..
+            } => vec![RuntimeEvent::InteractionRequested {
+                request: InteractionRequest::Select {
+                    request_id: tact_protocol::RequestId::from(request_id.to_string()),
+                    prompt: prompt.clone(),
+                    options: options.clone(),
+                },
+            }],
+            AgentUpdate::RequestMultiSelect {
+                request_id,
+                prompt,
+                options,
+            } => vec![RuntimeEvent::InteractionRequested {
+                request: InteractionRequest::MultiSelect {
+                    request_id: tact_protocol::RequestId::from(request_id.to_string()),
+                    prompt: prompt.clone(),
+                    options: options.clone(),
+                },
+            }],
+            AgentUpdate::TaskComplete(content) => vec![
+                RuntimeEvent::Notification {
+                    level: "complete".into(),
+                    content: content.clone(),
+                },
+                RuntimeEvent::RunFinished {
+                    run_id: run_id.unwrap_or_else(|| RunId::from("runtime")),
+                    success: true,
+                },
+            ],
+            AgentUpdate::TaskCancelled => vec![RuntimeEvent::Cancelled {
+                run_id: run_id.unwrap_or_else(|| RunId::from("runtime")),
+            }],
+            AgentUpdate::Info(content) | AgentUpdate::MdInfo(content) => {
+                vec![RuntimeEvent::Notification {
+                    level: "info".into(),
+                    content: content.clone(),
+                }]
+            }
+            AgentUpdate::HookContext { source, text } => vec![RuntimeEvent::Notification {
+                level: "hook_context".into(),
+                content: source
+                    .as_ref()
+                    .map_or_else(|| text.clone(), |source| format!("{source}: {text}")),
+            }],
+            AgentUpdate::HookStatus {
+                source,
+                message,
+                elapsed_ms,
+                ..
+            } => vec![RuntimeEvent::Notification {
+                level: "hook_status".into(),
+                content: format!(
+                    "{}{} ({elapsed_ms:?}ms)",
+                    source.as_deref().unwrap_or("hook"),
+                    message
+                ),
+            }],
+            AgentUpdate::PopupMarkdown { title, source } => vec![RuntimeEvent::Notification {
+                level: "popup_markdown".into(),
+                content: format!("{title}\n{source}"),
+            }],
+            AgentUpdate::TasksChanged { tasks, reason } => vec![RuntimeEvent::Notification {
+                level: "tasks_changed".into(),
+                content: format!("{} tasks {reason:?}", tasks.len()),
+            }],
+            AgentUpdate::ToolMeta {
+                tool_id,
+                model,
+                task_id,
+                ..
+            } => vec![RuntimeEvent::Notification {
+                level: "tool_meta".into(),
+                content: format!("{tool_id}: model={model:?}, task_id={task_id:?}"),
+            }],
+            AgentUpdate::BackgroundTaskFinished {
+                tool_id,
+                success,
+                message,
+                ..
+            } => vec![RuntimeEvent::Notification {
+                level: "background_task_finished".into(),
+                content: format!("{tool_id}: success={success}; {message}"),
+            }],
+            AgentUpdate::SubagentFinished {
+                tool_id,
+                child_id,
+                success,
+                summary,
+            } => vec![RuntimeEvent::Notification {
+                level: "subagent_finished".into(),
+                content: format!("{tool_id}: child={child_id}, success={success}; {summary}"),
+            }],
+            AgentUpdate::SubagentsChanged { runs } => vec![RuntimeEvent::Notification {
+                level: "subagents_changed".into(),
+                content: format!("{} subagent runs changed", runs.len()),
+            }],
+            // CapabilityRouter owns ToolCallStarted / ToolCallFinished so the
+            // protocol stream has one authoritative invocation lifecycle.
+            AgentUpdate::StepAdded(_)
+            | AgentUpdate::StepStarted { .. }
+            | AgentUpdate::StepFinished { .. } => Vec::new(),
+        }
+    }
+
     pub fn emit_update(&self, update: AgentUpdate) {
         // Desktop notifications for key lifecycle events
         match &update {
@@ -882,40 +1037,7 @@ impl Agent {
         }
 
         if let Some(sink) = &self.runtime.runtime_event_sink {
-            let event = match &update {
-                AgentUpdate::StreamChunk(content) => Some(tact_protocol::RuntimeEvent::Text {
-                    run_id: None,
-                    role: "assistant".into(),
-                    content: content.clone(),
-                }),
-                AgentUpdate::Info(content) | AgentUpdate::MdInfo(content) => {
-                    Some(tact_protocol::RuntimeEvent::Notification {
-                        level: "info".into(),
-                        content: content.clone(),
-                    })
-                }
-                AgentUpdate::HookContext { text, .. } => {
-                    Some(tact_protocol::RuntimeEvent::Notification {
-                        level: "hook_context".into(),
-                        content: text.clone(),
-                    })
-                }
-                AgentUpdate::Error(error) => Some(tact_protocol::RuntimeEvent::Error {
-                    run_id: None,
-                    message: error.to_string(),
-                }),
-                AgentUpdate::TaskComplete(content) => {
-                    Some(tact_protocol::RuntimeEvent::Notification {
-                        level: "complete".into(),
-                        content: content.clone(),
-                    })
-                }
-                AgentUpdate::TaskCancelled => Some(tact_protocol::RuntimeEvent::Cancelled {
-                    run_id: tact_protocol::RunId::from("runtime"),
-                }),
-                _ => None,
-            };
-            if let Some(event) = event {
+            for event in self.runtime_events_for_update(&update) {
                 let _ = sink.emit(event);
             }
         }
@@ -1202,6 +1324,9 @@ impl Agent {
     ///    other than `ToolUse` or an unrecoverable error occurs.
     #[tracing::instrument(skip(self), name = "agent_loop")]
     pub async fn agent_loop(&mut self, user_turn_message: Option<Message>) -> Result<()> {
+        if user_turn_message.is_some() || self.runtime.current_run_id.is_none() {
+            self.runtime.current_run_id = Some(RunId::from(uuid::Uuid::new_v4().to_string()));
+        }
         self.runtime.recovery_state = RecoveryState::default();
         self.runtime.interrupt_hooks_fired = false;
 
@@ -2906,6 +3031,19 @@ mod tests {
     use crate::store::SessionStore;
     use crate::tool::test_support::test_context;
     use serde_json::Value;
+
+    #[derive(Default)]
+    struct CapturedRuntimeEvents(std::sync::Mutex<Vec<tact_protocol::RuntimeEvent>>);
+
+    impl crate::kernel::RuntimeEventSink for CapturedRuntimeEvents {
+        fn emit(
+            &self,
+            event: tact_protocol::RuntimeEvent,
+        ) -> std::result::Result<(), crate::kernel::KernelError> {
+            self.0.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
 
     fn ensure_config() {
         crate::config::test_support::install_default();
@@ -5984,6 +6122,81 @@ mod tests {
 
         assert!(agent.runtime.ui_tx.is_some());
         assert!(agent.tool_context.ui_tx.is_some());
+    }
+
+    #[test]
+    fn agent_streaming_updates_project_to_runtime_events() {
+        ensure_config();
+        let sink = Arc::new(CapturedRuntimeEvents::default());
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            test_context("agent_runtime_events"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".into()),
+        )
+        .with_runtime_event_sink(sink.clone());
+        agent.runtime.current_run_id = Some(tact_protocol::RunId::from("run-events"));
+
+        agent.emit_update(AgentUpdate::StreamChunk("answer".into()));
+        agent.emit_update(AgentUpdate::ThinkingChunk(
+            tact_protocol::ThinkingChunk::Delta("reasoning".into()),
+        ));
+        agent.emit_update(AgentUpdate::ToolProgress {
+            tool_id: "tool-1".into(),
+            chunks: vec![tact_protocol::ToolOutputChunk::stderr("warning")],
+        });
+        agent.emit_update(AgentUpdate::TokenUsage(TokenUsageInfo {
+            prompt: 10,
+            completion: 5,
+            total: 15,
+            prompt_cache_hit_tokens: 2,
+            prompt_cache_miss_tokens: 8,
+            reasoning_tokens: 1,
+        }));
+        agent.emit_update(AgentUpdate::TurnStats {
+            turns_taken: 2,
+            max_turns: Some(10),
+        });
+        agent.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
+            model: "test-model".into(),
+            max_tokens: 100,
+            thinking_budget: Some(20),
+            reasoning_effort: Some("low".into()),
+            extra_body: None,
+        }));
+
+        let events = sink.0.lock().unwrap();
+        assert_eq!(events.len(), 6);
+        assert!(matches!(
+            &events[0],
+            tact_protocol::RuntimeEvent::Text { run_id: Some(run_id), role, content }
+                if run_id.as_str() == "run-events" && role == "assistant" && content == "answer"
+        ));
+        assert!(matches!(
+            &events[1],
+            tact_protocol::RuntimeEvent::Thinking { .. }
+        ));
+        assert!(matches!(
+            &events[2],
+            tact_protocol::RuntimeEvent::ToolProgress { .. }
+        ));
+        assert!(matches!(
+            &events[3],
+            tact_protocol::RuntimeEvent::TokenUsage { .. }
+        ));
+        assert!(matches!(
+            &events[4],
+            tact_protocol::RuntimeEvent::TurnStats { .. }
+        ));
+        assert!(matches!(
+            &events[5],
+            tact_protocol::RuntimeEvent::ModelInfo { .. }
+        ));
     }
 
     #[tokio::test]

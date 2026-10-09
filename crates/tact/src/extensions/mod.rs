@@ -6,37 +6,8 @@ use tact_protocol::{
 
 use crate::{Agent, plugin::RuntimePluginManifest};
 
-pub mod agent {
-    use super::*;
-    pub fn manifest(capabilities: Vec<CapabilityDeclaration>) -> RuntimePluginManifest {
-        RuntimePluginManifest {
-            id: PluginId::from("tact.agent"),
-            version: env!("CARGO_PKG_VERSION").into(),
-            protocol: ProtocolVersion::CURRENT,
-            capabilities,
-        }
-    }
-}
-
-pub mod session {
-    use super::*;
-    pub fn manifest() -> RuntimePluginManifest {
-        RuntimePluginManifest {
-            id: PluginId::from("tact.session"),
-            version: env!("CARGO_PKG_VERSION").into(),
-            protocol: ProtocolVersion::CURRENT,
-            capabilities: vec![CapabilityDeclaration {
-                name: "sessions.read".into(),
-                kind: CapabilityKind::Service,
-                version: "1".into(),
-                description: Some("Read and resume persisted sessions".into()),
-                input_schema: None,
-                output_schema: None,
-                risk: CapabilityRisk::ReadOnly,
-            }],
-        }
-    }
-}
+pub mod agent;
+pub mod session;
 
 pub mod chat {
     use super::*;
@@ -92,7 +63,7 @@ pub mod workflow {
 
 pub fn official_manifests(agent: &Agent) -> Vec<RuntimePluginManifest> {
     vec![
-        agent::manifest(Vec::new()),
+        agent::manifest(),
         session::manifest(),
         chat::manifest(),
         tools::manifest(agent.capability_declarations()),
@@ -115,3 +86,9 @@ mod tests {
         assert!(ids.contains("tact.chat"));
     }
 }
+
+#[cfg(test)]
+mod agent_tests;
+
+#[cfg(test)]
+mod session_tests;
