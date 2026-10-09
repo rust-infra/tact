@@ -337,7 +337,6 @@ pub struct AgentRuntime {
     /// rules, so nothing can reach a credential file.
     pub security: crate::security::sensitive::Scanner,
     pub stats: Arc<RwLock<SessionStats>>,
-    pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
     /// Protocol-neutral event sink used by non-TUI clients during migration.
     pub runtime_event_sink: Option<Arc<dyn crate::kernel::RuntimeEventSink>>,
     /// Async event service for capability invocations. When an EventTransport
@@ -511,7 +510,6 @@ impl Agent {
                 permission_manager,
                 security,
                 stats: Arc::new(RwLock::new(SessionStats::default())),
-                ui_tx: None,
                 runtime_event_sink: None,
                 runtime_event_service: None,
                 current_run_id: None,
@@ -823,13 +821,14 @@ impl Agent {
         }
     }
 
-    /// Attaches a TUI update channel so the agent can stream events
-    /// (token usage, thinking blocks, tool results) to the terminal.
+    /// Compatibility adapter for tests and legacy tool helpers. The Agent
+    /// runtime itself emits protocol events through `EventTransport`.
+    #[cfg(any(test, feature = "test-support"))]
     pub fn with_ui_channel(mut self, tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>) -> Self {
-        self.runtime.ui_tx = Some(tx.clone());
-        // Keep tool_context in sync so ToolProgress / tool helpers use the same
-        // channel (critical for tagged subagent ui_tx).
-        self.tool_context.ui_tx = Some(tx);
+        self.tool_context.interactive = true;
+        self.tool_context.ui_responder.set_legacy_sender(tx.clone());
+        self.tool_context.ui_tx = Some(tx.clone());
+        self.tool_context.view_updates = crate::tool::ViewUpdateEmitter::legacy(tx);
         self
     }
 
@@ -839,6 +838,12 @@ impl Agent {
         mut self,
         sink: Arc<dyn crate::kernel::RuntimeEventSink>,
     ) -> Self {
+        self.tool_context
+            .view_updates
+            .set_runtime_sink(sink.clone());
+        self.tool_context
+            .ui_responder
+            .set_runtime_event_sink(sink.clone());
         self.runtime.runtime_event_sink = Some(sink);
         self
     }
@@ -852,10 +857,7 @@ impl Agent {
     ) -> Self {
         let event_sink: Arc<dyn crate::kernel::RuntimeEventSink> = Arc::new(transport.clone());
         let event_service: Arc<dyn crate::kernel::EventService> = Arc::new(transport);
-        self.tool_context
-            .ui_responder
-            .set_runtime_event_sink(event_sink.clone());
-        self.runtime.runtime_event_sink = Some(event_sink);
+        self = self.with_runtime_event_sink(event_sink);
         self.runtime.runtime_event_service = Some(event_service);
         self
     }
@@ -1050,12 +1052,12 @@ impl Agent {
             for event in self.runtime_events_for_update(&update) {
                 let _ = sink.emit(event);
             }
-        }
-        if let Some(tx) = &self.runtime.ui_tx
-            && (self.runtime.runtime_event_sink.is_none()
-                || !runtime_event_replaces_view_update(&update))
-        {
-            let _ = tx.send(update);
+            self.tool_context
+                .view_updates
+                .set_run_id(self.runtime.current_run_id.clone());
+            let _ = self.tool_context.view_updates.emit(update);
+        } else {
+            let _ = self.tool_context.view_updates.emit(update);
         }
     }
 
@@ -1343,6 +1345,9 @@ impl Agent {
         });
         if let Some(run_id) = next_run_id {
             self.runtime.current_run_id = Some(run_id.clone());
+            self.tool_context
+                .view_updates
+                .set_run_id(Some(run_id.clone()));
             if let Some(sink) = &self.runtime.runtime_event_sink {
                 let _ = sink.emit(tact_protocol::RuntimeEvent::RunStarted { run_id });
             }
@@ -1763,12 +1768,31 @@ impl Agent {
         ),
         anyhow::Error,
     > {
-        let ui_tx = self.runtime.ui_tx.clone();
+        let view_updates = self.tool_context.view_updates.clone();
+        let (ui_tx, forwarder) = if self.runtime.runtime_event_sink.is_some() {
+            let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+            let forwarder = tokio::spawn(async move {
+                while let Some(update) = ui_rx.recv().await {
+                    let _ = view_updates.emit(update);
+                }
+            });
+            (Some(ui_tx), Some(forwarder))
+        } else {
+            #[cfg(any(test, feature = "test-support"))]
+            let ui_tx = self.tool_context.ui_tx.clone();
+            #[cfg(not(any(test, feature = "test-support")))]
+            let ui_tx = None;
+            (ui_tx, None)
+        };
         let response = self
             .runtime
             .client
             .stream_message(request, self.runtime.provider_state.as_ref(), ui_tx)
-            .await
+            .await;
+        if let Some(forwarder) = forwarder {
+            let _ = forwarder.await;
+        }
+        let response = response
             // Keep the typed `LlmError` as the root cause: the recovery loop
             // classifies retries on `LlmError::HttpError.status`, and
             // stringifying here would erase it (and the error chain) before
@@ -2798,25 +2822,6 @@ impl Agent {
             .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))
             .map(|manager| manager.load_memory_prompt())
     }
-}
-
-fn runtime_event_replaces_view_update(update: &AgentUpdate) -> bool {
-    matches!(
-        update,
-        AgentUpdate::StreamChunk(_)
-            | AgentUpdate::ThinkingChunk(_)
-            | AgentUpdate::ToolProgress { .. }
-            | AgentUpdate::ModelInfo(_)
-            | AgentUpdate::TokenUsage(_)
-            | AgentUpdate::TurnStats { .. }
-            | AgentUpdate::TaskComplete(_)
-            | AgentUpdate::TaskCancelled
-            | AgentUpdate::Info(_)
-            | AgentUpdate::MdInfo(_)
-            | AgentUpdate::PopupMarkdown { .. }
-            | AgentUpdate::RequestSelect { .. }
-            | AgentUpdate::RequestMultiSelect { .. }
-    )
 }
 
 /// Extracts a mutable text target from a user message for prompt hooks.
@@ -6159,7 +6164,6 @@ mod tests {
         )
         .with_ui_channel(tx);
 
-        assert!(agent.runtime.ui_tx.is_some());
         assert!(agent.tool_context.ui_tx.is_some());
     }
 
@@ -6210,7 +6214,7 @@ mod tests {
         }));
 
         let events = sink.0.lock().unwrap();
-        assert_eq!(events.len(), 6);
+        assert_eq!(events.len(), 12);
         assert!(matches!(
             &events[0],
             tact_protocol::RuntimeEvent::Text { run_id: Some(run_id), role, content }
@@ -6218,23 +6222,64 @@ mod tests {
         ));
         assert!(matches!(
             &events[1],
-            tact_protocol::RuntimeEvent::Thinking { .. }
+            tact_protocol::RuntimeEvent::ViewUpdate {
+                update: AgentUpdate::StreamChunk(content), ..
+            } if content == "answer"
         ));
         assert!(matches!(
             &events[2],
-            tact_protocol::RuntimeEvent::ToolProgress { .. }
+            tact_protocol::RuntimeEvent::Thinking { .. }
         ));
         assert!(matches!(
             &events[3],
-            tact_protocol::RuntimeEvent::TokenUsage { .. }
+            tact_protocol::RuntimeEvent::ViewUpdate {
+                update: AgentUpdate::ThinkingChunk(_),
+                ..
+            }
         ));
         assert!(matches!(
             &events[4],
-            tact_protocol::RuntimeEvent::TurnStats { .. }
+            tact_protocol::RuntimeEvent::ToolProgress { .. }
         ));
         assert!(matches!(
             &events[5],
+            tact_protocol::RuntimeEvent::ViewUpdate {
+                update: AgentUpdate::ToolProgress { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            &events[6],
+            tact_protocol::RuntimeEvent::TokenUsage { .. }
+        ));
+        assert!(matches!(
+            &events[7],
+            tact_protocol::RuntimeEvent::ViewUpdate {
+                update: AgentUpdate::TokenUsage(_),
+                ..
+            }
+        ));
+        assert!(matches!(
+            &events[8],
+            tact_protocol::RuntimeEvent::TurnStats { .. }
+        ));
+        assert!(matches!(
+            &events[9],
+            tact_protocol::RuntimeEvent::ViewUpdate {
+                update: AgentUpdate::TurnStats { .. },
+                ..
+            }
+        ));
+        assert!(matches!(
+            &events[10],
             tact_protocol::RuntimeEvent::ModelInfo { .. }
+        ));
+        assert!(matches!(
+            &events[11],
+            tact_protocol::RuntimeEvent::ViewUpdate {
+                update: AgentUpdate::ModelInfo(_),
+                ..
+            }
         ));
     }
 
@@ -6262,7 +6307,12 @@ mod tests {
 
         assert!(matches!(
             sink.0.lock().unwrap().as_slice(),
-            [tact_protocol::RuntimeEvent::Text { content, .. }] if content == "answer"
+            [
+                tact_protocol::RuntimeEvent::Text { content, .. },
+                tact_protocol::RuntimeEvent::ViewUpdate {
+                    update: AgentUpdate::StreamChunk(view_text), ..
+                }
+            ] if content == "answer" && view_text == "answer"
         ));
         assert!(ui_rx.try_recv().is_err());
     }
@@ -6297,6 +6347,48 @@ mod tests {
             Some(tact_protocol::RuntimeEvent::RunStarted { run_id: event_run_id })
                 if event_run_id == run_id
         ));
+    }
+
+    #[tokio::test]
+    async fn streamed_provider_updates_reach_the_runtime_event_transport() {
+        ensure_config();
+        let sink = Arc::new(CapturedRuntimeEvents::default());
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("streamed answer")],
+            Some(StopReason::EndTurn),
+        )])
+        .with_streaming_chunks();
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("agent_runtime_stream_bridge"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".into()),
+        )
+        .with_runtime_event_sink(sink.clone());
+
+        let _ = agent
+            .agent_loop(Some(Message::new_text(Role::User, "start")))
+            .await;
+
+        let streamed = sink
+            .0
+            .lock()
+            .unwrap()
+            .iter()
+            .filter_map(|event| match event {
+                tact_protocol::RuntimeEvent::ViewUpdate {
+                    update: AgentUpdate::StreamChunk(text),
+                    ..
+                } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<String>();
+        assert_eq!(streamed, "streamed answer");
     }
 
     #[tokio::test]

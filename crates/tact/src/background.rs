@@ -487,6 +487,7 @@ pub struct BackgroundProgressSink {
 }
 
 impl BackgroundProgressSink {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(
         tool_id: impl Into<String>,
         ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,

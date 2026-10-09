@@ -19,7 +19,9 @@ use crate::security::{RedactionLevel, redact::StreamRedactor};
 #[derive(Clone, Debug, Default)]
 pub struct ToolProgressReporter {
     tool_id: String,
+    #[cfg(any(test, feature = "test-support"))]
     ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    view_updates: Option<super::ViewUpdateEmitter>,
     stream: Option<Arc<Mutex<StreamState>>>,
 }
 
@@ -42,6 +44,7 @@ impl StreamState {
 }
 
 impl ToolProgressReporter {
+    #[cfg(any(test, feature = "test-support"))]
     pub fn new(
         tool_id: impl Into<String>,
         ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
@@ -49,7 +52,32 @@ impl ToolProgressReporter {
         Self {
             tool_id: tool_id.into(),
             ui_tx,
+            view_updates: None,
             stream: None,
+        }
+    }
+
+    pub fn with_view_updates(
+        tool_id: impl Into<String>,
+        view_updates: super::ViewUpdateEmitter,
+    ) -> Self {
+        Self {
+            tool_id: tool_id.into(),
+            #[cfg(any(test, feature = "test-support"))]
+            ui_tx: None,
+            view_updates: Some(view_updates),
+            stream: None,
+        }
+    }
+
+    fn emit(&self, update: AgentUpdate) {
+        if let Some(view_updates) = &self.view_updates {
+            let _ = view_updates.emit(update);
+        } else {
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(tx) = &self.ui_tx {
+                let _ = tx.send(update);
+            }
         }
     }
 
@@ -79,12 +107,10 @@ impl ToolProgressReporter {
             // empty batch would just churn the renderer.
             return;
         }
-        if let Some(tx) = &self.ui_tx {
-            let _ = tx.send(AgentUpdate::ToolProgress {
-                tool_id: self.tool_id.clone(),
-                chunks,
-            });
-        }
+        self.emit(AgentUpdate::ToolProgress {
+            tool_id: self.tool_id.clone(),
+            chunks,
+        });
     }
 
     /// Emit whatever the redactor is still holding back.
@@ -105,12 +131,10 @@ impl ToolProgressReporter {
         let Some(text) = tail.filter(|t| !t.is_empty()) else {
             return;
         };
-        if let Some(tx) = &self.ui_tx {
-            let _ = tx.send(AgentUpdate::ToolProgress {
-                tool_id: self.tool_id.clone(),
-                chunks: vec![ToolOutputChunk { stream, text }],
-            });
-        }
+        self.emit(AgentUpdate::ToolProgress {
+            tool_id: self.tool_id.clone(),
+            chunks: vec![ToolOutputChunk { stream, text }],
+        });
     }
 
     fn redact(&self, chunks: Vec<ToolOutputChunk>) -> Vec<ToolOutputChunk> {
@@ -144,9 +168,7 @@ impl ToolProgressReporter {
     /// tail — so the redaction state and the channel stay in one place instead
     /// of being reimplemented per tool.
     pub fn send(&self, update: AgentUpdate) {
-        if let Some(tx) = &self.ui_tx {
-            let _ = tx.send(update);
-        }
+        self.emit(update);
     }
 
     /// Redact a complete, final piece of text at the level this reporter

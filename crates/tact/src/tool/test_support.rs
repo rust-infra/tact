@@ -91,7 +91,9 @@ pub fn test_context(name: &str) -> ToolContext {
         subagent_manager: SharedSubagentManager::new(
             block_on(SubagentManager::new(&db_path)).unwrap(),
         ),
+        interactive: false,
         ui_tx: None,
+        view_updates: super::ViewUpdateEmitter::default(),
         ui_responder: crate::ui_responder::UiResponder::new(),
         progress_reporter: super::ToolProgressReporter::default(),
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),

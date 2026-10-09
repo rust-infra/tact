@@ -40,7 +40,7 @@ pub async fn run_command_loop_with_account(
 ) -> Agent {
     let image_work_dir = image_work_dir.as_ref().to_path_buf();
     let cancel_flag = agent.runtime.cancel_flag.clone();
-    let ui_tx = agent.runtime.ui_tx.clone();
+    let view_updates = agent.tool_context.view_updates.clone();
     // Shared stats snapshot: QueryStats can read it without awaiting the
     // in-flight task (the Agent itself is exclusively owned by that task).
     let stats = agent.runtime.stats.clone();
@@ -86,12 +86,10 @@ pub async fn run_command_loop_with_account(
 
         match cmd {
             UserCommand::Runtime(RuntimeCommand::StartRun { run_id, input }) => {
-                let Some(task) = input.get("message").and_then(serde_json::Value::as_str) else {
-                    if let Some(tx) = &ui_tx {
-                        let _ = tx.send(AgentUpdate::Error(AgentErrorKind::Other(
-                            "Runtime StartRun requires a string `message`".into(),
-                        )));
-                    }
+                let Some(task) = input.get("message").and_then(|value| value.as_str()) else {
+                    let _ = view_updates.emit(AgentUpdate::Error(AgentErrorKind::Other(
+                        "Runtime StartRun requires a string `message`".into(),
+                    )));
                     continue;
                 };
                 if let Some(handle) = active.take() {
@@ -113,9 +111,7 @@ pub async fn run_command_loop_with_account(
             }
             UserCommand::Runtime(RuntimeCommand::CancelRun { .. }) => {
                 cancel_flag.store(true, Ordering::Relaxed);
-                if let Some(tx) = &ui_tx {
-                    let _ = tx.send(AgentUpdate::Info("Cancelling...".into()));
-                }
+                let _ = view_updates.emit(AgentUpdate::Info("Cancelling...".into()));
             }
             UserCommand::Runtime(_) => {}
             UserCommand::UiResponse(response) => {
@@ -127,21 +123,18 @@ pub async fn run_command_loop_with_account(
             }
             UserCommand::Cancel => {
                 cancel_flag.store(true, Ordering::Relaxed);
-                if let Some(tx) = &ui_tx {
-                    let _ = tx.send(AgentUpdate::Info("Cancelling...".into()));
-                }
+                let _ = view_updates.emit(AgentUpdate::Info("Cancelling...".into()));
             }
             UserCommand::CancelSubagent { child_id } => {
                 if subagent_manager.request_cancel(&child_id) {
                     let _ = subagent_manager.cancel(&child_id).await;
-                    tact::subagent::emit_subagents_changed(&ui_tx, &subagent_manager).await;
-                    if let Some(tx) = &ui_tx {
-                        let _ = tx.send(AgentUpdate::Info(format!(
-                            "Cancelling subagent {child_id}..."
-                        )));
-                    }
-                } else if let Some(tx) = &ui_tx {
-                    let _ = tx.send(AgentUpdate::Info(format!(
+                    tact::subagent::emit_subagents_changed_view(&view_updates, &subagent_manager)
+                        .await;
+                    let _ = view_updates.emit(AgentUpdate::Info(format!(
+                        "Cancelling subagent {child_id}..."
+                    )));
+                } else {
+                    let _ = view_updates.emit(AgentUpdate::Info(format!(
                         "No running subagent {child_id} to cancel"
                     )));
                 }
@@ -153,12 +146,10 @@ pub async fn run_command_loop_with_account(
                 // read-out popup, like /background: a snapshot is not
                 // conversation.
                 let stats_text = stats.read_recover().summary();
-                if let Some(tx) = &ui_tx {
-                    let _ = tx.send(AgentUpdate::PopupMarkdown {
-                        title: "Session Statistics".to_string(),
-                        source: stats_text,
-                    });
-                }
+                let _ = view_updates.emit(AgentUpdate::PopupMarkdown {
+                    title: "Session Statistics".to_string(),
+                    source: stats_text,
+                });
             }
             UserCommand::QueryBackground(task_id) => {
                 // `/background` and `/background <id>`. Answered here, from the
@@ -168,7 +159,7 @@ pub async fn run_command_loop_with_account(
                     &background_manager,
                     background_session_id.as_deref(),
                     task_id,
-                    &ui_tx,
+                    &view_updates,
                 )
                 .await;
             }
@@ -221,10 +212,8 @@ pub async fn run_command_loop_with_account(
 
     // The parent is exiting: request cancellation and persist Cancelled for
     // every live child before detached tasks can be dropped by runtime shutdown.
-    if subagent_manager.cancel_all_and_persist().await > 0
-        && let Some(tx) = &ui_tx
-    {
-        let _ = tx.send(AgentUpdate::Info(
+    if subagent_manager.cancel_all_and_persist().await > 0 {
+        let _ = view_updates.emit(AgentUpdate::Info(
             "Cancelling background subagents (parent exiting)...".into(),
         ));
     }
@@ -250,24 +239,21 @@ async fn query_background(
     manager: &SharedBackgroundManager,
     session_id: Option<&str>,
     task_id: Option<String>,
-    ui_tx: &Option<UnboundedSender<AgentUpdate>>,
+    view_updates: &tact::tool::ViewUpdateEmitter,
 ) {
-    let Some(tx) = ui_tx else {
-        return;
-    };
     match manager.check(task_id.as_deref(), session_id).await {
         Ok(output) => {
             // Fenced code block keeps the one-line-per-task listing (and the
             // single-task pretty JSON) aligned and copyable. Shown in the popup
             // rather than the log: this is a read-out, not part of the
             // conversation.
-            let _ = tx.send(AgentUpdate::PopupMarkdown {
+            let _ = view_updates.emit(AgentUpdate::PopupMarkdown {
                 title: "⚙️ Background Tasks".to_string(),
                 source: format!("```text\n{output}\n```"),
             });
         }
         Err(err) => {
-            let _ = tx.send(AgentUpdate::Error(AgentErrorKind::Other(format!(
+            let _ = view_updates.emit(AgentUpdate::Error(AgentErrorKind::Other(format!(
                 "Background check failed: {err}"
             ))));
         }
@@ -466,7 +452,7 @@ async fn handle_user_command_with_account(
                 &agent.tool_context.background_manager,
                 agent.runtime.session_id.as_deref(),
                 task_id,
-                &agent.runtime.ui_tx,
+                &agent.tool_context.view_updates,
             )
             .await;
         }

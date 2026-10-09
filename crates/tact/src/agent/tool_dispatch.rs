@@ -405,7 +405,7 @@ impl PermissionService for PreflightPermissionGate {
     }
 }
 
-async fn run_native_tool(
+async fn run_capability_tool(
     runtime: &crate::kernel::RuntimeContext,
     run_id: &RunId,
     tool_use_id: &str,
@@ -439,59 +439,15 @@ async fn run_native_tool(
             },
         },
         Err(error) => ExecResult {
-            content: if error.category() == tact_protocol::ErrorCategory::StorageError {
-                error.message().to_string()
-            } else {
-                format!("Error invoking tool {}: {}", name, error.message())
-            },
-            status: StepStatus::Failed,
-            image: None,
-            effects: Vec::new(),
-        },
-    }
-}
-
-async fn run_mcp_tool(
-    runtime: &crate::kernel::RuntimeContext,
-    run_id: &RunId,
-    tool_use_id: &str,
-    name: &str,
-    input: &serde_json::Value,
-) -> ExecResult {
-    let invocation = runtime
-        .invocation(
-            RequestId::from(tool_use_id),
-            PluginId::from("tact.mcp"),
-            "agent",
-        )
-        .with_run_id(run_id.clone());
-    match runtime
-        .router()
-        .invoke(name, invocation, input.clone())
-        .await
-    {
-        Ok(output) => match serde_json::from_value::<ToolCallResult>(output) {
-            Ok(result) => ExecResult {
-                content: result.content,
-                status: StepStatus::Success,
-                image: result.image,
-                effects: result.effects,
-            },
-            Err(error) => ExecResult {
-                content: format!("Error decoding MCP capability result for {name}: {error}"),
-                status: StepStatus::Failed,
-                image: None,
-                effects: Vec::new(),
-            },
-        },
-        Err(error) => ExecResult {
             content: if error.category() == tact_protocol::ErrorCategory::StorageError
                 || is_mcp_prompt_tool(name)
                 || is_mcp_resource_tool(name)
             {
                 error.message().to_string()
-            } else {
+            } else if name.starts_with("mcp__") {
                 format!("Error invoking MCP tool {}: {}", name, error.message())
+            } else {
+                format!("Error invoking tool {}: {}", name, error.message())
             },
             status: StepStatus::Failed,
             image: None,
@@ -1088,7 +1044,7 @@ impl Agent {
                                         &tool_use.input,
                                     );
 
-                                    let choice = if let Some(tx) = &self.runtime.ui_tx {
+                                    let choice = if self.tool_context.interactive {
                                         if let Some(rule) = &prefix_rule {
                                             prompt.push_str(&format!(
                                                 "\n\n\"Always allow this pattern\" would \
@@ -1104,7 +1060,7 @@ impl Agent {
                                         // ends on a real user answer or when the UI
                                         // closes (both route through the responder).
                                         let selection = responder
-                                            .request_select(tx, prompt, options, false)
+                                            .request_select_runtime(prompt, options, false)
                                             .await
                                             .ok()
                                             .flatten();
@@ -1337,33 +1293,16 @@ impl Agent {
                     .clone();
                 let run_id = run_id.clone();
                 let prep = &prepared[pi];
-                let is_mcp = matches!(
-                    &prep.resolved,
-                    ResolvedTool::Mcp { .. }
-                        | ResolvedTool::McpResource { .. }
-                        | ResolvedTool::McpPrompt { .. }
-                );
                 futures.push(async move {
                     let start = std::time::Instant::now();
-                    let exec = if is_mcp {
-                        run_mcp_tool(
-                            &capability_runtime,
-                            &run_id,
-                            &prep.id,
-                            &prep.name,
-                            &prep.input,
-                        )
-                        .await
-                    } else {
-                        run_native_tool(
-                            &capability_runtime,
-                            &run_id,
-                            &prep.id,
-                            &prep.name,
-                            &prep.input,
-                        )
-                        .await
-                    };
+                    let exec = run_capability_tool(
+                        &capability_runtime,
+                        &run_id,
+                        &prep.id,
+                        &prep.name,
+                        &prep.input,
+                    )
+                    .await;
                     (pi, exec, start.elapsed().as_micros() as u64)
                 });
             }
@@ -1658,7 +1597,63 @@ mod tests {
 
     use super::*;
     use crate::mcp::{McpClient, McpResourceTool, MockMcpService};
-    use tact_protocol::StepStatus;
+    use async_trait::async_trait;
+    use tact_protocol::{CapabilityDeclaration, CapabilityKind, CapabilityRisk, RunId, StepStatus};
+
+    struct AllowCapability;
+
+    #[async_trait]
+    impl PermissionService for AllowCapability {
+        async fn check(
+            &self,
+            _declaration: &CapabilityDeclaration,
+            _context: &InvocationContext,
+            _input: &serde_json::Value,
+        ) -> Result<(), KernelError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn external_tool_calls_use_the_unified_capability_runner() {
+        let router = crate::kernel::CapabilityRouter::new();
+        router
+            .register_handler(
+                CapabilityDeclaration {
+                    name: "mcp__demo__echo".into(),
+                    kind: CapabilityKind::Tool,
+                    version: "1".into(),
+                    description: None,
+                    input_schema: None,
+                    output_schema: None,
+                    risk: CapabilityRisk::ReadOnly,
+                },
+                crate::kernel::FnCapabilityHandler::new(|_, _| async {
+                    Ok(serde_json::json!({
+                        "content": "from external tool",
+                        "effects": [],
+                        "image": null
+                    }))
+                }),
+            )
+            .unwrap();
+        let runtime = crate::kernel::RuntimeContext::with_services(
+            router,
+            RuntimeServices::with_permission(Arc::new(AllowCapability)),
+        );
+
+        let result = run_capability_tool(
+            &runtime,
+            &RunId::from("run-unified"),
+            "call-unified",
+            "mcp__demo__echo",
+            &serde_json::json!({"text": "hello"}),
+        )
+        .await;
+
+        assert_eq!(result.content, "from external tool");
+        assert_eq!(result.status, StepStatus::Success);
+    }
 
     /// A router with one server that publishes one readable resource.
     fn router_with_a_resource() -> MCPToolRouter {

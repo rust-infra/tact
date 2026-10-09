@@ -73,12 +73,12 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>();
 
-    if let Some(tx) = &ctx.ui_tx {
+    if ctx.interactive {
         if !options.is_empty() {
             let responder = ctx.ui_responder.clone();
             if multi {
                 return match responder
-                    .request_multi(tx, question.clone(), options.clone())
+                    .request_multi_runtime(question.clone(), options.clone())
                     .await
                 {
                     Ok(Some(idxs)) => Ok(format_multi_selection(&options, &idxs)),
@@ -90,7 +90,7 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
             }
 
             return match responder
-                .request_select(tx, question.clone(), options.clone(), false)
+                .request_select_runtime(question.clone(), options.clone(), false)
                 .await
             {
                 Ok(Some(idx)) => {
@@ -107,7 +107,7 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
             };
         }
 
-        let _ = tx.send(AgentUpdate::Info(format!("❓ {question}")));
+        let _ = ctx.emit_view_update(AgentUpdate::Info(format!("❓ {question}")));
         return Ok(format!(
             "Question shown to the user:\n{question}\n\n\
              No choices were provided, so there was no selection popup. \
@@ -196,7 +196,8 @@ mod tests {
     async fn ask_user_popup_returns_selected_option() {
         let mut context = test_context("ask_user_popup_returns_selected_option");
         let (tx, mut rx) = unbounded_channel();
-        context.ui_tx = Some(tx);
+        context.interactive = true;
+        context.set_test_view_updates(tx);
         let responder = context.ui_responder.clone();
 
         let tool = tokio::spawn(async move {
@@ -242,7 +243,8 @@ mod tests {
     async fn ask_user_multi_popup_returns_several() {
         let mut context = test_context("ask_user_multi_popup_returns_several");
         let (tx, mut rx) = unbounded_channel();
-        context.ui_tx = Some(tx);
+        context.interactive = true;
+        context.set_test_view_updates(tx);
         let responder = context.ui_responder.clone();
 
         let tool = tokio::spawn(async move {
@@ -283,7 +285,8 @@ mod tests {
     async fn ask_user_popup_cancel() {
         let mut context = test_context("ask_user_popup_cancel");
         let (tx, mut rx) = unbounded_channel();
-        context.ui_tx = Some(tx);
+        context.interactive = true;
+        context.set_test_view_updates(tx);
         let responder = context.ui_responder.clone();
 
         let tool = tokio::spawn(async move {
@@ -317,7 +320,8 @@ mod tests {
     async fn ask_user_free_text_emits_info() {
         let mut context = test_context("ask_user_free_text_emits_info");
         let (tx, mut rx) = unbounded_channel();
-        context.ui_tx = Some(tx);
+        context.interactive = true;
+        context.set_test_view_updates(tx);
 
         let output = run_tool(
             &context,

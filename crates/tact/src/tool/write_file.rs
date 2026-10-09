@@ -99,15 +99,13 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
 
                 if milestone_reached || time_elapsed {
                     let pct = (written * 100 / total) as u64;
-                    if let Some(ref tx) = ctx.ui_tx {
-                        let _ = tx.send(AgentUpdate::Info(format!(
-                            "Writing {}... {}% ({} / {})",
-                            path.display(),
-                            pct,
-                            format_bytes(written),
-                            format_bytes(total)
-                        )));
-                    }
+                    let _ = ctx.emit_view_update(AgentUpdate::Info(format!(
+                        "Writing {}... {}% ({} / {})",
+                        path.display(),
+                        pct,
+                        format_bytes(written),
+                        format_bytes(total)
+                    )));
                     last_update = now;
                     if milestone_reached {
                         next_milestone += total / 10;

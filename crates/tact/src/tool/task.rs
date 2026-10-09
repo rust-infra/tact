@@ -45,7 +45,7 @@ pub async fn task_create(ctx: ToolContext, input: TaskCreateInput) -> Result<Str
         .await?;
     let listed = ctx.task_manager.list().await.unwrap_or_default();
     emit_tasks_changed(
-        &ctx.ui_tx,
+        &ctx.view_updates,
         listed,
         tact_protocol::TasksChangeReason::Created,
     );
@@ -146,7 +146,7 @@ pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<Str
         .await?;
     let listed = ctx.task_manager.list().await.unwrap_or_default();
     emit_tasks_changed(
-        &ctx.ui_tx,
+        &ctx.view_updates,
         listed,
         tact_protocol::TasksChangeReason::Updated,
     );
@@ -228,7 +228,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let router = ToolRouter::new().route(TaskCreateTool).unwrap();
         let mut context = test_context("task_create_emits");
-        context.ui_tx = Some(tx);
+        context.set_test_view_updates(tx);
 
         router
             .call(
@@ -259,7 +259,7 @@ mod tests {
             .route(TaskUpdateTool)
             .unwrap();
         let mut context = test_context("task_update_emits");
-        context.ui_tx = Some(tx.clone());
+        context.set_test_view_updates(tx.clone());
 
         let created = router
             .call(
@@ -277,7 +277,7 @@ mod tests {
             .as_u64()
             .unwrap();
 
-        context.ui_tx = Some(tx);
+        context.set_test_view_updates(tx);
         router
             .call(
                 &context,
@@ -309,7 +309,7 @@ mod tests {
             .route(TaskListTool)
             .unwrap();
         let mut context = test_context("task_list_no_emit");
-        context.ui_tx = Some(tx.clone());
+        context.set_test_view_updates(tx.clone());
         let _ = router
             .call(
                 &context,
@@ -320,7 +320,7 @@ mod tests {
             .unwrap();
         while rx.try_recv().is_ok() {}
 
-        context.ui_tx = Some(tx);
+        context.set_test_view_updates(tx);
         router
             .call(&context, "task_list", serde_json::json!({}))
             .await

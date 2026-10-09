@@ -707,7 +707,9 @@ flowchart TB
     V --> EXT
 ```
 
-`crates/tact/src/kernel/` contains the initial service boundaries. `crates/tact/src/trajectory/` contains the execution fact model and ordered recorder. `crates/protocol/` contains language-neutral IDs, envelopes, capabilities, runtime events, commands, interactions, and errors. Existing AgentUpdate/UserCommand and TUI wiring remain compatibility paths until the later adapter migration removes them.
+`crates/tact/src/kernel/` contains service boundaries for capability routing, permission, events, trajectory, storage, cancellation, and interactions. `crates/tact/src/trajectory/` contains the execution fact model and ordered recorder. `crates/protocol/` contains language-neutral IDs, envelopes, capabilities, runtime events, commands, interactions, and errors. Interactive and headless hosts attach the SQLite trajectory subscriber before the Agent starts. The TUI consumes Runtime events for run lifecycle, streaming, status, popups, and select requests; it sends Runtime start, cancel, and interaction-response commands.
+
+Rich tool-card lifecycle details and specialized Tact slash commands still use the in-process `AgentUpdate` / `UserCommand` adapter. Official Agent, Chat, Session, Tools, and Workflow manifests register through `PluginRegistry`; Agent/Chat, Session, and Workflow capabilities register through `CapabilityRouter`, while native and MCP tool handlers are installed through the same router for each execution wave.
 
 Native tools, namespaced MCP tools, and the MCP prompt/resource commands now register as `CapabilityRouter` handlers. Agent keeps its existing sequential hook, permission, and resource preflight during migration, then presents a one-use approval ticket to the router before execution. Typed tool effects and output metadata survive the adapter response.
 

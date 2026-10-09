@@ -36,8 +36,6 @@ use tact::{
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
 use tact_llm::get_llm_client;
-use tact_protocol::AgentUpdate;
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
     permission::permission_mode_from_config,
@@ -61,7 +59,7 @@ pub enum Notices {
     ///
     /// The TUI owns the alternate screen by the time it starts building the
     /// agent, so a stray `eprintln!` would land in the middle of a frame.
-    Ui(UnboundedSender<AgentUpdate>),
+    Ui(tact::kernel::EventTransport),
 }
 
 impl Notices {
@@ -73,7 +71,10 @@ impl Notices {
     fn notice(&self, tag: &str, message: &str) {
         match self {
             Self::Ui(tx) => {
-                let _ = tx.send(AgentUpdate::Info(message.to_string()));
+                let _ = tx.publish(tact_protocol::RuntimeEvent::Notification {
+                    level: "info".into(),
+                    content: message.to_string(),
+                });
             }
             Self::Stderr => eprintln!("{}", stderr_line(tag, message)),
         }
@@ -102,14 +103,8 @@ fn stderr_line(tag: &str, message: &str) -> String {
     format!("[{tag}] {message}")
 }
 
-/// The interactive frontend's channel into the agent.
-///
-/// Both halves are part of one decision — "there is a UI to talk to" — so they
-/// travel together: a `ui_tx` with no responder would leave approval prompts
-/// and `ask_user` unanswered, and a responder with no channel would never see
-/// the prompts it is meant to answer.
+/// The interactive frontend's protocol event and interaction services.
 pub struct UiWiring {
-    pub tx: UnboundedSender<AgentUpdate>,
     pub responder: UiResponder,
     pub runtime_events: tact::kernel::EventTransport,
 }
@@ -246,12 +241,12 @@ pub async fn bootstrap_session(
         tools.set_tool_description("bash", tact::tool::SANDBOXED_BASH_DESCRIPTION);
     }
 
-    let (ui_tx, ui_responder) = match &ui {
-        Some(wiring) => (Some(wiring.tx.clone()), wiring.responder.clone()),
+    let ui_responder = match &ui {
+        Some(wiring) => wiring.responder.clone(),
         // An empty responder is the honest value for "nobody can answer": a
         // tool that asks fails cleanly instead of hanging on a prompt that has
         // no one behind it.
-        None => (None, UiResponder::new()),
+        None => UiResponder::new(),
     };
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),
@@ -264,7 +259,9 @@ pub async fn bootstrap_session(
         teammate_manager,
         worktree_manager,
         subagent_manager,
-        ui_tx,
+        interactive: ui.is_some(),
+        ui_tx: None,
+        view_updates: tact::tool::ViewUpdateEmitter::default(),
         ui_responder,
         progress_reporter: tact::tool::ToolProgressReporter::default(),
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
@@ -300,9 +297,6 @@ pub async fn bootstrap_session(
         tact::plugin::PluginRegistry::new(tact_protocol::ProtocolVersion::CURRENT);
     tact::extensions::register_official_manifests(&plugin_registry, &agent)?;
     agent = agent.with_plugin_registry(plugin_registry);
-    if let Some(wiring) = ui {
-        agent = agent.with_ui_channel(wiring.tx);
-    }
     agent = agent.with_runtime_event_transport(runtime_events);
     // RTK filter is opt-in — `with_post_tool` no-ops unless the
     // `tools.rtk_filter` setting is enabled.
@@ -325,7 +319,6 @@ pub async fn bootstrap_session(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tokio::sync::mpsc::unbounded_channel;
 
     /// The UI path carries the finding and drops the tag.
     ///
@@ -333,12 +326,14 @@ mod tests {
     /// it; a TUI row has its own place on screen and reads on its own.
     #[tokio::test]
     async fn ui_notices_arrive_as_an_info_row_without_the_tag() {
-        let (tx, mut rx) = unbounded_channel();
-        Notices::Ui(tx).notice("mcp", "server demo did not answer");
+        let transport = tact::kernel::EventTransport::new(4);
+        let mut subscription = transport.subscribe();
+        Notices::Ui(transport).notice("mcp", "server demo did not answer");
 
-        let update = rx.try_recv().expect("a notice");
+        let update = subscription.try_recv().expect("a notice");
         assert!(
-            matches!(&update, AgentUpdate::Info(message) if message == "server demo did not answer"),
+            matches!(&update, tact_protocol::RuntimeEvent::Notification { level, content }
+                if level == "info" && content == "server demo did not answer"),
             "{update:?}"
         );
     }
@@ -351,10 +346,11 @@ mod tests {
     /// rather than assumed.
     #[tokio::test]
     async fn the_permission_mode_is_reported_only_where_nothing_else_shows_it() {
-        let (tx, mut rx) = unbounded_channel();
-        Notices::Ui(tx).permission_mode(PermissionMode::Plan);
+        let transport = tact::kernel::EventTransport::new(4);
+        let mut subscription = transport.subscribe();
+        Notices::Ui(transport).permission_mode(PermissionMode::Plan);
         assert!(
-            rx.try_recv().is_err(),
+            subscription.try_recv().is_err(),
             "the UI path must not repeat what its status bar already shows"
         );
     }

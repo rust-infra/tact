@@ -42,6 +42,84 @@ use crate::{
     team::SharedTeammateManager, ui_responder::UiResponder, worktree::SharedWorktreeManager,
 };
 
+#[derive(Clone, Default)]
+pub struct ViewUpdateEmitter {
+    inner: Arc<Mutex<ViewUpdateEmitterState>>,
+}
+
+impl std::fmt::Debug for ViewUpdateEmitter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ViewUpdateEmitter")
+            .finish_non_exhaustive()
+    }
+}
+
+#[derive(Default)]
+struct ViewUpdateEmitterState {
+    runtime_sink: Option<Arc<dyn crate::kernel::RuntimeEventSink>>,
+    #[cfg(any(test, feature = "test-support"))]
+    legacy_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    run_id: Option<tact_protocol::RunId>,
+}
+
+impl ViewUpdateEmitter {
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn legacy(tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>) -> Self {
+        let emitter = Self::default();
+        emitter.set_legacy_sender(tx);
+        emitter
+    }
+
+    pub fn set_runtime_sink(&self, sink: Arc<dyn crate::kernel::RuntimeEventSink>) {
+        self.inner
+            .lock()
+            .expect("view update emitter lock poisoned")
+            .runtime_sink = Some(sink);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_legacy_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>) {
+        self.inner
+            .lock()
+            .expect("view update emitter lock poisoned")
+            .legacy_tx = Some(tx);
+    }
+
+    pub fn set_run_id(&self, run_id: Option<tact_protocol::RunId>) {
+        self.inner
+            .lock()
+            .expect("view update emitter lock poisoned")
+            .run_id = run_id;
+    }
+
+    pub fn emit(&self, update: AgentUpdate) -> bool {
+        let (runtime_sink, run_id) = {
+            let state = self
+                .inner
+                .lock()
+                .expect("view update emitter lock poisoned");
+            (state.runtime_sink.clone(), state.run_id.clone())
+        };
+        if let Some(sink) = runtime_sink {
+            sink.emit(tact_protocol::RuntimeEvent::ViewUpdate { run_id, update })
+                .is_ok()
+        } else {
+            #[cfg(any(test, feature = "test-support"))]
+            if let Some(tx) = self
+                .inner
+                .lock()
+                .expect("view update emitter lock poisoned")
+                .legacy_tx
+                .clone()
+            {
+                return tx.send(update).is_ok();
+            }
+            false
+        }
+    }
+}
+
 mod ask_user;
 mod background_run;
 mod bash;
@@ -58,10 +136,8 @@ mod readonly_shell;
 mod registry;
 mod sleep;
 mod subagent;
-#[cfg(feature = "test-support")]
+#[cfg(any(test, feature = "test-support"))]
 pub mod subagent_ui;
-#[cfg(not(feature = "test-support"))]
-mod subagent_ui;
 mod task;
 mod team;
 #[cfg(any(test, feature = "test-support"))]
@@ -122,7 +198,11 @@ pub struct ToolContext {
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
     pub subagent_manager: crate::subagent::SharedSubagentManager,
+    /// Whether this host has an active client that can answer interactions.
+    pub interactive: bool,
+    #[cfg(any(test, feature = "test-support"))]
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    pub view_updates: ViewUpdateEmitter,
     /// Shared request/reply registry for `ask_user` and permission selects.
     /// Cloned into subagents so request ids stay globally unique.
     pub ui_responder: UiResponder,
@@ -160,6 +240,21 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
+    pub fn emit_view_update(&self, update: AgentUpdate) -> bool {
+        self.view_updates.emit(update)
+    }
+
+    /// Test/embedding hook: route view updates to a legacy TUI channel.
+    ///
+    /// Keeps the pre-migration assertion style (`rx.recv()` of `AgentUpdate`)
+    /// working for tools that now publish through [`ViewUpdateEmitter`].
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_test_view_updates(&mut self, tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>) {
+        self.view_updates = ViewUpdateEmitter::legacy(tx.clone());
+        self.ui_responder.set_legacy_sender(tx.clone());
+        self.ui_tx = Some(tx);
+    }
+
     pub fn for_invocation(&self, tool_id: &str) -> Self {
         self.for_invocation_with_redaction(tool_id, crate::security::RedactionLevel::Off)
     }
@@ -177,7 +272,8 @@ impl ToolContext {
     ) -> Self {
         let mut context = self.clone();
         context.progress_reporter =
-            ToolProgressReporter::new(tool_id, self.ui_tx.clone()).with_stream_redaction(level);
+            ToolProgressReporter::with_view_updates(tool_id, self.view_updates.clone())
+                .with_stream_redaction(level);
         context
     }
 }
@@ -402,6 +498,22 @@ mod tests {
         *,
     };
 
+    #[test]
+    fn view_update_emitter_uses_the_runtime_event_transport() {
+        let transport = crate::kernel::EventTransport::new(4);
+        let mut subscription = transport.subscribe();
+        let emitter = ViewUpdateEmitter::default();
+        emitter.set_runtime_sink(Arc::new(transport));
+
+        assert!(emitter.emit(AgentUpdate::Info("through protocol".into())));
+        assert!(matches!(
+            subscription.try_recv(),
+            Ok(tact_protocol::RuntimeEvent::ViewUpdate {
+                update: AgentUpdate::Info(message), ..
+            }) if message == "through protocol"
+        ));
+    }
+
     #[derive(serde::Deserialize, JsonSchema)]
     struct EchoInput {
         #[schemars(description = "Text to echo.")]
@@ -560,7 +672,7 @@ mod tests {
         let router = ToolRouter::new().route(WriteFileTool).unwrap();
         let mut context = test_context("write_file_emits_progress");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        context.ui_tx = Some(tx);
+        context.set_test_view_updates(tx);
 
         let content = "x".repeat(300 * 1024);
         let path = "large.txt";

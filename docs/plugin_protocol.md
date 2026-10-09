@@ -12,4 +12,6 @@ The WASM host launches a Wasmtime CLI runner with configured fuel, linear-memory
 
 Plugin events must be namespaced as `plugin.<plugin_id>.<event>`. The plugin ID and origin are carried in the event and validated together. Reserved host facts such as permission, tool, run, model, and lifecycle events cannot be forged by a plugin.
 
-The protocol keeps legacy `AgentUpdate` and `UserCommand` exports during migration. New clients use `RuntimeEvent`, `RuntimeCommand`, `InteractionRequest`, and `InteractionResponse`.
+The interactive host uses `RuntimeCommand::StartRun`, `CancelRun`, and `RespondInteraction` for chat submission and select responses. The TUI consumes `RuntimeEvent` for streamed text, thinking, progress, model and token status, run lifecycle, popup content, and interaction requests, then projects those values into its existing widget state.
+
+Detailed tool-card lifecycle updates and Tact-specific slash commands still pass through the in-process `AgentUpdate` / `UserCommand` adapter. The generic plugin hosts and official Agent, Chat, Session, and Workflow capability entry points use `CapabilityRouter`; each host injects its own event and interaction services, so Chat does not depend on a TUI implementation.

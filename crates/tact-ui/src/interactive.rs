@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tact::{Agent, config::CliArgs, consts::TactPath, store::DynSessionStore};
-use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate};
+use tact_protocol::AccountUpdate;
 
 use crate::{
     account,
@@ -53,7 +53,6 @@ async fn run_interactive_locked(
     // the driver has not started yet are buffered by the unbounded channel
     // and processed once the driver task is spawned — the UI never blocks on
     // MCP readiness, and nothing is dropped.
-    let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
     let (account_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
     let (plugin_tx, plugin_request_rx) = tokio::sync::mpsc::unbounded_channel();
     let (plugin_event_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -105,7 +104,7 @@ async fn run_interactive_locked(
             None
         };
         tui::run_tui(tui::TuiConfig {
-            agent_rx,
+            agent_rx: None,
             runtime_events: tui_runtime_events,
             account_rx,
             plugin_rx,
@@ -178,8 +177,8 @@ async fn run_interactive_locked(
     // deferred past the TUI spawn above. Because the TUI is already in raw
     // mode / alternate screen at this point, a failure here must NOT propagate
     // via `?` (that would leave the terminal unrestored with a detached TUI
-    // task). Instead the error is delivered into the running TUI as an
-    // `AgentUpdate::Error`, the user quits normally, and `run_tui` restores
+    // task). Instead the error is delivered into the running TUI as a Runtime
+    // error event, the user quits normally, and `run_tui` restores
     // the terminal.
     //
     // Raced against the TUI, because this is the slowest thing that happens
@@ -195,13 +194,12 @@ async fn run_interactive_locked(
     // on this path — there is no agent to summarise.
     let mut build = Box::pin(build_agent_for_interactive(
         tact_path,
-        agent_tx.clone(),
         agent_skill_registry,
         agent_session_id,
         agent_session_store,
         work_dir,
         ui_responder,
-        runtime_events,
+        runtime_events.clone(),
     ));
     let driver = tokio::select! {
         // `biased`, so a build that is *already* finished is always used: the
@@ -220,9 +218,10 @@ async fn run_interactive_locked(
                 // Deliver the failure into the already-running TUI instead of
                 // propagating it past the raw-mode boundary. The TUI shows the
                 // error and the user quits normally (restoring the terminal).
-                let _ = agent_tx.send(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                    "startup failed: {err:#}"
-                ))));
+                let _ = runtime_events.publish(tact_protocol::RuntimeEvent::Error {
+                    run_id: None,
+                    message: format!("startup failed: {err:#}"),
+                });
                 None
             }
         },
@@ -268,7 +267,6 @@ async fn run_interactive_locked(
 /// which channel the agent may talk back on.
 async fn build_agent_for_interactive(
     tact_path: TactPath,
-    agent_tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>,
     skill_registry: tact::skill::SharedSkillRegistry,
     session_id: String,
     session_store: DynSessionStore,
@@ -276,8 +274,7 @@ async fn build_agent_for_interactive(
     ui_responder: tact::ui_responder::UiResponder,
     runtime_events: tact::kernel::EventTransport,
 ) -> anyhow::Result<Agent> {
-    // One clone for the notices: the wiring below takes the original channel.
-    let notices = Notices::Ui(agent_tx.clone());
+    let notices = Notices::Ui(runtime_events.clone());
     bootstrap_session(
         &tact_path,
         work_dir,
@@ -285,7 +282,6 @@ async fn build_agent_for_interactive(
         session_id,
         session_store,
         Some(UiWiring {
-            tx: agent_tx,
             responder: ui_responder,
             runtime_events,
         }),

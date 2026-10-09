@@ -4,6 +4,23 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-09 — Headless 与 TUI 共用 Runtime 事件轨迹
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature / architecture（可观察：无终端运行也会把 Agent 运行事件写入 SQLite 轨迹） |
+| **Related** | `crates/tact-ui/src/session_bootstrap.rs`、`crates/tact/src/kernel/trajectory.rs`、`crates/tact/src/extensions/` |
+
+**现象 / 动机：** 轨迹订阅只在交互 TUI 启动时安装，headless 会话能运行 Agent，却没有同样可回放的 Runtime 事件序列。Chat、Session 与 Workflow 也只有清单，尚不能从另一种 View 注入自己的事件服务。
+
+**决策：** UI 与 headless 共用一个 `EventTransport` / SQLite Trajectory 启动流程；RunStarted 携带稳定 RunId；开始、取消与交互响应走 `RuntimeCommand`。官方 Agent、Chat、Session、Tools、Workflow 清单统一注册，并为 Agent/Chat、Session 和 Workflow 提供 CapabilityRouter 入口。
+
+**改后行为：** headless 与 TUI 都会记录运行期间可回放的 Runtime 事实；TUI 将 Runtime 事件投影到现有视图，外部 View 可注入自己的事件服务。富工具卡片和 Tact 专属命令仍由进程内兼容适配器承接，后续迁移再删除。
+
+**Verification：** `cargo test -p tui --lib`、`cargo test -p tact-ui --lib`、`cargo test -p tact --lib extensions::` 顺序通过；Runtime 交互等待使用超时覆盖请求顺序、取消与恢复。
+
+**Pointers:** `docs/superpowers/specs/2026-10-08-runtime-plugin-architecture-design.md`、`docs/superpowers/plans/2026-10-08-runtime-plugin-architecture.md`、`docs/plugin_protocol.md`、`docs/trajectory.md`。
+
 ## 1. 2026-10-08 — Open 按钮单击链路与代码弹窗稳定身份
 
 | Field | Value |

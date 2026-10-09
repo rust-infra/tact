@@ -1,6 +1,6 @@
 use async_trait::async_trait;
 use serde_json::Value;
-use tact_protocol::{RunId, RuntimeEvent, StepId, TrajectoryId};
+use tact_protocol::{AgentUpdate, RunId, RuntimeEvent, StepId, TrajectoryId};
 
 use crate::trajectory::{
     Sensitivity, SqliteTrajectoryRecorder, TrajectoryEventType, TrajectoryRecorder,
@@ -58,7 +58,8 @@ impl TrajectoryService for KernelTrajectoryRecorder {
             | RuntimeEvent::ModelInfo { run_id, .. }
             | RuntimeEvent::TokenUsage { run_id, .. }
             | RuntimeEvent::TurnStats { run_id, .. }
-            | RuntimeEvent::ToolProgress { run_id, .. } => run_id.clone(),
+            | RuntimeEvent::ToolProgress { run_id, .. }
+            | RuntimeEvent::ViewUpdate { run_id, .. } => run_id.clone(),
             _ => None,
         }) {
             Some(run_id) => run_id,
@@ -97,6 +98,22 @@ impl TrajectoryService for KernelTrajectoryRecorder {
             RuntimeEvent::Text { .. } | RuntimeEvent::Notification { .. } => {
                 TrajectoryEventType::Message
             }
+            RuntimeEvent::ViewUpdate { update, .. } => match update {
+                AgentUpdate::StepAdded(_)
+                | AgentUpdate::StepStarted { .. }
+                | AgentUpdate::StepFinished { .. }
+                | AgentUpdate::StepFailed { .. }
+                | AgentUpdate::ToolProgress { .. }
+                | AgentUpdate::ToolMeta { .. }
+                | AgentUpdate::BackgroundTaskFinished { .. }
+                | AgentUpdate::SubagentFinished { .. } => TrajectoryEventType::ToolCall,
+                AgentUpdate::RequestSelect { .. } | AgentUpdate::RequestMultiSelect { .. } => {
+                    TrajectoryEventType::Interaction
+                }
+                AgentUpdate::TaskCancelled => TrajectoryEventType::Cancellation,
+                AgentUpdate::Error(_) => TrajectoryEventType::Error,
+                _ => TrajectoryEventType::Message,
+            },
             RuntimeEvent::Error { .. } => TrajectoryEventType::Error,
             RuntimeEvent::PluginStarted { .. }
             | RuntimeEvent::PluginStopped { .. }
@@ -155,7 +172,8 @@ impl TrajectoryService for SqliteTrajectoryService {
                 | RuntimeEvent::ModelInfo { run_id, .. }
                 | RuntimeEvent::TokenUsage { run_id, .. }
                 | RuntimeEvent::TurnStats { run_id, .. }
-                | RuntimeEvent::ToolProgress { run_id, .. } => run_id.clone(),
+                | RuntimeEvent::ToolProgress { run_id, .. }
+                | RuntimeEvent::ViewUpdate { run_id, .. } => run_id.clone(),
                 _ => None,
             })
             // Notifications and plugin lifecycle events can be emitted before
@@ -222,6 +240,22 @@ fn event_type(event: &RuntimeEvent) -> TrajectoryEventType {
         RuntimeEvent::Text { .. } | RuntimeEvent::Notification { .. } => {
             TrajectoryEventType::Message
         }
+        RuntimeEvent::ViewUpdate { update, .. } => match update {
+            AgentUpdate::StepAdded(_)
+            | AgentUpdate::StepStarted { .. }
+            | AgentUpdate::StepFinished { .. }
+            | AgentUpdate::StepFailed { .. }
+            | AgentUpdate::ToolProgress { .. }
+            | AgentUpdate::ToolMeta { .. }
+            | AgentUpdate::BackgroundTaskFinished { .. }
+            | AgentUpdate::SubagentFinished { .. } => TrajectoryEventType::ToolCall,
+            AgentUpdate::RequestSelect { .. } | AgentUpdate::RequestMultiSelect { .. } => {
+                TrajectoryEventType::Interaction
+            }
+            AgentUpdate::TaskCancelled => TrajectoryEventType::Cancellation,
+            AgentUpdate::Error(_) => TrajectoryEventType::Error,
+            _ => TrajectoryEventType::Message,
+        },
         RuntimeEvent::Error { .. } => TrajectoryEventType::Error,
         RuntimeEvent::PluginStarted { .. }
         | RuntimeEvent::PluginStopped { .. }

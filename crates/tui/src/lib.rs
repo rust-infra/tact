@@ -153,7 +153,9 @@ pub(crate) fn on_poll_timeout(app: &mut App) {
 
 /// Configuration for launching the TUI.
 pub struct TuiConfig {
-    pub agent_rx: UnboundedReceiver<AgentUpdate>,
+    /// Optional in-process compatibility receiver for test-support hosts.
+    /// Production View traffic arrives through `runtime_events`.
+    pub agent_rx: Option<UnboundedReceiver<AgentUpdate>>,
     pub runtime_events: tact::kernel::EventTransport,
     pub account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     pub plugin_rx: UnboundedReceiver<PluginEvent>,
@@ -247,6 +249,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Initialize application state
+    let agent_rx = agent_rx.unwrap_or_else(|| tokio::sync::mpsc::unbounded_channel().1);
     let mut app = App::new(
         agent_rx,
         account_rx,
@@ -551,41 +554,7 @@ fn runtime_event_to_agent_updates(event: tact_protocol::RuntimeEvent) -> Vec<Age
     use tact_protocol::RuntimeEvent;
 
     match event {
-        RuntimeEvent::Text { role, content, .. } if role == "assistant" => {
-            vec![AgentUpdate::StreamChunk(content)]
-        }
-        RuntimeEvent::Thinking { chunk, .. } => vec![AgentUpdate::ThinkingChunk(chunk)],
-        RuntimeEvent::ToolProgress {
-            tool_id, chunks, ..
-        } => vec![AgentUpdate::ToolProgress { tool_id, chunks }],
-        RuntimeEvent::ModelInfo { params, .. } => vec![AgentUpdate::ModelInfo(params)],
-        RuntimeEvent::TokenUsage { usage, .. } => vec![AgentUpdate::TokenUsage(usage)],
-        RuntimeEvent::TurnStats {
-            turns_taken,
-            max_turns,
-            ..
-        } => vec![AgentUpdate::TurnStats {
-            turns_taken,
-            max_turns,
-        }],
-        RuntimeEvent::Cancelled { .. } => vec![AgentUpdate::TaskCancelled],
-        RuntimeEvent::Notification { level, content } if level == "complete" => {
-            vec![AgentUpdate::TaskComplete(content)]
-        }
-        RuntimeEvent::Notification { level, content } if level == "md_info" => {
-            vec![AgentUpdate::MdInfo(content)]
-        }
-        RuntimeEvent::Notification { level, content } if level == "popup_markdown" => {
-            let (title, source) = if let Some((title, source)) = content.split_once('\n') {
-                (title.to_owned(), source.to_owned())
-            } else {
-                (String::new(), content)
-            };
-            vec![AgentUpdate::PopupMarkdown { title, source }]
-        }
-        RuntimeEvent::Notification { level, content } if level == "info" => {
-            vec![AgentUpdate::Info(content)]
-        }
+        RuntimeEvent::ViewUpdate { update, .. } => vec![update],
         RuntimeEvent::InteractionRequested { request } => match request {
             tact_protocol::InteractionRequest::Select {
                 request_id,
@@ -811,10 +780,9 @@ mod runtime_event_tests {
 
     #[test]
     fn runtime_text_events_project_to_stream_updates() {
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::Text {
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ViewUpdate {
             run_id: Some(tact_protocol::RunId::from("run-1")),
-            role: "assistant".into(),
-            content: "hello".into(),
+            update: tact_protocol::AgentUpdate::StreamChunk("hello".into()),
         });
 
         assert!(matches!(
@@ -825,9 +793,9 @@ mod runtime_event_tests {
 
     #[test]
     fn runtime_completion_notification_projects_to_done_update() {
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::Notification {
-            level: "complete".into(),
-            content: "finished".into(),
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ViewUpdate {
+            run_id: None,
+            update: tact_protocol::AgentUpdate::TaskComplete("finished".into()),
         });
 
         assert!(matches!(
@@ -845,9 +813,9 @@ mod runtime_event_tests {
             reasoning_effort: Some("low".into()),
             extra_body: None,
         };
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ModelInfo {
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ViewUpdate {
             run_id: None,
-            params,
+            update: tact_protocol::AgentUpdate::ModelInfo(params),
         });
 
         assert!(matches!(
@@ -880,15 +848,40 @@ mod runtime_event_tests {
 
     #[test]
     fn runtime_popup_notification_projects_to_modal_content() {
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::Notification {
-            level: "popup_markdown".into(),
-            content: "Session stats\nTurns: 3".into(),
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ViewUpdate {
+            run_id: None,
+            update: tact_protocol::AgentUpdate::PopupMarkdown {
+                title: "Session stats".into(),
+                source: "Turns: 3".into(),
+            },
         });
 
         assert!(matches!(
             updates.as_slice(),
             [tact_protocol::AgentUpdate::PopupMarkdown { title, source }]
                 if title == "Session stats" && source == "Turns: 3"
+        ));
+    }
+
+    #[test]
+    fn runtime_view_update_projects_rich_tool_cards_to_the_tui_adapter() {
+        let update = tact_protocol::AgentUpdate::StepStarted {
+            idx: 7,
+            tool_id: "tool-view".into(),
+            tool_name: "write_file".into(),
+            arg_summary: "a.txt".into(),
+            arg_full: "a.txt: content".into(),
+            presentation: tact_protocol::ToolPresentationInfo::generic("Write File"),
+        };
+        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ViewUpdate {
+            run_id: Some(tact_protocol::RunId::from("run-view")),
+            update,
+        });
+
+        assert!(matches!(
+            updates.as_slice(),
+            [tact_protocol::AgentUpdate::StepStarted { idx: 7, tool_id, .. }]
+                if tool_id == "tool-view"
         ));
     }
 

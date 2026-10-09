@@ -13,13 +13,15 @@ use serde::{Deserialize, Serialize};
 use crate::{runtime::RuntimeCommand, tool_output::ToolOutputChunk};
 
 /// Execution status of a step.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum StepStatus {
     Success,
     Failed,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolVisualKind {
     #[default]
     Generic,
@@ -32,7 +34,8 @@ pub enum ToolVisualKind {
     Sleep,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolDetailKind {
     #[default]
     None,
@@ -40,14 +43,15 @@ pub enum ToolDetailKind {
     InputField(String),
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum ToolPopupKind {
     #[default]
     None,
     SubagentTranscript,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolPresentationInfo {
     pub visual_kind: ToolVisualKind,
     pub display_name: String,
@@ -77,7 +81,7 @@ impl ToolPresentationInfo {
 }
 
 /// Structured result of a step execution.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StepResult {
     pub tool: String,
     pub arg_summary: String,
@@ -107,7 +111,8 @@ pub struct ModelCallParams {
 
 /// Error classification — lets the TUI distinguish fatal errors (displayed as ❌ Error)
 /// from non-fatal situations (shown as Info).
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", content = "message", rename_all = "snake_case")]
 pub enum AgentErrorKind {
     /// Generic error (catch-all)
     Other(String),
@@ -140,7 +145,8 @@ pub struct TokenUsageInfo {
 }
 
 /// UI-facing task status (excludes soft-deleted records).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TaskStatusSnapshot {
     #[default]
     Pending,
@@ -159,14 +165,15 @@ impl TaskStatusSnapshot {
 }
 
 /// Why a [`AgentUpdate::TasksChanged`] was emitted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum TasksChangeReason {
     Created,
     Updated,
 }
 
 /// One non-deleted persistent task for TUI progress surfaces.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct TaskSnapshot {
     pub id: u64,
     pub subject: String,
@@ -185,7 +192,8 @@ pub struct TaskSnapshot {
 /// UI-facing subagent run status for the sticky 总览 (mirrors
 /// [`TaskStatusSnapshot`] but keeps terminal states visible: a finished child
 /// still has a summary worth showing).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum SubagentStatusSnapshot {
     #[default]
     Running,
@@ -210,7 +218,7 @@ impl SubagentStatusSnapshot {
 /// in-memory known set) — unlike `subagent_runs` rows, which accumulate across
 /// sessions and orphan-repair noise. Live detail still lives on the parent
 /// `spawn_subagent` tool card / popup; this is status-level only.
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
 pub struct SubagentRunSnapshot {
     /// Child session id (the `async_launched { id }` handle).
     pub child_id: String,
@@ -222,7 +230,8 @@ pub struct SubagentRunSnapshot {
 }
 
 /// Status update messages sent from the Agent to the TUI.
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "type", content = "data", rename_all = "snake_case")]
 pub enum AgentUpdate {
     /// Dynamically append a step to the existing plan (does not reset selection state)
     StepAdded(PlanStep),

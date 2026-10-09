@@ -31,7 +31,9 @@ use std::sync::{Arc, Mutex};
 
 use crate::utils::LockExt;
 use tact_protocol::{AgentUpdate, UiResponse};
-use tokio::sync::{mpsc::UnboundedSender, oneshot};
+#[cfg(any(test, feature = "test-support"))]
+use tokio::sync::mpsc::UnboundedSender;
+use tokio::sync::oneshot;
 
 /// Why a UI select request failed to complete.
 ///
@@ -110,6 +112,8 @@ struct UiResponderInner {
     pending: Mutex<HashMap<u64, PendingEntry>>,
     next_id: AtomicU64,
     runtime_event_sink: Mutex<Option<Arc<dyn crate::kernel::RuntimeEventSink>>>,
+    #[cfg(any(test, feature = "test-support"))]
+    legacy_tx: Mutex<Option<UnboundedSender<AgentUpdate>>>,
 }
 
 impl UiResponder {
@@ -121,6 +125,11 @@ impl UiResponder {
     /// host is attached. The snapshot remains the authoritative UI state.
     pub fn set_runtime_event_sink(&self, sink: Arc<dyn crate::kernel::RuntimeEventSink>) {
         *self.inner.runtime_event_sink.lock_recover() = Some(sink);
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn set_legacy_sender(&self, tx: UnboundedSender<AgentUpdate>) {
+        *self.inner.legacy_tx.lock_recover() = Some(tx);
     }
 
     /// Register a single-select request and return its id plus the waiter.
@@ -276,9 +285,33 @@ impl UiResponder {
     /// Returns `Ok(Some(index))` on a selection, `Ok(None)` when the user
     /// cancelled, or `Err` when the UI closed before answering or answered with
     /// the wrong response kind.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn request_select(
         &self,
         ui_tx: &UnboundedSender<AgentUpdate>,
+        prompt: String,
+        options: Vec<String>,
+        log_confirm: bool,
+    ) -> Result<Option<usize>, UiRequestError> {
+        self.set_legacy_sender(ui_tx.clone());
+        self.request_select_inner(prompt, options, log_confirm)
+            .await
+    }
+
+    /// Ask through the Runtime interaction event stream, without requiring a
+    /// View channel owned by the Agent.
+    pub async fn request_select_runtime(
+        &self,
+        prompt: String,
+        options: Vec<String>,
+        log_confirm: bool,
+    ) -> Result<Option<usize>, UiRequestError> {
+        self.request_select_inner(prompt, options, log_confirm)
+            .await
+    }
+
+    async fn request_select_inner(
+        &self,
         prompt: String,
         options: Vec<String>,
         log_confirm: bool,
@@ -288,15 +321,12 @@ impl UiResponder {
             responder: self.clone(),
             request_id,
         };
-        if !self.send_request_hint(
-            ui_tx,
-            AgentUpdate::RequestSelect {
-                request_id,
-                prompt,
-                options,
-                log_confirm,
-            },
-        ) {
+        if !self.send_request_hint(AgentUpdate::RequestSelect {
+            request_id,
+            prompt,
+            options,
+            log_confirm,
+        }) {
             // UI already gone: drop the pending waiter so the receiver resolves
             // immediately instead of hanging until `shutdown`.
             self.withdraw(request_id);
@@ -314,9 +344,27 @@ impl UiResponder {
     /// Returns `Ok(Some(indices))` on confirm (possibly empty), `Ok(None)` when
     /// cancelled, or `Err` when the UI closed before answering or answered with
     /// the wrong response kind.
+    #[cfg(any(test, feature = "test-support"))]
     pub async fn request_multi(
         &self,
         ui_tx: &UnboundedSender<AgentUpdate>,
+        prompt: String,
+        options: Vec<String>,
+    ) -> Result<Option<Vec<usize>>, UiRequestError> {
+        self.set_legacy_sender(ui_tx.clone());
+        self.request_multi_inner(prompt, options).await
+    }
+
+    pub async fn request_multi_runtime(
+        &self,
+        prompt: String,
+        options: Vec<String>,
+    ) -> Result<Option<Vec<usize>>, UiRequestError> {
+        self.request_multi_inner(prompt, options).await
+    }
+
+    async fn request_multi_inner(
+        &self,
         prompt: String,
         options: Vec<String>,
     ) -> Result<Option<Vec<usize>>, UiRequestError> {
@@ -325,14 +373,11 @@ impl UiResponder {
             responder: self.clone(),
             request_id,
         };
-        if !self.send_request_hint(
-            ui_tx,
-            AgentUpdate::RequestMultiSelect {
-                request_id,
-                prompt,
-                options,
-            },
-        ) {
+        if !self.send_request_hint(AgentUpdate::RequestMultiSelect {
+            request_id,
+            prompt,
+            options,
+        }) {
             self.withdraw(request_id);
             return Err(UiRequestError::Closed);
         }
@@ -348,9 +393,17 @@ impl UiResponder {
         let _ = self.respond(response);
     }
 
-    fn send_request_hint(&self, ui_tx: &UnboundedSender<AgentUpdate>, update: AgentUpdate) -> bool {
+    fn send_request_hint(&self, update: AgentUpdate) -> bool {
         let Some(sink) = self.inner.runtime_event_sink.lock_recover().clone() else {
-            return ui_tx.send(update).is_ok();
+            #[cfg(any(test, feature = "test-support"))]
+            return self
+                .inner
+                .legacy_tx
+                .lock_recover()
+                .clone()
+                .is_some_and(|tx| tx.send(update).is_ok());
+            #[cfg(not(any(test, feature = "test-support")))]
+            return false;
         };
         let request = match update {
             AgentUpdate::RequestSelect {
@@ -757,6 +810,52 @@ mod tests {
                 .unwrap()
                 .unwrap(),
             Some(1)
+        );
+    }
+
+    #[tokio::test]
+    async fn runtime_select_request_needs_no_view_channel() {
+        let responder = UiResponder::new();
+        let events = Arc::new(CapturedEvents::default());
+        responder.set_runtime_event_sink(events.clone());
+        let task = tokio::spawn({
+            let responder = responder.clone();
+            async move {
+                responder
+                    .request_select_runtime(
+                        "Select through Runtime".into(),
+                        vec!["yes".into(), "no".into()],
+                        false,
+                    )
+                    .await
+            }
+        });
+
+        tokio::time::timeout(std::time::Duration::from_millis(200), async {
+            while responder.snapshot().is_empty() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .expect("request did not register");
+        let pending = responder.snapshot()[0].clone();
+        assert!(events.0.lock().unwrap().iter().any(|event| matches!(
+            event,
+            RuntimeEvent::InteractionRequested {
+                request: tact_protocol::InteractionRequest::Select { prompt, .. }
+            } if prompt == "Select through Runtime"
+        )));
+        responder.respond(UiResponse::Select {
+            request_id: pending.request_id,
+            choice: Some(0),
+        });
+        assert_eq!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), task)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap(),
+            Some(0)
         );
     }
 }

@@ -149,9 +149,7 @@ fn notice_unsandboxed(ctx: &ToolContext) {
         return;
     }
     tracing::warn!(reason = %degraded.reason, "bash: command not sandboxed");
-    if let Some(tx) = &ctx.ui_tx {
-        let _ = tx.send(AgentUpdate::Info(degraded.reason.clone()));
-    }
+    let _ = ctx.emit_view_update(AgentUpdate::Info(degraded.reason.clone()));
 }
 
 /// Resolve the effective wall-clock limit: a per-call `timeout` (if given)

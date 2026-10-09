@@ -407,15 +407,12 @@ pub const MAX_SUBAGENT_SNAPSHOT: usize = 20;
 /// Notify the TUI that the current-process subagent set changed (no-op without
 /// `ui_tx`). Emitted after the run row is durable so the TUI never sees a
 /// snapshot that disagrees with the store.
-pub async fn emit_subagents_changed(
-    ui_tx: &Option<tokio::sync::mpsc::UnboundedSender<tact_protocol::AgentUpdate>>,
+pub async fn emit_subagents_changed_view(
+    view_updates: &crate::tool::ViewUpdateEmitter,
     manager: &SharedSubagentManager,
 ) {
-    let Some(tx) = ui_tx else {
-        return;
-    };
     let runs = manager.ui_snapshot().await;
-    let _ = tx.send(tact_protocol::AgentUpdate::SubagentsChanged { runs });
+    let _ = view_updates.emit(tact_protocol::AgentUpdate::SubagentsChanged { runs });
 }
 
 impl SharedSubagentManager {

@@ -1,7 +1,7 @@
 use crate::{
-    CapabilityDeclaration, InteractionRequest, InteractionResponse, ModelCallParams, PluginId,
-    ProtocolError, ProtocolVersion, RequestId, RunId, StepId, ThinkingChunk, TokenUsageInfo,
-    ToolOutputChunk, TrajectoryId,
+    AgentUpdate, CapabilityDeclaration, InteractionRequest, InteractionResponse, ModelCallParams,
+    PluginId, ProtocolError, ProtocolVersion, RequestId, RunId, StepId, ThinkingChunk,
+    TokenUsageInfo, ToolOutputChunk, TrajectoryId,
 };
 use serde::{Deserialize, Serialize};
 
@@ -125,6 +125,12 @@ pub enum RuntimeEvent {
     Notification {
         level: String,
         content: String,
+    },
+    /// Versioned, serializable update for a View adapter while legacy widget
+    /// state is being moved behind the Runtime event stream.
+    ViewUpdate {
+        run_id: Option<RunId>,
+        update: AgentUpdate,
     },
     Thinking {
         run_id: Option<RunId>,
