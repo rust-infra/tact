@@ -108,6 +108,38 @@ impl PluginRegistry {
         Ok(())
     }
 
+    /// Replaces a stopped extension manifest while retaining the same stable
+    /// plugin ID. A running or stopping extension must be shut down first.
+    pub fn replace(&self, manifest: RuntimePluginManifest) -> Result<(), KernelError> {
+        manifest.validate(self.supported_protocol)?;
+        let mut plugins = self.plugins.write().map_err(|_| {
+            KernelError::new(
+                tact_protocol::ErrorCategory::InternalError,
+                "plugin registry lock poisoned",
+                "plugin",
+                true,
+            )
+        })?;
+        let Some((_, state)) = plugins.get(&manifest.id) else {
+            return Err(KernelError::new(
+                tact_protocol::ErrorCategory::CapabilityNotFound,
+                "plugin is not registered",
+                "plugin",
+                false,
+            ));
+        };
+        if matches!(state, PluginState::Running | PluginState::Stopping) {
+            return Err(KernelError::new(
+                tact_protocol::ErrorCategory::InvalidRequest,
+                "running plugin must stop before its manifest can be replaced",
+                "plugin",
+                false,
+            ));
+        }
+        plugins.insert(manifest.id.clone(), (manifest, PluginState::Registered));
+        Ok(())
+    }
+
     pub fn set_state(&self, id: &PluginId, state: PluginState) -> Result<(), KernelError> {
         let mut plugins = self.plugins.write().map_err(|_| {
             KernelError::new(
@@ -127,6 +159,14 @@ impl PluginRegistry {
         };
         *current = state;
         Ok(())
+    }
+
+    pub fn enable(&self, id: &PluginId) -> Result<(), KernelError> {
+        self.set_state(id, PluginState::Running)
+    }
+
+    pub fn disable(&self, id: &PluginId) -> Result<(), KernelError> {
+        self.set_state(id, PluginState::Stopped)
     }
 
     #[must_use]

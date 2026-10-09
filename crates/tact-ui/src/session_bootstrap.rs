@@ -298,9 +298,7 @@ pub async fn bootstrap_session(
     .with_provider_kind(provider_kind);
     let plugin_registry =
         tact::plugin::PluginRegistry::new(tact_protocol::ProtocolVersion::CURRENT);
-    for manifest in tact::extensions::official_manifests(&agent) {
-        plugin_registry.register(manifest)?;
-    }
+    tact::extensions::register_official_manifests(&plugin_registry, &agent)?;
     agent = agent.with_plugin_registry(plugin_registry);
     if let Some(wiring) = ui {
         agent = agent.with_ui_channel(wiring.tx);

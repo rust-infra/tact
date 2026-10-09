@@ -237,10 +237,10 @@
 - Produces official extension manifests and registrations using the same Plugin Protocol as third-party extensions.
 - Chat owns conversational projection and commands; Tools owns current tool families; Workflow owns orchestration.
 
-- [ ] Register built-in extensions through PluginRegistry and CapabilityRouter.
-- [ ] Preserve current command names, tool names, hooks, memory, skills, tasks, teams, worktrees, voice, and background behavior.
-- [ ] Test extension enable/disable, replacement, duplicate capability handling, and a Chat instance using a different View adapter.
-- [ ] Run `cargo test -p tact --lib extensions::`.
+- [x] Register built-in extensions through PluginRegistry and CapabilityRouter.
+- [x] Preserve current command names, tool names, hooks, memory, skills, tasks, teams, worktrees, voice, and background behavior.
+- [x] Test extension enable/disable, replacement, duplicate capability handling, and a Chat instance using a different View adapter.
+- [x] Run `cargo test -p tact --lib extensions::`.
 
 ### Task 11: Add Node.js Plugin Host and a minimal Node Chat plugin
 

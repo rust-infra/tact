@@ -1,65 +1,15 @@
 //! Official extensions registered through the same protocol as external ones.
 
-use tact_protocol::{
-    CapabilityDeclaration, CapabilityKind, CapabilityRisk, PluginId, ProtocolVersion,
+use crate::{
+    Agent,
+    plugin::{PluginRegistry, RuntimePluginManifest},
 };
 
-use crate::{Agent, plugin::RuntimePluginManifest};
-
 pub mod agent;
+pub mod chat;
 pub mod session;
-
-pub mod chat {
-    use super::*;
-    pub fn manifest() -> RuntimePluginManifest {
-        RuntimePluginManifest {
-            id: PluginId::from("tact.chat"),
-            version: env!("CARGO_PKG_VERSION").into(),
-            protocol: ProtocolVersion::CURRENT,
-            capabilities: vec![CapabilityDeclaration {
-                name: "chat.start_run".into(),
-                kind: CapabilityKind::App,
-                version: "1".into(),
-                description: Some("Start and follow a conversational run".into()),
-                input_schema: None,
-                output_schema: None,
-                risk: CapabilityRisk::Medium,
-            }],
-        }
-    }
-}
-
-pub mod tools {
-    use super::*;
-    pub fn manifest(capabilities: Vec<CapabilityDeclaration>) -> RuntimePluginManifest {
-        RuntimePluginManifest {
-            id: PluginId::from("tact.tools"),
-            version: env!("CARGO_PKG_VERSION").into(),
-            protocol: ProtocolVersion::CURRENT,
-            capabilities,
-        }
-    }
-}
-
-pub mod workflow {
-    use super::*;
-    pub fn manifest() -> RuntimePluginManifest {
-        RuntimePluginManifest {
-            id: PluginId::from("tact.workflow"),
-            version: env!("CARGO_PKG_VERSION").into(),
-            protocol: ProtocolVersion::CURRENT,
-            capabilities: vec![CapabilityDeclaration {
-                name: "workflow.run".into(),
-                kind: CapabilityKind::Command,
-                version: "1".into(),
-                description: Some("Run a multi-step workflow".into()),
-                input_schema: None,
-                output_schema: None,
-                risk: CapabilityRisk::Medium,
-            }],
-        }
-    }
-}
+pub mod tools;
+pub mod workflow;
 
 pub fn official_manifests(agent: &Agent) -> Vec<RuntimePluginManifest> {
     vec![
@@ -69,6 +19,16 @@ pub fn official_manifests(agent: &Agent) -> Vec<RuntimePluginManifest> {
         tools::manifest(agent.capability_declarations()),
         workflow::manifest(),
     ]
+}
+
+pub fn register_official_manifests(
+    registry: &PluginRegistry,
+    agent: &Agent,
+) -> Result<(), crate::kernel::KernelError> {
+    for manifest in official_manifests(agent) {
+        registry.register(manifest)?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -89,6 +49,9 @@ mod tests {
 
 #[cfg(test)]
 mod agent_tests;
+
+#[cfg(test)]
+mod official_extensions_tests;
 
 #[cfg(test)]
 mod session_tests;

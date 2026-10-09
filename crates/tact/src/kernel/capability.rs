@@ -89,6 +89,40 @@ impl CapabilityRouter {
         self.register_many(vec![registration])
     }
 
+    /// Atomically replaces the implementation for an existing capability.
+    /// In-flight invocations retain their current handler; subsequent calls
+    /// use the replacement.
+    pub fn replace(&self, registration: CapabilityRegistration) -> Result<(), KernelError> {
+        registration.declaration.validate().map_err(|message| {
+            KernelError::new(
+                tact_protocol::ErrorCategory::InvalidRequest,
+                message,
+                "kernel",
+                false,
+            )
+        })?;
+        let name = registration.declaration.name.clone();
+        let mut capabilities = self.capabilities.write().map_err(|_| {
+            KernelError::new(
+                tact_protocol::ErrorCategory::InternalError,
+                "capability registry lock poisoned",
+                "kernel",
+                true,
+            )
+        })?;
+        if !capabilities.contains_key(&name) {
+            return Err(KernelError::capability_not_found(name));
+        }
+        capabilities.insert(
+            name,
+            RegisteredCapability {
+                declaration: registration.declaration,
+                handler: registration.handler,
+            },
+        );
+        Ok(())
+    }
+
     /// Atomically registers a set of capabilities. A conflict leaves the
     /// existing registry unchanged and inserts none of the batch.
     pub fn register_many(

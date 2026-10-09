@@ -36,12 +36,18 @@ impl AgentExtension {
     }
 
     pub fn register(&self, runtime: &RuntimeContext) -> Result<(), KernelError> {
-        runtime.router().register(CapabilityRegistration::new(
-            run_capability(),
-            Arc::new(AgentRunHandler {
-                executor: self.executor.clone(),
-            }),
-        ))
+        let handler: Arc<dyn CapabilityHandler> = Arc::new(AgentRunHandler {
+            executor: self.executor.clone(),
+        });
+        let chat_capability = super::chat::manifest()
+            .capabilities
+            .into_iter()
+            .next()
+            .expect("Chat declares its start-run capability");
+        runtime.router().register_many(vec![
+            CapabilityRegistration::new(run_capability(), handler.clone()),
+            CapabilityRegistration::new(chat_capability, handler),
+        ])
     }
 }
 
