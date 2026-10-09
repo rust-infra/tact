@@ -27,6 +27,7 @@ pub fn register(router: &CapabilityRouter) -> Result<(), KernelError> {
         trajectory_read(),
         trajectory_append_plugin_event(),
         permission_request(),
+        interaction_request(),
     ])
 }
 
@@ -189,6 +190,33 @@ fn trajectory_append_plugin_event() -> CapabilityRegistration {
     )
 }
 
+fn interaction_request() -> CapabilityRegistration {
+    registration(
+        "interaction.request",
+        CapabilityRisk::Medium,
+        "Request a user interaction",
+        |context, input| async move {
+            let request: InteractionRequest = serde_json::from_value(input).map_err(|error| {
+                KernelError::new(
+                    ErrorCategory::InvalidRequest,
+                    error.to_string(),
+                    "kernel_service",
+                    false,
+                )
+            })?;
+            let response = context.interaction().request(request, &context).await?;
+            serde_json::to_value(response).map_err(|error| {
+                KernelError::new(
+                    ErrorCategory::InternalError,
+                    error.to_string(),
+                    "kernel_service",
+                    false,
+                )
+            })
+        },
+    )
+}
+
 fn permission_request() -> CapabilityRegistration {
     registration(
         "permission.request",
@@ -220,10 +248,12 @@ fn permission_request() -> CapabilityRegistration {
 mod tests {
     use super::*;
     use crate::{
-        EventTransport, PermissionService, RuntimeContext, RuntimeServices, StorageServiceImpl,
-        TrajectoryService,
+        EventTransport, InteractionBroker, PermissionService, RuntimeContext, RuntimeServices,
+        StorageServiceImpl, TrajectoryService,
     };
-    use tact_protocol::{CapabilityDeclaration, PluginId, RequestId, RunId};
+    use tact_protocol::{
+        CapabilityDeclaration, InteractionRequest, InteractionResponse, PluginId, RequestId, RunId,
+    };
 
     struct AllowPermission;
 
@@ -363,5 +393,43 @@ mod tests {
             .await
             .expect("trajectory.read");
         assert_eq!(facts.as_array().map(Vec::len), Some(1));
+    }
+
+    #[tokio::test]
+    async fn interaction_request_round_trips_through_the_router() {
+        let broker = InteractionBroker::new(8);
+        let router = crate::CapabilityRouter::new();
+        register(&router).expect("register kernel services");
+        let runtime = RuntimeContext::with_services(
+            router,
+            RuntimeServices::with_permission(std::sync::Arc::new(AllowPermission))
+                .with_interaction(std::sync::Arc::new(broker.clone())),
+        );
+        let context = runtime.invocation(
+            RequestId::from("req-interaction"),
+            PluginId::from("test.plugin"),
+            "test",
+        );
+        let mut subscription = broker.subscribe();
+        let responder = tokio::spawn(async move {
+            let request = subscription.recv().await.expect("a request");
+            let request_id = match &request {
+                InteractionRequest::Confirm { request_id, .. } => request_id.clone(),
+                other => panic!("expected confirm, got {other:?}"),
+            };
+            broker.respond(InteractionResponse::Approved { request_id });
+        });
+        let response = runtime
+            .router()
+            .invoke(
+                "interaction.request",
+                context,
+                json!({"type": "confirm", "request_id": "req-interaction", "prompt": "ok?"}),
+            )
+            .await
+            .expect("interaction.request");
+        responder.await.expect("responder");
+        let response: InteractionResponse = serde_json::from_value(response).unwrap();
+        assert!(matches!(response, InteractionResponse::Approved { .. }));
     }
 }

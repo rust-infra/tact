@@ -11,7 +11,9 @@ use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
 
 use super::{CancellationService, CapabilityRouter, KernelError};
-use crate::{EventService, PermissionService, StorageService, TrajectoryService};
+use crate::{
+    EventService, InteractionService, PermissionService, StorageService, TrajectoryService,
+};
 
 /// Event delivery supplied by a Runtime host.
 ///
@@ -24,6 +26,7 @@ pub struct RuntimeServices {
     pub(crate) trajectory: Arc<dyn TrajectoryService>,
     pub(crate) permission: Arc<dyn PermissionService>,
     pub(crate) storage: Arc<dyn StorageService>,
+    pub(crate) interaction: Arc<dyn InteractionService>,
 }
 
 impl RuntimeServices {
@@ -39,7 +42,15 @@ impl RuntimeServices {
             trajectory,
             permission,
             storage,
+            interaction: Arc::new(NoopInteractionService),
         }
+    }
+
+    /// Replaces the default no-op interaction service with a real broker.
+    #[must_use]
+    pub fn with_interaction(mut self, interaction: Arc<dyn InteractionService>) -> Self {
+        self.interaction = interaction;
+        self
     }
 
     #[must_use]
@@ -252,6 +263,11 @@ impl InvocationContext {
     }
 
     #[must_use]
+    pub fn interaction(&self) -> &Arc<dyn InteractionService> {
+        &self.services.interaction
+    }
+
+    #[must_use]
     pub fn storage(&self) -> &Arc<dyn StorageService> {
         &self.services.storage
     }
@@ -350,6 +366,24 @@ impl PermissionService for DenyPermissionService {
     ) -> Result<(), KernelError> {
         Err(KernelError::permission_denied(
             "permission service is not configured",
+        ))
+    }
+}
+
+struct NoopInteractionService;
+
+#[async_trait]
+impl InteractionService for NoopInteractionService {
+    async fn request(
+        &self,
+        _request: tact_protocol::InteractionRequest,
+        _context: &InvocationContext,
+    ) -> Result<tact_protocol::InteractionResponse, KernelError> {
+        Err(KernelError::new(
+            tact_protocol::ErrorCategory::PermissionDenied,
+            "interaction service is not configured",
+            "interaction",
+            false,
         ))
     }
 }
