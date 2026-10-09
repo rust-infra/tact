@@ -646,8 +646,8 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use tact_llm::{ContentBlock, MockClient, StopReason};
-    use tact_protocol::{RunId, RuntimeCommand};
-    use tact_view::{AgentUpdate, UserCommand};
+    use tact_protocol::{RunId, RuntimeCommand, RuntimeEvent};
+    use tact_view::UserCommand;
 
     use crate::test_support::{build_test_agent, install_test_config};
 
@@ -668,7 +668,9 @@ mod tests {
 
         assert!(agent.runtime.cancel_flag.load(Ordering::Relaxed));
         let update = agent_rx.try_recv().expect("expected Cancelling info");
-        assert!(matches!(update, AgentUpdate::Info(msg) if msg.contains("Cancelling")));
+        assert!(
+            matches!(update, RuntimeEvent::Info { content: msg, .. } if msg.contains("Cancelling"))
+        );
     }
 
     #[tokio::test]
@@ -787,7 +789,7 @@ mod tests {
         assert!(!agent.runtime.cancel_flag.load(Ordering::Relaxed));
         let mut saw_complete = false;
         while let Ok(update) = agent_rx.try_recv() {
-            if matches!(update, AgentUpdate::TaskComplete(_)) {
+            if matches!(update, RuntimeEvent::TaskComplete { .. }) {
                 saw_complete = true;
             }
         }
@@ -871,7 +873,7 @@ mod tests {
 
         let mut saw_model_info = false;
         while let Ok(update) = agent_rx.try_recv() {
-            if let AgentUpdate::ModelInfo(params) = update {
+            if let RuntimeEvent::ModelInfo { params, .. } = update {
                 assert_eq!(params.thinking_budget, Some(32_000));
                 assert!(params.max_tokens > 32_000);
                 saw_model_info = true;
@@ -907,7 +909,7 @@ mod tests {
 
         let mut last: Option<tact_protocol::ModelCallParams> = None;
         while let Ok(update) = agent_rx.try_recv() {
-            if let AgentUpdate::ModelInfo(params) = update {
+            if let RuntimeEvent::ModelInfo { params, .. } = update {
                 last = Some(params);
             }
         }
@@ -930,9 +932,13 @@ mod tests {
         let mut popup = None;
         while let Ok(update) = agent_rx.try_recv() {
             match update {
-                AgentUpdate::PopupMarkdown { title, source } => popup = Some((title, source)),
+                RuntimeEvent::PopupMarkdown { title, source, .. } => {
+                    popup = Some((title, source));
+                }
                 // The listing is a read-out: it must not land in the transcript.
-                AgentUpdate::MdInfo(md) => panic!("background listing must not be MdInfo: {md}"),
+                RuntimeEvent::MdInfo { content: md, .. } => {
+                    panic!("background listing must not be MdInfo: {md}")
+                }
                 _ => {}
             }
         }
@@ -956,7 +962,7 @@ mod tests {
 
         let mut saw_error = false;
         while let Ok(update) = agent_rx.try_recv() {
-            if let AgentUpdate::Error(err) = update {
+            if let RuntimeEvent::Error { message: err, .. } = update {
                 assert!(
                     err.to_string().contains("Unknown background task"),
                     "err: {err}"
@@ -977,7 +983,7 @@ mod tests {
 
         let mut saw_md = false;
         while let Ok(update) = agent_rx.try_recv() {
-            if let AgentUpdate::MdInfo(md) = update {
+            if let RuntimeEvent::MdInfo { content: md, .. } = update {
                 assert!(md.contains("MCP Servers"), "md: {md}");
                 saw_md = true;
             }
@@ -995,7 +1001,7 @@ mod tests {
 
         let mut rendered = None;
         while let Ok(update) = agent_rx.try_recv() {
-            if let AgentUpdate::MdInfo(md) = update {
+            if let RuntimeEvent::MdInfo { content: md, .. } = update {
                 rendered = Some(md);
             }
         }
@@ -1031,7 +1037,7 @@ mod tests {
 
         let mut message = None;
         while let Ok(update) = agent_rx.try_recv() {
-            if let AgentUpdate::Error(kind) = update {
+            if let RuntimeEvent::Error { message: kind, .. } = update {
                 message = Some(kind.to_string());
             }
         }
@@ -1102,7 +1108,7 @@ mod tests {
         let mut completions = 0;
         let wait_result = tokio::time::timeout(Duration::from_secs(1), async {
             while completions < 2 {
-                if let Some(AgentUpdate::TaskComplete(_)) = agent_rx.recv().await {
+                if let Some(RuntimeEvent::TaskComplete { .. }) = agent_rx.recv().await {
                     completions += 1;
                 }
             }
@@ -1173,7 +1179,7 @@ mod tests {
 
         let mut completions = 0;
         while let Ok(update) = agent_rx.try_recv() {
-            if let AgentUpdate::TaskComplete(_) = update {
+            if let RuntimeEvent::TaskComplete { .. } = update {
                 completions += 1;
             }
         }
@@ -1219,7 +1225,7 @@ mod tests {
         let mut saw_stats = false;
         loop {
             match tokio::time::timeout(Duration::from_millis(300), agent_rx.recv()).await {
-                Ok(Some(AgentUpdate::PopupMarkdown { .. })) => {
+                Ok(Some(RuntimeEvent::PopupMarkdown { .. })) => {
                     saw_stats = true;
                     break;
                 }
@@ -1284,7 +1290,7 @@ mod tests {
         let mut saw_popup = false;
         loop {
             match tokio::time::timeout(Duration::from_millis(300), agent_rx.recv()).await {
-                Ok(Some(AgentUpdate::PopupMarkdown { title, source })) => {
+                Ok(Some(RuntimeEvent::PopupMarkdown { title, source, .. })) => {
                     assert_eq!(title, "⚙️ Background Tasks");
                     assert!(source.contains("No background tasks."), "source: {source}");
                     saw_popup = true;

@@ -412,7 +412,8 @@ pub async fn emit_subagents_changed_view(
     manager: &SharedSubagentManager,
 ) {
     let runs = manager.ui_snapshot().await;
-    let _ = view_updates.emit(tact_view::AgentUpdate::SubagentsChanged { runs });
+    let _ = view_updates
+        .emit_runtime_event(tact_protocol::RuntimeEvent::SubagentsChanged { run_id: None, runs });
 }
 
 impl SharedSubagentManager {

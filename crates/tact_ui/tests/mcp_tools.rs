@@ -17,8 +17,7 @@ use rmcp::{
 use serde_json::json;
 use tact_extensions::mcp::{MCPToolRouter, McpClient, MockMcpService};
 use tact_llm::{ContentBlock, MockClient, StopReason};
-use tact_protocol::StepStatus;
-use tact_view::AgentUpdate;
+use tact_protocol::{RuntimeEvent, StepStatus};
 
 fn echo_tool() -> McpTool {
     McpTool {
@@ -94,7 +93,7 @@ async fn agent_routes_mcp_tool_through_mock_server() {
 
     assert!(updates.iter().any(|u| matches!(
         u,
-        AgentUpdate::StepFinished { result, .. }
+        RuntimeEvent::StepFinished { result, .. }
             if matches!(result.status, StepStatus::Success) && result.message.contains("echo: hi")
     )));
 }
@@ -134,7 +133,7 @@ async fn large_mcp_output_is_persisted() {
 
     assert!(updates.iter().any(|update| matches!(
         update,
-        AgentUpdate::StepFinished { tool_id, result, .. }
+        RuntimeEvent::StepFinished { tool_id, result, .. }
             if tool_id == "mcp_big"
                 && matches!(result.status, StepStatus::Success)
                 && result.message.contains("<persisted-output>")
@@ -182,7 +181,7 @@ async fn mcp_tool_error_is_reported_as_step_failure() {
     // but the returned message contains the error reported by the server.
     assert!(updates.iter().any(|u| matches!(
         u,
-        AgentUpdate::StepFinished { result, .. }
+        RuntimeEvent::StepFinished { result, .. }
             if result.message.contains("server exploded")
     )));
 }
@@ -234,7 +233,7 @@ async fn mcp_tool_prompts_in_default_mode() {
     // observable evidence in the collected updates is the permission_label.
     assert!(updates.iter().any(|u| matches!(
         u,
-        AgentUpdate::StepFinished { result, .. }
+        RuntimeEvent::StepFinished { result, .. }
             if matches!(result.status, StepStatus::Success)
                 && result.permission_label.as_deref() == Some("Allow once")
                 && result.message.contains("echo: hi")
@@ -280,7 +279,7 @@ async fn agent_recovers_when_mcp_tool_returns_error() {
     // The failed MCP tool should be recorded as a failed step.
     assert!(updates.iter().any(|u| matches!(
         u,
-        AgentUpdate::StepFinished { result, .. }
+        RuntimeEvent::StepFinished { result, .. }
             if matches!(result.status, StepStatus::Failed)
                 && result.message.contains("Error invoking MCP tool mcp__demo__echo")
     )));
@@ -288,6 +287,6 @@ async fn agent_recovers_when_mcp_tool_returns_error() {
     // The agent should still finish the task after the error.
     assert!(updates.iter().any(|u| matches!(
         u,
-        AgentUpdate::TaskComplete(message) if message.contains("recovered")
+        RuntimeEvent::TaskComplete { content: message, .. } if message.contains("recovered")
     )));
 }

@@ -7,12 +7,11 @@ use harness::{
 };
 use tact_extensions::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{ContentBlock, LlmError, MessageContent, MockClient, ProviderKind, StopReason};
-use tact_protocol::TokenUsageInfo;
-use tact_view::AgentUpdate;
+use tact_protocol::{RuntimeEvent, TokenUsageInfo};
 
-fn error_contains(updates: &[AgentUpdate], needle: &str) -> bool {
+fn error_contains(updates: &[RuntimeEvent], needle: &str) -> bool {
     updates.iter().any(
-        |update| matches!(update, AgentUpdate::Error(error) if error.to_string().contains(needle)),
+        |update| matches!(update, RuntimeEvent::Error { message: error, .. } if error.to_string().contains(needle)),
     )
 }
 
@@ -107,13 +106,13 @@ async fn context_limit_triggers_auto_compact() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("[auto compact]"))),
+            .any(|u| matches!(u, RuntimeEvent::Info { content: msg, .. } if msg.contains("[auto compact]"))),
         "expected auto compact info, got: {updates:?}"
     );
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("[transcript saved"))),
+            .any(|u| matches!(u, RuntimeEvent::Info { content: msg, .. } if msg.contains("[transcript saved"))),
         "expected transcript saved info, got: {updates:?}"
     );
     assert!(task_completed_with(&updates, "Done after compact"));
@@ -154,7 +153,7 @@ async fn end_turn_does_not_compact_until_another_model_call_is_needed() {
         "Finished near the context limit"
     ));
     assert!(
-        !updates.iter().any(|update| matches!(update, AgentUpdate::Info(message) if message.contains("[auto compact]"))),
+        !updates.iter().any(|update| matches!(update, RuntimeEvent::Info { content: message, .. } if message.contains("[auto compact]"))),
         "terminal response must not trigger an unused compaction call: {updates:?}"
     );
 }
@@ -200,7 +199,7 @@ async fn failed_compact_tool_does_not_trigger_manual_compaction() {
         "Continued after rejected compact"
     ));
     assert!(
-        !updates.iter().any(|update| matches!(update, AgentUpdate::Info(message) if message.contains("[manual compact]"))),
+        !updates.iter().any(|update| matches!(update, RuntimeEvent::Info { content: message, .. } if message.contains("[manual compact]"))),
         "failed compact tool must not rewrite conversation history: {updates:?}"
     );
 }
@@ -247,7 +246,7 @@ async fn prompt_too_long_recovery_compacts_and_retries() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("[Recovery]") && msg.contains("compact"))),
+            .any(|u| matches!(u, RuntimeEvent::Info { content: msg, .. } if msg.contains("[Recovery]") && msg.contains("compact"))),
         "expected compact recovery info, got: {updates:?}"
     );
     assert!(task_completed_with(&updates, "Recovered from long prompt"));
@@ -277,7 +276,7 @@ async fn compact_summary_retries_transient_transport_error() {
         run_single_task_with_config(mock, "recover", PermissionMode::Auto, config, |_| {}).await;
 
     assert!(updates.iter().any(
-        |update| matches!(update, AgentUpdate::Info(message) if message.contains("compact retry"))
+        |update| matches!(update, RuntimeEvent::Info { content: message, .. } if message.contains("compact retry"))
     ));
     assert!(task_completed_with(
         &updates,
@@ -303,7 +302,7 @@ async fn compact_summary_rejects_empty_text_response() {
     assert!(
         !updates
             .iter()
-            .any(|update| matches!(update, AgentUpdate::TaskComplete(_)))
+            .any(|update| matches!(update, RuntimeEvent::TaskComplete { .. }))
     );
 }
 
@@ -335,7 +334,7 @@ async fn compact_summary_continues_truncated_response() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("[compact continue 5/5]"))),
+            .any(|u| matches!(u, RuntimeEvent::Info { content: msg, .. } if msg.contains("[compact continue 5/5]"))),
         "expected exhausted continuation notices, got: {updates:?}"
     );
     assert!(
@@ -410,13 +409,13 @@ async fn max_tokens_with_pending_tools_executes_then_continues() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::StepFinished { tool_id: id, .. } if id == "bash1")),
+            .any(|u| matches!(u, RuntimeEvent::StepFinished { tool_id: id, .. } if id == "bash1")),
         "pending bash tool should still execute, got: {updates:?}"
     );
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("[Recovery]") && msg.contains("continue"))),
+            .any(|u| matches!(u, RuntimeEvent::Info { content: msg, .. } if msg.contains("[Recovery]") && msg.contains("continue"))),
         "expected continuation recovery info, got: {updates:?}"
     );
     assert!(task_completed_with(&updates, "Continued after max_tokens"));
@@ -520,11 +519,11 @@ fn messages_json(messages: &[tact_llm::Message]) -> serde_json::Value {
     serde_json::to_value(messages).unwrap()
 }
 
-fn info_messages(updates: &[AgentUpdate]) -> Vec<String> {
+fn info_messages(updates: &[RuntimeEvent]) -> Vec<String> {
     updates
         .iter()
         .filter_map(|update| match update {
-            AgentUpdate::Info(msg) => Some(msg.clone()),
+            RuntimeEvent::Info { content: msg, .. } => Some(msg.clone()),
             _ => None,
         })
         .collect()
@@ -535,8 +534,8 @@ fn info_messages(updates: &[AgentUpdate]) -> Vec<String> {
 async fn drive_compact_command(
     agent: tact_extensions::Agent,
     work_dir: std::path::PathBuf,
-    agent_rx: tokio::sync::mpsc::UnboundedReceiver<AgentUpdate>,
-) -> (tact_extensions::Agent, Vec<AgentUpdate>) {
+    agent_rx: tokio::sync::mpsc::UnboundedReceiver<RuntimeEvent>,
+) -> (tact_extensions::Agent, Vec<RuntimeEvent>) {
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
     user_cmd_tx.send(UserCommand::Compact).unwrap();
@@ -619,7 +618,7 @@ async fn command_compact_native_responses_success() {
     assert!(
         !updates
             .iter()
-            .any(|update| matches!(update, AgentUpdate::Error(_))),
+            .any(|update| matches!(update, RuntimeEvent::Error { .. })),
         "no error expected after successful compaction, got: {updates:?}"
     );
 
@@ -676,7 +675,7 @@ async fn command_compact_native_responses_failure_keeps_context() {
     assert!(
         updates.iter().any(|update| matches!(
             update,
-            AgentUpdate::Error(error) if error.to_string().contains("Compaction failed")
+            RuntimeEvent::Error { message: error, .. } if error.to_string().contains("Compaction failed")
         )),
         "expected compaction failure error, got: {updates:?}"
     );
@@ -916,7 +915,7 @@ async fn native_compact_failure_rolls_back_runtime_and_database() {
     assert!(
         updates.iter().any(|update| matches!(
             update,
-            AgentUpdate::Error(error) if error.to_string().contains("Compaction failed")
+            RuntimeEvent::Error { message: error, .. } if error.to_string().contains("Compaction failed")
         )),
         "expected compaction failure error, got: {updates:?}"
     );

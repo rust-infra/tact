@@ -8,7 +8,7 @@ use harness::{
 };
 use tact_extensions::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{MockClient, StopReason};
-use tact_view::AgentUpdate;
+use tact_protocol::RuntimeEvent;
 use tui::test_support::TestApp;
 
 #[tokio::test]
@@ -21,7 +21,9 @@ async fn driver_stream_complete_renders_in_app() {
     let (updates, work_dir) = run_single_task(mock, "say hello", PermissionMode::Auto).await;
 
     let has_response = updates.iter().any(|u| match u {
-        AgentUpdate::StreamChunk(s) | AgentUpdate::TaskComplete(s) => s.contains("Bridge hello"),
+        RuntimeEvent::Text { content: s, .. } | RuntimeEvent::TaskComplete { content: s, .. } => {
+            s.contains("Bridge hello")
+        }
         _ => false,
     });
     assert!(
@@ -115,7 +117,7 @@ async fn driver_token_usage_reaches_app_render() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::TokenUsage(_))),
+            .any(|u| matches!(u, RuntimeEvent::TokenUsage { .. })),
         "driver should emit TokenUsage"
     );
 
@@ -149,7 +151,7 @@ async fn parallel_background_runs_each_get_a_sticky_row() {
     let task_ids: Vec<String> = updates
         .iter()
         .filter_map(|u| match u {
-            AgentUpdate::ToolMeta { task_id, .. } => task_id.clone(),
+            RuntimeEvent::ToolMeta { task_id, .. } => task_id.clone(),
             _ => None,
         })
         .collect();
@@ -220,7 +222,7 @@ async fn background_rows_accumulate_across_turns() {
         .filter(|u| {
             matches!(
                 u,
-                AgentUpdate::ToolMeta {
+                RuntimeEvent::ToolMeta {
                     task_id: Some(_),
                     ..
                 }

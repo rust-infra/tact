@@ -17,7 +17,6 @@ use tact_llm::{
     ProviderStateUpdate, RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
 };
 use tact_protocol::{RunId, RuntimeEvent, TokenUsageInfo};
-use tact_view::AgentUpdate;
 
 use crate::{
     ToolSpec,
@@ -744,7 +743,7 @@ impl Agent {
     /// `max_tokens`, `max_tokens` is automatically expanded to `budget + 1` and a
     /// warning is emitted to the UI channel.
     ///
-    /// Always emits [`AgentUpdate::ModelInfo`] so the TUI status bar resyncs after
+    /// Always emits [`RuntimeEvent::ModelInfo`] so the TUI status bar resyncs after
     /// `/model` picks: `SetThinkingBudget` is queued behind an in-flight task, and
     /// that task's older `ModelInfo` would otherwise leave the bar stuck on the
     /// previous budget.
@@ -823,10 +822,13 @@ impl Agent {
         }
     }
 
-    /// Compatibility adapter for tests and legacy tool helpers. The Agent
-    /// runtime itself emits protocol events through `EventTransport`.
+    /// Attach the in-process View channel a harness reads.
+    ///
+    /// The channel carries protocol [`RuntimeEvent`]s, exactly like the
+    /// `EventTransport` a production host attaches — it is only the transport
+    /// that differs (a `tokio` channel instead of the Runtime host).
     #[cfg(any(test, feature = "test-support"))]
-    pub fn with_ui_channel(mut self, tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>) -> Self {
+    pub fn with_ui_channel(mut self, tx: tokio::sync::mpsc::UnboundedSender<RuntimeEvent>) -> Self {
         self.tool_context.interactive = true;
         self.tool_context.ui_responder.set_legacy_sender(tx.clone());
         self.tool_context.ui_tx = Some(tx.clone());
@@ -1641,12 +1643,10 @@ impl Agent {
                 while let Some(event) = ui_rx.recv().await {
                     #[cfg(any(test, feature = "test-support"))]
                     if let Some(tx) = legacy_tx.as_ref() {
-                        // A harness that has not migrated yet still reads the
-                        // legacy view model; project back for it.
-                        for update in tact_view::runtime_event_to_agent_updates(event) {
-                            if tx.send(update).is_err() {
-                                return;
-                            }
+                        // The in-process View channel carries the protocol type
+                        // itself, so there is nothing to project.
+                        if tx.send(event).is_err() {
+                            return;
                         }
                         continue;
                     }
@@ -1843,7 +1843,7 @@ impl Agent {
 
     /// Reserves the id for one hook's progress line.
     ///
-    /// The caller emits [`AgentUpdate::HookStatus`] twice with the same id —
+    /// The caller emits [`RuntimeEvent::HookStatus`] twice with the same id —
     /// once when the hook starts, once when it returns — and the TUI rewrites
     /// that one row instead of leaving a stale "Loading…" behind.
     pub fn next_hook_status_id(&self) -> u64 {
@@ -2970,6 +2970,17 @@ mod tests {
         crate::config::test_support::install_default();
     }
 
+    /// The in-process `u64` id behind a protocol `RequestId`.
+    ///
+    /// `UiResponder::respond_by_index` speaks the in-process id; an event
+    /// carries the protocol form, which is that id in decimal.
+    fn response_request_id(request_id: &tact_protocol::RequestId) -> u64 {
+        request_id
+            .as_str()
+            .parse()
+            .expect("in-process request ids are the decimal form")
+    }
+
     fn make_text_block(content: &str) -> ContentBlock {
         ContentBlock::Text {
             text: content.to_string(),
@@ -3548,7 +3559,7 @@ mod tests {
         let info_messages: Vec<&str> = updates
             .iter()
             .filter_map(|u| match u {
-                tact_view::AgentUpdate::Info(msg) => Some(msg.as_str()),
+                RuntimeEvent::Info { content: msg, .. } => Some(msg.as_str()),
                 _ => None,
             })
             .collect();
@@ -3659,7 +3670,6 @@ mod tests {
     #[tokio::test]
     async fn local_compact_continues_truncated_summary() {
         ensure_config();
-        use tact_view::AgentUpdate;
 
         let context = test_context("local_compact_continue");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -3722,7 +3732,7 @@ mod tests {
         }
         assert!(
             updates.iter().any(|u| {
-                matches!(u, AgentUpdate::Info(msg) if msg.contains("[compact continue 1/5]"))
+                matches!(u, RuntimeEvent::Info { content: msg, .. } if msg.contains("[compact continue 1/5]"))
             }),
             "expected a compact-continue Info update, got: {updates:?}"
         );
@@ -4080,7 +4090,7 @@ mod tests {
         let infos: Vec<&str> = updates
             .iter()
             .filter_map(|u| match u {
-                AgentUpdate::Info(msg) => Some(msg.as_str()),
+                RuntimeEvent::Info { content: msg, .. } => Some(msg.as_str()),
                 _ => None,
             })
             .collect();
@@ -4250,7 +4260,10 @@ mod tests {
 
         let mut infos = Vec::new();
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::Info(message) = update {
+            if let RuntimeEvent::Info {
+                content: message, ..
+            } = update
+            {
                 infos.push(message);
             }
         }
@@ -4591,7 +4604,7 @@ mod tests {
         assert!(
             updates.iter().all(|u| !matches!(
                 u,
-                tact_view::AgentUpdate::Info(msg) if msg.contains("[responses compacted")
+                RuntimeEvent::Info { content: msg, .. } if msg.contains("[responses compacted")
             )),
             "no compaction success Info may be emitted, got: {updates:?}"
         );
@@ -5250,7 +5263,7 @@ mod tests {
                 updates
                     .iter()
                     .filter_map(|u| match u {
-                        tact_view::AgentUpdate::Info(msg) => Some(msg.as_str()),
+                        RuntimeEvent::Info { content: msg, .. } => Some(msg.as_str()),
                         _ => None,
                     })
                     .all(|msg| !msg.contains(secret)),
@@ -5358,9 +5371,10 @@ mod tests {
         // update is already queued.
         let mut stats = Vec::new();
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::TurnStats {
+            if let RuntimeEvent::TurnStats {
                 turns_taken,
                 max_turns,
+                ..
             } = update
             {
                 stats.push((turns_taken, max_turns));
@@ -5403,9 +5417,10 @@ mod tests {
 
         let mut stats = Vec::new();
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::TurnStats {
+            if let RuntimeEvent::TurnStats {
                 turns_taken,
                 max_turns,
+                ..
             } = update
             {
                 stats.push((turns_taken, max_turns));
@@ -5513,7 +5528,6 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_injects_session_start_context_as_its_own_message() {
         ensure_config();
-        use tact_view::AgentUpdate;
 
         const BRIEF: &str = "graph says: resume from checkpoint 7";
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5590,7 +5604,7 @@ mod tests {
         // The TUI is told what was injected, without the framing.
         let mut notices = Vec::new();
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::HookContext { source, text } = update {
+            if let RuntimeEvent::HookContext { source, text, .. } = update {
                 notices.push((source, text));
             }
         }
@@ -5868,7 +5882,7 @@ mod tests {
         );
         let mut notice = None;
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::Info(text) = update {
+            if let RuntimeEvent::Info { content: text, .. } = update {
                 notice = Some(text);
             }
         }
@@ -5926,7 +5940,6 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_surfaces_refusal_as_error() {
         ensure_config();
-        use tact_view::AgentUpdate;
 
         let context = test_context("agent_loop_refusal");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5966,9 +5979,9 @@ mod tests {
             updates.push(u);
         }
         assert!(
-            updates
-                .iter()
-                .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("refused"))),
+            updates.iter().any(
+                |u| matches!(u, RuntimeEvent::Info { content: msg, .. } if msg.contains("refused"))
+            ),
             "expected Info about refusal, got: {updates:?}"
         );
     }
@@ -6226,7 +6239,6 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_runs_parallel_read_tools() {
         ensure_config();
-        use tact_view::AgentUpdate;
 
         use crate::tool::test_support::{test_context, write_workspace_file};
 
@@ -6285,7 +6297,7 @@ mod tests {
         let finished: Vec<_> = updates
             .iter()
             .filter_map(|u| match u {
-                AgentUpdate::StepFinished {
+                RuntimeEvent::StepFinished {
                     tool_id, result, ..
                 } if result.tool == "read_file" => Some(tool_id.as_str()),
                 _ => None,
@@ -6379,7 +6391,7 @@ mod tests {
         assert!(
             !updates
                 .iter()
-                .any(|u| matches!(u, AgentUpdate::StepFinished { .. })),
+                .any(|u| matches!(u, RuntimeEvent::StepFinished { .. })),
             "a cancelled-before-execution tool must not report a finished step"
         );
 
@@ -6406,7 +6418,6 @@ mod tests {
     async fn cancel_mid_preflight_answers_every_tool_use_once() {
         ensure_config();
         use crate::tool::test_support::test_context;
-        use tact_view::AgentUpdate;
 
         let dir = tempfile::tempdir().unwrap();
         let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
@@ -6468,11 +6479,14 @@ mod tests {
         let responder = agent.tool_context.ui_responder.clone();
         tokio::spawn(async move {
             while let Some(update) = rx.recv().await {
-                if let AgentUpdate::RequestSelect { request_id, .. } = update {
+                if let RuntimeEvent::InteractionRequested {
+                    request: tact_protocol::InteractionRequest::Select { request_id, .. },
+                } = update
+                {
                     // Deny `t1`, then cancel: the flag is first observed at the
                     // top of the `t2` iteration, i.e. mid-pre-flight.
                     flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                    responder.respond_by_index(request_id, Some(1));
+                    responder.respond_by_index(response_request_id(&request_id), Some(1));
                     return;
                 }
             }
@@ -6496,7 +6510,6 @@ mod tests {
     async fn cancel_mid_preflight_answers_an_approved_but_unrun_call() {
         ensure_config();
         use crate::tool::test_support::test_context;
-        use tact_view::AgentUpdate;
 
         let dir = tempfile::tempdir().unwrap();
         let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
@@ -6556,10 +6569,13 @@ mod tests {
         let responder = agent.tool_context.ui_responder.clone();
         tokio::spawn(async move {
             while let Some(update) = rx.recv().await {
-                if let AgentUpdate::RequestSelect { request_id, .. } = update {
+                if let RuntimeEvent::InteractionRequested {
+                    request: tact_protocol::InteractionRequest::Select { request_id, .. },
+                } = update
+                {
                     // Allow `t1` once, then cancel.
                     flag.store(true, std::sync::atomic::Ordering::SeqCst);
-                    responder.respond_by_index(request_id, Some(0));
+                    responder.respond_by_index(response_request_id(&request_id), Some(0));
                     return;
                 }
             }
@@ -6716,7 +6732,6 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_plan_mode_denies_write() {
         ensure_config();
-        use tact_view::AgentUpdate;
 
         use crate::tool::test_support::test_context;
 
@@ -6765,7 +6780,7 @@ mod tests {
             updates.iter().any(|u| {
                 matches!(
                     u,
-                    AgentUpdate::StepFailed { tool_id, error, .. }
+                    RuntimeEvent::StepFailed { tool_id, error, .. }
                         if tool_id == "w1" && error.contains("Plan mode")
                 )
             }),
@@ -6777,7 +6792,6 @@ mod tests {
     async fn agent_loop_emits_token_usage_from_mock() {
         ensure_config();
         use tact_protocol::TokenUsageInfo;
-        use tact_view::AgentUpdate;
 
         use crate::tool::test_support::test_context;
 
@@ -6826,7 +6840,7 @@ mod tests {
             updates.iter().any(|u| {
                 matches!(
                     u,
-                    AgentUpdate::TokenUsage(u) if u.total == usage.total
+                    RuntimeEvent::TokenUsage { usage: u, .. } if u.total == usage.total
                 )
             }),
             "expected TokenUsage from mock, got: {updates:?}"
@@ -6836,7 +6850,6 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_serializes_read_before_write_on_same_file() {
         ensure_config();
-        use tact_view::AgentUpdate;
 
         use crate::tool::test_support::{test_context, write_workspace_file};
 
@@ -6889,10 +6902,10 @@ mod tests {
         }
 
         let read_done = updates.iter().position(
-            |u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "r1"),
+            |u| matches!(u, RuntimeEvent::StepFinished { tool_id, .. } if tool_id == "r1"),
         );
         let write_done = updates.iter().position(
-            |u| matches!(u, AgentUpdate::StepFinished { tool_id, .. } if tool_id == "w1"),
+            |u| matches!(u, RuntimeEvent::StepFinished { tool_id, .. } if tool_id == "w1"),
         );
         assert!(
             read_done.is_some() && write_done.is_some() && read_done < write_done,
@@ -7027,12 +7040,12 @@ mod tests {
         let mut saw_model_info = false;
         while let Ok(update) = rx.try_recv() {
             match update {
-                AgentUpdate::ModelInfo(params) => {
+                RuntimeEvent::ModelInfo { params, .. } => {
                     assert_eq!(params.thinking_budget, Some(64_000));
                     assert!(params.max_tokens > 64_000);
                     saw_model_info = true;
                 }
-                AgentUpdate::Info(_) => {}
+                RuntimeEvent::Info { .. } => {}
                 other => panic!("unexpected update: {other:?}"),
             }
         }

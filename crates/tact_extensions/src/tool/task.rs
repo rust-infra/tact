@@ -157,8 +157,8 @@ pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<Str
 mod tests {
     use super::*;
     use crate::tool::{ToolRouter, test_support::test_context};
+    use tact_protocol::RuntimeEvent;
     use tact_protocol::TasksChangeReason;
-    use tact_view::AgentUpdate;
 
     #[tokio::test]
     async fn task_create_strips_empty_description() {
@@ -242,7 +242,7 @@ mod tests {
 
         let update = rx.try_recv().expect("TasksChanged");
         match update {
-            AgentUpdate::TasksChanged { tasks, reason } => {
+            RuntimeEvent::TasksChanged { tasks, reason, .. } => {
                 assert!(matches!(reason, TasksChangeReason::Created));
                 assert_eq!(tasks.len(), 1);
                 assert_eq!(tasks[0].subject, "Ship panel");
@@ -293,7 +293,7 @@ mod tests {
 
         let update = rx.try_recv().expect("TasksChanged after update");
         match update {
-            AgentUpdate::TasksChanged { tasks, reason } => {
+            RuntimeEvent::TasksChanged { tasks, reason, .. } => {
                 assert!(matches!(reason, TasksChangeReason::Updated));
                 assert!(tasks.is_empty(), "deleted tasks omitted from snapshot");
             }

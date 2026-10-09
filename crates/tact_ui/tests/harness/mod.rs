@@ -8,7 +8,7 @@ use std::sync::{
 
 use tact_extensions::permission::PermissionMode;
 use tact_llm::{ContentBlock, MockClient, StopReason};
-use tact_protocol::TokenUsageInfo;
+use tact_protocol::{InteractionRequest, RequestId, RuntimeEvent, TokenUsageInfo};
 use tact_ui::{
     driver::run_command_loop,
     test_support::{
@@ -17,11 +17,22 @@ use tact_ui::{
         user_command_channels,
     },
 };
-use tact_view::{AgentUpdate, UserCommand};
+use tact_view::UserCommand;
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     task::JoinHandle,
 };
+
+/// The in-process `u64` id behind a protocol `RequestId`.
+///
+/// `UiResponder::respond_by_index` speaks the in-process id; an event carries
+/// the protocol form, which is that id in decimal.
+pub fn request_id_u64(request_id: &RequestId) -> u64 {
+    request_id
+        .as_str()
+        .parse()
+        .expect("in-process request ids are the decimal form")
+}
 
 pub fn text_block(content: &str) -> ContentBlock {
     ContentBlock::Text {
@@ -76,23 +87,30 @@ pub fn sample_token_usage() -> TokenUsageInfo {
     }
 }
 
-/// Auto-respond to [`AgentUpdate::RequestSelect`] with `choice` (`0` = allow once).
+/// Auto-respond to [`InteractionRequest::Select`] with `choice` (`0` = allow once).
 pub fn wire_permission_responder(
-    agent_rx: UnboundedReceiver<AgentUpdate>,
+    agent_rx: UnboundedReceiver<RuntimeEvent>,
     choice: Option<usize>,
     ui_responder: tact_extensions::ui_responder::UiResponder,
-) -> UnboundedReceiver<AgentUpdate> {
+) -> UnboundedReceiver<RuntimeEvent> {
     let (collect_tx, collect_rx) = unbounded_channel();
     tokio::spawn(async move {
         let mut agent_rx = agent_rx;
         while let Some(update) = agent_rx.recv().await {
             match update {
-                AgentUpdate::RequestSelect { request_id, .. } => {
-                    ui_responder.respond_by_index(request_id, choice);
+                RuntimeEvent::InteractionRequested {
+                    request: InteractionRequest::Select { request_id, .. },
+                } => {
+                    ui_responder.respond_by_index(request_id_u64(&request_id), choice);
                 }
-                AgentUpdate::RequestMultiSelect { request_id, .. } => {
+                RuntimeEvent::InteractionRequested {
+                    request: InteractionRequest::MultiSelect { request_id, .. },
+                } => {
                     // Map single harness choice → one-element multi selection (or cancel).
-                    ui_responder.respond_multi_by_index(request_id, choice.map(|i| vec![i]));
+                    ui_responder.respond_multi_by_index(
+                        request_id_u64(&request_id),
+                        choice.map(|i| vec![i]),
+                    );
                 }
                 other => {
                     let _ = collect_tx.send(other);
@@ -108,7 +126,7 @@ pub async fn run_single_task(
     mock: MockClient,
     task: &str,
     permission_mode: PermissionMode,
-) -> (Vec<AgentUpdate>, std::path::PathBuf) {
+) -> (Vec<RuntimeEvent>, std::path::PathBuf) {
     run_single_task_with_setup(mock, task, permission_mode, |_| {}).await
 }
 
@@ -118,7 +136,7 @@ pub async fn run_single_task_with_setup(
     task: &str,
     permission_mode: PermissionMode,
     setup: impl FnOnce(&std::path::Path),
-) -> (Vec<AgentUpdate>, std::path::PathBuf) {
+) -> (Vec<RuntimeEvent>, std::path::PathBuf) {
     run_single_task_with_permission_choice(mock, task, permission_mode, None, setup).await
 }
 
@@ -129,7 +147,7 @@ pub async fn run_single_task_with_permission_choice(
     permission_mode: PermissionMode,
     permission_choice: Option<usize>,
     setup: impl FnOnce(&std::path::Path),
-) -> (Vec<AgentUpdate>, std::path::PathBuf) {
+) -> (Vec<RuntimeEvent>, std::path::PathBuf) {
     install_test_config();
     let (agent_tx, agent_rx) = unbounded_channel();
     let (agent, work_dir) = build_test_agent_with_mode(mock, Some(agent_tx), permission_mode);
@@ -157,7 +175,7 @@ pub async fn run_single_task_with_mcp(
     permission_mode: PermissionMode,
     permission_choice: Option<usize>,
     mcp_router: tact_extensions::mcp::MCPToolRouter,
-) -> (Vec<AgentUpdate>, std::path::PathBuf) {
+) -> (Vec<RuntimeEvent>, std::path::PathBuf) {
     install_test_config();
     let (agent_tx, agent_rx) = unbounded_channel();
     let (agent, work_dir) =
@@ -185,7 +203,7 @@ pub async fn run_single_task_with_config(
     permission_mode: PermissionMode,
     config: tact_extensions::config::ResolvedConfig,
     setup: impl FnOnce(&std::path::Path),
-) -> (Vec<AgentUpdate>, std::path::PathBuf) {
+) -> (Vec<RuntimeEvent>, std::path::PathBuf) {
     let (agent_tx, agent_rx) = unbounded_channel();
     let (agent, work_dir) =
         build_test_agent_with_config(mock, Some(agent_tx), permission_mode, &config);
@@ -211,7 +229,7 @@ pub async fn run_commands<F>(
     mock: MockClient,
     permission_mode: PermissionMode,
     send_cmds: F,
-) -> (Vec<AgentUpdate>, std::path::PathBuf)
+) -> (Vec<RuntimeEvent>, std::path::PathBuf)
 where
     F: FnOnce(UnboundedSender<UserCommand>) -> JoinHandle<()>,
 {
@@ -224,7 +242,7 @@ pub async fn run_commands_with_permission_choice<F>(
     permission_mode: PermissionMode,
     permission_choice: Option<usize>,
     send_cmds: F,
-) -> (Vec<AgentUpdate>, std::path::PathBuf)
+) -> (Vec<RuntimeEvent>, std::path::PathBuf)
 where
     F: FnOnce(UnboundedSender<UserCommand>) -> JoinHandle<()>,
 {
@@ -244,17 +262,20 @@ where
     (updates, work_dir)
 }
 
-pub fn step_finished_ids(updates: &[AgentUpdate]) -> Vec<String> {
+pub fn step_finished_ids(updates: &[RuntimeEvent]) -> Vec<String> {
     updates
         .iter()
         .filter_map(|u| match u {
-            AgentUpdate::StepFinished { tool_id: id, .. } => Some(id.clone()),
+            RuntimeEvent::StepFinished { tool_id: id, .. } => Some(id.clone()),
             _ => None,
         })
         .collect()
 }
 
-pub fn first_index(updates: &[AgentUpdate], pred: impl Fn(&AgentUpdate) -> bool) -> Option<usize> {
+pub fn first_index(
+    updates: &[RuntimeEvent],
+    pred: impl Fn(&RuntimeEvent) -> bool,
+) -> Option<usize> {
     updates.iter().position(pred)
 }
 
@@ -470,23 +491,30 @@ pub fn compact_tool_use(id: &str, focus: Option<&str>) -> ContentBlock {
 /// `choices[idx]` is sent for the `idx`-th `RequestSelect`. If the sequence
 /// is exhausted, subsequent prompts are denied (`None`).
 pub fn wire_permission_responder_with_choices(
-    agent_rx: UnboundedReceiver<AgentUpdate>,
+    agent_rx: UnboundedReceiver<RuntimeEvent>,
     choices: Vec<Option<usize>>,
     ui_responder: tact_extensions::ui_responder::UiResponder,
-) -> UnboundedReceiver<AgentUpdate> {
+) -> UnboundedReceiver<RuntimeEvent> {
     let (collect_tx, collect_rx) = unbounded_channel();
     tokio::spawn(async move {
         let mut agent_rx = agent_rx;
         let mut choices = choices.into_iter();
         while let Some(update) = agent_rx.recv().await {
             match update {
-                AgentUpdate::RequestSelect { request_id, .. } => {
+                RuntimeEvent::InteractionRequested {
+                    request: InteractionRequest::Select { request_id, .. },
+                } => {
                     let choice = choices.next().unwrap_or(None);
-                    ui_responder.respond_by_index(request_id, choice);
+                    ui_responder.respond_by_index(request_id_u64(&request_id), choice);
                 }
-                AgentUpdate::RequestMultiSelect { request_id, .. } => {
+                RuntimeEvent::InteractionRequested {
+                    request: InteractionRequest::MultiSelect { request_id, .. },
+                } => {
                     let choice = choices.next().unwrap_or(None);
-                    ui_responder.respond_multi_by_index(request_id, choice.map(|i| vec![i]));
+                    ui_responder.respond_multi_by_index(
+                        request_id_u64(&request_id),
+                        choice.map(|i| vec![i]),
+                    );
                 }
                 other => {
                     let _ = collect_tx.send(other);
@@ -500,44 +528,51 @@ pub fn wire_permission_responder_with_choices(
 // ── Assertion helpers ────────────────────────────────────────────────
 
 pub fn step_result<'a>(
-    updates: &'a [AgentUpdate],
+    updates: &'a [RuntimeEvent],
     id: &str,
 ) -> Option<&'a tact_protocol::StepResult> {
     updates.iter().find_map(|u| match u {
-        AgentUpdate::StepFinished {
+        RuntimeEvent::StepFinished {
             tool_id, result, ..
         } if tool_id == id => Some(result),
         _ => None,
     })
 }
 
-pub fn step_succeeded(updates: &[AgentUpdate], id: &str) -> bool {
+pub fn step_succeeded(updates: &[RuntimeEvent], id: &str) -> bool {
     step_result(updates, id)
         .map(|r| matches!(r.status, tact_protocol::StepStatus::Success))
         .unwrap_or(false)
 }
 
-pub fn step_failed(updates: &[AgentUpdate], id: &str) -> bool {
+pub fn step_failed(updates: &[RuntimeEvent], id: &str) -> bool {
     updates
         .iter()
-        .any(|u| matches!(u, AgentUpdate::StepFailed { tool_id, .. } if tool_id == id))
+        .any(|u| matches!(u, RuntimeEvent::StepFailed { tool_id, .. } if tool_id == id))
 }
 
-pub fn task_completed_with(updates: &[AgentUpdate], substring: &str) -> bool {
+pub fn task_completed_with(updates: &[RuntimeEvent], substring: &str) -> bool {
     updates.iter().any(|u| match u {
-        AgentUpdate::TaskComplete(text) => text.contains(substring),
+        RuntimeEvent::TaskComplete { content: text, .. } => text.contains(substring),
         _ => false,
     })
 }
 
-pub fn request_select_count(updates: &[AgentUpdate]) -> usize {
+pub fn request_select_count(updates: &[RuntimeEvent]) -> usize {
     updates
         .iter()
-        .filter(|u| matches!(u, AgentUpdate::RequestSelect { .. }))
+        .filter(|u| {
+            matches!(
+                u,
+                RuntimeEvent::InteractionRequested {
+                    request: InteractionRequest::Select { .. },
+                }
+            )
+        })
         .count()
 }
 
-pub fn token_usage_total(updates: &[AgentUpdate]) -> tact_protocol::TokenUsageInfo {
+pub fn token_usage_total(updates: &[RuntimeEvent]) -> tact_protocol::TokenUsageInfo {
     let mut total = tact_protocol::TokenUsageInfo {
         prompt: 0,
         completion: 0,
@@ -547,7 +582,7 @@ pub fn token_usage_total(updates: &[AgentUpdate]) -> tact_protocol::TokenUsageIn
         reasoning_tokens: 0,
     };
     for u in updates {
-        if let AgentUpdate::TokenUsage(usage) = u {
+        if let RuntimeEvent::TokenUsage { usage, .. } = u {
             total.prompt += usage.prompt;
             total.completion += usage.completion;
             total.total += usage.total;
@@ -561,9 +596,9 @@ pub fn token_usage_total(updates: &[AgentUpdate]) -> tact_protocol::TokenUsageIn
 
 /// Assert that update `a` appears before update `b` in the stream.
 pub fn assert_update_before(
-    updates: &[AgentUpdate],
-    a_pred: impl Fn(&AgentUpdate) -> bool,
-    b_pred: impl Fn(&AgentUpdate) -> bool,
+    updates: &[RuntimeEvent],
+    a_pred: impl Fn(&RuntimeEvent) -> bool,
+    b_pred: impl Fn(&RuntimeEvent) -> bool,
     msg: &str,
 ) {
     let a = updates.iter().position(&a_pred);
@@ -588,10 +623,10 @@ pub async fn load_session_messages(
 /// Like [`wire_permission_responder_with_choices`], but also returns an atomic
 /// counter that is incremented for every `RequestSelect` that is handled.
 pub fn wire_permission_responder_with_counter(
-    agent_rx: UnboundedReceiver<AgentUpdate>,
+    agent_rx: UnboundedReceiver<RuntimeEvent>,
     choices: Vec<Option<usize>>,
     ui_responder: tact_extensions::ui_responder::UiResponder,
-) -> (UnboundedReceiver<AgentUpdate>, Arc<AtomicUsize>) {
+) -> (UnboundedReceiver<RuntimeEvent>, Arc<AtomicUsize>) {
     let (collect_tx, collect_rx) = unbounded_channel();
     let counter = Arc::new(AtomicUsize::new(0));
     let counter_clone = counter.clone();
@@ -600,15 +635,22 @@ pub fn wire_permission_responder_with_counter(
         let mut choices = choices.into_iter();
         while let Some(update) = agent_rx.recv().await {
             match update {
-                AgentUpdate::RequestSelect { request_id, .. } => {
+                RuntimeEvent::InteractionRequested {
+                    request: InteractionRequest::Select { request_id, .. },
+                } => {
                     counter_clone.fetch_add(1, Ordering::Relaxed);
                     let choice = choices.next().unwrap_or(None);
-                    ui_responder.respond_by_index(request_id, choice);
+                    ui_responder.respond_by_index(request_id_u64(&request_id), choice);
                 }
-                AgentUpdate::RequestMultiSelect { request_id, .. } => {
+                RuntimeEvent::InteractionRequested {
+                    request: InteractionRequest::MultiSelect { request_id, .. },
+                } => {
                     counter_clone.fetch_add(1, Ordering::Relaxed);
                     let choice = choices.next().unwrap_or(None);
-                    ui_responder.respond_multi_by_index(request_id, choice.map(|i| vec![i]));
+                    ui_responder.respond_multi_by_index(
+                        request_id_u64(&request_id),
+                        choice.map(|i| vec![i]),
+                    );
                 }
                 other => {
                     let _ = collect_tx.send(other);

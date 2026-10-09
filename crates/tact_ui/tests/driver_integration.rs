@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tact_extensions::tool::test_support::write_workspace_file;
 use tact_llm::{ContentBlock, MockClient, StopReason};
-use tact_protocol::StepStatus;
+use tact_protocol::{RuntimeEvent, StepStatus};
 use tact_ui::{
     driver::run_command_loop,
     test_support::{
@@ -12,7 +12,7 @@ use tact_ui::{
         install_test_config, user_command_channels,
     },
 };
-use tact_view::{AgentUpdate, UserCommand};
+use tact_view::UserCommand;
 
 fn text_block(content: &str) -> ContentBlock {
     ContentBlock::Text {
@@ -70,7 +70,7 @@ async fn submit_task_emits_task_complete() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::TaskComplete(text) if text.contains("Hello"))),
+            .any(|u| matches!(u, RuntimeEvent::TaskComplete { content: text, .. } if text.contains("Hello"))),
         "expected TaskComplete with assistant text, got: {updates:?}"
     );
 }
@@ -105,7 +105,7 @@ async fn submit_task_clears_stale_cancel_flag() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
+            .any(|u| matches!(u, RuntimeEvent::TaskComplete { .. })),
         "new SubmitTask should clear cancel_flag and complete, got: {updates:?}"
     );
 }
@@ -144,7 +144,7 @@ async fn submit_task_runs_read_file_tool() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished { tool_id: id, result, .. }
+                RuntimeEvent::StepFinished { tool_id: id, result, .. }
                     if id == "tool_read_1" && result.tool == "read_file"
             )
         }),
@@ -153,7 +153,7 @@ async fn submit_task_runs_read_file_tool() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
+            .any(|u| matches!(u, RuntimeEvent::TaskComplete { .. })),
         "expected TaskComplete after tool turn, got: {updates:?}"
     );
 }
@@ -190,21 +190,21 @@ async fn cancel_during_task_does_not_emit_task_complete() {
 
     let updates = collect_updates_after(agent_rx).await;
     assert!(
-        updates
-            .iter()
-            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("Cancelling"))),
+        updates.iter().any(
+            |u| matches!(u, RuntimeEvent::Info { content: msg, .. } if msg.contains("Cancelling"))
+        ),
         "expected Cancelling info, got: {updates:?}"
     );
     assert!(
         !updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
+            .any(|u| matches!(u, RuntimeEvent::TaskComplete { .. })),
         "cancelled task must not emit TaskComplete, got: {updates:?}"
     );
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::TaskCancelled)),
+            .any(|u| matches!(u, RuntimeEvent::Cancelled { .. })),
         "cancelled task must emit TaskCancelled so TUI leaves busy state, got: {updates:?}"
     );
 }
@@ -279,7 +279,7 @@ async fn sequential_submit_tasks_both_complete() {
     let completes: Vec<_> = updates
         .iter()
         .filter_map(|u| match u {
-            AgentUpdate::TaskComplete(text) => Some(text.as_str()),
+            RuntimeEvent::TaskComplete { content: text, .. } => Some(text.as_str()),
             _ => None,
         })
         .collect();
@@ -325,7 +325,7 @@ async fn submit_task_runs_write_file_tool() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished { tool_id: id, result, .. }
+                RuntimeEvent::StepFinished { tool_id: id, result, .. }
                     if id == "tool_write_1"
                         && result.tool == "write_file"
                         && matches!(result.status, StepStatus::Success)
@@ -371,7 +371,7 @@ async fn read_missing_file_emits_failed_step() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished { tool_id: id, result, .. }
+                RuntimeEvent::StepFinished { tool_id: id, result, .. }
                     if id == "tool_read_1"
                         && matches!(result.status, StepStatus::Failed)
             )
@@ -381,7 +381,7 @@ async fn read_missing_file_emits_failed_step() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::TaskComplete(_))),
+            .any(|u| matches!(u, RuntimeEvent::TaskComplete { .. })),
         "agent should continue after tool failure, got: {updates:?}"
     );
 }
@@ -420,7 +420,7 @@ async fn cancel_emits_cancelled_by_user_info() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("Cancelled by user"))),
+            .any(|u| matches!(u, RuntimeEvent::Info { content: msg, .. } if msg.contains("Cancelled by user"))),
         "cancelled agent_loop should emit info, got: {updates:?}"
     );
 }

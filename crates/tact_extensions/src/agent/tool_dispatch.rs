@@ -681,7 +681,7 @@ fn tool_resources_for(
 /// Like [`make_presentation`], but input-aware: a `spawn_subagent` call with
 /// `run_in_background: true` keeps its card live (the invocation returns
 /// `async_launched { id }` and the card is finalized later by
-/// [`AgentUpdate::SubagentFinished`]). Static metadata can't express this
+/// [`RuntimeEvent::SubagentFinished`]). Static metadata can't express this
 /// because `keep_live` is a per-invocation property, not a per-tool one.
 fn make_presentation_for(
     meta: &crate::tool::ToolMetadata,

@@ -10,9 +10,9 @@
 //!
 //! - [`Notices`] — a process with no UI writes startup problems to stderr; the
 //!   TUI sends them into a frame it is already drawing.
-//! - [`UiWiring`] — the TUI registers an `AgentUpdate` channel and hands the
-//!   agent the `UiResponder` its prompts are answered through; headless has
-//!   neither.
+//! - [`UiWiring`] — the TUI registers the in-process `RuntimeEvent` channel and
+//!   hands the agent the `UiResponder` its prompts are answered through;
+//!   headless has neither.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;

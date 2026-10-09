@@ -7,8 +7,7 @@ use harness::{
 };
 use tact_extensions::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{MockClient, StopReason};
-use tact_protocol::StepStatus;
-use tact_view::AgentUpdate;
+use tact_protocol::{RuntimeEvent, StepStatus};
 
 #[tokio::test]
 async fn default_mode_allow_once_runs_edit_file() {
@@ -36,7 +35,7 @@ async fn default_mode_allow_once_runs_edit_file() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished { tool_id: id, result, .. }
+                RuntimeEvent::StepFinished { tool_id: id, result, .. }
                     if id == "e1"
                         && result.tool == "edit_file"
                         && matches!(result.status, StepStatus::Success)
@@ -74,7 +73,7 @@ async fn default_mode_deny_blocks_edit_file() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFailed { tool_id: id, error: msg, .. }
+                RuntimeEvent::StepFailed { tool_id: id, error: msg, .. }
                     if id == "e1" && msg.contains("denied")
             )
         }),
@@ -108,7 +107,7 @@ async fn high_risk_bash_shell_guard_blocks_after_permission_allow() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished { tool_id: id, result, .. }
+                RuntimeEvent::StepFinished { tool_id: id, result, .. }
                     if id == "bash_sudo"
                         && matches!(result.status, StepStatus::Failed)
                         && result.message.contains("Dangerous command blocked")
@@ -150,7 +149,7 @@ async fn always_allow_skips_second_permission_prompt() {
         .filter(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished { result, .. }
+                RuntimeEvent::StepFinished { result, .. }
                     if result.permission_label.as_deref() == Some("Always allow this tool")
             )
         })

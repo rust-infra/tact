@@ -15,11 +15,12 @@ use std::time::Duration;
 
 use serde_json::json;
 use tact_llm::MockClient;
+use tact_protocol::RuntimeEvent;
 use tact_ui::{
     driver::handle_user_command,
     test_support::{build_test_agent, install_test_config},
 };
-use tact_view::{AgentUpdate, UserCommand};
+use tact_view::UserCommand;
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path, path_regex},
@@ -110,7 +111,7 @@ async fn oauth_url_reaches_the_ui_before_the_callback_arrives() {
                 match update {
                     // Only the authorization URL is actionable; ignore any
                     // other progress line and keep waiting for it.
-                    Some(AgentUpdate::Info(line)) if line.contains("code_challenge") => {
+                    Some(RuntimeEvent::Info { content: line, .. }) if line.contains("code_challenge") => {
                         url = Some(line);
                         break;
                     }

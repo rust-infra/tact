@@ -11,7 +11,8 @@ use harness::{
 };
 use tact_extensions::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{LlmError, MockClient, StopReason};
-use tact_view::{AgentUpdate, UserCommand};
+use tact_protocol::RuntimeEvent;
+use tact_view::UserCommand;
 
 #[tokio::test]
 async fn dynamic_mock_inspects_request_and_branches() {
@@ -73,7 +74,7 @@ async fn mock_timeout_retries_then_succeeds() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("Recovery") && msg.contains("backoff"))),
+            .any(|u| matches!(u, RuntimeEvent::Info { content: msg, .. } if msg.contains("Recovery") && msg.contains("backoff"))),
         "expected backoff recovery info, got: {updates:?}"
     );
     assert!(task_completed_with(&updates, "Recovered after timeout"));
@@ -92,7 +93,7 @@ async fn streaming_mock_emits_chunks() {
     let chunks: Vec<String> = updates
         .iter()
         .filter_map(|u| match u {
-            AgentUpdate::StreamChunk(s) => Some(s.clone()),
+            RuntimeEvent::Text { content: s, .. } => Some(s.clone()),
             _ => None,
         })
         .collect();
@@ -194,8 +195,8 @@ async fn update_order_read_before_write() {
 
     assert_update_before(
         &updates,
-        |u| matches!(u, AgentUpdate::StepFinished { tool_id: id, .. } if id == "r1"),
-        |u| matches!(u, AgentUpdate::StepFinished { tool_id: id, .. } if id == "w1"),
+        |u| matches!(u, RuntimeEvent::StepFinished { tool_id: id, .. } if id == "r1"),
+        |u| matches!(u, RuntimeEvent::StepFinished { tool_id: id, .. } if id == "w1"),
         "read must finish before write",
     );
 }
@@ -208,7 +209,7 @@ async fn run_single_task_with_permission_choice_and_choices(
     choices: Vec<Option<usize>>,
     setup: impl FnOnce(&std::path::Path),
 ) -> (
-    Vec<AgentUpdate>,
+    Vec<RuntimeEvent>,
     std::path::PathBuf,
     std::sync::Arc<std::sync::atomic::AtomicUsize>,
 ) {
@@ -248,6 +249,6 @@ async fn run_single_task_with_setup(
     task: &str,
     permission_mode: PermissionMode,
     setup: impl FnOnce(&std::path::Path),
-) -> (Vec<AgentUpdate>, std::path::PathBuf) {
+) -> (Vec<RuntimeEvent>, std::path::PathBuf) {
     harness::run_single_task_with_setup(mock, task, permission_mode, setup).await
 }

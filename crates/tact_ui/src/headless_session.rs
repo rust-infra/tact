@@ -23,8 +23,9 @@ pub struct HeadlessSessionResult {
     pub is_done: bool,
 }
 
-/// Run `run_command_loop` concurrently with a headless App that drains `AgentUpdate`s
-/// in real time (same architecture as `interactive.rs`, without crossterm).
+/// Run `run_command_loop` concurrently with a headless App that drains the
+/// protocol event stream in real time (same architecture as `interactive.rs`,
+/// without crossterm).
 pub async fn run_headless_session<F>(
     mock: MockClient,
     permission_mode: PermissionMode,

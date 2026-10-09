@@ -1,7 +1,6 @@
 //! Forward subagent `ui_tx` traffic as `ToolProgress` for the parent tool card.
 
-use tact_protocol::ToolOutputChunk;
-use tact_view::AgentUpdate;
+use tact_protocol::{RuntimeEvent, ToolOutputChunk};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::tool::ToolProgressReporter;
@@ -57,23 +56,23 @@ fn format_thinking_block(summary: &str) -> String {
 }
 
 /// Spawn a forwarder that pushes subagent stream/steps/thinking as
-/// [`AgentUpdate::ToolProgress`] into the parent tool card, while passing
+/// [`RuntimeEvent::ToolProgress`] into the parent tool card, while passing
 /// through permission selects with a `[Subagent]` prefix.
 ///
 /// Returns a new sender for the subagent to use as `ui_tx`.
 pub fn tagged_ui_channel_with_progress(
-    inner: UnboundedSender<AgentUpdate>,
+    inner: UnboundedSender<RuntimeEvent>,
     progress: ToolProgressReporter,
-) -> UnboundedSender<AgentUpdate> {
+) -> UnboundedSender<RuntimeEvent> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
         let mut thinking_buf = String::new();
         while let Some(update) = rx.recv().await {
             match update {
-                AgentUpdate::StreamChunk(text) => {
+                RuntimeEvent::Text { content: text, .. } => {
                     progress.report(vec![ToolOutputChunk::other(text)]);
                 }
-                AgentUpdate::ThinkingChunk(chunk) => match chunk {
+                RuntimeEvent::Thinking { chunk, .. } => match chunk {
                     tact_protocol::ThinkingChunk::Started => {
                         thinking_buf.clear();
                     }
@@ -88,7 +87,7 @@ pub fn tagged_ui_channel_with_progress(
                         }
                     }
                 },
-                AgentUpdate::StepStarted {
+                RuntimeEvent::StepStarted {
                     tool_name,
                     arg_summary,
                     ..
@@ -100,7 +99,7 @@ pub fn tagged_ui_channel_with_progress(
                     };
                     progress.report(vec![structural_line(line)]);
                 }
-                AgentUpdate::StepFinished { result, .. } => {
+                RuntimeEvent::StepFinished { result, .. } => {
                     let preview = result.message;
                     if !preview.is_empty() {
                         // Multi-line tool output (e.g. `ls -la`) must keep its
@@ -111,63 +110,69 @@ pub fn tagged_ui_channel_with_progress(
                         ))]);
                     }
                 }
-                AgentUpdate::StepFailed { error, .. } => {
+                RuntimeEvent::StepFailed { error, .. } => {
                     progress.report(vec![structural_stderr(format!(
                         "✗ {}",
                         preserve_markdown_newlines(&error)
                     ))]);
                 }
-                AgentUpdate::Info(msg) => {
+                RuntimeEvent::Info { content: msg, .. } => {
                     progress.report(vec![structural_line(msg)]);
                 }
-                AgentUpdate::Error(err) => {
-                    progress.report(vec![structural_stderr(format!("error: {err:?}"))]);
+                RuntimeEvent::Error { message, .. } => {
+                    progress.report(vec![structural_stderr(format!("error: {message}"))]);
                 }
-                AgentUpdate::TokenUsage(usage) => {
+                RuntimeEvent::TokenUsage { usage, .. } => {
                     // Update the parent tool card header (model + token count)
                     // instead of cluttering the output stream with inline lines.
-                    let _ = inner.send(AgentUpdate::ToolMeta {
+                    let _ = inner.send(RuntimeEvent::ToolMeta {
+                        run_id: None,
                         tool_id: progress.tool_id().to_string(),
                         model: None,
                         token_usage: Some(usage),
                         task_id: None,
                     });
                 }
-                AgentUpdate::ModelInfo(params) => {
-                    let _ = inner.send(AgentUpdate::ToolMeta {
+                RuntimeEvent::ModelInfo { params, .. } => {
+                    let _ = inner.send(RuntimeEvent::ToolMeta {
+                        run_id: None,
                         tool_id: progress.tool_id().to_string(),
                         model: Some(params.model),
                         token_usage: None,
                         task_id: None,
                     });
                 }
-                AgentUpdate::RequestSelect {
-                    request_id,
-                    mut prompt,
-                    options,
-                    log_confirm,
-                } => {
-                    prompt = format!("[Subagent] {prompt}");
-                    let _ = inner.send(AgentUpdate::RequestSelect {
-                        request_id,
-                        prompt,
-                        options,
-                        log_confirm,
-                    });
+                RuntimeEvent::InteractionRequested { request } => {
+                    // The child's prompt is unlabelled on the wire; the reader
+                    // has to be able to tell it apart from a parent prompt.
+                    let request = match request {
+                        tact_protocol::InteractionRequest::Select {
+                            request_id,
+                            prompt,
+                            options,
+                            log_confirm,
+                        } => tact_protocol::InteractionRequest::Select {
+                            request_id,
+                            prompt: format!("[Subagent] {prompt}"),
+                            options,
+                            log_confirm,
+                        },
+                        tact_protocol::InteractionRequest::MultiSelect {
+                            request_id,
+                            prompt,
+                            options,
+                        } => tact_protocol::InteractionRequest::MultiSelect {
+                            request_id,
+                            prompt: format!("[Subagent] {prompt}"),
+                            options,
+                        },
+                        // Permission / confirm / input prompts pass through
+                        // unchanged: the parent is still the only responder.
+                        other => other,
+                    };
+                    let _ = inner.send(RuntimeEvent::InteractionRequested { request });
                 }
-                AgentUpdate::RequestMultiSelect {
-                    request_id,
-                    mut prompt,
-                    options,
-                } => {
-                    prompt = format!("[Subagent] {prompt}");
-                    let _ = inner.send(AgentUpdate::RequestMultiSelect {
-                        request_id,
-                        prompt,
-                        options,
-                    });
-                }
-                AgentUpdate::TaskComplete(_) | AgentUpdate::TaskCancelled => {}
+                RuntimeEvent::TaskComplete { .. } | RuntimeEvent::Cancelled { .. } => {}
                 // Unused/unknown variants — skip silently.
                 _ => {}
             }
@@ -191,14 +196,20 @@ mod tests {
         let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
 
         tagged
-            .send(AgentUpdate::StreamChunk("hello world\n".into()))
+            .send(RuntimeEvent::Text {
+                run_id: None,
+                role: "assistant".into(),
+                content: "hello world\n".into(),
+            })
             .unwrap();
         tokio::task::yield_now().await;
 
-        let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
+        let got: Vec<RuntimeEvent> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
         assert_eq!(got.len(), 1);
         match &got[0] {
-            AgentUpdate::ToolProgress { tool_id, chunks } => {
+            RuntimeEvent::ToolProgress {
+                tool_id, chunks, ..
+            } => {
                 assert_eq!(tool_id, "task-1");
                 assert_eq!(chunks.len(), 1);
                 assert_eq!(chunks[0].text, "hello world\n");
@@ -216,22 +227,29 @@ mod tests {
         let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
 
         tagged
-            .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Started))
+            .send(RuntimeEvent::Thinking {
+                run_id: None,
+                chunk: ThinkingChunk::Started,
+            })
             .unwrap();
         tagged
-            .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-                "reasoning line\nsecond".into(),
-            )))
+            .send(RuntimeEvent::Thinking {
+                run_id: None,
+                chunk: ThinkingChunk::Delta("reasoning line\nsecond".into()),
+            })
             .unwrap();
         tagged
-            .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+            .send(RuntimeEvent::Thinking {
+                run_id: None,
+                chunk: ThinkingChunk::Finished,
+            })
             .unwrap();
         tokio::task::yield_now().await;
 
-        let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
+        let got: Vec<RuntimeEvent> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
         assert_eq!(got.len(), 1);
         match &got[0] {
-            AgentUpdate::ToolProgress { chunks, .. } => {
+            RuntimeEvent::ToolProgress { chunks, .. } => {
                 let text = &chunks[0].text;
                 assert!(text.contains("🧠 Thinking"), "got {text:?}");
                 assert!(
@@ -289,10 +307,16 @@ mod tests {
         let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
 
         tagged
-            .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Started))
+            .send(RuntimeEvent::Thinking {
+                run_id: None,
+                chunk: ThinkingChunk::Started,
+            })
             .unwrap();
         tagged
-            .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+            .send(RuntimeEvent::Thinking {
+                run_id: None,
+                chunk: ThinkingChunk::Finished,
+            })
             .unwrap();
         tokio::task::yield_now().await;
 
@@ -307,7 +331,8 @@ mod tests {
         let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
 
         tagged
-            .send(AgentUpdate::StepStarted {
+            .send(RuntimeEvent::StepStarted {
+                run_id: None,
                 idx: 0,
                 tool_id: "b1".into(),
                 tool_name: "read_file".into(),
@@ -317,7 +342,8 @@ mod tests {
             })
             .unwrap();
         tagged
-            .send(AgentUpdate::StepFailed {
+            .send(RuntimeEvent::StepFailed {
+                run_id: None,
                 idx: 0,
                 tool_id: "b1".into(),
                 arg_summary: String::new(),
@@ -326,17 +352,17 @@ mod tests {
             .unwrap();
         tokio::task::yield_now().await;
 
-        let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
+        let got: Vec<RuntimeEvent> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
         assert_eq!(got.len(), 2);
         match &got[0] {
-            AgentUpdate::ToolProgress { chunks, .. } => {
+            RuntimeEvent::ToolProgress { chunks, .. } => {
                 assert!(chunks[0].text.contains("read_file"));
                 assert!(chunks[0].text.contains("main.rs"));
             }
             other => panic!("expected ToolProgress, got {other:?}"),
         }
         match &got[1] {
-            AgentUpdate::ToolProgress { chunks, .. } => {
+            RuntimeEvent::ToolProgress { chunks, .. } => {
                 assert!(chunks[0].text.contains("✗ "));
                 assert!(chunks[0].text.contains("not found"));
                 assert!(chunks[0].text.starts_with("\n\n"));
@@ -357,7 +383,8 @@ mod tests {
         let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
 
         tagged
-            .send(AgentUpdate::StepFinished {
+            .send(RuntimeEvent::StepFinished {
+                run_id: None,
                 idx: 0,
                 tool_id: "b1".into(),
                 result: StepResult {
@@ -375,10 +402,10 @@ mod tests {
             .unwrap();
         tokio::task::yield_now().await;
 
-        let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
+        let got: Vec<RuntimeEvent> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
         assert_eq!(got.len(), 1);
         match &got[0] {
-            AgentUpdate::ToolProgress { chunks, .. } => {
+            RuntimeEvent::ToolProgress { chunks, .. } => {
                 assert!(chunks[0].text.contains("✓ "));
                 assert!(chunks[0].text.contains("hi"));
                 assert!(chunks[0].text.starts_with("\n\n"));
@@ -396,7 +423,8 @@ mod tests {
         let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
 
         tagged
-            .send(AgentUpdate::StepFinished {
+            .send(RuntimeEvent::StepFinished {
+                run_id: None,
                 idx: 0,
                 tool_id: "b1".into(),
                 result: StepResult {
@@ -425,27 +453,33 @@ mod tests {
         let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
 
         tagged
-            .send(AgentUpdate::RequestSelect {
-                request_id: 42,
-                prompt: "Allow bash?".into(),
-                options: vec!["Yes".into()],
-                log_confirm: false,
+            .send(RuntimeEvent::InteractionRequested {
+                request: tact_protocol::InteractionRequest::Select {
+                    request_id: tact_protocol::RequestId::from("42"),
+                    prompt: "Allow bash?".into(),
+                    options: vec!["Yes".into()],
+                    log_confirm: false,
+                },
             })
             .unwrap();
         tokio::task::yield_now().await;
 
         let got = inner_rx.try_recv().unwrap();
         match got {
-            AgentUpdate::RequestSelect {
-                request_id, prompt, ..
+            RuntimeEvent::InteractionRequested {
+                request:
+                    tact_protocol::InteractionRequest::Select {
+                        request_id, prompt, ..
+                    },
             } => {
                 assert_eq!(
-                    request_id, 42,
+                    request_id.as_str(),
+                    "42",
                     "request id must survive subagent forwarding"
                 );
                 assert!(prompt.starts_with("[Subagent]"));
             }
-            other => panic!("expected RequestSelect, got {other:?}"),
+            other => panic!("expected a select request, got {other:?}"),
         }
     }
 
@@ -457,13 +491,16 @@ mod tests {
         let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
 
         tagged
-            .send(AgentUpdate::TokenUsage(TokenUsageInfo {
-                total: 999,
-                prompt: 800,
-                prompt_cache_hit_tokens: 600,
-                prompt_cache_miss_tokens: 200,
-                ..Default::default()
-            }))
+            .send(RuntimeEvent::TokenUsage {
+                run_id: None,
+                usage: TokenUsageInfo {
+                    total: 999,
+                    prompt: 800,
+                    prompt_cache_hit_tokens: 600,
+                    prompt_cache_miss_tokens: 200,
+                    ..Default::default()
+                },
+            })
             .unwrap();
         tokio::task::yield_now().await;
 
@@ -474,11 +511,12 @@ mod tests {
         );
         // ToolMeta sent to parent channel for the TUI to update the tool card header.
         match inner_rx.try_recv().unwrap() {
-            AgentUpdate::ToolMeta {
+            RuntimeEvent::ToolMeta {
                 tool_id,
                 model,
                 token_usage,
                 task_id,
+                ..
             } => {
                 assert_eq!(tool_id, "t1");
                 assert!(model.is_none());
@@ -500,10 +538,15 @@ mod tests {
 
         // Stream chunk with no trailing newline — previously glued to the next event.
         tagged
-            .send(AgentUpdate::StreamChunk("partial".into()))
+            .send(RuntimeEvent::Text {
+                run_id: None,
+                role: "assistant".into(),
+                content: "partial".into(),
+            })
             .unwrap();
         tagged
-            .send(AgentUpdate::StepStarted {
+            .send(RuntimeEvent::StepStarted {
+                run_id: None,
                 idx: 0,
                 tool_id: "b1".into(),
                 tool_name: "bash".into(),
@@ -514,16 +557,16 @@ mod tests {
             .unwrap();
         tokio::task::yield_now().await;
 
-        let got: Vec<AgentUpdate> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
+        let got: Vec<RuntimeEvent> = std::iter::from_fn(|| progress_rx.try_recv().ok()).collect();
         assert_eq!(got.len(), 2);
         match &got[0] {
-            AgentUpdate::ToolProgress { chunks, .. } => {
+            RuntimeEvent::ToolProgress { chunks, .. } => {
                 assert_eq!(chunks[0].text, "partial");
             }
             other => panic!("expected ToolProgress, got {other:?}"),
         }
         match &got[1] {
-            AgentUpdate::ToolProgress { chunks, .. } => {
+            RuntimeEvent::ToolProgress { chunks, .. } => {
                 assert_eq!(chunks[0].text, "\n\n→ bash ls\n\n");
             }
             other => panic!("expected ToolProgress, got {other:?}"),
@@ -538,13 +581,16 @@ mod tests {
         let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
 
         tagged
-            .send(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
-                model: "fake".into(),
-                max_tokens: 4096,
-                thinking_budget: None,
-                reasoning_effort: None,
-                extra_body: None,
-            }))
+            .send(RuntimeEvent::ModelInfo {
+                run_id: None,
+                params: tact_protocol::ModelCallParams {
+                    model: "fake".into(),
+                    max_tokens: 4096,
+                    thinking_budget: None,
+                    reasoning_effort: None,
+                    extra_body: None,
+                },
+            })
             .unwrap();
         tokio::task::yield_now().await;
 
@@ -554,11 +600,12 @@ mod tests {
             "ModelInfo must not produce ToolProgress chunks"
         );
         match inner_rx.try_recv().unwrap() {
-            AgentUpdate::ToolMeta {
+            RuntimeEvent::ToolMeta {
                 tool_id,
                 model,
                 token_usage,
                 task_id,
+                ..
             } => {
                 assert_eq!(tool_id, "t1");
                 assert!(task_id.is_none());
@@ -577,9 +624,14 @@ mod tests {
         let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
 
         tagged
-            .send(AgentUpdate::TaskComplete("done".into()))
+            .send(RuntimeEvent::TaskComplete {
+                run_id: None,
+                content: "done".into(),
+            })
             .unwrap();
-        tagged.send(AgentUpdate::TaskCancelled).unwrap();
+        tagged
+            .send(RuntimeEvent::Cancelled { run_id: None })
+            .unwrap();
         tokio::task::yield_now().await;
 
         assert!(progress_rx.try_recv().is_err());

@@ -31,13 +31,11 @@ use std::{
     },
     time::{Duration, Instant},
 };
-use tact_protocol::RuntimeEvent;
 
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tact_protocol::{ToolOutputChunk, ToolOutputStream};
-use tact_view::AgentUpdate;
+use tact_protocol::{RuntimeEvent, ToolOutputChunk, ToolOutputStream};
 use tokio::{
     io::AsyncWriteExt,
     process::{Child, Command},
@@ -492,7 +490,7 @@ impl BackgroundProgressSink {
     #[cfg(any(test, feature = "test-support"))]
     pub fn new(
         tool_id: impl Into<String>,
-        ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+        ui_tx: Option<tokio::sync::mpsc::UnboundedSender<RuntimeEvent>>,
     ) -> Self {
         Self {
             reporter: crate::tool::ToolProgressReporter::new(tool_id, ui_tx),
@@ -1400,11 +1398,11 @@ mod tests {
                 panic!("timed out waiting for background task events");
             };
             match update {
-                Some(AgentUpdate::ToolProgress { chunks, .. }) => {
+                Some(RuntimeEvent::ToolProgress { chunks, .. }) => {
                     seen.extend(chunks.iter().map(|c| c.text.as_str()));
                     saw_progress = true;
                 }
-                Some(AgentUpdate::BackgroundTaskFinished { output, .. }) => {
+                Some(RuntimeEvent::BackgroundTaskFinished { output, .. }) => {
                     seen.push_str(&output);
                     break;
                 }
@@ -1443,17 +1441,20 @@ mod tests {
                 panic!("timed out waiting for background task events");
             };
             match update {
-                Some(AgentUpdate::ToolProgress { tool_id, chunks }) => {
+                Some(RuntimeEvent::ToolProgress {
+                    tool_id, chunks, ..
+                }) => {
                     assert_eq!(tool_id, "bg-test");
                     let text: String = chunks.iter().map(|c| c.text.as_str()).collect();
                     assert!(text.contains("hello-world"), "progress text: {text:?}");
                     saw_progress = true;
                 }
-                Some(AgentUpdate::BackgroundTaskFinished {
+                Some(RuntimeEvent::BackgroundTaskFinished {
                     tool_id,
                     success,
                     message,
                     output,
+                    ..
                 }) => {
                     assert_eq!(tool_id, "bg-test");
                     assert!(success, "echo should succeed");
@@ -1503,16 +1504,19 @@ mod tests {
                 panic!("timed out waiting for background task events");
             };
             match update {
-                Some(AgentUpdate::ToolProgress { tool_id, chunks }) => {
+                Some(RuntimeEvent::ToolProgress {
+                    tool_id, chunks, ..
+                }) => {
                     assert_eq!(tool_id, "bg-fail");
                     let text: String = chunks.iter().map(|c| c.text.as_str()).collect();
                     assert!(text.contains("before-fail"), "progress text: {text:?}");
                 }
-                Some(AgentUpdate::BackgroundTaskFinished {
+                Some(RuntimeEvent::BackgroundTaskFinished {
                     tool_id,
                     success,
                     message,
                     output,
+                    ..
                 }) => {
                     assert_eq!(tool_id, "bg-fail");
                     assert!(!success, "`false` must finish as failed");

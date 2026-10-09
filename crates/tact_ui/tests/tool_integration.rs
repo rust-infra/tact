@@ -11,8 +11,8 @@ use harness::{
 };
 use tact_extensions::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{MockClient, StopReason};
-use tact_protocol::StepStatus;
-use tact_view::{AgentUpdate, UserCommand};
+use tact_protocol::{RuntimeEvent, StepStatus};
+use tact_view::UserCommand;
 
 #[tokio::test]
 async fn parallel_read_files_both_succeed() {
@@ -40,7 +40,7 @@ async fn parallel_read_files_both_succeed() {
     assert!(ids.contains(&"read_b".to_string()));
     assert!(
         updates.iter().all(|u| {
-            if let AgentUpdate::StepFinished { result, .. } = u {
+            if let RuntimeEvent::StepFinished { result, .. } = u {
                 matches!(result.status, StepStatus::Success)
             } else {
                 true
@@ -72,7 +72,7 @@ async fn parallel_background_runs_each_publish_their_task_id() {
     let keep_live_starts: Vec<String> = updates
         .iter()
         .filter_map(|u| match u {
-            AgentUpdate::StepStarted {
+            RuntimeEvent::StepStarted {
                 tool_id,
                 presentation,
                 ..
@@ -83,7 +83,7 @@ async fn parallel_background_runs_each_publish_their_task_id() {
     let metas: Vec<(String, Option<String>)> = updates
         .iter()
         .filter_map(|u| match u {
-            AgentUpdate::ToolMeta {
+            RuntimeEvent::ToolMeta {
                 tool_id, task_id, ..
             } => Some((tool_id.clone(), task_id.clone())),
             _ => None,
@@ -131,7 +131,7 @@ async fn large_read_file_output_is_not_persisted() {
 
     assert!(updates.iter().any(|update| matches!(
         update,
-        AgentUpdate::StepFinished { tool_id, result, .. }
+        RuntimeEvent::StepFinished { tool_id, result, .. }
             if tool_id == "read_big"
                 && matches!(result.status, StepStatus::Success)
                 && !result.message.contains("<persisted-output>")
@@ -160,7 +160,7 @@ async fn large_native_bash_output_is_persisted() {
     assert!(
         updates.iter().any(|update| matches!(
             update,
-            AgentUpdate::StepFinished { tool_id, result, .. }
+            RuntimeEvent::StepFinished { tool_id, result, .. }
                 if tool_id == "bash_big"
                     && matches!(result.status, StepStatus::Success)
                     && result.message.contains("<persisted-output>")
@@ -186,7 +186,7 @@ async fn plan_mode_blocks_write_file() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFailed { tool_id: id, error: msg, .. }
+                RuntimeEvent::StepFailed { tool_id: id, error: msg, .. }
                     if id == "w1" && msg.contains("Plan mode")
             )
         }),
@@ -214,7 +214,7 @@ async fn bash_echo_returns_success() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished { tool_id: id, result, .. }
+                RuntimeEvent::StepFinished { tool_id: id, result, .. }
                     if id == "bash1"
                         && result.tool == "bash"
                         && matches!(result.status, StepStatus::Success)
@@ -242,21 +242,23 @@ async fn bash_streams_progress_before_step_finished() {
         .position(|update| {
             matches!(
                 update,
-                AgentUpdate::ToolProgress { tool_id, .. } if tool_id == "bash_stream"
+                RuntimeEvent::ToolProgress { tool_id, .. } if tool_id == "bash_stream"
             )
         })
         .expect("expected bash progress");
     let finish_idx = first_index(&updates, |update| {
         matches!(
             update,
-            AgentUpdate::StepFinished { tool_id, .. } if tool_id == "bash_stream"
+            RuntimeEvent::StepFinished { tool_id, .. } if tool_id == "bash_stream"
         )
     })
     .expect("expected bash finish");
     let progress_text = updates
         .iter()
         .filter_map(|update| match update {
-            AgentUpdate::ToolProgress { tool_id, chunks } if tool_id == "bash_stream" => Some(
+            RuntimeEvent::ToolProgress {
+                tool_id, chunks, ..
+            } if tool_id == "bash_stream" => Some(
                 chunks
                     .iter()
                     .map(|chunk| chunk.text.as_str())
@@ -332,23 +334,23 @@ async fn cancel_then_submit_completes_fresh_task() {
     .await;
 
     assert!(
-        updates
-            .iter()
-            .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("Cancelling"))),
+        updates.iter().any(
+            |u| matches!(u, RuntimeEvent::Info { content: msg, .. } if msg.contains("Cancelling"))
+        ),
         "expected cancel info, got: {updates:?}"
     );
     assert!(
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::TaskComplete(text) if text.contains("Recovered")
+                RuntimeEvent::TaskComplete { content: text, .. } if text.contains("Recovered")
             )
         }),
         "second task should complete after cancel, got: {updates:?}"
     );
     let completes = updates
         .iter()
-        .filter(|u| matches!(u, AgentUpdate::TaskComplete(_)))
+        .filter(|u| matches!(u, RuntimeEvent::TaskComplete { .. }))
         .count();
     assert_eq!(completes, 1, "only the recovery task should TaskComplete");
 }
@@ -365,7 +367,7 @@ async fn submit_task_emits_model_info() {
     assert!(
         updates
             .iter()
-            .any(|u| matches!(u, AgentUpdate::ModelInfo(_))),
+            .any(|u| matches!(u, RuntimeEvent::ModelInfo { .. })),
         "agent_loop should emit ModelInfo before LLM call, got: {updates:?}"
     );
 }
@@ -434,11 +436,11 @@ async fn read_write_same_file_serializes() {
 
     let read_done = first_index(
         &updates,
-        |u| matches!(u, AgentUpdate::StepFinished { tool_id: id, .. } if id == "read_shared"),
+        |u| matches!(u, RuntimeEvent::StepFinished { tool_id: id, .. } if id == "read_shared"),
     );
     let write_done = first_index(
         &updates,
-        |u| matches!(u, AgentUpdate::StepFinished { tool_id: id, .. } if id == "write_shared"),
+        |u| matches!(u, RuntimeEvent::StepFinished { tool_id: id, .. } if id == "write_shared"),
     );
     assert!(
         read_done.is_some() && write_done.is_some() && read_done < write_done,
@@ -465,7 +467,7 @@ async fn submit_task_emits_token_usage() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::TokenUsage(info)
+                RuntimeEvent::TokenUsage { usage: info, .. }
                     if info.prompt == usage.prompt
                         && info.completion == usage.completion
                         && info.total == usage.total

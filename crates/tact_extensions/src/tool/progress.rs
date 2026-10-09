@@ -1,8 +1,5 @@
 use std::sync::{Arc, Mutex};
-use tact_protocol::RuntimeEvent;
-
-use tact_protocol::{ToolOutputChunk, ToolOutputStream};
-use tact_view::AgentUpdate;
+use tact_protocol::{RuntimeEvent, ToolOutputChunk, ToolOutputStream};
 
 use crate::security::{RedactionLevel, redact::StreamRedactor};
 
@@ -22,7 +19,7 @@ use crate::security::{RedactionLevel, redact::StreamRedactor};
 pub struct ToolProgressReporter {
     tool_id: String,
     #[cfg(any(test, feature = "test-support"))]
-    ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    ui_tx: Option<tokio::sync::mpsc::UnboundedSender<RuntimeEvent>>,
     view_updates: Option<super::ViewUpdateEmitter>,
     stream: Option<Arc<Mutex<StreamState>>>,
 }
@@ -49,7 +46,7 @@ impl ToolProgressReporter {
     #[cfg(any(test, feature = "test-support"))]
     pub fn new(
         tool_id: impl Into<String>,
-        ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+        ui_tx: Option<tokio::sync::mpsc::UnboundedSender<RuntimeEvent>>,
     ) -> Self {
         Self {
             tool_id: tool_id.into(),
@@ -78,11 +75,9 @@ impl ToolProgressReporter {
         } else {
             #[cfg(any(test, feature = "test-support"))]
             if let Some(tx) = &self.ui_tx {
-                // A harness that has not migrated still reads the legacy view
-                // model, so project back for it.
-                for update in tact_view::runtime_event_to_agent_updates(event) {
-                    let _ = tx.send(update);
-                }
+                // No Runtime sink: the event goes to the in-process View
+                // channel, which carries the protocol type itself.
+                let _ = tx.send(event);
             }
         }
     }
@@ -202,13 +197,12 @@ impl ToolProgressReporter {
 
 #[cfg(test)]
 mod tests {
-    use tact_view::AgentUpdate;
 
     use super::*;
 
-    fn progress_texts(update: &AgentUpdate) -> Vec<String> {
+    fn progress_texts(update: &RuntimeEvent) -> Vec<String> {
         match update {
-            AgentUpdate::ToolProgress { chunks, .. } => {
+            RuntimeEvent::ToolProgress { chunks, .. } => {
                 chunks.iter().map(|c| c.text.clone()).collect()
             }
             other => panic!("expected ToolProgress, got {other:?}"),
@@ -224,7 +218,7 @@ mod tests {
 
         assert!(matches!(
             rx.try_recv().unwrap(),
-            AgentUpdate::ToolProgress { tool_id, .. } if tool_id == "bash-7"
+            RuntimeEvent::ToolProgress { tool_id, .. } if tool_id == "bash-7"
         ));
     }
 
@@ -289,7 +283,7 @@ mod tests {
         assert!(
             matches!(
                 update,
-                AgentUpdate::ToolProgress { chunks, .. }
+                RuntimeEvent::ToolProgress { chunks, .. }
                     if chunks[0].stream == ToolOutputStream::Stderr
             ),
             "a flushed tail keeps the stream it came from"

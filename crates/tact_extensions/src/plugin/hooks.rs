@@ -2408,7 +2408,6 @@ mod tests {
     use tempfile::tempdir;
 
     use super::*;
-    use tact_view::AgentUpdate;
 
     #[test]
     fn parses_inline_manifest_hooks() {
@@ -2729,11 +2728,12 @@ mod tests {
 
         let mut statuses = Vec::new();
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::HookStatus {
+            if let RuntimeEvent::HookStatus {
                 id,
                 source,
                 message,
                 elapsed_ms,
+                ..
             } = update
             {
                 statuses.push((id, source, message, elapsed_ms));
@@ -2970,7 +2970,7 @@ mod tests {
         );
         let mut notice = None;
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::Info(text) = update {
+            if let RuntimeEvent::Info { content: text, .. } = update {
                 notice = Some(text);
             }
         }
@@ -3353,11 +3353,12 @@ mod tests {
         // which hook it was.
         let mut statuses = Vec::new();
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::HookStatus {
+            if let RuntimeEvent::HookStatus {
                 id,
                 source,
                 message,
                 elapsed_ms,
+                ..
             } = update
             {
                 statuses.push((id, source, message, elapsed_ms));
@@ -4380,7 +4381,7 @@ mod tests {
 
         let mut messages = Vec::new();
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::Info(text) = update {
+            if let RuntimeEvent::Info { content: text, .. } = update {
                 messages.push(text);
             }
         }

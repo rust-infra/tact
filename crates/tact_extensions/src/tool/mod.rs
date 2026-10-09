@@ -36,7 +36,6 @@ use anyhow::Result;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde_json::Value;
-use tact_view::AgentUpdate;
 
 use crate::{
     ToolSpec, background::SharedBackgroundManager, memory::MemoryManager, task::SharedTaskManager,
@@ -60,13 +59,15 @@ impl std::fmt::Debug for ViewUpdateEmitter {
 struct ViewUpdateEmitterState {
     runtime_sink: Option<Arc<dyn tact::RuntimeEventSink>>,
     #[cfg(any(test, feature = "test-support"))]
-    legacy_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    legacy_tx: Option<tokio::sync::mpsc::UnboundedSender<RuntimeEvent>>,
     run_id: Option<tact_protocol::RunId>,
 }
 
 impl ViewUpdateEmitter {
+    /// An emitter whose events go to an in-process channel instead of a Runtime
+    /// host (test/embedding).
     #[cfg(any(test, feature = "test-support"))]
-    pub fn legacy(tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>) -> Self {
+    pub fn legacy(tx: tokio::sync::mpsc::UnboundedSender<RuntimeEvent>) -> Self {
         let emitter = Self::default();
         emitter.set_legacy_sender(tx);
         emitter
@@ -80,7 +81,7 @@ impl ViewUpdateEmitter {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn set_legacy_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>) {
+    pub fn set_legacy_sender(&self, tx: tokio::sync::mpsc::UnboundedSender<RuntimeEvent>) {
         self.inner
             .lock()
             .expect("view update emitter lock poisoned")
@@ -92,34 +93,6 @@ impl ViewUpdateEmitter {
             .lock()
             .expect("view update emitter lock poisoned")
             .run_id = run_id;
-    }
-
-    pub fn emit(&self, update: AgentUpdate) -> bool {
-        let (runtime_sink, run_id) = {
-            let state = self
-                .inner
-                .lock()
-                .expect("view update emitter lock poisoned");
-            (state.runtime_sink.clone(), state.run_id.clone())
-        };
-        if let Some(sink) = runtime_sink {
-            for event in tact_view::runtime_events_for(&update, run_id) {
-                let _ = sink.emit(event);
-            }
-            true
-        } else {
-            #[cfg(any(test, feature = "test-support"))]
-            if let Some(tx) = self
-                .inner
-                .lock()
-                .expect("view update emitter lock poisoned")
-                .legacy_tx
-                .clone()
-            {
-                return tx.send(update).is_ok();
-            }
-            false
-        }
     }
 
     /// Emits a protocol event whose producer did not know the run.
@@ -146,11 +119,9 @@ impl ViewUpdateEmitter {
             .legacy_tx
             .clone()
         {
-            // A harness that has not migrated to `RuntimeEvent` yet still reads
-            // the legacy view model, so project back for it.
-            return tact_view::runtime_event_to_agent_updates(event)
-                .into_iter()
-                .all(|update| tx.send(update).is_ok());
+            // No Runtime sink: the event goes to the in-process View channel,
+            // which carries the protocol type itself.
+            return tx.send(event).is_ok();
         }
         false
     }
@@ -237,7 +208,7 @@ pub struct ToolContext {
     /// Whether this host has an active client that can answer interactions.
     pub interactive: bool,
     #[cfg(any(test, feature = "test-support"))]
-    pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<RuntimeEvent>>,
     pub view_updates: ViewUpdateEmitter,
     /// Shared request/reply registry for `ask_user` and permission selects.
     /// Cloned into subagents so request ids stay globally unique.
@@ -286,12 +257,12 @@ impl ToolContext {
         self.view_updates.emit_runtime_event(event)
     }
 
-    /// Test/embedding hook: route view updates to a legacy TUI channel.
+    /// Test/embedding hook: route view updates to an in-process event channel.
     ///
-    /// Keeps the pre-migration assertion style (`rx.recv()` of `AgentUpdate`)
-    /// working for tools that now publish through [`ViewUpdateEmitter`].
+    /// A harness then reads protocol [`RuntimeEvent`]s off `rx` instead of
+    /// attaching a Runtime host — the same events a production sink would get.
     #[cfg(any(test, feature = "test-support"))]
-    pub fn set_test_view_updates(&mut self, tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>) {
+    pub fn set_test_view_updates(&mut self, tx: tokio::sync::mpsc::UnboundedSender<RuntimeEvent>) {
         self.view_updates = ViewUpdateEmitter::legacy(tx.clone());
         self.ui_responder.set_legacy_sender(tx.clone());
         self.ui_tx = Some(tx);
@@ -734,7 +705,7 @@ mod tests {
 
         let mut progress_count = 0;
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::Info(msg) = update {
+            if let RuntimeEvent::Info { content: msg, .. } = update {
                 assert!(msg.contains("Writing"));
                 assert!(msg.contains("large.txt"));
                 progress_count += 1;

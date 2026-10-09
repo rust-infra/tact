@@ -13,7 +13,7 @@ use tact_extensions::{
     tool::{test_support::test_context, toolset},
 };
 use tact_llm::{LlmProvider, MockClient, ProviderKind};
-use tact_view::AgentUpdate;
+use tact_protocol::RuntimeEvent;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 static WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -93,10 +93,10 @@ pub fn install_test_config_with(config: tact_extensions::config::ResolvedConfig)
     tact_extensions::config::install_or_override(config);
 }
 
-/// Build an agent wired to a mock LLM and optional UI update channel.
+/// Build an agent wired to a mock LLM and optional in-process event channel.
 pub fn build_test_agent(
     mock: MockClient,
-    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    ui_tx: Option<UnboundedSender<RuntimeEvent>>,
 ) -> (Agent, std::path::PathBuf) {
     build_test_agent_with_mode(mock, ui_tx, PermissionMode::Auto)
 }
@@ -104,7 +104,7 @@ pub fn build_test_agent(
 /// Like [`build_test_agent`], but selects the permission mode (Plan / Auto / Default).
 pub fn build_test_agent_with_mode(
     mock: MockClient,
-    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     permission_mode: PermissionMode,
 ) -> (Agent, std::path::PathBuf) {
     let config = default_test_config();
@@ -117,7 +117,7 @@ pub fn build_test_agent_with_mode(
 /// `config.agent` to the returned agent so parallel tests do not race.
 pub fn build_test_agent_with_config(
     mock: MockClient,
-    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     permission_mode: PermissionMode,
     config: &tact_extensions::config::ResolvedConfig,
 ) -> (Agent, std::path::PathBuf) {
@@ -132,7 +132,7 @@ pub fn build_test_agent_with_config(
 /// Responses) pointed at a local wiremock server.
 pub fn build_test_agent_with_provider(
     client: LlmProvider,
-    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     permission_mode: PermissionMode,
     config: &tact_extensions::config::ResolvedConfig,
 ) -> (Agent, std::path::PathBuf) {
@@ -164,7 +164,7 @@ pub fn build_test_agent_with_provider(
 /// `base_url` (normally a local wiremock server).
 pub fn build_responses_test_agent(
     base_url: &str,
-    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    ui_tx: Option<UnboundedSender<RuntimeEvent>>,
 ) -> (Agent, std::path::PathBuf) {
     let config = default_test_config();
     build_test_agent_with_provider(
@@ -183,7 +183,7 @@ pub fn build_responses_test_agent(
 /// without spawning real MCP server child processes.
 pub fn build_test_agent_with_mcp(
     mock: MockClient,
-    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     permission_mode: PermissionMode,
     mcp_router: MCPToolRouter,
 ) -> (Agent, std::path::PathBuf) {
@@ -215,7 +215,7 @@ pub fn build_test_agent_with_mcp(
 /// Like [`build_test_agent`], but attaches an in-memory SQLite session store.
 pub async fn build_test_agent_with_session(
     mock: MockClient,
-    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    ui_tx: Option<UnboundedSender<RuntimeEvent>>,
 ) -> (Agent, PathBuf, DynSessionStore, String) {
     let config = default_test_config();
     tact_extensions::config::install_or_override(config.clone());
@@ -264,8 +264,8 @@ pub fn user_command_channels() -> (
     unbounded_channel()
 }
 
-/// Drain all pending updates from the agent channel (non-blocking after idle).
-pub async fn collect_updates(rx: &mut UnboundedReceiver<AgentUpdate>) -> Vec<AgentUpdate> {
+/// Drain all pending events from the agent channel (non-blocking after idle).
+pub async fn collect_updates(rx: &mut UnboundedReceiver<RuntimeEvent>) -> Vec<RuntimeEvent> {
     let mut updates = Vec::new();
     while let Ok(update) = rx.try_recv() {
         updates.push(update);
@@ -273,8 +273,8 @@ pub async fn collect_updates(rx: &mut UnboundedReceiver<AgentUpdate>) -> Vec<Age
     updates
 }
 
-/// Drain updates until idle, waiting briefly for in-flight agent work.
-pub async fn collect_updates_after(mut rx: UnboundedReceiver<AgentUpdate>) -> Vec<AgentUpdate> {
+/// Drain events until idle, waiting briefly for in-flight agent work.
+pub async fn collect_updates_after(mut rx: UnboundedReceiver<RuntimeEvent>) -> Vec<RuntimeEvent> {
     let mut updates = Vec::new();
     loop {
         match tokio::time::timeout(std::time::Duration::from_millis(50), rx.recv()).await {

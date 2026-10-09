@@ -1,23 +1,23 @@
-//! Shared request/reply registry for UI prompts (`RequestSelect` /
-//! `RequestMultiSelect`).
+//! Shared request/reply registry for UI prompts (`InteractionRequest::Select` /
+//! `InteractionRequest::MultiSelect`).
 //!
 //! The agent runtime no longer embeds a `tokio::sync::oneshot::Sender` inside
-//! [`AgentUpdate`] (that made the protocol enum impossible to serialize and
+//! `AgentUpdate` (that made the protocol enum impossible to serialize and
 //! coupled the transport to a single in-process responder). Instead a tool or
 //! the permission gate asks [`UiResponder`] for a selection, which:
 //!
 //! 1. allocates a globally-unique `request_id`,
 //! 2. records the request metadata plus a pending oneshot for that id,
-//! 3. emits a pure-data `RequestSelect` / `RequestMultiSelect` carrying the id,
+//! 3. emits a pure-data [`RuntimeEvent::InteractionRequested`] carrying the id,
 //! 4. awaits the answer, which arrives via [`UiResponder::respond`] (or the
 //!    protocol `InteractionResponse`) from the
 //!    TUI or the command driver.
 //!
 //! The pending map is also exposed as an ordered [`UiResponder::snapshot`]. In
 //! interactive mode the TUI reconciles its select popup from that snapshot and
-//! treats `RequestSelect` as a wake-up hint only; a lost or duplicated hint can
-//! no longer leave a waiter hanging. The legacy event path remains for
-//! headless/tests when no broker snapshot is attached.
+//! treats `InteractionRequested` as a wake-up hint only; a lost or duplicated
+//! hint can no longer leave a waiter hanging. The in-process channel path
+//! remains for headless/tests when no broker snapshot is attached.
 //!
 //! The id allocator and pending map live behind an `Arc`, so the parent agent
 //! and every subagent (which clone the same [`ToolContext`]) share one
@@ -30,7 +30,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::utils::LockExt;
-use tact_view::AgentUpdate;
+#[cfg(any(test, feature = "test-support"))]
+use tact_protocol::RuntimeEvent;
 #[cfg(any(test, feature = "test-support"))]
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;
@@ -113,7 +114,7 @@ struct UiResponderInner {
     next_id: AtomicU64,
     runtime_event_sink: Mutex<Option<Arc<dyn tact::RuntimeEventSink>>>,
     #[cfg(any(test, feature = "test-support"))]
-    legacy_tx: Mutex<Option<UnboundedSender<AgentUpdate>>>,
+    legacy_tx: Mutex<Option<UnboundedSender<RuntimeEvent>>>,
 }
 
 impl UiResponder {
@@ -128,14 +129,14 @@ impl UiResponder {
     }
 
     #[cfg(any(test, feature = "test-support"))]
-    pub fn set_legacy_sender(&self, tx: UnboundedSender<AgentUpdate>) {
+    pub fn set_legacy_sender(&self, tx: UnboundedSender<RuntimeEvent>) {
         *self.inner.legacy_tx.lock_recover() = Some(tx);
     }
 
     /// Register a single-select request and return its id plus the waiter.
     ///
     /// The request is visible through [`Self::snapshot`] immediately, before
-    /// any `AgentUpdate` hint is sent. This ordering is what lets the TUI
+    /// any `RuntimeEvent` hint is sent. This ordering is what lets the TUI
     /// recover from a lost hint: it can pull the authoritative snapshot on a
     /// later tick.
     pub fn register_select(
@@ -207,7 +208,7 @@ impl UiResponder {
     #[cfg(any(test, feature = "test-support"))]
     pub async fn request_select(
         &self,
-        ui_tx: &UnboundedSender<AgentUpdate>,
+        ui_tx: &UnboundedSender<RuntimeEvent>,
         prompt: String,
         options: Vec<String>,
         log_confirm: bool,
@@ -240,8 +241,8 @@ impl UiResponder {
             responder: self.clone(),
             request_id,
         };
-        if !self.send_request_hint(AgentUpdate::RequestSelect {
-            request_id,
+        if !self.send_request_hint(tact_protocol::InteractionRequest::Select {
+            request_id: protocol_request_id(request_id),
             prompt,
             options: options.clone(),
             log_confirm,
@@ -265,7 +266,7 @@ impl UiResponder {
     #[cfg(any(test, feature = "test-support"))]
     pub async fn request_multi(
         &self,
-        ui_tx: &UnboundedSender<AgentUpdate>,
+        ui_tx: &UnboundedSender<RuntimeEvent>,
         prompt: String,
         options: Vec<String>,
     ) -> Result<Option<Vec<usize>>, UiRequestError> {
@@ -291,8 +292,8 @@ impl UiResponder {
             responder: self.clone(),
             request_id,
         };
-        if !self.send_request_hint(AgentUpdate::RequestMultiSelect {
-            request_id,
+        if !self.send_request_hint(tact_protocol::InteractionRequest::MultiSelect {
+            request_id: protocol_request_id(request_id),
             prompt,
             options: options.clone(),
         }) {
@@ -355,7 +356,12 @@ impl UiResponder {
             .map(|entry| entry.request.options.clone())
     }
 
-    fn send_request_hint(&self, update: AgentUpdate) -> bool {
+    /// Publish a select / multi-select prompt to the View.
+    ///
+    /// The request id is minted as a `u64` by [`Self::register`]; its protocol
+    /// form is the decimal string an [`InteractionResponse`] carries back.
+    fn send_request_hint(&self, request: tact_protocol::InteractionRequest) -> bool {
+        let event = tact_protocol::RuntimeEvent::InteractionRequested { request };
         let Some(sink) = self.inner.runtime_event_sink.lock_recover().clone() else {
             #[cfg(any(test, feature = "test-support"))]
             return self
@@ -363,35 +369,11 @@ impl UiResponder {
                 .legacy_tx
                 .lock_recover()
                 .clone()
-                .is_some_and(|tx| tx.send(update).is_ok());
+                .is_some_and(|tx| tx.send(event).is_ok());
             #[cfg(not(any(test, feature = "test-support")))]
             return false;
         };
-        let request = match update {
-            AgentUpdate::RequestSelect {
-                request_id,
-                prompt,
-                options,
-                log_confirm,
-            } => tact_protocol::InteractionRequest::Select {
-                request_id: tact_protocol::RequestId::from(request_id.to_string()),
-                prompt,
-                options,
-                log_confirm,
-            },
-            AgentUpdate::RequestMultiSelect {
-                request_id,
-                prompt,
-                options,
-            } => tact_protocol::InteractionRequest::MultiSelect {
-                request_id: tact_protocol::RequestId::from(request_id.to_string()),
-                prompt,
-                options,
-            },
-            _ => return false,
-        };
-        sink.emit(tact_protocol::RuntimeEvent::InteractionRequested { request })
-            .is_ok()
+        sink.emit(event).is_ok()
     }
 
     /// Drop every pending waiter, unblocking any in-flight `request_*` call
@@ -424,6 +406,15 @@ impl UiResponder {
             .insert(request_id, PendingEntry { request, tx });
         (request_id, rx)
     }
+}
+
+/// The protocol form of the in-process request id minted by `register`.
+///
+/// `pending` is keyed by `u64` because that is what the waiter wants back;
+/// the View only ever sees [`tact_protocol::RequestId`], so the decimal string
+/// is the one place the two identities meet.
+fn protocol_request_id(request_id: u64) -> tact_protocol::RequestId {
+    tact_protocol::RequestId::from(request_id.to_string())
 }
 
 fn interaction_request_id(response: &tact_protocol::InteractionResponse) -> &str {
@@ -480,8 +471,16 @@ fn multi_index(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tact_protocol::RuntimeEvent;
+    use tact_protocol::{InteractionRequest, RequestId, RuntimeEvent};
     use tokio::sync::mpsc::unbounded_channel;
+
+    /// The in-process `u64` id behind a protocol `RequestId`.
+    fn request_id_u64(request_id: &RequestId) -> u64 {
+        request_id
+            .as_str()
+            .parse()
+            .expect("in-process request ids are the decimal form")
+    }
 
     #[derive(Default)]
     struct CapturedEvents(std::sync::Mutex<Vec<RuntimeEvent>>);
@@ -496,7 +495,7 @@ mod tests {
     #[tokio::test]
     async fn multi_select_routes_response_by_request_id() {
         let responder = UiResponder::new();
-        let (tx, mut rx) = unbounded_channel::<AgentUpdate>();
+        let (tx, mut rx) = unbounded_channel::<RuntimeEvent>();
 
         let handle = tokio::spawn({
             let responder = responder.clone();
@@ -508,25 +507,28 @@ mod tests {
         });
 
         // The request carries a request_id, not a sender.
-        let AgentUpdate::RequestMultiSelect {
-            request_id,
-            prompt,
-            options,
+        let RuntimeEvent::InteractionRequested {
+            request:
+                InteractionRequest::MultiSelect {
+                    request_id,
+                    prompt,
+                    options,
+                },
         } = rx.recv().await.unwrap()
         else {
-            panic!("expected RequestMultiSelect");
+            panic!("expected a multi-select request");
         };
         assert_eq!(prompt, "Pick toppings");
         assert_eq!(options, vec!["a", "b"]);
 
-        responder.respond_multi_by_index(request_id, Some(vec![0]));
+        responder.respond_multi_by_index(request_id_u64(&request_id), Some(vec![0]));
         assert_eq!(handle.await.unwrap(), Ok(Some(vec![0])));
     }
 
     #[tokio::test]
     async fn select_returns_none_on_cancel() {
         let responder = UiResponder::new();
-        let (tx, mut rx) = unbounded_channel::<AgentUpdate>();
+        let (tx, mut rx) = unbounded_channel::<RuntimeEvent>();
 
         let handle = tokio::spawn({
             let responder = responder.clone();
@@ -537,17 +539,20 @@ mod tests {
             }
         });
 
-        let AgentUpdate::RequestSelect { request_id, .. } = rx.recv().await.unwrap() else {
-            panic!("expected RequestSelect");
+        let RuntimeEvent::InteractionRequested {
+            request: InteractionRequest::Select { request_id, .. },
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("expected a select request");
         };
-        responder.respond_by_index(request_id, None);
+        responder.respond_by_index(request_id_u64(&request_id), None);
         assert_eq!(handle.await.unwrap(), Ok(None));
     }
 
     #[tokio::test]
     async fn shutdown_unblocks_waiters_with_error() {
         let responder = UiResponder::new();
-        let (tx, _rx) = unbounded_channel::<AgentUpdate>();
+        let (tx, _rx) = unbounded_channel::<RuntimeEvent>();
 
         let handle = tokio::spawn({
             let responder = responder.clone();
@@ -567,7 +572,7 @@ mod tests {
     #[tokio::test]
     async fn closed_channel_fails_fast_without_hanging() {
         let responder = UiResponder::new();
-        let (tx, rx) = unbounded_channel::<AgentUpdate>();
+        let (tx, rx) = unbounded_channel::<RuntimeEvent>();
         drop(rx); // close the UI channel
 
         let result = tokio::time::timeout(
@@ -582,7 +587,7 @@ mod tests {
     #[tokio::test]
     async fn mismatched_response_is_an_error_not_cancel() {
         let responder = UiResponder::new();
-        let (tx, mut rx) = unbounded_channel::<AgentUpdate>();
+        let (tx, mut rx) = unbounded_channel::<RuntimeEvent>();
 
         let handle = tokio::spawn({
             let responder = responder.clone();
@@ -593,12 +598,15 @@ mod tests {
             }
         });
 
-        let AgentUpdate::RequestSelect { request_id, .. } = rx.recv().await.unwrap() else {
-            panic!("expected RequestSelect");
+        let RuntimeEvent::InteractionRequested {
+            request: InteractionRequest::Select { request_id, .. },
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("expected a select request");
         };
         // Wrong variant for a single-select request, at the protocol level.
         responder.respond(tact_protocol::InteractionResponse::Text {
-            request_id: tact_protocol::RequestId::from(request_id.to_string()),
+            request_id,
             value: "unexpected".into(),
         });
         assert_eq!(handle.await.unwrap(), Err(UiRequestError::Mismatched));
@@ -608,7 +616,7 @@ mod tests {
     async fn request_ids_are_globally_unique_across_clones() {
         let a = UiResponder::new();
         let b = a.clone();
-        let (tx, mut rx) = unbounded_channel::<AgentUpdate>();
+        let (tx, mut rx) = unbounded_channel::<RuntimeEvent>();
 
         let h1 = tokio::spawn({
             let a = a.clone();
@@ -628,11 +636,15 @@ mod tests {
         });
 
         let id1 = match rx.recv().await.unwrap() {
-            AgentUpdate::RequestSelect { request_id, .. } => request_id,
+            RuntimeEvent::InteractionRequested {
+                request: InteractionRequest::Select { request_id, .. },
+            } => request_id_u64(&request_id),
             other => panic!("unexpected {other:?}"),
         };
         let id2 = match rx.recv().await.unwrap() {
-            AgentUpdate::RequestSelect { request_id, .. } => request_id,
+            RuntimeEvent::InteractionRequested {
+                request: InteractionRequest::Select { request_id, .. },
+            } => request_id_u64(&request_id),
             other => panic!("unexpected {other:?}"),
         };
         assert_ne!(id1, id2);
@@ -715,7 +727,7 @@ mod tests {
     #[tokio::test]
     async fn request_is_visible_in_snapshot_before_hint_is_received() {
         let responder = UiResponder::new();
-        let (tx, mut rx) = unbounded_channel::<AgentUpdate>();
+        let (tx, mut rx) = unbounded_channel::<RuntimeEvent>();
         let handle = tokio::spawn({
             let responder = responder.clone();
             async move {
@@ -725,9 +737,13 @@ mod tests {
             }
         });
 
-        let AgentUpdate::RequestSelect { request_id, .. } = rx.recv().await.unwrap() else {
-            panic!("expected RequestSelect");
+        let RuntimeEvent::InteractionRequested {
+            request: InteractionRequest::Select { request_id, .. },
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("expected a select request");
         };
+        let request_id = request_id_u64(&request_id);
         // The hint and the snapshot are both live; reconcile can use either.
         assert_eq!(responder.snapshot()[0].request_id, request_id);
         responder.respond_by_index(request_id, Some(0));
@@ -736,7 +752,7 @@ mod tests {
     #[tokio::test]
     async fn aborting_request_task_withdraws_pending_entry() {
         let responder = UiResponder::new();
-        let (tx, _rx) = unbounded_channel::<AgentUpdate>();
+        let (tx, _rx) = unbounded_channel::<RuntimeEvent>();
         let task = tokio::spawn({
             let responder = responder.clone();
             async move {
@@ -768,7 +784,7 @@ mod tests {
         let responder = UiResponder::new();
         let events = Arc::new(CapturedEvents::default());
         responder.set_runtime_event_sink(events.clone());
-        let (tx, mut rx) = unbounded_channel::<AgentUpdate>();
+        let (tx, mut rx) = unbounded_channel::<RuntimeEvent>();
         let task = tokio::spawn({
             let responder = responder.clone();
             async move {

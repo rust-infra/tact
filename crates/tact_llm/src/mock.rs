@@ -199,7 +199,7 @@ impl MockClient {
         })
     }
 
-    /// Enable emission of [`RuntimeEvent::StreamChunk`] events during
+    /// Enable emission of [`RuntimeEvent::Text`] events during
     /// `stream_message` by splitting text blocks into word-sized chunks.
     pub fn with_streaming_chunks(self) -> Self {
         Self {

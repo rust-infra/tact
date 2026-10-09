@@ -277,7 +277,8 @@ pub fn emit_tasks_changed(
     tasks: Vec<TaskRecord>,
     reason: tact_protocol::TasksChangeReason,
 ) {
-    let _ = view_updates.emit(tact_view::AgentUpdate::TasksChanged {
+    let _ = view_updates.emit_runtime_event(tact_protocol::RuntimeEvent::TasksChanged {
+        run_id: None,
         tasks: to_ui_snapshots(tasks),
         reason,
     });

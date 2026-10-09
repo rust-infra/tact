@@ -13,8 +13,7 @@ use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::time::Duration;
-use tact_protocol::RuntimeEvent;
-use tact_protocol::ToolVisualKind;
+use tact_protocol::{RuntimeEvent, ToolVisualKind};
 use tool_refactor_macros::tool;
 
 use crate::tool::ToolContext;
@@ -397,7 +396,6 @@ fn elapsed(record: &BackgroundTaskRecord) -> String {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
-    use tact_view::AgentUpdate;
 
     /// A cancellation flag that is never set: the task runs to completion.
     fn no_cancel() -> Arc<AtomicBool> {
@@ -544,7 +542,7 @@ mod tests {
 
         let mut reported = None;
         while let Ok(update) = rx.try_recv() {
-            if let AgentUpdate::ToolMeta {
+            if let RuntimeEvent::ToolMeta {
                 tool_id, task_id, ..
             } = update
             {

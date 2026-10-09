@@ -1,10 +1,11 @@
 //! Ask the human operator a question.
 //!
 //! Interactive mode (TUI `ui_tx` present):
-//! - With **options** + `multi_select: false` (default) → [`AgentUpdate::RequestSelect`]
-//! - With **options** + `multi_select: true` → [`AgentUpdate::RequestMultiSelect`]
+//! - With **options** + `multi_select: false` (default) → an
+//!   `InteractionRequest::Select`
+//! - With **options** + `multi_select: true` → an `InteractionRequest::MultiSelect`
 //!   (Space toggles, Enter confirms; permission / model pick still use single-select)
-//! - Without options → [`AgentUpdate::Info`]; next chat message is the answer
+//! - Without options → a `RuntimeEvent::Info`; next chat message is the answer
 //!
 //! Headless / no `ui_tx`: return a formatted question string (tests / CI).
 
@@ -148,11 +149,19 @@ fn format_headless_question(question: &str, options: &[String], multi: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use tact_view::AgentUpdate;
+    use tact_protocol::RuntimeEvent;
     use tokio::sync::mpsc::unbounded_channel;
 
     use super::*;
     use crate::tool::test_support::{run_tool, test_context};
+
+    /// The in-process `u64` id behind a protocol `RequestId`.
+    fn request_id_u64(request_id: &tact_protocol::RequestId) -> u64 {
+        request_id
+            .as_str()
+            .parse()
+            .expect("in-process request ids are the decimal form")
+    }
 
     #[tokio::test]
     async fn ask_user_formats_question_headless() {
@@ -212,13 +221,16 @@ mod tests {
             .await
         });
 
-        let update = rx.recv().await.expect("RequestSelect");
+        let update = rx.recv().await.expect("a select request");
         match update {
-            AgentUpdate::RequestSelect {
-                prompt,
-                options,
-                request_id,
-                log_confirm,
+            RuntimeEvent::InteractionRequested {
+                request:
+                    tact_protocol::InteractionRequest::Select {
+                        prompt,
+                        options,
+                        request_id,
+                        log_confirm,
+                    },
             } => {
                 assert_eq!(prompt, "Pick a color");
                 assert_eq!(options, vec!["red", "blue"]);
@@ -226,9 +238,9 @@ mod tests {
                     !log_confirm,
                     "selection renders on tool meta, not a system line"
                 );
-                responder.respond_by_index(request_id, Some(1));
+                responder.respond_by_index(request_id_u64(&request_id), Some(1));
             }
-            other => panic!("expected RequestSelect, got {other:?}"),
+            other => panic!("expected a select request, got {other:?}"),
         }
 
         let output = tool.await.unwrap().unwrap();
@@ -257,17 +269,20 @@ mod tests {
             .await
         });
 
-        match rx.recv().await.expect("RequestMultiSelect") {
-            AgentUpdate::RequestMultiSelect {
-                prompt,
-                options,
-                request_id,
+        match rx.recv().await.expect("a multi-select request") {
+            RuntimeEvent::InteractionRequested {
+                request:
+                    tact_protocol::InteractionRequest::MultiSelect {
+                        prompt,
+                        options,
+                        request_id,
+                    },
             } => {
                 assert_eq!(prompt, "Pick toppings");
                 assert_eq!(options.len(), 3);
-                responder.respond_multi_by_index(request_id, Some(vec![0, 2]));
+                responder.respond_multi_by_index(request_id_u64(&request_id), Some(vec![0, 2]));
             }
-            other => panic!("expected RequestMultiSelect, got {other:?}"),
+            other => panic!("expected a multi-select request, got {other:?}"),
         }
 
         let output = tool.await.unwrap().unwrap();
@@ -295,11 +310,13 @@ mod tests {
             .await
         });
 
-        match rx.recv().await.expect("RequestSelect") {
-            AgentUpdate::RequestSelect { request_id, .. } => {
-                responder.respond_by_index(request_id, None);
+        match rx.recv().await.expect("a select request") {
+            RuntimeEvent::InteractionRequested {
+                request: tact_protocol::InteractionRequest::Select { request_id, .. },
+            } => {
+                responder.respond_by_index(request_id_u64(&request_id), None);
             }
-            other => panic!("expected RequestSelect, got {other:?}"),
+            other => panic!("expected a select request, got {other:?}"),
         }
 
         let output = tool.await.unwrap().unwrap();
@@ -325,7 +342,7 @@ mod tests {
         assert!(output.contains("Question shown"));
         assert!(output.contains("What is your name?"));
         match rx.try_recv().expect("Info") {
-            AgentUpdate::Info(msg) => assert!(msg.contains("What is your name?")),
+            RuntimeEvent::Info { content: msg, .. } => assert!(msg.contains("What is your name?")),
             other => panic!("expected Info, got {other:?}"),
         }
     }

@@ -4,6 +4,23 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-09 — 进程内事件通道由 `AgentUpdate` 改为协议 `RuntimeEvent`
+
+| Field | Value |
+|-------|-------|
+| **Type** | refactor（一处渲染文本随之改变） |
+| **Related** | `crates/tact_extensions/src/{agent/mod.rs,tool/*,ui_responder.rs,background.rs,plugin/hooks.rs,task/mod.rs,subagent.rs}`、`crates/tact_ui/src/test_support.rs`、`crates/tact_ui/tests/*`、`crates/tui/src/test_support.rs`；`docs/superpowers/plans/2026-10-09-legacy-view-adapter-removal.md` |
+
+**现象 / 动机：** 上一步把「生产侧发射 `AgentUpdate`」清零后，进程内通道（`Agent::with_ui_channel` → `ToolContext::ui_tx` → `ViewUpdateEmitter::legacy` / `UiResponder::legacy_tx`）仍在传递 legacy view model，并且这条路径上还挂着一层**反向投影**（`runtime_event_to_agent_updates`）——事件被投影成 view model 只为让 harness 断言，而那正是 spec §2 要淘汰的类型。
+
+**决策：** 通道载荷整体换成 `tact_protocol::RuntimeEvent`；运行路径上的反向投影全部删除（`ViewUpdateEmitter::emit_runtime_event` 无 sink 分支、`ToolProgressReporter` 同分支、`Agent::stream_message` 的 forwarder 一律直接 `tx.send(event)`），`ViewUpdateEmitter::emit(AgentUpdate)` 随之删除。31 处 select 请求改为嵌套的 `InteractionRequest::{Select,MultiSelect}`，因其 `request_id` 由 `u64` 变为字符串 `RequestId`，在 `ui_responder`（生产侧 `protocol_request_id`）与三处测试夹具各加一个显式转换函数。**仍保留一处**投影：`tui/src/test_support.rs` 的 `TestApp::feed`/`HeadlessApp::new`——因为 App 自身仍说 view model，那属 Task 4 范围。
+
+**改后行为：** harness 直接断言协议事件。一处可见文本变化：`tool/subagent_ui.rs` 的子代理错误行由 `error: Other("…")` 渲染为 `error: <消息>`（去掉了 debug 包装）。
+
+**Verification：** `./scripts/check-rust.sh` 全绿；`cargo test --workspace` **2862 passed / 0 failed**，与改动前逐项一致（只改断言形状，未增删或跳过任何测试）。
+
+**Pointers:** `docs/superpowers/plans/2026-10-09-legacy-view-adapter-removal.md`（含实测规模、三次失败尝试与工序）。
+
 ## 1. 2026-10-09 — 权限决策与安全策略下沉到 Kernel
 
 | Field | Value |
