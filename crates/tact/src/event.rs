@@ -97,27 +97,20 @@ impl EventService for EventTransport {
         for observer in self.observers.iter() {
             observer.observe(&event).await?;
         }
-        self.sender.send(event).map(|_| ()).map_err(|error| {
-            KernelError::new(
-                tact_protocol::ErrorCategory::InternalError,
-                error.to_string(),
-                "event_transport",
-                true,
-            )
-        })
+        // A broadcast channel only returns `SendError` when there are no
+        // receivers at all; publishing to an empty audience is a no-op, not a
+        // transport failure.
+        if self.sender.send(event).is_ok() {
+            return Ok(());
+        }
+        Ok(())
     }
 }
 
 impl RuntimeEventSink for EventTransport {
     fn emit(&self, event: RuntimeEvent) -> Result<(), KernelError> {
-        self.sender.send(event).map(|_| ()).map_err(|error| {
-            KernelError::new(
-                tact_protocol::ErrorCategory::InternalError,
-                error.to_string(),
-                "event_transport",
-                true,
-            )
-        })
+        let _ = self.sender.send(event);
+        Ok(())
     }
 }
 

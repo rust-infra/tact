@@ -22,6 +22,7 @@ pub mod paths;
 pub mod permission;
 pub mod protocol;
 pub mod redact;
+pub mod services;
 pub mod sqlite;
 pub mod storage;
 pub mod trajectory;
