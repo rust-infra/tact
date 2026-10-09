@@ -126,11 +126,14 @@ the home it already has rather than to invent one:
 | `QueryBalance`, `QueryStats`, `QueryBackground`, `HooksList`, `HooksTrust`, `HooksForget`, `McpList`, `McpPrompts`, `RunMcpPrompt`, `McpAuth` | `Command` capabilities (read-only ones can stay `Risk::ReadOnly`) |
 | `SetModel`, `SetThinkingBudget`, `SetReasoningEffort`, `SetPermissionMode` | `Command` capabilities owned by the config extension |
 | `CancelSubagent` | `Command` capability owned by Tools |
-| `SubagentFinishedNotification` | **not a command at all** — it is a `RuntimeEvent` travelling on the command channel |
+| `SubagentFinishedNotification` | **stays a command.** Read the handler before touching it (`driver.rs:168`): it renders nothing, it is a *wake-up* — "retain the wake-up until that turn's `JoinHandle` completes, otherwise the notification could be lost in the gap between the final queue drain and turn exit". Its place on the command channel is deliberate queue ordering, not a misplaced event. Only the name is misleading. |
 
-That last row is worth fixing first: it is a notification crossing a boundary it
-should not, it is self-contained, and it does not need the capability design to
-land. It is the one genuinely small, safe slice of this direction.
+**There is no small, safe slice here.** An earlier draft of this section claimed
+`SubagentFinishedNotification` was one — "a `RuntimeEvent` on the wrong channel".
+Reading its handler shows the opposite: it carries a *wake-up* whose ordering
+against the turn's `JoinHandle` is the whole point, so converting it to an event
+would break the guarantee it exists for. It was the only candidate, and it is
+not one.
 
 
 ### Production consumers of `AgentUpdate`
