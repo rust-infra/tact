@@ -77,6 +77,15 @@ streaming delta (or `RuntimeEvent`) would drop that dependency.
 
 ### The other direction: `UserCommand` still wraps `RuntimeCommand`
 
+**Resolved as intentional (2026-10-09), not as remaining work.** The evidence is
+in `docs/superpowers/specs/2026-10-09-command-capability-migration-design.md`:
+moving these to `Command` capabilities needs an owner per command, access to live
+state (the Agent owns its MCP router by value, the rendering lives in the `tact_ui`
+binary), and a runtime on the command dispatch path (the `Agent` exposes no
+`CapabilityRouter`). Three structural blockers make it a re-architecture of
+command dispatch rather than a slice of this removal. The TUI keeps its own
+command vocabulary; only a second View needing to share it would change that.
+
 Measured 2026-10-09. The Runtime → View direction is not the only legacy surface.
 A View's commands travel as `UserCommand::Runtime(RuntimeCommand::…)` — the
 protocol type exists and is used, but it only ever appears **nested inside the
