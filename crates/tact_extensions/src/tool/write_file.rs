@@ -10,7 +10,6 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::ToolVisualKind;
 use tact_protocol::format_bytes;
-use tact_view::AgentUpdate;
 use tokio::{fs, io::AsyncWriteExt};
 use tool_refactor_macros::tool;
 
@@ -100,7 +99,7 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
 
                 if milestone_reached || time_elapsed {
                     let pct = (written * 100 / total) as u64;
-                    let _ = ctx.emit_view_update(AgentUpdate::Info(format!(
+                    let _ = ctx.emit_view_event(crate::runtime_event::info(format!(
                         "Writing {}... {}% ({} / {})",
                         path.display(),
                         pct,

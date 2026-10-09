@@ -17,7 +17,6 @@ use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::ToolVisualKind;
-use tact_view::AgentUpdate;
 use tool_refactor_macros::tool;
 use tracing::debug;
 
@@ -107,7 +106,7 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
             };
         }
 
-        let _ = ctx.emit_view_update(AgentUpdate::Info(format!("❓ {question}")));
+        let _ = ctx.emit_view_event(crate::runtime_event::info(format!("❓ {question}")));
         return Ok(format!(
             "Question shown to the user:\n{question}\n\n\
              No choices were provided, so there was no selection popup. \

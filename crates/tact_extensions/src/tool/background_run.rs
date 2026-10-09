@@ -13,8 +13,8 @@ use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::time::Duration;
+use tact_protocol::RuntimeEvent;
 use tact_protocol::ToolVisualKind;
-use tact_view::AgentUpdate;
 use tool_refactor_macros::tool;
 
 use crate::tool::ToolContext;
@@ -119,7 +119,8 @@ pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Resu
     // Surface the id on the live card. The invocation returns while the task
     // keeps running, so this meta row is the only place a user can read the id
     // to poll it (`/background <id>`), long before the result text is opened.
-    let _ = ctx.emit_view_update(AgentUpdate::ToolMeta {
+    let _ = ctx.emit_view_event(RuntimeEvent::ToolMeta {
+        run_id: None,
         tool_id: ctx.progress_reporter.tool_id().to_string(),
         model: None,
         token_usage: None,
@@ -396,6 +397,7 @@ fn elapsed(record: &BackgroundTaskRecord) -> String {
 mod tests {
     use std::sync::Arc;
     use std::sync::atomic::AtomicBool;
+    use tact_view::AgentUpdate;
 
     /// A cancellation flag that is never set: the task runs to completion.
     fn no_cancel() -> Arc<AtomicBool> {

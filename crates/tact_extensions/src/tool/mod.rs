@@ -30,6 +30,7 @@ use std::{
     path::PathBuf,
     sync::{Arc, Mutex, OnceLock},
 };
+use tact_protocol::RuntimeEvent;
 
 use anyhow::Result;
 use async_trait::async_trait;
@@ -278,8 +279,11 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
-    pub fn emit_view_update(&self, update: AgentUpdate) -> bool {
-        self.view_updates.emit(update)
+    /// Emits a protocol event to the View.
+    ///
+    /// The producer leaves `run_id` empty; the emitter owns the identity.
+    pub fn emit_view_event(&self, event: RuntimeEvent) -> bool {
+        self.view_updates.emit_runtime_event(event)
     }
 
     /// Test/embedding hook: route view updates to a legacy TUI channel.

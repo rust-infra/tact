@@ -10,7 +10,6 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::ToolVisualKind;
 use tact_protocol::{ToolOutputBuffer, ToolOutputChunk, ToolOutputStream};
-use tact_view::AgentUpdate;
 use tokio::{
     process::{Child, Command},
     sync::mpsc,
@@ -150,7 +149,7 @@ fn notice_unsandboxed(ctx: &ToolContext) {
         return;
     }
     tracing::warn!(reason = %degraded.reason, "bash: command not sandboxed");
-    let _ = ctx.emit_view_update(AgentUpdate::Info(degraded.reason.clone()));
+    let _ = ctx.emit_view_event(crate::runtime_event::info(degraded.reason.clone()));
 }
 
 /// Resolve the effective wall-clock limit: a per-call `timeout` (if given)
