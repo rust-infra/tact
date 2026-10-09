@@ -45,12 +45,12 @@
 - Produces `PluginRequest`, `PluginResponse`, `RuntimeEvent`, `RuntimeCommand`, `InteractionRequest`, `InteractionResponse`, `CapabilityDeclaration`, and `ProtocolError`.
 - Every envelope carries protocol version, request ID, plugin ID, optional session/run/trajectory IDs, and optional deadline.
 
-- [ ] Define serde-stable IDs as newtypes with string serialization and equality/hash behavior.
-- [ ] Define protocol envelopes and explicit error categories, including retryability and origin.
-- [ ] Define runtime-neutral event variants for run lifecycle, model boundaries, tool calls, permission, plugin lifecycle, interaction, and terminal outcomes.
-- [ ] Define capability declarations for Tools, Commands, EventHandlers, Apps, Views, and runtime services.
-- [ ] Write serialization round-trip tests, unknown variant tests, and reserved-field validation tests.
-- [ ] Run `cargo test -p tact_protocol --test runtime_protocol`.
+- [x] Define serde-stable IDs as newtypes with string serialization and equality/hash behavior.
+- [x] Define protocol envelopes and explicit error categories, including retryability and origin.
+- [x] Define runtime-neutral event variants for run lifecycle, model boundaries, tool calls, permission, plugin lifecycle, interaction, and terminal outcomes.
+- [x] Define capability declarations for Tools, Commands, EventHandlers, Apps, Views, and runtime services.
+- [x] Write serialization round-trip tests, unknown variant tests, and reserved-field validation tests.
+- [x] Run `cargo test -p tact_protocol --test runtime_protocol`.
 
 ### Task 2: Add Kernel service interfaces and invocation context
 
@@ -68,11 +68,11 @@
 - `CapabilityRouter::register`, `CapabilityRouter::describe`, and `CapabilityRouter::invoke` are the only generic capability entry points.
 - `InvocationContext` contains request identity, actor, deadline, cancellation token, and access to event, trajectory, permission, and storage services.
 
-- [ ] Define traits with object-safe boundaries so in-process and remote hosts share the same invocation path.
-- [ ] Implement deadline and cancellation propagation using Tokio cancellation primitives.
-- [ ] Ensure invocation errors preserve origin, retryability, request ID, and plugin ID.
-- [ ] Add tests for missing capabilities, duplicate registrations, cancelled calls, expired deadlines, and error conversion.
-- [ ] Run `cargo test -p tact --lib kernel::`.
+- [x] Define traits with object-safe boundaries so in-process and remote hosts share the same invocation path.
+- [x] Implement deadline and cancellation propagation using Tokio cancellation primitives.
+- [x] Ensure invocation errors preserve origin, retryability, request ID, and plugin ID.
+- [x] Add tests for missing capabilities, duplicate registrations, cancelled calls, expired deadlines, and error conversion.
+- [x] Run `cargo test -p tact --lib kernel::`.
 
 ### Task 3: Extract Permission Engine behind the Kernel boundary
 
@@ -87,11 +87,11 @@
 - Produces `PermissionService::check`, `PermissionService::request`, and `PermissionDecision`.
 - Consumes existing `PermissionPolicy`, `CapabilityRisk`, settings, and UI-independent `InteractionRequest`.
 
-- [ ] Move the decision boundary so native tools, MCP tools, and plugins all call the same service.
-- [ ] Preserve Auto, Ask, Deny, always-allowed, sensitive-path, shell, and fail-closed behavior.
-- [ ] Emit permission request, decision, and denial events through RuntimeEvent and Trajectory.
-- [ ] Test hostile plugin declarations, sensitive paths, denied writes, approval responses, and missing responders.
-- [ ] Run `cargo test -p tact --lib kernel::permission`.
+- [x] Move the decision boundary so native tools, MCP tools, and plugins all call the same service.
+- [x] Preserve Auto, Ask, Deny, always-allowed, sensitive-path, shell, and fail-closed behavior.
+- [x] Emit permission request, decision, and denial events through RuntimeEvent and Trajectory.
+- [x] Test hostile plugin declarations, sensitive paths, denied writes, approval responses, and missing responders.
+- [x] Run `cargo test -p tact --lib kernel::permission`.
 
 ### Task 4: Implement Event Transport and Trajectory Recorder
 
@@ -110,12 +110,12 @@
 - Produces `TrajectoryRecorder::append`, `query`, and `replay`.
 - Produces `TrajectoryEvent` with sequence, actor, event type, parent step, payload, and sensitivity.
 
-- [ ] Implement monotonic per-trajectory sequence allocation and parent-child step relationships.
-- [ ] Persist durable events through the existing SQLite store with redaction before persistence.
-- [ ] Separate transient EventBus delivery from durable Trajectory append; define what is replayable.
-- [ ] Reject plugin attempts to emit reserved host facts while allowing namespaced plugin events.
-- [ ] Add bounded channel tests for ordering, replay, sequence gaps, subscriber cancellation, and slow consumers.
-- [ ] Run `cargo test -p tact --lib trajectory::`.
+- [x] Implement monotonic per-trajectory sequence allocation and parent-child step relationships.
+- [x] Persist durable events through the existing SQLite store with redaction before persistence.
+- [x] Separate transient EventBus delivery from durable Trajectory append; define what is replayable.
+- [x] Reject plugin attempts to emit reserved host facts while allowing namespaced plugin events.
+- [x] Add bounded channel tests for ordering, replay, sequence gaps, subscriber cancellation, and slow consumers.
+- [x] Run `cargo test -p tact --lib trajectory::`.
 
 ### Task 5: Add namespaced Minimal Storage facade
 
@@ -129,11 +129,11 @@
 - Produces `Storage::get`, `set`, `delete`, `list`, and `transaction`.
 - Produces namespace types for `runtime`, `sessions`, `trajectories`, and `plugins/<plugin_id>`.
 
-- [ ] Wrap existing SQLite access without changing current database compatibility.
-- [ ] Enforce namespace ownership at the service boundary.
-- [ ] Keep existing session, task, team, worktree, token usage, and trajectory records readable during migration.
-- [ ] Test cross-namespace denial, plugin isolation, transaction rollback, and existing database migration behavior.
-- [ ] Run `cargo test -p tact --lib store::`.
+- [x] Wrap existing SQLite access without changing current database compatibility.
+- [x] Enforce namespace ownership at the service boundary.
+- [x] Keep existing session, task, team, worktree, token usage, and trajectory records readable during migration.
+- [x] Test cross-namespace denial, plugin isolation, transaction rollback, and existing database migration behavior.
+- [x] Run `cargo test -p tact --lib store::`.
 
 ### Task 6: Define Plugin Lifecycle and Rust Host
 
@@ -150,11 +150,11 @@
 - Produces `PluginRegistry::discover`, `register`, `start`, `stop`, `restart`, `health`, and `unregister`.
 - Produces a Rust host that uses the same manifest, protocol, capability, permission, event, and trajectory paths as remote hosts.
 
-- [ ] Validate plugin IDs, protocol versions, dependencies, capability declarations, and reserved names.
-- [ ] Implement lifecycle events and health state transitions.
-- [ ] Ensure in-process Rust extensions do not bypass permission or trajectory recording.
-- [ ] Test duplicate IDs, version mismatch, dependency failure, crash state, restart, shutdown drain, and in-flight request failure.
-- [ ] Run `cargo test -p tact --lib plugin::`.
+- [x] Validate plugin IDs, protocol versions, dependencies, capability declarations, and reserved names.
+- [x] Implement lifecycle events and health state transitions.
+- [x] Ensure in-process Rust extensions do not bypass permission or trajectory recording.
+- [x] Test duplicate IDs, version mismatch, dependency failure, crash state, restart, shutdown drain, and in-flight request failure.
+- [x] Run `cargo test -p tact --lib plugin::`.
 
 ### Task 7: Unify native tools and MCP through Capability Router
 
@@ -257,11 +257,11 @@
 - Produces `NodePluginHost::start`, `stop`, `restart`, and protocol transport over stdio.
 - Fixture plugin registers a Chat capability, starts a run, subscribes to events, answers an interaction request, and exits cleanly.
 
-- [ ] Implement process startup, handshake, manifest validation, stdout/stderr separation, deadlines, cancellation, and shutdown drain.
-- [ ] Route Node calls through the same Capability Router, Permission Engine, Event Transport, and Trajectory Recorder.
-- [ ] Detect crashes and fail in-flight calls without terminating unrelated Runtime work.
-- [ ] Test registration, event replay, permission denial, timeout, cancellation, malformed messages, crash recovery, and protocol mismatch.
-- [ ] Run `cargo test -p tact_plugin_node --test node_host`; the test launches the checked-in `index.mjs` fixture directly, so no second test runner is required.
+- [x] Implement process startup, handshake, manifest validation, stdout/stderr separation, deadlines, cancellation, and shutdown drain.
+- [x] Route Node calls through the same Capability Router, Permission Engine, Event Transport, and Trajectory Recorder.
+- [x] Detect crashes and fail in-flight calls without terminating unrelated Runtime work.
+- [x] Test registration, event replay, permission denial, timeout, cancellation, malformed messages, crash recovery, and protocol mismatch.
+- [x] Run `cargo test -p tact_plugin_node --test node_host`; the test launches the checked-in `index.mjs` fixture directly, so no second test runner is required.
 
 ### Task 12: Add WASM Plugin Host with constrained capabilities
 
@@ -276,11 +276,11 @@
 - Produces `WasmPluginHost::instantiate`, `invoke`, `interrupt`, and `drop_instance`.
 - Host functions expose only declared and permitted capabilities.
 
-- [ ] Implement manifest and protocol validation before instantiation.
-- [ ] Mediate storage, event, trajectory, clock, and declared external capabilities through host functions.
-- [ ] Enforce memory, fuel/deadline, cancellation, and permission limits.
-- [ ] Test denied filesystem/network/process access, timeout, interruption, namespaced events, and instance cleanup.
-- [ ] Run `cargo test -p tact_plugin_wasm --test wasm_host`.
+- [x] Implement manifest and protocol validation before instantiation.
+- [x] Mediate storage, event, trajectory, clock, and declared external capabilities through host functions.
+- [x] Enforce memory, fuel/deadline, cancellation, and permission limits.
+- [x] Test denied filesystem/network/process access, timeout, interruption, namespaced events, and instance cleanup.
+- [x] Run `cargo test -p tact_plugin_wasm --test wasm_host`.
 
 ### Task 13: Remove legacy direct paths and update documentation
 
@@ -294,13 +294,13 @@
 - Modify: `book/26_chapter_issue_zh.md` if user-visible behavior changed
 - Test: repository dependency and protocol integration tests
 
-- [ ] Remove every Agent-to-TUI channel and replace it with RuntimeEvent/EventTransport.
-- [ ] Remove MCP-only execution branches and route all external capabilities through Plugin Protocol.
-- [ ] Remove compatibility types only after all consumers use neutral protocol types.
-- [ ] Update architecture diagrams and module tables to match the final dependency graph.
-- [ ] Add integration tests proving Kernel builds without UI, a plugin can run without Chat, and a View can be replaced.
-- [ ] Run `cargo test --workspace` once, sequentially, after all focused tests pass.
-- [ ] Run `git diff --check` and inspect the final dependency graph before declaring completion.
+- [x] Remove every Agent-to-TUI channel and replace it with RuntimeEvent/EventTransport.
+- [x] Remove MCP-only execution branches and route all external capabilities through Plugin Protocol.
+- [x] Remove compatibility types only after all consumers use neutral protocol types.
+- [x] Update architecture diagrams and module tables to match the final dependency graph.
+- [x] Add integration tests proving Kernel builds without UI, a plugin can run without Chat, and a View can be replaced.
+- [x] Run `cargo test --workspace` once, sequentially, after all focused tests pass.
+- [x] Run `git diff --check` and inspect the final dependency graph before declaring completion.
 
 ## Completion gate
 
