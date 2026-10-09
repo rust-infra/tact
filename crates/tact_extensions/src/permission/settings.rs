@@ -2849,3 +2849,14 @@ mod prefix_tests {
         assert!(!rule.matches("bash", &command("cargo build")));
     }
 }
+
+impl tact::PermissionRules for PermissionSettings {
+    fn action(&self, capability: &str, input: &Value) -> Option<tact::RuleAction> {
+        match self.cached_effective_rules().action(capability, input) {
+            RuleAction::Deny => Some(tact::RuleAction::Deny),
+            RuleAction::Allow => Some(tact::RuleAction::Allow),
+            RuleAction::Ask => Some(tact::RuleAction::Ask),
+            RuleAction::None => None,
+        }
+    }
+}

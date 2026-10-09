@@ -38,8 +38,8 @@ use globset::GlobMatcher;
 // Kernel primitive shared with the redactor: `redaction.basic_only_paths` and
 // `sensitive_paths.allow` are the same matching problem with different
 // consequences, and two implementations would drift.
-use tact::paths::{UserScope, expand_home, file_name_of, home_relative, matcher, user_scope};
-pub use tact::paths::{home_dir, matches_any_with};
+use crate::paths::{UserScope, expand_home, file_name_of, home_relative, matcher, user_scope};
+pub use crate::paths::{home_dir, matches_any_with};
 
 // ---------------------------------------------------------------------------
 // Types

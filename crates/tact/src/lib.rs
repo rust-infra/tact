@@ -22,6 +22,7 @@ pub mod paths;
 pub mod permission;
 pub mod protocol;
 pub mod redact;
+pub mod security;
 pub mod services;
 pub mod sqlite;
 pub mod storage;
@@ -39,8 +40,12 @@ pub use error::KernelError;
 pub use event::{EventObserver, EventService, EventSubscription, EventTransport, RuntimeEventSink};
 pub use interaction::{InteractionBroker, InteractionService, InteractionSubscription};
 pub use lifecycle::{PluginRegistry, PluginState, RuntimePluginManifest};
-pub use permission::PermissionService;
+pub use permission::{
+    CapabilityRisk, DecisionInput, PermissionBehavior, PermissionDecision, PermissionMode,
+    PermissionRules, PermissionService, RuleAction, decide,
+};
 pub use redact::{RedactionConfig, RedactionLevel};
+pub use security::{SecurityConfig, SensitivePathsConfig, sensitive};
 pub use storage::{SqliteStorageService, StorageNamespace, StorageService, StorageServiceImpl};
 pub use trajectory::TrajectoryService;
 

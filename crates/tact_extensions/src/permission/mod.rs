@@ -15,66 +15,17 @@ pub mod settings;
 
 pub use kernel_service::{PermissionManagerService, PermissionResponder};
 
-use std::fmt;
-
 use anyhow::Result;
 use serde_json::Value;
-use strum_macros::{Display, EnumString};
+use strum_macros::Display;
 
 use crate::tool::PermissionPromptPolicy;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
-#[strum(serialize_all = "snake_case")]
-pub enum CapabilityRisk {
-    Read,
-    Write,
-    High,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
-#[strum(serialize_all = "snake_case")]
-pub enum PermissionMode {
-    Default,
-    Plan,
-    Auto,
-}
-
-impl PermissionMode {
-    /// The mode's name in the Claude Code / plugin-hook vocabulary.
-    ///
-    /// Hook payloads carry this spelling, not Tact's (`Codex`'s
-    /// `hook_permission_mode` maps its approval policy onto the same set), so a
-    /// plugin that branches on `payload["permission_mode"]` reads a value it
-    /// recognizes. `Auto` allows everything but high-risk operations, which is
-    /// Claude's `acceptEdits` rather than its blanket `bypassPermissions`.
-    #[must_use]
-    pub fn hook_name(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::Plan => "plan",
-            Self::Auto => "acceptEdits",
-        }
-    }
-}
-
-impl fmt::Display for PermissionMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            PermissionMode::Default => "default - ask for writes",
-            PermissionMode::Plan => "plan - read only",
-            PermissionMode::Auto => "auto - allow non-high operations",
-        };
-
-        write!(f, "{label}")
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PermissionBehavior {
-    Allow,
-    Deny,
-    Ask,
-}
+// The decision types and the decision itself live in the Kernel; this module
+// keeps the stateful manager, the settings parser, and the prompt formatting.
+pub use tact::permission::{
+    CapabilityRisk, PermissionBehavior, PermissionDecision, PermissionMode, RuleAction,
+};
 
 /// What an "always allow this tool" gesture managed to record.
 ///
@@ -97,35 +48,6 @@ impl AllowOutcome {
     #[must_use]
     pub fn is_recorded(self) -> bool {
         matches!(self, Self::Recorded)
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PermissionDecision {
-    pub behavior: PermissionBehavior,
-    pub reason: String,
-}
-
-impl PermissionDecision {
-    fn allow(reason: impl Into<String>) -> Self {
-        Self {
-            behavior: PermissionBehavior::Allow,
-            reason: reason.into(),
-        }
-    }
-
-    fn ask(reason: impl Into<String>) -> Self {
-        Self {
-            behavior: PermissionBehavior::Ask,
-            reason: reason.into(),
-        }
-    }
-
-    fn deny(reason: impl Into<String>) -> Self {
-        Self {
-            behavior: PermissionBehavior::Deny,
-            reason: reason.into(),
-        }
     }
 }
 
@@ -313,95 +235,26 @@ impl PermissionManager {
         input: &Value,
         auto_approved: bool,
     ) -> PermissionDecision {
-        // 1. Read capabilities are always allowed.
-        if risk == CapabilityRisk::Read {
-            self.consecutive_denials = 0;
-            return PermissionDecision::allow("Read-only capability allowed");
-        }
-
-        // 2. Plan mode blocks all write/High operations.
-        if self.mode == PermissionMode::Plan {
-            return PermissionDecision::deny("Plan mode: write operations are blocked");
-        }
-
-        // 3. Auto mode trusts the agent — skip all risk checks.
-        if self.mode == PermissionMode::Auto {
-            self.consecutive_denials = 0;
-            return PermissionDecision::allow("Auto mode: all capabilities auto-approved");
-        }
-
-        // At this point we are in Default mode.
-
-        // 4-6. Evaluate loaded settings rules (Deny/Allow apply at all risks).
-        let settings_action = self
+        let always_allowed = self.is_always_allowed(tool_name, input);
+        let rules = self
             .settings
             .as_ref()
-            .map(|settings| settings.cached_effective_rules().action(tool_name, input));
-
-        match settings_action {
-            Some(settings::RuleAction::Deny) => {
-                return PermissionDecision::deny(format!(
-                    "Blocked by project permission rule: {}",
-                    tool_name
-                ));
-            }
-            Some(settings::RuleAction::Allow) => {
-                self.consecutive_denials = 0;
-                return PermissionDecision::allow(format!(
-                    "Allowed by project permission rule: {}",
-                    tool_name
-                ));
-            }
-            // 7. An explicit local `ask` rule outranks the server's own entry —
-            //    including for a High-risk tool, where the rule would otherwise
-            //    fall through to the default high-risk prompt and let the
-            //    server's `auto` skip it.
-            Some(settings::RuleAction::Ask) if risk != CapabilityRisk::High || auto_approved => {
-                return PermissionDecision::ask(format!(
-                    "Project permission rule requires confirmation: {}",
-                    tool_name
-                ));
-            }
-            // 6. The server entry opted this tool into `approval_mode: "auto"`.
-            //    Checked after deny and ask so that a server's own declaration
-            //    can skip the *default* prompt, never a local decision.
-            _ if auto_approved => {
-                self.consecutive_denials = 0;
-                return PermissionDecision::allow(format!(
-                    "Auto-approved by the MCP server entry: {tool_name}"
-                ));
-            }
-            _ => {}
-        }
-
-        // 8. High-risk: ask, unless the user already allowed this exact tool
-        //    *and* input. The TUI offers "Always allow this tool" for every
-        //    risk, so a High tool that skipped the list here would record an
-        //    approval and then ignore it — the gesture would silently do
-        //    nothing whenever no settings store exists to persist it into.
-        //    Asking first, and honouring a granted allow afterwards, is what
-        //    the button promises. Plan mode above still blocks it.
-        if risk == CapabilityRisk::High {
-            if self.is_always_allowed(tool_name, input) {
-                self.consecutive_denials = 0;
-                return PermissionDecision::allow(format!(
-                    "Always-allowed high-risk capability: {tool_name}"
-                ));
-            }
-            return PermissionDecision::ask(format!(
-                "High-risk capability requires approval: {}",
-                tool_name
-            ));
-        }
-
-        // 10. Fallback: in-memory same-session always-allowed list.
-        if self.is_always_allowed(tool_name, input) {
+            .map(|settings| settings as &dyn tact::PermissionRules);
+        let decision = tact::decide(
+            self.mode,
+            &tact::DecisionInput {
+                capability: tool_name,
+                risk,
+                input,
+                rules,
+                auto_approved,
+                always_allowed,
+            },
+        );
+        if decision.behavior == PermissionBehavior::Allow {
             self.consecutive_denials = 0;
-            return PermissionDecision::allow(format!("Always allowed tool: {tool_name}"));
         }
-
-        // 11. Default: ask.
-        PermissionDecision::ask(format!("Default mode: asking user for {tool_name}"))
+        decision
     }
 
     pub fn ask_user(&mut self, tool_name: &str, risk: CapabilityRisk) -> Result<bool> {
