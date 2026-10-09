@@ -222,7 +222,7 @@ SystemPrompt::from(include_str!("my_template.md"))
 - **memory_guidance** — 何时调用 `save_memory`（`[agent].memory_enabled = false` 时整节不出现）
 - **additional** — 项目 `AGENTS.md`（渲染在 `# Additional context` 下）
 - **mcp_instructions** — 已连接 MCP server 的 `instructions`（无 server 提供时整节不出现）
-- **memory** — 持久化 `~/.tact/memory/*.md` 内容
+- **memory** — `MEMORY.md` **索引**（按仓库；正文由 `load_memory` 按需读取，不在此注入）
 - **dynamic_context** — 日期、workdir、模型、平台、目录快照
 
 渲染后的提示词类似：

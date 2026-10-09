@@ -325,7 +325,7 @@ The runtime builds the system prompt via `SystemPrompt` (Tera template in `crate
 |---|---|
 | Role / guidelines / constraints | Static template |
 | Skills | `skill_registry.describe_available()` (name/description only; full body via `load_skill` or TUI `/skill`) |
-| Memory | `~/.tact/memory/*.md` via `MemoryManager` (user-global, shared across projects) |
+| Memory | `~/.tact/projects/<repo>/memory/*.md` via `MemoryManager` (one directory per git repository, shared across its worktrees). Only `MEMORY.md` is injected; bodies via `load_memory` |
 | CLAUDE.md | `~/.claude/CLAUDE.md`, project `CLAUDE.md`, optional subdir — **cached once per session** |
 | AGENTS.md | project `AGENTS.md` (and cwd if it differs), injected via `additional` — **cached once per session** |
 | **Dynamic context** | `load_dynamic_context()` — date, workdir, model, platform, **Project structure** |
@@ -381,7 +381,7 @@ Recovery mechanisms inside `agent_loop()`:
 | Teammates | `team.rs` | Named agents with roles and an inbox supporting point-to-point messages, broadcasts, `plan_approval`, and shutdown protocols. |
 | Worktrees | `worktree/` | Git worktree isolation: `create`, `list`, `status`, `run`, `events`. Metadata stored under `.tact/worktrees/`. |
 | Background tasks | `background.rs` | Async shell commands with polling via `background_run` / `check_background`. |
-| Memory | `memory/` | Markdown files with YAML frontmatter (`user`, `feedback`, `project`, `reference`) injected into the system prompt. |
+| Memory | `memory/` | One Markdown directory per git repository (`~/.tact/projects/<repo>/memory/`), files with YAML frontmatter (`user`, `feedback`, `project`, `reference`, `modified`). Only the `MEMORY.md` index is injected; bodies via `load_memory`. |
 | Skills | `skill/` | `SKILL.md` under `<workdir>/.tact/skills/`, `~/.tact/skills/`, `~/.agents/skills/`, `.claude/skills/`, plus optional `[agent].skill_dirs`; **summaries** in the system prompt; full body via `load_skill` or TUI slash (`<skill>` wrap). |
 
 ---

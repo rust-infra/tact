@@ -4,6 +4,29 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-09 — 持久记忆对齐 Claude：按仓库切分、只注入索引、`load_memory` 按需读
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization（用户可见：记忆目录从全局一份改为**每仓库一份**；系统提示只注入 `MEMORY.md` 索引，正文改用 `load_memory` 读取；旧全局记忆自动迁移；新增 `[agent].auto_memory_directory` 覆盖） |
+| **Related** | `crates/tact/src/memory/mod.rs`、`crates/tact/src/tool/memory.rs`、`crates/tact/src/tool/registry.rs`、`crates/tact/src/consts.rs`、`crates/tact/src/config/{types,resolve}.rs`、`crates/tact-ui/src/session_bootstrap.rs`；Ch 03 §2 §5 §6、Ch 21 |
+
+**现象 / 动机：** 记忆复刻了 Claude Code 的**格式**（YAML frontmatter、`type`、`MEMORY.md`）却没复刻**结构**，两个后果都很具体：**(1) 项目事实外泄**——单一全局 `~/.tact/memory/` 让某个仓库的发布分支约定被注入进所有无关项目，读者无从判断记忆属于哪个项目；**(2) 提示词无上界**——`load_memory_prompt` 把每条记忆的**完整正文**拼进系统提示，而 200 行上限只作用在索引文件 `rebuild_index` 上，那份索引在加载时又被 `!= MEMORY_INDEX_FILE` 过滤掉、根本不进提示词——上限守着一个从不被注入的产物，真正的注入量没有任何约束。
+
+**决策：** 按 Claude Code 的 auto memory 模型落地三件事：**(1) 按仓库切分**——新增 `memory_root(workdir)`：向上找 `.git`，取 **common git dir** 的父目录（checkout 根）slug 化（非 `[A-Za-z0-9._-]` → `-`，保留前导 `-`，与 Claude 的 `-Users-me-Projects-<name>` 同形）得到 `~/.tact/projects/<slug>/memory`；`.git` 在主 checkout 是目录、在 linked worktree 是含 `gitdir:` 的文件，两者取到**同一个** common git dir，因此 worktree 与主 checkout **共享**一个目录（对齐 Claude 的 "shared across git worktrees"）。解析是**纯函数**：只读 `$HOME` 与 `.git`，不 spawn 进程、不做 `canonicalize`（启动路径上）。**(2) 只注入索引**——`load_memory_index_prompt` 注入 `MEMORY.md` 本身，`truncate_index` 施加 200 行 **与 25 KB 双上限**（Claude 的同两个数）；索引行带上**文件名** `- <name> (<stem>.md): <desc> [<type>]`，因为它是取正文的句柄。`load_all` 在索引缺失时补建——索引现在**就是**被注入的产物，不能只在保存时存在。**(3) `load_memory` 工具**——按 stem（也接受显示名）返回一条记忆的完整原文。这是「只注入索引」能成立的前提：`read_file` 受 `safe_path` 拒绝工作区外路径，而仓库记忆住在 `$HOME`；没有这个工具，索引列出的内容模型**读不到**。两个工具同受 `memory_enabled` 开关。另：`save_memory` 写入 ISO-8601 `modified` frontmatter，让新旧可辨。
+
+**旧数据归属：** `migrate_legacy_memory(legacy, dest)` 在启动时把 `~/.tact/memory/*.md` **拷贝**进本仓库目录——只在目标**尚无** `.md` 时执行一次（陈旧全局目录不得覆盖既有记忆）、**只拷不删**（第二个 checkout 也能迁移）、跳过 `MEMORY.md`（按目标重建）、数量经启动 `Notices` 报告，失败只损失导入不影响会话。
+
+**可覆盖（`[agent].auto_memory_directory`）：** 对齐 Claude Code 的 `autoMemoryDirectory`。值为 `Option<String>`，resolve 阶段**原样保留**（只 trim，空串视为未设），因为 `~` 与相对路径需要 workdir、而 resolve 拿不到。展开在 `expand_memory_dir` 里，用与 `[agent].skill_dirs` **完全相同**的三条规则（`~`/`~/x` → `$HOME`、相对 → workdir、绝对原样），免得两个路径型设置对 `~/x` 的解释分叉。覆盖优先级在仓库派生与 `$HOME` 兜底**之前**，因此无条件生效且 `$HOME` 未设时同样可用。读取走 `try_settings()`（进程级配置），与 `get_skill_registry` 读 `skill_dirs` 同一手法——这样 `memory_root(workdir)` 不必为多接一个参数而改动每个调用点；真正做决定的 `memory_root_with(workdir, home, override)` 独立出来，逻辑不依赖全局配置即可单测。
+
+**改后行为：** 记忆按仓库隔离，`project` 类事实不再跨项目泄漏；系统提示的注入量恒定为索引（≤200 行 / 25 KB），与记忆总条数无关；模型用 `load_memory` 取全文。既有安装首次在新仓库启动时，旧全局记忆被迁入并打印一行 `migrated N memories from … to …`。
+
+**Verification：** `cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` 干净；推送门四个包全绿（tact 1245）。新增：`a_worktree_and_its_checkout_resolve_to_one_directory`（**钉住 worktree 共享**：fixture 复刻 git 真实布局 `.git/worktrees/<name>` + `commondir`）、`the_real_worktrees_in_this_repository_share_the_main_directory`（直接跑真实 `.worktrees/`，fixture 与现实脱节即报红）、`different_repositories_get_different_directories`（隔离）、`a_dotted_workdir_resolves_like_its_normal_form`（`..` 词法折叠——**实测踩到**：第一版把 `<repo>/crates/tact/../..` slug 成另一个目录，等于给 tact 建了第二份记忆）、`outside_a_repository_the_workdir_owns_the_directory`、`a_configured_directory_overrides_the_derived_one`（覆盖优先于派生、且在 `$HOME` 未设时仍生效）、`expand_memory_dir_follows_the_skill_dirs_rules`、`prompt_carries_the_index_and_not_the_bodies`（正文**不在**提示词里）、`a_hand_written_directory_gets_an_index_on_load`、`load_topic_returns_the_full_file`、`byte_cap_truncates_a_long_index`、`migration_copies_memories_once_and_never_overwrites`、`load_memory_returns_a_saved_body_and_lists_the_known_names`、`resolve_auto_memory_directory_from_toml`（含空串 = 未设）；工具集测试补断言 `load_memory` 与 `save_memory` 同开同关。真机迁移实测：`~/.tact/memory` 的 12 个 `.md`（第 13 个是 `MEMORY.md`）→ `~/.tact/projects/-Users-rg-Projects-tact/memory/`，主 checkout 与两个真实 worktree 解出同一目录，二次运行 `copied = 0`（幂等），索引 2367 字节。
+
+**Pointers:** `docs/superpowers/specs/2026-10-09-memory-claude-alignment-design.md`；Ch 03（§2 架构 / §4 生命周期 / §5 集成点 / §6 存储布局与迁移）、Ch 01、Ch 02、Ch 04、Ch 07、Ch 21、`README.md`、`ARCHITECTURE.md`、`config.example.toml`。
+
+---
+
 ## 1. 2026-10-08 — Open 按钮单击链路与代码弹窗稳定身份
 
 | Field | Value |

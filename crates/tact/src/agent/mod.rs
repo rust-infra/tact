@@ -2553,12 +2553,16 @@ impl Agent {
             .context("failed to render system prompt")
     }
 
+    /// The injected memory block: the repository's `MEMORY.md` index.
+    ///
+    /// Only the index is injected; topic bodies are fetched on demand with the
+    /// `load_memory` tool. See `crate::memory` for why.
     fn load_memory_prompt(&self) -> Result<String> {
         self.tool_context
             .memory_manager
             .lock()
             .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))
-            .map(|manager| manager.load_memory_prompt())
+            .map(|manager| manager.load_memory_index_prompt())
     }
 }
 
@@ -2886,6 +2890,7 @@ mod tests {
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
+            auto_memory_directory: None,
             subagent: None,
         };
         let agent = Agent::new(
@@ -3152,6 +3157,41 @@ mod tests {
         assert!(prompt.contains("# Memory guidance"), "{prompt}");
     }
 
+    /// The injected memory section is the **index**, reachable through
+    /// `load_memory` — not the bodies.
+    ///
+    /// Drives the real path: a memory saved by the tool, then a prompt built
+    /// from the same manager, so a regression that folds bodies back into the
+    /// prompt is caught here rather than in the prompt template.
+    #[tokio::test]
+    async fn the_system_prompt_carries_the_index_and_points_at_load_memory() {
+        ensure_config();
+        let context = crate::tool::test_support::test_context("memory_index_in_prompt");
+        context
+            .memory_manager
+            .lock()
+            .unwrap()
+            .save_memory(
+                "Release Branch",
+                "the branch to cut from",
+                crate::memory::MemoryType::Project,
+                "BODY_SENTINEL cut releases from main.",
+            )
+            .unwrap();
+
+        let mut agent = chat_completions_test_agent_for("memory_index_in_prompt", context);
+        agent.system_prompt = AgentSystemPrompt::Dynamic;
+
+        let prompt = agent.build_system_prompt().unwrap();
+        assert!(prompt.contains("## Memory"), "{prompt}");
+        assert!(prompt.contains("release_branch.md"), "{prompt}");
+        assert!(prompt.contains("load_memory"), "{prompt}");
+        assert!(
+            !prompt.contains("BODY_SENTINEL"),
+            "bodies must not be injected: {prompt}"
+        );
+    }
+
     #[test]
     fn disabled_memory_is_absent_from_the_system_prompt() {
         ensure_config();
@@ -3161,23 +3201,29 @@ mod tests {
 
         let prompt = agent.build_system_prompt().unwrap();
         assert!(!prompt.contains("# Memory guidance"), "{prompt}");
-        assert!(
-            !prompt.contains("# Memories (persistent across sessions)"),
-            "{prompt}"
-        );
+        assert!(!prompt.contains("# Memory"), "{prompt}");
     }
 
     fn chat_completions_test_agent(context_name: &str) -> Agent {
+        chat_completions_test_agent_for(context_name, test_context(context_name))
+    }
+
+    /// The same agent, but built over a caller-supplied context so a test can
+    /// populate the memory manager before the prompt is assembled.
+    fn chat_completions_test_agent_for(
+        context_name: &str,
+        context: crate::tool::ToolContext,
+    ) -> Agent {
         Agent::new(
             LlmProvider::Mock(MockClient::new(vec![])),
-            test_context(context_name),
+            context,
             crate::tool::toolset(),
             crate::mcp::MCPToolRouter::new(),
             crate::permission::PermissionManager::try_new(
                 crate::permission::PermissionMode::Default,
             )
             .unwrap(),
-            AgentSystemPrompt::Static("test".to_string()),
+            AgentSystemPrompt::Static(context_name.to_string()),
         )
     }
 
@@ -4466,6 +4512,7 @@ mod tests {
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
+            auto_memory_directory: None,
             subagent: None,
         };
         let agent = responses_test_agent("responses_auto_compact", "https://api.openai.com/v1")
@@ -4506,6 +4553,7 @@ mod tests {
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
+            auto_memory_directory: None,
             subagent: None,
         };
         agent.agent_settings = tiny;

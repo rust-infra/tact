@@ -2,7 +2,7 @@
 
 本章说明 Tact 的**磁盘持久化层**：`.tact/` 下的 JSON 文件存储原语，以及独立的 SQLite 数据库。对话历史、领域状态（任务、background、队友、worktree、subagent）与可观测性数据**全部**存放在 SQLite 中；JSON store 目前没有领域消费者——它只剩单元测试在用。
 
-记忆（[持久化记忆](./03_chapter_memory_zh.md)）使用用户级全局目录 `~/.tact/memory/` 下的 Markdown 文件，**不属于** JSON store API。
+记忆（[持久化记忆](./03_chapter_memory_zh.md)）使用按仓库切分的 `~/.tact/projects/<slug>/memory/` 下的 Markdown 文件，**不属于** JSON store API。
 
 ---
 
@@ -22,10 +22,10 @@ graph TD
     root --> skills[skills/]
     root --> bg[background/<id>.log]
     ss[6 个 Store trait] --> db
-    mem[~/.tact/memory/]
+    mem[~/.tact/projects/&lt;slug&gt;/memory/]
 ```
 
-图中 `.tact/` 的四个条目里，只有前两个走存储 API：`JSON store` 是 `StoreRoot` / `Store<T>` / `CollectionStore<T>`（域状态迁到 SQLite 后仅测试使用），`tact.db` 是上面那六个 Store trait 的 SQLite 落点。`skills/` 与 `background/<id>.log` 是**普通文件**，不属于 `StoreRoot`。`~/.tact/memory/` 是独立模块，不属于 JSON store API（见 [持久化记忆](./03_chapter_memory_zh.md)）。
+图中 `.tact/` 的四个条目里，只有前两个走存储 API：`JSON store` 是 `StoreRoot` / `Store<T>` / `CollectionStore<T>`（域状态迁到 SQLite 后仅测试使用），`tact.db` 是上面那六个 Store trait 的 SQLite 落点。`skills/` 与 `background/<id>.log` 是**普通文件**，不属于 `StoreRoot`。`~/.tact/projects/<slug>/memory/` 是独立模块，不属于 JSON store API（见 [持久化记忆](./03_chapter_memory_zh.md)）。
 
 启动时真正打开的只有 SQLite：`crates/tact-ui/src/main.rs` 在 `Upgrade` 子命令之后调用 `open_sqlite_session_store(&tact_path.session_db_path())`（自升级不需要 store），随后建行、抢锁、`touch` 由 `session_bootstrap::open_session` 完成，headless 与交互两个前端共用。`StoreRoot::new` 如今**只出现在单元测试里**——域状态迁到 SQLite 后它没有任何生产调用者。
 

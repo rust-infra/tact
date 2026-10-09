@@ -489,57 +489,68 @@ pub(crate) mod test_support {
     /// because several modules need it (`agent`, `plugin::hooks`, …).
     pub(crate) fn install_default() {
         INSTALL.call_once(|| {
-            super::install(super::types::ResolvedConfig {
-                llm: super::types::LlmSettings {
-                    provider: ProviderKind::OpenAi,
-                    protocol: OpenAiProtocol::default(),
-                    reasoning_effort: None,
-                    api_key: String::new(),
-                    base_url: String::new(),
-                    model: "mock-model".to_string(),
-                    models: Vec::new(),
-                    model_profiles: Default::default(),
-                    responses_compact_threshold: None,
-                },
-                agent: super::types::AgentSettings {
-                    model: "mock-model".to_string(),
-                    reasoning_effort: None,
-                    model_context_window: 500_000,
-                    max_tokens: 8192,
-                    thinking_budget: 0,
-                    snapshot_max_items: 80,
-                    notifications_enabled: false,
-                    max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
-                    micro_compact_enabled: true,
-                    memory_enabled: true,
-                    skill_body_auto_inject: false,
-                    skill_dirs: Vec::new(),
-                    instruction_sources: super::InstructionSources::default(),
-                    subagent: None,
-                },
-                ui: super::types::UiSettings {
-                    theme: "retro".to_string(),
-                    language: "en".to_string(),
-                    vision_image: super::types::VisionImageSettings {
-                        compress: super::types::VisionImageSettings::DEFAULT_COMPRESS,
-                        max_edge: super::types::VisionImageSettings::DEFAULT_MAX_EDGE,
-                        jpeg_quality: super::types::VisionImageSettings::DEFAULT_JPEG_QUALITY,
-                    },
-                    hook_output: super::types::UiSettings::DEFAULT_HOOK_OUTPUT,
-                },
-                tools: super::types::ToolSettings {
-                    bash_timeout_secs: super::types::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
-                    bash_nice: super::types::ToolSettings::DEFAULT_BASH_NICE,
-                    rtk_filter: false,
-                    sandbox: false,
-                },
-                voice: super::types::VoiceSettings::disabled_defaults(),
-                mcp: super::types::McpSettings::default(),
-                permission_mode: None,
-                tokio_console: false,
-                config_path: None,
-            });
+            super::install(resolved_config());
         });
+    }
+
+    /// A minimal resolved config, for tests that need one without installing it
+    /// into the process-global slot.
+    ///
+    /// Returned by value so a caller can tweak one field (for example
+    /// `agent.auto_memory_directory`) without mutating the process-global
+    /// settings that other tests are concurrently reading.
+    pub(crate) fn resolved_config() -> super::types::ResolvedConfig {
+        super::types::ResolvedConfig {
+            llm: super::types::LlmSettings {
+                provider: ProviderKind::OpenAi,
+                protocol: OpenAiProtocol::default(),
+                reasoning_effort: None,
+                api_key: String::new(),
+                base_url: String::new(),
+                model: "mock-model".to_string(),
+                models: Vec::new(),
+                model_profiles: Default::default(),
+                responses_compact_threshold: None,
+            },
+            agent: super::types::AgentSettings {
+                model: "mock-model".to_string(),
+                reasoning_effort: None,
+                model_context_window: 500_000,
+                max_tokens: 8192,
+                thinking_budget: 0,
+                snapshot_max_items: 80,
+                notifications_enabled: false,
+                max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
+                micro_compact_enabled: true,
+                memory_enabled: true,
+                skill_body_auto_inject: false,
+                skill_dirs: Vec::new(),
+                instruction_sources: super::InstructionSources::default(),
+                auto_memory_directory: None,
+                subagent: None,
+            },
+            ui: super::types::UiSettings {
+                theme: "retro".to_string(),
+                language: "en".to_string(),
+                vision_image: super::types::VisionImageSettings {
+                    compress: super::types::VisionImageSettings::DEFAULT_COMPRESS,
+                    max_edge: super::types::VisionImageSettings::DEFAULT_MAX_EDGE,
+                    jpeg_quality: super::types::VisionImageSettings::DEFAULT_JPEG_QUALITY,
+                },
+                hook_output: super::types::UiSettings::DEFAULT_HOOK_OUTPUT,
+            },
+            tools: super::types::ToolSettings {
+                bash_timeout_secs: super::types::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
+                bash_nice: super::types::ToolSettings::DEFAULT_BASH_NICE,
+                rtk_filter: false,
+                sandbox: false,
+            },
+            voice: super::types::VoiceSettings::disabled_defaults(),
+            mcp: super::types::McpSettings::default(),
+            permission_mode: None,
+            tokio_console: false,
+            config_path: None,
+        }
     }
 }
 

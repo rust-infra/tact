@@ -171,7 +171,8 @@ Optional agent settings (config file or CLI):
 | `snapshot_max_items` | `--snapshot-max-items` | `80` | Max entries in the system-prompt Project structure snapshot |
 | `model_context_window` | `--model-context-window` | `200000` | Model context window in tokens (80% auto-compact + TUI usage meter) |
 | `micro_compact_enabled` | `--no-micro-compact` | `false` | Stub old tool results before each LLM call when enabled |
-| `memory_enabled` | — | `true` | Inject `~/.tact/memory` + memory guidance and register `save_memory`; `false` disables both (files are kept) |
+| `memory_enabled` | — | `true` | Inject the `MEMORY.md` index + memory guidance and register `save_memory` / `load_memory`; `false` disables all four (files are kept) |
+| `auto_memory_directory` | — | derived per repository | Override the memory directory (`~`/relative expand like `skill_dirs`) |
 
 ### 3. Run
 
@@ -483,7 +484,8 @@ mode = "default"                 # default | plan | auto
 model_context_window = 200000     # tokens; 80% auto-compact + TUI meter
 snapshot_max_items = 80
 micro_compact_enabled = false     # stub old tool results before each LLM call
-memory_enabled = true             # false: no memory prompt / guidance / save_memory
+memory_enabled = true             # false: no MEMORY.md index / guidance / save_memory / load_memory
+# auto_memory_directory = "~/my-memories"   # default: per-repository
 notifications_enabled = true
 skill_body_auto_inject = false
 # skill_dirs = ["~/shared-skills", "./vendor/skills"]

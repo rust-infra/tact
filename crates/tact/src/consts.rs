@@ -204,6 +204,8 @@ const TACT_DIR: &str = ".tact";
 const AGENTS_DIR: &str = ".agents";
 const MEMORY_DIR: &str = "memory";
 const SKILL_DIR: &str = "skills";
+/// Parent of the per-repository memory directories (`projects/<slug>/memory`).
+const PROJECTS_DIR: &str = "projects";
 
 /// Sub-directory names used under `.tact/`.  Available through [`TactPath`] methods.
 const TRANSCRIPT_SUBDIR: &str = "transcripts";
@@ -309,11 +311,13 @@ impl TactPath {
     // Subdirectories under `.tact/`
     // ----------------------------------------------------------------
 
-    /// `<workdir>/.tact/memory` — legacy project-local memory directory.
+    /// `<workdir>/.tact/memory` — the project-local memory directory.
     ///
-    /// The agent runtime keeps memory user-global under
-    /// [`home_memory_dir`](Self::home_memory_dir); this project-local path is
-    /// only used as a fallback when `$HOME` is unset.
+    /// The default layout keeps memory per repository under
+    /// [`home_projects_dir`](Self::home_projects_dir); this project-local path
+    /// is used when the workdir is not inside a git repository and as the
+    /// fallback when `$HOME` is unset. See [`crate::memory::memory_root`],
+    /// which is the authority on the choice.
     pub fn memory_dir(&self) -> PathBuf {
         self.tact_dir().join(MEMORY_DIR)
     }
@@ -409,8 +413,13 @@ impl TactPath {
         std::env::var_os("HOME").map(|h| PathBuf::from(h).join(TACT_DIR))
     }
 
-    /// `$HOME/.tact/memory` — user-global persistent memory directory, shared
-    /// across all projects (the tact analogue of a user-level global store).
+    /// `$HOME/.tact/memory` — the **legacy** user-global memory directory.
+    ///
+    /// Retired in favour of the per-repository layout
+    /// ([`memory_root`](crate::memory::memory_root)). It is still consulted as
+    /// a **migration source**: whatever it holds is copied into the repository
+    /// directory the first time a session starts there. Files are never
+    /// deleted, so two checkouts can both migrate from it.
     pub fn home_memory_dir() -> Option<PathBuf> {
         std::env::var_os("HOME").map(|home| Self::home_memory_dir_for(Path::new(&home)))
     }
@@ -420,6 +429,22 @@ impl TactPath {
     #[must_use]
     pub fn home_memory_dir_for(home: &Path) -> PathBuf {
         home.join(TACT_DIR).join(MEMORY_DIR)
+    }
+
+    /// `$HOME/.tact/projects` — parent of the per-repository memory
+    /// directories (`projects/<slug>/memory`).
+    ///
+    /// Mirrors Claude Code's `~/.claude/projects/`, which is likewise keyed by
+    /// repository rather than by working directory.
+    pub fn home_projects_dir() -> Option<PathBuf> {
+        std::env::var_os("HOME").map(|home| Self::home_projects_dir_for(Path::new(&home)))
+    }
+
+    /// [`home_projects_dir`](Self::home_projects_dir) with an explicit home
+    /// path, for unit-testing the derivation without env vars.
+    #[must_use]
+    pub fn home_projects_dir_for(home: &Path) -> PathBuf {
+        home.join(TACT_DIR).join(PROJECTS_DIR)
     }
 
     /// `$HOME/.agents` — global agents config directory.

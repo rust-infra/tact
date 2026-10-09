@@ -183,11 +183,31 @@ pub async fn bootstrap_session(
     let worktree_manager =
         SharedWorktreeManager::new(WorktreeManager::new(&db_path, work_dir.clone()).await?);
     let subagent_manager = SharedSubagentManager::new(SubagentManager::new(&db_path).await?);
-    // Memory is user-global (`~/.tact/memory`) so it persists across projects.
-    // Project-local `.tact/memory` is only the fallback when `$HOME` is unset.
-    let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager(
-        TactPath::home_memory_dir().unwrap_or_else(|| tact_path.memory_dir()),
-    )?));
+    // Memory is scoped to the git **repository** (`~/.tact/projects/<slug>/memory`),
+    // so a project fact stays inside the project that produced it. Worktrees of
+    // one repository share a directory because the slug comes from the common
+    // git dir, not the working directory.
+    let memory_dir = tact::memory::memory_root(&work_dir);
+    // The retired global `~/.tact/memory` is migrated in, once, when the
+    // scoped directory is still empty. Never fatal: a failure here costs the
+    // import, not the session.
+    if let Some(legacy) = TactPath::home_memory_dir()
+        && legacy != memory_dir
+    {
+        match tact::memory::migrate_legacy_memory(&legacy, &memory_dir) {
+            Ok(copied) if copied > 0 => notices.notice(
+                "memory",
+                &format!(
+                    "migrated {copied} memories from {} to {}",
+                    legacy.display(),
+                    memory_dir.display()
+                ),
+            ),
+            Ok(_) => {}
+            Err(error) => notices.notice("memory", &format!("memory migration skipped: {error}")),
+        }
+    }
+    let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager(memory_dir)?));
     let (mcp_router, mcp_report) = load_mcp_router_with_report().await?;
     // MCP problems are collected, never fatal (one broken server must not stop
     // startup), so they have to be surfaced here — otherwise a typo'd command

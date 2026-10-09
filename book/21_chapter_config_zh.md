@@ -164,7 +164,10 @@ model_context_window = 200000
 notifications_enabled = true
 snapshot_max_items = 80
 micro_compact_enabled = true
-memory_enabled = true      # 关闭后不注入记忆，也不注册 save_memory
+memory_enabled = true      # 关闭后不注入 MEMORY.md 索引，也不注册 save_memory / load_memory
+# 记忆目录（可选）。缺省按仓库派生 ~/.tact/projects/<slug>/memory；
+# ~ / ~/x 展开为 $HOME，相对路径按 workdir 解析。
+# auto_memory_directory = "~/my-memories"
 max_token_usage_bodies = 1   # 每会话保留的请求正文条数（压缩行永远保留自己的）
 # 额外 skill 根目录（可选）。每个目录下应包含 */SKILL.md。
 # 相对路径按 workdir 解析；~ 展开为 $HOME。
@@ -277,7 +280,8 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `notifications_enabled` | `true` | — |
 | `snapshot_max_items` | 80 | — |
 | `micro_compact_enabled` | `true` | — |
-| `memory_enabled` | `true` | —（关闭后不注入 `~/.tact/memory` 与 `MEMORY_GUIDANCE`，也不注册 `save_memory`） |
+| `memory_enabled` | `true` | —（关闭后不注入 `MEMORY.md` 索引与 `MEMORY_GUIDANCE`，也不注册 `save_memory` / `load_memory`） |
+| `auto_memory_directory` | —（按仓库派生） | —（覆盖记忆目录；`~`/相对路径按 `skill_dirs` 同一套规则展开） |
 | `max_token_usage_bodies` | 1 | —（每会话在 `token_usages` 保留的请求正文条数；`0` 表示一条不留，同时使 `/view-system-prompt` 的 assembled 视图失效） |
 | `instruction_sources` | `["agents_md"]` | — |
 | `skill_dirs` | 空（无额外根） | — |

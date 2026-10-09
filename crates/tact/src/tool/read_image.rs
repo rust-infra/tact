@@ -158,6 +158,7 @@ mod tests {
                 skill_body_auto_inject: false,
                 skill_dirs: Vec::new(),
                 instruction_sources: crate::config::InstructionSources::default(),
+                auto_memory_directory: None,
                 subagent: None,
             },
             ui: crate::config::UiSettings {

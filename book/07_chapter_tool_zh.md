@@ -352,7 +352,7 @@ pub struct ToolResources {
 
 几个不显眼但故意的声明：
 
-- `save_memory` 是 `Independent`——它写的是工作区**之外**的 `~/.tact/memory/`，不在冲突模型内；并发调用由 `ToolContext.memory_manager` 的 `Arc<Mutex<_>>` 串起来。
+- `save_memory` 是 `Independent`——它写的是工作区**之外**的 `~/.tact/projects/<slug>/memory/`，不在冲突模型内；并发调用由 `ToolContext.memory_manager` 的 `Arc<Mutex<_>>` 串起来。`load_memory` 同为 `Independent`（只读，走同一把锁）。
 - `cancel_subagent` 是 `Independent`（权限却是 `High`）——它只翻子会话的 `AtomicBool` 取消标志，没有需要保序的工作区效果。
 - `task_get` / `task_list` 是 `Independent`，只有 `task_create` / `task_update` 走 `SharedState`——读任务表不改变状态。
 
