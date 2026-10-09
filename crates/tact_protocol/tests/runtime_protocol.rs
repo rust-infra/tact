@@ -231,3 +231,55 @@ fn runtime_step_started_round_trips_rich_tool_card_data() {
                 && presentation.visual_kind == tact_protocol::ToolVisualKind::FileWrite
     ));
 }
+
+#[test]
+fn with_run_id_fills_in_a_fact_that_had_no_run() {
+    let run = RunId::from("run-1");
+
+    let stamped = RuntimeEvent::Info {
+        run_id: None,
+        content: "hello".into(),
+    }
+    .with_run_id(Some(run.clone()));
+    assert!(
+        matches!(&stamped, RuntimeEvent::Info { run_id, content }
+            if run_id.as_ref() == Some(&run) && content == "hello"),
+        "a producer that cannot know the run leaves it empty for the owner to fill"
+    );
+
+    // It also corrects a stale identity rather than keeping both.
+    let re_stamped = stamped.with_run_id(Some(RunId::from("run-2")));
+    assert!(matches!(&re_stamped, RuntimeEvent::Info { run_id, .. }
+        if run_id.as_ref().map(RunId::as_str) == Some("run-2")));
+}
+
+#[test]
+fn with_run_id_never_erases_an_identity_a_fact_cannot_lose() {
+    let run = RunId::from("run-1");
+    // `RunStarted` has no way to say "no run", so an absent id must not clear it.
+    let started = RuntimeEvent::RunStarted {
+        run_id: run.clone(),
+    }
+    .with_run_id(None);
+    assert!(matches!(&started, RuntimeEvent::RunStarted { run_id } if run_id == &run));
+
+    let renamed = RuntimeEvent::RunStarted {
+        run_id: run.clone(),
+    }
+    .with_run_id(Some(RunId::from("run-2")));
+    assert!(matches!(&renamed, RuntimeEvent::RunStarted { run_id }
+        if run_id.as_str() == "run-2"));
+}
+
+#[test]
+fn with_run_id_leaves_facts_that_belong_to_no_run_alone() {
+    // A plugin lifecycle event describes the connection, not a run, and it has
+    // no field to carry one.
+    let event = RuntimeEvent::PluginStarted {
+        plugin_id: "tact.chat".into(),
+    };
+    assert!(matches!(
+        event.with_run_id(Some(RunId::from("run-1"))),
+        RuntimeEvent::PluginStarted { plugin_id } if plugin_id == "tact.chat"
+    ));
+}

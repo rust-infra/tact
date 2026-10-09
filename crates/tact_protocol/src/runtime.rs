@@ -280,6 +280,70 @@ pub enum RuntimeEvent {
 }
 
 impl RuntimeEvent {
+    /// Attributes the event to `run_id`, where the variant carries one.
+    ///
+    /// A producer that cannot know the run (a model adapter, a tool helper)
+    /// builds the event with `run_id: None` and the component that owns the run
+    /// fills it in here. The match is exhaustive on purpose: a new variant must
+    /// be classified as run-carrying or not, instead of silently passing through
+    /// with no identity.
+    #[must_use]
+    pub fn with_run_id(mut self, run_id: Option<RunId>) -> Self {
+        match &mut self {
+            // Facts about a run's execution: fill the identity in, or correct it.
+            RuntimeEvent::RunFinished { run_id: slot, .. }
+            | RuntimeEvent::Cancelled { run_id: slot, .. }
+            | RuntimeEvent::Compaction { run_id: slot, .. }
+            | RuntimeEvent::Recovery { run_id: slot, .. }
+            | RuntimeEvent::Retry { run_id: slot, .. }
+            | RuntimeEvent::Text { run_id: slot, .. }
+            | RuntimeEvent::Thinking { run_id: slot, .. }
+            | RuntimeEvent::ToolProgress { run_id: slot, .. }
+            | RuntimeEvent::ModelInfo { run_id: slot, .. }
+            | RuntimeEvent::TokenUsage { run_id: slot, .. }
+            | RuntimeEvent::TurnStats { run_id: slot, .. }
+            | RuntimeEvent::Error { run_id: slot, .. }
+            | RuntimeEvent::StepAdded { run_id: slot, .. }
+            | RuntimeEvent::StepStarted { run_id: slot, .. }
+            | RuntimeEvent::StepFinished { run_id: slot, .. }
+            | RuntimeEvent::StepFailed { run_id: slot, .. }
+            | RuntimeEvent::TaskComplete { run_id: slot, .. }
+            | RuntimeEvent::Info { run_id: slot, .. }
+            | RuntimeEvent::MdInfo { run_id: slot, .. }
+            | RuntimeEvent::HookContext { run_id: slot, .. }
+            | RuntimeEvent::HookStatus { run_id: slot, .. }
+            | RuntimeEvent::PopupMarkdown { run_id: slot, .. }
+            | RuntimeEvent::TasksChanged { run_id: slot, .. }
+            | RuntimeEvent::ToolMeta { run_id: slot, .. }
+            | RuntimeEvent::BackgroundTaskFinished { run_id: slot, .. }
+            | RuntimeEvent::SubagentFinished { run_id: slot, .. }
+            | RuntimeEvent::SubagentsChanged { run_id: slot, .. } => *slot = run_id,
+            // These cannot express "no run", so they only accept an identity —
+            // never lose the one they already carry.
+            RuntimeEvent::RunStarted { run_id: slot, .. }
+            | RuntimeEvent::ModelCallStarted { run_id: slot, .. }
+            | RuntimeEvent::ModelCallFinished { run_id: slot, .. }
+            | RuntimeEvent::ToolCallStarted { run_id: slot, .. }
+            | RuntimeEvent::ToolCallFinished { run_id: slot, .. }
+            | RuntimeEvent::TimedOut { run_id: slot, .. } => {
+                if let Some(run_id) = run_id {
+                    *slot = run_id;
+                }
+            }
+            // These describe the connection or a plugin's own lifecycle, not a
+            // run's execution, so there is nothing to attribute.
+            RuntimeEvent::PermissionRequested { .. }
+            | RuntimeEvent::PermissionResolved { .. }
+            | RuntimeEvent::PluginStarted { .. }
+            | RuntimeEvent::PluginStopped { .. }
+            | RuntimeEvent::InteractionRequested { .. }
+            | RuntimeEvent::InteractionResponded { .. }
+            | RuntimeEvent::Notification { .. }
+            | RuntimeEvent::Plugin { .. } => {}
+        }
+        self
+    }
+
     pub fn validate_plugin_event(&self, plugin_id: &str) -> Result<(), String> {
         let RuntimeEvent::Plugin {
             plugin_id: event_plugin_id,

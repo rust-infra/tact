@@ -135,7 +135,7 @@ impl ViewUpdateEmitter {
             (state.runtime_sink.clone(), state.run_id.clone())
         };
         if let Some(sink) = runtime_sink {
-            return sink.emit(stamp_run_id(event, run_id.as_ref())).is_ok();
+            return sink.emit(event.with_run_id(run_id)).is_ok();
         }
         #[cfg(any(test, feature = "test-support"))]
         if let Some(tx) = self
@@ -152,80 +152,6 @@ impl ViewUpdateEmitter {
                 .all(|update| tx.send(update).is_ok());
         }
         false
-    }
-}
-
-/// Fills in the run identity for the events a model adapter emits.
-///
-/// Only the variants a model stream can produce are rewritten; anything else
-/// passes through untouched rather than being silently given a run it does not
-/// belong to.
-fn stamp_run_id(
-    event: tact_protocol::RuntimeEvent,
-    run_id: Option<&tact_protocol::RunId>,
-) -> tact_protocol::RuntimeEvent {
-    use tact_protocol::RuntimeEvent;
-
-    match event {
-        RuntimeEvent::Text { role, content, .. } => RuntimeEvent::Text {
-            run_id: run_id.cloned(),
-            role,
-            content,
-        },
-        RuntimeEvent::Thinking { chunk, .. } => RuntimeEvent::Thinking {
-            run_id: run_id.cloned(),
-            chunk,
-        },
-        RuntimeEvent::TokenUsage { usage, .. } => RuntimeEvent::TokenUsage {
-            run_id: run_id.cloned(),
-            usage,
-        },
-        RuntimeEvent::ModelInfo { params, .. } => RuntimeEvent::ModelInfo {
-            run_id: run_id.cloned(),
-            params,
-        },
-        RuntimeEvent::StepStarted {
-            idx,
-            tool_id,
-            tool_name,
-            arg_summary,
-            arg_full,
-            presentation,
-            ..
-        } => RuntimeEvent::StepStarted {
-            run_id: run_id.cloned(),
-            idx,
-            tool_id,
-            tool_name,
-            arg_summary,
-            arg_full,
-            presentation,
-        },
-        RuntimeEvent::StepFinished {
-            idx,
-            tool_id,
-            result,
-            ..
-        } => RuntimeEvent::StepFinished {
-            run_id: run_id.cloned(),
-            idx,
-            tool_id,
-            result,
-        },
-        RuntimeEvent::StepFailed {
-            idx,
-            tool_id,
-            arg_summary,
-            error,
-            ..
-        } => RuntimeEvent::StepFailed {
-            run_id: run_id.cloned(),
-            idx,
-            tool_id,
-            arg_summary,
-            error,
-        },
-        other => other,
     }
 }
 
