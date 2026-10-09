@@ -86,11 +86,17 @@ pub enum RuntimeEvent {
         run_id: RunId,
         step_id: StepId,
         tool: String,
+        /// Step this call is nested under (a subagent's work under the call
+        /// that spawned it). `None` for a top-level call.
+        #[serde(default)]
+        parent_step_id: Option<StepId>,
     },
     ToolCallFinished {
         run_id: RunId,
         step_id: StepId,
         success: bool,
+        #[serde(default)]
+        parent_step_id: Option<StepId>,
     },
     PermissionRequested {
         request_id: RequestId,

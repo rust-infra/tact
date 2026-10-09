@@ -224,6 +224,9 @@ pub struct ToolContext {
     /// Set when a configured sandbox backend could not start. The `bash` tool
     /// uses it to emit the one-time "running unsandboxed" notice.
     pub sandbox_degraded: Option<Arc<crate::sandbox::SandboxDegradation>>,
+    /// Step this context's work is nested under, when it is a subagent's: the
+    /// tool call that spawned it. Stamped by `spawn_subagent`.
+    pub parent_step_id: Option<tact_protocol::StepId>,
     /// Parent agent session id when persistence is wired (`with_session`).
     pub session_id: Option<String>,
     /// Shared SQLite session store from the parent agent, if any.

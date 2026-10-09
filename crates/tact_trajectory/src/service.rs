@@ -234,13 +234,14 @@ impl TrajectoryService for KernelTrajectoryRecorder {
                 false,
             )
         })?;
+        let parent_step_id = parent_step_of(&event);
         self.recorder
             .append(
                 trajectory_id,
                 run_id,
                 "runtime".to_string(),
                 event_type,
-                None::<StepId>,
+                parent_step_id,
                 payload,
                 Sensitivity::Internal,
             )
@@ -350,13 +351,14 @@ impl TrajectoryService for SqliteTrajectoryService {
             )
         })?;
         let payload = redact_payload(&payload, &self.redaction);
+        let parent_step_id = parent_step_of(&event);
         self.recorder
             .append(
                 trajectory_id,
                 run_id,
                 "runtime".into(),
                 event_type,
-                None,
+                parent_step_id,
                 payload,
                 Sensitivity::Internal,
             )
@@ -370,6 +372,15 @@ impl TrajectoryService for SqliteTrajectoryService {
                     true,
                 )
             })
+    }
+}
+
+/// The step a fact is nested under, when the event carries one.
+fn parent_step_of(event: &RuntimeEvent) -> Option<StepId> {
+    match event {
+        RuntimeEvent::ToolCallStarted { parent_step_id, .. }
+        | RuntimeEvent::ToolCallFinished { parent_step_id, .. } => parent_step_id.clone(),
+        _ => None,
     }
 }
 
@@ -426,7 +437,7 @@ fn event_type(event: &RuntimeEvent) -> TrajectoryEventType {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tact_protocol::{RunId, RuntimeEvent, TrajectoryId};
+    use tact_protocol::{RunId, RuntimeEvent, StepId, TrajectoryId};
 
     #[tokio::test]
     async fn query_returns_appended_facts_in_order() {
@@ -457,6 +468,31 @@ mod tests {
         assert_eq!(facts.len(), 3);
         assert!(facts.windows(2).all(|w| w[0].sequence < w[1].sequence));
         assert_eq!(facts[0].event_type, TrajectoryEventType::RunLifecycle);
+    }
+
+    #[tokio::test]
+    async fn nested_tool_call_records_its_parent_step() {
+        let service = KernelTrajectoryRecorder::new(TrajectoryRecorder::default());
+        let trajectory = TrajectoryId::from("trajectory-parent-test");
+        let run = RunId::from("run-parent-test");
+        service
+            .append(
+                Some(&trajectory),
+                Some(&run),
+                RuntimeEvent::ToolCallStarted {
+                    run_id: run.clone(),
+                    step_id: StepId::from("child-step"),
+                    tool: "read_file".into(),
+                    parent_step_id: Some(StepId::from("parent-step")),
+                },
+            )
+            .await
+            .expect("append");
+        let facts = service.query(&trajectory, 0).await.expect("query");
+        assert_eq!(
+            facts[0].parent_step_id.as_ref().map(StepId::as_str),
+            Some("parent-step")
+        );
     }
 
     #[tokio::test]

@@ -101,6 +101,7 @@ pub fn test_context(name: &str) -> ToolContext {
         bash_nice: 0,
         sandbox: None,
         sandbox_degraded: None,
+        parent_step_id: None,
         session_id: None,
         session_store: None,
         permission_snapshot: None,

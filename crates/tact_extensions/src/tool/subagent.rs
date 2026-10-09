@@ -540,6 +540,10 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         subagent_tools.set_tool_description("bash", crate::tool::SANDBOXED_BASH_DESCRIPTION);
     }
 
+    // The child's work is nested under this `spawn_subagent` call, so its own
+    // tool calls record that parent step in the trajectory.
+    ctx.parent_step_id = tact_protocol::StepId::new(ctx.progress_reporter.tool_id()).ok();
+
     let mut subagent = Agent::new(
         client,
         ctx.clone(),

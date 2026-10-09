@@ -282,6 +282,7 @@ pub async fn bootstrap_session(
         bash_nice: tact_extensions::config::settings().tools.bash_nice,
         sandbox,
         sandbox_degraded,
+        parent_step_id: None,
         session_id: None,
         session_store: None,
         permission_snapshot: None,

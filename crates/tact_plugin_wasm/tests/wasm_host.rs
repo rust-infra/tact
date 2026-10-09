@@ -314,6 +314,7 @@ async fn undeclared_storage_and_forged_host_events_are_rejected() {
     )
     .unwrap();
     let forged = RuntimeEvent::ToolCallFinished {
+        parent_step_id: None,
         run_id: RunId::from("run-1"),
         step_id: tact_protocol::StepId::from("step-1"),
         success: true,

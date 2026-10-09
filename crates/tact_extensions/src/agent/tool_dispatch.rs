@@ -410,14 +410,18 @@ async fn run_capability_tool(
     tool_use_id: &str,
     name: &str,
     input: &serde_json::Value,
+    parent_step_id: Option<tact_protocol::StepId>,
 ) -> ExecResult {
-    let invocation = runtime
+    let mut invocation = runtime
         .invocation(
             RequestId::from(tool_use_id),
             PluginId::from("tact.agent"),
             "agent",
         )
         .with_run_id(run_id.clone());
+    if let Some(parent) = parent_step_id {
+        invocation = invocation.with_parent_step_id(parent);
+    }
     match runtime
         .router()
         .invoke(name, invocation, input.clone())
@@ -1290,6 +1294,7 @@ impl Agent {
                     .clone();
                 let run_id = run_id.clone();
                 let prep = &prepared[pi];
+                let parent_step_id = self.tool_context.parent_step_id.clone();
                 futures.push(async move {
                     let start = std::time::Instant::now();
                     let exec = run_capability_tool(
@@ -1298,6 +1303,7 @@ impl Agent {
                         &prep.id,
                         &prep.name,
                         &prep.input,
+                        parent_step_id,
                     )
                     .await;
                     (pi, exec, start.elapsed().as_micros() as u64)
@@ -1645,6 +1651,7 @@ mod tests {
             "call-unified",
             "mcp__demo__echo",
             &serde_json::json!({"text": "hello"}),
+            None,
         )
         .await;
 

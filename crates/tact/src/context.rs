@@ -5,7 +5,8 @@ use std::{sync::Arc, time::Duration};
 use async_trait::async_trait;
 use serde_json::Value;
 use tact_protocol::{
-    CapabilityDeclaration, PluginId, RequestId, RunId, RuntimeEvent, SessionId, TrajectoryId,
+    CapabilityDeclaration, PluginId, RequestId, RunId, RuntimeEvent, SessionId, StepId,
+    TrajectoryId,
 };
 use tokio::time::Instant;
 use tokio_util::sync::CancellationToken;
@@ -169,6 +170,7 @@ pub struct InvocationContext {
     session_id: Option<SessionId>,
     run_id: Option<RunId>,
     trajectory_id: Option<TrajectoryId>,
+    parent_step_id: Option<StepId>,
     deadline: Option<Instant>,
     cancellation: CancellationToken,
     services: RuntimeServices,
@@ -201,6 +203,7 @@ impl InvocationContext {
             session_id: None,
             run_id: None,
             trajectory_id: None,
+            parent_step_id: None,
             deadline: None,
             cancellation,
             services,
@@ -235,6 +238,18 @@ impl InvocationContext {
     #[must_use]
     pub fn trajectory_id(&self) -> Option<&TrajectoryId> {
         self.trajectory_id.as_ref()
+    }
+
+    /// The step this invocation is nested under, if any.
+    #[must_use]
+    pub fn parent_step_id(&self) -> Option<&StepId> {
+        self.parent_step_id.as_ref()
+    }
+
+    #[must_use]
+    pub fn with_parent_step_id(mut self, parent_step_id: StepId) -> Self {
+        self.parent_step_id = Some(parent_step_id);
+        self
     }
 
     #[must_use]

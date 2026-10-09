@@ -257,6 +257,7 @@ impl CapabilityRouter {
                     run_id: run_id.clone(),
                     step_id: step_id.clone(),
                     tool: tool.clone(),
+                    parent_step_id: context.parent_step_id().cloned(),
                 },
             )
             .await
@@ -273,6 +274,7 @@ impl CapabilityRouter {
                     run_id,
                     step_id,
                     success: result.is_ok(),
+                    parent_step_id: context.parent_step_id().cloned(),
                 },
             )
             .await
