@@ -297,7 +297,7 @@ pub async fn bootstrap_session(
     if let Some(wiring) = ui {
         agent = agent
             .with_ui_channel(wiring.tx)
-            .with_runtime_event_sink(Arc::new(wiring.runtime_events));
+            .with_runtime_event_transport(wiring.runtime_events);
     }
     // RTK filter is opt-in — `with_post_tool` no-ops unless the
     // `tools.rtk_filter` setting is enabled.

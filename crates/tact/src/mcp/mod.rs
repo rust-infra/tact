@@ -1914,6 +1914,7 @@ fn cap_instructions(text: &str) -> String {
     format!("{kept}\n… (truncated at {MCP_INSTRUCTIONS_MAX_CHARS} characters)")
 }
 
+#[derive(Clone)]
 pub struct McpClient {
     pub server_name: String,
     service: Arc<dyn McpService>,
@@ -2187,38 +2188,14 @@ impl McpClient {
     }
 
     pub async fn call_tool(&self, tool_name: &str, arguments: Value) -> Result<String> {
-        let arguments = match arguments {
-            Value::Object(map) => Some(map),
-            Value::Null => None,
-            other => {
-                let mut map = Map::new();
-                map.insert("value".to_string(), other);
-                Some(map)
-            }
-        };
-
-        // The entry's `tool_timeout_sec` overrides the global ceiling for this
-        // server; the error names whichever budget was actually applied.
-        let budget = self.policy.tool_timeout().unwrap_or(MCP_CALL_TOOL_TIMEOUT);
-        let result = tokio::time::timeout(
-            budget,
-            self.service.call_tool(CallToolRequestParams {
-                meta: None,
-                name: tool_name.to_string().into(),
-                arguments,
-                task: None,
-            }),
+        call_service_tool(
+            self.service.as_ref(),
+            &self.policy,
+            &self.server_name,
+            tool_name,
+            arguments,
         )
         .await
-        .with_context(|| {
-            format!(
-                "MCP tool {tool_name} did not return within {}s",
-                budget.as_secs()
-            )
-        })?
-        .with_context(|| format!("failed to call MCP tool {tool_name}"))?;
-
-        Ok(join_mcp_content(&result.content))
     }
 
     pub fn agent_tools(&self) -> &[ToolSpec] {
@@ -2232,6 +2209,47 @@ impl McpClient {
     pub async fn shutdown(self) {
         let _ = self.service.cancel().await;
     }
+}
+
+pub(crate) async fn call_service_tool(
+    service: &dyn McpService,
+    policy: &McpServerPolicy,
+    _server: &str,
+    tool_name: &str,
+    arguments: Value,
+) -> Result<String> {
+    let arguments = match arguments {
+        Value::Object(map) => Some(map),
+        Value::Null => None,
+        other => {
+            let mut map = Map::new();
+            map.insert("value".to_string(), other);
+            Some(map)
+        }
+    };
+
+    // The entry's `tool_timeout_sec` overrides the global ceiling for this
+    // server; the error names whichever budget was actually applied.
+    let budget = policy.tool_timeout().unwrap_or(MCP_CALL_TOOL_TIMEOUT);
+    let result = tokio::time::timeout(
+        budget,
+        service.call_tool(CallToolRequestParams {
+            meta: None,
+            name: tool_name.to_string().into(),
+            arguments,
+            task: None,
+        }),
+    )
+    .await
+    .with_context(|| {
+        format!(
+            "MCP tool {tool_name} did not return within {}s",
+            budget.as_secs()
+        )
+    })?
+    .with_context(|| format!("failed to call MCP tool {tool_name}"))?;
+
+    Ok(join_mcp_content(&result.content))
 }
 
 /// Test double for an MCP server.
@@ -2608,7 +2626,7 @@ pub struct ResolvedMcpTool {
     pub tool: String,
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct MCPToolRouter {
     clients: HashMap<String, McpClient>,
 }
@@ -2767,7 +2785,8 @@ impl MCPToolRouter {
     /// Exposes connected MCP tools through the shared capability declaration
     /// model. The full MCP name remains stable and retains server namespacing.
     pub fn capability_declarations(&self) -> Vec<tact_protocol::CapabilityDeclaration> {
-        self.clients
+        let mut declarations: Vec<_> = self
+            .clients
             .iter()
             .flat_map(|(server, client)| {
                 client.tool_specs.iter().map(move |spec| {
@@ -2791,7 +2810,107 @@ impl MCPToolRouter {
                     }
                 })
             })
-            .collect()
+            .collect();
+        for spec in self.resource_tool_specs() {
+            let Some(tool) = McpResourceTool::from_name(&spec.name) else {
+                continue;
+            };
+            let risk = match resource_tool_risk(tool) {
+                CapabilityRisk::Read => tact_protocol::CapabilityRisk::ReadOnly,
+                CapabilityRisk::Write => tact_protocol::CapabilityRisk::Medium,
+                CapabilityRisk::High => tact_protocol::CapabilityRisk::High,
+            };
+            declarations.push(tact_protocol::CapabilityDeclaration {
+                name: spec.name,
+                kind: tact_protocol::CapabilityKind::Tool,
+                version: "1".into(),
+                description: spec.description,
+                input_schema: Some(spec.input_schema),
+                output_schema: None,
+                risk,
+            });
+        }
+        for spec in self.prompt_tool_specs() {
+            let Some(tool) = McpPromptTool::from_name(&spec.name) else {
+                continue;
+            };
+            let risk = match prompt_tool_risk(tool) {
+                CapabilityRisk::Read => tact_protocol::CapabilityRisk::ReadOnly,
+                CapabilityRisk::Write => tact_protocol::CapabilityRisk::Medium,
+                CapabilityRisk::High => tact_protocol::CapabilityRisk::High,
+            };
+            declarations.push(tact_protocol::CapabilityDeclaration {
+                name: spec.name,
+                kind: tact_protocol::CapabilityKind::Tool,
+                version: "1".into(),
+                description: spec.description,
+                input_schema: Some(spec.input_schema),
+                output_schema: None,
+                risk,
+            });
+        }
+        declarations
+    }
+
+    pub(crate) fn capability_registrations(
+        &self,
+        tool_context: crate::tool::ToolContext,
+    ) -> Vec<crate::kernel::CapabilityRegistration> {
+        let router = Arc::new(self.clone());
+        let declarations = self
+            .capability_declarations()
+            .into_iter()
+            .map(|declaration| (declaration.name.clone(), declaration))
+            .collect::<HashMap<_, _>>();
+        let mut registrations = Vec::new();
+        for client in self.clients.values() {
+            for spec in &client.tool_specs {
+                let Some(declaration) = declarations.get(&spec.name) else {
+                    continue;
+                };
+                let Ok(parsed) = McpToolName::try_from(spec.name.as_str()) else {
+                    continue;
+                };
+                registrations.push(crate::kernel::CapabilityRegistration::new(
+                    declaration.clone(),
+                    Arc::new(crate::capability::mcp_tool::McpToolCapabilityHandler::new(
+                        Arc::clone(&router),
+                        crate::capability::mcp_tool::McpCapabilityTarget::Tool {
+                            name: parsed.full_name(),
+                            output_token_limit: self.output_token_limit(&spec.name),
+                        },
+                        tool_context.clone(),
+                    )),
+                ));
+            }
+        }
+        for tool in McpResourceTool::ALL {
+            let spec = tool.spec();
+            if let Some(declaration) = declarations.get(&spec.name) {
+                registrations.push(crate::kernel::CapabilityRegistration::new(
+                    declaration.clone(),
+                    Arc::new(crate::capability::mcp_tool::McpToolCapabilityHandler::new(
+                        Arc::clone(&router),
+                        crate::capability::mcp_tool::McpCapabilityTarget::Resource(tool),
+                        tool_context.clone(),
+                    )),
+                ));
+            }
+        }
+        for tool in McpPromptTool::ALL {
+            let spec = tool.spec();
+            if let Some(declaration) = declarations.get(&spec.name) {
+                registrations.push(crate::kernel::CapabilityRegistration::new(
+                    declaration.clone(),
+                    Arc::new(crate::capability::mcp_tool::McpToolCapabilityHandler::new(
+                        Arc::clone(&router),
+                        crate::capability::mcp_tool::McpCapabilityTarget::Prompt(tool),
+                        tool_context.clone(),
+                    )),
+                ));
+            }
+        }
+        registrations
     }
 
     pub fn server_summaries(&self) -> Vec<(String, usize)> {

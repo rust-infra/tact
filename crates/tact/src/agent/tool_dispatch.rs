@@ -3,23 +3,32 @@
 //! After Task 5, all semantic decisions flow through typed metadata instead of
 //! matching native tool-name strings.
 
+use std::{
+    collections::HashSet,
+    sync::{Arc, Mutex},
+};
+
 use anyhow::Result;
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use tact_llm::ContentBlock;
-use tact_protocol::{AgentUpdate, StepResult, StepStatus, ToolPresentationInfo};
+use tact_protocol::{
+    AgentUpdate, PluginId, RequestId, RunId, StepResult, StepStatus, ToolPresentationInfo,
+};
 
 use super::Agent;
 use crate::{
-    compact::{persist_large_output, persist_large_output_over_tokens},
     hook::{HookControl, NotificationContext, ToolResult, ToolUse},
     invoke_hooks,
-    mcp::MCPToolRouter,
+    kernel::{InvocationContext, KernelError, PermissionService, RuntimeServices},
     permission::{CapabilityRisk, PermissionBehavior, PermissionManager, format_permission_prompt},
     tool::{
-        ArgumentSummaryPolicy, DetailPolicy, OutputPolicy, TaskOperation, ToolDomain, ToolRouter,
+        ArgumentSummaryPolicy, DetailPolicy, TaskOperation, ToolCallResult, ToolDomain, ToolEffect,
     },
     utils::RwLockExt,
 };
+
+#[cfg(test)]
+use crate::mcp::MCPToolRouter;
 
 /// What the interactive permission popup's selection means.
 ///
@@ -335,87 +344,158 @@ struct ExecResult {
     content: String,
     status: StepStatus,
     image: Option<tact_llm::ImageSource>,
+    effects: Vec<ToolEffect>,
+}
+
+/// One-use authorization tickets issued by the sequential Agent preflight.
+/// CapabilityRouter consumes the matching ticket immediately before invoking
+/// a handler, so a registered tool cannot be reached through this bridge with
+/// a different name, request ID, or input.
+struct PreflightPermissionGate {
+    approved: Mutex<HashSet<(RequestId, String, String)>>,
+}
+
+impl PreflightPermissionGate {
+    fn new(prepared: &[PreparedTool]) -> Self {
+        let approved = prepared
+            .iter()
+            .filter(|tool| matches!(tool.state, PreparedState::Run))
+            .map(|tool| {
+                (
+                    RequestId::from(tool.id.as_str()),
+                    tool.name.clone(),
+                    tool.input.to_string(),
+                )
+            })
+            .collect();
+        Self {
+            approved: Mutex::new(approved),
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl PermissionService for PreflightPermissionGate {
+    async fn check(
+        &self,
+        declaration: &tact_protocol::CapabilityDeclaration,
+        context: &InvocationContext,
+        input: &serde_json::Value,
+    ) -> std::result::Result<(), KernelError> {
+        let key = (
+            context.request_id().clone(),
+            declaration.name.clone(),
+            input.to_string(),
+        );
+        let mut approved = self.approved.lock().map_err(|_| {
+            KernelError::new(
+                tact_protocol::ErrorCategory::InternalError,
+                "preflight authorization lock poisoned",
+                "permission",
+                true,
+            )
+        })?;
+        if approved.remove(&key) {
+            Ok(())
+        } else {
+            Err(KernelError::permission_denied(
+                "capability call has no matching preflight approval",
+            ))
+        }
+    }
 }
 
 async fn run_native_tool(
-    tools: &ToolRouter,
-    ctx: &crate::tool::ToolContext,
+    runtime: &crate::kernel::RuntimeContext,
+    run_id: &RunId,
     tool_use_id: &str,
     name: &str,
     input: &serde_json::Value,
-    output_policy: OutputPolicy,
-    stream_redaction: crate::security::RedactionLevel,
 ) -> ExecResult {
-    let call_ctx = ctx.for_invocation_with_redaction(tool_use_id, stream_redaction);
-    match tools.call_result(&call_ctx, name, input.clone()).await {
-        Ok(result) => {
-            let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
-            match output_policy {
-                OutputPolicy::PersistLargeOutput => {
-                    match persist_large_output(&tact_path, tool_use_id, &result.content).await {
-                        Ok(content) => ExecResult {
-                            content,
-                            status: StepStatus::Success,
-                            image: result.image,
-                        },
-                        Err(error) => ExecResult {
-                            content: format!("Error persisting large output: {error}"),
-                            status: StepStatus::Failed,
-                            image: None,
-                        },
-                    }
-                }
-                OutputPolicy::KeepInline => ExecResult {
-                    content: result.content,
-                    status: StepStatus::Success,
-                    image: result.image,
-                },
-            }
-        }
-        Err(e) => ExecResult {
-            content: format!("Error invoking tool {}: {}", name, e),
+    let invocation = runtime
+        .invocation(
+            RequestId::from(tool_use_id),
+            PluginId::from("tact.agent"),
+            "agent",
+        )
+        .with_run_id(run_id.clone());
+    match runtime
+        .router()
+        .invoke(name, invocation, input.clone())
+        .await
+    {
+        Ok(output) => match serde_json::from_value::<ToolCallResult>(output) {
+            Ok(result) => ExecResult {
+                content: result.content,
+                status: StepStatus::Success,
+                image: result.image,
+                effects: result.effects,
+            },
+            Err(error) => ExecResult {
+                content: format!("Error decoding capability result for {name}: {error}"),
+                status: StepStatus::Failed,
+                image: None,
+                effects: Vec::new(),
+            },
+        },
+        Err(error) => ExecResult {
+            content: if error.category() == tact_protocol::ErrorCategory::StorageError {
+                error.message().to_string()
+            } else {
+                format!("Error invoking tool {}: {}", name, error.message())
+            },
             status: StepStatus::Failed,
             image: None,
+            effects: Vec::new(),
         },
     }
 }
 
 async fn run_mcp_tool(
-    mcp_router: &MCPToolRouter,
-    ctx: &crate::tool::ToolContext,
+    runtime: &crate::kernel::RuntimeContext,
+    run_id: &RunId,
     tool_use_id: &str,
     name: &str,
     input: &serde_json::Value,
 ) -> ExecResult {
-    match mcp_router.call(name, input.clone()).await {
-        Ok(output) => {
-            let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
-            // A `tools.<name>.output_token_limit` on the server's entry wins
-            // over the session-wide character threshold; without one the
-            // global rule applies unchanged.
-            let persisted = match mcp_router.output_token_limit(name) {
-                Some(limit) => {
-                    persist_large_output_over_tokens(&tact_path, tool_use_id, &output, limit).await
-                }
-                None => persist_large_output(&tact_path, tool_use_id, &output).await,
-            };
-            match persisted {
-                Ok(content) => ExecResult {
-                    content,
-                    status: StepStatus::Success,
-                    image: None,
-                },
-                Err(error) => ExecResult {
-                    content: format!("Error persisting large MCP output: {error}"),
-                    status: StepStatus::Failed,
-                    image: None,
-                },
-            }
-        }
-        Err(e) => ExecResult {
-            content: format!("Error invoking MCP tool {}: {}", name, e),
+    let invocation = runtime
+        .invocation(
+            RequestId::from(tool_use_id),
+            PluginId::from("tact.mcp"),
+            "agent",
+        )
+        .with_run_id(run_id.clone());
+    match runtime
+        .router()
+        .invoke(name, invocation, input.clone())
+        .await
+    {
+        Ok(output) => match serde_json::from_value::<ToolCallResult>(output) {
+            Ok(result) => ExecResult {
+                content: result.content,
+                status: StepStatus::Success,
+                image: result.image,
+                effects: result.effects,
+            },
+            Err(error) => ExecResult {
+                content: format!("Error decoding MCP capability result for {name}: {error}"),
+                status: StepStatus::Failed,
+                image: None,
+                effects: Vec::new(),
+            },
+        },
+        Err(error) => ExecResult {
+            content: if error.category() == tact_protocol::ErrorCategory::StorageError
+                || is_mcp_prompt_tool(name)
+                || is_mcp_resource_tool(name)
+            {
+                error.message().to_string()
+            } else {
+                format!("Error invoking MCP tool {}: {}", name, error.message())
+            },
             status: StepStatus::Failed,
             image: None,
+            effects: Vec::new(),
         },
     }
 }
@@ -435,6 +515,7 @@ fn is_mcp_prompt_tool(name: &str) -> bool {
 /// Outside `run_mcp_tool` for the resource tools' reason: those take an
 /// `mcp__<server>__<tool>` name parsed into a server/tool pair, and a prompt has
 /// no tool name at all.
+#[cfg(test)]
 async fn run_mcp_prompt_tool(
     mcp_router: &MCPToolRouter,
     tool: crate::mcp::McpPromptTool,
@@ -449,6 +530,7 @@ async fn run_mcp_prompt_tool(
                     content: "Error invoking get_mcp_prompt: `server` is required".to_string(),
                     status: StepStatus::Failed,
                     image: None,
+                    effects: Vec::new(),
                 };
             };
             let Some(name) = input.get("name").and_then(|value| value.as_str()) else {
@@ -456,6 +538,7 @@ async fn run_mcp_prompt_tool(
                     content: "Error invoking get_mcp_prompt: `name` is required".to_string(),
                     status: StepStatus::Failed,
                     image: None,
+                    effects: Vec::new(),
                 };
             };
             match prompt_arguments(input) {
@@ -470,11 +553,13 @@ async fn run_mcp_prompt_tool(
             content,
             status: StepStatus::Success,
             image: None,
+            effects: Vec::new(),
         },
         Err(error) => ExecResult {
             content: format!("Error invoking {}: {error}", tool.name()),
             status: StepStatus::Failed,
             image: None,
+            effects: Vec::new(),
         },
     }
 }
@@ -486,6 +571,7 @@ async fn run_mcp_prompt_tool(
 /// `"3"`. Anything else (an object, an array, null) is refused by name: silently
 /// omitting it would hand the server a template with an unfilled placeholder and
 /// report success.
+#[cfg(test)]
 fn prompt_arguments(
     input: &serde_json::Value,
 ) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
@@ -510,6 +596,7 @@ fn prompt_arguments(
 ///
 /// Deliberately outside `run_mcp_tool`: those tools take a `mcp__<server>__<tool>`
 /// name parsed into a server/tool pair, and a resource has no tool name at all.
+#[cfg(test)]
 async fn run_mcp_resource_tool(
     mcp_router: &MCPToolRouter,
     tool: crate::mcp::McpResourceTool,
@@ -525,6 +612,7 @@ async fn run_mcp_resource_tool(
                     content: "Error invoking read_mcp_resource: `server` is required".to_string(),
                     status: StepStatus::Failed,
                     image: None,
+                    effects: Vec::new(),
                 };
             };
             match input.get("uri").and_then(|value| value.as_str()) {
@@ -539,11 +627,13 @@ async fn run_mcp_resource_tool(
             content,
             status: StepStatus::Success,
             image: None,
+            effects: Vec::new(),
         },
         Err(error) => ExecResult {
             content: format!("Error invoking {}: {error}", tool.name()),
             status: StepStatus::Failed,
             image: None,
+            effects: Vec::new(),
         },
     }
 }
@@ -681,7 +771,12 @@ impl Agent {
             let outputs = (0..preflight.prepared.len()).map(|_| None).collect();
             return Ok((build_tool_results(preflight.prepared, outputs), None));
         }
-        let (outputs, manual_compact) = self.run_tool_waves(&preflight.prepared).await?;
+        let (outputs, manual_compact) = self
+            .run_tool_waves(
+                &preflight.prepared,
+                RunId::from(uuid::Uuid::new_v4().to_string()),
+            )
+            .await?;
         Ok((
             build_tool_results(preflight.prepared, outputs),
             manual_compact,
@@ -1178,6 +1273,7 @@ impl Agent {
     async fn run_tool_waves(
         &mut self,
         prepared: &[PreparedTool],
+        run_id: RunId,
     ) -> Result<(Vec<Option<ExecResult>>, Option<String>)> {
         let run_indices: Vec<usize> = prepared
             .iter()
@@ -1202,6 +1298,27 @@ impl Agent {
 
         let mut outputs: Vec<Option<ExecResult>> = (0..prepared.len()).map(|_| None).collect();
         let mut manual_compact = None;
+        let capability_runtime = if run_indices.is_empty() {
+            None
+        } else {
+            let router = crate::capability::register_tool_capabilities(
+                &self.tools,
+                &self.mcp_router,
+                self.tool_context.clone(),
+                self.runtime.security.clone(),
+                self.runtime.permission_manager.security_config().redaction,
+            )?;
+            let permission = Arc::new(PreflightPermissionGate::new(prepared));
+            let services = match &self.runtime.runtime_event_service {
+                Some(events) => {
+                    RuntimeServices::with_event_and_permission(Arc::clone(events), permission)
+                }
+                None => RuntimeServices::with_permission(permission),
+            };
+            Some(crate::kernel::RuntimeContext::with_services(
+                router, services,
+            ))
+        };
 
         for wave in super::tool_schedule::waves_grouped(&resources) {
             if self.cancel_requested() {
@@ -1211,61 +1328,36 @@ impl Agent {
             let mut futures = FuturesUnordered::new();
             for &pos in &wave {
                 let pi = run_indices[pos];
-                let tools = &self.tools;
-                let mcp = &self.mcp_router;
-                let ctx = &self.tool_context;
+                let capability_runtime = capability_runtime
+                    .as_ref()
+                    .expect("runnable tools have a capability runtime")
+                    .clone();
+                let run_id = run_id.clone();
                 let prep = &prepared[pi];
-                let is_mcp = matches!(prep.resolved, ResolvedTool::Mcp { .. });
-                let resource_tool = match &prep.resolved {
-                    ResolvedTool::McpResource { tool } => Some(*tool),
-                    _ => None,
-                };
-                let prompt_tool = match &prep.resolved {
-                    ResolvedTool::McpPrompt { tool } => Some(*tool),
-                    _ => None,
-                };
-                let output_policy = match &prep.resolved {
-                    ResolvedTool::Native { metadata } => metadata.output,
-                    _ => OutputPolicy::PersistLargeOutput,
-                };
-                // Live-output redaction is decided per call, the same way the
-                // final result's level is: a sensitive target gets the full
-                // treatment, everything else keeps the high-confidence rules.
-                let stream_redaction = {
-                    let redaction = self.runtime.permission_manager.security_config().redaction;
-                    let (sensitive, target) = match &prep.resolved {
-                        ResolvedTool::Native { metadata } => (
-                            metadata
-                                .permission
-                                .sensitive(&prep.input, &self.runtime.security)
-                                .is_some(),
-                            metadata.permission.target(&prep.input),
-                        ),
-                        _ => (false, None),
-                    };
-                    crate::security::redact::level_for_call(
-                        &redaction,
-                        sensitive,
-                        target.as_deref(),
-                    )
-                };
+                let is_mcp = matches!(
+                    &prep.resolved,
+                    ResolvedTool::Mcp { .. }
+                        | ResolvedTool::McpResource { .. }
+                        | ResolvedTool::McpPrompt { .. }
+                );
                 futures.push(async move {
                     let start = std::time::Instant::now();
-                    let exec = if let Some(tool) = resource_tool {
-                        run_mcp_resource_tool(mcp, tool, &prep.input).await
-                    } else if let Some(tool) = prompt_tool {
-                        run_mcp_prompt_tool(mcp, tool, &prep.input).await
-                    } else if is_mcp {
-                        run_mcp_tool(mcp, ctx, &prep.id, &prep.name, &prep.input).await
-                    } else {
-                        run_native_tool(
-                            tools,
-                            ctx,
+                    let exec = if is_mcp {
+                        run_mcp_tool(
+                            &capability_runtime,
+                            &run_id,
                             &prep.id,
                             &prep.name,
                             &prep.input,
-                            output_policy,
-                            stream_redaction,
+                        )
+                        .await
+                    } else {
+                        run_native_tool(
+                            &capability_runtime,
+                            &run_id,
+                            &prep.id,
+                            &prep.name,
+                            &prep.input,
                         )
                         .await
                     };
@@ -1448,11 +1540,22 @@ impl Agent {
                         .or_else(|| Some(String::new()));
                 }
 
+                if succeeded {
+                    for effect in std::mem::take(&mut exec.effects) {
+                        match effect {
+                            ToolEffect::CompactHistory { focus } => {
+                                manual_compact = Some(focus.unwrap_or_default());
+                            }
+                        }
+                    }
+                }
+
                 self.record_tool_stats(&prep_name, succeeded, duration_us);
                 outputs[pi] = Some(ExecResult {
                     content: exec_output,
                     status: final_status,
                     image: exec_image,
+                    effects: Vec::new(),
                 });
             }
             drop(futures);

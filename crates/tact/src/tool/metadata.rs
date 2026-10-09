@@ -359,6 +359,37 @@ impl PermissionPolicy {
     }
 }
 
+impl ToolMetadata {
+    /// Builds the language-neutral declaration from the same metadata the
+    /// legacy Agent path uses for permission and display decisions.
+    #[must_use]
+    pub fn capability_declaration(
+        &self,
+        input_schema: Value,
+    ) -> tact_protocol::CapabilityDeclaration {
+        let risk = match self.permission {
+            PermissionPolicy::Read | PermissionPolicy::ReadPath { .. } => {
+                tact_protocol::CapabilityRisk::ReadOnly
+            }
+            PermissionPolicy::Write | PermissionPolicy::WritePath { .. } => {
+                tact_protocol::CapabilityRisk::Medium
+            }
+            PermissionPolicy::High
+            | PermissionPolicy::ShellCommand { .. }
+            | PermissionPolicy::PatchPaths => tact_protocol::CapabilityRisk::High,
+        };
+        tact_protocol::CapabilityDeclaration {
+            name: self.name.to_string(),
+            kind: tact_protocol::CapabilityKind::Tool,
+            version: "1".into(),
+            description: Some(self.description.to_string()),
+            input_schema: Some(input_schema),
+            output_schema: None,
+            risk,
+        }
+    }
+}
+
 /// Whether the file tools could even reach this path.
 ///
 /// They resolve `path` against the workspace and refuse anything that escapes
@@ -683,12 +714,13 @@ pub enum ArgumentSummaryPolicy {
 // Tool effects & structured results
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
 pub enum ToolEffect {
     CompactHistory { focus: Option<String> },
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ToolCallResult {
     pub content: String,
     pub effects: Vec<ToolEffect>,

@@ -202,7 +202,7 @@ pub trait Tool: Send + Sync {
 
 /// A registered tool: handler + its static metadata.
 struct RegisteredTool {
-    handler: Box<dyn Tool>,
+    handler: Arc<dyn Tool>,
     metadata: &'static ToolMetadata,
 }
 
@@ -273,7 +273,7 @@ impl ToolRouter {
         self.tools.insert(
             name,
             RegisteredTool {
-                handler: Box::new(tool),
+                handler: Arc::new(tool),
                 metadata,
             },
         );
@@ -314,26 +314,37 @@ impl ToolRouter {
         self.tools
             .values()
             .map(|registered| {
-                let risk = match registered.metadata.permission {
-                    PermissionPolicy::Read | PermissionPolicy::ReadPath { .. } => {
-                        tact_protocol::CapabilityRisk::ReadOnly
-                    }
-                    PermissionPolicy::Write | PermissionPolicy::WritePath { .. } => {
-                        tact_protocol::CapabilityRisk::Medium
-                    }
-                    PermissionPolicy::High
-                    | PermissionPolicy::ShellCommand { .. }
-                    | PermissionPolicy::PatchPaths => tact_protocol::CapabilityRisk::High,
-                };
-                tact_protocol::CapabilityDeclaration {
-                    name: registered.metadata.name.to_string(),
-                    kind: tact_protocol::CapabilityKind::Tool,
-                    version: "1".into(),
-                    description: Some(registered.metadata.description.to_string()),
-                    input_schema: Some(registered.handler.input_schema()),
-                    output_schema: None,
-                    risk,
-                }
+                registered
+                    .metadata
+                    .capability_declaration(registered.handler.input_schema())
+            })
+            .collect()
+    }
+
+    pub(crate) fn capability_registrations(
+        &self,
+        context: ToolContext,
+        scanner: crate::security::sensitive::Scanner,
+        redaction: crate::security::RedactionConfig,
+    ) -> Vec<crate::kernel::CapabilityRegistration> {
+        self.tools
+            .values()
+            .map(|registered| {
+                let declaration = registered
+                    .metadata
+                    .capability_declaration(registered.handler.input_schema());
+                crate::kernel::CapabilityRegistration::new(
+                    declaration,
+                    Arc::new(
+                        crate::capability::native_tool::NativeToolCapabilityHandler::new(
+                            Arc::clone(&registered.handler),
+                            registered.metadata,
+                            context.clone(),
+                            scanner.clone(),
+                            redaction.clone(),
+                        ),
+                    ),
+                )
             })
             .collect()
     }

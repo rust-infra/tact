@@ -9,7 +9,7 @@ use std::{
 
 use async_trait::async_trait;
 use serde_json::Value;
-use tact_protocol::CapabilityDeclaration;
+use tact_protocol::{CapabilityDeclaration, CapabilityKind, RuntimeEvent, StepId};
 use tokio::time;
 
 use super::{InvocationContext, KernelError};
@@ -205,11 +205,63 @@ impl CapabilityRouter {
             .await
             .map_err(|error| enrich_error(error, &context))?;
         context.ensure_active()?;
-
-        guarded(&context, handler.invoke(context.clone(), input))
+        let lifecycle = if declaration.kind == CapabilityKind::Tool {
+            context.run_id().map(|run_id| {
+                (
+                    run_id.clone(),
+                    StepId::from(context.request_id().as_str()),
+                    declaration.name.clone(),
+                )
+            })
+        } else {
+            None
+        };
+        if let Some((run_id, step_id, tool)) = &lifecycle {
+            record_tool_event(
+                &context,
+                RuntimeEvent::ToolCallStarted {
+                    run_id: run_id.clone(),
+                    step_id: step_id.clone(),
+                    tool: tool.clone(),
+                },
+            )
             .await
-            .map_err(|error| enrich_error(error, &context))
+            .map_err(|error| enrich_error(error, &context))?;
+        }
+
+        let result = guarded(&context, handler.invoke(context.clone(), input))
+            .await
+            .map_err(|error| enrich_error(error, &context));
+        if let Some((run_id, step_id, _tool)) = lifecycle {
+            record_tool_event(
+                &context,
+                RuntimeEvent::ToolCallFinished {
+                    run_id,
+                    step_id,
+                    success: result.is_ok(),
+                },
+            )
+            .await
+            .map_err(|error| enrich_error(error, &context))?;
+        }
+        result
     }
+}
+
+async fn record_tool_event(
+    context: &InvocationContext,
+    event: RuntimeEvent,
+) -> Result<(), KernelError> {
+    let run_id = match &event {
+        RuntimeEvent::ToolCallStarted { run_id, .. }
+        | RuntimeEvent::ToolCallFinished { run_id, .. } => Some(run_id),
+        _ => None,
+    };
+    context
+        .trajectory()
+        .append(context.trajectory_id(), run_id, event.clone())
+        .await?;
+    context.events().publish(event).await
 }
 
 async fn guarded<T, F>(context: &InvocationContext, future: F) -> Result<T, KernelError>

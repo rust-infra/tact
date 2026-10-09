@@ -1,5 +1,6 @@
 use std::{sync::Arc, time::Duration};
 
+use async_trait::async_trait;
 use serde_json::json;
 use tact_protocol::{
     CapabilityDeclaration, CapabilityKind, CapabilityRisk, ErrorCategory, PluginId, ProtocolError,
@@ -7,8 +8,9 @@ use tact_protocol::{
 };
 
 use super::{
-    CapabilityHandler, CapabilityRegistration, CapabilityRouter, FnCapabilityHandler,
-    InvocationContext, KernelError,
+    CapabilityHandler, CapabilityRegistration, CapabilityRouter, EventService, FnCapabilityHandler,
+    InvocationContext, KernelError, PermissionService, RuntimeContext, RuntimeServices,
+    StorageService, TrajectoryService,
 };
 
 fn declaration(name: &str) -> CapabilityDeclaration {
@@ -24,7 +26,11 @@ fn declaration(name: &str) -> CapabilityDeclaration {
 }
 
 fn context() -> InvocationContext {
-    InvocationContext::new(
+    RuntimeContext::with_services(
+        CapabilityRouter::new(),
+        RuntimeServices::with_permission(Arc::new(AllowPermission)),
+    )
+    .invocation(
         RequestId::from("request-1"),
         PluginId::from("plugin-1"),
         "test",
@@ -42,6 +48,38 @@ async fn missing_capability_preserves_invocation_identity() {
     assert_eq!(error.category(), ErrorCategory::CapabilityNotFound);
     assert_eq!(error.request_id(), Some(&RequestId::from("request-1")));
     assert_eq!(error.plugin_id(), Some(&PluginId::from("plugin-1")));
+}
+
+#[tokio::test]
+async fn missing_permission_service_fails_closed() {
+    let router = CapabilityRouter::new();
+    let called = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let handler_called = Arc::clone(&called);
+    router
+        .register_handler(
+            declaration("demo.protected"),
+            FnCapabilityHandler::new(move |_context: InvocationContext, _input| {
+                handler_called.store(true, std::sync::atomic::Ordering::SeqCst);
+                async { Ok(json!("ran")) }
+            }),
+        )
+        .unwrap();
+    let runtime = RuntimeContext::new(router);
+    let error = runtime
+        .router()
+        .invoke(
+            "demo.protected",
+            runtime.invocation(
+                RequestId::from("no-permission-service"),
+                PluginId::from("plugin"),
+                "test",
+            ),
+            json!({}),
+        )
+        .await
+        .expect_err("an unconfigured permission boundary must deny");
+    assert_eq!(error.category(), ErrorCategory::PermissionDenied);
+    assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
 }
 
 #[test]
@@ -90,6 +128,52 @@ fn batch_registration_is_atomic_when_a_capability_conflicts() {
     assert_eq!(error.category(), ErrorCategory::InvalidRequest);
     assert!(router.describe("demo.new").is_none());
     assert_eq!(router.describe_all().len(), 1);
+}
+
+#[tokio::test]
+async fn capability_invocation_publishes_and_records_tool_lifecycle() {
+    let router = CapabilityRouter::new();
+    router
+        .register_handler(
+            declaration("demo.echo"),
+            FnCapabilityHandler::new(|_context: InvocationContext, input| async move { Ok(input) }),
+        )
+        .unwrap();
+    let events = Arc::new(CapturedEvents::default());
+    let trajectory = Arc::new(CapturedTrajectory::default());
+    let runtime = RuntimeContext::with_services(
+        router.clone(),
+        RuntimeServices::new(
+            events.clone(),
+            trajectory.clone(),
+            Arc::new(AllowPermission),
+            Arc::new(NoStorage),
+        ),
+    );
+    let context = runtime
+        .invocation(
+            RequestId::from("evented-call"),
+            PluginId::from("test-plugin"),
+            "test",
+        )
+        .with_run_id(tact_protocol::RunId::from("run-7"))
+        .with_trajectory_id(tact_protocol::TrajectoryId::from("trajectory-7"));
+
+    assert_eq!(
+        router
+            .invoke("demo.echo", context, json!({"ok":true}))
+            .await
+            .unwrap(),
+        json!({"ok":true})
+    );
+    assert!(matches!(
+        events.0.lock().await.as_slice(),
+        [
+            tact_protocol::RuntimeEvent::ToolCallStarted { .. },
+            tact_protocol::RuntimeEvent::ToolCallFinished { success: true, .. }
+        ]
+    ));
+    assert_eq!(trajectory.0.lock().await.len(), 2);
 }
 
 #[tokio::test]
@@ -174,4 +258,67 @@ fn protocol_error_conversion_preserves_metadata() {
     assert_eq!(converted.retryable, protocol.retryable);
     assert_eq!(converted.request_id, protocol.request_id);
     assert_eq!(converted.plugin_id, protocol.plugin_id);
+}
+
+struct AllowPermission;
+
+#[async_trait]
+impl PermissionService for AllowPermission {
+    async fn check(
+        &self,
+        _declaration: &CapabilityDeclaration,
+        _context: &InvocationContext,
+        _input: &serde_json::Value,
+    ) -> Result<(), KernelError> {
+        Ok(())
+    }
+}
+
+struct NoStorage;
+
+#[async_trait]
+impl StorageService for NoStorage {
+    async fn get(
+        &self,
+        _namespace: &str,
+        _key: &str,
+    ) -> Result<Option<serde_json::Value>, KernelError> {
+        Ok(None)
+    }
+
+    async fn set(
+        &self,
+        _namespace: &str,
+        _key: &str,
+        _value: serde_json::Value,
+    ) -> Result<(), KernelError> {
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct CapturedEvents(tokio::sync::Mutex<Vec<tact_protocol::RuntimeEvent>>);
+
+#[async_trait]
+impl EventService for CapturedEvents {
+    async fn publish(&self, event: tact_protocol::RuntimeEvent) -> Result<(), KernelError> {
+        self.0.lock().await.push(event);
+        Ok(())
+    }
+}
+
+#[derive(Default)]
+struct CapturedTrajectory(tokio::sync::Mutex<Vec<tact_protocol::RuntimeEvent>>);
+
+#[async_trait]
+impl TrajectoryService for CapturedTrajectory {
+    async fn append(
+        &self,
+        _trajectory_id: Option<&tact_protocol::TrajectoryId>,
+        _run_id: Option<&tact_protocol::RunId>,
+        event: tact_protocol::RuntimeEvent,
+    ) -> Result<(), KernelError> {
+        self.0.lock().await.push(event);
+        Ok(())
+    }
 }

@@ -29,6 +29,13 @@ async fn start(args: &[&str]) -> NodePluginHost {
     .unwrap()
 }
 
+fn allow_runtime(router: tact::kernel::CapabilityRouter) -> RuntimeContext {
+    RuntimeContext::with_services(
+        router,
+        RuntimeServices::with_permission(Arc::new(AllowPermissions)),
+    )
+}
+
 #[tokio::test]
 async fn registers_chat_capability_and_invokes_it() {
     let host = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
@@ -41,7 +48,7 @@ async fn registers_chat_capability_and_invokes_it() {
     );
     let router = tact::kernel::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
-    let runtime = RuntimeContext::new(router);
+    let runtime = allow_runtime(router);
     let context = runtime.invocation(
         RequestId::from("echo-call"),
         PluginId::from("fixture.chat"),
@@ -75,7 +82,7 @@ async fn chat_command_receives_run_identity_from_runtime() {
     let host = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
     let router = tact::kernel::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
-    let runtime = RuntimeContext::new(router);
+    let runtime = allow_runtime(router);
     let context = runtime
         .invocation(
             RequestId::from("start-chat"),
@@ -181,7 +188,7 @@ async fn denied_capability_never_reaches_node_process() {
 
     let allowed_router = tact::kernel::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &allowed_router).unwrap();
-    let allowed_runtime = RuntimeContext::new(allowed_router);
+    let allowed_runtime = allow_runtime(allowed_router);
     let context = allowed_runtime.invocation(
         RequestId::from("allowed-probe"),
         PluginId::from("fixture.chat"),
@@ -259,7 +266,7 @@ async fn timeout_terminates_failed_host() {
     ));
     let router = tact::kernel::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
-    let runtime = RuntimeContext::new(router);
+    let runtime = allow_runtime(router);
     let context = runtime.invocation(
         RequestId::from("timeout-call"),
         PluginId::from("fixture.chat"),
@@ -279,7 +286,7 @@ async fn cancellation_terminates_only_the_plugin_host() {
     let host = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
     let router = tact::kernel::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
-    let runtime = RuntimeContext::new(router);
+    let runtime = allow_runtime(router);
     let request_id = RequestId::from("cancel-this-call");
     let context = runtime.invocation(request_id.clone(), PluginId::from("fixture.chat"), "test");
     let cancellation = runtime.cancellation().clone();
@@ -301,7 +308,7 @@ async fn malformed_response_fails_host_and_restart_recovers() {
     let host = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
     let router = tact::kernel::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
-    let runtime = RuntimeContext::new(router);
+    let runtime = allow_runtime(router);
     let context = runtime.invocation(
         RequestId::from("malformed-call"),
         PluginId::from("fixture.chat"),
@@ -337,7 +344,7 @@ async fn plugin_crash_does_not_prevent_host_restart() {
     let independent_router = tact::kernel::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&crashed), &crashed_router).unwrap();
     NodePluginHost::register_with_router(Arc::clone(&independent), &independent_router).unwrap();
-    let crashed_runtime = RuntimeContext::new(crashed_router);
+    let crashed_runtime = allow_runtime(crashed_router);
     let context = crashed_runtime.invocation(
         RequestId::from("crash-call"),
         PluginId::from("fixture.chat"),
@@ -357,7 +364,7 @@ async fn plugin_crash_does_not_prevent_host_restart() {
         independent.lock().await.state(),
         tact::plugin::PluginState::Running
     );
-    let independent_runtime = RuntimeContext::new(independent_router);
+    let independent_runtime = allow_runtime(independent_router);
     let context = independent_runtime.invocation(
         RequestId::from("independent-call"),
         PluginId::from("fixture.chat"),

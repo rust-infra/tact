@@ -340,6 +340,10 @@ pub struct AgentRuntime {
     pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
     /// Protocol-neutral event sink used by non-TUI clients during migration.
     pub runtime_event_sink: Option<Arc<dyn crate::kernel::RuntimeEventSink>>,
+    /// Async event service for capability invocations. When an EventTransport
+    /// is installed, kernel tool lifecycle events are broadcast and recorded
+    /// by the session's trajectory subscriber.
+    pub runtime_event_service: Option<Arc<dyn crate::kernel::EventService>>,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub session_store: Option<DynSessionStore>,
     /// Set together with [`Self::session_store`] via [`Agent::with_session`] at startup.
@@ -504,6 +508,7 @@ impl Agent {
                 stats: Arc::new(RwLock::new(SessionStats::default())),
                 ui_tx: None,
                 runtime_event_sink: None,
+                runtime_event_service: None,
                 cancel_flag,
                 session_store: None,
                 session_id: None,
@@ -828,6 +833,20 @@ impl Agent {
         sink: Arc<dyn crate::kernel::RuntimeEventSink>,
     ) -> Self {
         self.runtime.runtime_event_sink = Some(sink);
+        self
+    }
+
+    /// Attach the interactive Runtime event transport as both the synchronous
+    /// Agent event sink and the async capability event service.
+    #[must_use]
+    pub fn with_runtime_event_transport(
+        mut self,
+        transport: crate::kernel::EventTransport,
+    ) -> Self {
+        let event_sink: Arc<dyn crate::kernel::RuntimeEventSink> = Arc::new(transport.clone());
+        let event_service: Arc<dyn crate::kernel::EventService> = Arc::new(transport);
+        self.runtime.runtime_event_sink = Some(event_sink);
+        self.runtime.runtime_event_service = Some(event_service);
         self
     }
 
@@ -1896,9 +1915,10 @@ impl Agent {
             .collect()
     }
 
-    /// Returns the protocol-neutral declarations for native and connected MCP
-    /// tools. The legacy LLM-facing specs remain available separately while
-    /// hosts migrate discovery to the Plugin Protocol.
+    /// Returns protocol-neutral declarations for native tools, connected MCP
+    /// tools, and Tact's MCP prompt/resource commands. Legacy LLM-facing specs
+    /// remain available separately while hosts migrate discovery to the Plugin
+    /// Protocol.
     pub fn capability_declarations(&self) -> Vec<tact_protocol::CapabilityDeclaration> {
         let mut declarations = self.tools.capability_declarations();
         declarations.extend(self.mcp_router.capability_declarations());
@@ -3071,6 +3091,85 @@ mod tests {
         assert!(
             prompt.contains("Call recent_activity to orient yourself."),
             "{prompt}"
+        );
+    }
+
+    #[tokio::test]
+    async fn mcp_tool_execution_uses_the_shared_capability_router() {
+        ensure_config();
+        use std::{borrow::Cow, sync::Arc};
+
+        use rmcp::model::{Content, JsonObject, Tool as McpTool};
+        use serde_json::json;
+
+        let tool = McpTool {
+            name: Cow::Borrowed("echo"),
+            title: None,
+            description: Some(Cow::Borrowed("Echo input")),
+            input_schema: Arc::new(JsonObject::new()),
+            output_schema: None,
+            annotations: None,
+            execution: None,
+            icons: None,
+            meta: None,
+        };
+        let service = Arc::new(crate::mcp::MockMcpService::new(
+            vec![tool.clone()],
+            |params| {
+                let value = params
+                    .arguments
+                    .as_ref()
+                    .and_then(|arguments| arguments.get("text"))
+                    .and_then(|value| value.as_str())
+                    .unwrap_or_default();
+                Ok(rmcp::model::CallToolResult::success(vec![Content::text(
+                    format!("mcp:{value}"),
+                )]))
+            },
+        ));
+        let mut mcp = crate::mcp::MCPToolRouter::new();
+        mcp.register_client(crate::mcp::McpClient::with_service(
+            "db",
+            vec![tool],
+            service.clone(),
+        ));
+        let mut permission = crate::permission::PermissionManager::try_new(
+            crate::permission::PermissionMode::Default,
+        )
+        .unwrap();
+        permission.allow_tool("mcp__db__echo");
+        let mock = MockClient::new(vec![
+            (
+                vec![ContentBlock::ToolUse {
+                    id: "mcp-call-1".into(),
+                    name: "mcp__db__echo".into(),
+                    input: json!({ "text": "through-router" }),
+                }],
+                Some(StopReason::ToolUse),
+            ),
+            (vec![make_text_block("done")], Some(StopReason::EndTurn)),
+        ]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("mcp_capability_router"),
+            crate::tool::toolset(),
+            mcp,
+            permission,
+            AgentSystemPrompt::Static("test".into()),
+        );
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "call MCP")))
+            .await
+            .expect("agent loop should finish");
+
+        assert_eq!(
+            service.calls(),
+            vec![("echo".into(), json!({ "text": "through-router" }))]
+        );
+        assert!(
+            tool_result_for(&agent.runtime.context, "mcp-call-1")
+                .unwrap()
+                .contains("mcp:through-router")
         );
     }
 

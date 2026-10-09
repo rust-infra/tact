@@ -16,7 +16,7 @@ use tact::{
 };
 use tact_protocol::{
     CapabilityDeclaration, ErrorCategory, PluginId, PluginRequest, PluginResponse, ProtocolVersion,
-    RequestId, RuntimeEvent, StepId,
+    RequestId,
 };
 use tokio::{sync::Mutex, time::Instant};
 
@@ -429,7 +429,7 @@ impl NodePluginHost {
         router: &CapabilityRouter,
         host_calls: Arc<dyn HostCallService>,
     ) -> Result<(), KernelError> {
-        let declarations = host
+        let (declarations, request_timeout) = host
             .try_lock()
             .map_err(|_| {
                 KernelError::new(
@@ -438,9 +438,8 @@ impl NodePluginHost {
                     "node_plugin",
                     true,
                 )
-            })?
-            .capabilities
-            .clone();
+            })
+            .map(|host| (host.capabilities.clone(), host.request_timeout))?;
         let own_capabilities = Arc::new(
             declarations
                 .iter()
@@ -458,6 +457,7 @@ impl NodePluginHost {
                         host_calls: Arc::clone(&host_calls),
                         router: router.clone(),
                         own_capabilities: Arc::clone(&own_capabilities),
+                        request_timeout,
                         capability,
                     }),
                 )
@@ -530,26 +530,18 @@ struct NodeCapabilityHandler {
     host_calls: Arc<dyn HostCallService>,
     router: CapabilityRouter,
     own_capabilities: Arc<BTreeSet<String>>,
+    request_timeout: Duration,
     capability: String,
 }
 
 #[async_trait]
 impl CapabilityHandler for NodeCapabilityHandler {
     async fn invoke(&self, context: InvocationContext, input: Value) -> Result<Value, KernelError> {
-        let step_id = StepId::from(context.request_id().as_str());
-        if let Some(run_id) = context.run_id() {
-            let event = RuntimeEvent::ToolCallStarted {
-                run_id: run_id.clone(),
-                step_id: step_id.clone(),
-                tool: self.capability.clone(),
-            };
+        let context = if context.deadline().is_none() {
+            context.with_timeout(self.request_timeout)
+        } else {
             context
-                .trajectory()
-                .append(context.trajectory_id(), Some(run_id), event.clone())
-                .await?;
-            context.events().publish(event).await?;
-        }
-
+        };
         let cancellation = context.cancellation_token();
         let deadline = context.deadline();
         let cleanup_host = Arc::clone(&self.host);
@@ -574,18 +566,6 @@ impl CapabilityHandler for NodeCapabilityHandler {
         let result = self.invoke_plugin(&mut host, &context, input).await;
         completed.store(true, std::sync::atomic::Ordering::Release);
         cleanup.abort();
-        if let Some(run_id) = context.run_id() {
-            let event = RuntimeEvent::ToolCallFinished {
-                run_id: run_id.clone(),
-                step_id,
-                success: result.is_ok(),
-            };
-            context
-                .trajectory()
-                .append(context.trajectory_id(), Some(run_id), event.clone())
-                .await?;
-            context.events().publish(event).await?;
-        }
         result
     }
 }

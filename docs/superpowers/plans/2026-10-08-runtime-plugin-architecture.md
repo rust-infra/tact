@@ -172,11 +172,11 @@
 - Produces one `CapabilityRouter::invoke` path for native, MCP, and future plugin tools.
 - Preserves `ToolMetadata`, `PermissionPolicy`, `ResourcePolicy`, `ToolPresentation`, `ToolEffect`, and stable external names.
 
-- [ ] Adapt native `Tool` implementations without changing their public LLM names or metadata.
-- [ ] Adapt `mcp__<server>__<tool>` and MCP prompt/resource routing through protocol capabilities.
-- [ ] Move permission, resource, presentation, output, and trajectory hooks to the shared invocation boundary.
-- [ ] Test native tool success/failure/effect application, MCP namespacing, unknown tools, and fail-closed privileges.
-- [ ] Run `cargo test -p tact --lib capability::`.
+- [x] Adapt native `Tool` implementations without changing their public LLM names or metadata.
+- [x] Adapt `mcp__<server>__<tool>` and MCP prompt/resource routing through protocol capabilities.
+- [x] Route execution through one `CapabilityRouter::invoke` path, consume one-use preflight authorization in `PermissionService`, carry output/effects through the adapter result, and record tool lifecycle through event/trajectory services. Keep Agent resource-wave scheduling and TUI presentation projection in their current compatibility owners until Tasks 8/9 replace those paths.
+- [x] Test native tool success/failure/effect application, MCP namespacing, unknown tools, and fail-closed privileges.
+- [x] Run `cargo test -p tact --lib capability::`.
 
 ### Task 8: Move Agent and Session behind extension interfaces
 

@@ -55,6 +55,13 @@ fn manifest() -> WasmPluginManifest {
     }
 }
 
+fn allow_runtime(router: CapabilityRouter) -> RuntimeContext {
+    RuntimeContext::with_services(
+        router,
+        RuntimeServices::with_permission(Arc::new(AllowPermissions)),
+    )
+}
+
 async fn instantiate(timeout: Duration) -> (WasmPluginHost, tempfile::TempDir) {
     instantiate_with(manifest(), timeout).await
 }
@@ -89,7 +96,7 @@ async fn instantiates_with_limits_and_routes_declared_calls() {
     let (host, _module_dir) = instantiate(Duration::from_secs(2)).await;
     let router = CapabilityRouter::new();
     host.register_with_router(&router).unwrap();
-    let runtime = RuntimeContext::new(router);
+    let runtime = allow_runtime(router);
     let context = runtime
         .invocation(
             RequestId::from("wasm-echo"),
@@ -134,7 +141,7 @@ async fn guest_host_calls_are_denied_when_not_granted() {
     let (host, _module_dir) = instantiate_with(manifest, Duration::from_secs(2)).await;
     let router = CapabilityRouter::new();
     host.register_with_router(&router).unwrap();
-    let runtime = RuntimeContext::new(router);
+    let runtime = allow_runtime(router);
     let context = runtime.invocation(
         RequestId::from("wasm-no-clock"),
         PluginId::from("fixture.wasm"),
@@ -156,7 +163,7 @@ async fn guest_cannot_recursively_invoke_its_own_capability() {
     let (host, _module_dir) = instantiate_with(manifest, Duration::from_secs(2)).await;
     let router = CapabilityRouter::new();
     host.register_with_router(&router).unwrap();
-    let runtime = RuntimeContext::new(router);
+    let runtime = allow_runtime(router);
     let context = runtime
         .invocation(
             RequestId::from("wasm-self-call"),
@@ -278,7 +285,7 @@ async fn timeout_and_interrupt_stop_the_guest_instance() {
     let host = Arc::new(host);
     let router = CapabilityRouter::new();
     host.register_with_router(&router).unwrap();
-    let runtime = RuntimeContext::new(router);
+    let runtime = allow_runtime(router);
     let request_id = RequestId::from("wasm-cancel");
     let context = runtime.invocation(request_id.clone(), PluginId::from("fixture.wasm"), "test");
     let call_runtime = runtime.clone();
@@ -412,7 +419,7 @@ async fn declared_external_host_capability_uses_kernel_router() {
             )),
         ))
         .unwrap();
-    let runtime = RuntimeContext::new(router.clone());
+    let runtime = allow_runtime(router.clone());
     let context = runtime.invocation(
         RequestId::from("external-host-call"),
         PluginId::from("fixture.wasm"),

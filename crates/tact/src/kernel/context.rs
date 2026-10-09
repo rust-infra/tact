@@ -95,7 +95,33 @@ impl RuntimeServices {
         Self::new(
             Arc::new(NoopEventService),
             Arc::new(NoopTrajectoryService),
-            Arc::new(AllowPermissionService),
+            Arc::new(DenyPermissionService),
+            Arc::new(NoopStorageService),
+        )
+    }
+
+    /// Uses the default non-persistent services with a caller-supplied
+    /// permission boundary. Useful when the Runtime host owns the durable
+    /// event/trajectory and storage services elsewhere.
+    #[must_use]
+    pub fn with_permission(permission: Arc<dyn PermissionService>) -> Self {
+        Self::new(
+            Arc::new(NoopEventService),
+            Arc::new(NoopTrajectoryService),
+            permission,
+            Arc::new(NoopStorageService),
+        )
+    }
+
+    #[must_use]
+    pub fn with_event_and_permission(
+        events: Arc<dyn EventService>,
+        permission: Arc<dyn PermissionService>,
+    ) -> Self {
+        Self::new(
+            events,
+            Arc::new(NoopTrajectoryService),
+            permission,
             Arc::new(NoopStorageService),
         )
     }
@@ -110,8 +136,8 @@ pub struct RuntimeContext {
 }
 
 impl RuntimeContext {
-    /// Creates a context with no-op event, trajectory, permission and storage
-    /// services. This is useful for an in-process host that only needs routing.
+    /// Creates a context with no-op event, trajectory, and storage services.
+    /// Invocation is denied until a permission service is explicitly installed.
     #[must_use]
     pub fn new(router: CapabilityRouter) -> Self {
         Self::with_services(router, RuntimeServices::noop())
@@ -360,17 +386,19 @@ impl TrajectoryService for NoopTrajectoryService {
     }
 }
 
-struct AllowPermissionService;
+struct DenyPermissionService;
 
 #[async_trait]
-impl PermissionService for AllowPermissionService {
+impl PermissionService for DenyPermissionService {
     async fn check(
         &self,
         _declaration: &CapabilityDeclaration,
         _context: &InvocationContext,
         _input: &Value,
     ) -> Result<(), KernelError> {
-        Ok(())
+        Err(KernelError::permission_denied(
+            "permission service is not configured",
+        ))
     }
 }
 
