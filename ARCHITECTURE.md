@@ -17,7 +17,7 @@ above them.
 |---|---|---|
 | `crates/tact` | `tact` | **Runtime Kernel** — capability router, the permission decision (`permission.rs`: mode/risk/rules/allow-list ordering) plus the sensitive-path and security policy it consults (`security/`), event transport, minimal storage, cancellation / timeout / error, plugin registry, payload redaction. Depends on `tact_protocol` only. |
 | `crates/tact_protocol` | `tact_protocol` | **Plugin Protocol** — language-neutral IDs, envelopes, capability declarations, structured runtime events / commands, interactions, error categories, and the shared payload types. `serde` only. |
-| `crates/tact_view` | `tact_view` | **View contract** — the Rust view-model types a View adapter renders (`AgentUpdate`, `UserCommand`, `AgentErrorKind`), the `runtime_events_for` projection onto the structured protocol events, and its inverse `runtime_event_to_agent_updates`. These are deliberately outside `tact_protocol`. |
+| `crates/tact_view` | `tact_view` | **View contract** — the Rust view-model types a View adapter still renders itself (`UserCommand`, `AgentErrorKind`). The `AgentUpdate` enum and its projection pair are deleted: the runtime and the View now exchange `tact_protocol::RuntimeEvent` directly. |
 | `crates/tact_trajectory` | `tact_trajectory` | **Trajectory** — execution-fact model, in-memory and SQLite recorders, ordered replay. Implements the Kernel's `TrajectoryService`. |
 | `crates/tact_plugin_host` | `tact_plugin_host` | **Plugin host machinery** — lifecycle boundary, stdio transport, supervision (handshake, correlation, timeouts, cancellation, crash detection, shutdown drain). |
 | `crates/tact_plugin_node` | `tact_plugin_node` | **Node.js Host** — the Node entry point over the shared host machinery. |
@@ -133,7 +133,7 @@ flowchart TB
     end
 
     subgraph core["tact_protocol — shared types"]
-        UPD["AgentUpdate enum"]
+        EV["RuntimeEvent enum"]
         CMD["UserCommand enum"]
         STEP["PlanStep / StepResult"]
     end
@@ -151,7 +151,7 @@ flowchart TB
     B1 --> A
     B1 --> T
     T -- UnboundedSender<UserCommand> --> A
-    A -- UnboundedSender<AgentUpdate> --> T
+    A -- RuntimeEvent --> T
 
     A --> TOOL
     A --> MCP
@@ -243,7 +243,7 @@ sequenceDiagram
     TUI ->> U: Show completion / statistics
 ```
 
-Key `AgentUpdate` variants used today:
+Key `RuntimeEvent` variants used today:
 
 | Variant | Meaning |
 |---|---|
@@ -573,8 +573,8 @@ flowchart TD
 flowchart LR
     subgraph Channels["Tokio Unbounded MPSC Channels"]
         direction LR
-        TX1["ui_tx<br/>(UnboundedSender&lt;AgentUpdate&gt;)"]
-        RX1["agent_rx<br/>(UnboundedReceiver&lt;AgentUpdate&gt;)"]
+        TX1["ui_tx<br/>(UnboundedSender&lt;RuntimeEvent&gt;)"]
+        RX1["agent_rx<br/>(UnboundedReceiver&lt;RuntimeEvent&gt;)"]
         TX2["user_cmd_tx<br/>(UnboundedSender&lt;UserCommand&gt;)"]
         RX2["cmd_rx<br/>(UnboundedReceiver&lt;UserCommand&gt;)"]
     end
@@ -588,7 +588,7 @@ flowchart LR
     end
 
     A -- "Send status updates" --> TX1
-    TX1 -- "AgentUpdate" --> RX1
+    TX1 -- "RuntimeEvent" --> RX1
     RX1 --> TUI
 
     TUI -- "Send user commands" --> TX2
@@ -749,7 +749,7 @@ flowchart TB
 
 The Kernel is `crates/tact` itself: capability routing, permission boundary, events, minimal storage, cancellation, interactions, the plugin registry, and payload redaction, depending only on `crates/tact_protocol`. Execution facts live in `crates/tact_trajectory` (model, in-memory and SQLite recorders, ordered replay) and implement the Kernel's `TrajectoryService`. Shared host machinery — lifecycle, stdio transport, supervision — is `crates/tact_plugin_host`; `crates/tact_plugin_node` and `crates/tact_plugin_wasm` are the language-specific entry points above it, and neither depends on the extension crate. `crates/tact_protocol` holds the language-neutral IDs, envelopes, capabilities, runtime events, commands, interactions, and errors. Interactive and headless hosts attach the SQLite trajectory subscriber before the Agent starts. The TUI consumes Runtime events for run lifecycle, streaming, status, popups, and select requests; it sends Runtime start, cancel, and interaction-response commands.
 
-Rich tool-card lifecycle details and specialized Tact slash commands still use the in-process `AgentUpdate` / `UserCommand` adapter. Official Agent, Chat, Session, Tools, and Workflow manifests register through `PluginRegistry` and are marked serving (`Running`) as they register — the in-process host serves an extension the moment it is registered, so `state` / `health` report what is actually live; Agent/Chat, Session, and Workflow capabilities register through `CapabilityRouter`, while native and MCP tool handlers are installed through the same router for each execution wave.
+The View's event path is protocol-only: `AgentUpdate` and its projection pair are deleted, and the App, the widget components and the harness all consume `tact_protocol::RuntimeEvent`. `UserCommand` still wraps `RuntimeCommand` for the command direction — replacing it needs a design decision (the app commands have to become `Command` capabilities) and is recorded in `docs/superpowers/plans/2026-10-09-legacy-view-adapter-removal.md`. Official Agent, Chat, Session, Tools, and Workflow manifests register through `PluginRegistry` and are marked serving (`Running`) as they register — the in-process host serves an extension the moment it is registered, so `state` / `health` report what is actually live; Agent/Chat, Session, and Workflow capabilities register through `CapabilityRouter`, while native and MCP tool handlers are installed through the same router for each execution wave.
 
 ### Declared but not yet consumed
 

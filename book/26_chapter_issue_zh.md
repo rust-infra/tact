@@ -4,6 +4,25 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-09 — `AgentUpdate` 类型删除，View 事件路径端到端走协议事件
+
+| Field | Value |
+|-------|-------|
+| **Type** | refactor（无用户可见行为变化；一条内部类型消失） |
+| **Related** | `crates/tact_view/src/lib.rs`、`crates/tui/**`、`crates/agent_tui_kit/**`、`crates/tact_ui/src/test_support.rs`；`ARCHITECTURE.md` §0/§1/§10/§15 |
+
+**现象 / 动机：** 上一步把进程内通道换成协议事件后，**最后一个** legacy 类型仍在：`AgentUpdate`（及其投影对 `runtime_events_for` / `runtime_event_to_agent_updates`）是 View 自己的事件词汇。spec §2 把它列为「migration input」——应由 `RuntimeEvent` 取代。
+
+**决策：** App 改为 `handle_runtime_event(RuntimeEvent)`，`agent_tui_kit::Component::on_update` 改为收 `&RuntimeEvent`，整个 `AgentUpdate` 枚举与投影对从 `tact_view` 删除。select 请求的 id 在 App 内部**保持 `u64`**、只在边界转 `RequestId`（沿用 `ui_responder` 已有的 `protocol_request_id` 形状），因此没有重构 select popup。
+
+**改后行为：** 全仓已无 `AgentUpdate` 类型。渲染字符串、宽度、顺序一律未改（buffer 级渲染测试未改动且全绿）。**删除的测试恰好 5 个**，且都是 `tact_view` 的投影测试（`tasks_changed_snapshot_round_trips_fields`、`subagents_changed_snapshot_round_trips_fields`、`tool_progress_event_keeps_ordered_chunks`、`select_projection_keeps_log_confirm`、`a_run_less_turn_does_not_invent_a_run_id`）——被测对象已不存在；没有削弱任何断言。
+
+**Verification：** `./scripts/check-rust.sh` 退出 0；`cargo test --workspace` **2857 passed / 0 failed**（2862 − 上述 5 个）。
+
+**风险：** 没有「整段会话端到端渲染」的测试，建议人工打开一次 TUI 目视确认。
+
+**Pointers:** `docs/superpowers/plans/2026-10-09-legacy-view-adapter-removal.md`。
+
 ## 1. 2026-10-09 — 进程内事件通道由 `AgentUpdate` 改为协议 `RuntimeEvent`
 
 | Field | Value |
