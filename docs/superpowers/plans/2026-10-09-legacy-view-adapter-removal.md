@@ -96,6 +96,22 @@ Interaction API" needs both.
 `RespondInteraction`, `Subscribe`, `Resume`), so this is a wiring change like the
 other one: replace the enum, not the payload.
 
+**Refinement (same day): that last sentence is wrong, and the direction is not a
+sweep at all.** `UserCommand` has **20 variants** and only one of them is the
+protocol enum; the other 19 are Tact's own command vocabulary — `SubmitTask`,
+`Cancel`, `Compact`, `QueryBalance` / `QueryStats` / `QueryBackground`,
+`SetPermissionMode` / `SetThinkingBudget` / `SetReasoningEffort` / `SetModel`,
+`SubagentFinishedNotification`, `CancelSubagent`, `McpAuth` / `McpList` /
+`McpPrompts`. Nothing in `RuntimeCommand` can carry them.
+
+The architecture already says where they belong: §4 lists `Command` as a plugin
+*contribution* kind, and the plan's Task 10 registers "official … Tools and
+Workflow extensions" with commands owned by Chat. So the end state is those
+commands as **capability invocations**, not as enum variants — which makes this a
+**design decision plus a migration**, not a mechanical replacement. Sizing it as
+"another ~180-reference sweep" understated it; the 179 references are the easy
+part.
+
 ### Production consumers of `AgentUpdate`
 
 | File | refs |
