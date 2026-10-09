@@ -75,6 +75,27 @@ variants (`StreamChunk`, `ThinkingChunk`, `TokenUsage`, `ModelInfo`,
 `StepStarted`, `StepFinished`, `StepFailed`). Giving it a protocol-neutral
 streaming delta (or `RuntimeEvent`) would drop that dependency.
 
+### The other direction: `UserCommand` still wraps `RuntimeCommand`
+
+Measured 2026-10-09. The Runtime → View direction is not the only legacy surface.
+A View's commands travel as `UserCommand::Runtime(RuntimeCommand::…)` — the
+protocol type exists and is used, but it only ever appears **nested inside the
+legacy enum**, which the design says it should replace:
+
+- **22** wrap sites (`UserCommand::Runtime(…)`), **15** unwrap/match sites;
+- `UserCommand` totals **179** references: `tui` 108, `tact_ui` 65,
+  `tact_view` 4, `tact_extensions` 2.
+
+So the View → Runtime boundary crosses the legacy type in exactly the same way
+the Runtime → View boundary crosses `AgentUpdate`, and it is a *separate* sweep
+(no `AgentUpdate` involved). Neither can be finished by the other, and the
+acceptance item "TUI, Web, Desktop and External Client use only Views /
+Interaction API" needs both.
+
+`RuntimeCommand` itself is complete (`StartRun`, `CancelRun`,
+`RespondInteraction`, `Subscribe`, `Resume`), so this is a wiring change like the
+other one: replace the enum, not the payload.
+
 ### Production consumers of `AgentUpdate`
 
 | File | refs |
