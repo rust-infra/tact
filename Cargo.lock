@@ -4852,7 +4852,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "tact_protocol",
- "tact_view",
  "thiserror 2.0.19",
  "tokio",
  "tracing",

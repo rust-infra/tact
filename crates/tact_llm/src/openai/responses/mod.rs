@@ -11,6 +11,7 @@ pub use request_options::ResponsesRequestOptions;
 
 use std::sync::Arc;
 
+use crate::stream_event;
 use async_openai_responses::{
     Client, config::Config, error::OpenAIError, types::responses::ResponseStreamEvent,
 };
@@ -19,7 +20,7 @@ use reqwest13::header::{AUTHORIZATION, HeaderMap};
 use secrecy::ExposeSecret as LegacyExposeSecret;
 use secrecy10::{ExposeSecret, SecretString};
 use serde_json::Value;
-use tact_view::AgentUpdate;
+use tact_protocol::RuntimeEvent;
 use tokio::sync::mpsc::UnboundedSender;
 
 use self::{
@@ -588,7 +589,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     ) -> Result<LlmResponse, LlmError> {
         if let Some(ProviderConversationState::OpenAiResponses(state)) = provider_state {
             self.validate_state_binding(state)?;
@@ -646,7 +647,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         if let Some(usage) = &normalized.usage
             && let Some(tx) = &ui_tx
         {
-            let _ = tx.send(AgentUpdate::TokenUsage(usage.clone()));
+            let _ = tx.send(stream_event::token_usage(usage.clone()));
         }
         let state_update = self.state_update(&normalized, request, input_items)?;
         Ok(Self::into_result(normalized, request_body, state_update))

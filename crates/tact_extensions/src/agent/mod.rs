@@ -1625,20 +1625,30 @@ impl Agent {
         anyhow::Error,
     > {
         let view_updates = self.tool_context.view_updates.clone();
-        let (ui_tx, forwarder) = if self.runtime.runtime_event_sink.is_some() {
+        let (ui_tx, forwarder) = {
+            // The model adapter only ever sees a request, never a run, so it
+            // emits every streaming fact with `run_id: None`. The emitter owns
+            // the run identity and stamps it on the way through.
             let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+            #[cfg(any(test, feature = "test-support"))]
+            let legacy_tx = self.tool_context.ui_tx.clone();
             let forwarder = tokio::spawn(async move {
-                while let Some(update) = ui_rx.recv().await {
-                    let _ = view_updates.emit(update);
+                while let Some(event) = ui_rx.recv().await {
+                    #[cfg(any(test, feature = "test-support"))]
+                    if let Some(tx) = legacy_tx.as_ref() {
+                        // A harness that has not migrated yet still reads the
+                        // legacy view model; project back for it.
+                        for update in tact_view::runtime_event_to_agent_updates(event) {
+                            if tx.send(update).is_err() {
+                                return;
+                            }
+                        }
+                        continue;
+                    }
+                    let _ = view_updates.emit_runtime_event(event);
                 }
             });
             (Some(ui_tx), Some(forwarder))
-        } else {
-            #[cfg(any(test, feature = "test-support"))]
-            let ui_tx = self.tool_context.ui_tx.clone();
-            #[cfg(not(any(test, feature = "test-support")))]
-            let ui_tx = None;
-            (ui_tx, None)
         };
         let response = self
             .runtime
