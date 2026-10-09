@@ -13,7 +13,7 @@ and in the log. Naming them is honest, but three of them are pure loss for the u
    exposes 21 tools ≈ 34.6 KB of JSON schema ≈ 8.7k tokens; a user who needs the seven
    recall tools still pays for `delete_project`, `schema_diff`, `create_memory_project`, …
 2. **Startup failure.** The stdio handshake timeout is the fixed `MCP_INIT_TIMEOUT` (60s,
-   `crates/tact/src/mcp/mod.rs`). A cold `uvx basic-memory mcp` measured ~100s, so the
+   `crates/tact_extensions/src/mcp/mod.rs`). A cold `uvx basic-memory mcp` measured ~100s, so the
    server is reported as failed with no way to say "this one is slow".
 3. **Approval friction.** `normalize_mcp_capability` returns `CapabilityRisk::High` for
    every MCP tool, so a read-only recall tool prompts on every call. The only escape today

@@ -1,6 +1,6 @@
 # 上下文压缩（Context Compaction）
 
-本章说明 Tact 如何把长时间对话**压进模型上下文窗口**：每轮廉价的原地截断（`micro_compact`）、触及上限时的 LLM 摘要（`compact_history`，非 Responses provider）、OpenAI Responses 的原生 `/responses/compact`，以及 transcript / 超大工具输出的落盘溢出。原语在 `crates/tact/src/compact/mod.rs`；编排在 `crates/tact/src/agent/mod.rs` 的 `Agent::compact_history`。
+本章说明 Tact 如何把长时间对话**压进模型上下文窗口**：每轮廉价的原地截断（`micro_compact`）、触及上限时的 LLM 摘要（`compact_history`，非 Responses provider）、OpenAI Responses 的原生 `/responses/compact`，以及 transcript / 超大工具输出的落盘溢出。原语在 `crates/tact_extensions/src/compact/mod.rs`；编排在 `crates/tact_extensions/src/agent/mod.rs` 的 `Agent::compact_history`。
 
 压缩也是一种**恢复策略**：当 provider 因 prompt 过长拒绝对话时，agent 会先压缩再重试。见 [错误恢复](./06_chapter_recovery_zh.md)（英文）。
 
@@ -101,7 +101,7 @@ graph TD
 1. **入口路径** — 在 push 用户 turn 之前，`should_auto_compact` 会预留 `estimate(user_turn)`，避免刚 append 就立刻撑爆窗口。
 2. **每次循环迭代** — 在模型请求前（含工具后的续写 / recovery）先跑 `micro_compact`（默认关闭时立即返回，见 §9），再跑 `should_auto_compact(incoming = 0)`。
 3. **工具执行之后** — 只有**成功**的 `compact` 工具才会设置 `manual_compact`；该路径调用 `compact_history(focus)` 后回到循环顶部。失败 / 被拒绝的 compact 调用不会改写历史。
-4. **Prompt-too-long 恢复** 执行 `compact_history` 后 `continue` 循环（同一任务、新 context）。上限：`MAX_COMPACT_ATTEMPTS`（3，`crates/tact/src/recovery.rs`）。细节见 [错误恢复](./06_chapter_recovery_zh.md)。
+4. **Prompt-too-long 恢复** 执行 `compact_history` 后 `continue` 循环（同一任务、新 context）。上限：`MAX_COMPACT_ATTEMPTS`（3，`crates/tact_extensions/src/recovery.rs`）。细节见 [错误恢复](./06_chapter_recovery_zh.md)。
 5. **手动 `compact` 工具** 不能在工具处理函数*内部*改写 context（API 有效性）。Dispatch 仅在成功时记录 flag；`compact_history` 在 tool results **追加之后**再跑。
 
 ---
@@ -464,15 +464,15 @@ flowchart TD
            <LLM 摘要，按 6 点组织：>
            1. 当前目标：给 compact 模块加 80% 提前触发
            2. 关键发现：should_auto_compact 同时使用实际与估算 token
-           3. 涉及文件：crates/tact/src/compact/mod.rs（should_auto_compact）、
-              crates/tact/src/agent/mod.rs（compact_history）
+           3. 涉及文件：crates/tact_extensions/src/compact/mod.rs（should_auto_compact）、
+              crates/tact_extensions/src/agent/mod.rs（compact_history）
            4. 剩余工作：补单元测试、跑 cargo test
            5. 用户偏好：先加 TODO，后续再优化
            6. 错误：暂无
 
            Recently accessed files (re-read if you need their contents):
-           - crates/tact/src/compact/mod.rs
-           - crates/tact/src/agent/mod.rs
+           - crates/tact_extensions/src/compact/mod.rs
+           - crates/tact_extensions/src/agent/mod.rs
            </context-handoff>"
 ```
 
@@ -518,7 +518,7 @@ graph TD
 
 ## 6. 手动压缩：`compact` 工具
 
-模型可通过 `compact` 工具请求压缩（`crates/tact/src/tool/compact.rs`）。
+模型可通过 `compact` 工具请求压缩（`crates/tact_extensions/src/tool/compact.rs`）。
 
 ```mermaid
 sequenceDiagram
@@ -642,7 +642,7 @@ graph TD
 | `agent.max_tokens` | 8,000（Kimi K2.x 32,000） | 回复预算、压缩重建时的预留、自动触发的预留——以及 effort 语义 provider 上摘要信封的**下限**（以「指令仍放得下」封顶）；budget 语义 provider 仍保持经典 `min(窗口 × 20%, 2,000)` 文本上限 |
 | `agent.micro_compact_enabled`（`--no-micro-compact`） | **`false`** | 每轮 stub 的开关。默认关闭（opt-in）：TOML 里写 `true` 才启用；`--no-micro-compact` 只能强制关闭，无法开启 |
 
-经 `crates/tact/src/config/` 分层解析（CLI > TOML > 默认）。编译期常量（`KEEP_RECENT_TOOL_RESULTS`、`PERSIST_THRESHOLD` …）**尚不可配置**。
+经 `crates/tact_extensions/src/config/` 分层解析（CLI > TOML > 默认）。编译期常量（`KEEP_RECENT_TOOL_RESULTS`、`PERSIST_THRESHOLD` …）**尚不可配置**。
 
 ---
 
@@ -650,12 +650,12 @@ graph TD
 
 | 文件 | 职责 |
 |------|------|
-| `crates/tact/src/compact/mod.rs` | `micro_compact`、`should_auto_compact`、`estimate_context_tokens`、`collect_user_messages`、`build_compacted_history`、`write_transcript`、`persist_large_output`、`compacted_context`、`CompactState` |
-| `crates/tact/src/agent/mod.rs` | 循环触发；`compact_history` / `compact_history_legacy`；`remember_recent_file`；`replace_persisted_context` |
-| `crates/tact/src/agent/tool_dispatch.rs` | 原生/MCP 结果的 `persist_large_output`；`manual_compact` flag；近期文件追踪 |
-| `crates/tact/src/tool/compact.rs` | `compact` 工具 stub + `focus` |
-| `crates/tact/src/recovery.rs` | Prompt-too-long 分类 → 压缩 |
-| `crates/tact/src/consts.rs` | `transcript_dir()`、`tool_results_dir()` |
+| `crates/tact_extensions/src/compact/mod.rs` | `micro_compact`、`should_auto_compact`、`estimate_context_tokens`、`collect_user_messages`、`build_compacted_history`、`write_transcript`、`persist_large_output`、`compacted_context`、`CompactState` |
+| `crates/tact_extensions/src/agent/mod.rs` | 循环触发；`compact_history` / `compact_history_legacy`；`remember_recent_file`；`replace_persisted_context` |
+| `crates/tact_extensions/src/agent/tool_dispatch.rs` | 原生/MCP 结果的 `persist_large_output`；`manual_compact` flag；近期文件追踪 |
+| `crates/tact_extensions/src/tool/compact.rs` | `compact` 工具 stub + `focus` |
+| `crates/tact_extensions/src/recovery.rs` | Prompt-too-long 分类 → 压缩 |
+| `crates/tact_extensions/src/consts.rs` | `transcript_dir()`、`tool_results_dir()` |
 | `docs/compaction.md` | 行为 / 调参速查 |
 
 ```mermaid

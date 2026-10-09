@@ -37,7 +37,7 @@ start with `getting_started` had no way to fetch it, exactly as it had no way to
 
 ### 2.1 Two tools, the resource pair's shape
 
-`crates/tact/src/mcp/prompt.rs` mirrors `resource.rs`: an `McpPromptTool` enum (`List` → `Get`),
+`crates/tact_extensions/src/mcp/prompt.rs` mirrors `resource.rs`: an `McpPromptTool` enum (`List` → `Get`),
 `LIST_PROMPTS_TOOL` / `GET_PROMPT_TOOL` constants, `ALL` / `from_name` / `name` / `spec`, and the same
 `MCPToolRouter` methods. Everything downstream follows the existing entries — resolution in
 `agent::tool_dispatch` (`is_mcp_prompt_tool`, `run_mcp_prompt_tool`), `stable_name`, `risk`,

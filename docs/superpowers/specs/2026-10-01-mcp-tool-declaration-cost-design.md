@@ -60,10 +60,10 @@ policy it drafts.
 
 ## Verification
 
-- `crates/tact-ui/src/mcp_cli.rs`: `the_detail_view_reports_what_the_tools_cost` ("21 tools" says
+- `crates/tact_ui/src/mcp_cli.rs`: `the_detail_view_reports_what_the_tools_cost` ("21 tools" says
   nothing about what a server costs), `the_detail_view_drafts_a_risk_policy_from_the_servers_own_claim`
   (the draft is a suggestion and cannot loosen anything).
-- `crates/tact/src/mcp/mod.rs`: the measurement rides on `derive_exposed`, covered through the detail
+- `crates/tact_extensions/src/mcp/mod.rs`: the measurement rides on `derive_exposed`, covered through the detail
   view rather than by a direct unit test.
 - Docs: [Ch 08](../../../book/08_chapter_mcp_zh.md), [Ch 26](../../../book/26_chapter_issue_zh.md)
   2026-10-01 entry.

@@ -1,7 +1,7 @@
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use serde_json::json;
-use tact::kernel::{
+use tact::{
     EventService, InvocationContext, KernelError, PermissionService, RuntimeContext,
     RuntimeServices, StorageService, TrajectoryService,
 };
@@ -29,7 +29,7 @@ async fn start(args: &[&str]) -> NodePluginHost {
     .unwrap()
 }
 
-fn allow_runtime(router: tact::kernel::CapabilityRouter) -> RuntimeContext {
+fn allow_runtime(router: tact::CapabilityRouter) -> RuntimeContext {
     RuntimeContext::with_services(
         router,
         RuntimeServices::with_permission(Arc::new(AllowPermissions)),
@@ -46,7 +46,7 @@ async fn registers_chat_capability_and_invokes_it() {
             .iter()
             .any(|capability| capability.name == "chat.echo")
     );
-    let router = tact::kernel::CapabilityRouter::new();
+    let router = tact::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
     let runtime = allow_runtime(router);
     let context = runtime.invocation(
@@ -80,7 +80,7 @@ async fn direct_invoke_requests_cannot_bypass_capability_router() {
 #[tokio::test]
 async fn chat_command_receives_run_identity_from_runtime() {
     let host = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
-    let router = tact::kernel::CapabilityRouter::new();
+    let router = tact::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
     let runtime = allow_runtime(router);
     let context = runtime
@@ -159,13 +159,13 @@ async fn plugin_cannot_forge_host_runtime_events() {
         .await
         .unwrap_err();
     assert_eq!(error.category(), ErrorCategory::InvalidRequest);
-    assert_eq!(host.state(), tact::plugin::PluginState::Failed);
+    assert_eq!(host.state(), tact::PluginState::Failed);
 }
 
 #[tokio::test]
 async fn denied_capability_never_reaches_node_process() {
     let host = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
-    let router = tact::kernel::CapabilityRouter::new();
+    let router = tact::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
     let services = RuntimeServices::new(
         Arc::new(NoopEvents),
@@ -186,7 +186,7 @@ async fn denied_capability_never_reaches_node_process() {
         .unwrap_err();
     assert_eq!(error.category(), ErrorCategory::PermissionDenied);
 
-    let allowed_router = tact::kernel::CapabilityRouter::new();
+    let allowed_router = tact::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &allowed_router).unwrap();
     let allowed_runtime = allow_runtime(allowed_router);
     let context = allowed_runtime.invocation(
@@ -206,7 +206,7 @@ async fn denied_capability_never_reaches_node_process() {
 #[tokio::test]
 async fn invocation_publishes_events_and_persists_trajectory_facts() {
     let host = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
-    let router = tact::kernel::CapabilityRouter::new();
+    let router = tact::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
     let events = Arc::new(RecordedEvents::default());
     let trajectory = Arc::new(RecordedTrajectory::default());
@@ -264,7 +264,7 @@ async fn timeout_terminates_failed_host() {
         .await
         .unwrap(),
     ));
-    let router = tact::kernel::CapabilityRouter::new();
+    let router = tact::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
     let runtime = allow_runtime(router);
     let context = runtime.invocation(
@@ -278,13 +278,13 @@ async fn timeout_terminates_failed_host() {
         .await
         .unwrap_err();
     assert_eq!(error.category(), ErrorCategory::Timeout);
-    assert_eq!(host.lock().await.state(), tact::plugin::PluginState::Failed);
+    assert_eq!(host.lock().await.state(), tact::PluginState::Failed);
 }
 
 #[tokio::test]
 async fn cancellation_terminates_only_the_plugin_host() {
     let host = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
-    let router = tact::kernel::CapabilityRouter::new();
+    let router = tact::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
     let runtime = allow_runtime(router);
     let request_id = RequestId::from("cancel-this-call");
@@ -300,13 +300,13 @@ async fn cancellation_terminates_only_the_plugin_host() {
     assert!(cancellation.cancel_request(&request_id));
     let error = task.await.unwrap().unwrap_err();
     assert_eq!(error.category(), ErrorCategory::Cancelled);
-    assert_eq!(host.lock().await.state(), tact::plugin::PluginState::Failed);
+    assert_eq!(host.lock().await.state(), tact::PluginState::Failed);
 }
 
 #[tokio::test]
 async fn malformed_response_fails_host_and_restart_recovers() {
     let host = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
-    let router = tact::kernel::CapabilityRouter::new();
+    let router = tact::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
     let runtime = allow_runtime(router);
     let context = runtime.invocation(
@@ -320,7 +320,7 @@ async fn malformed_response_fails_host_and_restart_recovers() {
         .await
         .unwrap_err();
     assert_eq!(error.category(), ErrorCategory::PluginCrashed);
-    assert_eq!(host.lock().await.state(), tact::plugin::PluginState::Failed);
+    assert_eq!(host.lock().await.state(), tact::PluginState::Failed);
     host.lock().await.restart().await.unwrap();
     let context = runtime.invocation(
         RequestId::from("after-restart"),
@@ -340,8 +340,8 @@ async fn malformed_response_fails_host_and_restart_recovers() {
 async fn plugin_crash_does_not_prevent_host_restart() {
     let crashed = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
     let independent = Arc::new(tokio::sync::Mutex::new(start(&[]).await));
-    let crashed_router = tact::kernel::CapabilityRouter::new();
-    let independent_router = tact::kernel::CapabilityRouter::new();
+    let crashed_router = tact::CapabilityRouter::new();
+    let independent_router = tact::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&crashed), &crashed_router).unwrap();
     NodePluginHost::register_with_router(Arc::clone(&independent), &independent_router).unwrap();
     let crashed_runtime = allow_runtime(crashed_router);
@@ -356,14 +356,8 @@ async fn plugin_crash_does_not_prevent_host_restart() {
         .await
         .unwrap_err();
     assert_eq!(error.category(), ErrorCategory::PluginCrashed);
-    assert_eq!(
-        crashed.lock().await.state(),
-        tact::plugin::PluginState::Failed
-    );
-    assert_eq!(
-        independent.lock().await.state(),
-        tact::plugin::PluginState::Running
-    );
+    assert_eq!(crashed.lock().await.state(), tact::PluginState::Failed);
+    assert_eq!(independent.lock().await.state(), tact::PluginState::Running);
     let independent_runtime = allow_runtime(independent_router);
     let context = independent_runtime.invocation(
         RequestId::from("independent-call"),

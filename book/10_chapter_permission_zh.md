@@ -6,11 +6,11 @@
 
 ## 1. 权限模型做什么
 
-`PermissionManager`（`crates/tact/src/permission/mod.rs`）对每个工具调用回答一个问题：
+`PermissionManager`（`crates/tact_extensions/src/permission/mod.rs`）对每个工具调用回答一个问题：
 
 > 给定此工具名与输入，我们应 **允许**、**拒绝**，还是 **询问用户**？
 
-它 **不** 执行工具。它只做两件事：给这次调用定级，再套用当前模式与允许清单，然后返回 `PermissionDecision`。`crates/tact/src/agent/tool_dispatch.rs` 中的 agent 将其转为调度工具，或合成一条被拦截的 `ToolResult`。
+它 **不** 执行工具。它只做两件事：给这次调用定级，再套用当前模式与允许清单，然后返回 `PermissionDecision`。`crates/tact_extensions/src/agent/tool_dispatch.rs` 中的 agent 将其转为调度工具，或合成一条被拦截的 `ToolResult`。
 
 | 层级 | 职责 |
 |------|------|
@@ -51,7 +51,7 @@ Tact 里没有一个单独存着"意图"的对象，也没有一张按工具名�
 metadata.permission.resolve(&tool_use.input)   // → CapabilityRisk
 ```
 
-预检对每个已解析调用取风险的来源（`crates/tact/src/agent/tool_dispatch.rs`）：
+预检对每个已解析调用取风险的来源（`crates/tact_extensions/src/agent/tool_dispatch.rs`）：
 
 | 解析结果 | 风险来源 |
 |----------|----------|
@@ -66,7 +66,7 @@ metadata.permission.resolve(&tool_use.input)   // → CapabilityRisk
 
 ### 风险规则
 
-`PermissionPolicy` 七个变体，`resolve` 是唯一的分类入口（`crates/tact/src/tool/metadata.rs`）：
+`PermissionPolicy` 七个变体，`resolve` 是唯一的分类入口（`crates/tact_extensions/src/tool/metadata.rs`）：
 
 | 风险 | 规则 |
 |------|------|
@@ -272,7 +272,7 @@ pub fn validate_shell_command(command: &str) -> Result<()>;
 
 ### 只读 shell 命令分类
 
-自 2026-08-13 起，`PermissionPolicy::ShellCommand` 仅在命令**可证明只读**时将其归为 **Read**。逻辑位于 `crates/tact/src/tool/readonly_shell.rs`，分两阶段：
+自 2026-08-13 起，`PermissionPolicy::ShellCommand` 仅在命令**可证明只读**时将其归为 **Read**。逻辑位于 `crates/tact_extensions/src/tool/readonly_shell.rs`，分两阶段：
 
 1. **纯命令切分** — 命令字符串必须是由空白分隔的词（裸词或单/双引号段）组成，且不含任何 shell 元字符：`; & | > < $ backtick \`、glob、花括号、圆括号、`!`。重定向、管道、命令替换与转义一律拒绝，因此分类结果不会与 `sh -c` 实际执行的内容产生分歧。裸 `\n` / `\r` 对 `sh -c` 是**命令分隔符**而非空白——含换行的多命令字符串（如 `ls\nrm file`，含 CRLF）整体拒绝；引号内的字面换行是词字符，继续放行。允许词首 `~` 与词内单引号段（两者都是字面量）。
 2. **白名单匹配** — 首词必须是"仅凭选项无法写入"的程序：
@@ -322,7 +322,7 @@ sequenceDiagram
 
 ## 8. 工具流水线中的集成
 
-权限阶梯在 `execute_tool_call`（`crates/tact/src/agent/tool_dispatch.rs`）的 **Phase 1** 运行，严格在 hook 之后；而**风险分类与敏感目标守卫在 hook 之前**——`Credential` 命中在那个位置就被拒绝，碰不到 hook、规则与模式（逐项顺序见 [§13.1](#131-固定检查点)）：
+权限阶梯在 `execute_tool_call`（`crates/tact_extensions/src/agent/tool_dispatch.rs`）的 **Phase 1** 运行，严格在 hook 之后；而**风险分类与敏感目标守卫在 hook 之前**——`Credential` 命中在那个位置就被拒绝，碰不到 hook、规则与模式（逐项顺序见 [§13.1](#131-固定检查点)）：
 
 ```text
 For each ToolUse (sequential):
@@ -373,7 +373,7 @@ sequenceDiagram
     end
 ```
 
-`PermissionManager` 在 `AgentRuntime`（`crates/tact/src/agent/mod.rs`）上，不在 `ToolContext`。`spawn_subagent` 工具创建的子 agent 有独立 manager（始终 `PermissionMode::Default`），但继承主 agent 的 `ui_tx`，权限弹窗仍可用。
+`PermissionManager` 在 `AgentRuntime`（`crates/tact_extensions/src/agent/mod.rs`）上，不在 `ToolContext`。`spawn_subagent` 工具创建的子 agent 有独立 manager（始终 `PermissionMode::Default`），但继承主 agent 的 `ui_tx`，权限弹窗仍可用。
 
 ---
 
@@ -386,7 +386,7 @@ sequenceDiagram
 mode = "default"   # "default" | "plan" | "auto"
 ```
 
-定义于 `PermissionTomlConfig`（`crates/tact/src/config/types.rs`）。省略时默认 `"default"`。
+定义于 `PermissionTomlConfig`（`crates/tact_extensions/src/config/types.rs`）。省略时默认 `"default"`。
 
 ### JSON（`.tact/settings.json` 里的 `permissions`）
 
@@ -432,24 +432,24 @@ mode = "default"   # "default" | "plan" | "auto"
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/permission/mod.rs` | `CapabilityRisk`、`PermissionMode`、`PermissionManager`（`check` / `check_with_auto` / `ask_user` / `allow_tool_with_input`）、`PermissionDecision`、`AllowOutcome`、`format_permission_prompt` |
-| `crates/tact/src/security/sensitive.rs` | 敏感路径注册表、两个档位、`Scanner`、`classify_command`、`refusal_text` |
-| `crates/tact/src/security/redact.rs` | `redact`、`level_for_call`、`StreamRedactor` |
-| `crates/tact/src/security/mod.rs` | `SecurityConfig` 解析与 global+project 合并 |
+| `crates/tact_extensions/src/permission/mod.rs` | `CapabilityRisk`、`PermissionMode`、`PermissionManager`（`check` / `check_with_auto` / `ask_user` / `allow_tool_with_input`）、`PermissionDecision`、`AllowOutcome`、`format_permission_prompt` |
+| `crates/tact_extensions/src/security/sensitive.rs` | 敏感路径注册表、两个档位、`Scanner`、`classify_command`、`refusal_text` |
+| `crates/tact_extensions/src/security/redact.rs` | `redact`、`level_for_call`、`StreamRedactor` |
+| `crates/tact_extensions/src/security/mod.rs` | `SecurityConfig` 解析与 global+project 合并 |
 | `crates/tact/src/shell.rs` | 共享高风险 shell 模式；执行时 `validate_shell_command` 拦截 |
-| `crates/tact/src/agent/tool_dispatch.rs` | 预检权限；`RequestSelect` 处理；`StepFinished` 上的 `permission_label` |
-| `crates/tact/src/agent/mod.rs` | `AgentRuntime.permission_manager` |
-| `crates/tact/src/tool/metadata.rs` | `PermissionPolicy`（`Read` / `Write` / `High` / `ReadPath` / `WritePath` / `PatchPaths` / `ShellCommand`）与其 `resolve` 分类入口、`PermissionPromptPolicy::PatchTarget` |
-| `crates/tact/src/tool/readonly_shell.rs` | `is_read_only_shell_command` — `ShellCommand` 的只读白名单 |
-| `crates/tact/src/tool/progress.rs` | `ToolProgressReporter`——实时输出脱敏及其 flush |
-| `crates/tact/src/tool/bash.rs` | spawn shell 前调用 `validate_shell_command`；并 flush 脱敏器 |
-| `crates/tact/src/background.rs` | 后台 shell 命令同样校验 |
-| `crates/tact/src/tool/subagent.rs` | 子 agent 用 `Default` 模式；继承 `ui_tx` |
-| `crates/tact-ui/src/permission.rs` | `permission_mode_from_config()` |
-| `crates/tact-ui/src/session_bootstrap.rs` | `bootstrap_session` 里构造 `PermissionManager`（`try_new_with_settings`）；headless / 交互共用 |
-| `crates/tact/src/config/types.rs` | `[permission] mode` TOML schema |
+| `crates/tact_extensions/src/agent/tool_dispatch.rs` | 预检权限；`RequestSelect` 处理；`StepFinished` 上的 `permission_label` |
+| `crates/tact_extensions/src/agent/mod.rs` | `AgentRuntime.permission_manager` |
+| `crates/tact_extensions/src/tool/metadata.rs` | `PermissionPolicy`（`Read` / `Write` / `High` / `ReadPath` / `WritePath` / `PatchPaths` / `ShellCommand`）与其 `resolve` 分类入口、`PermissionPromptPolicy::PatchTarget` |
+| `crates/tact_extensions/src/tool/readonly_shell.rs` | `is_read_only_shell_command` — `ShellCommand` 的只读白名单 |
+| `crates/tact_extensions/src/tool/progress.rs` | `ToolProgressReporter`——实时输出脱敏及其 flush |
+| `crates/tact_extensions/src/tool/bash.rs` | spawn shell 前调用 `validate_shell_command`；并 flush 脱敏器 |
+| `crates/tact_extensions/src/background.rs` | 后台 shell 命令同样校验 |
+| `crates/tact_extensions/src/tool/subagent.rs` | 子 agent 用 `Default` 模式；继承 `ui_tx` |
+| `crates/tact_ui/src/permission.rs` | `permission_mode_from_config()` |
+| `crates/tact_ui/src/session_bootstrap.rs` | `bootstrap_session` 里构造 `PermissionManager`（`try_new_with_settings`）；headless / 交互共用 |
+| `crates/tact_extensions/src/config/types.rs` | `[permission] mode` TOML schema |
 | `crates/tui/src/widgets/state/app/agent.rs` | 处理 `AgentUpdate::RequestSelect` |
-| `crates/protocol/src/lib.rs` | `AgentUpdate::RequestSelect`、`StepResult.permission_label` |
+| `crates/tact_protocol/src/lib.rs` | `AgentUpdate::RequestSelect`、`StepResult.permission_label` |
 
 ---
 
@@ -463,7 +463,7 @@ mode = "default"   # "default" | "plan" | "auto"
 | `PlanStep.need_approval` 已弃用 | 字段标记 `#[deprecated(since = "0.19.0")]`；用 `PlanStep::new()` — 权限由 `PermissionManager` 驱动 |
 | 权限与 hook 重叠 | 两者均可拦截工具；hook 先运行，`Block` 时跳过权限 |
 | 风险与守卫在 hook 之前算定 | 第 2 步 `resolve` 与第 3 步守卫读的是 `PreToolUse` **之前**的 input，而 `check_with_auto` 读**之后**的 `tool_use.input`。于是改写 input 的 hook 能影响 settings 规则的匹配，却改变不了本次调用的风险档位与守卫结论（§13.1） |
-| 守卫是只看名字的经验规则 | §12 只拦得住**字面出现**的敏感名（含解释器 `-c` 里的绝对路径）；名字根本不出现的读取——环境变量的值、argv、stdin（`printenv`），或文件名本身人畜无害（`cat notes/passwords-2026.txt`）——只能靠脱敏兜底。真正的边界是 `crates/tact/src/sandbox/`——**仅 Linux 且默认关闭**（macOS 上返回 `SandboxDegradation`，`[tools] sandbox = false`） |
+| 守卫是只看名字的经验规则 | §12 只拦得住**字面出现**的敏感名（含解释器 `-c` 里的绝对路径）；名字根本不出现的读取——环境变量的值、argv、stdin（`printenv`），或文件名本身人畜无害（`cat notes/passwords-2026.txt`）——只能靠脱敏兜底。真正的边界是 `crates/tact_extensions/src/sandbox/`——**仅 Linux 且默认关闭**（macOS 上返回 `SandboxDegradation`，`[tools] sandbox = false`） |
 | MCP 的输入不被守卫扫描 | 第三方工具的路径参数不做分类（其**结果**仍按 `Basic` 脱敏）。MCP 工具默认 `High`，风险可按工具声明 |
 | 脱敏是模式匹配 | 可以被关掉（`redaction.enabled = false`），且测试 fixture 里的假密钥会和真密钥一样被脱敏 |
 
@@ -471,7 +471,7 @@ mode = "default"   # "default" | "plan" | "auto"
 
 ## 12. 敏感路径与密钥脱敏
 
-权限阶梯回答的是「agent 可不可以做这件事」，至于*一次已经批准的读取会返回什么内容*，它管不着——私钥就是从这儿漏出去的：`cat ~/.ssh/id_ed25519` 是可证明只读的命令，于是被判 `Read`，于是在还没轮到 plan mode 判断之前就已经放行了。`crates/tact/src/security/` 里的两套机制堵住它。
+权限阶梯回答的是「agent 可不可以做这件事」，至于*一次已经批准的读取会返回什么内容*，它管不着——私钥就是从这儿漏出去的：`cat ~/.ssh/id_ed25519` 是可证明只读的命令，于是被判 `Read`，于是在还没轮到 plan mode 判断之前就已经放行了。`crates/tact_extensions/src/security/` 里的两套机制堵住它。
 
 ### 12.1 背景：一次静默的私钥读取
 
@@ -574,7 +574,7 @@ sequenceDiagram
 
 ### 12.4 这不是什么
 
-两者都不是沙箱。它们都只是同一个进程里按名字和模式做的判断，只要刻意绕一下就能避开。真正的执行边界在 `crates/tact/src/sandbox/`（bwrap），而它目前**只支持 Linux**——macOS 上会返回 `SandboxDegradation::new("no sandbox implementation for this platform yet")`——而且**默认关闭**（`[tools] sandbox = false`）。这次的设计只是把可能出问题的面缩小了一些，并没有划出一条真正的边界。
+两者都不是沙箱。它们都只是同一个进程里按名字和模式做的判断，只要刻意绕一下就能避开。真正的执行边界在 `crates/tact_extensions/src/sandbox/`（bwrap），而它目前**只支持 Linux**——macOS 上会返回 `SandboxDegradation::new("no sandbox implementation for this platform yet")`——而且**默认关闭**（`[tools] sandbox = false`）。这次的设计只是把可能出问题的面缩小了一些，并没有划出一条真正的边界。
 
 ---
 
@@ -584,7 +584,7 @@ sequenceDiagram
 
 ### 13.1 固定检查点
 
-每个 native 调用都按这个顺序走（`crates/tact/src/agent/tool_dispatch.rs` 的预检）：
+每个 native 调用都按这个顺序走（`crates/tact_extensions/src/agent/tool_dispatch.rs` 的预检）：
 
 | # | 检查点 | 决定者 | 备注 |
 |---|--------|--------|------|
@@ -626,7 +626,7 @@ graph TD
 ### 13.2 `ReadPath` —— `read_file` / `read_image`
 
 ```rust
-// crates/tact/src/tool/{read_file,read_image}.rs，经 ToolMetadata::path_read
+// crates/tact_extensions/src/tool/{read_file,read_image}.rs，经 ToolMetadata::path_read
 permission: PermissionPolicy::ReadPath { path_field: "path" }      // read_file
 permission: PermissionPolicy::ReadPath { path_field: "file_path" } // read_image
 ```
@@ -680,7 +680,7 @@ apply_patch(patch: "…\n+++ secrets.json\n@@ …")                   → 同样
 
 「Always allow」在这个变体上多一道限制：`PermissionPromptPolicy::PatchTarget` 只在补丁**恰好涉及一个文件**时才生成输入感知规则（`*<path>*`），多文件时 `generate_key` 返回 `None`，这次点击只批准当前调用，并由 `AllowOutcome::NotNarrowable` 明说——用其中一个路径生成的规则会静默授权其余文件。
 
-> **接线状态：** `crates/tact/src/tool/apply_patch.rs` 今天**没有被编译**（`crates/tact/src/tool/mod.rs` 里没有 `mod apply_patch;`），也没有任何 toolset 注册它。上面的判定是策略本身的行为、由测试覆盖；要在真实调用里看到它们，得先把工具接回来——见 [工具系统](./07_chapter_tool_zh.md) §5。
+> **接线状态：** `crates/tact_extensions/src/tool/apply_patch.rs` 今天**没有被编译**（`crates/tact_extensions/src/tool/mod.rs` 里没有 `mod apply_patch;`），也没有任何 toolset 注册它。上面的判定是策略本身的行为、由测试覆盖；要在真实调用里看到它们，得先把工具接回来——见 [工具系统](./07_chapter_tool_zh.md) §5。
 
 ### 13.5 `ShellCommand` —— `bash` / `background_run` / `worktree_run`
 

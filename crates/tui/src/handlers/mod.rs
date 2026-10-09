@@ -618,14 +618,14 @@ fn skills_table_markdown(
 /// it inside `spawn_blocking` (see `App::start_skills_reload`). Kept synchronous
 /// and lock-scoped: no lock is ever held across an `.await`.
 pub(crate) fn reload_skills(
-    registry: &tact::skill::SharedSkillRegistry,
+    registry: &tact_extensions::skill::SharedSkillRegistry,
     work_dir: &std::path::Path,
 ) -> Result<crate::widgets::state::app::background::SkillsSnapshot, String> {
     use crate::widgets::state::app::background::SkillsSnapshot;
 
-    let mut reg = tact::skill::lock_skills(registry);
+    let mut reg = tact_extensions::skill::lock_skills(registry);
     // Keep search roots in sync with the current workdir (tests may set work_dir late).
-    *reg = tact::skill::get_skill_registry(work_dir).map_err(|e| e.to_string())?;
+    *reg = tact_extensions::skill::get_skill_registry(work_dir).map_err(|e| e.to_string())?;
     let description = reg.describe_available();
     let data = reg
         .skills()

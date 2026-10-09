@@ -48,7 +48,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     widgets::ScrollbarState,
 };
-use tact::plugin::{PluginEvent, PluginRequest};
+use tact_extensions::plugin::{PluginEvent, PluginRequest};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::StreamExt;
@@ -156,7 +156,7 @@ pub struct TuiConfig {
     /// Optional in-process compatibility receiver for test-support hosts.
     /// Production View traffic arrives through `runtime_events`.
     pub agent_rx: Option<UnboundedReceiver<AgentUpdate>>,
-    pub runtime_events: tact::kernel::EventTransport,
+    pub runtime_events: tact::EventTransport,
     pub account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     pub plugin_rx: UnboundedReceiver<PluginEvent>,
     pub plugin_tx: UnboundedSender<PluginRequest>,
@@ -187,13 +187,13 @@ pub struct TuiConfig {
     pub skills_description: String,
     pub skills_data: Vec<SkillEntry>,
     /// Shared session store used to inspect persisted request payloads.
-    pub session_store: tact::store::DynSessionStore,
-    pub skill_registry: tact::skill::SharedSkillRegistry,
+    pub session_store: tact_extensions::store::DynSessionStore,
+    pub skill_registry: tact_extensions::skill::SharedSkillRegistry,
     /// Authoritative in-process pending UI request broker. The TUI reconciles
     /// from `snapshot()` instead of trusting a single `RequestSelect` event.
-    pub pending_ui: tact::ui_responder::UiResponder,
+    pub pending_ui: tact_extensions::ui_responder::UiResponder,
     /// Voice-to-text settings (independent of LLM providers).
-    pub voice: tact::config::VoiceSettings,
+    pub voice: tact_extensions::config::VoiceSettings,
     /// Keyboard shortcut to start/stop voice recording (e.g. "ctrl+g").
     /// Parsed from voice.voice_keybind; ready for crossterm matching.
     pub voice_parsed_keybind: Option<(KeyModifiers, KeyCode)>,
@@ -282,15 +282,17 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     if model_thinking_budget > 0 {
         app.status_bar_mut().model_thinking_budget = Some(model_thinking_budget as u32);
     }
-    app.status_bar_mut().model_reasoning_effort = tact::config::try_settings()
+    app.status_bar_mut().model_reasoning_effort = tact_extensions::config::try_settings()
         .and_then(|s| s.agent.reasoning_effort)
         .map(|effort| effort.as_str().to_string());
     app.add_startup_banner();
 
     if voice.enabled {
-        let missing_api_key = matches!(voice.provider, tact::config::VoiceProvider::OpenAi)
-            && voice.api_key.is_none();
-        let worker = tact::voice::spawn_worker(voice);
+        let missing_api_key = matches!(
+            voice.provider,
+            tact_extensions::config::VoiceProvider::OpenAi
+        ) && voice.api_key.is_none();
+        let worker = tact_extensions::voice::spawn_worker(voice);
         app.voice = crate::widgets::state::VoiceState::enabled(worker, missing_api_key);
     }
 

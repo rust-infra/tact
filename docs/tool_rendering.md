@@ -45,7 +45,7 @@ sequenceDiagram
     end
 ```
 
-### Runtime (`crates/tact/src/agent/tool_dispatch.rs`)
+### Runtime (`crates/tact_extensions/src/agent/tool_dispatch.rs`)
 
 | Step | What happens |
 |---|---|
@@ -321,7 +321,7 @@ While a tool detail popup is active, `y` copies its non-empty selection and fall
 
 ## 9. Wire types
 
-File: `crates/protocol/src/lib.rs`
+File: `crates/tact_protocol/src/lib.rs`
 
 ```rust
 pub struct StepResult {
@@ -370,8 +370,8 @@ No changes to `ToolCell` are needed unless the visual structure itself changes (
 
 | File | Responsibility |
 |---|---|
-| `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call`, `StepResult` assembly, `tool_*_summary/detail` |
-| `crates/protocol/src/lib.rs` | `AgentUpdate`, `StepResult` types |
+| `crates/tact_extensions/src/agent/tool_dispatch.rs` | `execute_tool_call`, `StepResult` assembly, `tool_*_summary/detail` |
+| `crates/tact_protocol/src/lib.rs` | `AgentUpdate`, `StepResult` types |
 | `crates/tui/src/widgets/state/app/agent.rs` | `handle_agent_update` for tool events |
 | `crates/tui/src/widgets/state/app/visibility.rs` | Placeholders, finalize, cancel, phys index shifting |
 | `crates/tui/src/widgets/state/tool_state.rs` | `ToolState`, `DiffPopup` |

@@ -2,12 +2,12 @@
 
 Spec: [2026-09-30-tui-hooks-command-design.md](../specs/2026-09-30-tui-hooks-command-design.md)
 
-1. **Protocol** (`crates/protocol/src/agent.rs`)
+1. **Protocol** (`crates/tact_protocol/src/agent.rs`)
    - `UserCommand::{HooksList, HooksTrust { all, source }, HooksForget}` with doc comments that
      state the `--all` / `--source` requirement.
 2. **Kit bridge** (`crates/agent_tui_kit/src/bridge.rs`)
    - Three `Err(())` arms — the kit is generic and has no hook store.
-3. **Driver** (`crates/tact-ui/src/driver.rs`)
+3. **Driver** (`crates/tact_ui/src/driver.rs`)
    - `HooksList` → `survey_hooks` → `hooks_cli::render_hooks_listing` as `MdInfo`.
    - `HooksTrust` → `trust_hooks`; empty result and success get distinct messages, and success
      names the next-session caveat.

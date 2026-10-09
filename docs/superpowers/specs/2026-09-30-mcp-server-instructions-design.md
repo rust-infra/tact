@@ -7,7 +7,7 @@ largest effect on the Basic Memory integration).
 
 Tact connects MCP servers, keeps their **tools**, and throws away everything else the handshake
 returned. `InitializeResult.instructions` — the one channel the MCP spec gives a server for
-"here is what I am and how to use me" — is never read (`grep instructions crates/tact/src/mcp/`
+"here is what I am and how to use me" — is never read (`grep instructions crates/tact_extensions/src/mcp/`
 has no hits).
 
 This is the root cause of the observed "Basic Memory is connected but nothing feels like memory":

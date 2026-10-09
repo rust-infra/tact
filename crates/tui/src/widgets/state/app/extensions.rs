@@ -9,7 +9,7 @@ use ratatui::{
     style::Style,
     text::{Line, Span},
 };
-use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
+use tact_extensions::plugin::{PluginEvent, PluginOperation, PluginResult};
 use tact_protocol::{AccountError, AccountUpdate};
 
 use crate::{
@@ -132,7 +132,7 @@ impl App {
     }
 
     /// Renders `/plugin list` as a titled table block (same style as `/skill list`).
-    fn show_plugin_list(&mut self, plugins: &[tact::plugin::InstalledPlugin]) {
+    fn show_plugin_list(&mut self, plugins: &[tact_extensions::plugin::InstalledPlugin]) {
         self.add_new_line();
 
         let msgs = self.msgs();
@@ -193,7 +193,10 @@ impl App {
     ///
     /// Must not go through [`App::add_system_message`]: a single-newline list
     /// would be Markdown-soft-broken into one crowded line.
-    fn show_marketplace_list(&mut self, marketplaces: &[tact::plugin::MarketplaceRecord]) {
+    fn show_marketplace_list(
+        &mut self,
+        marketplaces: &[tact_extensions::plugin::MarketplaceRecord],
+    ) {
         self.add_new_line();
 
         let msgs = self.msgs();

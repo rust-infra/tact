@@ -1,7 +1,7 @@
 # Claude Marketplace 插件全功能兼容设计
 
 > 日期：2026-08-29 · 状态：已批准（用户选择"全部做"，先写设计文档）
-> 关联：`crates/tact/src/plugin/`、`crates/tact/src/skill/mod.rs`、`crates/tact/src/hook/`、`crates/tact/src/mcp/mod.rs`、`crates/tact/src/tool/subagent.rs`、`crates/tact-ui/src/{interactive,headless}.rs`
+> 关联：`crates/tact_extensions/src/plugin/`、`crates/tact_extensions/src/skill/mod.rs`、`crates/tact_extensions/src/hook/`、`crates/tact_extensions/src/mcp/mod.rs`、`crates/tact_extensions/src/tool/subagent.rs`、`crates/tact_ui/src/{interactive,headless}.rs`
 
 ## 1. 背景与动机
 
@@ -60,7 +60,7 @@ Tact 的插件从 Claude marketplace（`claude-plugins-official` 等）安装，
 
 ### 4.1 Phase 1 — 安装/清单兼容
 
-**完整 manifest 解析**（`crates/tact/src/plugin/install.rs` 的 `CompatibilityManifest` → 更名 `PluginManifest`）：
+**完整 manifest 解析**（`crates/tact_extensions/src/plugin/install.rs` 的 `CompatibilityManifest` → 更名 `PluginManifest`）：
 
 ```rust
 #[derive(Deserialize)]
@@ -75,7 +75,7 @@ pub struct PluginManifest {
 }
 ```
 
-`McpServerConfig` 复用 `crates/tact/src/mcp/mod.rs` 的（command/args/env，camelCase）。
+`McpServerConfig` 复用 `crates/tact_extensions/src/mcp/mod.rs` 的（command/args/env，camelCase）。
 
 **功能摘要**（install.rs 的 `validate_plugin_candidate` 返回）：
 
@@ -120,7 +120,7 @@ Claude Code 官方说明：`commands/*.md` 与 `skills/<name>/SKILL.md` 加载�
 
 ### 4.3 Phase 3 — MCP 从已安装插件加载
 
-新增（`crates/tact/src/mcp/mod.rs`）：
+新增（`crates/tact_extensions/src/mcp/mod.rs`）：
 
 ```rust
 /// 扫描已安装插件缓存，返回 (server_name, config)。
@@ -199,7 +199,7 @@ pub struct SubagentInput {
 }
 ```
 
-**解析模型**（新模块 `crates/tact/src/plugin/hooks.rs`）：
+**解析模型**（新模块 `crates/tact_extensions/src/plugin/hooks.rs`）：
 
 ```rust
 pub struct HooksFile  { pub hooks: HashMap<String, Vec<HookMatcher>> }
@@ -209,7 +209,7 @@ pub struct HookCommand{ pub ty: String, pub command: Option<String>, pub command
                         pub async_: bool /* serde "async" */ }
 ```
 
-**命令执行器**（`crates/tact/src/plugin/hook_runner.rs`）：
+**命令执行器**（`crates/tact_extensions/src/plugin/hook_runner.rs`）：
 
 ```
 run_command_hook(cmd: &HookCommand, plugin_root: &Path, event: HookEvent, input: &mut Value) -> Result<HookOutput>
@@ -222,7 +222,7 @@ run_command_hook(cmd: &HookCommand, plugin_root: &Path, event: HookEvent, input:
   - 旧版：`{"hookSpecificOutput": {"hookEventName": "…", "permissionDecision": "allow"|"deny", "permissionDecisionReason": "…", "additionalContext": "…", "updatedSystemPrompt": "…"}}`
   - 超时 / 退出码非 0 / JSON 非法 → 记 warning 并按 Continue 处理（**失败不阻塞**，与 Claude Code 一致；`statusMessage` 透传到 TUI 状态栏可选）。
 
-**Hook 注册**（`crates/tact/src/hook/mod.rs`）：
+**Hook 注册**（`crates/tact_extensions/src/hook/mod.rs`）：
 
 ```rust
 pub enum Hook {

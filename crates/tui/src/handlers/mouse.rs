@@ -822,14 +822,14 @@ mod tests {
 
     #[test]
     fn voice_button_click_starts_and_stops_recording() {
-        use tact::voice::VoiceCommand;
+        use tact_extensions::voice::VoiceCommand;
         use tokio::sync::mpsc::unbounded_channel;
 
         let mut app = make_app();
         let (cmd_tx, mut cmd_rx) = unbounded_channel();
         let (_event_tx, event_rx) = unbounded_channel();
         app.voice = crate::widgets::state::VoiceState::enabled(
-            tact::voice::VoiceWorkerHandle::stub_for_test(cmd_tx, event_rx),
+            tact_extensions::voice::VoiceWorkerHandle::stub_for_test(cmd_tx, event_rx),
             false,
         );
         let title_row = 0u16;
@@ -841,7 +841,7 @@ mod tests {
         assert!(matches!(cmd_rx.try_recv(), Ok(VoiceCommand::Start)));
 
         app.voice
-            .apply_event(tact::voice::VoiceEvent::RecordingStarted);
+            .apply_event(tact_extensions::voice::VoiceEvent::RecordingStarted);
         handle_mouse_event(&mut app, mouse_down(button_x, title_row));
         assert!(matches!(cmd_rx.try_recv(), Ok(VoiceCommand::Stop)));
 

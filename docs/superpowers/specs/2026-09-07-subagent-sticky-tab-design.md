@@ -1,7 +1,7 @@
 # Subagent Sticky Tab（重新实现）设计
 
 > 日期：2026-09-07 · 状态：草稿待批准
-> 关联：`crates/protocol/src/agent.rs`、`crates/tact/src/subagent.rs`、`crates/tact/src/tool/subagent.rs`、
+> 关联：`crates/tact_protocol/src/agent.rs`、`crates/tact_extensions/src/subagent.rs`、`crates/tact_extensions/src/tool/subagent.rs`、
 > `crates/agent_tui_kit/src/{components,state,render}/task_panel.rs`、`crates/tui/src/render/task_panel.rs`
 > 背景：2026-07-26 提交 `98a133f` 删除了旧的 Subagent sticky pane；本设计在**当前组件化架构**
 > （agent_tui_kit registry + `TasksChanged`/TaskPanel 模式）上**重新实现**，不回滚该提交。
@@ -67,7 +67,7 @@ sequenceDiagram
 Tasks 的模式是「工具 handler 每次变更后 `emit_tasks_changed` 发全量快照」。子代理照搬，
 但快照内容来自 `SubagentManager` 的**进程内已知集合**，而不是全表 `list()`（见 §4.2）。
 
-### 3.2 协议（`crates/protocol/src/agent.rs`）
+### 3.2 协议（`crates/tact_protocol/src/agent.rs`）
 
 ```rust
 /// UI-facing subagent run status.
@@ -94,7 +94,7 @@ pub enum AgentUpdate {
 - 镜像 `TasksChanged`：携带**全量可见快照**，TUI 直接 `apply_snapshot`。
 - 只读工具（`check_subagent`/`wait_subagent`）不发射；`resume` 复用一个已知 child 时照常发射。
 
-### 3.3 tact 侧发射点（`crates/tact/src/subagent.rs` + 调用方）
+### 3.3 tact 侧发射点（`crates/tact_extensions/src/subagent.rs` + 调用方）
 
 `SubagentManager` 增加：
 
@@ -106,7 +106,7 @@ known: Mutex<HashSet<String>>,
 - `pub fn note_started(&self, child_id: &str)`：spawn handler 在 `start()` 后调用。
 - `pub async fn ui_snapshot(&self) -> Vec<SubagentRunSnapshot>`：遍历 `known`（去重、上限见下），
   逐 child `records.get()`，映射为快照；排序 Running 优先、其余按 started_at 倒序。
-- 发射 helper（与 `emit_tasks_changed` 同风格，放 `crates/tact/src/subagent.rs`）：
+- 发射 helper（与 `emit_tasks_changed` 同风格，放 `crates/tact_extensions/src/subagent.rs`）：
 
 ```rust
 pub async fn emit_subagents_changed(ui_tx: &Option<UnboundedSender<AgentUpdate>>, m: &SubagentManager)

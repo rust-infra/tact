@@ -12,7 +12,7 @@ Covers `AgentUpdate` / `UserCommand` / `AccountUpdate` channels, plan step lifec
 
 Interactive TUI mode adds a pull side-channel: the shared `UiResponder` exposes an ordered pending snapshot, and `App::reconcile_pending_ui()` derives `InputMode::Select` from it. `RequestSelect` remains a wake-up hint; the legacy event-driven path is used when no broker is attached.
 
-Files: `crates/protocol/src/agent.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tact/src/agent/tool_dispatch.rs`
+Files: `crates/tact_protocol/src/agent.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tact_extensions/src/agent/tool_dispatch.rs`
 
 ---
 
@@ -120,7 +120,7 @@ stateDiagram-v2
 
 ## 3. Persistent Task Lifecycle
 
-File: `crates/tact/src/task/mod.rs`
+File: `crates/tact_extensions/src/task/mod.rs`
 
 Tasks are durable work items with dependency tracking.
 
@@ -158,7 +158,7 @@ stateDiagram-v2
 
 ## 4. Background Task Lifecycle
 
-File: `crates/tact/src/background.rs`
+File: `crates/tact_extensions/src/background.rs`
 
 Background tasks are asynchronous shell commands spawned via `tokio::spawn`.
 
@@ -187,7 +187,7 @@ Each transition is persisted to the `background_tasks` table in `<workdir>/.tact
 
 ## 5. Permission Decision
 
-File: `crates/tact/src/permission/mod.rs`
+File: `crates/tact_extensions/src/permission/mod.rs`
 
 Every tool call is classified and checked against the active permission mode and the loaded permission settings.
 
@@ -276,7 +276,7 @@ The settings check applies after mode classification for Default-mode prompted c
 
 ## 6. Hook Control
 
-File: `crates/tact/src/hook/mod.rs`
+File: `crates/tact_extensions/src/hook/mod.rs`
 
 Hooks can permit or veto operations at three lifecycle points.
 
@@ -302,7 +302,7 @@ Hooks are invoked in this order during a tool call:
 
 ## 7. Step Execution Status
 
-File: `crates/protocol/src/agent.rs`
+File: `crates/tact_protocol/src/agent.rs`
 
 A small enum attached to `StepResult` for TUI display.
 
@@ -393,7 +393,7 @@ Key transitions:
 
 ## 10. Agent Runtime Recovery State
 
-File: `crates/tact/src/agent/mod.rs` (via `AgentRuntime.recovery_state`)
+File: `crates/tact_extensions/src/agent/mod.rs` (via `AgentRuntime.recovery_state`)
 
 The agent loop keeps counters for automatic recovery:
 
@@ -409,15 +409,15 @@ All three are reset to zero when the corresponding recovery path succeeds or whe
 
 | State machine | File | Driven by | Purpose |
 |---|---|---|---|
-| **Agent–TUI protocol** | `crates/protocol/src/agent.rs` | `AgentUpdate` / `UserCommand` | Message-driven plan step and task lifecycle. |
+| **Agent–TUI protocol** | `crates/tact_protocol/src/agent.rs` | `AgentUpdate` / `UserCommand` | Message-driven plan step and task lifecycle. |
 | `Status` | `crates/tui/src/widgets/state/mod.rs` | `AgentUpdate` + user input | Top-level TUI execution state. |
 | `InputMode` | `crates/tui/src/widgets/state/mod.rs` | Keyboard events | Keyboard input interpretation. |
 | `ToolState` | `crates/tui/src/widgets/state/tool_state.rs` | `StepStarted` / `StepFinished` | Concurrent running tool blocks + diff popup. |
-| `TaskStatus` | `crates/tact/src/task/mod.rs` | `task_*` tools | Persistent task lifecycle. |
-| `BackgroundTaskStatus` | `crates/tact/src/background.rs` | `background_run` / completion | Async shell task lifecycle. |
-| `PermissionBehavior` | `crates/tact/src/permission/mod.rs` | Risk classification + mode | Approve/deny/ask for each tool call. |
-| `HookControl` | `crates/tact/src/hook/mod.rs` | Hook return value | Permit or veto agent operations. |
-| `StepStatus` | `crates/protocol/src/agent.rs` | Tool execution result | Per-step success/failure display. |
+| `TaskStatus` | `crates/tact_extensions/src/task/mod.rs` | `task_*` tools | Persistent task lifecycle. |
+| `BackgroundTaskStatus` | `crates/tact_extensions/src/background.rs` | `background_run` / completion | Async shell task lifecycle. |
+| `PermissionBehavior` | `crates/tact_extensions/src/permission/mod.rs` | Risk classification + mode | Approve/deny/ask for each tool call. |
+| `HookControl` | `crates/tact_extensions/src/hook/mod.rs` | Hook return value | Permit or veto agent operations. |
+| `StepStatus` | `crates/tact_protocol/src/agent.rs` | Tool execution result | Per-step success/failure display. |
 | `SelectPopup` | `crates/agent_tui_kit/src/state/select_popup.rs` | pending snapshot / `RequestSelect` + keys | User option selection popup. |
 | `StreamState` / `ThinkingState` | `crates/tui/src/widgets/state/stream_state.rs` / `thinking_state.rs` | Stream chunks | Parse Markdown/code/thinking output. |
-| `RecoveryState` | `crates/tact/src/recovery.rs` | LLM errors | Auto-recovery from transport/context errors. |
+| `RecoveryState` | `crates/tact_extensions/src/recovery.rs` | LLM errors | Auto-recovery from transport/context errors. |

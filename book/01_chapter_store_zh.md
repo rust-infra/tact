@@ -27,13 +27,13 @@ graph TD
 
 图中 `.tact/` 的四个条目里，只有前两个走存储 API：`JSON store` 是 `StoreRoot` / `Store<T>` / `CollectionStore<T>`（域状态迁到 SQLite 后仅测试使用），`tact.db` 是上面那六个 Store trait 的 SQLite 落点。`skills/` 与 `background/<id>.log` 是**普通文件**，不属于 `StoreRoot`。`~/.tact/memory/` 是独立模块，不属于 JSON store API（见 [持久化记忆](./03_chapter_memory_zh.md)）。
 
-启动时真正打开的只有 SQLite：`crates/tact-ui/src/main.rs` 在 `Upgrade` 子命令之后调用 `open_sqlite_session_store(&tact_path.session_db_path())`（自升级不需要 store），随后建行、抢锁、`touch` 由 `session_bootstrap::open_session` 完成，headless 与交互两个前端共用。`StoreRoot::new` 如今**只出现在单元测试里**——域状态迁到 SQLite 后它没有任何生产调用者。
+启动时真正打开的只有 SQLite：`crates/tact_ui/src/main.rs` 在 `Upgrade` 子命令之后调用 `open_sqlite_session_store(&tact_path.session_db_path())`（自升级不需要 store），随后建行、抢锁、`touch` 由 `session_bootstrap::open_session` 完成，headless 与交互两个前端共用。`StoreRoot::new` 如今**只出现在单元测试里**——域状态迁到 SQLite 后它没有任何生产调用者。
 
 ---
 
 ## 2. StoreRoot：安全路径解析
 
-`StoreRoot`（`crates/tact/src/store/mod.rs`）是所有 JSON 持久化的入口。
+`StoreRoot`（`crates/tact_extensions/src/store/mod.rs`）是所有 JSON 持久化的入口。
 
 ```rust
 pub struct StoreRoot { root: PathBuf }
@@ -114,7 +114,7 @@ root.collection::<T>(relative_dir)?              // CollectionStore<T> — 按�
 
 ## 6. Session Store（SQLite）
 
-定义于 `crates/tact/src/store/session_store/`。trait 为 async；默认实现为 `SqliteSessionStore`。
+定义于 `crates/tact_extensions/src/store/session_store/`。trait 为 async；默认实现为 `SqliteSessionStore`。
 
 ### 数据库位置
 
@@ -122,11 +122,11 @@ root.collection::<T>(relative_dir)?              // CollectionStore<T> — 按�
 <workdir>/.tact/tact.db
 ```
 
-在 `main.rs` 中通过 `open_sqlite_session_store` 于 `<workdir>/.tact/tact.db` 打开。此后「这次运行属于哪个会话」由 `crates/tact-ui/src/session_bootstrap.rs` 的 `open_session` 一次做完，两个前端共用（见 §7）：
+在 `main.rs` 中通过 `open_sqlite_session_store` 于 `<workdir>/.tact/tact.db` 打开。此后「这次运行属于哪个会话」由 `crates/tact_ui/src/session_bootstrap.rs` 的 `open_session` 一次做完，两个前端共用（见 §7）：
 
 1. 解析 id —— `--session` 指定，或 `--resume-last` 取 `list_sessions(Some(root_dir))` 的第一行（`root_dir` 按当前工作目录过滤），否则新建 UUID。
 2. `ensure_session_row(id, root_dir, "")` —— 行必须先存在，锁才有东西可锁。
-3. `SessionLockGuard::acquire`（`crates/tact-ui/src/session_lock.rs`）—— 争用时重试 `try_lock_session`（最多 5 次，退避 `50ms × attempt`），写入 `locked_by` + `lock_epoch`；`0`/空表示未锁定。
+3. `SessionLockGuard::acquire`（`crates/tact_ui/src/session_lock.rs`）—— 争用时重试 `try_lock_session`（最多 5 次，退避 `50ms × attempt`），写入 `locked_by` + `lock_epoch`；`0`/空表示未锁定。
 4. `lock_registry.register(...)` 与 `touch_session(id, root_dir)` —— 注册后退出信号能释放它；touch 过的会话下次才会被 `--resume-last` 找到。
 
 `lock_epoch` 是 `process_identity(pid)`（`store/session_store/process_identity.rs`）：Linux 读 `/proc/<pid>/stat` 的 starttime，macOS 用 `proc_pidinfo`，其他平台退回 `ps -o lstart`。它的作用是把「同一个 PID 被复用」与「同一个进程」区分开——只记 pid 会让一个新进程误判自己仍持有锁。
@@ -213,33 +213,33 @@ sequenceDiagram
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/store/mod.rs` | `StoreRoot`、`Store<T>`、`CollectionStore<T>` |
-| `crates/tact/src/store/sqlite.rs` | 共享 `SqlitePool`（每个 db 一份、引用计数）、连接参数决策（WAL + `busy_timeout`，WAL 失败回退）与各域共用的毫秒时间戳转换（`now_millis` / `from_millis`——后者决定"读不出来的时间戳"回退为 `Utc::now()`，因为该列只是显示字段） |
-| `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait、`DynSessionStore`、`open_sqlite_session_store`、`MAX_INPUT_HISTORY` / `MAX_TOKEN_USAGE_BODIES` |
-| `crates/tact/src/store/session_store/sqlite.rs` | 全新 schema（`CREATE TABLE IF NOT EXISTS`，含 `responses_states`）、`SqliteSessionStore` 实现 |
-| `crates/tact/src/store/session_store/process_identity.rs` | `process_identity(pid)` —— `lock_epoch` 的来源，用于识别 PID 复用 |
-| `crates/tact/src/store/session_store/session_lock.rs` | `SessionLock` —— 子 agent 用的轻量 RAII 锁（无 `Drop`，需显式 `release`） |
-| `crates/tact/src/store/test_support.rs` | 仅测试：`temp_db(prefix, name)`，各域 store 测试共用的临时库 fixture（先清空目录，避免上一轮崩溃留下的行造成偶发失败） |
-| `crates/tact/src/store/subagent_store/mod.rs` | `SubagentStore` trait（async：upsert / get / list / list_running——最后一项供启动时把 orphan `running` 行改判 `failed`） |
-| `crates/tact/src/store/subagent_store/sqlite.rs` | `SqliteSubagentStore` — `subagent_runs` 表 |
-| `crates/tact/src/store/task_store/mod.rs` | `TaskStore` trait（async：create/get/update/list/delete） |
-| `crates/tact/src/store/task_store/sqlite.rs` | `SqliteTaskStore` — `tasks` + `task_dependencies` 表、`BEGIN IMMEDIATE` 事务、`busy_timeout` |
-| `crates/tact/src/store/background_store/mod.rs` | `BackgroundStore` trait（async：upsert/get/list） |
-| `crates/tact/src/store/background_store/sqlite.rs` | `SqliteBackgroundStore` — `background_tasks` 表、upsert + `CHECK` 约束 status |
-| `crates/tact/src/store/team_store/mod.rs` | `TeamStore` trait（async：create_teammate/list_teammates/append_message/read_inbox） |
-| `crates/tact/src/store/team_store/sqlite.rs` | `SqliteTeamStore` — `teammates` + `inbox_messages` 表 |
-| `crates/tact/src/store/worktree_store/mod.rs` | `WorktreeStore` trait（async：create_worktree/find_worktree/list_worktrees/append_event/recent_events） |
-| `crates/tact/src/store/worktree_store/sqlite.rs` | `SqliteWorktreeStore` — `worktrees` + `worktree_events` 表 |
-| `crates/tact/src/agent/mod.rs` | `ensure_session`、`persist_message`、`persist_llm_call`、`replace_persisted_context` / `replace_persisted_context_and_state`、`compact_history*` |
-| `crates/tact-ui/src/session_lock.rs` | `SessionLockGuard`（5 次重试 + 退避）+ `SessionLockRegistry`（注册 / 退出信号释放 + `130`/`143` 退出） |
-| `crates/tact-ui/src/session_bootstrap.rs` | `open_session`（解析 id → 建行 → 抢锁 → 注册 → touch）与 `bootstrap_session`（五个领域 manager + agent，两个前端共用） |
-| `crates/tact/src/consts.rs` | `TactPath::session_db_path()` → `<workdir>/.tact/tact.db`；`TactPath::workdir()` 存为 `sessions.root_dir` |
-| `crates/tact-ui/src/main.rs` | 打开 SQLite session store（`Upgrade` 子命令在此之前返回）；`--list-sessions`、`SessionLockRegistry::spawn_exit_listener()` |
-| `crates/tact/src/task/mod.rs` | `TaskManager` 门面（`Box<dyn TaskStore>`）+ `SharedTaskManager` |
-| `crates/tact/src/background.rs` | `BackgroundManager` 门面（`Arc<dyn BackgroundStore>`）+ `SharedBackgroundManager` |
-| `crates/tact/src/team.rs` | `TeammateManager` 门面（`Box<dyn TeamStore>`）+ `SharedTeammateManager` |
-| `crates/tact/src/worktree/mod.rs` | `WorktreeManager` 门面（`Box<dyn WorktreeStore>`）+ `SharedWorktreeManager` |
-| `crates/tact/src/subagent.rs` | `SubagentManager` 门面（持有 `SqliteSubagentStore`，启动时做 orphan 修复）+ `SharedSubagentManager`（`Arc`，工具侧） |
+| `crates/tact_extensions/src/store/mod.rs` | `StoreRoot`、`Store<T>`、`CollectionStore<T>` |
+| `crates/tact_extensions/src/store/sqlite.rs` | 共享 `SqlitePool`（每个 db 一份、引用计数）、连接参数决策（WAL + `busy_timeout`，WAL 失败回退）与各域共用的毫秒时间戳转换（`now_millis` / `from_millis`——后者决定"读不出来的时间戳"回退为 `Utc::now()`，因为该列只是显示字段） |
+| `crates/tact_extensions/src/store/session_store/mod.rs` | `SessionStore` trait、`DynSessionStore`、`open_sqlite_session_store`、`MAX_INPUT_HISTORY` / `MAX_TOKEN_USAGE_BODIES` |
+| `crates/tact_extensions/src/store/session_store/sqlite.rs` | 全新 schema（`CREATE TABLE IF NOT EXISTS`，含 `responses_states`）、`SqliteSessionStore` 实现 |
+| `crates/tact_extensions/src/store/session_store/process_identity.rs` | `process_identity(pid)` —— `lock_epoch` 的来源，用于识别 PID 复用 |
+| `crates/tact_extensions/src/store/session_store/session_lock.rs` | `SessionLock` —— 子 agent 用的轻量 RAII 锁（无 `Drop`，需显式 `release`） |
+| `crates/tact_extensions/src/store/test_support.rs` | 仅测试：`temp_db(prefix, name)`，各域 store 测试共用的临时库 fixture（先清空目录，避免上一轮崩溃留下的行造成偶发失败） |
+| `crates/tact_extensions/src/store/subagent_store/mod.rs` | `SubagentStore` trait（async：upsert / get / list / list_running——最后一项供启动时把 orphan `running` 行改判 `failed`） |
+| `crates/tact_extensions/src/store/subagent_store/sqlite.rs` | `SqliteSubagentStore` — `subagent_runs` 表 |
+| `crates/tact_extensions/src/store/task_store/mod.rs` | `TaskStore` trait（async：create/get/update/list/delete） |
+| `crates/tact_extensions/src/store/task_store/sqlite.rs` | `SqliteTaskStore` — `tasks` + `task_dependencies` 表、`BEGIN IMMEDIATE` 事务、`busy_timeout` |
+| `crates/tact_extensions/src/store/background_store/mod.rs` | `BackgroundStore` trait（async：upsert/get/list） |
+| `crates/tact_extensions/src/store/background_store/sqlite.rs` | `SqliteBackgroundStore` — `background_tasks` 表、upsert + `CHECK` 约束 status |
+| `crates/tact_extensions/src/store/team_store/mod.rs` | `TeamStore` trait（async：create_teammate/list_teammates/append_message/read_inbox） |
+| `crates/tact_extensions/src/store/team_store/sqlite.rs` | `SqliteTeamStore` — `teammates` + `inbox_messages` 表 |
+| `crates/tact_extensions/src/store/worktree_store/mod.rs` | `WorktreeStore` trait（async：create_worktree/find_worktree/list_worktrees/append_event/recent_events） |
+| `crates/tact_extensions/src/store/worktree_store/sqlite.rs` | `SqliteWorktreeStore` — `worktrees` + `worktree_events` 表 |
+| `crates/tact_extensions/src/agent/mod.rs` | `ensure_session`、`persist_message`、`persist_llm_call`、`replace_persisted_context` / `replace_persisted_context_and_state`、`compact_history*` |
+| `crates/tact_ui/src/session_lock.rs` | `SessionLockGuard`（5 次重试 + 退避）+ `SessionLockRegistry`（注册 / 退出信号释放 + `130`/`143` 退出） |
+| `crates/tact_ui/src/session_bootstrap.rs` | `open_session`（解析 id → 建行 → 抢锁 → 注册 → touch）与 `bootstrap_session`（五个领域 manager + agent，两个前端共用） |
+| `crates/tact_extensions/src/consts.rs` | `TactPath::session_db_path()` → `<workdir>/.tact/tact.db`；`TactPath::workdir()` 存为 `sessions.root_dir` |
+| `crates/tact_ui/src/main.rs` | 打开 SQLite session store（`Upgrade` 子命令在此之前返回）；`--list-sessions`、`SessionLockRegistry::spawn_exit_listener()` |
+| `crates/tact_extensions/src/task/mod.rs` | `TaskManager` 门面（`Box<dyn TaskStore>`）+ `SharedTaskManager` |
+| `crates/tact_extensions/src/background.rs` | `BackgroundManager` 门面（`Arc<dyn BackgroundStore>`）+ `SharedBackgroundManager` |
+| `crates/tact_extensions/src/team.rs` | `TeammateManager` 门面（`Box<dyn TeamStore>`）+ `SharedTeammateManager` |
+| `crates/tact_extensions/src/worktree/mod.rs` | `WorktreeManager` 门面（`Box<dyn WorktreeStore>`）+ `SharedWorktreeManager` |
+| `crates/tact_extensions/src/subagent.rs` | `SubagentManager` 门面（持有 `SqliteSubagentStore`，启动时做 orphan 修复）+ `SharedSubagentManager`（`Arc`，工具侧） |
 
 ---
 

@@ -1,17 +1,17 @@
 [package]
 name = "tact_plugin_node"
-version.workspace = true
-edition.workspace = true
-license.workspace = true
+version = "1.1.33"
+edition = "2024"
+license = "MIT"
+description = "Node.js plugin host over the shared Tact Plugin Protocol."
 
 [dependencies]
-tact = { path = "../tact" }
-tact_protocol = { path = "../protocol" }
+tact_plugin_host = { path = "../tact_plugin_host" }
+tact_protocol = { path = "../tact_protocol" }
+
+[dev-dependencies]
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["io-util", "process", "sync", "time", "macros", "rt-multi-thread"] }
-uuid = { workspace = true }
-
-[dev-dependencies]
-tempfile = { workspace = true }
+tact = { path = "../tact" }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }

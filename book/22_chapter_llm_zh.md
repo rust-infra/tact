@@ -87,7 +87,7 @@ pub trait CredentialProvider: Send + Sync {
 启动时安装（测试 override 下可 re-init）。provider 是**静态快照**：`/model` 不再修改它。per-agent model 存于 `AgentSettings.model`（经 `UserCommand::SetModel` 更新）、per-request 存于 `CreateMessageParams.model`——wire 形状启发式（`is_kimi_k2x`、body hook 选择）读取 *request* model，因此 `/model` 切换无需重建 client 即可改变 wire。`RwLock<Option<ProviderInfo>>` 保留用于 test-support override；生产 install 只执行一次。
 
 ```rust
-// crates/tact/src/config/mod.rs
+// crates/tact_extensions/src/config/mod.rs
 pub fn install(config: ResolvedConfig) {
     tact_llm::init_provider(config.llm.provider_info());
     *SETTINGS.write().expect("tact config lock poisoned") = Some(config);
@@ -680,8 +680,8 @@ sequenceDiagram
 | `tact_llm/src/openai/` | Chat Completions transport，以及隔离的 Responses converter、normalizer 与 stream state |
 | `tact_llm/src/openai/body.rs` | `ChatCompletionsDialect` body hooks（`Standard` / `DeepSeek` / `Kimi`） |
 | `tact_llm/src/convert.rs` | 请求翻译、Image → `image_url`、Kimi thinking blocks |
-| `crates/tact/src/agent/mod.rs` | `stream_message` 包装、`with_session` 中设置 `user_id` |
-| `crates/tact/src/compact/mod.rs` | 摘要用 `create_message` |
+| `crates/tact_extensions/src/agent/mod.rs` | `stream_message` 包装、`with_session` 中设置 `user_id` |
+| `crates/tact_extensions/src/compact/mod.rs` | 摘要用 `create_message` |
 
 ---
 

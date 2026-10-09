@@ -6,7 +6,7 @@ Status: implemented (2026-09-15) — see "Result and deviations" at the end
 
 ## Work Items
 
-1. **`SandboxBackend` enum** — in `crates/tact/src/config/types.rs`, add
+1. **`SandboxBackend` enum** — in `crates/tact_extensions/src/config/types.rs`, add
    `pub enum SandboxBackend { None, Bwrap }` with
    `#[derive(Serialize, Deserialize)]` + `#[serde(rename_all = "lowercase")]`,
    `Default` → `None`, `Clone, Copy, Debug`. Keep it in `config/types.rs` so the
@@ -23,7 +23,7 @@ Status: implemented (2026-09-15) — see "Result and deviations" at the end
    - `config.example.toml` `[tools]` (after `rtk_filter`): add
      `# sandbox = "none"  # "none" (default) | "bwrap" — Linux bubblewrap sandbox`.
 
-3. **Sandbox module** — new `crates/tact/src/sandbox/`:
+3. **Sandbox module** — new `crates/tact_extensions/src/sandbox/`:
    - `mod.rs`: the `Sandbox` trait from the spec (`command(&self, program, args,
      work_dir) -> anyhow::Result<tokio::process::Command>` + `describe() ->
      &'static str`) and a `pub fn resolve(backend: SandboxBackend, work_dir: &Path)
@@ -44,11 +44,11 @@ Status: implemented (2026-09-15) — see "Result and deviations" at the end
    "/"`, `work_dir == $HOME`, `work_dir` an ancestor of `$HOME`, or under
    `/etc` `/usr` `/boot` — record it as the degradation reason (§5.1).
 
-5. **`ToolContext`** — `crates/tact/src/tool/mod.rs:107`: add
+5. **`ToolContext`** — `crates/tact_extensions/src/tool/mod.rs:107`: add
    `pub sandbox: Option<Arc<dyn Sandbox>>` and
    `pub sandbox_degraded_reason: Option<String>`. Update every construction site:
-   `crates/tact-ui/src/interactive.rs:309`, `crates/tact-ui/src/headless.rs:107`,
-   `crates/tact/src/tool/test_support.rs:71`, and the `read_image.rs` test helper
+   `crates/tact_ui/src/interactive.rs:309`, `crates/tact_ui/src/headless.rs:107`,
+   `crates/tact_extensions/src/tool/test_support.rs:71`, and the `read_image.rs` test helper
    (default `None`/`None`).
 
 6. **Startup resolution + warning** — in `interactive.rs` / `headless.rs`, after
@@ -57,7 +57,7 @@ Status: implemented (2026-09-15) — see "Result and deviations" at the end
    reason, plus `eprintln!` so it is visible to a default CLI run), and stash the
    reason in `ToolContext` for the first-command notice.
 
-7. **`bash` integration** — `crates/tact/src/tool/bash.rs:181`: replace the
+7. **`bash` integration** — `crates/tact_extensions/src/tool/bash.rs:181`: replace the
    `Command::new("sh")` block with the §11 `match &ctx.sandbox` (Some → `sandbox.
    command(...)`; None → direct `sh -c` with `current_dir(&ctx.work_dir)`, today's
    behaviour). Keep `stdout/stderr`, `kill_on_drop`, `configure_process_group`,

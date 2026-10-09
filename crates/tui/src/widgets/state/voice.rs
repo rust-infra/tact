@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use ratatui::layout::Rect;
-use tact::voice::{VoiceCommand, VoiceEvent, VoiceWorkerHandle};
+use tact_extensions::voice::{VoiceCommand, VoiceEvent, VoiceWorkerHandle};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VoicePhase {

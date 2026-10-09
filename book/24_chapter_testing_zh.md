@@ -70,7 +70,7 @@ Pre-push 运行 `./scripts/check-rust.sh`（fmt check、clippy、集成测试）
 
 ## tact-ui harness（无终端）
 
-**位置：** `crates/tact-ui/src/test_support.rs`、`crates/tact-ui/tests/harness/mod.rs`
+**位置：** `crates/tact_ui/src/test_support.rs`、`crates/tact_ui/tests/harness/mod.rs`
 
 - `build_test_agent` / `build_test_agent_with_mode` — mock LLM + 隔离 workspace（`unique_workspace_name` 避免并行测试冲突）
 - `run_command_loop` — 与交互模式相同代码路径，由 `UserCommand` channel 驱动
@@ -116,7 +116,7 @@ Pre-push 运行 `./scripts/check-rust.sh`（fmt check、clippy、集成测试）
 
 ## Headless 交互 session
 
-**位置：** `crates/tact-ui/src/headless_session.rs`、`crates/tui/src/headless_loop.rs`
+**位置：** `crates/tact_ui/src/headless_session.rs`、`crates/tui/src/headless_loop.rs`
 
 镜像 `interactive.rs`（driver task + App update drain），无 crossterm：
 
@@ -181,8 +181,8 @@ let mock = MockClient::with_usage(vec![(/* blocks */, stop, usage)]]);
 
 ## 添加新场景
 
-1. **仅 Agent 行为** → `crates/tact/src/agent/mod.rs` 或 `crates/tact/src/tool/` 下工具测试
-2. **Driver / 权限 / session** → `crates/tact-ui/tests/` 中新 `#[tokio::test]`，复用 `harness::run_single_task`
+1. **仅 Agent 行为** → `crates/tact_extensions/src/agent/mod.rs` 或 `crates/tact_extensions/src/tool/` 下工具测试
+2. **Driver / 权限 / session** → `crates/tact_ui/tests/` 中新 `#[tokio::test]`，复用 `harness::run_single_task`
 3. **UI 状态转换** → `crates/tui/src/widgets/state/app/agent.rs` 生命周期测试
 4. **可见布局** → `scene_tests.rs` 或 `popup_scene_tests.rs`；通过 `handle_agent_update` 或 popup 辅助 seed
 5. **端到端 driver + render** → `app_bridge_integration.rs`

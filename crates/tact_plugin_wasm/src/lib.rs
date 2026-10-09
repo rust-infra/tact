@@ -18,11 +18,8 @@ use std::{
 use anyhow::{Context, Result, bail};
 use async_trait::async_trait;
 use serde_json::Value;
-use tact::{
-    kernel::{CapabilityRouter, InvocationContext, KernelError, RuntimeContext},
-    plugin::PluginState,
-};
-use tact_plugin_node::{HostCallService, NodePluginHost};
+use tact::{CapabilityRouter, InvocationContext, KernelError, PluginState, RuntimeContext};
+use tact_plugin_host::{HostCallService, StdioPluginHost as NodePluginHost};
 use tact_protocol::{
     CapabilityDeclaration, ErrorCategory, PluginId, PluginRequest, PluginResponse, ProtocolVersion,
     RequestId,
@@ -233,7 +230,7 @@ impl WasmPluginHost {
 
     pub fn interrupt(
         &self,
-        cancellation: &tact::kernel::CancellationService,
+        cancellation: &tact::CancellationService,
         request_id: &RequestId,
     ) -> bool {
         let cancelled = cancellation.cancel_request(request_id);
@@ -312,7 +309,7 @@ fn same_declarations(left: &[CapabilityDeclaration], right: &[CapabilityDeclarat
 }
 
 #[async_trait::async_trait]
-impl tact::plugin::PluginHost for WasmPluginHost {
+impl tact_plugin_host::PluginHost for WasmPluginHost {
     fn plugin_id(&self) -> &PluginId {
         &self.plugin_id
     }

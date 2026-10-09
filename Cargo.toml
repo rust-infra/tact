@@ -1,10 +1,13 @@
 [workspace]
 members = [
-    "crates/protocol",
+    "crates/tact_protocol",
     "crates/agent_tui_kit",
     "crates/tui",
     "crates/tact",
-    "crates/tact-ui",
+    "crates/tact_trajectory",
+    "crates/tact_plugin_host",
+    "crates/tact_extensions",
+    "crates/tact_ui",
     "crates/tact_plugin_node",
     "crates/tact_plugin_wasm",
     "crates/tact_llm",

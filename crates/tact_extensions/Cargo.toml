@@ -1,0 +1,65 @@
+[package]
+name = "tact_extensions"
+
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tact_protocol = { path = "../tact_protocol" }
+tact = { path = "../tact" }
+tact_trajectory = { path = "../tact_trajectory" }
+tact_plugin_host = { path = "../tact_plugin_host" }
+tact_llm = { path = "../tact_llm" }
+tool_refactor_macros = { path = "../tool_refactor_macros" }
+anyhow = { workspace = true }
+async-openai = { workspace = true }
+async-trait = { workspace = true }
+base64 = { workspace = true }
+bytes = { workspace = true }
+chrono = { workspace = true }
+clap = { workspace = true }
+derive_builder = { workspace = true }
+flate2 = { workspace = true }
+futures-util = { workspace = true }
+globset = { workspace = true }
+git2 = { workspace = true }
+http = "1"
+image = { workspace = true }
+libc = { workspace = true }
+regex = { workspace = true }
+reqwest = { workspace = true, features = ["multipart"] }
+# rmcp's Streamable HTTP transport is built on reqwest 0.13; building a custom
+# client for it requires depending on the same crate version, or the
+# `StreamableHttpClient for reqwest::Client` impl does not apply.
+reqwest13 = { workspace = true }
+reqwest-eventsource = { workspace = true }
+rmcp = { workspace = true }
+schemars = { workspace = true }
+secrecy = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+sha2 = { workspace = true }
+sqlx = { workspace = true }
+strum = { workspace = true }
+strum_macros = { workspace = true }
+tera = { workspace = true }
+tar = { workspace = true }
+tokio = { workspace = true, features = ["fs", "io-util", "net", "process", "sync", "time", "tracing", "macros", "rt-multi-thread"] }
+tokio-util = { workspace = true }
+cpal = { workspace = true }
+toml = { workspace = true }
+toml_edit = { workspace = true }
+tracing = { workspace = true }
+uuid = { workspace = true }
+walkdir = { workspace = true }
+
+[features]
+test-support = []
+
+[dev-dependencies]
+wiremock = "0.6"
+proptest = "1"
+rmcp = { workspace = true, features = ["server"] }
+tempfile = { workspace = true }

@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
 };
 
-use tact::{
+use tact_extensions::{
     plugin::{PluginEvent, PluginRequest},
     skill::SharedSkillRegistry,
 };
@@ -250,7 +250,7 @@ pub struct App {
     /// Authoritative in-process pending UI requests. When set, the TUI
     /// reconciles its select popup from this snapshot instead of treating
     /// individual `RequestSelect` events as the source of truth.
-    pub(crate) pending_ui: Option<tact::ui_responder::UiResponder>,
+    pub(crate) pending_ui: Option<tact_extensions::ui_responder::UiResponder>,
     // File picker popup (triggered by @ in insert mode)
     pub(crate) file_picker: FilePicker,
     pub(crate) slash_command: SlashCommandState,
@@ -269,7 +269,7 @@ pub struct App {
     /// Same mutex as agent `ToolContext.skill_registry` (interactive mode).
     pub(crate) skill_registry: SharedSkillRegistry,
     /// Shared session store used to inspect persisted request payloads.
-    pub(crate) session_store: Option<tact::store::DynSessionStore>,
+    pub(crate) session_store: Option<tact_extensions::store::DynSessionStore>,
     /// Spinner animation frame (0-9) for typing/loading indicator.
     pub(crate) spinner_frame: u8,
     /// Loading placeholder index in messages (spinner row while waiting for output).

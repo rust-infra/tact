@@ -10,8 +10,8 @@ Each task is independently testable and committable. Suggested commit types foll
 
 ---
 
-1. **`security::sensitive` — the registry and the classifiers** (new: `crates/tact/src/security/mod.rs`,
-   `crates/tact/src/security/sensitive.rs`; `crates/tact/src/lib.rs` gains `pub(crate) mod security;`)
+1. **`security::sensitive` — the registry and the classifiers** (new: `crates/tact_extensions/src/security/mod.rs`,
+   `crates/tact_extensions/src/security/sensitive.rs`; `crates/tact/src/lib.rs` gains `pub(crate) mod security;`)
    - `Tier { Credential, Secret }`, `SensitiveKind { PrivateKey, CredentialStore, AgentConfig, EnvFile,
      ShellHistory, KeyMaterial }`, `Hit { tier, kind, matched, pattern }` — all with the doc comment
      explaining the two tiers and why the escape hatches differ.
@@ -38,7 +38,7 @@ Each task is independently testable and committable. Suggested commit types foll
      `classify_command_catches_plain_reads`.
    - Commit: `feat(security): a registry of paths that are secrets by their nature`
 
-2. **Config plumbing** (`crates/tact/src/permission/settings.rs`)
+2. **Config plumbing** (`crates/tact_extensions/src/permission/settings.rs`)
    - Read `permissions.sensitive_paths` (`enabled`, `extra`, `allow`) and `permissions.redaction`
      (`enabled`, `level`, `extra_patterns`, `ignore_paths`) out of the same document
      `extract_rule_lists` already parses. Tolerant, exactly like the rule lists: a malformed key warns
@@ -53,7 +53,7 @@ Each task is independently testable and committable. Suggested commit types foll
      the round-trip preservation test extended with both new objects.
    - Commit: `feat(permission): settings carry the sensitive-path and redaction config`
 
-3. **`PermissionPolicy` learns about its target** (`crates/tact/src/tool/metadata.rs`, plus every
+3. **`PermissionPolicy` learns about its target** (`crates/tact_extensions/src/tool/metadata.rs`, plus every
    metadata const that carries a path)
    - Add `ReadPath { path_field }`, `WritePath { path_field }`, `PatchPaths`. `resolve` returns `High`
      when `classify_path` hits, unchanged otherwise; `sensitive(&self, input, scanner) -> Option<Hit>`
@@ -82,8 +82,8 @@ Each task is independently testable and committable. Suggested commit types foll
      `Read`; `apply_patch` with a `+++ b/secrets.json` header → `High`; `ls ~` still `Read`.
    - Commit: `feat(security): a tool's target, not just its verb, decides the risk`
 
-4. **The guard in preflight** (`crates/tact/src/agent/tool_dispatch.rs`, `crates/tact/src/agent/mod.rs`,
-   `crates/tact-ui/src/{interactive,headless}.rs`, `crates/tact/src/tool/subagent.rs`)
+4. **The guard in preflight** (`crates/tact_extensions/src/agent/tool_dispatch.rs`, `crates/tact_extensions/src/agent/mod.rs`,
+   `crates/tact_ui/src/{interactive,headless}.rs`, `crates/tact_extensions/src/tool/subagent.rs`)
    - `AgentRuntime` gains `security: Scanner`; built from `PermissionSettings::security_config()` at each
      of the three construction sites (the subagent inherits the parent's scanner alongside its
      `PermissionSnapshot`).
@@ -104,8 +104,8 @@ Each task is independently testable and committable. Suggested commit types foll
      `agent::tool_dispatch`'s test module (the decision lives there, unlike the MCP router case).
    - Commit: `feat(security): a private key is refused before any mode or rule can allow it`
 
-5. **`security::redact` + final-result redaction** (new `crates/tact/src/security/redact.rs`;
-   `crates/tact/src/agent/tool_dispatch.rs`)
+5. **`security::redact` + final-result redaction** (new `crates/tact_extensions/src/security/redact.rs`;
+   `crates/tact_extensions/src/agent/tool_dispatch.rs`)
    - `RedactionLevel { Off, Basic, Credential }`, `redact(text, level, &RedactionConfig) -> Cow<str>`
      and `redact_for_call(text, hit: Option<&Hit>, cfg)` — the latter picks `Credential` when the call
      was classified sensitive or its result came from an `ignore_paths`-exempt location, `Basic`
@@ -123,8 +123,8 @@ Each task is independently testable and committable. Suggested commit types foll
      `redaction_off_is_honoured`; `session_store_holds_redacted_text` (round-trip through the store).
    - Commit: `feat(security): redact secrets out of tool results before they are stored`
 
-6. **Live-output redaction** (`crates/tact/src/security/redact.rs`,
-   `crates/tact/src/tool/progress.rs`, `crates/tact/src/tool/bash.rs`)
+6. **Live-output redaction** (`crates/tact_extensions/src/security/redact.rs`,
+   `crates/tact_extensions/src/tool/progress.rs`, `crates/tact_extensions/src/tool/bash.rs`)
    - `StreamRedactor { holdback, level }` with `push(&mut self, chunk) -> Option<String>` and
      `finish(&mut self) -> Option<String>`; hold back the longest possible partial match.
    - Own it per invocation in the progress reporter (built in `ToolContext::for_invocation`, so the

@@ -74,11 +74,11 @@ boundary around the agent, and v1 must not be described as one:
 
 - `read_file` / `write_file` / `edit_file` run in-process and keep full host
   filesystem access (bounded only by Permission).
-- `background_run` (`crates/tact/src/background.rs:379`) and `worktree_run`
-  (`crates/tact/src/worktree/mod.rs:203`) spawn shells of their own and stay
+- `background_run` (`crates/tact_extensions/src/background.rs:379`) and `worktree_run`
+  (`crates/tact_extensions/src/worktree/mod.rs:203`) spawn shells of their own and stay
   unsandboxed (§15).
-- Command hooks (`crates/tact/src/plugin/hooks.rs:271`) and stdio MCP servers
-  (`crates/tact/src/mcp/mod.rs:839`) are unsandboxed host processes; both are
+- Command hooks (`crates/tact_extensions/src/plugin/hooks.rs:271`) and stdio MCP servers
+  (`crates/tact_extensions/src/mcp/mod.rs:839`) are unsandboxed host processes; both are
   user-configured, and neither is reachable by the agent as a tool call.
 
 Therefore the value of v1 is: **code that the agent's approved command pulls in
@@ -185,7 +185,7 @@ The sandbox only changes how the process is started and what filesystem/network 
 Introduce a small abstraction under:
 
 ```text
-crates/tact/src/sandbox/
+crates/tact_extensions/src/sandbox/
 ├── mod.rs
 └── bwrap.rs
 ```
@@ -432,7 +432,7 @@ rather than:
 ### 5.1 Workspace boundary guard
 
 `work_dir` comes from `ToolContext::work_dir`, which for the interactive path is
-`std::env::current_dir()` (`crates/tact/src/consts.rs:157`). Nothing stops it
+`std::env::current_dir()` (`crates/tact_extensions/src/consts.rs:157`). Nothing stops it
 from being `$HOME` or `/`, and `--bind <work_dir> /workspace` would then hand the
 sandbox the entire home directory (SSH keys, cloud credentials) read-write —
 silently voiding the guarantee §Goals states, since the home directory *is* the
@@ -646,7 +646,7 @@ tact (process_group(0) → child is its own group leader, pgid == bwrap pid)
 ```
 
 `killpg(8137)` — exactly what `terminate_child`
-(`crates/tact/src/tool/bash.rs:83-93`) does — kills bwrap only. The grandchildren
+(`crates/tact_extensions/src/tool/bash.rs:83-93`) does — kills bwrap only. The grandchildren
 stay in group 8138, keep the inherited stdout/stderr write ends open, and the
 pipe never reaches EOF. `bash`'s loop
 
@@ -1023,12 +1023,12 @@ spawn processes today; v1 sandboxes exactly one of them:
 
 | Path | v1 | Agent-callable |
 | --- | --- | --- |
-| `bash` — `crates/tact/src/tool/bash.rs:181` | **sandboxed** | yes |
-| `background_run` — `crates/tact/src/background.rs:379` | unchanged | yes |
-| `worktree_run` — `crates/tact/src/worktree/mod.rs:203` | unchanged | yes |
-| worktree lane management (`git`) — `crates/tact/src/worktree/mod.rs:137,190,231,251,371,513` | unchanged | via tools |
-| command hooks — `crates/tact/src/plugin/hooks.rs:271` | unchanged | no (user config) |
-| stdio MCP servers — `crates/tact/src/mcp/mod.rs:839` | unchanged | no (user config) |
+| `bash` — `crates/tact_extensions/src/tool/bash.rs:181` | **sandboxed** | yes |
+| `background_run` — `crates/tact_extensions/src/background.rs:379` | unchanged | yes |
+| `worktree_run` — `crates/tact_extensions/src/worktree/mod.rs:203` | unchanged | yes |
+| worktree lane management (`git`) — `crates/tact_extensions/src/worktree/mod.rs:137,190,231,251,371,513` | unchanged | via tools |
+| command hooks — `crates/tact_extensions/src/plugin/hooks.rs:271` | unchanged | no (user config) |
+| stdio MCP servers — `crates/tact_extensions/src/mcp/mod.rs:839` | unchanged | no (user config) |
 | `voice/transcriber.rs:389`, `hook/rtk_filter.rs:17,44` | unchanged | no |
 | `read_file` / `write_file` / `edit_file` / `grep` | not processes | yes |
 
@@ -1048,7 +1048,7 @@ reverse (`/workspace/...` handed to `edit_file`) fails too. Three things are
 needed, and the first is not optional:
 
 1. **Say it in the tool surface.** `BASH_METADATA.description`
-   (`crates/tact/src/tool/bash.rs:146`) and the `BashInput` field doc currently
+   (`crates/tact_extensions/src/tool/bash.rs:146`) and the `BashInput` field doc currently
    say only "Shell command to run in the current workspace." Extend them — once,
    in a backend-independent way — with: the workspace is mounted at `/workspace`
    and is the working directory, the host workspace path is not visible, the

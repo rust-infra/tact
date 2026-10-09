@@ -4,7 +4,7 @@ Spec: [2026-10-01-mcp-plugin-server-short-name-design.md](../specs/2026-10-01-mc
 
 Shipped as `ebd5a18b`. Retroactive record (2026-10-02).
 
-1. **`crates/tact/src/mcp/mod.rs`**
+1. **`crates/tact_extensions/src/mcp/mod.rs`**
    - `split_plugin_server_name(name) -> Option<(&str, &str)>` — strips `plugin__`, splits on the
      first `__`, rejects an empty plugin id or server segment.
    - `display_server_name(name) -> &str` — the short form, `#[must_use]`, identity when the prefix
@@ -13,7 +13,7 @@ Shipped as `ebd5a18b`. Retroactive record (2026-10-02).
      first, then the unique display-name match, then an error naming the candidates.
    - `resolve_name_against(name, configured)` — the pure core, separated so the matching rules are
      testable without reading the working directory.
-2. **`crates/tact-ui/src/mcp_cli.rs`**
+2. **`crates/tact_ui/src/mcp_cli.rs`**
    - Route every displayed name through `display_server_name`; measure the report's column width on
      the displayed names.
    - `mcp get`: short heading, full names on the tool lines.

@@ -2,7 +2,7 @@
 
 本章文档化 `tact_protocol` crate：agent 运行时与终端 UI 之间交换的消息类型，以及各 `AgentUpdate` variant 如何在两侧驱动状态转换。
 
-实现：`crates/protocol/src/agent.rs`、`crates/protocol/src/biz.rs`。TUI 消费者：`crates/tui/src/widgets/state/app/agent.rs`。Agent 发出者：`crates/tact/src/agent/tool_dispatch.rs`、`crates/tact_llm`（流式）。
+实现：`crates/tact_protocol/src/agent.rs`、`crates/tact_protocol/src/biz.rs`。TUI 消费者：`crates/tui/src/widgets/state/app/agent.rs`。Agent 发出者：`crates/tact_extensions/src/agent/tool_dispatch.rs`、`crates/tact_llm`（流式）。
 
 相关章节：[Ch 18 Agent Loop](./18_chapter_agent_loop_zh.md)、[Ch 23 TUI](./23_chapter_tui_zh.md)。其他状态机（输入模式、权限、任务）见 [docs/state_machines.md](../docs/state_machines.md)。
 
@@ -24,7 +24,7 @@ graph LR
 | `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → driver | 提交任务、取消、余额查询、UI 响应 |
 | `account_tx` / `account_rx` | `AccountUpdate` | Account → TUI | 余额 / 配额（与 agent 协议分离） |
 
-所有通道均用 `tokio::sync::mpsc::unbounded_channel`。`AgentUpdate` 是**纯数据**：`RequestSelect` / `RequestMultiSelect` 携带 `request_id` 而非内嵌的 `oneshot::Sender`，因此该 enum 不再携带传输句柄（后续可自由派生 `Serialize`/`Clone`）。TUI 通过反向通道发送 `UserCommand::UiResponse` 回 driver，driver 再经运行时共享的 [`UiResponder`] 注册表（`crates/tact/src/ui_responder.rs`）路由给等待中的调用方（父 agent 或 subagent）。
+所有通道均用 `tokio::sync::mpsc::unbounded_channel`。`AgentUpdate` 是**纯数据**：`RequestSelect` / `RequestMultiSelect` 携带 `request_id` 而非内嵌的 `oneshot::Sender`，因此该 enum 不再携带传输句柄（后续可自由派生 `Serialize`/`Clone`）。TUI 通过反向通道发送 `UserCommand::UiResponse` 回 driver，driver 再经运行时共享的 [`UiResponder`] 注册表（`crates/tact_extensions/src/ui_responder.rs`）路由给等待中的调用方（父 agent 或 subagent）。
 
 交互模式下，共享的 `UiResponder` 还会暴露一个有序 pending snapshot；TUI 从该 snapshot reconcile `InputMode::Select`，并把 `RequestSelect` / `RequestMultiSelect` 当作 wake-up hint。没有 broker 的 headless/tests 仍以该事件为权威。
 
@@ -114,7 +114,7 @@ pub struct PlanStep {
 
 ### `AccountUpdate`（biz 模块）
 
-余额与配额更新使用专用 channel 上的 `AccountUpdate`，避免 provider 特定账户状态泄漏进 `AgentUpdate`。见 `crates/protocol/src/biz.rs` 与 `crates/tact-ui/src/account.rs`。
+余额与配额更新使用专用 channel 上的 `AccountUpdate`，避免 provider 特定账户状态泄漏进 `AgentUpdate`。见 `crates/tact_protocol/src/biz.rs` 与 `crates/tact_ui/src/account.rs`。
 
 ---
 
@@ -216,7 +216,7 @@ graph TD
 | `Done` | `Idle` | `task_done_time` 后 2 s | 主循环调用 `maybe_expire_done_status` |
 | *（不变）* | *（不变）* | `UserCommand::Cancel` | `Info("Cancelling…")` + 设 `cancel_flag`；随后 `TaskCancelled` |
 
-`TaskComplete` 由 `crates/tact-ui/src/driver.rs` 在 `agent_loop` 返回 `Ok(())` 且 `cancel_flag` 为 false 时发送（[Ch 18 §7](./18_chapter_agent_loop_zh.md#7-tui-integration)）。取消路径改为发送 `TaskCancelled`。
+`TaskComplete` 由 `crates/tact_ui/src/driver.rs` 在 `agent_loop` 返回 `Ok(())` 且 `cancel_flag` 为 false 时发送（[Ch 18 §7](./18_chapter_agent_loop_zh.md#7-tui-integration)）。取消路径改为发送 `TaskCancelled`。
 
 ### 4.2 `AgentUpdate` → `Status` 映射
 
@@ -411,8 +411,8 @@ TaskComplete            ← agent_loop Ok 后 driver
 
 ## 9. 相关资源
 
-- 协议源码：[crates/protocol/src/agent.rs](../crates/protocol/src/agent.rs)
-- Biz 类型：[crates/protocol/src/biz.rs](../crates/protocol/src/biz.rs)
+- 协议源码：[crates/tact_protocol/src/agent.rs](../crates/tact_protocol/src/agent.rs)
+- Biz 类型：[crates/tact_protocol/src/biz.rs](../crates/tact_protocol/src/biz.rs)
 - TUI handler：[crates/tui/src/widgets/state/app/agent.rs](../crates/tui/src/widgets/state/app/agent.rs)
-- Tool dispatch 发出者：[crates/tact/src/agent/tool_dispatch.rs](../crates/tact/src/agent/tool_dispatch.rs)
+- Tool dispatch 发出者：[crates/tact_extensions/src/agent/tool_dispatch.rs](../crates/tact_extensions/src/agent/tool_dispatch.rs)
 - 其他状态机：[docs/state_machines.md](../docs/state_machines.md)

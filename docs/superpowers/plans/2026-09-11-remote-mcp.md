@@ -24,7 +24,7 @@ Shipped as designed. Deviations from the original work items:
 - Follow-up: the CLI grew the full management surface — `mcp get <name>` (one
   server, connects only to it, prints qualified tool names), `mcp remove <name>
   [--user]`, `mcp logout <server>`, and `mcp add <name> --url|--command …`.
-  Config writes live in the new `crates/tact/src/mcp/edit.rs` and edit the raw
+  Config writes live in the new `crates/tact_extensions/src/mcp/edit.rs` and edit the raw
   JSON document so unknown keys survive; credential deletion lives in
   `remote::forget_credentials`. `mcp login` is the new name for `mcp auth`
   (kept as an alias, and `/mcp login` is accepted in the TUI). Server names are

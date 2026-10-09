@@ -36,17 +36,17 @@ The current workspace already contains most business capabilities:
 
 | Current area | Responsibility to preserve | Target owner |
 |---|---|---|
-| `crates/tact/src/agent/` | Streaming model loop, tool dispatch, compaction, recovery | Agent extension using Kernel services |
-| `crates/tact/src/tool/` | Native tools, metadata, tool effects, task/team/memory/worktree tools | Tools extensions through Capability Router |
-| `crates/tact/src/mcp/` | MCP discovery, connection, tool and prompt routing | Plugin Protocol adapter / external plugin host |
-| `crates/tact/src/permission/` | Permission modes, risk classification, user approval | Kernel Permission Engine |
-| `crates/tact/src/hook/` | Session, pre-tool, post-tool and lifecycle hooks | Event Handler capability |
-| `crates/tact/src/store/` | SQLite persistence, sessions, tasks, teams, worktrees, token usage | Kernel Storage plus extension namespaces |
-| `crates/tact/src/compact/` | Micro-compaction, transcript persistence, Codex-style recovery | Agent extension using Trajectory and Storage |
-| `crates/tact/src/ui_responder.rs` | Select, multi-select and user interaction requests | Kernel Interaction API |
-| `crates/protocol/` | Shared wire types and UI update types | Language-neutral Runtime / Plugin Protocol types |
+| `crates/tact_extensions/src/agent/` | Streaming model loop, tool dispatch, compaction, recovery | Agent extension using Kernel services |
+| `crates/tact_extensions/src/tool/` | Native tools, metadata, tool effects, task/team/memory/worktree tools | Tools extensions through Capability Router |
+| `crates/tact_extensions/src/mcp/` | MCP discovery, connection, tool and prompt routing | Plugin Protocol adapter / external plugin host |
+| `crates/tact_extensions/src/permission/` | Permission modes, risk classification, user approval | Kernel Permission Engine |
+| `crates/tact_extensions/src/hook/` | Session, pre-tool, post-tool and lifecycle hooks | Event Handler capability |
+| `crates/tact_extensions/src/store/` | SQLite persistence, sessions, tasks, teams, worktrees, token usage | Kernel Storage plus extension namespaces |
+| `crates/tact_extensions/src/compact/` | Micro-compaction, transcript persistence, Codex-style recovery | Agent extension using Trajectory and Storage |
+| `crates/tact_extensions/src/ui_responder.rs` | Select, multi-select and user interaction requests | Kernel Interaction API |
+| `crates/tact_protocol/` | Shared wire types and UI update types | Language-neutral Runtime / Plugin Protocol types |
 | `crates/tui/` | Ratatui event loop, state and rendering | TUI View Adapter |
-| `crates/tact-ui/` | CLI startup, host wiring, interactive and headless modes | Runtime host and client wiring |
+| `crates/tact_ui/` | CLI startup, host wiring, interactive and headless modes | Runtime host and client wiring |
 
 Existing behavior remains the acceptance baseline: streaming output, thinking and tool progress, permissions, compaction, recovery, MCP tools, hooks, sub-agents, teams, tasks, background work, memory, skills, worktrees, voice support, token usage, sessions, themes, internationalization, popups, command palette, headless execution, and all existing safety checks.
 
@@ -57,7 +57,7 @@ Existing behavior remains the acceptance baseline: streaming output, thinking an
 The Kernel contains mechanisms that must be consistent for every extension and client:
 
 ```text
-crates/tact/src/kernel/
+crates/tact/src/
   lifecycle.rs       # plugin registration, start, stop, restart
   capability.rs      # capability handles and invocation context
   permission.rs      # centralized permission decisions

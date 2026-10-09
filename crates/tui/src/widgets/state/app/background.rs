@@ -383,7 +383,7 @@ mod background_tests {
         let mut app = make_app();
         app.work_dir = work_dir.to_path_buf();
         app.skill_registry = std::sync::Arc::new(std::sync::Mutex::new(
-            tact::skill::get_skill_registry(work_dir).unwrap(),
+            tact_extensions::skill::get_skill_registry(work_dir).unwrap(),
         ));
         app
     }
@@ -416,7 +416,7 @@ mod background_tests {
             app.log.items
         );
         // Registry itself is updated (shared with the agent).
-        let registry = tact::skill::lock_skills(&app.skill_registry);
+        let registry = tact_extensions::skill::lock_skills(&app.skill_registry);
         assert!(registry.skills().contains_key("new"));
     }
 

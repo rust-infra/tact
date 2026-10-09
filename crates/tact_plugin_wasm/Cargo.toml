@@ -6,8 +6,8 @@ license.workspace = true
 
 [dependencies]
 tact = { path = "../tact" }
-tact_protocol = { path = "../protocol" }
-tact_plugin_node = { path = "../tact_plugin_node" }
+tact_protocol = { path = "../tact_protocol" }
+tact_plugin_host = { path = "../tact_plugin_host" }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 serde_json = { workspace = true }

@@ -3,7 +3,7 @@
 use std::{collections::BTreeSet, time::SystemTime};
 
 use serde_json::{Value, json};
-use tact::kernel::{CapabilityRouter, InvocationContext, KernelError};
+use tact::{CapabilityRouter, InvocationContext, KernelError};
 use tact_protocol::{
     CapabilityDeclaration, CapabilityKind, CapabilityRisk, ErrorCategory, PluginId, RuntimeEvent,
 };

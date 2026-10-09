@@ -134,19 +134,19 @@ pub(crate) fn submit_user_task(app: &mut App, display_text: String, agent_task: 
 fn task_within_limits(app: &mut App, display_text: &str, agent_task: &str) -> bool {
     let display_chars = display_text.chars().count();
     let agent_chars = agent_task.chars().count();
-    if tact::consts::exceeds_input_char_limit(agent_chars) {
+    if tact_extensions::consts::exceeds_input_char_limit(agent_chars) {
         let msg = app
             .msgs()
             .skill_task_too_long_tmpl
-            .replace("{}", &tact::consts::MAX_INPUT_CHARS.to_string());
+            .replace("{}", &tact_extensions::consts::MAX_INPUT_CHARS.to_string());
         app.add_system_message(msg);
         return false;
     }
-    if tact::consts::exceeds_input_char_limit(display_chars) {
+    if tact_extensions::consts::exceeds_input_char_limit(display_chars) {
         let msg = app
             .msgs()
             .input_too_long_tmpl
-            .replace("{}", &tact::consts::MAX_INPUT_CHARS.to_string());
+            .replace("{}", &tact_extensions::consts::MAX_INPUT_CHARS.to_string());
         app.add_system_message(msg);
         return false;
     }

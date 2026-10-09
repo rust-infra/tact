@@ -1,0 +1,20 @@
+[package]
+name = "tact_trajectory"
+version = "1.1.33"
+edition = "2024"
+license = "MIT"
+description = "Tact trajectory model, durable store, and replay."
+
+[dependencies]
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+chrono = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+sqlx = { workspace = true }
+tact = { path = "../tact" }
+tact_protocol = { path = "../tact_protocol" }
+
+[dev-dependencies]
+tempfile = { workspace = true }
+tokio = { workspace = true, features = ["macros", "rt"] }

@@ -2,7 +2,7 @@
 
 本章说明 Tact 如何通过 `spawn_subagent` 工具 spawn **隔离的工作 agent**：全新对话循环、受限工具集、`ToolContext` 服务，以及——除非 `worktree: true` 请求隔离的 git 泳道——共享文件系统，但无父级历史、hook 或 MCP 工具。每个子 agent 有自己的 SQLite session 行，经 `sessions.ref_id` 挂到父会话。
 
-实现：`crates/tact/src/tool/subagent.rs`。工具集装配：`subagent_toolset()` 在 `crates/tact/src/tool/registry.rs`。
+实现：`crates/tact_extensions/src/tool/subagent.rs`。工具集装配：`subagent_toolset()` 在 `crates/tact_extensions/src/tool/registry.rs`。
 
 勿与 [团队协调](./14_chapter_team_zh.md) 混淆 —— `spawn_teammate` 仅写入 roster/inbox 记录；`spawn_subagent` 实际运行嵌套的 `Agent::agent_loop`。
 
@@ -186,7 +186,7 @@ You are a principal reviewer. …
 
 `spawn_subagent` 的 `ToolMetadata.resources` 声明 `ResourcePolicy::Barrier`。普通的（共享文件系统）`spawn_subagent` 调用绝不与同一 wave 中任何其他工具并行 —— 见 [任务与工具调度](./11_chapter_task_zh.md)。该场景的后台并行来自 `tokio::spawn`（`run_in_background`），而非放宽 wave 调度。
 
-**worktree 隔离的 spawn 是例外。** `execute_tool_call` 按调用解析资源（`crates/tact/src/agent/tool_dispatch.rs` 的 `tool_resources_for`）：`worktree: true` 的 `spawn_subagent` 映射为 `ToolResources::independent()` —— 其文件影响被限定在泳道内，因此可与同一 wave 中其他工具（包括其他隔离子 agent）并行 fan-out，而不会与主树竞争。这正是 2026-08-26 异步子 agent 设计评审中的 "worktree follow-up"：一旦每个子 agent 拥有作用域化文件系统，阻塞型子 agent 的同一 wave fan-out 就安全了。注意：worktree 是**组织边界**，**不是** OS 沙箱 —— 子 agent 的 `bash` 仍可访问泳道之外；隔离只是防止*常规*路径冲突编辑互相碰撞。
+**worktree 隔离的 spawn 是例外。** `execute_tool_call` 按调用解析资源（`crates/tact_extensions/src/agent/tool_dispatch.rs` 的 `tool_resources_for`）：`worktree: true` 的 `spawn_subagent` 映射为 `ToolResources::independent()` —— 其文件影响被限定在泳道内，因此可与同一 wave 中其他工具（包括其他隔离子 agent）并行 fan-out，而不会与主树竞争。这正是 2026-08-26 异步子 agent 设计评审中的 "worktree follow-up"：一旦每个子 agent 拥有作用域化文件系统，阻塞型子 agent 的同一 wave fan-out 就安全了。注意：worktree 是**组织边界**，**不是** OS 沙箱 —— 子 agent 的 `bash` 仍可访问泳道之外；隔离只是防止*常规*路径冲突编辑互相碰撞。
 
 泳道创建在 handler 内同步执行（在同步循环前，或在返回 `async_launched { id }` 前），因此非 git 的 `work_dir` 会让 spawn 明确报错，而不是静默共享文件系统。泳道基于仓库根 `HEAD`，子 agent 完成后保留；可用 `git worktree remove <path>` 手动删除（尚无工具入口）。
 
@@ -239,17 +239,17 @@ let summary = subagent
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/tool/subagent.rs` | `spawn_subagent` + `check_subagent` + `wait_subagent` + `cancel_subagent` handler — spawn、同步/异步循环、summary 提取、resume、max_turns |
-| `crates/tact/src/tool/mod.rs` | `ToolContext` 上的 `permission_snapshot` + `subagent_results` + `subagent_manager`（工具结构体由 `#[tool]` 宏生成，见 `tool/subagent.rs`） |
-| `crates/tact/src/tool/registry.rs` | `toolset()` 中的四个子 agent 工具（`SpawnSubagentTool` / `CheckSubagentTool` / `WaitSubagentTool` / `CancelSubagentTool`）；`subagent_toolset()` |
-| `crates/tact/src/agent/mod.rs` | `Agent::new`、`agent_loop`（drain + max_turns）、`ensure_session`、`pending_subagent_results` |
-| `crates/tact/src/agent/tool_dispatch.rs` | stamp `permission_snapshot` + `subagent_results`；输入感知 `keep_live` |
-| `crates/tact/src/permission/mod.rs` | `PermissionSnapshot`、`snapshot()`/`from_snapshot()` |
-| `crates/tact/src/subagent.rs` | `SubagentManager` / `SubagentRun` / `SubagentStatus`（orphan repair） |
-| `crates/tact/src/store/subagent_store/` | `subagent_runs` SQLite 表 + trait |
-| `crates/protocol/src/agent.rs` | `AgentUpdate::SubagentFinished`、`UserCommand::SubagentFinishedNotification` |
-| `crates/tact-ui/src/driver.rs` | `SubagentFinishedNotification` 的唤醒轮（一轮进行中时保留；结果队列已 drain 时跳过） |
-| `crates/tact/src/agent/tool_schedule.rs` | `spawn_subagent` 作为调度 barrier |
+| `crates/tact_extensions/src/tool/subagent.rs` | `spawn_subagent` + `check_subagent` + `wait_subagent` + `cancel_subagent` handler — spawn、同步/异步循环、summary 提取、resume、max_turns |
+| `crates/tact_extensions/src/tool/mod.rs` | `ToolContext` 上的 `permission_snapshot` + `subagent_results` + `subagent_manager`（工具结构体由 `#[tool]` 宏生成，见 `tool/subagent.rs`） |
+| `crates/tact_extensions/src/tool/registry.rs` | `toolset()` 中的四个子 agent 工具（`SpawnSubagentTool` / `CheckSubagentTool` / `WaitSubagentTool` / `CancelSubagentTool`）；`subagent_toolset()` |
+| `crates/tact_extensions/src/agent/mod.rs` | `Agent::new`、`agent_loop`（drain + max_turns）、`ensure_session`、`pending_subagent_results` |
+| `crates/tact_extensions/src/agent/tool_dispatch.rs` | stamp `permission_snapshot` + `subagent_results`；输入感知 `keep_live` |
+| `crates/tact_extensions/src/permission/mod.rs` | `PermissionSnapshot`、`snapshot()`/`from_snapshot()` |
+| `crates/tact_extensions/src/subagent.rs` | `SubagentManager` / `SubagentRun` / `SubagentStatus`（orphan repair） |
+| `crates/tact_extensions/src/store/subagent_store/` | `subagent_runs` SQLite 表 + trait |
+| `crates/tact_protocol/src/agent.rs` | `AgentUpdate::SubagentFinished`、`UserCommand::SubagentFinishedNotification` |
+| `crates/tact_ui/src/driver.rs` | `SubagentFinishedNotification` 的唤醒轮（一轮进行中时保留；结果队列已 drain 时跳过） |
+| `crates/tact_extensions/src/agent/tool_schedule.rs` | `spawn_subagent` 作为调度 barrier |
 | `ARCHITECTURE.md` | 工具表中的一行摘要 |
 
 ---

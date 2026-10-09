@@ -22,28 +22,28 @@ Concrete defects, all verified against the current tree:
    `.codex-plugin/plugin.json` manifest (cwd-scoped) or a full
    marketplace → install → cache round trip (global). There is no
    `~/.tact/mcp.json` and no `.tact/mcp.json`. Code: `load_mcp_router`
-   (`crates/tact/src/mcp/mod.rs:580`) reads exactly two sources.
+   (`crates/tact_extensions/src/mcp/mod.rs:580`) reads exactly two sources.
 2. **`.mcp.json` is read inside plugin roots but not at cwd, and there is no
    project-scoped MCP file.** `PluginLoader::scan` only opens
-   `<dir>/.codex-plugin/plugin.json` (`crates/tact/src/mcp/mod.rs:79`), so a
+   `<dir>/.codex-plugin/plugin.json` (`crates/tact_extensions/src/mcp/mod.rs:79`), so a
    Claude-format project file is silently ignored, while the same filename *is*
    read inside plugin roots (`collect_plugin_mcp_servers`,
-   `crates/tact/src/mcp/mod.rs:174`) — an asymmetric rule with no project-level
+   `crates/tact_extensions/src/mcp/mod.rs:174`) — an asymmetric rule with no project-level
    answer at all.
 3. **Connection failures are invisible.** A failed `McpClient::try_new` logs
    `tracing::debug!` and the router is returned as if nothing happened
-   (`crates/tact/src/mcp/mod.rs:610`). A typo'd `command` produces no user
+   (`crates/tact_extensions/src/mcp/mod.rs:610`). A typo'd `command` produces no user
    feedback at all.
 4. **Plugin state and plugin content share a directory.**
    `~/.tact/plugins/` holds `installed.json` + `marketplaces.json` (a few KB)
    next to `cache/` (hundreds of MB). Code: `PluginHome::from_home`
-   (`crates/tact/src/consts.rs:26`).
+   (`crates/tact_extensions/src/consts.rs:26`).
 5. **Skill roots are ordered backwards.** `skill_search_dirs` returns
    `[workdir/.tact/skills, ~/.tact/skills, ~/.agents/skills]` and later wins
-   (`crates/tact/src/skill/mod.rs:151`). The foreign `~/.agents/skills`
+   (`crates/tact_extensions/src/skill/mod.rs:151`). The foreign `~/.agents/skills`
    therefore overrides Tact's own `~/.tact/skills`.
 6. **`$HOME` is derived positionally.** `plugin_home_dir` is
-   `home.root.parent()?.parent()` (`crates/tact/src/plugin/store.rs:142`),
+   `home.root.parent()?.parent()` (`crates/tact_extensions/src/plugin/store.rs:142`),
    which silently breaks if the root layout changes.
 
 ## Goals

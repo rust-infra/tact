@@ -4,13 +4,13 @@ Spec: [2026-09-30-mcp-tool-list-changed-design.md](../specs/2026-09-30-mcp-tool-
 
 One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`).
 
-1. **Capture the notification** (`crates/tact/src/mcp/mod.rs`)
+1. **Capture the notification** (`crates/tact_extensions/src/mcp/mod.rs`)
    - `ToolListChangedSignal` (`Clone + Default`, `Arc<AtomicBool>`) implementing
      `ClientHandler::on_tool_list_changed`.
    - `connect` installs it (`signal.clone().serve(transport)`) and returns the clone alongside the
      `RunningService`; `RealMcpService` stores it.
    - `McpService::take_tools_changed(&self) -> bool`, defaulted `false`.
-2. **Refresh** (`crates/tact/src/mcp/mod.rs`)
+2. **Refresh** (`crates/tact_extensions/src/mcp/mod.rs`)
    - Extract the filter/spec/annotation derivation out of `assemble` into one helper; `assemble` calls
      it.
    - `McpClient::refresh_tools_if_stale(&mut self) -> Result<bool>` — no-op when the flag is clear;
@@ -18,7 +18,7 @@ One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`)
    - `MCPToolRouter::refresh_changed(&mut self) -> Vec<ToolListChange>` with
      `ToolListChange { server, before, after }`; a failed re-list keeps the previous list and is
      reported.
-3. **Wire into the agent** (`crates/tact/src/agent/mod.rs`)
+3. **Wire into the agent** (`crates/tact_extensions/src/agent/mod.rs`)
    - At the top of each `agent_loop` iteration, before the request is built: refresh, emit one
      `Info` line per changed server (and per failure), and `rebuild_cached_tool_specs()`.
 4. **Tests**

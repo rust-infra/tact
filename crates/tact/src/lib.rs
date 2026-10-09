@@ -1,86 +1,47 @@
-//! Tact — the agent runtime crate.
+//! The Tact Runtime Kernel.
 //!
-//! This crate implements the core agent loop: it manages conversation context,
-//! dispatches tool calls (native and MCP), enforces permission policies,
-//! handles context compaction, and integrates with the TUI frontend for
-//! streaming output and user interaction.
+//! This crate is the protocol-neutral core the architecture diagram calls
+//! *Tact Runtime Kernel*: plugin lifecycle, the capability router, the
+//! permission boundary, event transport, the trajectory recorder, minimal
+//! storage, protocol versioning, and cancellation / timeout / error handling.
 //!
-//! # Key concepts
-//!
-//! - [`Agent`] owns the message history, tool router, MCP router, and hooks.
-//! - [`AgentRuntime`] carries the Anthropic client, context window state, and
-//!   recovery/permission state.
-//! - [`Agent::agent_loop`] is the main conversation loop: it sends messages to the LLM,
-//!   processes tool-use blocks, applies permissions, and writes results back.
-//! - Module [`tool`] defines the [`Tool`] trait, the [`ToolRouter`], and
-//!   registers all built-in tools.
-//! - Module [`hook`] provides pre/post tool-use and session-start hooks.
-//! - Module [`compact`] handles context compaction and transcript persistence.
-//! - Module [`permission`] classifies tool risk and enforces approval policies.
-//! - Module [`notifications`] sends macOS desktop notifications for task lifecycle events.
+//! It deliberately does not depend on the extension crate
+//! (`tact_extensions`), on any frontend, or on a concrete plugin language.
+//! Hosts — `tact_plugin_node`, `tact_plugin_wasm`, and the in-process Rust
+//! host that lives beside the Agent — all consume the same pieces from here,
+//! so a capability cannot be invoked through a path that skips permission,
+//! events, or the trajectory.
 
-pub mod agent;
-pub mod background;
 pub mod capability;
-pub mod compact;
-pub mod config;
-pub mod consts;
-pub mod extensions;
-pub mod hook;
-pub mod kernel;
-pub mod mcp;
-pub mod memory;
-pub mod notifications;
-pub mod permission;
-pub(crate) mod pipe_stream;
+pub mod context;
+pub mod error;
+pub mod event;
+pub mod interaction;
+pub mod paths;
 pub mod plugin;
-pub mod prompt;
-pub mod recovery;
-pub mod sandbox;
-pub(crate) mod security;
-pub(crate) mod shell;
-pub mod skill;
-pub mod stats;
-pub mod store;
-pub mod subagent;
-pub mod task;
-pub mod team;
-pub mod tool;
-pub mod trajectory;
-pub mod ui_responder;
-pub mod upgrade;
-pub mod utils;
-pub mod voice;
-pub mod worktree;
+pub mod redact;
+pub mod sqlite;
+pub mod storage;
 
-pub use agent::{Agent, AgentRuntime, AgentSystemPrompt};
-pub use tact_llm::Tool as ToolSpec;
-use tact_llm::{ContentBlock, LlmProvider, MessageContent};
+mod cancellation;
 
-/// Constructs the active LLM client from the installed configuration.
-pub async fn get_llm_client() -> anyhow::Result<LlmProvider> {
-    tact_llm::get_llm_client().await
-}
+pub use cancellation::CancellationService;
+pub use capability::{
+    CapabilityFuture, CapabilityHandler, CapabilityRegistration, CapabilityRouter,
+    FnCapabilityHandler,
+};
+pub use context::{
+    EventService, InvocationContext, PermissionService, RuntimeContext, RuntimeServices,
+    StorageService, TrajectoryService,
+};
+pub use error::KernelError;
+pub use event::{EventObserver, EventSubscription, EventTransport, RuntimeEventSink};
+pub use interaction::{InteractionBroker, InteractionService, InteractionSubscription};
+pub use plugin::{PluginRegistry, PluginState, RuntimePluginManifest};
+pub use redact::{RedactionConfig, RedactionLevel};
+pub use storage::{SqliteStorageService, StorageNamespace, StorageServiceImpl};
 
-pub type LoopState = Agent;
-
-/// Extracts plain text from a [`MessageContent`] block.
-///
-/// For `Text` content returns the string directly; for `Blocks` content
-/// joins all text blocks with newlines.
-pub fn extract_text(content: &MessageContent) -> String {
-    match content {
-        MessageContent::Text { content } => content.clone(),
-        MessageContent::Blocks { content } => content
-            .iter()
-            .filter_map(|block| {
-                if let ContentBlock::Text { text } = block {
-                    Some(text.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
-    }
-}
+#[cfg(test)]
+mod interaction_tests;
+#[cfg(test)]
+mod tests;

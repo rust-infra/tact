@@ -175,7 +175,7 @@ pub fn lock_skills(reg: &SharedSkillRegistry) -> MutexGuard<'_, SkillRegistry> /
 
 ### load_skill 工具
 
-`crates/tact/src/tool/load_skill.rs`：
+`crates/tact_extensions/src/tool/load_skill.rs`：
 
 ```rust
 #[tool(name = "load_skill", description = "Load the full body of a named skill…")]
@@ -252,13 +252,13 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/skill/mod.rs` | `SkillRegistry`、frontmatter 解析、插件扫描、`describe_available` / `describe_available_with_body`、`load_full_text`、`shared_skill_registry` / `lock_skills` |
-| `crates/tact/src/consts.rs` | `tact_skills_dir()`、`skill_search_dirs()` |
-| `crates/tact/src/tool/load_skill.rs` | `load_skill` 原生工具 |
-| `crates/tact/src/agent/mod.rs` | `build_system_prompt` 中的 `describe_available[_with_body]()`（由 `skill_body_auto_inject` 选择） |
-| `crates/tact/src/tool/mod.rs` | `ToolContext.skill_registry` |
-| `crates/tact/src/tool/registry.rs` | `toolset()` 中的 `LoadSkillTool` |
-| `crates/tact-ui/src/interactive.rs`、`headless.rs` | `shared_skill_registry()` → TUI 的 `SkillEntry` |
+| `crates/tact_extensions/src/skill/mod.rs` | `SkillRegistry`、frontmatter 解析、插件扫描、`describe_available` / `describe_available_with_body`、`load_full_text`、`shared_skill_registry` / `lock_skills` |
+| `crates/tact_extensions/src/consts.rs` | `tact_skills_dir()`、`skill_search_dirs()` |
+| `crates/tact_extensions/src/tool/load_skill.rs` | `load_skill` 原生工具 |
+| `crates/tact_extensions/src/agent/mod.rs` | `build_system_prompt` 中的 `describe_available[_with_body]()`（由 `skill_body_auto_inject` 选择） |
+| `crates/tact_extensions/src/tool/mod.rs` | `ToolContext.skill_registry` |
+| `crates/tact_extensions/src/tool/registry.rs` | `toolset()` 中的 `LoadSkillTool` |
+| `crates/tact_ui/src/interactive.rs`、`headless.rs` | `shared_skill_registry()` → TUI 的 `SkillEntry` |
 | `crates/tui/src/handlers/skills.rs` | `/skill` 子命令、斜杠调用、`$ARGUMENTS`、`submit_user_task` |
 | `crates/tui/src/handlers/insert.rs` | 斜杠弹出 Enter / Tab 自动补全 |
 | `crates/tui/src/handlers/palette.rs` | 面板 `/skill` → Insert 预填 |

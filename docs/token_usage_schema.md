@@ -433,18 +433,18 @@ pays no row for it.
 
 | File | Role |
 |------|------|
-| `crates/protocol/src/lib.rs` | `TokenUsageInfo` struct definition. |
+| `crates/tact_protocol/src/lib.rs` | `TokenUsageInfo` struct definition. |
 | `crates/agent_tui_kit/src/render/stats_line.rs` | `task_stats_body` (shared builder), `live_stats_reserve` / `live_stats_row` (geometry), `render_live_stats_band`. |
 | `crates/tui/src/widgets/state/app/messages.rs` | `App::add_task_stats_block` — the frozen row. |
 | `crates/tui/src/render/log.rs` | `prepare_log_frame` — applies the live row's viewport reserve. |
 | `crates/tui/src/handlers/mouse.rs` | `below_log_viewport` — a click on a reserved row starts no selection. |
-| `crates/tact/src/stats.rs` | `SessionStats` — in-memory accumulation + summary display. |
-| `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait — `record_token_usage()`, `record_tool_schedule()`. |
-| `crates/tact/src/store/session_store/sqlite.rs` | SQLite `token_usages` table + `record_token_usage()` / `record_tool_schedule()` implementations. |
-| `crates/tact/src/agent/tool_schedule.rs` | Conflict-aware wave scheduler + `ToolScheduleSummary` written to `tool_schedule`. |
-| `crates/tact/src/agent/tool_dispatch.rs` | `Agent::persist_tool_schedule()` — attaches schedule to token row via `llm_call_last_message_id`. |
+| `crates/tact_extensions/src/stats.rs` | `SessionStats` — in-memory accumulation + summary display. |
+| `crates/tact_extensions/src/store/session_store/mod.rs` | `SessionStore` trait — `record_token_usage()`, `record_tool_schedule()`. |
+| `crates/tact_extensions/src/store/session_store/sqlite.rs` | SQLite `token_usages` table + `record_token_usage()` / `record_tool_schedule()` implementations. |
+| `crates/tact_extensions/src/agent/tool_schedule.rs` | Conflict-aware wave scheduler + `ToolScheduleSummary` written to `tool_schedule`. |
+| `crates/tact_extensions/src/agent/tool_dispatch.rs` | `Agent::persist_tool_schedule()` — attaches schedule to token row via `llm_call_last_message_id`. |
 | `crates/tact_llm/src/anthropic.rs` | Parse DeepSeek cache/reasoning from Anthropic-format usage JSON. |
 | `crates/tact_llm/src/openai.rs` | Parse cache/reasoning from OpenAI-format chunk usage. |
-| `crates/tact/src/agent/mod.rs` | `Agent::persist_llm_call()` — persists usage + optional `request_body` from `agent_loop()` and `compact_history()`. |
+| `crates/tact_extensions/src/agent/mod.rs` | `Agent::persist_llm_call()` — persists usage + optional `request_body` from `agent_loop()` and `compact_history()`. |
 | `crates/tact_llm/src/lib.rs` | `LlmRequestBody` type alias; OpenAI adapter serializes final request JSON after all injections. |
-| `crates/tact-ui/src/interactive.rs`, `headless.rs` | Print `SessionStats` summary on session exit. |
+| `crates/tact_ui/src/interactive.rs`, `headless.rs` | Print `SessionStats` summary on session exit. |

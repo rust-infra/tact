@@ -2,11 +2,8 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 
 use serde_json::json;
 use tact::{
-    kernel::{
-        CapabilityRegistration, CapabilityRouter, FnCapabilityHandler, InvocationContext,
-        KernelError, PermissionService, RuntimeContext, RuntimeServices, StorageService,
-    },
-    plugin::PluginState,
+    CapabilityRegistration, CapabilityRouter, FnCapabilityHandler, InvocationContext, KernelError,
+    PermissionService, PluginState, RuntimeContext, RuntimeServices, StorageService,
 };
 use tact_plugin_wasm::{WasmHostConfig, WasmHostFunctions, WasmPluginHost, WasmPluginManifest};
 use tact_protocol::{
@@ -468,7 +465,7 @@ impl PermissionService for DenyPermissions {
 struct RecordedEvents(tokio::sync::Mutex<Vec<RuntimeEvent>>);
 
 #[async_trait::async_trait]
-impl tact::kernel::EventService for RecordedEvents {
+impl tact::EventService for RecordedEvents {
     async fn publish(&self, event: RuntimeEvent) -> Result<(), KernelError> {
         self.0.lock().await.push(event);
         Ok(())
@@ -479,7 +476,7 @@ impl tact::kernel::EventService for RecordedEvents {
 struct RecordedTrajectory(tokio::sync::Mutex<Vec<RuntimeEvent>>);
 
 #[async_trait::async_trait]
-impl tact::kernel::TrajectoryService for RecordedTrajectory {
+impl tact::TrajectoryService for RecordedTrajectory {
     async fn append(
         &self,
         _trajectory_id: Option<&TrajectoryId>,
@@ -531,7 +528,7 @@ impl StorageService for NamespacedStorage {
 struct NoopEvents;
 
 #[async_trait::async_trait]
-impl tact::kernel::EventService for NoopEvents {
+impl tact::EventService for NoopEvents {
     async fn publish(&self, _event: RuntimeEvent) -> Result<(), KernelError> {
         Ok(())
     }
@@ -540,7 +537,7 @@ impl tact::kernel::EventService for NoopEvents {
 struct NoopTrajectory;
 
 #[async_trait::async_trait]
-impl tact::kernel::TrajectoryService for NoopTrajectory {
+impl tact::TrajectoryService for NoopTrajectory {
     async fn append(
         &self,
         _trajectory_id: Option<&TrajectoryId>,

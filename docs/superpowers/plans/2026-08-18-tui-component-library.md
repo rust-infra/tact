@@ -29,7 +29,7 @@
 
 - New: `crates/agent_tui_kit/**` (lib.rs, protocol.rs, theme.rs, i18n.rs, shell.rs, components/, render/, handlers/, bridge.rs, examples/mock_agent.rs), `docs/superpowers/specs/2026-08-18-tui-component-library-design.md`, `docs/superpowers/plans/2026-08-18-tui-component-library.md` (this plan).
 - Modify: root `Cargo.toml` (workspace member `agent_tui_kit`), `crates/tui/Cargo.toml` (depend on kit; keep tact/tact_llm only for the app layer), `crates/tui/**` (remove moved code; App becomes shell assembly + extension impl).
-- Untouched (Phase 1 guarantee): `crates/protocol/**`, `crates/tact/**`, `crates/tact_llm/**` (Phase 4 only removes *TUI-side* imports of tact/tact_llm; the crates themselves stay put).
+- Untouched (Phase 1 guarantee): `crates/tact_protocol/**`, `crates/tact/**`, `crates/tact_llm/**` (Phase 4 only removes *TUI-side* imports of tact/tact_llm; the crates themselves stay put).
 - Book/docs sync (Phase 5): `book/23_chapter_tui{,_zh}.md`, `book/26_chapter_issue{,_zh}.md`.
 
 ---

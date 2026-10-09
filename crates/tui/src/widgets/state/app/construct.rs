@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
 };
 
-use tact::plugin::{PluginEvent, PluginRequest};
+use tact_extensions::plugin::{PluginEvent, PluginRequest};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -148,7 +148,7 @@ impl App {
             skills_description,
             skills_data,
             skill_registry: std::sync::Arc::new(std::sync::Mutex::new(
-                tact::skill::SkillRegistry::new(std::iter::empty::<std::path::PathBuf>()),
+                tact_extensions::skill::SkillRegistry::new(std::iter::empty::<std::path::PathBuf>()),
             )),
             session_store: None,
             spinner_frame: 0,

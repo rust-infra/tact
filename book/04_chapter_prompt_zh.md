@@ -28,10 +28,10 @@
 模板位于：
 
 ```text
-crates/tact/src/prompt/system_prompt_template.md
+crates/tact_extensions/src/prompt/system_prompt_template.md
 ```
 
-由 [Tera](https://keats.github.io/tera/) 根据 `crates/tact/src/prompt/mod.rs` 中组装的数据渲染。
+由 [Tera](https://keats.github.io/tera/) 根据 `crates/tact_extensions/src/prompt/mod.rs` 中组装的数据渲染。
 
 最终输出顺序如下：
 
@@ -89,8 +89,8 @@ crates/tact/src/prompt/system_prompt_template.md
 
 ### 3.1 模板与渲染
 
-- `crates/tact/src/prompt/system_prompt_template.md` — Tera 模板。
-- `crates/tact/src/prompt/mod.rs` — `SystemPrompt` builder、`Prompt` 包装与 `render()`。
+- `crates/tact_extensions/src/prompt/system_prompt_template.md` — Tera 模板。
+- `crates/tact_extensions/src/prompt/mod.rs` — `SystemPrompt` builder、`Prompt` 包装与 `render()`。
 
 `SystemPrompt` 为 builder：
 
@@ -109,7 +109,7 @@ let rendered = prompt.to_prompt().render()?;
 
 ### 3.2 接入 Agent
 
-实际内容在 `Agent::build_system_prompt`（`crates/tact/src/agent/mod.rs`）中组装：
+实际内容在 `Agent::build_system_prompt`（`crates/tact_extensions/src/agent/mod.rs`）中组装：
 
 ```rust
 let prompt = SystemPrompt::builder()
@@ -126,7 +126,7 @@ let prompt = SystemPrompt::builder()
     .build()?;
 ```
 
-另外：若 provider 是 OpenAI Responses，`build_system_prompt` 会在 builder 之前换上 `responses_prompt_template()`（`crates/tact/src/prompt/responses_system_prompt_template.md`）；模板是唯一差别，各字段含义不变。`mcp_instructions` 来自 `self.mcp_router.instructions_block()`，`""` 时模板整节略去。
+另外：若 provider 是 OpenAI Responses，`build_system_prompt` 会在 builder 之前换上 `responses_prompt_template()`（`crates/tact_extensions/src/prompt/responses_system_prompt_template.md`）；模板是唯一差别，各字段含义不变。`mcp_instructions` 来自 `self.mcp_router.instructions_block()`，`""` 时模板整节略去。
 
 `build_system_prompt()` 在**每个任务**开始时调用一次，位于 `agent_loop` 顶部、回合循环开始之前。同一渲染字符串在该任务内每次 LLM 请求复用，使提示词在回合间字节稳定，利于前缀 KV 缓存。`memory` 与 `dynamic_context` 在下一任务开始时重新求值；启用的指令文件（`AGENTS.md`）与目录快照**每会话组装一次**并缓存。`[agent].memory_enabled`（默认 `true`）关闭时，`# Memory guidance` 与 `## Memory` 两节都不出现，`save_memory` 工具也不注册（见 [持久记忆](./03_chapter_memory_zh.md) §5）。
 
@@ -350,7 +350,7 @@ crates/tact
 crates/tact-ui
   src/
   tests/
-crates/tact-ui/tests
+crates/tact_ui/tests
   harness/
 crates/tact/src
   agent/
@@ -409,9 +409,9 @@ cargo test -p tact prompt
 
 ## 相关文件
 
-- 模板：`[crates/tact/src/prompt/system_prompt_template.md](../crates/tact/src/prompt/system_prompt_template.md)`
-- Builder / 渲染逻辑：`[crates/tact/src/prompt/mod.rs](../crates/tact/src/prompt/mod.rs)`
-- Agent 接线：`[crates/tact/src/agent/mod.rs](../crates/tact/src/agent/mod.rs)`（`Agent::build_system_prompt`）
-- Memory manager：`[crates/tact/src/memory/mod.rs](../crates/tact/src/memory/mod.rs)` — 见 [持久化记忆](./03_chapter_memory_zh.md)
-- Skill 注册表：`[crates/tact/src/skill/mod.rs](../crates/tact/src/skill/mod.rs)` — 见 [Skill 注册表](./02_chapter_skill_zh.md)
-- 动态上下文加载：`[crates/tact/src/agent/mod.rs](../crates/tact/src/agent/mod.rs)`（`fn load_dynamic_context`）
+- 模板：`[crates/tact_extensions/src/prompt/system_prompt_template.md](../crates/tact_extensions/src/prompt/system_prompt_template.md)`
+- Builder / 渲染逻辑：`[crates/tact_extensions/src/prompt/mod.rs](../crates/tact_extensions/src/prompt/mod.rs)`
+- Agent 接线：`[crates/tact_extensions/src/agent/mod.rs](../crates/tact_extensions/src/agent/mod.rs)`（`Agent::build_system_prompt`）
+- Memory manager：`[crates/tact_extensions/src/memory/mod.rs](../crates/tact_extensions/src/memory/mod.rs)` — 见 [持久化记忆](./03_chapter_memory_zh.md)
+- Skill 注册表：`[crates/tact_extensions/src/skill/mod.rs](../crates/tact_extensions/src/skill/mod.rs)` — 见 [Skill 注册表](./02_chapter_skill_zh.md)
+- 动态上下文加载：`[crates/tact_extensions/src/agent/mod.rs](../crates/tact_extensions/src/agent/mod.rs)`（`fn load_dynamic_context`）

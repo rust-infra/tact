@@ -31,14 +31,14 @@
 ### Task 1: Freeze protocol IDs, envelopes, and neutral runtime messages
 
 **Files:**
-- Create: `crates/protocol/src/ids.rs`
-- Create: `crates/protocol/src/envelope.rs`
-- Create: `crates/protocol/src/runtime.rs`
-- Create: `crates/protocol/src/capability.rs`
-- Create: `crates/protocol/src/interaction.rs`
-- Create: `crates/protocol/src/error.rs`
-- Modify: `crates/protocol/src/lib.rs`
-- Test: `crates/protocol/tests/runtime_protocol.rs`
+- Create: `crates/tact_protocol/src/ids.rs`
+- Create: `crates/tact_protocol/src/envelope.rs`
+- Create: `crates/tact_protocol/src/runtime.rs`
+- Create: `crates/tact_protocol/src/capability.rs`
+- Create: `crates/tact_protocol/src/interaction.rs`
+- Create: `crates/tact_protocol/src/error.rs`
+- Modify: `crates/tact_protocol/src/lib.rs`
+- Test: `crates/tact_protocol/tests/runtime_protocol.rs`
 
 **Interfaces:**
 - Produces `PluginId`, `RequestId`, `SessionId`, `RunId`, `TrajectoryId`, `StepId`.
@@ -55,13 +55,13 @@
 ### Task 2: Add Kernel service interfaces and invocation context
 
 **Files:**
-- Create: `crates/tact/src/kernel/mod.rs`
-- Create: `crates/tact/src/kernel/context.rs`
-- Create: `crates/tact/src/kernel/capability.rs`
-- Create: `crates/tact/src/kernel/error.rs`
-- Create: `crates/tact/src/kernel/cancellation.rs`
+- Create: `crates/tact/src/mod.rs`
+- Create: `crates/tact/src/context.rs`
+- Create: `crates/tact_extensions/src/capability.rs`
+- Create: `crates/tact/src/error.rs`
+- Create: `crates/tact/src/cancellation.rs`
 - Modify: `crates/tact/src/lib.rs`
-- Test: `crates/tact/src/kernel/tests.rs`
+- Test: `crates/tact/src/tests.rs`
 
 **Interfaces:**
 - Produces `RuntimeContext`, `CapabilityRouter`, `InvocationContext`, `CancellationService`, and `KernelError`.
@@ -77,11 +77,11 @@
 ### Task 3: Extract Permission Engine behind the Kernel boundary
 
 **Files:**
-- Modify: `crates/tact/src/permission/mod.rs`
-- Modify: `crates/tact/src/permission/settings.rs`
-- Create: `crates/tact/src/kernel/permission.rs`
-- Modify: `crates/tact/src/kernel/context.rs`
-- Test: `crates/tact/src/kernel/permission_tests.rs`
+- Modify: `crates/tact_extensions/src/permission/mod.rs`
+- Modify: `crates/tact_extensions/src/permission/settings.rs`
+- Create: `crates/tact_extensions/src/permission.rs`
+- Modify: `crates/tact/src/context.rs`
+- Test: `crates/tact/src/permission_tests.rs`
 
 **Interfaces:**
 - Produces `PermissionService::check`, `PermissionService::request`, and `PermissionDecision`.
@@ -96,14 +96,13 @@
 ### Task 4: Implement Event Transport and Trajectory Recorder
 
 **Files:**
-- Create: `crates/tact/src/kernel/event.rs`
-- Create: `crates/tact/src/kernel/trajectory.rs`
-- Create: `crates/tact/src/trajectory/model.rs`
-- Create: `crates/tact/src/trajectory/recorder.rs`
-- Create: `crates/tact/src/trajectory/query.rs`
-- Create: `crates/tact/src/trajectory/replay.rs`
-- Modify: `crates/tact/src/store/mod.rs`
-- Test: `crates/tact/src/trajectory/tests.rs`
+- Create: `crates/tact/src/event.rs`
+- Create: `crates/tact_trajectory/src/service.rs`
+- Create: `crates/tact_trajectory/src/model/event.rs`
+- Create: `crates/tact_trajectory/src/model/recorder.rs`
+- Create: `crates/tact_trajectory/src/model/sqlite.rs`
+- Modify: `crates/tact_extensions/src/store/mod.rs`
+- Test: `crates/tact_trajectory/src/model/sqlite.rs` (`#[cfg(test)]` module)
 
 **Interfaces:**
 - Produces `EventTransport::publish`, `subscribe`, `replay_from`, and `close`.
@@ -120,10 +119,10 @@
 ### Task 5: Add namespaced Minimal Storage facade
 
 **Files:**
-- Create: `crates/tact/src/kernel/storage.rs`
-- Modify: `crates/tact/src/store/mod.rs`
-- Modify: `crates/tact/src/store/sqlite.rs`
-- Test: `crates/tact/src/kernel/storage_tests.rs`
+- Create: `crates/tact/src/storage.rs`
+- Modify: `crates/tact_extensions/src/store/mod.rs`
+- Modify: `crates/tact_extensions/src/store/sqlite.rs`
+- Test: `crates/tact/src/storage_tests.rs`
 
 **Interfaces:**
 - Produces `Storage::get`, `set`, `delete`, `list`, and `transaction`.
@@ -138,13 +137,13 @@
 ### Task 6: Define Plugin Lifecycle and Rust Host
 
 **Files:**
-- Create: `crates/tact/src/plugin/manifest.rs`
-- Create: `crates/tact/src/plugin/registry.rs`
-- Create: `crates/tact/src/plugin/lifecycle.rs`
-- Create: `crates/tact/src/plugin/transport.rs`
-- Create: `crates/tact/src/plugin/supervision.rs`
-- Modify: `crates/tact/src/plugin/mod.rs`
-- Test: `crates/tact/src/plugin/lifecycle_tests.rs`
+- Create: `crates/tact_extensions/src/plugin/manifest.rs`
+- Create: `crates/tact_extensions/src/plugin/registry.rs`
+- Create: `crates/tact_extensions/src/plugin/lifecycle.rs`
+- Create: `crates/tact_extensions/src/plugin/transport.rs`
+- Create: `crates/tact_extensions/src/plugin/supervision.rs`
+- Modify: `crates/tact_extensions/src/plugin/mod.rs`
+- Test: `crates/tact_extensions/src/plugin/lifecycle_tests.rs`
 
 **Interfaces:**
 - Produces `PluginRegistry::discover`, `register`, `start`, `stop`, `restart`, `health`, and `unregister`.
@@ -159,14 +158,14 @@
 ### Task 7: Unify native tools and MCP through Capability Router
 
 **Files:**
-- Modify: `crates/tact/src/tool/registry.rs`
-- Modify: `crates/tact/src/tool/metadata.rs`
-- Modify: `crates/tact/src/agent/tool_dispatch.rs`
-- Modify: `crates/tact/src/mcp/mod.rs`
-- Modify: `crates/tact/src/mcp/prompt.rs`
-- Create: `crates/tact/src/capability/native_tool.rs`
-- Create: `crates/tact/src/capability/mcp_tool.rs`
-- Test: `crates/tact/src/capability/router_tests.rs`
+- Modify: `crates/tact_extensions/src/tool/registry.rs`
+- Modify: `crates/tact_extensions/src/tool/metadata.rs`
+- Modify: `crates/tact_extensions/src/agent/tool_dispatch.rs`
+- Modify: `crates/tact_extensions/src/mcp/mod.rs`
+- Modify: `crates/tact_extensions/src/mcp/prompt.rs`
+- Create: `crates/tact_extensions/src/capability/native_tool.rs`
+- Create: `crates/tact_extensions/src/capability/mcp_tool.rs`
+- Test: `crates/tact_extensions/src/capability/router_tests.rs`
 
 **Interfaces:**
 - Produces one `CapabilityRouter::invoke` path for native, MCP, and future plugin tools.
@@ -181,14 +180,14 @@
 ### Task 8: Move Agent and Session behind extension interfaces
 
 **Files:**
-- Modify: `crates/tact/src/agent/mod.rs`
-- Modify: `crates/tact/src/agent/tool_schedule.rs`
-- Modify: `crates/tact/src/compact/mod.rs`
-- Modify: `crates/tact/src/store/session_store/mod.rs`
-- Create: `crates/tact/src/extensions/agent.rs`
-- Create: `crates/tact/src/extensions/session.rs`
-- Test: `crates/tact/src/extensions/agent_tests.rs`
-- Test: `crates/tact/src/extensions/session_tests.rs`
+- Modify: `crates/tact_extensions/src/agent/mod.rs`
+- Modify: `crates/tact_extensions/src/agent/tool_schedule.rs`
+- Modify: `crates/tact_extensions/src/compact/mod.rs`
+- Modify: `crates/tact_extensions/src/store/session_store/mod.rs`
+- Create: `crates/tact_extensions/src/extensions/agent.rs`
+- Create: `crates/tact_extensions/src/extensions/session.rs`
+- Test: `crates/tact_extensions/src/extensions/agent_tests.rs`
+- Test: `crates/tact_extensions/src/extensions/session_tests.rs`
 
 **Interfaces:**
 - Produces Agent and Session extension entry points that consume `RuntimeContext` and return protocol events/results.
@@ -203,14 +202,14 @@
 ### Task 9: Convert UI responder and TUI to View / Interaction adapters
 
 **Files:**
-- Create: `crates/tact/src/kernel/interaction.rs`
-- Modify: `crates/tact/src/ui_responder.rs`
-- Modify: `crates/tact-ui/src/session_bootstrap.rs`
-- Modify: `crates/tact-ui/src/driver.rs`
-- Modify: `crates/tact-ui/src/interactive.rs`
+- Create: `crates/tact/src/interaction.rs`
+- Modify: `crates/tact_extensions/src/ui_responder.rs`
+- Modify: `crates/tact_ui/src/session_bootstrap.rs`
+- Modify: `crates/tact_ui/src/driver.rs`
+- Modify: `crates/tact_ui/src/interactive.rs`
 - Modify: `crates/tui/src/lib.rs`
 - Modify: `crates/tui/src/state/`
-- Test: `crates/tact/src/kernel/interaction_tests.rs`
+- Test: `crates/tact/src/interaction_tests.rs`
 - Test: existing TUI event/render tests requiring protocol updates
 
 **Interfaces:**
@@ -226,12 +225,12 @@
 ### Task 10: Register official Agent, Session, Chat, Tools, and Workflow extensions
 
 **Files:**
-- Create: `crates/tact/src/extensions/mod.rs`
-- Create: `crates/tact/src/extensions/chat.rs`
-- Create: `crates/tact/src/extensions/tools.rs`
-- Create: `crates/tact/src/extensions/workflow.rs`
-- Modify: `crates/tact/src/tool/mod.rs`, `crates/tact/src/tool/registry.rs`, and tool metadata modules for extension registration
-- Test: `crates/tact/src/extensions/official_extensions_tests.rs`
+- Create: `crates/tact_extensions/src/extensions/mod.rs`
+- Create: `crates/tact_extensions/src/extensions/chat.rs`
+- Create: `crates/tact_extensions/src/extensions/tools.rs`
+- Create: `crates/tact_extensions/src/extensions/workflow.rs`
+- Modify: `crates/tact_extensions/src/tool/mod.rs`, `crates/tact_extensions/src/tool/registry.rs`, and tool metadata modules for extension registration
+- Test: `crates/tact_extensions/src/extensions/official_extensions_tests.rs`
 
 **Interfaces:**
 - Produces official extension manifests and registrations using the same Plugin Protocol as third-party extensions.
@@ -285,9 +284,9 @@
 ### Task 13: Remove legacy direct paths and update documentation
 
 **Files:**
-- Modify: `crates/tact/src/agent/mod.rs`, `crates/tact/src/agent/tool_dispatch.rs`, and `crates/tact/src/agent/tool_schedule.rs` for remaining direct UI sends
-- Modify: `crates/tact/src/mcp/mod.rs`, `crates/tact/src/mcp/prompt.rs`, `crates/tact/src/mcp/resource.rs`, and `crates/tact/src/mcp/remote.rs` for remaining special invocation paths
-- Modify: `crates/tact/src/ui_responder.rs` or delete once migrated
+- Modify: `crates/tact_extensions/src/agent/mod.rs`, `crates/tact_extensions/src/agent/tool_dispatch.rs`, and `crates/tact_extensions/src/agent/tool_schedule.rs` for remaining direct UI sends
+- Modify: `crates/tact_extensions/src/mcp/mod.rs`, `crates/tact_extensions/src/mcp/prompt.rs`, `crates/tact_extensions/src/mcp/resource.rs`, and `crates/tact_extensions/src/mcp/remote.rs` for remaining special invocation paths
+- Modify: `crates/tact_extensions/src/ui_responder.rs` or delete once migrated
 - Modify: `ARCHITECTURE.md`
 - Create: `docs/plugin_protocol.md`
 - Create: `docs/trajectory.md`
@@ -301,6 +300,38 @@
 - [x] Add integration tests proving Kernel builds without UI, a plugin can run without Chat, and a View can be replaced.
 - [x] Run `cargo test --workspace` once, sequentially, after all focused tests pass.
 - [x] Run `git diff --check` and inspect the final dependency graph before declaring completion.
+
+### Task 14: Align the crate taxonomy with the layered architecture
+
+**Files:**
+- Create: `crates/tact_trajectory/`, `crates/tact_plugin_host/`, `crates/tact_extensions/`
+- Rename: `crates/protocol` → `crates/tact_protocol`, `crates/tact-ui` → `crates/tact_ui`
+- Repurpose: `crates/tact` as the Runtime Kernel
+
+**Interfaces:**
+- `tact` (Kernel) depends on `tact_protocol` only; no frontend, no extension.
+- `tact_plugin_host` and `tact_trajectory` depend on the Kernel; `tact_plugin_node`
+  and `tact_plugin_wasm` depend on `tact_plugin_host` and never on
+  `tact_extensions`.
+
+- [x] Move the Kernel services out of the extension crate: `tact` is now the
+      Runtime Kernel (capability router, permission boundary, events, minimal
+      storage, cancellation/timeout/error, plugin registry, redaction, path
+      matching).
+- [x] Extract `tact_trajectory` for the execution-fact model, in-memory and
+      SQLite recorders, and ordered replay; it implements the Kernel's
+      `TrajectoryService`.
+- [x] Extract `tact_plugin_host` for the lifecycle boundary, stdio transport,
+      and supervision; `tact_plugin_node` and `tact_plugin_wasm` are thin
+      entry points above it and no longer depend on each other's crate.
+- [x] Rename the extension crate to `tact_extensions` (official Agent, Session,
+      Chat, Tools, Workflow extensions plus the in-process Rust host).
+- [x] Delete the first-pass duplicate hosts (`tact/src/plugin/{node,wasm}.rs`)
+      that the dedicated host crates replaced.
+- [x] Update the push gate to run `cargo test --workspace` so every crate in the
+      taxonomy is covered.
+- [x] Sync `ARCHITECTURE.md` §0/§15, `docs/plugin_protocol.md`, `docs/trajectory.md`,
+      and every `crates/` path referenced from `book/`.
 
 ## Completion gate
 

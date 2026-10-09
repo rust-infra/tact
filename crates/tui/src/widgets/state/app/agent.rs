@@ -87,7 +87,10 @@ impl App {
     }
 
     /// Install the in-process pending UI broker and reconcile immediately.
-    pub(crate) fn set_pending_ui(&mut self, pending_ui: tact::ui_responder::UiResponder) {
+    pub(crate) fn set_pending_ui(
+        &mut self,
+        pending_ui: tact_extensions::ui_responder::UiResponder,
+    ) {
         self.pending_ui = Some(pending_ui);
         self.reconcile_pending_ui();
     }
@@ -104,7 +107,10 @@ impl App {
         self.reconcile_pending_selects(&pending);
     }
 
-    fn reconcile_pending_selects(&mut self, pending: &[tact::ui_responder::PendingUiRequest]) {
+    fn reconcile_pending_selects(
+        &mut self,
+        pending: &[tact_extensions::ui_responder::PendingUiRequest],
+    ) {
         if let Some(current_id) = self.select.request_id {
             if pending
                 .iter()
@@ -142,7 +148,7 @@ impl App {
         };
 
         match next.kind {
-            tact::ui_responder::PendingUiRequestKind::Select => {
+            tact_extensions::ui_responder::PendingUiRequestKind::Select => {
                 self.select.set(
                     next.prompt.clone(),
                     next.options.clone(),
@@ -150,7 +156,7 @@ impl App {
                     next.log_confirm,
                 );
             }
-            tact::ui_responder::PendingUiRequestKind::MultiSelect => {
+            tact_extensions::ui_responder::PendingUiRequestKind::MultiSelect => {
                 self.select.set_multi(
                     next.prompt.clone(),
                     next.options.clone(),
@@ -968,7 +974,7 @@ impl App {
 mod lifecycle_tests {
     use std::{collections::HashMap, fs, path::PathBuf};
 
-    use tact::plugin::{PluginEvent, PluginOperation, PluginResult};
+    use tact_extensions::plugin::{PluginEvent, PluginOperation, PluginResult};
     use tact_protocol::{
         AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, RunId, RuntimeCommand,
         TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, ToolOutputChunk,
@@ -1155,7 +1161,7 @@ mod lifecycle_tests {
         let mut app = make_app();
         app.work_dir = work_dir.to_path_buf();
         app.skill_registry = std::sync::Arc::new(std::sync::Mutex::new(
-            tact::skill::get_skill_registry(work_dir).unwrap(),
+            tact_extensions::skill::get_skill_registry(work_dir).unwrap(),
         ));
         app
     }
@@ -1173,7 +1179,7 @@ mod lifecycle_tests {
             refresh_skills: false,
         });
 
-        let registry = tact::skill::lock_skills(&app.skill_registry);
+        let registry = tact_extensions::skill::lock_skills(&app.skill_registry);
         assert!(registry.skills().contains_key("existing"));
         assert!(!registry.skills().contains_key("new"));
     }
@@ -1192,7 +1198,7 @@ mod lifecycle_tests {
             detail: "technical detail".into(),
         });
 
-        let registry = tact::skill::lock_skills(&app.skill_registry);
+        let registry = tact_extensions::skill::lock_skills(&app.skill_registry);
         assert!(registry.skills().contains_key("existing"));
         assert!(!registry.skills().contains_key("new"));
     }
@@ -1211,7 +1217,7 @@ mod lifecycle_tests {
             refresh_skills: true,
         });
 
-        let registry = tact::skill::lock_skills(&app.skill_registry);
+        let registry = tact_extensions::skill::lock_skills(&app.skill_registry);
         assert!(registry.skills().contains_key("existing"));
         assert!(registry.skills().contains_key("new"));
     }
@@ -1263,7 +1269,7 @@ mod lifecycle_tests {
 
         app.handle_plugin_event(PluginEvent::Succeeded {
             result: PluginResult::ListedInstalled {
-                plugins: vec![tact::plugin::InstalledPlugin {
+                plugins: vec![tact_extensions::plugin::InstalledPlugin {
                     id: "superpowers".into(),
                     marketplace: "superpowers-dev".into(),
                     revision: "abc123".into(),
@@ -1309,15 +1315,15 @@ mod lifecycle_tests {
         app.handle_plugin_event(PluginEvent::Succeeded {
             result: PluginResult::ListedMarketplaces {
                 marketplaces: vec![
-                    tact::plugin::MarketplaceRecord {
+                    tact_extensions::plugin::MarketplaceRecord {
                         name: "claude-plugins-official".into(),
-                        source: tact::plugin::MarketplaceSource::GitUrl(
+                        source: tact_extensions::plugin::MarketplaceSource::GitUrl(
                             "https://github.com/anthropics/claude-plugins-official.git".into(),
                         ),
                     },
-                    tact::plugin::MarketplaceRecord {
+                    tact_extensions::plugin::MarketplaceRecord {
                         name: "superpowers-dev".into(),
-                        source: tact::plugin::MarketplaceSource::GitUrl(
+                        source: tact_extensions::plugin::MarketplaceSource::GitUrl(
                             "https://github.com/obra/superpowers.git".into(),
                         ),
                     },
@@ -2357,7 +2363,7 @@ mod lifecycle_tests {
         use crate::widgets::state::InputMode;
 
         let mut app = make_app();
-        let responder = tact::ui_responder::UiResponder::new();
+        let responder = tact_extensions::ui_responder::UiResponder::new();
         app.set_pending_ui(responder.clone());
 
         let (request_id, _rx) = responder.register_select(
@@ -2386,7 +2392,7 @@ mod lifecycle_tests {
         use crate::widgets::state::InputMode;
 
         let mut app = make_app();
-        let responder = tact::ui_responder::UiResponder::new();
+        let responder = tact_extensions::ui_responder::UiResponder::new();
         app.set_pending_ui(responder.clone());
         let (request_id, _rx) = responder.register_select(
             "Allow write?".into(),
@@ -2405,7 +2411,7 @@ mod lifecycle_tests {
     #[test]
     fn broker_snapshot_advances_to_next_pending_request() {
         let mut app = make_app();
-        let responder = tact::ui_responder::UiResponder::new();
+        let responder = tact_extensions::ui_responder::UiResponder::new();
         app.set_pending_ui(responder.clone());
 
         let (first, _rx1) = responder.register_select("first".into(), vec!["1".into()], false);

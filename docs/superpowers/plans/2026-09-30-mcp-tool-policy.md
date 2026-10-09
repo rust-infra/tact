@@ -5,7 +5,7 @@ Spec: [2026-09-30-mcp-tool-policy-design.md](../specs/2026-09-30-mcp-tool-policy
 Each step compiles and is tested before the next one starts. `cargo test` is run one
 invocation at a time (see AGENTS.md — parallel runs contend on `target/`).
 
-1. **Config surface** (`crates/tact/src/mcp/mod.rs`)
+1. **Config surface** (`crates/tact_extensions/src/mcp/mod.rs`)
    - `McpToolConfig { approval_mode, output_token_limit }`, `ApprovalMode { Auto, Prompt, Approve }`.
    - New `McpProjectConfig` fields with explicit snake_case `rename`s and `Default` updates.
    - `McpServerPolicy` (enabled/disabled lists, startup timeout, default + per-tool approval,

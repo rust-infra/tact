@@ -1,6 +1,6 @@
 # 后台任务（Background Tasks）
 
-本章说明 Tact 的 **异步 shell 执行**：`background_run` 工具在 `tokio::spawn` 任务上启动命令并立即返回；`wait_background` 阻塞到它结束，`check_background` 则不等待、只查状态。每个任务持久化到磁盘，结果不受轮询顺序影响 —— 但进程重启后不保留（见 §5）。实现位于 `crates/tact/src/background.rs`，工具包装在 `crates/tact/src/tool/background_run.rs`。
+本章说明 Tact 的 **异步 shell 执行**：`background_run` 工具在 `tokio::spawn` 任务上启动命令并立即返回；`wait_background` 阻塞到它结束，`check_background` 则不等待、只查状态。每个任务持久化到磁盘，结果不受轮询顺序影响 —— 但进程重启后不保留（见 §5）。实现位于 `crates/tact_extensions/src/background.rs`，工具包装在 `crates/tact_extensions/src/tool/background_run.rs`。
 
 后台任务是同步 `bash` 工具的「即发即忘」对应物：相同 shell、相同校验，但 agent 的一轮不会因完成而阻塞。
 
@@ -142,14 +142,14 @@ output: "Process interrupted (agent restarted)"
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/store/background_store/mod.rs` | `BackgroundStore` trait（async：upsert/get/list） |
-| `crates/tact/src/store/background_store/sqlite.rs` | `SqliteBackgroundStore` — `background_tasks` 表 |
-| `crates/tact/src/background.rs` | `BackgroundManager`、`SharedBackgroundManager`、记录类型、spawn 逻辑、启动修复 |
-| `crates/tact/src/tool/background_run.rs` | `background_run` / `check_background` 工具 |
+| `crates/tact_extensions/src/store/background_store/mod.rs` | `BackgroundStore` trait（async：upsert/get/list） |
+| `crates/tact_extensions/src/store/background_store/sqlite.rs` | `SqliteBackgroundStore` — `background_tasks` 表 |
+| `crates/tact_extensions/src/background.rs` | `BackgroundManager`、`SharedBackgroundManager`、记录类型、spawn 逻辑、启动修复 |
+| `crates/tact_extensions/src/tool/background_run.rs` | `background_run` / `check_background` 工具 |
 | `crates/tact/src/shell.rs` | 与 `bash` 共享的 `validate_shell_command` blocklist |
-| `crates/tact/src/tool/mod.rs` | `ToolContext.background_manager` |
-| `crates/tact/src/tool/registry.rs` | `toolset()` 中的后台工具 |
-| `crates/tact-ui/src/session_bootstrap.rs` | `bootstrap_session` 里从 `tact.db` 构造 manager；headless / 交互共用 |
+| `crates/tact_extensions/src/tool/mod.rs` | `ToolContext.background_manager` |
+| `crates/tact_extensions/src/tool/registry.rs` | `toolset()` 中的后台工具 |
+| `crates/tact_ui/src/session_bootstrap.rs` | `bootstrap_session` 里从 `tact.db` 构造 manager；headless / 交互共用 |
 | `docs/state_machines.md` | 后台 job 状态图 |
 
 ---

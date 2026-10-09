@@ -1,6 +1,6 @@
 # Worktree 泳道（Lanes）
 
-本章说明 Tact 的 **git worktree 泳道**：用 `git worktree add` 创建的隔离工作目录，在 JSON 索引中跟踪，并通过六个 agent 工具驱动。实现位于 `crates/tact/src/worktree/mod.rs`，工具封装在 `crates/tact/src/tool/worktree.rs`。
+本章说明 Tact 的 **git worktree 泳道**：用 `git worktree add` 创建的隔离工作目录，在 JSON 索引中跟踪，并通过六个 agent 工具驱动。实现位于 `crates/tact_extensions/src/worktree/mod.rs`，工具封装在 `crates/tact_extensions/src/tool/worktree.rs`。
 
 「泳道」（lane）是 Tact 对一条命名 worktree 的称呼：其目录、专用分支、可选的持久化任务链接，以及状态字符串。泳道让 agent 在独立分支上运行命令或实验，而不干扰主 checkout。
 
@@ -48,7 +48,7 @@ store: Box<dyn WorktreeStore>,   // tact.db → worktrees + worktree_events 表
     └── tact.db                 # worktrees + worktree_events 表
 ```
 
-Schema（`crates/tact/src/store/worktree_store/sqlite.rs`）：
+Schema（`crates/tact_extensions/src/store/worktree_store/sqlite.rs`）：
 
 ```text
 worktrees(id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT UNIQUE, path TEXT,
@@ -140,13 +140,13 @@ let worktree_manager =
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/worktree/mod.rs` | `WorktreeManager`、`SharedWorktreeManager`、create/list/status/run/remove/events |
-| `crates/tact/src/store/worktree_store/mod.rs` | `WorktreeStore` trait（async：create_worktree/find_worktree/list_worktrees/remove_worktree/append_event/recent_events） |
-| `crates/tact/src/store/worktree_store/sqlite.rs` | `SqliteWorktreeStore` — `worktrees` + `worktree_events` 表 |
-| `crates/tact/src/tool/worktree.rs` | 六个 `#[tool]` 封装 |
-| `crates/tact/src/tool/mod.rs` | `ToolContext.worktree_manager` |
-| `crates/tact/src/tool/registry.rs` | `toolset()` 中的 worktree 工具 |
-| `crates/tact-ui/src/session_bootstrap.rs` | `bootstrap_session` 里从 `tact.db` + workdir 构造 manager；headless / 交互共用 |
+| `crates/tact_extensions/src/worktree/mod.rs` | `WorktreeManager`、`SharedWorktreeManager`、create/list/status/run/remove/events |
+| `crates/tact_extensions/src/store/worktree_store/mod.rs` | `WorktreeStore` trait（async：create_worktree/find_worktree/list_worktrees/remove_worktree/append_event/recent_events） |
+| `crates/tact_extensions/src/store/worktree_store/sqlite.rs` | `SqliteWorktreeStore` — `worktrees` + `worktree_events` 表 |
+| `crates/tact_extensions/src/tool/worktree.rs` | 六个 `#[tool]` 封装 |
+| `crates/tact_extensions/src/tool/mod.rs` | `ToolContext.worktree_manager` |
+| `crates/tact_extensions/src/tool/registry.rs` | `toolset()` 中的 worktree 工具 |
+| `crates/tact_ui/src/session_bootstrap.rs` | `bootstrap_session` 里从 `tact.db` + workdir 构造 manager；headless / 交互共用 |
 
 ---
 
