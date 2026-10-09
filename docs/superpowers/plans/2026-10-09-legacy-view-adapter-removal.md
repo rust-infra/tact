@@ -270,13 +270,26 @@ Order that stays green inside each crate pair:
    path (`ViewUpdateEmitter::legacy`, `UiResponder::legacy_tx`,
    `ToolProgressReporter::ui_tx`, `ToolContext::ui_tx`,
    `Agent::with_ui_channel`).
-2. Rewrite the test patterns. Almost all are regex-able because their bindings
-   are bare identifiers:
+2. Rewrite the test patterns. Most are regex-able because their bindings are
+   bare identifiers:
    `AgentUpdate::Info(msg)` → `RuntimeEvent::Info { content: msg, .. }`, and the
    same for `MdInfo`, `Error`, `StreamChunk` (→ `Text { content, .. }`),
    `StepAdded` (→ `StepAdded { step, .. }`), `TokenUsage`, `ModelInfo`,
    `TaskComplete`, `ThinkingChunk` (→ `Thinking { chunk, .. }`).
    Struct patterns (`TurnStats`, `HookStatus`, `StepStarted`) only need `..`.
+
+   **But 23 of the 168 are not renames.** `RequestSelect` /
+   `RequestMultiSelect` (16 + 7 sites) have no direct counterpart: the protocol
+   expresses them as `RuntimeEvent::InteractionRequested { request:
+   InteractionRequest::Select { .. } }`, and the request id changes type —
+   `AgentUpdate` carries a `u64`, the protocol carries a `RequestId` string.
+   Every one of those assertions has to be re-expressed, not substituted.
+
+   That type change also *removes a latent bug*: the reverse projection parses
+   the protocol id back with `request_id.as_str().parse::<u64>().ok()` and
+   `unwrap_or_default()`, so a non-numeric request id silently produces **no**
+   legacy hint at all. Tests that read the legacy channel would see nothing;
+   after the sweep they read the protocol id directly.
 3. Then the channel is gone and `Agent::with_ui_channel` becomes a sink fixture.
 
 `tui` (277) is Task 4 and has to follow, because it still reads the legacy view
