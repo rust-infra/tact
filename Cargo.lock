@@ -4778,31 +4778,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tact-ui"
-version = "1.1.33"
-dependencies = [
- "anyhow",
- "base64",
- "chrono",
- "clap",
- "console-subscriber",
- "regex",
- "rmcp",
- "serde_json",
- "tact",
- "tact_extensions",
- "tact_llm",
- "tact_protocol",
- "tact_trajectory",
- "tempfile",
- "tokio",
- "tracing-subscriber",
- "tui",
- "uuid",
- "wiremock",
-]
-
-[[package]]
 name = "tact_extensions"
 version = "1.1.33"
 dependencies = [
@@ -4943,6 +4918,31 @@ dependencies = [
  "tact_protocol",
  "tempfile",
  "tokio",
+]
+
+[[package]]
+name = "tact_ui"
+version = "1.1.33"
+dependencies = [
+ "anyhow",
+ "base64",
+ "chrono",
+ "clap",
+ "console-subscriber",
+ "regex",
+ "rmcp",
+ "serde_json",
+ "tact",
+ "tact_extensions",
+ "tact_llm",
+ "tact_protocol",
+ "tact_trajectory",
+ "tempfile",
+ "tokio",
+ "tracing-subscriber",
+ "tui",
+ "uuid",
+ "wiremock",
 ]
 
 [[package]]

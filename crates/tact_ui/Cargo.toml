@@ -1,5 +1,5 @@
 [package]
-name = "tact-ui"
+name = "tact_ui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
