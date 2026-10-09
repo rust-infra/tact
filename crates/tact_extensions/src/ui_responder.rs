@@ -372,11 +372,12 @@ impl UiResponder {
                 request_id,
                 prompt,
                 options,
-                ..
+                log_confirm,
             } => tact_protocol::InteractionRequest::Select {
                 request_id: tact_protocol::RequestId::from(request_id.to_string()),
                 prompt,
                 options,
+                log_confirm,
             },
             AgentUpdate::RequestMultiSelect {
                 request_id,

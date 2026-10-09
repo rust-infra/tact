@@ -40,6 +40,7 @@ async fn broker_preserves_interaction_order_and_correlates_response() {
         request_id: request_id.clone(),
         prompt: "Choose".into(),
         options: vec!["one".into(), "two".into()],
+        log_confirm: true,
     };
     let request_task = tokio::spawn({
         let broker = broker.clone();
@@ -114,6 +115,7 @@ async fn snapshot_exposes_pending_requests_until_answered() {
         request_id: request_id.clone(),
         prompt: "Pick".into(),
         options: vec!["a".into(), "b".into()],
+        log_confirm: false,
     };
     let request_task = tokio::spawn({
         let broker = broker.clone();

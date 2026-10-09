@@ -548,177 +548,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     Ok(())
 }
 
-/// Projects protocol events into the current TUI view model.
-///
-/// This is an adapter boundary: the TUI consumes structured `RuntimeEvent`s and
-/// projects them onto the widgets' view model.
-fn runtime_event_to_agent_updates(event: tact_protocol::RuntimeEvent) -> Vec<AgentUpdate> {
-    use tact_protocol::RuntimeEvent;
-
-    match event {
-        RuntimeEvent::Text { role, content, .. } if role == "assistant" => {
-            vec![AgentUpdate::StreamChunk(content)]
-        }
-        RuntimeEvent::Thinking { chunk, .. } => vec![AgentUpdate::ThinkingChunk(chunk)],
-        RuntimeEvent::ToolProgress {
-            tool_id, chunks, ..
-        } => vec![AgentUpdate::ToolProgress { tool_id, chunks }],
-        RuntimeEvent::ModelInfo { params, .. } => vec![AgentUpdate::ModelInfo(params)],
-        RuntimeEvent::TokenUsage { usage, .. } => vec![AgentUpdate::TokenUsage(usage)],
-        RuntimeEvent::TurnStats {
-            turns_taken,
-            max_turns,
-            ..
-        } => vec![AgentUpdate::TurnStats {
-            turns_taken,
-            max_turns,
-        }],
-        RuntimeEvent::StepAdded { step, .. } => vec![AgentUpdate::StepAdded(step)],
-        RuntimeEvent::StepStarted {
-            idx,
-            tool_id,
-            tool_name,
-            arg_summary,
-            arg_full,
-            presentation,
-            ..
-        } => vec![AgentUpdate::StepStarted {
-            idx,
-            tool_id,
-            tool_name,
-            arg_summary,
-            arg_full,
-            presentation,
-        }],
-        RuntimeEvent::StepFinished {
-            idx,
-            tool_id,
-            result,
-            ..
-        } => vec![AgentUpdate::StepFinished {
-            idx,
-            tool_id,
-            result,
-        }],
-        RuntimeEvent::StepFailed {
-            idx,
-            tool_id,
-            arg_summary,
-            error,
-            ..
-        } => vec![AgentUpdate::StepFailed {
-            idx,
-            tool_id,
-            arg_summary,
-            error,
-        }],
-        RuntimeEvent::TaskComplete { content, .. } => vec![AgentUpdate::TaskComplete(content)],
-        RuntimeEvent::Info { content, .. } => vec![AgentUpdate::Info(content)],
-        RuntimeEvent::MdInfo { content, .. } => vec![AgentUpdate::MdInfo(content)],
-        RuntimeEvent::HookContext { source, text, .. } => {
-            vec![AgentUpdate::HookContext { source, text }]
-        }
-        RuntimeEvent::HookStatus {
-            id,
-            source,
-            message,
-            elapsed_ms,
-            ..
-        } => vec![AgentUpdate::HookStatus {
-            id,
-            source,
-            message,
-            elapsed_ms,
-        }],
-        RuntimeEvent::PopupMarkdown { title, source, .. } => {
-            vec![AgentUpdate::PopupMarkdown { title, source }]
-        }
-        RuntimeEvent::TasksChanged { tasks, reason, .. } => {
-            vec![AgentUpdate::TasksChanged { tasks, reason }]
-        }
-        RuntimeEvent::ToolMeta {
-            tool_id,
-            model,
-            token_usage,
-            task_id,
-            ..
-        } => vec![AgentUpdate::ToolMeta {
-            tool_id,
-            model,
-            token_usage,
-            task_id,
-        }],
-        RuntimeEvent::BackgroundTaskFinished {
-            tool_id,
-            success,
-            message,
-            output,
-            ..
-        } => vec![AgentUpdate::BackgroundTaskFinished {
-            tool_id,
-            success,
-            message,
-            output,
-        }],
-        RuntimeEvent::SubagentFinished {
-            tool_id,
-            child_id,
-            success,
-            summary,
-            ..
-        } => vec![AgentUpdate::SubagentFinished {
-            tool_id,
-            child_id,
-            success,
-            summary,
-        }],
-        RuntimeEvent::SubagentsChanged { runs, .. } => vec![AgentUpdate::SubagentsChanged { runs }],
-        RuntimeEvent::Cancelled { .. } => vec![AgentUpdate::TaskCancelled],
-        RuntimeEvent::Error { message, .. } => {
-            vec![AgentUpdate::Error(tact_view::AgentErrorKind::Other(
-                message,
-            ))]
-        }
-        RuntimeEvent::Notification { content, .. } => vec![AgentUpdate::Info(content)],
-        RuntimeEvent::InteractionRequested { request } => match request {
-            tact_protocol::InteractionRequest::Select {
-                request_id,
-                prompt,
-                options,
-            } => request_id
-                .as_str()
-                .parse::<u64>()
-                .ok()
-                .map(|request_id| {
-                    vec![AgentUpdate::RequestSelect {
-                        request_id,
-                        prompt,
-                        options,
-                        log_confirm: false,
-                    }]
-                })
-                .unwrap_or_default(),
-            tact_protocol::InteractionRequest::MultiSelect {
-                request_id,
-                prompt,
-                options,
-            } => request_id
-                .as_str()
-                .parse::<u64>()
-                .ok()
-                .map(|request_id| {
-                    vec![AgentUpdate::RequestMultiSelect {
-                        request_id,
-                        prompt,
-                        options,
-                    }]
-                })
-                .unwrap_or_default(),
-            _ => Vec::new(),
-        },
-        _ => Vec::new(),
-    }
-}
+pub use tact_view::runtime_event_to_agent_updates;
 
 fn apply_runtime_event(app: &mut App, event: tact_protocol::RuntimeEvent) {
     match event {
@@ -958,6 +788,7 @@ mod runtime_event_tests {
                     request_id: tact_protocol::RequestId::from("42"),
                     prompt: "Approve?".into(),
                     options: vec!["Allow".into(), "Deny".into()],
+                    log_confirm: true,
                 },
             });
 
@@ -967,8 +798,8 @@ mod runtime_event_tests {
                 request_id: 42,
                 prompt,
                 options,
-                ..
-            }] if prompt == "Approve?" && options.len() == 2
+                log_confirm,
+            }] if prompt == "Approve?" && options.len() == 2 && *log_confirm
         ));
     }
 

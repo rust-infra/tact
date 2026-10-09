@@ -399,12 +399,13 @@ pub fn runtime_events_for(update: &AgentUpdate, run_id: Option<RunId>) -> Vec<Ru
             request_id,
             prompt,
             options,
-            ..
+            log_confirm,
         } => vec![RuntimeEvent::InteractionRequested {
             request: tact_protocol::InteractionRequest::Select {
                 request_id: tact_protocol::RequestId::from(request_id.to_string()),
                 prompt: prompt.clone(),
                 options: options.clone(),
+                log_confirm: *log_confirm,
             },
         }],
         AgentUpdate::RequestMultiSelect {
@@ -509,6 +510,178 @@ pub fn runtime_events_for(update: &AgentUpdate, run_id: Option<RunId>) -> Vec<Ru
     }
 }
 
+/// Projects protocol events back onto the legacy `AgentUpdate` view model.
+///
+/// The inverse of [`runtime_events_for`]. A producer that only holds the
+/// protocol type — an LLM adapter, a harness — can still feed a consumer that
+/// has not migrated to `RuntimeEvent` yet. It goes away with `AgentUpdate`.
+pub fn runtime_event_to_agent_updates(event: tact_protocol::RuntimeEvent) -> Vec<AgentUpdate> {
+    use tact_protocol::RuntimeEvent;
+
+    match event {
+        RuntimeEvent::Text { role, content, .. } if role == "assistant" => {
+            vec![AgentUpdate::StreamChunk(content)]
+        }
+        RuntimeEvent::Thinking { chunk, .. } => vec![AgentUpdate::ThinkingChunk(chunk)],
+        RuntimeEvent::ToolProgress {
+            tool_id, chunks, ..
+        } => vec![AgentUpdate::ToolProgress { tool_id, chunks }],
+        RuntimeEvent::ModelInfo { params, .. } => vec![AgentUpdate::ModelInfo(params)],
+        RuntimeEvent::TokenUsage { usage, .. } => vec![AgentUpdate::TokenUsage(usage)],
+        RuntimeEvent::TurnStats {
+            turns_taken,
+            max_turns,
+            ..
+        } => vec![AgentUpdate::TurnStats {
+            turns_taken,
+            max_turns,
+        }],
+        RuntimeEvent::StepAdded { step, .. } => vec![AgentUpdate::StepAdded(step)],
+        RuntimeEvent::StepStarted {
+            idx,
+            tool_id,
+            tool_name,
+            arg_summary,
+            arg_full,
+            presentation,
+            ..
+        } => vec![AgentUpdate::StepStarted {
+            idx,
+            tool_id,
+            tool_name,
+            arg_summary,
+            arg_full,
+            presentation,
+        }],
+        RuntimeEvent::StepFinished {
+            idx,
+            tool_id,
+            result,
+            ..
+        } => vec![AgentUpdate::StepFinished {
+            idx,
+            tool_id,
+            result,
+        }],
+        RuntimeEvent::StepFailed {
+            idx,
+            tool_id,
+            arg_summary,
+            error,
+            ..
+        } => vec![AgentUpdate::StepFailed {
+            idx,
+            tool_id,
+            arg_summary,
+            error,
+        }],
+        RuntimeEvent::TaskComplete { content, .. } => vec![AgentUpdate::TaskComplete(content)],
+        RuntimeEvent::Info { content, .. } => vec![AgentUpdate::Info(content)],
+        RuntimeEvent::MdInfo { content, .. } => vec![AgentUpdate::MdInfo(content)],
+        RuntimeEvent::HookContext { source, text, .. } => {
+            vec![AgentUpdate::HookContext { source, text }]
+        }
+        RuntimeEvent::HookStatus {
+            id,
+            source,
+            message,
+            elapsed_ms,
+            ..
+        } => vec![AgentUpdate::HookStatus {
+            id,
+            source,
+            message,
+            elapsed_ms,
+        }],
+        RuntimeEvent::PopupMarkdown { title, source, .. } => {
+            vec![AgentUpdate::PopupMarkdown { title, source }]
+        }
+        RuntimeEvent::TasksChanged { tasks, reason, .. } => {
+            vec![AgentUpdate::TasksChanged { tasks, reason }]
+        }
+        RuntimeEvent::ToolMeta {
+            tool_id,
+            model,
+            token_usage,
+            task_id,
+            ..
+        } => vec![AgentUpdate::ToolMeta {
+            tool_id,
+            model,
+            token_usage,
+            task_id,
+        }],
+        RuntimeEvent::BackgroundTaskFinished {
+            tool_id,
+            success,
+            message,
+            output,
+            ..
+        } => vec![AgentUpdate::BackgroundTaskFinished {
+            tool_id,
+            success,
+            message,
+            output,
+        }],
+        RuntimeEvent::SubagentFinished {
+            tool_id,
+            child_id,
+            success,
+            summary,
+            ..
+        } => vec![AgentUpdate::SubagentFinished {
+            tool_id,
+            child_id,
+            success,
+            summary,
+        }],
+        RuntimeEvent::SubagentsChanged { runs, .. } => vec![AgentUpdate::SubagentsChanged { runs }],
+        RuntimeEvent::Cancelled { .. } => vec![AgentUpdate::TaskCancelled],
+        RuntimeEvent::Error { message, .. } => {
+            vec![AgentUpdate::Error(AgentErrorKind::Other(message))]
+        }
+        RuntimeEvent::Notification { content, .. } => vec![AgentUpdate::Info(content)],
+        RuntimeEvent::InteractionRequested { request } => match request {
+            tact_protocol::InteractionRequest::Select {
+                request_id,
+                prompt,
+                options,
+                log_confirm,
+            } => request_id
+                .as_str()
+                .parse::<u64>()
+                .ok()
+                .map(|request_id| {
+                    vec![AgentUpdate::RequestSelect {
+                        request_id,
+                        prompt,
+                        options,
+                        log_confirm,
+                    }]
+                })
+                .unwrap_or_default(),
+            tact_protocol::InteractionRequest::MultiSelect {
+                request_id,
+                prompt,
+                options,
+            } => request_id
+                .as_str()
+                .parse::<u64>()
+                .ok()
+                .map(|request_id| {
+                    vec![AgentUpdate::RequestMultiSelect {
+                        request_id,
+                        prompt,
+                        options,
+                    }]
+                })
+                .unwrap_or_default(),
+            _ => Vec::new(),
+        },
+        _ => Vec::new(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,5 +747,42 @@ mod tests {
             AgentUpdate::ToolProgress { tool_id, chunks: actual }
                 if tool_id == "bash-1" && actual == chunks
         ));
+    }
+
+    /// `log_confirm` decides whether the View appends a "Selected: …" line
+    /// after the user confirms, so dropping it in the projection silently
+    /// changes what the reader sees.
+    #[test]
+    fn select_projection_keeps_log_confirm() {
+        for log_confirm in [true, false] {
+            let events = runtime_events_for(
+                &AgentUpdate::RequestSelect {
+                    request_id: 7,
+                    prompt: "Choose".into(),
+                    options: vec!["one".into(), "two".into()],
+                    log_confirm,
+                },
+                Some(tact_protocol::RunId::from("run-1")),
+            );
+            match events.as_slice() {
+                [
+                    RuntimeEvent::InteractionRequested {
+                        request:
+                            tact_protocol::InteractionRequest::Select {
+                                request_id,
+                                prompt,
+                                options,
+                                log_confirm: projected,
+                            },
+                    },
+                ] => {
+                    assert_eq!(request_id.as_str(), "7");
+                    assert_eq!(prompt, "Choose");
+                    assert_eq!(options, &vec!["one".to_string(), "two".to_string()]);
+                    assert_eq!(*projected, log_confirm, "log_confirm must survive");
+                }
+                other => panic!("unexpected {other:?}"),
+            }
+        }
     }
 }

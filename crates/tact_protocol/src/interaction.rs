@@ -13,6 +13,11 @@ pub enum InteractionRequest {
         request_id: RequestId,
         prompt: String,
         options: Vec<String>,
+        /// When true the View appends a "Selected: …" line after the user
+        /// confirms. Permission prompts keep this `false` — the choice is
+        /// already shown on the tool meta row.
+        #[serde(default)]
+        log_confirm: bool,
     },
     MultiSelect {
         request_id: RequestId,
