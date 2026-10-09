@@ -7,7 +7,7 @@
 use crossterm::event::KeyEvent;
 use ratatui::{buffer::Buffer, layout::Rect};
 
-use crate::{Component, Ctx, protocol::AgentUpdate, state::SubagentPanelState};
+use crate::{Component, Ctx, protocol::RuntimeEvent, state::SubagentPanelState};
 
 pub struct SubagentPanelComponent {
     state: SubagentPanelState,
@@ -51,8 +51,8 @@ impl std::ops::DerefMut for SubagentPanelComponent {
 }
 
 impl Component for SubagentPanelComponent {
-    fn on_update(&mut self, update: &AgentUpdate, _ctx: &mut Ctx<'_>) -> bool {
-        if let AgentUpdate::SubagentsChanged { runs } = update {
+    fn on_update(&mut self, update: &RuntimeEvent, _ctx: &mut Ctx<'_>) -> bool {
+        if let RuntimeEvent::SubagentsChanged { runs, .. } = update {
             self.state.apply_snapshot(runs.clone());
             true
         } else {
@@ -125,7 +125,8 @@ mod tests {
             Vec::new(),
         );
         let dirty = comp.on_update(
-            &AgentUpdate::SubagentsChanged {
+            &RuntimeEvent::SubagentsChanged {
+                run_id: None,
                 runs: vec![run(tact_protocol::SubagentStatusSnapshot::Running)],
             },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
@@ -146,7 +147,10 @@ mod tests {
             Vec::new(),
         );
         let dirty = comp.on_update(
-            &AgentUpdate::TaskComplete("done".into()),
+            &RuntimeEvent::TaskComplete {
+                run_id: None,
+                content: "done".into(),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(!dirty);

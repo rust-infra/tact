@@ -7,7 +7,7 @@
 use crossterm::event::KeyEvent;
 use ratatui::{buffer::Buffer, layout::Rect};
 
-use crate::{Component, Ctx, protocol::AgentUpdate, state::PlanPanel};
+use crate::{Component, Ctx, protocol::RuntimeEvent, state::PlanPanel};
 
 pub struct PlanComponent {
     state: PlanPanel,
@@ -62,7 +62,7 @@ impl std::ops::DerefMut for PlanComponent {
 }
 
 impl Component for PlanComponent {
-    fn on_update(&mut self, update: &AgentUpdate, _ctx: &mut Ctx<'_>) -> bool {
+    fn on_update(&mut self, update: &RuntimeEvent, _ctx: &mut Ctx<'_>) -> bool {
         match update {
             // These branches write side state (the plan snapshot) but do not
             // *consume* the update: `ToolComponent` also handles `StepAdded` /
@@ -70,7 +70,7 @@ impl Component for PlanComponent {
             // registry dispatches to every component until one claims.
             // Returning `false` lets the dispatch continue to the tool
             // component; the plan write still happens.
-            AgentUpdate::StepAdded(step) => {
+            RuntimeEvent::StepAdded { step, .. } => {
                 self.state.steps.push(step.clone());
                 self.state
                     .steps_set
@@ -81,10 +81,11 @@ impl Component for PlanComponent {
             // status bar's progress derivation stays correct. The agent's raw
             // `idx` is not a reliable plan index (out-of-order/restarted tool
             // ids), so resolve to the first plan position like the shell does.
-            AgentUpdate::StepFinished {
+            RuntimeEvent::StepFinished {
                 idx,
                 tool_id,
                 result,
+                ..
             } => {
                 let idx = self.resolve_step_idx(tool_id, *idx);
                 if let Some(step) = self.state.steps.get_mut(idx) {
@@ -92,7 +93,7 @@ impl Component for PlanComponent {
                 }
                 false
             }
-            AgentUpdate::StepFailed {
+            RuntimeEvent::StepFailed {
                 idx,
                 tool_id,
                 error,
@@ -172,7 +173,10 @@ mod tests {
             Vec::new(),
         );
         comp.on_update(
-            &AgentUpdate::StepAdded(step("t1")),
+            &RuntimeEvent::StepAdded {
+                run_id: None,
+                step: step("t1"),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert_eq!(comp.state().steps.len(), 1);
@@ -188,11 +192,15 @@ mod tests {
             Vec::new(),
         );
         comp.on_update(
-            &AgentUpdate::StepAdded(step("t1")),
+            &RuntimeEvent::StepAdded {
+                run_id: None,
+                step: step("t1"),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         comp.on_update(
-            &AgentUpdate::StepFinished {
+            &RuntimeEvent::StepFinished {
+                run_id: None,
                 idx: 0,
                 tool_id: "t1".into(),
                 result: StepResult {
@@ -224,16 +232,23 @@ mod tests {
             Vec::new(),
         );
         comp.on_update(
-            &AgentUpdate::StepAdded(step("t1")),
+            &RuntimeEvent::StepAdded {
+                run_id: None,
+                step: step("t1"),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         comp.on_update(
-            &AgentUpdate::StepAdded(step("t2")),
+            &RuntimeEvent::StepAdded {
+                run_id: None,
+                step: step("t2"),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         // Raw idx 0 would hit steps[0] (t1); resolved must be steps[1] (t2).
         comp.on_update(
-            &AgentUpdate::StepFinished {
+            &RuntimeEvent::StepFinished {
+                run_id: None,
                 idx: 0,
                 tool_id: "t2".into(),
                 result: StepResult {
@@ -267,15 +282,22 @@ mod tests {
             Vec::new(),
         );
         comp.on_update(
-            &AgentUpdate::StepAdded(step("t1")),
+            &RuntimeEvent::StepAdded {
+                run_id: None,
+                step: step("t1"),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         comp.on_update(
-            &AgentUpdate::StepAdded(step("t2")),
+            &RuntimeEvent::StepAdded {
+                run_id: None,
+                step: step("t2"),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         comp.on_update(
-            &AgentUpdate::StepFailed {
+            &RuntimeEvent::StepFailed {
+                run_id: None,
                 idx: 0,
                 tool_id: "t2".into(),
                 arg_summary: String::new(),

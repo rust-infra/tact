@@ -7,7 +7,7 @@ use crate::i18n::Messages;
 #[derive(Debug, Clone)]
 pub struct TaskPanelState {
     pub snapshot: Vec<TaskSnapshot>,
-    /// Set on first [`AgentUpdate::TasksChanged`] this UI session.
+    /// Set on first [`RuntimeEvent::TasksChanged`] this UI session.
     pub session_seen: bool,
     pub visible: bool,
     pub expanded: bool,

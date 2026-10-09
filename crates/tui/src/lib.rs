@@ -49,8 +49,8 @@ use ratatui::{
     widgets::ScrollbarState,
 };
 use tact_extensions::plugin::{PluginEvent, PluginRequest};
-use tact_protocol::AccountUpdate;
-use tact_view::{AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, RuntimeEvent};
+use tact_view::UserCommand;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::StreamExt;
 
@@ -156,7 +156,7 @@ pub(crate) fn on_poll_timeout(app: &mut App) {
 pub struct TuiConfig {
     /// Optional in-process compatibility receiver for test-support hosts.
     /// Production View traffic arrives through `runtime_events`.
-    pub agent_rx: Option<UnboundedReceiver<AgentUpdate>>,
+    pub agent_rx: Option<UnboundedReceiver<RuntimeEvent>>,
     pub runtime_events: tact::EventTransport,
     pub account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     pub plugin_rx: UnboundedReceiver<PluginEvent>,
@@ -328,7 +328,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         // log_scroll.visual_start computed during rendering would be inconsistent with the
         // actual message array, causing mouse clicks to map to wrong lines.
         while let Ok(update) = app.agent_rx.try_recv() {
-            app.handle_agent_update(update);
+            app.handle_runtime_event(update);
         }
         while let Ok(event) = runtime_subscription.try_recv() {
             apply_runtime_event(&mut app, event);
@@ -548,41 +548,8 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     Ok(())
 }
 
-pub use tact_view::runtime_event_to_agent_updates;
-
 fn apply_runtime_event(app: &mut App, event: tact_protocol::RuntimeEvent) {
-    match event {
-        tact_protocol::RuntimeEvent::PluginStarted { plugin_id } => {
-            app.handle_agent_update(AgentUpdate::Info(format!("Plugin started: {plugin_id}")));
-        }
-        tact_protocol::RuntimeEvent::PluginStopped { plugin_id } => {
-            app.handle_agent_update(AgentUpdate::Info(format!("Plugin stopped: {plugin_id}")));
-        }
-        tact_protocol::RuntimeEvent::Plugin {
-            plugin_id,
-            event_type,
-            ..
-        } => {
-            app.handle_agent_update(AgentUpdate::Info(format!(
-                "Plugin event {plugin_id}: {event_type}"
-            )));
-        }
-        tact_protocol::RuntimeEvent::RunStarted { run_id } => {
-            app.runtime_run_id = Some(run_id);
-        }
-        tact_protocol::RuntimeEvent::RunFinished { run_id, .. } => {
-            // A turn that ended without a run must not clear the identity of a
-            // run that is still current.
-            if app.runtime_run_id == run_id {
-                app.runtime_run_id = None;
-            }
-        }
-        event => {
-            for update in runtime_event_to_agent_updates(event) {
-                app.handle_agent_update(update);
-            }
-        }
-    }
+    app.handle_runtime_event(event);
 }
 
 #[cfg(test)]
@@ -733,120 +700,130 @@ mod voice_keybind_tests {
 
 #[cfg(test)]
 mod runtime_event_tests {
-    use super::{apply_runtime_event, runtime_event_to_agent_updates};
+    use super::apply_runtime_event;
+    use crate::{
+        render::test_harness::{make_app, render_log_panel_text},
+        widgets::state::{InputMode, Status},
+    };
+    use tact_protocol::{InteractionRequest, RequestId, RuntimeEvent};
 
     #[test]
-    fn runtime_text_events_project_to_stream_updates() {
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::Text {
-            run_id: Some(tact_protocol::RunId::from("run-1")),
-            role: "assistant".into(),
-            content: "hello".into(),
-        });
+    fn runtime_text_events_reach_the_log() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::Text {
+                run_id: Some(tact_protocol::RunId::from("run-1")),
+                role: "assistant".into(),
+                content: "hello".into(),
+            },
+        );
 
-        assert!(matches!(
-            updates.as_slice(),
-            [tact_view::AgentUpdate::StreamChunk(text)] if text == "hello"
-        ));
+        let text = render_log_panel_text(&mut app, 80, 20);
+        assert!(
+            text.contains("hello"),
+            "assistant text should reach the log, got:\n{text}"
+        );
     }
 
     #[test]
-    fn runtime_completion_notification_projects_to_done_update() {
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::TaskComplete {
-            run_id: None,
-            content: "finished".into(),
-        });
+    fn runtime_completion_notification_finishes_the_task() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::TaskComplete {
+                run_id: None,
+                content: "finished".into(),
+            },
+        );
 
-        assert!(matches!(
-            updates.as_slice(),
-            [tact_view::AgentUpdate::TaskComplete(text)] if text == "finished"
-        ));
+        assert!(matches!(app.status, Status::Done));
     }
 
     #[test]
-    fn runtime_model_info_projects_to_status_update() {
-        let params = tact_protocol::ModelCallParams {
-            model: "model-a".into(),
-            max_tokens: 128,
-            thinking_budget: Some(16),
-            reasoning_effort: Some("low".into()),
-            extra_body: None,
-        };
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::ModelInfo {
-            run_id: None,
-            params,
-        });
+    fn runtime_model_info_reaches_the_status_bar() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::ModelInfo {
+                run_id: None,
+                params: tact_protocol::ModelCallParams {
+                    model: "model-a".into(),
+                    max_tokens: 128,
+                    thinking_budget: Some(16),
+                    reasoning_effort: Some("low".into()),
+                    extra_body: None,
+                },
+            },
+        );
 
-        assert!(matches!(
-            updates.as_slice(),
-            [tact_view::AgentUpdate::ModelInfo(info)] if info.model == "model-a"
-        ));
+        assert_eq!(app.status_bar().model_name, "model-a");
     }
 
     #[test]
-    fn runtime_select_interaction_projects_to_wake_up_hint() {
-        let updates =
-            runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::InteractionRequested {
-                request: tact_protocol::InteractionRequest::Select {
-                    request_id: tact_protocol::RequestId::from("42"),
+    fn runtime_select_interaction_opens_the_popup() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::InteractionRequested {
+                request: InteractionRequest::Select {
+                    request_id: RequestId::from("42"),
                     prompt: "Approve?".into(),
                     options: vec!["Allow".into(), "Deny".into()],
                     log_confirm: true,
                 },
-            });
+            },
+        );
 
-        assert!(matches!(
-            updates.as_slice(),
-            [tact_view::AgentUpdate::RequestSelect {
-                request_id: 42,
-                prompt,
-                options,
-                log_confirm,
-            }] if prompt == "Approve?" && options.len() == 2 && *log_confirm
-        ));
+        assert!(matches!(app.input_mode, InputMode::Select));
+        assert_eq!(app.select.request_id, Some(42));
+        assert!(app.select.log_confirm, "log_confirm must survive the wire");
     }
 
     #[test]
-    fn runtime_popup_notification_projects_to_modal_content() {
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::PopupMarkdown {
-            run_id: None,
-            title: "Session stats".into(),
-            source: "Turns: 3".into(),
-        });
+    fn runtime_popup_notification_opens_the_modal() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::PopupMarkdown {
+                run_id: None,
+                title: "Session stats".into(),
+                source: "Turns: 3".into(),
+            },
+        );
 
-        assert!(matches!(
-            updates.as_slice(),
-            [tact_view::AgentUpdate::PopupMarkdown { title, source }]
-                if title == "Session stats" && source == "Turns: 3"
-        ));
+        let popup = app.system_prompt_popup.as_ref().expect("modal opened");
+        assert_eq!(popup.title, "Session stats");
+        assert_eq!(popup.source, "Turns: 3");
     }
 
     #[test]
-    fn runtime_view_update_projects_rich_tool_cards_to_the_tui_adapter() {
-        let updates = runtime_event_to_agent_updates(tact_protocol::RuntimeEvent::StepStarted {
-            run_id: Some(tact_protocol::RunId::from("run-view")),
-            idx: 7,
-            tool_id: "tool-view".into(),
-            tool_name: "write_file".into(),
-            arg_summary: "a.txt".into(),
-            arg_full: "a.txt: content".into(),
-            presentation: tact_protocol::ToolPresentationInfo::generic("Write File"),
-        });
+    fn runtime_step_started_opens_a_tool_card() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::StepStarted {
+                run_id: Some(tact_protocol::RunId::from("run-view")),
+                idx: 7,
+                tool_id: "tool-view".into(),
+                tool_name: "write_file".into(),
+                arg_summary: "a.txt".into(),
+                arg_full: "a.txt: content".into(),
+                presentation: tact_protocol::ToolPresentationInfo::generic("Write File"),
+            },
+        );
 
-        assert!(matches!(
-            updates.as_slice(),
-            [tact_view::AgentUpdate::StepStarted { idx: 7, tool_id, .. }]
-                if tool_id == "tool-view"
-        ));
+        assert_eq!(app.tools().active.len(), 1);
     }
 
     #[test]
     fn run_lifecycle_events_track_the_active_run_for_cancel_commands() {
-        let mut app = crate::render::test_harness::make_app();
+        let mut app = make_app();
         let run_id = tact_protocol::RunId::from("run-view-1");
 
         apply_runtime_event(
             &mut app,
-            tact_protocol::RuntimeEvent::RunStarted {
+            RuntimeEvent::RunStarted {
                 run_id: run_id.clone(),
             },
         );
@@ -854,7 +831,7 @@ mod runtime_event_tests {
 
         apply_runtime_event(
             &mut app,
-            tact_protocol::RuntimeEvent::RunFinished {
+            RuntimeEvent::RunFinished {
                 run_id: Some(run_id),
                 success: true,
             },

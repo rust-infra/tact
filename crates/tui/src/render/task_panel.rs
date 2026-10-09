@@ -144,7 +144,7 @@ pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 #[cfg(test)]
 mod sticky_host_tests {
     use tact_protocol::{
-        SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot,
+        RuntimeEvent, SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot,
     };
 
     use super::super::test_harness::{make_app, render_main_area_text};
@@ -247,15 +247,17 @@ mod sticky_host_tests {
     fn seed_running_background(app: &mut crate::widgets::state::App, task_id: &str, command: &str) {
         let mut presentation = tact_protocol::ToolPresentationInfo::generic("background_run");
         presentation.keep_live = true;
-        app.handle_agent_update(tact_view::AgentUpdate::StepAdded(
-            tact_protocol::PlanStep::new(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: tact_protocol::PlanStep::new(
                 "run build in background",
                 "background_run",
                 "bg1",
                 std::collections::HashMap::from([("command".to_string(), command.to_string())]),
             ),
-        ));
-        app.handle_agent_update(tact_view::AgentUpdate::StepStarted {
+        });
+        app.handle_runtime_event(RuntimeEvent::StepStarted {
+            run_id: None,
             idx: 0,
             tool_id: "bg1".into(),
             tool_name: "background_run".into(),
@@ -263,7 +265,8 @@ mod sticky_host_tests {
             arg_full: command.into(),
             presentation,
         });
-        app.handle_agent_update(tact_view::AgentUpdate::ToolMeta {
+        app.handle_runtime_event(RuntimeEvent::ToolMeta {
+            run_id: None,
             tool_id: "bg1".into(),
             model: None,
             token_usage: None,
@@ -320,7 +323,8 @@ mod sticky_host_tests {
         // The first chunk of output rebuilds the card. The task id must survive
         // that rebuild, or the strip empties the moment the task prints
         // anything (the live report: it flashed for well under a second).
-        app.handle_agent_update(tact_view::AgentUpdate::ToolProgress {
+        app.handle_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: "bg1".into(),
             chunks: vec![tact_protocol::ToolOutputChunk::stdout("Compiling ...\n")],
         });
@@ -348,7 +352,8 @@ mod sticky_host_tests {
         assert!(app.background_panel().visible);
 
         // What the shell receives when the task ends.
-        app.handle_agent_update(tact_view::AgentUpdate::BackgroundTaskFinished {
+        app.handle_runtime_event(RuntimeEvent::BackgroundTaskFinished {
+            run_id: None,
             tool_id: "bg1".into(),
             success: true,
             message: "Background task 018f3a2c completed".into(),

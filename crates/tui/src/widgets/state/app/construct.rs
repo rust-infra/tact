@@ -7,8 +7,8 @@ use std::{
 };
 
 use tact_extensions::plugin::{PluginEvent, PluginRequest};
-use tact_protocol::AccountUpdate;
-use tact_view::{AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, RuntimeEvent};
+use tact_view::UserCommand;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{
@@ -30,7 +30,7 @@ impl App {
     /// Create an initialized App instance, defaulting to Insert mode with the Retro theme.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        agent_rx: UnboundedReceiver<AgentUpdate>,
+        agent_rx: UnboundedReceiver<RuntimeEvent>,
         account_rx: Option<UnboundedReceiver<AccountUpdate>>,
         plugin_rx: UnboundedReceiver<PluginEvent>,
         plugin_tx: UnboundedSender<PluginRequest>,

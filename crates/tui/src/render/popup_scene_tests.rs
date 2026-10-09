@@ -3,6 +3,7 @@
 use std::time::Duration;
 
 use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
+use tact_protocol::RuntimeEvent;
 
 use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
 use crate::test_fixtures::StepCall;
@@ -954,13 +955,14 @@ fn main_area_thinking_popup_renders_reasoning() {
 
 #[test]
 fn active_thinking_popup_uses_buffered_content() {
+    use tact_protocol::RuntimeEvent;
     use tact_protocol::ThinkingChunk;
-    use tact_view::AgentUpdate;
 
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-        "draft reasoning".into(),
-    )));
+    app.handle_runtime_event(RuntimeEvent::Thinking {
+        run_id: None,
+        chunk: ThinkingChunk::Delta("draft reasoning".into()),
+    });
     let phys_idx = app.thinking_mut().active.as_ref().unwrap().phys_idx;
     app.open_thinking_popup_at_physical_index(phys_idx);
 
@@ -974,13 +976,14 @@ fn active_thinking_popup_uses_buffered_content() {
 
 #[test]
 fn active_thinking_popup_preserves_blank_lines() {
+    use tact_protocol::RuntimeEvent;
     use tact_protocol::ThinkingChunk;
-    use tact_view::AgentUpdate;
 
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-        "first line\n\nlast line".into(),
-    )));
+    app.handle_runtime_event(RuntimeEvent::Thinking {
+        run_id: None,
+        chunk: ThinkingChunk::Delta("first line\n\nlast line".into()),
+    });
     let phys_idx = app.thinking_mut().active.as_ref().unwrap().phys_idx;
     app.open_thinking_popup_at_physical_index(phys_idx);
 
@@ -1100,11 +1103,18 @@ fn thinking_popup_selection_text_matches_visible_markdown_text() {
 
 #[test]
 fn full_frame_done_status_renders_in_status_bar() {
-    use tact_view::AgentUpdate;
+    use tact_protocol::RuntimeEvent;
 
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk("All done.".into()));
-    app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "All done.".into(),
+    });
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "All done.".into(),
+    });
 
     let text = render_app_text(&mut app, 100, 24);
 
@@ -1132,9 +1142,11 @@ fn full_frame_select_mode_shows_in_status_bar() {
 #[test]
 fn main_area_markdown_stream_renders_in_log() {
     let mut app = make_app();
-    app.handle_agent_update(tact_view::AgentUpdate::StreamChunk(
-        "# Title\n\nBody paragraph.".into(),
-    ));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "# Title\n\nBody paragraph.".into(),
+    });
 
     let text = render_main_area_text(&mut app, 100, 24);
 
@@ -1162,7 +1174,8 @@ fn background_popup_keeps_the_listing_out_of_the_log() {
     let mut app = make_app();
     let listing = "```text\n018f3a2c  running   cargo build\n```";
     let log_len = app.log.items.len();
-    app.handle_agent_update(tact_view::AgentUpdate::PopupMarkdown {
+    app.handle_runtime_event(RuntimeEvent::PopupMarkdown {
+        run_id: None,
         title: "⚙️ Background Tasks".to_string(),
         source: listing.to_string(),
     });
@@ -1197,7 +1210,8 @@ fn session_stats_popup_renders_gfm_table() {
         "|--------|------:|\n",
         "| Elapsed | 1.0s |\n",
     );
-    app.handle_agent_update(tact_view::AgentUpdate::PopupMarkdown {
+    app.handle_runtime_event(RuntimeEvent::PopupMarkdown {
+        run_id: None,
         title: "Session Statistics".to_string(),
         source: stats.to_string(),
     });
@@ -1252,20 +1266,23 @@ fn main_area_loading_spinner_when_executing() {
     use std::collections::HashMap;
 
     use tact_protocol::PlanStep;
-    use tact_view::AgentUpdate;
+    use tact_protocol::RuntimeEvent;
 
     let mut app = make_app();
     app.status = crate::widgets::state::Status::Executing {
         current_step: 0,
         total: 1,
     };
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "run tool",
-        "bash",
-        "bash1",
-        HashMap::from([("command".to_string(), "sleep 1".to_string())]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "bash1", "bash", "sleep 1").started());
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "run tool",
+            "bash",
+            "bash1",
+            HashMap::from([("command".to_string(), "sleep 1".to_string())]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "bash1", "bash", "sleep 1").started());
     app.append_blank(LogItemKind::SystemTool);
     app.loading_idx = Some(app.log.items.len().saturating_sub(1));
 
@@ -1282,7 +1299,7 @@ fn open_diff_popup_after_edit_file_step_uses_git_diff() {
     use std::{collections::HashMap, process::Command};
 
     use tact_protocol::PlanStep;
-    use tact_view::AgentUpdate;
+    use tact_protocol::RuntimeEvent;
 
     let tmp = std::env::temp_dir().join(format!("tact-edit-popup-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
@@ -1309,18 +1326,21 @@ fn open_diff_popup_after_edit_file_step_uses_git_diff() {
     app.work_dir = tmp.clone();
 
     let path = file.to_string_lossy().into_owned();
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "edit",
-        "edit_file",
-        "edit_popup",
-        HashMap::from([
-            ("path".to_string(), path.clone()),
-            ("old_text".to_string(), "fn old() {}".into()),
-            ("new_text".to_string(), "fn new() {}".into()),
-        ]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "edit_popup", "edit_file", path.clone()).started());
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "edit",
+            "edit_file",
+            "edit_popup",
+            HashMap::from([
+                ("path".to_string(), path.clone()),
+                ("old_text".to_string(), "fn old() {}".into()),
+                ("new_text".to_string(), "fn new() {}".into()),
+            ]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "edit_popup", "edit_file", path.clone()).started());
+    app.handle_runtime_event(
         StepCall::new(0, "edit_popup", "edit_file", path.clone())
             .message("wrote")
             .detail("fn new() {}")
@@ -1461,7 +1481,7 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
     use std::{collections::HashMap, process::Command};
 
     use tact_protocol::PlanStep;
-    use tact_view::AgentUpdate;
+    use tact_protocol::RuntimeEvent;
 
     let tmp = std::env::temp_dir().join(format!("tact-edit-popup-mp-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
@@ -1489,18 +1509,21 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
     app.work_dir = tmp.clone();
     let path = file.to_string_lossy().into_owned();
 
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "edit",
-        "edit_file",
-        "edit_calc",
-        HashMap::from([
-            ("path".to_string(), path.clone()),
-            ("old_text".to_string(), "a + b".into()),
-            ("new_text".to_string(), "a - b".into()),
-        ]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "edit_calc", "edit_file", path.clone()).started());
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "edit",
+            "edit_file",
+            "edit_calc",
+            HashMap::from([
+                ("path".to_string(), path.clone()),
+                ("old_text".to_string(), "a + b".into()),
+                ("new_text".to_string(), "a - b".into()),
+            ]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "edit_calc", "edit_file", path.clone()).started());
+    app.handle_runtime_event(
         StepCall::new(0, "edit_calc", "edit_file", path.clone())
             .message("wrote")
             .detail("fn add(a: i32, b: i32) -> i32 {\n    a - b\n}")
@@ -1539,21 +1562,24 @@ fn open_diff_popup_after_read_file_step_finish() {
     use std::collections::HashMap;
 
     use tact_protocol::PlanStep;
-    use tact_view::AgentUpdate;
+    use tact_protocol::RuntimeEvent;
 
     let mut app = make_app();
     let file = std::env::temp_dir().join(format!("tact-popup-{}.rs", std::process::id()));
     std::fs::write(&file, "fn popup_real_path() {}").expect("write temp file");
     let path = file.to_string_lossy().into_owned();
 
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "read",
-        "read_file",
-        "read_popup",
-        HashMap::from([("path".to_string(), path.clone())]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "read_popup", "read_file", path.clone()).started());
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "read",
+            "read_file",
+            "read_popup",
+            HashMap::from([("path".to_string(), path.clone())]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "read_popup", "read_file", path.clone()).started());
+    app.handle_runtime_event(
         StepCall::new(0, "read_popup", "read_file", path.clone())
             .detail("fn popup_real_path() {}")
             .duration_us(100)
@@ -1640,9 +1666,11 @@ fn tasks_dag_popup_paints_the_theme_background_over_its_whole_rect() {
 
     let mut app = make_app();
     // Seed the log with wide glyphs so a leave-behind would be visible.
-    app.handle_agent_update(tact_view::AgentUpdate::StreamChunk(
-        "│ ── 中文宽字符 ── │\n".repeat(4),
-    ));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "│ ── 中文宽字符 ── │\n".repeat(4),
+    });
     app.task_panel_mut().apply_snapshot(vec![TaskSnapshot {
         id: 1,
         subject: "root".into(),

@@ -2,7 +2,7 @@
 //! `InteractionRequest::MultiSelect`).
 //!
 //! The agent runtime no longer embeds a `tokio::sync::oneshot::Sender` inside
-//! `AgentUpdate` (that made the protocol enum impossible to serialize and
+//! `RuntimeEvent` (that made the protocol enum impossible to serialize and
 //! coupled the transport to a single in-process responder). Instead a tool or
 //! the permission gate asks [`UiResponder`] for a selection, which:
 //!

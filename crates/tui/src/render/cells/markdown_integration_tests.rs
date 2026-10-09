@@ -1,10 +1,10 @@
 //! App-integration tests for the kit's `MarkdownCell`.
 //!
 //! These stay in `crates/tui` because they exercise the full `App` pipeline
-//! (`make_app`, `handle_agent_update`, log rendering); the cell itself and its
+//! (`make_app`, `handle_runtime_event`, log rendering); the cell itself and its
 //! pure unit tests moved to `agent_tui_kit::render::cells::markdown`.
 
-use tact_view::AgentUpdate;
+use tact_protocol::RuntimeEvent;
 
 use crate::{
     render::{
@@ -38,7 +38,10 @@ fn assistant_history_mermaid_uses_width_aware_cell() {
 fn md_info_renders_as_one_markdown_cell() {
     let mut app = make_app();
     let md = "# Title\n\n- item one\n- item two\n\n```rust\nfn hi() {}\n```\n";
-    app.handle_agent_update(AgentUpdate::MdInfo(md.into()));
+    app.handle_runtime_event(RuntimeEvent::MdInfo {
+        run_id: None,
+        content: md.into(),
+    });
 
     let text = render_log_panel_text(&mut app, 80, 20);
     assert!(text.contains("Title"), "{text}");
@@ -60,7 +63,10 @@ fn md_info_renders_as_one_markdown_cell() {
 #[test]
 fn md_info_cell_is_followed_by_normal_message_without_layout_shift() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::MdInfo("# Head\n\nline two\n".into()));
+    app.handle_runtime_event(RuntimeEvent::MdInfo {
+        run_id: None,
+        content: "# Head\n\nline two\n".into(),
+    });
     // A normal message after the markdown cell.
     app.append_msg(
         ratatui::text::Line::from("after markdown"),
@@ -77,7 +83,10 @@ fn md_info_cell_is_followed_by_normal_message_without_layout_shift() {
 fn md_info_does_not_break_scroll_positions_of_following_rows() {
     let mut app = make_app();
     // Markdown block whose height is stable across renders.
-    app.handle_agent_update(AgentUpdate::MdInfo("# A\n\npara\n".into()));
+    app.handle_runtime_event(RuntimeEvent::MdInfo {
+        run_id: None,
+        content: "# A\n\npara\n".into(),
+    });
     app.append_msg(
         ratatui::text::Line::from("tail line"),
         "tail line".into(),
@@ -98,7 +107,10 @@ fn md_info_does_not_break_scroll_positions_of_following_rows() {
 #[test]
 fn md_info_skips_mouse_selection() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::MdInfo("# Title\n".into()));
+    app.handle_runtime_event(RuntimeEvent::MdInfo {
+        run_id: None,
+        content: "# Title\n".into(),
+    });
     // Force a selection range over the markdown row.
     app.mouse.log_selection = Some(crate::widgets::state::LogSelection::new(
         crate::widgets::state::TextPosition {

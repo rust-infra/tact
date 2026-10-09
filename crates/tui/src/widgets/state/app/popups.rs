@@ -1120,11 +1120,11 @@ mod tests {
     use std::collections::HashMap;
 
     use ratatui::layout::Rect;
+    use tact_protocol::RuntimeEvent;
     use tact_protocol::{
         PlanStep, StepResult, StepStatus, ToolDetailKind, ToolPopupKind, ToolPresentationInfo,
         ToolVisualKind,
     };
-    use tact_view::AgentUpdate;
 
     use crate::test_fixtures::StepCall;
     use crate::{
@@ -1152,18 +1152,21 @@ mod tests {
 
     /// Push a finished `spawn_subagent` tool card and return its `phys_idx`.
     fn push_subagent_card(app: &mut App, tool_id: &str) -> usize {
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "run",
-            "spawn_subagent",
-            tool_id,
-            HashMap::from([("prompt".to_string(), "do it".to_string())]),
-        )));
-        app.handle_agent_update(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "run",
+                "spawn_subagent",
+                tool_id,
+                HashMap::from([("prompt".to_string(), "do it".to_string())]),
+            ),
+        });
+        app.handle_runtime_event(
             StepCall::new(0, tool_id, "spawn_subagent", "do it")
                 .presentation(subagent_presentation())
                 .started(),
         );
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, tool_id, "spawn_subagent", "do it")
                 .detail(format!("summary for {tool_id}"))
                 .presentation(subagent_presentation())
@@ -1347,12 +1350,13 @@ mod tests {
         let command = "cargo test --workspace --all-targets -- -D warnings";
         let mut presentation = ToolPresentationInfo::generic("background_run");
         presentation.keep_live = true;
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "bg1", "background_run", command)
                 .presentation(presentation)
                 .started(),
         );
-        app.handle_agent_update(AgentUpdate::BackgroundTaskFinished {
+        app.handle_runtime_event(RuntimeEvent::BackgroundTaskFinished {
+            run_id: None,
             tool_id: "bg1".into(),
             success: true,
             message: "Background task x completed".into(),
@@ -1382,12 +1386,12 @@ mod tests {
         // missing from the popup entirely (the drawn error card keeps the error
         // first on purpose — that is what the preview shows).
         let mut app = make_app();
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "b1", "bash", "cargo build")
                 .arg_full("cargo build --release")
                 .started(),
         );
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "b1", "bash", "cargo build")
                 .arg_full("cargo build --release")
                 .status(StepStatus::Failed)
@@ -1410,10 +1414,10 @@ mod tests {
         // popup that opens from the hint must also carry *what the call was*,
         // and the hint's line count must count that line too.
         let mut app = make_app();
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "t1", "task_create", "# Task.1 · fix the popup").started(),
         );
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "t1", "task_create", "# Task.1 · fix the popup")
                 .message("created task 1")
                 .detail("created task 1\nsubject: fix the popup")
@@ -1438,10 +1442,10 @@ mod tests {
     #[test]
     fn ask_user_popup_opens_with_the_question() {
         let mut app = make_app();
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "a1", "ask_user", "Which database should I use?").started(),
         );
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "a1", "ask_user", "Which database should I use?")
                 .message("User selected: B")
                 .detail("User selected: B\nthe long note")
@@ -1459,12 +1463,12 @@ mod tests {
     #[test]
     fn json_input_tool_popup_does_not_repeat_its_argument() {
         let mut app = make_app();
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "m1", "save_memory", r#"{"name":"tabs"}"#)
                 .arg_full(r#"{"name":"tabs","content":"use tabs","type":"user"}"#)
                 .started(),
         );
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "m1", "save_memory", r#"{"name":"tabs"}"#)
                 .arg_full(r#"{"name":"tabs","content":"use tabs"}"#)
                 .message("Saved memory 'tabs'")

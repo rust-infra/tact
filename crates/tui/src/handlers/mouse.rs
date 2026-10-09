@@ -650,8 +650,8 @@ mod tests {
 
     use crossterm::event::KeyModifiers;
     use ratatui::layout::Rect;
+    use tact_protocol::RuntimeEvent;
     use tact_protocol::{PlanStep, ThinkingChunk, ToolPresentationInfo};
-    use tact_view::AgentUpdate;
 
     use super::*;
     use crate::test_fixtures::StepCall;
@@ -858,7 +858,7 @@ mod tests {
         use tact_view::UserCommand;
         use tokio::sync::mpsc::unbounded_channel;
 
-        let (_agent_tx, agent_rx) = unbounded_channel::<tact_view::AgentUpdate>();
+        let (_agent_tx, agent_rx) = unbounded_channel::<RuntimeEvent>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
         let (plugin_tx, _plugin_request_rx) = unbounded_channel();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel();
@@ -905,7 +905,7 @@ mod tests {
     fn subagent_cancel_button_sends_cancel_subagent() {
         use tokio::sync::mpsc::unbounded_channel;
 
-        let (_agent_tx, agent_rx) = unbounded_channel::<tact_view::AgentUpdate>();
+        let (_agent_tx, agent_rx) = unbounded_channel::<RuntimeEvent>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
         let (plugin_tx, _plugin_request_rx) = unbounded_channel();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel();
@@ -1435,14 +1435,17 @@ mod tests {
     fn app_with_collapsed_command(language: crate::i18n::Language) -> App {
         let mut app = make_app();
         app.language = language;
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "run",
-            "bash",
-            "b1",
-            HashMap::from([("command".to_string(), "echo hi".to_string())]),
-        )));
-        app.handle_agent_update(StepCall::new(0, "b1", "bash", "echo hi").started());
-        app.handle_agent_update(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "run",
+                "bash",
+                "b1",
+                HashMap::from([("command".to_string(), "echo hi".to_string())]),
+            ),
+        });
+        app.handle_runtime_event(StepCall::new(0, "b1", "bash", "echo hi").started());
+        app.handle_runtime_event(
             StepCall::new(0, "b1", "bash", "echo hi")
                 .detail("hi\n")
                 .finished(),
@@ -1529,10 +1532,14 @@ mod tests {
     fn app_with_thinking_card(language: crate::i18n::Language) -> App {
         let mut app = make_app();
         app.language = language;
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-            "one\ntwo\nthree\nfour\n".into(),
-        )));
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Delta("one\ntwo\nthree\nfour\n".into()),
+        });
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Finished,
+        });
         app
     }
 
@@ -1623,14 +1630,18 @@ mod tests {
         };
 
         let mut collapsed = make_app();
-        collapsed.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "run",
-            "bash",
-            "single-tool",
-            HashMap::<String, String>::from([("command".into(), "echo hi".into())]),
-        )));
-        collapsed.handle_agent_update(StepCall::new(0, "single-tool", "bash", "echo hi").started());
-        collapsed.handle_agent_update(
+        collapsed.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "run",
+                "bash",
+                "single-tool",
+                HashMap::<String, String>::from([("command".into(), "echo hi".into())]),
+            ),
+        });
+        collapsed
+            .handle_runtime_event(StepCall::new(0, "single-tool", "bash", "echo hi").started());
+        collapsed.handle_runtime_event(
             StepCall::new(0, "single-tool", "bash", "echo hi")
                 .detail("hi\n")
                 .finished(),
@@ -1640,16 +1651,19 @@ mod tests {
         assert!(collapsed.tools_mut().popup.is_some());
 
         let mut subagent = make_app();
-        subagent.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "audit",
-            "spawn_subagent",
-            "single-subagent",
-            HashMap::<String, String>::from([("prompt".into(), "audit".into())]),
-        )));
-        subagent.handle_agent_update(
+        subagent.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "audit",
+                "spawn_subagent",
+                "single-subagent",
+                HashMap::<String, String>::from([("prompt".into(), "audit".into())]),
+            ),
+        });
+        subagent.handle_runtime_event(
             StepCall::new(0, "single-subagent", "spawn_subagent", "audit").started(),
         );
-        subagent.handle_agent_update(
+        subagent.handle_runtime_event(
             StepCall::new(0, "single-subagent", "spawn_subagent", "audit")
                 .detail("child output")
                 .finished(),
@@ -1763,14 +1777,17 @@ mod tests {
     #[test]
     fn double_click_collapsed_command_hint_opens_diff_popup() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "run",
-            "bash",
-            "b1",
-            HashMap::from([("command".to_string(), "echo hi".to_string())]),
-        )));
-        app.handle_agent_update(StepCall::new(0, "b1", "bash", "echo hi").started());
-        app.handle_agent_update(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "run",
+                "bash",
+                "b1",
+                HashMap::from([("command".to_string(), "echo hi".to_string())]),
+            ),
+        });
+        app.handle_runtime_event(StepCall::new(0, "b1", "bash", "echo hi").started());
+        app.handle_runtime_event(
             StepCall::new(0, "b1", "bash", "echo hi")
                 .detail("hi\n")
                 .finished(),
@@ -1857,14 +1874,17 @@ mod tests {
         let long_command = "cd /home/rg/Projects/tact && no_proxy=127.0.0.1,localhost \
                             cargo test --workspace 2>&1 | tail -20";
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "run",
-            "bash",
-            "b1",
-            HashMap::from([("command".to_string(), long_command.to_string())]),
-        )));
-        app.handle_agent_update(StepCall::new(0, "b1", "bash", long_command).started());
-        app.handle_agent_update(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "run",
+                "bash",
+                "b1",
+                HashMap::from([("command".to_string(), long_command.to_string())]),
+            ),
+        });
+        app.handle_runtime_event(StepCall::new(0, "b1", "bash", long_command).started());
+        app.handle_runtime_event(
             StepCall::new(0, "b1", "bash", long_command)
                 .detail("done\n")
                 .finished(),
@@ -1927,18 +1947,21 @@ mod tests {
     #[test]
     fn double_click_collapsed_edit_hint_opens_diff_popup() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "patch",
-            "edit_file",
-            "e1",
-            HashMap::from([
-                ("path".to_string(), "src/lib.rs".to_string()),
-                ("old_text".to_string(), "fn old()".to_string()),
-                ("new_text".to_string(), "fn new()".to_string()),
-            ]),
-        )));
-        app.handle_agent_update(StepCall::new(0, "e1", "edit_file", "src/lib.rs").started());
-        app.handle_agent_update(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "patch",
+                "edit_file",
+                "e1",
+                HashMap::from([
+                    ("path".to_string(), "src/lib.rs".to_string()),
+                    ("old_text".to_string(), "fn old()".to_string()),
+                    ("new_text".to_string(), "fn new()".to_string()),
+                ]),
+            ),
+        });
+        app.handle_runtime_event(StepCall::new(0, "e1", "edit_file", "src/lib.rs").started());
+        app.handle_runtime_event(
             StepCall::new(0, "e1", "edit_file", "src/lib.rs")
                 .message("edited")
                 .detail("- fn old()\n+ fn new()")
@@ -1976,14 +1999,17 @@ mod tests {
     #[test]
     fn double_click_collapsed_read_hint_opens_diff_popup() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "read",
-            "read_file",
-            "r1",
-            HashMap::from([("path".to_string(), "src/lib.rs".to_string())]),
-        )));
-        app.handle_agent_update(StepCall::new(0, "r1", "read_file", "src/lib.rs").started());
-        app.handle_agent_update(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "read",
+                "read_file",
+                "r1",
+                HashMap::from([("path".to_string(), "src/lib.rs".to_string())]),
+            ),
+        });
+        app.handle_runtime_event(StepCall::new(0, "r1", "read_file", "src/lib.rs").started());
+        app.handle_runtime_event(
             StepCall::new(0, "r1", "read_file", "src/lib.rs")
                 .detail("fn main() {}\nfn helper() {}")
                 .finished(),
@@ -2030,18 +2056,21 @@ mod tests {
             display_name: "📋 Task".into(),
             ..ToolPresentationInfo::generic("task_list")
         };
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "list tasks",
-            "task_list",
-            "t1",
-            HashMap::<String, String>::new(),
-        )));
-        app.handle_agent_update(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "list tasks",
+                "task_list",
+                "t1",
+                HashMap::<String, String>::new(),
+            ),
+        });
+        app.handle_runtime_event(
             StepCall::new(0, "t1", "task_list", String::new())
                 .presentation(task_presentation())
                 .started(),
         );
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "t1", "task_list", String::new())
                 .no_arg_full()
                 .message("2 tasks")
@@ -2089,16 +2118,19 @@ mod tests {
     #[test]
     fn double_click_subagent_header_does_not_open_diff_popup() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "audit",
-            "spawn_subagent",
-            "s1",
-            HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
-        )));
-        app.handle_agent_update(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "audit",
+                "spawn_subagent",
+                "s1",
+                HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
+            ),
+        });
+        app.handle_runtime_event(
             StepCall::new(0, "s1", "spawn_subagent", "audit the repo").started(),
         );
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "s1", "spawn_subagent", "audit the repo")
                 .message("done")
                 .detail("child summary")

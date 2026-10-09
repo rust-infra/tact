@@ -14,8 +14,8 @@
 use std::path::PathBuf;
 
 use tact_extensions::plugin::{PluginEvent, PluginRequest};
-use tact_protocol::{StepResult, StepStatus, ToolPresentationInfo};
-use tact_view::{AgentUpdate, UserCommand};
+use tact_protocol::{RuntimeEvent, StepResult, StepStatus, ToolPresentationInfo};
+use tact_view::UserCommand;
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::widgets::state::App;
@@ -47,7 +47,7 @@ impl TestApp {
         // Both senders are dropped here: the receivers are what the app holds,
         // and a fixture that kept an agent channel alive would let a test hang
         // waiting on a stream nothing can close.
-        let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
+        let (_agent_tx, agent_rx) = unbounded_channel::<RuntimeEvent>();
         let (user_cmd_tx, user_cmds) = unbounded_channel::<UserCommand>();
         let (plugin_tx, plugin_requests) = unbounded_channel::<PluginRequest>();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel::<PluginEvent>();
@@ -178,8 +178,9 @@ impl StepCall {
         self
     }
 
-    pub fn started(&self) -> AgentUpdate {
-        AgentUpdate::StepStarted {
+    pub fn started(&self) -> RuntimeEvent {
+        RuntimeEvent::StepStarted {
+            run_id: None,
             idx: self.idx,
             tool_id: self.tool_id.clone(),
             tool_name: self.tool.clone(),
@@ -189,8 +190,9 @@ impl StepCall {
         }
     }
 
-    pub fn finished(&self) -> AgentUpdate {
-        AgentUpdate::StepFinished {
+    pub fn finished(&self) -> RuntimeEvent {
+        RuntimeEvent::StepFinished {
+            run_id: None,
             idx: self.idx,
             tool_id: self.tool_id.clone(),
             result: StepResult {

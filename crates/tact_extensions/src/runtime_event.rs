@@ -9,7 +9,7 @@
 use tact_protocol::{ModelCallParams, PlanStep, RuntimeEvent, ThinkingChunk, TokenUsageInfo};
 use tact_view::AgentErrorKind;
 
-/// Every builder here mirrors the legacy `AgentUpdate` variant it replaced, so a
+/// Every builder here mirrors the legacy `RuntimeEvent` variant it replaced, so a
 /// migrated call site keeps its meaning. `AgentErrorKind` is stringified because
 /// the protocol carries the message, not the classification.
 pub fn info(content: impl Into<String>) -> RuntimeEvent {

@@ -1,7 +1,7 @@
 //! Sticky subagent-overview panel state and pure format helpers.
 //!
 //! Mirrors `task_panel.rs` but for the current-process subagent set driven by
-//! [`tact_view::AgentUpdate::SubagentsChanged`]. The sticky shows
+//! [`RuntimeEvent::SubagentsChanged`]. The sticky shows
 //! status-level runs (child id, status, summary first line, duration) — live
 //! detail stays on the parent `spawn_subagent` tool card / popup.
 
@@ -14,7 +14,7 @@ pub const SUBAGENT_SHORT_ID_CHARS: usize = 8;
 #[derive(Debug, Clone)]
 pub struct SubagentPanelState {
     pub snapshot: Vec<SubagentRunSnapshot>,
-    /// Set on first [`tact_view::AgentUpdate::SubagentsChanged`] this UI
+    /// Set on first [`RuntimeEvent::SubagentsChanged`] this UI
     /// session.
     pub session_seen: bool,
     pub visible: bool,

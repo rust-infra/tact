@@ -2,8 +2,7 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use tact_protocol::{AccountUpdate, PlanStep, ThinkingChunk, ToolPresentationInfo};
-use tact_view::AgentUpdate;
+use tact_protocol::{AccountUpdate, PlanStep, RuntimeEvent, ThinkingChunk, ToolPresentationInfo};
 
 use super::test_harness::{
     make_app, render_app_text, render_log_panel_text, render_main_area_text,
@@ -23,14 +22,17 @@ fn full_frame_keeps_bottom_bar_visible_when_terminal_is_short() {
 }
 
 fn seed_write_file_finished(app: &mut App, path: &str, content: &str) {
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "write file",
-        "write_file",
-        "wf1",
-        HashMap::from([("path".to_string(), path.to_string())]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "wf1", "write_file", path).started());
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "write file",
+            "write_file",
+            "wf1",
+            HashMap::from([("path".to_string(), path.to_string())]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "wf1", "write_file", path).started());
+    app.handle_runtime_event(
         StepCall::new(0, "wf1", "write_file", path)
             .message("written")
             .detail(content)
@@ -40,14 +42,17 @@ fn seed_write_file_finished(app: &mut App, path: &str, content: &str) {
 }
 
 fn seed_bash_finished(app: &mut App, command: &str, output: &str) {
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "run shell",
-        "bash",
-        "bash1",
-        HashMap::from([("command".to_string(), command.to_string())]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "bash1", "bash", command).started());
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "run shell",
+            "bash",
+            "bash1",
+            HashMap::from([("command".to_string(), command.to_string())]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "bash1", "bash", command).started());
+    app.handle_runtime_event(
         StepCall::new(0, "bash1", "bash", command)
             .detail(output)
             .duration_us(100)
@@ -105,13 +110,19 @@ fn bash_tool_popup_shows_command_output() {
 #[test]
 fn log_renders_collapsed_thinking_card() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-        "Analyzing the problem…".into(),
-    )));
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-        " considering options.".into(),
-    )));
-    app.handle_agent_update(AgentUpdate::StreamChunk("Final answer.".into()));
+    app.handle_runtime_event(RuntimeEvent::Thinking {
+        run_id: None,
+        chunk: ThinkingChunk::Delta("Analyzing the problem…".into()),
+    });
+    app.handle_runtime_event(RuntimeEvent::Thinking {
+        run_id: None,
+        chunk: ThinkingChunk::Delta(" considering options.".into()),
+    });
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "Final answer.".into(),
+    });
 
     let text = render_main_area_text(&mut app, 100, 28);
 
@@ -128,10 +139,13 @@ fn log_renders_collapsed_thinking_card() {
 #[test]
 fn log_markdown_list_then_empty_fence_stays_in_markdown_flow() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
+    app.handle_runtime_event(RuntimeEvent::Text { run_id: None, role: "assistant".into(), content: 
         "- example:\n  - why not remote compact\n  - why not push current turn first\n```\n - why normalize assistant history\n```".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+     });
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "done".into(),
+    });
 
     let text = render_log_panel_text(&mut app, 100, 24);
 
@@ -156,10 +170,15 @@ fn log_markdown_list_then_empty_fence_stays_in_markdown_flow() {
 #[test]
 fn log_renders_streamed_code_block_card() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
-        "```rust\nfn code_card_test() {}\n```\n".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "```rust\nfn code_card_test() {}\n```\n".into(),
+    });
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "done".into(),
+    });
 
     let text = render_main_area_text(&mut app, 100, 28);
 
@@ -176,10 +195,15 @@ fn log_renders_streamed_code_block_card() {
 #[test]
 fn log_renders_streamed_mermaid_without_code_card() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
-        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
+    });
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "done".into(),
+    });
 
     let text = render_main_area_text(&mut app, 100, 30);
 
@@ -210,10 +234,15 @@ fn log_renders_streamed_mermaid_without_code_card() {
 #[test]
 fn mermaid_popup_copy_uses_source_not_ascii() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
-        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
+    });
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "done".into(),
+    });
 
     assert_eq!(app.mermaid_blocks.len(), 1);
     let ascii = app.log.items[app.mermaid_blocks[0].start_idx].raw.clone();
@@ -240,10 +269,15 @@ fn mermaid_popup_copy_uses_source_not_ascii() {
 #[test]
 fn log_falls_back_to_code_card_for_invalid_streamed_mermaid() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
-        "```mermaid\nnot valid Mermaid\n```\n".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "```mermaid\nnot valid Mermaid\n```\n".into(),
+    });
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "done".into(),
+    });
 
     let text = render_main_area_text(&mut app, 100, 30);
 
@@ -267,10 +301,16 @@ fn flush_consumes_closing_fence_without_trailing_newline() {
     // Stream ends with ``` and no final \n — the close fence stays in stream.buffer.
     // Flush must treat it as a close, not re-render it as leaked ``` lines.
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
-        "已提交。\n\n```text\nCommit: abc\n```\n\n当前状态：\n\n```text\na\nb\nc\n```".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "已提交。\n\n```text\nCommit: abc\n```\n\n当前状态：\n\n```text\na\nb\nc\n```"
+            .into(),
+    });
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "done".into(),
+    });
 
     assert_eq!(
         app.code_blocks.len(),
@@ -305,10 +345,15 @@ fn flush_renders_streamed_mermaid_without_trailing_newline() {
     // Stream ends with ``` and no final \n — the close fence stays in
     // stream.buffer and flush must finalize a valid diagram, never a code card.
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
-        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```".into(),
+    });
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "done".into(),
+    });
 
     let text = render_main_area_text(&mut app, 100, 30);
 
@@ -332,10 +377,15 @@ fn flush_falls_back_to_code_card_for_unclosed_streamed_mermaid() {
     // arrives: the stream was interrupted, so the buffered block must take
     // the code-card fallback and retain its source — never splice a diagram.
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
-        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n".into(),
+    });
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "done".into(),
+    });
 
     let text = render_main_area_text(&mut app, 100, 30);
 
@@ -380,11 +430,14 @@ fn flush_falls_back_to_code_card_for_unclosed_streamed_mermaid_with_nested_fence
     // Mermaid router would parse the nested fence as a real diagram and draw
     // box-art inside the code card.
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
+    app.handle_runtime_event(RuntimeEvent::Text { run_id: None, role: "assistant".into(), content: 
         "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```mermaid\nflowchart TD\n  A --> B\n"
             .into(),
-    ));
-    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+     });
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "done".into(),
+    });
 
     let text = render_main_area_text(&mut app, 100, 30);
 
@@ -443,25 +496,31 @@ fn full_frame_normal_mode_status_bar() {
 #[test]
 fn plan_steps_track_multiple_steps_with_one_running() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "read first",
-        "read_file",
-        "r1",
-        HashMap::from([("path".to_string(), "a.txt".to_string())]),
-    )));
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "read second",
-        "read_file",
-        "r2",
-        HashMap::from([("path".to_string(), "b.txt".to_string())]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "r1", "read_file", "a.txt").started());
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "read first",
+            "read_file",
+            "r1",
+            HashMap::from([("path".to_string(), "a.txt".to_string())]),
+        ),
+    });
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "read second",
+            "read_file",
+            "r2",
+            HashMap::from([("path".to_string(), "b.txt".to_string())]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "r1", "read_file", "a.txt").started());
+    app.handle_runtime_event(
         StepCall::new(0, "r1", "read_file", "a.txt")
             .no_arg_full()
             .finished(),
     );
-    app.handle_agent_update(StepCall::new(1, "r2", "read_file", "b.txt").started());
+    app.handle_runtime_event(StepCall::new(1, "r2", "read_file", "b.txt").started());
 
     assert_eq!(
         app.plan_mut().steps.len(),
@@ -481,14 +540,18 @@ fn plan_steps_track_multiple_steps_with_one_running() {
 #[test]
 fn plan_panel_lists_failed_step_description() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "failing read",
-        "read_file",
-        "fail1",
-        HashMap::from([("path".to_string(), "nope.txt".to_string())]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "fail1", "read_file", "nope.txt").started());
-    app.handle_agent_update(AgentUpdate::StepFailed {
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "failing read",
+            "read_file",
+            "fail1",
+            HashMap::from([("path".to_string(), "nope.txt".to_string())]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "fail1", "read_file", "nope.txt").started());
+    app.handle_runtime_event(RuntimeEvent::StepFailed {
+        run_id: None,
         idx: 0,
         tool_id: "fail1".into(),
         arg_summary: String::new(),
@@ -584,7 +647,11 @@ fn file_picker_highlights_selected_row() {
 #[test]
 fn narrow_terminal_renders_without_empty_frame() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk("Narrow layout.".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "Narrow layout.".into(),
+    });
 
     let text = render_app_text(&mut app, 35, 18);
 
@@ -665,7 +732,10 @@ fn done_status_persists_within_two_seconds() {
 #[test]
 fn status_bar_shows_idle_after_done_expires() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "done".into(),
+    });
     app.task_done_time = Some(chrono::Local::now() - chrono::Duration::seconds(3));
     app.maybe_expire_done_status();
 
@@ -696,11 +766,13 @@ fn full_frame_planning_status_renders_in_status_bar() {
 fn request_select_update_renders_select_popup() {
     let mut app = make_app();
 
-    app.handle_agent_update(AgentUpdate::RequestSelect {
-        request_id: 0,
-        prompt: "Allow edit_file on lib.rs?".into(),
-        options: vec!["Allow once".into(), "Deny".into()],
-        log_confirm: false,
+    app.handle_runtime_event(RuntimeEvent::InteractionRequested {
+        request: tact_protocol::InteractionRequest::Select {
+            request_id: tact_protocol::RequestId::from(0.to_string()),
+            prompt: "Allow edit_file on lib.rs?".into(),
+            options: vec!["Allow once".into(), "Deny".into()],
+            log_confirm: false,
+        },
     });
 
     assert!(matches!(app.input_mode, InputMode::Select));
@@ -715,18 +787,21 @@ fn request_select_update_renders_select_popup() {
 #[test]
 fn full_frame_edit_file_tool_shows_in_log() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "patch lib",
-        "edit_file",
-        "edit1",
-        HashMap::from([
-            ("path".to_string(), "lib.rs".to_string()),
-            ("old_text".to_string(), "fn old()".to_string()),
-            ("new_text".to_string(), "fn new()".to_string()),
-        ]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "edit1", "edit_file", "lib.rs").started());
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "patch lib",
+            "edit_file",
+            "edit1",
+            HashMap::from([
+                ("path".to_string(), "lib.rs".to_string()),
+                ("old_text".to_string(), "fn old()".to_string()),
+                ("new_text".to_string(), "fn new()".to_string()),
+            ]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "edit1", "edit_file", "lib.rs").started());
+    app.handle_runtime_event(
         StepCall::new(0, "edit1", "edit_file", "lib.rs")
             .message("patched")
             .detail("- fn old()\n+ fn new()")
@@ -755,14 +830,17 @@ fn full_frame_edit_file_tool_shows_in_log() {
 #[test]
 fn full_frame_read_file_tool_shows_in_log() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "read lib",
-        "read_file",
-        "read1",
-        HashMap::from([("path".to_string(), "lib.rs".to_string())]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "read1", "read_file", "lib.rs").started());
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "read lib",
+            "read_file",
+            "read1",
+            HashMap::from([("path".to_string(), "lib.rs".to_string())]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "read1", "read_file", "lib.rs").started());
+    app.handle_runtime_event(
         StepCall::new(0, "read1", "read_file", "lib.rs")
             .detail("body-one\nbody-two\nbody-three")
             .duration_us(200)
@@ -790,14 +868,17 @@ fn full_frame_read_file_tool_shows_in_log() {
 #[test]
 fn full_frame_write_file_tool_shows_in_log() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "write lib",
-        "write_file",
-        "w1",
-        HashMap::from([("path".to_string(), "lib.rs".to_string())]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "w1", "write_file", "lib.rs").started());
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "write lib",
+            "write_file",
+            "w1",
+            HashMap::from([("path".to_string(), "lib.rs".to_string())]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "w1", "write_file", "lib.rs").started());
+    app.handle_runtime_event(
         StepCall::new(0, "w1", "write_file", "lib.rs")
             .message("wrote")
             .detail("wrote-one\nwrote-two\nwrote-three")
@@ -826,13 +907,16 @@ fn full_frame_write_file_tool_shows_in_log() {
 #[test]
 fn full_frame_cardless_tool_result_is_openable() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "list tasks",
-        "task_list",
-        "t1",
-        HashMap::<String, String>::new(),
-    )));
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "list tasks",
+            "task_list",
+            "t1",
+            HashMap::<String, String>::new(),
+        ),
+    });
+    app.handle_runtime_event(
         StepCall::new(0, "t1", "task_list", String::new())
             .presentation(ToolPresentationInfo {
                 visual_kind: tact_protocol::ToolVisualKind::Task,
@@ -841,7 +925,7 @@ fn full_frame_cardless_tool_result_is_openable() {
             })
             .started(),
     );
-    app.handle_agent_update(
+    app.handle_runtime_event(
         StepCall::new(0, "t1", "task_list", String::new())
             .no_arg_full()
             .message("2 tasks")
@@ -1062,10 +1146,15 @@ fn toggle_theme_renders_changed_message_in_log() {
 #[test]
 fn mermaid_popup_opens_on_rendered_diagram_not_source() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
-        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
+    });
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "done".into(),
+    });
     assert_eq!(app.mermaid_blocks.len(), 1);
 
     app.open_mermaid_popup_at_physical_index(0);
@@ -1090,10 +1179,15 @@ fn mermaid_popup_opens_on_rendered_diagram_not_source() {
 #[test]
 fn mermaid_popup_tab_switches_to_source_and_back() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
-        "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
-    ));
-    app.handle_agent_update(AgentUpdate::TaskComplete("done".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "```mermaid\nsequenceDiagram\n  Alice->>Bob: Hello\n```\n".into(),
+    });
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "done".into(),
+    });
     app.open_mermaid_popup_at_physical_index(0);
 
     app.toggle_mermaid_popup_view();

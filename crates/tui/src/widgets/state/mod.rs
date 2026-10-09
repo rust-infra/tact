@@ -7,8 +7,8 @@ use tact_extensions::{
     plugin::{PluginEvent, PluginRequest},
     skill::SharedSkillRegistry,
 };
-use tact_protocol::{AccountUpdate, RunId};
-use tact_view::{AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, RunId, RuntimeEvent};
+use tact_view::UserCommand;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{i18n::Language, theme::Theme};
@@ -156,7 +156,7 @@ pub struct App {
     /// and routes updates through `dispatch_components` (agent.rs). The shared
     /// `LogCoordinator` stays shell-owned (decision in task #42).
     pub(crate) registry: agent_tui_kit::components::ComponentRegistry,
-    pub(crate) agent_rx: UnboundedReceiver<AgentUpdate>,
+    pub(crate) agent_rx: UnboundedReceiver<RuntimeEvent>,
     pub(crate) account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     pub(crate) plugin_rx: UnboundedReceiver<PluginEvent>,
     pub(crate) plugin_tx: UnboundedSender<PluginRequest>,

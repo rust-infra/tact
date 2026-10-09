@@ -171,7 +171,7 @@ fn dispatch_user_task(app: &mut App, display_text: String, agent_task: String) -
     app.task_start_time = Some(chrono::Local::now());
     // Turn counters: this is the single choke point for user turns (direct
     // submits, queued flushes, skill dispatch), so count here. The per-task LLM
-    // counter resets and is driven by `AgentUpdate::TurnStats` from then on.
+    // counter resets and is driven by `RuntimeEvent::TurnStats` from then on.
     app.status_bar_mut().turn_user += 1;
     app.status_bar_mut().turn_llm = 0;
     app.status_bar_mut().turn_llm_cap = None;
@@ -378,8 +378,9 @@ mod tests {
         use tokio::sync::mpsc::unbounded_channel;
 
         use crate::widgets::state::App;
+        use tact_protocol::RuntimeEvent;
 
-        let (_agent_tx, agent_rx) = unbounded_channel::<tact_view::AgentUpdate>();
+        let (_agent_tx, agent_rx) = unbounded_channel::<RuntimeEvent>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel();
         let (plugin_tx, _plugin_rx) = unbounded_channel();
         let (_event_tx, plugin_event_rx) = unbounded_channel();

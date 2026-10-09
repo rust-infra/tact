@@ -7,7 +7,7 @@
 use crossterm::event::KeyEvent;
 use ratatui::{buffer::Buffer, layout::Rect};
 
-use crate::{Component, Ctx, protocol::AgentUpdate, state::StatusBarState};
+use crate::{Component, Ctx, protocol::RuntimeEvent, state::StatusBarState};
 
 pub struct StatusBarComponent {
     state: StatusBarState,
@@ -46,9 +46,9 @@ impl std::ops::DerefMut for StatusBarComponent {
 }
 
 impl Component for StatusBarComponent {
-    fn on_update(&mut self, update: &AgentUpdate, _ctx: &mut Ctx<'_>) -> bool {
+    fn on_update(&mut self, update: &RuntimeEvent, _ctx: &mut Ctx<'_>) -> bool {
         match update {
-            AgentUpdate::TokenUsage(usage) => {
+            RuntimeEvent::TokenUsage { usage, .. } => {
                 self.state.token_prompt = usage.prompt;
                 self.state.token_completion = usage.completion;
                 self.state.token_total = usage.total;
@@ -57,15 +57,16 @@ impl Component for StatusBarComponent {
                 self.state.token_reasoning = usage.reasoning_tokens;
                 true
             }
-            AgentUpdate::TurnStats {
+            RuntimeEvent::TurnStats {
                 turns_taken,
                 max_turns,
+                ..
             } => {
                 self.state.turn_llm = *turns_taken;
                 self.state.turn_llm_cap = *max_turns;
                 true
             }
-            AgentUpdate::ModelInfo(params) => {
+            RuntimeEvent::ModelInfo { params, .. } => {
                 self.state.model_name = params.model.clone();
                 self.state.model_max_tokens = params.max_tokens;
                 self.state.model_thinking_budget = params.thinking_budget;
@@ -139,7 +140,10 @@ mod tests {
             reasoning_tokens: 20,
         };
         let dirty = comp.on_update(
-            &AgentUpdate::TokenUsage(usage),
+            &RuntimeEvent::TokenUsage {
+                run_id: None,
+                usage,
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(dirty);
@@ -157,7 +161,8 @@ mod tests {
             Vec::new(),
         );
         let dirty = comp.on_update(
-            &AgentUpdate::TurnStats {
+            &RuntimeEvent::TurnStats {
+                run_id: None,
                 turns_taken: 3,
                 max_turns: Some(50),
             },
@@ -168,7 +173,8 @@ mod tests {
         assert_eq!(comp.state().turn_llm_cap, Some(50));
         // Unbounded (main-agent) runs report `None` and must clear any stale cap.
         comp.on_update(
-            &AgentUpdate::TurnStats {
+            &RuntimeEvent::TurnStats {
+                run_id: None,
                 turns_taken: 4,
                 max_turns: None,
             },
@@ -194,7 +200,10 @@ mod tests {
             extra_body: None,
         };
         comp.on_update(
-            &AgentUpdate::ModelInfo(params),
+            &RuntimeEvent::ModelInfo {
+                run_id: None,
+                params,
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert_eq!(comp.state().model_name, "mock-model");
@@ -210,7 +219,10 @@ mod tests {
             Vec::new(),
         );
         let dirty = comp.on_update(
-            &AgentUpdate::TaskComplete("done".into()),
+            &RuntimeEvent::TaskComplete {
+                run_id: None,
+                content: "done".into(),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(!dirty);

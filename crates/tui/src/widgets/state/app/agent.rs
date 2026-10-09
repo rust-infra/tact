@@ -4,10 +4,10 @@ use ratatui::{
     widgets::ScrollbarState,
 };
 use tact_protocol::{
-    InteractionResponse, PlanStep, RequestId, RuntimeCommand, StepResult, TaskSnapshot,
-    TasksChangeReason, ThinkingChunk,
+    InteractionRequest, InteractionResponse, PlanStep, RequestId, RuntimeCommand, RuntimeEvent,
+    StepResult, TaskSnapshot, TasksChangeReason, ThinkingChunk,
 };
-use tact_view::{AgentErrorKind, AgentUpdate, UserCommand};
+use tact_view::UserCommand;
 
 use agent_tui_kit::{Ctx, PendingQueue, components::tool::ToolEvent, state::StreamEvent};
 
@@ -47,7 +47,67 @@ impl App {
         }
     }
 
-    pub(crate) fn handle_agent_update(&mut self, update: AgentUpdate) {
+    pub(crate) fn handle_runtime_event(&mut self, event: RuntimeEvent) {
+        // Control events the shell answered before it reached the update
+        // handler: the active run's identity and plugin lifecycle notices.
+        let event = match event {
+            RuntimeEvent::RunStarted { run_id } => {
+                self.runtime_run_id = Some(run_id);
+                return;
+            }
+            RuntimeEvent::RunFinished { run_id, .. } => {
+                // A turn that ended without a run must not clear the identity
+                // of a run that is still current.
+                if self.runtime_run_id == run_id {
+                    self.runtime_run_id = None;
+                }
+                return;
+            }
+            RuntimeEvent::PluginStarted { plugin_id } => RuntimeEvent::Info {
+                run_id: None,
+                content: format!("Plugin started: {plugin_id}"),
+            },
+            RuntimeEvent::PluginStopped { plugin_id } => RuntimeEvent::Info {
+                run_id: None,
+                content: format!("Plugin stopped: {plugin_id}"),
+            },
+            RuntimeEvent::Plugin {
+                plugin_id,
+                event_type,
+                ..
+            } => RuntimeEvent::Info {
+                run_id: None,
+                content: format!("Plugin event {plugin_id}: {event_type}"),
+            },
+            other => other,
+        };
+        // Only assistant text joins the log; the other roles, and the protocol
+        // events the shell never rendered, are ignored — exactly where the
+        // projection the TUI used before it spoke `RuntimeEvent` dropped them.
+        match &event {
+            RuntimeEvent::Text { role, .. } if role != "assistant" => return,
+            RuntimeEvent::ModelCallStarted { .. }
+            | RuntimeEvent::ModelCallFinished { .. }
+            | RuntimeEvent::ToolCallStarted { .. }
+            | RuntimeEvent::ToolCallFinished { .. }
+            | RuntimeEvent::PermissionRequested { .. }
+            | RuntimeEvent::PermissionResolved { .. }
+            | RuntimeEvent::InteractionResponded { .. }
+            | RuntimeEvent::Compaction { .. }
+            | RuntimeEvent::Recovery { .. }
+            | RuntimeEvent::Retry { .. }
+            | RuntimeEvent::TimedOut { .. } => return,
+            // Permission / Confirm / Input prompts are the broker's to answer;
+            // only the select family drives the popup.
+            RuntimeEvent::InteractionRequested {
+                request:
+                    InteractionRequest::Permission { .. }
+                    | InteractionRequest::Confirm { .. }
+                    | InteractionRequest::Input { .. },
+            } => return,
+            _ => {}
+        }
+        let update = event;
         self.dirty = true;
         self.coordinator_prepass(&update);
         // 1. Components update their own state (registry dispatch); the
@@ -56,7 +116,7 @@ impl App {
         // 2. Apply the stream outbox to the shared log — StreamChunk only
         //    (the gap checks may append rows and must not run for other
         //    update types, mirroring the pre-dispatch `apply_stream_chunk`).
-        if matches!(update, AgentUpdate::StreamChunk(_)) {
+        if matches!(update, RuntimeEvent::Text { .. }) {
             self.apply_stream_events(stream_events);
         }
         // 3. Apply the tool-lifecycle outbox (placeholder rows, scroll).
@@ -211,8 +271,8 @@ impl App {
     /// dispatched now: `ToolComponent` owns the full tool-card lifecycle
     /// (active blocks, finalization) and emits `ToolEvent`s for the shell's
     /// log side effects.
-    fn dispatch_components(&mut self, update: &AgentUpdate) -> (Vec<StreamEvent>, Vec<ToolEvent>) {
-        if matches!(update, AgentUpdate::ThinkingChunk(_)) {
+    fn dispatch_components(&mut self, update: &RuntimeEvent) -> (Vec<StreamEvent>, Vec<ToolEvent>) {
+        if matches!(update, RuntimeEvent::Thinking { .. }) {
             return (Vec::new(), Vec::new());
         }
         // Field-split borrows: `Ctx` borrows the shell-owned shared surfaces
@@ -341,19 +401,22 @@ impl App {
     /// via the tool-event outbox applied in `apply_tool_events`), `StepAdded`
     /// (PlanComponent), `TasksChanged` (TaskPanelComponent), and `StreamChunk`
     /// (StreamComponent, via the stream outbox) during dispatch.
-    fn shell_handle(&mut self, update: AgentUpdate) {
+    fn shell_handle(&mut self, update: RuntimeEvent) {
         match update {
-            AgentUpdate::StepAdded(step) => self.on_step_added(step),
-            AgentUpdate::StepStarted { idx, tool_id, .. } => {
+            RuntimeEvent::StepAdded { step, .. } => self.on_step_added(step),
+            RuntimeEvent::StepStarted { idx, tool_id, .. } => {
                 self.on_step_started_tail(idx, tool_id);
             }
-            AgentUpdate::StepFinished {
+            RuntimeEvent::StepFinished {
                 idx,
                 tool_id,
                 result,
+                ..
             } => self.on_step_finished_tail(idx, tool_id, result),
-            AgentUpdate::StepFailed { .. } => self.on_step_failed_tail(),
-            AgentUpdate::TaskComplete(summary) => {
+            RuntimeEvent::StepFailed { .. } => self.on_step_failed_tail(),
+            RuntimeEvent::TaskComplete {
+                content: summary, ..
+            } => {
                 // Task complete: flush leftover streaming lines
                 self.flush_stream_pending();
                 // Don't re-render summary into messages (StreamChunk already displayed it).
@@ -374,7 +437,7 @@ impl App {
                 // token/model snapshots live in the status bar.
                 self.add_task_stats_block();
             }
-            AgentUpdate::TaskCancelled => {
+            RuntimeEvent::Cancelled { .. } => {
                 // Cancel exits without TaskComplete; must leave Planning/Executing
                 // or queued (pending) messages would be flushed against a stale
                 // busy state.
@@ -388,7 +451,7 @@ impl App {
                 self.task_done_time = None;
             }
             // Error handling
-            AgentUpdate::Error(AgentErrorKind::Other(msg)) => {
+            RuntimeEvent::Error { message: msg, .. } => {
                 // Fatal error: flush leftover streaming lines
                 self.flush_stream_pending();
                 let msgs = self.msgs();
@@ -396,44 +459,63 @@ impl App {
                 self.status = Status::Idle;
                 self.freeze_last_prompt_cost();
             }
-            // Add system message
-            AgentUpdate::Info(msg) => {
+            // Add system message (a protocol `Notification` is the same
+            // reader-facing notice).
+            RuntimeEvent::Info { content: msg, .. }
+            | RuntimeEvent::Notification { content: msg, .. } => {
                 self.add_system_message(msg);
             }
             // Whole-Markdown notice, rendered as a single MarkdownCell
-            AgentUpdate::MdInfo(msg) => {
+            RuntimeEvent::MdInfo { content: msg, .. } => {
                 self.append_system_markdown(msg);
             }
             // Hook-injected context: the same markdown body as `MdInfo`, but
             // labelled. The `<hook-context>` framing is stripped before it
             // reaches the log, so the label is what keeps a hook's output from
             // reading as a notice Tact wrote itself.
-            AgentUpdate::HookContext { source, text } => {
+            RuntimeEvent::HookContext { source, text, .. } => {
                 self.append_hook_context_markdown(source.as_deref(), &text);
             }
             // A plugin hook's own progress line: shown while the subprocess
             // runs, rewritten in place once it returns. The row keeps its index
             // — only its styling and the measured time change.
-            AgentUpdate::HookStatus {
+            RuntimeEvent::HookStatus {
                 id,
                 source,
                 message,
                 elapsed_ms,
+                ..
             } => {
                 self.apply_hook_status(id, source.as_deref(), &message, elapsed_ms);
             }
             // Pre-rendered Markdown for a modal read-out (`/stats`,
             // `/background`): unlike `MdInfo` it does not join the log, so
             // opening a listing does not push the conversation off screen.
-            AgentUpdate::PopupMarkdown { title, source } => {
+            RuntimeEvent::PopupMarkdown { title, source, .. } => {
                 self.open_markdown_popup(title, source);
             }
-            AgentUpdate::RequestSelect {
-                prompt,
-                options,
-                request_id,
-                log_confirm,
-            } => {
+            RuntimeEvent::InteractionRequested { request } => {
+                let (request_id, prompt, options, log_confirm, multi) = match request {
+                    InteractionRequest::Select {
+                        request_id,
+                        prompt,
+                        options,
+                        log_confirm,
+                    } => (request_id, prompt, options, log_confirm, false),
+                    InteractionRequest::MultiSelect {
+                        request_id,
+                        prompt,
+                        options,
+                    } => (request_id, prompt, options, false, true),
+                    // Permission / Confirm / Input prompts are the broker's to
+                    // answer; the popup is reconciled from its snapshot.
+                    _ => return,
+                };
+                // The popup keys on the in-process numeric id; the protocol's
+                // `RequestId` is that number as a decimal string.
+                let Ok(request_id) = request_id.as_str().parse::<u64>() else {
+                    return;
+                };
                 if self.pending_ui.is_none() {
                     self.select_kind = SelectKind::Agent;
                     if self.select.request_id.is_some() {
@@ -442,41 +524,21 @@ impl App {
                             prompt,
                             options,
                             request_id,
-                            multi: false,
+                            multi,
                             log_confirm,
                         });
+                    } else if multi {
+                        self.select.set_multi(prompt, options, request_id, false);
+                        self.input_mode = InputMode::Select;
                     } else {
                         self.select.set(prompt, options, request_id, log_confirm);
                         self.input_mode = InputMode::Select;
                     }
                 }
-                // Broker path: RequestSelect is only a wake-up hint; the
-                // actual state is reconciled from the broker snapshot.
+                // Broker path: this request is only a wake-up hint; the actual
+                // state is reconciled from the broker snapshot.
             }
-            AgentUpdate::RequestMultiSelect {
-                prompt,
-                options,
-                request_id,
-            } => {
-                if self.pending_ui.is_none() {
-                    self.select_kind = SelectKind::Agent;
-                    if self.select.request_id.is_some() {
-                        // Legacy path: queue behind the currently-open select.
-                        self.pending_agent_selects.push_back(AgentSelectRequest {
-                            prompt,
-                            options,
-                            request_id,
-                            multi: true,
-                            log_confirm: false,
-                        });
-                    } else {
-                        self.select.set_multi(prompt, options, request_id, false);
-                        self.input_mode = InputMode::Select;
-                    }
-                }
-                // Broker path: RequestMultiSelect is only a wake-up hint.
-            }
-            AgentUpdate::ThinkingChunk(chunk) => {
+            RuntimeEvent::Thinking { chunk, .. } => {
                 match chunk {
                     ThinkingChunk::Started => {
                         self.begin_thinking_block();
@@ -493,7 +555,7 @@ impl App {
                     }
                 }
             }
-            AgentUpdate::BackgroundTaskFinished {
+            RuntimeEvent::BackgroundTaskFinished {
                 tool_id,
                 success,
                 message,
@@ -506,27 +568,31 @@ impl App {
                 // running row showed.
                 self.note_finished_background(&tool_id, success);
             }
-            AgentUpdate::SubagentFinished {
+            RuntimeEvent::SubagentFinished {
                 tool_id,
                 child_id,
                 success,
                 summary,
+                ..
             } => self.on_subagent_finished_tail(&tool_id, &child_id, success, &summary),
             // ToolProgress → ToolComponent (live output + Resize event).
-            AgentUpdate::ToolProgress { .. } => {}
-            AgentUpdate::TasksChanged { tasks, reason } => {
+            RuntimeEvent::ToolProgress { .. } => {}
+            RuntimeEvent::TasksChanged { tasks, reason, .. } => {
                 self.on_tasks_changed_tail(tasks, reason);
             }
             // TokenUsage / ModelInfo / TurnStats → StatusBarComponent (dispatch).
             // ToolMeta → ToolComponent (dispatch).
             // StreamChunk → StreamComponent parse + apply_stream_events.
             // SubagentsChanged → SubagentPanelComponent (registry dispatch).
-            AgentUpdate::TokenUsage(_)
-            | AgentUpdate::ModelInfo(_)
-            | AgentUpdate::TurnStats { .. }
-            | AgentUpdate::ToolMeta { .. }
-            | AgentUpdate::StreamChunk(_)
-            | AgentUpdate::SubagentsChanged { .. } => {}
+            RuntimeEvent::TokenUsage { .. }
+            | RuntimeEvent::ModelInfo { .. }
+            | RuntimeEvent::TurnStats { .. }
+            | RuntimeEvent::ToolMeta { .. }
+            | RuntimeEvent::Text { .. }
+            | RuntimeEvent::SubagentsChanged { .. } => {}
+            // Metadata the components own end-to-end, and the protocol events
+            // filtered at the top of `handle_runtime_event`.
+            _ => {}
         }
     }
 
@@ -539,22 +605,22 @@ impl App {
     ///   mid-stream).
     /// - Remove the loading placeholder on any content-producing update
     ///   (metadata-only updates keep it).
-    fn coordinator_prepass(&mut self, update: &AgentUpdate) {
+    fn coordinator_prepass(&mut self, update: &RuntimeEvent) {
         match update {
-            AgentUpdate::ThinkingChunk(_)
-            | AgentUpdate::TokenUsage(_)
-            | AgentUpdate::TurnStats { .. }
-            | AgentUpdate::ModelInfo(_)
-            | AgentUpdate::ToolMeta { .. }
-            | AgentUpdate::ToolProgress { .. } => {}
+            RuntimeEvent::Thinking { .. }
+            | RuntimeEvent::TokenUsage { .. }
+            | RuntimeEvent::TurnStats { .. }
+            | RuntimeEvent::ModelInfo { .. }
+            | RuntimeEvent::ToolMeta { .. }
+            | RuntimeEvent::ToolProgress { .. } => {}
             _ => self.flush_and_close_thinking(),
         }
         match update {
-            AgentUpdate::TokenUsage(_)
-            | AgentUpdate::TurnStats { .. }
-            | AgentUpdate::ModelInfo(_)
-            | AgentUpdate::ToolMeta { .. }
-            | AgentUpdate::ToolProgress { .. } => {}
+            RuntimeEvent::TokenUsage { .. }
+            | RuntimeEvent::TurnStats { .. }
+            | RuntimeEvent::ModelInfo { .. }
+            | RuntimeEvent::ToolMeta { .. }
+            | RuntimeEvent::ToolProgress { .. } => {}
             _ => {
                 self.remove_loading_placeholder();
             }
@@ -939,12 +1005,13 @@ mod lifecycle_tests {
     use std::{collections::HashMap, fs, path::PathBuf};
 
     use tact_extensions::plugin::{PluginEvent, PluginOperation, PluginResult};
+    use tact_protocol::RuntimeEvent;
     use tact_protocol::{
         AccountError, AccountUpdate, PlanStep, RunId, RuntimeCommand, TaskSnapshot,
         TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, ToolOutputChunk,
         ToolPresentationInfo,
     };
-    use tact_view::{AgentErrorKind, AgentUpdate, UserCommand};
+    use tact_view::UserCommand;
     use tokio::sync::mpsc::unbounded_channel;
 
     use crate::test_fixtures::StepCall;
@@ -984,7 +1051,8 @@ mod lifecycle_tests {
         let mut app = make_app();
         assert!(!app.task_panel_mut().visible);
         let log_len_before = app.log.items.len();
-        app.handle_agent_update(AgentUpdate::TasksChanged {
+        app.handle_runtime_event(RuntimeEvent::TasksChanged {
+            run_id: None,
             tasks: vec![TaskSnapshot {
                 id: 1,
                 subject: "Fix auth".into(),
@@ -1022,7 +1090,8 @@ mod lifecycle_tests {
     fn tasks_dag_popup_refreshes_when_new_tasks_arrive() {
         let mut app = make_app();
         // Baseline: one task, open the DAG popup.
-        app.handle_agent_update(AgentUpdate::TasksChanged {
+        app.handle_runtime_event(RuntimeEvent::TasksChanged {
+            run_id: None,
             tasks: vec![TaskSnapshot {
                 id: 1,
                 subject: "old".into(),
@@ -1052,7 +1121,8 @@ mod lifecycle_tests {
         assert!(!before.contains("new"), "new task not added yet:\n{before}");
 
         // A newer task is created while the popup is open.
-        app.handle_agent_update(AgentUpdate::TasksChanged {
+        app.handle_runtime_event(RuntimeEvent::TasksChanged {
+            run_id: None,
             tasks: vec![
                 TaskSnapshot {
                     id: 1,
@@ -1094,7 +1164,8 @@ mod lifecycle_tests {
     #[test]
     fn tasks_changed_hides_when_no_open_items() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::TasksChanged {
+        app.handle_runtime_event(RuntimeEvent::TasksChanged {
+            run_id: None,
             tasks: vec![TaskSnapshot {
                 id: 1,
                 subject: "done".into(),
@@ -1388,13 +1459,16 @@ mod lifecycle_tests {
     }
 
     fn seed_running_bash(app: &mut App, tool_id: &str) {
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "run command",
-            "bash",
-            tool_id,
-            HashMap::from([("command".to_string(), "long-command".to_string())]),
-        )));
-        app.handle_agent_update(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "run command",
+                "bash",
+                tool_id,
+                HashMap::from([("command".to_string(), "long-command".to_string())]),
+            ),
+        });
+        app.handle_runtime_event(
             StepCall::new(0, tool_id.to_string(), "bash", "long-command").started(),
         );
     }
@@ -1405,22 +1479,26 @@ mod lifecycle_tests {
         seed_running_bash(&mut app, "b1");
         let initial_rows = app.tools_mut().active[0].output.visual_rows(false);
 
-        app.handle_agent_update(AgentUpdate::ToolProgress {
+        app.handle_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("one\n")],
         });
         let one_row = app.tools_mut().active[0].output.visual_rows(false);
-        app.handle_agent_update(AgentUpdate::ToolProgress {
+        app.handle_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("two\n")],
         });
         let two_rows = app.tools_mut().active[0].output.visual_rows(false);
-        app.handle_agent_update(AgentUpdate::ToolProgress {
+        app.handle_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("three\n")],
         });
         let three_rows = app.tools_mut().active[0].output.visual_rows(false);
-        app.handle_agent_update(AgentUpdate::ToolProgress {
+        app.handle_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("four\n")],
         });
@@ -1448,7 +1526,8 @@ mod lifecycle_tests {
         seed_running_bash(&mut app, "b1");
         app.log_scroll.visual_top = 3;
 
-        app.handle_agent_update(AgentUpdate::ToolProgress {
+        app.handle_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("line\n")],
         });
@@ -1468,7 +1547,8 @@ mod lifecycle_tests {
             "render clamps the bottom sentinel"
         );
 
-        app.handle_agent_update(AgentUpdate::ToolProgress {
+        app.handle_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("live line\n")],
         });
@@ -1485,11 +1565,13 @@ mod lifecycle_tests {
     fn progress_keeps_open_thinking_and_ignores_unknown_tool_ids() {
         let mut app = make_app();
         seed_running_bash(&mut app, "b1");
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-            "still thinking".into(),
-        )));
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Delta("still thinking".into()),
+        });
 
-        app.handle_agent_update(AgentUpdate::ToolProgress {
+        app.handle_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: "unknown".into(),
             chunks: vec![ToolOutputChunk::stdout("ignored\n")],
         });
@@ -1507,13 +1589,16 @@ mod lifecycle_tests {
     }
 
     fn seed_running_background(app: &mut App, tool_id: &str) {
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "run build in background",
-            "background_run",
-            tool_id,
-            HashMap::from([("command".to_string(), "cargo build".to_string())]),
-        )));
-        app.handle_agent_update(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "run build in background",
+                "background_run",
+                tool_id,
+                HashMap::from([("command".to_string(), "cargo build".to_string())]),
+            ),
+        });
+        app.handle_runtime_event(
             StepCall::new(0, tool_id.to_string(), "background_run", "cargo build")
                 .presentation(background_presentation())
                 .started(),
@@ -1525,7 +1610,7 @@ mod lifecycle_tests {
         let mut app = make_app();
         seed_running_background(&mut app, "bg1");
 
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "bg1", "background_run", "cargo build")
                 .message("Background task 018f3a2c started: cargo build")
                 .duration_us(1200)
@@ -1554,13 +1639,15 @@ mod lifecycle_tests {
         let mut app = make_app();
         seed_running_background(&mut app, "bg1");
         seed_running_background(&mut app, "bg2");
-        app.handle_agent_update(AgentUpdate::ToolMeta {
+        app.handle_runtime_event(RuntimeEvent::ToolMeta {
+            run_id: None,
             tool_id: "bg1".into(),
             model: None,
             token_usage: None,
             task_id: Some("id1".into()),
         });
-        app.handle_agent_update(AgentUpdate::ToolMeta {
+        app.handle_runtime_event(RuntimeEvent::ToolMeta {
+            run_id: None,
             tool_id: "bg2".into(),
             model: None,
             token_usage: None,
@@ -1573,14 +1660,17 @@ mod lifecycle_tests {
                 .all(|a| a.output.task_id.is_some())
         );
 
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "inspect",
-            "bash",
-            "bash1",
-            HashMap::from([("command".to_string(), "ls".to_string())]),
-        )));
-        app.handle_agent_update(StepCall::new(1, "bash1", "bash", "ls").started());
-        app.handle_agent_update(StepCall::new(1, "bash1", "bash", "ls").finished());
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "inspect",
+                "bash",
+                "bash1",
+                HashMap::from([("command".to_string(), "ls".to_string())]),
+            ),
+        });
+        app.handle_runtime_event(StepCall::new(1, "bash1", "bash", "ls").started());
+        app.handle_runtime_event(StepCall::new(1, "bash1", "bash", "ls").finished());
 
         let ids: Vec<Option<String>> = app
             .tools_mut()
@@ -1599,7 +1689,8 @@ mod lifecycle_tests {
     fn background_task_finished_finalizes_success_card() {
         let mut app = make_app();
         seed_running_background(&mut app, "bg1");
-        app.handle_agent_update(AgentUpdate::ToolProgress {
+        app.handle_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: "bg1".into(),
             chunks: vec![ToolOutputChunk::stdout("Compiling ...\n")],
         });
@@ -1608,7 +1699,8 @@ mod lifecycle_tests {
             "live progress should grow the active card"
         );
 
-        app.handle_agent_update(AgentUpdate::BackgroundTaskFinished {
+        app.handle_runtime_event(RuntimeEvent::BackgroundTaskFinished {
+            run_id: None,
             tool_id: "bg1".into(),
             success: true,
             message: "Background task 018f3a2c completed".into(),
@@ -1636,7 +1728,8 @@ mod lifecycle_tests {
         let mut app = make_app();
         seed_running_background(&mut app, "bg1");
 
-        app.handle_agent_update(AgentUpdate::BackgroundTaskFinished {
+        app.handle_runtime_event(RuntimeEvent::BackgroundTaskFinished {
+            run_id: None,
             tool_id: "bg1".into(),
             success: false,
             message: "Background task 018f3a2c failed".into(),
@@ -1672,7 +1765,8 @@ mod lifecycle_tests {
     fn background_task_finished_without_live_card_adds_system_message() {
         let mut app = make_app();
 
-        app.handle_agent_update(AgentUpdate::BackgroundTaskFinished {
+        app.handle_runtime_event(RuntimeEvent::BackgroundTaskFinished {
+            run_id: None,
             tool_id: "gone".into(),
             success: true,
             message: "Background task 018f3a2c completed".into(),
@@ -1695,7 +1789,8 @@ mod lifecycle_tests {
     fn active_bash_popup_uses_buffered_output() {
         let mut app = make_app();
         seed_running_bash(&mut app, "b1");
-        app.handle_agent_update(AgentUpdate::ToolProgress {
+        app.handle_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("live line\n")],
         });
@@ -1716,13 +1811,14 @@ mod lifecycle_tests {
     fn completed_bash_collapses_live_card_and_ignores_late_progress() {
         let mut app = make_app();
         seed_running_bash(&mut app, "b1");
-        app.handle_agent_update(AgentUpdate::ToolProgress {
+        app.handle_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("one\ntwo\nthree\nfour\n")],
         });
         let live_rows = app.tools_mut().active[0].output.visual_rows(false);
 
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "b1", "bash", "long-command")
                 .message("live line")
                 .detail("live line\n")
@@ -1731,7 +1827,8 @@ mod lifecycle_tests {
         );
         let completed_rows = app.tools_mut().blocks[0].output.visual_rows(false);
         let collapsed = app.tools_mut().blocks[0].output.layout.detail_collapsed;
-        app.handle_agent_update(AgentUpdate::ToolProgress {
+        app.handle_runtime_event(RuntimeEvent::ToolProgress {
+            run_id: None,
             tool_id: "b1".into(),
             chunks: vec![ToolOutputChunk::stdout("late\n")],
         });
@@ -1853,15 +1950,21 @@ mod lifecycle_tests {
     #[test]
     fn step_added_then_task_complete_reaches_done() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "read file",
-            "read_file",
-            "tool_read_1",
-            HashMap::from([("path".to_string(), "main.rs".to_string())]),
-        )));
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "read file",
+                "read_file",
+                "tool_read_1",
+                HashMap::from([("path".to_string(), "main.rs".to_string())]),
+            ),
+        });
         assert!(matches!(app.status, Status::Executing { .. }));
 
-        app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
+        app.handle_runtime_event(RuntimeEvent::TaskComplete {
+            run_id: None,
+            content: "All done.".into(),
+        });
         assert!(matches!(app.status, Status::Done));
         assert!(app.task_done_time.is_some());
     }
@@ -1871,25 +1974,34 @@ mod lifecycle_tests {
         use tact_protocol::{ModelCallParams, TokenUsageInfo};
 
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::TokenUsage(TokenUsageInfo {
-            prompt: 100,
-            completion: 50,
-            total: 150,
-            prompt_cache_hit_tokens: 10,
-            prompt_cache_miss_tokens: 90,
-            reasoning_tokens: 5,
-        }));
-        app.handle_agent_update(AgentUpdate::ModelInfo(ModelCallParams {
-            model: "mock-model".into(),
-            max_tokens: 8192,
-            thinking_budget: None,
-            reasoning_effort: None,
-            extra_body: None,
-        }));
+        app.handle_runtime_event(RuntimeEvent::TokenUsage {
+            run_id: None,
+            usage: TokenUsageInfo {
+                prompt: 100,
+                completion: 50,
+                total: 150,
+                prompt_cache_hit_tokens: 10,
+                prompt_cache_miss_tokens: 90,
+                reasoning_tokens: 5,
+            },
+        });
+        app.handle_runtime_event(RuntimeEvent::ModelInfo {
+            run_id: None,
+            params: ModelCallParams {
+                model: "mock-model".into(),
+                max_tokens: 8192,
+                thinking_budget: None,
+                reasoning_effort: None,
+                extra_body: None,
+            },
+        });
         // Frozen elapsed time: separator reuses it when no start time is set.
         app.last_prompt_elapsed_secs = Some(65);
 
-        app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
+        app.handle_runtime_event(RuntimeEvent::TaskComplete {
+            run_id: None,
+            content: "All done.".into(),
+        });
 
         let joined = app
             .log
@@ -1915,7 +2027,8 @@ mod lifecycle_tests {
     #[test]
     fn turn_stats_update_reaches_status_bar() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::TurnStats {
+        app.handle_runtime_event(RuntimeEvent::TurnStats {
+            run_id: None,
             turns_taken: 2,
             max_turns: None,
         });
@@ -1935,7 +2048,8 @@ mod lifecycle_tests {
         app.append_blank(crate::widgets::state::LogItemKind::SystemTool);
         app.loading_idx = Some(app.log.items.len().saturating_sub(1));
 
-        app.handle_agent_update(AgentUpdate::TurnStats {
+        app.handle_runtime_event(RuntimeEvent::TurnStats {
+            run_id: None,
             turns_taken: 1,
             max_turns: None,
         });
@@ -1986,7 +2100,10 @@ mod lifecycle_tests {
         let mut app = make_app();
         app.last_prompt_elapsed_secs = Some(5);
 
-        app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
+        app.handle_runtime_event(RuntimeEvent::TaskComplete {
+            run_id: None,
+            content: "All done.".into(),
+        });
 
         let joined = app
             .log
@@ -2008,7 +2125,10 @@ mod lifecycle_tests {
         app.language = crate::i18n::Language::Chinese;
         app.last_prompt_elapsed_secs = Some(5);
 
-        app.handle_agent_update(AgentUpdate::TaskComplete("All done.".into()));
+        app.handle_runtime_event(RuntimeEvent::TaskComplete {
+            run_id: None,
+            content: "All done.".into(),
+        });
 
         let joined = app
             .log
@@ -2126,14 +2246,17 @@ mod lifecycle_tests {
     #[test]
     fn step_finished_updates_plan_output() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "read file",
-            "read_file",
-            "tool_read_1",
-            HashMap::from([("path".to_string(), "main.rs".to_string())]),
-        )));
-        app.handle_agent_update(StepCall::new(0, "tool_read_1", "read_file", "main.rs").started());
-        app.handle_agent_update(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "read file",
+                "read_file",
+                "tool_read_1",
+                HashMap::from([("path".to_string(), "main.rs".to_string())]),
+            ),
+        });
+        app.handle_runtime_event(StepCall::new(0, "tool_read_1", "read_file", "main.rs").started());
+        app.handle_runtime_event(
             StepCall::new(0, "tool_read_1", "read_file", "main.rs")
                 .no_arg_full()
                 .detail("file body")
@@ -2146,13 +2269,17 @@ mod lifecycle_tests {
     #[test]
     fn step_failed_sets_idle() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "read file",
-            "read_file",
-            "tool_read_1",
-            HashMap::from([("path".to_string(), "missing.txt".to_string())]),
-        )));
-        app.handle_agent_update(AgentUpdate::StepFailed {
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "read file",
+                "read_file",
+                "tool_read_1",
+                HashMap::from([("path".to_string(), "missing.txt".to_string())]),
+            ),
+        });
+        app.handle_runtime_event(RuntimeEvent::StepFailed {
+            run_id: None,
             idx: 0,
             tool_id: "tool_read_1".into(),
             arg_summary: String::new(),
@@ -2166,12 +2293,13 @@ mod lifecycle_tests {
         let mut app = make_app();
         // Started without a query (action not yet populated), then failed with
         // the query carried on the failure: the failed card title must show it.
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "ws_1", "web_search", String::new())
                 .presentation(tact_protocol::ToolPresentationInfo::generic("web_search"))
                 .started(),
         );
-        app.handle_agent_update(AgentUpdate::StepFailed {
+        app.handle_runtime_event(RuntimeEvent::StepFailed {
+            run_id: None,
             idx: 0,
             tool_id: "ws_1".into(),
             arg_summary: "Rust async".into(),
@@ -2189,9 +2317,10 @@ mod lifecycle_tests {
     #[test]
     fn error_other_sets_idle_and_adds_message() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::Other(
-            "LLM unavailable".into(),
-        )));
+        app.handle_runtime_event(RuntimeEvent::Error {
+            run_id: None,
+            message: "LLM unavailable".into(),
+        });
         assert!(matches!(app.status, Status::Idle));
         assert!(
             app.log
@@ -2207,7 +2336,10 @@ mod lifecycle_tests {
     fn info_update_appends_system_message() {
         let mut app = make_app();
         let before = app.log.items.len();
-        app.handle_agent_update(AgentUpdate::Info("Cancelling...".into()));
+        app.handle_runtime_event(RuntimeEvent::Info {
+            run_id: None,
+            content: "Cancelling...".into(),
+        });
         assert!(app.log.items.len() > before);
         assert!(
             app.log
@@ -2220,11 +2352,15 @@ mod lifecycle_tests {
     #[test]
     fn hook_context_update_is_labelled_but_md_info_is_not() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::HookContext {
+        app.handle_runtime_event(RuntimeEvent::HookContext {
+            run_id: None,
             source: Some("plugin demo".into()),
             text: "brief body".into(),
         });
-        app.handle_agent_update(AgentUpdate::MdInfo("plain notice".into()));
+        app.handle_runtime_event(RuntimeEvent::MdInfo {
+            run_id: None,
+            content: "plain notice".into(),
+        });
 
         let raws: Vec<&str> = app.log.items.iter().map(|item| item.raw.as_str()).collect();
         assert!(
@@ -2248,7 +2384,7 @@ mod lifecycle_tests {
     fn task_cancelled_clears_busy_status_to_idle() {
         let mut app = make_app();
         app.status = Status::Planning;
-        app.handle_agent_update(AgentUpdate::TaskCancelled);
+        app.handle_runtime_event(RuntimeEvent::Cancelled { run_id: None });
         assert!(
             matches!(app.status, Status::Idle),
             "TaskCancelled must clear Planning/Executing so new prompts can submit"
@@ -2258,22 +2394,32 @@ mod lifecycle_tests {
     #[test]
     fn stream_chunk_then_task_complete_reaches_done() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StreamChunk("Streaming answer.".into()));
-        app.handle_agent_update(AgentUpdate::TaskComplete("Streaming answer.".into()));
+        app.handle_runtime_event(RuntimeEvent::Text {
+            run_id: None,
+            role: "assistant".into(),
+            content: "Streaming answer.".into(),
+        });
+        app.handle_runtime_event(RuntimeEvent::TaskComplete {
+            run_id: None,
+            content: "Streaming answer.".into(),
+        });
         assert!(matches!(app.status, Status::Done));
     }
 
     #[test]
     fn token_usage_updates_status_bar() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::TokenUsage(tact_protocol::TokenUsageInfo {
-            prompt: 100,
-            completion: 50,
-            total: 150,
-            prompt_cache_hit_tokens: 10,
-            prompt_cache_miss_tokens: 90,
-            reasoning_tokens: 5,
-        }));
+        app.handle_runtime_event(RuntimeEvent::TokenUsage {
+            run_id: None,
+            usage: tact_protocol::TokenUsageInfo {
+                prompt: 100,
+                completion: 50,
+                total: 150,
+                prompt_cache_hit_tokens: 10,
+                prompt_cache_miss_tokens: 90,
+                reasoning_tokens: 5,
+            },
+        });
         assert_eq!(app.status_bar_mut().token_prompt, 100);
         assert_eq!(app.status_bar_mut().token_completion, 50);
         assert_eq!(app.status_bar_mut().token_total, 150);
@@ -2285,11 +2431,13 @@ mod lifecycle_tests {
         use crate::widgets::state::InputMode;
 
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::RequestSelect {
-            request_id: 1,
-            prompt: "Allow bash?".into(),
-            options: vec!["Yes".into(), "No".into()],
-            log_confirm: false,
+        app.handle_runtime_event(RuntimeEvent::InteractionRequested {
+            request: tact_protocol::InteractionRequest::Select {
+                request_id: tact_protocol::RequestId::from(1.to_string()),
+                prompt: "Allow bash?".into(),
+                options: vec!["Yes".into(), "No".into()],
+                log_confirm: false,
+            },
         });
         assert!(matches!(app.input_mode, InputMode::Select));
         assert!(app.select.prompt.contains("Allow bash"));
@@ -2302,17 +2450,20 @@ mod lifecycle_tests {
 
         let mut app = make_app();
         // A permission prompt is pending.
-        app.handle_agent_update(AgentUpdate::RequestSelect {
-            request_id: 7,
-            prompt: "Allow write?".into(),
-            options: vec!["Allow once".into(), "Deny".into()],
-            log_confirm: false,
+        app.handle_runtime_event(RuntimeEvent::InteractionRequested {
+            request: tact_protocol::InteractionRequest::Select {
+                request_id: tact_protocol::RequestId::from(7.to_string()),
+                prompt: "Allow write?".into(),
+                options: vec!["Allow once".into(), "Deny".into()],
+                log_confirm: false,
+            },
         });
         assert!(matches!(app.input_mode, InputMode::Select));
 
         // An unrelated update resets the mode (the historical "missed popup"
         // hang). The pending request must force the popup back on screen.
-        app.handle_agent_update(AgentUpdate::PopupMarkdown {
+        app.handle_runtime_event(RuntimeEvent::PopupMarkdown {
+            run_id: None,
             title: "Session Statistics".to_string(),
             source: "tokens: 42".to_string(),
         });
@@ -2337,7 +2488,7 @@ mod lifecycle_tests {
             false,
         );
 
-        // No AgentUpdate::RequestSelect was delivered — reconcile still shows
+        // No RuntimeEvent::RequestSelect was delivered — reconcile still shows
         // the authoritative broker state.
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, Some(request_id));
@@ -2392,11 +2543,16 @@ mod lifecycle_tests {
     #[test]
     fn thinking_chunk_flushes_on_stream() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-            "reasoning line".into(),
-        )));
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Delta("reasoning line".into()),
+        });
         assert!(app.thinking_mut().active.is_some());
-        app.handle_agent_update(AgentUpdate::StreamChunk("final answer".into()));
+        app.handle_runtime_event(RuntimeEvent::Text {
+            run_id: None,
+            role: "assistant".into(),
+            content: "final answer".into(),
+        });
         assert!(app.thinking_mut().active.is_none());
     }
 
@@ -2405,13 +2561,16 @@ mod lifecycle_tests {
         use tact_protocol::ModelCallParams;
 
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::ModelInfo(ModelCallParams {
-            model: "mock-model".into(),
-            max_tokens: 4096,
-            thinking_budget: Some(32_000),
-            reasoning_effort: Some("high".into()),
-            extra_body: None,
-        }));
+        app.handle_runtime_event(RuntimeEvent::ModelInfo {
+            run_id: None,
+            params: ModelCallParams {
+                model: "mock-model".into(),
+                max_tokens: 4096,
+                thinking_budget: Some(32_000),
+                reasoning_effort: Some("high".into()),
+                extra_body: None,
+            },
+        });
         assert_eq!(app.status_bar_mut().model_name, "mock-model");
         assert_eq!(app.status_bar_mut().model_max_tokens, 4096);
         assert_eq!(app.status_bar_mut().model_thinking_budget, Some(32_000));
@@ -2425,12 +2584,15 @@ mod lifecycle_tests {
     fn multiple_step_added_grows_plan() {
         let mut app = make_app();
         for (i, path) in ["a.rs", "b.rs"].into_iter().enumerate() {
-            app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-                format!("read {path}"),
-                "read_file",
-                format!("tool_{i}"),
-                HashMap::from([("path".to_string(), path.to_string())]),
-            )));
+            app.handle_runtime_event(RuntimeEvent::StepAdded {
+                run_id: None,
+                step: PlanStep::new(
+                    format!("read {path}"),
+                    "read_file",
+                    format!("tool_{i}"),
+                    HashMap::from([("path".to_string(), path.to_string())]),
+                ),
+            });
         }
         assert_eq!(app.plan_mut().steps.len(), 2);
     }
@@ -2461,15 +2623,18 @@ mod lifecycle_tests {
     #[test]
     fn step_started_then_finished_stays_executing_until_task_complete() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "read",
-            "read_file",
-            "t1",
-            HashMap::from([("path".to_string(), "a.rs".to_string())]),
-        )));
-        app.handle_agent_update(StepCall::new(0, "t1", "read_file", "a.rs").started());
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "read",
+                "read_file",
+                "t1",
+                HashMap::from([("path".to_string(), "a.rs".to_string())]),
+            ),
+        });
+        app.handle_runtime_event(StepCall::new(0, "t1", "read_file", "a.rs").started());
         assert!(matches!(app.status, Status::Executing { .. }));
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(0, "t1", "read_file", "a.rs")
                 .no_arg_full()
                 .finished(),
@@ -2496,12 +2661,14 @@ mod lifecycle_tests {
     #[test]
     fn thinking_chunks_accumulate_before_non_thinking_update() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-            "part1 ".into(),
-        )));
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-            "part2".into(),
-        )));
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Delta("part1 ".into()),
+        });
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Delta("part2".into()),
+        });
         assert!(
             app.thinking_mut()
                 .active
@@ -2518,18 +2685,28 @@ mod lifecycle_tests {
                 .content
                 .contains("part2")
         );
-        app.handle_agent_update(AgentUpdate::Info("done thinking".into()));
+        app.handle_runtime_event(RuntimeEvent::Info {
+            run_id: None,
+            content: "done thinking".into(),
+        });
         assert!(app.thinking_mut().active.is_none());
     }
 
     #[test]
     fn thinking_finished_closes_without_other_update() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-            "done thinking\n".into(),
-        )));
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Started,
+        });
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Delta("done thinking\n".into()),
+        });
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Finished,
+        });
         assert!(app.thinking_mut().active.is_none());
         assert!(!app.thinking_mut().blocks.is_empty());
     }
@@ -2539,16 +2716,23 @@ mod lifecycle_tests {
         use tact_protocol::TokenUsageInfo;
 
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-            "still thinking".into(),
-        )));
-        app.handle_agent_update(AgentUpdate::TokenUsage(TokenUsageInfo {
-            prompt: 1,
-            completion: 2,
-            total: 3,
-            ..Default::default()
-        }));
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Started,
+        });
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Delta("still thinking".into()),
+        });
+        app.handle_runtime_event(RuntimeEvent::TokenUsage {
+            run_id: None,
+            usage: TokenUsageInfo {
+                prompt: 1,
+                completion: 2,
+                total: 3,
+                ..Default::default()
+            },
+        });
         assert!(app.thinking_mut().active.is_some());
         assert!(
             app.thinking_mut()
@@ -2564,9 +2748,15 @@ mod lifecycle_tests {
     fn empty_started_finished_leaves_no_thinking_ui() {
         let mut app = make_app();
         let before = app.log.items.len();
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Started,
+        });
         assert!(app.thinking_mut().active.is_some());
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Finished,
+        });
         assert!(app.thinking_mut().active.is_none());
         assert!(app.thinking_mut().blocks.is_empty());
         assert_eq!(app.log.items.len(), before);
@@ -2576,11 +2766,18 @@ mod lifecycle_tests {
     fn whitespace_only_delta_finished_leaves_no_thinking_block() {
         let mut app = make_app();
         let before = app.log.items.len();
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-            "   ".into(),
-        )));
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Started,
+        });
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Delta("   ".into()),
+        });
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Finished,
+        });
         assert!(app.thinking_mut().blocks.is_empty());
         assert!(app.thinking_mut().active.is_none());
         assert_eq!(app.log.items.len(), before);
@@ -2589,12 +2786,16 @@ mod lifecycle_tests {
     #[test]
     fn thinking_finished_keeps_the_existing_placeholder_index() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-            "done thinking\n".into(),
-        )));
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Delta("done thinking\n".into()),
+        });
         let phys_idx = app.thinking_mut().active.as_ref().unwrap().phys_idx;
 
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Finished,
+        });
 
         assert_eq!(app.thinking_mut().blocks[0].phys_idx, phys_idx);
         assert!(app.thinking_mut().active.is_none());
@@ -2605,9 +2806,10 @@ mod lifecycle_tests {
         let mut app = make_app();
         let before = app.log.items.len();
 
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-            "first\nsecond".into(),
-        )));
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Delta("first\nsecond".into()),
+        });
 
         assert_eq!(
             app.log.items.len(),

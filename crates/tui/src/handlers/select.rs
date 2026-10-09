@@ -997,7 +997,7 @@ mod tests {
 
     use super::*;
     use crate::render::test_harness::make_app;
-    use tact_protocol::{InteractionResponse, RuntimeCommand};
+    use tact_protocol::{InteractionResponse, RuntimeCommand, RuntimeEvent};
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
@@ -1526,11 +1526,13 @@ thinking_budget = {thinking_budget}
 
         // A second agent select arrives while the first is open → queued, not
         // overwritten (the overwrite would hang the first subagent's waiter).
-        app.handle_agent_update(tact_view::AgentUpdate::RequestSelect {
-            prompt: "Second".into(),
-            options: vec!["Yes".into(), "No".into()],
-            request_id: 2,
-            log_confirm: false,
+        app.handle_runtime_event(RuntimeEvent::InteractionRequested {
+            request: tact_protocol::InteractionRequest::Select {
+                prompt: "Second".into(),
+                options: vec!["Yes".into(), "No".into()],
+                request_id: tact_protocol::RequestId::from(2.to_string()),
+                log_confirm: false,
+            },
         });
         assert_eq!(app.select.request_id, Some(1), "first select stays open");
         assert_eq!(app.pending_agent_selects.len(), 1, "second select queued");

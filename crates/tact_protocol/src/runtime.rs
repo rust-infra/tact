@@ -184,7 +184,7 @@ pub enum RuntimeEvent {
     },
     // ── Structured View events ───────────────────────────────────────────
     // A View consumes these directly; they replace the opaque
-    // `ViewUpdate { update: AgentUpdate }` pass-through so the Runtime stream
+    // `ViewUpdate { update: RuntimeEvent }` pass-through so the Runtime stream
     // carries the view data as first-class, serializable protocol values.
     StepAdded {
         run_id: Option<RunId>,

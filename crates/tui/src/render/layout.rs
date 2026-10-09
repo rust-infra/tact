@@ -82,7 +82,7 @@ mod render_tests {
     use std::collections::HashMap;
 
     use tact_protocol::PlanStep;
-    use tact_view::{AgentErrorKind, AgentUpdate};
+    use tact_protocol::RuntimeEvent;
 
     use super::super::test_harness::{buffer_contains, make_app, render_app_text};
     use crate::test_fixtures::StepCall;
@@ -92,22 +92,32 @@ mod render_tests {
     fn main_area_renders_tool_and_stream_content() {
         let mut app = make_app();
 
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "read file",
-            "read_file",
-            "tool_read_1",
-            HashMap::from([("path".to_string(), "main.rs".to_string())]),
-        )));
-        app.handle_agent_update(StepCall::new(0, "tool_read_1", "read_file", "main.rs").started());
-        app.handle_agent_update(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "read file",
+                "read_file",
+                "tool_read_1",
+                HashMap::from([("path".to_string(), "main.rs".to_string())]),
+            ),
+        });
+        app.handle_runtime_event(StepCall::new(0, "tool_read_1", "read_file", "main.rs").started());
+        app.handle_runtime_event(
             StepCall::new(0, "tool_read_1", "read_file", "main.rs")
                 .no_arg_full()
                 .detail("fn main() {}")
                 .duration_us(1000)
                 .finished(),
         );
-        app.handle_agent_update(AgentUpdate::StreamChunk("Hello from mock.".into()));
-        app.handle_agent_update(AgentUpdate::TaskComplete("Hello from mock.".into()));
+        app.handle_runtime_event(RuntimeEvent::Text {
+            run_id: None,
+            role: "assistant".into(),
+            content: "Hello from mock.".into(),
+        });
+        app.handle_runtime_event(RuntimeEvent::TaskComplete {
+            run_id: None,
+            content: "Hello from mock.".into(),
+        });
 
         assert!(matches!(app.status, Status::Done));
 
@@ -125,9 +135,10 @@ mod render_tests {
     #[test]
     fn main_area_renders_after_fatal_error() {
         let mut app = make_app();
-        app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::Other(
-            "provider timeout".into(),
-        )));
+        app.handle_runtime_event(RuntimeEvent::Error {
+            run_id: None,
+            message: "provider timeout".into(),
+        });
 
         assert!(matches!(app.status, Status::Idle));
 

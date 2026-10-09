@@ -2,8 +2,8 @@
 
 use std::time::Duration;
 
+use tact_protocol::RuntimeEvent;
 use tact_protocol::{InteractionResponse, RequestId};
-use tact_view::AgentUpdate;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::widgets::state::{App, InputMode, SelectKind};
@@ -11,7 +11,7 @@ use crate::widgets::state::{App, InputMode, SelectKind};
 /// Drain pending updates from `agent_rx`, optionally auto-confirm permission selects.
 pub fn drain_agent_updates(app: &mut App, auto_select: Option<usize>) {
     while let Ok(update) = app.agent_rx.try_recv() {
-        app.handle_agent_update(update);
+        app.handle_runtime_event(update);
         if matches!(app.input_mode, InputMode::Select)
             && let Some(choice) = auto_select
         {
@@ -82,7 +82,7 @@ where
 
 /// Build an `App` wired to the given agent channel (no startup logo/messages).
 pub fn make_headless_app(
-    agent_rx: UnboundedReceiver<AgentUpdate>,
+    agent_rx: UnboundedReceiver<RuntimeEvent>,
     work_dir: std::path::PathBuf,
 ) -> App {
     use tokio::sync::mpsc::unbounded_channel;

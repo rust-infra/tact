@@ -2,7 +2,7 @@
 //!
 //! These live on **separate channels** from the agent runtime so that
 //! provider-specific account state and the plugin system do not leak into the
-//! agent protocol (`AgentUpdate`). In the kit (Phase 3/4) this module becomes
+//! agent protocol (`RuntimeEvent`). In the kit (Phase 3/4) this module becomes
 //! the `BridgeExtension` implementation on the Tact app layer.
 
 use ratatui::{

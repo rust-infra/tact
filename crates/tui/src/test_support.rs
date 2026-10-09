@@ -48,14 +48,8 @@ impl TestApp {
     }
 
     /// Feed one protocol event to the App.
-    ///
-    /// The App still consumes its own legacy view model (`AgentUpdate`), so the
-    /// event is projected down here. That projection — and this indirection —
-    /// go away with that type.
     pub fn feed(&mut self, event: RuntimeEvent) {
-        for update in tact_view::runtime_event_to_agent_updates(event) {
-            self.0.handle_agent_update(update);
-        }
+        self.0.handle_runtime_event(event);
     }
 
     pub fn feed_all(&mut self, events: impl IntoIterator<Item = RuntimeEvent>) {
@@ -167,9 +161,6 @@ impl TestApp {
 /// Headless App wired to a live agent channel (mirrors `run_tui` update drain).
 pub struct HeadlessApp {
     inner: App,
-    /// Projects the protocol stream onto the App's legacy view model. Dropped
-    /// (with the projection) once the App consumes `RuntimeEvent` itself.
-    _bridge: Option<tokio::task::JoinHandle<()>>,
     auto_select: Option<usize>,
     capture_frames: bool,
     /// Direct route for auto-confirmed select responses. The driver owns the
@@ -179,20 +170,8 @@ pub struct HeadlessApp {
 
 impl HeadlessApp {
     pub fn new(agent_rx: UnboundedReceiver<RuntimeEvent>, work_dir: PathBuf) -> Self {
-        let (app_tx, app_rx) = unbounded_channel();
-        let bridge = tokio::spawn(async move {
-            let mut agent_rx = agent_rx;
-            while let Some(event) = agent_rx.recv().await {
-                for update in tact_view::runtime_event_to_agent_updates(event) {
-                    if app_tx.send(update).is_err() {
-                        return;
-                    }
-                }
-            }
-        });
         Self {
-            inner: make_headless_app(app_rx, work_dir),
-            _bridge: Some(bridge),
+            inner: make_headless_app(agent_rx, work_dir),
             auto_select: None,
             capture_frames: false,
             ui_responder: None,
@@ -232,7 +211,7 @@ impl HeadlessApp {
 
     fn drain(&mut self, auto_confirm: bool) {
         while let Ok(update) = self.inner.agent_rx.try_recv() {
-            self.inner.handle_agent_update(update);
+            self.inner.handle_runtime_event(update);
             if auto_confirm
                 && matches!(self.inner.input_mode, InputMode::Select)
                 && let Some(choice) = self.auto_select
