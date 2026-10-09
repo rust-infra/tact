@@ -259,26 +259,31 @@ Do the `tact_view` move first (it is a pure relocation, compiler-checked, and
 An **atomic sweep** — the channel's payload type and every assertion that reads
 it are coupled, so there is no green intermediate state.
 
-**Attempted 2026-10-09 and reverted.** A codemod handled the bulk (66 payload /
-declaration sites, 70 tuple-pattern assertions) in scope
-`tact_extensions` + `tact_ui`, and the first compile still produced **85 errors**.
-They fell into five classes, which is the real worklist:
+**Attempted twice and reverted.** What the second attempt established:
 
-1. **23** `RequestSelect` / `RequestMultiSelect` sites — re-expressions, not
-   renames (nested `InteractionRequest`, `u64` → `RequestId`).
-2. **~20** leftovers in eight files whose `use tact_view::AgentUpdate;` the
-   codemod removed while the file still names the type: `tool/mod.rs`,
-   `tool/ask_user.rs`, `tool/bash.rs`, `tool/write_file.rs`, `tool/task.rs`,
-   `tool/subagent_ui.rs`, `task/mod.rs`, `subagent.rs`, `background_run.rs`.
-   These are the "is there a UI channel?" plumbing, not assertions.
-3. **14** struct patterns that now need `..` (they omit `run_id`).
-4. **15** `RuntimeEvent` initializers in tests that need `run_id: None`.
-5. **3** duplicate imports where the codemod added one the file already had.
+- A codemod covers the mechanics: 66 payload/declaration sites, 67 tuple-pattern
+  assertions, plus textual rules (`Vec<AgentUpdate>`, `&AgentUpdate`,
+  `.send(AgentUpdate::…)`, `tact_view::RuntimeEvent::` leftovers).
+- A compiler-driven fixer (E0027 → add `..`; E0063 → insert `run_id: None,`)
+  then walked the error count **85 → 62 → 45 → 42 → 39**, where it stalled.
+- It stalled for two reasons, both worth knowing before trying again:
+  1. **The 23 select sites are the only semantic part** and automation cannot
+     reach them: `RequestSelect` / `RequestMultiSelect` become
+     `RuntimeEvent::InteractionRequested { request: InteractionRequest::Select {
+     .. } }`, and the id changes from `u64` to a `RequestId` string. Do these
+     **first**, by hand, while the tree still compiles around them.
+  2. **A brace-walking fixer corrupts code.** Finding "the closing brace of the
+     literal" by counting braces from the error line landed on a `match` block's
+     brace in `subagent_ui.rs` three times, appending `.. }` there instead. Prefer
+     per-line edits taken from rustc's own `help:` suggestions over brace walking.
 
-A first-scope mistake is worth recording too: applying the codemod to
-`crates/` wholesale also rewrote `tui`, `agent_tui_kit` and `tact_view`, which
-must not change here (`tact_view` defines the type; the other two are Task 4).
-The scope is `tact_extensions` + `tact_ui` only.
+So the order is: hand-rewrite the 23 select sites → mechanical codemod → per-line
+compiler fixes. Never a single automated pass.
+
+A first-scope mistake is worth recording too: applying the codemod to `crates/`
+wholesale also rewrote `tui`, `agent_tui_kit` and `tact_view`, which must not
+change here (`tact_view` defines the type; the other two are Task 4). The scope
+is `tact_extensions` + `tact_ui` only.
 
 Order that stays green inside each crate pair:
 
