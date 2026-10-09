@@ -38,7 +38,7 @@ impl StorageNamespace {
         &self.0
     }
 
-    fn parse(value: &str) -> Result<Self, KernelError> {
+    pub fn parse(value: &str) -> Result<Self, KernelError> {
         if value == "runtime" || value == "sessions" || value == "trajectories" {
             return Ok(Self(value.to_string()));
         }
@@ -51,6 +51,19 @@ impl StorageNamespace {
             ));
         };
         Self::plugin(plugin_id)
+    }
+
+    /// The plugin that owns this namespace, for `plugins/<id>`.
+    #[must_use]
+    pub fn plugin_owner(&self) -> Option<&str> {
+        self.0.strip_prefix("plugins/")
+    }
+
+    /// Whether this is a Runtime-owned namespace (`runtime` / `sessions` /
+    /// `trajectories`) rather than a plugin one.
+    #[must_use]
+    pub fn is_runtime_owned(&self) -> bool {
+        matches!(self.0.as_str(), "runtime" | "sessions" | "trajectories")
     }
 }
 

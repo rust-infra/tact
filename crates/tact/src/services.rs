@@ -74,6 +74,34 @@ fn string_field(input: &Value, field: &str) -> Result<String, KernelError> {
         })
 }
 
+/// Refuses a storage namespace the caller does not own.
+///
+/// A plugin may only touch its own `plugins/<id>` namespace; the Runtime-owned
+/// namespaces are reserved for the Runtime's own extensions and are otherwise
+/// reached through the dedicated capability methods (trajectory / session).
+fn authorize_namespace(
+    context: &InvocationContext,
+    namespace: &crate::StorageNamespace,
+) -> Result<(), KernelError> {
+    let caller = context.plugin_id().as_str();
+    if let Some(owner) = namespace.plugin_owner() {
+        if owner == caller {
+            return Ok(());
+        }
+        return Err(KernelError::permission_denied(format!(
+            "plugin {caller} cannot access plugin storage namespace {}",
+            namespace.as_str()
+        )));
+    }
+    if namespace.is_runtime_owned() && !caller.starts_with("tact.") {
+        return Err(KernelError::permission_denied(format!(
+            "storage namespace {} is reserved for the Runtime",
+            namespace.as_str()
+        )));
+    }
+    Ok(())
+}
+
 fn storage_get() -> CapabilityRegistration {
     registration(
         "storage.get",
@@ -82,7 +110,9 @@ fn storage_get() -> CapabilityRegistration {
         |context, input| async move {
             let namespace = string_field(&input, "namespace")?;
             let key = string_field(&input, "key")?;
-            let value = context.storage().get(&namespace, &key).await?;
+            let parsed = crate::StorageNamespace::parse(&namespace)?;
+            authorize_namespace(&context, &parsed)?;
+            let value = context.storage().get(parsed.as_str(), &key).await?;
             Ok(value.unwrap_or(Value::Null))
         },
     )
@@ -96,8 +126,10 @@ fn storage_set() -> CapabilityRegistration {
         |context, input| async move {
             let namespace = string_field(&input, "namespace")?;
             let key = string_field(&input, "key")?;
+            let parsed = crate::StorageNamespace::parse(&namespace)?;
+            authorize_namespace(&context, &parsed)?;
             let value = input.get("value").cloned().unwrap_or(Value::Null);
-            context.storage().set(&namespace, &key, value).await?;
+            context.storage().set(parsed.as_str(), &key, value).await?;
             Ok(json!(null))
         },
     )
@@ -393,6 +425,43 @@ mod tests {
             .await
             .expect("trajectory.read");
         assert_eq!(facts.as_array().map(Vec::len), Some(1));
+    }
+
+    #[tokio::test]
+    async fn storage_refuses_namespaces_the_caller_does_not_own() {
+        let runtime = runtime();
+        let context = runtime.invocation(
+            RequestId::from("req-namespace"),
+            PluginId::from("test.plugin"),
+            "test",
+        );
+        let other = runtime
+            .router()
+            .invoke(
+                "storage.set",
+                context.clone(),
+                json!({"namespace": "plugins/other.plugin", "key": "k", "value": 1}),
+            )
+            .await
+            .expect_err("another plugin's namespace must be refused");
+        assert_eq!(
+            other.category(),
+            tact_protocol::ErrorCategory::PermissionDenied
+        );
+
+        let runtime_owned = runtime
+            .router()
+            .invoke(
+                "storage.set",
+                context,
+                json!({"namespace": "sessions", "key": "k", "value": 1}),
+            )
+            .await
+            .expect_err("a runtime-owned namespace must be refused for a plugin");
+        assert_eq!(
+            runtime_owned.category(),
+            tact_protocol::ErrorCategory::PermissionDenied
+        );
     }
 
     #[tokio::test]
