@@ -2,6 +2,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tact_protocol::{AgentUpdate, RunId, RuntimeEvent, StepId, TrajectoryId};
 
+use crate::security::{RedactionConfig, RedactionLevel};
+
 use crate::trajectory::{
     Sensitivity, SqliteTrajectoryRecorder, TrajectoryEventType, TrajectoryRecorder,
 };
@@ -16,13 +18,58 @@ pub struct KernelTrajectoryRecorder {
 #[derive(Clone)]
 pub struct SqliteTrajectoryService {
     recorder: SqliteTrajectoryRecorder,
+    redaction: RedactionConfig,
 }
 
 impl SqliteTrajectoryService {
+    /// Builds the durable recorder with the default security policy.
+    ///
+    /// The default [`RedactionConfig`] resolves to [`RedactionLevel::Basic`],
+    /// so payloads are redacted out of the box rather than only when a host
+    /// remembers to install a policy.
     #[must_use]
     pub fn new(recorder: SqliteTrajectoryRecorder) -> Self {
-        Self { recorder }
+        Self {
+            recorder,
+            redaction: RedactionConfig::default(),
+        }
     }
+
+    /// Builds the durable recorder with the session's effective policy.
+    #[must_use]
+    pub fn with_redaction(recorder: SqliteTrajectoryRecorder, redaction: RedactionConfig) -> Self {
+        Self {
+            recorder,
+            redaction,
+        }
+    }
+}
+
+/// Redacts a serialized payload with the existing security policy.
+///
+/// Trajectory stores execution facts — streamed text, tool output, hook
+/// context, notifications — so it is a persistence sink exactly like the
+/// transcript and the session store, and a secret a tool printed must not land
+/// in `trajectory_events.payload` verbatim. The payload is redacted in its
+/// serialized form (the same text that would be written), then parsed back so
+/// the stored value stays structured. A redaction replacement cannot break the
+/// JSON shape (`[redacted:…]` contains no quotes or escapes), but if anything
+/// else ever did, the redacted text is stored as a JSON string rather than the
+/// secret being written — the safe direction to fail.
+fn redact_payload(payload: &Value, config: &RedactionConfig) -> Value {
+    let level = config.resolved_level();
+    if !config.is_enabled() || level == RedactionLevel::Off {
+        return payload.clone();
+    }
+    let Ok(text) = serde_json::to_string(payload) else {
+        return payload.clone();
+    };
+    let redacted =
+        crate::security::redact::redact(&text, level, &config.extra_patterns).into_owned();
+    if redacted == text {
+        return payload.clone();
+    }
+    serde_json::from_str(&redacted).unwrap_or(Value::String(redacted))
 }
 
 impl KernelTrajectoryRecorder {
@@ -54,7 +101,8 @@ impl TrajectoryService for KernelTrajectoryRecorder {
             | RuntimeEvent::ModelCallFinished { run_id, .. }
             | RuntimeEvent::ToolCallStarted { run_id, .. }
             | RuntimeEvent::ToolCallFinished { run_id, .. } => Some(run_id.clone()),
-            RuntimeEvent::Thinking { run_id, .. }
+            RuntimeEvent::Text { run_id, .. }
+            | RuntimeEvent::Thinking { run_id, .. }
             | RuntimeEvent::ModelInfo { run_id, .. }
             | RuntimeEvent::TokenUsage { run_id, .. }
             | RuntimeEvent::TurnStats { run_id, .. }
@@ -168,7 +216,8 @@ impl TrajectoryService for SqliteTrajectoryService {
                 | RuntimeEvent::ModelCallFinished { run_id, .. }
                 | RuntimeEvent::ToolCallStarted { run_id, .. }
                 | RuntimeEvent::ToolCallFinished { run_id, .. } => Some(run_id.clone()),
-                RuntimeEvent::Thinking { run_id, .. }
+                RuntimeEvent::Text { run_id, .. }
+                | RuntimeEvent::Thinking { run_id, .. }
                 | RuntimeEvent::ModelInfo { run_id, .. }
                 | RuntimeEvent::TokenUsage { run_id, .. }
                 | RuntimeEvent::TurnStats { run_id, .. }
@@ -192,6 +241,7 @@ impl TrajectoryService for SqliteTrajectoryService {
                 false,
             )
         })?;
+        let payload = redact_payload(&payload, &self.redaction);
         self.recorder
             .append(
                 trajectory_id,

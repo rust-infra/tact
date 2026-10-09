@@ -4,6 +4,23 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-09 — Runtime 轨迹在落库前脱敏，且订阅落后不再停止记录
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix（可观察：轨迹表里不再出现未脱敏的密钥；一次事件洪峰后轨迹仍继续记录） |
+| **Related** | `crates/tact/src/kernel/trajectory.rs`、`crates/tact/src/kernel/event.rs`、`crates/tact-ui/src/session_bootstrap.rs`、`crates/tact/src/lib.rs`；`docs/trajectory.md` |
+
+**现象 / 动机：** 这条 Runtime 事件轨迹有两个和设计不一致的地方。(1) 事件 payload 直接序列化进 `trajectory_events`，没有走既有的 `permissions.redaction`——工具打印出来的密钥会原样落在会话库里，和 transcript / session store 同属持久化落点却少了脱敏。(2) 唯一的持久化写入者是一个 broadcast 订阅者，`while let Ok(event) = subscription.recv()` 一遇到 `RecvError::Lagged`（写入者短暂落后于有界通道）就结束循环——此后整个会话都不会再写轨迹，而且是静默的。另外 RED 测试暴露了第三处：`Text` 带 `run_id`，但两次 run-id 提取的 `match` 都漏了它，于是所有流式助手文本都落到合成的 `runtime` 轨迹而不是该 run 的轨迹。
+
+**决策：** （1）在 `SqliteTrajectoryService` 落库前对序列化 payload 跑 `redact`（级别取会话的有效策略，默认 `Basic`），再解析回结构化值；解析失败时退化为 JSON 字符串而不是写入原文——失败方向指向安全。宿主通过 `kernel::TrajectoryRedactionConfig` 传入策略，无需触碰私有 `security` 模块。（2）新增 `EventSubscription::recv_skipping_lag`：`Lagged` 记一条 warn 并继续，只有 `Closed` 才结束；被跳过的那段靠"从序列号重连轨迹"恢复，但之后的每条事实仍会落库。（3）两处 run-id 提取补上 `RuntimeEvent::Text`。
+
+**改后行为：** 轨迹表与 transcript 用同一套脱敏策略，密钥不会以明文入库；写入者短暂落后后仍持续记录，缺失窗口由重连补齐；流式文本归入正确的 run 轨迹。
+
+**Verification：** `session_bootstrap::tests::persisted_trajectory_payloads_are_redacted`、`trajectory_writer_survives_a_lagged_subscription` 先 RED 后 GREEN；`cargo test --workspace` 顺序全绿。
+
+**Pointers:** `docs/trajectory.md`、`crates/tact/src/kernel/trajectory.rs::{redact_payload,SqliteTrajectoryService::with_redaction}`、`crates/tact/src/kernel/event.rs::EventSubscription::recv_skipping_lag`。
+
 ## 1. 2026-10-09 — Headless 与 TUI 共用 Runtime 事件轨迹
 
 | Field | Value |

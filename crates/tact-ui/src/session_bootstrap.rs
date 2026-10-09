@@ -117,14 +117,18 @@ fn runtime_event_transport(ui: Option<&UiWiring>) -> tact::kernel::EventTranspor
 async fn start_trajectory_recorder(
     db_path: &Path,
     event_transport: &tact::kernel::EventTransport,
+    redaction: tact::kernel::TrajectoryRedactionConfig,
     notices: &Notices,
 ) {
     match tact::trajectory::SqliteTrajectoryRecorder::open(db_path).await {
         Ok(recorder) => {
-            let trajectory = tact::kernel::SqliteTrajectoryService::new(recorder);
+            let trajectory =
+                tact::kernel::SqliteTrajectoryService::with_redaction(recorder, redaction);
             let mut subscription = event_transport.subscribe();
             tokio::spawn(async move {
-                while let Ok(event) = subscription.recv().await {
+                // A lagged broadcast window must not end recording: the writer
+                // skips the lost window and keeps persisting every later fact.
+                while let Some(event) = subscription.recv_skipping_lag().await {
                     let _ = trajectory.append(None, None, event).await;
                 }
             });
@@ -204,8 +208,11 @@ pub async fn bootstrap_session(
     // Runtime events are the single source for replayable execution history.
     // Start the recorder before the agent can emit its first event so both UI
     // and headless runs persist the complete stream, including startup hooks.
+    // The recorder redacts payloads with the session's effective policy, so a
+    // secret a tool printed never lands in the trajectory table verbatim.
+    let redaction = permission_manager.security_config().redaction.clone();
     let runtime_events = runtime_event_transport(ui.as_ref());
-    start_trajectory_recorder(&db_path, &runtime_events, &notices).await;
+    start_trajectory_recorder(&db_path, &runtime_events, redaction, &notices).await;
     let task_manager = SharedTaskManager::new(TaskManager::new(&db_path).await?);
     let background_manager = SharedBackgroundManager::new(BackgroundManager::new(&db_path).await?);
     let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&db_path).await?);
@@ -383,7 +390,13 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let db_path = dir.path().join("session.db");
         let transport = runtime_event_transport(None);
-        start_trajectory_recorder(&db_path, &transport, &Notices::Stderr).await;
+        start_trajectory_recorder(
+            &db_path,
+            &transport,
+            tact::kernel::TrajectoryRedactionConfig::default(),
+            &Notices::Stderr,
+        )
+        .await;
         let run_id = tact_protocol::RunId::from("headless-run");
         transport
             .publish(tact_protocol::RuntimeEvent::RunStarted {
@@ -411,6 +424,126 @@ mod tests {
 
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].run_id, run_id);
+    }
+
+    /// A secret a tool printed must not reach the durable trajectory verbatim.
+    ///
+    /// The trajectory table is a persistence sink like the transcript, so the
+    /// session's redaction policy applies to event payloads before they are
+    /// written. Pinning it here is what stops a later refactor from dropping
+    /// the redaction on the way to SQLite.
+    #[tokio::test]
+    async fn persisted_trajectory_payloads_are_redacted() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("session.db");
+        let transport = runtime_event_transport(None);
+        start_trajectory_recorder(
+            &db_path,
+            &transport,
+            tact::kernel::TrajectoryRedactionConfig::default(),
+            &Notices::Stderr,
+        )
+        .await;
+        let run_id = tact_protocol::RunId::from("secret-run");
+        transport
+            .publish(tact_protocol::RuntimeEvent::Text {
+                run_id: Some(run_id.clone()),
+                role: "tool".into(),
+                content: "api sk-abcdefghijklmnopqrstuvwx done".into(),
+            })
+            .unwrap();
+
+        let recorder = tact::trajectory::SqliteTrajectoryRecorder::open(&db_path)
+            .await
+            .unwrap();
+        let events = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let events = recorder
+                    .query(&tact_protocol::TrajectoryId::from(run_id.as_str()), 0)
+                    .await
+                    .unwrap();
+                if !events.is_empty() {
+                    break events;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("trajectory recorder did not persist the event");
+
+        let stored = serde_json::to_string(&events[0].payload).unwrap();
+        assert!(
+            !stored.contains("sk-abcdefghijklmnopqrstuvwx"),
+            "secret reached the trajectory table: {stored}"
+        );
+        assert!(stored.contains("[redacted:api-key]"), "{stored}");
+    }
+
+    /// A lagged subscriber must not stop the durable writer for the session.
+    ///
+    /// The recorder is the only durable writer, and it consumes a bounded
+    /// broadcast channel. Before this fix, one `RecvError::Lagged` ended its
+    /// loop — every later fact was silently lost. Here the writer falls behind
+    /// on purpose and every event published after it catches up is still
+    /// persisted.
+    #[tokio::test]
+    async fn trajectory_writer_survives_a_lagged_subscription() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("session.db");
+        // Capacity 1 keeps the test small while still forcing a lag.
+        let transport = tact::kernel::EventTransport::new(1);
+        start_trajectory_recorder(
+            &db_path,
+            &transport,
+            tact::kernel::TrajectoryRedactionConfig::default(),
+            &Notices::Stderr,
+        )
+        .await;
+        let run_id = tact_protocol::RunId::from("lagged-run");
+
+        // Publish more than the capacity without yielding, so the subscriber
+        // is behind when it next polls and the bus reports a lag.
+        for index in 0..64 {
+            transport
+                .publish(tact_protocol::RuntimeEvent::Text {
+                    run_id: Some(run_id.clone()),
+                    role: "assistant".into(),
+                    content: format!("{run_id}-{index}"),
+                })
+                .unwrap();
+        }
+        // The last event is published after a yield so it falls outside any
+        // skipped window the writer may have consumed.
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        transport
+            .publish(tact_protocol::RuntimeEvent::Text {
+                run_id: Some(run_id.clone()),
+                role: "assistant".into(),
+                content: format!("{run_id}-sentinel"),
+            })
+            .unwrap();
+
+        let recorder = tact::trajectory::SqliteTrajectoryRecorder::open(&db_path)
+            .await
+            .unwrap();
+        let saw_sentinel = tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                let events = recorder
+                    .query(&tact_protocol::TrajectoryId::from(run_id.as_str()), 0)
+                    .await
+                    .unwrap();
+                if events.iter().any(|event| {
+                    serde_json::to_string(&event.payload)
+                        .is_ok_and(|text| text.contains("lagged-run-sentinel"))
+                }) {
+                    break true;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("a lagged subscriber must keep the trajectory writer alive");
+        assert!(saw_sentinel);
     }
 
     /// The stderr format a headless operator reads.

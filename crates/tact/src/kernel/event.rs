@@ -61,6 +61,31 @@ impl EventSubscription {
         self.receiver.recv().await
     }
 
+    /// Receives the next event, skipping a lagged window instead of ending.
+    ///
+    /// A durable writer that briefly falls behind must not stop recording for
+    /// the rest of the session. `broadcast` reports a gap as
+    /// [`broadcast::error::RecvError::Lagged`] and then keeps delivering the
+    /// events still retained, so the lag is logged and the loop continues;
+    /// only a closed channel ends the stream with `None`. The skipped events
+    /// themselves are already gone from the bus — a reconnect from a
+    /// Trajectory sequence is what recovers those — but every subsequent fact
+    /// is still persisted.
+    pub async fn recv_skipping_lag(&mut self) -> Option<RuntimeEvent> {
+        loop {
+            match self.receiver.recv().await {
+                Ok(event) => return Some(event),
+                Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                    tracing::warn!(
+                        skipped,
+                        "runtime event subscriber fell behind; skipped events while catching up"
+                    );
+                }
+                Err(broadcast::error::RecvError::Closed) => return None,
+            }
+        }
+    }
+
     pub fn try_recv(&mut self) -> Result<RuntimeEvent, broadcast::error::TryRecvError> {
         self.receiver.try_recv()
     }

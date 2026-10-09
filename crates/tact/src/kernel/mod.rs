@@ -30,6 +30,11 @@ pub use permission::{PermissionManagerService, PermissionResponder};
 pub use storage::{SqliteStorageService, StorageNamespace, StorageServiceImpl};
 pub use trajectory::{KernelTrajectoryRecorder, SqliteTrajectoryService};
 
+/// The redaction policy the durable trajectory recorder applies to event
+/// payloads before persisting them. Re-exported so hosts can supply the
+/// session's effective configuration without reaching into `security`.
+pub use crate::security::RedactionConfig as TrajectoryRedactionConfig;
+
 #[cfg(test)]
 mod tests;
 
