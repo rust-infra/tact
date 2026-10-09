@@ -384,8 +384,8 @@ mod tests {
             facts.push(tact_protocol::TrajectoryEvent {
                 trajectory_id: trajectory_id
                     .cloned()
-                    .unwrap_or_else(|| TrajectoryId::from("runtime")),
-                run_id: run_id.cloned().unwrap_or_else(|| RunId::from("runtime")),
+                    .unwrap_or_else(|| TrajectoryId::from("unattributed")),
+                run_id: run_id.cloned(),
                 sequence,
                 timestamp: chrono::Utc::now(),
                 actor: "test".into(),
@@ -406,7 +406,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .filter(|fact| &fact.run_id == run_id)
+                .filter(|fact| fact.run_id.as_ref() == Some(run_id))
                 .cloned()
                 .collect())
         }
@@ -500,18 +500,21 @@ mod tests {
             .invoke(
                 "trajectory.read",
                 context.clone(),
-                json!({"trajectory_id": "runtime", "from_sequence": 0}),
+                json!({"trajectory_id": "unattributed", "from_sequence": 0}),
             )
             .await
             .expect("trajectory.read");
         assert_eq!(facts.as_array().map(Vec::len), Some(1));
 
+        // A fact outside any run is not attributed to one — including a run
+        // that happens to be named `runtime`, which the synthetic bucket it
+        // used to be filed under would have collided with.
         let by_run = runtime
             .router()
             .invoke("trajectory.read", context, json!({"run_id": "runtime"}))
             .await
             .expect("trajectory.read by run");
-        assert_eq!(by_run.as_array().map(Vec::len), Some(1));
+        assert_eq!(by_run.as_array().map(Vec::len), Some(0));
     }
 
     #[tokio::test]

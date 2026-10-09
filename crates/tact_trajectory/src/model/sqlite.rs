@@ -44,7 +44,7 @@ impl SqliteTrajectoryRecorder {
     pub async fn append(
         &self,
         trajectory_id: TrajectoryId,
-        run_id: RunId,
+        run_id: Option<RunId>,
         actor: ActorId,
         event_type: TrajectoryEventType,
         parent_step_id: Option<StepId>,
@@ -66,7 +66,9 @@ impl SqliteTrajectoryRecorder {
              VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(trajectory_id.as_str())
-        .bind(run_id.as_str())
+        // The column stays `NOT NULL` so existing databases keep working; an
+        // empty run id is how "this fact belongs to no run" is stored.
+        .bind(run_id.as_ref().map_or("", RunId::as_str))
         .bind(sequence)
         .bind(timestamp)
         .bind(&actor)
@@ -153,7 +155,11 @@ impl Row {
     fn into_event(self) -> Result<TrajectoryEvent> {
         Ok(TrajectoryEvent {
             trajectory_id: TrajectoryId::new(self.trajectory_id).map_err(anyhow::Error::msg)?,
-            run_id: RunId::new(self.run_id).map_err(anyhow::Error::msg)?,
+            run_id: if self.run_id.is_empty() {
+                None
+            } else {
+                Some(RunId::new(self.run_id).map_err(anyhow::Error::msg)?)
+            },
             sequence: self.sequence as u64,
             timestamp: chrono::DateTime::from_timestamp_millis(self.timestamp)
                 .unwrap_or_else(chrono::Utc::now),
@@ -185,7 +191,7 @@ mod tests {
         recorder
             .append(
                 trajectory.clone(),
-                run.clone(),
+                Some(run.clone()),
                 "agent".into(),
                 TrajectoryEventType::Message,
                 None,
@@ -197,6 +203,6 @@ mod tests {
         let events = recorder.query(&trajectory, 0).await.expect("query events");
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].sequence, 0);
-        assert_eq!(events[0].run_id, run);
+        assert_eq!(events[0].run_id, Some(run));
     }
 }

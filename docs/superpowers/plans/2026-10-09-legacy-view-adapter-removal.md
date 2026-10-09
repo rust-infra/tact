@@ -149,16 +149,21 @@ Audit result (2026-10-09, all 25 variants compared field by field):
       started a run says so instead of borrowing a shared synthetic identity.
       `tact_view::tests::a_run_less_turn_does_not_invent_a_run_id` pins it and was
       verified to fail when the fabrication is reintroduced.
-- [ ] Finding 2b — **open, discovered while fixing 2.** The fabrication has a
-      second, deeper home: `TrajectoryService::append`
-      (`crates/tact_trajectory/src/service.rs`) still substitutes
-      `RunId::new("runtime")` when neither the caller nor the event supplies a
-      run, and then derives `trajectory_id` from it — so every run-less fact of a
-      session lands in **one** synthetic trajectory named `runtime`, and
-      `query_by_run("runtime")` conflates unrelated turns. Fixing it is a
-      trajectory-keying decision (make `TrajectoryEvent.run_id` optional, or
-      require a caller-supplied identity, or bucket run-less facts under the
-      session trajectory), so it needs an explicit choice.
+- [x] Finding 2b — **closed.** The fabrication also lived in
+      `TrajectoryService::append`, which substituted `RunId::new("runtime")`
+      when neither the caller nor the event supplied one and then derived
+      `trajectory_id` from it. Production hits this: the subscriber calls
+      `append(None, None, event)` (`tact_ui/src/session_bootstrap.rs`), so every
+      run-less fact of a session — plugin lifecycle, notices, a turn cancelled
+      before it started — landed in one trajectory literally named `runtime`,
+      where a real run of that name would have collided with it.
+      `TrajectoryEvent.run_id` is now `Option<RunId>`; run-less facts go to a
+      dedicated `unattributed` trajectory and carry no run identity. The SQLite
+      column stays `NOT NULL` (an empty string is how "no run" is stored), so
+      existing databases keep working. Pinned by
+      `tact_trajectory::service::tests::a_fact_outside_any_run_is_not_attributed_to_one`
+      and `tact::services::tests::trajectory_append_and_read_through_the_router`,
+      both verified to fail against the previous behaviour.
 - [x] Non-finding: `AgentUpdate::Error(AgentErrorKind)` looked lossy
       (`to_string()`), but `AgentErrorKind` is a single-variant enum
       (`Other(String)`) today, so nothing is dropped.

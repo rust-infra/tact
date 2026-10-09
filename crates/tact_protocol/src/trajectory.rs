@@ -45,7 +45,10 @@ pub enum TrajectoryEventType {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TrajectoryEvent {
     pub trajectory_id: TrajectoryId,
-    pub run_id: RunId,
+    /// `None` for a fact that belongs to no run (a plugin lifecycle event, a
+    /// notice, a turn cancelled before it started). It is not attributed to a
+    /// synthetic run: two unrelated facts must not share an identity.
+    pub run_id: Option<RunId>,
     pub sequence: u64,
     pub timestamp: DateTime<Utc>,
     pub actor: ActorId,

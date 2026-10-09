@@ -23,7 +23,7 @@ impl TrajectoryRecorder {
     pub fn append(
         &self,
         trajectory_id: TrajectoryId,
-        run_id: RunId,
+        run_id: Option<RunId>,
         actor: ActorId,
         event_type: TrajectoryEventType,
         parent_step_id: Option<StepId>,
@@ -63,7 +63,7 @@ impl TrajectoryRecorder {
         let mut facts: Vec<TrajectoryEvent> = events
             .values()
             .flatten()
-            .filter(|event| &event.run_id == run_id)
+            .filter(|event| event.run_id.as_ref() == Some(run_id))
             .cloned()
             .collect();
         facts.sort_by(|a, b| {

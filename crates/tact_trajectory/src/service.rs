@@ -130,7 +130,7 @@ impl TrajectoryService for KernelTrajectoryRecorder {
         supplied_run_id: Option<&RunId>,
         event: RuntimeEvent,
     ) -> Result<(), KernelError> {
-        let run_id = match supplied_run_id.cloned().or_else(|| match &event {
+        let run_id = supplied_run_id.cloned().or_else(|| match &event {
             RuntimeEvent::RunStarted { run_id } => Some(run_id.clone()),
             RuntimeEvent::RunFinished { run_id, .. } | RuntimeEvent::Cancelled { run_id } => {
                 run_id.clone()
@@ -165,20 +165,10 @@ impl TrajectoryService for KernelTrajectoryRecorder {
             | RuntimeEvent::Recovery { run_id, .. }
             | RuntimeEvent::Retry { run_id, .. } => run_id.clone(),
             _ => None,
-        }) {
-            Some(run_id) => run_id,
-            None => RunId::new("runtime").map_err(|error| {
-                KernelError::new(
-                    tact_protocol::ErrorCategory::InternalError,
-                    error.to_string(),
-                    "trajectory",
-                    false,
-                )
-            })?,
-        };
-        let trajectory_id = supplied_trajectory_id.cloned().unwrap_or_else(|| {
-            TrajectoryId::new(run_id.as_str()).expect("run ID is validated by protocol")
         });
+        let trajectory_id = supplied_trajectory_id
+            .cloned()
+            .unwrap_or_else(|| trajectory_for_run(run_id.as_ref()));
         let event_type = match &event {
             RuntimeEvent::RunStarted { .. } | RuntimeEvent::RunFinished { .. } => {
                 TrajectoryEventType::RunLifecycle
@@ -298,51 +288,45 @@ impl TrajectoryService for SqliteTrajectoryService {
         run_id: Option<&tact_protocol::RunId>,
         event: RuntimeEvent,
     ) -> Result<(), KernelError> {
-        let run_id = run_id
-            .cloned()
-            .or_else(|| match &event {
-                RuntimeEvent::RunStarted { run_id } => Some(run_id.clone()),
-                RuntimeEvent::RunFinished { run_id, .. } | RuntimeEvent::Cancelled { run_id } => {
-                    run_id.clone()
-                }
-                RuntimeEvent::TimedOut { run_id }
-                | RuntimeEvent::ModelCallStarted { run_id, .. }
-                | RuntimeEvent::ModelCallFinished { run_id, .. }
-                | RuntimeEvent::ToolCallStarted { run_id, .. }
-                | RuntimeEvent::ToolCallFinished { run_id, .. } => Some(run_id.clone()),
-                RuntimeEvent::Text { run_id, .. }
-                | RuntimeEvent::Thinking { run_id, .. }
-                | RuntimeEvent::ModelInfo { run_id, .. }
-                | RuntimeEvent::TokenUsage { run_id, .. }
-                | RuntimeEvent::TurnStats { run_id, .. }
-                | RuntimeEvent::ToolProgress { run_id, .. }
-                | RuntimeEvent::StepAdded { run_id, .. }
-                | RuntimeEvent::StepStarted { run_id, .. }
-                | RuntimeEvent::StepFinished { run_id, .. }
-                | RuntimeEvent::StepFailed { run_id, .. }
-                | RuntimeEvent::TaskComplete { run_id, .. }
-                | RuntimeEvent::Info { run_id, .. }
-                | RuntimeEvent::MdInfo { run_id, .. }
-                | RuntimeEvent::HookContext { run_id, .. }
-                | RuntimeEvent::HookStatus { run_id, .. }
-                | RuntimeEvent::PopupMarkdown { run_id, .. }
-                | RuntimeEvent::TasksChanged { run_id, .. }
-                | RuntimeEvent::ToolMeta { run_id, .. }
-                | RuntimeEvent::BackgroundTaskFinished { run_id, .. }
-                | RuntimeEvent::SubagentFinished { run_id, .. }
-                | RuntimeEvent::SubagentsChanged { run_id, .. }
-                | RuntimeEvent::Compaction { run_id, .. }
-                | RuntimeEvent::Recovery { run_id, .. }
-                | RuntimeEvent::Retry { run_id, .. } => run_id.clone(),
-                _ => None,
-            })
-            // Notifications and plugin lifecycle events can be emitted before
-            // a run exists. Keep them replayable in the runtime stream rather
-            // than dropping them or making startup depend on a synthetic run.
-            .unwrap_or_else(|| tact_protocol::RunId::from("runtime"));
+        let run_id = run_id.cloned().or_else(|| match &event {
+            RuntimeEvent::RunStarted { run_id } => Some(run_id.clone()),
+            RuntimeEvent::RunFinished { run_id, .. } | RuntimeEvent::Cancelled { run_id } => {
+                run_id.clone()
+            }
+            RuntimeEvent::TimedOut { run_id }
+            | RuntimeEvent::ModelCallStarted { run_id, .. }
+            | RuntimeEvent::ModelCallFinished { run_id, .. }
+            | RuntimeEvent::ToolCallStarted { run_id, .. }
+            | RuntimeEvent::ToolCallFinished { run_id, .. } => Some(run_id.clone()),
+            RuntimeEvent::Text { run_id, .. }
+            | RuntimeEvent::Thinking { run_id, .. }
+            | RuntimeEvent::ModelInfo { run_id, .. }
+            | RuntimeEvent::TokenUsage { run_id, .. }
+            | RuntimeEvent::TurnStats { run_id, .. }
+            | RuntimeEvent::ToolProgress { run_id, .. }
+            | RuntimeEvent::StepAdded { run_id, .. }
+            | RuntimeEvent::StepStarted { run_id, .. }
+            | RuntimeEvent::StepFinished { run_id, .. }
+            | RuntimeEvent::StepFailed { run_id, .. }
+            | RuntimeEvent::TaskComplete { run_id, .. }
+            | RuntimeEvent::Info { run_id, .. }
+            | RuntimeEvent::MdInfo { run_id, .. }
+            | RuntimeEvent::HookContext { run_id, .. }
+            | RuntimeEvent::HookStatus { run_id, .. }
+            | RuntimeEvent::PopupMarkdown { run_id, .. }
+            | RuntimeEvent::TasksChanged { run_id, .. }
+            | RuntimeEvent::ToolMeta { run_id, .. }
+            | RuntimeEvent::BackgroundTaskFinished { run_id, .. }
+            | RuntimeEvent::SubagentFinished { run_id, .. }
+            | RuntimeEvent::SubagentsChanged { run_id, .. }
+            | RuntimeEvent::Compaction { run_id, .. }
+            | RuntimeEvent::Recovery { run_id, .. }
+            | RuntimeEvent::Retry { run_id, .. } => run_id.clone(),
+            _ => None,
+        });
         let trajectory_id = trajectory_id
             .cloned()
-            .unwrap_or_else(|| tact_protocol::TrajectoryId::from(run_id.as_str()));
+            .unwrap_or_else(|| trajectory_for_run(run_id.as_ref()));
         let event_type = event_type(&event);
         let payload = serde_json::to_value(&event).map_err(|error| {
             KernelError::new(
@@ -378,6 +362,19 @@ impl TrajectoryService for SqliteTrajectoryService {
 }
 
 /// The step a fact is nested under, when the event carries one.
+/// The trajectory a fact belongs to when it is not attributed to a run.
+///
+/// These facts are still replayable — they just do not pretend to belong to a
+/// run, and they cannot collide with a run that happens to be named `runtime`.
+const UNATTRIBUTED_TRAJECTORY: &str = "unattributed";
+
+/// A run's facts live in a trajectory named after the run; facts outside any
+/// run live in [`UNATTRIBUTED_TRAJECTORY`].
+fn trajectory_for_run(run_id: Option<&RunId>) -> TrajectoryId {
+    let name = run_id.map_or(UNATTRIBUTED_TRAJECTORY, RunId::as_str);
+    TrajectoryId::new(name).expect("run IDs and the constant are valid trajectory names")
+}
+
 fn parent_step_of(event: &RuntimeEvent) -> Option<StepId> {
     match event {
         RuntimeEvent::ToolCallStarted { parent_step_id, .. }
@@ -481,6 +478,43 @@ mod tests {
             facts.iter().map(|fact| fact.sequence).collect::<Vec<_>>()
         );
         assert!(replayed[0].sequence == 0);
+    }
+
+    /// A fact that belongs to no run must not borrow one: the old fallback put
+    /// every run-less fact of a session into a single synthetic bucket, so a
+    /// run that happened to be named `runtime` would have seen them.
+    #[tokio::test]
+    async fn a_fact_outside_any_run_is_not_attributed_to_one() {
+        let service = KernelTrajectoryRecorder::new(TrajectoryRecorder::default());
+        service
+            .append(
+                None,
+                None,
+                RuntimeEvent::PluginStarted {
+                    plugin_id: "test.plugin".into(),
+                },
+            )
+            .await
+            .expect("append a run-less fact");
+
+        let facts = service
+            .replay(&TrajectoryId::from(UNATTRIBUTED_TRAJECTORY))
+            .await
+            .expect("replay the unattributed trajectory");
+        assert_eq!(facts.len(), 1);
+        assert_eq!(
+            facts[0].run_id, None,
+            "a run-less fact must not be given a run identity"
+        );
+
+        let fake_run = service
+            .query(&TrajectoryId::from("runtime"), 0)
+            .await
+            .expect("query the runtime trajectory");
+        assert!(
+            fake_run.is_empty(),
+            "a run named `runtime` must not inherit unrelated facts"
+        );
     }
 
     #[tokio::test]

@@ -265,7 +265,7 @@ mod tests {
     fn fact(trajectory_id: &TrajectoryId, sequence: u64) -> TrajectoryEvent {
         TrajectoryEvent {
             trajectory_id: trajectory_id.clone(),
-            run_id: RunId::new("run-1").expect("run id"),
+            run_id: Some(RunId::new("run-1").expect("run id")),
             sequence,
             timestamp: chrono::Utc::now(),
             actor: ActorId::from("host"),

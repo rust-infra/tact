@@ -429,7 +429,7 @@ mod tests {
         .expect("trajectory recorder did not persist the event");
 
         assert_eq!(events.len(), 1);
-        assert_eq!(events[0].run_id, run_id);
+        assert_eq!(events[0].run_id, Some(run_id));
     }
 
     /// A secret a tool printed must not reach the durable trajectory verbatim.
