@@ -254,6 +254,36 @@ Do the `tact_view` move first (it is a pure relocation, compiler-checked, and
 
 **Verify:** `cargo test -p tact_extensions --lib`.
 
+### Task 3 tail: delete the legacy channel
+
+An **atomic sweep** — the channel's payload type and every assertion that reads
+it are coupled, so there is no green intermediate state. Measured 2026-10-09:
+
+- **22** declarations of `UnboundedSender<AgentUpdate>`: `tool/mod.rs` (5),
+  `ui_responder.rs` (4), `tool/progress.rs` (2), `tool/subagent_ui.rs` (2),
+  `agent/mod.rs` (1), `background.rs` (1), `tact_ui/tests…/test_support.rs` (7).
+- **168** test assertions/patterns reading `AgentUpdate` off that channel.
+
+Order that stays green inside each crate pair:
+
+1. Change the payload to `RuntimeEvent` and drop the reverse projection on this
+   path (`ViewUpdateEmitter::legacy`, `UiResponder::legacy_tx`,
+   `ToolProgressReporter::ui_tx`, `ToolContext::ui_tx`,
+   `Agent::with_ui_channel`).
+2. Rewrite the test patterns. Almost all are regex-able because their bindings
+   are bare identifiers:
+   `AgentUpdate::Info(msg)` → `RuntimeEvent::Info { content: msg, .. }`, and the
+   same for `MdInfo`, `Error`, `StreamChunk` (→ `Text { content, .. }`),
+   `StepAdded` (→ `StepAdded { step, .. }`), `TokenUsage`, `ModelInfo`,
+   `TaskComplete`, `ThinkingChunk` (→ `Thinking { chunk, .. }`).
+   Struct patterns (`TurnStats`, `HookStatus`, `StepStarted`) only need `..`.
+3. Then the channel is gone and `Agent::with_ui_channel` becomes a sink fixture.
+
+`tui` (277) is Task 4 and has to follow, because it still reads the legacy view
+model internally — that is a View's own business and can stay; what must go is
+crossing the crate boundary with it.
+
+
 ### Task 4: Switch the TUI to `RuntimeEvent`
 
 - [ ] `App::handle_agent_update(AgentUpdate)` → `handle_runtime_event(RuntimeEvent)`
