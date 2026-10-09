@@ -7,7 +7,8 @@ use tact_extensions::{
     plugin::{PluginEvent, PluginRequest},
     skill::SharedSkillRegistry,
 };
-use tact_protocol::{AccountUpdate, AgentUpdate, RunId, UserCommand};
+use tact_protocol::{AccountUpdate, RunId};
+use tact_view::{AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{i18n::Language, theme::Theme};

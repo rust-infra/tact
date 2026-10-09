@@ -17,7 +17,8 @@ use rmcp::{
 use serde_json::json;
 use tact_extensions::mcp::{MCPToolRouter, McpClient, MockMcpService};
 use tact_llm::{ContentBlock, MockClient, StopReason};
-use tact_protocol::{AgentUpdate, StepStatus};
+use tact_protocol::StepStatus;
+use tact_view::AgentUpdate;
 
 fn echo_tool() -> McpTool {
     McpTool {

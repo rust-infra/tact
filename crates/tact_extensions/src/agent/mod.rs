@@ -16,7 +16,8 @@ use tact_llm::{
     MessageKind, OpenAiReasoningEffort, ProviderConversationState, ProviderKind,
     ProviderStateUpdate, RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
 };
-use tact_protocol::{AgentUpdate, RunId, TokenUsageInfo};
+use tact_protocol::{RunId, TokenUsageInfo};
+use tact_view::AgentUpdate;
 
 use crate::{
     ToolSpec,
@@ -3506,7 +3507,7 @@ mod tests {
         let info_messages: Vec<&str> = updates
             .iter()
             .filter_map(|u| match u {
-                tact_protocol::AgentUpdate::Info(msg) => Some(msg.as_str()),
+                tact_view::AgentUpdate::Info(msg) => Some(msg.as_str()),
                 _ => None,
             })
             .collect();
@@ -3617,7 +3618,7 @@ mod tests {
     #[tokio::test]
     async fn local_compact_continues_truncated_summary() {
         ensure_config();
-        use tact_protocol::AgentUpdate;
+        use tact_view::AgentUpdate;
 
         let context = test_context("local_compact_continue");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -4549,7 +4550,7 @@ mod tests {
         assert!(
             updates.iter().all(|u| !matches!(
                 u,
-                tact_protocol::AgentUpdate::Info(msg) if msg.contains("[responses compacted")
+                tact_view::AgentUpdate::Info(msg) if msg.contains("[responses compacted")
             )),
             "no compaction success Info may be emitted, got: {updates:?}"
         );
@@ -5208,7 +5209,7 @@ mod tests {
                 updates
                     .iter()
                     .filter_map(|u| match u {
-                        tact_protocol::AgentUpdate::Info(msg) => Some(msg.as_str()),
+                        tact_view::AgentUpdate::Info(msg) => Some(msg.as_str()),
                         _ => None,
                     })
                     .all(|msg| !msg.contains(secret)),
@@ -5471,7 +5472,7 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_injects_session_start_context_as_its_own_message() {
         ensure_config();
-        use tact_protocol::AgentUpdate;
+        use tact_view::AgentUpdate;
 
         const BRIEF: &str = "graph says: resume from checkpoint 7";
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -5884,7 +5885,7 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_surfaces_refusal_as_error() {
         ensure_config();
-        use tact_protocol::AgentUpdate;
+        use tact_view::AgentUpdate;
 
         let context = test_context("agent_loop_refusal");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
@@ -6182,7 +6183,7 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_runs_parallel_read_tools() {
         ensure_config();
-        use tact_protocol::AgentUpdate;
+        use tact_view::AgentUpdate;
 
         use crate::tool::test_support::{test_context, write_workspace_file};
 
@@ -6362,7 +6363,7 @@ mod tests {
     async fn cancel_mid_preflight_answers_every_tool_use_once() {
         ensure_config();
         use crate::tool::test_support::test_context;
-        use tact_protocol::AgentUpdate;
+        use tact_view::AgentUpdate;
 
         let dir = tempfile::tempdir().unwrap();
         let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
@@ -6452,7 +6453,7 @@ mod tests {
     async fn cancel_mid_preflight_answers_an_approved_but_unrun_call() {
         ensure_config();
         use crate::tool::test_support::test_context;
-        use tact_protocol::AgentUpdate;
+        use tact_view::AgentUpdate;
 
         let dir = tempfile::tempdir().unwrap();
         let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
@@ -6672,7 +6673,7 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_plan_mode_denies_write() {
         ensure_config();
-        use tact_protocol::AgentUpdate;
+        use tact_view::AgentUpdate;
 
         use crate::tool::test_support::test_context;
 
@@ -6732,7 +6733,8 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_emits_token_usage_from_mock() {
         ensure_config();
-        use tact_protocol::{AgentUpdate, TokenUsageInfo};
+        use tact_protocol::TokenUsageInfo;
+        use tact_view::AgentUpdate;
 
         use crate::tool::test_support::test_context;
 
@@ -6791,7 +6793,7 @@ mod tests {
     #[tokio::test]
     async fn agent_loop_serializes_read_before_write_on_same_file() {
         ensure_config();
-        use tact_protocol::AgentUpdate;
+        use tact_view::AgentUpdate;
 
         use crate::tool::test_support::{test_context, write_workspace_file};
 

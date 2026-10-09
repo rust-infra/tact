@@ -1,5 +1,6 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tact_protocol::{InteractionResponse, RequestId, UserCommand};
+use tact_protocol::{InteractionResponse, RequestId};
+use tact_view::UserCommand;
 
 use crate::i18n::Language;
 use crate::widgets::state::app::config::theme_label;
@@ -1525,7 +1526,7 @@ thinking_budget = {thinking_budget}
 
         // A second agent select arrives while the first is open → queued, not
         // overwritten (the overwrite would hang the first subagent's waiter).
-        app.handle_agent_update(tact_protocol::AgentUpdate::RequestSelect {
+        app.handle_agent_update(tact_view::AgentUpdate::RequestSelect {
             prompt: "Second".into(),
             options: vec!["Yes".into(), "No".into()],
             request_id: 2,

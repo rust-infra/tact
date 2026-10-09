@@ -954,7 +954,8 @@ fn main_area_thinking_popup_renders_reasoning() {
 
 #[test]
 fn active_thinking_popup_uses_buffered_content() {
-    use tact_protocol::{AgentUpdate, ThinkingChunk};
+    use tact_protocol::ThinkingChunk;
+    use tact_view::AgentUpdate;
 
     let mut app = make_app();
     app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
@@ -973,7 +974,8 @@ fn active_thinking_popup_uses_buffered_content() {
 
 #[test]
 fn active_thinking_popup_preserves_blank_lines() {
-    use tact_protocol::{AgentUpdate, ThinkingChunk};
+    use tact_protocol::ThinkingChunk;
+    use tact_view::AgentUpdate;
 
     let mut app = make_app();
     app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
@@ -1098,7 +1100,7 @@ fn thinking_popup_selection_text_matches_visible_markdown_text() {
 
 #[test]
 fn full_frame_done_status_renders_in_status_bar() {
-    use tact_protocol::AgentUpdate;
+    use tact_view::AgentUpdate;
 
     let mut app = make_app();
     app.handle_agent_update(AgentUpdate::StreamChunk("All done.".into()));
@@ -1130,7 +1132,7 @@ fn full_frame_select_mode_shows_in_status_bar() {
 #[test]
 fn main_area_markdown_stream_renders_in_log() {
     let mut app = make_app();
-    app.handle_agent_update(tact_protocol::AgentUpdate::StreamChunk(
+    app.handle_agent_update(tact_view::AgentUpdate::StreamChunk(
         "# Title\n\nBody paragraph.".into(),
     ));
 
@@ -1160,7 +1162,7 @@ fn background_popup_keeps_the_listing_out_of_the_log() {
     let mut app = make_app();
     let listing = "```text\n018f3a2c  running   cargo build\n```";
     let log_len = app.log.items.len();
-    app.handle_agent_update(tact_protocol::AgentUpdate::PopupMarkdown {
+    app.handle_agent_update(tact_view::AgentUpdate::PopupMarkdown {
         title: "⚙️ Background Tasks".to_string(),
         source: listing.to_string(),
     });
@@ -1195,7 +1197,7 @@ fn session_stats_popup_renders_gfm_table() {
         "|--------|------:|\n",
         "| Elapsed | 1.0s |\n",
     );
-    app.handle_agent_update(tact_protocol::AgentUpdate::PopupMarkdown {
+    app.handle_agent_update(tact_view::AgentUpdate::PopupMarkdown {
         title: "Session Statistics".to_string(),
         source: stats.to_string(),
     });
@@ -1249,7 +1251,8 @@ fn session_stats_popup_renders_gfm_table() {
 fn main_area_loading_spinner_when_executing() {
     use std::collections::HashMap;
 
-    use tact_protocol::{AgentUpdate, PlanStep};
+    use tact_protocol::PlanStep;
+    use tact_view::AgentUpdate;
 
     let mut app = make_app();
     app.status = crate::widgets::state::Status::Executing {
@@ -1278,7 +1281,8 @@ fn main_area_loading_spinner_when_executing() {
 fn open_diff_popup_after_edit_file_step_uses_git_diff() {
     use std::{collections::HashMap, process::Command};
 
-    use tact_protocol::{AgentUpdate, PlanStep};
+    use tact_protocol::PlanStep;
+    use tact_view::AgentUpdate;
 
     let tmp = std::env::temp_dir().join(format!("tact-edit-popup-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
@@ -1456,7 +1460,8 @@ fn diff_popup_no_diff_mode_shows_line_numbers_and_syntax() {
 fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
     use std::{collections::HashMap, process::Command};
 
-    use tact_protocol::{AgentUpdate, PlanStep};
+    use tact_protocol::PlanStep;
+    use tact_view::AgentUpdate;
 
     let tmp = std::env::temp_dir().join(format!("tact-edit-popup-mp-{}", std::process::id()));
     std::fs::create_dir_all(&tmp).unwrap();
@@ -1533,7 +1538,8 @@ fn open_diff_popup_after_edit_file_step_shows_minus_and_plus() {
 fn open_diff_popup_after_read_file_step_finish() {
     use std::collections::HashMap;
 
-    use tact_protocol::{AgentUpdate, PlanStep};
+    use tact_protocol::PlanStep;
+    use tact_view::AgentUpdate;
 
     let mut app = make_app();
     let file = std::env::temp_dir().join(format!("tact-popup-{}.rs", std::process::id()));
@@ -1634,7 +1640,7 @@ fn tasks_dag_popup_paints_the_theme_background_over_its_whole_rect() {
 
     let mut app = make_app();
     // Seed the log with wide glyphs so a leave-behind would be visible.
-    app.handle_agent_update(tact_protocol::AgentUpdate::StreamChunk(
+    app.handle_agent_update(tact_view::AgentUpdate::StreamChunk(
         "│ ── 中文宽字符 ── │\n".repeat(4),
     ));
     app.task_panel_mut().apply_snapshot(vec![TaskSnapshot {

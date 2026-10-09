@@ -1,7 +1,7 @@
 //! Shared OpenAI-compatible `LlmClient` wiring: assemble body → transport.
 
 use serde_json::Value;
-use tact_protocol::AgentUpdate;
+use tact_view::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::OpenAiAdapter;

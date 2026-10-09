@@ -15,11 +15,11 @@ use std::time::Duration;
 
 use serde_json::json;
 use tact_llm::MockClient;
-use tact_protocol::{AgentUpdate, UserCommand};
 use tact_ui::{
     driver::handle_user_command,
     test_support::{build_test_agent, install_test_config},
 };
+use tact_view::{AgentUpdate, UserCommand};
 use wiremock::{
     Mock, MockServer, ResponseTemplate,
     matchers::{method, path, path_regex},

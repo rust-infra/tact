@@ -4,7 +4,7 @@
 //! (`make_app`, `handle_agent_update`, log rendering); the cell itself and its
 //! pure unit tests moved to `agent_tui_kit::render::cells::markdown`.
 
-use tact_protocol::AgentUpdate;
+use tact_view::AgentUpdate;
 
 use crate::{
     render::{

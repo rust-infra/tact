@@ -25,15 +25,12 @@ pub use envelope::{
 pub use error::{ErrorCategory, ProtocolError};
 pub use ids::{PluginId, RequestId, RunId, SessionId, StepId, TrajectoryId};
 pub use interaction::{InteractionRequest, InteractionResponse};
-pub use runtime::{
-    PluginRequest, PluginResponse, RuntimeCommand, RuntimeEvent, runtime_events_for,
-};
+pub use runtime::{PluginRequest, PluginResponse, RuntimeCommand, RuntimeEvent};
 
 pub use agent::{
-    AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus,
-    SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot,
-    TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolDetailKind, ToolPopupKind,
-    ToolPresentationInfo, ToolVisualKind, UserCommand,
+    ModelCallParams, PlanStep, StepResult, StepStatus, SubagentRunSnapshot, SubagentStatusSnapshot,
+    TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, TokenUsageInfo,
+    ToolDetailKind, ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
 };
 pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,

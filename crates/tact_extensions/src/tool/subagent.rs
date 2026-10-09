@@ -12,7 +12,8 @@ use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_llm::{ApiKeyProvider, Client, Message, Role, get_llm_client};
-use tact_protocol::{AgentUpdate, ToolVisualKind};
+use tact_protocol::ToolVisualKind;
+use tact_view::AgentUpdate;
 use tool_refactor_macros::tool;
 use tracing::warn;
 

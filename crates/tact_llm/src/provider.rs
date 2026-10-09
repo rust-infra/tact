@@ -503,7 +503,8 @@ mod tests {
 
     use futures_util::future::BoxFuture;
     use secrecy::SecretString;
-    use tact_protocol::{AgentUpdate, TokenUsageInfo};
+    use tact_protocol::TokenUsageInfo;
+    use tact_view::AgentUpdate;
 
     use super::*;
     use crate::{

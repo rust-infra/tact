@@ -16,8 +16,8 @@ use crate::tool::{
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tact_protocol::AgentUpdate;
 use tact_protocol::ToolVisualKind;
+use tact_view::AgentUpdate;
 use tool_refactor_macros::tool;
 use tracing::debug;
 
@@ -149,7 +149,7 @@ fn format_headless_question(question: &str, options: &[String], multi: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use tact_protocol::AgentUpdate;
+    use tact_view::AgentUpdate;
     use tokio::sync::mpsc::unbounded_channel;
 
     use super::*;

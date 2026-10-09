@@ -7,7 +7,8 @@ use harness::{
 };
 use tact_extensions::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{MockClient, StopReason};
-use tact_protocol::{AgentUpdate, StepStatus};
+use tact_protocol::StepStatus;
+use tact_view::AgentUpdate;
 
 #[tokio::test]
 async fn default_mode_allow_once_runs_edit_file() {

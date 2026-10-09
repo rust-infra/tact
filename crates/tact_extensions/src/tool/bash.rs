@@ -9,7 +9,8 @@ use anyhow::{Context, Result};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::ToolVisualKind;
-use tact_protocol::{AgentUpdate, ToolOutputBuffer, ToolOutputChunk, ToolOutputStream};
+use tact_protocol::{ToolOutputBuffer, ToolOutputChunk, ToolOutputStream};
+use tact_view::AgentUpdate;
 use tokio::{
     process::{Child, Command},
     sync::mpsc,

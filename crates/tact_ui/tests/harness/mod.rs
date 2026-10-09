@@ -8,7 +8,7 @@ use std::sync::{
 
 use tact_extensions::permission::PermissionMode;
 use tact_llm::{ContentBlock, MockClient, StopReason};
-use tact_protocol::{AgentUpdate, TokenUsageInfo, UserCommand};
+use tact_protocol::TokenUsageInfo;
 use tact_ui::{
     driver::run_command_loop,
     test_support::{
@@ -17,6 +17,7 @@ use tact_ui::{
         user_command_channels,
     },
 };
+use tact_view::{AgentUpdate, UserCommand};
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel},
     task::JoinHandle,

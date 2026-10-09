@@ -35,7 +35,8 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
-use tact_protocol::{AgentUpdate, ToolOutputChunk, ToolOutputStream};
+use tact_protocol::{ToolOutputChunk, ToolOutputStream};
+use tact_view::AgentUpdate;
 use tokio::{
     io::AsyncWriteExt,
     process::{Child, Command},

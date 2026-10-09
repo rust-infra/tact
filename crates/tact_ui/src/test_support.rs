@@ -13,7 +13,7 @@ use tact_extensions::{
     tool::{test_support::test_context, toolset},
 };
 use tact_llm::{LlmProvider, MockClient, ProviderKind};
-use tact_protocol::AgentUpdate;
+use tact_view::AgentUpdate;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 static WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
@@ -258,8 +258,8 @@ pub async fn build_test_agent_with_session(
 
 /// `(sender, receiver)` pair for driving `run_command_loop` in tests.
 pub fn user_command_channels() -> (
-    UnboundedSender<tact_protocol::UserCommand>,
-    UnboundedReceiver<tact_protocol::UserCommand>,
+    UnboundedSender<tact_view::UserCommand>,
+    UnboundedReceiver<tact_view::UserCommand>,
 ) {
     unbounded_channel()
 }

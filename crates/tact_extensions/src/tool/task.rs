@@ -157,7 +157,8 @@ pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<Str
 mod tests {
     use super::*;
     use crate::tool::{ToolRouter, test_support::test_context};
-    use tact_protocol::{AgentUpdate, TasksChangeReason};
+    use tact_protocol::TasksChangeReason;
+    use tact_view::AgentUpdate;
 
     #[tokio::test]
     async fn task_create_strips_empty_description() {

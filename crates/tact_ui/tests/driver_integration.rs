@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tact_extensions::tool::test_support::write_workspace_file;
 use tact_llm::{ContentBlock, MockClient, StopReason};
-use tact_protocol::{AgentUpdate, StepStatus, UserCommand};
+use tact_protocol::StepStatus;
 use tact_ui::{
     driver::run_command_loop,
     test_support::{
@@ -12,6 +12,7 @@ use tact_ui::{
         install_test_config, user_command_channels,
     },
 };
+use tact_view::{AgentUpdate, UserCommand};
 
 fn text_block(content: &str) -> ContentBlock {
     ContentBlock::Text {

@@ -7,7 +7,8 @@ use std::{
 };
 
 use tact_extensions::plugin::{PluginEvent, PluginRequest};
-use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
+use tact_protocol::AccountUpdate;
+use tact_view::{AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{

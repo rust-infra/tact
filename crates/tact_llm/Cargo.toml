@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 tact_protocol = { path = "../tact_protocol" }
+tact_view = { path = "../tact_view" }
 anyhow = { workspace = true }
 thiserror = "2"
 async-openai = { workspace = true }

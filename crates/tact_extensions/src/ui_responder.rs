@@ -30,7 +30,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::utils::LockExt;
-use tact_protocol::AgentUpdate;
+use tact_view::AgentUpdate;
 #[cfg(any(test, feature = "test-support"))]
 use tokio::sync::mpsc::UnboundedSender;
 use tokio::sync::oneshot;

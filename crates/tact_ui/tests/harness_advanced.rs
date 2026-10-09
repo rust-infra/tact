@@ -11,7 +11,7 @@ use harness::{
 };
 use tact_extensions::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{LlmError, MockClient, StopReason};
-use tact_protocol::{AgentUpdate, UserCommand};
+use tact_view::{AgentUpdate, UserCommand};
 
 #[tokio::test]
 async fn dynamic_mock_inspects_request_and_branches() {

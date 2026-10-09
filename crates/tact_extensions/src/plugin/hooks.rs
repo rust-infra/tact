@@ -42,7 +42,7 @@ use serde_json::{Value, json};
 use tokio::{io::AsyncWriteExt, process::Command, time::timeout};
 use tracing::warn;
 
-use tact_protocol::AgentUpdate;
+use tact_view::AgentUpdate;
 
 use crate::{
     compact::CompactTrigger,

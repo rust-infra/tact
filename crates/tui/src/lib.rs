@@ -49,7 +49,8 @@ use ratatui::{
     widgets::ScrollbarState,
 };
 use tact_extensions::plugin::{PluginEvent, PluginRequest};
-use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
+use tact_protocol::AccountUpdate;
+use tact_view::{AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::StreamExt;
 
@@ -674,7 +675,7 @@ fn runtime_event_to_agent_updates(event: tact_protocol::RuntimeEvent) -> Vec<Age
         RuntimeEvent::SubagentsChanged { runs, .. } => vec![AgentUpdate::SubagentsChanged { runs }],
         RuntimeEvent::Cancelled { .. } => vec![AgentUpdate::TaskCancelled],
         RuntimeEvent::Error { message, .. } => {
-            vec![AgentUpdate::Error(tact_protocol::AgentErrorKind::Other(
+            vec![AgentUpdate::Error(tact_view::AgentErrorKind::Other(
                 message,
             ))]
         }
@@ -912,7 +913,7 @@ mod runtime_event_tests {
 
         assert!(matches!(
             updates.as_slice(),
-            [tact_protocol::AgentUpdate::StreamChunk(text)] if text == "hello"
+            [tact_view::AgentUpdate::StreamChunk(text)] if text == "hello"
         ));
     }
 
@@ -925,7 +926,7 @@ mod runtime_event_tests {
 
         assert!(matches!(
             updates.as_slice(),
-            [tact_protocol::AgentUpdate::TaskComplete(text)] if text == "finished"
+            [tact_view::AgentUpdate::TaskComplete(text)] if text == "finished"
         ));
     }
 
@@ -945,7 +946,7 @@ mod runtime_event_tests {
 
         assert!(matches!(
             updates.as_slice(),
-            [tact_protocol::AgentUpdate::ModelInfo(info)] if info.model == "model-a"
+            [tact_view::AgentUpdate::ModelInfo(info)] if info.model == "model-a"
         ));
     }
 
@@ -962,7 +963,7 @@ mod runtime_event_tests {
 
         assert!(matches!(
             updates.as_slice(),
-            [tact_protocol::AgentUpdate::RequestSelect {
+            [tact_view::AgentUpdate::RequestSelect {
                 request_id: 42,
                 prompt,
                 options,
@@ -981,7 +982,7 @@ mod runtime_event_tests {
 
         assert!(matches!(
             updates.as_slice(),
-            [tact_protocol::AgentUpdate::PopupMarkdown { title, source }]
+            [tact_view::AgentUpdate::PopupMarkdown { title, source }]
                 if title == "Session stats" && source == "Turns: 3"
         ));
     }
@@ -1000,7 +1001,7 @@ mod runtime_event_tests {
 
         assert!(matches!(
             updates.as_slice(),
-            [tact_protocol::AgentUpdate::StepStarted { idx: 7, tool_id, .. }]
+            [tact_view::AgentUpdate::StepStarted { idx: 7, tool_id, .. }]
                 if tool_id == "tool-view"
         ));
     }

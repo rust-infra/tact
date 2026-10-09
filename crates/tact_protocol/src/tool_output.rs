@@ -494,22 +494,4 @@ mod tests {
             50_000 + TRUNCATION_MARKER.chars().count()
         );
     }
-
-    #[test]
-    fn tool_progress_event_keeps_ordered_chunks() {
-        let chunks = vec![
-            ToolOutputChunk::stdout("out"),
-            ToolOutputChunk::stderr("err"),
-        ];
-        let event = crate::AgentUpdate::ToolProgress {
-            tool_id: "bash-1".to_string(),
-            chunks: chunks.clone(),
-        };
-
-        assert!(matches!(
-            event,
-            crate::AgentUpdate::ToolProgress { tool_id, chunks: actual }
-                if tool_id == "bash-1" && actual == chunks
-        ));
-    }
 }

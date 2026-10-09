@@ -33,7 +33,8 @@ pub use multi_model::ChatCompletionsAdapter;
 use reqwest13::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
-use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo};
+use tact_protocol::{ThinkingChunk, TokenUsageInfo};
+use tact_view::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::LlmError;

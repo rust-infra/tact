@@ -7,6 +7,7 @@ license.workspace = true
 
 [dependencies]
 tact_protocol = { path = "../tact_protocol" }
+tact_view = { path = "../tact_view" }
 tact = { path = "../tact" }
 tact_trajectory = { path = "../tact_trajectory" }
 tact_plugin_host = { path = "../tact_plugin_host" }

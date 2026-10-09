@@ -8,7 +8,7 @@ use harness::{
 };
 use tact_extensions::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{MockClient, StopReason};
-use tact_protocol::AgentUpdate;
+use tact_view::AgentUpdate;
 use tui::test_support::TestApp;
 
 #[tokio::test]
@@ -185,7 +185,7 @@ async fn parallel_background_runs_each_get_a_sticky_row() {
 async fn background_rows_accumulate_across_turns() {
     use harness::{background_run_tool_use, run_commands};
     use std::time::Duration;
-    use tact_protocol::UserCommand;
+    use tact_view::UserCommand;
 
     let mock = MockClient::new(vec![
         mock_turn(

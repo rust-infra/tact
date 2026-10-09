@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "crates/tact_protocol",
+    "crates/tact_view",
     "crates/agent_tui_kit",
     "crates/tui",
     "crates/tact",

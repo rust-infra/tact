@@ -1,6 +1,7 @@
 //! Forward subagent `ui_tx` traffic as `ToolProgress` for the parent tool card.
 
-use tact_protocol::{AgentUpdate, ToolOutputChunk};
+use tact_protocol::ToolOutputChunk;
+use tact_view::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::tool::ToolProgressReporter;

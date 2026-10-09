@@ -4,7 +4,8 @@ use std::time::Instant;
 use async_openai_responses::types::responses::{
     OutputItem, Response, ResponseStreamEvent, WebSearchToolCall, WebSearchToolCallStatus,
 };
-use tact_protocol::{AgentUpdate, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo};
+use tact_protocol::{StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo};
+use tact_view::AgentUpdate;
 
 use super::normalize::{NormalizedResponse, normalize_response};
 use crate::LlmError;
@@ -446,7 +447,8 @@ impl ResponsesStreamState {
 #[cfg(test)]
 mod tests {
     use async_openai_responses::types::responses::ResponseStreamEvent;
-    use tact_protocol::{AgentUpdate, StepStatus, ThinkingChunk};
+    use tact_protocol::{StepStatus, ThinkingChunk};
+    use tact_view::AgentUpdate;
 
     use super::ResponsesStreamState;
     use crate::ContentBlock;

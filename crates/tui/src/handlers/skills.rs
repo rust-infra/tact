@@ -8,7 +8,7 @@
 //! [`submit_user_task`] matches a normal Insert Enter submit (Planning / log /
 //! history).
 
-use tact_protocol::UserCommand;
+use tact_view::UserCommand;
 
 use super::CommandExecOutcome;
 use crate::widgets::state::{App, SkillEntry, Status};
@@ -379,7 +379,7 @@ mod tests {
 
         use crate::widgets::state::App;
 
-        let (_agent_tx, agent_rx) = unbounded_channel::<tact_protocol::AgentUpdate>();
+        let (_agent_tx, agent_rx) = unbounded_channel::<tact_view::AgentUpdate>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel();
         let (plugin_tx, _plugin_rx) = unbounded_channel();
         let (_event_tx, plugin_event_rx) = unbounded_channel();

@@ -13,7 +13,8 @@ use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::time::Duration;
-use tact_protocol::{AgentUpdate, ToolVisualKind};
+use tact_protocol::ToolVisualKind;
+use tact_view::AgentUpdate;
 use tool_refactor_macros::tool;
 
 use crate::tool::ToolContext;

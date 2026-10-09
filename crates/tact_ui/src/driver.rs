@@ -5,7 +5,8 @@ use std::{path::Path, sync::atomic::Ordering};
 use tact_extensions::background::SharedBackgroundManager;
 use tact_extensions::{Agent, extract_text, hook::HookControl, utils::RwLockExt};
 use tact_llm::{Message, Role};
-use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, RuntimeCommand, UserCommand};
+use tact_protocol::{AccountUpdate, RuntimeCommand};
+use tact_view::{AgentErrorKind, AgentUpdate, UserCommand};
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
@@ -637,7 +638,8 @@ mod tests {
     use std::sync::atomic::Ordering;
 
     use tact_llm::{ContentBlock, MockClient, StopReason};
-    use tact_protocol::{AgentUpdate, RunId, RuntimeCommand, UserCommand};
+    use tact_protocol::{RunId, RuntimeCommand};
+    use tact_view::{AgentUpdate, UserCommand};
 
     use crate::test_support::{build_test_agent, install_test_config};
 

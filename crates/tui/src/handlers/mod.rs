@@ -21,7 +21,7 @@ pub(crate) use overlay::handle_overlay_key;
 pub(crate) use palette::handle_palette_mode;
 pub(crate) use select::handle_select_mode;
 pub(crate) use skills::flush_pending_when_idle;
-use tact_protocol::UserCommand;
+use tact_view::UserCommand;
 
 use crate::widgets::state::{App, InputMode, SelectKind, SlashCommand, Status};
 
@@ -709,7 +709,7 @@ mod tests {
     use crate::test_fixtures::TestApp;
     use crate::widgets::state::{App, InputMode, SlashCommand, Status, Subcommand};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use tact_protocol::UserCommand;
+    use tact_view::UserCommand;
 
     /// Runs `/skill <sub>` the way the input box does: the palette dispatches on
     /// the command name alone, and the handler reads the subcommand from the

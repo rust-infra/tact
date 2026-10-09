@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
-use tact_protocol::{AgentUpdate, PlanStep, StepStatus, ThinkingChunk, ToolPresentationInfo};
+use tact_protocol::{PlanStep, StepStatus, ThinkingChunk, ToolPresentationInfo};
+use tact_view::AgentUpdate;
 
 use super::log::render_log_panel;
 use super::test_harness::{

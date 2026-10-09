@@ -2,7 +2,8 @@
 
 use std::{collections::HashMap, time::Duration};
 
-use tact_protocol::{AccountUpdate, AgentUpdate, PlanStep, ThinkingChunk, ToolPresentationInfo};
+use tact_protocol::{AccountUpdate, PlanStep, ThinkingChunk, ToolPresentationInfo};
+use tact_view::AgentUpdate;
 
 use super::test_harness::{
     make_app, render_app_text, render_log_panel_text, render_main_area_text,

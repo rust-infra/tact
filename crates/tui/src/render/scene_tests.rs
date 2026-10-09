@@ -3,7 +3,8 @@
 use std::collections::HashMap;
 
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
-use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepStatus, ThinkingChunk};
+use tact_protocol::{PlanStep, StepStatus, ThinkingChunk};
+use tact_view::{AgentErrorKind, AgentUpdate};
 
 use super::{
     render_status_bar,

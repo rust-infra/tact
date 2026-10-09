@@ -247,7 +247,7 @@ mod sticky_host_tests {
     fn seed_running_background(app: &mut crate::widgets::state::App, task_id: &str, command: &str) {
         let mut presentation = tact_protocol::ToolPresentationInfo::generic("background_run");
         presentation.keep_live = true;
-        app.handle_agent_update(tact_protocol::AgentUpdate::StepAdded(
+        app.handle_agent_update(tact_view::AgentUpdate::StepAdded(
             tact_protocol::PlanStep::new(
                 "run build in background",
                 "background_run",
@@ -255,7 +255,7 @@ mod sticky_host_tests {
                 std::collections::HashMap::from([("command".to_string(), command.to_string())]),
             ),
         ));
-        app.handle_agent_update(tact_protocol::AgentUpdate::StepStarted {
+        app.handle_agent_update(tact_view::AgentUpdate::StepStarted {
             idx: 0,
             tool_id: "bg1".into(),
             tool_name: "background_run".into(),
@@ -263,7 +263,7 @@ mod sticky_host_tests {
             arg_full: command.into(),
             presentation,
         });
-        app.handle_agent_update(tact_protocol::AgentUpdate::ToolMeta {
+        app.handle_agent_update(tact_view::AgentUpdate::ToolMeta {
             tool_id: "bg1".into(),
             model: None,
             token_usage: None,
@@ -320,7 +320,7 @@ mod sticky_host_tests {
         // The first chunk of output rebuilds the card. The task id must survive
         // that rebuild, or the strip empties the moment the task prints
         // anything (the live report: it flashed for well under a second).
-        app.handle_agent_update(tact_protocol::AgentUpdate::ToolProgress {
+        app.handle_agent_update(tact_view::AgentUpdate::ToolProgress {
             tool_id: "bg1".into(),
             chunks: vec![tact_protocol::ToolOutputChunk::stdout("Compiling ...\n")],
         });
@@ -348,7 +348,7 @@ mod sticky_host_tests {
         assert!(app.background_panel().visible);
 
         // What the shell receives when the task ends.
-        app.handle_agent_update(tact_protocol::AgentUpdate::BackgroundTaskFinished {
+        app.handle_agent_update(tact_view::AgentUpdate::BackgroundTaskFinished {
             tool_id: "bg1".into(),
             success: true,
             message: "Background task 018f3a2c completed".into(),

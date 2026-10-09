@@ -1,6 +1,7 @@
 //! [`LlmClient`] trait and [`LlmProvider`] enum.
 
-use tact_protocol::{AgentUpdate, TokenUsageInfo};
+use tact_protocol::TokenUsageInfo;
+use tact_view::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{

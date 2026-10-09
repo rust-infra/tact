@@ -2,7 +2,7 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use tact_protocol::AgentUpdate;
+use tact_view::AgentUpdate;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::{
@@ -237,12 +237,9 @@ impl HeadlessApp {
                 let _ = responder.respond(response);
             }
             None => {
-                let _ = self
-                    .inner
-                    .user_cmd_tx
-                    .send(tact_protocol::UserCommand::Runtime(
-                        tact_protocol::RuntimeCommand::RespondInteraction { response },
-                    ));
+                let _ = self.inner.user_cmd_tx.send(tact_view::UserCommand::Runtime(
+                    tact_protocol::RuntimeCommand::RespondInteraction { response },
+                ));
             }
         }
     }
@@ -280,7 +277,7 @@ impl HeadlessApp {
         self.inner.tools().popup.is_some()
     }
 
-    pub fn user_cmd_tx(&self) -> UnboundedSender<tact_protocol::UserCommand> {
+    pub fn user_cmd_tx(&self) -> UnboundedSender<tact_view::UserCommand> {
         self.inner.user_cmd_tx.clone()
     }
 

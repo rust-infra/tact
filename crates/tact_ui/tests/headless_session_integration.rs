@@ -10,8 +10,8 @@ use harness::{
 };
 use tact_extensions::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{MockClient, StopReason};
-use tact_protocol::UserCommand;
 use tact_ui::headless_session::run_headless_session;
+use tact_view::UserCommand;
 
 #[tokio::test]
 async fn headless_session_simple_task_reaches_done() {

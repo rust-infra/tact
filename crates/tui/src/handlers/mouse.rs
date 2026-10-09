@@ -1,7 +1,7 @@
 //! Mouse handling extracted from the main event loop for testability.
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-use tact_protocol::UserCommand;
+use tact_view::UserCommand;
 
 use super::{scroll_active_sticky, sticky_scrollable};
 use crate::widgets::state::{
@@ -650,7 +650,8 @@ mod tests {
 
     use crossterm::event::KeyModifiers;
     use ratatui::layout::Rect;
-    use tact_protocol::{AgentUpdate, PlanStep, ThinkingChunk, ToolPresentationInfo};
+    use tact_protocol::{PlanStep, ThinkingChunk, ToolPresentationInfo};
+    use tact_view::AgentUpdate;
 
     use super::*;
     use crate::test_fixtures::StepCall;
@@ -854,10 +855,10 @@ mod tests {
 
     #[test]
     fn pending_cancel_button_drops_queue_without_touching_task() {
-        use tact_protocol::UserCommand;
+        use tact_view::UserCommand;
         use tokio::sync::mpsc::unbounded_channel;
 
-        let (_agent_tx, agent_rx) = unbounded_channel::<tact_protocol::AgentUpdate>();
+        let (_agent_tx, agent_rx) = unbounded_channel::<tact_view::AgentUpdate>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
         let (plugin_tx, _plugin_request_rx) = unbounded_channel();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel();
@@ -904,7 +905,7 @@ mod tests {
     fn subagent_cancel_button_sends_cancel_subagent() {
         use tokio::sync::mpsc::unbounded_channel;
 
-        let (_agent_tx, agent_rx) = unbounded_channel::<tact_protocol::AgentUpdate>();
+        let (_agent_tx, agent_rx) = unbounded_channel::<tact_view::AgentUpdate>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
         let (plugin_tx, _plugin_request_rx) = unbounded_channel();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel();

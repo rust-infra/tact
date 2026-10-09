@@ -18,6 +18,7 @@ tact_extensions = { path = "../tact_extensions", features = ["test-support"] }
 tact_trajectory = { path = "../tact_trajectory" }
 tact_llm = { path = "../tact_llm" }
 tact_protocol = { path = "../tact_protocol" }
+tact_view = { path = "../tact_view" }
 tui = { path = "../tui", features = ["test-support"] }
 anyhow = { workspace = true }
 base64 = { workspace = true }

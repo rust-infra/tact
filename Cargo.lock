@@ -19,6 +19,7 @@ dependencies = [
  "ratatui-markdown",
  "syntect",
  "tact_protocol",
+ "tact_view",
  "unicode-segmentation",
  "unicode-width",
 ]
@@ -4817,6 +4818,7 @@ dependencies = [
  "tact_plugin_host",
  "tact_protocol",
  "tact_trajectory",
+ "tact_view",
  "tar",
  "tempfile",
  "tera",
@@ -4850,6 +4852,7 @@ dependencies = [
  "serde_json",
  "sha2",
  "tact_protocol",
+ "tact_view",
  "thiserror 2.0.19",
  "tokio",
  "tracing",
@@ -4938,12 +4941,21 @@ dependencies = [
  "tact_llm",
  "tact_protocol",
  "tact_trajectory",
+ "tact_view",
  "tempfile",
  "tokio",
  "tracing-subscriber",
  "tui",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "tact_view"
+version = "1.1.33"
+dependencies = [
+ "serde",
+ "tact_protocol",
 ]
 
 [[package]]
@@ -5509,6 +5521,7 @@ dependencies = [
  "tact_extensions",
  "tact_llm",
  "tact_protocol",
+ "tact_view",
  "tempfile",
  "tokio",
  "tokio-stream",

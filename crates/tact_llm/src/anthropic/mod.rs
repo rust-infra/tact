@@ -9,7 +9,8 @@ use std::{error::Error, time::Duration};
 use futures_util::StreamExt;
 use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::Deserialize;
-use tact_protocol::{AgentUpdate, ModelCallParams, ThinkingChunk, TokenUsageInfo};
+use tact_protocol::{ModelCallParams, ThinkingChunk, TokenUsageInfo};
+use tact_view::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::{

@@ -19,7 +19,7 @@ use reqwest13::header::{AUTHORIZATION, HeaderMap};
 use secrecy::ExposeSecret as LegacyExposeSecret;
 use secrecy10::{ExposeSecret, SecretString};
 use serde_json::Value;
-use tact_protocol::AgentUpdate;
+use tact_view::AgentUpdate;
 use tokio::sync::mpsc::UnboundedSender;
 
 use self::{

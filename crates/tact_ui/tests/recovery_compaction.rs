@@ -7,7 +7,8 @@ use harness::{
 };
 use tact_extensions::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{ContentBlock, LlmError, MessageContent, MockClient, ProviderKind, StopReason};
-use tact_protocol::{AgentUpdate, TokenUsageInfo};
+use tact_protocol::TokenUsageInfo;
+use tact_view::AgentUpdate;
 
 fn error_contains(updates: &[AgentUpdate], needle: &str) -> bool {
     updates.iter().any(
@@ -478,11 +479,11 @@ use std::sync::Arc;
 
 use tact_extensions::store::{SessionStore, session_store::SqliteSessionStore};
 use tact_llm::{Message, ProviderConversationState, ResponsesConversationState, Role};
-use tact_protocol::UserCommand;
 use tact_ui::{
     driver::run_command_loop,
     test_support::{build_responses_test_agent, collect_updates_after, user_command_channels},
 };
+use tact_view::UserCommand;
 use wiremock::matchers::{method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 

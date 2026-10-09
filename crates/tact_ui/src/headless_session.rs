@@ -7,7 +7,7 @@ use std::{
 
 use tact_extensions::permission::PermissionMode;
 use tact_llm::MockClient;
-use tact_protocol::UserCommand;
+use tact_view::UserCommand;
 use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
 use tui::test_support::{HeadlessApp, HeadlessSnapshots};
 

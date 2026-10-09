@@ -16,7 +16,8 @@ above them.
 | Directory | Package | Responsibility |
 |---|---|---|
 | `crates/tact` | `tact` | **Runtime Kernel** — capability router, permission boundary, event transport, minimal storage, cancellation / timeout / error, plugin registry, payload redaction. Depends on `tact_protocol` only. |
-| `crates/tact_protocol` | `tact_protocol` | **Plugin Protocol** — language-neutral IDs, envelopes, capability declarations, runtime events / commands, interactions, error categories. `serde` only. |
+| `crates/tact_protocol` | `tact_protocol` | **Plugin Protocol** — language-neutral IDs, envelopes, capability declarations, structured runtime events / commands, interactions, error categories, and the shared payload types. `serde` only. |
+| `crates/tact_view` | `tact_view` | **View contract** — the Rust view-model types a View adapter renders (`AgentUpdate`, `UserCommand`, `AgentErrorKind`) and the `runtime_events_for` projection onto the structured protocol events. These are deliberately outside `tact_protocol`. |
 | `crates/tact_trajectory` | `tact_trajectory` | **Trajectory** — execution-fact model, in-memory and SQLite recorders, ordered replay. Implements the Kernel's `TrajectoryService`. |
 | `crates/tact_plugin_host` | `tact_plugin_host` | **Plugin host machinery** — lifecycle boundary, stdio transport, supervision (handshake, correlation, timeouts, cancellation, crash detection, shutdown drain). |
 | `crates/tact_plugin_node` | `tact_plugin_node` | **Node.js Host** — the Node entry point over the shared host machinery. |
@@ -50,15 +51,20 @@ flowchart TB
     node --> host
     node --> protocol
     wasm --> host
+    view["tact_view<br/>View contract"]
     ext --> kernel
     ext --> traj
     ext --> host
     ext --> llm
+    ext --> view
     llm --> protocol
+    llm --> view
+    view --> protocol
     kit --> protocol
     tui --> ext
     tui --> kernel
     tui --> kit
+    tui --> view
     ui --> ext
     ui --> tui
     ui --> traj

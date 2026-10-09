@@ -27,7 +27,7 @@ async fn headless_frame_capture_records_progression() {
         |_| {},
         |tx| {
             tokio::spawn(async move {
-                tx.send(tact_protocol::UserCommand::SubmitTask("sleep".into()))
+                tx.send(tact_view::UserCommand::SubmitTask("sleep".into()))
                     .unwrap();
                 drop(tx);
             })
@@ -142,7 +142,7 @@ async fn headless_session_default_permission_reaches_select_popup() {
         |_| {},
         |tx| {
             tokio::spawn(async move {
-                tx.send(tact_protocol::UserCommand::SubmitTask("write".into()))
+                tx.send(tact_view::UserCommand::SubmitTask("write".into()))
                     .unwrap();
                 drop(tx);
             })

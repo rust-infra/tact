@@ -11,9 +11,8 @@ use std::{
 use anyhow::Result;
 use futures_util::{StreamExt, stream::FuturesUnordered};
 use tact_llm::ContentBlock;
-use tact_protocol::{
-    AgentUpdate, PluginId, RequestId, RunId, StepResult, StepStatus, ToolPresentationInfo,
-};
+use tact_protocol::{PluginId, RequestId, RunId, StepResult, StepStatus, ToolPresentationInfo};
+use tact_view::AgentUpdate;
 
 use super::Agent;
 use crate::{

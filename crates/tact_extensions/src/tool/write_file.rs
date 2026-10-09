@@ -9,7 +9,8 @@ use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::ToolVisualKind;
-use tact_protocol::{AgentUpdate, format_bytes};
+use tact_protocol::format_bytes;
+use tact_view::AgentUpdate;
 use tokio::{fs, io::AsyncWriteExt};
 use tool_refactor_macros::tool;
 

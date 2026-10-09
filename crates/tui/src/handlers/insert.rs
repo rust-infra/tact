@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent};
-use tact_protocol::UserCommand;
+use tact_view::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::{
@@ -582,7 +582,7 @@ mod tests {
     use super::{handle_insert_mode, insert_transcript};
     use crate::test_fixtures::TestApp;
     use crate::widgets::state::{App, InputMode, Status};
-    use tact_protocol::UserCommand;
+    use tact_view::UserCommand;
 
     fn runtime_task(command: UserCommand) -> String {
         match command {

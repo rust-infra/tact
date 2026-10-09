@@ -35,7 +35,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde_json::Value;
-use tact_protocol::AgentUpdate;
+use tact_view::AgentUpdate;
 
 use crate::{
     ToolSpec, background::SharedBackgroundManager, memory::MemoryManager, task::SharedTaskManager,
@@ -102,7 +102,7 @@ impl ViewUpdateEmitter {
             (state.runtime_sink.clone(), state.run_id.clone())
         };
         if let Some(sink) = runtime_sink {
-            for event in tact_protocol::runtime_events_for(&update, run_id) {
+            for event in tact_view::runtime_events_for(&update, run_id) {
                 let _ = sink.emit(event);
             }
             true

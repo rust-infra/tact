@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use tact_protocol::{AgentUpdate, InteractionResponse, RequestId};
+use tact_protocol::{InteractionResponse, RequestId};
+use tact_view::AgentUpdate;
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::widgets::state::{App, InputMode, SelectKind};

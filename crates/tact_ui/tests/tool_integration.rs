@@ -11,7 +11,8 @@ use harness::{
 };
 use tact_extensions::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{MockClient, StopReason};
-use tact_protocol::{AgentUpdate, StepStatus, UserCommand};
+use tact_protocol::StepStatus;
+use tact_view::{AgentUpdate, UserCommand};
 
 #[tokio::test]
 async fn parallel_read_files_both_succeed() {

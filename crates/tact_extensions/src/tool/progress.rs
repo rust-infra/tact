@@ -1,6 +1,7 @@
 use std::sync::{Arc, Mutex};
 
-use tact_protocol::{AgentUpdate, ToolOutputChunk, ToolOutputStream};
+use tact_protocol::{ToolOutputChunk, ToolOutputStream};
+use tact_view::AgentUpdate;
 
 use crate::security::{RedactionLevel, redact::StreamRedactor};
 
@@ -194,7 +195,7 @@ impl ToolProgressReporter {
 
 #[cfg(test)]
 mod tests {
-    use tact_protocol::AgentUpdate;
+    use tact_view::AgentUpdate;
 
     use super::*;
 

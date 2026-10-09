@@ -1121,9 +1121,10 @@ mod tests {
 
     use ratatui::layout::Rect;
     use tact_protocol::{
-        AgentUpdate, PlanStep, StepResult, StepStatus, ToolDetailKind, ToolPopupKind,
-        ToolPresentationInfo, ToolVisualKind,
+        PlanStep, StepResult, StepStatus, ToolDetailKind, ToolPopupKind, ToolPresentationInfo,
+        ToolVisualKind,
     };
+    use tact_view::AgentUpdate;
 
     use crate::test_fixtures::StepCall;
     use crate::{

@@ -4,9 +4,10 @@ use ratatui::{
     widgets::ScrollbarState,
 };
 use tact_protocol::{
-    AgentErrorKind, AgentUpdate, InteractionResponse, PlanStep, RequestId, RuntimeCommand,
-    StepResult, TaskSnapshot, TasksChangeReason, ThinkingChunk, UserCommand,
+    InteractionResponse, PlanStep, RequestId, RuntimeCommand, StepResult, TaskSnapshot,
+    TasksChangeReason, ThinkingChunk,
 };
+use tact_view::{AgentErrorKind, AgentUpdate, UserCommand};
 
 use agent_tui_kit::{Ctx, PendingQueue, components::tool::ToolEvent, state::StreamEvent};
 
@@ -939,10 +940,11 @@ mod lifecycle_tests {
 
     use tact_extensions::plugin::{PluginEvent, PluginOperation, PluginResult};
     use tact_protocol::{
-        AccountError, AccountUpdate, AgentErrorKind, AgentUpdate, PlanStep, RunId, RuntimeCommand,
-        TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, ToolOutputChunk,
-        ToolPresentationInfo, UserCommand,
+        AccountError, AccountUpdate, PlanStep, RunId, RuntimeCommand, TaskSnapshot,
+        TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, ToolOutputChunk,
+        ToolPresentationInfo,
     };
+    use tact_view::{AgentErrorKind, AgentUpdate, UserCommand};
     use tokio::sync::mpsc::unbounded_channel;
 
     use crate::test_fixtures::StepCall;

@@ -81,7 +81,8 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
 mod render_tests {
     use std::collections::HashMap;
 
-    use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep};
+    use tact_protocol::PlanStep;
+    use tact_view::{AgentErrorKind, AgentUpdate};
 
     use super::super::test_harness::{buffer_contains, make_app, render_app_text};
     use crate::test_fixtures::StepCall;
