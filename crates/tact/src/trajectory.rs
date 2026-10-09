@@ -6,7 +6,7 @@
 //! into it, so a fact is recorded on the same path that publishes the event.
 
 use async_trait::async_trait;
-use tact_protocol::{RunId, RuntimeEvent, TrajectoryId};
+use tact_protocol::{RunId, RuntimeEvent, TrajectoryEvent, TrajectoryId};
 
 use crate::KernelError;
 
@@ -18,4 +18,23 @@ pub trait TrajectoryService: Send + Sync {
         run_id: Option<&RunId>,
         event: RuntimeEvent,
     ) -> Result<(), KernelError>;
+
+    /// Returns the recorded facts for a trajectory from `from_sequence`,
+    /// in ascending sequence order.
+    ///
+    /// A host that installed a durable recorder overrides this; the default is
+    /// a named "not available" failure so a plugin that asks to read facts from
+    /// a recorder-less runtime gets an explicit error rather than empty data.
+    async fn query(
+        &self,
+        _trajectory_id: &TrajectoryId,
+        _from_sequence: u64,
+    ) -> Result<Vec<TrajectoryEvent>, KernelError> {
+        Err(KernelError::new(
+            tact_protocol::ErrorCategory::CapabilityNotFound,
+            "trajectory query is not available",
+            "trajectory",
+            false,
+        ))
+    }
 }

@@ -15,6 +15,7 @@ pub mod ids;
 pub mod interaction;
 pub mod runtime;
 pub mod tool_output;
+pub mod trajectory;
 
 pub use capability::{CapabilityDeclaration, CapabilityKind, CapabilityRisk};
 pub use envelope::{
@@ -38,6 +39,7 @@ pub use biz::{
 pub use tool_output::{
     ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
 };
+pub use trajectory::{ActorId, Sensitivity, TrajectoryEvent, TrajectoryEventType};
 
 /// Format a byte count using human-readable units: B, KB, MB, GB.
 ///

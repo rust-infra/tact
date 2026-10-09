@@ -81,10 +81,35 @@ impl KernelTrajectoryRecorder {
     pub fn recorder(&self) -> &TrajectoryRecorder {
         &self.recorder
     }
+
+    async fn query_facts(
+        &self,
+        trajectory_id: &TrajectoryId,
+        from_sequence: u64,
+    ) -> Result<Vec<tact_protocol::TrajectoryEvent>, KernelError> {
+        self.recorder
+            .query(trajectory_id, from_sequence)
+            .map_err(|error| {
+                KernelError::new(
+                    tact_protocol::ErrorCategory::StorageError,
+                    error,
+                    "trajectory",
+                    true,
+                )
+            })
+    }
 }
 
 #[async_trait]
 impl TrajectoryService for KernelTrajectoryRecorder {
+    async fn query(
+        &self,
+        trajectory_id: &tact_protocol::TrajectoryId,
+        from_sequence: u64,
+    ) -> Result<Vec<tact_protocol::TrajectoryEvent>, KernelError> {
+        self.query_facts(trajectory_id, from_sequence).await
+    }
+
     async fn append(
         &self,
         supplied_trajectory_id: Option<&TrajectoryId>,
@@ -198,6 +223,24 @@ impl TrajectoryService for KernelTrajectoryRecorder {
 
 #[async_trait]
 impl TrajectoryService for SqliteTrajectoryService {
+    async fn query(
+        &self,
+        trajectory_id: &tact_protocol::TrajectoryId,
+        from_sequence: u64,
+    ) -> Result<Vec<tact_protocol::TrajectoryEvent>, KernelError> {
+        self.recorder
+            .query(trajectory_id, from_sequence)
+            .await
+            .map_err(|error| {
+                KernelError::new(
+                    tact_protocol::ErrorCategory::StorageError,
+                    error.to_string(),
+                    "trajectory",
+                    true,
+                )
+            })
+    }
+
     async fn append(
         &self,
         trajectory_id: Option<&tact_protocol::TrajectoryId>,
@@ -309,5 +352,42 @@ fn event_type(event: &RuntimeEvent) -> TrajectoryEventType {
         RuntimeEvent::PluginStarted { .. }
         | RuntimeEvent::PluginStopped { .. }
         | RuntimeEvent::Plugin { .. } => TrajectoryEventType::PluginLifecycle,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tact_protocol::{RunId, RuntimeEvent, TrajectoryId};
+
+    #[tokio::test]
+    async fn query_returns_appended_facts_in_order() {
+        let service = KernelTrajectoryRecorder::new(TrajectoryRecorder::default());
+        let trajectory = TrajectoryId::from("trajectory-query-test");
+        let run = RunId::from("run-query-test");
+        let events = vec![
+            RuntimeEvent::RunStarted {
+                run_id: run.clone(),
+            },
+            RuntimeEvent::Text {
+                run_id: Some(run.clone()),
+                role: "assistant".into(),
+                content: "first".into(),
+            },
+            RuntimeEvent::RunFinished {
+                run_id: run.clone(),
+                success: true,
+            },
+        ];
+        for event in events {
+            service
+                .append(Some(&trajectory), Some(&run), event)
+                .await
+                .expect("append fact");
+        }
+        let facts = service.query(&trajectory, 0).await.expect("query facts");
+        assert_eq!(facts.len(), 3);
+        assert!(facts.windows(2).all(|w| w[0].sequence < w[1].sequence));
+        assert_eq!(facts[0].event_type, TrajectoryEventType::RunLifecycle);
     }
 }
