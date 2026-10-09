@@ -24,6 +24,7 @@ pub fn register(router: &CapabilityRouter) -> Result<(), KernelError> {
         storage_get(),
         storage_set(),
         events_publish(),
+        events_subscribe(),
         trajectory_read(),
         trajectory_append_plugin_event(),
         permission_request(),
@@ -151,6 +152,50 @@ fn events_publish() -> CapabilityRegistration {
             })?;
             context.events().publish(event).await?;
             Ok(json!(null))
+        },
+    )
+}
+
+/// Replays the caller's own events from a sequence.
+///
+/// A reconnecting client resumes from the last sequence it saw; the durable
+/// trajectory is the replayable source. Live delivery continues over the
+/// caller's transport (the protocol's `subscribe` message), not this call.
+fn events_subscribe() -> CapabilityRegistration {
+    registration(
+        "events.subscribe",
+        CapabilityRisk::ReadOnly,
+        "Replay the caller's events from a sequence",
+        |context, input| async move {
+            let from_sequence = input
+                .get("from_sequence")
+                .and_then(Value::as_u64)
+                .unwrap_or(0);
+            let trajectory_id = context.trajectory_id().cloned().or_else(|| {
+                context
+                    .run_id()
+                    .map(|run_id| TrajectoryId::from(run_id.as_str()))
+            });
+            let Some(trajectory_id) = trajectory_id else {
+                return Err(KernelError::new(
+                    ErrorCategory::InvalidRequest,
+                    "invocation has no trajectory to resume",
+                    "kernel_service",
+                    false,
+                ));
+            };
+            let facts = context
+                .trajectory()
+                .query(&trajectory_id, from_sequence)
+                .await?;
+            serde_json::to_value(facts).map_err(|error| {
+                KernelError::new(
+                    ErrorCategory::InternalError,
+                    error.to_string(),
+                    "kernel_service",
+                    false,
+                )
+            })
         },
     )
 }
@@ -467,6 +512,40 @@ mod tests {
             .await
             .expect("trajectory.read by run");
         assert_eq!(by_run.as_array().map(Vec::len), Some(1));
+    }
+
+    #[tokio::test]
+    async fn events_subscribe_replays_from_the_callers_sequence() {
+        let runtime = runtime();
+        let context = runtime
+            .invocation(
+                RequestId::from("req-subscribe"),
+                PluginId::from("test.plugin"),
+                "test",
+            )
+            .with_run_id(RunId::from("runtime"));
+        let fact = RuntimeEvent::Plugin {
+            plugin_id: PluginId::from("test.plugin"),
+            origin: "plugin".into(),
+            event_type: "plugin.test.plugin.progress".into(),
+            payload: json!({"step": 1}),
+        };
+        runtime
+            .router()
+            .invoke(
+                "trajectory.append_plugin_event",
+                context.clone(),
+                serde_json::to_value(fact).unwrap(),
+            )
+            .await
+            .expect("trajectory.append_plugin_event");
+
+        let replay = runtime
+            .router()
+            .invoke("events.subscribe", context, json!({"from_sequence": 0}))
+            .await
+            .expect("events.subscribe");
+        assert_eq!(replay.as_array().map(Vec::len), Some(1));
     }
 
     #[tokio::test]

@@ -143,3 +143,63 @@ async fn session_read_capability_cannot_read_an_unscoped_session() {
         tact_protocol::ErrorCategory::PermissionDenied
     );
 }
+
+#[tokio::test]
+async fn session_write_capability_appends_and_scopes_to_the_invocation() {
+    let dir = tempfile::tempdir().unwrap();
+    let store = Arc::new(
+        SqliteSessionStore::new(&dir.path().join("sessions.db"))
+            .await
+            .unwrap(),
+    );
+    store
+        .create_session("session-write", "/workspace", "")
+        .await
+        .unwrap();
+
+    let runtime = RuntimeContext::with_services(
+        tact::CapabilityRouter::new(),
+        RuntimeServices::with_permission(Arc::new(AllowAll)),
+    );
+    SessionExtension::new(store.clone())
+        .register(&runtime)
+        .unwrap();
+
+    let result = runtime
+        .router()
+        .invoke(
+            "sessions.write",
+            runtime
+                .invocation(
+                    RequestId::from("request-session-write"),
+                    PluginId::from("tact.session"),
+                    "tester",
+                )
+                .with_session_id(tact_protocol::SessionId::from("session-write")),
+            json!({"session_id": "session-write", "role": "user", "text": "hello"}),
+        )
+        .await
+        .unwrap();
+    assert!(result.get("message_id").is_some());
+    assert_eq!(store.load_session("session-write").await.unwrap().len(), 1);
+
+    let denied = runtime
+        .router()
+        .invoke(
+            "sessions.write",
+            runtime
+                .invocation(
+                    RequestId::from("request-session-write-other"),
+                    PluginId::from("tact.session"),
+                    "tester",
+                )
+                .with_session_id(tact_protocol::SessionId::from("other-session")),
+            json!({"session_id": "session-write", "role": "user", "text": "hello"}),
+        )
+        .await
+        .expect_err("a different session must be refused");
+    assert_eq!(
+        denied.category(),
+        tact_protocol::ErrorCategory::PermissionDenied
+    );
+}

@@ -54,7 +54,7 @@ async fn agent_run_capability_forwards_message_and_returns_run_id() {
     let result = runtime
         .router()
         .invoke(
-            "agent.run",
+            "runs.start",
             runtime.invocation(
                 RequestId::from("request-agent-test"),
                 PluginId::from("tact.agent"),
@@ -82,7 +82,7 @@ async fn agent_run_capability_rejects_missing_message() {
     let error = runtime
         .router()
         .invoke(
-            "agent.run",
+            "runs.start",
             runtime.invocation(
                 RequestId::from("request-agent-invalid"),
                 PluginId::from("tact.agent"),
@@ -97,4 +97,46 @@ async fn agent_run_capability_rejects_missing_message() {
         error.category(),
         tact_protocol::ErrorCategory::InvalidRequest
     );
+}
+
+/// `runs.cancel` sets the executor's cancel flag and records a `Cancelled`
+/// event for the requested run.
+#[tokio::test]
+async fn runs_cancel_capability_requests_cancellation() {
+    struct CancellingExecutor(Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl AgentExecutor for CancellingExecutor {
+        async fn run(
+            &self,
+            _context: InvocationContext,
+            _message: String,
+        ) -> Result<RunId, KernelError> {
+            Ok(RunId::from("run-cancel-test"))
+        }
+
+        fn cancel(&self, run_id: &RunId) -> Result<(), KernelError> {
+            self.0.lock().unwrap().push(run_id.as_str().to_string());
+            Ok(())
+        }
+    }
+
+    let executor = Arc::new(CancellingExecutor(Mutex::new(Vec::new())));
+    let runtime = runtime();
+    AgentExtension::new(executor.clone())
+        .register(&runtime)
+        .unwrap();
+    let context = runtime.invocation(
+        RequestId::from("request-cancel-test"),
+        PluginId::from("tact.agent"),
+        "tester",
+    );
+
+    let output = runtime
+        .router()
+        .invoke("runs.cancel", context, json!({"run_id": "run-cancel-test"}))
+        .await
+        .unwrap();
+    assert_eq!(output, json!({"cancelled": true}));
+    assert_eq!(executor.0.lock().unwrap().as_slice(), ["run-cancel-test"]);
 }

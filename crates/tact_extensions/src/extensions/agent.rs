@@ -41,8 +41,12 @@ impl AgentExtension {
             .into_iter()
             .next()
             .expect("Chat declares its start-run capability");
+        let cancel_handler: Arc<dyn CapabilityHandler> = Arc::new(AgentCancelHandler {
+            executor: self.executor.clone(),
+        });
         runtime.router().register_many(vec![
             CapabilityRegistration::new(run_capability(), handler.clone()),
+            CapabilityRegistration::new(cancel_capability(), cancel_handler),
             CapabilityRegistration::new(chat_capability, handler),
         ])
     }
@@ -52,22 +56,44 @@ impl AgentExtension {
 #[async_trait]
 pub trait AgentExecutor: Send + Sync {
     async fn run(&self, context: InvocationContext, message: String) -> Result<RunId, KernelError>;
+
+    /// Requests cooperative cancellation of the in-flight run. Best-effort: the
+    /// agent loop observes the flag at its next checkpoint.
+    fn cancel(&self, _run_id: &RunId) -> Result<(), KernelError> {
+        Err(KernelError::new(
+            tact_protocol::ErrorCategory::CapabilityNotFound,
+            "run cancellation is not available",
+            "agent",
+            false,
+        ))
+    }
 }
 
 struct InProcessAgentExecutor {
     agent: tokio::sync::Mutex<Agent>,
+    /// Cloned from the agent at construction so `runs.cancel` can set it
+    /// without waiting on the run that currently holds the agent lock.
+    cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl InProcessAgentExecutor {
     fn new(agent: Agent) -> Self {
+        let cancel_flag = agent.runtime.cancel_flag.clone();
         Self {
             agent: tokio::sync::Mutex::new(agent),
+            cancel_flag,
         }
     }
 }
 
 #[async_trait]
 impl AgentExecutor for InProcessAgentExecutor {
+    fn cancel(&self, _run_id: &RunId) -> Result<(), KernelError> {
+        self.cancel_flag
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        Ok(())
+    }
+
     async fn run(&self, context: InvocationContext, message: String) -> Result<RunId, KernelError> {
         use tact_llm::{Message, Role};
 
@@ -122,7 +148,7 @@ impl CapabilityHandler for AgentRunHandler {
         let request: AgentRunInput = serde_json::from_value(input).map_err(|error| {
             KernelError::new(
                 tact_protocol::ErrorCategory::InvalidRequest,
-                format!("invalid agent.run request: {error}"),
+                format!("invalid runs.start request: {error}"),
                 "agent",
                 false,
             )
@@ -130,7 +156,7 @@ impl CapabilityHandler for AgentRunHandler {
         if request.message.trim().is_empty() {
             return Err(KernelError::new(
                 tact_protocol::ErrorCategory::InvalidRequest,
-                "agent.run message cannot be empty",
+                "runs.start message cannot be empty",
                 "agent",
                 false,
             ));
@@ -142,7 +168,7 @@ impl CapabilityHandler for AgentRunHandler {
 
 fn run_capability() -> CapabilityDeclaration {
     CapabilityDeclaration {
-        name: "agent.run".into(),
+        name: "runs.start".into(),
         kind: CapabilityKind::App,
         version: "1".into(),
         description: Some("Start an Agent run and stream its Runtime events".into()),
@@ -152,11 +178,55 @@ fn run_capability() -> CapabilityDeclaration {
     }
 }
 
+fn cancel_capability() -> CapabilityDeclaration {
+    CapabilityDeclaration {
+        name: "runs.cancel".into(),
+        kind: CapabilityKind::Command,
+        version: "1".into(),
+        description: Some("Request cancellation of a running Agent run".into()),
+        input_schema: None,
+        output_schema: None,
+        risk: CapabilityRisk::Medium,
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AgentCancelInput {
+    run_id: RunId,
+}
+
+struct AgentCancelHandler {
+    executor: Arc<dyn AgentExecutor>,
+}
+
+#[async_trait]
+impl CapabilityHandler for AgentCancelHandler {
+    async fn invoke(&self, context: InvocationContext, input: Value) -> Result<Value, KernelError> {
+        let request: AgentCancelInput = serde_json::from_value(input).map_err(|error| {
+            KernelError::new(
+                tact_protocol::ErrorCategory::InvalidRequest,
+                format!("invalid runs.cancel request: {error}"),
+                "agent",
+                false,
+            )
+        })?;
+        self.executor.cancel(&request.run_id)?;
+        let _ = context
+            .events()
+            .publish(tact_protocol::RuntimeEvent::Cancelled {
+                run_id: request.run_id,
+            })
+            .await;
+        Ok(json!({"cancelled": true}))
+    }
+}
+
 pub fn manifest() -> RuntimePluginManifest {
     RuntimePluginManifest {
         id: PluginId::from("tact.agent"),
         version: env!("CARGO_PKG_VERSION").into(),
         protocol: ProtocolVersion::CURRENT,
-        capabilities: vec![run_capability()],
+        capabilities: vec![run_capability(), cancel_capability()],
     }
 }

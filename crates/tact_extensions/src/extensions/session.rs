@@ -26,12 +26,20 @@ impl SessionExtension {
     }
 
     pub fn register(&self, runtime: &RuntimeContext) -> Result<(), KernelError> {
-        runtime.router().register(CapabilityRegistration::new(
-            read_capability(),
-            Arc::new(SessionReadHandler {
-                store: self.store.clone(),
-            }),
-        ))
+        runtime.router().register_many(vec![
+            CapabilityRegistration::new(
+                read_capability(),
+                Arc::new(SessionReadHandler {
+                    store: self.store.clone(),
+                }),
+            ),
+            CapabilityRegistration::new(
+                write_capability(),
+                Arc::new(SessionWriteHandler {
+                    store: self.store.clone(),
+                }),
+            ),
+        ])
     }
 }
 
@@ -97,6 +105,105 @@ impl CapabilityHandler for SessionReadHandler {
     }
 }
 
+struct SessionWriteHandler {
+    store: DynSessionStore,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct SessionWriteInput {
+    session_id: String,
+    /// `user` or `assistant`.
+    role: String,
+    text: String,
+}
+
+#[async_trait]
+impl CapabilityHandler for SessionWriteHandler {
+    async fn invoke(&self, context: InvocationContext, input: Value) -> Result<Value, KernelError> {
+        let request: SessionWriteInput = serde_json::from_value(input).map_err(|error| {
+            KernelError::new(
+                tact_protocol::ErrorCategory::InvalidRequest,
+                format!("invalid sessions.write request: {error}"),
+                "session",
+                false,
+            )
+        })?;
+        if request.session_id.trim().is_empty() || request.text.trim().is_empty() {
+            return Err(KernelError::new(
+                tact_protocol::ErrorCategory::InvalidRequest,
+                "session_id and text cannot be empty",
+                "session",
+                false,
+            ));
+        }
+        if context
+            .session_id()
+            .is_none_or(|session_id| session_id.as_str() != request.session_id)
+        {
+            return Err(KernelError::permission_denied(
+                "sessions.write may only write the invocation's session",
+            ));
+        }
+        let role = match request.role.as_str() {
+            "user" => tact_llm::Role::User,
+            "assistant" => tact_llm::Role::Assistant,
+            other => {
+                return Err(KernelError::new(
+                    tact_protocol::ErrorCategory::InvalidRequest,
+                    format!("unknown role {other}; expected `user` or `assistant`"),
+                    "session",
+                    false,
+                ));
+            }
+        };
+        let ordinal = self
+            .store
+            .count_messages_by_session(&request.session_id)
+            .await
+            .map_err(|error| {
+                KernelError::new(
+                    tact_protocol::ErrorCategory::StorageError,
+                    error.to_string(),
+                    "session",
+                    true,
+                )
+            })?;
+        let message_id = self
+            .store
+            .append_message(
+                &request.session_id,
+                role,
+                &tact_llm::MessageContent::Text {
+                    content: request.text,
+                },
+                ordinal,
+            )
+            .await
+            .map_err(|error| {
+                KernelError::new(
+                    tact_protocol::ErrorCategory::StorageError,
+                    error.to_string(),
+                    "session",
+                    true,
+                )
+            })?;
+        Ok(json!({"message_id": message_id}))
+    }
+}
+
+fn write_capability() -> CapabilityDeclaration {
+    CapabilityDeclaration {
+        name: "sessions.write".into(),
+        kind: CapabilityKind::Service,
+        version: "1".into(),
+        description: Some("Append a message to the invocation's session".into()),
+        input_schema: None,
+        output_schema: None,
+        risk: CapabilityRisk::Medium,
+    }
+}
+
 fn read_capability() -> CapabilityDeclaration {
     CapabilityDeclaration {
         name: "sessions.read".into(),
@@ -114,6 +221,6 @@ pub fn manifest() -> RuntimePluginManifest {
         id: PluginId::from("tact.session"),
         version: env!("CARGO_PKG_VERSION").into(),
         protocol: ProtocolVersion::CURRENT,
-        capabilities: vec![read_capability()],
+        capabilities: vec![read_capability(), write_capability()],
     }
 }
