@@ -4,6 +4,23 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-10 — MCP prompt 回合也走 `runs.start`；host 测试偶发失败定位为 `ETXTBSY`
+
+| Field | Value |
+|-------|-------|
+| **Type** | refactor + test-infra（无用户可见行为变化） |
+| **Related** | `crates/tact_ui/src/driver.rs`、`crates/tact_plugin_wasm/tests/wasm_host.rs`、`crates/tact_plugin_node/tests/node_host.rs` |
+
+**① `UserCommand::RunMcpPrompt` 收口。** 它是最后一条绕过 router 的提交路径：落在 `other` 兜底分支里、直接调 `handle_user_command_with_account(SubmitTask(messages))`。现在它有独立 arm——短暂持锁渲染 prompt、**先释放锁**（`run_submit` 会再取锁，而 `tokio::sync::Mutex` 不可重入，重入即死锁），再交给与 `SubmitTask` **同一个** `run_submit` / `finish_completed_turn`。因此：有 serving context 时经 `runs.start`，没有时走兼容直连；post-turn 逻辑（Stop hook 续跑、`task_complete`、TaskCompleted hooks）两条路径完全共用，错误文案不变。
+
+**② host 测试偶发失败 = `ETXTBSY`，不是超时。** 现象是整仓 gate 偶发变红（`tact_plugin_wasm --test wasm_host`）。最初假设「测试把 startup 超时当请求超时用」**不成立**：启动与握手由 `tact_plugin_host` 固定的 `STARTUP_TIMEOUT = 10s` 兜底，`request_timeout` 只是每次调用的默认值。真正原因：这些测试并行跑，一个线程的 `Command::spawn` fork 会短暂继承**另一个**线程刚写完 runner 脚本、仍打开的写描述符，`execve` 于是以 `ETXTBSY`（Text file busy）拒绝该脚本——复现率 4/80（原版），与超时值无关。修法：让「写脚本 + spawn」串行（`static SPAWN_LOCK` + `write_runner_and_instantiate`，所有实例化测试走它），修后 **0/200**。顺带仍把 startup 与被测超时分开（startup 5s、被测超时放到 invocation），并给 node 的 `Failed` 状态转换加了有界等待（断言未削弱、仍会 fire）。
+
+**改后行为：** 用户可见行为不变。
+
+**Verification：** `./scripts/check-rust.sh` 通过；`cargo test --workspace` **2874 → 2875 passed / 0 failed**（+1 新测试）；`wasm_host` ×5 与 `node_host` ×5 每轮 12/14 全过；压力验证 wasm **0/200**、node **0/100** 失败。诚实声明：重复运行降低概率但不能证明竞态消失；这里的窗口是**按构造**移除的（写与 spawn 串行），但 `ETXTBSY` 属内核/调度行为。
+
+**Pointers:** `crates/tact_ui/src/driver.rs::{UserCommand::RunMcpPrompt, run_submit}`、`crates/tact_plugin_wasm/tests/wasm_host.rs::{SPAWN_LOCK, write_runner_and_instantiate}`。
+
 ## 1. 2026-10-10 — TUI 的 run 也走 `runs.start`：两个 host 的 run 入口统一
 
 | Field | Value |

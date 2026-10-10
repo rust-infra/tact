@@ -40,7 +40,7 @@ rows above are addressed; and **both** hosts now start their run through
 serving context), so the Task 13 "Agent-to-TUI" row no longer describes the run
 path either. Still open: `WorkflowExtension::register` is test-only, 11 of the
 12 service capabilities have no invoking caller, `Agent::runtime_plugins` is
-never read, and `UserCommand::RunMcpPrompt` submits directly.
+never read, and the submit paths are now all routed (`RunMcpPrompt` included).
 `ARCHITECTURE.md` §15 lists what remains unconsumed.
 
 ## Global Constraints
