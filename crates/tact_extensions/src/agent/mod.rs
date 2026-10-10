@@ -458,6 +458,16 @@ pub struct Agent {
     cached_tool_specs: Vec<ToolSpec>,
     /// Runtime extensions registered for this agent/session.
     pub runtime_plugins: crate::plugin::PluginRegistry,
+    /// The session's serving [`tact::RuntimeContext`]: one router carrying the
+    /// Kernel's service capabilities and the official extensions, over the
+    /// session's real event, trajectory, permission and storage services.
+    ///
+    /// Held rather than dropped because the router *is* the reachability of
+    /// those capabilities — nothing else keeps a second copy — and because a
+    /// host that starts its run through the router reads the context back. It
+    /// is separate from the per-wave tool router: tool calls keep their own
+    /// router and permission gate, so this cannot widen a tool's authority.
+    pub serving_context: Option<tact::RuntimeContext>,
 }
 
 impl Agent {
@@ -548,9 +558,21 @@ impl Agent {
             runtime_plugins: crate::plugin::PluginRegistry::new(
                 tact_protocol::ProtocolVersion::CURRENT,
             ),
+            serving_context: None,
         };
         agent.rebuild_cached_tool_specs();
         agent
+    }
+
+    /// Attach the session's serving Runtime context.
+    ///
+    /// The bootstrap builds it once, after the session store and the event
+    /// transport exist, and the Agent keeps it alive for the whole session so
+    /// the Kernel's service capabilities are actually reachable.
+    #[must_use]
+    pub fn with_serving_context(mut self, context: tact::RuntimeContext) -> Self {
+        self.serving_context = Some(context);
+        self
     }
 
     /// Attach the session's official and external runtime extension registry.

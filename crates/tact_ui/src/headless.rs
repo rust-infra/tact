@@ -1,12 +1,10 @@
 use std::sync::Arc;
 
-use async_trait::async_trait;
-use serde_json::Value;
 use tact_extensions::{
     config::CliArgs, consts::TactPath, extensions::agent::AgentExtension, extract_text,
     store::DynSessionStore,
 };
-use tact_protocol::{CapabilityDeclaration, PluginId, RequestId};
+use tact_protocol::{PluginId, RequestId};
 
 use crate::{
     session_bootstrap::{Notices, bootstrap_session, open_session},
@@ -68,14 +66,14 @@ async fn run_headless_locked(
     agent.ensure_session().await?;
     // The user turn is built here, from the raw prompt.
     let prompt_message = build_user_message(&prompt, &work_dir).await;
-    // The shared event transport the bootstrap installed: the Router's
-    // `RuntimeServices` must publish to the same stream the session's
-    // trajectory recorder and any subscribed client already read.
-    let events = agent
-        .runtime
-        .runtime_event_service
+    // The session's serving context, cloned out before the Agent moves behind
+    // its shared handle. It already carries the shared event transport the
+    // bootstrap installed, so the Router's `RuntimeServices` publish to the same
+    // stream the session's trajectory recorder and any subscribed client read.
+    let serving = agent
+        .serving_context
         .clone()
-        .expect("bootstrap installs a protocol event transport");
+        .expect("bootstrap installs the session's serving context");
     let cancel_flag = agent.runtime.cancel_flag.clone();
 
     // The run now goes through the Router, but the host keeps the Agent for
@@ -83,7 +81,7 @@ async fn run_headless_locked(
     // cancellation and MCP shutdown all read it after `runs.start` returns.
     let agent = Arc::new(tokio::sync::Mutex::new(agent));
     let runtime = headless_runtime(
-        events,
+        serving,
         AgentExtension::from_shared(Arc::clone(&agent), cancel_flag),
     )?;
 
@@ -141,78 +139,37 @@ async fn run_headless_locked(
     Ok(())
 }
 
-/// Wires the Router a headless run is started through.
+/// The headless run's wiring: the Agent extension is registered on the
+/// **session's** serving context, not on a router of its own.
 ///
-/// The entry point passes an [`AgentExtension::from_shared`]; the test calls it
-/// the same way, so it exercises the host's *only* way to start a run — the
-/// Router path — rather than a direct `agent_loop` call beside it.
+/// The run capability and the Kernel's service capabilities then share one real
+/// router with one real set of services, so `runs.start` is answered by the same
+/// context a plugin's `storage.set` would reach. The serving context's policy
+/// keeps the host's own control plane (`runs.start` / `runs.cancel`) allowed —
+/// see [`crate::permission::serving_permission`] — so starting the run never
+/// depends on a prompt this process cannot answer.
 fn headless_runtime(
-    events: Arc<dyn tact::EventService>,
+    serving: tact::RuntimeContext,
     extension: AgentExtension,
 ) -> anyhow::Result<tact::RuntimeContext> {
-    let router = tact::CapabilityRouter::new();
-    let services = tact::RuntimeServices::with_event_and_permission(
-        events,
-        Arc::new(HeadlessControlPlanePermission),
-    );
-    let runtime = tact::RuntimeContext::with_services(router, services);
-    extension.register(&runtime)?;
-    Ok(runtime)
-}
-
-/// The headless host's permission policy for its **own** control-plane calls.
-///
-/// `CapabilityRouter::invoke` always runs `PermissionService::check`, and the
-/// headless host has no interactive channel to answer an approval prompt. The
-/// general policy, `PermissionManagerService`
-/// (crates/tact_extensions/src/permission/kernel_service.rs), is fail-closed in
-/// `Ask` mode: with no responder it denies. That would break headless for any
-/// user on `mode = ask`, because starting the run is the host's own control
-/// plane — not a tool the model asked for — and must not be gated on a prompt
-/// the process cannot answer.
-///
-/// So this policy allows exactly the host's own control capabilities
-/// (`runs.start`, `runs.cancel`) and denies everything else. It is **not** a
-/// per-tool bypass: tool invocations never pass through it — they are
-/// authorized by the Agent's own permission manager (`PermissionManagerService`
-/// and the preflight gate in `tool_dispatch`). The narrow, deny-by-default
-/// shape keeps that honest: a capability of any other kind is refused.
-///
-/// The alternative is a mode-aware `PermissionManagerService` that still allows
-/// the host's control plane; this is the minimal version that does not change
-/// the agent's tool-permission behavior.
-struct HeadlessControlPlanePermission;
-
-#[async_trait]
-impl tact::PermissionService for HeadlessControlPlanePermission {
-    async fn check(
-        &self,
-        declaration: &CapabilityDeclaration,
-        _context: &tact::InvocationContext,
-        _input: &Value,
-    ) -> Result<(), tact::KernelError> {
-        match declaration.name.as_str() {
-            "runs.start" | "runs.cancel" => Ok(()),
-            other => Err(tact::KernelError::permission_denied(format!(
-                "headless host only authorizes its own control capabilities; \
-                 {other} is not one"
-            ))),
-        }
-    }
+    extension.register(&serving)?;
+    Ok(serving)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tact::PermissionService;
+    use tact_extensions::{permission::PermissionMode, store::open_sqlite_session_store};
     use tact_llm::{ContentBlock, MockClient, Role, StopReason};
 
     /// The headless host starts its run by invoking `runs.start` through the
-    /// Router; there is no direct `agent_loop` call. This drives that exact
-    /// wiring (the helper the entry point uses) with a real Agent behind the
-    /// shared handle, so it also proves `from_shared` keeps the host's Agent.
+    /// session's serving router; there is no direct `agent_loop` call. This
+    /// drives that exact wiring (the helper the entry point uses) with a real
+    /// Agent behind the shared handle, so it also proves `from_shared` keeps the
+    /// host's Agent — and that the run capability shares one router with the
+    /// Kernel's service capabilities.
     #[tokio::test]
-    async fn headless_starts_its_run_through_the_router() {
+    async fn headless_starts_its_run_through_the_serving_router() {
         let mock = MockClient::new(vec![(
             vec![ContentBlock::Text {
                 text: "routed answer".into(),
@@ -223,15 +180,39 @@ mod tests {
         let cancel_flag = agent.runtime.cancel_flag.clone();
         let agent = Arc::new(tokio::sync::Mutex::new(agent));
 
-        let events: Arc<dyn tact::EventService> = Arc::new(tact::EventTransport::new(8));
+        // The serving context the bootstrap builds: the Kernel services and the
+        // Session extension over real backing, with the session's policy.
+        let directory = tempfile::tempdir().expect("temp directory");
+        let db_path = directory.path().join("session.db");
+        let store = open_sqlite_session_store(&db_path)
+            .await
+            .expect("session store");
+        let transport = tact::EventTransport::new(8);
+        let settings = tact_extensions::permission::settings::PermissionSettings::load_from(
+            &directory.path().join("settings.json"),
+            None,
+        );
+        let serving = crate::session_bootstrap::build_serving_context(
+            &db_path,
+            &store,
+            &transport,
+            Arc::new(tact_trajectory::KernelTrajectoryRecorder::default()),
+            crate::permission::serving_permission(PermissionMode::Auto, settings)
+                .expect("serving policy"),
+            &Notices::Stderr,
+        )
+        .await;
+
         let runtime = headless_runtime(
-            events,
+            serving,
             AgentExtension::from_shared(Arc::clone(&agent), cancel_flag),
         )
-        .expect("the Agent extension registers on the headless Router");
+        .expect("the Agent extension registers on the session's serving Router");
 
-        // Reachable by name: the entry point goes through the Router.
+        // Reachable by name, on one router: the entry point goes through it, and
+        // the Kernel's own services are registered beside it.
         assert!(runtime.router().describe("runs.start").is_some());
+        assert!(runtime.router().describe("storage.set").is_some());
 
         // Same input shape the entry point sends: the built turn as content.
         let input = serde_json::json!({
@@ -266,40 +247,5 @@ mod tests {
                 && tact_extensions::extract_text(&message.content) == "hello from headless"
         });
         assert!(saw_user_turn, "the user turn reached the shared Agent");
-    }
-
-    /// The host's control-plane policy allows its own capabilities and denies
-    /// everything else — it is not a blanket allow.
-    #[tokio::test]
-    async fn headless_permission_allows_only_the_host_control_capabilities() {
-        let check = |name: &str| {
-            let declaration = CapabilityDeclaration {
-                name: name.into(),
-                kind: tact_protocol::CapabilityKind::App,
-                version: "1".into(),
-                description: None,
-                input_schema: None,
-                output_schema: None,
-                risk: tact_protocol::CapabilityRisk::Medium,
-            };
-            let context = tact::InvocationContext::new(
-                RequestId::from("permission-probe"),
-                PluginId::from("tact.agent"),
-                "headless",
-            );
-            async move {
-                HeadlessControlPlanePermission
-                    .check(&declaration, &context, &serde_json::json!({}))
-                    .await
-            }
-        };
-
-        assert!(check("runs.start").await.is_ok());
-        assert!(check("runs.cancel").await.is_ok());
-        let denied = check("bash").await.expect_err("a tool is not allowed");
-        assert_eq!(
-            denied.category(),
-            tact_protocol::ErrorCategory::PermissionDenied
-        );
     }
 }

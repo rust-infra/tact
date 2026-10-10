@@ -38,7 +38,7 @@ use tact_extensions::{
 use tact_llm::get_llm_client;
 
 use crate::{
-    permission::permission_mode_from_config,
+    permission::{permission_mode_from_config, serving_permission},
     session_lock::{SessionLockGuard, SessionLockRegistry},
 };
 
@@ -114,12 +114,19 @@ fn runtime_event_transport(ui: Option<&UiWiring>) -> tact::EventTransport {
         .unwrap_or_else(|| tact::EventTransport::new(256))
 }
 
+/// Starts the durable trajectory recorder and returns the service that writes
+/// to it.
+///
+/// The returned handle is the *same* recorder the transport replays from, so
+/// the serving context's `trajectory.*` capabilities read the facts the session
+/// actually persisted. `None` means the durable recorder is unavailable (the
+/// notice says so); the caller degrades rather than losing the session.
 async fn start_trajectory_recorder(
     db_path: &Path,
     event_transport: &tact::EventTransport,
     redaction: tact_trajectory::TrajectoryRedactionConfig,
     notices: &Notices,
-) {
+) -> Option<Arc<dyn TrajectoryService>> {
     match tact_trajectory::SqliteTrajectoryRecorder::open(db_path).await {
         Ok(recorder) => {
             let trajectory = std::sync::Arc::new(
@@ -130,19 +137,93 @@ async fn start_trajectory_recorder(
             // than the one that was persisted.
             event_transport.set_replay_source(trajectory.clone());
             let mut subscription = event_transport.subscribe();
+            let writer = trajectory.clone();
             tokio::spawn(async move {
                 // A lagged broadcast window must not end recording: the writer
                 // skips the lost window and keeps persisting every later fact.
                 while let Some(event) = subscription.recv_skipping_lag().await {
-                    let _ = trajectory.append(None, None, event).await;
+                    let _ = writer.append(None, None, event).await;
                 }
             });
+            Some(trajectory)
         }
-        Err(error) => notices.notice(
-            "trajectory",
-            &format!("SQLite trajectory recorder unavailable: {error}"),
-        ),
+        Err(error) => {
+            notices.notice(
+                "trajectory",
+                &format!("SQLite trajectory recorder unavailable: {error}"),
+            );
+            None
+        }
     }
+}
+
+/// Builds the session's serving [`tact::RuntimeContext`].
+///
+/// This is the one place the Kernel's service capabilities are registered with
+/// real backing. Before it existed, `tact::services::register` had no caller, so
+/// `storage.*`, `events.*`, `trajectory.*`, `permission.request` and
+/// `interaction.request` were unreachable in the shipping binary even though
+/// every piece of them existed.
+///
+/// - `router` carries the Kernel services (`tact::services::register`) and the
+///   Session extension over the real session store.
+/// - `events` is the same [`tact::EventTransport`] the agent publishes to, so a
+///   capability-published event is delivered to the subscribers the session
+///   already has (and recorded by the trajectory writer that consumes them).
+/// - `trajectory` is the durable recorder when SQLite opened; without it the
+///   in-process recorder keeps `trajectory.*` answering instead of claiming a
+///   history that was never written.
+/// - `permission` is the session's configured policy plus the host's own
+///   control plane — see [`crate::permission::serving_permission`].
+/// - `storage` is a second SQLite handle on the session database, so a plugin's
+///   `plugins/<id>` namespace survives the process.
+///
+/// `interaction.request` / `permission.request` keep the default no-op
+/// interaction service: an unattended host has no one to prompt, so they fail
+/// closed rather than hanging on a request nobody can answer.
+///
+/// A failure at any step degrades to a notice — a serving context that is
+/// missing one capability must not stop the session from starting.
+pub(crate) async fn build_serving_context(
+    db_path: &Path,
+    session_store: &DynSessionStore,
+    runtime_events: &tact::EventTransport,
+    trajectory: Arc<dyn TrajectoryService>,
+    permission: Arc<dyn tact::PermissionService>,
+    notices: &Notices,
+) -> tact::RuntimeContext {
+    let storage: Arc<dyn tact::StorageService> =
+        match tact::SqliteStorageService::open(db_path).await {
+            Ok(storage) => Arc::new(storage),
+            Err(error) => {
+                notices.notice("storage", &format!("SQLite storage unavailable: {error}"));
+                Arc::new(tact::StorageServiceImpl::default())
+            }
+        };
+
+    let services = tact::RuntimeServices::new(
+        Arc::new(runtime_events.clone()),
+        trajectory,
+        permission,
+        storage,
+    );
+    let context = tact::RuntimeContext::with_services(tact::CapabilityRouter::new(), services);
+    if let Err(error) = tact::services::register(context.router()) {
+        notices.notice(
+            "services",
+            &format!("Kernel service capabilities unavailable: {error}"),
+        );
+    }
+    if let Err(error) =
+        tact_extensions::extensions::session::SessionExtension::new(session_store.clone())
+            .register(&context)
+    {
+        notices.notice(
+            "session",
+            &format!("session capabilities unavailable: {error}"),
+        );
+    }
+    context
 }
 
 /// Resolve (or start) this run's session, and take its lock.
@@ -206,6 +287,11 @@ pub async fn bootstrap_session(
     let client = get_llm_client().await?;
     let mode = permission_mode_from_config();
     let settings = PermissionSettings::load(tact_path);
+    // The serving context's policy is built from the same settings, so a
+    // capability reaching the router is decided exactly as the session's tools
+    // would be. `try_new_with_settings` takes the settings by value, hence the
+    // clone.
+    let serving_policy = serving_permission(mode, settings.clone())?;
     let permission_manager = PermissionManager::try_new_with_settings(mode, settings)?;
     notices.permission_mode(mode);
 
@@ -217,7 +303,28 @@ pub async fn bootstrap_session(
     // secret a tool printed never lands in the trajectory table verbatim.
     let redaction = permission_manager.security_config().redaction.clone();
     let runtime_events = runtime_event_transport(ui.as_ref());
-    start_trajectory_recorder(&db_path, &runtime_events, redaction, &notices).await;
+    let recorder = start_trajectory_recorder(&db_path, &runtime_events, redaction, &notices).await;
+    // The session's one serving router: the Kernel's service capabilities and
+    // the Session extension, over the real event transport, trajectory recorder,
+    // permission policy and session database. Built here (not by a frontend) so
+    // both frontends serve the same capabilities, and attached to the Agent
+    // below so it lives exactly as long as the session does.
+    let trajectory: Arc<dyn TrajectoryService> = match recorder {
+        Some(recorder) => recorder,
+        // No durable recorder: keep the trajectory-backed capabilities
+        // answering from the Runtime's in-process recorder instead of failing
+        // every `trajectory.read` because the database could not be opened.
+        None => Arc::new(tact_trajectory::KernelTrajectoryRecorder::default()),
+    };
+    let serving = build_serving_context(
+        &db_path,
+        &session_store,
+        &runtime_events,
+        trajectory,
+        serving_policy,
+        &notices,
+    )
+    .await;
     let task_manager = SharedTaskManager::new(TaskManager::new(&db_path).await?);
     let background_manager = SharedBackgroundManager::new(BackgroundManager::new(&db_path).await?);
     let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&db_path).await?);
@@ -316,6 +423,11 @@ pub async fn bootstrap_session(
     tact_extensions::extensions::register_official_manifests(&plugin_registry, &agent)?;
     agent = agent.with_plugin_registry(plugin_registry);
     agent = agent.with_runtime_event_transport(runtime_events);
+    // The serving context is held by the session's Agent: it is the only
+    // reference to the Kernel service router, so dropping it here would take
+    // `storage.*`, `events.*`, `trajectory.*` and the Session capabilities with
+    // it.
+    agent = agent.with_serving_context(serving);
     // RTK filter is opt-in — `with_post_tool` no-ops unless the
     // `tools.rtk_filter` setting is enabled.
     agent = agent.with_post_tool(tact_extensions::hook::rtk_filter::create_rtk_post_tool_hook());
@@ -337,6 +449,220 @@ pub async fn bootstrap_session(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    use std::time::Duration;
+
+    use serde_json::json;
+    use tact::{SqliteStorageService, StorageService};
+    use tact_extensions::extensions::agent::AgentExecutor;
+
+    /// A run executor stands in for the Agent so a registration test does not
+    /// have to build one; the capability only has to *be* registered here.
+    struct StubExecutor;
+
+    #[async_trait::async_trait]
+    impl AgentExecutor for StubExecutor {
+        async fn run(
+            &self,
+            _context: tact::InvocationContext,
+            _message: tact_llm::Message,
+        ) -> Result<tact_protocol::RunId, tact::KernelError> {
+            Ok(tact_protocol::RunId::from("stub-run"))
+        }
+    }
+
+    /// The serving context is live with real backing, not merely declared.
+    ///
+    /// The whole point of routing the §4 capabilities through one Router is
+    /// that the implementations behind it are the session's real ones, so this
+    /// drives each kind of slot the way a plugin would: `storage.set` then
+    /// `storage.get` for the caller's own `plugins/<id>` namespace (and a second
+    /// SQLite handle sees the row, which an in-memory store would not),
+    /// `events.publish` observed on the session's own transport, `sessions.read`
+    /// answered by the real session store, and `trajectory.read` answered by the
+    /// recorder that persists the session. The Router must also describe every
+    /// §4 capability name: a capability that is not declared cannot be
+    /// discovered, let alone invoked.
+    #[tokio::test]
+    async fn the_serving_context_serves_the_kernel_capabilities_over_real_backing() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let db_path = directory.path().join("session.db");
+        let session_id = "serving-context-session";
+        let store = tact_extensions::store::open_sqlite_session_store(&db_path)
+            .await
+            .expect("session store");
+        store
+            .ensure_session_row(session_id, &directory.path().display().to_string(), "")
+            .await
+            .expect("session row");
+
+        let transport = tact::EventTransport::new(64);
+        let mut subscription = transport.subscribe();
+        let recorder = start_trajectory_recorder(
+            &db_path,
+            &transport,
+            tact_trajectory::TrajectoryRedactionConfig::default(),
+            &Notices::Stderr,
+        )
+        .await
+        .expect("the durable recorder opens on a fresh database");
+        let settings = PermissionSettings::load_from(&directory.path().join("settings.json"), None);
+        let serving = build_serving_context(
+            &db_path,
+            &store,
+            &transport,
+            recorder,
+            crate::permission::serving_permission(PermissionMode::Auto, settings)
+                .expect("serving policy"),
+            &Notices::Stderr,
+        )
+        .await;
+
+        // The headless host registers the Agent extension on this same router,
+        // which is what puts `runs.*` beside the Kernel's own services.
+        tact_extensions::extensions::agent::AgentExtension::new(Arc::new(StubExecutor))
+            .register(&serving)
+            .expect("the Agent extension registers on the serving context");
+
+        // Every §4 capability is declared — the Kernel's own eight, the
+        // Session extension's two, and the host's two.
+        for name in [
+            "runs.start",
+            "runs.cancel",
+            "sessions.read",
+            "sessions.write",
+            "events.subscribe",
+            "events.publish",
+            "trajectory.read",
+            "trajectory.append_plugin_event",
+            "storage.get",
+            "storage.set",
+            "permission.request",
+            "interaction.request",
+        ] {
+            assert!(
+                serving.router().describe(name).is_some(),
+                "{name} is not registered on the serving router"
+            );
+        }
+
+        let plugin = tact_protocol::PluginId::from("demo.plugin");
+        let namespace = format!("plugins/{plugin}");
+        let invocation = || {
+            serving.invocation(
+                tact_protocol::RequestId::from(uuid::Uuid::new_v4().to_string()),
+                plugin.clone(),
+                "serving-context-test",
+            )
+        };
+        let session_invocation =
+            invocation().with_session_id(tact_protocol::SessionId::from(session_id));
+
+        serving
+            .router()
+            .invoke(
+                "storage.set",
+                invocation(),
+                json!({"namespace": namespace, "key": "greeting", "value": "hello"}),
+            )
+            .await
+            .expect("storage.set is served");
+        assert_eq!(
+            serving
+                .router()
+                .invoke(
+                    "storage.get",
+                    invocation(),
+                    json!({"namespace": namespace, "key": "greeting"}),
+                )
+                .await
+                .expect("storage.get is served"),
+            json!("hello")
+        );
+        // The value is in the database, not in a process-local map: a second
+        // handle on the same file reads it back.
+        assert_eq!(
+            SqliteStorageService::open(&db_path)
+                .await
+                .expect("second handle")
+                .get(&namespace, "greeting")
+                .await
+                .expect("read through the second handle"),
+            Some(json!("hello"))
+        );
+        // The plugin's own namespace is its own; the Runtime's are not.
+        let denied = serving
+            .router()
+            .invoke(
+                "storage.get",
+                invocation(),
+                json!({"namespace": "runtime", "key": "greeting"}),
+            )
+            .await
+            .expect_err("a plugin cannot read the Runtime's namespace");
+        assert_eq!(
+            denied.category(),
+            tact_protocol::ErrorCategory::PermissionDenied
+        );
+
+        assert_eq!(
+            serving
+                .router()
+                .invoke(
+                    "sessions.read",
+                    session_invocation,
+                    json!({"session_id": session_id}),
+                )
+                .await
+                .expect("sessions.read is served")["messages"],
+            json!([])
+        );
+
+        let run_id = tact_protocol::RunId::from("serving-context-run");
+        serving
+            .router()
+            .invoke(
+                "events.publish",
+                invocation(),
+                serde_json::to_value(tact_protocol::RuntimeEvent::RunStarted {
+                    run_id: run_id.clone(),
+                })
+                .unwrap(),
+            )
+            .await
+            .expect("events.publish is served");
+        let observed = tokio::time::timeout(Duration::from_secs(1), subscription.recv())
+            .await
+            .expect("the published event was not delivered to the session's transport")
+            .expect("the session's transport is live");
+        assert!(
+            matches!(&observed, tact_protocol::RuntimeEvent::RunStarted { run_id: id } if id == &run_id),
+            "{observed:?}"
+        );
+
+        // `trajectory.read` is answered by the durable recorder the session's
+        // own writer persists into (a no-op slot would report "not available").
+        let facts = tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                let facts = serving
+                    .router()
+                    .invoke(
+                        "trajectory.read",
+                        invocation(),
+                        json!({"run_id": run_id.as_str()}),
+                    )
+                    .await
+                    .expect("trajectory.read is served");
+                if facts.as_array().is_some_and(|facts| !facts.is_empty()) {
+                    break facts;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("the trajectory recorder did not answer");
+        assert_eq!(facts[0]["run_id"], json!(run_id.as_str()));
+    }
 
     /// The UI path carries the finding and drops the tag.
     ///
