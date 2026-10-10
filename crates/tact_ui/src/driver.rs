@@ -238,6 +238,49 @@ pub async fn run_command_loop_with_account(
                     run_submit(task_agent, serving, task, &work_dir, None).await
                 }));
             }
+            UserCommand::RunMcpPrompt {
+                server,
+                name,
+                arguments,
+            } => {
+                if let Some(handle) = active.take() {
+                    agent = Some(handle.await.expect("mcp prompt task join panicked"));
+                }
+                // A prompt is a *starting message*, so it runs like any other
+                // submitted turn: rendered here, then handed to the very same
+                // `run_submit` helper as `SubmitTask` (no explicit run id), so
+                // a plugin-prompt turn goes through `runs.start` when a serving
+                // context exists and keeps the direct path when it does not.
+                pending_subagent_wakeup = false;
+                // Render under a brief lock and *drop it before running*:
+                // `run_submit` takes the same lock itself, and
+                // `tokio::sync::Mutex` deadlocks if it is re-locked while held.
+                let rendered = {
+                    let agent_arc = agent.as_ref().expect("agent available for mcp prompt");
+                    let guard = agent_arc.lock().await;
+                    render_mcp_prompt(&guard, &server, &name, arguments).await
+                };
+                match rendered {
+                    Ok(messages) => {
+                        let work_dir = image_work_dir.clone();
+                        let task_agent = agent.take().expect("agent available for mcp prompt");
+                        let serving = serving.clone();
+                        active = Some(tokio::spawn(async move {
+                            run_submit(task_agent, serving, messages, &work_dir, None).await
+                        }));
+                    }
+                    Err(message) => {
+                        // The same Error event the direct path emits, with the
+                        // same run attribution: lock just long enough to emit.
+                        agent
+                            .as_ref()
+                            .expect("agent available for mcp prompt")
+                            .lock()
+                            .await
+                            .emit_update(runtime_event::error(AgentErrorKind::Other(message)));
+                    }
+                }
+            }
             other => {
                 if let Some(handle) = active.take() {
                     agent = Some(handle.await.expect("command join panicked"));
@@ -518,8 +561,10 @@ async fn finish_completed_turn(agent: &mut Agent, stop_continuations: &mut u32) 
 /// Fetches one MCP prompt and renders it as the text of a user turn.
 ///
 /// Split out from the command arm so the fetch-and-render path is reachable
-/// without running a turn: the arm is then three lines, and this is the one
-/// place the router, the renderer and the two error messages meet.
+/// without running a turn: this is the one place the router, the renderer and
+/// the two error messages meet. The command loop renders here under a brief
+/// lock and then hands the text to `run_submit`; a direct caller falls through
+/// [`handle_user_command_with_account`]'s own arm and reuses the same render.
 async fn render_mcp_prompt(
     agent: &Agent,
     server: &str,
@@ -963,6 +1008,86 @@ mod tests {
         assert!(
             seen.iter().any(|name| name == "runs.start"),
             "the interactive run must be invoked through the Router: {seen:?}"
+        );
+    }
+
+    /// A `/mcp prompt` turn reaches `runs.start` too: the new arm renders the
+    /// prompt (a *starting message*) and submits it through the same
+    /// `run_submit` helper as `SubmitTask`, so a plugin-prompt run is routed
+    /// exactly like an ordinary one when a serving context is present. The
+    /// recording policy proves the invocation went through the Router, and the
+    /// completed turn proves the routed call actually ran.
+    #[tokio::test]
+    async fn interactive_mcp_prompt_goes_through_runs_start_when_a_serving_context_is_present() {
+        install_test_config();
+        let mock = MockClient::new(vec![(
+            vec![text_block("routed prompt answer")],
+            Some(StopReason::EndTurn),
+        )]);
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+
+        // One mock MCP server publishing a prompt, so the render succeeds and
+        // the arm proceeds to submit the composed message instead of erroring.
+        let service = tact_extensions::mcp::MockMcpService::new(Vec::new(), |_| {
+            Ok(rmcp::model::CallToolResult::success(Vec::new()))
+        })
+        .with_prompt("getting_started", "Introduce the project", &[])
+        .with_prompt_messages(
+            "getting_started",
+            vec![rmcp::model::PromptMessage::new_text(
+                rmcp::model::PromptMessageRole::User,
+                "Show me around.",
+            )],
+        );
+        agent
+            .mcp_router
+            .register_client(tact_extensions::mcp::McpClient::with_service(
+                "basic-memory",
+                Vec::new(),
+                std::sync::Arc::new(service),
+            ));
+
+        let directory = tempfile::tempdir().expect("temp directory");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let serving = serving_context_with_recorder(directory.path(), seen.clone()).await;
+        let agent = agent.with_serving_context(serving);
+
+        let (command_tx, command_rx) = crate::test_support::user_command_channels();
+        let driver = tokio::spawn(super::run_command_loop(agent, command_rx, work_dir));
+
+        command_tx
+            .send(UserCommand::RunMcpPrompt {
+                server: "basic-memory".into(),
+                name: "getting_started".into(),
+                arguments: std::collections::BTreeMap::new(),
+            })
+            .unwrap();
+
+        // Wait for the turn to complete, so the assertion below cannot race the
+        // Router invocation.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match agent_rx.recv().await {
+                    Some(RuntimeEvent::TaskComplete { .. }) => break,
+                    Some(_) => continue,
+                    None => panic!("agent event channel closed before completion"),
+                }
+            }
+        })
+        .await
+        .expect("the routed MCP-prompt turn must complete");
+
+        drop(command_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(2), driver)
+            .await
+            .expect("driver did not shut down")
+            .unwrap();
+
+        let seen = seen.lock().expect("recording lock");
+        assert!(
+            seen.iter().any(|name| name == "runs.start"),
+            "the MCP-prompt run must be invoked through the Router: {seen:?}"
         );
     }
 

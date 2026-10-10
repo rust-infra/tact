@@ -27,6 +27,31 @@ fn write_runner_script(path: &std::path::Path, script: &str) {
     }
 }
 
+/// Serializes writing a runner script with the plugin spawn that execs it.
+///
+/// On Linux `execve` rejects a script with `ETXTBSY` ("Text file busy") while
+/// any process still holds that file open for writing. These tests run in
+/// parallel, and one thread's `Command::spawn` fork briefly inherits another
+/// thread's still-open write descriptor to its freshly created runner script,
+/// so the write and the spawn that consumes it must not overlap. Holding this
+/// lock across both removes the window (and the intermittent failure) without
+/// touching any assertion.
+static SPAWN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
+/// Writes `script` to `runner` and instantiates the host from it while holding
+/// [`SPAWN_LOCK`], so the write cannot race another test's spawn fork.
+async fn write_runner_and_instantiate(
+    runner: &std::path::Path,
+    script: &str,
+    module: impl AsRef<std::path::Path>,
+    manifest: WasmPluginManifest,
+    config: WasmHostConfig,
+) -> anyhow::Result<WasmPluginHost> {
+    let _guard = SPAWN_LOCK.lock().await;
+    write_runner_script(runner, script);
+    WasmPluginHost::instantiate(runner, module, manifest, config).await
+}
+
 fn declaration(name: &str) -> CapabilityDeclaration {
     CapabilityDeclaration {
         name: name.into(),
@@ -71,9 +96,9 @@ async fn instantiate_with(
     let module = dir.path().join("chat.wasm");
     std::fs::write(&module, b"\0asm\x01\0\0\0").unwrap();
     let runner = dir.path().join("wasmtime-shim");
-    write_runner_script(&runner, &std::fs::read_to_string(runner_shim()).unwrap());
-    let host = WasmPluginHost::instantiate(
+    let host = write_runner_and_instantiate(
         &runner,
+        &std::fs::read_to_string(runner_shim()).unwrap(),
         &module,
         manifest,
         WasmHostConfig {
@@ -181,16 +206,18 @@ async fn manifest_is_validated_before_starting_runner() {
     let tempdir = tempfile::tempdir().unwrap();
     let marker = tempdir.path().join("runner-started");
     let runner = tempdir.path().join("runner");
-    write_runner_script(
+    let module = tempdir.path().join("missing.wasm");
+    let result = write_runner_and_instantiate(
         &runner,
         &format!(
             "import fs from 'node:fs'; fs.writeFileSync('{}', 'started');",
             marker.display()
         ),
-    );
-    let module = tempdir.path().join("missing.wasm");
-    let result =
-        WasmPluginHost::instantiate(&runner, module, manifest, WasmHostConfig::default()).await;
+        module,
+        manifest,
+        WasmHostConfig::default(),
+    )
+    .await;
     assert!(result.is_err());
     assert!(
         !marker.exists(),
@@ -204,17 +231,14 @@ async fn zero_resource_limits_fail_before_runner_startup() {
     let tempdir = tempfile::tempdir().unwrap();
     let marker = tempdir.path().join("runner-started");
     let runner = tempdir.path().join("runner");
-    write_runner_script(
+    let module = tempdir.path().join("guest.wasm");
+    std::fs::write(&module, b"\0asm\x01\0\0\0").unwrap();
+    let result = write_runner_and_instantiate(
         &runner,
         &format!(
             "import fs from 'node:fs'; fs.writeFileSync('{}', 'started');",
             marker.display()
         ),
-    );
-    let module = tempdir.path().join("guest.wasm");
-    std::fs::write(&module, b"\0asm\x01\0\0\0").unwrap();
-    let result = WasmPluginHost::instantiate(
-        &runner,
         module,
         manifest(),
         WasmHostConfig {
@@ -257,12 +281,17 @@ async fn required_host_calls_must_be_negotiated_before_registration() {
     let legacy_shim = std::fs::read_to_string(runner_shim())
         .unwrap()
         .replace(", 'host_calls'", "");
-    write_runner_script(&runner, &legacy_shim);
     let module = tempdir.path().join("guest.wasm");
     std::fs::write(&module, b"\0asm\x01\0\0\0").unwrap();
 
-    let result =
-        WasmPluginHost::instantiate(&runner, &module, manifest(), WasmHostConfig::default()).await;
+    let result = write_runner_and_instantiate(
+        &runner,
+        &legacy_shim,
+        &module,
+        manifest(),
+        WasmHostConfig::default(),
+    )
+    .await;
     assert!(
         result.is_err(),
         "missing host_calls feature must fail startup"
@@ -272,13 +301,23 @@ async fn required_host_calls_must_be_negotiated_before_registration() {
 #[cfg(unix)]
 #[tokio::test]
 async fn timeout_and_interrupt_stop_the_guest_instance() {
-    let (host, _module_dir) = instantiate(Duration::from_millis(100)).await;
+    // The host-wide timeout also bounds startup (spawning the Node runner and
+    // completing the handshake), so it must not share the short bound this test
+    // exercises: on a loaded machine the spawn alone can outlast a few tens of
+    // milliseconds and fail the test before the guest is even reached. Keep the
+    // host generous and narrow only the invocation under test below.
+    let (host, _module_dir) = instantiate(Duration::from_secs(5)).await;
     let host = Arc::new(host);
     let router = CapabilityRouter::new();
     host.register_with_router(&router).unwrap();
     let runtime = allow_runtime(router);
     let request_id = RequestId::from("wasm-cancel");
-    let context = runtime.invocation(request_id.clone(), PluginId::from("fixture.wasm"), "test");
+    // The short timeout that used to be the host-wide setting now applies to
+    // exactly the request under test, so the timeout/interrupt semantics are
+    // unchanged while startup stays untimed-bound by it.
+    let context = runtime
+        .invocation(request_id.clone(), PluginId::from("fixture.wasm"), "test")
+        .with_timeout(Duration::from_millis(100));
     let call_runtime = runtime.clone();
     let call_host = Arc::clone(&host);
     let call = tokio::spawn(async move {

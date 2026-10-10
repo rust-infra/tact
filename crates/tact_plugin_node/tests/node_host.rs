@@ -253,13 +253,18 @@ async fn invocation_publishes_events_and_persists_trajectory_facts() {
 
 #[tokio::test]
 async fn timeout_terminates_failed_host() {
+    // The host-wide timeout also bounds startup (spawning Node and completing
+    // the handshake), so it must not share the short bound this test exercises:
+    // on a loaded machine the spawn alone can outlast a few tens of
+    // milliseconds and fail the test before the request under test is even
+    // reached. Keep the host generous and narrow the one invocation below.
     let host = Arc::new(tokio::sync::Mutex::new(
         NodePluginHost::start_with_timeout(
             "node",
             &[fixture().display().to_string()],
             PluginId::from("fixture.chat"),
             ProtocolVersion::CURRENT,
-            Duration::from_millis(40),
+            Duration::from_secs(5),
         )
         .await
         .unwrap(),
@@ -267,17 +272,32 @@ async fn timeout_terminates_failed_host() {
     let router = tact::CapabilityRouter::new();
     NodePluginHost::register_with_router(Arc::clone(&host), &router).unwrap();
     let runtime = allow_runtime(router);
-    let context = runtime.invocation(
-        RequestId::from("timeout-call"),
-        PluginId::from("fixture.chat"),
-        "test",
-    );
+    // The short timeout that used to be the host-wide setting now applies to
+    // exactly the request under test, so the timeout semantics are unchanged.
+    let context = runtime
+        .invocation(
+            RequestId::from("timeout-call"),
+            PluginId::from("fixture.chat"),
+            "test",
+        )
+        .with_timeout(Duration::from_millis(40));
     let error = runtime
         .router()
         .invoke("chat.slow", context, json!({}))
         .await
         .unwrap_err();
     assert_eq!(error.category(), ErrorCategory::Timeout);
+    // The Router enforces the invocation deadline itself, so it can return the
+    // timeout a hair before the host's own expiry path marks it Failed. Wait
+    // (bounded) for that observable transition instead of racing it; the
+    // assertion below is unchanged.
+    tokio::time::timeout(Duration::from_secs(1), async {
+        while host.lock().await.state() != tact::PluginState::Failed {
+            tokio::time::sleep(Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("the timed-out host must reach Failed");
     assert_eq!(host.lock().await.state(), tact::PluginState::Failed);
 }
 
