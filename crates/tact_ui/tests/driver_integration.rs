@@ -2,14 +2,15 @@
 
 use std::time::Duration;
 
+use tact_extensions::permission::PermissionMode;
 use tact_extensions::tool::test_support::write_workspace_file;
 use tact_llm::{ContentBlock, MockClient, StopReason};
 use tact_protocol::{RuntimeEvent, StepStatus};
 use tact_ui::{
     driver::run_command_loop,
     test_support::{
-        build_test_agent, build_test_agent_with_session, collect_updates_after,
-        install_test_config, user_command_channels,
+        build_test_agent, build_test_agent_with_session, build_test_agent_without_serving,
+        collect_updates_after, install_test_config, user_command_channels,
     },
 };
 use tact_view::UserCommand;
@@ -422,5 +423,45 @@ async fn cancel_emits_cancelled_by_user_info() {
             .iter()
             .any(|u| matches!(u, RuntimeEvent::Info { content: msg, .. } if msg.contains("Cancelled by user"))),
         "cancelled agent_loop should emit info, got: {updates:?}"
+    );
+}
+
+/// The compatibility path: an agent built **without** a serving context takes the
+/// driver's direct branch (`TurnEntry::Shared`) and must still complete a turn.
+///
+/// Every other test in this file (and the rest of the suite) builds its agent
+/// through the shared builders, which attach a serving context, so this is the
+/// only integration test that exercises the fallback end to end.
+#[tokio::test]
+async fn an_agent_without_a_serving_context_still_completes_a_turn() {
+    let mock = MockClient::new(vec![(
+        vec![text_block("Hello from the fallback path")],
+        Some(StopReason::EndTurn),
+    )]);
+
+    let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (agent, work_dir) =
+        build_test_agent_without_serving(mock, Some(agent_tx), PermissionMode::Auto);
+    assert!(
+        agent.serving_context.is_none(),
+        "this test is about the path with no serving context"
+    );
+
+    let (user_cmd_tx, user_cmd_rx) = user_command_channels();
+    let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
+
+    user_cmd_tx
+        .send(UserCommand::SubmitTask("Say hello".into()))
+        .unwrap();
+    drop(user_cmd_tx);
+
+    driver.await.unwrap();
+
+    let updates = collect_updates_after(agent_rx).await;
+    assert!(
+        updates
+            .iter()
+            .any(|u| matches!(u, RuntimeEvent::TaskComplete { content, .. } if content.contains("fallback path"))),
+        "the direct path must still complete the turn, got: {updates:?}"
     );
 }
