@@ -31,6 +31,60 @@
 
 ---
 
+## 1. 2026-10-10 — 发版 v1.1.37：清单版本从 1.1.33 直接补到 1.1.37
+
+| Field | Value |
+|-------|-------|
+| **Type** | release（用户可见：`--version` 与升级接口报 1.1.37；GitHub Release 产出五个平台的 `tact-ui-v1.1.37-*` 与 `SHA256SUMS`） |
+| **Related** | `Cargo.toml`（`[workspace.package].version`）、`Cargo.lock`（四个包条目）、`README.md`（徽章 + 发版命令片段）；`.github/workflows/release.yml` |
+
+**现象 / 动机：** 标签 `v1.1.34`–`v1.1.36` 是从 squash-merge 后的 `main` 打的，**没有配套的清单提升**：`Cargo.toml` 一直停在 `1.1.33`。后果是本地 build 的 `--version`、`crates/tact/src/upgrade.rs`（`env!("CARGO_PKG_VERSION")`）与 `USER_AGENT` 全都少报三个版本号，而 release workflow 在 tag 触发时是**从 `Cargo.toml` 取版本**（只有 tag 触发才用 `GITHUB_REF_NAME`）——两个来源长期不一致，下一次 `workflow_dispatch` 发出的二进制会叫 `v1.1.33-*`。
+
+**决策：** 本次发版把清单版本一次性补到 **1.1.37**，与已发布的 tag 对齐。
+
+- 跳号是**有意的**：`v1.1.34`–`v1.1.36` 三个 tag 已经存在并且都指向 `main` 上更早的提交，改小版本号会撞上已存在的 tag。1.1.33 → 1.1.37 之间的四个版本号由此**全部用掉**，语义上等价于「把这些已打标的改动补记进清单」。
+- **`release.yml` 的版本来源保持不动。** tag 触发时用 `GITHUB_REF_NAME`，与清单版本无关；把清单改对只是让本地/`workflow_dispatch` 路径不再说谎。
+- `Cargo.lock` 的四个条目（`tact` / `tact-ui` / `tact_llm` / 其余 workspace 包）随清单一起提升；`tact_protocol` 等独立版本包**不动**。
+- README 徽章与「发版」代码片段同步到 `v1.1.37`——那两行是照抄即用的发版指令，留在旧版本号上会把人引导去打一个已存在的 tag。
+
+**改后行为：** `tact-ui --version` 报 1.1.37；`upgrade` 的 UA 与自报版本一致；推送 `v1.1.37` 触发 `release.yml`，五个 target 构建并发布 Release。清单版本从此与已发布 tag 对齐。
+
+**Verification：** `git diff Cargo.lock` 只有四条 `version = "1.1.x"` 行变化，无依赖增删；推送门四包全绿。
+
+**Pointers:** `Cargo.toml`、`Cargo.lock`、`README.md`、`.github/workflows/release.yml`。
+
+---
+
+## 1. 2026-10-10 — 往上翻不再被弹走：跟尾变成显式状态，日志下边框浮出「回到最新」药丸
+
+| Field | Value |
+|-------|-------|
+| **Type** | bugfix（用户可见：任务在跑时往上翻看历史**不再被新输出拽回底部**；不在底部时日志下边框**靠右**浮出 `新活动 · ↓ 回到最新 · esc` 药丸；`esc` 新增一级） |
+| **Related** | `crates/agent_tui_kit/src/state/log_scroll.rs`（`follow` / `unseen`）、`crates/tui/src/widgets/state/app/scroll.rs`（策略与 `note_log_rows_appended` / `keep_log_tail_pinned`）、`crates/tui/src/widgets/state/app/{popups,visibility,agent,messages}.rs`、`crates/agent_tui_kit/src/render/{ctx,scroll_pill}.rs`、`crates/tui/src/render/layout.rs`、`crates/agent_tui_kit/src/i18n.rs`、`crates/tui/src/handlers/{insert,normal,mouse}.rs`；Ch 23 §6.15 |
+
+**现象 / 动机：** 往上翻看历史时，新的输出会把你**有时**拽回底部、**有时**不会 —— 因为两套行为并存：工具卡 Resize 路径用 `is_log_pinned_to_bottom()` 尊重滚动位置（`agent.rs:283`），而消息追加路径有 **8 处**无条件 `scroll_log_to_bottom()`。其中 `agent.rs:893`（每个 `AgentUpdate` 之后）意味着**流式输出期间根本没法看历史**。
+
+**决策：** 把「跟尾」变成**显式状态**并把它收进追加原语。
+
+- `LogScroll::follow`（新）取代从 `visual_top == usize::MAX` + visual cache 反推。**反推在最需要它的时候恰好失效**：cache 以 `items.len()` 为版本号，追加一行的瞬间就过期，于是贴着底的读者被判成「滚走了」。`is_log_pinned_to_bottom()` 现在就是读这个字段。
+- `LogScroll::unseen`（新）= 离开底部期间有新行到达（徽章）。
+- 策略收进 `append_msg` / `extend_msgs` / `append_markdown_with_kind` / `append_blank`：跟尾就继续贴底，否则保持位置并点亮徽章。视口**上方**原地变高（thinking / tool 增长）走 `keep_log_tail_pinned()`：只贴底、不点亮徽章。
+- 删掉 4 处 agent 驱动的无条件 scroll（每个 `AgentUpdate`、回合结束分隔线、冻结统计行）。**保留**用户自己触发的：`add_system_message`、`/plugin` 列表，并给 `add_user_message` 补一处**显式**跟尾 —— 用户刚按回车，回显就该在眼前。
+- 提示：日志区**最后一行**（Log 面板下边框行；粘性条可见时是它的下边框行）**靠右**浮出的药丸（`agent_tui_kit::render::scroll_pill`，新模块）。它是 overlay：先 `Clear` 矩形、再刷 band 底（`theme.status_bar_bg`）、最后落字形 —— **0 行成本**。选靠右不选居中，是因为**实时统计行是居中的**，两条居中的行叠在一起会读成一坨。徽章 `theme.muted_fg()`、动作 `theme.warning`。宽度 = 文本宽 + 4（两端各一个圆角端字形 + 1 列内边距），放不下就不画。
+- **圆角端：** 终端一个格子就是矩形，没有 `border-radius`，所以两端用 Nerd Font 的 Powerline 半圆字形（左 `U+E0B6` / 右 `U+E0B4`）。**端格是唯一不刷 band 底的格子**：`fg = band 色`、`bg = 面板底色` —— 靠这个颜色反转才看得见圆角，端格若也刷 band 底色就退化成直角。已核过三个本地 Nerd Font：advance 与 `0` 相同（正好 1 列）、满格高、且各自略微溢出格子 → 端头与 band 无缝。
+- **可点，不只是快捷键。** 渲染返回命中矩形（`render_scroll_pill -> Rect`），host 写进 `App::scroll_back_area`，由既有鼠标处理器命中 —— 与 `[Cancel]` 同一个契约（kit 纯渲染 → 返回矩形 → host 存 → handler 动作）。不画时返回 `Rect::default()`，旧矩形不会吃掉点击。
+- `esc` 是「退出当前视图状态」的梯子，滚离底部插在**退出 Insert 之上**：第一次按回底部，第二次才退 Insert。`End` 不可用（Insert 模式已绑输入光标）。
+
+**改后行为：** 贴着底时行为不变（新行继续跟着走）。往上翻之后，新输出**不再移动视口**，日志下边框靠右浮出 `新活动 · ↓ 回到最新 · esc` 药丸（没有新活动时只剩 `↓ 回到最新 · esc`，分隔符跟着徽章一起消失），按 `esc`、点药丸或滚回底部即回到最新并收起。空闲会话不花任何行。
+
+**顺手清掉的死代码：** `crates/agent_tui_kit/src/render/input.rs` 里有一段 `eprintln!("DEBUG input.rs: scroll={} > cursor_display_line={} …")`，在光标行计算里，条件命中就往 stderr 打印。它在 **HEAD 里**（`d9feeecc` v1.1.22 引入），不是谁未提交的调试代码，而且渲染路径写 stderr 会把 TUI 画面弄花。删掉，光标行计算直接算。
+
+**Verification：** `cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` 干净；推送门四包全绿。新增：`scroll.rs` 5 条策略用例（跟尾时追加仍贴底 / 滚离后追加保持位置并点亮徽章 / 滚回底部恢复跟尾并清徽章 / `scroll_log_to_top` 停跟尾 / 用户自己的消息一定进视野）、`render/layout.rs` 7 条药丸用例（不跟尾时隐藏 / 滚离时显示 / 回底时退役 / 无徽章时连分隔符一起省略 / 靠右停靠且右端留 1 列 / **band 只填两端之间、端格保持面板底色** / **两端是圆角端字形** / 太窄时隐藏）、`handlers/mouse.rs` 2 条（点药丸回底部 / 点别处不动视口）、`insert.rs` 1 条 `esc_returns_to_the_log_tail_before_leaving_insert_mode`（第一按回底部且仍在 Insert，第二按才退）。既有 `progress_does_not_repin_scrolled_log` 的 fixture 补上 `follow = false` —— 它直接写 `visual_top` 模拟「滚上去」，而位置本身不再是那个决定。
+
+**Pointers:** `docs/superpowers/specs/2026-10-10-scroll-back-to-bottom-pill-design.md`、可视稿 `docs/design/scroll-back-to-bottom.html`（三档对比 + 位置取舍）、Ch 23 §6.15。
+
+---
+
 ## 1. 2026-10-10 — 实时任务统计行的两侧留白里放一只会走动的吉祥物
 
 | Field | Value |

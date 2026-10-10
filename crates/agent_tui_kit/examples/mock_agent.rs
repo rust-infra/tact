@@ -250,6 +250,8 @@ impl MockShell {
                     theme: &self.theme,
                     messages: Messages::by_language(Language::English),
                     log_scroll: &self.log_scroll,
+                    log_following: self.log_scroll.follow,
+                    log_unseen: self.log_scroll.unseen,
                     log: &self.log,
                     code_blocks: &[],
                     mermaid_blocks: &[],

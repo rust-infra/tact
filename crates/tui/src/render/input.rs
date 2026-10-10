@@ -55,6 +55,9 @@ pub(crate) fn render_input_box(frame: &mut Frame, area: Rect, app: &mut App) {
     let skill_names = skill_name_set(&app.skills_data);
     let cancel_area = kit_input::render_input_box(frame, area, &ctx, &skill_names);
     app.set_cancel_button_area(cancel_area);
+    // Deliberately **not** `set_scroll_back_area` here: this runs after the Log
+    // panel, and the pill on its bottom border owns that hit area. Writing it
+    // from here would clobber the pill with an empty rect every frame.
 }
 
 /// Render command-line input (Palette mode).
@@ -91,7 +94,37 @@ mod render_tests {
         super::test_harness::{buffer_text, make_app},
         render_input_box,
     };
-    use crate::widgets::state::{SkillEntry, VoicePhase, VoiceState};
+    use crate::widgets::state::{App, SkillEntry, VoicePhase, VoiceState};
+
+    /// Draw the input box and return its text plus the buffer, so a test can
+    /// assert on styling as well as content.
+    fn draw_input(app: &mut App, width: u16) -> (String, ratatui::buffer::Buffer) {
+        let backend = TestBackend::new(width, 5);
+        let mut terminal = Terminal::new(backend).expect("terminal");
+        terminal
+            .draw(|frame| render_input_box(frame, Rect::new(0, 0, width, 5), app))
+            .expect("draw");
+        let buffer = terminal.backend().buffer().clone();
+        (buffer_text(&buffer), buffer)
+    }
+
+    // Scroll-back tests moved to `layout.rs` — the pill is drawn on the Log
+    // panel's bottom border row (C-tier overlay), not on the input box border.
+
+    /// Narrow input boxes keep their own title: the hint yields.
+    #[test]
+    fn a_narrow_input_box_does_not_show_the_hint() {
+        let mut app = make_app();
+        app.log_scroll.follow = false;
+
+        let (text, _) = draw_input(&mut app, 60);
+
+        assert!(
+            !text.contains("Back to bottom"),
+            "below the minimum width the hint would overwrite the title:\n{text}"
+        );
+        assert!(text.contains("Input"), "the title is still there:\n{text}");
+    }
 
     #[test]
     fn input_box_renders_multiline_content() {

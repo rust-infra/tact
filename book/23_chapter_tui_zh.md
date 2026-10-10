@@ -602,15 +602,19 @@ Thinking、tool 与 code placeholder 行在 Phase 0 各自可见，使 logical-t
 
 **Phase 1 wrap cache** 在 `messages.len()`、面板内容宽度或主题名变化时重建。每 logical 行经 `log_style::restyle_log_line`（主题感知）再 `wrap_line`。`visual_start_cache` 中前缀和映射 logical → visual 行索引。
 
-**Scroll 单位：** `log_scroll.offset` 以 **logical 行**计，非 visual 行。Scrollbar thumb 则跟踪 **visual** 位置 — 长换行段落使每 logical 步 thumb 跳更远。
+**Scroll 单位：** 权威字段是 `log_scroll.visual_top`（**visual 行**），`offset` 只是渲染时同步的 logical 镜像，供鼠标 hit test 等只读消费方使用。Scrollbar thumb 跟踪 **visual** 位置 — 长换行段落使每 logical 步 thumb 跳更远。
 
-**自动 scroll 到底：** handler 在用户提交输入、流 chunk、thinking 增长、tool 完成、`TaskComplete` 时设 `offset = u16::MAX`。Render 将 `offset` clamp 到由 visual 高度算的 `effective_max_logical`。特殊值 `u16::MAX` 因此表示「粘底」而不存精确计数。
+**跟尾是一个显式状态（`LogScroll::follow`）。** 2026-10-10 之前它是从 `visual_top == usize::MAX` 加 visual cache 反推的，而那个反推在**最需要它的时候恰好失效**：cache 以 `items.len()` 为版本号，追加一行的瞬间就过期，于是「一直贴着底」的读者被判成「用户滚走了」。现在 `follow` 是字段：
 
-**底钉（`resolve_visual_scroll`）：** offset 最大时 viewport 钉在 `total_visual − visible_height`，而非 `visual_start_cache[offset]`。防止底部高 tool detail card 在前一行是长换行段落时末行 unreachable（见 `log.rs` 单元测试）。
+- `scroll_log_to_bottom()` 置 `follow = true` 并清 `unseen`；`scroll_log_up` / `scroll_log_to_top` 置 false；`scroll_log_down` 一旦落到底部就重新置 true。
+- **追加**（`append_msg` / `extend_msgs` / `append_markdown_with_kind` / `append_blank`）走 `note_log_rows_appended()`：跟尾就继续贴底，否则**保持读者位置**并点亮 `unseen`。
+- **在视口上方原地变高**（thinking / tool card 增长，`refresh_*_log_scroll`）走 `keep_log_tail_pinned()`：只重新贴底，不点亮徽章 —— 末尾没有新东西可滚。
 
-**手动 scroll：** 鼠标滚轮与 normal 模式 `j`/`k` 按 logical offset ±1。
-`ToolProgress` 更新保留显式数字 offset；若为 `u16::MAX`，active card 变化时仍粘底。
-Assistant `StreamChunk` 更新仍会请求跟随底部。
+**用户自己的动作是刻意的例外：** `add_user_message` 与 `add_system_message`（`scroll_after_message`）、`/plugin` 列表都会显式 `scroll_log_to_bottom()` —— 用户刚敲下去，回显就该出现在眼前。**agent 的连续输出不再拽动视口**：删掉了「每个 `AgentUpdate` 之后」「回合结束分隔线」「冻结统计行」「thinking/tool 增长」那几处无条件 scroll，它们正是「往上翻会被弹走」的来源。
+
+**提示与 `esc`：** 不在底部时，日志区**最后一行**（Log 面板的下边框行；粘性条可见时是它的下边框行）**靠右**浮出一枚药丸 `新活动 · ↓ 回到最新 · esc`（徽章 `theme.muted_fg()`、动作 `theme.warning`）。它是 overlay（`agent_tui_kit::render::scroll_pill`）：先 `Clear` 自己的矩形、再刷 band 底（`theme.status_bar_bg`）、最后落字形，**0 行成本**。两端是 Nerd Font 的 Powerline 半圆字形（`U+E0B6` / `U+E0B4`），端格用 `fg = band 色`、`bg = 面板底色` —— 圆角靠这个颜色反转才看得见。**靠右不居中**：实时统计行是居中的，两条居中的行叠着读成一坨。放不下就不画。`esc` 是「退出当前视图状态」的梯子，滚离底部插在**退出 Insert 之上**：第一次按回到底部，第二次才退 Insert。
+
+**底钉（`resolve_visual_scroll`）：** sentinel 最大时 viewport 钉在 `total_visual − visible_height`，而非 `visual_start_cache[offset]`。防止底部高 tool detail card 在前一行是长换行段落时末行 unreachable（见 `log.rs` 单元测试）。
 
 **Cache 持久化：** 每次 draw 后 `visual_start_cache` 复制到 `log_scroll.visual_start`，供 render 外鼠标 hit test（点击行 → visual → logical 映射于 `lib.rs`）。
 

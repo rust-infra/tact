@@ -401,8 +401,13 @@ impl App {
     }
 
     /// Append one log row, keeping all row metadata together in the coordinator.
+    ///
+    /// Follow-the-tail lives here so it cannot be forgotten at a call site:
+    /// a reader who is at the bottom stays at the bottom, and one who scrolled
+    /// up keeps their place (and gets the "new activity" badge).
     pub(crate) fn append_msg(&mut self, line: Line<'static>, raw: String, kind: LogItemKind) {
         self.log.append_msg(line, raw, kind);
+        self.note_log_rows_appended();
     }
 
     /// Append a whole-Markdown notice as a single log item.
@@ -435,10 +440,12 @@ impl App {
         kind: LogItemKind,
     ) {
         self.log.append_markdown(content.into(), &self.theme, kind);
+        self.note_log_rows_appended();
     }
 
     pub(crate) fn append_blank(&mut self, kind: LogItemKind) {
         self.log.append_blank(kind);
+        self.note_log_rows_appended();
     }
 
     pub(crate) fn extend_msgs(
@@ -448,6 +455,7 @@ impl App {
         kind: LogItemKind,
     ) {
         self.log.extend_msgs(lines, raw_lines, kind);
+        self.note_log_rows_appended();
     }
 
     pub(crate) fn insert_msg(

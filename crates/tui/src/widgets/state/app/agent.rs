@@ -363,9 +363,6 @@ impl App {
                 // Trailing separator: bumps `log_items.len()` to rebuild the visual wrap
                 // cache and marks the end of this response.
                 self.add_task_end_separator();
-                if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-                    self.scroll_log_to_bottom();
-                }
                 self.status = Status::Done;
                 self.freeze_last_prompt_cost();
                 self.task_done_time = Some(chrono::Local::now());
@@ -379,9 +376,6 @@ impl App {
                 // busy state.
                 self.flush_stream_pending();
                 self.add_task_end_separator();
-                if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-                    self.scroll_log_to_bottom();
-                }
                 self.status = Status::Idle;
                 self.freeze_last_prompt_cost();
                 self.task_done_time = None;
@@ -889,8 +883,10 @@ impl App {
         }
 
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
-        // Auto-scroll to bottom (u16::MAX clipped by render_log_panel to visual line count)
-        self.scroll_log_to_bottom();
+        // No unconditional scroll: every `AgentUpdate` used to yank the viewport
+        // back to the bottom, which is what made reading scrollback during a
+        // live turn impossible. Follow-the-tail now lives in `append_msg` /
+        // `extend_msgs`, so a reader who is at the bottom still stays there.
     }
 
     /// Revert `Done` → `Idle` after 2s (shared with `run_tui` main loop).
@@ -1444,7 +1440,12 @@ mod lifecycle_tests {
     fn progress_does_not_repin_scrolled_log() {
         let mut app = make_app();
         seed_running_bash(&mut app, "b1");
+        // "Scrolled up" is a *decision*, carried by `follow` — `visual_top`
+        // alone is just a position, and a position the renderer will happily
+        // re-clamp. Both move together because this is a fixture standing in
+        // for `App::scroll_log_up`.
         app.log_scroll.visual_top = 3;
+        app.log_scroll.follow = false;
 
         app.handle_agent_update(AgentUpdate::ToolProgress {
             tool_id: "b1".into(),
