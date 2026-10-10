@@ -4,6 +4,45 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-10 — 权限决策成为可记录的轨迹事实（PermissionRequested / PermissionResolved）
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（无用户可见渲染变化——TUI 本就过滤这两个事件） |
+| **Related** | `crates/tact_extensions/src/agent/tool_dispatch.rs`；`crates/tact_trajectory/src/service.rs` |
+
+**现象 / 动机：** spec §7 要求 Trajectory 记录 permission decisions。`RuntimeEvent::{PermissionRequested, PermissionResolved}` **已有消费者**（轨迹分类器映射到 `TrajectoryEventType::Permission`；TUI 主动把它们过滤出日志），但生产里**从不构造**——权限决策只存在于内存与用户弹窗里，轨迹里没有痕迹。
+
+**决策：** 在 `preflight_tool_calls` 的权限阶梯处成对发出：`check_with_auto` **之前**发 `PermissionRequested { request_id, capability }`，整个 `match decision.behavior` 解析完成后发**恰好一条** `PermissionResolved { request_id, allowed }`，其中 `allowed = matches!(state, PreparedState::Run)`（该 arm 内只有放行才会产生 `Run`，所以 Deny、hook 阻断、弹窗拒绝/取消都记 `false`）。`request_id` 取自工具调用自身的 id（`RequestId::new(call_id)`，校验失败回退 UUID），使一条决策记录能与它的调用对应。PreToolUse hook 直接放行/阻断、未知工具、`Credential` 敏感路径拒绝等**没有走到决策阶梯**的路径不发。
+
+**改后行为：** 用户不可见（TUI 过滤这两个变体，渲染字符串与布局不变）。轨迹中每次权限决策多一对 `Permission` 事实，可被 `trajectory.read` 查询。
+
+**Verification：** `./scripts/check-rust.sh` 通过；`cargo test --workspace` **2866 → 2869 passed / 0 failed**（+3 新测试）；**没有既有断言需要改**（既有测试用谓词而非精确事件序列）。
+
+**Pointers:** `crates/tact_extensions/src/agent/tool_dispatch.rs::{permission_request_id, preflight_tool_calls}`。
+
+## 1. 2026-10-10 — Headless 的 run 现在经 `CapabilityRouter` 的 `runs.start` 启动
+
+| Field | Value |
+|-------|-------|
+| **Type** | refactor（API 可见：`runs.start` 入参扩展、`AgentExecutor::run` 契约变更；用户可见行为不变） |
+| **Related** | `crates/tact_extensions/src/extensions/agent.rs`、`crates/tact_ui/src/headless.rs`；`ARCHITECTURE.md` §15 |
+
+**现象 / 动机：** spec §5 要求 Agent 作为官方扩展走统一能力协议，但 `runs.start` 在生产里**没有调用者**、`AgentExtension::register` 只在测试里被调用，headless 直接用 `agent.agent_loop(...)`。acceptance 第 2 条「Runtime 可经协议 headless 执行」因此不成立。
+
+**决策：**
+- `runs.start` 入参：`{"message": <string>}`（保持兼容）或 `{"content": <tact_llm::MessageContent>}`（完整 blocks），二者互斥且非空；仍 `deny_unknown_fields`。用 `content` 是因为 `build_user_message` 产出的 @文件块必须原样过边界。
+- `AgentExecutor::run` 从收 `String` 改为收 `tact_llm::Message`（**故意的公开契约变更**，4 个测试替身随改）。
+- 新增 `AgentExtension::from_shared(Arc<Mutex<Agent>>, cancel_flag)`：host 跑完 run 后还要读 stats、最终消息、SessionEnd hooks、关 MCP，不能把 Agent 按值交出去；cancel flag 单独传，因为 `cancel()` 是同步的、不能在持锁时 await 取 flag。
+- headless 改为构造 `CapabilityRouter` + 注册 Agent 扩展 + `RuntimeContext`，经 `runs.start` 启动；`KernelError` 按 message 映射回 `anyhow`，退出码与 stderr 文案不变。
+- headless 自身的控制面权限新增 `HeadlessControlPlanePermission`：只放行 `runs.start`/`runs.cancel`，其余一律拒绝。理由写在文档注释里——`PermissionManagerService` 在 `ask` 模式下 fail-closed（无 responder 即拒绝），会让 headless 整体不可用；而工具调用不经过这个 service（走 Agent 自己的 permission manager 与 preflight gate），所以它不是 per-tool bypass；替代方案（mode-aware 的 `PermissionManagerService`）也已写明。
+
+**改后行为：** 用户可见行为不变（headless 的 stdout / stderr / 退出码一致）。内部变化：`runs.start`、`AgentExtension::register`、`CapabilityRouter::invoke`（App 类）首次在生产路径上被调用。
+
+**Verification：** `./scripts/check-rust.sh` 通过；`cargo test --workspace` **2862 → 2866 passed / 0 failed**（+4 新测试）；`headless_session_integration` 与 `headless_tui_advanced` **未改动**即通过（无输出/退出码变化）。
+
+**Pointers:** `crates/tact_extensions/src/extensions/agent.rs::{from_shared, AgentExecutor, AgentRunInput}`、`crates/tact_ui/src/headless.rs::{headless_runtime, HeadlessControlPlanePermission}`。
+
 ## 1. 2026-10-10 — 轨迹补齐「回合结束」与「用户输入」两个事实；交互式主机退出时关闭事件传输
 
 | Field | Value |

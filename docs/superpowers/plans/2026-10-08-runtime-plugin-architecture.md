@@ -30,6 +30,10 @@ check the evidence before relying on one.
 
 Progress since the audit: `RunFinished` and the user-role `Text` fact now have
 producers, and `EventTransport::close` has a real caller (commit `f342883f`);
+the **headless** host starts its run through `runs.start`, so
+`AgentExtension::register` and the run capability have a production caller
+(commit `d68c3a0b`). The Task 10 row still holds for Session/Workflow and for
+the TUI path, which still calls `agent.agent_loop` directly.
 `ARCHITECTURE.md` §15 lists the interfaces that remain unconsumed.
 
 ## Global Constraints
