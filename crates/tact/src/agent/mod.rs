@@ -646,6 +646,36 @@ impl Agent {
         self.agent_settings.model_context_window
     }
 
+    /// The best available estimate of what the context window currently holds.
+    ///
+    /// Prefers the provider-reported total — it is the real wire figure and the
+    /// only one that survives native compaction — and falls back to the
+    /// serialized-context estimate before the first response of a session.
+    /// Returns 0 when neither is available, which callers must read as
+    /// "unknown" rather than "empty".
+    fn current_context_tokens(&self) -> usize {
+        if self.runtime.last_token_total > 0 {
+            return self.runtime.last_token_total as usize;
+        }
+        estimate_context_tokens(&self.runtime.context)
+    }
+
+    /// The subagent advisory for this task, when the window is filling up.
+    ///
+    /// Computed once per task, at the moment the system prompt is built: the
+    /// prompt is intentionally a per-task snapshot so the prefix KV-cache holds
+    /// across turns, so this cannot track the window mid-task. That is
+    /// acceptable because it is the *start* of a task that decides how the work
+    /// gets split, and because auto-compaction resets the pressure inside a
+    /// long task anyway.
+    fn context_advisory(&self) -> Option<String> {
+        crate::compact::context_pressure_advisory(
+            self.current_context_tokens(),
+            self.model_context_window(),
+        )
+        .then(crate::compact::subagent_advisory)
+    }
+
     fn max_tokens(&self) -> u32 {
         self.agent_settings.max_tokens
     }
@@ -2505,6 +2535,9 @@ impl Agent {
         } else {
             ""
         };
+        // Resolved before the builder chain: the chain holds
+        // `cached_dir_snapshot` mutably, so `&self` is not available inside it.
+        let advisory = self.context_advisory();
         let prompt = prompt_builder
             .role(format!(
                 "You are a coding agent operating in {}.",
@@ -2543,6 +2576,7 @@ impl Agent {
                 &mut self.runtime.cached_dir_snapshot,
                 self.agent_settings.snapshot_max_items,
                 &self.agent_settings.model,
+                advisory,
             ))
             .memory_guidance(memory_guidance)
             .build()?;
@@ -2608,6 +2642,7 @@ fn load_dynamic_context(
     cached_snapshot: &mut Option<String>,
     snapshot_limit: usize,
     model: &str,
+    advisory: Option<String>,
 ) -> String {
     let tree = match cached_snapshot {
         Some(cached) => cached.clone(),
@@ -2624,6 +2659,14 @@ fn load_dynamic_context(
         format!("Model: {model}"),
         format!("Platform: {}", std::env::consts::OS),
     ];
+
+    // Kept last: it is the one line here that can change between tasks, and the
+    // section is already below `=== DYNAMIC_BOUNDARY ===` for exactly that
+    // reason.
+    if let Some(advisory) = advisory {
+        lines.push(String::new());
+        lines.push(advisory);
+    }
 
     if !tree.is_empty() {
         lines.push(String::new());
@@ -3202,6 +3245,36 @@ mod tests {
         let prompt = agent.build_system_prompt().unwrap();
         assert!(!prompt.contains("# Memory guidance"), "{prompt}");
         assert!(!prompt.contains("# Memory"), "{prompt}");
+    }
+
+    /// The advisory reaches the rendered prompt, and only when the window is
+    /// actually filling — driven through the real `build_system_prompt`.
+    #[test]
+    fn a_filling_window_steers_the_prompt_at_subagents() {
+        ensure_config();
+
+        // Room to spare: no advisory.
+        let mut roomy = chat_completions_test_agent("advisory_roomy");
+        roomy.system_prompt = AgentSystemPrompt::Dynamic;
+        roomy.agent_settings.model_context_window = 200_000;
+        let prompt = roomy.build_system_prompt().unwrap();
+        assert!(!prompt.contains("spawn_subagent"), "{prompt}");
+
+        // Same agent, a window that is 65% full: the advisory appears.
+        let mut full = chat_completions_test_agent("advisory_full");
+        full.system_prompt = AgentSystemPrompt::Dynamic;
+        full.agent_settings.model_context_window = 200_000;
+        full.runtime.last_token_total = 130_000;
+        let prompt = full.build_system_prompt().unwrap();
+        assert!(prompt.contains("spawn_subagent"), "{prompt}");
+        assert!(prompt.contains("60% full"), "{prompt}");
+
+        // It lands in the dynamic section, which is the one allowed to change
+        // between tasks without invalidating the cached prefix.
+        let (_, dynamic) = prompt
+            .split_once("=== DYNAMIC_BOUNDARY ===")
+            .expect("template emits the boundary");
+        assert!(dynamic.contains("spawn_subagent"), "{dynamic}");
     }
 
     fn chat_completions_test_agent(context_name: &str) -> Agent {

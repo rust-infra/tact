@@ -77,7 +77,7 @@ crates/tact/src/prompt/system_prompt_template.md
 | `additional` | `AGENTS.md`（默认；在 `# Additional context` 下） | 每会话静态 |
 | `mcp_instructions` | `MCPToolRouter::instructions_block()`（已连接 server 的 `instructions`，按名称排序、每 server 一节） | 每会话静态（仅在重新加载 router 时变化） |
 | `memory` | `MemoryManager` | 动态 |
-| `dynamic_context` | 目录快照 / 近期文件 | 动态 |
+| `dynamic_context` | 目录快照 / 近期文件（+ 上下文压力提示，见 §3.4） | 动态 |
 
 `=== DYNAMIC_BOUNDARY ===` **之上**的节很少变化。**之下**的节（`memory`、`dynamic_context`）每轮可能变化。
 
@@ -121,7 +121,7 @@ let prompt = SystemPrompt::builder()
     .memory(if memory_enabled { self.load_memory_prompt()? } else { String::new() })
     .additional(cached_md_section(&mut cached_agents_md, || assemble_agents_md_prompt(workdir, &instruction_sources)))
     .mcp_instructions(self.mcp_router.instructions_block())
-    .dynamic_context(load_dynamic_context(workdir, &mut self.runtime.cached_dir_snapshot, self.agent_settings.snapshot_max_items, &self.agent_settings.model))
+    .dynamic_context(load_dynamic_context(workdir, &mut self.runtime.cached_dir_snapshot, self.agent_settings.snapshot_max_items, &self.agent_settings.model, advisory))
     .memory_guidance(if memory_enabled { MEMORY_GUIDANCE.trim() } else { "" })
     .build()?;
 ```
@@ -129,6 +129,27 @@ let prompt = SystemPrompt::builder()
 另外：若 provider 是 OpenAI Responses，`build_system_prompt` 会在 builder 之前换上 `responses_prompt_template()`（`crates/tact/src/prompt/responses_system_prompt_template.md`）；模板是唯一差别，各字段含义不变。`mcp_instructions` 来自 `self.mcp_router.instructions_block()`，`""` 时模板整节略去。
 
 `build_system_prompt()` 在**每个任务**开始时调用一次，位于 `agent_loop` 顶部、回合循环开始之前。同一渲染字符串在该任务内每次 LLM 请求复用，使提示词在回合间字节稳定，利于前缀 KV 缓存。`memory` 与 `dynamic_context` 在下一任务开始时重新求值；启用的指令文件（`AGENTS.md`）与目录快照**每会话组装一次**并缓存。`[agent].memory_enabled`（默认 `true`）关闭时，`# Memory guidance` 与 `## Memory` 两节都不出现，`save_memory` 工具也不注册（见 [持久记忆](./03_chapter_memory_zh.md) §5）。
+
+### 3.4 上下文压力提示（窗口快满时引导拆给 subagent）
+
+窗口占用达到 **60%** 时，`dynamic_context` 末尾追加一行提示，引导模型把大块或自包含的工作交给 `spawn_subagent`：
+
+```
+Context window is over 60% full. Prefer delegating large or self-contained work to a
+subagent (`spawn_subagent`), which runs in its own fresh context and returns only a
+summary — the parent window then pays for the summary, not the work. Keep work whose
+intermediate results you need in this conversation here; delegate the parts you only
+need the answer to.
+```
+
+四个设计要点：
+
+- **阈值 60% 是刻意低于 auto-compact 的 80%**（`SUBAGENT_ADVISORY_THRESHOLD_PERCENT` vs `AUTO_COMPACT_THRESHOLD_PERCENT`）。到了压缩阈值，下一步就压缩、窗口回落，建议已经没机会被采纳——提示只有落在两个阈值之间那条带里才有用，所以必须**先于**压缩开口。测试 `the_subagent_advisory_fires_below_the_compaction_threshold` 把这条关系钉住（改任一个数都会红）。
+- **占用取自 `last_token_total`（provider 真实用量），无则退回 `estimate_context_tokens(context)`**；两者都为 0 时（全新会话）**不说话**——没有证据的提示会教会模型把这行当噪音。
+- **落在 `=== DYNAMIC_BOUNDARY ===` 之下**，因为它是这里唯一会跨任务变化的行，而该段本就是为"可变且不破前缀 KV 缓存"设的。
+- **每个任务只求值一次**（与 system prompt 同生命周期），**不随任务内增长实时更新**——每轮改提示词会毁掉前缀 KV 缓存。这可以接受：决定"怎么拆活"的时机是任务**开始**，而任务很长时 auto-compact 本来就会把压力重置。
+
+提示词里此前**完全不提 subagent**（模板与代码零命中），模型只从 `spawn_subagent` 的工具描述知道它存在、不知道**何时**该用；这行补上了那个缺口。文案由 `subagent_advisory()` 拼出，百分比直接取自阈值常量——写死数字会在阈值变动那天悄悄说谎。
 
 ### 3.3 指令文件来源（`instruction_sources`）
 
@@ -223,7 +244,7 @@ SystemPrompt::from(include_str!("my_template.md"))
 - **additional** — 项目 `AGENTS.md`（渲染在 `# Additional context` 下）
 - **mcp_instructions** — 已连接 MCP server 的 `instructions`（无 server 提供时整节不出现）
 - **memory** — `MEMORY.md` **索引**（按仓库；正文由 `load_memory` 按需读取，不在此注入）
-- **dynamic_context** — 日期、workdir、模型、平台、目录快照
+- **dynamic_context** — 日期、workdir、模型、平台、目录快照（窗口占用 ≥60% 时末尾另加一行 subagent 引导，见 §3.4）
 
 渲染后的提示词类似：
 

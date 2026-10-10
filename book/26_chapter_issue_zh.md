@@ -4,6 +4,32 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-10 — 窗口快满时，系统提示引导拆给 subagent
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization（用户可见：窗口占用 ≥60% 时系统提示动态段多一行 subagent 引导） |
+| **Related** | `crates/tact/src/compact/mod.rs`（`context_pressure_advisory` / `subagent_advisory` / `SUBAGENT_ADVISORY_THRESHOLD_PERCENT`）、`crates/tact/src/agent/mod.rs`（`current_context_tokens` / `context_advisory` / `load_dynamic_context`）；Ch 04 §3.4、Ch 05 §4 |
+
+**现象 / 动机：** 长任务把窗口吃满以后，唯一的出路是 auto-compact——摘要是有损的，而且会丢掉任务的中间结构。更早的做法是把还能独立的大块工作交给 `spawn_subagent`（它在自己的新 context 里跑，父窗口只付摘要的钱）。但**模型不知道这个选项**：系统提示词里此前完全不提 subagent（模板与 `prompt/mod.rs` 零命中），模型只从 `spawn_subagent` 的工具描述知道它存在，不知道**何时**该用。
+
+**决策：** 窗口占用 ≥ **60%** 时，在 `dynamic_context` 末尾追加一行引导。四处关键取舍：
+
+- **60% 刻意低于 auto-compact 的 80%。** 到 80% 下一步就压缩、窗口回落，建议已无机会被采纳；提示只在两个阈值之间那条带里有效，所以必须**先于**压缩开口。`the_subagent_advisory_fires_below_the_compaction_threshold` 直接断言 `context_pressure_advisory(60,100) == true` 而 `should_auto_compact(60,100,0,0,0) == false`、两者在 80 处交换——改任一个常量都会红。
+- **占用取 `last_token_total`（provider 真实用量），无则退回 `estimate_context_tokens(context)`；两者皆 0 时（全新会话）不说话。** 没有证据的提示会训练模型忽略这行。
+- **落在 `=== DYNAMIC_BOUNDARY ===` 之下**——它是这里唯一跨任务变化的行，而该段本就是为"可变且不破前缀 KV 缓存"设的。
+- **文案由 `subagent_advisory()` 拼出，百分比取自阈值常量**，不写死 60——否则阈值一改，提示就在对模型说谎（`the_advisory_text_states_the_actual_threshold` 钉住）。
+
+**只按任务求值一次。** `build_system_prompt` 是每 task 快照（`agent_loop` 顶部、loop 之前调用一次，之后每轮复用同一字符串），所以这行**不反映任务内的增长**。这是有意的：每轮改提示词会毁掉前缀 KV 缓存。可接受的原因是——决定"怎么拆活"的时机是任务**开始**，而任务很长时 auto-compact 本来就会把压力重置。
+
+**改后行为：** 窗口占用 ≥60% 时，动态段末尾出现一行（约 400 字符），说明优先把大块/自包含工作交给 `spawn_subagent`、只把"需要中间结果"的工作留在本窗口。低于阈值、全新会话、或 `model_context_window = 0` 时不出现。
+
+**Verification：** `cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` 干净。新增：`the_subagent_advisory_fires_below_the_compaction_threshold`（阈值序关系）、`the_subagent_advisory_stays_quiet_without_evidence`（无窗口 / 无用量不说话，120k/200k 触发而 119,999 不触发）、`the_advisory_text_states_the_actual_threshold`（文案里的百分比 == 常量，且点名 `spawn_subagent`）、`a_filling_window_steers_the_prompt_at_subagents`（走真实 `build_system_prompt`：宽松窗口无该行、65% 窗口有，且断言它落在 `DYNAMIC_BOUNDARY` **之下**）。真机 dump 确认渲染位置在 `## Dynamic context` 的 `Platform: macos` 之后。
+
+**Pointers:** Ch 04 §3.4、Ch 05 §4（两个阈值的关系）、`crates/tact/src/compact/mod.rs`。
+
+---
+
 ## 1. 2026-10-10 — 实时任务统计行的两侧留白里放一只会走动的吉祥物
 
 | Field | Value |

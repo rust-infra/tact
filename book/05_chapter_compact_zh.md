@@ -173,6 +173,12 @@ OR 两侧都与同一 **token** 窗口比较，且两侧都预留了输出预算
 
 **Responses 例外**：`Agent::auto_compact_due` 对 OpenAI Responses 只认 provider 回报的 `last_token_total`，**不用**逻辑 context 的估算。原因是原生压缩只收缩 wire 基线、不缩小逻辑 context——若让估算参与触发，它会在一个已经压缩过的 context 上永远重触发。因此该路径下 `last_token_total == 0`（尚无用量）时一律不触发，也不做「`max_tokens` 单独越线」的兜底。
 
+### 与 60% subagent 提示的关系
+
+同一个 `model_context_window` 还驱动系统提示里的**上下文压力提示**（[系统提示词](./04_chapter_prompt_zh.md) §3.4）：占用 ≥ `SUBAGENT_ADVISORY_THRESHOLD_PERCENT`（**60%**）时，动态段追加一行引导模型把大块工作交给 `spawn_subagent`。
+
+两个阈值**刻意不同且必须保持这个顺序**：60% < 80%。到 80% 下一步就压缩、窗口回落，建议没机会被采纳；提示只在两者之间那条带里有效。`the_subagent_advisory_fires_below_the_compaction_threshold` 把这条关系钉死——改任何一个数都会红。注意提示按**任务**求值一次（与 system prompt 同生命周期），因此它反映的是任务开始时的占用，不是任务内的增长。
+
 摘要后重建（Codex 风格）：**`[近期真实 User…] + [<context-handoff> summary cell]`**，不再是单条 summary。交接摘要是一条带 `<context-handoff>` … `</context-handoff>` 包裹、内存中标记为 `MessageKind::Summary` 的 `User` 角色消息，是**一等公民 cell**：按类型检测（reload 会话回退到 `SUMMARY_PREFIX` 字符串匹配）、永远不会被当成真实 user turn，即使 provider 合并连续 user 消息也能靠标签区分。重建分为三步：
 
 1. **`collect_user_messages`** — 遍历整个 context，用 `is_real_user_message` 挑出真实 user turn（排除工具结果组成的 block 消息、旧 summary 消息、hook 注入的 `<hook-context>` cell 和非 User 角色）。
