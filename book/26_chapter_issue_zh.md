@@ -4,6 +4,31 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-10 — 发版 v1.1.38：清单版本 1.1.37 → 1.1.38，与本次的权限弹窗改动一起进 PR
+
+| Field | Value |
+|-------|-------|
+| **Type** | release（用户可见：`--version` 与升级接口报 1.1.38；`v1.1.38` 触发 `release.yml`，五个平台产出 `tact-ui-v1.1.38-*` 与 `SHA256SUMS`） |
+| **Related** | `Cargo.toml`（`[workspace.package].version`）、`Cargo.lock`（四个包条目）、`README.md`（徽章 + 发版命令片段）；`.github/workflows/release.yml` |
+
+**现象 / 动机：** 上一次发版（v1.1.37）把清单从 `1.1.33` 直接补到 `1.1.37` 是为了追上**已经存在**的 tag——当时 `v1.1.37` 已指向 `main`，清单却还停在 `1.1.33`。此后又合入了几笔有用户可见行为的改动（权限弹窗去档、日志跟尾、吉祥物……），但**没有配套提升版本**：本地 build 的 `--version`、`crates/tact/src/upgrade.rs`（`env!("CARGO_PKG_VERSION")`）与 `USER_AGENT` 都仍在报 `1.1.37`，也就是对着一个已经被打过的 tag 说谎。
+
+**决策：** 本次发版把清单推到 **1.1.38**，并**与权限弹窗那笔改动放进同一个 PR**。
+
+- **`1.1.38` 无碰撞**：`v1.1.38` 这个 tag 不存在（本地与 `origin` 都没有），所以直接递增即可，不需要像上次那样跳号。上次跳号是撞 tag 的补救，不是常规。
+- **发版与功能同 PR**（这次与上次不同）：上次是「tag 先打、清单后补」，留下了一段两个来源不一致的窗口。这次让 tag 与它引用的提交在同一个 PR 里——`v1.1.38` 将打在合并后的 `main` 提交上，清单版本从那一提交起就是对的。
+- **`release.yml` 的版本来源保持不动。** tag 触发用 `GITHUB_REF_NAME`、否则读 `Cargo.toml`；改清单只是让本地 build 与 `workflow_dispatch` 路径不再少报。
+- `Cargo.lock` 的四个条目（`tact` / `tact-ui` / `tact_llm` / `tool_refactor_macros`，均为 `version.workspace = true`）随清单一起提升；`tact_protocol` / `agent_tui_kit` 是独立版本包（`0.1.0`），**不动**。
+- README 徽章与「发版」两行命令同步到 `v1.1.38`——那两行是照抄即用的指令，留在旧版本号上会把人引导去打一个已存在的 tag。
+
+**改后行为：** `tact-ui --version` 报 1.1.38；`upgrade` 的 UA 与自报版本一致；推送 `v1.1.38` 触发 `release.yml`，五个 target 构建并发布 Release。
+
+**Verification：** `git diff Cargo.lock` 只有四条 `version = "1.1.x"` 行变化，无依赖增删；推送门（`scripts/check-rust.sh`：fmt + clippy `-D warnings` + 四个包的测试）全绿。
+
+**Pointers:** `Cargo.toml`、`Cargo.lock`、`README.md`、`.github/workflows/release.yml`。
+
+---
+
 ## 1. 2026-10-10 — 窗口快满时，系统提示引导拆给 subagent
 
 | Field | Value |
