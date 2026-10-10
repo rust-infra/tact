@@ -74,13 +74,17 @@ struct EventPublishingAgent;
 
 #[async_trait]
 impl AgentExecutor for EventPublishingAgent {
-    async fn run(&self, context: InvocationContext, message: String) -> Result<RunId, KernelError> {
+    async fn run(
+        &self,
+        context: InvocationContext,
+        message: tact_llm::Message,
+    ) -> Result<RunId, KernelError> {
         context
             .events()
             .publish(RuntimeEvent::Text {
                 run_id: context.run_id().cloned(),
                 role: "assistant".into(),
-                content: message,
+                content: tact_extensions::extract_text(&message.content),
             })
             .await?;
         Ok(RunId::from("run-without-chat"))

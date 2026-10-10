@@ -22,14 +22,14 @@ impl PermissionService for AllowAll {
     }
 }
 
-struct CapturingExecutor(Mutex<Option<String>>);
+struct CapturingExecutor(Mutex<Option<tact_llm::Message>>);
 
 #[async_trait]
 impl AgentExecutor for CapturingExecutor {
     async fn run(
         &self,
         _context: InvocationContext,
-        message: String,
+        message: tact_llm::Message,
     ) -> Result<RunId, KernelError> {
         *self.0.lock().unwrap() = Some(message);
         Ok(RunId::from("run-agent-test"))
@@ -66,9 +66,80 @@ async fn agent_run_capability_forwards_message_and_returns_run_id() {
         .unwrap();
 
     assert_eq!(result, json!({"run_id": "run-agent-test"}));
+    let captured = executor
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("executor captured the message");
+    assert_eq!(captured.role, tact_llm::Role::User);
     assert_eq!(
-        executor.0.lock().unwrap().as_deref(),
-        Some("hello from extension")
+        crate::extract_text(&captured.content),
+        "hello from extension"
+    );
+}
+
+/// The full-content form is accepted too, so a client can send blocks rather
+/// than a bare string without the boundary narrowing it to text.
+#[tokio::test]
+async fn agent_run_capability_accepts_a_full_message_content() {
+    let runtime = runtime();
+    let executor = Arc::new(CapturingExecutor(Mutex::new(None)));
+    AgentExtension::new(executor.clone())
+        .register(&runtime)
+        .unwrap();
+
+    let result = runtime
+        .router()
+        .invoke(
+            "runs.start",
+            runtime.invocation(
+                RequestId::from("request-agent-content"),
+                PluginId::from("tact.agent"),
+                "test",
+            ),
+            json!({"content": {"content": [{"type": "text", "text": "hello blocks"}]}}),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result, json!({"run_id": "run-agent-test"}));
+    let captured = executor
+        .0
+        .lock()
+        .unwrap()
+        .clone()
+        .expect("executor captured the message");
+    assert_eq!(captured.role, tact_llm::Role::User);
+    assert_eq!(crate::extract_text(&captured.content), "hello blocks");
+}
+
+/// `message` and `content` are alternatives, not a pair: both together is a
+/// malformed request, not a merge.
+#[tokio::test]
+async fn agent_run_capability_rejects_message_and_content_together() {
+    let runtime = runtime();
+    AgentExtension::new(Arc::new(CapturingExecutor(Mutex::new(None))))
+        .register(&runtime)
+        .unwrap();
+
+    let error = runtime
+        .router()
+        .invoke(
+            "runs.start",
+            runtime.invocation(
+                RequestId::from("request-agent-both"),
+                PluginId::from("tact.agent"),
+                "test",
+            ),
+            json!({"message": "hi", "content": {"content": "also hi"}}),
+        )
+        .await
+        .unwrap_err();
+
+    assert_eq!(
+        error.category(),
+        tact_protocol::ErrorCategory::InvalidRequest
     );
 }
 
@@ -110,7 +181,7 @@ async fn runs_cancel_capability_requests_cancellation() {
         async fn run(
             &self,
             _context: InvocationContext,
-            _message: String,
+            _message: tact_llm::Message,
         ) -> Result<RunId, KernelError> {
             Ok(RunId::from("run-cancel-test"))
         }

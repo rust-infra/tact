@@ -49,13 +49,17 @@ struct PublishingExecutor;
 
 #[async_trait]
 impl AgentExecutor for PublishingExecutor {
-    async fn run(&self, context: InvocationContext, message: String) -> Result<RunId, KernelError> {
+    async fn run(
+        &self,
+        context: InvocationContext,
+        message: tact_llm::Message,
+    ) -> Result<RunId, KernelError> {
         context
             .events()
             .publish(RuntimeEvent::Text {
                 run_id: None,
                 role: "assistant".into(),
-                content: message,
+                content: crate::extract_text(&message.content),
             })
             .await?;
         Ok(RunId::from("run-view-adapter"))
