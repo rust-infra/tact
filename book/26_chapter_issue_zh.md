@@ -4,6 +4,23 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-10 — TUI 的 run 也走 `runs.start`：两个 host 的 run 入口统一
+
+| Field | Value |
+|-------|-------|
+| **Type** | refactor（内部所有权变更；用户可见行为不变） |
+| **Related** | `crates/tact_ui/src/driver.rs`、`crates/tact_ui/src/interactive.rs`、`crates/tact_ui/tests/recovery_compaction.rs`；`ARCHITECTURE.md` §15 |
+
+**现象 / 动机：** headless 已经走 `runs.start`，但交互式 TUI 仍在 `handle_user_command` 里直接调 `agent.agent_loop(...)`——run 入口两台 host 不一致。根因是 driver 的设计：「run 期间 Agent 被独占搬进 spawned task」（`let mut task_agent = agent.take(); spawn(async move { …; task_agent })`），而 `runs.start` 要求 host 交出共享所有权。
+
+**决策：** driver 改为持有 `Arc<tokio::sync::Mutex<Agent>>`（`SharedAgent`），两个 loop 入口返回它；run 在锁内执行，其余命令继续从启动时克隆出来的 Arc 句柄（stats / ui_responder / managers / cancel_flag / view_updates）作答——这些句柄本来就是为此存在的，所以独占不再是必需。存在 serving context 时把 Agent 扩展注册到它上面，并以**完整 content**（`{"content": message.content}`）经 `runs.start` 启动，图像/文件块得以保留；没有 serving context（测试中直接构造的 agent）保留直连 `agent_loop` 的兼容路径。post-run 逻辑抽成共用的 `finish_completed_turn`，两条路径不会漂移。
+
+**改后行为：** 用户可见行为不变。取消/完成/错误三分支语义原样保留：`Ok` + `cancel_flag` = 取消（`task_cancelled`）；`Ok` = 完成（`finish_completed_turn`：Stop hook 续跑 + `task_complete` + TaskCompleted hooks）；`Err` = 与直连路径**同样的错误文案**（`KernelError::message()` 就是原先 `e.to_string()` 的内容，有测试钉住）。约 20 个 `run_command_loop` 调用点只有 2 处需要改（`interactive.rs` 读回 agent、`recovery_compaction.rs` 的 helper），其余都是 spawn-and-drop。
+
+**Verification：** `./scripts/check-rust.sh` 通过；`cargo test --workspace` **2871 → 2874 passed / 0 failed**（+3 新测试）；`driver_integration` 9、`harness_advanced` 6、`recovery_compaction` 14、`tool_integration` 13、`headless_session_integration` 6、`headless_tui_advanced` 5 全过。**已知限制：** `UserCommand::RunMcpPrompt` 这条 submit 路径仍是直连（行为与改动前一致），是唯一未走 router 的路径。
+
+**Pointers:** `crates/tact_ui/src/driver.rs::{run_submit, run_routed_submit, finish_completed_turn}`。
+
 ## 1. 2026-10-10 — 会话级 serving `RuntimeContext`：§4 的 12 个内核服务能力真正可达
 
 | Field | Value |

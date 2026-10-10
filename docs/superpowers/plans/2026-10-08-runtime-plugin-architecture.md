@@ -35,10 +35,13 @@ the **headless** host starts its run through `runs.start`, so
 (commit `d68c3a0b`); the session bootstrap now builds a serving
 `RuntimeContext` that calls `tact::services::register` over real backing, and
 `SessionExtension::register` runs in production, so the Task 2/5 and Session
-rows above are addressed. The Task 10/13 rows still hold: the TUI calls
-`agent.agent_loop` directly, `WorkflowExtension::register` is test-only, 11 of
-the 12 service capabilities have no invoking caller, and `Agent::runtime_plugins`
-is still never read. `ARCHITECTURE.md` §15 lists what remains unconsumed.
+rows above are addressed; and **both** hosts now start their run through
+`runs.start` (the interactive driver registers the Agent extension on the same
+serving context), so the Task 13 "Agent-to-TUI" row no longer describes the run
+path either. Still open: `WorkflowExtension::register` is test-only, 11 of the
+12 service capabilities have no invoking caller, `Agent::runtime_plugins` is
+never read, and `UserCommand::RunMcpPrompt` submits directly.
+`ARCHITECTURE.md` §15 lists what remains unconsumed.
 
 ## Global Constraints
 
