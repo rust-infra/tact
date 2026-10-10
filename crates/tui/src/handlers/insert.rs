@@ -570,6 +570,15 @@ pub(crate) fn handle_insert_mode(
             app.voice.cancel();
             app.dirty = true;
         }
+        // "Back out of the current view state" is a ladder: the slash popup and
+        // voice come first (above), and a log scrolled away from its tail is a
+        // view state too — so it sits *above* leaving Insert mode. The hint on
+        // the input box's border advertises `esc` for exactly this, which is
+        // what makes the extra rung discoverable rather than surprising.
+        KeyCode::Esc if !app.is_log_pinned_to_bottom() => {
+            app.scroll_log_to_bottom();
+            app.dirty = true;
+        }
         KeyCode::Esc => app.input_mode = InputMode::Normal,
         _ => {}
     }
@@ -890,6 +899,45 @@ mod tests {
         assert!(
             app.flash_msg.is_none(),
             "queuing must not flash the old busy message"
+        );
+    }
+
+    /// `esc` is a ladder of "back out of the current view state", and a log
+    /// scrolled away from its tail is one — so it takes the first press and
+    /// Insert mode takes the second. The hint on the input box's border
+    /// advertises exactly this.
+    #[test]
+    fn esc_returns_to_the_log_tail_before_leaving_insert_mode() {
+        let (mut app, _rx) = TestApp::new().into_commands();
+        let user_cmd_tx = app.user_cmd_tx.clone();
+        app.append_markdown("row");
+        app.scroll_log_up(1);
+        assert!(!app.is_log_pinned_to_bottom(), "fixture: scrolled away");
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(
+            app.is_log_pinned_to_bottom(),
+            "first esc returns to the tail"
+        );
+        assert!(
+            matches!(app.input_mode, InputMode::Insert),
+            "and the reader is still typing"
+        );
+
+        handle_insert_mode(
+            &mut app,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+            &user_cmd_tx,
+        );
+
+        assert!(
+            matches!(app.input_mode, InputMode::Normal),
+            "second esc leaves Insert mode"
         );
     }
 

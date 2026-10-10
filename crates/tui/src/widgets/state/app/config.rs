@@ -162,6 +162,8 @@ impl App {
             theme: &self.theme,
             messages: self.msgs(),
             log_scroll: &self.log_scroll,
+            log_following: self.log_scroll.follow,
+            log_unseen: self.log_scroll.unseen,
             log: &self.log,
             code_blocks: &self.code_blocks,
             mermaid_blocks: &self.mermaid_blocks,

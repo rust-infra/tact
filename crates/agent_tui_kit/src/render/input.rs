@@ -130,8 +130,15 @@ pub fn render_command_line(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
 
 /// Render the input box (insert mode) or command line (palette mode).
 ///
-/// Returns the pending `[Cancel]` button hit area (empty when inactive) so the
-/// host can record it for mouse handling — the kit render pass stays pure.
+/// Returns the `[Cancel]` button's hit area (`Rect::default()` when inactive)
+/// so the host can record it for mouse handling — the kit render pass stays
+/// pure.
+///
+/// The back-to-bottom affordance is **not** here: it is the floating pill on
+/// the Log panel's bottom border (`agent_tui_kit::render::scroll_pill`), whose
+/// host is `layout.rs`. Nothing in this module may write that hit area — this
+/// renderer runs *after* the Log, so a `Rect::default()` written here would
+/// silently un-click the pill.
 pub fn render_input_box(
     frame: &mut Frame,
     area: Rect,
@@ -243,15 +250,8 @@ pub fn render_input_box(
 
     let cursor_x =
         (area.x + 1 + caret_col_in_line as u16).min(area.x + area.width.saturating_sub(2));
-    let cursor_y = {
-        if ctx.input_scroll as usize > cursor_display_line {
-            eprintln!(
-                "DEBUG input.rs: scroll={} > cursor_display_line={} area={:?} input={:?} cursor={}",
-                ctx.input_scroll, cursor_display_line, area, ctx.input, ctx.input_cursor
-            );
-        }
-        area.y + 1 + cursor_display_line.saturating_sub(ctx.input_scroll as usize) as u16
-    };
+    let cursor_y =
+        area.y + 1 + cursor_display_line.saturating_sub(ctx.input_scroll as usize) as u16;
     frame.set_cursor_position((cursor_x, cursor_y));
 
     cancel_area

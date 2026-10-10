@@ -25,24 +25,15 @@ impl App {
             .max(1)
     }
 
-    /// Whether the rendered log viewport currently sits at its visual bottom.
+    /// Whether the log is following its tail (see [`LogScroll::follow`]).
     ///
-    /// `usize::MAX` is only a pre-render bottom sentinel: `render_log_panel`
-    /// clamps it to `total - height`. Tool progress therefore needs to
-    /// recognize both representations before it grows placeholder rows.
+    /// Used to be derived from `visual_top` plus the visual caches. That
+    /// derivation was wrong at exactly the moment it was asked: the caches are
+    /// versioned on `items.len()`, so appending a row invalidates them before
+    /// anyone can ask, and the answer flipped to "not pinned" for a reader who
+    /// never scrolled. The explicit flag cannot go stale.
     pub(crate) fn is_log_pinned_to_bottom(&self) -> bool {
-        if self.log_scroll.visual_top == usize::MAX {
-            return true;
-        }
-        if self.log_scroll.visible_indices_ver != self.log.items.len()
-            || self.log_scroll.visual_cache_ver != self.log.items.len()
-            || self.log_scroll.visual_start_cache.len() < 2
-        {
-            return false;
-        }
-        let total = *self.log_scroll.visual_start_cache.last().unwrap_or(&0);
-        let max_visual = total.saturating_sub(self.log_scroll.height as usize);
-        self.log_scroll.visual_top >= max_visual
+        self.log_scroll.follow
     }
 
     pub(crate) fn is_message_visible(&self, idx: usize) -> bool {
@@ -623,9 +614,10 @@ impl App {
 
     pub(crate) fn refresh_thinking_log_scroll(&mut self) {
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
-        if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-            self.scroll_log_to_bottom();
-        }
+        // A thinking block growing above the viewport moves the tail, but adds
+        // nothing at the end: re-pin a following reader, never badge one who
+        // scrolled away.
+        self.keep_log_tail_pinned();
     }
 
     pub(crate) fn shift_phys_indices_from(&mut self, at: usize, delta: isize) {
@@ -702,9 +694,10 @@ impl App {
 
     pub(crate) fn refresh_tool_log_scroll(&mut self) {
         self.log_scroll.state = ScrollbarState::new(self.total_log_lines().saturating_sub(1));
-        if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-            self.scroll_log_to_bottom();
-        }
+        // See `refresh_thinking_log_scroll`: growth above, not new rows at the
+        // end. A caller that just appended something the reader asked for
+        // (`add_user_message`) re-pins explicitly instead.
+        self.keep_log_tail_pinned();
     }
 }
 

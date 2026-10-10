@@ -164,6 +164,12 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         handle_voice_button_click(app);
         return;
     }
+    // The hint and `esc` are the same action; the click is what makes it
+    // discoverable without reading the keymap.
+    if point_in_rect(mouse.column, mouse.row, app.scroll_back_area) {
+        app.scroll_log_to_bottom();
+        return;
+    }
     if point_in_rect(mouse.column, mouse.row, app.pending_cancel_btn_area) {
         // Clicking `[Cancel]` drops the queued messages only — the running
         // task keeps going (unlike `/cancel`, which stops it too).
@@ -2366,6 +2372,40 @@ mod tests {
             last.raw.contains("已复制") || last.raw.contains("Copied"),
             "expected a copy notice, got: {:?}",
             last
+        );
+    }
+
+    /// The hint and `esc` are the same action, so the click has to land too.
+    #[test]
+    fn clicking_the_back_to_bottom_hint_returns_to_the_tail() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("row".into());
+        app.scroll_log_up(1);
+        assert!(!app.is_log_pinned_to_bottom(), "fixture: scrolled away");
+        app.set_scroll_back_area(Rect::new(60, 0, 20, 1));
+
+        handle_mouse_event(&mut app, mouse_down(65, 0));
+
+        assert!(
+            app.is_log_pinned_to_bottom(),
+            "a click on the hint returns to the tail"
+        );
+    }
+
+    /// …and a click anywhere else is not that action. The area is empty
+    /// whenever the hint is not drawn, which is what keeps this honest.
+    #[test]
+    fn a_click_outside_the_hint_does_not_move_the_viewport() {
+        let mut app = app_with_clickable_log();
+        app.add_system_message("row".into());
+        app.scroll_log_up(1);
+        app.set_scroll_back_area(Rect::new(60, 0, 20, 1));
+
+        handle_mouse_event(&mut app, mouse_down(30, 0));
+
+        assert!(
+            !app.is_log_pinned_to_bottom(),
+            "only the hint returns to the tail"
         );
     }
 

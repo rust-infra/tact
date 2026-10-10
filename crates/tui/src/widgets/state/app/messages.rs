@@ -544,10 +544,10 @@ impl App {
         spans.push(Span::raw("  "));
         spans.push(Span::styled(body, Style::default().fg(self.theme.accent)));
         let line = Line::from(spans);
+        // `append_msg` applies follow-the-tail: this row lands where the live
+        // band was, so a reader at the bottom stays put and one who scrolled
+        // away keeps their place.
         self.append_msg(line, raw, LogItemKind::SystemPlain(SystemMsgStyle::Default));
-        if self.input_mode == InputMode::Insert || self.input_mode == InputMode::Normal {
-            self.scroll_log_to_bottom();
-        }
     }
 
     /// Copy the turn that ends at the given task-stats physical row.
@@ -583,6 +583,12 @@ impl App {
 
     /// Add a user input message and record it in task history.
     pub(crate) fn add_user_message(&mut self, content: String) {
+        // The user's own words are the one append that always follows: they
+        // just pressed Enter, so the echo belongs on screen. This is a
+        // *deliberate* exception to follow-the-tail (`append_msg`), not an
+        // accident of the old unconditional scroll — which is why it lives
+        // here, at the user action, instead of in the append primitive.
+        self.scroll_log_to_bottom();
         // Insert a blank line as separator first
         self.add_new_line();
         let msgs = self.msgs();

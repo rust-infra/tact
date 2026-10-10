@@ -144,6 +144,9 @@ pub struct App {
     /// Hit area of the pending block's `[Cancel]` button (drops the queue
     /// without touching the running task; `Rect::default()` = inactive).
     pub(crate) pending_cancel_btn_area: ratatui::layout::Rect,
+    /// Hit area of the back-to-bottom hint on the input box's top border
+    /// (`Rect::default()` = not shown, so a stale area cannot eat a click).
+    pub(crate) scroll_back_area: ratatui::layout::Rect,
     pub(crate) cmd_line: String,
     /// Model context window in tokens (from agent config `model_context_window`).
     pub(crate) model_context_window: usize,

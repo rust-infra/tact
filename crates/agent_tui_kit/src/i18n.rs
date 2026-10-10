@@ -123,6 +123,11 @@ pub struct Messages {
     pub file_picker_title: &'static str,
     pub command_title: &'static str,
     pub input_box_title: &'static str,
+    /// Shown on the input box's top border, right-aligned, only while the log
+    /// is scrolled away from its tail. The badge is the "new activity" half
+    /// and is omitted (with its separator) when nothing arrived.
+    pub scroll_back_badge: &'static str,
+    pub scroll_back_action: &'static str,
     pub input_box_placeholder: &'static str,
     pub voice_idle: &'static str,
     pub voice_stop: &'static str,
@@ -489,6 +494,8 @@ impl Messages {
             file_picker_title: " Attach file ",
             command_title: " ⌘ Command ",
             input_box_title: " ❯ Input (Shift/Alt+Enter=newline) ",
+            scroll_back_badge: "New activity",
+            scroll_back_action: "↓ Back to bottom · esc",
             input_box_placeholder: "Type a task and press Enter…",
             voice_idle: "⏺ Voice",
             voice_stop: "⏹ Stop",
@@ -805,6 +812,8 @@ impl Messages {
             file_picker_title: " 附加文件 ",
             command_title: " ⌘ 命令 ",
             input_box_title: " ❯ 输入 (Shift/Alt+Enter 换行) ",
+            scroll_back_badge: "新活动",
+            scroll_back_action: "↓ 回到最新 · esc",
             input_box_placeholder: "输入任务，按 Enter 提交…",
             voice_idle: "⏺ 语音",
             voice_stop: "⏹ 停止",
