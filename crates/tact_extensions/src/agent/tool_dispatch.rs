@@ -96,6 +96,20 @@ fn permission_choice_for(selection: Option<usize>) -> PermissionChoice {
     }
 }
 
+/// The `request_id` that ties a `PermissionRequested` to the one
+/// `PermissionResolved` that answers it.
+///
+/// Derived from the tool call's own id so a recorded decision correlates with
+/// the call it belongs to. A synthetic call id that cannot serve as a protocol
+/// id (empty, or carrying whitespace/control characters) falls back to a fresh
+/// UUID: recording a decision under a mangled id would be worse than recording
+/// one that simply does not correlate.
+fn permission_request_id(call_id: &str) -> RequestId {
+    RequestId::new(call_id).unwrap_or_else(|_| {
+        RequestId::new(uuid::Uuid::new_v4().to_string()).expect("a UUID is a valid RequestId")
+    })
+}
+
 /// A resolved tool — either native (with owned metadata copy) or MCP.
 enum ResolvedTool {
     Native {
@@ -952,13 +966,21 @@ impl Agent {
 
             let state = match invoke_hooks!(PreToolUse, self, &mut tool_use) {
                 Ok(HookControl::Continue) => {
+                    // Spec §7: a permission decision is a recorded fact. The
+                    // request is announced before the ladder resolves it, and
+                    // exactly one resolution answers it.
+                    let request_id = permission_request_id(id);
+                    self.emit_update(RuntimeEvent::PermissionRequested {
+                        request_id: request_id.clone(),
+                        capability: stable_name.into(),
+                    });
                     let decision = self.runtime.permission_manager.check_with_auto(
                         stable_name,
                         risk,
                         &tool_use.input,
                         auto_approved,
                     );
-                    match decision.behavior {
+                    let state = match decision.behavior {
                         PermissionBehavior::Allow => PreparedState::Run,
                         PermissionBehavior::Deny => {
                             let msg = format!("Permission denied: {}", decision.reason);
@@ -1157,7 +1179,16 @@ impl Agent {
                                 }
                             }
                         }
-                    }
+                    };
+                    // One resolution per request. `Run` is the only outcome
+                    // that lets the call proceed; every `Resolved` is a
+                    // denial — by policy, by a hook, or by a cancelled or
+                    // denying prompt.
+                    self.emit_update(RuntimeEvent::PermissionResolved {
+                        request_id,
+                        allowed: matches!(state, PreparedState::Run),
+                    });
+                    state
                 }
                 // A hook that allows skips the permission check entirely: the
                 // decision was already made, and asking anyway would defeat the
@@ -1969,6 +2000,136 @@ mod tests {
                 serde_json::json!({ "path": "src/main.rs" })
             ),
             "run"
+        );
+    }
+
+    // ── Permission-decision recording (spec §7) ─────────────────────────
+
+    /// Drive pre-flight for one call while capturing the protocol events it
+    /// emits.
+    ///
+    /// The events, not the call's fate, are what the §7 assertions read: an
+    /// allowed call resolves the decision before the tool runs, so a test on
+    /// execution would be answering a different question.
+    fn permission_events_for(
+        agent: &mut Agent,
+        name: &str,
+        input: serde_json::Value,
+    ) -> Vec<RuntimeEvent> {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        agent.tool_context.set_test_view_updates(tx);
+        let _ =
+            block_on(agent.preflight_tool_calls(&tool_use(name, input))).expect("pre-flight runs");
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        events
+    }
+
+    /// Assert the event stream recorded exactly one decision: a
+    /// `PermissionRequested` naming `capability` and keyed by `request_id`,
+    /// followed by the single `PermissionResolved` that shares that key and
+    /// carries `allowed`.
+    fn assert_one_permission_decision(
+        events: &[RuntimeEvent],
+        capability: &str,
+        request_id: &str,
+        allowed: bool,
+    ) {
+        let requested: Vec<&RuntimeEvent> = events
+            .iter()
+            .filter(|event| matches!(event, RuntimeEvent::PermissionRequested { .. }))
+            .collect();
+        assert_eq!(
+            requested.len(),
+            1,
+            "one request per decision, got {events:?}"
+        );
+        match requested[0] {
+            RuntimeEvent::PermissionRequested {
+                request_id: id,
+                capability: recorded,
+            } => {
+                assert_eq!(id.as_str(), request_id, "the request is keyed by the call");
+                assert_eq!(recorded, capability);
+            }
+            other => panic!("expected PermissionRequested, got {other:?}"),
+        }
+
+        let resolved: Vec<(&RequestId, bool)> = events
+            .iter()
+            .filter_map(|event| match event {
+                RuntimeEvent::PermissionResolved {
+                    request_id,
+                    allowed,
+                } => Some((request_id, *allowed)),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            resolved.len(),
+            1,
+            "exactly one resolution per request, got {events:?}"
+        );
+        assert_eq!(
+            resolved[0].0.as_str(),
+            request_id,
+            "the resolution answers the request it was asked under"
+        );
+        assert_eq!(resolved[0].1, allowed);
+    }
+
+    #[test]
+    fn a_policy_denial_records_one_resolved_with_allowed_false() {
+        // Default mode with no UI: a High-risk `.env` read is denied without a
+        // prompt ever rendering (the non-interactive `ask_user` denies `High`).
+        let mut agent = agent_with(
+            "perm_deny_events",
+            crate::permission::PermissionMode::Default,
+        );
+        let events = permission_events_for(
+            &mut agent,
+            "read_file",
+            serde_json::json!({ "path": ".env" }),
+        );
+        assert_one_permission_decision(&events, "read_file", "t1", false);
+    }
+
+    #[test]
+    fn an_allowed_decision_records_one_resolved_with_allowed_true() {
+        let mut agent = agent_with(
+            "perm_allow_events",
+            crate::permission::PermissionMode::Default,
+        );
+        let events = permission_events_for(
+            &mut agent,
+            "read_file",
+            serde_json::json!({ "path": "src/main.rs" }),
+        );
+        assert_one_permission_decision(&events, "read_file", "t1", true);
+    }
+
+    /// The `Credential` refusal is decided *before* the permission ladder, so
+    /// it records no decision at all — only the `StepFailed` that already
+    /// describes the refusal.
+    #[test]
+    fn a_credential_refusal_records_no_permission_decision() {
+        let mut agent = agent_with(
+            "perm_credential_events",
+            crate::permission::PermissionMode::Auto,
+        );
+        let events = permission_events_for(
+            &mut agent,
+            "bash",
+            serde_json::json!({ "command": "cat ~/.ssh/id_ed25519" }),
+        );
+        assert!(
+            !events.iter().any(|event| matches!(
+                event,
+                RuntimeEvent::PermissionRequested { .. } | RuntimeEvent::PermissionResolved { .. }
+            )),
+            "a credential refusal is not a permission decision, got {events:?}"
         );
     }
 
