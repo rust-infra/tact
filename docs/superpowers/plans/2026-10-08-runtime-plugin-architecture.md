@@ -36,12 +36,16 @@ the **headless** host starts its run through `runs.start`, so
 (commit `d68c3a0b`); the session bootstrap now builds a serving
 `RuntimeContext` that calls `tact::services::register` over real backing, and
 `SessionExtension::register` runs in production, so the Task 2/5 and Session
-rows above are addressed; and **both** hosts now start their run through
+rows above are addressed; **both** hosts now start their run through
 `runs.start` (the interactive driver registers the Agent extension on the same
 serving context), so the Task 13 "Agent-to-TUI" row no longer describes the run
-path either. Still open: `WorkflowExtension::register` is test-only, 11 of the
-12 service capabilities have no invoking caller, `Agent::runtime_plugins` is
-never read, and the submit paths are now all routed (`RunMcpPrompt` included).
+path either; and **Chat now has a real implementation** — `chat.submit` owns the
+conversational turn (assembly, the Stop-hook continuation loop, `TaskComplete`,
+TaskCompleted hooks) and both hosts submit through it, which also fixed a real
+asymmetry (headless used to ignore continuation-requesting `Stop` hooks and never
+fire `TaskCompleted`). Still open: `WorkflowExtension::register` is test-only, 11
+of the 12 service capabilities have no invoking caller, `Agent::runtime_plugins`
+is never read, and the submit paths are all routed.
 `ARCHITECTURE.md` §15 lists what remains unconsumed.
 
 ## Global Constraints

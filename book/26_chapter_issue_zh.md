@@ -4,6 +4,25 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-10 — Chat 扩展真正拥有「会话回合」；headless 因此补上 Stop hook 续跑与 TaskCompleted
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（用户可见：headless 现在遵守 Stop hook 续跑，并触发 TaskCompleted hooks） |
+| **Related** | `crates/tact_extensions/src/extensions/{chat.rs,chat_input.rs}`、`crates/tact_ui/src/{driver.rs,headless.rs,permission.rs,session_bootstrap.rs}` |
+
+**现象 / 动机：** `extensions/chat.rs` 过去只有 manifest，`chat.start_run` 的 handler 是复用 Agent 扩展的 run handler——Chat 没有任何实现。而真正属于聊天的逻辑却住在 TUI host 里：`driver.rs::{run_routed_submit, finish_completed_turn}`（Stop hook 续跑循环、取消/完成分类、`TaskComplete`、TaskCompleted hooks）。后果（`git grep` 证实）：`dispatch_stop_hooks` / `dispatch_task_completed_hooks` 的**唯一非测试调用点是 `driver.rs`**，所以 headless 会**静默忽略**要求续跑的 `Stop` hook，也从不触发 `TaskCompleted` hooks。
+
+**决策：** 会话回合归 Chat。`extensions/chat.rs` 新增 `chat.submit`（manifest 现在同时声明 `chat.start_run` 与 `chat.submit`），承载：`build_user_message` 组装、vision 检查、每轮 reset（`tool_use_counter`、cancel flag）、经 `runs.start` 跑一轮、Stop hook 续跑循环（`MAX_STOP_CONTINUATIONS = 4`）、`TaskComplete` 与 TaskCompleted hooks。`build_user_message` 连同其 6 个测试从 `tact_ui::user_message` 搬到 `tact_extensions::extensions::chat_input`——「用户这一轮到底说什么」是聊天语义，不是 View 语义。两个 host 都改为提交 `chat.submit`（TUI driver、headless），而运行本身仍由 Agent 扩展的 `runs.start` 负责：**Chat 拥有回合，Agent 拥有单次 run**。
+
+**一个被实现否决的设计点（记录以免重犯）：** 原计划让 Chat 在整个回合持有 Agent 锁；但 `runs.start` 的 executor 会锁**同一把** `Arc<Mutex<Agent>>`，tokio mutex 不可重入，持锁跨 invoke 会**每回合死锁**。因此锁只在每轮 reset 与每次 post-run 记账时持有，run 期间释放。
+
+**改后行为（穷举）：** ① headless 现在遵守 Stop hook 续跑、并触发 TaskCompleted hooks（本次修复的不一致）；② headless 的 run 失败除 stderr 外还会发一条 `Error` 运行时事件（因而进轨迹）；③ driver 在 router 拒答 `chat.submit` 时不再重复报错（回合自己会报）。其余（流式、取消、弹窗、其他命令、渲染、`UiResponder`）未动。
+
+**Verification：** `./scripts/check-rust.sh` 通过；`cargo test --workspace` **2875 → 2881 passed / 0 failed**（+6 测试）。新增测试含 `headless_stop_hook_continuation_runs_a_second_turn`（本次修复的钉子）、`task_completed_hooks_fire_in_the_chat_turn`、`interactive_submit_goes_through_chat_submit_when_a_serving_context_is_present`；`build_user_message` 的 6 个测试原样迁移。
+
+**Pointers:** `crates/tact_extensions/src/extensions/chat.rs::{run_chat_turn, ChatExtension}`、`crates/tact_extensions/src/extensions/chat_input.rs::build_user_message`。
+
 ## 1. 2026-10-10 — MCP prompt 回合也走 `runs.start`；host 测试偶发失败定位为 `ETXTBSY`
 
 | Field | Value |
