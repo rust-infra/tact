@@ -390,6 +390,56 @@ Architecture acceptance requires:
 - Existing business-function preservation matrix passes.
 - The code dependency graph has no hidden Agent-to-TUI direct path and no MCP-only execution path.
 
+## Implementation status (2026-10-10)
+
+The target above is unchanged. This section records what the shipping binary
+actually does, so the acceptance list is not read as a description of the
+current state. It is based on a read-only audit of the whole spec plus the work
+landed since; the evidence lives in `ARCHITECTURE.md` §15 and the committed
+history. "Reachable, unconsumed" means the mechanism exists on a real path but
+no product code invokes it yet.
+
+| Area | Status |
+|---|---|
+| §1 Kernel module shape and dependency graph | implemented (`crates/tact` depends only on `tact_protocol`) |
+| §1 services | implemented; `tact::services::register` runs in the session bootstrap over real event / trajectory / storage / permission backing, so the §4 service capabilities are reachable. Members with no consumer are listed in `ARCHITECTURE.md` §15 |
+| §2 envelopes, messages, error categories | implemented; the 12 categories match this document exactly. `ResponseEnvelope` carries no `deadline`, and no production invocation sets one |
+| §2 cancellation | `PluginRequest::Cancel` is defined but never sent; cancellation is process termination |
+| §2 reconnect / replay from a sequence | **deferred**: `EventTransport::replay_from` answers from the recorder, but nothing calls it, and `RuntimeCommand::{Subscribe, Resume}` have no consumer |
+| §3 Rust host | implemented; no product caller |
+| §3 Node host | implemented (stdio, handshake, deadlines, crash detection, shutdown drain); no product caller |
+| §3 WASM host | a **subprocess runner, not an embedded engine** — no WASM engine is linked, fuel/memory/WASI limits are runner arguments, host functions travel over the negotiated protocol. See the implementation note in §3 |
+| §4 contribution `Tool` | implemented end to end |
+| §4 contributions `App` / `Command` | `runs.start` and `chat.start_run` are registered on the serving context, and `runs.start` is the run entry for both hosts; `workflow.run` is registered only in tests |
+| §4 contributions `EventHandler` / `View` | **not implemented** — hooks remain the `hook` subsystem and no View capability exists |
+| §4 Kernel services (12) | registered and reachable with real backing; only `runs.start` has an invoking caller. `permission.request` / `interaction.request` fail closed (no responder is wired) |
+| §4 semantic-authority names (`filesystem.read`, …) | not implemented; the shipped model is one capability per tool |
+| §5 Agent / Session / Tools | implemented as extensions and registered in production |
+| §5 Chat / Workflow | Chat has a manifest and no extension; Workflow has an interface with a test-only executor |
+| §6 Interaction API | partial: the TUI consumes Runtime events and both hosts start runs through the protocol, but prompts still go through `tact_extensions::ui_responder::UiResponder`. The Kernel broker cannot back them yet — it has no `withdraw`, and `InteractionService::request` takes an `InvocationContext` the prompt sites do not have |
+| §6 adapters | TUI and the headless protocol client exist; **Web and Desktop do not** |
+| §7 Trajectory | recording, ordering, query and redaction are implemented. User input, tool calls, hooks, permissions, errors, retries, cancellation, compaction and recovery all have producers. Plugin-lifecycle facts have none, and timeout facts are unreachable because no production invocation carries a deadline |
+| §7 replay | deferred (see §2) |
+| §8 Storage | the facade and its namespace guard are real and now sit on the serving router; production session / task / team / worktree persistence still uses the existing stores directly, and Runtime-owned records are not written through the facade |
+| Error / timeout / cancellation model | error categories match and carry origin and retryability; cancellation propagates from client to handler; no production deadline exists |
+| Business-function preservation matrix | **not verified as a whole** — the rows are covered by the existing integration suites, but no test targets the matrix itself |
+
+### Acceptance items that are aspirational, not demonstrated
+
+- "Every execution fact is available through Trajectory query and replay" — replay has no consumer.
+- "TUI, Web, Desktop and External Client use only Views / Interaction API" — Web and Desktop do not exist, and the TUI's prompt path is the in-process responder.
+- "Reserved host trajectory and permission facts cannot be forged by plugins" — the guard is implemented and tested, but no plugin host has a product caller, so it cannot fire in a real session.
+- "Plugin crashes, timeouts, cancellation and reconnect do not corrupt unrelated runs" — proven at host-test level only.
+- "Existing business-function preservation matrix passes" — no such test exists.
+
+### Not planned for now (revisit when a second View or a plugin needs them)
+
+- Web and Desktop View adapters.
+- A second Chat implementation and a production Workflow executor.
+- Migrating the existing stores onto the `MinimalStorage` facade.
+- Semantic-authority capability naming.
+- `EventHandler` and `View` contributions.
+
 ## Documentation synchronization
 
 Implementation work must update `ARCHITECTURE.md` to match the final dependency graph, add protocol and trajectory documentation under `docs/`, and add a newest-first user-visible migration entry to `book/26_chapter_issue_zh.md` if behavior or configuration changes are observable.
