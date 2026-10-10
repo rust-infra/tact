@@ -6,7 +6,7 @@
 
 **Architecture:** Extract protocol-neutral Kernel services for lifecycle, capabilities, permission, events, trajectory, storage, cancellation, interaction, and errors. Adapt current Agent, Session, native tools, MCP, hooks, and TUI behind those boundaries; then add Rust, Node.js, and WASM hosts using the same protocol. Each task leaves a working compatibility path until the final removal task.
 
-**Tech Stack:** Rust workspace, Tokio, serde/serde_json, SQLite existing store, existing MCP transport, ratatui, Node.js stdio RPC, WASI/Wasmtime host, Cargo unit/integration tests.
+**Tech Stack:** Rust workspace, Tokio, serde/serde_json, SQLite existing store, existing MCP transport, ratatui, Node.js stdio RPC, WASI-style subprocess runner (no engine linked — see the implementation note in the spec's §3), Cargo unit/integration tests.
 
 **Spec:** `docs/superpowers/specs/2026-10-08-runtime-plugin-architecture-design.md`
 

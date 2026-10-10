@@ -74,16 +74,16 @@
 
 **Verification：** `./scripts/check-rust.sh` 通过；`cargo test --workspace` **2871 → 2874 passed / 0 failed**（+3 新测试）；`driver_integration` 9、`harness_advanced` 6、`recovery_compaction` 14、`tool_integration` 13、`headless_session_integration` 6、`headless_tui_advanced` 5 全过。**已知限制：** `UserCommand::RunMcpPrompt` 这条 submit 路径仍是直连（行为与改动前一致），是唯一未走 router 的路径。
 
-**Pointers:** `crates/tact_ui/src/driver.rs::{run_submit, run_routed_submit, finish_completed_turn}`。
+**Pointers:** `crates/tact_ui/src/driver.rs::run_submit`、`crates/tact_extensions/src/extensions/chat.rs::{run_chat_turn, finish_completed_turn}`。（注：`run_routed_submit` 已随该次重构删除。）
 
-## 1. 2026-10-10 — 会话级 serving `RuntimeContext`：§4 的 12 个内核服务能力真正可达
+## 1. 2026-10-10 — 会话级 serving `RuntimeContext`：§4 的内核服务能力真正可达
 
 | Field | Value |
 |-------|-------|
 | **Type** | feat（内部架构变更；无用户可见行为变化） |
 | **Related** | `crates/tact_ui/src/session_bootstrap.rs`、`crates/tact_ui/src/permission.rs`、`crates/tact_extensions/src/agent/mod.rs`、`crates/tact_ui/src/headless.rs`；`ARCHITECTURE.md` §15 |
 
-**现象 / 动机：** `tact::services::register`（注册 §4 的 12 个内核服务能力）**零调用者**，因此 `storage.*`、`events.*`、`trajectory.*`、`permission.request`、`interaction.request` 在发布二进制里全部不可达——spec §4「所有调用走同一能力入口」与 §8 的命名空间守卫，实际只存在于测试中。
+**现象 / 动机：** `tact::services::register`（安装 §4 内核服务能力里的 **8 个**——`storage.*`、`events.*`、`trajectory.*`、`permission.request`、`interaction.request`；`runs.*` 与 `sessions.*` 由扩展注册）**零调用者**，因此这些能力在发布二进制里全部不可达——spec §4「所有调用走同一能力入口」与 §8 的命名空间守卫，实际只存在于测试中。
 
 **决策：** bootstrap 只构建**一次**会话级 serving `RuntimeContext`（`build_serving_context`）：router 上注册 `tact::services::register` 与 Session 扩展；四个服务槽位用**真实后端**——会话的 `EventTransport`、SQLite trajectory（`start_trajectory_recorder` 现在把 recorder 返回出来）、`SqliteStorageService`（会话库的第二个句柄）、以及由配置派生的权限策略。context 挂在 `Agent::serving_context` 上随会话存活；headless 的 `runs.start` 也改为注册到这个 context 上，于是 run 能力与内核服务**共用同一个生产 router**。权限是复合的：`runs.*` 走 host 控制面允许（只放行这两个），其余走配置策略。
 
@@ -91,7 +91,7 @@
 
 **改后行为：** 用户不可见。内部：`storage.set`/`storage.get`、`events.publish`、`trajectory.read`、`sessions.read` 等在真实 router 上可达且带真实后端。
 
-**Verification：** `./scripts/check-rust.sh` 通过；`cargo test --workspace` **2869 → 2871 passed / 0 failed**（+3 新测试，−1 迁移测试）。新增端到端测试通过该 router 写入 `plugins/<id>` 命名空间、并用**另一个 SQLite 句柄**读回（证明确实落库而非内存），`events.publish` 可从会话 transport 观察到，Runtime 命名空间被正确拒绝。**仍未做：** 12 个服务里只有 `runs.start` 有产品调用者，其余 11 个是「已注册、可达、无人调用」——已如实写进 `ARCHITECTURE.md` §15。
+**Verification：** `./scripts/check-rust.sh` 通过；`cargo test --workspace` **2869 → 2871 passed / 0 failed**（+3 新测试，−1 迁移测试）。新增端到端测试通过该 router 写入 `plugins/<id>` 命名空间、并用**另一个 SQLite 句柄**读回（证明确实落库而非内存），`events.publish` 可从会话 transport 观察到，Runtime 命名空间被正确拒绝。**仍未做：** 当时 12 个服务里只有 `runs.start` 有产品调用者（`runs.cancel` 随后在 2026-10-10 的 cancel/compact 收口里接上），其余为「已注册、可达、无人调用」——已如实写进 `ARCHITECTURE.md` §15。
 
 **Pointers:** `crates/tact_ui/src/session_bootstrap.rs::build_serving_context`、`crates/tact_ui/src/permission.rs::serving_permission`、`crates/tact_extensions/src/agent/mod.rs::with_serving_context`。
 
@@ -132,7 +132,7 @@
 
 **Verification：** `./scripts/check-rust.sh` 通过；`cargo test --workspace` **2862 → 2866 passed / 0 failed**（+4 新测试）；`headless_session_integration` 与 `headless_tui_advanced` **未改动**即通过（无输出/退出码变化）。
 
-**Pointers:** `crates/tact_extensions/src/extensions/agent.rs::{from_shared, AgentExecutor, AgentRunInput}`、`crates/tact_ui/src/headless.rs::{headless_runtime, HeadlessControlPlanePermission}`。
+**Pointers:** `crates/tact_extensions/src/extensions/agent.rs::{from_shared, AgentExecutor, AgentRunInput}`、`crates/tact_ui/src/headless.rs::headless_runtime`、`crates/tact_ui/src/permission.rs::HostControlPlanePermission`。（该类型原在 `headless.rs` 名为 `HeadlessControlPlanePermission`，后随 serving context 共用而改名下移。）
 
 ## 1. 2026-10-10 — 轨迹补齐「回合结束」与「用户输入」两个事实；交互式主机退出时关闭事件传输
 

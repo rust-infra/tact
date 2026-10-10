@@ -454,4 +454,4 @@ buffer-level tests assert rendering.
 
 - No new runtime capability, no change to what the TUI displays.
 - No `Web` / `Desktop` adapters (they do not exist in this branch).
-- Not touching the WASM host's Wasmtime-CLI design (separate decision).
+- Not touching the WASM host's subprocess-runner design (separate decision).
