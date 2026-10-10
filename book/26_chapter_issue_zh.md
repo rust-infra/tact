@@ -4,6 +4,25 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-10 — cancel 与 compact 也走能力协议；并修掉一个我自己引入的重复事件
+
+| Field | Value |
+|-------|-------|
+| **Type** | refactor（最终无用户可见变化——本轮一度引入的多余分隔线已修回） |
+| **Related** | `crates/tact_extensions/src/extensions/{agent.rs,chat.rs}`、`crates/tact_ui/src/{driver.rs,permission.rs}` |
+
+**现象 / 动机：** `chat.submit` 落地后，会话三命令里的另外两个仍硬编码在 TUI host：`Cancel` 直接置 `cancel_flag`，于是 **`runs.cancel` 这个能力没有任何生产调用者**（`git grep` 只命中测试与权限白名单）；`Compact` 直接调 `agent.compact_history_with_trigger`。
+
+**决策：**
+- `runs.cancel` 的 `run_id` 入参改为**可选**。原因是硬的：run 期间 Agent 锁由 executor 持有，host **读不到** `current_run_id`（读就会阻塞到它想取消的那次 run 结束）。in-process executor 本来就忽略该 id，语义无损；返回值仍是 `{"cancelled": true}`。
+- 两个 Cancel arm 保留原先的直接置 flag 与 `Cancelling...`，**额外**经 router 调 `runs.cancel`；无 serving context 时回退直连。已核实 handler 路径只写 `Arc<AtomicBool>`、**从不取 Agent 锁**，所以取消不会排在它要取消的那次 run 后面（有测试用 `bash sleep 30` 钉住这一点）。
+- 新增 `chat.compact`（`compact_command` 单一实现，`[compacting]` / `Compaction complete.` / `Compaction failed:` 文案不变），driver 的 Compact arm 经 router 调它。至此 Chat 拥有三个会话命令：submit / cancel / compact。
+- **修正一个本轮引入的回归**：路由化之后，一次用户取消会产生**两条** `Cancelled` 事件（handler 一条 + chat 记账一条），TUI 因此多画一条结束分隔线。判断是：取消这个事实属于**真正结束的那个回合**，应由 chat 记账发出；`runs.cancel` handler 只确认（已加注释说明）。于是每次取消恰好一条事件，观感回到改动前。
+
+**Verification：** `./scripts/check-rust.sh` 通过；`cargo test --workspace` **2881 → 2886 passed / 0 failed**（+5 测试，含路由化 cancel/compact 各一条、空入参 `{}` 取消一条）；`driver_integration` 9、`harness_advanced` 6、`recovery_compaction` 14、`tool_integration` 13、两个 headless 套件 11 全过。
+
+**Pointers:** `crates/tact_extensions/src/extensions/agent.rs::AgentCancelHandler`、`crates/tact_extensions/src/extensions/chat.rs::{compact_command, ChatCompactHandler}`、`crates/tact_ui/src/driver.rs::invoke_runs_cancel`。
+
 ## 1. 2026-10-10 — Chat 扩展真正拥有「会话回合」；headless 因此补上 Stop hook 续跑与 TaskCompleted
 
 | Field | Value |
