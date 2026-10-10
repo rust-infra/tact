@@ -1,15 +1,11 @@
 use std::sync::Arc;
 
-use tact_extensions::{
-    config::CliArgs, consts::TactPath, extensions::agent::AgentExtension, extract_text,
-    store::DynSessionStore,
-};
+use tact_extensions::{config::CliArgs, consts::TactPath, extract_text, store::DynSessionStore};
 use tact_protocol::{PluginId, RequestId};
 
 use crate::{
     session_bootstrap::{Notices, bootstrap_session, open_session},
     session_lock::SessionLockRegistry,
-    user_message::build_user_message,
 };
 
 pub async fn run_headless(
@@ -64,8 +60,6 @@ async fn run_headless_locked(
     //
     // Restore any prior messages for resumed sessions.
     agent.ensure_session().await?;
-    // The user turn is built here, from the raw prompt.
-    let prompt_message = build_user_message(&prompt, &work_dir).await;
     // The session's serving context, cloned out before the Agent moves behind
     // its shared handle. It already carries the shared event transport the
     // bootstrap installed, so the Router's `RuntimeServices` publish to the same
@@ -78,28 +72,27 @@ async fn run_headless_locked(
 
     // The run now goes through the Router, but the host keeps the Agent for
     // teardown: stats, the final message, session-end hooks, subagent
-    // cancellation and MCP shutdown all read it after `runs.start` returns.
+    // cancellation and MCP shutdown all read it after `chat.submit` returns.
     let agent = Arc::new(tokio::sync::Mutex::new(agent));
-    let runtime = headless_runtime(
-        serving,
-        AgentExtension::from_shared(Arc::clone(&agent), cancel_flag),
-    )?;
+    let runtime = headless_runtime(serving, Arc::clone(&agent), cancel_flag)?;
 
     let invocation = runtime.invocation(
         RequestId::from(uuid::Uuid::new_v4().to_string()),
         PluginId::from("tact.agent"),
         "headless",
     );
-    // The built turn travels as full content, so blocks survive the boundary
-    // exactly as `build_user_message` produced them.
-    let input = serde_json::json!({ "content": prompt_message.content });
+    // The raw prompt travels; the **turn** it says (the `@` file / `![]` image
+    // message) is assembled by the Chat extension, the same turn the TUI
+    // submits. Headless therefore gets Stop-hook continuations and
+    // TaskCompleted hooks exactly as the TUI does.
+    let input = serde_json::json!({ "prompt": prompt });
     // Map the Kernel error back to `anyhow` by its message alone, so a failed
     // run surfaces the same text (`agent_loop`'s error, carried in
     // `KernelError::message`) it did when the host called `agent_loop`
     // directly, and `main` exits non-zero exactly as before.
     runtime
         .router()
-        .invoke("runs.start", invocation, input)
+        .invoke("chat.submit", invocation, input)
         .await
         .map_err(|error| anyhow::anyhow!("{}", error.message()))?;
 
@@ -139,20 +132,24 @@ async fn run_headless_locked(
     Ok(())
 }
 
-/// The headless run's wiring: the Agent extension is registered on the
+/// The headless run's wiring: the run capabilities are registered on the
 /// **session's** serving context, not on a router of its own.
 ///
-/// The run capability and the Kernel's service capabilities then share one real
-/// router with one real set of services, so `runs.start` is answered by the same
-/// context a plugin's `storage.set` would reach. The serving context's policy
-/// keeps the host's own control plane (`runs.start` / `runs.cancel`) allowed —
-/// see [`crate::permission::serving_permission`] — so starting the run never
-/// depends on a prompt this process cannot answer.
+/// The Chat turn (`chat.submit`) and the Agent's `runs.*` then share one real
+/// router with one real set of services, so starting a turn reaches the same
+/// context a plugin's `storage.set` would reach — and the turn's run is
+/// answered by the same `runs.start`. The serving context's policy keeps the
+/// host's own control plane (`chat.submit` / `runs.start` / `runs.cancel`)
+/// allowed — see [`crate::permission::serving_permission`] — so starting the run
+/// never depends on a prompt this process cannot answer.
 fn headless_runtime(
     serving: tact::RuntimeContext,
-    extension: AgentExtension,
+    agent: Arc<tokio::sync::Mutex<tact_extensions::Agent>>,
+    cancel_flag: Arc<std::sync::atomic::AtomicBool>,
 ) -> anyhow::Result<tact::RuntimeContext> {
-    extension.register(&serving)?;
+    // One shared Agent for both: the turn's `chat.submit` runs the run on the
+    // same conversation the host keeps for teardown.
+    crate::session_bootstrap::register_host_extensions(&serving, agent, cancel_flag)?;
     Ok(serving)
 }
 
@@ -162,14 +159,14 @@ mod tests {
     use tact_extensions::{permission::PermissionMode, store::open_sqlite_session_store};
     use tact_llm::{ContentBlock, MockClient, Role, StopReason};
 
-    /// The headless host starts its run by invoking `runs.start` through the
-    /// session's serving router; there is no direct `agent_loop` call. This
-    /// drives that exact wiring (the helper the entry point uses) with a real
-    /// Agent behind the shared handle, so it also proves `from_shared` keeps the
-    /// host's Agent — and that the run capability shares one router with the
-    /// Kernel's service capabilities.
+    /// The headless host starts its turn by invoking `chat.submit` through the
+    /// session's serving router; there is no direct `agent_loop` call and no
+    /// host-side message assembly. This drives that exact wiring (the helper the
+    /// entry point uses) with a real Agent behind the shared handle, so it also
+    /// proves the turn runs on the host's own Agent — and that the turn
+    /// capability shares one router with the Kernel's service capabilities.
     #[tokio::test]
-    async fn headless_starts_its_run_through_the_serving_router() {
+    async fn headless_submits_its_turn_through_the_serving_router() {
         let mock = MockClient::new(vec![(
             vec![ContentBlock::Text {
                 text: "routed answer".into(),
@@ -179,9 +176,120 @@ mod tests {
         let (agent, _work_dir) = crate::test_support::build_test_agent(mock, None);
         let cancel_flag = agent.runtime.cancel_flag.clone();
         let agent = Arc::new(tokio::sync::Mutex::new(agent));
+        let (_directory, serving) = serving_context().await;
+        let runtime = headless_runtime(serving, Arc::clone(&agent), cancel_flag)
+            .expect("the host extensions register on the session's serving Router");
 
-        // The serving context the bootstrap builds: the Kernel services and the
-        // Session extension over real backing, with the session's policy.
+        // Reachable by name, on one router: the entry point goes through it, and
+        // the Kernel's own services are registered beside it — as is the run the
+        // turn executes.
+        assert!(runtime.router().describe("chat.submit").is_some());
+        assert!(runtime.router().describe("runs.start").is_some());
+        assert!(runtime.router().describe("storage.set").is_some());
+
+        // Same input shape the entry point sends: the raw prompt.
+        let output = runtime
+            .router()
+            .invoke(
+                "chat.submit",
+                runtime.invocation(
+                    RequestId::from("headless-router-test"),
+                    PluginId::from("tact.agent"),
+                    "headless",
+                ),
+                serde_json::json!({ "prompt": "hello from headless" }),
+            )
+            .await
+            .expect("chat.submit answers through the Router");
+        assert_eq!(output, serde_json::json!({ "accepted": true }));
+
+        // The turn really ran on the shared Agent: the host can still read it.
+        let agent = agent.lock().await;
+        let saw_user_turn = agent.runtime.context.iter().any(|message| {
+            message.role == Role::User
+                && tact_extensions::extract_text(&message.content) == "hello from headless"
+        });
+        assert!(saw_user_turn, "the user turn reached the shared Agent");
+    }
+
+    /// A `Stop` hook that blocks keeps the turn going on the **headless** path.
+    ///
+    /// This is the asymmetry the chat turn closes: headless used to call
+    /// `runs.start` directly and stop there, so a continuation-requesting Stop
+    /// hook was silently ignored. Now the turn — and its continuation loop —
+    /// lives behind `chat.submit`, which both hosts call.
+    #[tokio::test]
+    async fn headless_stop_hook_continuation_runs_a_second_turn() {
+        let mock = MockClient::new(vec![
+            (
+                vec![ContentBlock::Text {
+                    text: "first answer".into(),
+                }],
+                Some(StopReason::EndTurn),
+            ),
+            (
+                vec![ContentBlock::Text {
+                    text: "continued answer".into(),
+                }],
+                Some(StopReason::EndTurn),
+            ),
+        ]);
+        let hook_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let seen = Arc::clone(&hook_calls);
+        let (agent, _work_dir) = crate::test_support::build_test_agent(mock, None);
+        let agent = agent.with_stop(move |_agent| {
+            let remaining = seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            Box::pin(async move {
+                if remaining == 0 {
+                    Ok(tact_extensions::hook::HookControl::Block(
+                        "keep going".into(),
+                    ))
+                } else {
+                    Ok(tact_extensions::hook::HookControl::Continue)
+                }
+            })
+        });
+        let cancel_flag = agent.runtime.cancel_flag.clone();
+        let agent = Arc::new(tokio::sync::Mutex::new(agent));
+        let (_directory, serving) = serving_context().await;
+        let runtime = headless_runtime(serving, Arc::clone(&agent), cancel_flag)
+            .expect("the host extensions register on the session's serving Router");
+
+        runtime
+            .router()
+            .invoke(
+                "chat.submit",
+                runtime.invocation(
+                    RequestId::from("headless-continuation-test"),
+                    PluginId::from("tact.agent"),
+                    "headless",
+                ),
+                serde_json::json!({ "prompt": "start" }),
+            )
+            .await
+            .expect("chat.submit answers through the Router");
+
+        assert_eq!(
+            hook_calls.load(std::sync::atomic::Ordering::Relaxed),
+            2,
+            "the blocked Stop hook must ask again after the continuation"
+        );
+        let agent = agent.lock().await;
+        let saw_continuation = agent.runtime.context.iter().any(|message| {
+            message.role == Role::User
+                && tact_extensions::extract_text(&message.content) == "keep going"
+        });
+        assert!(
+            saw_continuation,
+            "the Stop hook's reason must become the next turn"
+        );
+    }
+
+    /// The serving context the bootstrap builds: the Kernel services and the
+    /// Session extension over real backing, with the session's policy. The
+    /// temp directory is returned to keep the session database alive for the
+    /// duration of the test.
+    async fn serving_context() -> (tempfile::TempDir, tact::RuntimeContext) {
         let directory = tempfile::tempdir().expect("temp directory");
         let db_path = directory.path().join("session.db");
         let store = open_sqlite_session_store(&db_path)
@@ -202,50 +310,6 @@ mod tests {
             &Notices::Stderr,
         )
         .await;
-
-        let runtime = headless_runtime(
-            serving,
-            AgentExtension::from_shared(Arc::clone(&agent), cancel_flag),
-        )
-        .expect("the Agent extension registers on the session's serving Router");
-
-        // Reachable by name, on one router: the entry point goes through it, and
-        // the Kernel's own services are registered beside it.
-        assert!(runtime.router().describe("runs.start").is_some());
-        assert!(runtime.router().describe("storage.set").is_some());
-
-        // Same input shape the entry point sends: the built turn as content.
-        let input = serde_json::json!({
-            "content": tact_llm::MessageContent::Blocks {
-                content: vec![ContentBlock::Text {
-                    text: "hello from headless".into(),
-                }],
-            },
-        });
-        let output = runtime
-            .router()
-            .invoke(
-                "runs.start",
-                runtime.invocation(
-                    RequestId::from("headless-router-test"),
-                    PluginId::from("tact.agent"),
-                    "headless",
-                ),
-                input,
-            )
-            .await
-            .expect("runs.start answers through the Router");
-        assert!(
-            output.get("run_id").is_some(),
-            "the run identity is returned"
-        );
-
-        // The turn really ran on the shared Agent: the host can still read it.
-        let agent = agent.lock().await;
-        let saw_user_turn = agent.runtime.context.iter().any(|message| {
-            message.role == Role::User
-                && tact_extensions::extract_text(&message.content) == "hello from headless"
-        });
-        assert!(saw_user_turn, "the user turn reached the shared Agent");
+        (directory, serving)
     }
 }

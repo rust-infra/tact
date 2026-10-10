@@ -8,6 +8,7 @@ use tact_protocol::CapabilityDeclaration;
 
 pub mod agent;
 pub mod chat;
+pub mod chat_input;
 pub mod session;
 pub mod tools;
 pub mod workflow;

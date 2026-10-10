@@ -62,11 +62,10 @@ impl AgentExtension {
         let handler: Arc<dyn CapabilityHandler> = Arc::new(AgentRunHandler {
             executor: self.executor.clone(),
         });
-        let chat_capability = super::chat::manifest()
-            .capabilities
-            .into_iter()
-            .next()
-            .expect("Chat declares its start-run capability");
+        // `chat.start_run` stays this extension's: the Chat manifest declares
+        // the run entry (a run belongs to a conversational turn), and the Agent
+        // extension is what actually runs it.
+        let chat_capability = super::chat::start_run_capability();
         let cancel_handler: Arc<dyn CapabilityHandler> = Arc::new(AgentCancelHandler {
             executor: self.executor.clone(),
         });

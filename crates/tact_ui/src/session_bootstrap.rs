@@ -226,6 +226,29 @@ pub(crate) async fn build_serving_context(
     context
 }
 
+/// Registers the host's control-plane extensions on the session's serving
+/// context: Chat's `chat.submit` (the conversational turn) and the Agent's
+/// `runs.*` (the run that turn executes through).
+///
+/// Both need the *shared* Agent, which the bootstrap does not have: it builds
+/// the Agent and hands it to the frontend, and only the frontend wraps it in the
+/// `Arc<Mutex<...>>` a run needs. So registration happens in the frontends —
+/// through this one helper, so the two hosts cannot register a different set of
+/// host capabilities. Chat registers first only because `chat.submit` invokes
+/// `runs.start`: the router resolves capabilities at invocation time, so the
+/// order is not a dependency, but reading them in the order a turn uses them
+/// keeps the wiring legible.
+pub(crate) fn register_host_extensions(
+    serving: &tact::RuntimeContext,
+    agent: Arc<tokio::sync::Mutex<Agent>>,
+    cancel_flag: Arc<std::sync::atomic::AtomicBool>,
+) -> Result<(), tact::KernelError> {
+    tact_extensions::extensions::chat::ChatExtension::new(Arc::clone(&agent), serving.clone())
+        .register(serving)?;
+    tact_extensions::extensions::agent::AgentExtension::from_shared(agent, cancel_flag)
+        .register(serving)
+}
+
 /// Resolve (or start) this run's session, and take its lock.
 ///
 /// Both frontends do this as their first act, and the steps are not separable:
