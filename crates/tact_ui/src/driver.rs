@@ -794,7 +794,11 @@ mod tests {
     use tact_protocol::{RunId, RuntimeCommand, RuntimeEvent};
     use tact_view::UserCommand;
 
-    use crate::test_support::{build_test_agent, install_test_config};
+    use tact_extensions::permission::PermissionMode;
+
+    use crate::test_support::{
+        build_test_agent, build_test_agent_without_serving, install_test_config,
+    };
 
     fn text_block(content: &str) -> ContentBlock {
         ContentBlock::Text {
@@ -865,6 +869,34 @@ mod tests {
             &crate::session_bootstrap::Notices::Stderr,
         )
         .await
+    }
+
+    /// Every shared `build_test_agent*` builder attaches a serving context.
+    ///
+    /// This is the wiring the routing tests below and *every* `tact_ui`
+    /// integration suite now depend on: with a serving context present the
+    /// driver registers the host extensions and routes a submitted turn through
+    /// `chat.submit` → `runs.start`, so the `driver_integration` /
+    /// `tool_integration` / … suites exercise the production path instead of
+    /// the direct `agent_loop` fallback. Pinned here (and its absence in
+    /// [`build_test_agent_without_serving`]) so a future edit to a builder that
+    /// forgets the attachment fails loudly rather than silently reverting the
+    /// whole suite to the fallback.
+    #[tokio::test]
+    async fn shared_test_agent_builders_attach_a_serving_context() {
+        install_test_config();
+        let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), None);
+        assert!(
+            agent.serving_context.is_some(),
+            "build_test_agent must attach a serving context so a driver routes"
+        );
+
+        let (fallback_agent, _work_dir) =
+            build_test_agent_without_serving(MockClient::new(vec![]), None, PermissionMode::Auto);
+        assert!(
+            fallback_agent.serving_context.is_none(),
+            "the fallback builder must deliberately have no serving context"
+        );
     }
 
     /// The interactive host submits its turn through the Chat extension's
@@ -1386,12 +1418,18 @@ mod tests {
             .unwrap();
     }
 
+    /// The direct-path twin of `routed_start_command_preserves_the_requested_run_id`:
+    /// with **no** serving context the driver takes its `run_submit` fallback
+    /// (`TurnEntry::Shared`), so this pins the compatibility path the routed
+    /// test cannot. `build_test_agent_without_serving` is used on purpose —
+    /// every other builder attaches a serving context and would route instead.
     #[tokio::test]
     async fn runtime_start_command_preserves_the_requested_run_id() {
         install_test_config();
         let mock = MockClient::new(vec![(vec![text_block("done")], Some(StopReason::EndTurn))]);
         let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        let (agent, work_dir) =
+            build_test_agent_without_serving(mock, Some(agent_tx), PermissionMode::Auto);
         let transport = tact::EventTransport::new(8);
         let mut events = transport.subscribe();
         let agent = agent.with_runtime_event_transport(transport);

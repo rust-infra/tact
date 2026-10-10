@@ -1,7 +1,7 @@
 //! Helpers for tact-ui integration tests (mock LLM + channel harness).
 
 use std::{
-    path::PathBuf,
+    path::{Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
@@ -21,6 +21,94 @@ static WORKSPACE_COUNTER: AtomicU64 = AtomicU64::new(0);
 fn unique_workspace_name(prefix: &str) -> String {
     let n = WORKSPACE_COUNTER.fetch_add(1, Ordering::Relaxed);
     format!("{prefix}-{n}")
+}
+
+/// Runs `future` to completion on a fresh thread with its own runtime.
+///
+/// The `build_test_agent*` constructors are synchronous, but building the
+/// serving context is async. A scoped thread with its own runtime builds it
+/// without the "cannot start a runtime from within a runtime" panic a bare
+/// `block_on` would hit inside a `#[tokio::test]`. Same shape as the internal
+/// `block_on` in `tact_extensions::tool::test_support::test_context`, which the
+/// builders already rely on.
+fn block_on<F>(future: F) -> F::Output
+where
+    F: std::future::Future + Send,
+    F::Output: Send,
+{
+    std::thread::scope(|scope| {
+        scope
+            .spawn(|| {
+                tokio::runtime::Runtime::new()
+                    .expect("failed to create tokio runtime")
+                    .block_on(future)
+            })
+            .join()
+            .expect("block_on thread panicked")
+    })
+}
+
+/// Builds the serving context a test agent is attached to.
+///
+/// Mirrors what production builds: `session_bootstrap::bootstrap_session` for
+/// the headless/TUI hosts and the `#[cfg(test)]` `serving_context_with_recorder`
+/// in `driver.rs`. The four service slots behind the Router are:
+///
+/// - `events` — a local [`tact::EventTransport`]. The integration suites assert
+///   on the events that reach the agent's own `ui_tx`, so the serving context
+///   only needs *a* transport, not the agent's; keeping it local means the
+///   `events.*` capabilities are live without doubling the session's stream.
+/// - `trajectory` — an in-process
+///   [`tact_trajectory::KernelTrajectoryRecorder`], so `trajectory.*` answers
+///   instead of claiming a history that was never written (we deliberately do
+///   not start the durable SQLite writer here).
+/// - `permission` — [`crate::permission::serving_permission`] in
+///   [`PermissionMode::Auto`]. It is the *host's* control plane
+///   (`HostControlPlanePermission` allows `chat.submit` / `chat.compact` /
+///   `runs.start` / `runs.cancel`), independent of the agent's own tool
+///   permission mode, so one policy serves `Auto` / `Default` / `Plan` agents
+///   alike. Only starting a turn is governed here; the agent keeps its own
+///   `PermissionManager` for tools.
+/// - `storage` — a second SQLite handle on the same session database, opened
+///   inside [`crate::session_bootstrap::build_serving_context`].
+///
+/// The database lives under the agent's own temp workspace (`work_dir`), so
+/// parallel tests never share a file.
+async fn build_test_serving_context(work_dir: &Path) -> tact::RuntimeContext {
+    let db_path = work_dir.join(".tact").join("tact.db");
+    if let Some(parent) = db_path.parent() {
+        std::fs::create_dir_all(parent).expect("create serving-context db dir");
+    }
+    let store = open_sqlite_session_store(&db_path)
+        .await
+        .expect("open serving-context session store");
+    let transport = tact::EventTransport::new(64);
+    let settings = tact_extensions::permission::settings::PermissionSettings::load_from(
+        &work_dir.join("settings.json"),
+        None,
+    );
+    let policy = crate::permission::serving_permission(PermissionMode::Auto, settings)
+        .expect("serving policy");
+    crate::session_bootstrap::build_serving_context(
+        &db_path,
+        &store,
+        &transport,
+        std::sync::Arc::new(tact_trajectory::KernelTrajectoryRecorder::default()),
+        policy,
+        &crate::session_bootstrap::Notices::Stderr,
+    )
+    .await
+}
+
+/// Attaches a serving context to `agent`, whose temp workspace is `work_dir`.
+///
+/// This is what makes every shared test agent exercisable through the
+/// production path: with a serving context present the driver registers the
+/// host extensions and routes a submitted turn through `chat.submit` →
+/// `runs.start`, instead of its direct `agent_loop` fallback.
+fn attach_serving_context(agent: Agent, work_dir: &Path) -> Agent {
+    let serving = block_on(build_test_serving_context(work_dir));
+    agent.with_serving_context(serving)
 }
 
 fn default_test_config() -> tact_extensions::config::ResolvedConfig {
@@ -130,7 +218,43 @@ pub fn build_test_agent_with_config(
 /// `config.agent` to the returned agent so parallel tests do not race.
 /// Used by driver tests that need a real protocol adapter (e.g. OpenAI
 /// Responses) pointed at a local wiremock server.
+///
+/// The agent is attached to a serving context (see
+/// [`attach_serving_context`]), so a driver built on it takes the production
+/// routed path (`chat.submit` → `runs.start`). Tests that must pin the
+/// no-serving-context compatibility path use [`build_test_agent_without_serving`].
 pub fn build_test_agent_with_provider(
+    client: LlmProvider,
+    ui_tx: Option<UnboundedSender<RuntimeEvent>>,
+    permission_mode: PermissionMode,
+    config: &tact_extensions::config::ResolvedConfig,
+) -> (Agent, std::path::PathBuf) {
+    let (agent, work_dir) = build_test_agent_raw(client, ui_tx, permission_mode, config);
+    let agent = attach_serving_context(agent, &work_dir);
+    (agent, work_dir)
+}
+
+/// Build an agent wired to a mock LLM **without** a serving context — the
+/// driver's direct fallback path.
+///
+/// Identical to [`build_test_agent`] minus the serving context, so a driver
+/// built on this agent cannot register the host extensions and instead runs a
+/// submitted turn through `agent_loop` directly (the `run_submit` /
+/// `TurnEntry::Shared` branch). Kept so the compatibility path does not rot
+/// while every other builder's agent exercises the routed one.
+pub fn build_test_agent_without_serving(
+    mock: MockClient,
+    ui_tx: Option<UnboundedSender<RuntimeEvent>>,
+    permission_mode: PermissionMode,
+) -> (Agent, std::path::PathBuf) {
+    let config = default_test_config();
+    build_test_agent_raw(LlmProvider::Mock(mock), ui_tx, permission_mode, &config)
+}
+
+/// The un-attached agent: the body every builder shares, with no serving
+/// context. [`build_test_agent_with_provider`] attaches one; the fallback
+/// builder above deliberately does not.
+fn build_test_agent_raw(
     client: LlmProvider,
     ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     permission_mode: PermissionMode,
@@ -208,6 +332,7 @@ pub fn build_test_agent_with_mcp(
     if let Some(tx) = ui_tx {
         agent = agent.with_ui_channel(tx);
     }
+    let agent = attach_serving_context(agent, &work_dir);
 
     (agent, work_dir)
 }
@@ -252,6 +377,7 @@ pub async fn build_test_agent_with_session(
     if let Some(tx) = ui_tx {
         agent = agent.with_ui_channel(tx);
     }
+    let agent = agent.with_serving_context(build_test_serving_context(&work_dir).await);
 
     (agent, work_dir, session_store, session_id)
 }
