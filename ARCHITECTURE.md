@@ -21,7 +21,7 @@ above them.
 | `crates/tact_trajectory` | `tact_trajectory` | **Trajectory** — execution-fact model, in-memory and SQLite recorders, ordered replay. Implements the Kernel's `TrajectoryService`. |
 | `crates/tact_plugin_host` | `tact_plugin_host` | **Plugin host machinery** — lifecycle boundary, stdio transport, supervision (handshake, correlation, timeouts, cancellation, crash detection, shutdown drain). |
 | `crates/tact_plugin_node` | `tact_plugin_node` | **Node.js Host** — the Node entry point over the shared host machinery. |
-| `crates/tact_plugin_wasm` | `tact_plugin_wasm` | **WASM Host** — Wasmtime runner with constrained capabilities. |
+| `crates/tact_plugin_wasm` | `tact_plugin_wasm` | **WASM Host** — subprocess runner boundary with constrained capabilities (no embedded engine). |
 | `crates/tact_extensions` | `tact_extensions` | **Extension Capability API** — official Agent / Session / Chat / Tools / Workflow extensions, plus the in-process Rust host: tools, MCP, hooks, permissions, memory, skills, tasks, teams, worktrees, background work, voice, config, compaction. |
 | `crates/tact_llm` | `tact_llm` | LLM provider adapters (Anthropic / OpenAI / DeepSeek / Kimi), request conversion, provider and env resolution. |
 | `crates/tui` | `tui` | **TUI View Adapter** — `ratatui` rendering, key/mouse handling, view state. |
@@ -753,33 +753,42 @@ The View's event path is protocol-only: `AgentUpdate` and its projection pair ar
 
 **The command direction is intentionally left as the View's own vocabulary.** `UserCommand::Runtime(RuntimeCommand::…)` keeps the protocol command nested in a View-local enum, and that is a decision, not an oversight: moving the other 19 variants to `Command` capabilities needs three things the codebase does not have (an owner per command, access to live state that the Agent owns by value while the rendering lives in this binary crate, and a runtime on the command dispatch path — the `Agent` exposes no `CapabilityRouter` at all). On that evidence removing the View's own command vocabulary costs a re-architecture of command dispatch, which is a different job from eliminating a legacy *protocol* type. Revisit when a second View (Web/Desktop) genuinely needs to share the command set. The reasoning and the alternatives are recorded in `docs/superpowers/specs/2026-10-09-command-capability-migration-design.md`.
 
-Official Agent, Chat, Session, Tools, and Workflow manifests register through `PluginRegistry` and are marked serving (`Running`) as they register — the in-process host serves an extension the moment it is registered, so `state` / `health` report what is actually live; Agent/Chat, Session, and Workflow capabilities register through `CapabilityRouter`, while native and MCP tool handlers are installed through the same router for each execution wave.
+Official Agent, Chat, Session, Tools, and Workflow manifests register through `PluginRegistry` and are marked serving (`Running`) as they register — the in-process host serves an extension the moment it is registered, so `state` / `health` report what is actually live. **Only the manifests are registered on the production path, though**: `register_official_manifests` (`crates/tact_ui/src/session_bootstrap.rs`) never calls `AgentExtension::register` / `SessionExtension::register` / `WorkflowExtension::register`, so the capability handlers behind `runs.*`, `chat.start_run`, `sessions.*` and `workflow.run` are reachable only from tests, and the resulting `PluginRegistry` is stored on `Agent::runtime_plugins` and never read. The live run path is still `Agent::agent_loop`, called directly by the interactive and headless hosts. What *is* on the production router is the tool layer: native and MCP tool handlers are installed through `CapabilityRouter` for each execution wave.
 
 ### Declared but not yet consumed
 
-The Kernel exposes a few interfaces that **no production path calls today**. They
-exist because the architecture plan specifies them as extension points; do not
-read their presence as "this is wired":
+The Kernel and its hosts expose interfaces that **no production path calls
+today**. They exist because the architecture plan specifies them as extension
+points; do not read their presence as "this is wired":
 
 | Interface | Consumer today | Who it is for |
 |---|---|---|
 | `StorageService::{delete, list, transaction}` | none (no capability exposes them; `storage.get` / `storage.set` are the registered ones) | a host or plugin managing its own `plugins/<id>` namespace |
 | `PluginRegistry::{discover, health, health_all, unregister}` | none (`start` *is* called, by `register_official_manifests`) | a host that scans for, supervises, or uninstalls plugins |
-| `EventTransport::close` | none | a host shutting its event transport down before exit |
+| `EventTransport::close` | the interactive host, on both exits of `run_interactive_locked` (`crates/tact_ui/src/interactive.rs`) | a host shutting its event transport down before exit (headless still cannot reach its transport) |
 | `TrajectoryService::replay` | none (`query` serves resume) | a caller replaying a whole trajectory rather than resuming a sequence |
+| `tact::services::register` (all 12 §4 Kernel service capabilities) | none — zero callers anywhere, so `storage.*`, `events.*`, `trajectory.*`, `permission.request` and `interaction.request` are unreachable in production | any host serving plugin capability invocations |
+| `AgentExtension` / `SessionExtension` / `WorkflowExtension::register` | tests only | the in-process Rust host serving official extensions through the router |
+| `crates/tact_plugin_node`, `crates/tact_plugin_wasm` | no workspace crate depends on them; only their own tests | a product path that loads external plugins |
+| `Agent::runtime_plugins` | written, never read | host lifecycle / health reporting for registered extensions |
+| Kernel `InteractionBroker` / `InteractionService` | tests only | a client-neutral interaction path (production still answers through `tact_extensions::ui_responder::UiResponder`) |
+| `RuntimeCommand::{Subscribe, Resume, Invoke, Shutdown}` | none | protocol-driven external clients; the driver routes only `StartRun` / `CancelRun` / `RespondInteraction` |
 
-`EventTransport::replay_from` used to be on this list and was a real defect
-rather than an unused extension point: the acceptance item "a disconnected
-client reconnects from a Trajectory sequence" depends on it, and it answered
-`CapabilityNotFound` because nothing installed a replay source. It is now wired
-by `start_trajectory_recorder`.
+`EventTransport::replay_from` is closer to wired than the rest: the durable
+replay *source* is installed by `start_trajectory_recorder`, so the method
+answers from the SQLite trajectory instead of `CapabilityNotFound`. But no
+production path calls it — the only caller is a test inside
+`session_bootstrap.rs`'s `#[cfg(test)] mod tests`. The acceptance item "a
+disconnected client reconnects from a Trajectory sequence" therefore still has
+no production caller, and `RuntimeCommand::{Subscribe, Resume}` have no
+consumer either.
 
 
 Native tools, namespaced MCP tools, and the MCP prompt/resource commands now register as `CapabilityRouter` handlers. Agent keeps its existing sequential hook, permission, and resource preflight during migration, then presents a one-use approval ticket to the router before execution. Typed tool effects and output metadata survive the adapter response.
 
 When a routed tool call has a run ID, the Kernel publishes and records `ToolCallStarted` and `ToolCallFinished` around the handler. The interactive host supplies the shared EventTransport, whose SQLite Trajectory subscriber persists those facts.
 
-The Node.js process host is exposed by `crates/tact_plugin_node/` and the WASM host by `crates/tact_plugin_wasm/`; both build on the shared `crates/tact_plugin_host/` handshake, correlation, timeout, cancellation, crash-detection, and shutdown machinery. The WASM host launches a configured Wasmtime CLI runner over the same stdio envelope protocol. When `host_calls` is negotiated, guest service requests are correlated through `HostCall` / `HostCallResult`; the host checks manifest grants and routes external capabilities through the Kernel permission boundary. The WASM runner receives explicit fuel, memory, and deadline limits, no preopened directories or inherited environment, and disabled WASI TCP/UDP.
+The Node.js process host is exposed by `crates/tact_plugin_node/` and the WASM host by `crates/tact_plugin_wasm/`; both build on the shared `crates/tact_plugin_host/` handshake, correlation, timeout, cancellation, crash-detection, and shutdown machinery, and neither crate is depended on by any product crate yet. The WASM host is a **subprocess host, not an embedded engine**: it spawns a caller-configured runner executable (the checked-in fixture is a Node shim, and the test module is a placeholder header) and passes fuel, linear-memory, timeout and WASI restrictions as runner arguments. This repository links no WASM engine (`Cargo.lock` contains `wasmtime` / `wasmi` / `wasmer` zero times), so those limits are honoured only if the configured runner enforces them. When `host_calls` is negotiated, guest service requests are correlated through `HostCall` / `HostCallResult`; the host checks manifest grants and routes external capabilities through the Kernel permission boundary.
 
 ---
 

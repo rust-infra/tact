@@ -8,7 +8,7 @@ Interactive and headless sessions subscribe the SQLite trajectory service to the
 
 Event payloads are redacted with the session's effective `permissions.redaction` policy before they are written, because the trajectory table is a persistence sink like the transcript and the session store. A secret a tool printed therefore cannot land in `trajectory_events.payload` verbatim.
 
-The TUI projects Runtime events into its current widget state and sends start, cancel, and interaction responses as Runtime commands. Detailed tool-card lifecycle events and Tact-specific commands still use the in-process compatibility adapter while their neutral protocol forms are added.
+The TUI projects Runtime events into its current widget state and sends start, cancel, and interaction responses as Runtime commands. Tact-specific commands still use the View's own `UserCommand` vocabulary (the former `AgentUpdate` compatibility type is deleted).
 
 Recorded event classes include run lifecycle, model calls, tool calls, permission decisions, interactions, plugin lifecycle, cancellation, timeout, compaction, recovery, and namespaced plugin facts. Host facts are emitted by Runtime services; plugins may append only namespaced custom facts.
 

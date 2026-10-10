@@ -10,6 +10,28 @@
 
 **Spec:** `docs/superpowers/specs/2026-10-08-runtime-plugin-architecture-design.md`
 
+## Status correction — 2026-10-10 audit
+
+The `[x]` marks below record the state when each task was written. A read-only
+audit of the whole spec against the shipping binary found several of them
+**false**. Treat the boxes as "the code exists", not "production-wired", and
+check the evidence before relying on one.
+
+| Task | Box that is false | Evidence (2026-10-10) |
+|---|---|---|
+| 2/5 | Kernel services reachable | `tact::services::register` has **zero callers**; the 12 §4 service capabilities (`storage.*`, `events.*`, `trajectory.*`, `permission.request`, `interaction.request`) are unreachable in the shipping binary |
+| 6 | "Implement lifecycle events and health state transitions" | `RuntimeEvent::PluginStarted/Stopped` have **no producer**; `PluginRegistry::{discover,restart,health,health_all,unregister}` have no production caller |
+| 9 | "Convert select, multi-select, confirm, input, permission, popup, stream, and completion flows to neutral interactions" | production interaction is still `tact_extensions::ui_responder::UiResponder`; the Kernel `InteractionBroker` is test-only; `InteractionRequest::{Permission,Confirm,Input}` are never constructed in production |
+| 10 | "Register built-in extensions through PluginRegistry and CapabilityRouter" | only the **manifests** register (`register_official_manifests`); `AgentExtension`/`SessionExtension`/`WorkflowExtension::register` are test-only; `Agent::runtime_plugins` is written and never read |
+| 11 | "a fixture plugin registers Chat, starts a run, subscribes to events, answers an interaction" | the fixture fabricates all three inside `index.mjs`; the host has no event transport or interaction broker; `runs.start` is never invoked from the Node path |
+| 12 | "Enforce memory, fuel/deadline, cancellation, and permission limits" | no engine dependency (`Cargo.lock` has 0 hits for `wasmtime`/`wasmi`/`wasmer`); fuel/max-memory are runner argv nobody interprets in-repo; the fixture "module" is an 8-byte placeholder |
+| 13 | "Remove every Agent-to-TUI channel" / "Remove MCP-only execution branches" | `agent.agent_loop` is still called directly by the interactive and headless hosts; `plugin/hooks.rs` still calls `mcp_router.call(...)` outside the router; legacy `ui_tx`/`UiResponder` remain live |
+| 6/11 | file lists | `tact_extensions/src/plugin/{manifest,registry,lifecycle,transport,supervision}.rs` and `tact_plugin_node/src/{process,transport}.rs` do not exist (the code moved to `crates/tact/src/lifecycle.rs` + `tact_plugin_host/src/*` in Task 14; the boxes were never corrected) |
+
+Progress since the audit: `RunFinished` and the user-role `Text` fact now have
+producers, and `EventTransport::close` has a real caller (commit `f342883f`);
+`ARCHITECTURE.md` §15 lists the interfaces that remain unconsumed.
+
 ## Global Constraints
 
 - Preserve all current business behavior listed in the spec's Business-function preservation matrix.

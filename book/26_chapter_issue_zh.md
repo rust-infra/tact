@@ -4,6 +4,23 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-10 — 轨迹补齐「回合结束」与「用户输入」两个事实；交互式主机退出时关闭事件传输
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（用户可见：TUI 的「当前运行」在回合结束后不再残留；无渲染字符串变化） |
+| **Related** | `crates/tact_extensions/src/agent/mod.rs`、`crates/tact_ui/src/interactive.rs`；`ARCHITECTURE.md` §15 |
+
+**现象 / 动机：** spec §7 要求 Trajectory 记录用户输入与回合终态。`RuntimeEvent::RunFinished`（→ `TrajectoryEventType::RunLifecycle`）与 `role == "user"` 的 `Text`（→ `UserInput`）在轨迹分类器和 TUI 里**都已有消费者/映射，但全仓没有生产者**：`agent_loop` 发 `RunStarted`，却从不发配对的 `RunFinished`，所以一次普通回合只剩 `TaskComplete`（被归为 `Message`），终态不入轨迹；用户 prompt 也从未以 `Text{role:"user"}` 形式出现。
+
+**决策：** `agent_loop` 改为薄包装（原实现降为私有 `agent_loop_inner`），包装层在返回后发 `RunFinished { run_id, success: result.is_ok() }`；`run_id` 规则是「本次调用创建/替换了 `current_run_id` 才带上它，否则 `None`」——接续一个已开启 run 的调用（如 `user_turn_message: None` 的续跑）不能结束不属于它的 run。接受用户回合时（hooks 放行之后、消息被 hook 修改之前取文本）发一条 `Text { role: "user", .. }`，只在真实人类 prompt（`Role::User` + Normal、文本非空）时发。顺带把此前零生产调用者的 `EventTransport::close` 接到交互式主机的两条退出路径（`interactive.rs`）。
+
+**改后行为：** 回合结束发 `RunFinished`，TUI 据此清空 `runtime_run_id`（此前会一直残留到下一回合）；该字段只参与「是否运行中」的内部判定，不改任何日志字符串或布局。用户输入事件被 TUI 既有的「非 assistant 文本丢弃」规则过滤，不新增日志行。
+
+**Verification：** `./scripts/check-rust.sh` 退出 0；`cargo test --workspace` **2857 → 2862 passed / 0 failed**（+5 新测试；没有既有断言因事件序列变化而需要改）。**需人工目视一次：** 回合结束时 TUI 的「运行中」状态归零。
+
+**Pointers:** `crates/tact_extensions/src/agent/mod.rs::{agent_loop, agent_loop_inner, user_turn_text}`、`crates/tact_ui/src/interactive.rs`。
+
 ## 1. 2026-10-09 — 子代理卡片现在有实时输出
 
 | Field | Value |
