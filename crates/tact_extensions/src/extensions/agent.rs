@@ -93,7 +93,13 @@ pub trait AgentExecutor: Send + Sync {
 
     /// Requests cooperative cancellation of the in-flight run. Best-effort: the
     /// agent loop observes the flag at its next checkpoint.
-    fn cancel(&self, _run_id: &RunId) -> Result<(), KernelError> {
+    ///
+    /// The run id is optional and *informational*. A host cancels whatever is
+    /// in flight: it cannot read the in-flight run's identity to pass one here,
+    /// because the run holds the Agent lock for its whole duration, so reading
+    /// `current_run_id` would block until the very run it is trying to cancel
+    /// has finished.
+    fn cancel(&self, _run_id: Option<&RunId>) -> Result<(), KernelError> {
         Err(KernelError::new(
             tact_protocol::ErrorCategory::CapabilityNotFound,
             "run cancellation is not available",
@@ -121,7 +127,11 @@ impl InProcessAgentExecutor {
 
 #[async_trait]
 impl AgentExecutor for InProcessAgentExecutor {
-    fn cancel(&self, _run_id: &RunId) -> Result<(), KernelError> {
+    fn cancel(&self, _run_id: Option<&RunId>) -> Result<(), KernelError> {
+        // Only the cloned flag is touched: this must stay callable *while* a
+        // run holds `self.agent` (that is the whole point of `runs.cancel`), so
+        // it never takes the Agent lock — taking it would block until the run
+        // it is trying to stop had finished.
         self.cancel_flag
             .store(true, std::sync::atomic::Ordering::SeqCst);
         Ok(())
@@ -280,7 +290,14 @@ fn cancel_capability() -> CapabilityDeclaration {
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AgentCancelInput {
-    run_id: RunId,
+    /// The run the caller wants cancelled, when it knows one. Optional: a host
+    /// cancels *whatever is in flight* and cannot read the in-flight run's id
+    /// (the run holds the Agent lock for its whole duration, so reading
+    /// `current_run_id` would block until the run it is cancelling has
+    /// finished). The in-process executor ignores it entirely; it is recorded
+    /// only so a caller that does know the run can say which one it meant.
+    #[serde(default)]
+    run_id: Option<RunId>,
 }
 
 struct AgentCancelHandler {
@@ -289,7 +306,11 @@ struct AgentCancelHandler {
 
 #[async_trait]
 impl CapabilityHandler for AgentCancelHandler {
-    async fn invoke(&self, context: InvocationContext, input: Value) -> Result<Value, KernelError> {
+    async fn invoke(
+        &self,
+        _context: InvocationContext,
+        input: Value,
+    ) -> Result<Value, KernelError> {
         let request: AgentCancelInput = serde_json::from_value(input).map_err(|error| {
             KernelError::new(
                 tact_protocol::ErrorCategory::InvalidRequest,
@@ -298,13 +319,12 @@ impl CapabilityHandler for AgentCancelHandler {
                 false,
             )
         })?;
-        self.executor.cancel(&request.run_id)?;
-        let _ = context
-            .events()
-            .publish(tact_protocol::RuntimeEvent::Cancelled {
-                run_id: Some(request.run_id),
-            })
-            .await;
+        self.executor.cancel(request.run_id.as_ref())?;
+        // Deliberately no `Cancelled` event here. The fact belongs to the turn
+        // that actually ended, and the chat turn's bookkeeping publishes it when
+        // the cancelled run returns. Publishing it here too put two `Cancelled`
+        // events on the stream for one user cancel, which the TUI renders as a
+        // second task-end separator.
         Ok(json!({"cancelled": true}))
     }
 }

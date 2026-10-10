@@ -162,14 +162,22 @@ pub async fn run_command_loop_with_account(
             UserCommand::Runtime(RuntimeCommand::RespondInteraction { response }) => {
                 let _ = ui_responder.respond(response);
             }
-            UserCommand::Runtime(RuntimeCommand::CancelRun { .. }) => {
+            UserCommand::Runtime(RuntimeCommand::CancelRun { run_id }) => {
                 cancel_flag.store(true, Ordering::Relaxed);
                 let _ = view_updates.emit_runtime_event(runtime_event::info("Cancelling..."));
+                // The invoke is additional: the direct flag set above is the
+                // fallback and keeps cancellation immediate even if the Router
+                // is slow. `runs.cancel`'s handler touches only the cloned
+                // cancel flag, so it never waits on the in-flight run.
+                invoke_runs_cancel(&serving, Some(run_id)).await;
             }
             UserCommand::Runtime(_) => {}
             UserCommand::Cancel => {
                 cancel_flag.store(true, Ordering::Relaxed);
                 let _ = view_updates.emit_runtime_event(runtime_event::info("Cancelling..."));
+                // As above: no run id — a host cancels whatever is in flight and
+                // cannot read the in-flight run's id (it holds the Agent lock).
+                invoke_runs_cancel(&serving, None).await;
             }
             UserCommand::CancelSubagent { child_id } => {
                 if subagent_manager.request_cancel(&child_id) {
@@ -276,6 +284,39 @@ pub async fn run_command_loop_with_account(
                             .await
                             .emit_update(runtime_event::error(AgentErrorKind::Other(message)));
                     }
+                }
+            }
+            UserCommand::Compact => {
+                // Wait for any in-flight run first: the compact must see the
+                // finished context, exactly as it did when this command fell
+                // through to the `other` arm below.
+                if let Some(handle) = active.take() {
+                    agent = Some(handle.await.expect("compact task join panicked"));
+                }
+                if let Some(serving) = serving.as_ref() {
+                    // The `chat.compact` handler locks the Agent itself, and
+                    // `tokio::sync::Mutex` is not reentrant, so the guard must
+                    // be released before the invoke — the same reason the
+                    // `RunMcpPrompt` arm above drops its render guard. No guard
+                    // is taken here, so the invoke owns the lock.
+                    let invocation = serving.invocation(
+                        RequestId::from(uuid::Uuid::new_v4().to_string()),
+                        PluginId::from("tact.chat"),
+                        "interactive",
+                    );
+                    // The failure is already reported as the same Error event
+                    // the direct path emits, so the result is not re-reported.
+                    let _ = serving
+                        .router()
+                        .invoke("chat.compact", invocation, serde_json::json!({}))
+                        .await;
+                } else if let Some(agent_arc) = agent.take() {
+                    // No serving context: the same command, called directly
+                    // under this driver's own guard.
+                    let mut a = agent_arc.lock().await;
+                    let _ = tact_extensions::extensions::chat::compact_command(&mut a).await;
+                    drop(a);
+                    agent = Some(agent_arc);
                 }
             }
             other => {
@@ -436,6 +477,39 @@ async fn run_submit(
     agent
 }
 
+/// Requests cancellation of the in-flight run through `runs.cancel`, when the
+/// session has a serving context.
+///
+/// The caller has already stored the cancel flag directly: that is the
+/// fallback for a driver with no serving context (the unit tests, a degraded
+/// setup) and it keeps this command immediate. Routing the request as well is
+/// what gives `runs.cancel` its production caller and puts the stop on the
+/// session's control plane like the turn's start.
+///
+/// It cannot block behind the run it is cancelling: the invoke's handler path
+/// (`AgentCancelHandler` → `InProcessAgentExecutor::cancel`) only stores the
+/// cloned cancel flag and publishes the `Cancelled` fact — it never takes the
+/// Agent lock the run holds for its whole duration. `run_id` is informational;
+/// `UserCommand::Cancel` has none and passes `None`.
+async fn invoke_runs_cancel(serving: &Option<tact::RuntimeContext>, run_id: Option<RunId>) {
+    let Some(serving) = serving else {
+        return;
+    };
+    let invocation = serving.invocation(
+        RequestId::from(uuid::Uuid::new_v4().to_string()),
+        PluginId::from("tact.agent"),
+        "interactive",
+    );
+    let input = match run_id {
+        Some(run_id) => serde_json::json!({ "run_id": run_id }),
+        None => serde_json::json!({}),
+    };
+    let _ = serving
+        .router()
+        .invoke("runs.cancel", invocation, input)
+        .await;
+}
+
 /// Handle a single user command (shared by the loop and tests).
 ///
 /// This wrapper discards any account-related updates; tests that need to
@@ -491,20 +565,11 @@ async fn handle_user_command_with_account(
             let _ = run_chat_turn(TurnEntry::Exclusive(&mut *agent), &task, None).await;
         }
         UserCommand::Compact => {
-            agent.emit_update(runtime_event::info("[compacting]"));
-            if let Err(error) = agent
-                .compact_history_with_trigger(
-                    tact_extensions::compact::CompactTrigger::Command,
-                    None,
-                )
-                .await
-            {
-                agent.emit_update(runtime_event::error(AgentErrorKind::Other(format!(
-                    "Compaction failed: {error}"
-                ))));
-            } else {
-                agent.emit_update(runtime_event::info("Compaction complete."));
-            }
+            // The same command the loop routes through `chat.compact`, run by
+            // the one implementation so the direct and routed paths cannot
+            // drift. Failure is already reported as an Error event; a direct
+            // caller has nothing to do with the returned error.
+            let _ = tact_extensions::extensions::chat::compact_command(&mut *agent).await;
         }
         UserCommand::QueryBalance => {
             let Some(account_tx) = account_tx else {
@@ -1110,6 +1175,125 @@ mod tests {
                 .iter()
                 .any(|name| name == "runs.start"),
             "the run must have gone through the Router"
+        );
+    }
+
+    /// The interactive host's `/compact` goes through the Chat extension's
+    /// `chat.compact` when a serving context is present, and the routed command
+    /// emits the same user-visible messages the direct one did. The recording
+    /// policy proves the invocation reached the Router.
+    #[tokio::test]
+    async fn interactive_compact_goes_through_chat_compact_when_a_serving_context_is_present() {
+        install_test_config();
+        let mock = MockClient::new(vec![(
+            vec![text_block("compacted summary")],
+            Some(StopReason::EndTurn),
+        )]);
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        agent.runtime.context.push(tact_llm::Message::new_text(
+            tact_llm::Role::User,
+            "first turn",
+        ));
+        agent.runtime.context.push(tact_llm::Message::new_text(
+            tact_llm::Role::Assistant,
+            "second turn",
+        ));
+
+        let directory = tempfile::tempdir().expect("temp directory");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let serving = serving_context_with_recorder(directory.path(), seen.clone()).await;
+        let agent = agent.with_serving_context(serving);
+
+        let (command_tx, command_rx) = crate::test_support::user_command_channels();
+        let driver = tokio::spawn(super::run_command_loop(agent, command_rx, work_dir));
+
+        command_tx.send(UserCommand::Compact).unwrap();
+        drop(command_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(5), driver)
+            .await
+            .expect("driver did not shut down")
+            .unwrap();
+
+        assert!(
+            seen.lock()
+                .expect("recording lock")
+                .iter()
+                .any(|name| name == "chat.compact"),
+            "the /compact command must go through the chat.compact capability"
+        );
+
+        let mut infos = Vec::new();
+        while let Ok(update) = agent_rx.try_recv() {
+            if let RuntimeEvent::Info { content, .. } = update {
+                infos.push(content);
+            }
+        }
+        assert!(
+            infos.iter().any(|msg| msg == "[compacting]"),
+            "expected the [compacting] info, got: {infos:?}"
+        );
+        assert!(
+            infos.iter().any(|msg| msg == "Compaction complete."),
+            "expected the completion info, got: {infos:?}"
+        );
+    }
+
+    /// Cancelling an in-flight run goes through the session's control plane: the
+    /// `Cancel` arm still stores the cancel flag (so the run stops immediately)
+    /// and additionally invokes `runs.cancel` through the serving router. The
+    /// recording policy proves the capability was invoked through the Router,
+    /// and the prompt shutdown proves the run it named actually stopped — the
+    /// invoke touched only the cloned cancel flag and never waited on the run.
+    #[tokio::test]
+    async fn interactive_cancel_goes_through_runs_cancel_when_a_serving_context_is_present() {
+        install_test_config();
+        // The turn blocks in a real `sleep` tool so the `Cancel` command
+        // genuinely arrives mid-run; the tool observes the cooperative cancel
+        // flag and the run stops without waiting out the sleep.
+        let mock = MockClient::new(vec![
+            (
+                vec![ContentBlock::ToolUse {
+                    id: "tool_bash_1".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({ "command": "sleep 30" }),
+                }],
+                Some(StopReason::ToolUse),
+            ),
+            (
+                vec![text_block("should not complete")],
+                Some(StopReason::EndTurn),
+            ),
+        ]);
+        let (agent, work_dir) = build_test_agent(mock, None);
+
+        let directory = tempfile::tempdir().expect("temp directory");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let serving = serving_context_with_recorder(directory.path(), seen.clone()).await;
+        let agent = agent.with_serving_context(serving);
+
+        let (command_tx, command_rx) = crate::test_support::user_command_channels();
+        let driver = tokio::spawn(super::run_command_loop(agent, command_rx, work_dir));
+
+        command_tx
+            .send(UserCommand::SubmitTask("run sleep".into()))
+            .unwrap();
+        // Let the turn reach the blocking tool before cancelling.
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        command_tx.send(UserCommand::Cancel).unwrap();
+        drop(command_tx);
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), driver)
+            .await
+            .expect("a routed cancel must stop the run promptly")
+            .unwrap();
+
+        assert!(
+            seen.lock()
+                .expect("recording lock")
+                .iter()
+                .any(|name| name == "runs.cancel"),
+            "cancelling must go through the runs.cancel capability"
         );
     }
 

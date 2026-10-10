@@ -170,11 +170,11 @@ async fn agent_run_capability_rejects_missing_message() {
     );
 }
 
-/// `runs.cancel` sets the executor's cancel flag and records a `Cancelled`
-/// event for the requested run.
+/// `runs.cancel` sets the executor's cancel flag for the requested run.
+/// The `Cancelled` fact is not this capability's to emit — see the handler.
 #[tokio::test]
 async fn runs_cancel_capability_requests_cancellation() {
-    struct CancellingExecutor(Mutex<Vec<String>>);
+    struct CancellingExecutor(Mutex<Vec<Option<String>>>);
 
     #[async_trait]
     impl AgentExecutor for CancellingExecutor {
@@ -186,8 +186,11 @@ async fn runs_cancel_capability_requests_cancellation() {
             Ok(RunId::from("run-cancel-test"))
         }
 
-        fn cancel(&self, run_id: &RunId) -> Result<(), KernelError> {
-            self.0.lock().unwrap().push(run_id.as_str().to_string());
+        fn cancel(&self, run_id: Option<&RunId>) -> Result<(), KernelError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(run_id.map(|id| id.as_str().to_string()));
             Ok(())
         }
     }
@@ -209,5 +212,58 @@ async fn runs_cancel_capability_requests_cancellation() {
         .await
         .unwrap();
     assert_eq!(output, json!({"cancelled": true}));
-    assert_eq!(executor.0.lock().unwrap().as_slice(), ["run-cancel-test"]);
+    assert_eq!(
+        executor.0.lock().unwrap().as_slice(),
+        [Some("run-cancel-test".to_string())]
+    );
+}
+
+/// `runs.cancel` does not require a run id: a host cancels the in-flight run
+/// and cannot supply its identity. An empty body still cancels and reports
+/// `cancelled: true`.
+#[tokio::test]
+async fn runs_cancel_without_a_run_id_still_cancels() {
+    struct RecordingExecutor(Mutex<Vec<Option<String>>>);
+
+    #[async_trait]
+    impl AgentExecutor for RecordingExecutor {
+        async fn run(
+            &self,
+            _context: InvocationContext,
+            _message: tact_llm::Message,
+        ) -> Result<RunId, KernelError> {
+            Ok(RunId::from("run-ignored"))
+        }
+
+        fn cancel(&self, run_id: Option<&RunId>) -> Result<(), KernelError> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(run_id.map(|id| id.as_str().to_string()));
+            Ok(())
+        }
+    }
+
+    let executor = Arc::new(RecordingExecutor(Mutex::new(Vec::new())));
+    let runtime = runtime();
+    AgentExtension::new(executor.clone())
+        .register(&runtime)
+        .unwrap();
+    let context = runtime.invocation(
+        RequestId::from("request-cancel-no-id"),
+        PluginId::from("tact.agent"),
+        "tester",
+    );
+
+    let output = runtime
+        .router()
+        .invoke("runs.cancel", context, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(output, json!({"cancelled": true}));
+    assert_eq!(
+        executor.0.lock().unwrap().as_slice(),
+        [None],
+        "the executor is asked to cancel without a run id"
+    );
 }

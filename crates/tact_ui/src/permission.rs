@@ -33,15 +33,16 @@ pub(crate) fn permission_mode_from_config() -> PermissionMode {
 ///
 /// `CapabilityRouter::invoke` always runs `PermissionService::check`, and the
 /// host has no guarded path to its own turn: `chat.submit` submits the
-/// conversational turn the user asked for, and `runs.start` / `runs.cancel` are
-/// the run that turn executes and the process stopping it. All three are the
-/// host acting on the user's own request, not a capability the model asked for.
+/// conversational turn the user asked for, `chat.compact` compacts the
+/// conversation the user asked to compact, and `runs.start` / `runs.cancel` are
+/// the run that turn executes and the process stopping it. All are the host
+/// acting on the user's own request, not a capability the model asked for.
 /// The general policy, [`PermissionManagerService`], is fail-closed in `Ask`
 /// mode: with no responder it denies. That would break a headless run for any
 /// user on `mode = default`, because submitting the turn would be gated on a
 /// prompt the process cannot answer.
 ///
-/// So this policy allows exactly those three names and denies everything else.
+/// So this policy allows exactly those names and denies everything else.
 /// It is **not** a per-tool bypass: tool invocations never pass through it —
 /// they are authorized by the Agent's own permission manager and the preflight
 /// gate in tool dispatch. The narrow, deny-by-default shape keeps that honest:
@@ -57,7 +58,7 @@ impl PermissionService for HostControlPlanePermission {
         _input: &Value,
     ) -> Result<(), KernelError> {
         match declaration.name.as_str() {
-            "chat.submit" | "runs.start" | "runs.cancel" => Ok(()),
+            "chat.submit" | "chat.compact" | "runs.start" | "runs.cancel" => Ok(()),
             other => Err(KernelError::permission_denied(format!(
                 "the host only authorizes its own control capabilities; \
                  {other} is not one"
@@ -70,10 +71,10 @@ impl PermissionService for HostControlPlanePermission {
 ///
 /// Two decisions meet here, and conflating them would undo one of the other:
 ///
-/// - The host's **own control plane** (`chat.submit` / `runs.start` /
-///   `runs.cancel`) is decided by [`HostControlPlanePermission`], so the process
-///   can always submit, start and stop the turn it is hosting regardless of the
-///   configured mode.
+/// - The host's **own control plane** (`chat.submit` / `chat.compact` /
+///   `runs.start` / `runs.cancel`) is decided by [`HostControlPlanePermission`],
+///   so the process can always submit, compact and stop the turn it is hosting
+///   regardless of the configured mode.
 /// - **Everything else** — the Kernel's `storage.*` / `events.*` /
 ///   `trajectory.*` / `permission.request` / `interaction.request`, the
 ///   `sessions.*` extension, and any plugin capability — is decided by the same
@@ -98,7 +99,7 @@ impl PermissionService for ServingPermission {
         input: &Value,
     ) -> Result<(), KernelError> {
         match declaration.name.as_str() {
-            "chat.submit" | "runs.start" | "runs.cancel" => {
+            "chat.submit" | "chat.compact" | "runs.start" | "runs.cancel" => {
                 self.control_plane.check(declaration, context, input).await
             }
             _ => self.policy.check(declaration, context, input).await,
@@ -175,6 +176,7 @@ mod tests {
         };
 
         assert!(check("chat.submit").await.is_ok());
+        assert!(check("chat.compact").await.is_ok());
         assert!(check("runs.start").await.is_ok());
         assert!(check("runs.cancel").await.is_ok());
         let denied = check("bash").await.expect_err("a tool is not allowed");

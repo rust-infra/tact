@@ -323,19 +323,23 @@ impl ChatExtension {
         Self { agent, runtime }
     }
 
-    /// Registers `chat.submit` on the given context.
+    /// Registers `chat.submit` and `chat.compact` on the given context.
     ///
     /// `chat.start_run` stays the Agent extension's: it is the run's
     /// *implementation*, served by [`crate::extensions::agent::AgentExtension`],
     /// and is neither removed nor re-pointed here.
     pub fn register(&self, runtime: &RuntimeContext) -> Result<(), KernelError> {
-        let handler: Arc<dyn CapabilityHandler> = Arc::new(ChatSubmitHandler {
+        let submit: Arc<dyn CapabilityHandler> = Arc::new(ChatSubmitHandler {
             agent: Arc::clone(&self.agent),
             runtime: self.runtime.clone(),
         });
-        runtime
-            .router()
-            .register(CapabilityRegistration::new(submit_capability(), handler))
+        let compact: Arc<dyn CapabilityHandler> = Arc::new(ChatCompactHandler {
+            agent: Arc::clone(&self.agent),
+        });
+        runtime.router().register_many(vec![
+            CapabilityRegistration::new(submit_capability(), submit),
+            CapabilityRegistration::new(compact_capability(), compact),
+        ])
     }
 }
 
@@ -382,12 +386,85 @@ impl CapabilityHandler for ChatSubmitHandler {
     }
 }
 
+/// The `/compact` command, on an Agent the caller already owns (locked).
+///
+/// This is the one implementation of the command: the `chat.compact` handler
+/// locks the shared Agent and calls it, and the driver's direct (no serving
+/// context) fallback calls it under its own guard, so the two paths cannot
+/// drift in what they emit.
+///
+/// The user-visible outcome is exactly what the driver's `Compact` arm emitted
+/// before the command went through the capability protocol: the `[compacting]`
+/// info, then `Compaction complete.` on success or the `Compaction failed:
+/// {error}` error event otherwise. Failure is *also* returned so a routed
+/// caller can observe it; the direct caller ignores it, as it did before.
+pub async fn compact_command(agent: &mut Agent) -> Result<(), KernelError> {
+    agent.emit_update(runtime_event::info("[compacting]"));
+    match agent
+        .compact_history_with_trigger(crate::compact::CompactTrigger::Command, None)
+        .await
+    {
+        Ok(()) => {
+            agent.emit_update(runtime_event::info("Compaction complete."));
+            Ok(())
+        }
+        Err(error) => {
+            let message = format!("Compaction failed: {error}");
+            agent.emit_update(runtime_event::error(AgentErrorKind::Other(message.clone())));
+            Err(KernelError::new(
+                ErrorCategory::InternalError,
+                message,
+                "chat",
+                false,
+            ))
+        }
+    }
+}
+
+/// The `chat.compact` request body.
+///
+/// It carries no fields: `/compact` summarises the whole conversation and the
+/// host's command has no focus to pass. The empty body is still parsed so an
+/// unexpected field is rejected rather than silently ignored.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ChatCompactInput {}
+
+struct ChatCompactHandler {
+    agent: Arc<Mutex<Agent>>,
+}
+
+#[async_trait]
+impl CapabilityHandler for ChatCompactHandler {
+    async fn invoke(
+        &self,
+        _context: InvocationContext,
+        input: Value,
+    ) -> Result<Value, KernelError> {
+        let _: ChatCompactInput = serde_json::from_value(input).map_err(|error| {
+            KernelError::new(
+                ErrorCategory::InvalidRequest,
+                format!("invalid chat.compact request: {error}"),
+                "chat",
+                false,
+            )
+        })?;
+        let mut agent = self.agent.lock().await;
+        compact_command(&mut agent).await?;
+        Ok(json!({ "compacted": true }))
+    }
+}
+
 pub fn manifest() -> RuntimePluginManifest {
     RuntimePluginManifest {
         id: PluginId::from("tact.chat"),
         version: env!("CARGO_PKG_VERSION").into(),
         protocol: ProtocolVersion::CURRENT,
-        capabilities: vec![start_run_capability(), submit_capability()],
+        capabilities: vec![
+            start_run_capability(),
+            submit_capability(),
+            compact_capability(),
+        ],
         dependencies: Vec::new(),
     }
 }
@@ -416,6 +493,22 @@ fn submit_capability() -> CapabilityDeclaration {
         description: Some(
             "Submit one conversational turn: assemble the user message, run it, \
              and drive the Stop-hook continuation loop"
+                .into(),
+        ),
+        input_schema: None,
+        output_schema: None,
+        risk: CapabilityRisk::Medium,
+    }
+}
+
+fn compact_capability() -> CapabilityDeclaration {
+    CapabilityDeclaration {
+        name: "chat.compact".into(),
+        kind: CapabilityKind::App,
+        version: "1".into(),
+        description: Some(
+            "Compact the conversation's history, summarising it in place \
+             (the host's `/compact` command)"
                 .into(),
         ),
         input_schema: None,
@@ -458,11 +551,14 @@ mod tests {
         )
     }
 
-    fn test_agent(mock: MockClient) -> Agent {
+    /// A test Agent on a context unique to `name` — `test_context` keys its
+    /// scratch directory on the name and deletes it before creating it, so two
+    /// tests sharing one name would race on the same SQLite file.
+    fn test_agent(name: &str, mock: MockClient) -> Agent {
         crate::config::test_support::install_default();
         Agent::new(
             tact_llm::LlmProvider::Mock(mock),
-            test_context("chat-extension"),
+            test_context(name),
             crate::tool::toolset(),
             crate::mcp::MCPToolRouter::new(),
             PermissionManager::try_new(PermissionMode::Auto).expect("permission mode"),
@@ -474,22 +570,152 @@ mod tests {
         ContentBlock::Text { text: text.into() }
     }
 
-    /// The Chat extension registers `chat.submit` — and leaves `chat.start_run`
-    /// to the Agent extension — on the session's serving router.
+    /// The Chat extension registers `chat.submit` and `chat.compact` — and
+    /// leaves `chat.start_run` to the Agent extension — on the session's
+    /// serving router.
     #[test]
     fn chat_extension_registers_its_submit_capability() {
         let runtime = runtime();
-        let agent = Arc::new(Mutex::new(test_agent(MockClient::new(vec![]))));
+        let agent = Arc::new(Mutex::new(test_agent(
+            "chat-register",
+            MockClient::new(vec![]),
+        )));
         ChatExtension::new(agent, runtime.clone())
             .register(&runtime)
             .expect("chat.submit registers");
         assert!(runtime.router().describe("chat.submit").is_some());
+        assert!(
+            runtime.router().describe("chat.compact").is_some(),
+            "the host's `/compact` command must be a registered capability"
+        );
         assert!(
             manifest()
                 .capabilities
                 .iter()
                 .any(|capability| capability.name == "chat.start_run"),
             "the run entry stays declared by Chat; the Agent extension serves it"
+        );
+        assert!(
+            manifest()
+                .capabilities
+                .iter()
+                .any(|capability| capability.name == "chat.compact"),
+            "chat.compact is declared in the manifest"
+        );
+    }
+
+    /// `chat.compact` compacts the shared conversation and emits the same
+    /// user-visible messages the driver's `/compact` arm did: the
+    /// `[compacting]` info and, on success, `Compaction complete.`
+    #[tokio::test]
+    async fn chat_compact_compacts_and_emits_the_same_messages() {
+        let mock = MockClient::new(vec![(
+            vec![text_block("the summary")],
+            Some(StopReason::EndTurn),
+        )]);
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut agent = test_agent("chat-compact-ok", mock).with_ui_channel(events_tx);
+        agent
+            .runtime
+            .context
+            .push(tact_llm::Message::new_text(Role::User, "first turn"));
+        agent
+            .runtime
+            .context
+            .push(tact_llm::Message::new_text(Role::Assistant, "second turn"));
+        let agent = Arc::new(Mutex::new(agent));
+
+        let runtime = runtime();
+        ChatExtension::new(Arc::clone(&agent), runtime.clone())
+            .register(&runtime)
+            .expect("chat.compact registers");
+
+        let output = runtime
+            .router()
+            .invoke(
+                "chat.compact",
+                runtime.invocation(
+                    RequestId::from("chat-compact-test"),
+                    PluginId::from("tact.chat"),
+                    "test",
+                ),
+                json!({}),
+            )
+            .await
+            .expect("chat.compact answers");
+        assert_eq!(output, json!({"compacted": true}));
+
+        let mut infos = Vec::new();
+        while let Ok(event) = events_rx.try_recv() {
+            if let RuntimeEvent::Info { content, .. } = event {
+                infos.push(content);
+            }
+        }
+        assert!(
+            infos.iter().any(|msg| msg == "[compacting]"),
+            "expected the [compacting] info, got: {infos:?}"
+        );
+        assert!(
+            infos.iter().any(|msg| msg == "Compaction complete."),
+            "expected the completion info, got: {infos:?}"
+        );
+
+        let agent = agent.lock().await;
+        let context_text = serde_json::to_string(&agent.runtime.context).unwrap_or_default();
+        assert!(
+            context_text.contains("the summary"),
+            "the summary must be in the compacted context: {context_text}"
+        );
+    }
+
+    /// `chat.compact` reports a failed compaction as the same
+    /// `Compaction failed: {error}` Error event the driver's arm emitted, and
+    /// returns an error rather than claiming success.
+    #[tokio::test]
+    async fn chat_compact_reports_a_failed_compaction() {
+        use tact_llm::LlmError;
+        let mock = MockClient::with_error(vec![LlmError::Mock("compact blew up".to_string())]);
+        let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut agent = test_agent("chat-compact-fail", mock).with_ui_channel(events_tx);
+        agent
+            .runtime
+            .context
+            .push(tact_llm::Message::new_text(Role::User, "first turn"));
+        let agent = Arc::new(Mutex::new(agent));
+
+        let runtime = runtime();
+        ChatExtension::new(Arc::clone(&agent), runtime.clone())
+            .register(&runtime)
+            .expect("chat.compact registers");
+
+        let error = runtime
+            .router()
+            .invoke(
+                "chat.compact",
+                runtime.invocation(
+                    RequestId::from("chat-compact-fail"),
+                    PluginId::from("tact.chat"),
+                    "test",
+                ),
+                json!({}),
+            )
+            .await
+            .expect_err("a failed compaction must not report success");
+        assert!(
+            error.message().contains("Compaction failed"),
+            "got: {}",
+            error.message()
+        );
+
+        let mut errors = Vec::new();
+        while let Ok(event) = events_rx.try_recv() {
+            if let RuntimeEvent::Error { message, .. } = event {
+                errors.push(message.to_string());
+            }
+        }
+        assert!(
+            errors.iter().any(|msg| msg.contains("Compaction failed")),
+            "expected the Compaction failed Error event, got: {errors:?}"
         );
     }
 
@@ -501,10 +727,12 @@ mod tests {
             vec![text_block("answered")],
             Some(StopReason::EndTurn),
         )]);
-        let agent = Arc::new(Mutex::new(test_agent(mock).with_ui_channel({
-            let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
-            tx
-        })));
+        let agent = Arc::new(Mutex::new(
+            test_agent("chat-submit-routed", mock).with_ui_channel({
+                let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                tx
+            }),
+        ));
         let runtime = runtime();
         AgentExtension::from_shared(Arc::clone(&agent), Arc::new(AtomicBool::new(false)))
             .register(&runtime)
@@ -547,7 +775,7 @@ mod tests {
         let calls = Arc::new(AtomicUsize::new(0));
         let hook_calls = Arc::clone(&calls);
         let (events_tx, mut events_rx) = tokio::sync::mpsc::unbounded_channel();
-        let agent = test_agent(mock)
+        let agent = test_agent("chat-stop-hook", mock)
             .with_stop(move |_agent| {
                 let remaining = hook_calls.fetch_add(1, Ordering::Relaxed);
                 Box::pin(async move {
@@ -584,12 +812,12 @@ mod tests {
         let mock = MockClient::new(vec![(vec![text_block("done")], Some(StopReason::EndTurn))]);
         let completed = Arc::new(AtomicUsize::new(0));
         let hook_calls = Arc::clone(&completed);
-        let agent = Arc::new(Mutex::new(test_agent(mock).with_task_completed(
-            move |_agent| {
+        let agent = Arc::new(Mutex::new(
+            test_agent("chat-task-completed", mock).with_task_completed(move |_agent| {
                 hook_calls.fetch_add(1, Ordering::Relaxed);
                 Box::pin(async { Ok(HookControl::Continue) })
-            },
-        )));
+            }),
+        ));
 
         run_chat_turn(TurnEntry::Shared(&agent), "finish", None)
             .await
