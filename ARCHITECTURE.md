@@ -753,13 +753,14 @@ The View's event path is protocol-only: `AgentUpdate` and its projection pair ar
 
 **The command direction is intentionally left as the View's own vocabulary.** `UserCommand::Runtime(RuntimeCommand::…)` keeps the protocol command nested in a View-local enum, and that is a decision, not an oversight: moving the other 19 variants to `Command` capabilities needs three things the codebase does not have (an owner per command, access to live state that the Agent owns by value while the rendering lives in this binary crate, and a runtime on the command dispatch path — the `Agent` exposes no `CapabilityRouter` at all). On that evidence removing the View's own command vocabulary costs a re-architecture of command dispatch, which is a different job from eliminating a legacy *protocol* type. Revisit when a second View (Web/Desktop) genuinely needs to share the command set. The reasoning and the alternatives are recorded in `docs/superpowers/specs/2026-10-09-command-capability-migration-design.md`.
 
-Official Agent, Chat, Session, Tools, and Workflow manifests register through `PluginRegistry` and are marked serving (`Running`) as they register — the in-process host serves an extension the moment it is registered, so `state` / `health` report what is actually live. **Only the manifests are registered on the production path, though**: `register_official_manifests` (`crates/tact_ui/src/session_bootstrap.rs`) never calls `AgentExtension::register` / `SessionExtension::register` / `WorkflowExtension::register`, so the capability handlers behind `runs.*`, `chat.start_run`, `sessions.*` and `workflow.run` are reachable only from tests, and the resulting `PluginRegistry` is stored on `Agent::runtime_plugins` and never read. The live run path for the TUI is still `Agent::agent_loop`; the **headless** host now starts its run through `runs.start` on a `CapabilityRouter` (the first production consumer of `AgentExtension::register`). What *is* on the production router for both hosts is the tool layer: native and MCP tool handlers are installed through `CapabilityRouter` for each execution wave.
+Official Agent, Chat, Session, Tools, and Workflow manifests register through `PluginRegistry` and are marked serving (`Running`) as they register — the in-process host serves an extension the moment it is registered, so `state` / `health` report what is actually live. Alongside the manifests, the session bootstrap builds one **session-long serving `RuntimeContext`** (`build_serving_context` in `crates/tact_ui/src/session_bootstrap.rs`) whose router carries the Kernel's §4 service capabilities and the Session extension, over the session's real event, trajectory, permission and storage services; the headless host registers the Agent extension on that same context, so `runs.start` and the service capabilities share one production router. What is still not wired: the TUI starts its run by calling `agent.agent_loop` directly, `WorkflowExtension::register` is test-only, and 11 of the 12 service capabilities have no product-code caller yet.
 
 ### Declared but not yet consumed
 
-The Kernel and its hosts expose interfaces that **no production path calls
-today**. They exist because the architecture plan specifies them as extension
-points; do not read their presence as "this is wired":
+The Kernel and its hosts expose interfaces that **no product code invokes yet**.
+They exist because the architecture plan specifies them as extension points; do
+not read their presence as "this is wired". A few are registered and reachable
+but still uninvoked — the table says so explicitly.
 
 | Interface | Consumer today | Who it is for |
 |---|---|---|
@@ -767,8 +768,8 @@ points; do not read their presence as "this is wired":
 | `PluginRegistry::{discover, health, health_all, unregister}` | none (`start` *is* called, by `register_official_manifests`) | a host that scans for, supervises, or uninstalls plugins |
 | `EventTransport::close` | the interactive host, on both exits of `run_interactive_locked` (`crates/tact_ui/src/interactive.rs`) | a host shutting its event transport down before exit (headless still cannot reach its transport) |
 | `TrajectoryService::replay` | none (`query` serves resume) | a caller replaying a whole trajectory rather than resuming a sequence |
-| `tact::services::register` (all 12 §4 Kernel service capabilities) | none — zero callers anywhere, so `storage.*`, `events.*`, `trajectory.*`, `permission.request` and `interaction.request` are unreachable in production | any host serving plugin capability invocations |
-| `SessionExtension` / `WorkflowExtension::register` | tests only | the in-process Rust host serving Session and Workflow through the router (`AgentExtension::register` is no longer test-only: the headless host calls it) |
+| `tact::services::register` (the §4 Kernel service capabilities) | **called** by the session bootstrap's `build_serving_context`, over real event / trajectory / storage / policy services. Only `runs.start` has an invoking caller (headless); the other 11 are reachable but uninvoked, and `permission.request` / `interaction.request` fail closed (no responder) | a plugin host or a View that invokes them |
+| `WorkflowExtension::register` | tests only | the in-process Rust host serving Workflow through the router (`AgentExtension::register` is called by the headless host; `SessionExtension::register` is called by the shared session bootstrap) |
 | `crates/tact_plugin_node`, `crates/tact_plugin_wasm` | no workspace crate depends on them; only their own tests | a product path that loads external plugins |
 | `Agent::runtime_plugins` | written, never read | host lifecycle / health reporting for registered extensions |
 | Kernel `InteractionBroker` / `InteractionService` | tests only | a client-neutral interaction path (production still answers through `tact_extensions::ui_responder::UiResponder`) |

@@ -4,6 +4,25 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-10 — 会话级 serving `RuntimeContext`：§4 的 12 个内核服务能力真正可达
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（内部架构变更；无用户可见行为变化） |
+| **Related** | `crates/tact_ui/src/session_bootstrap.rs`、`crates/tact_ui/src/permission.rs`、`crates/tact_extensions/src/agent/mod.rs`、`crates/tact_ui/src/headless.rs`；`ARCHITECTURE.md` §15 |
+
+**现象 / 动机：** `tact::services::register`（注册 §4 的 12 个内核服务能力）**零调用者**，因此 `storage.*`、`events.*`、`trajectory.*`、`permission.request`、`interaction.request` 在发布二进制里全部不可达——spec §4「所有调用走同一能力入口」与 §8 的命名空间守卫，实际只存在于测试中。
+
+**决策：** bootstrap 只构建**一次**会话级 serving `RuntimeContext`（`build_serving_context`）：router 上注册 `tact::services::register` 与 Session 扩展；四个服务槽位用**真实后端**——会话的 `EventTransport`、SQLite trajectory（`start_trajectory_recorder` 现在把 recorder 返回出来）、`SqliteStorageService`（会话库的第二个句柄）、以及由配置派生的权限策略。context 挂在 `Agent::serving_context` 上随会话存活；headless 的 `runs.start` 也改为注册到这个 context 上，于是 run 能力与内核服务**共用同一个生产 router**。权限是复合的：`runs.*` 走 host 控制面允许（只放行这两个），其余走配置策略。
+
+**刻意不做：** **不动工具热路径**——`run_tool_waves`、per-wave 工具 router、一次性票据 `PreflightPermissionGate` 全部保持原样，工具权限一点没放宽（`tool_dispatch.rs` 本次零改动）；没有接 `InteractionBroker`，所以 `interaction.request` / `permission.request` 仍 fail-closed（无人可问时拒绝而非挂起）。
+
+**改后行为：** 用户不可见。内部：`storage.set`/`storage.get`、`events.publish`、`trajectory.read`、`sessions.read` 等在真实 router 上可达且带真实后端。
+
+**Verification：** `./scripts/check-rust.sh` 通过；`cargo test --workspace` **2869 → 2871 passed / 0 failed**（+3 新测试，−1 迁移测试）。新增端到端测试通过该 router 写入 `plugins/<id>` 命名空间、并用**另一个 SQLite 句柄**读回（证明确实落库而非内存），`events.publish` 可从会话 transport 观察到，Runtime 命名空间被正确拒绝。**仍未做：** 12 个服务里只有 `runs.start` 有产品调用者，其余 11 个是「已注册、可达、无人调用」——已如实写进 `ARCHITECTURE.md` §15。
+
+**Pointers:** `crates/tact_ui/src/session_bootstrap.rs::build_serving_context`、`crates/tact_ui/src/permission.rs::serving_permission`、`crates/tact_extensions/src/agent/mod.rs::with_serving_context`。
+
 ## 1. 2026-10-10 — 权限决策成为可记录的轨迹事实（PermissionRequested / PermissionResolved）
 
 | Field | Value |
