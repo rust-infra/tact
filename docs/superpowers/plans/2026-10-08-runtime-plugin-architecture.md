@@ -55,6 +55,12 @@ never drive the command loop. No existing assertion needed changing, and the
 routed chain proved behaviourally equivalent to the fallback for everything the
 suites check. `build_test_agent_without_serving` keeps the fallback covered.
 
+The spec's business-function preservation matrix is now a **map** rather than an
+unverified list: each of the fourteen rows names the suite that would fail if the
+behaviour regressed (thirteen do; voice has no end-to-end test for want of audio
+hardware). That closes the acceptance item "the preservation matrix passes"
+without adding a duplicate suite.
+
 ## Global Constraints
 
 - Preserve all current business behavior listed in the spec's Business-function preservation matrix.

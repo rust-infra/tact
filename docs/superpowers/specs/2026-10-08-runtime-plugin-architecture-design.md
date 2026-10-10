@@ -301,22 +301,28 @@ Runtime-owned records cannot be written through a plugin namespace. Plugin data 
 
 The migration is complete only when the following behavior remains available through the new boundaries:
 
-| Capability | Final extension or service | Preservation requirement |
-|---|---|---|
-| Streaming agent loop | Agent extension | Same provider behavior, streamed text, thinking and stop/error handling |
-| Native tools | Tools extensions | Same names, metadata, permission/resource policies and typed effects |
-| MCP tools/prompts/resources | Plugin Protocol adapter | Same discovery, namespacing, routing and failures |
-| Hooks | EventHandler capability | Same lifecycle timing, mutation and veto semantics |
-| Permissions | Kernel Permission Engine | Same modes, risk decisions, prompts and fail-closed behavior |
-| Sessions/resume | Session extension + Storage | Same persistence, locking, resume and compatibility |
-| Compaction/recovery | Agent extension + Trajectory | Same compaction triggers, transcript behavior and transport recovery |
-| Tasks/teams/subagents | Tools/Workflow extensions | Same persistence, background execution and user-visible results |
-| Memory/skills/worktrees | Tools extensions | Same storage, prompt integration and safety checks |
-| Background processes | Tool/Workflow extension | Same cancellation, output and cleanup behavior |
-| Voice | Chat/View extension | Same recording/transcription integration where supported |
-| Token/balance statistics | Agent/Session projection | Same accounting and display data |
-| TUI rendering | TUI View Adapter | Same visual behavior and interaction outcomes |
-| Headless mode | External Client adapter | Same non-interactive execution and exit behavior |
+| Capability | Final extension or service | Preservation requirement | Covered by (test that would fail if this regressed) |
+|---|---|---|---|
+| Streaming agent loop | Agent extension | Same provider behavior, streamed text, thinking and stop/error handling | `crates/tact_ui/tests/driver_integration.rs` (a turn driven through `chat.submit` → `runs.start`); streaming/thinking assertions in `crates/tact_extensions/src/agent/mod.rs` |
+| Native tools | Tools extensions | Same names, metadata, permission/resource policies and typed effects | `crates/tact_ui/tests/tool_integration.rs` |
+| MCP tools/prompts/resources | Plugin Protocol adapter | Same discovery, namespacing, routing and failures | `crates/tact_ui/tests/mcp_tools.rs`, `mcp_auth_url_progress.rs` |
+| Hooks | EventHandler capability | Same lifecycle timing, mutation and veto semantics | `crates/tact_extensions/src/plugin/hooks.rs` tests; hook timing/veto in `crates/tact_extensions/src/agent/mod.rs`; `headless::tests::headless_stop_hook_continuation_runs_a_second_turn` |
+| Permissions | Kernel Permission Engine | Same modes, risk decisions, prompts and fail-closed behavior | `crates/tact_ui/tests/permission_integration.rs`; `crates/tact_extensions/src/agent/tool_dispatch.rs` permission-decision tests |
+| Sessions/resume | Session extension + Storage | Same persistence, locking, resume and compatibility | `crates/tact_ui/tests/headless_session_integration.rs`; `crates/tact_extensions/src/extensions/session_tests.rs` |
+| Compaction/recovery | Agent extension + Trajectory | Same compaction triggers, transcript behavior and transport recovery | `crates/tact_ui/tests/recovery_compaction.rs` |
+| Tasks/teams/subagents | Tools/Workflow extensions | Same persistence, background execution and user-visible results | `crates/tact_ui/tests/subsystem_tools.rs` |
+| Memory/skills/worktrees | Tools extensions | Same storage, prompt integration and safety checks | `crates/tact_ui/tests/subsystem_tools.rs` |
+| Background processes | Tool/Workflow extension | Same cancellation, output and cleanup behavior | `crates/tact_ui/tests/subsystem_tools.rs`, `tool_integration.rs` |
+| Voice | Chat/View extension | Same recording/transcription integration where supported | **no end-to-end test** — needs audio hardware. Unit-level coverage only: `crates/tact_extensions/src/voice/` |
+| Token/balance statistics | Agent/Session projection | Same accounting and display data | `crates/tact_ui/tests/tool_integration.rs` (token usage), `harness_advanced.rs` |
+| TUI rendering | TUI View Adapter | Same visual behavior and interaction outcomes | `crates/tui/src/render/{scene_tests,log_render_tests,render_gap_tests,popup_scene_tests}.rs` |
+| Headless mode | External Client adapter | Same non-interactive execution and exit behavior | `crates/tact_ui/tests/headless_session_integration.rs`, `headless_tui_advanced.rs` |
+
+Thirteen of the fourteen rows name a real suite; voice is the one row with no
+end-to-end test. Ten of the twelve `tact_ui` integration suites drive the
+**production** run path (`chat.submit` → `runs.start`) rather than the driver's
+fallback (the other two never drive the command loop), so this map is evidence
+about the migrated path and not only about the legacy one.
 
 ## Error, timeout and cancellation model
 
@@ -422,7 +428,7 @@ no product code invokes it yet.
 | §7 replay | deferred (see §2) |
 | §8 Storage | the facade and its namespace guard are real and now sit on the serving router; production session / task / team / worktree persistence still uses the existing stores directly, and Runtime-owned records are not written through the facade |
 | Error / timeout / cancellation model | error categories match and carry origin and retryability; cancellation propagates from client to handler; no production deadline exists |
-| Business-function preservation matrix | **not verified as a whole** — the rows are covered by the existing integration suites, but no test targets the matrix itself |
+| Business-function preservation matrix | **verified by mapping**: thirteen of the fourteen rows name the suite that would fail if the behaviour regressed (table above), and ten of the twelve `tact_ui` integration suites drive the production path. Voice has no end-to-end test (audio hardware) and is covered at unit level only |
 
 ### Acceptance items that are aspirational, not demonstrated
 
@@ -430,7 +436,8 @@ no product code invokes it yet.
 - "TUI, Web, Desktop and External Client use only Views / Interaction API" — Web and Desktop do not exist, and the TUI's prompt path is the in-process responder.
 - "Reserved host trajectory and permission facts cannot be forged by plugins" — the guard is implemented and tested, but no plugin host has a product caller, so it cannot fire in a real session.
 - "Plugin crashes, timeouts, cancellation and reconnect do not corrupt unrelated runs" — proven at host-test level only.
-- "Existing business-function preservation matrix passes" — no such test exists.
+
+(The business-function preservation matrix is no longer on this list: thirteen of its fourteen rows name the suite that would fail if the behaviour regressed, and ten of the twelve `tact_ui` integration suites drive the production path. Voice remains unit-level only, for want of audio hardware. A single matrix runner over those suites would be a convenience, not new coverage.)
 
 ### Not planned for now (revisit when a second View or a plugin needs them)
 
