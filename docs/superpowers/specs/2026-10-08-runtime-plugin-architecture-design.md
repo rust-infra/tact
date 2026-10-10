@@ -156,6 +156,15 @@ Node plugins run in an independent Node process connected through stdio RPC or I
 
 WASM plugins run under a WASI/Wasmtime-style host boundary. File, network, process, clock and storage access are host functions mediated by capabilities and permissions. WASM must not access Runtime memory directly.
 
+> **Implementation note (2026-10-10).** The shipped `crates/tact_plugin_wasm` is a
+> *subprocess* host: it spawns a caller-configured runner executable over the same
+> stdio envelope protocol and passes fuel / linear-memory / timeout / WASI
+> restrictions as runner arguments. No WASM engine is linked into this
+> repository, so those limits are enforced only by the configured runner, and
+> host functions are reached through the negotiated `HostCall` protocol rather
+> than a Wasmtime `Linker`. Set `TACT_WASM_RUNNER` to a real runner (e.g. a
+> `wasmtime` CLI) to get the boundary described here.
+
 ### 4. Extension Capability API
 
 Capabilities are divided into contributions and services.
