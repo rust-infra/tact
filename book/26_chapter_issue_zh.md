@@ -19,12 +19,13 @@
 - **占用取 `last_token_total`（provider 真实用量），无则退回 `estimate_context_tokens(context)`；两者皆 0 时（全新会话）不说话。** 没有证据的提示会训练模型忽略这行。
 - **落在 `=== DYNAMIC_BOUNDARY ===` 之下**——它是这里唯一跨任务变化的行，而该段本就是为"可变且不破前缀 KV 缓存"设的。
 - **文案由 `subagent_advisory()` 拼出，百分比取自阈值常量**，不写死 60——否则阈值一改，提示就在对模型说谎（`the_advisory_text_states_the_actual_threshold` 钉住）。
+- **前提：`spawn_subagent` 必须在工具表里**（`Agent::has_tool`，读的是构建请求所用的 `cached_tool_specs`）。这行点名了那个工具，缺席时整行不出现——让提示词提到模型手里没有的工具会训练模型不信任提示词。守的是将来（受限工具集 / 配置开关）两处不脱节，同时给了第二层保护：子 agent 的 `subagent_toolset()` **没有** `spawn_subagent`，即便将来子 agent 改用动态提示词也漏不进去（当前靠 `AgentSystemPrompt::Static` 提前返回挡住）。
 
 **只按任务求值一次。** `build_system_prompt` 是每 task 快照（`agent_loop` 顶部、loop 之前调用一次，之后每轮复用同一字符串），所以这行**不反映任务内的增长**。这是有意的：每轮改提示词会毁掉前缀 KV 缓存。可接受的原因是——决定"怎么拆活"的时机是任务**开始**，而任务很长时 auto-compact 本来就会把压力重置。
 
 **改后行为：** 窗口占用 ≥60% 时，动态段末尾出现一行（约 400 字符），说明优先把大块/自包含工作交给 `spawn_subagent`、只把"需要中间结果"的工作留在本窗口。低于阈值、全新会话、或 `model_context_window = 0` 时不出现。
 
-**Verification：** `cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` 干净。新增：`the_subagent_advisory_fires_below_the_compaction_threshold`（阈值序关系）、`the_subagent_advisory_stays_quiet_without_evidence`（无窗口 / 无用量不说话，120k/200k 触发而 119,999 不触发）、`the_advisory_text_states_the_actual_threshold`（文案里的百分比 == 常量，且点名 `spawn_subagent`）、`a_filling_window_steers_the_prompt_at_subagents`（走真实 `build_system_prompt`：宽松窗口无该行、65% 窗口有，且断言它落在 `DYNAMIC_BOUNDARY` **之下**）。真机 dump 确认渲染位置在 `## Dynamic context` 的 `Platform: macos` 之后。
+**Verification：** `cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` 干净。新增：`the_subagent_advisory_fires_below_the_compaction_threshold`（阈值序关系）、`the_subagent_advisory_stays_quiet_without_evidence`（无窗口 / 无用量不说话，120k/200k 触发而 119,999 不触发）、`the_advisory_text_states_the_actual_threshold`（文案里的百分比 == 常量，且点名 `spawn_subagent`）、`a_filling_window_steers_the_prompt_at_subagents`（走真实 `build_system_prompt`：宽松窗口无该行、65% 窗口有，且断言它落在 `DYNAMIC_BOUNDARY` **之下**）、`a_full_window_stays_quiet_when_subagents_are_not_offered`（先断言"满窗口本会触发"作为前提，再把 `spawn_subagent` 从工具表移除、断言整行消失——**已实测该测试有牙**：临时去掉 `has_tool` 守卫后它立刻 FAILED）。真机 dump 确认渲染位置在 `## Dynamic context` 的 `Platform: macos` 之后。
 
 **Pointers:** Ch 04 §3.4、Ch 05 §4（两个阈值的关系）、`crates/tact/src/compact/mod.rs`。
 

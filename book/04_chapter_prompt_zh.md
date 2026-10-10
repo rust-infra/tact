@@ -149,6 +149,8 @@ need the answer to.
 - **落在 `=== DYNAMIC_BOUNDARY ===` 之下**，因为它是这里唯一会跨任务变化的行，而该段本就是为"可变且不破前缀 KV 缓存"设的。
 - **每个任务只求值一次**（与 system prompt 同生命周期），**不随任务内增长实时更新**——每轮改提示词会毁掉前缀 KV 缓存。这可以接受：决定"怎么拆活"的时机是任务**开始**，而任务很长时 auto-compact 本来就会把压力重置。
 
+**前提：`spawn_subagent` 必须真的在工具表里。** 这行点名了那个工具，所以它缺席时整行不出现（`Agent::has_tool("spawn_subagent")`，读的正是构建请求所用的 `cached_tool_specs` 缓存）。理由不只是洁癖：让提示词提到一个模型手里没有的工具，会训练模型不信任提示词。当前主工具集总是注册它，这个前提守的是将来——受限工具集、配置开关——让两处不会脱节。顺带还给了第二层保护：子 agent 走 `subagent_toolset()`（**没有** `spawn_subagent`），即便将来子 agent 改用动态提示词，这行也漏不进去（现在靠 `AgentSystemPrompt::Static` 提前返回挡住）。
+
 提示词里此前**完全不提 subagent**（模板与代码零命中），模型只从 `spawn_subagent` 的工具描述知道它存在、不知道**何时**该用；这行补上了那个缺口。文案由 `subagent_advisory()` 拼出，百分比直接取自阈值常量——写死数字会在阈值变动那天悄悄说谎。
 
 ### 3.3 指令文件来源（`instruction_sources`）

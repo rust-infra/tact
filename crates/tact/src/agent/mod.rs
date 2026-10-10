@@ -668,7 +668,17 @@ impl Agent {
     /// acceptable because it is the *start* of a task that decides how the work
     /// gets split, and because auto-compaction resets the pressure inside a
     /// long task anyway.
+    ///
+    /// Requires `spawn_subagent` to actually be offered: the text tells the
+    /// model to reach for that tool, so without it the line would be advice the
+    /// model cannot take — and a prompt that names a nonexistent tool teaches
+    /// the model to distrust the prompt. Today the main toolset always registers
+    /// it; the guard is here so a future gate (a restricted toolset, a config
+    /// switch) cannot leave the two out of step.
     fn context_advisory(&self) -> Option<String> {
+        if !self.has_tool("spawn_subagent") {
+            return None;
+        }
         crate::compact::context_pressure_advisory(
             self.current_context_tokens(),
             self.model_context_window(),
@@ -1861,6 +1871,14 @@ impl Agent {
             .iter()
             .map(crate::tool::copy_tool_spec)
             .collect()
+    }
+
+    /// Whether a tool by this name is actually offered to the model.
+    ///
+    /// Reads the same cache the request is built from, so guidance that names a
+    /// tool cannot outlive the tool itself.
+    fn has_tool(&self, name: &str) -> bool {
+        self.cached_tool_specs.iter().any(|spec| spec.name == name)
     }
 
     // TODO(compact): summarization input is a crude tail-truncation to 80k
@@ -3275,6 +3293,35 @@ mod tests {
             .split_once("=== DYNAMIC_BOUNDARY ===")
             .expect("template emits the boundary");
         assert!(dynamic.contains("spawn_subagent"), "{dynamic}");
+    }
+
+    /// The advice names `spawn_subagent`, so it must not appear when that tool
+    /// is not offered — a prompt pointing at a tool the model does not have is
+    /// worse than silence.
+    #[test]
+    fn a_full_window_stays_quiet_when_subagents_are_not_offered() {
+        ensure_config();
+        let mut agent = chat_completions_test_agent("advisory_no_subagent");
+        agent.system_prompt = AgentSystemPrompt::Dynamic;
+        agent.agent_settings.model_context_window = 200_000;
+        agent.runtime.last_token_total = 130_000;
+        // The premise of the test: a full window would otherwise trigger.
+        assert!(crate::compact::context_pressure_advisory(130_000, 200_000));
+        assert!(
+            agent.has_tool("spawn_subagent"),
+            "fixture must start with it"
+        );
+
+        // Make the premise of *this* test explicit: the same full window, with
+        // the tool removed from the set the request is built from.
+        agent
+            .cached_tool_specs
+            .retain(|spec| spec.name != "spawn_subagent");
+        assert!(!agent.has_tool("spawn_subagent"));
+
+        let prompt = agent.build_system_prompt().unwrap();
+        assert!(!prompt.contains("spawn_subagent"), "{prompt}");
+        assert!(!prompt.contains("Context window is over"), "{prompt}");
     }
 
     fn chat_completions_test_agent(context_name: &str) -> Agent {
