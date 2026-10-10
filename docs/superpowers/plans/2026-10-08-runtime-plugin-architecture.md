@@ -48,6 +48,13 @@ of the 12 service capabilities have no invoking caller, `Agent::runtime_plugins`
 is never read, and the submit paths are all routed.
 `ARCHITECTURE.md` §15 lists what remains unconsumed.
 
+Verification note (2026-10-10): the `tact_ui` integration suites now attach a
+serving context, so 10 of the 12 of them drive the **production** run path
+(`chat.submit` → `runs.start`) rather than the driver's fallback; the other two
+never drive the command loop. No existing assertion needed changing, and the
+routed chain proved behaviourally equivalent to the fallback for everything the
+suites check. `build_test_agent_without_serving` keeps the fallback covered.
+
 ## Global Constraints
 
 - Preserve all current business behavior listed in the spec's Business-function preservation matrix.
