@@ -31,6 +31,30 @@
 
 ---
 
+## 1. 2026-10-10 — 发版 v1.1.37：清单版本从 1.1.33 直接补到 1.1.37
+
+| Field | Value |
+|-------|-------|
+| **Type** | release（用户可见：`--version` 与升级接口报 1.1.37；GitHub Release 产出五个平台的 `tact-ui-v1.1.37-*` 与 `SHA256SUMS`） |
+| **Related** | `Cargo.toml`（`[workspace.package].version`）、`Cargo.lock`（四个包条目）、`README.md`（徽章 + 发版命令片段）；`.github/workflows/release.yml` |
+
+**现象 / 动机：** 标签 `v1.1.34`–`v1.1.36` 是从 squash-merge 后的 `main` 打的，**没有配套的清单提升**：`Cargo.toml` 一直停在 `1.1.33`。后果是本地 build 的 `--version`、`crates/tact/src/upgrade.rs`（`env!("CARGO_PKG_VERSION")`）与 `USER_AGENT` 全都少报三个版本号，而 release workflow 在 tag 触发时是**从 `Cargo.toml` 取版本**（只有 tag 触发才用 `GITHUB_REF_NAME`）——两个来源长期不一致，下一次 `workflow_dispatch` 发出的二进制会叫 `v1.1.33-*`。
+
+**决策：** 本次发版把清单版本一次性补到 **1.1.37**，与已发布的 tag 对齐。
+
+- 跳号是**有意的**：`v1.1.34`–`v1.1.36` 三个 tag 已经存在并且都指向 `main` 上更早的提交，改小版本号会撞上已存在的 tag。1.1.33 → 1.1.37 之间的四个版本号由此**全部用掉**，语义上等价于「把这些已打标的改动补记进清单」。
+- **`release.yml` 的版本来源保持不动。** tag 触发时用 `GITHUB_REF_NAME`，与清单版本无关；把清单改对只是让本地/`workflow_dispatch` 路径不再说谎。
+- `Cargo.lock` 的四个条目（`tact` / `tact-ui` / `tact_llm` / 其余 workspace 包）随清单一起提升；`tact_protocol` 等独立版本包**不动**。
+- README 徽章与「发版」代码片段同步到 `v1.1.37`——那两行是照抄即用的发版指令，留在旧版本号上会把人引导去打一个已存在的 tag。
+
+**改后行为：** `tact-ui --version` 报 1.1.37；`upgrade` 的 UA 与自报版本一致；推送 `v1.1.37` 触发 `release.yml`，五个 target 构建并发布 Release。清单版本从此与已发布 tag 对齐。
+
+**Verification：** `git diff Cargo.lock` 只有四条 `version = "1.1.x"` 行变化，无依赖增删；推送门四包全绿。
+
+**Pointers:** `Cargo.toml`、`Cargo.lock`、`README.md`、`.github/workflows/release.yml`。
+
+---
+
 ## 1. 2026-10-10 — 往上翻不再被弹走：跟尾变成显式状态，日志下边框浮出「回到最新」药丸
 
 | Field | Value |
