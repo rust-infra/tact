@@ -251,6 +251,7 @@ async fn run_interactive_locked(
     // already surfaced in the TUI above and the terminal has been restored.
     if let Some(driver) = driver {
         let agent = driver.await.expect("command driver task panicked");
+        let agent = agent.lock().await;
 
         if let Some(sid) = agent.runtime.session_id.as_ref() {
             eprintln!("[session id: {sid}]");

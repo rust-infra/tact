@@ -1,25 +1,46 @@
 //! Interactive-mode command driver: bridges `UserCommand` from the TUI to `Agent`.
 
-use std::{path::Path, sync::atomic::Ordering};
+use std::{
+    path::Path,
+    sync::{Arc, atomic::Ordering},
+};
+use tact_extensions::extensions::agent::AgentExtension;
 use tact_extensions::runtime_event;
 use tact_protocol::RuntimeEvent;
 
 use tact_extensions::background::SharedBackgroundManager;
 use tact_extensions::{Agent, extract_text, hook::HookControl, utils::RwLockExt};
 use tact_llm::{Message, Role};
-use tact_protocol::{AccountUpdate, RuntimeCommand};
+use tact_protocol::{AccountUpdate, PluginId, RequestId, RunId, RuntimeCommand};
 use tact_view::{AgentErrorKind, UserCommand};
 use tokio::{
-    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    sync::{
+        Mutex,
+        mpsc::{UnboundedReceiver, UnboundedSender},
+    },
     task::JoinHandle,
 };
 
 use crate::{account, user_message::build_user_message};
 
+/// The Agent shared between the driver, its in-flight run task and the
+/// session's `runs.start` capability.
+///
+/// Before the run went through the capability protocol the driver *owned* the
+/// `Agent` outright and the run task moved it in and out of the task. The
+/// Router's [`AgentExtension`] needs shared ownership, so the driver now owns
+/// an `Arc<Mutex<Agent>>` and every other command keeps answering from the
+/// `Arc` handles cloned out of it at start (stats, ui_responder, managers,
+/// cancel_flag, view_updates).
+type SharedAgent = Arc<Mutex<Agent>>;
+
 /// Process `UserCommand`s until the channel closes, then shut down MCP.
 ///
-/// `SubmitTask` runs in a background task so `Cancel` can set `cancel_flag`
-/// while `agent_loop` is in progress. Integration tests drive this with a fake TUI.
+/// The driver owns the Agent behind a shared handle (`Arc<Mutex<Agent>>`) and
+/// returns it, so the session's `runs.start` capability can reach the same
+/// conversation. `SubmitTask` runs in a background task so `Cancel` can set
+/// `cancel_flag` while the run is in progress. Integration tests drive this
+/// with a fake TUI.
 ///
 /// This convenience wrapper does **not** wire an account-update channel; balance
 /// queries initiated through it are dropped. Use
@@ -29,7 +50,7 @@ pub async fn run_command_loop(
     agent: Agent,
     user_cmd_rx: UnboundedReceiver<UserCommand>,
     image_work_dir: impl AsRef<Path>,
-) -> Agent {
+) -> SharedAgent {
     run_command_loop_with_account(agent, user_cmd_rx, image_work_dir, None).await
 }
 
@@ -40,15 +61,15 @@ pub async fn run_command_loop_with_account(
     mut user_cmd_rx: UnboundedReceiver<UserCommand>,
     image_work_dir: impl AsRef<Path>,
     account_tx: Option<UnboundedSender<AccountUpdate>>,
-) -> Agent {
+) -> SharedAgent {
     let image_work_dir = image_work_dir.as_ref().to_path_buf();
     let cancel_flag = agent.runtime.cancel_flag.clone();
     let view_updates = agent.tool_context.view_updates.clone();
     // Shared stats snapshot: QueryStats can read it without awaiting the
-    // in-flight task (the Agent itself is exclusively owned by that task).
+    // in-flight task (the Agent itself is locked by that task's run).
     let stats = agent.runtime.stats.clone();
     // Shared UI responder: routes TUI select responses to the waiter (parent
-    // or subagent) even while the Agent is owned by the in-flight task.
+    // or subagent) even while the Agent is locked by the in-flight run.
     let ui_responder = agent.tool_context.ui_responder.clone();
     // Shared subagent manager: lets CancelSubagent flip a running child's
     // cooperative cancel flag without owning the parent Agent.
@@ -59,8 +80,37 @@ pub async fn run_command_loop_with_account(
     let background_manager = agent.tool_context.background_manager.clone();
     let background_session_id = agent.runtime.session_id.clone();
 
-    let mut agent = Some(agent);
-    let mut active: Option<JoinHandle<Agent>> = None;
+    // The session's serving context, cloned out before the Agent moves behind
+    // the shared handle. The run is started through the capability protocol on
+    // it (see `run_submit`), so `runs.start` becomes the interactive host's run
+    // entry exactly as it already is for the headless host.
+    let serving = agent.serving_context.clone();
+    let mut agent: Option<SharedAgent> = Some(Arc::new(Mutex::new(agent)));
+    // Register the Agent extension on the session's serving context, so the run
+    // task can reach the one conversation through `runs.start`. An Agent built
+    // directly (the integration tests, a degraded setup) has no serving
+    // context: keep today's direct `agent_loop` path for those, so the driver
+    // is still usable without a Kernel router. A registration failure (a router
+    // that already carries these capabilities) degrades the same way rather
+    // than stranding the run.
+    let serving = serving.and_then(|serving| {
+        let extension = AgentExtension::from_shared(
+            agent.as_ref().expect("agent just wrapped").clone(),
+            cancel_flag.clone(),
+        );
+        match extension.register(&serving) {
+            Ok(()) => Some(serving),
+            Err(error) => {
+                let _ = view_updates.emit_runtime_event(runtime_event::error(
+                    AgentErrorKind::Other(format!(
+                        "Agent run capability unavailable; using the direct run path: {error}"
+                    )),
+                ));
+                None
+            }
+        }
+    });
+    let mut active: Option<JoinHandle<SharedAgent>> = None;
     // A `SubagentFinishedNotification` that arrives while a turn is in flight
     // cannot be dropped: the result may already have been drained from the
     // queue at the start of the turn, and once the turn exits there is nothing
@@ -76,7 +126,8 @@ pub async fn run_command_loop_with_account(
                     active = None;
                     if pending_subagent_wakeup {
                         pending_subagent_wakeup = false;
-                        spawn_wakeup_task(&mut agent, &mut active, &image_work_dir);
+                        spawn_wakeup_task(&mut agent, &mut active, &image_work_dir, &serving)
+                            .await;
                     }
                     continue;
                 }
@@ -102,13 +153,11 @@ pub async fn run_command_loop_with_account(
                 }
                 pending_subagent_wakeup = false;
                 let work_dir = image_work_dir.clone();
-                let mut task_agent = agent.take().expect("agent available for runtime start");
-                task_agent.runtime.next_run_id = Some(run_id);
+                let task_agent = agent.take().expect("agent available for runtime start");
                 let task = task.to_string();
+                let serving = serving.clone();
                 active = Some(tokio::spawn(async move {
-                    handle_user_command(&mut task_agent, UserCommand::SubmitTask(task), &work_dir)
-                        .await;
-                    task_agent
+                    run_submit(task_agent, serving, task, &work_dir, Some(run_id)).await
                 }));
             }
             UserCommand::Runtime(RuntimeCommand::RespondInteraction { response }) => {
@@ -170,7 +219,7 @@ pub async fn run_command_loop_with_account(
                 // JoinHandle completes. Otherwise the notification could be
                 // lost in the gap between the final queue drain and turn exit.
                 if active.is_none() {
-                    spawn_wakeup_task(&mut agent, &mut active, &image_work_dir);
+                    spawn_wakeup_task(&mut agent, &mut active, &image_work_dir, &serving).await;
                 } else {
                     pending_subagent_wakeup = true;
                 }
@@ -183,18 +232,18 @@ pub async fn run_command_loop_with_account(
                 // do not add a redundant wake-up after it finishes.
                 pending_subagent_wakeup = false;
                 let work_dir = image_work_dir.clone();
-                let mut task_agent = agent.take().expect("agent available for submit");
+                let task_agent = agent.take().expect("agent available for submit");
+                let serving = serving.clone();
                 active = Some(tokio::spawn(async move {
-                    handle_user_command(&mut task_agent, UserCommand::SubmitTask(task), &work_dir)
-                        .await;
-                    task_agent
+                    run_submit(task_agent, serving, task, &work_dir, None).await
                 }));
             }
             other => {
                 if let Some(handle) = active.take() {
                     agent = Some(handle.await.expect("command join panicked"));
                 }
-                if let Some(mut a) = agent.take() {
+                if let Some(agent_arc) = agent.take() {
+                    let mut a = agent_arc.lock().await;
                     handle_user_command_with_account(
                         &mut a,
                         other,
@@ -202,7 +251,8 @@ pub async fn run_command_loop_with_account(
                         account_tx.as_ref(),
                     )
                     .await;
-                    agent = Some(a);
+                    drop(a);
+                    agent = Some(agent_arc);
                 }
             }
         }
@@ -224,10 +274,13 @@ pub async fn run_command_loop_with_account(
         agent = Some(handle.await.expect("final task join panicked"));
     }
 
-    let mut agent = agent.expect("agent should be available after command loop");
-    // SessionEnd hooks fire once at teardown, symmetrical with SessionStart.
-    let _ = agent.dispatch_session_end_hooks().await;
-    agent.shutdown_mcp().await;
+    let agent = agent.expect("agent should be available after command loop");
+    {
+        // SessionEnd hooks fire once at teardown, symmetrical with SessionStart.
+        let mut guard = agent.lock().await;
+        let _ = guard.dispatch_session_end_hooks().await;
+        guard.shutdown_mcp().await;
+    }
     agent
 }
 
@@ -263,10 +316,11 @@ async fn query_background(
     }
 }
 
-fn spawn_wakeup_task(
-    agent: &mut Option<Agent>,
-    active: &mut Option<JoinHandle<Agent>>,
+async fn spawn_wakeup_task(
+    agent: &mut Option<SharedAgent>,
+    active: &mut Option<JoinHandle<SharedAgent>>,
     image_work_dir: &Path,
+    serving: &Option<tact::RuntimeContext>,
 ) {
     if active.is_some() {
         return;
@@ -274,16 +328,15 @@ fn spawn_wakeup_task(
     // A wake-up turn only delivers queued results into the parent's context.
     // If a turn that just finished already drained the queue, the summary is
     // already in context and this turn would be empty — skip it entirely.
-    if !agent
-        .as_ref()
-        .is_some_and(Agent::has_pending_subagent_results)
-    {
-        return;
-    }
-    let Some(mut task_agent) = agent.take() else {
+    let Some(agent_arc) = agent.as_ref() else {
         return;
     };
+    if !agent_arc.lock().await.has_pending_subagent_results() {
+        return;
+    }
     let work_dir = image_work_dir.to_path_buf();
+    let task_agent = Arc::clone(agent_arc);
+    let serving = serving.clone();
     *active = Some(tokio::spawn(async move {
         // The queued result reaches the model during the drain below, so it
         // may legitimately not appear verbatim as a result "below"; point at
@@ -291,9 +344,171 @@ fn spawn_wakeup_task(
         let prompt = "A background subagent finished. Review its result below \
                       (or call check_subagent if none is shown)."
             .to_string();
-        handle_user_command(&mut task_agent, UserCommand::SubmitTask(prompt), &work_dir).await;
-        task_agent
+        run_submit(task_agent, serving, prompt, &work_dir, None).await
     }));
+}
+
+/// Runs one submitted turn on the shared Agent.
+///
+/// This is the driver's single submit entry: when the session has a serving
+/// context the turn goes through the capability protocol (`runs.start`), and
+/// only a driver without one (the integration tests, a degraded setup) falls
+/// back to the direct `agent_loop` path via [`handle_user_command`].
+///
+/// `requested_run_id` carries the run identity a `Runtime(StartRun)` command
+/// asked for; it is set on the Agent before the run so the identity survives
+/// the boundary exactly as it did when the driver called `agent_loop` directly.
+///
+/// Returns the shared Agent so the caller's `JoinHandle` hands it back the way
+/// the old exclusive-ownership design did.
+async fn run_submit(
+    agent: SharedAgent,
+    serving: Option<tact::RuntimeContext>,
+    task: String,
+    image_work_dir: &Path,
+    requested_run_id: Option<RunId>,
+) -> SharedAgent {
+    if let Some(run_id) = requested_run_id {
+        agent.lock().await.runtime.next_run_id = Some(run_id);
+    }
+    match serving {
+        Some(serving) => run_routed_submit(&serving, &agent, task, image_work_dir).await,
+        None => {
+            let mut guard = agent.lock().await;
+            handle_user_command(&mut guard, UserCommand::SubmitTask(task), image_work_dir).await;
+        }
+    }
+    agent
+}
+
+/// Runs one submitted turn through the session's `runs.start` capability.
+///
+/// The built turn travels as full `content`, so image/file blocks survive the
+/// boundary exactly as the headless host sends them. The post-run bookkeeping
+/// — Stop-hook continuations, the cancelled-vs-completed split, `task_complete`
+/// and the TaskCompleted hooks — is shared with the direct path through
+/// [`finish_completed_turn`], so the two paths cannot drift. A router failure
+/// is shown with `KernelError::message()`, which is `agent_loop`'s own text
+/// carried through the extension, so the TUI shows the same error either way.
+async fn run_routed_submit(
+    serving: &tact::RuntimeContext,
+    agent: &SharedAgent,
+    task: String,
+    image_work_dir: &Path,
+) {
+    // Per-turn reset under the lock: the tool-use counter, and the cooperative
+    // cancel flag cleared for the new turn. The flag is cloned out first so the
+    // loop can tell a cancelled run from a completed one without the lock.
+    let cancel_flag = {
+        let mut guard = agent.lock().await;
+        guard.tool_use_counter = 0;
+        guard.runtime.cancel_flag.store(false, Ordering::Relaxed);
+        guard.runtime.cancel_flag.clone()
+    };
+
+    let task_message = build_user_message(&task, image_work_dir).await;
+
+    // DeepSeek V4 and other text-only models reject `image_url` parts. Reject
+    // images early rather than sending a broken request to the API.
+    if task_message.has_images() && !tact_extensions::config::supports_vision() {
+        let model = tact_llm::get_provider().model;
+        agent
+            .lock()
+            .await
+            .emit_update(runtime_event::error(AgentErrorKind::Other(format!(
+                "Image attachments are not supported by {model}. \
+                 The current model does not accept image input."
+            ))));
+        return;
+    }
+
+    let mut task_message = Some(task_message);
+    let mut stop_continuations = 0u32;
+    loop {
+        let invocation = serving.invocation(
+            RequestId::from(uuid::Uuid::new_v4().to_string()),
+            PluginId::from("tact.agent"),
+            "interactive",
+        );
+        let input = serde_json::json!({
+            "content": task_message
+                .take()
+                .expect("a user message is pending")
+                .content,
+        });
+        let result = serving
+            .router()
+            .invoke("runs.start", invocation, input)
+            .await;
+
+        let mut guard = agent.lock().await;
+        let continuation = match &result {
+            Ok(_) if !cancel_flag.load(Ordering::Relaxed) => {
+                finish_completed_turn(&mut guard, &mut stop_continuations).await
+            }
+            Ok(_) => {
+                // Cancelled: clear TUI busy state (Planning/Executing) so
+                // queued (pending) messages are flushed rather than waiting on
+                // a stale busy state.
+                guard.emit_update(runtime_event::task_cancelled());
+                None
+            }
+            Err(error) => {
+                guard.emit_update(runtime_event::error(AgentErrorKind::Other(
+                    error.message().to_string(),
+                )));
+                None
+            }
+        };
+        drop(guard);
+        match continuation {
+            Some(message) => task_message = Some(message),
+            None => break,
+        }
+    }
+}
+
+/// The post-turn bookkeeping a completed turn shares between the direct and
+/// the routed run paths.
+///
+/// Runs the Stop hooks (an `allow` means "nothing to add" like `continue`; a
+/// `block` asks for one more turn, bounded by `MAX_STOP_CONTINUATIONS`), then
+/// emits `task_complete` with the last message and fires the TaskCompleted
+/// hooks once. Returns the continuation message when a Stop hook asked for one.
+async fn finish_completed_turn(agent: &mut Agent, stop_continuations: &mut u32) -> Option<Message> {
+    // A Stop hook may `block` to request one more turn (Codex
+    // continuation-fragment semantics: the block reason becomes the next
+    // prompt). Bound the loop so a misbehaving hook cannot spin the agent
+    // forever.
+    const MAX_STOP_CONTINUATIONS: u32 = 4;
+    match agent.dispatch_stop_hooks().await {
+        Ok(HookControl::Block(reason)) if *stop_continuations < MAX_STOP_CONTINUATIONS => {
+            *stop_continuations += 1;
+            agent.emit_update(runtime_event::info(format!(
+                "[Stop hook] continuing: {reason}"
+            )));
+            return Some(Message::new_text(Role::User, reason));
+        }
+        Ok(HookControl::Block(reason)) => {
+            agent.emit_update(runtime_event::info(format!(
+                "[Stop hook] continuation limit reached; stopping: {reason}"
+            )));
+        }
+        // An `allow` from a Stop hook means "nothing to add", the same as
+        // `continue`.
+        Ok(HookControl::Continue | HookControl::Allow) | Err(_) => {}
+    }
+    if let Some(last) = agent.runtime.context.last() {
+        let text = extract_text(&last.content);
+        agent.emit_update(runtime_event::task_complete(text));
+    }
+    // TaskCompleted hooks fire once per completed user task.
+    if let Err(error) = agent.dispatch_task_completed_hooks().await {
+        agent.emit_update(runtime_event::info(format!(
+            "[TaskCompleted hook failed] {error}"
+        )));
+    }
+    None
 }
 
 /// Handle a single user command (shared by the loop and tests).
@@ -358,11 +573,10 @@ async fn handle_user_command_with_account(
                 return;
             }
 
-            // A Stop hook may `block` to request one more turn (Codex
-            // continuation-fragment semantics: the block reason becomes the
-            // next prompt). Bound the loop so a misbehaving hook cannot spin
-            // the agent forever.
-            const MAX_STOP_CONTINUATIONS: u32 = 4;
+            // The Stop-hook continuation loop and the post-turn bookkeeping
+            // (task_complete / cancelled / TaskCompleted hooks) are shared with
+            // the routed path via `finish_completed_turn`, so the two run
+            // entries cannot drift.
             let mut task_message = Some(task_message);
             let mut stop_continuations = 0u32;
             loop {
@@ -370,35 +584,11 @@ async fn handle_user_command_with_account(
                     Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) => {
                         // Turn completed normally: run Stop hooks to decide
                         // whether to keep going.
-                        match agent.dispatch_stop_hooks().await {
-                            Ok(HookControl::Block(reason))
-                                if stop_continuations < MAX_STOP_CONTINUATIONS =>
-                            {
-                                stop_continuations += 1;
-                                agent.emit_update(runtime_event::info(format!(
-                                    "[Stop hook] continuing: {reason}"
-                                )));
-                                task_message = Some(Message::new_text(Role::User, reason));
-                                continue;
-                            }
-                            Ok(HookControl::Block(reason)) => {
-                                agent.emit_update(runtime_event::info(format!(
-                                    "[Stop hook] continuation limit reached; stopping: {reason}"
-                                )));
-                            }
-                            // An `allow` from a Stop hook means "nothing
-                            // to add", the same as `continue`.
-                            Ok(HookControl::Continue | HookControl::Allow) | Err(_) => {}
-                        }
-                        if let Some(last) = agent.runtime.context.last() {
-                            let text = extract_text(&last.content);
-                            agent.emit_update(runtime_event::task_complete(text));
-                        }
-                        // TaskCompleted hooks fire once per completed user task.
-                        if let Err(error) = agent.dispatch_task_completed_hooks().await {
-                            agent.emit_update(runtime_event::info(format!(
-                                "[TaskCompleted hook failed] {error}"
-                            )));
+                        if let Some(next) =
+                            finish_completed_turn(agent, &mut stop_continuations).await
+                        {
+                            task_message = Some(next);
+                            continue;
                         }
                     }
                     Ok(()) => {
@@ -655,6 +845,237 @@ mod tests {
         ContentBlock::Text {
             text: content.to_string(),
         }
+    }
+
+    /// A permission policy that records every capability name the Router checks
+    /// before delegating to the session's real policy.
+    ///
+    /// `CapabilityRouter::invoke` always runs the check, so a name appearing
+    /// here is proof the capability was invoked *through the Router* — not that
+    /// some direct path happened to do the same work.
+    struct RecordingPermission {
+        inner: std::sync::Arc<dyn tact::PermissionService>,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    }
+
+    #[async_trait::async_trait]
+    impl tact::PermissionService for RecordingPermission {
+        async fn check(
+            &self,
+            declaration: &tact_protocol::CapabilityDeclaration,
+            context: &tact::InvocationContext,
+            input: &serde_json::Value,
+        ) -> Result<(), tact::KernelError> {
+            self.seen
+                .lock()
+                .expect("recording lock")
+                .push(declaration.name.clone());
+            self.inner.check(declaration, context, input).await
+        }
+    }
+
+    /// The serving context `bootstrap_session` builds, with a recording policy
+    /// in front of the session's real one, plus the recorder of everything the
+    /// Router checks. Mirrors the headless test's construction so the two hosts
+    /// are exercised the same way.
+    async fn serving_context_with_recorder(
+        directory: &std::path::Path,
+        seen: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    ) -> tact::RuntimeContext {
+        let db_path = directory.join("session.db");
+        let store = tact_extensions::store::open_sqlite_session_store(&db_path)
+            .await
+            .expect("session store");
+        let transport = tact::EventTransport::new(8);
+        let settings = tact_extensions::permission::settings::PermissionSettings::load_from(
+            &directory.join("settings.json"),
+            None,
+        );
+        let policy = crate::permission::serving_permission(
+            tact_extensions::permission::PermissionMode::Auto,
+            settings,
+        )
+        .expect("serving policy");
+        let recording: std::sync::Arc<dyn tact::PermissionService> =
+            std::sync::Arc::new(RecordingPermission {
+                inner: policy,
+                seen,
+            });
+        crate::session_bootstrap::build_serving_context(
+            &db_path,
+            &store,
+            &transport,
+            std::sync::Arc::new(tact_trajectory::KernelTrajectoryRecorder::default()),
+            recording,
+            &crate::session_bootstrap::Notices::Stderr,
+        )
+        .await
+    }
+
+    /// The interactive host starts its run through the session's serving router
+    /// (`runs.start`), exactly as the headless host already does — not by
+    /// calling `agent_loop` directly. The recording policy proves the run was
+    /// invoked *through the Router*, and the completed turn proves that routed
+    /// call actually ran on the shared Agent.
+    #[tokio::test]
+    async fn interactive_submit_goes_through_runs_start_when_a_serving_context_is_present() {
+        install_test_config();
+        let mock = MockClient::new(vec![(
+            vec![text_block("routed answer")],
+            Some(StopReason::EndTurn),
+        )]);
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+
+        let directory = tempfile::tempdir().expect("temp directory");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let serving = serving_context_with_recorder(directory.path(), seen.clone()).await;
+        let agent = agent.with_serving_context(serving);
+
+        let (command_tx, command_rx) = crate::test_support::user_command_channels();
+        let driver = tokio::spawn(super::run_command_loop(agent, command_rx, work_dir));
+
+        command_tx
+            .send(UserCommand::SubmitTask("hello".into()))
+            .unwrap();
+
+        // Wait for the turn to complete, so the assertion below cannot race the
+        // Router invocation.
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match agent_rx.recv().await {
+                    Some(RuntimeEvent::TaskComplete { .. }) => break,
+                    Some(_) => continue,
+                    None => panic!("agent event channel closed before completion"),
+                }
+            }
+        })
+        .await
+        .expect("the routed turn must complete");
+
+        drop(command_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(2), driver)
+            .await
+            .expect("driver did not shut down")
+            .unwrap();
+
+        let seen = seen.lock().expect("recording lock");
+        assert!(
+            seen.iter().any(|name| name == "runs.start"),
+            "the interactive run must be invoked through the Router: {seen:?}"
+        );
+    }
+
+    /// A run that fails through the Router shows the same message the direct
+    /// path would: the router's `KernelError` carries `agent_loop`'s own error
+    /// text, and the driver maps it back with `message()`.
+    #[tokio::test]
+    async fn routed_run_failure_shows_the_agent_error_text() {
+        install_test_config();
+        let mock = MockClient::with_error(vec![tact_llm::LlmError::Mock(
+            "routed failure text".to_string(),
+        )]);
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+
+        let directory = tempfile::tempdir().expect("temp directory");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let serving = serving_context_with_recorder(directory.path(), seen.clone()).await;
+        let agent = agent.with_serving_context(serving);
+
+        let (command_tx, command_rx) = crate::test_support::user_command_channels();
+        let driver = tokio::spawn(super::run_command_loop(agent, command_rx, work_dir));
+
+        command_tx
+            .send(UserCommand::SubmitTask("hello".into()))
+            .unwrap();
+
+        let mut message = None;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while let Some(update) = agent_rx.recv().await {
+                if let RuntimeEvent::Error { message: err, .. } = update {
+                    message = Some(err.to_string());
+                    break;
+                }
+            }
+        })
+        .await
+        .expect("the routed failure must surface an Error event");
+
+        drop(command_tx);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), driver).await;
+
+        let message = message.expect("a failed routed run must emit an Error");
+        assert!(
+            message.contains("routed failure text"),
+            "the TUI must show the Agent's own error text, got: {message}"
+        );
+        assert!(
+            seen.lock()
+                .expect("recording lock")
+                .iter()
+                .any(|name| name == "runs.start"),
+            "the failing run must still have gone through the Router"
+        );
+    }
+
+    /// The same run-identity guarantee as the direct path, but through the
+    /// Router: a `Runtime(StartRun)` id is set on the Agent before `runs.start`
+    /// is invoked, so `RunStarted` carries exactly the requested id.
+    #[tokio::test]
+    async fn routed_start_command_preserves_the_requested_run_id() {
+        install_test_config();
+        let mock = MockClient::new(vec![(vec![text_block("done")], Some(StopReason::EndTurn))]);
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        let transport = tact::EventTransport::new(8);
+        let mut events = transport.subscribe();
+        let agent = agent.with_runtime_event_transport(transport);
+
+        let directory = tempfile::tempdir().expect("temp directory");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let serving = serving_context_with_recorder(directory.path(), seen.clone()).await;
+        let agent = agent.with_serving_context(serving);
+
+        let (command_tx, command_rx) = crate::test_support::user_command_channels();
+        let driver = tokio::spawn(super::run_command_loop(agent, command_rx, work_dir));
+        let run_id = RunId::from("run-routed-start");
+
+        command_tx
+            .send(UserCommand::Runtime(RuntimeCommand::StartRun {
+                run_id: run_id.clone(),
+                input: serde_json::json!({"message": "go"}),
+            }))
+            .unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            loop {
+                match events.recv().await {
+                    Ok(RuntimeEvent::RunStarted { run_id: actual }) => {
+                        assert_eq!(
+                            actual, run_id,
+                            "the requested run id must survive the Router"
+                        );
+                        return;
+                    }
+                    Ok(_) => continue,
+                    Err(error) => panic!("event stream closed before RunStarted: {error}"),
+                }
+            }
+        })
+        .await
+        .expect("the routed run must start");
+
+        drop(command_tx);
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(2), driver).await;
+
+        assert!(
+            seen.lock()
+                .expect("recording lock")
+                .iter()
+                .any(|name| name == "runs.start"),
+            "the run must have gone through the Router"
+        );
     }
 
     #[tokio::test]

@@ -535,7 +535,10 @@ async fn drive_compact_command(
     agent: tact_extensions::Agent,
     work_dir: std::path::PathBuf,
     agent_rx: tokio::sync::mpsc::UnboundedReceiver<RuntimeEvent>,
-) -> (tact_extensions::Agent, Vec<RuntimeEvent>) {
+) -> (
+    std::sync::Arc<tokio::sync::Mutex<tact_extensions::Agent>>,
+    Vec<RuntimeEvent>,
+) {
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
     user_cmd_tx.send(UserCommand::Compact).unwrap();
@@ -574,6 +577,7 @@ async fn command_compact_native_responses_success() {
         .push(Message::new_text(Role::Assistant, "second turn"));
 
     let (agent, updates) = drive_compact_command(agent, work_dir, agent_rx).await;
+    let agent = agent.lock().await;
 
     // Exactly one native compact request; no local summary request.
     server.verify().await;
@@ -671,6 +675,7 @@ async fn command_compact_native_responses_failure_keeps_context() {
     agent.runtime.context = original.clone();
 
     let (agent, updates) = drive_compact_command(agent, work_dir, agent_rx).await;
+    let agent = agent.lock().await;
 
     assert!(
         updates.iter().any(|update| matches!(
@@ -911,6 +916,7 @@ async fn native_compact_failure_rolls_back_runtime_and_database() {
     agent.runtime.provider_state = Some(old_state.clone());
 
     let (agent, updates) = drive_compact_command(agent, work_dir, agent_rx).await;
+    let agent = agent.lock().await;
 
     assert!(
         updates.iter().any(|update| matches!(
