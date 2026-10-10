@@ -4,6 +4,31 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-10 — 发版 v1.1.38：清单版本 1.1.37 → 1.1.38，与本次的权限弹窗改动一起进 PR
+
+| Field | Value |
+|-------|-------|
+| **Type** | release（用户可见：`--version` 与升级接口报 1.1.38；`v1.1.38` 触发 `release.yml`，五个平台产出 `tact-ui-v1.1.38-*` 与 `SHA256SUMS`） |
+| **Related** | `Cargo.toml`（`[workspace.package].version`）、`Cargo.lock`（四个包条目）、`README.md`（徽章 + 发版命令片段）；`.github/workflows/release.yml` |
+
+**现象 / 动机：** 上一次发版（v1.1.37）把清单从 `1.1.33` 直接补到 `1.1.37` 是为了追上**已经存在**的 tag——当时 `v1.1.37` 已指向 `main`，清单却还停在 `1.1.33`。此后又合入了几笔有用户可见行为的改动（权限弹窗去档、日志跟尾、吉祥物……），但**没有配套提升版本**：本地 build 的 `--version`、`crates/tact/src/upgrade.rs`（`env!("CARGO_PKG_VERSION")`）与 `USER_AGENT` 都仍在报 `1.1.37`，也就是对着一个已经被打过的 tag 说谎。
+
+**决策：** 本次发版把清单推到 **1.1.38**，并**与权限弹窗那笔改动放进同一个 PR**。
+
+- **`1.1.38` 无碰撞**：`v1.1.38` 这个 tag 不存在（本地与 `origin` 都没有），所以直接递增即可，不需要像上次那样跳号。上次跳号是撞 tag 的补救，不是常规。
+- **发版与功能同 PR**（这次与上次不同）：上次是「tag 先打、清单后补」，留下了一段两个来源不一致的窗口。这次让 tag 与它引用的提交在同一个 PR 里——`v1.1.38` 将打在合并后的 `main` 提交上，清单版本从那一提交起就是对的。
+- **`release.yml` 的版本来源保持不动。** tag 触发用 `GITHUB_REF_NAME`、否则读 `Cargo.toml`；改清单只是让本地 build 与 `workflow_dispatch` 路径不再少报。
+- `Cargo.lock` 的四个条目（`tact` / `tact-ui` / `tact_llm` / `tool_refactor_macros`，均为 `version.workspace = true`）随清单一起提升；`tact_protocol` / `agent_tui_kit` 是独立版本包（`0.1.0`），**不动**。
+- README 徽章与「发版」两行命令同步到 `v1.1.38`——那两行是照抄即用的指令，留在旧版本号上会把人引导去打一个已存在的 tag。
+
+**改后行为：** `tact-ui --version` 报 1.1.38；`upgrade` 的 UA 与自报版本一致；推送 `v1.1.38` 触发 `release.yml`，五个 target 构建并发布 Release。
+
+**Verification：** `git diff Cargo.lock` 只有四条 `version = "1.1.x"` 行变化，无依赖增删；推送门（`scripts/check-rust.sh`：fmt + clippy `-D warnings` + 四个包的测试）全绿。
+
+**Pointers:** `Cargo.toml`、`Cargo.lock`、`README.md`、`.github/workflows/release.yml`。
+
+---
+
 ## 1. 2026-10-10 — 窗口快满时，系统提示引导拆给 subagent
 
 | Field | Value |
@@ -52,6 +77,31 @@
 **Verification：** `git diff Cargo.lock` 只有四条 `version = "1.1.x"` 行变化，无依赖增删；推送门四包全绿。
 
 **Pointers:** `Cargo.toml`、`Cargo.lock`、`README.md`、`.github/workflows/release.yml`。
+
+---
+
+## 1. 2026-10-10 — 权限弹窗去掉「Allow for this session」，四个选项里没有它的一席之地
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature/UX（用户可见：授权弹窗从最多 5 项变成最多 4 项，少一项） |
+| **Related** | `crates/tact/src/agent/tool_dispatch.rs`（`PERMISSION_OPTIONS` / `PermissionChoice` / `permission_choice_for`）、`crates/tact/src/permission/mod.rs`（删 `allow_tool_for_session`）；Ch 10 §5 |
+
+**现象 / 动机：** 弹窗里「Allow for this session」和「Always allow this tool」生成的是**同一条规则**——都走 `PermissionRule::generate`（窄度完全一致，键在那条被展示的命令/路径上），唯一差别是前者只进内存、不写 settings。也就是同一件事两个按钮，差别只在持久化，而用户并不据此决策。用户的原话是「太多了，没意义」。
+
+**决策：** 删掉会话档。
+
+- **保留精确档，而不是保留会话档。** 安全前提（「点一条普通命令不会顺带放行 `sudo`」）由**规则窄度**保证，两档共用 `generate`，所以它在两档都成立；持久化与否不是安全边界，只是「下次还问不问」。留能持久化的那个——想要「别问了」的人拿到的是不再问，而不是下次还问。
+- **索引重排的边界要说清楚。** `Deny` 固定索引 1、「Always allow this tool」固定索引 2 是**肌肉记忆**，注释明说只追加不插入。删掉索引 3 的会话档后，**追加的**前缀档从索引 4 挪到 3，前三位**一动不动**——这是这次删除唯一动的索引。
+- **`permission_label` 少一个取值**：`StepResult.permission_label` 是自由字符串（`Option<String>`），删档只是不再出现 `"Allow for this session"`，协议无需改动。
+- **删掉 `PermissionManager::allow_tool_for_session` 整个方法**（连同 3 条测试）。它是 `pub` 且 `permission` 是 lib 的 `pub mod`，不会触发 dead-code lint；留着就是一个没人能到达的 API 面。
+- **其中一条测试不能只删掉。** `session_allow_records_nothing_when_the_rule_cannot_be_narrowed` 钉的是「窄化不了时**绝不能退回裸 allow**」——那正是「含 `:` 的 `bash` 命令点一次就授权此后所有 shell 命令」的历史回归，而全仓**只有它**在断言这条。已把它改扸到幸存的 `allow_tool_with_input`（`always_allow_records_nothing_when_the_rule_cannot_be_narrowed`），而不是删除。另两条（不越界到更长的命令、不落盘）分别由既有的 `allow_tool_with_input_prevents_privilege_escalation` 和「本就没落过盘」覆盖，删除。
+
+**改后行为：** 授权弹窗最多 4 项：`Allow once` / `Deny` / `Always allow this tool` / `Always allow this pattern`（末项无法构建前缀规则时不出现，退回 3 项）。前三位位置不变。会话档的持久化差异消失——精确档一律走 settings（无 settings 存储时落内存，与从前一致）。
+
+**Verification：** `cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` 干净。新增/改写：`permission_popup_indices_map_to_their_choices`、`every_permission_option_maps_back_to_its_choice`、`the_pattern_choice_is_appended_and_can_be_withheld` 三处索引断言改成 4 项（`permission_choice_for(Some(3)) == AlwaysAllowProgram`、越界与取消仍归 `Deny`）；`always_allow_records_nothing_when_the_rule_cannot_be_narrowed` 为改写自会话档的回归保护。
+
+**Pointers:** `crates/tact/src/agent/tool_dispatch.rs`、`crates/tact/src/permission/mod.rs`、`book/10_chapter_permission_zh.md` §5。
 
 ---
 

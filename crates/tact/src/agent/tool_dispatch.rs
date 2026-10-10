@@ -29,7 +29,6 @@ use crate::{
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PermissionChoice {
     AllowOnce,
-    AllowForSession,
     AlwaysAllow,
     AlwaysAllowProgram,
     Deny,
@@ -41,11 +40,17 @@ enum PermissionChoice {
 /// the list is stated once. `Deny` keeps index 1 and "always allow this tool"
 /// keeps index 2, because those positions are muscle memory; every later option
 /// is appended rather than inserted.
-const PERMISSION_OPTIONS: [&str; 5] = [
+///
+/// A narrow in-memory-only option ("Allow for this session") used to sit at
+/// index 3. It recorded exactly the same rule as "Always allow this tool" —
+/// `PermissionRule::generate`, same narrowness — and differed only in not
+/// persisting it, so it was a fourth button for a distinction nobody acts on.
+/// Removing it renumbers only the *appended* pattern option (4 → 3); the three
+/// muscle-memory positions are untouched.
+const PERMISSION_OPTIONS: [&str; 4] = [
     "Allow once",
     "Deny",
     "Always allow this tool",
-    "Allow for this session",
     "Always allow this pattern",
 ];
 
@@ -81,8 +86,7 @@ fn permission_choice_for(selection: Option<usize>) -> PermissionChoice {
     match selection {
         Some(0) => PermissionChoice::AllowOnce,
         Some(2) => PermissionChoice::AlwaysAllow,
-        Some(3) => PermissionChoice::AllowForSession,
-        Some(4) => PermissionChoice::AlwaysAllowProgram,
+        Some(3) => PermissionChoice::AlwaysAllowProgram,
         _ => PermissionChoice::Deny,
     }
 }
@@ -1027,22 +1031,6 @@ impl Agent {
                                             permission_label = Some("Allow once".to_string());
                                             PreparedState::Run
                                         }
-                                        PermissionChoice::AllowForSession => {
-                                            permission_label =
-                                                Some("Allow for this session".to_string());
-                                            let outcome = self
-                                                .runtime
-                                                .permission_manager
-                                                .allow_tool_for_session(
-                                                    stable_name,
-                                                    permit_prompt,
-                                                    &tool_use.input,
-                                                );
-                                            if !outcome.is_recorded() {
-                                                self.report_unrecorded_approval(stable_name);
-                                            }
-                                            PreparedState::Run
-                                        }
                                         PermissionChoice::AlwaysAllowProgram => {
                                             permission_label =
                                                 Some("Always allow this pattern".to_string());
@@ -1655,10 +1643,6 @@ mod tests {
         );
         assert_eq!(
             permission_choice_for(Some(3)),
-            PermissionChoice::AllowForSession
-        );
-        assert_eq!(
-            permission_choice_for(Some(4)),
             PermissionChoice::AlwaysAllowProgram
         );
 
@@ -1707,7 +1691,6 @@ mod tests {
             PermissionChoice::AllowOnce,
             PermissionChoice::Deny,
             PermissionChoice::AlwaysAllow,
-            PermissionChoice::AllowForSession,
             PermissionChoice::AlwaysAllowProgram,
         ];
         assert_eq!(PERMISSION_OPTIONS.len(), expected.len());
