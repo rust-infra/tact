@@ -56,10 +56,13 @@ routed chain proved behaviourally equivalent to the fallback for everything the
 suites check. `build_test_agent_without_serving` keeps the fallback covered.
 
 The spec's business-function preservation matrix is now a **map** rather than an
-unverified list: each of the fourteen rows names the suite that would fail if the
-behaviour regressed (thirteen do; voice has no end-to-end test for want of audio
-hardware). That closes the acceptance item "the preservation matrix passes"
-without adding a duplicate suite.
+unverified list: each of the fourteen rows names the test that would fail if the
+behaviour regressed (twelve do; voice needs audio hardware and the balance half
+of token/balance has no end-to-end test, and both rows say so). That closes the
+acceptance item "the preservation matrix passes" without adding a duplicate
+suite. The driver's fallback path — which the shared builders no longer exercise
+— is covered end to end by
+`crates/tact_ui/tests/driver_integration.rs::an_agent_without_a_serving_context_still_completes_a_turn`.
 
 ## Global Constraints
 
