@@ -211,10 +211,26 @@ mode = "default"
 
 # Enable Tact's persistent memory (default: true).
 #
-# When false: no memory block or memory guidance is injected into the system
-# prompt, and `save_memory` is not registered. Files under `~/.tact/memory`
-# are never deleted.
+# Memories live one directory per git repository, under
+# `~/.tact/projects/<slug>/memory/`. Only the `MEMORY.md` index is injected
+# into the system prompt; individual memories are read on demand with the
+# `load_memory` tool.
+#
+# When false: no memory index or memory guidance is injected into the system
+# prompt, and neither `save_memory` nor `load_memory` is registered. Files on
+# disk are never deleted.
 # memory_enabled = true
+
+# Where to keep persistent memory (optional).
+#
+# Default: derived per repository as `~/.tact/projects/<slug>/memory/`, so
+# each repository (and all of its worktrees) has its own memories.
+#
+# `~` / `~/…` expands to $HOME; a relative path resolves against the workdir.
+# Setting this puts every project in one directory, which is what the default
+# layout exists to avoid — prefer it for a shared or network store, not as a
+# way to share memories between unrelated repositories.
+# auto_memory_directory = "~/my-memories"
 
 # How many request bodies `token_usages` keeps per session (default: 1).
 #

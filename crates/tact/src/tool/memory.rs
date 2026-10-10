@@ -24,6 +24,18 @@ pub struct SaveMemoryInput {
     pub content: String,
 }
 
+#[derive(Debug, Deserialize, JsonSchema)]
+pub struct LoadMemoryInput {
+    #[schemars(description = "File name from the memory index, without the `.md` suffix.")]
+    pub name: String,
+}
+
+pub const LOAD_MEMORY_METADATA: ToolMetadata = ToolMetadata::read_json(
+    "load_memory",
+    "Read one saved memory in full. The system prompt lists them by file name.",
+    "🧠 Memory",
+);
+
 pub const SAVE_MEMORY_METADATA: ToolMetadata = ToolMetadata {
     name: "save_memory",
     description: "Save a persistent memory that survives across sessions.",
@@ -61,10 +73,66 @@ pub async fn save_memory(ctx: ToolContext, input: SaveMemoryInput) -> Result<Str
         .context("failed to save memory")
 }
 
+#[tool]
+/// # Errors
+///
+/// Returns an error if:
+/// - The memory name is unknown (the message lists the known ones).
+/// - The memory manager lock is poisoned.
+/// - The memory file cannot be read.
+pub async fn load_memory(ctx: ToolContext, input: LoadMemoryInput) -> Result<String> {
+    let manager = ctx
+        .memory_manager
+        .lock()
+        .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))?;
+    manager.load_topic(&input.name)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::tool::test_support::{run_tool, test_context};
+
+    #[tokio::test]
+    async fn load_memory_returns_a_saved_body_and_lists_the_known_names() {
+        let context = test_context("load_memory_round_trip");
+        run_tool(
+            &context,
+            SaveMemoryTool,
+            "save_memory",
+            serde_json::json!({
+                "name": "Prefer Tabs",
+                "description": "Indent with tabs",
+                "type": "user",
+                "content": "Tabs everywhere."
+            }),
+        )
+        .await
+        .unwrap();
+
+        let body = run_tool(
+            &context,
+            LoadMemoryTool,
+            "load_memory",
+            serde_json::json!({ "name": "prefer_tabs" }),
+        )
+        .await
+        .unwrap();
+        assert!(body.contains("Tabs everywhere."), "{body}");
+        assert!(body.contains("type: user"), "{body}");
+
+        let error = run_tool(
+            &context,
+            LoadMemoryTool,
+            "load_memory",
+            serde_json::json!({ "name": "nope" }),
+        )
+        .await
+        .unwrap_err()
+        .to_string();
+        assert!(error.contains("Unknown memory"), "{error}");
+        assert!(error.contains("prefer_tabs"), "{error}");
+    }
 
     #[tokio::test]
     async fn save_memory_rejects_invalid_type() {

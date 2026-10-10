@@ -8,7 +8,7 @@ use super::{
     compact::CompactTool,
     edit_file::EditFileTool,
     load_skill::LoadSkillTool,
-    memory::SaveMemoryTool,
+    memory::{LoadMemoryTool, SaveMemoryTool},
     read_file::ReadFileTool,
     read_image::ReadImageTool,
     sleep::SleepTool,
@@ -27,9 +27,9 @@ use super::{
 
 /// Assembles the full tool set for the main agent loop.
 ///
-/// `memory_enabled` mirrors `[agent].memory_enabled`: when false, `save_memory`
-/// is not registered, so it disappears from the advertised specs and dispatch
-/// rejects it as an unknown tool.
+/// `memory_enabled` mirrors `[agent].memory_enabled`: when false, neither
+/// `save_memory` nor `load_memory` is registered, so they disappear from the
+/// advertised specs and dispatch rejects them as unknown tools.
 fn try_toolset(memory_enabled: bool) -> anyhow::Result<ToolRouter> {
     let router = ToolRouter::new()
         .route(AskUserTool)?
@@ -44,7 +44,7 @@ fn try_toolset(memory_enabled: bool) -> anyhow::Result<ToolRouter> {
         .route(EditFileTool)?
         .route(LoadSkillTool)?;
     let router = if memory_enabled {
-        router.route(SaveMemoryTool)?
+        router.route(SaveMemoryTool)?.route(LoadMemoryTool)?
     } else {
         router
     };
@@ -223,11 +223,15 @@ mod tests {
     fn memory_is_on_in_the_default_toolset() {
         let names = names(toolset());
         assert!(names.contains(&"save_memory".to_string()), "{names:?}");
+        // Both halves ship together: the prompt injects only the index, so a
+        // session without `load_memory` could see a memory it cannot read.
+        assert!(names.contains(&"load_memory".to_string()), "{names:?}");
     }
 
     #[test]
     fn disabled_memory_removes_save_memory() {
         let names = names(toolset_with_memory(false));
         assert!(!names.contains(&"save_memory".to_string()), "{names:?}");
+        assert!(!names.contains(&"load_memory".to_string()), "{names:?}");
     }
 }

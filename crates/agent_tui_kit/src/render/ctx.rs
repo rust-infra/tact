@@ -39,8 +39,12 @@ pub struct RenderCtx<'a> {
     pub skills_data: &'a [SkillEntry],
     /// Loading placeholder row index, if present.
     pub loading_idx: Option<usize>,
-    /// Spinner animation frame counter.
-    pub spinner_frame: u8,
+    /// Animation tick: advances once per painted frame in an active state.
+    ///
+    /// Monotonic (the host no longer wraps it at 10), so an animation that
+    /// needs more than one cycle — the live stats mascot's ping-pong — can use
+    /// it directly. A frame-index animation takes `% LEN` itself.
+    pub spinner_frame: u32,
     // ── Status/bottom bar surface (migrated with `render/bar.rs`) ──
     pub status_bar: &'a StatusBarState,
     pub status: &'a Status,

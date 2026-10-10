@@ -544,7 +544,7 @@ fn restamp_log_left_border(buf: &mut Buffer, area: Rect, borders: Borders, theme
 }
 
 /// Render an animated loading spinner at the loading placeholder position.
-/// Uses `ctx.spinner_frame` (cycled 0-9) to pick a Braille spinner character,
+/// Uses `ctx.spinner_frame` (a monotonic tick) to pick a Braille spinner character,
 /// and displays a "Thinking..." label with a subtle pulse.
 fn render_loading_spinner(
     frame: &mut Frame,

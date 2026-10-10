@@ -1178,6 +1178,7 @@ mod tests {
                 skill_body_auto_inject: false,
                 skill_dirs: Vec::new(),
                 instruction_sources: tact::config::InstructionSources::default(),
+                auto_memory_directory: None,
                 subagent: None,
             },
             ui: tact::config::UiSettings {

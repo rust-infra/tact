@@ -4,6 +4,82 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-10 — 窗口快满时，系统提示引导拆给 subagent
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization（用户可见：窗口占用 ≥60% 时系统提示动态段多一行 subagent 引导） |
+| **Related** | `crates/tact/src/compact/mod.rs`（`context_pressure_advisory` / `subagent_advisory` / `SUBAGENT_ADVISORY_THRESHOLD_PERCENT`）、`crates/tact/src/agent/mod.rs`（`current_context_tokens` / `context_advisory` / `load_dynamic_context`）；Ch 04 §3.4、Ch 05 §4 |
+
+**现象 / 动机：** 长任务把窗口吃满以后，唯一的出路是 auto-compact——摘要是有损的，而且会丢掉任务的中间结构。更早的做法是把还能独立的大块工作交给 `spawn_subagent`（它在自己的新 context 里跑，父窗口只付摘要的钱）。但**模型不知道这个选项**：系统提示词里此前完全不提 subagent（模板与 `prompt/mod.rs` 零命中），模型只从 `spawn_subagent` 的工具描述知道它存在，不知道**何时**该用。
+
+**决策：** 窗口占用 ≥ **60%** 时，在 `dynamic_context` 末尾追加一行引导。四处关键取舍：
+
+- **60% 刻意低于 auto-compact 的 80%。** 到 80% 下一步就压缩、窗口回落，建议已无机会被采纳；提示只在两个阈值之间那条带里有效，所以必须**先于**压缩开口。`the_subagent_advisory_fires_below_the_compaction_threshold` 直接断言 `context_pressure_advisory(60,100) == true` 而 `should_auto_compact(60,100,0,0,0) == false`、两者在 80 处交换——改任一个常量都会红。
+- **占用取 `last_token_total`（provider 真实用量），无则退回 `estimate_context_tokens(context)`；两者皆 0 时（全新会话）不说话。** 没有证据的提示会训练模型忽略这行。
+- **落在 `=== DYNAMIC_BOUNDARY ===` 之下**——它是这里唯一跨任务变化的行，而该段本就是为"可变且不破前缀 KV 缓存"设的。
+- **文案由 `subagent_advisory()` 拼出，百分比取自阈值常量**，不写死 60——否则阈值一改，提示就在对模型说谎（`the_advisory_text_states_the_actual_threshold` 钉住）。
+- **前提：`spawn_subagent` 必须在工具表里**（`Agent::has_tool`，读的是构建请求所用的 `cached_tool_specs`）。这行点名了那个工具，缺席时整行不出现——让提示词提到模型手里没有的工具会训练模型不信任提示词。守的是将来（受限工具集 / 配置开关）两处不脱节，同时给了第二层保护：子 agent 的 `subagent_toolset()` **没有** `spawn_subagent`，即便将来子 agent 改用动态提示词也漏不进去（当前靠 `AgentSystemPrompt::Static` 提前返回挡住）。
+
+**只按任务求值一次。** `build_system_prompt` 是每 task 快照（`agent_loop` 顶部、loop 之前调用一次，之后每轮复用同一字符串），所以这行**不反映任务内的增长**。这是有意的：每轮改提示词会毁掉前缀 KV 缓存。可接受的原因是——决定"怎么拆活"的时机是任务**开始**，而任务很长时 auto-compact 本来就会把压力重置。
+
+**改后行为：** 窗口占用 ≥60% 时，动态段末尾出现一行（约 400 字符），说明优先把大块/自包含工作交给 `spawn_subagent`、只把"需要中间结果"的工作留在本窗口。低于阈值、全新会话、或 `model_context_window = 0` 时不出现。
+
+**Verification：** `cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` 干净。新增：`the_subagent_advisory_fires_below_the_compaction_threshold`（阈值序关系）、`the_subagent_advisory_stays_quiet_without_evidence`（无窗口 / 无用量不说话，120k/200k 触发而 119,999 不触发）、`the_advisory_text_states_the_actual_threshold`（文案里的百分比 == 常量，且点名 `spawn_subagent`）、`a_filling_window_steers_the_prompt_at_subagents`（走真实 `build_system_prompt`：宽松窗口无该行、65% 窗口有，且断言它落在 `DYNAMIC_BOUNDARY` **之下**）、`a_full_window_stays_quiet_when_subagents_are_not_offered`（先断言"满窗口本会触发"作为前提，再把 `spawn_subagent` 从工具表移除、断言整行消失——**已实测该测试有牙**：临时去掉 `has_tool` 守卫后它立刻 FAILED）。真机 dump 确认渲染位置在 `## Dynamic context` 的 `Platform: macos` 之后。
+
+**Pointers:** Ch 04 §3.4、Ch 05 §4（两个阈值的关系）、`crates/tact/src/compact/mod.rs`。
+
+---
+
+## 1. 2026-10-10 — 实时任务统计行的两侧留白里放一只会走动的吉祥物
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature（用户可见：任务在跑时，实时统计行两侧各出现一只吉祥物来回走动，掉头时换成朝另一侧的字形；文字与数字一格不动） |
+| **Related** | `crates/agent_tui_kit/src/render/stats_line.rs`（`mascot_step` / `mascot_cells` / `MASCOT_RIGHT` / `MASCOT_LEFT` / `MASCOT_MIN_RUNWAY`）、`crates/agent_tui_kit/src/render/{ctx,bar,log}.rs`（tick 语义）、`crates/tui/src/lib.rs`、`crates/tui/src/widgets/state/mod.rs`、`crates/tui/src/render/log_render_tests.rs`；Ch 23 §6.6、Ch 26 2026-10-05 条 |
+
+**现象 / 动机：** 任务跑着的时候，实时统计行是**全屏唯一不动的东西**——工具行有 `⠋` 转圈、thinking 卡片有时间轴、底栏有 spinner，只有这一行是一串静止的数字。用户的原话是「这里可以加一个动画，用于表示当前正在处理中？」。
+
+**决策：** 在实时统计行的**两侧留白**里各放一只吉祥物，来回走动，掉头时**换成朝另一侧的同族字形**（`md-transfer_right` 󰔰 / `md-transfer_left` 󰶢）。要点：
+
+- **只动留白，不动文字。** 那一行每个格子都是数字，横穿就会吃掉读数；这一行是**居中**的，两侧留白天然是两条跑道，只落在 `[1, pad-2]` 与 `[width-pad+1, width-2]` 内。
+- **两侧镜像位相。** 右只是左只的镜像（离自己那侧的边一样远、朝反方向走），两只同时往里、同时掉头。
+- **掉头 = 换字形。** 终端**不能镜像字形**（一个码位一个字形，没有 transform）；同族里朝另一侧的字形 advance 与 `0` 完全相同（查过字体度量）→ 正好 1 列宽，跑道数学精确，绝不挤动文字。
+- **没有跑道就没有吉祥物。** 留白 < 4 列整只不画——窄行就是没有留白可给的行使，因此不需要第二个降级分支；文字溢出时 `pad = 0`，自动没有。
+- **同一个时钟。** 复用 `RenderCtx::spinner_frame`，与工具行 spinner 同一拍。因此把 `App::spinner_frame` 与 `RenderCtx::spinner_frame` 从 `u8`（宿主已 `% 10`）改成**单调 `u32`**：转圈类动效自己取模，吉祥物的往返需要比一个动画周期更长的计数。`bar.rs` 原本**没有**取模、直接拿宿主的值索引 `SPINNER_FRAMES`，这次补上（否则单调计数会立刻越界 panic）。
+- **颜色用 `theme.warning`**：那一行的文字已经是 `theme.accent` 红，同色的吉祥物会读成句子的一部分。
+
+**改后行为：** 任务在跑时，实时统计行的两侧留白各有一只吉祥物在走（如 `···󰔰     Task stats:⏱ 00:45 · …     󰶢···`），掉头时换字形，回合结束与那一行一起消失。窄终端（留白 < 4 列）与文字溢出的行没有吉祥物，其余行为一字不变。frozen 行**不画**——那是已经结束的回合，动画会撒谎。
+
+**Verification：** 纯函数用例 6 条（往返不跳端点、掉头恰在两端、两只朝向永远相反、任何 tick × 任何宽度都不碰文字列、留白不足返回 `None`、退化跑道 0/1 列与计数器回绕不 panic）+ 缓冲区用例 `the_live_row_walks_a_mascot_on_both_paddings`（恰好两只、都在文字区间之外、朝向相反、背景仍是 `theme.bg`）。既有 `stats_row_padding` 改为把吉祥物字形视为空白——否则「居中」用例会去过量吉祥物的位置，**用例仍会通过但测的东西已经变了**。推送门四个包全绿。
+
+**Pointers:** `docs/superpowers/specs/2026-10-10-live-stats-mascot-design.md`、可视稿 `docs/design/live-stats-activity.html`（7 组图标 × 3 种朝向 × 3 条跑道 × 3 档速度的对比板）、`docs/token_usage_schema.md` § Per-Turn Stats Line → "The mascot on the live row"、Ch 23 §6.6。
+
+---
+
+## 1. 2026-10-09 — 持久记忆对齐 Claude：按仓库切分、只注入索引、`load_memory` 按需读
+
+| Field | Value |
+|-------|-------|
+| **Type** | optimization（用户可见：记忆目录从全局一份改为**每仓库一份**；系统提示只注入 `MEMORY.md` 索引，正文改用 `load_memory` 读取；旧全局记忆自动迁移；新增 `[agent].auto_memory_directory` 覆盖） |
+| **Related** | `crates/tact/src/memory/mod.rs`、`crates/tact/src/tool/memory.rs`、`crates/tact/src/tool/registry.rs`、`crates/tact/src/consts.rs`、`crates/tact/src/config/{types,resolve}.rs`、`crates/tact-ui/src/session_bootstrap.rs`；Ch 03 §2 §5 §6、Ch 21 |
+
+**现象 / 动机：** 记忆复刻了 Claude Code 的**格式**（YAML frontmatter、`type`、`MEMORY.md`）却没复刻**结构**，两个后果都很具体：**(1) 项目事实外泄**——单一全局 `~/.tact/memory/` 让某个仓库的发布分支约定被注入进所有无关项目，读者无从判断记忆属于哪个项目；**(2) 提示词无上界**——`load_memory_prompt` 把每条记忆的**完整正文**拼进系统提示，而 200 行上限只作用在索引文件 `rebuild_index` 上，那份索引在加载时又被 `!= MEMORY_INDEX_FILE` 过滤掉、根本不进提示词——上限守着一个从不被注入的产物，真正的注入量没有任何约束。
+
+**决策：** 按 Claude Code 的 auto memory 模型落地三件事：**(1) 按仓库切分**——新增 `memory_root(workdir)`：向上找 `.git`，取 **common git dir** 的父目录（checkout 根）slug 化（非 `[A-Za-z0-9._-]` → `-`，保留前导 `-`，与 Claude 的 `-Users-me-Projects-<name>` 同形）得到 `~/.tact/projects/<slug>/memory`；`.git` 在主 checkout 是目录、在 linked worktree 是含 `gitdir:` 的文件，两者取到**同一个** common git dir，因此 worktree 与主 checkout **共享**一个目录（对齐 Claude 的 "shared across git worktrees"）。解析是**纯函数**：只读 `$HOME` 与 `.git`，不 spawn 进程、不做 `canonicalize`（启动路径上）。**(2) 只注入索引**——`load_memory_index_prompt` 注入 `MEMORY.md` 本身，`truncate_index` 施加 200 行 **与 25 KB 双上限**（Claude 的同两个数）；索引行带上**文件名** `- <name> (<stem>.md): <desc> [<type>]`，因为它是取正文的句柄。`load_all` 在索引缺失时补建——索引现在**就是**被注入的产物，不能只在保存时存在。**(3) `load_memory` 工具**——按 stem（也接受显示名）返回一条记忆的完整原文。这是「只注入索引」能成立的前提：`read_file` 受 `safe_path` 拒绝工作区外路径，而仓库记忆住在 `$HOME`；没有这个工具，索引列出的内容模型**读不到**。两个工具同受 `memory_enabled` 开关。另：`save_memory` 写入 ISO-8601 `modified` frontmatter，让新旧可辨。
+
+**旧数据归属：** `migrate_legacy_memory(legacy, dest)` 在启动时把 `~/.tact/memory/*.md` **拷贝**进本仓库目录——只在目标**尚无** `.md` 时执行一次（陈旧全局目录不得覆盖既有记忆）、**只拷不删**（第二个 checkout 也能迁移）、跳过 `MEMORY.md`（按目标重建）、数量经启动 `Notices` 报告，失败只损失导入不影响会话。
+
+**可覆盖（`[agent].auto_memory_directory`）：** 对齐 Claude Code 的 `autoMemoryDirectory`。值为 `Option<String>`，resolve 阶段**原样保留**（只 trim，空串视为未设），因为 `~` 与相对路径需要 workdir、而 resolve 拿不到。展开在 `expand_memory_dir` 里，用与 `[agent].skill_dirs` **完全相同**的三条规则（`~`/`~/x` → `$HOME`、相对 → workdir、绝对原样），免得两个路径型设置对 `~/x` 的解释分叉。覆盖优先级在仓库派生与 `$HOME` 兜底**之前**，因此无条件生效且 `$HOME` 未设时同样可用。读取走 `try_settings()`（进程级配置），与 `get_skill_registry` 读 `skill_dirs` 同一手法——这样 `memory_root(workdir)` 不必为多接一个参数而改动每个调用点；真正做决定的 `memory_root_with(workdir, home, override)` 独立出来，逻辑不依赖全局配置即可单测。
+
+**改后行为：** 记忆按仓库隔离，`project` 类事实不再跨项目泄漏；系统提示的注入量恒定为索引（≤200 行 / 25 KB），与记忆总条数无关；模型用 `load_memory` 取全文。既有安装首次在新仓库启动时，旧全局记忆被迁入并打印一行 `migrated N memories from … to …`。
+
+**Verification：** `cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` 干净；推送门四个包全绿（tact 1245）。新增：`a_worktree_and_its_checkout_resolve_to_one_directory`（**钉住 worktree 共享**：fixture 复刻 git 真实布局 `.git/worktrees/<name>` + `commondir`）、`the_real_worktrees_in_this_repository_share_the_main_directory`（直接跑真实 `.worktrees/`，fixture 与现实脱节即报红）、`different_repositories_get_different_directories`（隔离）、`a_dotted_workdir_resolves_like_its_normal_form`（`..` 词法折叠——**实测踩到**：第一版把 `<repo>/crates/tact/../..` slug 成另一个目录，等于给 tact 建了第二份记忆）、`outside_a_repository_the_workdir_owns_the_directory`、`a_configured_directory_overrides_the_derived_one`（覆盖优先于派生、且在 `$HOME` 未设时仍生效）、`expand_memory_dir_follows_the_skill_dirs_rules`、`prompt_carries_the_index_and_not_the_bodies`（正文**不在**提示词里）、`a_hand_written_directory_gets_an_index_on_load`、`load_topic_returns_the_full_file`、`byte_cap_truncates_a_long_index`、`migration_copies_memories_once_and_never_overwrites`、`load_memory_returns_a_saved_body_and_lists_the_known_names`、`resolve_auto_memory_directory_from_toml`（含空串 = 未设）；工具集测试补断言 `load_memory` 与 `save_memory` 同开同关。真机迁移实测：`~/.tact/memory` 的 12 个 `.md`（第 13 个是 `MEMORY.md`）→ `~/.tact/projects/-Users-rg-Projects-tact/memory/`，主 checkout 与两个真实 worktree 解出同一目录，二次运行 `copied = 0`（幂等），索引 2367 字节。
+
+**Pointers:** `docs/superpowers/specs/2026-10-09-memory-claude-alignment-design.md`；Ch 03（§2 架构 / §4 生命周期 / §5 集成点 / §6 存储布局与迁移）、Ch 01、Ch 02、Ch 04、Ch 07、Ch 21、`README.md`、`ARCHITECTURE.md`、`config.example.toml`。
+
+---
+
 ## 1. 2026-10-08 — Open 按钮单击链路与代码弹窗稳定身份
 
 | Field | Value |

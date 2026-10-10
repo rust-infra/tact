@@ -54,6 +54,51 @@ pub const KEEP_USER_MESSAGE_TOKENS: usize = 20_000;
 const COMPACT_REBUILD_HEADROOM_PERCENT: usize = 20;
 const AUTO_COMPACT_THRESHOLD_PERCENT: usize = 80;
 
+/// Fraction of the context window at which the system prompt starts steering
+/// large work at subagents.
+///
+/// Deliberately **below** [`AUTO_COMPACT_THRESHOLD_PERCENT`]: a session that is
+/// already at the compaction threshold never gets to act on the advice — the
+/// next call compacts and the window drops back. The warning is only useful in
+/// the band between these two numbers, so it has to open before compaction
+/// closes it.
+const SUBAGENT_ADVISORY_THRESHOLD_PERCENT: usize = 60;
+
+/// Whether the context is full enough to steer large remaining work at
+/// subagents.
+///
+/// `context_tokens` is the best available estimate of what the window holds:
+/// provider-reported usage when there is any, else the serialized-context
+/// estimate. Zero means "unknown" (a fresh session) and yields `false` — an
+/// advisory on no evidence is worse than none, because it would teach the model
+/// to ignore the line.
+#[must_use]
+pub(crate) fn context_pressure_advisory(
+    context_tokens: usize,
+    model_context_window: usize,
+) -> bool {
+    if model_context_window == 0 || context_tokens == 0 {
+        return false;
+    }
+    context_tokens.saturating_mul(100)
+        >= model_context_window.saturating_mul(SUBAGENT_ADVISORY_THRESHOLD_PERCENT)
+}
+
+/// The advisory text appended to the prompt's dynamic section.
+///
+/// Built rather than `const` so the stated percentage is the threshold constant
+/// itself: a literal "60%" here would silently disagree the day the threshold
+/// moves, and the model would be quoting a number nobody uses.
+pub(crate) fn subagent_advisory() -> String {
+    format!(
+        "Context window is over {SUBAGENT_ADVISORY_THRESHOLD_PERCENT}% full. Prefer delegating \
+         large or self-contained work to a subagent (`spawn_subagent`), which runs in its own \
+         fresh context and returns only a summary — the parent window then pays for the summary, \
+         not the work. Keep work whose intermediate results you need in this conversation here; \
+         delegate the parts you only need the answer to."
+    )
+}
+
 /// Why a compaction is being triggered.
 ///
 /// Mirrors Codex's `PreCompact` / `PostCompact` `trigger` matcher vocabulary:
@@ -712,12 +757,13 @@ mod tests {
 
     use super::{
         HANDOFF_CLOSE_TAG, HANDOFF_OPEN_TAG, KEEP_USER_MESSAGE_TOKENS, MAX_COMPACT_ARTIFACTS,
-        OMITTED_IMAGE, PERSIST_THRESHOLD, SUMMARY_PREFIX, approx_text_tokens,
-        build_compacted_history, collect_user_messages, estimate_context_tokens,
-        estimate_message_tokens, is_real_user_message, is_summary_message, persist_large_output,
+        OMITTED_IMAGE, PERSIST_THRESHOLD, SUBAGENT_ADVISORY_THRESHOLD_PERCENT, SUMMARY_PREFIX,
+        approx_text_tokens, build_compacted_history, collect_user_messages,
+        context_pressure_advisory, estimate_context_tokens, estimate_message_tokens,
+        is_real_user_message, is_summary_message, persist_large_output,
         persist_large_output_over_tokens, recent_messages_for_summary,
-        retained_user_message_token_budget, should_auto_compact, summary_message, take_last_tokens,
-        write_transcript,
+        retained_user_message_token_budget, should_auto_compact, subagent_advisory,
+        summary_message, take_last_tokens, write_transcript,
     };
     use crate::hook::{HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG};
 
@@ -749,6 +795,45 @@ mod tests {
         // Token path: last_token under window until incoming approx tokens added.
         assert!(!should_auto_compact(70, 100, 0, 0, 0));
         assert!(should_auto_compact(70, 100, 0, 10, 0));
+    }
+
+    /// The advisory must open *before* auto-compaction closes it, or it would
+    /// only ever appear on a window that is about to be compacted anyway.
+    #[test]
+    fn the_subagent_advisory_fires_below_the_compaction_threshold() {
+        // 60% of the window, when there is no completion to reserve against.
+        assert!(!context_pressure_advisory(59, 100));
+        assert!(context_pressure_advisory(60, 100));
+        assert!(context_pressure_advisory(79, 100));
+
+        // And the compaction trigger is still above it, so the band exists.
+        assert!(context_pressure_advisory(60, 100));
+        assert!(!should_auto_compact(60, 100, 0, 0, 0));
+        assert!(should_auto_compact(80, 100, 0, 0, 0));
+    }
+
+    #[test]
+    fn the_subagent_advisory_stays_quiet_without_evidence() {
+        // No window configured, or nothing measured yet: say nothing rather
+        // than teach the model that the line is noise.
+        assert!(!context_pressure_advisory(1_000, 0));
+        assert!(!context_pressure_advisory(0, 200_000));
+        assert!(!context_pressure_advisory(0, 0));
+
+        // A real window at a real size does fire.
+        assert!(context_pressure_advisory(120_000, 200_000));
+        assert!(!context_pressure_advisory(119_999, 200_000));
+    }
+
+    /// The number the model reads has to be the one the code enforces.
+    #[test]
+    fn the_advisory_text_states_the_actual_threshold() {
+        let text = subagent_advisory();
+        assert!(
+            text.contains(&format!("{SUBAGENT_ADVISORY_THRESHOLD_PERCENT}%")),
+            "{text}"
+        );
+        assert!(text.contains("spawn_subagent"), "{text}");
     }
 
     #[test]

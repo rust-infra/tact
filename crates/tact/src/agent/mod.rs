@@ -646,6 +646,46 @@ impl Agent {
         self.agent_settings.model_context_window
     }
 
+    /// The best available estimate of what the context window currently holds.
+    ///
+    /// Prefers the provider-reported total — it is the real wire figure and the
+    /// only one that survives native compaction — and falls back to the
+    /// serialized-context estimate before the first response of a session.
+    /// Returns 0 when neither is available, which callers must read as
+    /// "unknown" rather than "empty".
+    fn current_context_tokens(&self) -> usize {
+        if self.runtime.last_token_total > 0 {
+            return self.runtime.last_token_total as usize;
+        }
+        estimate_context_tokens(&self.runtime.context)
+    }
+
+    /// The subagent advisory for this task, when the window is filling up.
+    ///
+    /// Computed once per task, at the moment the system prompt is built: the
+    /// prompt is intentionally a per-task snapshot so the prefix KV-cache holds
+    /// across turns, so this cannot track the window mid-task. That is
+    /// acceptable because it is the *start* of a task that decides how the work
+    /// gets split, and because auto-compaction resets the pressure inside a
+    /// long task anyway.
+    ///
+    /// Requires `spawn_subagent` to actually be offered: the text tells the
+    /// model to reach for that tool, so without it the line would be advice the
+    /// model cannot take — and a prompt that names a nonexistent tool teaches
+    /// the model to distrust the prompt. Today the main toolset always registers
+    /// it; the guard is here so a future gate (a restricted toolset, a config
+    /// switch) cannot leave the two out of step.
+    fn context_advisory(&self) -> Option<String> {
+        if !self.has_tool("spawn_subagent") {
+            return None;
+        }
+        crate::compact::context_pressure_advisory(
+            self.current_context_tokens(),
+            self.model_context_window(),
+        )
+        .then(crate::compact::subagent_advisory)
+    }
+
     fn max_tokens(&self) -> u32 {
         self.agent_settings.max_tokens
     }
@@ -1833,6 +1873,14 @@ impl Agent {
             .collect()
     }
 
+    /// Whether a tool by this name is actually offered to the model.
+    ///
+    /// Reads the same cache the request is built from, so guidance that names a
+    /// tool cannot outlive the tool itself.
+    fn has_tool(&self, name: &str) -> bool {
+        self.cached_tool_specs.iter().any(|spec| spec.name == name)
+    }
+
     // TODO(compact): summarization input is a crude tail-truncation to 80k
     // chars of raw JSON; consider a smarter selection (e.g. drop tool-result
     // bodies first, keep user/assistant text).
@@ -2505,6 +2553,9 @@ impl Agent {
         } else {
             ""
         };
+        // Resolved before the builder chain: the chain holds
+        // `cached_dir_snapshot` mutably, so `&self` is not available inside it.
+        let advisory = self.context_advisory();
         let prompt = prompt_builder
             .role(format!(
                 "You are a coding agent operating in {}.",
@@ -2543,6 +2594,7 @@ impl Agent {
                 &mut self.runtime.cached_dir_snapshot,
                 self.agent_settings.snapshot_max_items,
                 &self.agent_settings.model,
+                advisory,
             ))
             .memory_guidance(memory_guidance)
             .build()?;
@@ -2553,12 +2605,16 @@ impl Agent {
             .context("failed to render system prompt")
     }
 
+    /// The injected memory block: the repository's `MEMORY.md` index.
+    ///
+    /// Only the index is injected; topic bodies are fetched on demand with the
+    /// `load_memory` tool. See `crate::memory` for why.
     fn load_memory_prompt(&self) -> Result<String> {
         self.tool_context
             .memory_manager
             .lock()
             .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))
-            .map(|manager| manager.load_memory_prompt())
+            .map(|manager| manager.load_memory_index_prompt())
     }
 }
 
@@ -2604,6 +2660,7 @@ fn load_dynamic_context(
     cached_snapshot: &mut Option<String>,
     snapshot_limit: usize,
     model: &str,
+    advisory: Option<String>,
 ) -> String {
     let tree = match cached_snapshot {
         Some(cached) => cached.clone(),
@@ -2620,6 +2677,14 @@ fn load_dynamic_context(
         format!("Model: {model}"),
         format!("Platform: {}", std::env::consts::OS),
     ];
+
+    // Kept last: it is the one line here that can change between tasks, and the
+    // section is already below `=== DYNAMIC_BOUNDARY ===` for exactly that
+    // reason.
+    if let Some(advisory) = advisory {
+        lines.push(String::new());
+        lines.push(advisory);
+    }
 
     if !tree.is_empty() {
         lines.push(String::new());
@@ -2886,6 +2951,7 @@ mod tests {
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
+            auto_memory_directory: None,
             subagent: None,
         };
         let agent = Agent::new(
@@ -3152,6 +3218,41 @@ mod tests {
         assert!(prompt.contains("# Memory guidance"), "{prompt}");
     }
 
+    /// The injected memory section is the **index**, reachable through
+    /// `load_memory` — not the bodies.
+    ///
+    /// Drives the real path: a memory saved by the tool, then a prompt built
+    /// from the same manager, so a regression that folds bodies back into the
+    /// prompt is caught here rather than in the prompt template.
+    #[tokio::test]
+    async fn the_system_prompt_carries_the_index_and_points_at_load_memory() {
+        ensure_config();
+        let context = crate::tool::test_support::test_context("memory_index_in_prompt");
+        context
+            .memory_manager
+            .lock()
+            .unwrap()
+            .save_memory(
+                "Release Branch",
+                "the branch to cut from",
+                crate::memory::MemoryType::Project,
+                "BODY_SENTINEL cut releases from main.",
+            )
+            .unwrap();
+
+        let mut agent = chat_completions_test_agent_for("memory_index_in_prompt", context);
+        agent.system_prompt = AgentSystemPrompt::Dynamic;
+
+        let prompt = agent.build_system_prompt().unwrap();
+        assert!(prompt.contains("## Memory"), "{prompt}");
+        assert!(prompt.contains("release_branch.md"), "{prompt}");
+        assert!(prompt.contains("load_memory"), "{prompt}");
+        assert!(
+            !prompt.contains("BODY_SENTINEL"),
+            "bodies must not be injected: {prompt}"
+        );
+    }
+
     #[test]
     fn disabled_memory_is_absent_from_the_system_prompt() {
         ensure_config();
@@ -3161,23 +3262,88 @@ mod tests {
 
         let prompt = agent.build_system_prompt().unwrap();
         assert!(!prompt.contains("# Memory guidance"), "{prompt}");
+        assert!(!prompt.contains("# Memory"), "{prompt}");
+    }
+
+    /// The advisory reaches the rendered prompt, and only when the window is
+    /// actually filling — driven through the real `build_system_prompt`.
+    #[test]
+    fn a_filling_window_steers_the_prompt_at_subagents() {
+        ensure_config();
+
+        // Room to spare: no advisory.
+        let mut roomy = chat_completions_test_agent("advisory_roomy");
+        roomy.system_prompt = AgentSystemPrompt::Dynamic;
+        roomy.agent_settings.model_context_window = 200_000;
+        let prompt = roomy.build_system_prompt().unwrap();
+        assert!(!prompt.contains("spawn_subagent"), "{prompt}");
+
+        // Same agent, a window that is 65% full: the advisory appears.
+        let mut full = chat_completions_test_agent("advisory_full");
+        full.system_prompt = AgentSystemPrompt::Dynamic;
+        full.agent_settings.model_context_window = 200_000;
+        full.runtime.last_token_total = 130_000;
+        let prompt = full.build_system_prompt().unwrap();
+        assert!(prompt.contains("spawn_subagent"), "{prompt}");
+        assert!(prompt.contains("60% full"), "{prompt}");
+
+        // It lands in the dynamic section, which is the one allowed to change
+        // between tasks without invalidating the cached prefix.
+        let (_, dynamic) = prompt
+            .split_once("=== DYNAMIC_BOUNDARY ===")
+            .expect("template emits the boundary");
+        assert!(dynamic.contains("spawn_subagent"), "{dynamic}");
+    }
+
+    /// The advice names `spawn_subagent`, so it must not appear when that tool
+    /// is not offered — a prompt pointing at a tool the model does not have is
+    /// worse than silence.
+    #[test]
+    fn a_full_window_stays_quiet_when_subagents_are_not_offered() {
+        ensure_config();
+        let mut agent = chat_completions_test_agent("advisory_no_subagent");
+        agent.system_prompt = AgentSystemPrompt::Dynamic;
+        agent.agent_settings.model_context_window = 200_000;
+        agent.runtime.last_token_total = 130_000;
+        // The premise of the test: a full window would otherwise trigger.
+        assert!(crate::compact::context_pressure_advisory(130_000, 200_000));
         assert!(
-            !prompt.contains("# Memories (persistent across sessions)"),
-            "{prompt}"
+            agent.has_tool("spawn_subagent"),
+            "fixture must start with it"
         );
+
+        // Make the premise of *this* test explicit: the same full window, with
+        // the tool removed from the set the request is built from.
+        agent
+            .cached_tool_specs
+            .retain(|spec| spec.name != "spawn_subagent");
+        assert!(!agent.has_tool("spawn_subagent"));
+
+        let prompt = agent.build_system_prompt().unwrap();
+        assert!(!prompt.contains("spawn_subagent"), "{prompt}");
+        assert!(!prompt.contains("Context window is over"), "{prompt}");
     }
 
     fn chat_completions_test_agent(context_name: &str) -> Agent {
+        chat_completions_test_agent_for(context_name, test_context(context_name))
+    }
+
+    /// The same agent, but built over a caller-supplied context so a test can
+    /// populate the memory manager before the prompt is assembled.
+    fn chat_completions_test_agent_for(
+        context_name: &str,
+        context: crate::tool::ToolContext,
+    ) -> Agent {
         Agent::new(
             LlmProvider::Mock(MockClient::new(vec![])),
-            test_context(context_name),
+            context,
             crate::tool::toolset(),
             crate::mcp::MCPToolRouter::new(),
             crate::permission::PermissionManager::try_new(
                 crate::permission::PermissionMode::Default,
             )
             .unwrap(),
-            AgentSystemPrompt::Static("test".to_string()),
+            AgentSystemPrompt::Static(context_name.to_string()),
         )
     }
 
@@ -4466,6 +4632,7 @@ mod tests {
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
+            auto_memory_directory: None,
             subagent: None,
         };
         let agent = responses_test_agent("responses_auto_compact", "https://api.openai.com/v1")
@@ -4506,6 +4673,7 @@ mod tests {
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
+            auto_memory_directory: None,
             subagent: None,
         };
         agent.agent_settings = tiny;
