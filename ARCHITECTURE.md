@@ -772,7 +772,7 @@ but still uninvoked — the table says so explicitly.
 | `WorkflowExtension::register` | tests only | the in-process Rust host serving Workflow through the router (`AgentExtension::register` is called by the headless host; `SessionExtension::register` is called by the shared session bootstrap) |
 | `crates/tact_plugin_node`, `crates/tact_plugin_wasm` | no workspace crate depends on them; only their own tests | a product path that loads external plugins |
 | `Agent::runtime_plugins` | written, never read | host lifecycle / health reporting for registered extensions |
-| Kernel `InteractionBroker` / `InteractionService` | tests only | a client-neutral interaction path (production still answers through `tact_extensions::ui_responder::UiResponder`) |
+| Kernel `InteractionBroker` / `InteractionService` | tests only — and it cannot back the prompt path as it stands: it has no `withdraw` (needed when a waiter is dropped, or the TUI renders a ghost prompt) and `InteractionService::request` takes an `InvocationContext` that the prompt sites do not have | a client-neutral interaction path; production still answers through `tact_extensions::ui_responder::UiResponder` |
 | `RuntimeCommand::{Subscribe, Resume, Invoke, Shutdown}` | none | protocol-driven external clients; the driver routes only `StartRun` / `CancelRun` / `RespondInteraction` |
 
 `EventTransport::replay_from` is closer to wired than the rest: the durable
@@ -783,6 +783,19 @@ production path calls it — the only caller is a test inside
 disconnected client reconnects from a Trajectory sequence" therefore still has
 no production caller, and `RuntimeCommand::{Subscribe, Resume}` have no
 consumer either.
+
+Two §7 facts are **unreachable rather than unwired**, and the distinction
+matters for anyone reading the acceptance list:
+
+- `RuntimeEvent::TimedOut` (and therefore `TrajectoryEventType::Timeout`) has no
+  producer because **no production invocation carries a deadline**:
+  `InvocationContext::with_timeout` is called only from tests, so the Kernel's
+  `guarded` deadline path never fires in a real session. A provider-level
+  timeout surfaces as `Retry` / `Recovery` facts instead. Recording timeouts
+  needs a host that sets a deadline, not another emitter.
+- `Agent::runtime_plugins` is populated and never read, so a plugin's
+  health/crash state has no consumer. Giving it one is a product decision (a
+  `/plugins`-style surface), not wiring.
 
 
 Native tools, namespaced MCP tools, and the MCP prompt/resource commands now register as `CapabilityRouter` handlers. Agent keeps its existing sequential hook, permission, and resource preflight during migration, then presents a one-use approval ticket to the router before execution. Typed tool effects and output metadata survive the adapter response.
