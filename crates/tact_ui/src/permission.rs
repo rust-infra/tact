@@ -29,6 +29,17 @@ pub(crate) fn permission_mode_from_config() -> PermissionMode {
     }
 }
 
+/// The plugin identities the host's own control plane invokes as.
+///
+/// These are the extensions that own the host-driven capabilities: Chat owns
+/// `chat.submit` / `chat.compact`, the Agent owns `runs.start` / `runs.cancel`.
+/// The host speaks as the owning extension of the capability it is invoking
+/// (the same convention `runs.*` and `chat.compact` already followed), so a
+/// host call is one of these two and nothing else. Membership is the whole
+/// check — a caller that is not one of the host's identities is refused even
+/// for a control capability name.
+pub(crate) const HOST_CONTROL_PLANE_IDENTITIES: [&str; 2] = ["tact.chat", "tact.agent"];
+
 /// The host's permission policy for its **own** control-plane calls.
 ///
 /// `CapabilityRouter::invoke` always runs `PermissionService::check`, and the
@@ -42,11 +53,14 @@ pub(crate) fn permission_mode_from_config() -> PermissionMode {
 /// user on `mode = default`, because submitting the turn would be gated on a
 /// prompt the process cannot answer.
 ///
-/// So this policy allows exactly those names and denies everything else.
-/// It is **not** a per-tool bypass: tool invocations never pass through it —
-/// they are authorized by the Agent's own permission manager and the preflight
-/// gate in tool dispatch. The narrow, deny-by-default shape keeps that honest:
-/// a capability of any other kind is refused.
+/// So this policy allows exactly those names, and only when the caller is one
+/// of the host's own identities ([`HOST_CONTROL_PLANE_IDENTITIES`]); every
+/// other caller and every other capability is denied. It is **not** a per-tool
+/// bypass: tool invocations never pass through it — they are authorized by the
+/// Agent's own permission manager and the preflight gate in tool dispatch. The
+/// narrow, deny-by-default shape keeps that honest: a plugin holding the
+/// serving router cannot inject a turn, fire hooks/notifications, or rewrite
+/// the session history by invoking a control capability under its own name.
 pub(crate) struct HostControlPlanePermission;
 
 #[async_trait]
@@ -54,11 +68,23 @@ impl PermissionService for HostControlPlanePermission {
     async fn check(
         &self,
         declaration: &CapabilityDeclaration,
-        _context: &InvocationContext,
+        context: &InvocationContext,
         _input: &Value,
     ) -> Result<(), KernelError> {
         match declaration.name.as_str() {
-            "chat.submit" | "chat.compact" | "runs.start" | "runs.cancel" => Ok(()),
+            "chat.submit" | "chat.compact" | "runs.start" | "runs.cancel" => {
+                if HOST_CONTROL_PLANE_IDENTITIES.contains(&context.plugin_id().as_str()) {
+                    Ok(())
+                } else {
+                    Err(KernelError::permission_denied(format!(
+                        "{} is a host control capability; only the host's own identities \
+                         ({}) may invoke it, not {}",
+                        declaration.name,
+                        HOST_CONTROL_PLANE_IDENTITIES.join(", "),
+                        context.plugin_id(),
+                    )))
+                }
+            }
             other => Err(KernelError::permission_denied(format!(
                 "the host only authorizes its own control capabilities; \
                  {other} is not one"
@@ -180,6 +206,75 @@ mod tests {
         assert!(check("runs.start").await.is_ok());
         assert!(check("runs.cancel").await.is_ok());
         let denied = check("bash").await.expect_err("a tool is not allowed");
+        assert_eq!(
+            denied.category(),
+            tact_protocol::ErrorCategory::PermissionDenied
+        );
+    }
+
+    /// The allowance is scoped to the host: both of the host's own identities
+    /// pass, for every control capability.
+    #[tokio::test]
+    async fn the_host_control_plane_policy_allows_the_host_identities() {
+        for plugin in HOST_CONTROL_PLANE_IDENTITIES {
+            for name in ["chat.submit", "chat.compact", "runs.start", "runs.cancel"] {
+                let declaration = declaration(name, CapabilityRisk::Medium);
+                let context = InvocationContext::new(
+                    RequestId::from("permission-probe"),
+                    PluginId::from(plugin),
+                    "the host",
+                );
+                HostControlPlanePermission
+                    .check(&declaration, &context, &serde_json::json!({}))
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!(
+                            "the host identity {plugin} may invoke {name}: {}",
+                            error.message()
+                        )
+                    });
+            }
+        }
+    }
+
+    /// An unrelated plugin holding the router cannot invoke the host's control
+    /// plane by name alone: without a permission check it could inject a turn,
+    /// fire hooks and notifications, or rewrite the session history.
+    #[tokio::test]
+    async fn the_host_control_plane_policy_refuses_an_unrelated_plugin() {
+        for name in ["chat.submit", "chat.compact", "runs.start", "runs.cancel"] {
+            let declaration = declaration(name, CapabilityRisk::Medium);
+            let context = InvocationContext::new(
+                RequestId::from("permission-probe"),
+                PluginId::from("demo.plugin"),
+                "a plugin",
+            );
+            let denied = HostControlPlanePermission
+                .check(&declaration, &context, &serde_json::json!({}))
+                .await
+                .unwrap_err();
+            assert_eq!(
+                denied.category(),
+                tact_protocol::ErrorCategory::PermissionDenied,
+                "{name} must be refused for an unrelated plugin"
+            );
+        }
+    }
+
+    /// A plugin id that only *looks* like a host id is not one: the check is
+    /// exact membership, not a prefix.
+    #[tokio::test]
+    async fn the_host_control_plane_policy_is_not_fooled_by_a_lookalike_plugin() {
+        let declaration = declaration("chat.submit", CapabilityRisk::Medium);
+        let context = InvocationContext::new(
+            RequestId::from("permission-probe"),
+            PluginId::from("tact.chat.evil"),
+            "a lookalike",
+        );
+        let denied = HostControlPlanePermission
+            .check(&declaration, &context, &serde_json::json!({}))
+            .await
+            .expect_err("a lookalike plugin id is not the host");
         assert_eq!(
             denied.category(),
             tact_protocol::ErrorCategory::PermissionDenied

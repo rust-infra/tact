@@ -760,6 +760,34 @@ impl Agent {
         ))
     }
 
+    /// Answers a non-interactive `Ask`, resolving the request the caller
+    /// already announced if the answer itself fails.
+    ///
+    /// The caller emits `PermissionRequested` before the ladder runs and one
+    /// `PermissionResolved` after it, so exactly one resolution answers every
+    /// request. The non-interactive answer is the ladder's only fallible step,
+    /// and it is the one place a bare `?` could return *between* the two
+    /// emissions, stranding the request. Routing it through here keeps the
+    /// pairing: an `Err` still emits the matching
+    /// `PermissionResolved { allowed: false }` before it propagates, so a
+    /// request can never be announced without an answer.
+    fn resolve_noninteractive_ask(
+        &self,
+        request_id: &RequestId,
+        answer: Result<bool>,
+    ) -> Result<bool> {
+        match answer {
+            Ok(approved) => Ok(approved),
+            Err(error) => {
+                self.emit_update(RuntimeEvent::PermissionResolved {
+                    request_id: request_id.clone(),
+                    allowed: false,
+                });
+                Err(error)
+            }
+        }
+    }
+
     /// Phase 1 — sequential pre-flight.
     ///
     /// Each tool use is counted, resolved (native → MCP → unknown), formatted
@@ -1098,10 +1126,12 @@ impl Agent {
                                             .flatten();
                                         permission_choice_for(selection)
                                     } else {
-                                        let approved = self
+                                        let answer = self
                                             .runtime
                                             .permission_manager
-                                            .ask_user(stable_name, risk)?;
+                                            .ask_user(stable_name, risk);
+                                        let approved =
+                                            self.resolve_noninteractive_ask(&request_id, answer)?;
                                         if approved {
                                             PermissionChoice::AllowOnce
                                         } else {
@@ -2094,6 +2124,47 @@ mod tests {
             serde_json::json!({ "path": ".env" }),
         );
         assert_one_permission_decision(&events, "read_file", "t1", false);
+    }
+
+    /// A `PermissionRequested` must never be stranded by a failure of the
+    /// answer itself.
+    ///
+    /// `PermissionManager::ask_user` is a concrete method that always returns
+    /// `Ok`, so no real tool call can reach the failure and there is no trait
+    /// seam to inject an `Err` through. The pairing guarantee lives in
+    /// [`Agent::resolve_noninteractive_ask`] — the one call the non-interactive
+    /// `Ask` path uses — so this pins *that*: given an `Err`, it records the
+    /// matching `PermissionResolved { allowed: false }` before returning the
+    /// error, exactly as the production path relies on.
+    #[test]
+    fn a_failed_noninteractive_ask_still_resolves_the_request() {
+        let mut agent = agent_with(
+            "perm_ask_error_resolves",
+            crate::permission::PermissionMode::Default,
+        );
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        agent.tool_context.set_test_view_updates(tx);
+
+        // The caller announced the request before the ladder ran.
+        let request_id = RequestId::from("t-failing-ask");
+        agent.emit_update(RuntimeEvent::PermissionRequested {
+            request_id: request_id.clone(),
+            capability: "read_file".to_string(),
+        });
+
+        let error = agent
+            .resolve_noninteractive_ask(
+                &request_id,
+                Err(anyhow::anyhow!("permission backend down")),
+            )
+            .expect_err("the failure propagates");
+        assert_eq!(error.to_string(), "permission backend down");
+
+        let mut events = Vec::new();
+        while let Ok(event) = rx.try_recv() {
+            events.push(event);
+        }
+        assert_one_permission_decision(&events, "read_file", "t-failing-ask", false);
     }
 
     #[test]

@@ -455,9 +455,13 @@ async fn run_submit(
             // (the Error event the direct path emits, with the same text), so
             // the call's result is deliberately not re-reported here: emitting
             // both would put two Error rows in the transcript for one failure.
+            // The host speaks as the extension that owns the capability it is
+            // invoking — Chat owns `chat.submit` — the same convention the
+            // `chat.compact` and `runs.*` callers below already follow, so the
+            // caller's plugin id describes the caller honestly.
             let invocation = serving.invocation(
                 RequestId::from(uuid::Uuid::new_v4().to_string()),
-                PluginId::from("tact.agent"),
+                PluginId::from("tact.chat"),
                 "interactive",
             );
             let mut input = serde_json::json!({ "prompt": task });
@@ -488,8 +492,10 @@ async fn run_submit(
 ///
 /// It cannot block behind the run it is cancelling: the invoke's handler path
 /// (`AgentCancelHandler` → `InProcessAgentExecutor::cancel`) only stores the
-/// cloned cancel flag and publishes the `Cancelled` fact — it never takes the
-/// Agent lock the run holds for its whole duration. `run_id` is informational;
+/// cloned cancel flag — it never takes the Agent lock the run holds for its
+/// whole duration, and it deliberately does not publish a `Cancelled` fact
+/// (the chat turn records the cancellation when the stopped run returns, so one
+/// user cancel yields exactly one event). `run_id` is informational;
 /// `UserCommand::Cancel` has none and passes `None`.
 async fn invoke_runs_cancel(serving: &Option<tact::RuntimeContext>, run_id: Option<RunId>) {
     let Some(serving) = serving else {

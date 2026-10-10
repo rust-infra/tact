@@ -78,7 +78,7 @@ async fn run_headless_locked(
 
     let invocation = runtime.invocation(
         RequestId::from(uuid::Uuid::new_v4().to_string()),
-        PluginId::from("tact.agent"),
+        PluginId::from("tact.chat"),
         "headless",
     );
     // The raw prompt travels; the **turn** it says (the `@` file / `![]` image
@@ -112,9 +112,10 @@ async fn run_headless_locked(
     if let Some(final_content) = agent.runtime.context.last() {
         let text = extract_text(&final_content.content);
         println!("{text}");
-
-        let summary = text.chars().take(200).collect::<String>();
-        let _ = tact_extensions::notifications::notify_task_complete(&summary);
+        // The desktop notification is *not* sent here: the chat turn emits
+        // `RuntimeEvent::TaskComplete` and `Agent::emit_update` already
+        // notifies on it. A second call would fire two "Task Complete"
+        // notifications on macOS for one headless finish.
     }
 
     // The headless run is done: cancel and persist any still-running
@@ -194,7 +195,7 @@ mod tests {
                 "chat.submit",
                 runtime.invocation(
                     RequestId::from("headless-router-test"),
-                    PluginId::from("tact.agent"),
+                    PluginId::from("tact.chat"),
                     "headless",
                 ),
                 serde_json::json!({ "prompt": "hello from headless" }),
@@ -261,7 +262,7 @@ mod tests {
                 "chat.submit",
                 runtime.invocation(
                     RequestId::from("headless-continuation-test"),
-                    PluginId::from("tact.agent"),
+                    PluginId::from("tact.chat"),
                     "headless",
                 ),
                 serde_json::json!({ "prompt": "start" }),

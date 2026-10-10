@@ -31,7 +31,7 @@ use tact::{
 };
 use tact_protocol::{
     CapabilityDeclaration, CapabilityKind, CapabilityRisk, ErrorCategory, PluginId,
-    ProtocolVersion, RunId,
+    ProtocolVersion, RequestId, RunId,
 };
 use tact_view::AgentErrorKind;
 use tokio::sync::Mutex;
@@ -61,9 +61,12 @@ pub enum TurnEntry<'a> {
     Routed {
         agent: &'a Arc<Mutex<Agent>>,
         serving: &'a RuntimeContext,
-        /// The caller's invocation, reused for the `runs.start` call so the run
-        /// carries the same request identity, plugin and actor the host's
-        /// submit did — and so cancelling the submit cancels the run.
+        /// The caller's invocation. Each run of the turn builds a **fresh**
+        /// invocation from it — a new [`RequestId`] and its own cancellation
+        /// token — carrying the caller's plugin identity and actor. It is not
+        /// reused for the run so every run of the turn (and every Stop-hook
+        /// continuation) has its own identity and cannot be aborted by
+        /// aborting the caller's `chat.submit` request.
         invocation: &'a InvocationContext,
     },
     Shared(&'a Arc<Mutex<Agent>>),
@@ -158,12 +161,22 @@ pub async fn run_chat_turn(
                 invocation,
                 ..
             } => {
+                // Each run of the turn is its own invocation: a fresh request
+                // id and its own cancellation token, carrying the caller's
+                // plugin identity and actor. Reusing the caller's invocation
+                // would give every run the same request id and let aborting
+                // the *submit* request abort a run the caller never named.
+                let run_invocation = serving.invocation(
+                    RequestId::from(uuid::Uuid::new_v4().to_string()),
+                    invocation.plugin_id().clone(),
+                    invocation.actor().to_string(),
+                );
                 // The built turn travels as full `content`, so image/file blocks
                 // survive the boundary. `runs.start` is the per-turn executor.
                 let input = json!({ "content": message.content });
                 match serving
                     .router()
-                    .invoke("runs.start", (*invocation).clone(), input)
+                    .invoke("runs.start", run_invocation, input)
                     .await
                 {
                     Ok(_) => TurnOutcome::Completed,
@@ -544,6 +557,30 @@ mod tests {
         }
     }
 
+    /// Allows every call but records the `(capability, request id, plugin id)`
+    /// it saw, so a test can read the invocation each routed call carried.
+    #[derive(Default)]
+    struct RecordingInvocations {
+        seen: std::sync::Mutex<Vec<(String, String, String)>>,
+    }
+
+    #[async_trait]
+    impl PermissionService for RecordingInvocations {
+        async fn check(
+            &self,
+            declaration: &CapabilityDeclaration,
+            context: &InvocationContext,
+            _input: &Value,
+        ) -> Result<(), KernelError> {
+            self.seen.lock().expect("recording lock").push((
+                declaration.name.clone(),
+                context.request_id().as_str().to_string(),
+                context.plugin_id().as_str().to_string(),
+            ));
+            Ok(())
+        }
+    }
+
     fn runtime() -> RuntimeContext {
         RuntimeContext::with_services(
             CapabilityRouter::new(),
@@ -762,6 +799,93 @@ mod tests {
                 message.role == Role::User && extract_text(&message.content) == "hello"
             });
         assert!(saw_user_turn, "the user turn reached the shared Agent");
+    }
+
+    /// Each run of one turn carries its own request id: a Stop-hook
+    /// continuation starts a second `runs.start` under a fresh invocation, not
+    /// the submit's, so the two runs are independently identifiable and
+    /// aborting the submit request cannot abort a later run. The run keeps the
+    /// caller's plugin identity and actor.
+    #[tokio::test]
+    async fn each_run_of_a_turn_carries_its_own_request_id() {
+        let mock = MockClient::new(vec![
+            (vec![text_block("first")], Some(StopReason::EndTurn)),
+            (vec![text_block("second")], Some(StopReason::EndTurn)),
+        ]);
+        let calls = Arc::new(AtomicUsize::new(0));
+        let hook_calls = Arc::clone(&calls);
+        let agent = Arc::new(Mutex::new(
+            test_agent("chat-run-request-ids", mock)
+                .with_stop(move |_agent| {
+                    let remaining = hook_calls.fetch_add(1, Ordering::Relaxed);
+                    Box::pin(async move {
+                        if remaining == 0 {
+                            Ok(HookControl::Block("keep going".into()))
+                        } else {
+                            Ok(HookControl::Continue)
+                        }
+                    })
+                })
+                .with_ui_channel({
+                    let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
+                    tx
+                }),
+        ));
+
+        let recorder = Arc::new(RecordingInvocations::default());
+        let runtime = RuntimeContext::with_services(
+            CapabilityRouter::new(),
+            RuntimeServices::with_permission(recorder.clone()),
+        );
+        AgentExtension::from_shared(Arc::clone(&agent), Arc::new(AtomicBool::new(false)))
+            .register(&runtime)
+            .expect("runs.start registers");
+        ChatExtension::new(Arc::clone(&agent), runtime.clone())
+            .register(&runtime)
+            .expect("chat.submit registers");
+
+        runtime
+            .router()
+            .invoke(
+                "chat.submit",
+                runtime.invocation(
+                    RequestId::from("the-submit-request"),
+                    PluginId::from("tact.chat"),
+                    "test",
+                ),
+                json!({ "prompt": "start" }),
+            )
+            .await
+            .expect("chat.submit answers");
+
+        let seen = recorder.seen.lock().expect("recording lock");
+        let run_ids: Vec<&String> = seen
+            .iter()
+            .filter(|(name, _, _)| name == "runs.start")
+            .map(|(_, id, _)| id)
+            .collect();
+        assert_eq!(
+            run_ids.len(),
+            2,
+            "the continuation must start a second run: {seen:?}"
+        );
+        assert_ne!(
+            run_ids[0], run_ids[1],
+            "each run of the turn must have its own request id: {seen:?}"
+        );
+        for (name, id, plugin) in seen.iter() {
+            if name == "runs.start" {
+                assert_ne!(
+                    id.as_str(),
+                    "the-submit-request",
+                    "a run must not reuse the submit request's id: {seen:?}"
+                );
+                assert_eq!(
+                    plugin, "tact.chat",
+                    "the run keeps the caller's plugin identity: {seen:?}"
+                );
+            }
+        }
     }
 
     /// A Stop hook that blocks keeps the turn going: the block reason becomes
