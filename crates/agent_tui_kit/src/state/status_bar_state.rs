@@ -16,7 +16,7 @@ pub struct StatusBarState {
     pub turn_user: u32,
     /// LLM turns (agent-loop iterations) completed in the current task.
     /// Written by [`crate::components::status_bar::StatusBarComponent`] on
-    /// `AgentUpdate::TurnStats`, reset by the host at task dispatch.
+    /// `RuntimeEvent::TurnStats`, reset by the host at task dispatch.
     pub turn_llm: u32,
     /// Agent-loop turn cap (`Agent::max_turns`) reported by the last
     /// `TurnStats`; `None` = unbounded. Plumbed but not rendered today.

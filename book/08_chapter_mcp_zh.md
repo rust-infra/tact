@@ -229,7 +229,7 @@ tact-ui mcp logout linear                     # 删除 token
 
 `mcp get` 是 `mcp list` 的聚焦版本：它只连接**一个** server，因此查看单个条目不会启动或拨号其余配置，并打印 agent 实际必须调用的工具名（`mcp__<server>__<tool>`）。两个视图共用同一套状态措辞（`connected (N tools)` / `needs authorization` / `failed`），因此不会出现说法漂移。
 
-代码：`McpConfigFile::read`（`mcp.json`）、`installed_plugin_mcp_servers`（插件）、`collect_sourced_servers` 与 `resolve_servers`（优先级）、`validate_server_name`、`resolved_server_for`、`inspect_server`、`connect_server`，均在 `crates/tact/src/mcp/mod.rs`；写入侧（`McpServerDraft`、`McpConfigScope`、`add_mcp_server`、`remove_mcp_server`）在 `crates/tact/src/mcp/edit.rs`；凭据删除（`forget_credentials`）在 `crates/tact/src/mcp/remote.rs`；CLI 处理逻辑在 `crates/tact-ui/src/mcp_cli.rs`。
+代码：`McpConfigFile::read`（`mcp.json`）、`installed_plugin_mcp_servers`（插件）、`collect_sourced_servers` 与 `resolve_servers`（优先级）、`validate_server_name`、`resolved_server_for`、`inspect_server`、`connect_server`，均在 `crates/tact_extensions/src/mcp/mod.rs`；写入侧（`McpServerDraft`、`McpConfigScope`、`add_mcp_server`、`remove_mcp_server`）在 `crates/tact_extensions/src/mcp/edit.rs`；凭据删除（`forget_credentials`）在 `crates/tact_extensions/src/mcp/remote.rs`；CLI 处理逻辑在 `crates/tact_ui/src/mcp_cli.rs`。
 
 ### Step 1b：Server 配置错误时会发生什么
 
@@ -599,14 +599,14 @@ Client 应重新 `tools/list` 并刷新 Agent 工具表。
 重新拉取失败时**保留原有列表**：只有 server 自己能移除它的工具，一次瞬时的传输错误不该让一个本来可用的 server 看起来空了。变化与失败都会以 `AgentUpdate::Info` 行上报——一个工具悄悄出现或消失，正是事后会被归咎于模型行为的那类事。
 
 ```rust
-// crates/tact/src/mcp/mod.rs — connect 安装 handler，而不是 ()
+// crates/tact_extensions/src/mcp/mod.rs — connect 安装 handler，而不是 ()
 let signal = ToolListChangedSignal::default();
 let service = signal.clone().serve(transport).await?;
 Ok((service, signal))
 ```
 
 ```rust
-// crates/tact/src/agent/mod.rs — 按请求刷新，而不是按轮次
+// crates/tact_extensions/src/agent/mod.rs — 按请求刷新，而不是按轮次
 self.refresh_mcp_tools().await;
 let request = CreateMessageParams::new(..).with_tools(self.all_tool_specs());
 ```
@@ -614,7 +614,7 @@ let request = CreateMessageParams::new(..).with_tools(self.all_tool_specs());
 系统提示里的 `## <server>` instructions 段落**不会**在刷新时重新推导：instructions 来自 `initialize` 结果，在一条连接的生命周期内不可能改变。
 
 ```rust
-// crates/tact/src/agent/mod.rs — 缓存是被重建的，不是每请求重读
+// crates/tact_extensions/src/agent/mod.rs — 缓存是被重建的，不是每请求重读
 fn rebuild_cached_tool_specs(&mut self) {
     self.cached_tool_specs = native_specs
         .into_iter()
@@ -678,7 +678,7 @@ sequenceDiagram
 
 | 模块 | 文件 | 职责 |
 |------|------|------|
-| 配置扫描 | `crates/tact/src/mcp/mod.rs` — `collect_sourced_servers` | 依次读 `<workdir>/.mcp.json`、`~/.tact/.mcp.json`、`<workdir>/.tact/.mcp.json`、已安装插件 |
+| 配置扫描 | `crates/tact_extensions/src/mcp/mod.rs` — `collect_sourced_servers` | 依次读 `<workdir>/.mcp.json`、`~/.tact/.mcp.json`、`<workdir>/.tact/.mcp.json`、已安装插件 |
 | 插件服务器 | `installed_plugin_mcp_servers` | 读取已安装插件包 |
 | 来源优先级 | `collect_sourced_servers`、`resolve_servers` | 分层合并所有来源并上报覆盖 |
 | 加载报告 | `McpLoadReport` | 把失败 / 覆盖 / 跳过暴露出来，而非 `debug!` |
@@ -688,11 +688,11 @@ sequenceDiagram
 | 动态更新 | `McpClient::refresh_tools_if_stale` | 连接处的 handler 记录 `tools/list_changed`，随后在每次请求前重新拉取 |
 | 工具策略 | `McpServerPolicy` | `enabled_tools` / `disabled_tools`、`startup_timeout_sec`、审批模式、单工具输出预算、单工具 `risk` |
 | 路由 | `MCPToolRouter` | 按 `mcp__*` 名路由到正确 Server |
-| Resources | `crates/tact/src/mcp/resource.rs` | `list_mcp_resources` / `list_mcp_resource_templates` / `read_mcp_resource`：`resources/list`、`resources/templates/list` 与 `resources/read`，并渲染给模型 |
-| Prompts | `crates/tact/src/mcp/prompt.rs` | `list_mcp_prompts` / `get_mcp_prompt`：`prompts/list` 与 `prompts/get`，按 role 渲染消息；参数只做字符串化与拒绝，不猜占位符 |
-| Agent 集成 | `crates/tact/src/agent/mod.rs` | `Agent::new` 合并 tool spec；每轮 LLM 用 `all_tool_specs()` |
-| 并行调度 | `crates/tact/src/agent/tool_schedule.rs` | 同 Server 串行；不同 Server 可并行 |
-| 入口 | `crates/tact-ui/src/session_bootstrap.rs` | `bootstrap_session` 里 `load_mcp_router_with_report()`（两个前端共用）；报告经 `Notices` 输出，`mcp_cli.rs` 另有一条 CLI 路径 |
+| Resources | `crates/tact_extensions/src/mcp/resource.rs` | `list_mcp_resources` / `list_mcp_resource_templates` / `read_mcp_resource`：`resources/list`、`resources/templates/list` 与 `resources/read`，并渲染给模型 |
+| Prompts | `crates/tact_extensions/src/mcp/prompt.rs` | `list_mcp_prompts` / `get_mcp_prompt`：`prompts/list` 与 `prompts/get`，按 role 渲染消息；参数只做字符串化与拒绝，不猜占位符 |
+| Agent 集成 | `crates/tact_extensions/src/agent/mod.rs` | `Agent::new` 合并 tool spec；每轮 LLM 用 `all_tool_specs()` |
+| 并行调度 | `crates/tact_extensions/src/agent/tool_schedule.rs` | 同 Server 串行；不同 Server 可并行 |
+| 入口 | `crates/tact_ui/src/session_bootstrap.rs` | `bootstrap_session` 里 `load_mcp_router_with_report()`（两个前端共用）；报告经 `Notices` 输出，`mcp_cli.rs` 另有一条 CLI 路径 |
 
 ### 6.1 工具命名与路由
 
@@ -724,7 +724,7 @@ mcp__demo__postgres__query
 - **同一 Server** 上多个工具：**串行**（避免连接竞态）
 - **不同 Server** 上的工具：**可并行**
 
-见 `crates/tact/src/agent/tool_schedule.rs` 的 `mcp_server_resources(server)` 及相关测试（`mcp_tools_on_same_server_serialize` / `mcp_tools_on_different_servers_run_in_parallel`）。它给每个 server 一个 `__mcp__<server>` 写标记，而不是把 MCP 一律当 barrier；server 名为空时才退化为 `ToolResources::barrier()`。Tact 自己的资源 / prompt 工具另算：`read_mcp_resource` / `get_mcp_prompt` 显式给了 `server` 时用同一个 per-server 标记，不给 `server` 的列表才是 barrier——列表可能触及每个 server。
+见 `crates/tact_extensions/src/agent/tool_schedule.rs` 的 `mcp_server_resources(server)` 及相关测试（`mcp_tools_on_same_server_serialize` / `mcp_tools_on_different_servers_run_in_parallel`）。它给每个 server 一个 `__mcp__<server>` 写标记，而不是把 MCP 一律当 barrier；server 名为空时才退化为 `ToolResources::barrier()`。Tact 自己的资源 / prompt 工具另算：`read_mcp_resource` / `get_mcp_prompt` 显式给了 `server` 时用同一个 per-server 标记，不给 `server` 的列表才是 barrier——列表可能触及每个 server。
 
 ---
 
@@ -839,5 +839,5 @@ oauth_client_name = "Codex"   # 默认；设为 "Tact" 可如实标识
 
 - [MCP architecture overview](https://modelcontextprotocol.io/docs/learn/architecture)
 - [MCP specification — Lifecycle](https://modelcontextprotocol.io/specification/2025-06-18/basic/lifecycle)
-- Tact 源码：`crates/tact/src/mcp/mod.rs`
+- Tact 源码：`crates/tact_extensions/src/mcp/mod.rs`
 - rmcp（Rust SDK）：项目 `Cargo.toml` 中 `rmcp = "0.17"`

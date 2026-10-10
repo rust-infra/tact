@@ -104,7 +104,7 @@ and report in their own words.
   `中文`) and that `[llm.providers.kimi]` survived the write.
 - `crates/tui/src/widgets/state/app/config.rs`: `apply_language_switches_without_announcing`,
   `language_names_round_trip_through_the_config_spelling`.
-- `crates/tact/src/config/persist.rs`: `updates_ui_language_keeping_the_theme_line` (the sibling
+- `crates/tact_extensions/src/config/persist.rs`: `updates_ui_language_keeping_the_theme_line` (the sibling
   `theme` line and its trailing comment survive),
   `ui_language_is_created_when_the_table_is_missing`.
 - Docs: [Ch 23](../../../book/23_chapter_tui_zh.md) §6.10, [Ch 21](../../../book/21_chapter_config_zh.md)

@@ -11,7 +11,7 @@ The LLM may return several tool calls in one response. Two facts shape the desig
    of a turn's `ToolUse` blocks at once; none of them can wait for another's
    output. So tools in the *same* turn carry no data dependency on each other.
 2. **Real dependencies are cross-turn.** The agent loop (`agent_loop` in
-   `crates/tact/src/agent/mod.rs`) feeds each turn's tool results back into the next
+   `crates/tact_extensions/src/agent/mod.rs`) feeds each turn's tool results back into the next
    request. If the model needs `search_code`'s result to decide what to
    `read_file`, it issues `search_code` in turn *N* and `read_file` in turn
    *N+1*. The loop already serialises turns, so cross-turn dependencies are
@@ -56,10 +56,10 @@ events, hooks, permissions) needs `&mut self` and/or interactive ordering, so it
 stays sequential; the actual tool I/O (`ToolRouter::call`, `&self`) is the slow
 part worth overlapping.
 
-## Conflict model & wave scheduling (`crates/tact/src/agent/tool_schedule.rs`)
+## Conflict model & wave scheduling (`crates/tact_extensions/src/agent/tool_schedule.rs`)
 
 Each cleared tool declares its footprint through its own metadata
-(`ToolMetadata.resources`, a `ResourcePolicy` in `crates/tact/src/tool/metadata.rs`);
+(`ToolMetadata.resources`, a `ResourcePolicy` in `crates/tact_extensions/src/tool/metadata.rs`);
 `ResourcePolicy::resolve(input, work_dir)` turns the policy plus the call's input
 into a concrete `ToolResources { reads, writes, barrier }`. The scheduler holds no
 tool-name table.
@@ -161,6 +161,6 @@ JSON shape and example queries.
 
 | File | Role |
 |------|------|
-| `crates/tact/src/agent/tool_schedule.rs` | Resource model, conflict detection, wave scheduler, `ToolScheduleSummary`. |
-| `crates/tact/src/agent/tool_dispatch.rs` | `Agent::execute_tool_call` (three phases), native/MCP dispatch, `persist_tool_schedule`. |
-| `crates/tact/src/store/session_store/` | `record_tool_schedule` — UPDATE the call's `token_usages` row. |
+| `crates/tact_extensions/src/agent/tool_schedule.rs` | Resource model, conflict detection, wave scheduler, `ToolScheduleSummary`. |
+| `crates/tact_extensions/src/agent/tool_dispatch.rs` | `Agent::execute_tool_call` (three phases), native/MCP dispatch, `persist_tool_schedule`. |
+| `crates/tact_extensions/src/store/session_store/` | `record_tool_schedule` — UPDATE the call's `token_usages` row. |

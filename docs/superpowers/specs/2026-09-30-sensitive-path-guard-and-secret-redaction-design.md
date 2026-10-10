@@ -16,12 +16,12 @@ The guard is a policy. Redaction is a property of the pipe. Neither is a sandbox
 Three facts, each verified in this tree:
 
 1. **The file tools are already confined.** `tool::safe_path` canonicalises `work_dir.join(path)` and
-   rejects anything that escapes it (`crates/tact/src/tool/path.rs:12`). `read_file("~/.ssh/id_ed25519")`
+   rejects anything that escapes it (`crates/tact_extensions/src/tool/path.rs:12`). `read_file("~/.ssh/id_ed25519")`
    does not expand `~` — it looks for a literal `~` directory under the workspace — and an absolute path
    replaces the join and is then rejected. **File tools cannot reach `~/.ssh`.**
 
 2. **`bash` can, and is auto-allowed.** `PermissionPolicy::ShellCommand::resolve`
-   (`crates/tact/src/tool/metadata.rs:53`) returns `CapabilityRisk::Read` for anything
+   (`crates/tact_extensions/src/tool/metadata.rs:53`) returns `CapabilityRisk::Read` for anything
    `readonly_shell::is_read_only_shell_command` accepts. `cat` is on that safelist, and
    `split_plain_command` explicitly **accepts a leading `~`**, with the comment: *"a leading `~` is
    harmless — tilde expansion only substitutes the home directory, and every safelisted program stays
@@ -31,7 +31,7 @@ Three facts, each verified in this tree:
    It runs silently, in every mode, in headless too. `cat ~/.netrc` is the same call.
 
 3. **Nothing is redacted on the way out.** Whatever a tool returns is stored verbatim in the session
-   store and the transcript. `redact_query_value` exists (`crates/tact/src/mcp/remote.rs:962`) but only
+   store and the transcript. `redact_query_value` exists (`crates/tact_extensions/src/mcp/remote.rs:962`) but only
    for one OAuth URL field. There is no secret scanner anywhere on the tool-result path.
 
 4. **`read_file` was seeded into `always_allowed_tools`, and a bare name grants every input.**
@@ -69,7 +69,7 @@ read of a private key is classified as a *safe read*.
 |---|---|---|
 | `Read` is allowed **before** plan mode is consulted | `check_with_auto` step 1 | A guard bolted onto the risk ladder cannot work for read tools; it must be decided earlier or be its own outcome. |
 | A settings `allow` rule outranks the `High` prompt | `check_with_auto` steps 4–6 | Anything expressed as "risk = High" is one click away from permanent approval. Fine for a `.env`; not fine for `id_ed25519`. |
-| `PreparedState::Resolved(msg)` renders a persisted refusal | `crates/tact/src/agent/tool_dispatch.rs:672` | A hard denial already has a home: it emits `StepFailed`, skips the prompt, and lands in the tool result. No new UI. |
+| `PreparedState::Resolved(msg)` renders a persisted refusal | `crates/tact_extensions/src/agent/tool_dispatch.rs:672` | A hard denial already has a home: it emits `StepFailed`, skips the prompt, and lands in the tool result. No new UI. |
 | `~`/absolute paths cannot be read by the file tools anyway | `safe_path` | The file-tool guard only ever needs to cover **in-workspace** paths. Home-path matching is a `bash` concern. |
 
 ## 3. Part A — the sensitive-path guard
@@ -77,7 +77,7 @@ read of a private key is classified as a *safe read*.
 ### 3.1 New module
 
 ```
-crates/tact/src/security/
+crates/tact_extensions/src/security/
 ├── mod.rs        // re-exports; lib.rs adds `pub(crate) mod security;`
 ├── sensitive.rs  // SensitiveKind, Tier, Hit, Scanner, classify_*()
 └── redact.rs     // Part B
@@ -377,7 +377,7 @@ people work around. It is global and persisted, never per-call.
 - **It is not a sandbox.** Both parts are name-based heuristics in the same process as the agent. A
   determined path (`bash -c "cat $(echo ~)/.ssh/id_ed25519"`, a compiled helper, an MCP tool) gets past
   the guard; redaction is the only thing left, and it is pattern-based too. The real boundary is
-  `crates/tact/src/sandbox/` — bwrap — which today is **Linux-only and opt-in**
+  `crates/tact_extensions/src/sandbox/` — bwrap — which today is **Linux-only and opt-in**
   (`SandboxDegradation::new("no sandbox implementation for this platform yet")` on macOS, default
   `false` in config). This design narrows the exposure; it does not bound it. A macOS sandbox
   (`sandbox-exec`/Seatbelt) is separate work.

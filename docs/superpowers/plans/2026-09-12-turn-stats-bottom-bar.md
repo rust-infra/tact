@@ -7,9 +7,9 @@ Status: **implemented**
 ## Steps
 
 1. **Protocol event** — add `AgentUpdate::TurnStats { turns_taken, max_turns }`
-   (`crates/protocol/src/agent.rs`).
+   (`crates/tact_protocol/src/agent.rs`).
 2. **Agent emit** — emit it from `Agent::agent_loop` right after
-   `self.turns_taken += 1` (`crates/tact/src/agent/mod.rs`), so the count is
+   `self.turns_taken += 1` (`crates/tact_extensions/src/agent/mod.rs`), so the count is
    correct on the iteration that trips a cap.
 3. **State** — add `turn_user`, `turn_llm`, `turn_llm_cap`, `turn_last_secs`,
    `turn_done`, `turn_total_secs` to `StatusBarState` + `new()`

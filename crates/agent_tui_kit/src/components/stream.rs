@@ -17,7 +17,7 @@ use ratatui::{
 };
 
 use crate::{
-    Component, Ctx, i18n::Messages, protocol::AgentUpdate, state::StreamState, theme::Theme,
+    Component, Ctx, i18n::Messages, protocol::RuntimeEvent, state::StreamState, theme::Theme,
 };
 
 /// Streams assistant output text into the log.
@@ -70,8 +70,8 @@ impl std::ops::DerefMut for StreamComponent {
 }
 
 impl Component for StreamComponent {
-    fn on_update(&mut self, update: &AgentUpdate, ctx: &mut Ctx<'_>) -> bool {
-        if let AgentUpdate::StreamChunk(text) = update {
+    fn on_update(&mut self, update: &RuntimeEvent, ctx: &mut Ctx<'_>) -> bool {
+        if let RuntimeEvent::Text { content: text, .. } = update {
             for event in self.state.push_chunk(text) {
                 ctx.stream_events.push(event);
             }
@@ -164,7 +164,11 @@ mod tests {
     fn stream_chunk_parses_into_outbox() {
         let (mut comp, mut log, mut pending, mut events) = setup();
         let dirty = comp.on_update(
-            &AgentUpdate::StreamChunk("hello\n\n".into()),
+            &RuntimeEvent::Text {
+                run_id: None,
+                role: "assistant".into(),
+                content: "hello\n\n".into(),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(dirty);
@@ -184,7 +188,11 @@ mod tests {
     fn unfinished_line_stays_in_state_for_render() {
         let (mut comp, mut log, mut pending, mut events) = setup();
         comp.on_update(
-            &AgentUpdate::StreamChunk("partial".into()),
+            &RuntimeEvent::Text {
+                run_id: None,
+                role: "assistant".into(),
+                content: "partial".into(),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(events.is_empty());
@@ -205,7 +213,10 @@ mod tests {
     fn unrelated_updates_are_ignored() {
         let (mut comp, mut log, mut pending, mut events) = setup();
         let dirty = comp.on_update(
-            &AgentUpdate::TaskComplete("done".into()),
+            &RuntimeEvent::TaskComplete {
+                run_id: None,
+                content: "done".into(),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(!dirty);

@@ -8,7 +8,7 @@
 //! [`submit_user_task`] matches a normal Insert Enter submit (Planning / log /
 //! history).
 
-use tact_protocol::UserCommand;
+use tact_view::UserCommand;
 
 use super::CommandExecOutcome;
 use crate::widgets::state::{App, SkillEntry, Status};
@@ -134,19 +134,19 @@ pub(crate) fn submit_user_task(app: &mut App, display_text: String, agent_task: 
 fn task_within_limits(app: &mut App, display_text: &str, agent_task: &str) -> bool {
     let display_chars = display_text.chars().count();
     let agent_chars = agent_task.chars().count();
-    if tact::consts::exceeds_input_char_limit(agent_chars) {
+    if tact_extensions::consts::exceeds_input_char_limit(agent_chars) {
         let msg = app
             .msgs()
             .skill_task_too_long_tmpl
-            .replace("{}", &tact::consts::MAX_INPUT_CHARS.to_string());
+            .replace("{}", &tact_extensions::consts::MAX_INPUT_CHARS.to_string());
         app.add_system_message(msg);
         return false;
     }
-    if tact::consts::exceeds_input_char_limit(display_chars) {
+    if tact_extensions::consts::exceeds_input_char_limit(display_chars) {
         let msg = app
             .msgs()
             .input_too_long_tmpl
-            .replace("{}", &tact::consts::MAX_INPUT_CHARS.to_string());
+            .replace("{}", &tact_extensions::consts::MAX_INPUT_CHARS.to_string());
         app.add_system_message(msg);
         return false;
     }
@@ -171,11 +171,18 @@ fn dispatch_user_task(app: &mut App, display_text: String, agent_task: String) -
     app.task_start_time = Some(chrono::Local::now());
     // Turn counters: this is the single choke point for user turns (direct
     // submits, queued flushes, skill dispatch), so count here. The per-task LLM
-    // counter resets and is driven by `AgentUpdate::TurnStats` from then on.
+    // counter resets and is driven by `RuntimeEvent::TurnStats` from then on.
     app.status_bar_mut().turn_user += 1;
     app.status_bar_mut().turn_llm = 0;
     app.status_bar_mut().turn_llm_cap = None;
-    let _ = app.user_cmd_tx.send(UserCommand::SubmitTask(agent_task));
+    let run_id = tact_protocol::RunId::from(uuid::Uuid::new_v4().to_string());
+    app.runtime_run_id = Some(run_id.clone());
+    let _ = app.user_cmd_tx.send(UserCommand::Runtime(
+        tact_protocol::RuntimeCommand::StartRun {
+            run_id,
+            input: serde_json::json!({"message": agent_task}),
+        },
+    ));
     true
 }
 
@@ -317,6 +324,16 @@ mod tests {
     use super::*;
     use crate::test_fixtures::TestApp;
 
+    fn runtime_task(command: UserCommand) -> Option<String> {
+        match command {
+            UserCommand::Runtime(tact_protocol::RuntimeCommand::StartRun { input, .. }) => {
+                input.get("message")?.as_str().map(str::to_owned)
+            }
+            UserCommand::SubmitTask(task) => Some(task),
+            _ => None,
+        }
+    }
+
     #[test]
     fn skill_args_strips_command_prefix() {
         assert_eq!(
@@ -361,8 +378,9 @@ mod tests {
         use tokio::sync::mpsc::unbounded_channel;
 
         use crate::widgets::state::App;
+        use tact_protocol::RuntimeEvent;
 
-        let (_agent_tx, agent_rx) = unbounded_channel::<tact_protocol::AgentUpdate>();
+        let (_agent_tx, agent_rx) = unbounded_channel::<RuntimeEvent>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel();
         let (plugin_tx, _plugin_rx) = unbounded_channel();
         let (_event_tx, plugin_event_rx) = unbounded_channel();
@@ -393,14 +411,11 @@ mod tests {
 
         assert!(outcome.handled);
         assert!(app.input.is_empty(), "an invoked skill clears the input");
-        match user_cmd_rx.try_recv().expect("skill must submit a task") {
-            tact_protocol::UserCommand::SubmitTask(task) => {
-                assert!(task.contains("<skill name=\"demo\">"), "{task}");
-                assert!(task.contains("Follow the checklist."), "{task}");
-                assert!(task.contains("ARGUMENTS: fix auth"), "{task}");
-            }
-            other => panic!("expected SubmitTask, got {other:?}"),
-        }
+        let task = runtime_task(user_cmd_rx.try_recv().expect("skill must submit a task"))
+            .expect("expected Runtime StartRun");
+        assert!(task.contains("<skill name=\"demo\">"), "{task}");
+        assert!(task.contains("Follow the checklist."), "{task}");
+        assert!(task.contains("ARGUMENTS: fix auth"), "{task}");
     }
 
     #[test]
@@ -523,9 +538,11 @@ mod tests {
         assert!(ok);
         assert!(app.pending_messages.is_empty());
         assert!(matches!(app.status, Status::Planning));
-        match user_cmd_rx.try_recv().expect("SubmitTask") {
-            UserCommand::SubmitTask(task) => assert_eq!(task, "go"),
-            other => panic!("expected SubmitTask, got {other:?}"),
+        match user_cmd_rx.try_recv().expect("StartRun") {
+            UserCommand::Runtime(tact_protocol::RuntimeCommand::StartRun { input, .. }) => {
+                assert_eq!(input["message"], "go")
+            }
+            other => panic!("expected Runtime StartRun, got {other:?}"),
         }
     }
 
@@ -598,7 +615,7 @@ mod tests {
         assert!(app.pending_messages.is_empty(), "queue drained by flush");
         let mut tasks = Vec::new();
         while let Ok(cmd) = user_cmd_rx.try_recv() {
-            if let UserCommand::SubmitTask(task) = cmd {
+            if let Some(task) = runtime_task(cmd) {
                 tasks.push(task);
             }
         }
@@ -618,9 +635,6 @@ mod tests {
         flush_pending_when_idle(&mut app);
 
         assert!(app.pending_messages.is_empty());
-        assert!(matches!(
-            user_cmd_rx.try_recv(),
-            Ok(UserCommand::SubmitTask(_))
-        ));
+        assert!(user_cmd_rx.try_recv().ok().and_then(runtime_task).is_some());
     }
 }

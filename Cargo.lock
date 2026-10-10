@@ -19,6 +19,7 @@ dependencies = [
  "ratatui-markdown",
  "syntect",
  "tact_protocol",
+ "tact_view",
  "unicode-segmentation",
  "unicode-width",
 ]
@@ -4763,6 +4764,25 @@ name = "tact"
 version = "1.1.33"
 dependencies = [
  "anyhow",
+ "async-trait",
+ "chrono",
+ "globset",
+ "regex",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tact_protocol",
+ "tempfile",
+ "tokio",
+ "tokio-util",
+ "tracing",
+]
+
+[[package]]
+name = "tact_extensions"
+version = "1.1.33"
+dependencies = [
+ "anyhow",
  "async-openai",
  "async-trait",
  "base64",
@@ -4793,8 +4813,12 @@ dependencies = [
  "sqlx",
  "strum 0.27.2",
  "strum_macros 0.27.2",
+ "tact",
  "tact_llm",
+ "tact_plugin_host",
  "tact_protocol",
+ "tact_trajectory",
+ "tact_view",
  "tar",
  "tempfile",
  "tera",
@@ -4806,29 +4830,6 @@ dependencies = [
  "tracing",
  "uuid",
  "walkdir",
- "wiremock",
-]
-
-[[package]]
-name = "tact-ui"
-version = "1.1.33"
-dependencies = [
- "anyhow",
- "base64",
- "chrono",
- "clap",
- "console-subscriber",
- "regex",
- "rmcp",
- "serde_json",
- "tact",
- "tact_llm",
- "tact_protocol",
- "tempfile",
- "tokio",
- "tracing-subscriber",
- "tui",
- "uuid",
  "wiremock",
 ]
 
@@ -4858,11 +4859,103 @@ dependencies = [
 ]
 
 [[package]]
+name = "tact_plugin_host"
+version = "1.1.33"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde_json",
+ "tact",
+ "tact_protocol",
+ "tokio",
+ "uuid",
+]
+
+[[package]]
+name = "tact_plugin_node"
+version = "1.1.33"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde_json",
+ "tact",
+ "tact_plugin_host",
+ "tact_protocol",
+ "tokio",
+]
+
+[[package]]
+name = "tact_plugin_wasm"
+version = "1.1.33"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde_json",
+ "tact",
+ "tact_plugin_host",
+ "tact_protocol",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
 name = "tact_protocol"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "tact_trajectory"
+version = "1.1.33"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tact",
+ "tact_protocol",
+ "tempfile",
+ "tokio",
+]
+
+[[package]]
+name = "tact_ui"
+version = "1.1.33"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "base64",
+ "chrono",
+ "clap",
+ "console-subscriber",
+ "regex",
+ "rmcp",
+ "serde_json",
+ "tact",
+ "tact_extensions",
+ "tact_llm",
+ "tact_protocol",
+ "tact_trajectory",
+ "tact_view",
+ "tempfile",
+ "tokio",
+ "tracing-subscriber",
+ "tui",
+ "uuid",
+ "wiremock",
+]
+
+[[package]]
+name = "tact_view"
+version = "1.1.33"
+dependencies = [
+ "serde",
+ "tact_protocol",
 ]
 
 [[package]]
@@ -5425,8 +5518,10 @@ dependencies = [
  "strum 0.27.2",
  "syntect",
  "tact",
+ "tact_extensions",
  "tact_llm",
  "tact_protocol",
+ "tact_view",
  "tempfile",
  "tokio",
  "tokio-stream",
@@ -5434,6 +5529,7 @@ dependencies = [
  "tracing",
  "unicode-segmentation",
  "unicode-width",
+ "uuid",
 ]
 
 [[package]]

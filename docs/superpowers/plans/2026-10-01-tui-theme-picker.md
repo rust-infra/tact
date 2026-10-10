@@ -14,7 +14,7 @@ took, not a forecast.
    - `model_persist_yes` / `model_persist_no` renamed to `persist_yes` / `persist_no` — they are no
      longer model-specific.
    - `cmd_theme` description rewritten to name the picker and `Ctrl+T`.
-3. **Config** (`crates/tact/src/config/{mod.rs,persist.rs}`)
+3. **Config** (`crates/tact_extensions/src/config/{mod.rs,persist.rs}`)
    - `persist_theme(&str)` next to the other `persist_*` entry points; no config file is an error
      the caller reports as "session only".
    - `update_ui_theme_in_toml`; `set_scalar` replaces `Table::insert` in all five helpers so a

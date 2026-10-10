@@ -18,7 +18,7 @@
 
 ## T1 协议与 tact 发射
 
-### `crates/protocol/src/agent.rs`
+### `crates/tact_protocol/src/agent.rs`
 
 - 新增（放 `TaskStatusSnapshot` 附近，镜像其风格）：
 
@@ -49,7 +49,7 @@ SubagentsChanged { runs: Vec<SubagentRunSnapshot> },
 - `dispatch_components` / `shell_handle` 的穷尽匹配处（`agent.rs`）同步处理新变体。
 - `AgentUpdate` 现有 test 补 destructure 测试。
 
-### `crates/tact/src/subagent.rs`
+### `crates/tact_extensions/src/subagent.rs`
 
 - `SubagentManager` 增 `known: Mutex<HashSet<String>>`（`SubagentManager::new` 初始化空集合）。
 - 方法：
@@ -69,7 +69,7 @@ pub async fn emit_subagents_changed(
 
 - `SharedSubagentManager` 转发 `note_started` / `ui_snapshot`。
 
-### `crates/tact/src/tool/subagent.rs`（spawn / cancel）
+### `crates/tact_extensions/src/tool/subagent.rs`（spawn / cancel）
 
 - `spawn_subagent`：在 `ctx.subagent_manager.start(child_id.clone()).await?` 后
   `ctx.subagent_manager.note_started(&child_id)`，随后
@@ -77,7 +77,7 @@ pub async fn emit_subagents_changed(
   ui_tx；async detached task 里用克隆的 `ui_tx` / `manager` 在落库后、`SubagentFinished` 前发射）。
 - `cancel_subagent` 工具：`cancel()` 后发射。
 
-### `crates/tact-ui/src/driver.rs`
+### `crates/tact_ui/src/driver.rs`
 
 - `UserCommand::CancelSubagent` 分支：`cancel()` 后
   `crate::subagent::emit_subagents_changed(&ui_tx, &subagent_manager).await`。

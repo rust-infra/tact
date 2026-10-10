@@ -4,9 +4,9 @@ Spec: [2026-09-30-mcp-tool-hook-handlers-design.md](../specs/2026-09-30-mcp-tool
 
 One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`).
 
-1. **Naming** (`crates/tact/src/mcp/mod.rs`)
+1. **Naming** (`crates/tact_extensions/src/mcp/mod.rs`)
    - `mcp_tool_name(server, tool)` free fn + `McpToolName::full_name`; `build_tool_specs` uses it.
-2. **Schema** (`crates/tact/src/plugin/hooks.rs`)
+2. **Schema** (`crates/tact_extensions/src/plugin/hooks.rs`)
    - `HookCommand` gains `server`, `tool`, `arguments`; `type` is camel/snake tolerant for the two
      spellings Tact accepts.
    - `HookCommand::kind() -> HookKind` with `Command` / `McpTool { server, tool }` / `Invalid(reason)`.

@@ -21,12 +21,12 @@
 
 ### T1 放宽安装校验 + 功能摘要
 
-- `crates/tact/src/plugin/install.rs`
+- `crates/tact_extensions/src/plugin/install.rs`
   - `CompatibilityManifest` → `PluginManifest`（name/description/version/author/hooks/mcp_servers，camelCase，全 `Option`/`default`）。
   - `validate_plugin_candidate` 返回 `PluginFeatures { skill_count, command_count, agent_count, has_hooks, has_mcp }`；至少一种非空，否则报"插件不包含 Tact 支持的任何功能"。
   - hooks 判定：manifest.hooks 相对路径存在（或 `hooks/` 目录存在含 `.json`）。
   - mcp 判定：manifest.mcp_servers 非空 或 插件根 `.mcp.json` 存在。
-- `crates/tact/src/plugin/model.rs`：`InstalledPlugin` 增加 `command_count` / `agent_count` / `has_hooks` / `has_mcp`（serde default）；新增 `PluginFeatures` 模型（可 `From<&InstalledPlugin>`）。
+- `crates/tact_extensions/src/plugin/model.rs`：`InstalledPlugin` 增加 `command_count` / `agent_count` / `has_hooks` / `has_mcp`（serde default）；新增 `PluginFeatures` 模型（可 `From<&InstalledPlugin>`）。
 - 测试：无 skills 仅 commands 可安装；仅 agents 可安装；仅 hooks 可安装；仅 mcp 可安装；全空报错；功能计数正确；旧 installed.json 反序列化兼容。
 
 ### T2 install/update 记录新字段
@@ -37,14 +37,14 @@
 
 ### T3 CLI list 功能摘要
 
-- `crates/tact-ui/src/plugin_cli.rs`：`tact plugin list` 输出 `skills=N commands=M agents=K hooks hooks=Y/N mcp=Y/N`。
+- `crates/tact_ui/src/plugin_cli.rs`：`tact plugin list` 输出 `skills=N commands=M agents=K hooks hooks=Y/N mcp=Y/N`。
 - 测试：plugin_cli_tests 更新。
 
 ## Phase 2 — Commands 加载
 
 ### T4 SkillRegistry 加载 plugin commands
 
-- `crates/tact/src/skill/mod.rs`
+- `crates/tact_extensions/src/skill/mod.rs`
   - `load_plugin_commands(commands_dir, plugin_id)`：遍历 `commands/*.md`，name = 文件 stem，命名空间 `plugin:<stem>`。
   - `get_skill_registry` 在 plugin skills 之后追加 plugin commands（需要 `PluginStore` 提供已安装插件根列表——复用 `installed_skill_roots` 的结构，新增 `installed_plugin_roots` 返回所有有效缓存根）。
   - 同一插件内 skills/commands 同名：后加载 commands 覆盖。
@@ -54,14 +54,14 @@
 
 ### T5 plugin store 提供通用根
 
-- `crates/tact/src/plugin/store.rs`：新增 `installed_plugin_roots() -> Vec<PluginRoot { plugin_id, root: PathBuf }>`（供 commands/agents/hooks/mcp 复用），`installed_skill_roots` 改由它派生（保持现有 API/测试）。
+- `crates/tact_extensions/src/plugin/store.rs`：新增 `installed_plugin_roots() -> Vec<PluginRoot { plugin_id, root: PathBuf }>`（供 commands/agents/hooks/mcp 复用），`installed_skill_roots` 改由它派生（保持现有 API/测试）。
 - 测试：根列表仅含有效缓存。
 
 ## Phase 3 — MCP 从已安装插件加载
 
 ### T6 `.mcp.json` 解析 + 插件缓存扫描
 
-- `crates/tact/src/mcp/mod.rs`
+- `crates/tact_extensions/src/mcp/mod.rs`
   - `McpProjectConfig`：`{ type, command, args, env, url }`（serde camelCase + `type` serde rename）。
   - `installed_plugin_mcp_servers(home: &PluginHome) -> Result<Vec<(String, McpServerConfig)>>`：遍历已安装插件根，读 `.claude-plugin/plugin.json` mcpServers + `.mcp.json`；stdio → `McpServerConfig`，http/url → warn 跳过；server 名 `plugin__<id>__<server>`。
 - 测试：stdlib server 注册；http 跳过；plugin.json mcpServers 兼容；无插件时为空。
@@ -84,13 +84,13 @@
 
 ### T9 ToolContext 携带注册表
 
-- `crates/tact/src/tool/mod.rs`：`ToolContext` 增加 `pub agent_registry: SharedAgentDefinitionRegistry`。
+- `crates/tact_extensions/src/tool/mod.rs`：`ToolContext` 增加 `pub agent_registry: SharedAgentDefinitionRegistry`。
 - `interactive.rs` / `headless.rs`：构建并注入（同 skill_registry 模式）。
 - 测试：孤儿上下文默认空注册表可用。
 
 ### T10 spawn_subagent 按名引用
 
-- `crates/tact/src/tool/subagent.rs`：`SubagentInput.agent: Option<String>`（serde default）。
+- `crates/tact_extensions/src/tool/subagent.rs`：`SubagentInput.agent: Option<String>`（serde default）。
 - 解析流程：agent 名 → 注册表查 `plugin:<name>` 与原名 → system prompt = body + 用户任务；`tools` 过滤子代理工具集（Read/Glob/Grep→ReadFile, Bash→Bash, Edit→EditFile, Write→WriteFile, Sleep→Sleep，未知名忽略）；`model` 覆盖；`permission_mode` 覆盖（父级 Auto 保持粘性）。
 - 未找到 → 明确报错并列出可用名。
 - 测试：agent 引用成功（system prompt 含 body、工具集被过滤、model/permissionMode 生效）；未知 agent 报错。
@@ -107,13 +107,13 @@
 
 ### T13 hook JSON 解析模型
 
-- 新模块 `crates/tact/src/plugin/hooks.rs`：`HooksFile` / `HookMatcher` / `HookCommand`（ty/command/commandWindows/timeout/statusMessage/async，serde camelCase + "async" rename）。
+- 新模块 `crates/tact_extensions/src/plugin/hooks.rs`：`HooksFile` / `HookMatcher` / `HookCommand`（ty/command/commandWindows/timeout/statusMessage/async，serde camelCase + "async" rename）。
 - `PluginManifest.hooks` 相对路径解析（相对插件根）。
 - 测试：官方 ponytail hooks JSON 可解析；matcher/command/timeout/statusMessage 字段；非法 JSON 报错。
 
 ### T14 命令执行器
 
-- 新模块 `crates/tact/src/plugin/hook_runner.rs`：
+- 新模块 `crates/tact_extensions/src/plugin/hook_runner.rs`：
   - `run_command_hook(cmd, plugin_root, work_dir, event, input_json) -> Result<HookOutput>`；
   - `${CLAUDE_PLUGIN_ROOT}` 展开；env `CLAUDE_PLUGIN_ROOT` / `CLAUDE_PROJECT_DIR`；Unix `sh -c`（保留 commandWindows 字段仅 Windows 用）；
   - stdin JSON（session_id/transcript_path/cwd/hook_event_name + 事件字段）；stdout JSON；stderr 日志；timeout（默认 60s，0=不限）；async 立即返回；
@@ -123,7 +123,7 @@
 
 ### T15 Hook 枚举扩展 + 新注入点
 
-- `crates/tact/src/hook/mod.rs`：
+- `crates/tact_extensions/src/hook/mod.rs`：
   - `Hook::UserPromptSubmit(Box<dyn UserPromptSubmitFn>)`（`Fn(&LoopState, &mut String) -> …HookControl`）；
   - `Hook::SubagentStart(Box<dyn SubagentStartFn>)`（`Fn(&LoopState, &mut SubagentStartCtx) -> …HookControl`）；
   - `HookTypes` 自动跟随；`invoke_hooks!` 复用。
@@ -133,7 +133,7 @@
 
 ### T16 插件 hook 注册适配器
 
-- 新模块 `crates/tact/src/plugin/hook_register.rs`（或并入 hooks.rs）：
+- 新模块 `crates/tact_extensions/src/plugin/hook_register.rs`（或并入 hooks.rs）：
   - `register_plugin_hooks(agent_builder 相关, home: &PluginHome, work_dir)`：遍历已安装插件 → 解析 hooks → 按事件注册适配闭包（matcher 过滤在闭包内）；
   - SessionStart 输出 `systemPrompt`/`updatedSystemPrompt` → warn 不应用；
   - PreToolUse 输出 `additionalContext` → 追加进 tool_input；

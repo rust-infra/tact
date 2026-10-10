@@ -21,7 +21,7 @@ pub(crate) use overlay::handle_overlay_key;
 pub(crate) use palette::handle_palette_mode;
 pub(crate) use select::handle_select_mode;
 pub(crate) use skills::flush_pending_when_idle;
-use tact_protocol::UserCommand;
+use tact_view::UserCommand;
 
 use crate::widgets::state::{App, InputMode, SelectKind, SlashCommand, Status};
 
@@ -618,14 +618,14 @@ fn skills_table_markdown(
 /// it inside `spawn_blocking` (see `App::start_skills_reload`). Kept synchronous
 /// and lock-scoped: no lock is ever held across an `.await`.
 pub(crate) fn reload_skills(
-    registry: &tact::skill::SharedSkillRegistry,
+    registry: &tact_extensions::skill::SharedSkillRegistry,
     work_dir: &std::path::Path,
 ) -> Result<crate::widgets::state::app::background::SkillsSnapshot, String> {
     use crate::widgets::state::app::background::SkillsSnapshot;
 
-    let mut reg = tact::skill::lock_skills(registry);
+    let mut reg = tact_extensions::skill::lock_skills(registry);
     // Keep search roots in sync with the current workdir (tests may set work_dir late).
-    *reg = tact::skill::get_skill_registry(work_dir).map_err(|e| e.to_string())?;
+    *reg = tact_extensions::skill::get_skill_registry(work_dir).map_err(|e| e.to_string())?;
     let description = reg.describe_available();
     let data = reg
         .skills()
@@ -709,7 +709,7 @@ mod tests {
     use crate::test_fixtures::TestApp;
     use crate::widgets::state::{App, InputMode, SlashCommand, Status, Subcommand};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use tact_protocol::UserCommand;
+    use tact_view::UserCommand;
 
     /// Runs `/skill <sub>` the way the input box does: the palette dispatches on
     /// the command name alone, and the handler reads the subcommand from the

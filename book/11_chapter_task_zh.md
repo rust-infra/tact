@@ -8,7 +8,7 @@
 
 ## 1. 任务即 Agent Loop 的一轮
 
-在 Tact 中，**任务（task）** 指 `Agent::agent_loop`（`crates/tact/src/agent/mod.rs`）一次迭代中的工作：
+在 Tact 中，**任务（task）** 指 `Agent::agent_loop`（`crates/tact_extensions/src/agent/mod.rs`）一次迭代中的工作：
 
 ```text
 ┌─────────────┐    LLM call    ┌─────────────────────┐
@@ -41,7 +41,7 @@
 
 ## 2. 三阶段流水线
 
-`Agent::execute_tool_call`（`crates/tact/src/agent/tool_dispatch.rs`）将每轮分为三个阶段。
+`Agent::execute_tool_call`（`crates/tact_extensions/src/agent/tool_dispatch.rs`）将每轮分为三个阶段。
 
 ### Phase 1 — 预检（串行）
 
@@ -56,7 +56,7 @@
 
 ### Phase 2 — 执行（按 wave 并行）
 
-所有通过预检的工具交给 `crates/tact/src/agent/tool_schedule.rs` 中的调度器：
+所有通过预检的工具交给 `crates/tact_extensions/src/agent/tool_schedule.rs` 中的调度器：
 
 - 无依赖的 read 一起运行。
 - 冲突的 read/write 或 write/write 串行化。
@@ -82,7 +82,7 @@ Wave 按序执行；同一 wave 内工具并发运行。
 
 ## 3. 冲突模型与安全
 
-`tool_schedule.rs` 决定哪些工具可重叠，但它不维护一张工具名表：资源来自**工具自己的元数据**。每个工具在 `ToolMetadata.resources`（`ResourcePolicy`，`crates/tact/src/tool/metadata.rs`）里声明形状，`tool_resources_from_metadata` 调 `ResourcePolicy::resolve` 把它 + 本次输入解析成具体的读/写路径集：
+`tool_schedule.rs` 决定哪些工具可重叠，但它不维护一张工具名表：资源来自**工具自己的元数据**。每个工具在 `ToolMetadata.resources`（`ResourcePolicy`，`crates/tact_extensions/src/tool/metadata.rs`）里声明形状，`tool_resources_from_metadata` 调 `ResourcePolicy::resolve` 把它 + 本次输入解析成具体的读/写路径集：
 
 | `ResourcePolicy` | 解析结果 | 使用者 |
 |------------------|----------|--------|
@@ -135,7 +135,7 @@ MCP 工具不走这套元数据：它们的资源由 `mcp_server_resources(serve
 
 风险不再按工具名匹配——名字是字符串，策略是数据。完整阶梯、模式与 TUI 审批流程见 [权限模型](./10_chapter_permission_zh.md)。
 
-Hook（`PreToolUse`、`PostToolUse`）在 `crates/tact/src/hook/mod.rs`，可检查或修改工具输入/输出。它们在并行核心周围串行运行。完整设计见 [Agent 生命周期 Hook](./09_chapter_hook_zh.md)。
+Hook（`PreToolUse`、`PostToolUse`）在 `crates/tact_extensions/src/hook/mod.rs`，可检查或修改工具输入/输出。它们在并行核心周围串行运行。完整设计见 [Agent 生命周期 Hook](./09_chapter_hook_zh.md)。
 
 ---
 
@@ -182,13 +182,13 @@ Hook（`PreToolUse`、`PostToolUse`）在 `crates/tact/src/hook/mod.rs`，可检
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/agent/mod.rs` | `Agent::agent_loop`、`stream_message`、会话辅助 |
-| `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call`、三阶段编排 |
-| `crates/tact/src/agent/tool_schedule.rs` | 资源模型、冲突检测、wave 调度器、`ToolScheduleSummary` |
-| `crates/tact/src/permission/mod.rs` | 权限决策（`check` / `check_with_auto`）与模式；风险本身由 `tool/metadata.rs` 的 `PermissionPolicy` 解析 |
-| `crates/tact/src/hook/mod.rs` | `PreToolUse` / `PostToolUse` hook |
-| `crates/tact/src/tool/mod.rs` | `ToolRouter`、工具注册、native 工具分发 |
-| `crates/tact/src/store/session_store/` | `record_tool_schedule` — 持久化 schedule summary |
+| `crates/tact_extensions/src/agent/mod.rs` | `Agent::agent_loop`、`stream_message`、会话辅助 |
+| `crates/tact_extensions/src/agent/tool_dispatch.rs` | `execute_tool_call`、三阶段编排 |
+| `crates/tact_extensions/src/agent/tool_schedule.rs` | 资源模型、冲突检测、wave 调度器、`ToolScheduleSummary` |
+| `crates/tact_extensions/src/permission/mod.rs` | 权限决策（`check` / `check_with_auto`）与模式；风险本身由 `tool/metadata.rs` 的 `PermissionPolicy` 解析 |
+| `crates/tact_extensions/src/hook/mod.rs` | `PreToolUse` / `PostToolUse` hook |
+| `crates/tact_extensions/src/tool/mod.rs` | `ToolRouter`、工具注册、native 工具分发 |
+| `crates/tact_extensions/src/store/session_store/` | `record_tool_schedule` — 持久化 schedule summary |
 
 ---
 

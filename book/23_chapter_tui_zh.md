@@ -48,12 +48,12 @@ sequenceDiagram
 
 ### 交互式（`tact-ui`）
 
-`crates/tact-ui/src/interactive.rs` 中的 `run_interactive`（由 `main.rs` 分发）：
+`crates/tact_ui/src/interactive.rs` 中的 `run_interactive`（由 `main.rs` 分发）：
 
 1. `tact::config::init()` — 设置 + LLM provider（[Ch 21](./21_chapter_config_zh.md)）。
 2. 打开 SQLite session store，resolve `session_id`（`--session`、`--resume-last` 或新 UUID）。`--resume-last` 与 `--list-sessions` 按当前工作目录的 `root_dir` 过滤 session，忽略其他项目行。`SessionLockGuard` 在争用前重试 `try_lock_session`。这一步连同建行、抢锁、注册、touch 一起由 `session_bootstrap::open_session` 完成，两个前端共用（它返回**已持有**的锁，何时释放由调用方决定）。
 3. 建好 channel / session store / skill registry 等，**先在独立 tokio task 上 spawn `tui::run_tui(...)`** —— 这些都不依赖 Agent，所以 TUI 先可见。
-4. **与 TUI 竞速**地跑 `build_agent_for_interactive(...)`。构建本身（`toolset()`、MCP router、五个 manager、`ToolContext`、`with_ui_channel(agent_tx)`）与 headless 共用 `crates/tact-ui/src/session_bootstrap.rs` 的 `bootstrap_session`；两个前端只在两处不同：启动提示的出口（`Notices`：stderr 或 `AgentUpdate::Info`），以及有没有 UI 通道（`UiWiring`）。构建期间用户退出（`q` / `/quit`）就**放弃构建**直接返回：这一步最慢的是逐个 MCP server 握手，远端 server 的 OAuth 发现可以耗掉数秒，无条件 await 会让 `q` 看起来像卡住。丢弃构建是安全的——每个 MCP transport 在 drop 时杀掉自己的子进程——代价是这条路不打印 session id / stats，因为根本没有 agent 可总结。
+4. **与 TUI 竞速**地跑 `build_agent_for_interactive(...)`。构建本身（`toolset()`、MCP router、五个 manager、`ToolContext`、`with_ui_channel(agent_tx)`）与 headless 共用 `crates/tact_ui/src/session_bootstrap.rs` 的 `bootstrap_session`；两个前端只在两处不同：启动提示的出口（`Notices`：stderr 或 `AgentUpdate::Info`），以及有没有 UI 通道（`UiWiring`）。构建期间用户退出（`q` / `/quit`）就**放弃构建**直接返回：这一步最慢的是逐个 MCP server 握手，远端 server 的 OAuth 发现可以耗掉数秒，无条件 await 会让 `q` 看起来像卡住。丢弃构建是安全的——每个 MCP transport 在 drop 时杀掉自己的子进程——代价是这条路不打印 session id / stats，因为根本没有 agent 可总结。
 5. 构建成功后 spawn driver task 跑 `user_cmd_rx` 循环 — 分发 `SubmitTask`、`Cancel`、`QueryBalance`。
 6. `tui_handle` 结束后等 driver 收尾（SessionEnd hook + `shutdown_mcp`），再打印 session id 与 stats。
 
@@ -61,7 +61,7 @@ sequenceDiagram
 
 ### Headless（`tact-ui headless "prompt"`）
 
-`crates/tact-ui/src/headless.rs` 中的 `run_headless`。无 TUI 运行单次 `agent_loop`，最终文本打印到 stdout，发送桌面通知。由于没有 live card，工具进度保持仅输出最终结果。使用 config 驱动的权限模式 — 与交互模式相同。
+`crates/tact_ui/src/headless.rs` 中的 `run_headless`。无 TUI 运行单次 `agent_loop`，最终文本打印到 stdout，发送桌面通知。由于没有 live card，工具进度保持仅输出最终结果。使用 config 驱动的权限模式 — 与交互模式相同。
 
 agent 构建与交互模式共用 `session_bootstrap::bootstrap_session`（见上）。两处差异是刻意的：启动提示走 stderr（`Notices::Stderr`，另有交互模式不报的 `[permission: …]` 一行——TUI 的状态栏已经在显示权限模式），且没有 UI 通道（`ui: None`）。`ensure_session` 留在 headless 侧：它只有一次 `agent_loop`，必须在开跑前恢复历史；TUI 交给 `agent_loop` 自己做。
 
@@ -125,7 +125,7 @@ id=cmp_sanitize]` 只显示 id 的前几个字符）。压缩失败会显示 `Er
 完成的压缩（incomplete streamed compaction）是硬性协议错误，绝不静默地
 从可见文本“恢复”。
 
-`build_user_message`（`crates/tact-ui/src/user_message.rs`）将行内 `![alt](path)` 图片与 `@file` 引用解析为多模态 `ContentBlock`。栅格图使用 config 中 `[ui.vision_image]`：`compress`（默认 `true`）缩小并重编码为 JPEG（`max_edge` 1280、`jpeg_quality` 80）；设 `compress = false` 发送原始文件字节。文件路径用 `tact::tool::safe_path` 解析 — 工作区外引用在 prompt 文本中保持不变。
+`build_user_message`（`crates/tact_ui/src/user_message.rs`）将行内 `![alt](path)` 图片与 `@file` 引用解析为多模态 `ContentBlock`。栅格图使用 config 中 `[ui.vision_image]`：`compress`（默认 `true`）缩小并重编码为 JPEG（`max_edge` 1280、`jpeg_quality` 80）；设 `compress = false` 发送原始文件字节。文件路径用 `tact::tool::safe_path` 解析 — 工作区外引用在 prompt 文本中保持不变。
 
 **需要 vision 能力。** 压缩仅缩小 payload；不会让纯文本模型接受图片。OpenAI 兼容 provider（`openai` / `deepseek` / `kimi`）上 `ContentBlock::Image` 转为 Chat Completions `image_url` part（[Ch 22](./22_chapter_llm_zh.md)）。仅反序列化 `text` content part 的端点返回 HTTP 400（`unknown variant image_url, expected text`）。Anthropic 使用原生 Messages API image block。请用多模态模型，或不附加图片。
 
@@ -151,7 +151,7 @@ TUI 在 `crates/tui/src/widgets/state/app/agent.rs` → `handle_agent_update` �
 | `Error` | 带 `AgentErrorKind` 的错误横幅 |
 | `Info` | 系统消息行 |
 
-余额与配额使用独立 `AccountUpdate` channel（`crates/tact-ui/src/account.rs`），非 `AgentUpdate`。
+余额与配额使用独立 `AccountUpdate` channel（`crates/tact_ui/src/account.rs`），非 `AgentUpdate`。
 
 **重要：** `Agent::agent_loop` **不**发出 `TaskComplete`。`interactive.rs` 仅在成功、未取消的 loop 返回后发送：
 
@@ -376,9 +376,9 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 **ctx 恢复百分比、去掉进度条（2026-09-12，同日）：** 上面的瘦身一度删掉了 ctx 的 `pct%` 而保留 `■`/`·` 进度条。同日反转：进度条**删除**，百分比前置——`ctx [▍···] 45K/1M` → **`ctx 4% 45K/1M`**（24 → 17 → 14 列）。理由：进度条只是把百分比用字符又画了一遍，而只有 `45K/1M` 时读者得自己做除法才能回答"离自动压缩还有多远"。绝对 `used/window` 保留——比率无法替代它来自的两个计数。缓存 `▣` 段也移到紧接 `ctx` **之后**、回合计数**之前**，让两个会话级比率挨着读；push 顺序现为 `model → out → think → ctx → cache → turns → timing`，窄终端存活顺序为 `ctx > cache > 回合计数 > 回合耗时`。
 
-**回合计数与耗时（2026-09-12）：** `⟳` 统计本会话已派发的用户回合——在唯一派发入口（`handlers/skills.rs::dispatch_user_task`，同时服务排队刷新与 skill 派发）自增；断点续传时由 `load_history` 统计已持久化的 user 消息播种。`⇅` 统计当前任务的 agent-loop 迭代：agent 每次循环发一次 `AgentUpdate::TurnStats { turns_taken, max_turns }`（`crates/tact/src/agent/mod.rs`），kit 的 `StatusBarComponent` 存入状态，shell 在派发时重置。`max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**——只有 `spawn_subagent` 会设置 cap，主 agent 底栏永远不会显示。耗时在 `add_task_end_separator`（`widgets/state/app/popups.rs`）累计，这是唯一真正冻结 `task_start_time` 的位置；被取消的回合计入，合成分隔线（无 start time）不计入。运行中的实时耗时**不在底栏**：2026-09-14 它一度落在第 1 行紧挨运行，2026-10-05 移到日志的 **task-stats 行**（见上），底栏与顶栏都不再显示任何实时时钟。第 2 行的 `⏱` 只回答"已结束的回合各花多久"（上一回合 + 会话平均），与实时那只钟互不相干。
+**回合计数与耗时（2026-09-12）：** `⟳` 统计本会话已派发的用户回合——在唯一派发入口（`handlers/skills.rs::dispatch_user_task`，同时服务排队刷新与 skill 派发）自增；断点续传时由 `load_history` 统计已持久化的 user 消息播种。`⇅` 统计当前任务的 agent-loop 迭代：agent 每次循环发一次 `AgentUpdate::TurnStats { turns_taken, max_turns }`（`crates/tact_extensions/src/agent/mod.rs`），kit 的 `StatusBarComponent` 存入状态，shell 在派发时重置。`max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**——只有 `spawn_subagent` 会设置 cap，主 agent 底栏永远不会显示。耗时在 `add_task_end_separator`（`widgets/state/app/popups.rs`）累计，这是唯一真正冻结 `task_start_time` 的位置；被取消的回合计入，合成分隔线（无 start time）不计入。运行中的实时耗时**不在底栏**：2026-09-14 它一度落在第 1 行紧挨运行，2026-10-05 移到日志的 **task-stats 行**（见上），底栏与顶栏都不再显示任何实时时钟。第 2 行的 `⏱` 只回答"已结束的回合各花多久"（上一回合 + 会话平均），与实时那只钟互不相干。
 
-**输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；长行按字符边界软换行（`wrap_line`，CJK 双宽感知——`Paragraph` 保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（`caret_in_wrapped`）；CJK 感知光标宽度；无批准横幅（agent 的权限询问是 `RequestSelect` 更新，会以 `InputMode::Select` 打开选择弹窗）。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact/src/voice/`。
+**输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；长行按字符边界软换行（`wrap_line`，CJK 双宽感知——`Paragraph` 保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（`caret_in_wrapped`）；CJK 感知光标宽度；无批准横幅（agent 的权限询问是 `RequestSelect` 更新，会以 `InputMode::Select` 打开选择弹窗）。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact_extensions/src/voice/`。
 
 **忙时排队消息**（Codex 风格"当前任务结束后提交"，2026-08-16 起）：agent 处于 `Planning`/`Executing` 时按 Enter 不再弹"busy"提示——文本进入 `App.pending_messages` 队列（输入框清空，提示"消息将在当前任务结束后自动提交（按 esc 立即中断并发送）"及每条排队消息一行 `↳ 消息` **渲染在输入框上方**）。队列在 agent 进入 `Idle`/`Done` 时自动提交（`handlers::skills::flush_pending_when_idle`，主循环在 `agent_rx` 排空后调用）：每条排队消息按序各自派发为一个 `SubmitTask`——命令驱动（`tact-ui/src/driver.rs`）本就会串行处理在途的 `SubmitTask`，因此每条排队消息都成为下一个用户回合。**Esc 保持原语义不变**——始终退出插入模式、队列保留（绝不中断运行中的任务）。**没有"立即发送"操作**：排队消息纯自动——当前任务结束后自动提交。丢弃排队消息的**唯一**途径是 pending 提示行文案后紧接的可点击 **`[Cancel]` 按钮**（鼠标；窄终端隐藏）：只清空队列、不影响运行中的任务。`/cancel`（及 Normal 模式 `c`）与队列无关——只取消在途任务（Idle/Done 时 noop 提示），与功能引入前完全一致；被 `/cancel` 结束的任务同样会触发排队消息的自动提交（与任务自然结束相同）。字符长度校验在入队时执行，超长消息不会进入队列。排队状态位于 `widgets/state/app/pending.rs`；排队块自行绘制背景（无残影，见 Ch 26 2026-08-16 条目）。
 
@@ -767,12 +767,12 @@ TUI 本身不对流式事件直接调用 notification API。
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact-ui/src/main.rs` | CLI 分发（`init`、`--list-sessions`、headless vs interactive） |
-| `crates/tact-ui/src/interactive.rs` | TUI 接线、`UserCommand` 分发、`TaskComplete` |
-| `crates/tact-ui/src/headless.rs` | 非交互单次 agent 运行 |
-| `crates/tact-ui/src/user_message.rs` | 多模态 `@file` / markdown 图片解析 |
-| `crates/tact-ui/src/permission.rs` | `permission_mode_from_config()` |
-| `crates/tact-ui/src/sessions.rs` | `--list-sessions` 输出 |
+| `crates/tact_ui/src/main.rs` | CLI 分发（`init`、`--list-sessions`、headless vs interactive） |
+| `crates/tact_ui/src/interactive.rs` | TUI 接线、`UserCommand` 分发、`TaskComplete` |
+| `crates/tact_ui/src/headless.rs` | 非交互单次 agent 运行 |
+| `crates/tact_ui/src/user_message.rs` | 多模态 `@file` / markdown 图片解析 |
+| `crates/tact_ui/src/permission.rs` | `permission_mode_from_config()` |
+| `crates/tact_ui/src/sessions.rs` | `--list-sessions` 输出 |
 | `crates/tui/src/lib.rs` | `run_tui` 主循环、dirty 检查、终端生命周期 |
 | `crates/tui/src/handlers/` | 各输入模式键盘/鼠标 |
 | `crates/tui/src/render/layout.rs` | 主区域布局模式、popup 锚定 |

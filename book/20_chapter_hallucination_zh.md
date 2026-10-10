@@ -2,7 +2,7 @@
 
 本章系统梳理编码 Agent 循环中的 **LLM 幻觉模式**——模型凭空编造不存在的文件、函数签名、对话历史或工具输出。理解这些模式对于构建健壮的 Agent 系统至关重要，因为 prompt 中的幻觉（不仅是输出）会**毒化后续回合**，使整个任务偏离轨道。
 
-相关代码位于 `crates/tact/src/compact/mod.rs`、`crates/tact/src/agent/mod.rs`（特别是 prompt 构建和压缩逻辑）以及 `tact_llm` provider 适配层。
+相关代码位于 `crates/tact_extensions/src/compact/mod.rs`、`crates/tact_extensions/src/agent/mod.rs`（特别是 prompt 构建和压缩逻辑）以及 `tact_llm` provider 适配层。
 
 ---
 
@@ -220,5 +220,5 @@ LLM "记住"了命令*应该*输出什么，并用它替换了失败结果。这
 - [Agent 主循环](./18_chapter_agent_loop_zh.md) — 压缩后上下文重建的位置
 - [系统提示](./04_chapter_prompt_zh.md) — 截断占位符引导所在
 - [工具系统](./07_chapter_tool_zh.md) — 验证用的工具后钩子
-- `crates/tact/src/agent/mod.rs` — `compact_history_with_mode` 实现
-- `crates/tact/src/compact/mod.rs` — `COMPACTED_TOOL_RESULT` 和 `micro_compact`
+- `crates/tact_extensions/src/agent/mod.rs` — `compact_history_with_mode` 实现
+- `crates/tact_extensions/src/compact/mod.rs` — `COMPACTED_TOOL_RESULT` 和 `micro_compact`

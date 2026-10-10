@@ -5,7 +5,7 @@ set -euo pipefail
 REPO="${TACT_INSTALL_REPO:-rust-infra/tact}"
 GIT_REF="${TACT_INSTALL_GIT_REF:-main}"
 BINARY_NAME="tact-ui"
-CRATE_PACKAGE="tact-ui"
+CRATE_PACKAGE="tact_ui"
 DEFAULT_VERSION="0.19.0"
 # Matches workspace.package.rust-version (edition 2024).
 MIN_RUSTC_VERSION="1.85.0"

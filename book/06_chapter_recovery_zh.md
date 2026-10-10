@@ -1,6 +1,6 @@
 # 错误恢复（Error Recovery）
 
-本章说明 Tact 的 agent 循环如何在**不丢失会话**的前提下扛过失败：瞬态传输错误用指数退避重试，过大的 prompt 触发上下文压缩，被截断的模型输出则在句中续写。分类逻辑在 `crates/tact/src/recovery.rs`；决策接入 `crates/tact/src/agent/mod.rs` 中的 `agent_loop`。
+本章说明 Tact 的 agent 循环如何在**不丢失会话**的前提下扛过失败：瞬态传输错误用指数退避重试，过大的 prompt 触发上下文压缩，被截断的模型输出则在句中续写。分类逻辑在 `crates/tact_extensions/src/recovery.rs`；决策接入 `crates/tact_extensions/src/agent/mod.rs` 中的 `agent_loop`。
 
 完整循环结构见 [Agent 主循环](./18_chapter_agent_loop_zh.md)（英文）。
 
@@ -18,7 +18,7 @@
 | **Backoff** | 错误分类为 `Transient`（见 §3） | 睡眠 `backoff_delay(attempt)` 后重试 | `transport_attempts` |
 | **Continue** | 流式成功但 `stop_reason = MaxTokens` | 追加 `CONTINUATION_MESSAGE` 作为用户轮次 | `continuation_attempts` |
 
-三者**各有自己的上限**，不共用一个数（`crates/tact/src/recovery.rs`）：
+三者**各有自己的上限**，不共用一个数（`crates/tact_extensions/src/recovery.rs`）：
 
 ```rust
 pub const MAX_COMPACT_ATTEMPTS: u32 = 3;       // prompt-too-long 压缩重试
@@ -195,7 +195,7 @@ if !has_tool_calls_now && assistant.content.as_deref().unwrap_or("").is_empty() 
 }
 ```
 
-它在**每次**外发请求时 stub 空 assistant 消息并剥离 orphaned tool call，不仅限于恢复路径。更干净的长远修复是在 `agent_loop` 里避免把空 assistant 轮次加入 `context`，而不是在请求时打补丁。见 `crates/tact/src/agent/mod.rs` 与 `crates/tact_llm/src/convert.rs` 中的 `REVIEW` 注释。
+它在**每次**外发请求时 stub 空 assistant 消息并剥离 orphaned tool call，不仅限于恢复路径。更干净的长远修复是在 `agent_loop` 里避免把空 assistant 轮次加入 `context`，而不是在请求时打补丁。见 `crates/tact_extensions/src/agent/mod.rs` 与 `crates/tact_llm/src/convert.rs` 中的 `REVIEW` 注释。
 
 ---
 
@@ -203,9 +203,9 @@ if !has_tool_calls_now && assistant.content.as_deref().unwrap_or("").is_empty() 
 
 | 文件 | 职责 |
 |------|------|
-| `crates/tact/src/recovery.rs` | `RecoveryState`、分类器（`classify_llm_error` / `classify_error` / `classify_text`）、`is_transient_http_status`、`backoff_delay`、`CONTINUATION_MESSAGE`、`MAX_COMPACT_ATTEMPTS` / `MAX_TRANSPORT_ATTEMPTS` / `MAX_CONTINUATION_ATTEMPTS` |
-| `crates/tact/src/agent/mod.rs` | `agent_loop` 中的恢复分支；计数器重置；`compact_history` 调用 |
-| `crates/tact/src/compact/mod.rs` | compact 策略使用的压缩原语 |
+| `crates/tact_extensions/src/recovery.rs` | `RecoveryState`、分类器（`classify_llm_error` / `classify_error` / `classify_text`）、`is_transient_http_status`、`backoff_delay`、`CONTINUATION_MESSAGE`、`MAX_COMPACT_ATTEMPTS` / `MAX_TRANSPORT_ATTEMPTS` / `MAX_CONTINUATION_ATTEMPTS` |
+| `crates/tact_extensions/src/agent/mod.rs` | `agent_loop` 中的恢复分支；计数器重置；`compact_history` 调用 |
+| `crates/tact_extensions/src/compact/mod.rs` | compact 策略使用的压缩原语 |
 | `docs/state_machines.md` | 含恢复转移的状态机图 |
 
 ---

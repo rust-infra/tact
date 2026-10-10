@@ -59,7 +59,7 @@ Phase 2 内部的波次划分、冲突判定与 barrier 语义是 §9 的主题�
 
 ## 3. ToolContext
 
-所有原生 tool handler 的共享状态（`crates/tact/src/tool/mod.rs`）：
+所有原生 tool handler 的共享状态（`crates/tact_extensions/src/tool/mod.rs`）：
 
 ```rust
 pub struct ToolContext {
@@ -119,7 +119,7 @@ Spec 通过 `OnceLock` 只算一次——正常用法下首次 `tool_specs()` �
 
 ### 主 agent（`toolset()`）
 
-`try_toolset()`（`crates/tact/src/tool/registry.rs` 第 33–75 行）注册 **35 个**工具：文件系统、shell、后台任务、任务、团队、worktree、memory、skills、压缩与子 agent spawn。`save_memory` 随 `[agent].memory_enabled` 增删，因此关闭 memory 时是 34 个。
+`try_toolset()`（`crates/tact_extensions/src/tool/registry.rs` 第 33–75 行）注册 **35 个**工具：文件系统、shell、后台任务、任务、团队、worktree、memory、skills、压缩与子 agent spawn。`save_memory` 随 `[agent].memory_enabled` 增删，因此关闭 memory 时是 34 个。
 
 **注意 `apply_patch` 不在其中。** 它的模块（`tool/apply_patch.rs`）与 `APPLY_PATCH_METADATA` 都还在，但 `454367d6` 把它从 registry 的 import 中删掉后再没有任何 toolset 注册它——模型无法调用。`edit_file` 恢复之后它就退出了工具面，残留的元数据是孤儿（见 [任务与工具调度](./11_chapter_task_zh.md) §3）。
 
@@ -167,7 +167,7 @@ pub async fn save_memory(ctx: ToolContext, input: SaveMemoryInput) -> Result<Str
 
 ### 元数据常量
 
-工具的身份、权限声明与呈现策略声明为 `*_METADATA` 常量（`ToolMetadata`，定义在 `crates/tact/src/tool/metadata.rs`）。37 个常量里 23 个由 `metadata.rs` 的 const 构造器生成，分两层：
+工具的身份、权限声明与呈现策略声明为 `*_METADATA` 常量（`ToolMetadata`，定义在 `crates/tact_extensions/src/tool/metadata.rs`）。37 个常量里 23 个由 `metadata.rs` 的 const 构造器生成，分两层：
 
 **预设：整份形状完全一致**（成员之间没有任何字段不同）：
 
@@ -189,13 +189,13 @@ pub async fn save_memory(ctx: ToolContext, input: SaveMemoryInput) -> Result<Str
 
 **其余 14 个保留字面量。** 判据不是「差几个字段」而是差的**是不是数据**：一个工具*做什么*（`output` 策略、`live_output`、`permission`、`visual_kind`、`argument_summary`）是它自己的声明，藏进构造器等于把答案藏起来。所以 `bash` / `background_run` / `worktree_run`（差 `output` / `live_output`）、`check_background` / `wait_background`（差 `visual_kind`）、`write_file` / `edit_file`（差 `visual_kind` + `detail`）、`sleep`、`compact`、`save_memory`、`cancel_subagent`、`apply_patch`、`ask_user`、`spawn_subagent` 各写自己的字面量。`metadata.rs` 的测试把每一层钉住：预设「共享的那一半」逐字段、三个预设之间只差「权限 + 资源声明」、三个家族之间只差被参数化的那一项。
 
-**字段名必须三处一致。** 一份元数据最多会把同一个输入字段名写三遍：决定风险的 `permission`、决定「始终允许」规则键的 `permission_prompt`、以及变成卡片标题的 `argument_summary`（`"command"` / `"path"` / `"patch"`）。它们是三个独立字面量，且**没有任何下游会互相比较**——各自只读自己那一份。写错一处不是外观问题：提示会问一个路径而调度器保留另一个，或者「始终允许」规则会挂在风险判定从未用过的字段上。`crates/tact/src/tool/registry.rs` 的 `every_tool_names_one_input_field_across_its_policies` 在**组装后的 toolset** 上逐工具断言这三者一致（新增工具若不一致，即使每个策略单独看都合法也会失败）。构造器只是把这个不变式写得更难违反，它不能替代这条测试。
+**字段名必须三处一致。** 一份元数据最多会把同一个输入字段名写三遍：决定风险的 `permission`、决定「始终允许」规则键的 `permission_prompt`、以及变成卡片标题的 `argument_summary`（`"command"` / `"path"` / `"patch"`）。它们是三个独立字面量，且**没有任何下游会互相比较**——各自只读自己那一份。写错一处不是外观问题：提示会问一个路径而调度器保留另一个，或者「始终允许」规则会挂在风险判定从未用过的字段上。`crates/tact_extensions/src/tool/registry.rs` 的 `every_tool_names_one_input_field_across_its_policies` 在**组装后的 toolset** 上逐工具断言这三者一致（新增工具若不一致，即使每个策略单独看都合法也会失败）。构造器只是把这个不变式写得更难违反，它不能替代这条测试。
 
 ---
 
 ## 7. 工作区路径安全
 
-文件工具通过 `crates/tact/src/tool/path.rs` 的 `resolve_safe_path`：
+文件工具通过 `crates/tact_extensions/src/tool/path.rs` 的 `resolve_safe_path`：
 
 ```rust
 pub(crate) fn safe_path(work_dir: &Path, path: &str) -> Result<PathBuf>;
@@ -222,7 +222,7 @@ Hook → Permission → bash 工具 → Sandbox（可选）→ bwrap → sh -c �
 ```
 
 由 `[tools] sandbox = true` 开启（默认 `false`，见[配置](./21_chapter_config_zh.md)），
-在**启动时解析一次**（`crates/tact/src/sandbox/`），并挂在 `ToolContext` 上
+在**启动时解析一次**（`crates/tact_extensions/src/sandbox/`），并挂在 `ToolContext` 上
 （`sandbox`、`sandbox_degraded`）。开关特意做成布尔值：用什么机制实现是平台决策
 （Linux 用 bubblewrap；其他平台尚无实现，开关在那里是空操作）。任何导致沙箱无法
 启动的情况都降级为不沙箱并告警，而不是让工具失败。
@@ -283,7 +283,7 @@ pipeline 来绕过应用缓冲。
 
 本节讲**工具侧**的并行契约：一个工具如何声明自己碰什么（`ResourcePolicy`），调度器如何据此把一回合的工具切成 wave，以及哪些调用被排除在并行之外。回合编排的整体叙述（三阶段、UI 事件、持久化）在 [任务与工具调度](./11_chapter_task_zh.md)；这里聚焦算法与数据。
 
-代码落在 `crates/tact/src/agent/tool_schedule.rs`（380 行，含 19 个单测）与 `tool_dispatch.rs` 的 `run_tool_waves`。
+代码落在 `crates/tact_extensions/src/agent/tool_schedule.rs`（380 行，含 19 个单测）与 `tool_dispatch.rs` 的 `run_tool_waves`。
 
 ---
 
@@ -329,7 +329,7 @@ graph LR
 
 ### 9.3 资源声明：每个工具自己说碰什么
 
-调度器**没有工具名表**。资源来自工具自己的元数据 `ToolMetadata.resources`（`ResourcePolicy`，`crates/tact/src/tool/metadata.rs`）。`tool_resources_for` 调 `ResourcePolicy::resolve(input, work_dir)`，把「策略 + 本次输入」解析成具体的 `ToolResources`：
+调度器**没有工具名表**。资源来自工具自己的元数据 `ToolMetadata.resources`（`ResourcePolicy`，`crates/tact_extensions/src/tool/metadata.rs`）。`tool_resources_for` 调 `ResourcePolicy::resolve(input, work_dir)`，把「策略 + 本次输入」解析成具体的 `ToolResources`：
 
 ```rust
 pub struct ToolResources {
@@ -571,16 +571,16 @@ codex 侧没有时序意识是已知问题（`git add` 与 `git commit` 被并�
 
 | 文件 | 职责 |
 |------|------|
-| `crates/tact/src/tool/mod.rs` | `Tool`、`ToolContext`、`ToolRouter`、`input_schema` |
-| `crates/tact/src/tool/metadata.rs` | `ToolMetadata` 与各策略类型（含 `ResourcePolicy` 及其 `resolve`）；三个共享形状的 const 构造器 `read_json` / `team_write` / `barrier_write` |
-| `crates/tact/src/tool/registry.rs` | `toolset()`、`subagent_toolset()` |
-| `crates/tact/src/tool/path.rs` | 工作区路径校验 |
-| `crates/tact/src/tool/*.rs` | 各工具实现 |
-| `crates/tact/src/agent/tool_schedule.rs` | `ToolResources`、`conflicts` / `overlap`、`schedule_waves` / `waves_grouped`、`mcp_server_resources`、`ToolScheduleSummary` |
-| `crates/tact/src/agent/tool_dispatch.rs` | `preflight_tool_calls` / `run_tool_waves` / `build_tool_results`、`tool_resources_for`、native/MCP 分发 |
-| `crates/tact/src/agent/mod.rs` | `all_tool_specs`、agent 构造、`persist_tool_schedule` |
+| `crates/tact_extensions/src/tool/mod.rs` | `Tool`、`ToolContext`、`ToolRouter`、`input_schema` |
+| `crates/tact_extensions/src/tool/metadata.rs` | `ToolMetadata` 与各策略类型（含 `ResourcePolicy` 及其 `resolve`）；三个共享形状的 const 构造器 `read_json` / `team_write` / `barrier_write` |
+| `crates/tact_extensions/src/tool/registry.rs` | `toolset()`、`subagent_toolset()` |
+| `crates/tact_extensions/src/tool/path.rs` | 工作区路径校验 |
+| `crates/tact_extensions/src/tool/*.rs` | 各工具实现 |
+| `crates/tact_extensions/src/agent/tool_schedule.rs` | `ToolResources`、`conflicts` / `overlap`、`schedule_waves` / `waves_grouped`、`mcp_server_resources`、`ToolScheduleSummary` |
+| `crates/tact_extensions/src/agent/tool_dispatch.rs` | `preflight_tool_calls` / `run_tool_waves` / `build_tool_results`、`tool_resources_for`、native/MCP 分发 |
+| `crates/tact_extensions/src/agent/mod.rs` | `all_tool_specs`、agent 构造、`persist_tool_schedule` |
 | `crates/tool_refactor_macros/` | `#[tool]` 过程宏 |
-| `crates/tact-ui/src/session_bootstrap.rs` | 构建 `ToolContext` 与 agent（两个前端共用） |
+| `crates/tact_ui/src/session_bootstrap.rs` | 构建 `ToolContext` 与 agent（两个前端共用） |
 
 ---
 

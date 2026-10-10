@@ -1,0 +1,480 @@
+mod hooks;
+mod install;
+mod marketplace;
+mod model;
+mod store;
+
+use anyhow::{Context, Result};
+
+// Runtime plugin lifecycle (manifest, registry, host boundary) is Kernel
+// territory and lives in the Kernel crate; the modules in this crate are the
+// extension-side concerns: installed-plugin records, marketplaces, hooks, and
+// the interactive worker.
+pub use hooks::*;
+pub use install::*;
+pub use marketplace::*;
+pub use model::*;
+pub use store::*;
+pub use tact::{PluginRegistry, PluginState, RuntimePluginManifest};
+pub use tact_plugin_host::PluginHost;
+use tokio::{
+    sync::mpsc::{UnboundedReceiver, UnboundedSender},
+    task::JoinHandle,
+};
+
+use crate::consts::PluginHome;
+
+/// A plugin operation requested by the interactive UI.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginRequest {
+    Install { plugin: String, marketplace: String },
+    Uninstall { plugin: String },
+    Update { plugin: String },
+    List,
+    Reload,
+    MarketplaceAdd { source: String },
+    MarketplaceList,
+    MarketplaceUpdate { name: String },
+    MarketplaceRemove { name: String },
+}
+
+/// The kind of operation associated with a plugin-worker failure.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginOperation {
+    Install { plugin: String, marketplace: String },
+    Uninstall { plugin: String },
+    Update { plugin: String },
+    List,
+    Reload,
+    MarketplaceAdd,
+    MarketplaceList,
+    MarketplaceUpdate { marketplace: String },
+    MarketplaceRemove { marketplace: String },
+}
+
+impl From<&PluginRequest> for PluginOperation {
+    fn from(request: &PluginRequest) -> Self {
+        match request {
+            PluginRequest::Install {
+                plugin,
+                marketplace,
+            } => Self::Install {
+                plugin: plugin.clone(),
+                marketplace: marketplace.clone(),
+            },
+            PluginRequest::Uninstall { plugin } => Self::Uninstall {
+                plugin: plugin.clone(),
+            },
+            PluginRequest::Update { plugin } => Self::Update {
+                plugin: plugin.clone(),
+            },
+            PluginRequest::List => Self::List,
+            PluginRequest::Reload => Self::Reload,
+            PluginRequest::MarketplaceAdd { .. } => Self::MarketplaceAdd,
+            PluginRequest::MarketplaceList => Self::MarketplaceList,
+            PluginRequest::MarketplaceUpdate { name } => Self::MarketplaceUpdate {
+                marketplace: name.clone(),
+            },
+            PluginRequest::MarketplaceRemove { name } => Self::MarketplaceRemove {
+                marketplace: name.clone(),
+            },
+        }
+    }
+}
+
+/// Structured data produced by a successful plugin operation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginResult {
+    Installed {
+        plugin: String,
+        marketplace: String,
+    },
+    Uninstalled {
+        plugin: String,
+    },
+    Updated {
+        plugin: String,
+        marketplace: String,
+        revision: String,
+    },
+    UpToDate {
+        plugin: String,
+        marketplace: String,
+        revision: String,
+    },
+    ListedInstalled {
+        plugins: Vec<InstalledPlugin>,
+    },
+    Reloaded {
+        count: usize,
+    },
+    MarketplaceAdded {
+        marketplace: String,
+    },
+    ListedMarketplaces {
+        marketplaces: Vec<MarketplaceRecord>,
+    },
+    MarketplaceUpdated {
+        marketplace: String,
+        count: usize,
+    },
+    MarketplaceRemoved {
+        marketplace: String,
+    },
+}
+
+/// A structured result produced by the plugin worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PluginEvent {
+    Succeeded {
+        result: PluginResult,
+        refresh_skills: bool,
+    },
+    Failed {
+        operation: PluginOperation,
+        detail: String,
+    },
+}
+
+/// Starts the plugin worker. Filesystem and Git operations run on Tokio's
+/// blocking pool so interactive input remains responsive.
+#[must_use]
+pub fn spawn_worker(
+    home: PluginHome,
+    mut request_rx: UnboundedReceiver<PluginRequest>,
+    event_tx: UnboundedSender<PluginEvent>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(request) = request_rx.recv().await {
+            let refresh_skills = matches!(
+                &request,
+                PluginRequest::Install { .. }
+                    | PluginRequest::Uninstall { .. }
+                    | PluginRequest::Update { .. }
+                    | PluginRequest::Reload
+            );
+            let operation = PluginOperation::from(&request);
+            let worker_home = home.clone();
+            let event =
+                match tokio::task::spawn_blocking(move || execute_request(worker_home, request))
+                    .await
+                {
+                    Ok(Ok(result)) => PluginEvent::Succeeded {
+                        result,
+                        refresh_skills,
+                    },
+                    Ok(Err(error)) => PluginEvent::Failed {
+                        operation,
+                        detail: error.to_string(),
+                    },
+                    Err(error) => PluginEvent::Failed {
+                        operation,
+                        detail: error.to_string(),
+                    },
+                };
+            if event_tx.send(event).is_err() {
+                break;
+            }
+        }
+    })
+}
+
+/// Starts a responder for environments where the plugin home cannot be resolved.
+///
+/// Keeping the request channel alive lets callers surface a clear operation error
+/// instead of silently discarding plugin requests.
+#[must_use]
+pub fn spawn_unavailable_worker(
+    mut request_rx: UnboundedReceiver<PluginRequest>,
+    event_tx: UnboundedSender<PluginEvent>,
+) -> JoinHandle<()> {
+    tokio::spawn(async move {
+        while let Some(request) = request_rx.recv().await {
+            if event_tx
+                .send(PluginEvent::Failed {
+                    operation: PluginOperation::from(&request),
+                    detail: "HOME is not set".into(),
+                })
+                .is_err()
+            {
+                break;
+            }
+        }
+    })
+}
+
+pub fn execute_request(home: PluginHome, request: PluginRequest) -> Result<PluginResult> {
+    let marketplaces = MarketplaceService::new(home.clone());
+    match request {
+        PluginRequest::Install {
+            plugin,
+            marketplace,
+        } => {
+            let marketplace = if marketplace.is_empty() {
+                default_install_marketplace(&home, &plugin)?
+            } else {
+                marketplace
+            };
+            let installed = PluginInstaller::new(home).install(&plugin, &marketplace)?;
+            Ok(PluginResult::Installed {
+                plugin: installed.id,
+                marketplace: installed.marketplace,
+            })
+        }
+        PluginRequest::Uninstall { plugin } => {
+            PluginInstaller::new(home).uninstall(&plugin)?;
+            Ok(PluginResult::Uninstalled { plugin })
+        }
+        PluginRequest::Update { plugin } => match PluginInstaller::new(home).update(&plugin)? {
+            PluginUpdateResult::Updated { installed } => Ok(PluginResult::Updated {
+                plugin: installed.id,
+                marketplace: installed.marketplace,
+                revision: installed.revision,
+            }),
+            PluginUpdateResult::UpToDate { installed } => Ok(PluginResult::UpToDate {
+                plugin: installed.id,
+                marketplace: installed.marketplace,
+                revision: installed.revision,
+            }),
+        },
+        PluginRequest::List => {
+            let plugins = PluginInstaller::new(home).list()?;
+            Ok(PluginResult::ListedInstalled { plugins })
+        }
+        PluginRequest::Reload => {
+            let plugins = PluginInstaller::new(home).list()?;
+            Ok(PluginResult::Reloaded {
+                count: plugins.len(),
+            })
+        }
+        PluginRequest::MarketplaceAdd { source } => {
+            let marketplace = block_on_async(
+                marketplaces.add_catalog_source(MarketplaceSource::parse(&source)?),
+            )?;
+            Ok(PluginResult::MarketplaceAdded { marketplace })
+        }
+        PluginRequest::MarketplaceList => {
+            let state = PluginStore::new(home).load_marketplaces()?;
+            Ok(PluginResult::ListedMarketplaces {
+                marketplaces: state.iter().map(|(_, record)| record.clone()).collect(),
+            })
+        }
+        PluginRequest::MarketplaceUpdate { name } => {
+            let catalog = block_on_async(marketplaces.update_marketplace(&name))
+                .with_context(|| format!("failed to update marketplace {name}"))?;
+            Ok(PluginResult::MarketplaceUpdated {
+                marketplace: name,
+                count: catalog.plugins.len(),
+            })
+        }
+        PluginRequest::MarketplaceRemove { name } => {
+            marketplaces.remove_source(&name)?;
+            Ok(PluginResult::MarketplaceRemoved { marketplace: name })
+        }
+    }
+}
+
+fn default_install_marketplace(home: &PluginHome, plugin: &str) -> Result<String> {
+    let service = MarketplaceService::new(home.clone());
+    let state = PluginStore::new(home.clone()).load_marketplaces()?;
+    for (name, record) in state.iter() {
+        if !matches!(record.source, MarketplaceSource::LocalPath(_)) {
+            continue;
+        }
+        if service
+            .catalog(name)
+            .is_ok_and(|catalog| catalog.plugins.contains_key(plugin))
+        {
+            return Ok(name.to_owned());
+        }
+    }
+    Ok(OFFICIAL_MARKETPLACE.to_owned())
+}
+
+/// Runs an async future from a synchronous context, handling both
+/// when a tokio runtime is active and when it isn't.
+pub(crate) fn block_on_async<F: std::future::Future<Output = T>, T>(future: F) -> T {
+    if tokio::runtime::Handle::try_current().is_ok() {
+        // Already inside a tokio runtime: temporarily leave it with block_in_place.
+        tokio::task::block_in_place(|| tokio::runtime::Handle::current().block_on(future))
+    } else {
+        // Not inside a tokio runtime: create a fresh one.
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        rt.block_on(future)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::fs;
+
+    use tempfile::tempdir;
+    use tokio::sync::mpsc::unbounded_channel;
+
+    use super::{
+        PluginEvent, PluginHome, PluginRequest, PluginResult, execute_request,
+        spawn_unavailable_worker, spawn_worker,
+    };
+
+    async fn run_request(home: PluginHome, request: PluginRequest) -> PluginEvent {
+        let (request_tx, request_rx) = unbounded_channel();
+        let (event_tx, mut event_rx) = unbounded_channel();
+        let worker = spawn_worker(home, request_rx, event_tx);
+        request_tx.send(request).unwrap();
+        drop(request_tx);
+        let event = event_rx
+            .recv()
+            .await
+            .expect("worker should return an event");
+        worker.await.expect("worker task should not panic");
+        event
+    }
+
+    #[tokio::test]
+    async fn worker_returns_failed_event_without_mutating_store() {
+        let temporary_home = tempdir().unwrap();
+        let home = PluginHome::from_home(temporary_home.path());
+
+        let event = run_request(
+            home.clone(),
+            PluginRequest::Install {
+                plugin: "missing".into(),
+                marketplace: "fixture".into(),
+            },
+        )
+        .await;
+
+        assert!(matches!(event, PluginEvent::Failed { .. }));
+        assert!(!home.root.join("installed.json").exists());
+        assert!(!home.root.join("marketplaces.json").exists());
+        assert!(
+            fs::read_dir(temporary_home.path())
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_reports_uninstall_of_missing_plugin_without_mutating_store() {
+        let temporary_home = tempdir().unwrap();
+        let home = PluginHome::from_home(temporary_home.path());
+
+        let event = run_request(
+            home.clone(),
+            PluginRequest::Uninstall {
+                plugin: "missing".into(),
+            },
+        )
+        .await;
+
+        assert!(matches!(event, PluginEvent::Failed { .. }));
+        assert!(!home.root.join("installed.json").exists());
+        assert!(
+            fs::read_dir(temporary_home.path())
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_reports_update_of_missing_plugin_without_mutating_store() {
+        let temporary_home = tempdir().unwrap();
+        let home = PluginHome::from_home(temporary_home.path());
+
+        let event = run_request(
+            home.clone(),
+            PluginRequest::Update {
+                plugin: "missing".into(),
+            },
+        )
+        .await;
+
+        assert!(matches!(event, PluginEvent::Failed { .. }));
+        assert!(!home.root.join("installed.json").exists());
+        assert!(
+            fs::read_dir(temporary_home.path())
+                .unwrap()
+                .next()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_reports_invalid_marketplace_add_source() {
+        let temporary_home = tempdir().unwrap();
+        let home = PluginHome::from_home(temporary_home.path());
+
+        let event = run_request(
+            home,
+            PluginRequest::MarketplaceAdd {
+                source: "not-a-marketplace-source".into(),
+            },
+        )
+        .await;
+
+        assert!(matches!(event, PluginEvent::Failed { .. }));
+    }
+
+    #[test]
+    fn install_without_marketplace_prefers_discovered_codex_marketplace() {
+        let temporary_home = tempdir().unwrap();
+        fs::create_dir_all(temporary_home.path().join(".agents/plugins")).unwrap();
+        fs::create_dir_all(temporary_home.path().join("plugins/demo/skills/check")).unwrap();
+        fs::write(
+            temporary_home
+                .path()
+                .join(".agents/plugins/marketplace.json"),
+            r#"{
+                "name":"codex-local",
+                "plugins":[{
+                    "name":"demo",
+                    "source":{"source":"local","path":"./plugins/demo"}
+                }]
+            }"#,
+        )
+        .unwrap();
+        fs::write(
+            temporary_home
+                .path()
+                .join("plugins/demo/skills/check/SKILL.md"),
+            "---\nname: check\n---\n",
+        )
+        .unwrap();
+
+        let home = PluginHome::from_home(temporary_home.path());
+        let result = execute_request(
+            home,
+            PluginRequest::Install {
+                plugin: "demo".into(),
+                marketplace: String::new(),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(
+            result,
+            PluginResult::Installed {
+                plugin: "demo".into(),
+                marketplace: "codex-local".into(),
+            }
+        );
+    }
+
+    #[tokio::test]
+    async fn worker_reports_plugin_marketplace_unavailable_without_a_home_directory() {
+        let (request_tx, request_rx) = unbounded_channel();
+        let (event_tx, mut event_rx) = unbounded_channel();
+        let worker = spawn_unavailable_worker(request_rx, event_tx);
+
+        request_tx.send(PluginRequest::List).unwrap();
+        drop(request_tx);
+
+        assert!(matches!(
+            event_rx.recv().await,
+            Some(PluginEvent::Failed { .. })
+        ));
+        worker.await.expect("worker task should not panic");
+    }
+}

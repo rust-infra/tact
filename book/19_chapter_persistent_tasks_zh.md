@@ -7,7 +7,7 @@
 - [第 11 章 工具调度](./11_chapter_task_zh.md) — 一个 LLM turn 内的并行 **工具** wave 执行
 - [第 12 章 Subagents](./12_chapter_subagent_zh.md) — 生成嵌套 agent 的 `spawn_subagent` **工具**
 
-实现：`crates/tact/src/task/mod.rs`，工具封装在 `crates/tact/src/tool/task.rs`。
+实现：`crates/tact_extensions/src/task/mod.rs`，工具封装在 `crates/tact_extensions/src/tool/task.rs`。
 
 ---
 
@@ -132,7 +132,7 @@ pub task_manager: SharedTaskManager,
 
 只在主 `toolset()` 注册——**不在** `subagent_toolset()` 中。
 
-调度：四个工具在 `crates/tact/src/agent/tool_schedule.rs` 中共享合成写作用域（`__tact_tasks__`），因此在同一 LLM turn 内**彼此串行**（避免并行 `task_update` 竞态），但仍可与无关的文件读并行。
+调度：四个工具在 `crates/tact_extensions/src/agent/tool_schedule.rs` 中共享合成写作用域（`__tact_tasks__`），因此在同一 LLM turn 内**彼此串行**（避免并行 `task_update` 竞态），但仍可与无关的文件读并行。
 
 ---
 
@@ -153,12 +153,12 @@ pub fn render_task_list(tasks: Vec<TaskRecord>) -> String;
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/task/mod.rs` | `TaskManager` 门面（`Box<dyn TaskStore>`）、`TaskRecord`、渲染辅助 |
-| `crates/tact/src/store/task_store/mod.rs` | `TaskStore` trait |
-| `crates/tact/src/store/task_store/sqlite.rs` | `SqliteTaskStore` — schema、事务、边查询 |
-| `crates/tact/src/tool/task.rs` | 四个 `#[tool]` 处理器 |
-| `crates/tact/src/tool/mod.rs` | `ToolContext.task_manager` |
-| `crates/tact/src/tool/registry.rs` | `toolset()` 中的 `task_*` 工具 |
+| `crates/tact_extensions/src/task/mod.rs` | `TaskManager` 门面（`Box<dyn TaskStore>`）、`TaskRecord`、渲染辅助 |
+| `crates/tact_extensions/src/store/task_store/mod.rs` | `TaskStore` trait |
+| `crates/tact_extensions/src/store/task_store/sqlite.rs` | `SqliteTaskStore` — schema、事务、边查询 |
+| `crates/tact_extensions/src/tool/task.rs` | 四个 `#[tool]` 处理器 |
+| `crates/tact_extensions/src/tool/mod.rs` | `ToolContext.task_manager` |
+| `crates/tact_extensions/src/tool/registry.rs` | `toolset()` 中的 `task_*` 工具 |
 
 ---
 

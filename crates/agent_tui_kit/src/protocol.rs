@@ -5,11 +5,11 @@
 //! Tact business, handled by the host extension), and any future Tact-only
 //! protocol additions.
 
+pub use tact_protocol::RuntimeEvent;
 pub use tact_protocol::agent::{
-    AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus,
-    SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot,
-    TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolDetailKind, ToolPopupKind,
-    ToolPresentationInfo, ToolVisualKind,
+    ModelCallParams, PlanStep, StepResult, StepStatus, SubagentRunSnapshot, SubagentStatusSnapshot,
+    TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ThinkingChunk, TokenUsageInfo,
+    ToolDetailKind, ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
 };
 pub use tact_protocol::tool_output::{
     ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,

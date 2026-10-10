@@ -9,8 +9,10 @@ test-support = []
 [dependencies]
 agent_tui_kit = { path = "../agent_tui_kit" }
 tact = { path = "../tact" }
+tact_extensions = { path = "../tact_extensions" }
 tact_llm = { path = "../tact_llm" }
-tact_protocol = { path = "../protocol" }
+tact_protocol = { path = "../tact_protocol" }
+tact_view = { path = "../tact_view" }
 anyhow = { workspace = true }
 arboard = { workspace = true }
 base64 = { workspace = true }
@@ -29,10 +31,11 @@ tracing = { workspace = true }
 syntect = { workspace = true }
 unicode-segmentation = { workspace = true }
 unicode-width = { workspace = true }
+uuid = { workspace = true }
 
 [build-dependencies]
 toml = { workspace = true }
 
 [dev-dependencies]
-tact = { path = "../tact", features = ["test-support"] }
+tact_extensions = { path = "../tact_extensions", features = ["test-support"] }
 tempfile = { workspace = true }

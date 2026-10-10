@@ -5,7 +5,7 @@
 //! background task starts through exactly one tool (`background_run`), and the
 //! live tool card already carries everything the strip shows —
 //!
-//! - the task id (`AgentUpdate::ToolMeta { task_id }`, sent once the task
+//! - the task id (`RuntimeEvent::ToolMeta { task_id }`, sent once the task
 //!   exists and the invocation is about to return),
 //! - the command (the card's argument summary; the tool's metadata uses
 //!   `ArgumentSummaryPolicy::Command { field: "command" }`),

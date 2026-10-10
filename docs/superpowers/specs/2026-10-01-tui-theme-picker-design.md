@@ -92,7 +92,7 @@ subagent / effort / theme) go through it. `replacing_a_model_keeps_its_trailing_
 - `crates/tui/src/widgets/state/app/config.rs`: `set_theme_switches_to_the_named_theme`,
   `toggle_theme_cycles_from_ink`.
 - `crates/agent_tui_kit/src/theme.rs`: `theme_name_round_trips_through_as_str`.
-- `crates/tact/src/config/persist.rs`: `replacing_a_model_keeps_its_trailing_comment`,
+- `crates/tact_extensions/src/config/persist.rs`: `replacing_a_model_keeps_its_trailing_comment`,
   `updates_ui_theme_keeping_the_rest_of_the_file`.
 - Docs: [Ch 23](../../../book/23_chapter_tui_zh.md) §6.10, [Ch 26](../../../book/26_chapter_issue_zh.md)
   2026-10-01 entry.

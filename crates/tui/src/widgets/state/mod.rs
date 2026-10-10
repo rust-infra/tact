@@ -3,11 +3,12 @@ use std::{
     path::PathBuf,
 };
 
-use tact::{
+use tact_extensions::{
     plugin::{PluginEvent, PluginRequest},
     skill::SharedSkillRegistry,
 };
-use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, RunId, RuntimeEvent};
+use tact_view::UserCommand;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{i18n::Language, theme::Theme};
@@ -68,7 +69,7 @@ pub(crate) enum ModelTarget {
 /// Why the select popup is open (agent permission vs `/model` flow).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum SelectKind {
-    /// Agent `RequestSelect` — confirm emits a `UiResponse` on the command channel.
+    /// Agent `RequestSelect` — confirm emits an `InteractionResponse` on the command channel.
     Agent,
     /// `/model` first step — choose a model before applying either value.
     /// `target` selects the main agent or the subagent flow.
@@ -155,11 +156,12 @@ pub struct App {
     /// and routes updates through `dispatch_components` (agent.rs). The shared
     /// `LogCoordinator` stays shell-owned (decision in task #42).
     pub(crate) registry: agent_tui_kit::components::ComponentRegistry,
-    pub(crate) agent_rx: UnboundedReceiver<AgentUpdate>,
+    pub(crate) agent_rx: UnboundedReceiver<RuntimeEvent>,
     pub(crate) account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     pub(crate) plugin_rx: UnboundedReceiver<PluginEvent>,
     pub(crate) plugin_tx: UnboundedSender<PluginRequest>,
     pub(crate) user_cmd_tx: UnboundedSender<UserCommand>,
+    pub(crate) runtime_run_id: Option<RunId>,
     pub(crate) task_history: Vec<HistoryEntry>,
     pub(crate) theme: Theme,
     // Scroll
@@ -249,7 +251,7 @@ pub struct App {
     /// Authoritative in-process pending UI requests. When set, the TUI
     /// reconciles its select popup from this snapshot instead of treating
     /// individual `RequestSelect` events as the source of truth.
-    pub(crate) pending_ui: Option<tact::ui_responder::UiResponder>,
+    pub(crate) pending_ui: Option<tact_extensions::ui_responder::UiResponder>,
     // File picker popup (triggered by @ in insert mode)
     pub(crate) file_picker: FilePicker,
     pub(crate) slash_command: SlashCommandState,
@@ -268,7 +270,7 @@ pub struct App {
     /// Same mutex as agent `ToolContext.skill_registry` (interactive mode).
     pub(crate) skill_registry: SharedSkillRegistry,
     /// Shared session store used to inspect persisted request payloads.
-    pub(crate) session_store: Option<tact::store::DynSessionStore>,
+    pub(crate) session_store: Option<tact_extensions::store::DynSessionStore>,
     /// Spinner animation frame (0-9) for typing/loading indicator.
     pub(crate) spinner_frame: u8,
     /// Loading placeholder index in messages (spinner row while waiting for output).

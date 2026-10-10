@@ -5,7 +5,9 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use tact_protocol::{AgentUpdate, TokenUsageInfo};
+use crate::stream_event;
+use tact_protocol::RuntimeEvent;
+use tact_protocol::TokenUsageInfo;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
@@ -140,7 +142,7 @@ impl MockClient {
     }
 
     /// Like [`Self::new`], but attaches token usage to each turn (and emits
-    /// [`AgentUpdate::TokenUsage`] on `stream_message` when `ui_tx` is set).
+    /// [`RuntimeEvent::TokenUsage`] on `stream_message` when `ui_tx` is set).
     pub fn with_usage(
         responses: Vec<(Vec<ContentBlock>, Option<StopReason>, TokenUsageInfo)>,
     ) -> Self {
@@ -197,7 +199,7 @@ impl MockClient {
         })
     }
 
-    /// Enable emission of [`AgentUpdate::StreamChunk`] events during
+    /// Enable emission of [`RuntimeEvent::Text`] events during
     /// `stream_message` by splitting text blocks into word-sized chunks.
     pub fn with_streaming_chunks(self) -> Self {
         Self {
@@ -219,13 +221,13 @@ impl MockClient {
         self.inner.next_turn(request, idx)
     }
 
-    fn emit_token_usage(ui_tx: &Option<UnboundedSender<AgentUpdate>>, usage: &TokenUsageInfo) {
+    fn emit_token_usage(ui_tx: &Option<UnboundedSender<RuntimeEvent>>, usage: &TokenUsageInfo) {
         if let Some(tx) = ui_tx {
-            let _ = tx.send(AgentUpdate::TokenUsage(usage.clone()));
+            let _ = tx.send(stream_event::token_usage(usage.clone()));
         }
     }
 
-    fn emit_stream_chunks(ui_tx: &Option<UnboundedSender<AgentUpdate>>, blocks: &[ContentBlock]) {
+    fn emit_stream_chunks(ui_tx: &Option<UnboundedSender<RuntimeEvent>>, blocks: &[ContentBlock]) {
         let Some(tx) = ui_tx else { return };
         for block in blocks {
             if let ContentBlock::Text { text } = block {
@@ -238,7 +240,7 @@ impl MockClient {
                     } else {
                         format!("{word} ")
                     };
-                    let _ = tx.send(AgentUpdate::StreamChunk(chunk));
+                    let _ = tx.send(stream_event::text(chunk));
                 }
             }
         }
@@ -250,7 +252,7 @@ impl LlmClient for MockClient {
         &self,
         request: &CreateMessageParams,
         _provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     ) -> Result<LlmResponse, LlmError> {
         let (blocks, stop_reason, usage) = self.next_turn(request)?;
         if let Some(ref u) = usage {

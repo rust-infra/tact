@@ -88,7 +88,7 @@ impl App {
         let outcome = if !self.ui_config_available() {
             msgs.hook_output_session_only
         } else {
-            match tact::config::persist_hook_output(enabled) {
+            match tact_extensions::config::persist_hook_output(enabled) {
                 Ok(()) => msgs.hook_output_persisted,
                 Err(error) => {
                     let message = msgs
@@ -126,7 +126,7 @@ impl App {
             self.add_system_message(msgs.theme_session_only_tmpl.replace("{}", label));
             return;
         }
-        match tact::config::persist_theme(name.as_str()) {
+        match tact_extensions::config::persist_theme(name.as_str()) {
             Ok(()) => {
                 self.add_system_message(msgs.theme_persisted_tmpl.replace("{}", name.as_str()))
             }
@@ -223,7 +223,7 @@ impl App {
             self.add_system_message(msgs.lang_session_only_tmpl.replace("{}", label));
             return;
         }
-        match tact::config::persist_language(language.as_str()) {
+        match tact_extensions::config::persist_language(language.as_str()) {
             Ok(()) => {
                 self.add_system_message(msgs.lang_persisted_tmpl.replace("{}", language.as_str()))
             }

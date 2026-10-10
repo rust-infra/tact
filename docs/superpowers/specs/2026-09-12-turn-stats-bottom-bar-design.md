@@ -69,7 +69,7 @@ pub turn_total_secs: u64,
 
 All `new()` defaults: `0` / `0` / `None` / `None` / `0` / `0`.
 
-### 2. Protocol (`crates/protocol/src/agent.rs`)
+### 2. Protocol (`crates/tact_protocol/src/agent.rs`)
 
 New variant, emitted once per agent-loop iteration (same cadence as
 `TokenUsage`, so no new flood risk):
@@ -79,7 +79,7 @@ New variant, emitted once per agent-loop iteration (same cadence as
 TurnStats { turns_taken: u32, max_turns: Option<u32> },
 ```
 
-Emitted from `Agent::agent_loop` (`crates/tact/src/agent/mod.rs`) immediately
+Emitted from `Agent::agent_loop` (`crates/tact_extensions/src/agent/mod.rs`) immediately
 after `self.turns_taken += 1` — i.e. before the cap check, so the count is
 correct even on the iteration that trips a cap. `max_turns` rides along for
 future use (see the cap-decision note in §5); it is not rendered today.
@@ -151,7 +151,7 @@ Exact rendered shapes:
 
 > **Decision (2026-09-12): `max_turns` is plumbed but not displayed.**
 > `Agent::max_turns` is only ever set by `spawn_subagent`'s `max_turns` input
-> (`crates/tact/src/tool/subagent.rs:542` → `with_max_turns`); the main agent
+> (`crates/tact_extensions/src/tool/subagent.rs:542` → `with_max_turns`); the main agent
 > defaults to `None` and there is no CLI flag or TUI wiring, so a main-agent
 > bottom bar could never render a `/cap` suffix. The `TurnStats` event therefore
 > still carries `max_turns` (kept in `StatusBarState.turn_llm_cap`) so the

@@ -2,7 +2,7 @@
 //!
 //! Owns a [`BackgroundPanelState`] so the shell can reach it through the same
 //! component registry as the Tasks / Subagent stickies. Unlike those two there
-//! is **no `AgentUpdate` that carries this domain's rows** — they are derived
+//! is **no `RuntimeEvent` that carries this domain's rows** — they are derived
 //! from the live `background_run` cards each tick
 //! ([`crate::state::background_panel::running_background_tasks`], applied by
 //! `App::sync_background_sticky`). So `on_update` never claims an update; this
@@ -11,7 +11,7 @@
 use crossterm::event::KeyEvent;
 use ratatui::{buffer::Buffer, layout::Rect};
 
-use crate::{Component, Ctx, protocol::AgentUpdate, state::BackgroundPanelState};
+use crate::{Component, Ctx, protocol::RuntimeEvent, state::BackgroundPanelState};
 
 pub struct BackgroundPanelComponent {
     state: BackgroundPanelState,
@@ -56,7 +56,7 @@ impl std::ops::DerefMut for BackgroundPanelComponent {
 
 impl Component for BackgroundPanelComponent {
     /// Never claims an update: nothing in the protocol pushes this domain.
-    fn on_update(&mut self, _update: &AgentUpdate, _ctx: &mut Ctx<'_>) -> bool {
+    fn on_update(&mut self, _update: &RuntimeEvent, _ctx: &mut Ctx<'_>) -> bool {
         false
     }
 
@@ -114,7 +114,8 @@ mod tests {
             tool_events: &mut tool_events,
         };
         assert!(!component.on_update(
-            &AgentUpdate::ToolMeta {
+            &RuntimeEvent::ToolMeta {
+                run_id: None,
                 tool_id: "bg1".into(),
                 model: None,
                 token_usage: None,

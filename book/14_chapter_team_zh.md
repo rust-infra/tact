@@ -1,6 +1,6 @@
 # 团队协调（Team Coordination）
 
-本章说明 Tact 的 **多 agent 团队原语**：具名 teammate 的持久 roster，以及支持点对点消息、广播与结构化协议请求（plan 审批、shutdown）的 SQLite backed inbox 系统。实现位于 `crates/tact/src/team.rs`，工具包装在 `crates/tact/src/tool/team.rs`。
+本章说明 Tact 的 **多 agent 团队原语**：具名 teammate 的持久 roster，以及支持点对点消息、广播与结构化协议请求（plan 审批、shutdown）的 SQLite backed inbox 系统。实现位于 `crates/tact_extensions/src/team.rs`，工具包装在 `crates/tact_extensions/src/tool/team.rs`。
 
 重要前提：目前是 **协调数据层**，非编排引擎。「Spawn」teammate 仅创建 roster 记录 —— 不会启动第二个 agent 进程。见 [当前缺口](#8-当前缺口)。
 
@@ -58,7 +58,7 @@ pub struct InboxMessage {
 store: Box<dyn TeamStore>,   // tact.db → teammates + inbox_messages 表
 ```
 
-Schema（`crates/tact/src/store/team_store/sqlite.rs`）：
+Schema（`crates/tact_extensions/src/store/team_store/sqlite.rs`）：
 
 ```text
 teammates(name TEXT PRIMARY KEY, role TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'idle')
@@ -141,13 +141,13 @@ let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&tact_pat
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/team.rs` | `TeammateManager`、`SharedTeammateManager`、`InboxMessage` |
-| `crates/tact/src/store/team_store/mod.rs` | `TeamStore` trait（async：create_teammate/list_teammates/append_message/read_inbox） |
-| `crates/tact/src/store/team_store/sqlite.rs` | `SqliteTeamStore` — `teammates` + `inbox_messages` 表 |
-| `crates/tact/src/tool/team.rs` | 八个 `#[tool]` 包装 |
-| `crates/tact/src/tool/mod.rs` | `ToolContext.teammate_manager` |
-| `crates/tact/src/tool/registry.rs` | `toolset()` 中的 team 工具 |
-| `crates/tact-ui/src/session_bootstrap.rs` | `bootstrap_session` 里从 `tact.db` 构造 manager；headless / 交互共用 |
+| `crates/tact_extensions/src/team.rs` | `TeammateManager`、`SharedTeammateManager`、`InboxMessage` |
+| `crates/tact_extensions/src/store/team_store/mod.rs` | `TeamStore` trait（async：create_teammate/list_teammates/append_message/read_inbox） |
+| `crates/tact_extensions/src/store/team_store/sqlite.rs` | `SqliteTeamStore` — `teammates` + `inbox_messages` 表 |
+| `crates/tact_extensions/src/tool/team.rs` | 八个 `#[tool]` 包装 |
+| `crates/tact_extensions/src/tool/mod.rs` | `ToolContext.teammate_manager` |
+| `crates/tact_extensions/src/tool/registry.rs` | `toolset()` 中的 team 工具 |
+| `crates/tact_ui/src/session_bootstrap.rs` | `bootstrap_session` 里从 `tact.db` 构造 manager；headless / 交互共用 |
 
 ---
 

@@ -21,7 +21,7 @@ exists to convey.
 
 ### Two ends, separated
 
-**Display** goes through `display_server_name(name)` (`crates/tact/src/mcp/mod.rs`), which drops the
+**Display** goes through `display_server_name(name)` (`crates/tact_extensions/src/mcp/mod.rs`), which drops the
 `plugin__<plugin_id>__` prefix. The split is on the *first* `__` after the prefix, so a server key
 may itself contain `__`; only a plugin id may not. A name without the prefix, or with an empty
 plugin-id or server segment, is returned unchanged.
@@ -63,14 +63,14 @@ sees nothing; this is a presentation change with one input-side affordance.
 
 ## Verification
 
-- `crates/tact/src/mcp/mod.rs`: `display_server_name_strips_only_the_plugin_prefix`,
+- `crates/tact_extensions/src/mcp/mod.rs`: `display_server_name_strips_only_the_plugin_prefix`,
   `resolve_name_prefers_an_exact_match_over_a_plugin_short_form`,
   `resolve_name_reaches_a_plugin_server_through_its_short_form`,
   `resolve_name_refuses_to_guess_between_two_plugin_servers`,
   `resolve_name_reports_an_unknown_name`, and
   `pending_authorization_hint_uses_the_short_plugin_name` (the hint is built by `notice_lines` in the
   same crate, so it is pinned where it is produced).
-- `crates/tact-ui/src/mcp_cli.rs`: `report_shows_a_plugin_server_under_its_short_name`,
+- `crates/tact_ui/src/mcp_cli.rs`: `report_shows_a_plugin_server_under_its_short_name`,
   `report_notes_name_a_plugin_server_short_too`,
   `the_detail_view_heads_a_plugin_server_short_but_keeps_its_tool_prefix`,
   `live_listing_shows_a_plugin_server_under_its_short_name`.

@@ -8,7 +8,7 @@
 
 ## 1. 通知做什么
 
-`crates/tact/src/notifications/mod.rs` 封装单一原语：
+`crates/tact_extensions/src/notifications/mod.rs` 封装单一原语：
 
 ```rust
 pub fn notify(title: &str, message: &str) -> Result<()>;
@@ -77,7 +77,7 @@ pub fn is_enabled() -> bool {
 
 ## 4. 在 Agent 中的集成
 
-通知从 `Agent::emit_update`（`crates/tact/src/agent/mod.rs`）触发，**在** 更新转发到 TUI 通道 **之前**：
+通知从 `Agent::emit_update`（`crates/tact_extensions/src/agent/mod.rs`）触发，**在** 更新转发到 TUI 通道 **之前**：
 
 ```rust
 match &update {
@@ -136,11 +136,11 @@ Headless 运行设置 `ui_tx: None`，因此 `agent_loop` 从不向 TUI 发送 `
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/notifications/mod.rs` | `notify`、辅助函数、`is_enabled`、平台 cfg |
-| `crates/tact/src/agent/mod.rs` | `emit_update` — TaskComplete 与 StepFailed 钩子 |
-| `crates/tact-ui/src/headless.rs` | Headless 在 stdout 后的完成通知 |
-| `crates/tact/src/config/types.rs` | `AgentTomlConfig.notifications_enabled` |
-| `crates/tact/src/config/resolve.rs` | CLI `--no-notifications` 覆盖 |
+| `crates/tact_extensions/src/notifications/mod.rs` | `notify`、辅助函数、`is_enabled`、平台 cfg |
+| `crates/tact_extensions/src/agent/mod.rs` | `emit_update` — TaskComplete 与 StepFailed 钩子 |
+| `crates/tact_ui/src/headless.rs` | Headless 在 stdout 后的完成通知 |
+| `crates/tact_extensions/src/config/types.rs` | `AgentTomlConfig.notifications_enabled` |
+| `crates/tact_extensions/src/config/resolve.rs` | CLI `--no-notifications` 覆盖 |
 
 ---
 

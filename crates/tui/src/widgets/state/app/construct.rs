@@ -6,8 +6,9 @@ use std::{
     path::PathBuf,
 };
 
-use tact::plugin::{PluginEvent, PluginRequest};
-use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
+use tact_extensions::plugin::{PluginEvent, PluginRequest};
+use tact_protocol::{AccountUpdate, RuntimeEvent};
+use tact_view::UserCommand;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{
@@ -29,7 +30,7 @@ impl App {
     /// Create an initialized App instance, defaulting to Insert mode with the Retro theme.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        agent_rx: UnboundedReceiver<AgentUpdate>,
+        agent_rx: UnboundedReceiver<RuntimeEvent>,
         account_rx: Option<UnboundedReceiver<AccountUpdate>>,
         plugin_rx: UnboundedReceiver<PluginEvent>,
         plugin_tx: UnboundedSender<PluginRequest>,
@@ -98,6 +99,7 @@ impl App {
             plugin_rx,
             plugin_tx,
             user_cmd_tx,
+            runtime_run_id: None,
             task_history: Vec::new(),
             theme,
             log_scroll: LogScroll::new(),
@@ -147,7 +149,7 @@ impl App {
             skills_description,
             skills_data,
             skill_registry: std::sync::Arc::new(std::sync::Mutex::new(
-                tact::skill::SkillRegistry::new(std::iter::empty::<std::path::PathBuf>()),
+                tact_extensions::skill::SkillRegistry::new(std::iter::empty::<std::path::PathBuf>()),
             )),
             session_store: None,
             spinner_frame: 0,

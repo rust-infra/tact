@@ -2,7 +2,7 @@
 
 本章是第 1–11 章的 **收官篇**：描述 `Agent::agent_loop`——将 session 存储、prompt 组装、压缩、LLM 调用、恢复和工具 dispatch 绑成一轮循环的流式对话循环。
 
-实现：`crates/tact/src/agent/mod.rs`（`Agent`、`AgentRuntime`、`agent_loop`、`stream_message`、`build_system_prompt`）。工具执行细节见 [第 11 章 工具调度](./11_chapter_task_zh.md)。
+实现：`crates/tact_extensions/src/agent/mod.rs`（`Agent`、`AgentRuntime`、`agent_loop`、`stream_message`、`build_system_prompt`）。工具执行细节见 [第 11 章 工具调度](./11_chapter_task_zh.md)。
 
 ---
 
@@ -161,7 +161,7 @@ pub struct AgentRuntime {
 
 ## 7. TUI 集成
 
-在 `crates/tact-ui/src/interactive.rs`（`UserCommand::SubmitTask` 处理器）：
+在 `crates/tact_ui/src/interactive.rs`（`UserCommand::SubmitTask` 处理器）：
 
 ```rust
 UserCommand::SubmitTask(task) => {
@@ -194,11 +194,11 @@ UserCommand::Cancel => {
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/agent/mod.rs` | `agent_loop`、`stream_message`、`build_system_prompt`、session 辅助 |
-| `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call`、三阶段流水线 |
-| `crates/tact-ui/src/interactive.rs` | 在 `SubmitTask` 上 spawn 循环，设置 `TaskComplete` |
-| `crates/tact/src/recovery.rs` | 错误分类与 continuation 消息 |
-| `crates/tact/src/compact/mod.rs` | Turn 前 compact 钩子 |
+| `crates/tact_extensions/src/agent/mod.rs` | `agent_loop`、`stream_message`、`build_system_prompt`、session 辅助 |
+| `crates/tact_extensions/src/agent/tool_dispatch.rs` | `execute_tool_call`、三阶段流水线 |
+| `crates/tact_ui/src/interactive.rs` | 在 `SubmitTask` 上 spawn 循环，设置 `TaskComplete` |
+| `crates/tact_extensions/src/recovery.rs` | 错误分类与 continuation 消息 |
+| `crates/tact_extensions/src/compact/mod.rs` | Turn 前 compact 钩子 |
 | `tact_protocol` | `AgentUpdate`、`UserCommand` 线型类型 |
 
 ---

@@ -15,7 +15,7 @@
 
 ---
 
-## T1 核心实现（`crates/tact/src/tool/subagent.rs`）
+## T1 核心实现（`crates/tact_extensions/src/tool/subagent.rs`）
 
 - `SubagentInput` 增加字段（schema 描述见设计 §3.3）：
 
@@ -50,15 +50,15 @@ pub skill: Option<String>,
 
 ### T1b spawn 工具描述注入可用卡清单（主 agent 发现通道）
 
-- `crates/tact/src/tool/mod.rs`：`ToolRouter` 增加 `description_overrides: HashMap<String, String>` + `set_tool_description(name, text)`；
+- `crates/tact_extensions/src/tool/mod.rs`：`ToolRouter` 增加 `description_overrides: HashMap<String, String>` + `set_tool_description(name, text)`；
   `tool_specs()` 返回副本时按 override 替换对应工具的 description（不动 `cached_specs` 缓存内容）。
-- `crates/tact/src/tool/subagent.rs`：
+- `crates/tact_extensions/src/tool/subagent.rs`：
   - `const SKILL_CARD_DESC_CAP: usize = 60`；
   - `const MAX_SKILL_CARD_CATALOG_LINES: usize = 30`（总条数封顶，超出以 `… and N more` 收尾）；
   - `format_skill_card_line(stem, desc)`：折叠空白为单行 + 按字符数截断到 60 补 `…`；`list_skill_cards` 复用；
   - `annotate_spawn_subagent_skill_catalog(&mut ToolRouter)`（pub，经 `tool/mod.rs` 再导出为 `tact::tool::…`）：
     无 `$HOME` 或 0 张卡 → no-op；否则把 `Available subagent skill cards:\n- …` 追加进 `spawn_subagent` 的 description。
-- `crates/tact-ui/src/{interactive,headless}.rs`：`toolset()` 后调用 annotate（启动时快照，会话内不加新卡不生效）。
+- `crates/tact_ui/src/{interactive,headless}.rs`：`toolset()` 后调用 annotate（启动时快照，会话内不加新卡不生效）。
 - 测试：`catalog_lines_are_flattened_and_capped`、`annotate_spawn_description_appends_available_cards`、
   `annotate_spawn_description_skips_when_no_cards`、`annotate_spawn_description_caps_catalog_size`、
   `skill_card_name_rejects_directory_escape`、`catalog_lists_symlinked_cards_like_read_resolves_them`（unix）。

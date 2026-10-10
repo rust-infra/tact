@@ -4,7 +4,7 @@ Spec: [2026-09-30-hooks-in-config-toml-design.md](../specs/2026-09-30-hooks-in-c
 
 One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`).
 
-1. **Read the table** (`crates/tact/src/plugin/hooks.rs`)
+1. **Read the table** (`crates/tact_extensions/src/plugin/hooks.rs`)
    - `HooksFile::from_toml_file(path)` — parse a whole `config.toml` with `HooksFile`, so the other
      tables are ignored and only `[hooks]` is taken.
    - `config_hook_paths(work_dir) -> Vec<(PathBuf, HookOrigin)>` in ascending specificity: home

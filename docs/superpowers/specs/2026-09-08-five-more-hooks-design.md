@@ -151,17 +151,17 @@ exactly Codex's continuation fragment. This is the only place tact's `Block` mea
 
 ## 3. Files touched (estimated)
 
-- `crates/tact/src/hook/mod.rs` — new traits/context (`SubagentStopFn`, `SubagentStopContext`,
+- `crates/tact_extensions/src/hook/mod.rs` — new traits/context (`SubagentStopFn`, `SubagentStopContext`,
   `StopFn`, `SessionEndFn`, `PreCompactFn`, `PostCompactFn`), new `Hook` variants + `HookTypes`.
-- `crates/tact/src/agent/mod.rs` — builder methods, `dispatch_session_end_hooks`,
+- `crates/tact_extensions/src/agent/mod.rs` — builder methods, `dispatch_session_end_hooks`,
   `dispatch_stop_hooks`, PreCompact/PostCompact dispatch, `compact_history(trigger, focus)` signature.
-- `crates/tact/src/compact/mod.rs` — `CompactTrigger` enum (or reuse existing trigger if present);
+- `crates/tact_extensions/src/compact/mod.rs` — `CompactTrigger` enum (or reuse existing trigger if present);
   expose summary for PostCompact (already in `CompactState.last_summary`).
-- `crates/tact/src/tool/subagent.rs` — SubagentStop dispatch in sync + async tails.
-- `crates/tact/src/tool/mod.rs` — `ToolContext.subagent_stop_hooks`.
-- `crates/tact/src/plugin/hooks.rs` — 5 `HookEventKind` variants + `as_str`/`parse` arms +
+- `crates/tact_extensions/src/tool/subagent.rs` — SubagentStop dispatch in sync + async tails.
+- `crates/tact_extensions/src/tool/mod.rs` — `ToolContext.subagent_stop_hooks`.
+- `crates/tact_extensions/src/plugin/hooks.rs` — 5 `HookEventKind` variants + `as_str`/`parse` arms +
   `apply_plugin_hooks` arms + `plugin_subagent_stop_hooks` + trigger strings.
-- `crates/tact-ui/src/interactive.rs`, `headless.rs`, `driver.rs` — stamp `subagent_stop_hooks`,
+- `crates/tact_ui/src/interactive.rs`, `headless.rs`, `driver.rs` — stamp `subagent_stop_hooks`,
   SessionEnd/Stop dispatch sites, driver Stop re-run loop.
 - `book/09_chapter_hook_zh.md` — §2 table, §6 mapped-events bullets (both languages).
 - `book/26_chapter_issue*.md` — user-visible change entry (per AGENTS.md).

@@ -503,7 +503,8 @@ mod tests {
 
     use futures_util::future::BoxFuture;
     use secrecy::SecretString;
-    use tact_protocol::{AgentUpdate, TokenUsageInfo};
+    use tact_protocol::RuntimeEvent;
+    use tact_protocol::TokenUsageInfo;
 
     use super::*;
     use crate::{
@@ -977,7 +978,7 @@ mod tests {
         let update = rx.try_recv().expect("TokenUsage event");
         assert!(matches!(
             update,
-            AgentUpdate::TokenUsage(u) if u.total == usage.total
+            RuntimeEvent::TokenUsage { usage: u, .. } if u.total == usage.total
         ));
     }
 

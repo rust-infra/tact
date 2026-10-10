@@ -7,7 +7,7 @@ Spec: [2026-10-02-ui-language-persistence-design.md](../specs/2026-10-02-ui-lang
      whitespace-insensitive, aliases `english` / `cn` / `chinese`).
    - `lang_persist_prompt`, `lang_persisted_tmpl`, `lang_persist_failed_tmpl`,
      `lang_session_only_tmpl` in both locales.
-2. **Config** (`crates/tact/src/config/`)
+2. **Config** (`crates/tact_extensions/src/config/`)
    - `types.rs`: `UiTomlConfig.language: Option<String>`, `UiSettings.language: String`.
    - `resolve.rs`: read `[ui].language`, default `"en"`, no CLI flag; thread through
      `resolve_non_llm` → both `UiSettings` construction sites.
@@ -25,11 +25,11 @@ Spec: [2026-10-02-ui-language-persistence-design.md](../specs/2026-10-02-ui-lang
    - `start_language_toggle` / `open_language_persist_step` / `finish_language_persist`;
      `theme_config_available` renamed `ui_config_available` and shared by both commands.
    - Enter and Esc branches in `handle_select_mode` cover `PersistLang`.
-5. **Wiring** (`crates/tui/src/lib.rs`, `crates/tact-ui/src/interactive.rs`)
+5. **Wiring** (`crates/tui/src/lib.rs`, `crates/tact_ui/src/interactive.rs`)
    - `TuiConfig.language`; `app.set_configured_language(&language)` after `App::new`.
    - Test fixtures: add `language` to every `UiSettings` literal —
-     `crates/tact/src/config/mod.rs`, `crates/tact/src/tool/read_image.rs`,
-     `crates/tact-ui/src/test_support.rs`, `crates/tact-ui/tests/recovery_compaction.rs`.
+     `crates/tact_extensions/src/config/mod.rs`, `crates/tact_extensions/src/tool/read_image.rs`,
+     `crates/tact_ui/src/test_support.rs`, `crates/tact_ui/tests/recovery_compaction.rs`.
      (`cargo check --workspace --all-targets` reports them one wave at a time: `tact-ui`'s lib fails
      first, so the integration-test literal only surfaces after the lib one is fixed. Re-run the
      check after fixing.)

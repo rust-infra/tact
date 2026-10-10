@@ -48,8 +48,9 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     widgets::ScrollbarState,
 };
-use tact::plugin::{PluginEvent, PluginRequest};
-use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
+use tact_extensions::plugin::{PluginEvent, PluginRequest};
+use tact_protocol::{AccountUpdate, RuntimeEvent};
+use tact_view::UserCommand;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::StreamExt;
 
@@ -153,7 +154,10 @@ pub(crate) fn on_poll_timeout(app: &mut App) {
 
 /// Configuration for launching the TUI.
 pub struct TuiConfig {
-    pub agent_rx: UnboundedReceiver<AgentUpdate>,
+    /// Optional in-process compatibility receiver for test-support hosts.
+    /// Production View traffic arrives through `runtime_events`.
+    pub agent_rx: Option<UnboundedReceiver<RuntimeEvent>>,
+    pub runtime_events: tact::EventTransport,
     pub account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     pub plugin_rx: UnboundedReceiver<PluginEvent>,
     pub plugin_tx: UnboundedSender<PluginRequest>,
@@ -184,13 +188,13 @@ pub struct TuiConfig {
     pub skills_description: String,
     pub skills_data: Vec<SkillEntry>,
     /// Shared session store used to inspect persisted request payloads.
-    pub session_store: tact::store::DynSessionStore,
-    pub skill_registry: tact::skill::SharedSkillRegistry,
+    pub session_store: tact_extensions::store::DynSessionStore,
+    pub skill_registry: tact_extensions::skill::SharedSkillRegistry,
     /// Authoritative in-process pending UI request broker. The TUI reconciles
     /// from `snapshot()` instead of trusting a single `RequestSelect` event.
-    pub pending_ui: tact::ui_responder::UiResponder,
+    pub pending_ui: tact_extensions::ui_responder::UiResponder,
     /// Voice-to-text settings (independent of LLM providers).
-    pub voice: tact::config::VoiceSettings,
+    pub voice: tact_extensions::config::VoiceSettings,
     /// Keyboard shortcut to start/stop voice recording (e.g. "ctrl+g").
     /// Parsed from voice.voice_keybind; ready for crossterm matching.
     pub voice_parsed_keybind: Option<(KeyModifiers, KeyCode)>,
@@ -200,6 +204,7 @@ pub struct TuiConfig {
 pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     let TuiConfig {
         agent_rx,
+        runtime_events,
         account_rx,
         plugin_rx,
         plugin_tx,
@@ -245,6 +250,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     let mut terminal = Terminal::new(backend)?;
 
     // Initialize application state
+    let agent_rx = agent_rx.unwrap_or_else(|| tokio::sync::mpsc::unbounded_channel().1);
     let mut app = App::new(
         agent_rx,
         account_rx,
@@ -259,6 +265,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_description,
         skills_data,
     );
+    let mut runtime_subscription = runtime_events.subscribe();
 
     app.set_configured_language(&language);
     app.set_ui_config_path(ui_config_path);
@@ -276,15 +283,17 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     if model_thinking_budget > 0 {
         app.status_bar_mut().model_thinking_budget = Some(model_thinking_budget as u32);
     }
-    app.status_bar_mut().model_reasoning_effort = tact::config::try_settings()
+    app.status_bar_mut().model_reasoning_effort = tact_extensions::config::try_settings()
         .and_then(|s| s.agent.reasoning_effort)
         .map(|effort| effort.as_str().to_string());
     app.add_startup_banner();
 
     if voice.enabled {
-        let missing_api_key = matches!(voice.provider, tact::config::VoiceProvider::OpenAi)
-            && voice.api_key.is_none();
-        let worker = tact::voice::spawn_worker(voice);
+        let missing_api_key = matches!(
+            voice.provider,
+            tact_extensions::config::VoiceProvider::OpenAi
+        ) && voice.api_key.is_none();
+        let worker = tact_extensions::voice::spawn_worker(voice);
         app.voice = crate::widgets::state::VoiceState::enabled(worker, missing_api_key);
     }
 
@@ -319,7 +328,10 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         // log_scroll.visual_start computed during rendering would be inconsistent with the
         // actual message array, causing mouse clicks to map to wrong lines.
         while let Ok(update) = app.agent_rx.try_recv() {
-            app.handle_agent_update(update);
+            app.handle_runtime_event(update);
+        }
+        while let Ok(event) = runtime_subscription.try_recv() {
+            apply_runtime_event(&mut app, event);
         }
         // Codex-style: messages queued while the agent was busy are submitted
         // automatically once the current task reaches Idle/Done.
@@ -536,6 +548,10 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     Ok(())
 }
 
+fn apply_runtime_event(app: &mut App, event: tact_protocol::RuntimeEvent) {
+    app.handle_runtime_event(event);
+}
+
 #[cfg(test)]
 mod poll_timeout_tests {
     use super::{on_poll_timeout, should_repaint};
@@ -679,5 +695,147 @@ mod voice_keybind_tests {
         }
         // Unset (mouse-only) is the default and stays valid.
         assert_eq!(voice_keybind_conflict(None), None);
+    }
+}
+
+#[cfg(test)]
+mod runtime_event_tests {
+    use super::apply_runtime_event;
+    use crate::{
+        render::test_harness::{make_app, render_log_panel_text},
+        widgets::state::{InputMode, Status},
+    };
+    use tact_protocol::{InteractionRequest, RequestId, RuntimeEvent};
+
+    #[test]
+    fn runtime_text_events_reach_the_log() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::Text {
+                run_id: Some(tact_protocol::RunId::from("run-1")),
+                role: "assistant".into(),
+                content: "hello".into(),
+            },
+        );
+
+        let text = render_log_panel_text(&mut app, 80, 20);
+        assert!(
+            text.contains("hello"),
+            "assistant text should reach the log, got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn runtime_completion_notification_finishes_the_task() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::TaskComplete {
+                run_id: None,
+                content: "finished".into(),
+            },
+        );
+
+        assert!(matches!(app.status, Status::Done));
+    }
+
+    #[test]
+    fn runtime_model_info_reaches_the_status_bar() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::ModelInfo {
+                run_id: None,
+                params: tact_protocol::ModelCallParams {
+                    model: "model-a".into(),
+                    max_tokens: 128,
+                    thinking_budget: Some(16),
+                    reasoning_effort: Some("low".into()),
+                    extra_body: None,
+                },
+            },
+        );
+
+        assert_eq!(app.status_bar().model_name, "model-a");
+    }
+
+    #[test]
+    fn runtime_select_interaction_opens_the_popup() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::InteractionRequested {
+                request: InteractionRequest::Select {
+                    request_id: RequestId::from("42"),
+                    prompt: "Approve?".into(),
+                    options: vec!["Allow".into(), "Deny".into()],
+                    log_confirm: true,
+                },
+            },
+        );
+
+        assert!(matches!(app.input_mode, InputMode::Select));
+        assert_eq!(app.select.request_id, Some(42));
+        assert!(app.select.log_confirm, "log_confirm must survive the wire");
+    }
+
+    #[test]
+    fn runtime_popup_notification_opens_the_modal() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::PopupMarkdown {
+                run_id: None,
+                title: "Session stats".into(),
+                source: "Turns: 3".into(),
+            },
+        );
+
+        let popup = app.system_prompt_popup.as_ref().expect("modal opened");
+        assert_eq!(popup.title, "Session stats");
+        assert_eq!(popup.source, "Turns: 3");
+    }
+
+    #[test]
+    fn runtime_step_started_opens_a_tool_card() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::StepStarted {
+                run_id: Some(tact_protocol::RunId::from("run-view")),
+                idx: 7,
+                tool_id: "tool-view".into(),
+                tool_name: "write_file".into(),
+                arg_summary: "a.txt".into(),
+                arg_full: "a.txt: content".into(),
+                presentation: tact_protocol::ToolPresentationInfo::generic("Write File"),
+            },
+        );
+
+        assert_eq!(app.tools().active.len(), 1);
+    }
+
+    #[test]
+    fn run_lifecycle_events_track_the_active_run_for_cancel_commands() {
+        let mut app = make_app();
+        let run_id = tact_protocol::RunId::from("run-view-1");
+
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::RunStarted {
+                run_id: run_id.clone(),
+            },
+        );
+        assert_eq!(app.runtime_run_id, Some(run_id.clone()));
+
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::RunFinished {
+                run_id: Some(run_id),
+                success: true,
+            },
+        );
+        assert!(app.runtime_run_id.is_none());
     }
 }

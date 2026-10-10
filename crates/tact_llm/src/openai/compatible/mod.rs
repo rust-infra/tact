@@ -17,6 +17,7 @@ pub mod multi_model;
 
 use std::{collections::HashMap, sync::Arc};
 
+use crate::stream_event;
 use async_openai::{
     config::Config,
     types::{
@@ -33,7 +34,8 @@ pub use multi_model::ChatCompletionsAdapter;
 use reqwest13::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
-use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo};
+use tact_protocol::RuntimeEvent;
+use tact_protocol::{ThinkingChunk, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::LlmError;
@@ -50,33 +52,33 @@ fn openai_delta_ui_events(
     thinking_open: &mut bool,
     reasoning: Option<&str>,
     content: Option<&str>,
-) -> Vec<AgentUpdate> {
+) -> Vec<RuntimeEvent> {
     let mut events = Vec::new();
     if let Some(reasoning) = reasoning.filter(|s| !s.is_empty()) {
         if !*thinking_open {
             *thinking_open = true;
-            events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+            events.push(stream_event::thinking(ThinkingChunk::Started));
         }
-        events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        events.push(stream_event::thinking(ThinkingChunk::Delta(
             reasoning.to_string(),
         )));
     }
     if let Some(content) = content.filter(|s| !s.is_empty()) {
         if *thinking_open {
             *thinking_open = false;
-            events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+            events.push(stream_event::thinking(ThinkingChunk::Finished));
         }
-        events.push(AgentUpdate::StreamChunk(content.to_string()));
+        events.push(stream_event::text(content.to_string()));
     }
     events
 }
 
-fn finish_thinking_event(thinking_open: &mut bool) -> Option<AgentUpdate> {
+fn finish_thinking_event(thinking_open: &mut bool) -> Option<RuntimeEvent> {
     if !*thinking_open {
         return None;
     }
     *thinking_open = false;
-    Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+    Some(stream_event::thinking(ThinkingChunk::Finished))
 }
 
 /// Convert a `u64` token count to `u32`, saturating rather than truncating.
@@ -465,7 +467,7 @@ impl OpenAiAdapter {
         &self,
         body: &serde_json::Value,
         _provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     ) -> Result<LlmResponse, LlmError> {
         let json_body = serde_json::to_vec(body)?;
 
@@ -554,10 +556,13 @@ impl OpenAiAdapter {
                             delta.content.as_deref(),
                         ) {
                             match &event {
-                                AgentUpdate::StreamChunk(content) => {
+                                RuntimeEvent::Text { content, .. } => {
                                     text_buffer.push_str(content);
                                 }
-                                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(reasoning)) => {
+                                RuntimeEvent::Thinking {
+                                    chunk: ThinkingChunk::Delta(reasoning),
+                                    ..
+                                } => {
                                     reasoning_buffer.push_str(reasoning);
                                 }
                                 _ => {}
@@ -624,7 +629,7 @@ impl OpenAiAdapter {
                                 reasoning_tokens: reasoning,
                             };
                             if let Some(ref tx) = ui_tx {
-                                let _ = tx.send(AgentUpdate::TokenUsage(info.clone()));
+                                let _ = tx.send(stream_event::token_usage(info.clone()));
                             }
                             token_usage = Some(info);
                         }
@@ -831,10 +836,10 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(r)),
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
-                AgentUpdate::StreamChunk(c),
+                RuntimeEvent::Thinking { chunk: ThinkingChunk::Started, .. },
+                RuntimeEvent::Thinking { chunk: ThinkingChunk::Delta(r), .. },
+                RuntimeEvent::Thinking { chunk: ThinkingChunk::Finished, .. },
+                RuntimeEvent::Text { content: c, .. },
             ] if r == "reason" && c == "answer"
         ));
         assert!(!open);
@@ -847,15 +852,18 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(r)),
+                RuntimeEvent::Thinking { chunk: ThinkingChunk::Started, .. },
+                RuntimeEvent::Thinking { chunk: ThinkingChunk::Delta(r), .. },
             ] if r == "think"
         ));
         assert!(open);
         let finished = finish_thinking_event(&mut open);
         assert!(matches!(
             finished,
-            Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+            Some(RuntimeEvent::Thinking {
+                chunk: ThinkingChunk::Finished,
+                ..
+            })
         ));
         assert!(!open);
         assert!(finish_thinking_event(&mut open).is_none());
@@ -868,8 +876,8 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
-                AgentUpdate::StreamChunk(c),
+                RuntimeEvent::Thinking { chunk: ThinkingChunk::Finished, .. },
+                RuntimeEvent::Text { content: c, .. },
             ] if c == "done"
         ));
         assert!(!open);

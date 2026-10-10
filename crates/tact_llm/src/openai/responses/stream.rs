@@ -4,10 +4,12 @@ use std::time::Instant;
 use async_openai_responses::types::responses::{
     OutputItem, Response, ResponseStreamEvent, WebSearchToolCall, WebSearchToolCallStatus,
 };
-use tact_protocol::{AgentUpdate, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo};
+use tact_protocol::RuntimeEvent;
+use tact_protocol::{StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo};
 
 use super::normalize::{NormalizedResponse, normalize_response};
 use crate::LlmError;
+use crate::stream_event;
 
 /// Extracts the search query from a `WebSearchToolCall` (empty when the
 /// provider has not populated the action yet — `output_item.added` events
@@ -45,8 +47,9 @@ fn web_search_failure_detail(call: &WebSearchToolCall, query: &str) -> String {
 }
 
 /// Builds the `StepStarted` update for an in-progress web search call.
-fn web_search_started(index: u32, call: &WebSearchToolCall) -> AgentUpdate {
-    AgentUpdate::StepStarted {
+fn web_search_started(index: u32, call: &WebSearchToolCall) -> RuntimeEvent {
+    RuntimeEvent::StepStarted {
+        run_id: None,
         idx: index as usize,
         tool_id: call.id.clone(),
         tool_name: "web_search".to_string(),
@@ -61,12 +64,13 @@ fn web_search_finished(
     index: u32,
     call: &WebSearchToolCall,
     duration_us: Option<u64>,
-) -> AgentUpdate {
+) -> RuntimeEvent {
     let query = web_search_query(call);
     let presentation = ToolPresentationInfo::generic("web_search");
     let (idx, tool_id) = (index as usize, call.id.clone());
     match call.status {
-        WebSearchToolCallStatus::Failed => AgentUpdate::StepFailed {
+        WebSearchToolCallStatus::Failed => RuntimeEvent::StepFailed {
+            run_id: None,
             idx,
             tool_id,
             arg_summary: web_search_query(call),
@@ -80,7 +84,8 @@ fn web_search_finished(
         // item ended without a terminal status: surface it as a failure
         // rather than silently claiming success.
         WebSearchToolCallStatus::InProgress | WebSearchToolCallStatus::Searching => {
-            AgentUpdate::StepFailed {
+            RuntimeEvent::StepFailed {
+                run_id: None,
                 idx,
                 tool_id,
                 arg_summary: web_search_query(call),
@@ -90,7 +95,8 @@ fn web_search_finished(
                 ),
             }
         }
-        WebSearchToolCallStatus::Completed => AgentUpdate::StepFinished {
+        WebSearchToolCallStatus::Completed => RuntimeEvent::StepFinished {
+            run_id: None,
             idx,
             tool_id,
             result: StepResult {
@@ -144,16 +150,16 @@ pub(crate) struct ResponsesStreamState {
 }
 
 impl ResponsesStreamState {
-    pub(crate) fn close_thinking(&mut self) -> Option<AgentUpdate> {
+    pub(crate) fn close_thinking(&mut self) -> Option<RuntimeEvent> {
         if self.thinking_open {
             self.thinking_open = false;
-            Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+            Some(stream_event::thinking(ThinkingChunk::Finished))
         } else {
             None
         }
     }
 
-    fn thinking_delta(&mut self, delta: String) -> Vec<AgentUpdate> {
+    fn thinking_delta(&mut self, delta: String) -> Vec<RuntimeEvent> {
         if delta.is_empty() {
             return Vec::new();
         }
@@ -163,13 +169,13 @@ impl ResponsesStreamState {
         let mut updates = Vec::with_capacity(2);
         if !self.thinking_open {
             self.thinking_open = true;
-            updates.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+            updates.push(stream_event::thinking(ThinkingChunk::Started));
         }
-        updates.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(delta)));
+        updates.push(stream_event::thinking(ThinkingChunk::Delta(delta)));
         updates
     }
 
-    fn visible_delta(&mut self, delta: String) -> Vec<AgentUpdate> {
+    fn visible_delta(&mut self, delta: String) -> Vec<RuntimeEvent> {
         if delta.is_empty() {
             return Vec::new();
         }
@@ -177,13 +183,13 @@ impl ResponsesStreamState {
         let mut updates = Vec::with_capacity(2);
         if self.thinking_open {
             self.thinking_open = false;
-            updates.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+            updates.push(stream_event::thinking(ThinkingChunk::Finished));
         }
-        updates.push(AgentUpdate::StreamChunk(delta));
+        updates.push(stream_event::text(delta));
         updates
     }
 
-    fn set_terminal(&mut self, response: Response) -> Result<Vec<AgentUpdate>, LlmError> {
+    fn set_terminal(&mut self, response: Response) -> Result<Vec<RuntimeEvent>, LlmError> {
         if self.terminal.is_some() {
             return Err(LlmError::Unsupported(
                 "multiple terminal events".to_string(),
@@ -197,7 +203,7 @@ impl ResponsesStreamState {
     pub(crate) fn apply(
         &mut self,
         event: ResponseStreamEvent,
-    ) -> Result<Vec<AgentUpdate>, LlmError> {
+    ) -> Result<Vec<RuntimeEvent>, LlmError> {
         self.apply_with_raw(event, None)
     }
 
@@ -205,7 +211,7 @@ impl ResponsesStreamState {
         &mut self,
         event: ResponseStreamEvent,
         raw_output_items: Option<Vec<serde_json::Value>>,
-    ) -> Result<Vec<AgentUpdate>, LlmError> {
+    ) -> Result<Vec<RuntimeEvent>, LlmError> {
         if raw_output_items.is_some() {
             self.raw_terminal_output = raw_output_items;
         }
@@ -446,7 +452,8 @@ impl ResponsesStreamState {
 #[cfg(test)]
 mod tests {
     use async_openai_responses::types::responses::ResponseStreamEvent;
-    use tact_protocol::{AgentUpdate, StepStatus, ThinkingChunk};
+    use tact_protocol::RuntimeEvent;
+    use tact_protocol::{StepStatus, ThinkingChunk};
 
     use super::ResponsesStreamState;
     use crate::ContentBlock;
@@ -482,8 +489,8 @@ mod tests {
         assert!(matches!(
             thinking.as_slice(),
             [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(delta))
+                RuntimeEvent::Thinking { chunk: ThinkingChunk::Started, .. },
+                RuntimeEvent::Thinking { chunk: ThinkingChunk::Delta(delta), .. }
             ] if delta == "plan"
         ));
 
@@ -501,8 +508,8 @@ mod tests {
         assert!(matches!(
             text.as_slice(),
             [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
-                AgentUpdate::StreamChunk(delta)
+                RuntimeEvent::Thinking { chunk: ThinkingChunk::Finished, .. },
+                RuntimeEvent::Text { content: delta, .. }
             ] if delta == "answer"
         ));
 
@@ -607,7 +614,7 @@ mod tests {
             .unwrap();
         assert!(delta.iter().any(|update| matches!(
             update,
-            AgentUpdate::StreamChunk(text) if text == "answer"
+            RuntimeEvent::Text { content: text, .. } if text == "answer"
         )));
 
         let done = state
@@ -646,7 +653,10 @@ mod tests {
             .unwrap();
         assert!(matches!(
             updates.as_slice(),
-            [AgentUpdate::ThinkingChunk(ThinkingChunk::Finished)]
+            [RuntimeEvent::Thinking {
+                chunk: ThinkingChunk::Finished,
+                ..
+            }]
         ));
         assert!(state.finish().is_ok());
     }
@@ -1305,7 +1315,9 @@ mod tests {
             .unwrap();
 
         match &updates[0] {
-            AgentUpdate::StepStarted { idx, .. } => {
+            RuntimeEvent::StepStarted {
+                run_id: None, idx, ..
+            } => {
                 assert_eq!(*idx, 0, "the first hosted tool must render as step 1")
             }
             other => panic!("expected StepStarted, got {other:?}"),
@@ -1330,9 +1342,15 @@ mod tests {
 
         match (&first[0], &second[0]) {
             (
-                AgentUpdate::StepStarted { idx: first_idx, .. },
-                AgentUpdate::StepStarted {
-                    idx: second_idx, ..
+                RuntimeEvent::StepStarted {
+                    run_id: None,
+                    idx: first_idx,
+                    ..
+                },
+                RuntimeEvent::StepStarted {
+                    run_id: None,
+                    idx: second_idx,
+                    ..
                 },
             ) => {
                 assert_eq!(*first_idx, 0);
@@ -1361,9 +1379,15 @@ mod tests {
 
         match (&first[0], &second[0]) {
             (
-                AgentUpdate::StepStarted { idx: first_idx, .. },
-                AgentUpdate::StepStarted {
-                    idx: second_idx, ..
+                RuntimeEvent::StepStarted {
+                    run_id: None,
+                    idx: first_idx,
+                    ..
+                },
+                RuntimeEvent::StepStarted {
+                    run_id: None,
+                    idx: second_idx,
+                    ..
                 },
             ) => {
                 assert_eq!(*first_idx, 0);
@@ -1386,7 +1410,8 @@ mod tests {
 
         assert_eq!(updates.len(), 1);
         match &updates[0] {
-            AgentUpdate::StepStarted {
+            RuntimeEvent::StepStarted {
+                run_id: None,
                 idx,
                 tool_id,
                 tool_name,
@@ -1418,11 +1443,17 @@ mod tests {
             ))
             .unwrap();
 
-        assert!(matches!(&started[0], AgentUpdate::StepStarted { .. }));
+        assert!(matches!(
+            &started[0],
+            RuntimeEvent::StepStarted { run_id: None, .. }
+        ));
         assert_eq!(finished.len(), 1);
         match &finished[0] {
-            AgentUpdate::StepFinished {
-                tool_id, result, ..
+            RuntimeEvent::StepFinished {
+                run_id: None,
+                tool_id,
+                result,
+                ..
             } => {
                 assert_eq!(tool_id, "ws_1");
                 assert_eq!(result.tool, "web_search");
@@ -1452,7 +1483,11 @@ mod tests {
             .unwrap();
 
         match &updates[0] {
-            AgentUpdate::StepFinished { result, .. } => {
+            RuntimeEvent::StepFinished {
+                run_id: None,
+                result,
+                ..
+            } => {
                 assert!(result.detail.is_none(), "web search output is hidden");
             }
             other => panic!("expected StepFinished, got {other:?}"),
@@ -1477,7 +1512,8 @@ mod tests {
 
         assert_eq!(failed.len(), 1);
         match &failed[0] {
-            AgentUpdate::StepFailed {
+            RuntimeEvent::StepFailed {
+                run_id: None,
                 tool_id,
                 arg_summary,
                 error,
@@ -1522,7 +1558,12 @@ mod tests {
 
             assert_eq!(updates.len(), 1);
             match &updates[0] {
-                AgentUpdate::StepFailed { tool_id, error, .. } => {
+                RuntimeEvent::StepFailed {
+                    run_id: None,
+                    tool_id,
+                    error,
+                    ..
+                } => {
                     assert_eq!(tool_id, "ws_1");
                     assert!(
                         error.contains("without terminal status"),
@@ -1565,7 +1606,10 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(first.len(), 1);
-        assert!(matches!(&first[0], AgentUpdate::StepFinished { .. }));
+        assert!(matches!(
+            &first[0],
+            RuntimeEvent::StepFinished { run_id: None, .. }
+        ));
 
         let duplicate = state
             .apply(output_item_done(

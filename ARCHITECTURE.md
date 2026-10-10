@@ -8,37 +8,77 @@ For detailed state-machine diagrams (TUI status, input mode, task lifecycle, per
 
 ## 0. Workspace Structure
 
-This project is a Cargo Workspace containing the following crates:
+The crate taxonomy mirrors the layered architecture: the Runtime Kernel is its
+own crate, the cross-language wire contract is its own crate, plugin hosts
+depend only on those two, and the Agent / Session / Chat / Tools extensions sit
+above them.
 
-| Directory | Package | Version | Responsibility |
-|---|---|---|---|
-| `crates/protocol` | `tact_protocol` | `0.1.0` (local) | Shared wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Also contains a legacy `Agent` implementation that is no longer used by the runtime. |
-| `crates/tui` | `tui` | `0.1.0` (local) | Terminal UI built with `ratatui`. |
-| `crates/tact` | `tact` | `0.19.0` (workspace) | Agent runtime, tool router, MCP client, hooks, permissions, context compaction (library). |
-| `crates/tact-ui` | `tact-ui` | `0.19.0` (workspace) | CLI binary: interactive TUI and `headless` subcommand; wires `tact` + `tui`. |
-| `crates/tact_llm` | `tact_llm` | `0.19.0` (workspace) | Shared LLM provider layer (Anthropic/OpenAI/DeepSeek/Kimi adapters, request conversion, provider/env resolution). |
-| `crates/tool_refactor_macros` | `tool_refactor_macros` | `0.19.0` (workspace) | Proc-macro `#[tool(name = "...", description = "...")]` that generates `Tool` trait implementations from async functions. |
+| Directory | Package | Responsibility |
+|---|---|---|
+| `crates/tact` | `tact` | **Runtime Kernel** — capability router, the permission decision (`permission.rs`: mode/risk/rules/allow-list ordering) plus the sensitive-path and security policy it consults (`security/`), event transport, minimal storage, cancellation / timeout / error, plugin registry, payload redaction. Depends on `tact_protocol` only. |
+| `crates/tact_protocol` | `tact_protocol` | **Plugin Protocol** — language-neutral IDs, envelopes, capability declarations, structured runtime events / commands, interactions, error categories, and the shared payload types. `serde` only. |
+| `crates/tact_view` | `tact_view` | **View contract** — the Rust view-model types a View adapter still renders itself (`UserCommand`, `AgentErrorKind`). The `AgentUpdate` enum and its projection pair are deleted: the runtime and the View now exchange `tact_protocol::RuntimeEvent` directly. |
+| `crates/tact_trajectory` | `tact_trajectory` | **Trajectory** — execution-fact model, in-memory and SQLite recorders, ordered replay. Implements the Kernel's `TrajectoryService`. |
+| `crates/tact_plugin_host` | `tact_plugin_host` | **Plugin host machinery** — lifecycle boundary, stdio transport, supervision (handshake, correlation, timeouts, cancellation, crash detection, shutdown drain). |
+| `crates/tact_plugin_node` | `tact_plugin_node` | **Node.js Host** — the Node entry point over the shared host machinery. |
+| `crates/tact_plugin_wasm` | `tact_plugin_wasm` | **WASM Host** — subprocess runner boundary with constrained capabilities (no embedded engine). |
+| `crates/tact_extensions` | `tact_extensions` | **Extension Capability API** — official Agent / Session / Chat / Tools / Workflow extensions, plus the in-process Rust host: tools, MCP, hooks, permissions, memory, skills, tasks, teams, worktrees, background work, voice, config, compaction. |
+| `crates/tact_llm` | `tact_llm` | LLM provider adapters (Anthropic / OpenAI / DeepSeek / Kimi), request conversion, provider and env resolution. |
+| `crates/tui` | `tui` | **TUI View Adapter** — `ratatui` rendering, key/mouse handling, view state. |
+| `crates/agent_tui_kit` | `agent_tui_kit` | Reusable TUI widgets and state primitives shared by the view. |
+| `crates/tact_ui` | `tact-ui` | **Runtime host and external-client wiring** — the `tact-ui` binary: interactive TUI plus the `headless` external client; owns session bootstrap, locks, and CLI subcommands. |
+| `crates/tool_refactor_macros` | `tool_refactor_macros` | Proc-macro `#[tool(...)]` generating `Tool` implementations. |
 
-Dependency graph:
+Dependency graph (arrows point at dependencies):
 
 ```mermaid
 flowchart TB
-    tact_ui["tact-ui"] --> tact
-    tact_ui --> tui
-    tact --> tact_protocol
-    tact --> tact_llm
-    tact --> tool_refactor_macros
-    tact_llm --> tact_protocol
-    tui --> tact_protocol
+    protocol["tact_protocol<br/>Plugin Protocol"]
+    kernel["tact<br/>Runtime Kernel"]
+    traj["tact_trajectory"]
+    host["tact_plugin_host"]
+    node["tact_plugin_node"]
+    wasm["tact_plugin_wasm"]
+    ext["tact_extensions"]
+    llm["tact_llm"]
+    kit["agent_tui_kit"]
+    tui["tui"]
+    ui["tact-ui"]
+
+    kernel --> protocol
+    traj --> kernel
+    host --> kernel
+    node --> host
+    node --> protocol
+    wasm --> host
+    view["tact_view<br/>View contract"]
+    ext --> kernel
+    ext --> traj
+    ext --> host
+    ext --> llm
+    ext --> view
+    llm --> protocol
+    view --> protocol
+    kit --> protocol
+    tui --> ext
+    tui --> kernel
+    tui --> kit
+    tui --> view
+    ui --> ext
+    ui --> tui
+    ui --> traj
 ```
 
-Binaries produced by `crates/tact-ui`:
+No crate in the `tact_plugin_*` column depends on `tact_extensions`, and the
+Kernel depends on no frontend — so a plugin host cannot reach the Agent, and a
+capability cannot be invoked on a path that skips permission, events, or the
+trajectory.
+
+Binaries produced by `crates/tact_ui`:
 
 | Binary | Source | Mode |
 |---|---|---|
-| `tact-ui` | `crates/tact-ui/` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
-
-`tact-ui` crate layout: `main.rs` (dispatch), `interactive.rs`, `headless.rs`, `user_message.rs`, `permission.rs`, `sessions.rs`.
+| `tact-ui` | `crates/tact_ui/` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
 
 ---
 
@@ -47,7 +87,7 @@ Binaries produced by `crates/tact-ui`:
 ```mermaid
 flowchart TB
     subgraph bins["Binary entry points"]
-        B1["tact-ui<br/>crates/tact-ui/"]
+        B1["tact-ui<br/>crates/tact_ui/"]
     end
 
     subgraph tact_agent["tact/src/agent/ — Agent Runtime"]
@@ -93,7 +133,7 @@ flowchart TB
     end
 
     subgraph core["tact_protocol — shared types"]
-        UPD["AgentUpdate enum"]
+        EV["RuntimeEvent enum"]
         CMD["UserCommand enum"]
         STEP["PlanStep / StepResult"]
     end
@@ -111,7 +151,7 @@ flowchart TB
     B1 --> A
     B1 --> T
     T -- UnboundedSender<UserCommand> --> A
-    A -- UnboundedSender<AgentUpdate> --> T
+    A -- RuntimeEvent --> T
 
     A --> TOOL
     A --> MCP
@@ -203,7 +243,7 @@ sequenceDiagram
     TUI ->> U: Show completion / statistics
 ```
 
-Key `AgentUpdate` variants used today:
+Key `RuntimeEvent` variants used today:
 
 | Variant | Meaning |
 |---|---|
@@ -319,7 +359,7 @@ MCP tool naming convention: `mcp__<server_name>__<tool_name>`. Example: `mcp__fi
 
 ## 5.5 System Prompt & Dynamic Context
 
-The runtime builds the system prompt via `SystemPrompt` (Tera template in `crates/tact/src/prompt/`) plus injected blocks:
+The runtime builds the system prompt via `SystemPrompt` (Tera template in `crates/tact_extensions/src/prompt/`) plus injected blocks:
 
 | Block | Source |
 |---|---|
@@ -533,8 +573,8 @@ flowchart TD
 flowchart LR
     subgraph Channels["Tokio Unbounded MPSC Channels"]
         direction LR
-        TX1["ui_tx<br/>(UnboundedSender&lt;AgentUpdate&gt;)"]
-        RX1["agent_rx<br/>(UnboundedReceiver&lt;AgentUpdate&gt;)"]
+        TX1["ui_tx<br/>(UnboundedSender&lt;RuntimeEvent&gt;)"]
+        RX1["agent_rx<br/>(UnboundedReceiver&lt;RuntimeEvent&gt;)"]
         TX2["user_cmd_tx<br/>(UnboundedSender&lt;UserCommand&gt;)"]
         RX2["cmd_rx<br/>(UnboundedReceiver&lt;UserCommand&gt;)"]
     end
@@ -548,7 +588,7 @@ flowchart LR
     end
 
     A -- "Send status updates" --> TX1
-    TX1 -- "AgentUpdate" --> RX1
+    TX1 -- "RuntimeEvent" --> RX1
     RX1 --> TUI
 
     TUI -- "Send user commands" --> TX2
@@ -573,7 +613,7 @@ flowchart LR
 
 ## 11. Sandbox Safe Path Resolution
 
-The runtime uses `resolve_safe_path(work_dir, path, allow_missing)` in `crates/tact/src/tool/path.rs`.
+The runtime uses `resolve_safe_path(work_dir, path, allow_missing)` in `crates/tact_extensions/src/tool/path.rs`.
 
 ```mermaid
 flowchart TD
@@ -602,7 +642,7 @@ flowchart TD
 This guard is unrelated to the OS-level **execution** sandbox (bubblewrap) of
 [Bash Sandbox](./book/27_chapter_sandbox_zh.md): `resolve_safe_path` bounds the
 in-process file tools' *paths*, while the execution sandbox bounds what an
-approved `bash` command can *reach* (`crates/tact/src/sandbox/`).
+approved `bash` command can *reach* (`crates/tact_extensions/src/sandbox/`).
 
 ---
 
@@ -665,20 +705,94 @@ Handlers can be either:
 If you are reading older branches or notes, the following major evolutions have happened:
 
 - The plan-then-execute model (`generate_plan()` → sequential `execute_step()`) was replaced by a streaming agent loop (`agent_loop()`).
-- Business tools live in `crates/tact/src/tool/`; the legacy `crates/tools` Sandbox crate was removed.
+- Business tools live in `crates/tact_extensions/src/tool/`; the legacy `crates/tools` Sandbox crate was removed.
 - The runtime gained native support for MCP, hooks, permissions, context compaction, recovery, sub-agents, teammates, worktrees, memory, and skills.
 - `tact_protocol::Agent` is legacy code and is no longer used by the main binaries.
 - The TUI gained streaming output, diff/code/thinking popups, a command palette, mouse support, themes, and internationalization.
 - **Tool log blocks** — 3-tier layout (title + meta + detail card), concurrent active tools, live running elapsed time, and a fixed five-row live tail for active `bash` calls. Progress is keyed by `tool_id`; stderr uses warning styling, active output opens in the detail popup, and updates preserve bottom pinning or an explicit visual scroll position (`log_scroll.visual_top`).
-- **CLI** — `tact-ui` binary in `crates/tact-ui` (depends on `tact` lib + `tui`); default TUI, `headless` subcommand for non-interactive runs.
+- **CLI** — `tact-ui` binary in `crates/tact_ui` (depends on `tact_extensions` + `tui` + `tact_trajectory`); default TUI, `headless` subcommand for non-interactive runs.
 - **Popups / code cards** — modal popups render without drop shadow; code block titles use plain language labels (no emoji icons).
 - **Session store** — SQLite at `<workdir>/.tact/tact.db`; token usage rows optionally store serialized LLM `request_body` for debugging.
 - **Dynamic context** — Project structure snapshot with pruned walk, default 80 items, session-cached for KV stability.
 - **Bottom bar Cost timer** — retains last prompt duration until the next submission.
 
+## 15. Runtime Kernel and Plugin Boundary
+
+The runtime migration introduces a protocol-neutral Kernel boundary. The Kernel owns lifecycle, capability routing, permission checks, event transport, trajectory recording, cancellation, errors, and namespaced storage. Agent, Session, Chat, Tools, and Workflow use these services as extensions; TUI and future Web/Desktop clients consume Runtime events through View and Interaction adapters.
+
+```mermaid
+flowchart TB
+    K["Runtime Kernel<br/>Lifecycle / Capability Router / Permission<br/>Events / Trajectory / Storage / Cancellation"]
+    P["Plugin Protocol<br/>versioned envelopes + neutral events"]
+    RH["Rust Plugin Host"]
+    NH["Node.js Plugin Host"]
+    WH["WASM Plugin Host"]
+    E["Extension Capability API<br/>Agent / Session / Chat / Tools / Commands"]
+    V["Views / Interaction API"]
+    TUI["TUI"]
+    WEB["Web"]
+    DESK["Desktop"]
+    EXT["External Client"]
+    K --> P
+    P --> RH
+    P --> NH
+    P --> WH
+    RH --> E
+    NH --> E
+    WH --> E
+    E --> V
+    V --> TUI
+    V --> WEB
+    V --> DESK
+    V --> EXT
+```
+
+The Kernel is `crates/tact` itself: capability routing, permission boundary, events, minimal storage, cancellation, interactions, the plugin registry, and payload redaction, depending only on `crates/tact_protocol`. Execution facts live in `crates/tact_trajectory` (model, in-memory and SQLite recorders, ordered replay) and implement the Kernel's `TrajectoryService`. Shared host machinery — lifecycle, stdio transport, supervision — is `crates/tact_plugin_host`; `crates/tact_plugin_node` and `crates/tact_plugin_wasm` are the language-specific entry points above it, and neither depends on the extension crate. `crates/tact_protocol` holds the language-neutral IDs, envelopes, capabilities, runtime events, commands, interactions, and errors. Interactive and headless hosts attach the SQLite trajectory subscriber before the Agent starts. The TUI consumes Runtime events for run lifecycle, streaming, status, popups, and select requests; it sends Runtime start, cancel, and interaction-response commands.
+
+The View's event path is protocol-only: `AgentUpdate` and its projection pair are deleted, and the App, the widget components and the harness all consume `tact_protocol::RuntimeEvent`.
+
+**The command direction is intentionally left as the View's own vocabulary.** `UserCommand::Runtime(RuntimeCommand::…)` keeps the protocol command nested in a View-local enum, and that is a decision, not an oversight: moving the other 19 variants to `Command` capabilities needs three things the codebase does not have (an owner per command, access to live state that the Agent owns by value while the rendering lives in this binary crate, and a runtime on the command dispatch path — the `Agent` exposes no `CapabilityRouter` at all). On that evidence removing the View's own command vocabulary costs a re-architecture of command dispatch, which is a different job from eliminating a legacy *protocol* type. Revisit when a second View (Web/Desktop) genuinely needs to share the command set. The reasoning and the alternatives are recorded in `docs/superpowers/specs/2026-10-09-command-capability-migration-design.md`.
+
+Official Agent, Chat, Session, Tools, and Workflow manifests register through `PluginRegistry` and are marked serving (`Running`) as they register — the in-process host serves an extension the moment it is registered, so `state` / `health` report what is actually live. **Only the manifests are registered on the production path, though**: `register_official_manifests` (`crates/tact_ui/src/session_bootstrap.rs`) never calls `AgentExtension::register` / `SessionExtension::register` / `WorkflowExtension::register`, so the capability handlers behind `runs.*`, `chat.start_run`, `sessions.*` and `workflow.run` are reachable only from tests, and the resulting `PluginRegistry` is stored on `Agent::runtime_plugins` and never read. The live run path for the TUI is still `Agent::agent_loop`; the **headless** host now starts its run through `runs.start` on a `CapabilityRouter` (the first production consumer of `AgentExtension::register`). What *is* on the production router for both hosts is the tool layer: native and MCP tool handlers are installed through `CapabilityRouter` for each execution wave.
+
+### Declared but not yet consumed
+
+The Kernel and its hosts expose interfaces that **no production path calls
+today**. They exist because the architecture plan specifies them as extension
+points; do not read their presence as "this is wired":
+
+| Interface | Consumer today | Who it is for |
+|---|---|---|
+| `StorageService::{delete, list, transaction}` | none (no capability exposes them; `storage.get` / `storage.set` are the registered ones) | a host or plugin managing its own `plugins/<id>` namespace |
+| `PluginRegistry::{discover, health, health_all, unregister}` | none (`start` *is* called, by `register_official_manifests`) | a host that scans for, supervises, or uninstalls plugins |
+| `EventTransport::close` | the interactive host, on both exits of `run_interactive_locked` (`crates/tact_ui/src/interactive.rs`) | a host shutting its event transport down before exit (headless still cannot reach its transport) |
+| `TrajectoryService::replay` | none (`query` serves resume) | a caller replaying a whole trajectory rather than resuming a sequence |
+| `tact::services::register` (all 12 §4 Kernel service capabilities) | none — zero callers anywhere, so `storage.*`, `events.*`, `trajectory.*`, `permission.request` and `interaction.request` are unreachable in production | any host serving plugin capability invocations |
+| `SessionExtension` / `WorkflowExtension::register` | tests only | the in-process Rust host serving Session and Workflow through the router (`AgentExtension::register` is no longer test-only: the headless host calls it) |
+| `crates/tact_plugin_node`, `crates/tact_plugin_wasm` | no workspace crate depends on them; only their own tests | a product path that loads external plugins |
+| `Agent::runtime_plugins` | written, never read | host lifecycle / health reporting for registered extensions |
+| Kernel `InteractionBroker` / `InteractionService` | tests only | a client-neutral interaction path (production still answers through `tact_extensions::ui_responder::UiResponder`) |
+| `RuntimeCommand::{Subscribe, Resume, Invoke, Shutdown}` | none | protocol-driven external clients; the driver routes only `StartRun` / `CancelRun` / `RespondInteraction` |
+
+`EventTransport::replay_from` is closer to wired than the rest: the durable
+replay *source* is installed by `start_trajectory_recorder`, so the method
+answers from the SQLite trajectory instead of `CapabilityNotFound`. But no
+production path calls it — the only caller is a test inside
+`session_bootstrap.rs`'s `#[cfg(test)] mod tests`. The acceptance item "a
+disconnected client reconnects from a Trajectory sequence" therefore still has
+no production caller, and `RuntimeCommand::{Subscribe, Resume}` have no
+consumer either.
+
+
+Native tools, namespaced MCP tools, and the MCP prompt/resource commands now register as `CapabilityRouter` handlers. Agent keeps its existing sequential hook, permission, and resource preflight during migration, then presents a one-use approval ticket to the router before execution. Typed tool effects and output metadata survive the adapter response.
+
+When a routed tool call has a run ID, the Kernel publishes and records `ToolCallStarted` and `ToolCallFinished` around the handler. The interactive host supplies the shared EventTransport, whose SQLite Trajectory subscriber persists those facts.
+
+The Node.js process host is exposed by `crates/tact_plugin_node/` and the WASM host by `crates/tact_plugin_wasm/`; both build on the shared `crates/tact_plugin_host/` handshake, correlation, timeout, cancellation, crash-detection, and shutdown machinery, and neither crate is depended on by any product crate yet. The WASM host is a **subprocess host, not an embedded engine**: it spawns a caller-configured runner executable (the checked-in fixture is a Node shim, and the test module is a placeholder header) and passes fuel, linear-memory, timeout and WASI restrictions as runner arguments. This repository links no WASM engine (`Cargo.lock` contains `wasmtime` / `wasmi` / `wasmer` zero times), so those limits are honoured only if the configured runner enforces them. When `host_calls` is negotiated, guest service requests are correlated through `HostCall` / `HostCallResult`; the host checks manifest grants and routes external capabilities through the Kernel permission boundary.
+
 ---
 
-## 15. Related Documents
+## 16. Related Documents
 
 | Document | Focus |
 |---|---|

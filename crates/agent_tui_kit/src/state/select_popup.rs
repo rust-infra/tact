@@ -4,7 +4,7 @@ use super::filtered_list::FilteredList;
 /// *prompt* rather than a picker.
 ///
 /// The popup no longer holds a oneshot sender. Agent-originated selects carry a
-/// `request_id`; confirming or cancelling produces a [`tact_protocol::UiResponse`]
+/// `request_id`; confirming or cancelling produces a [`tact_protocol::InteractionResponse`]
 /// that the caller (the TUI) sends over the reverse command channel.
 ///
 /// `Deref`/`DerefMut` expose the list's `options` / `query` / `selected` and its
@@ -142,20 +142,10 @@ impl SelectPopup {
 
     /// Build the cancellation response for an agent-originated request, if any.
     /// Resets multi/checked state. Returns `None` for local flows.
-    pub fn cancel(&mut self) -> Option<tact_protocol::UiResponse> {
+    pub fn cancel(&mut self) -> Option<tact_protocol::InteractionResponse> {
         let request_id = self.request_id.take();
-        let response = request_id.map(|id| {
-            if self.multi {
-                tact_protocol::UiResponse::MultiSelect {
-                    request_id: id,
-                    choices: None,
-                }
-            } else {
-                tact_protocol::UiResponse::Select {
-                    request_id: id,
-                    choice: None,
-                }
-            }
+        let response = request_id.map(|id| tact_protocol::InteractionResponse::Cancelled {
+            request_id: tact_protocol::RequestId::from(id.to_string()),
         });
         self.multi = false;
         self.checked.clear();

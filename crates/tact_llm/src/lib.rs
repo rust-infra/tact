@@ -20,6 +20,7 @@ pub mod opencode;
 pub mod profile;
 pub mod provider;
 pub mod provider_state;
+mod stream_event;
 pub mod transport;
 pub mod types;
 

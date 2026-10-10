@@ -5,7 +5,7 @@ edition.workspace = true
 license.workspace = true
 
 [dependencies]
-tact_protocol = { path = "../protocol" }
+tact_protocol = { path = "../tact_protocol" }
 anyhow = { workspace = true }
 thiserror = "2"
 async-openai = { workspace = true }

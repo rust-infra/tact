@@ -15,7 +15,7 @@ on-disk contracts and are gated behind their own tests.
 
 1. Add `McpConfigFile`: parses `{"mcpServers": {...}}` into a map of server
    name to config, reusing the existing entry shape.
-2. Add path accessors in `crates/tact/src/consts.rs`:
+2. Add path accessors in `crates/tact_extensions/src/consts.rs`:
    `TactPath::mcp_config_path()` → `<workdir>/.tact/mcp.json`,
    `TactPath::home_mcp_config_path()` → `~/.tact/mcp.json`.
 3. Add `collect_sourced_servers` (layered read) and `resolve_servers`

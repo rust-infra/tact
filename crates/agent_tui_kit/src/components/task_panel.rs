@@ -7,7 +7,7 @@
 use crossterm::event::KeyEvent;
 use ratatui::{buffer::Buffer, layout::Rect};
 
-use crate::{Component, Ctx, protocol::AgentUpdate, state::TaskPanelState};
+use crate::{Component, Ctx, protocol::RuntimeEvent, state::TaskPanelState};
 
 pub struct TaskPanelComponent {
     state: TaskPanelState,
@@ -51,8 +51,8 @@ impl std::ops::DerefMut for TaskPanelComponent {
 }
 
 impl Component for TaskPanelComponent {
-    fn on_update(&mut self, update: &AgentUpdate, _ctx: &mut Ctx<'_>) -> bool {
-        if let AgentUpdate::TasksChanged { tasks, .. } = update {
+    fn on_update(&mut self, update: &RuntimeEvent, _ctx: &mut Ctx<'_>) -> bool {
+        if let RuntimeEvent::TasksChanged { tasks, .. } = update {
             self.state.apply_snapshot(tasks.clone());
             true
         } else {
@@ -124,7 +124,8 @@ mod tests {
             Vec::new(),
         );
         let dirty = comp.on_update(
-            &AgentUpdate::TasksChanged {
+            &RuntimeEvent::TasksChanged {
+                run_id: None,
                 tasks: vec![pending_task(1)],
                 reason: TasksChangeReason::Created,
             },
@@ -145,7 +146,10 @@ mod tests {
             Vec::new(),
         );
         let dirty = comp.on_update(
-            &AgentUpdate::TaskComplete("done".into()),
+            &RuntimeEvent::TaskComplete {
+                run_id: None,
+                content: "done".into(),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(!dirty);

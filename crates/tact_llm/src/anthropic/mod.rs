@@ -6,10 +6,12 @@
 
 use std::{error::Error, time::Duration};
 
+use crate::stream_event;
 use futures_util::StreamExt;
 use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::Deserialize;
-use tact_protocol::{AgentUpdate, ModelCallParams, ThinkingChunk, TokenUsageInfo};
+use tact_protocol::RuntimeEvent;
+use tact_protocol::{ModelCallParams, ThinkingChunk, TokenUsageInfo};
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::{
@@ -205,7 +207,7 @@ impl LlmClient for AnthropicAdapter {
         &self,
         request: &CreateMessageParams,
         _provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     ) -> Result<LlmResponse, LlmError> {
         let mut response_blocks: Vec<ContentBlock> = Vec::new();
         let mut tool_input_buffers: Vec<String> = Vec::new();
@@ -261,7 +263,7 @@ impl LlmClient for AnthropicAdapter {
                                     )))
                                 })?;
                             if let Some(ref tx) = ui_tx {
-                                let _ = tx.send(AgentUpdate::ModelInfo(ModelCallParams {
+                                let _ = tx.send(stream_event::model_info(ModelCallParams {
                                     model: start.message.model,
                                     max_tokens: request.max_tokens,
                                     thinking_budget: request
@@ -301,14 +303,14 @@ impl LlmClient for AnthropicAdapter {
                                     if !text.is_empty()
                                         && let Some(ref tx) = ui_tx
                                     {
-                                        let _ = tx.send(AgentUpdate::StreamChunk(text.clone()));
+                                        let _ = tx.send(stream_event::text(text.clone()));
                                     }
                                 }
                                 ContentBlock::Thinking { thinking, .. } => {
                                     tool_input_buffers[index].clear();
                                     if let Some(ref tx) = ui_tx {
                                         for chunk in thinking_start_events(thinking) {
-                                            let _ = tx.send(AgentUpdate::ThinkingChunk(chunk));
+                                            let _ = tx.send(stream_event::thinking(chunk));
                                         }
                                     }
                                 }
@@ -334,7 +336,7 @@ impl LlmClient for AnthropicAdapter {
                                     {
                                         existing.push_str(&text);
                                         if let Some(ref tx) = ui_tx {
-                                            let _ = tx.send(AgentUpdate::StreamChunk(text));
+                                            let _ = tx.send(stream_event::text(text));
                                         }
                                     }
                                 }
@@ -346,7 +348,7 @@ impl LlmClient for AnthropicAdapter {
                                         existing.push_str(&thinking);
                                     }
                                     if let Some(ref tx) = ui_tx {
-                                        let _ = tx.send(AgentUpdate::ThinkingChunk(
+                                        let _ = tx.send(stream_event::thinking(
                                             ThinkingChunk::Delta(thinking),
                                         ));
                                     }
@@ -377,8 +379,7 @@ impl LlmClient for AnthropicAdapter {
                             if is_thinking_content_block(response_blocks.get(stop.index))
                                 && let Some(ref tx) = ui_tx
                             {
-                                let _ =
-                                    tx.send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+                                let _ = tx.send(stream_event::thinking(ThinkingChunk::Finished));
                             }
                             if let Some(ContentBlock::ToolUse {
                                 input: existing, ..
@@ -418,7 +419,7 @@ impl LlmClient for AnthropicAdapter {
                                     reasoning_tokens: usage_reasoning_tokens(usage_json),
                                 };
                                 if let Some(ref tx) = ui_tx {
-                                    let _ = tx.send(AgentUpdate::TokenUsage(info.clone()));
+                                    let _ = tx.send(stream_event::token_usage(info.clone()));
                                 }
                                 token_usage = Some(info);
                             }

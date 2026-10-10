@@ -1,11 +1,11 @@
 # Remote MCP (Streamable HTTP + OAuth 2.0) 设计
 
 > 日期：2026-09-11 · 状态：**已批准 / 已实现**（用户确认：本地回环自动回调 + 启动不阻塞 + `/mcp auth` 补做 + 关键点加日志）
-> 关联：`crates/tact/src/mcp/`、`crates/tact/Cargo.toml`、`crates/tact/src/agent/mod.rs`、`crates/protocol/src/agent.rs`、`crates/tact-ui/src/driver.rs`、`crates/tui/src/handlers/`、`book/08_chapter_mcp*.md`、`book/21_chapter_config*.md`、`book/26_chapter_issue*.md`
+> 关联：`crates/tact_extensions/src/mcp/`、`crates/tact/Cargo.toml`、`crates/tact_extensions/src/agent/mod.rs`、`crates/tact_protocol/src/agent.rs`、`crates/tact_ui/src/driver.rs`、`crates/tui/src/handlers/`、`book/08_chapter_mcp*.md`、`book/21_chapter_config*.md`、`book/26_chapter_issue*.md`
 
 ## 1. 背景与动机
 
-Tact 的 MCP 客户端只支持 stdio（`McpClient::connect` → `TokioChildProcess`）。配置解析层其实已经认识远程条目（`McpProjectConfig` 的 `type`/`url`），但 `resolve_servers` 把它们记进 `skipped_remote` 后**丢弃**，运行时不连接（`crates/tact/src/mcp/mod.rs`）。后果：
+Tact 的 MCP 客户端只支持 stdio（`McpClient::connect` → `TokioChildProcess`）。配置解析层其实已经认识远程条目（`McpProjectConfig` 的 `type`/`url`），但 `resolve_servers` 把它们记进 `skipped_remote` 后**丢弃**，运行时不连接（`crates/tact_extensions/src/mcp/mod.rs`）。后果：
 
 - 远程 MCP 服务（Streamable HTTP / SSE）完全不可用；
 - 2026-09-10 接入的 OpenAI `openai-curated` catalog 中，带远程 MCP 的插件**可安装但不能用**；

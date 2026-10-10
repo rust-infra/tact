@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent};
-use tact_protocol::UserCommand;
+use tact_view::UserCommand;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::{scroll_active_sticky, sticky_scrollable};
@@ -181,11 +181,12 @@ mod tests {
     fn s_is_unbound_noop_key() {
         use std::path::PathBuf;
 
-        use tact_protocol::{AgentUpdate, UserCommand};
+        use tact_protocol::RuntimeEvent;
+        use tact_view::UserCommand;
 
         use crate::widgets::state::Status;
 
-        let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
+        let (_agent_tx, agent_rx) = unbounded_channel::<RuntimeEvent>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
         let (plugin_tx, _plugin_request_rx) = unbounded_channel();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel();
@@ -224,11 +225,12 @@ mod tests {
     fn c_cancels_while_executing() {
         use std::path::PathBuf;
 
-        use tact_protocol::{AgentUpdate, UserCommand};
+        use tact_protocol::RuntimeEvent;
+        use tact_view::UserCommand;
 
         use crate::widgets::state::Status;
 
-        let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
+        let (_agent_tx, agent_rx) = unbounded_channel::<RuntimeEvent>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
         let (plugin_tx, _plugin_request_rx) = unbounded_channel();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel();
@@ -270,11 +272,12 @@ mod tests {
     fn c_noop_while_done() {
         use std::path::PathBuf;
 
-        use tact_protocol::{AgentUpdate, UserCommand};
+        use tact_protocol::RuntimeEvent;
+        use tact_view::UserCommand;
 
         use crate::widgets::state::Status;
 
-        let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
+        let (_agent_tx, agent_rx) = unbounded_channel::<RuntimeEvent>();
         let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
         let (plugin_tx, _plugin_request_rx) = unbounded_channel();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel();

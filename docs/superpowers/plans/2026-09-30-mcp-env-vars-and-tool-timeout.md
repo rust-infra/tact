@@ -2,7 +2,7 @@
 
 Spec: [2026-09-30-mcp-env-vars-and-tool-timeout-design.md](../specs/2026-09-30-mcp-env-vars-and-tool-timeout-design.md)
 
-1. **`env_vars` config surface** (`crates/tact/src/mcp/mod.rs`)
+1. **`env_vars` config surface** (`crates/tact_extensions/src/mcp/mod.rs`)
    - `McpEnvVar` (untagged) + `name()` / `source()`.
    - `env_vars` on `McpServerConfig` and `McpProjectConfig`, carried through `to_stdio` /
      `to_transport` and `Default`.

@@ -4,7 +4,7 @@
 //! cards, the streaming markdown log, the popup family, task/plan panels, the
 //! input box, and the status/bottom bars, wired together by one contract:
 //!
-//! - **In:** a stream of [`protocol::AgentUpdate`] events from the host's agent.
+//! - **In:** a stream of [`protocol::RuntimeEvent`] events from the host's agent.
 //! - **Out:** [`bridge::Command`] values sent through the host's
 //!   [`bridge::AgentBridge`] implementation.
 //!
@@ -82,12 +82,12 @@ pub struct PendingQueue {
 
 /// A self-contained UI unit: state + update intake + rendering + key handling.
 ///
-/// `U` defaults to [`protocol::AgentUpdate`]; hosts that emit a different
+/// `U` defaults to [`protocol::RuntimeEvent`]; hosts that emit a different
 /// update enum implement `Component<TheirUpdate>` and map at the boundary.
 ///
 /// `Send` is required so hosts can move a shell holding a `ComponentRegistry`
 /// onto a worker task (Tact's `run_tui` runs on a `tokio::spawn`).
-pub trait Component<U = protocol::AgentUpdate>: 'static + Send {
+pub trait Component<U = protocol::RuntimeEvent>: 'static + Send {
     /// Handle one protocol update. Returns `true` if the frame must repaint.
     fn on_update(&mut self, update: &U, ctx: &mut Ctx<'_>) -> bool;
 

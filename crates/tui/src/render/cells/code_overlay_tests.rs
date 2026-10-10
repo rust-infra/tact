@@ -2,7 +2,7 @@
 //! drive `App` and build a `RenderCtx`).
 
 use ratatui::{Terminal, backend::TestBackend};
-use tact_protocol::AgentUpdate;
+use tact_protocol::RuntimeEvent;
 
 use crate::render::test_harness::{buffer_text, make_app, render_log_panel_text};
 use agent_tui_kit::render::cells::code::render_code_cards;
@@ -14,9 +14,11 @@ fn make_ctx(app: &crate::widgets::state::App) -> agent_tui_kit::render::ctx::Ren
 #[test]
 fn code_card_overlay_renders_language_and_body() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
-        "```rust\nfn overlay_test() {}\n```\n".into(),
-    ));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "```rust\nfn overlay_test() {}\n```\n".into(),
+    });
     assert!(!app.code_blocks.is_empty());
 
     let _ = render_log_panel_text(&mut app, 80, 18);
@@ -41,9 +43,11 @@ fn code_card_overlay_renders_language_and_body() {
 #[test]
 fn code_card_starts_at_the_thinking_indent() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk(
-        "```rust\nfn alignment_test() {}\n```\n".into(),
-    ));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "```rust\nfn alignment_test() {}\n```\n".into(),
+    });
     let _ = render_log_panel_text(&mut app, 80, 18);
 
     let backend = TestBackend::new(80, 18);

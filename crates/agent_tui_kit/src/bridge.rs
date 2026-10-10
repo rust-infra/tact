@@ -1,6 +1,6 @@
 //! The in/out contract between the kit and the host project.
 
-use tact_protocol::UserCommand;
+use tact_view::UserCommand;
 
 /// A user/agent command the kit sends to the host.
 ///
@@ -98,7 +98,7 @@ impl TryFrom<UserCommand> for Command {
             }
             // Responses to agent-originated selects flow on the reverse command
             // channel; they are not host commands and never map to `Command`.
-            UserCommand::UiResponse(_) => Err(()),
+            UserCommand::Runtime(_) => Err(()),
         }
     }
 }

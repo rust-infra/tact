@@ -1,6 +1,6 @@
 //! Headless mock-agent consumer (plan T5.1).
 //!
-//! Proves the kit stands alone: a mock agent emits a full `AgentUpdate`
+//! Proves the kit stands alone: a mock agent emits a full `RuntimeEvent`
 //! sequence (thinking → step started → tool progress → stream chunk → task
 //! complete), the example applies it to kit state and renders headless
 //! frames (status bar, log panel, input box, bottom bar) with **no** `tact`
@@ -23,7 +23,7 @@ use agent_tui_kit::{
     bridge::Command,
     i18n::{Language, Messages},
     protocol::{
-        AgentUpdate, PlanStep, StepResult, StepStatus, ThinkingChunk, TokenUsageInfo,
+        PlanStep, RuntimeEvent, StepResult, StepStatus, ThinkingChunk, TokenUsageInfo,
         ToolPresentationInfo,
     },
     render::{
@@ -79,9 +79,9 @@ impl MockShell {
     }
 
     /// Simplified host-side dispatch for the kit's protocol types.
-    fn on_update(&mut self, update: AgentUpdate) {
+    fn on_update(&mut self, update: RuntimeEvent) {
         match update {
-            AgentUpdate::ThinkingChunk(chunk) => match chunk {
+            RuntimeEvent::Thinking { chunk, .. } => match chunk {
                 ThinkingChunk::Started => {
                     self.log
                         .append_msg(Line::from(""), String::new(), LogItemKind::Thinking);
@@ -108,10 +108,10 @@ impl MockShell {
                     }
                 }
             },
-            AgentUpdate::StepAdded(step) => {
+            RuntimeEvent::StepAdded { step, .. } => {
                 self.plan.steps.push(step);
             }
-            AgentUpdate::StepStarted {
+            RuntimeEvent::StepStarted {
                 idx,
                 tool_id,
                 tool_name,
@@ -139,13 +139,13 @@ impl MockShell {
                         subagent_child_id: None,
                     });
             }
-            AgentUpdate::StepFinished { tool_id, .. } => {
+            RuntimeEvent::StepFinished { tool_id, .. } => {
                 self.tools.active.retain(|a| a.tool_id != tool_id);
             }
-            AgentUpdate::StreamChunk(chunk) => {
+            RuntimeEvent::Text { content: chunk, .. } => {
                 self.stream.buffer.push_str(&chunk);
             }
-            AgentUpdate::TaskComplete(reply) => {
+            RuntimeEvent::TaskComplete { content: reply, .. } => {
                 self.status = Status::Done;
                 // Flush any buffered stream text first (the real app splices
                 // the stream into the reply row; here it is a separate row).
@@ -158,7 +158,7 @@ impl MockShell {
                     LogItemKind::AssistantMarkdown,
                 );
             }
-            AgentUpdate::TokenUsage(usage) => {
+            RuntimeEvent::TokenUsage { usage, .. } => {
                 self.status_bar.token_total = usage.total;
                 self.status_bar.token_prompt = usage.prompt;
                 self.status_bar.token_completion = usage.completion;
@@ -310,20 +310,33 @@ impl MockShell {
 
 /// The full mock sequence: thinking → step started → tool progress → stream
 /// chunk → task complete (+ token usage), then a user command.
-fn full_sequence() -> Vec<AgentUpdate> {
+fn full_sequence() -> Vec<RuntimeEvent> {
     vec![
-        AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-        AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-            "Let me reason about this carefully.\nSecond reasoning line.\n".into(),
-        )),
-        AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
-        AgentUpdate::StepAdded(PlanStep::new(
-            "read file",
-            "read_file",
-            "tool_read_1",
-            HashMap::from([("path".to_string(), "main.rs".to_string())]),
-        )),
-        AgentUpdate::StepStarted {
+        RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Started,
+        },
+        RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Delta(
+                "Let me reason about this carefully.\nSecond reasoning line.\n".into(),
+            ),
+        },
+        RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Finished,
+        },
+        RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "read file",
+                "read_file",
+                "tool_read_1",
+                HashMap::from([("path".to_string(), "main.rs".to_string())]),
+            ),
+        },
+        RuntimeEvent::StepStarted {
+            run_id: None,
             idx: 0,
             tool_id: "tool_read_1".into(),
             tool_name: "read_file".into(),
@@ -331,7 +344,8 @@ fn full_sequence() -> Vec<AgentUpdate> {
             arg_full: "main.rs".into(),
             presentation: ToolPresentationInfo::generic("read_file"),
         },
-        AgentUpdate::StepFinished {
+        RuntimeEvent::StepFinished {
+            run_id: None,
             idx: 0,
             tool_id: "tool_read_1".into(),
             result: StepResult {
@@ -346,19 +360,31 @@ fn full_sequence() -> Vec<AgentUpdate> {
                 presentation: ToolPresentationInfo::generic("read_file"),
             },
         },
-        AgentUpdate::StreamChunk("Hello from the mock agent. ".into()),
-        AgentUpdate::StreamChunk("This text streams into the log.".into()),
-        AgentUpdate::TokenUsage(TokenUsageInfo {
-            prompt: 400,
-            completion: 190,
-            total: 590,
-            prompt_cache_hit_tokens: 0,
-            prompt_cache_miss_tokens: 0,
-            reasoning_tokens: 0,
-        }),
-        AgentUpdate::TaskComplete(
-            "Hello from the mock agent. This text streams into the log.".into(),
-        ),
+        RuntimeEvent::Text {
+            run_id: None,
+            role: "assistant".into(),
+            content: "Hello from the mock agent. ".into(),
+        },
+        RuntimeEvent::Text {
+            run_id: None,
+            role: "assistant".into(),
+            content: "This text streams into the log.".into(),
+        },
+        RuntimeEvent::TokenUsage {
+            run_id: None,
+            usage: TokenUsageInfo {
+                prompt: 400,
+                completion: 190,
+                total: 590,
+                prompt_cache_hit_tokens: 0,
+                prompt_cache_miss_tokens: 0,
+                reasoning_tokens: 0,
+            },
+        },
+        RuntimeEvent::TaskComplete {
+            run_id: None,
+            content: "Hello from the mock agent. This text streams into the log.".into(),
+        },
     ]
 }
 

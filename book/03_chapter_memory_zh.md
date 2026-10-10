@@ -19,7 +19,7 @@ Memory 回答：*跨会话 agent 应记住什么，且无法从当前代码库�
 | `project` | 「遗留 billing 模块不能动」 | 难以从代码推断的硬事实 |
 | `reference` | 「设计文档在 https://…」 | 外部资源位置 |
 
-静态字符串 `MEMORY_GUIDANCE`（`crates/tact/src/memory/mod.rs`）注入系统提示词（动态边界之上），教模型**何时保存**与**何时不要**——例如不要存密钥、临时分支名，或可从仓库轻易推导的内容。
+静态字符串 `MEMORY_GUIDANCE`（`crates/tact_extensions/src/memory/mod.rs`）注入系统提示词（动态边界之上），教模型**何时保存**与**何时不要**——例如不要存密钥、临时分支名，或可从仓库轻易推导的内容。
 
 ---
 
@@ -36,7 +36,7 @@ graph TD
     files --> mm2
 ```
 
-启动时，两个前端共用的 `session_bootstrap::bootstrap_session`（`crates/tact-ui/src/session_bootstrap.rs`）基于 `TactPath::home_memory_dir()` —— `$HOME/.tact/memory` —— 构造 `MemoryManager`，`load_all` 扫描该目录。由于目录位于用户主目录，记忆可**跨项目持久**；旧的项目本地路径（`TactPath::memory_dir()`，`<workdir>/.tact/memory`）仅在 `$HOME` 未设置时作为回退使用。同一 `Arc<Mutex<MemoryManager>>` 经 `ToolContext` 共享，供提示词渲染与 `save_memory` 使用。（构造点曾经分处 `headless.rs` / `interactive.rs`，随会话 bootstrap 合并为一份。）
+启动时，两个前端共用的 `session_bootstrap::bootstrap_session`（`crates/tact_ui/src/session_bootstrap.rs`）基于 `TactPath::home_memory_dir()` —— `$HOME/.tact/memory` —— 构造 `MemoryManager`，`load_all` 扫描该目录。由于目录位于用户主目录，记忆可**跨项目持久**；旧的项目本地路径（`TactPath::memory_dir()`，`<workdir>/.tact/memory`）仅在 `$HOME` 未设置时作为回退使用。同一 `Arc<Mutex<MemoryManager>>` 经 `ToolContext` 共享，供提示词渲染与 `save_memory` 使用。（构造点曾经分处 `headless.rs` / `interactive.rs`，随会话 bootstrap 合并为一份。）
 
 `[agent].memory_enabled` 只控制后两条消费路径：关闭时系统提示不注入 memory / guidance，`toolset_with_memory(false)` 也不注册 `save_memory`。`MemoryManager` 仍会构造并只读加载（不写盘），因此开关不是访问控制——模型仍可能通过 `read_file` / `bash` 读到这些 Markdown 文件。
 
@@ -129,7 +129,7 @@ Use tabs by default.
 
 ### 系统提示词
 
-`Agent::build_system_prompt`（`crates/tact/src/agent/mod.rs`）：
+`Agent::build_system_prompt`（`crates/tact_extensions/src/agent/mod.rs`）：
 
 ```rust
 let memory_enabled = self.agent_settings.memory_enabled;
@@ -152,9 +152,9 @@ pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
 
 ### save_memory 工具
 
-`crates/tact/src/tool/memory.rs` — `#[tool(name = "save_memory", …)]` 锁定 manager 并调用 `save_memory()`。非法 `type` 字符串返回错误。
+`crates/tact_extensions/src/tool/memory.rs` — `#[tool(name = "save_memory", …)]` 锁定 manager 并调用 `save_memory()`。非法 `type` 字符串返回错误。
 
-主 agent 的工具集在 `session_bootstrap::bootstrap_session` 里由 `crates/tact/src/tool/registry.rs` 的 `toolset_with_memory(tact::config::settings().agent.memory_enabled)` 组装；关闭时 `save_memory` 不进入 router，因此既不出现在工具声明里，派发时也只会得到 `unknown tool`。
+主 agent 的工具集在 `session_bootstrap::bootstrap_session` 里由 `crates/tact_extensions/src/tool/registry.rs` 的 `toolset_with_memory(tact::config::settings().agent.memory_enabled)` 组装；关闭时 `save_memory` 不进入 router，因此既不出现在工具声明里，派发时也只会得到 `unknown tool`。
 
 ---
 
@@ -174,13 +174,13 @@ pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/memory/mod.rs` | `MemoryType`、`MemoryEntry`、`MemoryManager`、`MEMORY_GUIDANCE`、frontmatter 解析 |
-| `crates/tact/src/tool/memory.rs` | `save_memory` 原生工具 |
-| `crates/tact/src/tool/registry.rs` | `toolset_with_memory()` 按 `[agent].memory_enabled` 决定是否注册 `save_memory` |
-| `crates/tact/src/agent/mod.rs` | `load_memory_prompt()`、系统提示词接线 |
-| `crates/tact/src/tool/mod.rs` | `ToolContext.memory_manager` |
-| `crates/tact-ui/src/session_bootstrap.rs` | `bootstrap_session` 里 `memory_manager(TactPath::home_memory_dir() …)` 与 `toolset_with_memory(...)`；headless / 交互两个前端共用同一份 |
-| `crates/tact/src/consts.rs` | `TactPath::home_memory_dir()` → `~/.tact/memory`（`memory_dir()` 保留项目本地回退） |
+| `crates/tact_extensions/src/memory/mod.rs` | `MemoryType`、`MemoryEntry`、`MemoryManager`、`MEMORY_GUIDANCE`、frontmatter 解析 |
+| `crates/tact_extensions/src/tool/memory.rs` | `save_memory` 原生工具 |
+| `crates/tact_extensions/src/tool/registry.rs` | `toolset_with_memory()` 按 `[agent].memory_enabled` 决定是否注册 `save_memory` |
+| `crates/tact_extensions/src/agent/mod.rs` | `load_memory_prompt()`、系统提示词接线 |
+| `crates/tact_extensions/src/tool/mod.rs` | `ToolContext.memory_manager` |
+| `crates/tact_ui/src/session_bootstrap.rs` | `bootstrap_session` 里 `memory_manager(TactPath::home_memory_dir() …)` 与 `toolset_with_memory(...)`；headless / 交互两个前端共用同一份 |
+| `crates/tact_extensions/src/consts.rs` | `TactPath::home_memory_dir()` → `~/.tact/memory`（`memory_dir()` 保留项目本地回退） |
 
 ---
 

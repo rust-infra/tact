@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use ratatui::{Terminal, backend::TestBackend, layout::Rect};
-use tact_protocol::{AgentErrorKind, AgentUpdate, PlanStep, StepStatus, ThinkingChunk};
+use tact_protocol::{PlanStep, RuntimeEvent, StepStatus, ThinkingChunk};
 
 use super::{
     render_status_bar,
@@ -16,13 +16,16 @@ use crate::{
 };
 
 fn seed_executing_read_step(app: &mut App) {
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "read config",
-        "read_file",
-        "tool_read_1",
-        HashMap::from([("path".to_string(), "config.toml".to_string())]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "tool_read_1", "read_file", "config.toml").started());
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "read config",
+            "read_file",
+            "tool_read_1",
+            HashMap::from([("path".to_string(), "config.toml".to_string())]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "tool_read_1", "read_file", "config.toml").started());
 }
 
 #[test]
@@ -59,7 +62,11 @@ fn full_frame_executing_renders_step_tracking_and_tool() {
 #[test]
 fn full_frame_log_only_layout() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk("Log-only content.".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "Log-only content.".into(),
+    });
 
     let text = render_app_text(&mut app, 100, 24);
 
@@ -76,14 +83,17 @@ fn full_frame_log_only_layout() {
 #[test]
 fn full_frame_failed_tool_shows_in_log() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "read missing",
-        "read_file",
-        "tool_fail",
-        HashMap::from([("path".to_string(), "missing.txt".to_string())]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "tool_fail", "read_file", "missing.txt").started());
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "read missing",
+            "read_file",
+            "tool_fail",
+            HashMap::from([("path".to_string(), "missing.txt".to_string())]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "tool_fail", "read_file", "missing.txt").started());
+    app.handle_runtime_event(
         StepCall::new(0, "tool_fail", "read_file", "missing.txt")
             .no_arg_full()
             .status(StepStatus::Failed)
@@ -104,8 +114,15 @@ fn full_frame_failed_tool_shows_in_log() {
 #[test]
 fn full_frame_stream_and_task_complete() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk("Final answer text.".into()));
-    app.handle_agent_update(AgentUpdate::TaskComplete("Final answer text.".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "Final answer text.".into(),
+    });
+    app.handle_runtime_event(RuntimeEvent::TaskComplete {
+        run_id: None,
+        content: "Final answer text.".into(),
+    });
 
     assert!(matches!(app.status, Status::Done));
 
@@ -119,10 +136,15 @@ fn full_frame_stream_and_task_complete() {
 #[test]
 fn full_frame_thinking_then_stream() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-        "Let me think…".into(),
-    )));
-    app.handle_agent_update(AgentUpdate::StreamChunk("Therefore: 42".into()));
+    app.handle_runtime_event(RuntimeEvent::Thinking {
+        run_id: None,
+        chunk: ThinkingChunk::Delta("Let me think…".into()),
+    });
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "Therefore: 42".into(),
+    });
 
     let text = render_app_text(&mut app, 100, 24);
 
@@ -135,9 +157,10 @@ fn full_frame_thinking_then_stream() {
 #[test]
 fn full_frame_fatal_error_message() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::Error(AgentErrorKind::Other(
-        "provider timeout".into(),
-    )));
+    app.handle_runtime_event(RuntimeEvent::Error {
+        run_id: None,
+        message: "provider timeout".into(),
+    });
 
     let text = render_app_text(&mut app, 100, 24);
     assert!(
@@ -154,7 +177,10 @@ fn full_frame_fatal_error_message() {
 #[test]
 fn full_frame_info_cancel_message() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::Info("Cancelling...".into()));
+    app.handle_runtime_event(RuntimeEvent::Info {
+        run_id: None,
+        content: "Cancelling...".into(),
+    });
 
     let text = render_app_text(&mut app, 100, 20);
     assert!(
@@ -166,21 +192,27 @@ fn full_frame_info_cancel_message() {
 #[test]
 fn full_frame_token_usage_in_bottom_bar() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::TokenUsage(tact_protocol::TokenUsageInfo {
-        prompt: 100,
-        completion: 50,
-        total: 150,
-        prompt_cache_hit_tokens: 10,
-        prompt_cache_miss_tokens: 90,
-        reasoning_tokens: 5,
-    }));
-    app.handle_agent_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
-        model: "mock-model".into(),
-        max_tokens: 8192,
-        thinking_budget: Some(0),
-        reasoning_effort: None,
-        extra_body: None,
-    }));
+    app.handle_runtime_event(RuntimeEvent::TokenUsage {
+        run_id: None,
+        usage: tact_protocol::TokenUsageInfo {
+            prompt: 100,
+            completion: 50,
+            total: 150,
+            prompt_cache_hit_tokens: 10,
+            prompt_cache_miss_tokens: 90,
+            reasoning_tokens: 5,
+        },
+    });
+    app.handle_runtime_event(RuntimeEvent::ModelInfo {
+        run_id: None,
+        params: tact_protocol::ModelCallParams {
+            model: "mock-model".into(),
+            max_tokens: 8192,
+            thinking_budget: Some(0),
+            reasoning_effort: None,
+            extra_body: None,
+        },
+    });
 
     let text = render_app_text(&mut app, 120, 30);
 
@@ -193,11 +225,13 @@ fn full_frame_token_usage_in_bottom_bar() {
 #[test]
 fn full_frame_select_popup_overlays() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::RequestSelect {
-        request_id: 0,
-        prompt: "Allow bash?".into(),
-        options: vec!["Allow once".into(), "Deny".into()],
-        log_confirm: false,
+    app.handle_runtime_event(RuntimeEvent::InteractionRequested {
+        request: tact_protocol::InteractionRequest::Select {
+            request_id: tact_protocol::RequestId::from(0.to_string()),
+            prompt: "Allow bash?".into(),
+            options: vec!["Allow once".into(), "Deny".into()],
+            log_confirm: false,
+        },
     });
 
     let text = render_app_text(&mut app, 100, 30);
@@ -212,16 +246,18 @@ fn full_frame_select_popup_overlays() {
 fn full_frame_select_popup_wraps_long_prompt() {
     let mut app = make_app();
     let prompt = "📝 对比题：He went to ___ school to pick up his daughter after ___ class.";
-    app.handle_agent_update(AgentUpdate::RequestSelect {
-        request_id: 0,
-        prompt: prompt.into(),
-        options: vec![
-            "A. the ... the".into(),
-            "B. Ø ... Ø".into(),
-            "C. the ... Ø".into(),
-            "D. Ø ... the".into(),
-        ],
-        log_confirm: false,
+    app.handle_runtime_event(RuntimeEvent::InteractionRequested {
+        request: tact_protocol::InteractionRequest::Select {
+            request_id: tact_protocol::RequestId::from(0.to_string()),
+            prompt: prompt.into(),
+            options: vec![
+                "A. the ... the".into(),
+                "B. Ø ... Ø".into(),
+                "C. the ... Ø".into(),
+                "D. Ø ... the".into(),
+            ],
+            log_confirm: false,
+        },
     });
 
     let text = render_app_text(&mut app, 80, 28);
@@ -298,12 +334,15 @@ fn full_frame_history_panel_lists_tasks() {
 #[test]
 fn plan_step_added_tracks_step_description() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "write tests",
-        "write_file",
-        "w1",
-        HashMap::from([("path".to_string(), "test.rs".to_string())]),
-    )));
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "write tests",
+            "write_file",
+            "w1",
+            HashMap::from([("path".to_string(), "test.rs".to_string())]),
+        ),
+    });
 
     assert_eq!(app.plan_mut().steps.len(), 1);
     assert_eq!(app.plan_mut().steps[0].description, "write tests");

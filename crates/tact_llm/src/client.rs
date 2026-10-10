@@ -1,6 +1,7 @@
 //! [`LlmClient`] trait and [`LlmProvider`] enum.
 
-use tact_protocol::{AgentUpdate, TokenUsageInfo};
+use tact_protocol::RuntimeEvent;
+use tact_protocol::TokenUsageInfo;
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
@@ -42,7 +43,7 @@ pub trait LlmClient: Send + Sync {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     ) -> Result<LlmResponse, LlmError>;
 
     /// Non-streaming message request (used for context compaction).
@@ -86,7 +87,7 @@ impl LlmClient for LlmProvider {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     ) -> Result<LlmResponse, LlmError> {
         match self {
             LlmProvider::Anthropic(a) => a.stream_message(request, provider_state, ui_tx).await,

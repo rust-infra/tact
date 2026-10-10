@@ -18,7 +18,7 @@ use ratatui::{buffer::Buffer, layout::Rect};
 use crate::{
     Component, Ctx,
     i18n::Messages,
-    protocol::{AgentUpdate, PlanStep, StepResult, TokenUsageInfo, ToolOutputChunk},
+    protocol::{PlanStep, RuntimeEvent, StepResult, TokenUsageInfo, ToolOutputChunk},
     state::{ActiveToolBlock, ToolBlock, ToolState},
     widgets::tool_widget::{ToolPhase, ToolRenderOutput, ToolWidget},
 };
@@ -509,19 +509,20 @@ impl std::ops::DerefMut for ToolComponent {
 }
 
 impl Component for ToolComponent {
-    fn on_update(&mut self, update: &AgentUpdate, ctx: &mut Ctx<'_>) -> bool {
+    fn on_update(&mut self, update: &RuntimeEvent, ctx: &mut Ctx<'_>) -> bool {
         match update {
-            AgentUpdate::StepAdded(step) => {
+            RuntimeEvent::StepAdded { step, .. } => {
                 self.on_step_added(step);
                 true
             }
-            AgentUpdate::StepStarted {
+            RuntimeEvent::StepStarted {
                 idx,
                 tool_id,
                 tool_name,
                 arg_summary,
                 arg_full,
                 presentation,
+                ..
             } => {
                 self.on_step_started(
                     *idx,
@@ -534,35 +535,40 @@ impl Component for ToolComponent {
                 );
                 true
             }
-            AgentUpdate::StepFinished {
+            RuntimeEvent::StepFinished {
                 idx,
                 tool_id,
                 result,
+                ..
             } => {
                 self.on_step_finished(*idx, tool_id, result, ctx.tool_events);
                 true
             }
-            AgentUpdate::StepFailed {
+            RuntimeEvent::StepFailed {
                 idx,
                 tool_id,
                 arg_summary,
                 error,
+                ..
             } => {
                 self.on_step_failed(*idx, tool_id, arg_summary, error, ctx.tool_events);
                 true
             }
-            AgentUpdate::ToolProgress { tool_id, chunks } => {
+            RuntimeEvent::ToolProgress {
+                tool_id, chunks, ..
+            } => {
                 if let Some(pos) = self.state.active.iter().position(|a| a.tool_id == *tool_id) {
                     self.state.active[pos].live_output.push_chunks(chunks);
                 }
                 self.on_tool_progress(tool_id, ctx.tool_events);
                 true
             }
-            AgentUpdate::ToolMeta {
+            RuntimeEvent::ToolMeta {
                 tool_id,
                 model,
                 token_usage,
                 task_id,
+                ..
             } => {
                 let Some(pos) = self.state.active.iter().position(|a| a.tool_id == *tool_id) else {
                     return false;
@@ -579,11 +585,12 @@ impl Component for ToolComponent {
                 }
                 true
             }
-            AgentUpdate::BackgroundTaskFinished {
+            RuntimeEvent::BackgroundTaskFinished {
                 tool_id,
                 success,
                 message,
                 output,
+                ..
             } => {
                 self.on_background_task_finished(
                     tool_id,
@@ -594,11 +601,12 @@ impl Component for ToolComponent {
                 );
                 true
             }
-            AgentUpdate::SubagentFinished {
+            RuntimeEvent::SubagentFinished {
                 tool_id,
                 child_id,
                 success,
                 summary,
+                ..
             } => {
                 self.on_subagent_finished(tool_id, child_id, *success, summary, ctx.tool_events);
                 true
@@ -674,12 +682,15 @@ mod tests {
 
     fn step_added(c: &mut ToolComponent, tool_id: &str) {
         c.on_update(
-            &AgentUpdate::StepAdded(PlanStep::new(
-                "read",
-                "read_file",
-                tool_id,
-                std::collections::HashMap::<String, String>::new(),
-            )),
+            &RuntimeEvent::StepAdded {
+                run_id: None,
+                step: PlanStep::new(
+                    "read",
+                    "read_file",
+                    tool_id,
+                    std::collections::HashMap::<String, String>::new(),
+                ),
+            },
             &mut ctx(
                 &mut LogCoordinator::default(),
                 &mut PendingQueue::default(),
@@ -697,7 +708,8 @@ mod tests {
             Vec::new(),
         );
         c.on_update(
-            &AgentUpdate::StepStarted {
+            &RuntimeEvent::StepStarted {
+                run_id: None,
                 idx: 0,
                 tool_id: tool_id.into(),
                 tool_name: "read_file".into(),
@@ -718,7 +730,8 @@ mod tests {
             Vec::new(),
         );
         c.on_update(
-            &AgentUpdate::ToolProgress {
+            &RuntimeEvent::ToolProgress {
+                run_id: None,
                 tool_id: tool_id.into(),
                 chunks: vec![ToolOutputChunk {
                     stream: ToolOutputStream::Stdout,
@@ -799,7 +812,8 @@ mod tests {
         let mut presentation = ToolPresentationInfo::generic("background_run");
         presentation.keep_live = true;
         c.on_update(
-            &AgentUpdate::StepStarted {
+            &RuntimeEvent::StepStarted {
+                run_id: None,
                 idx: 0,
                 tool_id: "bg1".into(),
                 tool_name: "background_run".into(),
@@ -810,7 +824,8 @@ mod tests {
             &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
         );
         c.on_update(
-            &AgentUpdate::ToolMeta {
+            &RuntimeEvent::ToolMeta {
+                run_id: None,
                 tool_id: "bg1".into(),
                 model: None,
                 token_usage: None,
@@ -856,7 +871,8 @@ mod tests {
             presentation: ToolPresentationInfo::generic("read_file"),
         };
         c.on_update(
-            &AgentUpdate::StepFinished {
+            &RuntimeEvent::StepFinished {
+                run_id: None,
                 idx: 0,
                 tool_id: "t1".into(),
                 result,
@@ -894,7 +910,8 @@ mod tests {
             Vec::new(),
         );
         c.on_update(
-            &AgentUpdate::StepFinished {
+            &RuntimeEvent::StepFinished {
+                run_id: None,
                 idx: 0,
                 tool_id: "t1".into(),
                 result,
@@ -930,7 +947,8 @@ mod tests {
             Vec::new(),
         );
         c.on_update(
-            &AgentUpdate::StepFinished {
+            &RuntimeEvent::StepFinished {
+                run_id: None,
                 idx: 0,
                 tool_id: "t1".into(),
                 result,
@@ -973,7 +991,8 @@ mod tests {
             Vec::new(),
         );
         c.on_update(
-            &AgentUpdate::BackgroundTaskFinished {
+            &RuntimeEvent::BackgroundTaskFinished {
+                run_id: None,
                 tool_id: "t1".into(),
                 success: true,
                 message: "bg done".into(),
@@ -995,7 +1014,8 @@ mod tests {
                 Vec::new(),
             );
             c2.on_update(
-                &AgentUpdate::BackgroundTaskFinished {
+                &RuntimeEvent::BackgroundTaskFinished {
+                    run_id: None,
                     tool_id: "ghost".into(),
                     success: false,
                     message: "gone".into(),
@@ -1022,7 +1042,8 @@ mod tests {
             Vec::new(),
         );
         c.on_update(
-            &AgentUpdate::StepFailed {
+            &RuntimeEvent::StepFailed {
+                run_id: None,
                 idx: 0,
                 tool_id: "t1".into(),
                 arg_summary: String::new(),
@@ -1062,7 +1083,8 @@ mod tests {
             Vec::new(),
         );
         c.on_update(
-            &AgentUpdate::StepFailed {
+            &RuntimeEvent::StepFailed {
+                run_id: None,
                 idx: 2,
                 tool_id: "ghost".into(),
                 arg_summary: String::new(),
@@ -1088,7 +1110,8 @@ mod tests {
             Vec::new(),
         );
         c.on_update(
-            &AgentUpdate::StepFailed {
+            &RuntimeEvent::StepFailed {
+                run_id: None,
                 idx: 7,
                 tool_id: "t1".into(),
                 arg_summary: String::new(),
@@ -1126,7 +1149,8 @@ mod tests {
             presentation: ToolPresentationInfo::generic("read_file"),
         };
         c.on_update(
-            &AgentUpdate::StepFinished {
+            &RuntimeEvent::StepFinished {
+                run_id: None,
                 idx: 0,
                 tool_id: "ghost".into(),
                 result,
@@ -1154,7 +1178,10 @@ mod tests {
             Vec::new(),
         );
         let dirty = c.on_update(
-            &AgentUpdate::TaskComplete("done".into()),
+            &RuntimeEvent::TaskComplete {
+                run_id: None,
+                content: "done".into(),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
         );
         assert!(!dirty);
@@ -1173,7 +1200,8 @@ mod tests {
             Vec::new(),
         );
         c.on_update(
-            &AgentUpdate::ToolMeta {
+            &RuntimeEvent::ToolMeta {
+                run_id: None,
                 tool_id: "t1".into(),
                 model: Some("subagent-model".into()),
                 token_usage: Some(crate::protocol::TokenUsageInfo {

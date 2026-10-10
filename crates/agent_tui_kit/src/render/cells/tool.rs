@@ -586,7 +586,7 @@ impl Renderable for ToolCell {
 // ── Tests ────────────────────────────────────────────────────────────
 //
 // Tests use `ToolRenderOutput` / `ToolLayout` from `widgets::tool_widget`
-// to construct realistic cell data without depending on the full `AgentUpdate`
+// to construct realistic cell data without depending on the full `RuntimeEvent`
 // pipeline.
 
 #[cfg(test)]

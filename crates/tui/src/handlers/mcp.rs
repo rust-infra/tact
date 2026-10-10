@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use tact_protocol::UserCommand;
+use tact_view::UserCommand;
 
 use super::CommandExecOutcome;
 use crate::widgets::state::{App, Status};
@@ -131,7 +131,7 @@ mod tests {
     use super::handle_mcp_command;
     use crate::test_fixtures::TestApp;
     use crate::widgets::state::Status;
-    use tact_protocol::UserCommand;
+    use tact_view::UserCommand;
 
     #[test]
     fn mcp_auth_queues_an_authorization_request() {

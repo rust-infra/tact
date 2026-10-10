@@ -5,7 +5,7 @@ use ratatui::{
 };
 use tact_llm::content::{ContentBlock, Message, MessageContent, Role};
 
-use tact::hook::{hook_context_body, hook_context_source, is_hook_context_text};
+use tact_extensions::hook::{hook_context_body, hook_context_source, is_hook_context_text};
 
 use agent_tui_kit::widgets::button::{Button, ButtonTheme, ButtonVariant};
 use agent_tui_kit::widgets::tool_widget::collapsed_action_text;
@@ -635,7 +635,7 @@ mod tests {
     use super::*;
     use crate::render::test_harness::make_app;
     use agent_tui_kit::render::util::{LOG_TOOL_BLOCK_INDENT, LOG_TOOL_INDENT};
-    use tact::hook::{HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG};
+    use tact_extensions::hook::{HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG};
 
     #[test]
     fn load_history_seeds_session_turn_counter() {
@@ -695,7 +695,7 @@ mod tests {
             .with_kind(tact_llm::MessageKind::HookContext),
             tact_llm::Message::new_text(
                 tact_llm::Role::User,
-                tact::hook::frame_hook_context(Some("plugin codex"), "from disk"),
+                tact_extensions::hook::frame_hook_context(Some("plugin codex"), "from disk"),
             ),
             tact_llm::Message::new_text(tact_llm::Role::User, "real".to_string()),
         ]);

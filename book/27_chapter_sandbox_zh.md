@@ -2,7 +2,7 @@
 
 本章说明 Tact 可选的 **OS 级 shell 沙箱**：`config.toml` 里一个布尔开关，把 `bash` 工具的 `sh -c` 进程包进平台的沙箱实现（Linux 用 `bubblewrap`），使得被批准命令引入的第三方代码——`cargo` 构建脚本、`npm` 生命周期脚本、测试二进制、`make` 配方——读不到宿主 home，也写不到工作区之外。**网络**是刻意保持共享的：沙箱约束的是文件系统，不是连通性。
 
-实现在 `crates/tact/src/sandbox/`（`mod.rs` 负责解析，`bwrap.rs` 是 Linux 后端）；唯一的调用点是 `crates/tact/src/tool/bash.rs`。权限模型完全不动：沙箱回答的是*命令能触达什么*，而不是*它能不能运行*（见[权限模型](./10_chapter_permission_zh.md)）。
+实现在 `crates/tact_extensions/src/sandbox/`（`mod.rs` 负责解析，`bwrap.rs` 是 Linux 后端）；唯一的调用点是 `crates/tact_extensions/src/tool/bash.rs`。权限模型完全不动：沙箱回答的是*命令能触达什么*，而不是*它能不能运行*（见[权限模型](./10_chapter_permission_zh.md)）。
 
 ---
 
@@ -30,7 +30,7 @@ sandbox = true   # 默认 false
 解析发生在**启动时一次**，而不是每次 `bash` 调用，因为这个结果同时决定 `bash` 的工具描述：
 
 ```rust
-// crates/tact-ui/src/interactive.rs / headless.rs
+// crates/tact_ui/src/interactive.rs / headless.rs
 let (sandbox, sandbox_degraded) =
     tact::sandbox::resolve(tact::config::settings().tools.sandbox, &work_dir);
 if sandbox.is_some() {
@@ -199,12 +199,12 @@ sequenceDiagram
 
 | 文件 | 职责 |
 |---|---|
-| `crates/tact/src/sandbox/mod.rs` | `Sandbox` trait、`resolve(enabled, work_dir)`、按 OS 分派的 `resolve_platform`、`SandboxDegradation`（原因 + 每会话一次的提示状态） |
-| `crates/tact/src/sandbox/bwrap.rs` | Linux 后端：`BwrapSandbox::probe`、纯函数 `bwrap_args_with`、`guard_workspace` |
-| `crates/tact/src/tool/bash.rs` | `match &ctx.sandbox` 处的进程构造、`notice_unsandboxed`、`SANDBOXED_BASH_DESCRIPTION` |
-| `crates/tact/src/tool/mod.rs` | `ToolContext.sandbox` / `sandbox_degraded` |
-| `crates/tact/src/config/types.rs` | `[tools] sandbox`（`Option<bool>`）与解析后的 `ToolSettings.sandbox: bool` |
-| `crates/tact-ui/src/interactive.rs`、`headless.rs` | 启动解析、降级提示、`bash` 描述覆盖 |
+| `crates/tact_extensions/src/sandbox/mod.rs` | `Sandbox` trait、`resolve(enabled, work_dir)`、按 OS 分派的 `resolve_platform`、`SandboxDegradation`（原因 + 每会话一次的提示状态） |
+| `crates/tact_extensions/src/sandbox/bwrap.rs` | Linux 后端：`BwrapSandbox::probe`、纯函数 `bwrap_args_with`、`guard_workspace` |
+| `crates/tact_extensions/src/tool/bash.rs` | `match &ctx.sandbox` 处的进程构造、`notice_unsandboxed`、`SANDBOXED_BASH_DESCRIPTION` |
+| `crates/tact_extensions/src/tool/mod.rs` | `ToolContext.sandbox` / `sandbox_degraded` |
+| `crates/tact_extensions/src/config/types.rs` | `[tools] sandbox`（`Option<bool>`）与解析后的 `ToolSettings.sandbox: bool` |
+| `crates/tact_ui/src/interactive.rs`、`headless.rs` | 启动解析、降级提示、`bash` 描述覆盖 |
 
 ---
 

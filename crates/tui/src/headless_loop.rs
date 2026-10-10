@@ -2,7 +2,8 @@
 
 use std::time::Duration;
 
-use tact_protocol::{AgentUpdate, UiResponse, UserCommand};
+use tact_protocol::RuntimeEvent;
+use tact_protocol::{InteractionResponse, RequestId};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::widgets::state::{App, InputMode, SelectKind};
@@ -10,7 +11,7 @@ use crate::widgets::state::{App, InputMode, SelectKind};
 /// Drain pending updates from `agent_rx`, optionally auto-confirm permission selects.
 pub fn drain_agent_updates(app: &mut App, auto_select: Option<usize>) {
     while let Ok(update) = app.agent_rx.try_recv() {
-        app.handle_agent_update(update);
+        app.handle_runtime_event(update);
         if matches!(app.input_mode, InputMode::Select)
             && let Some(choice) = auto_select
         {
@@ -22,9 +23,9 @@ pub fn drain_agent_updates(app: &mut App, auto_select: Option<usize>) {
 /// Build the response for auto-confirming the current select popup.
 ///
 /// Consumes the popup's request id and leaves `InputMode::Normal`. Returns the
-/// [`UiResponse`] to deliver, or `None` when the popup is a local flow (no
+/// [`InteractionResponse`] to deliver, or `None` when the popup is a local flow (no
 /// request id) or not actually open.
-pub fn build_auto_confirm_response(app: &mut App, choice: usize) -> Option<UiResponse> {
+pub fn build_auto_confirm_response(app: &mut App, choice: usize) -> Option<InteractionResponse> {
     if !matches!(app.input_mode, InputMode::Select) || app.select.options.is_empty() {
         return None;
     }
@@ -36,15 +37,20 @@ pub fn build_auto_confirm_response(app: &mut App, choice: usize) -> Option<UiRes
             *slot = true;
         }
         let idxs = app.select.confirm_multi();
-        request_id.map(|id| UiResponse::MultiSelect {
-            request_id: id,
-            choices: Some(idxs),
+        let values = idxs
+            .iter()
+            .filter_map(|&i| app.select.options.get(i).cloned())
+            .collect();
+        request_id.map(|id| InteractionResponse::Selected {
+            request_id: RequestId::from(id.to_string()),
+            values,
         })
     } else {
         let _ = app.select.confirm();
-        request_id.map(|id| UiResponse::Select {
-            request_id: id,
-            choice: Some(idx),
+        let value = app.select.options.get(idx).cloned().unwrap_or_default();
+        request_id.map(|id| InteractionResponse::Selected {
+            request_id: RequestId::from(id.to_string()),
+            values: vec![value],
         })
     };
     app.select_kind = SelectKind::Agent;
@@ -56,7 +62,7 @@ pub fn build_auto_confirm_response(app: &mut App, choice: usize) -> Option<UiRes
 /// the App's command channel (headless substitute for Enter).
 pub fn auto_confirm_select(app: &mut App, choice: usize) {
     if let Some(response) = build_auto_confirm_response(app, choice) {
-        let _ = app.user_cmd_tx.send(UserCommand::UiResponse(response));
+        app.respond_ui(response);
     }
 }
 
@@ -76,7 +82,7 @@ where
 
 /// Build an `App` wired to the given agent channel (no startup logo/messages).
 pub fn make_headless_app(
-    agent_rx: UnboundedReceiver<AgentUpdate>,
+    agent_rx: UnboundedReceiver<RuntimeEvent>,
     work_dir: std::path::PathBuf,
 ) -> App {
     use tokio::sync::mpsc::unbounded_channel;

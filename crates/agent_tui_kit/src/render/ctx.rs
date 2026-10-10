@@ -93,12 +93,12 @@ pub struct RenderCtx<'a> {
 
 /// A command emitted by render code, executed by the app after the frame.
 ///
-/// `AgentUpdate` is a large protocol enum; boxed because commands are
+/// `RuntimeEvent` is a large protocol enum; boxed because commands are
 /// low-frequency (UI gestures), not a hot path.
 #[allow(clippy::large_enum_variant)]
 pub enum RenderCommand {
     /// Replay an agent update from a UI gesture (double-click → copy/`MdInfo`).
-    AgentUpdate(crate::protocol::AgentUpdate),
+    RuntimeEvent(crate::protocol::RuntimeEvent),
     /// Enqueue a pending input message.
     QueuePending(String),
     /// Set the pending `[Cancel]` button hit area.

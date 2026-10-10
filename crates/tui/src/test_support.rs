@@ -2,7 +2,7 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use tact_protocol::AgentUpdate;
+use tact_protocol::RuntimeEvent;
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 
 use crate::{
@@ -47,13 +47,14 @@ impl TestApp {
         ))
     }
 
-    pub fn feed(&mut self, update: AgentUpdate) {
-        self.0.handle_agent_update(update);
+    /// Feed one protocol event to the App.
+    pub fn feed(&mut self, event: RuntimeEvent) {
+        self.0.handle_runtime_event(event);
     }
 
-    pub fn feed_all(&mut self, updates: impl IntoIterator<Item = AgentUpdate>) {
-        for update in updates {
-            self.feed(update);
+    pub fn feed_all(&mut self, events: impl IntoIterator<Item = RuntimeEvent>) {
+        for event in events {
+            self.feed(event);
         }
     }
 
@@ -163,12 +164,12 @@ pub struct HeadlessApp {
     auto_select: Option<usize>,
     capture_frames: bool,
     /// Direct route for auto-confirmed select responses. The driver owns the
-    /// same shared registry, so `handle_response` reaches the waiting tool.
-    ui_responder: Option<tact::ui_responder::UiResponder>,
+    /// same shared registry, so `respond` reaches the waiting tool.
+    ui_responder: Option<tact_extensions::ui_responder::UiResponder>,
 }
 
 impl HeadlessApp {
-    pub fn new(agent_rx: UnboundedReceiver<AgentUpdate>, work_dir: PathBuf) -> Self {
+    pub fn new(agent_rx: UnboundedReceiver<RuntimeEvent>, work_dir: PathBuf) -> Self {
         Self {
             inner: make_headless_app(agent_rx, work_dir),
             auto_select: None,
@@ -186,7 +187,10 @@ impl HeadlessApp {
     /// instead of the (disconnected) command channel. The headless App and the
     /// driver do not share a `user_cmd` channel, so routing responses this way
     /// is what lets a blocked tool unblock.
-    pub fn with_ui_responder(mut self, responder: tact::ui_responder::UiResponder) -> Self {
+    pub fn with_ui_responder(
+        mut self,
+        responder: tact_extensions::ui_responder::UiResponder,
+    ) -> Self {
         self.ui_responder = Some(responder);
         self
     }
@@ -207,7 +211,7 @@ impl HeadlessApp {
 
     fn drain(&mut self, auto_confirm: bool) {
         while let Ok(update) = self.inner.agent_rx.try_recv() {
-            self.inner.handle_agent_update(update);
+            self.inner.handle_runtime_event(update);
             if auto_confirm
                 && matches!(self.inner.input_mode, InputMode::Select)
                 && let Some(choice) = self.auto_select
@@ -225,17 +229,18 @@ impl HeadlessApp {
 
     /// Deliver a select response to the waiting tool: directly through the
     /// shared responder when wired, else on the App's command channel.
-    fn deliver_response(&self, response: Option<tact_protocol::UiResponse>) {
+    fn deliver_response(&self, response: Option<tact_protocol::InteractionResponse>) {
         let Some(response) = response else {
             return;
         };
         match &self.ui_responder {
-            Some(responder) => responder.handle_response(response),
+            Some(responder) => {
+                let _ = responder.respond(response);
+            }
             None => {
-                let _ = self
-                    .inner
-                    .user_cmd_tx
-                    .send(tact_protocol::UserCommand::UiResponse(response));
+                let _ = self.inner.user_cmd_tx.send(tact_view::UserCommand::Runtime(
+                    tact_protocol::RuntimeCommand::RespondInteraction { response },
+                ));
             }
         }
     }
@@ -273,7 +278,7 @@ impl HeadlessApp {
         self.inner.tools().popup.is_some()
     }
 
-    pub fn user_cmd_tx(&self) -> UnboundedSender<tact_protocol::UserCommand> {
+    pub fn user_cmd_tx(&self) -> UnboundedSender<tact_view::UserCommand> {
         self.inner.user_cmd_tx.clone()
     }
 

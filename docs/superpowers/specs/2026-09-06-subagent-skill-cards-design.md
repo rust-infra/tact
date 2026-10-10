@@ -1,7 +1,7 @@
 # 子代理技能卡（Subagent Skill Cards）设计
 
 > 日期：2026-09-06 · 状态：草稿待批准（先写设计文档）
-> 关联：`crates/tact/src/tool/subagent.rs`、`crates/tact/src/consts.rs`（`TactPath`）、`book/12_chapter_subagent*.md`、`book/26_chapter_issue*.md`
+> 关联：`crates/tact_extensions/src/tool/subagent.rs`、`crates/tact_extensions/src/consts.rs`（`TactPath`）、`book/12_chapter_subagent*.md`、`book/26_chapter_issue*.md`
 > 背景提交：`8c74f4e`（移除声明式 agent definitions，分支 `feat/plugin-compat`）
 
 ## 1. 背景与动机
@@ -103,7 +103,7 @@ You are a principal reviewer. …
 
 ### 3.4 实现位置（无新模块，无新共享状态）
 
-- 全部逻辑收敛在 `crates/tact/src/tool/subagent.rs`：
+- 全部逻辑收敛在 `crates/tact_extensions/src/tool/subagent.rs`：
   - `fn subagent_skill_dir() -> Option<PathBuf>`：`TactPath::home_tact_dir()?.join("subagent")`；
   - `fn parse_skill_card_frontmatter(text) -> (SkillCardFrontmatter, String)`：极简栅栏切分（fail-open）；
   - `fn read_skill_card(dir, name) -> Option<SkillCard>`（`SkillCard { description, body }`）：单文件读，key = 文件 stem；

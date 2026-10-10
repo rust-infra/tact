@@ -12,9 +12,9 @@ use crate::{Component, Ctx};
 
 /// Priority-ordered component registry.
 ///
-/// `U` defaults to [`crate::protocol::AgentUpdate`]; hosts that emit a
+/// `U` defaults to [`crate::protocol::RuntimeEvent`]; hosts that emit a
 /// different update enum parameterize the registry and map at the boundary.
-pub struct ComponentRegistry<U: 'static = crate::protocol::AgentUpdate> {
+pub struct ComponentRegistry<U: 'static = crate::protocol::RuntimeEvent> {
     components: Vec<(u8, Box<dyn Component<U>>)>,
 }
 
@@ -121,7 +121,7 @@ mod tests {
 
     use crate::{
         InputMode, PendingQueue,
-        protocol::{AgentUpdate, ThinkingChunk},
+        protocol::{RuntimeEvent, ThinkingChunk},
         state::LogCoordinator,
     };
 
@@ -151,9 +151,9 @@ mod tests {
     }
 
     impl Component for Counter {
-        fn on_update(&mut self, update: &AgentUpdate, _ctx: &mut Ctx<'_>) -> bool {
+        fn on_update(&mut self, update: &RuntimeEvent, _ctx: &mut Ctx<'_>) -> bool {
             self.updates.fetch_add(1, Ordering::Relaxed);
-            matches!(update, AgentUpdate::ThinkingChunk(_)) && self.claim_thinking
+            matches!(update, RuntimeEvent::Thinking { .. }) && self.claim_thinking
         }
 
         fn on_key(&mut self, _key: KeyEvent, _ctx: &mut Ctx<'_>) -> bool {
@@ -208,7 +208,10 @@ mod tests {
         let mut events: Vec<crate::state::StreamEvent> = Vec::new();
 
         let claimed = reg.dispatch_update(
-            &AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
+            &RuntimeEvent::Thinking {
+                run_id: None,
+                chunk: ThinkingChunk::Started,
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert!(claimed, "thinking counter claims thinking updates");
@@ -226,7 +229,10 @@ mod tests {
 
         // Non-claiming updates reach everyone in order.
         let _ = reg.dispatch_update(
-            &AgentUpdate::TaskComplete("done".into()),
+            &RuntimeEvent::TaskComplete {
+                run_id: None,
+                content: "done".into(),
+            },
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert_eq!(thinking_updates.load(Ordering::Relaxed), 2);

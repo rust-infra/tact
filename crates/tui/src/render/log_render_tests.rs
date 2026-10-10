@@ -3,7 +3,7 @@
 use std::collections::HashMap;
 
 use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
-use tact_protocol::{AgentUpdate, PlanStep, StepStatus, ThinkingChunk, ToolPresentationInfo};
+use tact_protocol::{PlanStep, RuntimeEvent, StepStatus, ThinkingChunk, ToolPresentationInfo};
 
 use super::log::render_log_panel;
 use super::test_harness::{
@@ -29,16 +29,19 @@ fn seed_tall_subagent_tool(app: &mut App, line_count: usize) {
         .map(|n| format!("child-out-{n:02}"))
         .collect::<Vec<_>>()
         .join("\n");
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "audit the repo",
-        "spawn_subagent",
-        "sub-tall",
-        HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
-    )));
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "audit the repo",
+            "spawn_subagent",
+            "sub-tall",
+            HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
+        ),
+    });
+    app.handle_runtime_event(
         StepCall::new(0, "sub-tall", "spawn_subagent", "audit the repo").started(),
     );
-    app.handle_agent_update(
+    app.handle_runtime_event(
         StepCall::new(0, "sub-tall", "spawn_subagent", "audit the repo")
             .detail(output)
             .duration_us(100)
@@ -205,7 +208,11 @@ fn log_user_message_shows_prefix() {
 fn log_mixed_categories_render_user_and_assistant() {
     let mut app = make_app();
     app.add_user_message("user task".into());
-    app.handle_agent_update(AgentUpdate::StreamChunk("assistant reply".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "assistant reply".into(),
+    });
 
     let text = render_log_panel_text(&mut app, 80, 20);
     assert!(
@@ -224,10 +231,14 @@ fn log_mixed_categories_render_user_and_assistant() {
 fn log_assistant_reply_aligns_with_thinking_indent() {
     let mut app = make_app();
     app.add_user_message("user task".into());
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-        "thinking reference".into(),
-    )));
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+    app.handle_runtime_event(RuntimeEvent::Thinking {
+        run_id: None,
+        chunk: ThinkingChunk::Delta("thinking reference".into()),
+    });
+    app.handle_runtime_event(RuntimeEvent::Thinking {
+        run_id: None,
+        chunk: ThinkingChunk::Finished,
+    });
     app.add_system_message("final assistant reply".into());
 
     let terminal = render_log_panel_terminal(&mut app, 80, 20);
@@ -276,11 +287,16 @@ fn log_task_end_separator_renders_solid_rule() {
 fn log_thinking_title_shows_scroll_indicator_when_collapsed() {
     let mut app = make_app();
     for i in 1..=6 {
-        app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(format!(
-            "reason line {i}\n"
-        ))));
+        app.handle_runtime_event(RuntimeEvent::Thinking {
+            run_id: None,
+            chunk: ThinkingChunk::Delta(format!("reason line {i}\n")),
+        });
     }
-    app.handle_agent_update(AgentUpdate::StreamChunk("final answer".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "final answer".into(),
+    });
 
     let text = render_log_panel_text(&mut app, 100, 24);
     assert!(
@@ -292,9 +308,10 @@ fn log_thinking_title_shows_scroll_indicator_when_collapsed() {
 #[test]
 fn active_thinking_card_renders_a_three_line_tail_without_source_rows() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-        "one\ntwo\nthree\nfour\n".into(),
-    )));
+    app.handle_runtime_event(RuntimeEvent::Thinking {
+        run_id: None,
+        chunk: ThinkingChunk::Delta("one\ntwo\nthree\nfour\n".into()),
+    });
 
     let text = render_log_panel_text(&mut app, 100, 24);
     assert!(text.contains("two") && text.contains("four"), "{text}");
@@ -360,7 +377,11 @@ fn log_narrow_width_wraps_long_paragraph() {
 #[test]
 fn log_stream_buffer_shows_in_progress_text() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StreamChunk("streaming partial".into()));
+    app.handle_runtime_event(RuntimeEvent::Text {
+        run_id: None,
+        role: "assistant".into(),
+        content: "streaming partial".into(),
+    });
 
     let text = render_log_panel_text(&mut app, 80, 16);
     assert!(
@@ -417,16 +438,19 @@ fn theme_change_repaints_existing_tool_title_rows() {
     let mut themes = Vec::new();
 
     for i in 0..3 {
-        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-            "run",
-            "bash",
-            format!("theme-probe-{i}"),
-            HashMap::from([("command".to_string(), "echo hi".to_string())]),
-        )));
-        app.handle_agent_update(
+        app.handle_runtime_event(RuntimeEvent::StepAdded {
+            run_id: None,
+            step: PlanStep::new(
+                "run",
+                "bash",
+                format!("theme-probe-{i}"),
+                HashMap::from([("command".to_string(), "echo hi".to_string())]),
+            ),
+        });
+        app.handle_runtime_event(
             StepCall::new(i, format!("theme-probe-{i}"), "bash", "echo hi").started(),
         );
-        app.handle_agent_update(
+        app.handle_runtime_event(
             StepCall::new(i, format!("theme-probe-{i}"), "bash", "echo hi")
                 .detail("hi\n")
                 .finished(),
@@ -522,19 +546,23 @@ fn running_background_card_shows_the_task_id() {
     let mut app = make_app();
     let mut presentation = ToolPresentationInfo::generic("background_run");
     presentation.keep_live = true;
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "run build in background",
-        "background_run",
-        "bg1",
-        HashMap::from([("command".to_string(), "cargo build".to_string())]),
-    )));
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "run build in background",
+            "background_run",
+            "bg1",
+            HashMap::from([("command".to_string(), "cargo build".to_string())]),
+        ),
+    });
+    app.handle_runtime_event(
         StepCall::new(0, "bg1", "background_run", "cargo build")
             .presentation(presentation)
             .started(),
     );
     // What `background_run` sends once the task exists.
-    app.handle_agent_update(AgentUpdate::ToolMeta {
+    app.handle_runtime_event(RuntimeEvent::ToolMeta {
+        run_id: None,
         tool_id: "bg1".into(),
         model: None,
         token_usage: None,
@@ -563,14 +591,17 @@ fn running_background_card_shows_the_task_id() {
 #[test]
 fn completed_command_renders_header_rows_only() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "run shell",
-        "bash",
-        "bash-collapsed",
-        HashMap::from([("command".to_string(), "cargo build".to_string())]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "bash-collapsed", "bash", "cargo build").started());
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "run shell",
+            "bash",
+            "bash-collapsed",
+            HashMap::from([("command".to_string(), "cargo build".to_string())]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "bash-collapsed", "bash", "cargo build").started());
+    app.handle_runtime_event(
         StepCall::new(0, "bash-collapsed", "bash", "cargo build")
             .detail("Compiling tact\ndone\n")
             .duration_us(100)
@@ -656,14 +687,17 @@ fn completed_command_renders_header_rows_only() {
 #[test]
 fn language_toggle_repaints_tool_card_chrome() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "run shell",
-        "bash",
-        "bash-failed",
-        HashMap::from([("command".to_string(), "false".to_string())]),
-    )));
-    app.handle_agent_update(StepCall::new(0, "bash-failed", "bash", "false").started());
-    app.handle_agent_update(
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "run shell",
+            "bash",
+            "bash-failed",
+            HashMap::from([("command".to_string(), "false".to_string())]),
+        ),
+    });
+    app.handle_runtime_event(StepCall::new(0, "bash-failed", "bash", "false").started());
+    app.handle_runtime_event(
         StepCall::new(0, "bash-failed", "bash", "false")
             .status(StepStatus::Failed)
             .message("exit 1")
@@ -774,10 +808,14 @@ fn log_left_border_force_updates_and_stays_theme_border_color() {
     let mut app = make_app();
     assert_eq!(app.theme.name, ThemeName::Ink);
 
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-        "Checking git status\nline2\nline3".into(),
-    )));
-    app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+    app.handle_runtime_event(RuntimeEvent::Thinking {
+        run_id: None,
+        chunk: ThinkingChunk::Delta("Checking git status\nline2\nline3".into()),
+    });
+    app.handle_runtime_event(RuntimeEvent::Thinking {
+        run_id: None,
+        chunk: ThinkingChunk::Finished,
+    });
     seed_tall_subagent_tool(&mut app, 10);
 
     let terminal = render_log_panel_terminal(&mut app, 100, 30);
@@ -841,21 +879,24 @@ fn heading_rows_carry_no_highlight_band() {
 #[test]
 fn subagent_cancel_button_rect_matches_the_drawn_glyphs() {
     let mut app = make_app();
-    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
-        "audit the repo",
-        "spawn_subagent",
-        "sub-live",
-        HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
-    )));
+    app.handle_runtime_event(RuntimeEvent::StepAdded {
+        run_id: None,
+        step: PlanStep::new(
+            "audit the repo",
+            "spawn_subagent",
+            "sub-live",
+            HashMap::from([("prompt".to_string(), "audit the repo".to_string())]),
+        ),
+    });
     let mut presentation = ToolPresentationInfo::generic("spawn_subagent");
     presentation.keep_live = true;
-    app.handle_agent_update(
+    app.handle_runtime_event(
         StepCall::new(0, "sub-live", "spawn_subagent", "audit the repo")
             .presentation(presentation.clone())
             .started(),
     );
     // What the async branch sends back while the child keeps running.
-    app.handle_agent_update(
+    app.handle_runtime_event(
         StepCall::new(0, "sub-live", "spawn_subagent", "audit the repo")
             .message("async_launched { child-123 }")
             .presentation(presentation)
