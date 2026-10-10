@@ -55,6 +55,31 @@
 
 ---
 
+## 1. 2026-10-10 — 权限弹窗去掉「Allow for this session」，四个选项里没有它的一席之地
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature/UX（用户可见：授权弹窗从最多 5 项变成最多 4 项，少一项） |
+| **Related** | `crates/tact/src/agent/tool_dispatch.rs`（`PERMISSION_OPTIONS` / `PermissionChoice` / `permission_choice_for`）、`crates/tact/src/permission/mod.rs`（删 `allow_tool_for_session`）；Ch 10 §5 |
+
+**现象 / 动机：** 弹窗里「Allow for this session」和「Always allow this tool」生成的是**同一条规则**——都走 `PermissionRule::generate`（窄度完全一致，键在那条被展示的命令/路径上），唯一差别是前者只进内存、不写 settings。也就是同一件事两个按钮，差别只在持久化，而用户并不据此决策。用户的原话是「太多了，没意义」。
+
+**决策：** 删掉会话档。
+
+- **保留精确档，而不是保留会话档。** 安全前提（「点一条普通命令不会顺带放行 `sudo`」）由**规则窄度**保证，两档共用 `generate`，所以它在两档都成立；持久化与否不是安全边界，只是「下次还问不问」。留能持久化的那个——想要「别问了」的人拿到的是不再问，而不是下次还问。
+- **索引重排的边界要说清楚。** `Deny` 固定索引 1、「Always allow this tool」固定索引 2 是**肌肉记忆**，注释明说只追加不插入。删掉索引 3 的会话档后，**追加的**前缀档从索引 4 挪到 3，前三位**一动不动**——这是这次删除唯一动的索引。
+- **`permission_label` 少一个取值**：`StepResult.permission_label` 是自由字符串（`Option<String>`），删档只是不再出现 `"Allow for this session"`，协议无需改动。
+- **删掉 `PermissionManager::allow_tool_for_session` 整个方法**（连同 3 条测试）。它是 `pub` 且 `permission` 是 lib 的 `pub mod`，不会触发 dead-code lint；留着就是一个没人能到达的 API 面。
+- **其中一条测试不能只删掉。** `session_allow_records_nothing_when_the_rule_cannot_be_narrowed` 钉的是「窄化不了时**绝不能退回裸 allow**」——那正是「含 `:` 的 `bash` 命令点一次就授权此后所有 shell 命令」的历史回归，而全仓**只有它**在断言这条。已把它改扸到幸存的 `allow_tool_with_input`（`always_allow_records_nothing_when_the_rule_cannot_be_narrowed`），而不是删除。另两条（不越界到更长的命令、不落盘）分别由既有的 `allow_tool_with_input_prevents_privilege_escalation` 和「本就没落过盘」覆盖，删除。
+
+**改后行为：** 授权弹窗最多 4 项：`Allow once` / `Deny` / `Always allow this tool` / `Always allow this pattern`（末项无法构建前缀规则时不出现，退回 3 项）。前三位位置不变。会话档的持久化差异消失——精确档一律走 settings（无 settings 存储时落内存，与从前一致）。
+
+**Verification：** `cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` 干净。新增/改写：`permission_popup_indices_map_to_their_choices`、`every_permission_option_maps_back_to_its_choice`、`the_pattern_choice_is_appended_and_can_be_withheld` 三处索引断言改成 4 项（`permission_choice_for(Some(3)) == AlwaysAllowProgram`、越界与取消仍归 `Deny`）；`always_allow_records_nothing_when_the_rule_cannot_be_narrowed` 为改写自会话档的回归保护。
+
+**Pointers:** `crates/tact/src/agent/tool_dispatch.rs`、`crates/tact/src/permission/mod.rs`、`book/10_chapter_permission_zh.md` §5。
+
+---
+
 ## 1. 2026-10-10 — 往上翻不再被弹走：跟尾变成显式状态，日志下边框浮出「回到最新」药丸
 
 | Field | Value |

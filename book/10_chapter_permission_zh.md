@@ -194,17 +194,17 @@ graph TD
 
 代价也要说清楚：`cargo test`、`npm run build` 这类前缀等价于信任该项目的构建配置（`build.rs`、`postinstall` 都会跑任意代码）。这是这一档存在的意义所在，也正因如此弹窗必须先展示规则、再由用户点。
 
-**「Allow for this session」是它的内存版。** 走同一个 `PermissionRule::generate`，因此窄度完全一致，区别只在规则只进内存列表、**绝不写入** settings 文件——会话结束即消失。宽度不变这一点是它安全的前提：对一条普通命令的点击不会顺带放行 `sudo`，它缩短的是**时间**范围而不是**匹配**范围。规则窄化不了时它同样什么都不记，并复用「记不住」那句提示。
+**这一档与「Always allow this tool」的区别在**覆盖范围**，而不在规则形状**：精确档只匹配**这一条**被展示的调用（同一条命令、同一个路径），越过它就要再问；前缀档则覆盖**这一类**（`^cargo test` 下的任意子命令、`@docs` 下的任意文件）。两者都由 `PermissionRule::generate` 家族生成**窄规则**，都不写裸工具名，所以「对一条普通命令的点击不会顺带放行 `sudo`」在两档都成立。
 
-（弹窗选项的顺序刻意**追加**而非插入：`Deny` 保持索引 1、「Always allow this tool」保持索引 2，因为位置是肌肉记忆。）
+（曾经还有一档「Allow for this session」，是精确档的**内存版**：同一条规则、只是不落盘。它已删除——精确档与它的宽度**完全一致**，差别仅在于是否持久化，而这并不是用户据此决策的东西，多一个按钮只是噪音。要「这次别问我了」，点精确档即可。弹窗选项的顺序刻意**追加**而非插入：`Deny` 保持索引 1、「Always allow this tool」保持索引 2，因为位置是肌肉记忆；删掉会话档只让**追加的**前缀档从索引 4 挪到 3，前三位一动不动。）
 
 **「Always allow」有时会记不住。** 当无法表达比整工具更窄的规则时——字段缺失、不是字符串、或值里含规则文法定界符（`(`、`)`、`:`，模式被嵌在 `tool(field:pattern)` 里）——`PermissionRule::generate` 返回 `None`。旧行为是退回**裸规则**，而任何含冒号的 `bash` 命令（`git commit -m "fix: thing"`）都会走到那条路，于是点一次就授权了此后所有 shell 命令、且跨会话。现在这次点击只批准当前调用，并由 `AllowOutcome::NotNarrowable` 让 `tool_dispatch` 明确告诉用户"这条记不住"——否则一个点了没反应的按钮，用户会以为它已经生效了。
 
-allowlist **仅内存**——不会持久化到 SQLite 或 TOML 跨会话；「Allow for this session」走的正是这条路径。只有 settings 规则那种形式能跨重启存活。
+allowlist **仅内存**——不会持久化到 SQLite 或 TOML 跨会话。只有 settings 规则那种形式能跨重启存活。
 
 ### 连续拒绝
 
-每次用户 **Deny** 使 `consecutive_denials` 加一。Allow once、always-allow 与会话档都将其重置为零。
+每次用户 **Deny** 使 `consecutive_denials` 加一。Allow once 与 always-allow 都将其重置为零。
 
 达到 `max_consecutive_denials`（默认 **3**）次拒绝后，`should_suggest_plan_mode()` 返回 true。非交互模式下 `ask_user()` 向 stderr 打印提示：
 
@@ -223,7 +223,7 @@ allowlist **仅内存**——不会持久化到 SQLite 或 TOML 跨会话；「A
 ```rust
 AgentUpdate::RequestSelect {
     prompt,      // 例如 "Allow bash: {\"command\":\"npm test\"}"
-    options,     // ["Allow once", "Deny", "Always allow this tool", "Allow for this session"]
+    options,     // ["Allow once", "Deny", "Always allow this tool", "Always allow this pattern"]
     respond,     // 回 agent 的 oneshot channel
 }
 ```
@@ -235,7 +235,7 @@ TUI（`crates/tui/src/widgets/state/app/agent.rs`）切换到 `InputMode::Select
 | Allow once | 0 | 运行工具；在 `StepFinished` 上设置 `permission_label = "Allow once"` |
 | Deny | 1（默认） | `PreparedState::Resolved`；`StepFailed` 附带 deny 消息 |
 | Always allow this tool | 2 | `allow_tool_with_input(name, policy, input)`；运行工具；`permission_label = "Always allow this tool"` |
-| Allow for this session | 3 | `allow_tool_for_session(name, policy, input)`；运行工具；`permission_label = "Allow for this session"` |
+| Always allow this pattern | 3 | `allow_tool_as_prefix(name, policy, input)`；运行工具；`permission_label = "Always allow this pattern"`（无法构建前缀规则时该项不出现） |
 
 `permission_label` 附加到 `StepResult`，并在 TUI 工具 meta 行显示。见 [Tool Rendering](../docs/tool_rendering.md)。
 
