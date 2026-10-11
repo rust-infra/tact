@@ -4,6 +4,24 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — §6 的 View 半边（收尾一）：`Input` 不再是挂死而是被拒绝
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（行为变化：交互会话里 Kernel 的 `Input` 请求现在会被应答为 `Cancelled`；此前被静默丢弃） |
+| **Related** | `crates/tui/src/widgets/state/app/agent.rs`、`crates/tui/src/handlers/select.rs` |
+
+**现象 / 动机：** 前两步让 `Select` / `MultiSelect` / `Confirm` / `Permission` 都能弹窗，`Input` 则仍被那道守卫直接 `return` 掉。问题是：**丢弃不等于拒绝**——broker 那侧还在等一个永远不会到来的回答，插件/调用方就此挂住。挂死比明确拒绝糟得多。
+
+**决策：** 没有文本输入模式时，`Input` 立即以 `Cancelled { request_id }` 应答（走既有 `respond_ui` → `RuntimeCommand::RespondInteraction` → driver 路由给 broker），调用方因此能立刻继续或报错。UI 目前不画任何东西（等文本输入模式落地）。等宽处理不做——`Input` 需要 `InputMode::TextPrompt` 与 kit 的 `TextPrompt` 状态，那是最后一步。
+
+**改后行为：** `Input` 有确定答复（`Cancelled`），不再有「等不到回答」的挂死；`Select` / `MultiSelect` / `Confirm` / `Permission` 行为不变。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2946 → 2947 passed / 0 failed / 22 ignored**（+1：`broker_input_is_refused_instead_of_left_hanging`，从 `app.user_cmd_tx` 取出实际发出的命令并断言是 `Cancelled` 且携带原 `RequestId`——只断言「没弹窗」是证明不了拒绝的）。
+
+**Pointers:** `crates/tui/src/widgets/state/app/agent.rs`（那道守卫现在应答而非丢弃）、`crates/tui/src/handlers/select.rs::tests::broker_input_is_refused_instead_of_left_hanging`。
+
+
 ## 1. 2026-10-11 — §6 的 View 半边（第二步）：broker 的 `Confirm` / `Permission` 也进弹窗，并以 `Approved` / `Rejected` 应答
 
 | Field | Value |

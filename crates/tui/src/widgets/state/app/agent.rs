@@ -103,8 +103,18 @@ impl App {
             // broker's `Confirm` / `Permission`, which are decisions over two
             // options — does, below.
             RuntimeEvent::InteractionRequested {
-                request: InteractionRequest::Input { .. },
-            } => return,
+                request: InteractionRequest::Input { request_id, .. },
+            } => {
+                // The TUI has no text-entry mode yet, so this prompt cannot be
+                // shown — but dropping it would leave the broker's caller
+                // waiting for an answer that can never come. Refuse it instead:
+                // an explicit refusal is something the caller can act on, a
+                // silent drop is a hang.
+                self.respond_ui(tact_protocol::InteractionResponse::Cancelled {
+                    request_id: request_id.clone(),
+                });
+                return;
+            }
             _ => {}
         }
         let update = event;
