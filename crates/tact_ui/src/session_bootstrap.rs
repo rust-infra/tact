@@ -227,8 +227,9 @@ pub(crate) async fn build_serving_context(
 }
 
 /// Registers the host's control-plane extensions on the session's serving
-/// context: Chat's `chat.submit` (the conversational turn) and the Agent's
-/// `runs.*` (the run that turn executes through).
+/// context: Chat's `chat.submit` (the conversational turn), the Agent's
+/// `runs.*` (the run that turn executes through), and Workflow's
+/// `workflow.run` (a sequence of such turns).
 ///
 /// Both need the *shared* Agent, which the bootstrap does not have: it builds
 /// the Agent and hands it to the frontend, and only the frontend wraps it in the
@@ -246,7 +247,14 @@ pub(crate) fn register_host_extensions(
     tact_extensions::extensions::chat::ChatExtension::new(Arc::clone(&agent), serving.clone())
         .register(serving)?;
     tact_extensions::extensions::agent::AgentExtension::from_shared(agent, cancel_flag)
-        .register(serving)
+        .register(serving)?;
+    // Workflow needs no Agent handle: it choreographs turns by invoking
+    // `chat.submit` on the same router, so it is registered over a clone of the
+    // serving context and is live the moment Chat is.
+    tact_extensions::extensions::workflow::WorkflowExtension::new(Arc::new(
+        tact_extensions::extensions::workflow::ChatTurnWorkflow::new(serving.clone()),
+    ))
+    .register(serving)
 }
 
 /// Resolve (or start) this run's session, and take its lock.

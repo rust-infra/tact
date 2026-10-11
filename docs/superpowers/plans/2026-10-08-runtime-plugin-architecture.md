@@ -43,7 +43,11 @@ path either; and **Chat now has a real implementation** — `chat.submit` owns t
 conversational turn (assembly, the Stop-hook continuation loop, `TaskComplete`,
 TaskCompleted hooks) and both hosts submit through it, which also fixed a real
 asymmetry (headless used to ignore continuation-requesting `Stop` hooks and never
-fire `TaskCompleted`). Still open: `WorkflowExtension::register` is test-only, 11
+fire `TaskCompleted`). **Workflow now has a production executor**: both hosts
+register `WorkflowExtension` with `ChatTurnWorkflow`, which sequences steps by
+invoking `chat.submit` (spec
+`docs/superpowers/specs/2026-10-11-production-workflow-executor-design.md`); no
+product code invokes `workflow.run` yet. Still open: 10
 of the 12 service capabilities have no invoking caller, `Agent::runtime_plugins`
 is never read, and the submit paths are all routed.
 `ARCHITECTURE.md` §15 lists what remains unconsumed.

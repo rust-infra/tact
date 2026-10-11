@@ -1006,6 +1006,77 @@ mod tests {
         );
     }
 
+    /// `workflow.run` sequences turns: each step is submitted through
+    /// `chat.submit`, which starts its run through `runs.start`, so one
+    /// `workflow.run` invocation completes as many turns as it has steps. The
+    /// recorder proves all three capabilities were reached through the Router,
+    /// and two `TaskComplete`s prove the steps actually ran on the shared Agent.
+    #[tokio::test]
+    async fn workflow_run_sequences_turns_through_the_serving_router() {
+        install_test_config();
+        let mock = MockClient::new(vec![
+            (vec![text_block("first answer")], Some(StopReason::EndTurn)),
+            (vec![text_block("second answer")], Some(StopReason::EndTurn)),
+        ]);
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, _work_dir) = build_test_agent(mock, Some(agent_tx));
+
+        let directory = tempfile::tempdir().expect("temp directory");
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let serving = serving_context_with_recorder(directory.path(), seen.clone()).await;
+        let agent = agent.with_serving_context(serving.clone());
+        crate::session_bootstrap::register_host_extensions(
+            &serving,
+            std::sync::Arc::new(tokio::sync::Mutex::new(agent)),
+            std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        )
+        .expect("the host extensions register");
+
+        let invocation = serving.invocation(
+            tact_protocol::RequestId::from("workflow-run-test"),
+            tact_protocol::PluginId::from("tact.chat"),
+            "test",
+        );
+        let output = serving
+            .router()
+            .invoke(
+                "workflow.run",
+                invocation,
+                serde_json::json!({
+                    "steps": [
+                        { "prompt": "first" },
+                        { "prompt": "second" },
+                    ]
+                }),
+            )
+            .await
+            .expect("workflow.run answers");
+
+        assert_eq!(output["steps"], serde_json::json!(2));
+        assert_eq!(output["runs"].as_array().map(Vec::len), Some(2));
+
+        let mut completions = 0;
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            while completions < 2 {
+                match agent_rx.recv().await {
+                    Some(RuntimeEvent::TaskComplete { .. }) => completions += 1,
+                    Some(_) => continue,
+                    None => panic!("agent event channel closed early"),
+                }
+            }
+        })
+        .await
+        .expect("both workflow steps must complete");
+
+        let seen = seen.lock().expect("recording lock");
+        for name in ["workflow.run", "chat.submit", "runs.start"] {
+            assert!(
+                seen.iter().any(|checked| checked == name),
+                "{name} must be invoked through the Router: {seen:?}"
+            );
+        }
+    }
+
     /// A `/mcp prompt` turn reaches `runs.start` too: the new arm renders the
     /// prompt (a *starting message*) and submits it through the same
     /// `run_submit` helper as `SubmitTask`, so a plugin-prompt run is routed

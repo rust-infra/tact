@@ -32,12 +32,13 @@ pub(crate) fn permission_mode_from_config() -> PermissionMode {
 /// The plugin identities the host's own control plane invokes as.
 ///
 /// These are the extensions that own the host-driven capabilities: Chat owns
-/// `chat.submit` / `chat.compact`, the Agent owns `runs.start` / `runs.cancel`.
-/// The host speaks as the owning extension of the capability it is invoking
-/// (the same convention `runs.*` and `chat.compact` already followed), so a
-/// host call is one of these two and nothing else. Membership is the whole
-/// check — a caller that is not one of the host's identities is refused even
-/// for a control capability name.
+/// `chat.submit` / `chat.compact`, the Agent owns `runs.start` / `runs.cancel`,
+/// and Workflow's `workflow.run` chains Chat's turn. The host speaks as the
+/// owning extension of the capability it is invoking (the same convention
+/// `runs.*` and `chat.compact` already followed), so a host call is one of
+/// these two and nothing else. Membership is the whole check — a caller that is
+/// not one of the host's identities is refused even for a control capability
+/// name.
 pub(crate) const HOST_CONTROL_PLANE_IDENTITIES: [&str; 2] = ["tact.chat", "tact.agent"];
 
 /// The host's permission policy for its **own** control-plane calls.
@@ -45,13 +46,15 @@ pub(crate) const HOST_CONTROL_PLANE_IDENTITIES: [&str; 2] = ["tact.chat", "tact.
 /// `CapabilityRouter::invoke` always runs `PermissionService::check`, and the
 /// host has no guarded path to its own turn: `chat.submit` submits the
 /// conversational turn the user asked for, `chat.compact` compacts the
-/// conversation the user asked to compact, and `runs.start` / `runs.cancel` are
-/// the run that turn executes and the process stopping it. All are the host
-/// acting on the user's own request, not a capability the model asked for.
-/// The general policy, [`PermissionManagerService`], is fail-closed in `Ask`
-/// mode: with no responder it denies. That would break a headless run for any
-/// user on `mode = default`, because submitting the turn would be gated on a
-/// prompt the process cannot answer.
+/// conversation the user asked to compact, `runs.start` / `runs.cancel` are
+/// the run that turn executes and the process stopping it, and `workflow.run`
+/// choreographs several such turns. All are the host acting on the user's own
+/// request, not a capability the model asked for. `workflow.run` is listed
+/// because it *chains* `chat.submit` — it grants no power the control plane did
+/// not already have. The general policy, [`PermissionManagerService`], is
+/// fail-closed in `Ask` mode: with no responder it denies. That would break a
+/// headless run for any user on `mode = default`, because submitting the turn
+/// would be gated on a prompt the process cannot answer.
 ///
 /// So this policy allows exactly those names, and only when the caller is one
 /// of the host's own identities ([`HOST_CONTROL_PLANE_IDENTITIES`]); every
@@ -72,7 +75,7 @@ impl PermissionService for HostControlPlanePermission {
         _input: &Value,
     ) -> Result<(), KernelError> {
         match declaration.name.as_str() {
-            "chat.submit" | "chat.compact" | "runs.start" | "runs.cancel" => {
+            "chat.submit" | "chat.compact" | "runs.start" | "runs.cancel" | "workflow.run" => {
                 if HOST_CONTROL_PLANE_IDENTITIES.contains(&context.plugin_id().as_str()) {
                     Ok(())
                 } else {
@@ -98,9 +101,10 @@ impl PermissionService for HostControlPlanePermission {
 /// Two decisions meet here, and conflating them would undo one of the other:
 ///
 /// - The host's **own control plane** (`chat.submit` / `chat.compact` /
-///   `runs.start` / `runs.cancel`) is decided by [`HostControlPlanePermission`],
-///   so the process can always submit, compact and stop the turn it is hosting
-///   regardless of the configured mode.
+///   `runs.start` / `runs.cancel` / `workflow.run`) is decided by
+///   [`HostControlPlanePermission`], so the process can always submit, compact,
+///   stop and sequence the turns it is hosting regardless of the configured
+///   mode.
 /// - **Everything else** — the Kernel's `storage.*` / `events.*` /
 ///   `trajectory.*` / `permission.request` / `interaction.request`, the
 ///   `sessions.*` extension, and any plugin capability — is decided by the same
@@ -205,6 +209,7 @@ mod tests {
         assert!(check("chat.compact").await.is_ok());
         assert!(check("runs.start").await.is_ok());
         assert!(check("runs.cancel").await.is_ok());
+        assert!(check("workflow.run").await.is_ok());
         let denied = check("bash").await.expect_err("a tool is not allowed");
         assert_eq!(
             denied.category(),
@@ -217,7 +222,13 @@ mod tests {
     #[tokio::test]
     async fn the_host_control_plane_policy_allows_the_host_identities() {
         for plugin in HOST_CONTROL_PLANE_IDENTITIES {
-            for name in ["chat.submit", "chat.compact", "runs.start", "runs.cancel"] {
+            for name in [
+                "chat.submit",
+                "chat.compact",
+                "runs.start",
+                "runs.cancel",
+                "workflow.run",
+            ] {
                 let declaration = declaration(name, CapabilityRisk::Medium);
                 let context = InvocationContext::new(
                     RequestId::from("permission-probe"),

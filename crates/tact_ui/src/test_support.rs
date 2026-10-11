@@ -65,10 +65,10 @@ where
 /// - `permission` — [`crate::permission::serving_permission`] in
 ///   [`PermissionMode::Auto`]. It is the *host's* control plane
 ///   (`HostControlPlanePermission` allows `chat.submit` / `chat.compact` /
-///   `runs.start` / `runs.cancel`), independent of the agent's own tool
-///   permission mode, so one policy serves `Auto` / `Default` / `Plan` agents
-///   alike. Only starting a turn is governed here; the agent keeps its own
-///   `PermissionManager` for tools.
+///   `runs.start` / `runs.cancel` / `workflow.run`), independent of the agent's
+///   own tool permission mode, so one policy serves `Auto` / `Default` / `Plan`
+///   agents alike. Only starting a turn is governed here; the agent keeps its
+///   own `PermissionManager` for tools.
 /// - `storage` — a second SQLite handle on the same session database, opened
 ///   inside [`crate::session_bootstrap::build_serving_context`].
 ///

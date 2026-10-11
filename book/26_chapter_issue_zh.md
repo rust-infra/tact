@@ -4,6 +4,29 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — Workflow 扩展落地生产 executor：一个 workflow = 一串会话回合
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（新增能力；暂无生产调用者，故无用户可见变化） |
+| **Related** | `crates/tact_extensions/src/extensions/workflow.rs`、`crates/tact_ui/src/{session_bootstrap.rs,permission.rs,driver.rs}` |
+
+**现象 / 动机：** `extensions/workflow.rs` 一直只有 `WorkflowExecutor` trait + `WorkflowRunHandler` + manifest，没有任何生产 executor；`WorkflowExtension::register` 的全仓调用点只有两处测试（`git grep` 证实）。规格把「production Workflow executor」列在 *Not planned for now*。于是 `workflow.run` 是个空壳：测试 executor 只数一下 `steps` 长度。
+
+**决策：一个 workflow 就是一串会话回合。** 每步通过 serving router 调 `chat.submit`，因此每步拿到完整的回合语义（消息组装、Stop hook 续跑、`TaskComplete`、TaskCompleted hooks），且每一跳仍受权限检查与轨迹记录。Workflow 是编排者，不是第二个 run 入口——它不直接碰 Agent。
+
+- 入参 `{"steps":[{"prompt","run_id"?}]}`，各层 `deny_unknown_fields`；输出 `{"steps":N,"runs":[...]}`。`run_id` 缺省时由 executor 生成再传给 `chat.submit`，这样**不改 `chat.submit` 的契约**（它仍答 `{"accepted":true}`，headless 测试钉着这一条）也能回传每步的 run id。
+- executor 持有 serving `RuntimeContext` 的 clone：注册后的 handler 只拿到 `InvocationContext`，它带请求不带 router（`ChatExtension` 出于同样原因也存了一份）。
+- 每步新建 invocation，**继承调用方的 plugin_id / actor**，只换 request id 与取消令牌——这正是 `chat.submit` 往 `runs.start` 走的那一跳，理由相同：复用调用方 invocation 会让所有步共用一个 request id，并把调用方的取消耦合到它没点名的那一步。
+- 失败语义：第一个失败步即停，错误 `origin` 改为 `workflow`、消息前缀 `workflow step {i} failed:`，其余字段（category / retryable / request_id / plugin_id / details）靠**改 protocol error 而非重建**保留。
+- 注册进 `register_host_extensions`（两 host 共享）。`HostControlPlanePermission` 白名单加 `workflow.run`，仍只对 host 身份 `tact.chat` / `tact.agent` 开放：executor 把调用方身份透传下去，inner `chat.submit` 因此以 host 身份过闸，**无需新增可信身份**；插件拿不到这种身份，注入回合的门依旧关着。`workflow.run` 只是链式调用 `chat.submit`，没有放大控制面权限。
+
+**改后行为：** 生产行为不变（没有调用者）。`workflow.run` 现在是真能力，注册在与其他 host 控制面能力同一条 router / 权限路径上。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2893 → 2897 passed / 0 failed / 22 ignored**（46 套件，+4 测试：`workflow.rs` 3 条——顺序+输出、失败即停并报步号、未知字段拒绝；`driver.rs` 1 条端到端 `workflow_run_sequences_turns_through_the_serving_router`，证明 `workflow.run` → `chat.submit` → `runs.start` 全走 Router 且两步各完成一个回合）。
+
+**Pointers:** `crates/tact_extensions/src/extensions/workflow.rs::ChatTurnWorkflow`、`crates/tact_ui/src/session_bootstrap.rs::register_host_extensions`、`crates/tact_ui/src/permission.rs::HostControlPlanePermission`；设计 `docs/superpowers/specs/2026-10-11-production-workflow-executor-design.md`。
+
 ## 1. 2026-10-10 — cancel 与 compact 也走能力协议；并修掉一个我自己引入的重复事件
 
 | Field | Value |
