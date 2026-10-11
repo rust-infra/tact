@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Tact · Subagent 会话怎么呈现 — 对齐开源做法</title>
+<style>
+  :root{
+    --page-bg:#f7f7f5;--page-fg:#1d1d1f;--page-dim:#6b6b70;--card:#fff;--line:#e3e3df;--chip:#f0f0ec;
+    /* Japanese theme —— 与 crates/agent_tui_kit/src/theme.rs 的 ThemeName::Japanese 一致 */
+    --bg:#191e2d;--fg:#e6dcc8;--accent:#c83c28;--muted:#808080;--border:#322d28;
+    --success:#64a046;--warning:#d2a032;--error:#b41e1e;--highlight:#3c5078;
+    --code-bg:#1e2332;--think-border:#8c8cdc;--think-fg:#b4b4c8;--bar:#232837;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:30px 24px 64px;background:var(--page-bg);color:var(--page-fg);
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;font-size:14px;line-height:1.6}
+  .wrap{max-width:1180px;margin:0 auto}
+  h1{font-size:21px;margin:0 0 6px}
+  h2{font-size:14.5px;margin:30px 0 10px}
+  h3{font-size:13.5px;margin:0 0 8px}
+  .sub{color:var(--page-dim);margin:0 0 4px}
+  code{font-family:ui-monospace,Menlo,monospace;font-size:12px;background:var(--chip);border-radius:4px;padding:1px 5px}
+  b.hl{color:#a33}
+  .lead{background:#fff;border:1px solid var(--line);border-left:3px solid var(--accent);border-radius:8px;padding:12px 16px;margin:12px 0 4px}
+  .lead b{color:#a33}
+
+  .term{background:var(--bg);border-radius:10px;padding:10px 0 12px;overflow:hidden;
+        font-family:"JetBrainsMono NFM","JetBrainsMonoNL NFM","Hack Nerd Font Mono",ui-monospace,Menlo,"PingFang SC",monospace;
+        font-size:12.5px;line-height:1.5;box-shadow:0 6px 22px rgba(20,20,30,.16)}
+  .tbar{background:var(--bar);padding:3px 14px;font-size:12px;margin-bottom:8px}
+  .tbar .acc{color:var(--accent)}.tbar .dim{color:var(--muted)}
+  .trow{white-space:pre;overflow:hidden;padding:0 14px;color:var(--fg)}
+  .dim{color:var(--muted)}.think{color:var(--think-fg)}.ok{color:var(--success)}
+  .warn{color:var(--warning)}.err{color:var(--error)}.link{color:var(--accent)}.bold{font-weight:700}
+  .rail{color:var(--accent)}.trait{color:var(--border)}
+  .code{background:var(--code-bg)}
+
+  .pop{position:relative;margin:0 10px;border:1px solid var(--border);border-radius:8px;
+       background:var(--bg);color:var(--fg);padding:1.5em 0 1.7em}
+  .pttl{position:absolute;top:0;left:1ch;transform:translateY(-50%);background:var(--bg);
+        padding:0 .6ch;white-space:pre;font-weight:700;color:var(--fg)}
+  .pttl .x{color:var(--muted);font-weight:400}
+  .pfoot{position:absolute;bottom:0;left:50%;transform:translate(-50%,50%);background:var(--bg);
+         padding:0 .8ch;white-space:pre;color:var(--muted)}
+  .pfoot .k{color:var(--accent)}
+  .icard{position:relative;border:1px solid var(--border);border-radius:5px;margin:0 14px;padding:.9em 0 1em}
+  .icard .ittl{position:absolute;top:0;left:1ch;transform:translateY(-50%);background:var(--bg);padding:0 .5ch;white-space:pre}
+  .icard .ifoot{position:absolute;bottom:0;left:1ch;transform:translateY(50%);background:var(--bg);padding:0 .5ch;white-space:pre;color:var(--muted)}
+  .icard .trow{padding:0 12px}
+  .icard.code{border-color:#6478b4}
+  .icard.code .ittl{color:#a0b4f0}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px;margin-top:8px}
+  .box{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px 16px}
+  .box ul{margin:0;padding-left:18px}.box li{margin:5px 0}
+  .no{color:#a33}.yes{color:#2f6b1f}
+  .cap{color:var(--page-dim);font-size:12px;margin:8px 0 0}
+
+  table{border-collapse:collapse;width:100%;margin-top:8px;font-size:12.5px}
+  th,td{border:1px solid var(--line);padding:7px 9px;text-align:left;vertical-align:top}
+  th{background:var(--chip);font-weight:600}
+  td code{background:#f6f6f3}
+  .tag{display:inline-block;border-radius:4px;padding:0 5px;font-size:11px;font-weight:600}
+  .tag.inline{background:#e8f2e4;color:#2f6b1f}
+  .tag.view{background:#e6eefb;color:#24507f}
+  .tag.popup{background:#fbe9e7;color:#a33}
+  .step{display:flex;gap:10px;align-items:flex-start;margin:10px 0}
+  .step .n{flex:0 0 26px;height:26px;border-radius:50%;background:var(--accent);color:#fff;
+           display:flex;align-items:center;justify-content:center;font-size:12.5px;font-weight:700}
+  .step .n.todo{background:#c9c9c4}
+  footer{color:var(--page-dim);font-size:12px;margin-top:26px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>Subagent 会话怎么呈现</h1>
+  <p class="sub">调研 + 重设计。起点是两张实机截图：弹窗里堆着主日志的工具卡，卡底写着 <code>Click for full code</code> / <code>[ Open ]</code> —— 在一个弹窗里承诺再开一个弹窗。</p>
+
+  <div class="lead">
+    <b>结论：问题不在「弹窗里怎么排版」，而在「子 agent 的会话该不该离开主日志」。</b><br>
+    三个开源项目的答案是一致的 —— <b>不弹窗</b>。要么把子 agent 的步骤<b>嵌进主日志</b>（Crush），要么<b>进入</b>子会话把它当成一个视图（OpenCode / Roo Code）。
+    弹窗这种容器天生不适合承载「可继续下钻」的内容：它自己就是一层 overlay，再叠一层就没人说得清 Esc 该关哪一层。
+  </div>
+
+  <h2>一、开源怎么做</h2>
+  <table>
+    <tr><th style="width:16%">项目</th><th style="width:14%">做法</th><th>关键机制（源码/文档里读到的）</th></tr>
+    <tr>
+      <td><b>Crush</b><br><span class="cap">charmbracelet · Go</span></td>
+      <td><span class="tag inline">内联嵌套</span></td>
+      <td>子 agent 的工具调用是<b>父工具调用这一条消息的子项</b>，在同一个聊天流里按树渲染：
+        <code>NestedToolContainer</code> 接口 / <code>nestedTools []ToolMessageItem</code>；
+        <code>AgentToolRenderContext</code> 先画子 agent 的 prompt，再用 <code>tree.Root</code> 把
+        <code>nestedTools</code> 逐个当孩子画出来。子项用 <b>simple / compact</b> 渲染
+        （<code>AddNestedTool</code> 里标记），比顶层卡片轻。父项 <code>Animate</code> 会 bump 自己的
+        list-cache，让<b>嵌套项的 spinner 也能转</b>。子会话用 <code>CreateTaskSession</code> +
+        <code>ParentSessionID</code> 建，费用回传父会话。</td>
+    </tr>
+    <tr>
+      <td><b>OpenCode</b><br><span class="cap">v2 TUI · TS</span></td>
+      <td><span class="tag view">进入视图</span></td>
+      <td>「<b>你在一个 subagent 的 session 里面</b>」是一个真实状态：<code>/subagents</code> 面板列出 root 会话的全部子 agent（含孙），按深度缩进，行首是任务名 + 括号里的 agent 名；
+        <code>enter</code> <b>打开</b>选中的子会话（面板不关），<code>›</code> 标出你当前在哪个 session，<code>f</code> 全屏，<code>esc</code> 关面板。
+        进入子会话后，TUI 在输入框上方显示一行实时状态（状态点 / 标签 / 模型 / 耗时 / tokens / ctx%）。
+        <b>内置 TUI 对子会话故意不渲染输入框</b> —— 进去是看，不是接着说。</td>
+    </tr>
+    <tr>
+      <td><b>Roo Code</b><br><span class="cap">VS Code 扩展</span></td>
+      <td><span class="tag view">进入视图</span></td>
+      <td>子任务是 <b>LIFO 任务栈</b>（<code>ClineProvider</code> 管）：<code>new_task</code> 压栈、当前视图整个换成子任务、完成后弹栈回到父任务。返回是<b>一层</b>，不是关一个弹窗。</td>
+    </tr>
+    <tr>
+      <td><b>Claude Code</b><br><span class="cap">保守派</span></td>
+      <td><span class="tag inline">默认收起</span></td>
+      <td>子 agent 的细节<b>默认不展开</b>：主日志里只留 Task 工具那一行 + 摘要，要看细节得显式切到更啰嗦的视图。
+        <span class="cap">（这条是按它的公开文档与使用习惯归纳的，没有源码可引 —— 前三条有。）</span></td>
+    </tr>
+  </table>
+  <p class="cap">共同点：<b>没有一家把子 agent 的会话做成模态弹窗</b>。要下钻，就换视图（有层级、Esc 只退一层）；要偷看，就嵌在当前流里（有父子缩进，不打断阅读）。</p>
+
+  <h2>二、现在的问题</h2>
+  <p class="sub">Rg 的两张截图，其实是同一件事的两面：<b>把主日志的「可交互卡片」整套搬进了弹窗</b>。</p>
+  <div class="grid">
+    <div class="box" style="border-color:#e8c9c0;background:#fffaf9">
+      <h3 class="no">✗ 卡片承诺了一个不该存在的弹窗</h3>
+      <div class="term" style="padding:8px 0">
+        <div class="trow" style="padding-left:0">  <span class="dim">33. $ Bash  cd … &amp;&amp; grep -rn "AgentUpdate::ToolProgress" …</span></div>
+        <div class="trow" style="padding-left:0">  <span class="ok">✓ Success · 133.49ms</span></div>
+        <div class="icard code" style="margin-left:2ch">
+          <div class="ittl"> Command output </div>
+          <div class="trow"><span class="dim">35 crates/tact-ui/tests/tool_integration.rs:42: if let AgentUpdate::StepFinished {</span></div>
+          <div class="trow"><span class="dim">36 …</span></div>
+          <div class="ifoot"> 8/42 lines | Click for full code </div>
+        </div>
+      </div>
+      <p class="cap">在日志里，<code>Click for full code</code> 打开的是<b>一层 overlay 盖在普通视图上</b>，说得通。
+        在弹窗里，它是<b>弹窗盖弹窗</b>：谁在下面、Esc 先关谁、滚动归谁，全都没有答案。而且它现在<b>点了没反应</b>（没接路由）。</p>
+    </div>
+    <div class="box" style="border-color:#e8c9c0;background:#fffaf9">
+      <h3 class="no">✗ 三层边框套娃</h3>
+      <ul>
+        <li>弹窗边框 → 工具卡边框 → 输出卡边框。一屏里三次同样的圆角。</li>
+        <li>每条工具调用 ~6 行起（2 行头 + 4 行卡），而它承载的信息是「跑了什么 / 成不成 / 输出了什么」。</li>
+        <li>主日志的卡片之所以长这样，是因为它在<b>一条流</b>里要压到 2 行并靠 <code>[ Open ]</code> 兜住全文；弹窗里既没有那个约束，也没有那个出口。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>三、第一步（已落地）：弹窗内改成自包含块</h2>
+  <p class="sub">先把「借来的交互」拿掉：工具调用与思考都渲染成<b>无边框、无 <code>[Open]</code>、自包含</b>的块 —— 左侧一条 rail，输出封顶并<b>计数</b>而不是给按钮。</p>
+
+  <div class="term" style="padding:8px 0 12px">
+    <div class="tbar"><span class="acc">tact</span> <span class="dim">·</span> main <span class="dim">·</span> <span class="acc">Japanese</span> <span class="dim">·</span> ~/Projects/tact</div>
+    <div class="pop">
+      <div class="pttl"><b>4. Subagent · code review</b><span class="x">  [x]</span></div>
+      <div class="trow"><span class="dim">🤖 claude-haiku-4.5 · ⚡ 12.4K tok · ⏱ 00:41 · </span><span class="warn">● running</span></div>
+      <div class="trow"> </div>
+      <div class="trow"><span class="dim">💬 </span>Review the subagent popup rendering…</div>
+      <div class="trow"> </div>
+      <div class="trow">  <span class="rail">▎</span> <span class="bold">1. ⚡ Bash</span>  grep -rn "AgentUpdate::ToolProgress" --include=*.rs</div>
+      <div class="trow">    <span class="ok">✓ Success · 133.49ms · 42 lines</span></div>
+      <div class="trow code">    <span class="trait">│</span> 35 crates/tact-ui/tests/tool_integration.rs:42: if let AgentUpdate::StepFinished {</div>
+      <div class="trow code">    <span class="trait">│</span> 36 crates/tact-ui/tests/tool_integration.rs:133: AgentUpdate::StepFinished {</div>
+      <div class="trow code">    <span class="trait">│</span> 41 …</div>
+      <div class="trow">    <span class="dim">⋯ 34 more lines</span></div>
+      <div class="trow"> </div>
+      <div class="trow">  <span style="color:var(--think-border)">▎</span> <b style="color:var(--think-border)">🧠 Thought</b><span class="dim"> · ⏱ 1.2s</span></div>
+      <div class="trow">    <span style="color:var(--think-border)">│</span> <span class="think">The forwarding layer still emits flat text…</span></div>
+      <div class="trow"> </div>
+      <div class="trow">Reading the diff, three things stand out.</div>
+      <div class="pfoot"><span class="k">y</span> copy <span class="dim">|</span> <span class="k">j/k</span> scroll <span class="dim">|</span> <span class="k">g/G</span> top/bottom <span class="dim">|</span> <span class="k">Esc</span> close</div>
+    </div>
+  </div>
+  <p class="cap">工具调用 3 行 + 预览；思考<b>全文</b>（它只在这里可见）；助手文本照旧 Markdown。
+    没有边框、没有 <code>[Open]</code>、没有「点一下再看」。块底部那行计数就是展开键，<code>y</code> 复制命令与输出——
+    而且<b>块行本身可以拖选</b>（rail 只占格不占字节，高亮从正文开始）。</p>
+
+  <div class="grid" style="margin-top:14px">
+    <div class="box">
+      <h3 class="yes">✓ 为什么思考全文、工具输出封顶</h3>
+      <ul>
+        <li>子 agent 的<b>推理只在这里可见</b>（日志里的思考卡属于<b>父级</b>），封顶等于藏起来。</li>
+        <li>工具输出不同：它在父日志的卡片里还有出口，而一份 500 行的 grep 倒进转录会把会话埋掉。</li>
+        <li>所以剩下多少行就<b>写多少行</b>（<code>⋯ 34 more lines</code>），不给按钮 —— 按钮就是下一个弹窗。</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h3 class="yes">✓ 顺手修掉的两处</h3>
+      <ul>
+        <li><code>$ &lt;command&gt;</code> 不再重复：详情卡为弹窗准备的那行参数行被丢掉，标题里已经有命令。</li>
+        <li>命令的输出取<b>尾部</b>（和主日志 <code>ToolWidget::build</code> 一致），其他取头部。</li>
+        <li>块内换行在<b>建段时</b>完成，所以 rail 出现在每一个视觉行上（不是只第一行）。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>四、第二步（已落地 2026-10-11）：换容器 —— 进入视图，弹窗退役</h2>
+  <p class="sub">第一步只是让弹窗「不再说谎」。按上面的调研，正确的做法是<b>换容器</b>：
+    给子会话一个真正的<b>视图</b>，而不是一个 overlay。这一步先做。</p>
+
+  <div class="step">
+    <div class="n">1</div>
+    <div>
+      <h3>进入一个视图（OpenCode / Roo Code 做法）—— <b>已落地</b></h3>
+      <p class="sub" style="margin:0">面包屑 <code>‹ 4. Subagent · code review</code>，主区域整体换成子会话，<code>esc</code> 退一层。<b>在这一层里，工具卡可以恢复成主日志那种可交互的形态</b> —— 因为 overlay 盖在<b>视图</b>上是正常的分层，盖在弹窗上才是套娃。这就是「不能硬搬主 agent 交互」的真正边界：<b>交互可以借，容器不能借</b>。</p>
+      <p class="sub" style="margin:6px 0 0"><b>实机取舍（Rg：「不用和主 agent 一致」）：</b>视图里的工具块<b>没有</b>恢复成可交互卡片，仍是自包含块（<code>▎ N. ⚡ Bash args</code> / <code>✓ Success · 133ms · 42 lines</code> / code band / <code>⋯ N more lines</code>）—— 输出封顶 8 行。但块底部那行计数<b>本身可点</b>：<code>⋯ 4 more lines · ▾ expand</code> 点开把<b>这一块</b>提到 50 行，同一行随后变成 <code>▴ collapse</code>。粒度是每块（子 agent 实测 34 步，一次展开全部会把要找的那段埋掉），<code>Enter</code> 是「全部展开 / 全部收起」的批量键。面包屑整行是返回键的鼠标面；提示画在面包屑右侧（视图没有 footer）。</p>
+      <p class="sub" style="margin:6px 0 0"><b>为什么不是先做内联：</b>Tact 的子 agent 跑的是<b>完整 agent loop</b>（那张截图 34 步、thinking <code>1/160 lines</code>），内联进父日志会把父对话埋掉；而且 Tact 的子 agent <b>不能再 spawn 子 agent</b>（<code>subagent_toolset()</code> 里没有），深度恒为 1 —— Crush 的树、Roo 的栈都退化成一层，不值那个复杂度。内联的紧凑形态留给卡片行内预览。</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="n todo">2</div>
+    <div>
+      <h3>（可选，之后）短会话内联（Crush 做法）</h3>
+      <p class="sub" style="margin:0">几步就回的短会话可以直接挂在卡片下面看；长的仍然走视图。默认收起，只留尾部几行。</p>
+    </div>
+  </div>
+  <div class="step">
+    <div class="n">3</div>
+    <div>
+      <h3>弹窗退役 —— <b>已落地</b></h3>
+      <p class="sub" style="margin:0">现有 <code>SubagentPopup</code> 的键盘/鼠标路由（<code>j/k</code>、<code>g/G</code>、拖选、<code>y</code>）已平移到视图上，<code>overlay_popup_*</code> / <code>has_overlay_popup</code> / 底部 overlay 列表里那条 subagent 分支已删掉；kit 的 chrome 版 <code>render_subagent_popup</code>（零调用者）与 <code>title_close_suffix_width</code> 也已删除，只留 <code>render_subagent_body</code> 给视图外壳。粘性条（<code>[Subagents] 1/2 · …</code>）已经在做「有哪些在跑」。</p>
+    </div>
+  </div>
+
+  <h2>五、必须钉住的不变量</h2>
+  <div class="grid">
+    <div class="box">
+      <ul>
+        <li><b>结构来自子 agent 的结构化更新</b>（<code>AgentUpdate::ToolTranscript</code>），不从扁平文本反推 —— 这条已经在实现里。</li>
+        <li><b>运行中与完成后同一套渲染</b>：助手文本运行中就是渲染后的 Markdown，结束时只有状态词与行数定格。</li>
+        <li><b>块不承载交互</b>：没有可点的字形，就没有「点了没反应」和「Esc 该关谁」。</li>
+        <li><b>换行在构建期完成</b>，rail 是每行的一个 span —— 交给事后 <code>wrap_line</code> 切，rail 只会留在第一行。</li>
+        <li><b>脱敏两条通道都要过</b>：结构化通道是另一个发送口，绕过 <code>redact_text</code> 就等于把扁平流抹掉的东西又放回来。</li>
+      </ul>
+    </div>
+    <div class="box">
+      <h3>阶段划分</h3>
+      <ul>
+        <li><b>已完成</b>：结构化转录 + 自包含块（本文第三节）。</li>
+        <li><b>已完成（2026-10-11）</b>：视图 + 面包屑 + <code>esc</code> / 点面包屑退层 + 块底部溢出行可点展开（<code>Enter</code> 批量）；弹窗退役（<code>render_subagent_popup</code> 删除）。</li>
+        <li><b>未做（可选）</b>：短会话内联（Crush 那一步）—— 见上面第 2 条。</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer>设计稿 · 2026-10-10 · 主题 Japanese（bg #191E2D / accent #C83C28 / think #8C8CDC）· 调研来源：charmbracelet/crush（<code>internal/ui/chat/agent.go</code>、<code>NestedToolContainer</code>）、OpenCode v2 TUI（<code>/subagents</code> 面板、进入子会话、子会话不渲染输入框）、Roo Code（任务栈）、Claude Code（默认收起）</footer>
+</div>
+</body>
+</html>

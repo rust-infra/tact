@@ -210,6 +210,20 @@ pub struct MouseState {
     /// text-selection surface because only one of them is ever open, so a
     /// single slot is the honest shape.
     pub popup_text_body_area: Rect,
+    /// The subagent view's breadcrumb row, which is its back affordance.
+    ///
+    /// A separate rect from the view's whole [`SurfaceId::SubagentPopup`] area
+    /// because the body below it means something else (a drag selects text):
+    /// only this row returns to the log. Refreshed by the view renderer while
+    /// the view is drawn, cleared when it closes — a zero-size rect hits
+    /// nothing.
+    pub subagent_back_area: Rect,
+    /// The subagent view's block-toggle rows: `(child step id, screen rect)`.
+    ///
+    /// One per tool block whose output is capped (`⋯ N more lines`) or raised
+    /// (`▴ collapse`). A click on one expands *that* block; the rects are
+    /// refreshed by the view renderer and cleared when the view closes.
+    pub subagent_block_toggles: Vec<(String, Rect)>,
     /// Hit maps for rows currently visible in the active text popup body.
     pub popup_text_hit_rows: Vec<PopupHitRow>,
     /// Source grapheme where the active text-popup drag began.

@@ -22,7 +22,6 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Scrollbar, ScrollbarState},
 };
-use unicode_width::UnicodeWidthStr;
 
 use crate::{
     theme::Theme,
@@ -47,6 +46,12 @@ pub struct PopupMouseSurface {
     /// Render-time cache write-back: the selection text the thinking popup
     /// computed for its active block (host applies it to the popup state).
     pub thinking_selection_text: Option<String>,
+    /// Clickable block-toggle rows: `(child step id, screen rect)`.
+    ///
+    /// The subagent view draws one per tool block whose output is capped
+    /// (`⋯ N more lines`) or raised (`▴ collapse`); the host routes a click on
+    /// one to that step's expansion. Empty for every other popup.
+    pub block_toggles: Vec<(String, Rect)>,
 }
 /// A single footer hint: key + label, e.g. ("↑/↓", "scroll"), ("Esc", "close").
 pub struct FooterHint {
@@ -141,11 +146,23 @@ pub fn render_popup_scrollbar(
     viewport: usize,
     offset: usize,
 ) {
+    // `offset` is a **scroll offset** (`0..=total - viewport`), but ratatui's
+    // scrollbar reads `position` as a **row index** in `0..total`: its thumb only
+    // reaches the track's end at `total - 1`. Fed the raw offset, the last one
+    // lands a viewport short of the end, so the bar promises content that is not
+    // there while the reader sits on the last row. Map one space onto the other
+    // (the log renderer does the same for the same reason — `render/log.rs`).
+    let max_offset = total.saturating_sub(viewport);
+    let position = offset
+        .min(max_offset)
+        .saturating_mul(total.saturating_sub(1))
+        .checked_div(max_offset)
+        .unwrap_or(0);
     let scrollbar =
         Scrollbar::default().orientation(ratatui::widgets::ScrollbarOrientation::VerticalRight);
     let mut state = ScrollbarState::new(total)
         .viewport_content_length(viewport)
-        .position(offset);
+        .position(position);
     frame.render_stateful_widget(scrollbar, popup_area, &mut state);
 }
 
@@ -154,19 +171,7 @@ pub fn render_popup_scrollbar(
 const COPY_HINT_KEY: &str = "y";
 
 /// The close affordance drawn at the end of a chrome popup's title row.
-///
-/// One definition, two consumers: the chrome that draws it and
-/// [`title_close_suffix_width`], which `subagent_popup` uses to reserve room
-/// for it before truncating a long title. They used to spell `"[x]"` twice and
-/// could silently drift, clipping or over-truncating the title row.
 pub const POPUP_CLOSE_MARKER: &str = "[x]";
-
-/// Display width of the title-row close affordance — the separating space plus
-/// [`POPUP_CLOSE_MARKER`], i.e. what `render_popup_chrome` appends after the
-/// caller's title.
-pub fn title_close_suffix_width() -> usize {
-    1 + UnicodeWidthStr::width(POPUP_CLOSE_MARKER)
-}
 
 /// RN-style popup chrome: Clear + styled border block + title row + optional footer.
 ///
@@ -266,16 +271,38 @@ mod tests {
         assert_eq!(popup.y, 14);
     }
 
-    /// The chrome draws `" "` + [`POPUP_CLOSE_MARKER`], and `subagent_popup`
-    /// reserves [`title_close_suffix_width`] for it. If either side grows the
-    /// suffix without the other, the subagent title row clips or over-truncates:
-    /// this is the test that fails first.
+    /// The bar is handed a *scroll offset*, not a row index. ratatui's scrollbar
+    /// only puts the thumb against the track's end at `content_length - 1`, so a
+    /// raw offset leaves the thumb one viewport short: the reader sits on the last
+    /// row while the bar says there is more.
     #[test]
-    fn title_close_suffix_width_matches_what_the_chrome_draws() {
-        let drawn = format!(" {POPUP_CLOSE_MARKER}");
+    fn the_thumb_reaches_the_track_end_at_the_last_offset() {
+        use ratatui::{Terminal, backend::TestBackend};
+
+        let area = Rect::new(0, 0, 1, 20);
+        let (total, viewport) = (120usize, 20usize);
+
+        let thumb_bottom = |offset: usize| {
+            let backend = TestBackend::new(area.width, area.height);
+            let mut terminal = Terminal::new(backend).expect("terminal");
+            terminal
+                .draw(|frame| render_popup_scrollbar(frame, area, total, viewport, offset))
+                .expect("draw");
+            let buf = terminal.backend().buffer();
+            (0..area.height).rfind(|y| buf[(0, *y)].symbol() == "█")
+        };
+
+        // `▲`/`▼` own the first and last rows, so a flush thumb ends one row
+        // above the bottom.
         assert_eq!(
-            title_close_suffix_width(),
-            UnicodeWidthStr::width(drawn.as_str())
+            thumb_bottom(total - viewport),
+            Some(area.height - 2),
+            "the last offset must put the thumb flush against the end"
+        );
+        assert!(
+            thumb_bottom(0).is_some_and(|bottom| bottom < 5),
+            "the first offset starts at the top: {:?}",
+            thumb_bottom(0)
         );
     }
 }

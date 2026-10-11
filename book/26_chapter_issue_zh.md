@@ -4,6 +4,91 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — subagent 从弹窗改成「视图」：主区域整块换、面包屑退层、被封顶的块自己就是展开键
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature（用户可见：点 `spawn_subagent` 卡不再是盖在日志上的居中弹窗，而是主区域整块换成子会话；`Esc` 或点面包屑退回；工具块底部那行 `⋯ N more lines` 本身可点，把**那一块**的 8 行上限提到 50；`Enter` 是「全部展开 / 全部收起」的批量键） |
+| **Related** | `crates/tui/src/render/popups/subagent_popup.rs`（视图外壳）、`crates/tui/src/render/layout.rs`、`crates/tui/src/widgets/state/app/popups.rs`、`crates/tui/src/handlers/{normal,mouse}.rs`、`crates/agent_tui_kit/src/render/popups/subagent_popup.rs`（`render_subagent_body` / `expanded_steps`）、`crates/agent_tui_kit/src/render/popups/mod.rs`（`PopupMouseSurface::block_toggles`）、`crates/agent_tui_kit/src/state/mouse_state.rs`（`subagent_back_area` / `subagent_block_toggles`）、`crates/agent_tui_kit/src/i18n.rs`；设计稿 `docs/design/subagent-presentation.html` / `subagent-oss-comparison.html`、spec `docs/superpowers/specs/2026-10-10-subagent-popup-redesign-design.md` |
+
+**现象 / 动机：** 上一版把子会话**渲染**对了，但**容器**错了。弹窗里工具块只能画成自包含块（`[ Open ]` 是死按钮——弹窗套弹窗正是这个表面唯一不能提供的），而块又把输出封顶 8 行；子 agent 跑的是完整 agent loop（实测 34 步、思考 `1/160 lines`），读者能看到的却是一列被截断的摘要。调研三个开源项目（Crush 树形内联 / OpenCode `/subagents` 面板 + 子会话视图 / Roo Code LIFO 视图）后定案：**交互可以借，容器不能借** —— overlay 盖**视图**是正常分层，盖**弹窗**才是套娃。
+
+**决策：**
+
+- **视图而不是弹窗。** `show_subagent_view` 让 `render_main_area` 走 `render_subagent_view`（优先于 sticky / log），布局 = 1 行面包屑 `‹ N. Subagent · 标题` + 可滚动 body + 最右 1 列 scrollbar。子代理从 `has_overlay_popup` / `overlay_scroll_mut` / `close_overlay_popup` / 底部 overlay 列表里**彻底摘除**——它不再是 overlay，只是另一种主区域形态。
+- **旧 overlay 渲染器退役。** `agent_tui_kit::render::popups::subagent_popup` 只留 `render_subagent_body`（无 chrome、无 scrollbar）；chrome 版 `render_subagent_popup` 与只服务它的 `title_close_suffix_width` 一并删除（零调用者）。
+- **面包屑就是返回键的鼠标面。** 整行是命中区（`MouseState::subagent_back_area`；2 格的 `‹` 不是可点的目标），点击与 `Esc` 同义；关闭时必须清矩形，否则下一帧点到的是陈旧矩形。
+- **展开是「每块」，而且那行计数本身就是按钮。** 块底部原本只写 `⋯ 12 more lines`；现在它是 `⋯ 12 more lines · ▾ expand`，**点它就是展开这一块**，展开后同一行变成 `▴ collapse`（若 50 行的上限仍截掉了内容，把计数附在后面）。粒度必须是每块：34 步的子会话里「全部展开」会把读者要找的那段对话埋掉。状态是 `SubagentPopup::expanded_steps: HashSet<step_id>`，渲染器把每行 toggle 的屏幕矩形随 `PopupMouseSurface::block_toggles` 交回 host（`MouseState::subagent_block_toggles`），host 命中即 `toggle_subagent_step_expanded`。
+- **`Enter` 保留为批量键**（全部展开 / 全部收起），提示词因此写成 `Enter expand all` / `Enter collapse all`——视图没有 footer（它不是弹窗），面包屑行右侧是唯一能广告真键位的地方；窄终端先丢提示，不先丢标题。
+- **50 行是安全上限而非「全给」**（`POPUP_TOOL_EXPANDED_LINES`）：`grep -r` 的 dump 可以几万行，而布局是整块重建的。取哪一端不变（普通输出取头、command 取尾）。
+- **滚动条要先把「滚动偏移」映射成「行号」。** `render_popup_scrollbar` 的调用方手里是偏移（`0..=total - viewport`），而 ratatui 的 `ScrollbarState::position` 是 `0..total` 的**行号**，拇指只有到 `total - 1` 才贴底。透传的后果就是 Rg 截图那一幕：内容已经到最后一行，拇指还差约一个视口才到底（所有弹窗共用这个 helper，所以 thinking/diff/code 也一样）。现在按 `offset * (total-1) / (total-viewport)` 映射——日志渲染器早就在做同一件事。
+- **钳制要写回状态，不能只在绘制时钳。** `G` 把 `scroll` 停在 `u16::MAX`；渲染器只在局部 `min(max_scroll)` 的话，下一次 `k` 会从 65535 往回滚，视图看起来卡死。视图现在在 prepare 阶段把钳制后的值写回 `SubagentPopup::scroll`（日志的做法是 `log_scroll.visual_top = visual_scroll`）。
+- **视图里凡是能读的文字都能选**（Rg：「其他区域的文字也要支持文本选择」）。原先只有 `Text` 段（提示词 / 助手文本 / Info / Error）可拖选，工具块与思考块只能整段 `y` 复制。现在块的行也按 `display_row_from_line` 构建：rail 是**有格无字节**（拖动经过它选不到东西，高亮从正文开始），copy 缓冲由行**自己按顺序追加**（所以每行的字节范围是构造出来的、绝对精确，不用从画出来的字形反推），`BlockCell` 走 `spans(selection)` 上 `REVERSED`。块的 copy 文本形状不变（`标题\n状态行\n输出行`；思考块只有推理正文，不含 `🧠 Thought` 标题）。
+- **运行中的阶段行会转**（Rg：「这个状态加点动画，因为还在运行中」）。布局里**烤进去**的是语义标记 `●`（copy 缓冲里也是它），绘制时只把**那一个格子**换成 `TOOL_RUNNING_SPINNER[spinner_frame % len]`（`BlockRow::spinner` 记列号）。**不能在布局里做动画**：body 是整块缓存 + 整块重建的，为了动一个字形每帧重排整条子会话是灾难。日志的活卡片是同一个套路（把 spinner 传给每帧现构的 cell）。
+
+**改后行为：** 点 `spawn_subagent` 卡 → 主区域变成子会话：面包屑 + 运行身份行 + 提示词（Markdown 渲染）+ 助手文本 + 思考块 + 自包含工具块。`j/k`、`g/G`、滚轮滚动；拖选 + `y` 复制；**点某个块底部的 `⋯ N more lines · ▾ expand` 只展开那一块**，再点同一行的 `▴ collapse` 收起；`Enter` 全部展开 / 收起；`Esc` 或点面包屑退回。视图是**看**的地方，输入框不参与。
+
+**Verification：** `./scripts/check-rust.sh` 全绿（fmt + clippy `-D warnings` + 四包；kit 403，tui 680）。用例：kit（`the_overflow_row_is_the_toggle` 三种状态的行文与计数、`only_the_clicked_block_is_expanded` 两块只展开一块、`flipping_expansion_rebuilds_the_layout` 计数器是缓存键、`a_thinking_block_row_covers_the_reasoning_not_the_label` 标签是 chrome、正文才是内容、`the_thumb_reaches_the_track_end_at_the_last_offset` 滚动条到底）、tui（`clicking_a_block_overflow_row_expands_that_block` 点一次展开、再点收起，`dragging_over_a_block_row_selects_its_text` 拖块选中输出、`a_selection_over_a_tool_block_highlights_its_text` / `a_selection_over_a_later_text_segment_highlights_it` 高亮、`subagent_view_reports_the_overflow_row_as_a_click_target` 矩形必须落在它描述的那一行上、`the_view_scrollbar_reaches_the_bottom_at_the_tail`、`the_view_writes_the_clamped_scroll_back`、面包屑提示随状态翻转、窄终端先丢提示、面包屑行空白格带 `theme.bg`、`Enter` 在视图里不落到输入框、点面包屑关闭而点 body 不关闭）。滚动条与高亮那三条**反向验证过**：把映射改回直接透传 `offset`，kit 那条 `left: Some(16) right: Some(18)`、tui 那条 `left: Some(8) right: Some(14)`（16 行终端里差 6 行）；把 `segment_selection` 改回「减段起点」，`a_selection_over_a_later_text_segment_highlights_it` 立刻红。
+
+**踩坑（值得记）：**
+
+- **半成品比没开工更贵。** 接手时 `expanded` 只落了一半：字段与渲染分档都在，构造点没补（5 个 E0063）、非 command 分支忘了用 `cap`、`cargo fmt` 也红。整棵树的「当前进度」只能靠 `cargo check` 报错来读——所以要么一次落完，要么先不留字段。
+- **布局缓存键用计数器，不用集合。** `expanded_steps` 改了但 `expanded_rev` 没跟着 +1，屏幕上的 body 就还是点击前那一个（`is_valid` 只比 `u64`）。这条有测试钉住：只改集合不 bump，`total_rows` 必须不变。
+- 视图的键处理必须**在 `handle_normal_mode` 最前面 return**：`Enter` 在普通模式下是「聚焦输入框」，分支晚一步就会既展开又抢焦点。
+- 视图的鼠标面要**三类矩形**：整块主区域（`SurfaceId::SubagentPopup`）、面包屑那一行（`subagent_back_area`，返回）、每个块的 toggle 行（`subagent_block_toggles`）。body 是文本选择面；toggle 行必须在选择之前命中，否则点击会变成开始拖选。
+- toggle 行的屏幕矩形要**和行本身用同一个 viewport 裁剪**（`vis < scroll || vis >= scroll + height` 就丢），否则滚动后点到的是屏幕外的行。
+- **选择是全局字节空间，行命中的字节也必须是全局的。** `local_selection` 曾经把范围**减去段的起点**再交给 `DisplayRow::spans`，于是除第一段以外的高亮全部消失——第一段的 `bytes.start` 恰好是 0，所以看着一直是对的。`y` 复制仍然正确（复制切的是 `selection_text` 的全局范围），**只有高亮不见了**，读起来就是「这段文字不能选」。改名 `segment_selection`（只求交集，不减）。
+- 让块行可选时，**字节范围要在构造时确定，不要从画出来的字形反推**：`wrap_line` 会把一行切成多个视觉行，事后按字形长度累加迟早会因为一处裁剪/丢空格而错位。现在 copy 缓冲由每个 copy 行**自己追加**（行间 `\n`、块间空行），行的范围就是它写入的位置。
+- **缓存的布局里不能藏动画**：`spinner_frame` 是单调 tick，而 body 只在 revision/宽度/主题/展开状态变化时重建——把帧号掺进缓存键等于每帧重排整条子会话。做法是**画的时候改一个格子**（`BlockCell` 里 `cell.set_symbol`），语义文本保持 `●`，copy 缓冲与字节范围都不动。
+- 动画只在**父级非 Idle/Done** 时前进（`lib.rs` 的 tick 条件）：前台子 agent（父级 `Executing`）会转；**后台子 agent**（`run_in_background`，父级可能已 Idle）不会自己转，只在新 transcript 到达触发重绘时跳一格。日志里的活卡片一直是这样，要改就得让 tick 也看「有没有子代理在跑」。
+
+**Pointers:** `docs/design/subagent-presentation.html`（三种容器的取舍 + 已落地的块形态）、`subagent-oss-comparison.html`（四家对照）、spec §8 / §9、Ch 12 §1「TUI 通道」行、Ch 23 组件表。
+
+---
+
+## 1. 2026-10-10 — subagent 弹窗重绘：结构由子 agent 的结构化更新驱动，与主日志共用渲染单元
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature（用户可见：subagent 弹窗不再是压平的纯文本——工具调用/思考/助手文本各按主日志的卡片渲染；运行中与完成后**同一套排版**，结束时不再重排） |
+| **Related** | `crates/protocol/src/subagent_transcript.rs`（新）、`crates/protocol/src/agent.rs`（`AgentUpdate::ToolTranscript`）、`crates/tact/src/tool/subagent_ui.rs`、`crates/agent_tui_kit/src/components/tool.rs`、`crates/agent_tui_kit/src/state/tool_state.rs`、`crates/agent_tui_kit/src/render/popups/subagent_popup.rs`、`crates/tui/src/render/popups/subagent_popup.rs`、`crates/tui/src/widgets/state/app/popups.rs`；设计稿 `docs/design/subagent-popup.html`、spec `docs/superpowers/specs/2026-10-10-subagent-popup-redesign-design.md` |
+
+**现象 / 动机：** 子 agent 的会话在转发层（`tool/subagent_ui.rs`）就被压成一坨文本——工具调用是 `→ name args`、结果是 `✓ message`、失败是 `✗ error`、思考是 `🧠 Thinking\n\n<全文>`，全靠 emoji 前缀区分，**结构在进 UI 之前就丢了**。弹窗只能从 `live_output.full_detail_text()`（运行中）或 `detail_full`（完成后）取这坨文本再渲染，于是：
+
+- 运行中是纯文本、全部 `theme.fg`，Markdown 源码原样显示（`**$78,629**` 带星号）；完成时整段过一遍 Markdown——**同一段话在结束的瞬间重排**，滚动位置跟着跳。
+- 工具名/参数/结果/耗时没有分层，分不出「参数」和「结果」；`read_file` 与 `bash` 长得一模一样。
+- `"Prompt:\n{p}\n\n"` 的单个 `\n` 在 Markdown 里是软换行 → **`Prompt:` 和提示词粘成一行**（只在完成态出现）。
+- 模型/token/耗时/child id/终态在弹窗里看不到（它们只到了卡片头的 `ToolMeta`）。
+
+**决策：**
+
+- **新增结构化通道，而不是从文本反推结构。** `AgentUpdate::ToolTranscript { tool_id, entry }`，`entry` = `Assistant` / `Thinking` / `Step` / `Info` / `Error`。转发器已经在 match 每一个事件，改动只是**在既有分支里多发一条**：连续 `StreamChunk` 合并成一条 `Assistant`（否则每批 token 一个 Markdown 块）、`Thinking` 带 Started→Finished 的实测耗时（卡片的 `⏱` 读数只有这里知道）、`Step` 的 Started/Finished 两半共用子 agent 本地的 `tool_id`（UI 侧就地改写同一张卡，和主日志的 `ActiveToolBlock → ToolBlock` 同构）。
+- **扁平文本保留。** 卡片那 8 行 live 预览（`ToolWidget::with_live_output`）与 `y` 复制的兜底仍读它；它的角色从「弹窗的数据源」降级为「卡片预览 + 复制兜底」。
+- **transcript 存 `ToolState::transcripts`（key = 父级 tool_id），不放进 `ToolRenderOutput`** ——日志渲染器每帧 `output.clone()`，塞进去就是每帧复制整条会话。它在卡片终结后仍然保留（已结束的子 agent 弹窗可以重开）。
+- **弹窗按「段」构建**：`Meta`（运行身份行）/ `Text`（提示词、助手 Markdown、Info、Error）/ `Thinking`（`ThinkingCell`）/ `Tool`（`ToolCell`），每段记 `vis_start` + 高度，丢进现成的 `LogColumnRenderer::with_viewport` 做裁剪。工具卡走 `ToolWidget::from_step_result` → `ToolCell`，所以 visual kind 与主日志同源（bash 命令卡、`read_file` 读取卡、`write/edit` diff 卡）。
+- **live 与完成同一套排版。** 删掉 prepare 里的 `is_live` 分支；布局缓存的键从「文本长度」换成 transcript 的 `revision`（只在追加时 +1），所以帧间不重排，结束时只有 meta 行的状态词变化。
+- **折叠卡在弹窗里展开**（`POPUP_TOOL_PREVIEW_LINES = 8`）。主日志把完成的 `read_file`/`bash`/写盘折叠成 2 行是因为流里没地方放输出；弹窗**就是读输出的地方**，所以把 `detail_collapsed` 还原成真卡片。
+- 选择：可选中文本 = 各文本段按顺序拼接，段记自己的字节区间，`DisplayRow` 的偏移是**全局**的，所以弹窗那一个选区能直接和任意段比较；卡片行不可选（与主日志一致，日志里 `ToolCell` 也不是选择目标）。
+- **提示词按 Markdown 渲染**（第一版是纯文本，实机一看就退回来了）：主日志把**人打的** user 行画成纯文本，但子 agent 的提示词是**父级生成的简报**——标题、编号清单、粗体引导语。照原样显示 `##` / `**`，弹窗里读者一定会看到的那一段看起来就是坏的（Rg 直接截图问「markdown 没渲染，是还没结束吗」）。`💬 ` 标记同时进选中文本与首行（字节数相同），所以选区偏移仍然对得上。
+
+**改后行为：** 弹窗顶部一行运行身份（`🤖 model · ⚡ N tok · ⏱ … · ● running`），下面是提示词 + 助手 Markdown（**运行中就渲染**）+ 思考卡 + 工具卡；`j/k`、`g/G`、拖选 + `y`、`Esc` 不变。
+
+**Verification：** `cargo test -p agent_tui_kit`（393，含 8 条弹窗布局用例：段序/连续/两态同构/同 id 一卡/缓存失效/折叠展开/选区映射/全局偏移）、`cargo test -p tui --lib subagent`（含 3 条缓冲区级：卡片与渲染后的 Markdown 上屏、空白格携带 `theme.bg`、hit row 在屏序内）、`cargo test -p tact --lib subagent_ui`（19，含 5 条结构化用例：chunk 合并、两半同 id、失败步补全、思考耗时、**脱敏**）。门全绿。
+
+**踩坑（值得记）：**
+
+- **结构化通道必须过 redactor。** 扁平流由 `ToolProgressReporter::report` 脱敏，而 transcript 走的是另一条 `inner` 通道——不过一遍就等于把扁平流已经抹掉的密钥重新放进弹窗。修法是每个文本字段都过 `ToolProgressReporter::redact_text`（整段文本的**无状态**脱敏，与流式那半不共享缓冲），并加了一条用 `sk-…` 钉住的用例。**加一条新的 UI 数据通道时，先问它有没有绕开脱敏。**
+- `StepFailed` 不携带 tool_name / presentation（主 TUI 从活跃卡里取），所以转发器要记住 `StepStarted` 那一半，失败时补全，否则失败卡没有名字。
+- **`Paragraph` 会把宽字形（emoji / CJK）后面那一格 `reset`，而且 ratatui 的 buffer diff 故意跳过那一格**（终端用字形自身画满两格，见 `Buffer::diff` 的 "double width symbol at index 0 - skip index 1"）。后果：缓冲区测试里那一格的背景永远是 `Reset`，看起来像「空白格丢了背景」。**这不是渲染单元的 bug**——为此写的「扫描 Reset 再补背景」是死代码（那一格根本不会被 emit），已删；测试改为跳过紧跟宽字形的那一格。
+- 卡片步骤号不能取 transcript 的 entry index（思考/助手也是 entry），否则子 agent 的第一次工具调用会显示成 `4.`；用独立的 step 计数器。
+- `crates/tui/src/widgets/state/app/agent.rs` 的 `shell_handle` 对 `AgentUpdate` 是**穷尽 match（无通配）**，加 variant 必须在那里补一支（编译器会指出来）。
+
+**未做（阶段 2）：** 弹窗内卡片/思考卡的 `[ Open ]` 目前渲染出来但**没接路由**（点击无反应）——嵌套详情弹窗需要弹窗自己返回命中矩形并让 host 路由，留作下一步。spec 里已列为阶段 2。
+
+**Pointers:** `docs/design/subagent-popup.html`（可视稿：现状 vs 重绘、消息→渲染单元对照表）、`docs/superpowers/specs/2026-10-10-subagent-popup-redesign-design.md`、Ch 12 §1「TUI 通道」行、Ch 25 `AgentUpdate` 枚举。
+
+---
+
 ## 1. 2026-10-10 — 发版 v1.1.38：清单版本 1.1.37 → 1.1.38，与本次的权限弹窗改动一起进 PR
 
 | Field | Value |
