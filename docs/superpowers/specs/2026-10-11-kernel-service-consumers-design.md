@@ -22,8 +22,8 @@ consumer is faked for them, because the honest consumer does not exist yet.
 | `storage.get` / `storage.set` | reserved (reachable with a grant) | a plugin host managing its own `plugins/<id>` namespace |
 | `events.subscribe` / `events.publish` | reserved (reachable with a grant) | a plugin host subscribing to the session stream |
 | `trajectory.read` / `trajectory.append_plugin_event` | reserved (reachable with a grant) | a plugin host / external View querying or appending history |
-| `permission.request` | reserved, fail-closed | a plugin host asking the host for a decision (fail-closed until a responder exists — a grant does not change that) |
-| `interaction.request` | reserved, fail-closed | a plugin host / View raising a prompt (fail-closed until a responder exists — a grant does not change that) |
+| `permission.request` | reserved; answered by the interactive host's broker, fail-closed otherwise (see *Update 3*) | a plugin host asking the host for a decision |
+| `interaction.request` | reserved; answered by the interactive host's broker, fail-closed otherwise (see *Update 3*) | a plugin host / View raising a prompt |
 
 Evidence for "no in-repo consumer is missing": the only code that invokes the
 eight `tact::services::register` capabilities is a test
@@ -109,8 +109,10 @@ named capability **on the serving router, as the plugin**:
   `Command` / `App` with its owner extension — so the per-capability verdicts
   above become *reachable on the ordinary permission path*: `storage.*`,
   `events.*`, `trajectory.*` and the Session extension's `sessions.*`;
-- `permission.request` / `interaction.request` stay fail-closed: the session's
-  policy is built without a responder, so the call is refused rather than hung;
+- `permission.request` / `interaction.request` stay fail-closed *in a policy built
+  without an interaction surface*, so the call is refused rather than hung. (The
+  interactive host now builds its policy *with* one — see *Update 3*; the
+  headless host keeps the shape described here);
 - `runs.start` / `runs.cancel` are `App` / `Command` on the serving router, so
   the kind check refuses them before anything else — and were they `Service`, the
   plugin's identity is not one of `HOST_CONTROL_PLANE_IDENTITIES`, so
@@ -126,6 +128,51 @@ See `docs/superpowers/specs/2026-10-11-hosted-runtime-plugins-design.md` § *Hos
 calls*, `crates/tact_plugin_host/src/runtime.rs::GrantedHostCalls`,
 `crates/tact_extensions/src/plugin/runtime.rs::host_call_policy`, and the policy
 tests in `crates/tact_plugin_host/tests/host_call_policy.rs`.
+
+## Update 3 — the interactive host installs the interaction broker (2026-10-11)
+
+The two rows above that read "fail-closed until a responder exists" now have
+that responder *in the interactive host*. The frontend creates a
+`tact::InteractionBroker`, `bootstrap_session` installs it as the session's
+interaction service **and** as the serving policy's `PermissionResponder`, and
+the driver routes `RuntimeCommand::RespondInteraction` to it before falling back
+to the in-process `UiResponder`. So on that host:
+
+- `interaction.request` is answered by whatever client is subscribed to the
+  broker;
+- `permission.request` is answered the same way — it asks the **permission**
+  service, not the interaction service, so the broker alone would not cover it;
+  the policy's responder is what makes the two capabilities symmetric;
+- `InteractionBroker::withdraw` lets a client abandon a prompt the waiting
+  invocation then sees as `PluginUnavailable` ("client disconnected"), and
+  `pending_count()` / `snapshot()` report what is still outstanding.
+
+`permission.request` is answered only where the capability's own permission
+*check* allows the call, because `CapabilityRouter::invoke` checks before it
+dispatches: in `default` (ask) mode a plugin-initiated `permission.request` is
+denied before its handler runs, so the broker is never asked. The responder
+answers the prompt the handler raises; it does not turn "ask" into "show a
+dialog". `interaction.request` has the same check and the same shape — in `ask`
+mode neither capability reaches its handler.
+
+Headless is unchanged and still fail-closed, deliberately: with no `UiWiring`,
+`build_serving_context` keeps the no-op interaction service and the policy keeps
+no responder, so both capabilities are refused rather than hung.
+
+Two limits are worth stating rather than implying:
+
+- **No shipped client subscribes to the broker yet.** The interactive host
+  installs one but the TUI is not a broker client: its popup reconciles from
+  `UiResponder::snapshot()` and is keyed by that responder's decimal `u64` id,
+  and it renders only the select family. So a Kernel prompt raised in an
+  interactive session is refused (`PluginUnavailable`, "no interaction client is
+  subscribed") — still fail-closed, no longer `PermissionDenied`. Turning broker
+  requests into the popup (arbitrary `RequestId`s plus the `Confirm` / `Input` /
+  `Permission` kinds) is the remaining View-adapter work, and it is what would
+  make `tact_extensions::ui_responder::UiResponder` the tool-prompt path alone.
+- **No production invocation carries a deadline**, so a *subscribed* client that
+  never answers leaves the invocation waiting until the run is cancelled or the
+  process exits. That is the §7 timeout gap, not a property of this wiring.
 
 ## Verification
 

@@ -85,6 +85,23 @@ impl InteractionBroker {
         sender.is_some_and(|sender| sender.send(response).is_ok())
     }
 
+    /// Abandons an outstanding interaction without answering it.
+    ///
+    /// Because the pending entry owns the oneshot, dropping it *is* the
+    /// resolution: the waiting invocation's receiver resolves to `Err`, which
+    /// [`InteractionService::request`] maps to a `PluginUnavailable`
+    /// ("client disconnected"). So a caller that can no longer ask — the popup
+    /// closed, the View went away — fails the invocation instead of leaving it
+    /// waiting on a question nobody will answer. `false` means there was
+    /// nothing to withdraw (already answered, already withdrawn, or stale).
+    pub fn withdraw(&self, request_id: &RequestId) -> bool {
+        self.pending
+            .lock()
+            .ok()
+            .and_then(|mut pending| pending.remove(request_id))
+            .is_some()
+    }
+
     /// Ordered snapshot of the requests still waiting for an answer.
     ///
     /// This is the authoritative source a client reconciles from: a lost

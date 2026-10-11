@@ -308,8 +308,9 @@ mod tests {
             &store,
             &transport,
             Arc::new(tact_trajectory::KernelTrajectoryRecorder::default()),
-            crate::permission::serving_permission(PermissionMode::Auto, settings)
+            crate::permission::serving_permission(PermissionMode::Auto, settings, None)
                 .expect("serving policy"),
+            None,
             &Notices::Stderr,
         )
         .await;

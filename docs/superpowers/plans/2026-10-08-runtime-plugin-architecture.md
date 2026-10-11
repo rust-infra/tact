@@ -21,7 +21,7 @@ check the evidence before relying on one.
 |---|---|---|
 | 2/5 | Kernel services reachable | `tact::services::register` has **zero callers**; the 12 §4 service capabilities (`storage.*`, `events.*`, `trajectory.*`, `permission.request`, `interaction.request`) are unreachable in the shipping binary |
 | 6 | "Implement lifecycle events and health state transitions" | `RuntimeEvent::PluginStarted/Stopped` have **no producer**; `PluginRegistry::{discover,restart,health,health_all,unregister}` have no production caller |
-| 9 | "Convert select, multi-select, confirm, input, permission, popup, stream, and completion flows to neutral interactions" | production interaction is still `tact_extensions::ui_responder::UiResponder`; the Kernel `InteractionBroker` is test-only and cannot back the prompt path as-is (no `withdraw`; `InteractionService::request` requires an `InvocationContext` the prompt sites do not have); `InteractionRequest::{Permission,Confirm,Input}` are never constructed in production |
+| 9 | "Convert select, multi-select, confirm, input, permission, popup, stream, and completion flows to neutral interactions" | production interaction is still `tact_extensions::ui_responder::UiResponder` and the prompt sites still do not have an `InvocationContext`; `InteractionRequest::{Permission,Confirm,Input}` are never constructed in production. **Partly corrected 2026-10-11**: the Kernel `InteractionBroker` is no longer test-only (`withdraw` exists, the interactive host installs it and the driver answers through it — see the progress note below), but it backs the *capability* surface, not the prompt sites |
 | — | §7 "timeout" fact | unreachable, not merely unwired: no production invocation sets a deadline (`InvocationContext::with_timeout` is test-only), so `TimedOut`/`TrajectoryEventType::Timeout` can never fire. Provider timeouts appear as `Retry`/`Recovery` facts |
 | 10 | "Register built-in extensions through PluginRegistry and CapabilityRouter" | only the **manifests** register (`register_official_manifests`); `AgentExtension`/`SessionExtension`/`WorkflowExtension::register` are test-only; `Agent::runtime_plugins` is written and never read |
 | 11 | "a fixture plugin registers Chat, starts a run, subscribes to events, answers an interaction" | the fixture fabricates all three inside `index.mjs`; the host has no event transport or interaction broker; `runs.start` is never invoked from the Node path |
@@ -57,7 +57,20 @@ host calls stay denied, so the Kernel services stay reserved, and a hosted
 capability is not yet a model-visible tool. Still open: 10
 of the 12 service capabilities have no invoking caller, and nothing reads
 extension state back (no health surface). The submit paths are
-all routed; `ARCHITECTURE.md` §15 lists what remains unconsumed.
+all routed; `ARCHITECTURE.md` §15 lists what remains unconsumed. **The
+interaction surface is now live too**: the interactive host creates a
+`tact::InteractionBroker`, `bootstrap_session` installs it as the session's
+interaction service *and* as the serving policy's permission responder (so
+`interaction.request` and `permission.request` are answerable through the same
+broker, and the broker gained the `withdraw` the old note asked for), and the
+driver routes `RuntimeCommand::RespondInteraction` into it before the local
+`UiResponder`; headless stays fail-closed by design. What that slice does not do
+is convert the *prompt* sites — the TUI popup still reconciles from
+`UiResponder::snapshot()` with decimal ids and renders only the select family,
+so nothing subscribes to the broker yet and a Kernel prompt is refused rather
+than displayed (spec
+`docs/superpowers/specs/2026-10-11-kernel-service-consumers-design.md`
+§ *Update 3*).
 
 Verification note (2026-10-10): the `tact_ui` integration suites now attach a
 serving context, so 10 of the 12 of them drive the **production** run path

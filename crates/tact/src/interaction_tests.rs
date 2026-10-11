@@ -146,3 +146,54 @@ async fn snapshot_exposes_pending_requests_until_answered() {
         .unwrap();
     assert!(broker.snapshot().is_empty());
 }
+
+/// A client that can no longer ask must be able to abandon the prompt: the
+/// waiter is unblocked, the pending entry is gone, and a later response with the
+/// same id is a no-op rather than a resurrection.
+#[tokio::test]
+async fn withdraw_unblocks_the_waiter_and_clears_the_pending_entry() {
+    let broker = InteractionBroker::new(4);
+    let mut subscription = broker.subscribe();
+    let runtime = runtime();
+    let request_id = RequestId::from("interaction-withdraw");
+    let context = runtime.invocation(request_id.clone(), PluginId::from("tact.chat"), "test");
+    let request_task = tokio::spawn({
+        let broker = broker.clone();
+        let request_id = request_id.clone();
+        async move {
+            broker
+                .request(
+                    InteractionRequest::Confirm {
+                        request_id,
+                        prompt: "Continue?".into(),
+                    },
+                    &context,
+                )
+                .await
+        }
+    });
+
+    timeout(Duration::from_millis(200), subscription.recv())
+        .await
+        .expect("request timed out")
+        .unwrap();
+    assert_eq!(broker.pending_count(), 1);
+
+    assert!(broker.withdraw(&request_id));
+    // The waiter sees a closed channel, not an answer: dropping the sender is
+    // how the invocation learns the client went away.
+    let error = timeout(Duration::from_millis(200), request_task)
+        .await
+        .expect("a withdrawn request must not leave the waiter hanging")
+        .unwrap()
+        .unwrap_err();
+    assert_eq!(
+        error.category(),
+        tact_protocol::ErrorCategory::PluginUnavailable
+    );
+    assert_eq!(broker.pending_count(), 0);
+    assert!(broker.snapshot().is_empty());
+    // Nothing is pending for that id any more, and withdrawing it again says so.
+    assert!(!broker.withdraw(&request_id));
+    assert!(!broker.respond(InteractionResponse::Approved { request_id }));
+}

@@ -87,7 +87,7 @@ async fn build_test_serving_context(work_dir: &Path) -> tact::RuntimeContext {
         &work_dir.join("settings.json"),
         None,
     );
-    let policy = crate::permission::serving_permission(PermissionMode::Auto, settings)
+    let policy = crate::permission::serving_permission(PermissionMode::Auto, settings, None)
         .expect("serving policy");
     crate::session_bootstrap::build_serving_context(
         &db_path,
@@ -95,6 +95,7 @@ async fn build_test_serving_context(work_dir: &Path) -> tact::RuntimeContext {
         &transport,
         std::sync::Arc::new(tact_trajectory::KernelTrajectoryRecorder::default()),
         policy,
+        None,
         &crate::session_bootstrap::Notices::Stderr,
     )
     .await

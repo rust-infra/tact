@@ -58,10 +58,18 @@ async fn run_interactive_locked(
     let (plugin_event_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel();
     let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
     let runtime_events = tact::EventTransport::new(256);
-    // One broker is shared by the agent (registration/waiter) and the TUI
+    // The in-process prompt registry the tool and permission *prompts* are
+    // answered through, shared by the agent (registration/waiter) and the TUI
     // (snapshot/reconcile). This remains an in-process transport: no protocol
     // enum or channel type is embedded in `tact_protocol`.
     let ui_responder = tact_extensions::ui_responder::UiResponder::new();
+    // The Kernel's interaction surface. The serving context installs this
+    // broker (through the agent build below), and the driver holds another
+    // clone to route `RespondInteraction` into, so a response the TUI sends
+    // reaches the invocation waiting on `interaction.request` /
+    // `permission.request`. One broker, two halves of one id space — unlike the
+    // responder above, whose ids are this process's own.
+    let interaction = tact::InteractionBroker::new(64);
     let _plugin_worker = match tact_extensions::consts::PluginHome::from_environment() {
         Some(plugin_home) => {
             tact_extensions::plugin::spawn_worker(plugin_home, plugin_request_rx, plugin_event_tx)
@@ -205,8 +213,11 @@ async fn run_interactive_locked(
         agent_session_id,
         agent_session_store,
         work_dir,
-        ui_responder,
-        runtime_events.clone(),
+        UiWiring {
+            responder: ui_responder,
+            runtime_events: runtime_events.clone(),
+            interaction: interaction.clone(),
+        },
     ));
     let driver = tokio::select! {
         // `biased`, so a build that is *already* finished is always used: the
@@ -220,6 +231,7 @@ async fn run_interactive_locked(
                 user_cmd_rx,
                 image_work_dir,
                 Some(account_tx),
+                Some(interaction.clone()),
             ))),
             Err(err) => {
                 // Deliver the failure into the already-running TUI instead of
@@ -283,27 +295,23 @@ async fn run_interactive_locked(
 /// rather than propagated through the raw-mode boundary (see the caller). The
 /// steps themselves are shared with headless — see
 /// [`crate::session_bootstrap`]; this only says where their notices go and
-/// which channel the agent may talk back on.
+/// which protocol surfaces the session runs on, which is exactly [`UiWiring`].
 async fn build_agent_for_interactive(
     tact_path: TactPath,
     skill_registry: tact_extensions::skill::SharedSkillRegistry,
     session_id: String,
     session_store: DynSessionStore,
     work_dir: std::path::PathBuf,
-    ui_responder: tact_extensions::ui_responder::UiResponder,
-    runtime_events: tact::EventTransport,
+    ui: UiWiring,
 ) -> anyhow::Result<Agent> {
-    let notices = Notices::Ui(runtime_events.clone());
+    let notices = Notices::Ui(ui.runtime_events.clone());
     bootstrap_session(
         &tact_path,
         work_dir,
         skill_registry,
         session_id,
         session_store,
-        Some(UiWiring {
-            responder: ui_responder,
-            runtime_events,
-        }),
+        Some(ui),
         notices,
     )
     .await

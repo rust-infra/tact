@@ -14,7 +14,8 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tact::{InvocationContext, KernelError, PermissionService};
 use tact_extensions::permission::{
-    PermissionManager, PermissionManagerService, PermissionMode, settings::PermissionSettings,
+    PermissionManager, PermissionManagerService, PermissionMode, PermissionResponder,
+    settings::PermissionSettings,
 };
 use tact_protocol::{CapabilityDeclaration, InteractionRequest, InteractionResponse};
 
@@ -109,8 +110,12 @@ impl PermissionService for HostControlPlanePermission {
 ///   `trajectory.*` / `permission.request` / `interaction.request`, the
 ///   `sessions.*` extension, and any plugin capability — is decided by the same
 ///   configured policy the session's tools use. In `ask` mode that check fails
-///   closed, and that is the intended answer: there is no interactive responder
-///   for a plugin-initiated capability, so an unattended "ask" is a denial.
+///   closed, and that is the intended answer: a capability something else asked
+///   for is not a pending turn the user already approved, and an unattended
+///   "ask" is a denial. It is also why `permission.request` reaches its handler
+///   — and so the broker that answers its prompt — only where the check allows
+///   the call (Auto mode, or an explicit allow rule); the check is a decision,
+///   not a prompt, and the responder below does not change that.
 ///
 /// This is not a tool bypass. Tool capabilities never reach the serving router:
 /// the wave keeps its own router and its own preflight gate, so nothing here can
@@ -118,6 +123,29 @@ impl PermissionService for HostControlPlanePermission {
 struct ServingPermission {
     policy: PermissionManagerService,
     control_plane: HostControlPlanePermission,
+}
+
+/// Answers a `permission.request` capability through the session's Kernel
+/// interaction surface.
+///
+/// The Kernel's `permission.request` asks the **permission** service, not the
+/// interaction service, so installing a broker on the context is not enough to
+/// make it answerable. This is the join: the policy keeps deciding `check`,
+/// while the *prompt* the policy raises travels the same broker (and so reaches
+/// the same client) as every other interaction. A session whose policy has no
+/// broker keeps `PermissionManagerService`'s no-responder default, which denies
+/// rather than hangs.
+struct BrokerPermissionResponder(tact::InteractionBroker);
+
+#[async_trait]
+impl PermissionResponder for BrokerPermissionResponder {
+    async fn request(
+        &self,
+        request: InteractionRequest,
+        context: &InvocationContext,
+    ) -> Result<InteractionResponse, KernelError> {
+        tact::InteractionService::request(&self.0, request, context).await
+    }
 }
 
 #[async_trait]
@@ -138,9 +166,9 @@ impl PermissionService for ServingPermission {
 
     /// Answers a `permission.request` with the policy's own responder.
     ///
-    /// The session's policy is built without a responder, so this fails closed:
-    /// a capability that asks the *policy* for a decision gets an explicit
-    /// denial rather than a hang.
+    /// With no responder installed (a session that has no interaction broker)
+    /// this fails closed: a capability that asks the *policy* for a decision
+    /// gets an explicit denial rather than a hang.
     async fn request(
         &self,
         request: InteractionRequest,
@@ -155,13 +183,29 @@ impl PermissionService for ServingPermission {
 /// The settings are cloned rather than shared because the Agent's own
 /// [`PermissionManager`] owns its copy: a policy decision made here must be the
 /// same decision the session's tools would get, not a second, diverging one.
+///
+/// `interaction` is the session's Kernel interaction surface, when it has one:
+/// the broker becomes this policy's responder, so a `permission.request` that
+/// reaches its handler is answered by the same client that answers
+/// `interaction.request`. Only the *prompt* goes through it — the capability's
+/// own `check` still runs first and still denies in `ask` mode. A headless
+/// session passes `None`, which is what makes the capability fail closed there —
+/// there is no UI to ask.
 pub(crate) fn serving_permission(
     mode: PermissionMode,
     settings: PermissionSettings,
+    interaction: Option<tact::InteractionBroker>,
 ) -> anyhow::Result<Arc<dyn PermissionService>> {
     let manager = PermissionManager::try_new_with_settings(mode, settings)?;
+    let policy = match interaction {
+        Some(broker) => PermissionManagerService::with_responder(
+            manager,
+            Arc::new(BrokerPermissionResponder(broker)),
+        ),
+        None => PermissionManagerService::new(manager),
+    };
     Ok(Arc::new(ServingPermission {
-        policy: PermissionManagerService::new(manager),
+        policy,
         control_plane: HostControlPlanePermission,
     }))
 }
@@ -305,7 +349,7 @@ mod tests {
         // cannot decide what this test asserts.
         let directory = tempfile::tempdir().expect("temp directory");
         let settings = PermissionSettings::load_from(&directory.path().join("settings.json"), None);
-        let policy = serving_permission(PermissionMode::Default, settings).expect("policy");
+        let policy = serving_permission(PermissionMode::Default, settings, None).expect("policy");
 
         policy
             .check(
@@ -342,7 +386,7 @@ mod tests {
         // mode's decision and not an unconditional refusal.
         let directory = tempfile::tempdir().expect("temp directory");
         let settings = PermissionSettings::load_from(&directory.path().join("settings.json"), None);
-        let policy = serving_permission(PermissionMode::Auto, settings).expect("policy");
+        let policy = serving_permission(PermissionMode::Auto, settings, None).expect("policy");
         policy
             .check(
                 &declaration("storage.set", CapabilityRisk::Medium),

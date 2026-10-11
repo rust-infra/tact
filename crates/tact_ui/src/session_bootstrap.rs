@@ -105,8 +105,23 @@ fn stderr_line(tag: &str, message: &str) -> String {
 
 /// The interactive frontend's protocol event and interaction services.
 pub struct UiWiring {
+    /// The in-process prompt registry the *tool* prompts are answered through.
+    /// It stays beside the broker rather than behind it: the tool and permission
+    /// prompt path is not the Kernel's interaction surface, and it keeps its own
+    /// responder by design (`crates/tact_extensions/src/ui_responder.rs`), so the
+    /// driver answers whichever of the two knows a response's request id.
     pub responder: UiResponder,
     pub runtime_events: tact::EventTransport,
+    /// The session's Kernel interaction surface.
+    ///
+    /// The frontend creates it and passes it in (rather than the bootstrap
+    /// creating one and handing it back) for two reasons: the process that owns
+    /// a UI is the thing that can answer through it, and a broker the caller
+    /// holds keeps `bootstrap_session`'s signature — and every existing
+    /// caller's — unchanged. A context that installs none
+    /// ([`build_serving_context`] with `None`, i.e. headless) keeps the no-op
+    /// service, so an interaction request there fails closed.
+    pub interaction: tact::InteractionBroker,
 }
 
 fn runtime_event_transport(ui: Option<&UiWiring>) -> tact::EventTransport {
@@ -177,10 +192,17 @@ async fn start_trajectory_recorder(
 ///   control plane — see [`crate::permission::serving_permission`].
 /// - `storage` is a second SQLite handle on the session database, so a plugin's
 ///   `plugins/<id>` namespace survives the process.
+/// - `interaction` is the session's Kernel interaction surface when the host
+///   has one. The interactive frontend supplies its broker, so
+///   `interaction.request` is answered by the process that owns the UI; headless
+///   passes `None` and keeps the no-op service, so the same call fails closed
+///   rather than waiting on a prompt nobody can answer.
 ///
-/// `interaction.request` / `permission.request` keep the default no-op
-/// interaction service: an unattended host has no one to prompt, so they fail
-/// closed rather than hanging on a request nobody can answer.
+/// `permission.request` is answered through the *permission* service, not this
+/// one, so installing a broker here does not cover it on its own: the session's
+/// policy is built with the same broker as its responder (see
+/// [`crate::permission::serving_permission`]). A context built with `None` gets
+/// neither, which is the fail-closed default for both capabilities.
 ///
 /// A failure at any step degrades to a notice — a serving context that is
 /// missing one capability must not stop the session from starting.
@@ -190,6 +212,7 @@ pub(crate) async fn build_serving_context(
     runtime_events: &tact::EventTransport,
     trajectory: Arc<dyn TrajectoryService>,
     permission: Arc<dyn tact::PermissionService>,
+    interaction: Option<Arc<dyn tact::InteractionService>>,
     notices: &Notices,
 ) -> tact::RuntimeContext {
     let storage: Arc<dyn tact::StorageService> =
@@ -201,12 +224,15 @@ pub(crate) async fn build_serving_context(
             }
         };
 
-    let services = tact::RuntimeServices::new(
+    let mut services = tact::RuntimeServices::new(
         Arc::new(runtime_events.clone()),
         trajectory,
         permission,
         storage,
     );
+    if let Some(interaction) = interaction {
+        services = services.with_interaction(interaction);
+    }
     let context = tact::RuntimeContext::with_services(tact::CapabilityRouter::new(), services);
     if let Err(error) = tact::services::register(context.router()) {
         notices.notice(
@@ -318,11 +344,18 @@ pub async fn bootstrap_session(
     let client = get_llm_client().await?;
     let mode = permission_mode_from_config();
     let settings = PermissionSettings::load(tact_path);
+    // The session's Kernel interaction surface, when this host has a UI. The
+    // same broker answers both Kernel prompt capabilities — `interaction.request`
+    // through the interaction service itself, `permission.request` through the
+    // policy's responder, because that capability asks the *permission* service.
+    // `None` (headless) leaves the no-op interaction service and the
+    // no-responder policy, which is the fail-closed default for both.
+    let interaction = ui.as_ref().map(|wiring| wiring.interaction.clone());
     // The serving context's policy is built from the same settings, so a
     // capability reaching the router is decided exactly as the session's tools
     // would be. `try_new_with_settings` takes the settings by value, hence the
     // clone.
-    let serving_policy = serving_permission(mode, settings.clone())?;
+    let serving_policy = serving_permission(mode, settings.clone(), interaction.clone())?;
     let permission_manager = PermissionManager::try_new_with_settings(mode, settings)?;
     notices.permission_mode(mode);
 
@@ -353,6 +386,7 @@ pub async fn bootstrap_session(
         &runtime_events,
         trajectory,
         serving_policy,
+        interaction.map(|broker| Arc::new(broker) as Arc<dyn tact::InteractionService>),
         &notices,
     )
     .await;
@@ -571,8 +605,9 @@ mod tests {
             &store,
             &transport,
             recorder,
-            crate::permission::serving_permission(PermissionMode::Auto, settings)
+            crate::permission::serving_permission(PermissionMode::Auto, settings, None)
                 .expect("serving policy"),
+            None,
             &Notices::Stderr,
         )
         .await;
@@ -721,6 +756,288 @@ mod tests {
         .await
         .expect("the trajectory recorder did not answer");
         assert_eq!(facts[0]["run_id"], json!(run_id.as_str()));
+    }
+
+    /// A production-shaped serving context: the bootstrap's own construction,
+    /// with the broker the interactive host installs and a policy for `mode`
+    /// that lets a plugin capability reach its handler.
+    ///
+    /// `Auto` mode is what makes most of these tests about *interaction* rather
+    /// than about permission: `permission.request` is checked before it runs,
+    /// and in `default` mode that check fails closed before the handler could
+    /// ask anyone (which a test of its own pins).
+    async fn serving_context_with_interaction(
+        directory: &Path,
+        mode: PermissionMode,
+        interaction: Option<tact::InteractionBroker>,
+    ) -> tact::RuntimeContext {
+        let db_path = directory.join("session.db");
+        let store = tact_extensions::store::open_sqlite_session_store(&db_path)
+            .await
+            .expect("session store");
+        let transport = tact::EventTransport::new(16);
+        let settings = PermissionSettings::load_from(&directory.join("settings.json"), None);
+        let policy = crate::permission::serving_permission(mode, settings, interaction.clone())
+            .expect("serving policy");
+        build_serving_context(
+            &db_path,
+            &store,
+            &transport,
+            Arc::new(tact_trajectory::KernelTrajectoryRecorder::default()),
+            policy,
+            interaction.map(|broker| Arc::new(broker) as Arc<dyn tact::InteractionService>),
+            &Notices::Stderr,
+        )
+        .await
+    }
+
+    fn plugin_invocation(
+        serving: &tact::RuntimeContext,
+        request_id: &str,
+    ) -> tact::InvocationContext {
+        serving.invocation(
+            tact_protocol::RequestId::from(request_id.to_string()),
+            tact_protocol::PluginId::from("demo.plugin"),
+            "interaction-test",
+        )
+    }
+
+    /// A plugin's `interaction.request`, on the context the bootstrap builds, is
+    /// answered by a client of the session's broker — the production path for a
+    /// hosted capability asking the user something.
+    #[tokio::test]
+    async fn the_serving_context_answers_an_interaction_request_through_the_broker() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let broker = tact::InteractionBroker::new(8);
+        let mut client = broker.subscribe();
+        let serving = serving_context_with_interaction(
+            directory.path(),
+            PermissionMode::Auto,
+            Some(broker.clone()),
+        )
+        .await;
+
+        let invoked = tokio::spawn({
+            let serving = serving.clone();
+            async move {
+                serving
+                    .router()
+                    .invoke(
+                        "interaction.request",
+                        plugin_invocation(&serving, "interaction-caller"),
+                        json!({
+                            "type": "confirm",
+                            "request_id": "interaction-1",
+                            "prompt": "Continue?",
+                        }),
+                    )
+                    .await
+            }
+        });
+
+        // The client is the View: it is handed the request over the broker's own
+        // stream, and the invoke returns exactly the response it sent back.
+        let delivered = tokio::time::timeout(Duration::from_secs(1), client.recv())
+            .await
+            .expect("the request was not published to the broker's client")
+            .expect("the client is subscribed");
+        assert!(
+            matches!(&delivered, tact_protocol::InteractionRequest::Confirm { request_id, .. }
+                if request_id.as_str() == "interaction-1"),
+            "{delivered:?}"
+        );
+        assert!(
+            broker.respond(tact_protocol::InteractionResponse::Approved {
+                request_id: tact_protocol::RequestId::from("interaction-1"),
+            })
+        );
+
+        let response = tokio::time::timeout(Duration::from_secs(1), invoked)
+            .await
+            .expect("interaction.request did not return")
+            .expect("invoke task")
+            .expect("the invoked request is answered");
+        let response: tact_protocol::InteractionResponse =
+            serde_json::from_value(response).expect("a serialized response");
+        assert!(matches!(
+            response,
+            tact_protocol::InteractionResponse::Approved { .. }
+        ));
+    }
+
+    /// With nobody to ask, the request fails closed instead of hanging.
+    ///
+    /// Two shapes, one answer. A headless context installs no broker at all, so
+    /// the no-op service refuses with `PermissionDenied` — the documented
+    /// default. An interactive context *with* a broker but no client subscribed
+    /// refuses in the broker: the request cannot even be published, so the call
+    /// errors rather than waiting for a response nobody can send. Both are
+    /// asserted under a timeout because the defect this pins is a hang, and a
+    /// hang has no assertion to fail.
+    #[tokio::test]
+    async fn an_unanswerable_interaction_request_fails_closed_instead_of_hanging() {
+        let headless_dir = tempfile::tempdir().expect("temp directory");
+        let headless =
+            serving_context_with_interaction(headless_dir.path(), PermissionMode::Auto, None).await;
+        let denied = tokio::time::timeout(
+            Duration::from_secs(1),
+            headless.router().invoke(
+                "interaction.request",
+                plugin_invocation(&headless, "headless-caller"),
+                json!({
+                    "type": "confirm",
+                    "request_id": "headless-1",
+                    "prompt": "Continue?",
+                }),
+            ),
+        )
+        .await
+        .expect("a headless interaction request must not hang")
+        .expect_err("a context with no interaction service refuses");
+        assert_eq!(
+            denied.category(),
+            tact_protocol::ErrorCategory::PermissionDenied
+        );
+
+        let interactive_dir = tempfile::tempdir().expect("temp directory");
+        let broker = tact::InteractionBroker::new(8);
+        let interactive = serving_context_with_interaction(
+            interactive_dir.path(),
+            PermissionMode::Auto,
+            Some(broker),
+        )
+        .await;
+        let unanswered = tokio::time::timeout(
+            Duration::from_secs(1),
+            interactive.router().invoke(
+                "interaction.request",
+                plugin_invocation(&interactive, "unheard-caller"),
+                json!({
+                    "type": "confirm",
+                    "request_id": "unheard-1",
+                    "prompt": "Anyone?",
+                }),
+            ),
+        )
+        .await
+        .expect("an interaction request with no client must not hang")
+        .expect_err("a broker with no subscriber refuses the request");
+        // The broker says why: nothing is subscribed to hear it. The category is
+        // not the point — that the call *returns* is.
+        assert_eq!(
+            unanswered.category(),
+            tact_protocol::ErrorCategory::PluginUnavailable
+        );
+    }
+
+    /// `permission.request` is answerable for the same reason: it asks the
+    /// *permission* service, so the bootstrapped policy is built with the
+    /// session's broker as its responder. Without that join a broker alone
+    /// would leave this capability failing closed while `interaction.request`
+    /// worked, which is exactly the asymmetry this test would catch.
+    #[tokio::test]
+    async fn the_serving_context_answers_a_permission_request_through_the_broker() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let broker = tact::InteractionBroker::new(8);
+        let mut client = broker.subscribe();
+        let serving = serving_context_with_interaction(
+            directory.path(),
+            PermissionMode::Auto,
+            Some(broker.clone()),
+        )
+        .await;
+
+        let invoked = tokio::spawn({
+            let serving = serving.clone();
+            async move {
+                serving
+                    .router()
+                    .invoke(
+                        "permission.request",
+                        plugin_invocation(&serving, "permission-caller"),
+                        json!({
+                            "type": "permission",
+                            "request_id": "permission-1",
+                            "capability": "filesystem.write",
+                            "reason": "Write generated output",
+                        }),
+                    )
+                    .await
+            }
+        });
+
+        let delivered = tokio::time::timeout(Duration::from_secs(1), client.recv())
+            .await
+            .expect("the permission prompt was not published to the broker's client")
+            .expect("the client is subscribed");
+        assert!(
+            matches!(&delivered, tact_protocol::InteractionRequest::Permission { request_id, .. }
+                if request_id.as_str() == "permission-1"),
+            "{delivered:?}"
+        );
+        assert!(
+            broker.respond(tact_protocol::InteractionResponse::Approved {
+                request_id: tact_protocol::RequestId::from("permission-1"),
+            })
+        );
+
+        let response = tokio::time::timeout(Duration::from_secs(1), invoked)
+            .await
+            .expect("permission.request did not return")
+            .expect("invoke task")
+            .expect("the invoked request is answered");
+        let response: tact_protocol::InteractionResponse =
+            serde_json::from_value(response).expect("a serialized response");
+        assert!(matches!(
+            response,
+            tact_protocol::InteractionResponse::Approved { .. }
+        ));
+    }
+
+    /// The one way this capability is *still* fail-closed in an interactive
+    /// session, pinned so it is a decision rather than a surprise: the
+    /// capability's own permission check runs **before** its handler, and in
+    /// `default` (ask) mode that check denies a plugin-initiated capability —
+    /// the responder answers the prompt the handler raises, it does not turn
+    /// "ask" into "show a dialog". So a broker answers `permission.request`
+    /// where the check allows the call (Auto, or an explicit allow rule) and the
+    /// prompt is refused otherwise, without ever reaching the broker.
+    #[tokio::test]
+    async fn permission_request_is_refused_by_its_own_check_before_the_broker_is_asked() {
+        let directory = tempfile::tempdir().expect("temp directory");
+        let broker = tact::InteractionBroker::new(8);
+        let serving = serving_context_with_interaction(
+            directory.path(),
+            PermissionMode::Default,
+            Some(broker.clone()),
+        )
+        .await;
+
+        let denied = tokio::time::timeout(
+            Duration::from_secs(1),
+            serving.router().invoke(
+                "permission.request",
+                plugin_invocation(&serving, "ask-mode-caller"),
+                json!({
+                    "type": "permission",
+                    "request_id": "ask-mode-1",
+                    "capability": "filesystem.write",
+                    "reason": "Write generated output",
+                }),
+            ),
+        )
+        .await
+        .expect("a denied permission.request must not hang")
+        .expect_err("ask mode refuses a plugin-initiated capability");
+        assert_eq!(
+            denied.category(),
+            tact_protocol::ErrorCategory::PermissionDenied
+        );
+        assert_eq!(
+            broker.pending_count(),
+            0,
+            "the check refuses the call before its handler can raise a prompt"
+        );
     }
 
     /// The UI path carries the finding and drops the tag.

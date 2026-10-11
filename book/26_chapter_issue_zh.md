@@ -4,6 +4,34 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — 交互面接入生产：交互式宿主安装 `InteractionBroker`，`interaction.request` / `permission.request` 不再恒为 fail-closed
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（行为变化：交互式宿主里两个内核提示能力的失败方式变了——有 broker 无客户端时是 `PluginUnavailable`，无 broker 的 headless 仍是 `PermissionDenied`；TUI 自身的工具 / 权限提示路径逐字不变） |
+| **Related** | `crates/tact/src/interaction.rs`（`InteractionBroker::withdraw`）、`crates/tact_ui/src/{interactive.rs,session_bootstrap.rs,permission.rs,driver.rs}` |
+
+**现象 / 动机：** 内核的交互面（`InteractionBroker` 实现 `InteractionService`：登记 pending → 发 `RuntimeEvent::InteractionRequested` → 等 oneshot）此前只在测试里存在：`build_serving_context` 装的是 `NoopInteractionService`，于是 §4 的 `interaction.request`、以及走**权限服务**而非交互服务的 `permission.request`，对任何调用者（含声明了 `runtime.grants` 的托管插件）恒为 fail-closed，属于「预留但无从应答」。同一时刻驱动侧还有半截断头：`RuntimeCommand::RespondInteraction` 只递给进程内 `UiResponder`，而它的 id 空间（十进制 `u64`）根本不是 broker 的（`RequestId`）。
+
+**决策与实现：**
+- **由调用方创建 broker 并传入**（`crates/tact_ui/src/interactive.rs`）：交互式前端 new 出 `tact::InteractionBroker`，经 `UiWiring.interaction` 交给 `bootstrap_session`；`build_serving_context` 多一个 `Option<Arc<dyn InteractionService>>` 参数，`Some` 时用 `RuntimeServices::with_interaction` 装上，`None`（headless）保持 no-op。选这种「调用方持有句柄」而不是类型擦除 + downcast：`respond` 是**客户端**的一半，不在中立的 `InteractionService` trait 上，而前端本来就是拥有 UI、能应答的那一方；同时 `bootstrap_session` 的签名与所有既有调用者都不用改。
+- **`permission.request` 走的是权限服务，不是交互服务**（实测确认）：handler 调 `context.permission().request(...)`，而 `ServingPermission` 此前把请求转给没有 responder 的 `PermissionManagerService`。因此只装 broker 不够，新增 `BrokerPermissionResponder` 适配器（`crates/tact_ui/src/permission.rs`），`serving_permission` 多收一个 `Option<InteractionBroker>`：有则 `PermissionManagerService::with_responder(manager, broker)`，无则保持旧默认。于是两个能力接的是同一个 broker、同一个客户端。
+- **驱动按 id 空间路由**（`crates/tact_ui/src/driver.rs`）：`RespondInteraction` 先给 broker（`InteractionBroker::respond -> bool`），返回 `false` 再退给 `ui_responder`。两套 id 并存是迁移中的事实——工具 / 权限**提示**仍走 `UiResponder`，所以不能删旧路径；「谁认得这个 id 谁应答」比在驱动里猜「这条响应来自哪种提示」更稳，也是回归防线（有 broker 但 id 不匹配时必须落到 responder，否则线上工具提示会全被 broker 吞掉，已有专门测试钉住）。
+- **`InteractionBroker::withdraw(&RequestId) -> bool`**：从 pending 表移除条目；pending 条目持有 oneshot sender，drop 就是「解析」——等待方看到 `Err(RecvError)`，被 `InteractionService::request` 映射成 `PluginUnavailable`（"client disconnected"），也就是客户端再也无法展示该提示时，调用方立刻失败而不是永远等下去。同一语义由 `PendingRequestGuard` 在 waiter 被 drop 时复用。
+- **拿不到的不再是静默 fail-closed**：交互式宿主装了 broker，但**目前没有任何 View 订阅它**，所以真实会话里一条内核提示会在 `requests.send(...)` 处失败并返回 `PluginUnavailable`（"no interaction client is subscribed"）——仍是 fail-closed，只是错误类别从 `PermissionDenied` 变成可诊断的那一个，且不会挂起。
+- **测试**：`crates/tact/src/interaction_tests.rs::withdraw_unblocks_the_waiter_and_clears_the_pending_entry`（withdraw 后 waiter 拿到 `PluginUnavailable`、`pending_count()` 归零、再 withdraw / respond 均为 `false`）；`crates/tact_ui/src/session_bootstrap.rs` 四个生产形态用例（装有 broker 的 serving router 上 `interaction.request` 被脚本化订阅者应答并原样返回；同一调用在「无 broker」与「有 broker 无订阅者」两种形态下都在超时内失败而非挂起；`permission.request` 在 Auto 模式同样被应答；同一 `permission.request` 在 Default 模式的检查阶段被拒、broker 的 pending 表始终为空）；`crates/tact_ui/src/driver.rs` 两个用例（`RespondInteraction` 到达 broker 的等待者并清空 pending；broker 不认识的 id 仍落到 `UiResponder`）。所有等待都有 `tokio::time::timeout`。
+
+**改后行为：** 交互式宿主：`interaction.request` 在 broker 上登记并发布 `InteractionRequested`，订阅了 broker 的客户端应答后 invoke 返回该响应；没有客户端订阅时立刻 `PluginUnavailable`（不再恒为 `PermissionDenied`，也不会挂起）。`permission.request` 与它对称（同一 broker），但**只在该能力自身的权限检查放行之后**——`CapabilityRouter::invoke` 先检查再分发，所以 `default`（ask）模式下插件发起的 `permission.request` 在 handler 之前就被拒，broker 根本不会被问到（responder 回答的是 handler 提出的提示，不会把 "ask" 变成 "弹窗"；`interaction.request` 同理）。headless：不装 broker、策略不装 responder，两者仍是 `PermissionDenied`——没有 UI 可问，fail-closed 就是正确答案。TUI 自己的工具 / 权限提示：逐字不变（仍 `UiResponder`，仍十进制 id）。
+
+**有意不做 / 已知边界：**
+- **没有把 TUI 变成本 broker 的客户端**（本切片的真实缺口，已记入 `ARCHITECTURE.md` §15 与设计文档 §*Update 3*）：TUI 的弹窗仍从 `UiResponder::snapshot()` 对账，且以该 responder 的十进制 `u64` 为 key、只渲染 select 家族。因此内核提示当前只会**被拒绝**，不会在界面上出现；要接通需要把弹窗迁到 broker 的 `RequestId` 空间并补上 `Confirm` / `Input` / `Permission` 三种形态——那是 View 适配器的活，不是接线。
+- 不删 `UiResponder` 提示路径（工具与权限提示按设计仍用它）；不给 broker 等待加默认超时（生产 invocation 目前不带 deadline，属于 §7 已记录的缺口：订阅了但不应答的客户端会让调用方等到取消或进程退出）。
+- 不改 TUI 渲染（除非上面那条缺口另行立项）。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2925 → 2932 passed / 0 failed / 22 ignored**（47 套件不变，+7 测试：`tact` +1、`tact_ui` session_bootstrap +4、`tact_ui` driver +2）。
+
+**Pointers:** `crates/tact/src/interaction.rs::{InteractionBroker::withdraw, InteractionService}`、`crates/tact_ui/src/session_bootstrap.rs::{UiWiring, build_serving_context}`、`crates/tact_ui/src/permission.rs::{BrokerPermissionResponder, serving_permission}`、`crates/tact_ui/src/driver.rs::run_command_loop_with_account`（`RespondInteraction` 分支）、`crates/tact_ui/src/interactive.rs`、判定 `docs/superpowers/specs/2026-10-11-kernel-service-consumers-design.md` §*Update 3*、计划 `docs/superpowers/plans/2026-10-08-runtime-plugin-architecture.md`（Task 9 行）。
+
 ## 1. 2026-10-11 — 插件可按清单声明的 `grants` 发 host call：`GrantedHostCalls` 让 `storage.*` / `events.*` / `trajectory.*` 首次在真实会话里可达
 
 | Field | Value |

@@ -50,16 +50,23 @@ pub async fn run_command_loop(
     user_cmd_rx: UnboundedReceiver<UserCommand>,
     image_work_dir: impl AsRef<Path>,
 ) -> SharedAgent {
-    run_command_loop_with_account(agent, user_cmd_rx, image_work_dir, None).await
+    run_command_loop_with_account(agent, user_cmd_rx, image_work_dir, None, None).await
 }
 
 /// Like [`run_command_loop`], but forwards balance / usage quota results to the
 /// provided account-update channel instead of mixing them into agent updates.
+///
+/// `interaction` is the session's Kernel interaction surface, when the caller
+/// holds one (the interactive host does; headless has no UI and passes `None`).
+/// It is passed rather than read off the Agent because the process that owns a
+/// UI is the one that answers through it, and `respond` — the answering half —
+/// is not on the client-neutral `InteractionService` trait.
 pub async fn run_command_loop_with_account(
     agent: Agent,
     mut user_cmd_rx: UnboundedReceiver<UserCommand>,
     image_work_dir: impl AsRef<Path>,
     account_tx: Option<UnboundedSender<AccountUpdate>>,
+    interaction: Option<tact::InteractionBroker>,
 ) -> SharedAgent {
     let image_work_dir = image_work_dir.as_ref().to_path_buf();
     let cancel_flag = agent.runtime.cancel_flag.clone();
@@ -160,7 +167,22 @@ pub async fn run_command_loop_with_account(
                 }));
             }
             UserCommand::Runtime(RuntimeCommand::RespondInteraction { response }) => {
-                let _ = ui_responder.respond(response);
+                // The Kernel broker is asked first: an `interaction.request` /
+                // `permission.request` capability is waiting there, and its id
+                // space is the *caller's* (`RequestId`, whatever the plugin
+                // chose), not the local responder's numeric one. `respond`
+                // returns false when no request with that id is pending, which
+                // is exactly the case for a TUI prompt: the tool and permission
+                // *prompt* path still asks through `UiResponder` and keeps
+                // answering through it. Both id spaces coexist during that
+                // migration, so route by which one accepts the response instead
+                // of deciding here which prompt it came from.
+                let answered = interaction
+                    .as_ref()
+                    .is_some_and(|broker| broker.respond(response.clone()));
+                if !answered {
+                    let _ = ui_responder.respond(response);
+                }
             }
             UserCommand::Runtime(RuntimeCommand::CancelRun { run_id }) => {
                 cancel_flag.store(true, Ordering::Relaxed);
@@ -802,6 +824,7 @@ mod tests {
     use crate::test_support::{
         build_test_agent, build_test_agent_without_serving, install_test_config,
     };
+    use tact::InteractionService;
 
     fn text_block(content: &str) -> ContentBlock {
         ContentBlock::Text {
@@ -856,6 +879,7 @@ mod tests {
         let policy = crate::permission::serving_permission(
             tact_extensions::permission::PermissionMode::Auto,
             settings,
+            None,
         )
         .expect("serving policy");
         let recording: std::sync::Arc<dyn tact::PermissionService> =
@@ -869,6 +893,7 @@ mod tests {
             &transport,
             std::sync::Arc::new(tact_trajectory::KernelTrajectoryRecorder::default()),
             recording,
+            None,
             &crate::session_bootstrap::Notices::Stderr,
         )
         .await
@@ -1454,6 +1479,56 @@ mod tests {
             .unwrap();
     }
 
+    /// A broker *is* installed (the interactive host's shape) and the response
+    /// still belongs to the local responder — the TUI prompt path every tool
+    /// and permission prompt uses. `InteractionBroker::respond` returning
+    /// `false` for an id it does not know is the whole routing rule: without it
+    /// the broker would swallow every prompt answer in the shipping binary,
+    /// which is the regression this pins.
+    #[tokio::test]
+    async fn runtime_interaction_response_the_broker_does_not_know_falls_back_to_the_responder() {
+        install_test_config();
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let responder = agent.tool_context.ui_responder.clone();
+        let (request_id, waiter) = responder.register_select(
+            "Permission".into(),
+            vec!["Allow".into(), "Deny".into()],
+            false,
+        );
+        let (command_tx, command_rx) = crate::test_support::user_command_channels();
+        let driver = tokio::spawn(super::run_command_loop_with_account(
+            agent,
+            command_rx,
+            work_dir,
+            None,
+            Some(tact::InteractionBroker::new(8)),
+        ));
+
+        command_tx
+            .send(UserCommand::Runtime(RuntimeCommand::RespondInteraction {
+                response: tact_protocol::InteractionResponse::Selected {
+                    request_id: tact_protocol::RequestId::from(request_id.to_string()),
+                    values: vec!["Deny".into()],
+                },
+            }))
+            .unwrap();
+        assert!(matches!(
+            tokio::time::timeout(std::time::Duration::from_millis(200), waiter)
+                .await
+                .expect("protocol response timed out")
+                .unwrap(),
+            tact_protocol::InteractionResponse::Selected { request_id: id, values }
+                if id.as_str() == request_id.to_string() && values == vec!["Deny".to_string()]
+        ));
+
+        drop(command_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(1), driver)
+            .await
+            .expect("driver did not shut down")
+            .unwrap();
+    }
+
     #[tokio::test]
     async fn runtime_interaction_response_reaches_the_pending_waiter() {
         install_test_config();
@@ -1484,6 +1559,82 @@ mod tests {
             tact_protocol::InteractionResponse::Selected { request_id: id, values }
                 if id.as_str() == request_id.to_string() && values == vec!["Deny".to_string()]
         ));
+
+        drop(command_tx);
+        tokio::time::timeout(std::time::Duration::from_secs(1), driver)
+            .await
+            .expect("driver did not shut down")
+            .unwrap();
+    }
+
+    /// The Kernel half of the same command: a response for a request that was
+    /// raised through the `interaction.request` capability is delivered to the
+    /// broker's waiter, whose id space is the *caller's* — not the local
+    /// responder's numeric one. The test above pins the legacy path (a TUI
+    /// prompt raised by `UiResponder`); together they pin the two id spaces the
+    /// driver has to serve while the prompt path migrates.
+    #[tokio::test]
+    async fn runtime_interaction_response_reaches_the_kernel_broker() {
+        install_test_config();
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        let broker = tact::InteractionBroker::new(8);
+        let mut subscription = broker.subscribe();
+        let invoked = tokio::spawn({
+            let broker = broker.clone();
+            async move {
+                broker
+                    .request(
+                        tact_protocol::InteractionRequest::Confirm {
+                            request_id: tact_protocol::RequestId::from("kernel-1"),
+                            prompt: "Continue?".into(),
+                        },
+                        &tact::InvocationContext::new(
+                            tact_protocol::RequestId::from("kernel-caller"),
+                            tact_protocol::PluginId::from("demo.plugin"),
+                            "driver-test",
+                        ),
+                    )
+                    .await
+            }
+        });
+        // The broker registers the request before it publishes the hint, so a
+        // delivered hint means the pending entry exists and the response below
+        // cannot race it.
+        tokio::time::timeout(std::time::Duration::from_secs(1), subscription.recv())
+            .await
+            .expect("the request was not published")
+            .expect("subscribed");
+
+        let (command_tx, command_rx) = crate::test_support::user_command_channels();
+        let driver = tokio::spawn(super::run_command_loop_with_account(
+            agent,
+            command_rx,
+            work_dir,
+            None,
+            Some(broker.clone()),
+        ));
+
+        command_tx
+            .send(UserCommand::Runtime(RuntimeCommand::RespondInteraction {
+                response: tact_protocol::InteractionResponse::Approved {
+                    request_id: tact_protocol::RequestId::from("kernel-1"),
+                },
+            }))
+            .unwrap();
+
+        let response = tokio::time::timeout(std::time::Duration::from_secs(1), invoked)
+            .await
+            .expect("the response never reached the broker's waiter")
+            .expect("invoke task")
+            .expect("the request is answered");
+        assert!(matches!(
+            response,
+            tact_protocol::InteractionResponse::Approved { request_id }
+                if request_id.as_str() == "kernel-1"
+        ));
+        assert_eq!(broker.pending_count(), 0);
 
         drop(command_tx);
         tokio::time::timeout(std::time::Duration::from_secs(1), driver)
