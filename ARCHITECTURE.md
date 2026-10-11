@@ -791,23 +791,29 @@ consumer either.
 Two §7 facts are worth stating precisely, because the difference between *wired*
 and *reached* matters for anyone reading the acceptance list:
 
-- `RuntimeEvent::TimedOut` (and therefore `TrajectoryEventType::Timeout`) now has
-  a producer: `CapabilityRouter`'s `guarded` deadline path publishes the fact
-  (`crates/tact/src/capability.rs`) when the invocation it guards carries both a
-  deadline and a run. The deadline it records is the **host ↔
-  external-participant** bound, never the user's turn — `chat.submit` /
-  `runs.start` and the hosts' own invocations deliberately carry none, because a
-  conversational turn may legitimately run for many minutes and cutting it short
-  would be a behaviour regression. The bounded invocations are the plugin-facing
-  ones: a hosted plugin's capability call, and the host calls the plugin makes
-  from inside it (`GrantedHostCalls` puts the host's `DEFAULT_REQUEST_TIMEOUT` on
-  the inner Kernel-service invoke, so a service that never answers fails that
-  host call instead of hanging the plugin's process). One caveat keeps the fact
-  out of a real session today: a plugin's own capability deadline is applied
-  *inside* `HostCapabilityHandler`, below the router's `guarded`, and a host call
-  is run-less — and `TimedOut` carries a **required** `RunId`, so a run-less
-  invocation records nothing rather than inventing an attribution. A
-  provider-level timeout still surfaces as `Retry` / `Recovery` facts instead.
+- `RuntimeEvent::TimedOut` (and therefore `TrajectoryEventType::Timeout`) has a
+  producer that a real session reaches: `CapabilityRouter`'s `guarded` deadline
+  path publishes the fact (`crates/tact/src/capability.rs`) when the invocation
+  it guards carries both a deadline and a run, and a **plugin tool call** — the
+  host ↔ external-participant boundary — now carries both. The wave router puts
+  the host's `DEFAULT_REQUEST_TIMEOUT` on the invocation a hosted plugin's
+  `Tool` capability runs under (`Agent::tool_call_deadline`), so a hanging
+  plugin fails the call *and* publishes the fact for the run. The deadline is
+  never the user's turn: `chat.submit` / `runs.start`, the hosts' own
+  invocations, and native and MCP tools deliberately carry none, because a
+  conversational turn or a `bash` command may legitimately run for many minutes
+  and cutting it short would be a behaviour regression. A plugin's *capability*
+  call is bounded too, but its timeout is applied *inside*
+  `HostCapabilityHandler`, below the router's `guarded`, so a fired deadline
+  there is only a caller-visible error — which is exactly why the tool-call
+  bound has to sit on the invocation that enters `guarded`. The host calls a
+  plugin makes from inside it are also bounded (`GrantedHostCalls` puts the
+  host's `DEFAULT_REQUEST_TIMEOUT` on the inner Kernel-service invoke, so a
+  service that never answers fails that host call instead of hanging the
+  plugin's process), but a host call is run-less, and `TimedOut` carries a
+  **required** `RunId`, so a run-less invocation records nothing rather than
+  inventing an attribution. A provider-level timeout still surfaces as `Retry` /
+  `Recovery` facts instead.
 - The session's **Kernel plugin registry** (`RuntimeContext::plugins`) is
   populated by the bootstrap and never read back, so a plugin's health/crash
   state still has no consumer. It used to hang off the `Agent` as

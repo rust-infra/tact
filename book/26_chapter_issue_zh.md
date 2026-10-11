@@ -4,6 +4,38 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — 插件工具调用补齐「既带 deadline 又带 run」：`TimedOut` 事实首次真正落进真实会话
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（行为变化：托管插件的 *工具* 调用现在由宿主 `DEFAULT_REQUEST_TIMEOUT` 约束，挂死的插件工具会超时失败，并发布 `RuntimeEvent::TimedOut` —— 该事实**首次在真实会话里落进 trajectory**；原生 / MCP 工具与用户回合仍然无界） |
+| **Related** | `crates/tact_extensions/src/agent/tool_dispatch.rs`（`run_capability_tool` / 波次循环）、`crates/tact_extensions/src/agent/mod.rs`（`tool_call_deadline`）、`crates/tact_extensions/src/plugin/test_support.rs`（挂死 double）、`crates/tact_extensions/Cargo.toml`（`tokio` 的 `test-util` 开发依赖） |
+
+**现象 / 动机：** 上一改动给 `RuntimeEvent::TimedOut` 找到了生产者（`CapabilityRouter::guarded` 的 deadline 分支会发布事实），但如实记录了一个缺口：**没有任何生产调用同时带 deadline 与 run id**，所以事实仍旧落不进真实会话——插件的能力调用把 timeout 施加在 `HostCapabilityHandler` 内部（位于 router `guarded` *之下*），而 host call 路径是 run-less。缺的正是**插件 *工具* 调用**这块边界：它既是 host ↔ 外部参与者，也天然带 run id，本就应当有界。
+
+**决策与实现：**
+- `run_capability_tool`（`tool_dispatch.rs`）增加 `Option<std::time::Duration>` deadline 参数，落到它构造的 invocation 上（`InvocationContext::with_timeout`），既有 `.with_run_id` / `.with_parent_step_id` 行为不变。
+- 波次循环按 Agent 已缓存的插件声明判定：新 helper `Agent::tool_call_deadline` 在「名字是插件工具」时返回 `Some(tact_plugin_host::DEFAULT_REQUEST_TIMEOUT)`，否则 `None`。注释写明 *为什么*：插件是外部参与者，而原生 / MCP 工具必须保持无界（一条 `bash` 命令可以合法地跑很久，砍掉它是行为回归）；同时说明插件自身的能力调用由 host handler 在 `guarded` *之下* 施加超时，**只有把界放到进入 `guarded` 的那次 invocation 上，事实才会被发布**。
+- 其余调用（回合、run、host call）一律不改。
+
+**测试（全部有界等待，暂停时钟）：**
+- 共享 host double（`plugin/test_support.rs`）新增「永远挂住」模式（`tokio::time::sleep` 睡到远超上界），并导出 `hosted_hanging`；挂住期间它照常持有 host 锁，模拟真实宿主在等一个沉默的插件。
+- `crates/tact_extensions/src/agent/tool_dispatch.rs::a_hanging_plugin_tool_times_out_and_publishes_the_fact`：以 `#[tokio::test(start_paused = true)]` 驱动一次真实的 `execute_tool_call`，插件工具挂死 ⇒ **（a）** 工具结果是超时（内容含 `invocation deadline exceeded`），**（b）** 携带该 run id 的 `RuntimeEvent::TimedOut` 到达 agent 的事件通道。两条都断言——只查错误证明不了事实。
+- `::only_a_plugin_tool_call_gets_a_deadline`：直接钉决策 helper（插件名 ⇒ `Some(DEFAULT_REQUEST_TIMEOUT)`，原生 `bash` ⇒ `None`）。负例只做 helper 级单元测试：端到端地证明「没有 deadline」最多只能显示某次调用恰好跑完了，钉住判定点才是确定的。
+- `crates/tact_extensions/Cargo.toml` 的 `[dev-dependencies]` 增加 `tokio` 的 `test-util`（照抄兄弟 crate `tact_plugin_host` 的写法），`Cargo.lock` 不变。
+- 反向验证：临时把 `tool_call_deadline` 改回恒返回 `None`，新测试在 **0.02s** 内失败（工具返回 `plugin:acme.echo.hang`，即调用成功而非超时），恢复后通过。
+
+**改后行为：** 挂死的托管插件工具调用会在宿主默认上界（30s）处被切断：调用方拿到超时错误，且内核在返回该错误前为这次 run 发布 `TimedOut`，交互式宿主按既有映射（`RuntimeEvent::TimedOut` → `TrajectoryEventType::Timeout`）把它写进 trajectory——这是该事实首次在真实会话里落点。用户回合与原生 / MCP 工具的时限行为**逐字不变**。
+
+**有意不做 / 已知边界：**
+- 不给用户回合（`chat.submit` / `runs.start` / 驱动 / headless 自身调用）或原生 / MCP 工具加 deadline：这是本次的**决策**，不是遗漏。
+- 插件自身的能力调用、以及它发出的 host call 仍不发布事实：前者的 deadline 在 `HostCapabilityHandler` 内、位于 `guarded` 之下；后者 run-less，而协议 `TimedOut.run_id` 非可选，硬塞就是伪造归因。
+- 如实记录一处边界：换成真实 stdio 宿主时，插件能力调用的外层 `guarded` 与内层 `StdioPluginHost::request_with_context` 用的是**同一个** deadline，谁先触发存在时序竞争；本次测试用的是 in-process double（其 `request_with_context` 走默认实现、没有内层 `sleep_until`），所以外层 `guarded` 是唯一执行者，判定是确定的。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2936 → 2938 passed / 0 failed / 22 ignored**（47 套件不变，+2 测试，均在本 crate lib）。
+
+**Pointers:** `crates/tact_extensions/src/agent/tool_dispatch.rs::{run_capability_tool, run_tool_waves}`、`crates/tact_extensions/src/agent/mod.rs::tool_call_deadline`、`crates/tact_extensions/src/plugin/test_support.rs::{DoubleHost::with_hang, hosted_hanging}`、`crates/tact/src/capability.rs::{guarded, record_timeout}`、判定 `ARCHITECTURE.md` §15（§7 timeout 条）、`docs/superpowers/specs/2026-10-08-runtime-plugin-architecture-design.md`（§7 Trajectory / Error-timeout-cancellation 两行）、`docs/superpowers/plans/2026-10-08-runtime-plugin-architecture.md`（状态表 timeout 行 + 现状段落）、`docs/superpowers/specs/2026-10-11-kernel-service-consumers-design.md`（两条限制）。
+
 ## 1. 2026-10-11 — 超时事实有了生产者：`guarded` 发布 `TimedOut`，deadline 落在插件 / host call 边界，而不是用户的回合
 
 | Field | Value |

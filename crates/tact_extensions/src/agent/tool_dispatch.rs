@@ -436,6 +436,7 @@ async fn run_capability_tool(
     name: &str,
     input: &serde_json::Value,
     parent_step_id: Option<tact_protocol::StepId>,
+    deadline: Option<std::time::Duration>,
 ) -> ExecResult {
     let mut invocation = runtime
         .invocation(
@@ -446,6 +447,9 @@ async fn run_capability_tool(
         .with_run_id(run_id.clone());
     if let Some(parent) = parent_step_id {
         invocation = invocation.with_parent_step_id(parent);
+    }
+    if let Some(deadline) = deadline {
+        invocation = invocation.with_timeout(deadline);
     }
     match runtime
         .router()
@@ -1423,6 +1427,10 @@ impl Agent {
                     .clone();
                 let run_id = run_id.clone();
                 let prep = &prepared[pi];
+                // Only a hosted plugin tool is bounded. See
+                // [`Agent::tool_call_deadline`] for why the deadline has to sit
+                // on *this* invocation for the timeout fact to land.
+                let deadline = self.tool_call_deadline(&prep.name);
                 let parent_step_id = self.tool_context.parent_step_id.clone();
                 futures.push(async move {
                     let start = std::time::Instant::now();
@@ -1433,6 +1441,7 @@ impl Agent {
                         &prep.name,
                         &prep.input,
                         parent_step_id,
+                        deadline,
                     )
                     .await;
                     (pi, exec, start.elapsed().as_micros() as u64)
@@ -1783,11 +1792,100 @@ mod tests {
             "mcp__demo__echo",
             &serde_json::json!({"text": "hello"}),
             None,
+            None,
         )
         .await;
 
         assert_eq!(result.content, "from external tool");
         assert_eq!(result.status, StepStatus::Success);
+    }
+
+    // ── Bounded plugin tool calls (host ↔ external participant) ─────────
+
+    /// Records the protocol events the capability path publishes, so a test can
+    /// assert the timeout *fact* landed and not only the caller's error.
+    #[derive(Default)]
+    struct CapturedEvents(std::sync::Mutex<Vec<RuntimeEvent>>);
+
+    #[async_trait]
+    impl tact::EventService for CapturedEvents {
+        async fn publish(&self, event: RuntimeEvent) -> Result<(), KernelError> {
+            self.0.lock().unwrap().push(event);
+            Ok(())
+        }
+    }
+
+    /// A plugin tool call is the host ↔ external-participant boundary, so it is
+    /// the one routed invocation that carries a deadline **and** a run. When the
+    /// plugin hangs, the deadline must both fail the call and publish the
+    /// `TimedOut` fact for the run — the producer added earlier could not land
+    /// without a caller like this.
+    ///
+    /// The clock is paused: the bound is the 30s `DEFAULT_REQUEST_TIMEOUT`, and
+    /// the plugin sleeps far past it, so real time would cost 30 seconds.
+    #[tokio::test(start_paused = true)]
+    async fn a_hanging_plugin_tool_times_out_and_publishes_the_fact() {
+        let events = Arc::new(CapturedEvents::default());
+        let mut plugins = crate::plugin::test_support::hosted_hanging(
+            "acme.echo",
+            vec![plugin_tool("acme.echo.hang", CapabilityRisk::ReadOnly)],
+        );
+        let serving = tact::RuntimeContext::new(tact::CapabilityRouter::new());
+        plugins.register(&serving, serving.plugins()).await;
+
+        let mut agent = agent_with(
+            "plugin_tool_timeout",
+            crate::permission::PermissionMode::Default,
+        )
+        .with_hosted_plugins(plugins);
+        agent.runtime.runtime_event_service =
+            Some(Arc::clone(&events) as Arc<dyn tact::EventService>);
+        let run_id = RunId::from("run-plugin-hang");
+        agent.runtime.current_run_id = Some(run_id.clone());
+
+        let (results, _) = agent
+            .execute_tool_call(&tool_use("acme.echo.hang", serde_json::json!({})))
+            .await
+            .expect("a timed-out tool call is a normal turn result, not an error");
+
+        let text = format!("{results:?}");
+        assert!(
+            text.contains("invocation deadline exceeded"),
+            "the tool result must be the timeout, got: {text}"
+        );
+
+        let captured = events.0.lock().unwrap();
+        assert!(
+            captured.iter().any(|event| matches!(
+                event,
+                RuntimeEvent::TimedOut { run_id: run } if run == &run_id
+            )),
+            "the run's timeout fact must reach the agent's event channel, got: {captured:?}"
+        );
+    }
+
+    /// The decision this change makes: only a plugin tool is bounded. A native
+    /// (or MCP) tool call must stay unbounded — a `bash` command may legitimately
+    /// run long — and an end-to-end assertion of "no deadline" could only show
+    /// the call happened to finish, so the decision helper is pinned directly.
+    #[test]
+    fn only_a_plugin_tool_call_gets_a_deadline() {
+        let agent = agent_with_plugin(
+            "plugin_tool_deadline",
+            crate::permission::PermissionMode::Default,
+            vec![plugin_tool("acme.echo.search", CapabilityRisk::ReadOnly)],
+        );
+
+        assert_eq!(
+            agent.tool_call_deadline("acme.echo.search"),
+            Some(tact_plugin_host::DEFAULT_REQUEST_TIMEOUT),
+            "a plugin tool is the host ↔ external-participant boundary"
+        );
+        assert_eq!(
+            agent.tool_call_deadline("bash"),
+            None,
+            "a native tool must stay unbounded; a `bash` command may legitimately run long"
+        );
     }
 
     /// A router with one server that publishes one readable resource.

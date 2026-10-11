@@ -2075,6 +2075,26 @@ impl Agent {
         self.hosted_plugins.as_ref()?.tool_declaration(name)
     }
 
+    /// The deadline a routed tool call runs under, if any.
+    ///
+    /// Only a **hosted plugin** tool is bounded, because a plugin is an external
+    /// participant reached over the host boundary: its call must not be able to
+    /// hang the turn forever. Every other tool stays unbounded on purpose — a
+    /// native `bash` command or an MCP call may legitimately run for a long
+    /// time, and cutting it at an arbitrary bound would be a behaviour
+    /// regression, not a fix.
+    ///
+    /// The bound does more than fail the call. A plugin's *own* capability call
+    /// applies its timeout inside `HostCapabilityHandler`, which sits **below**
+    /// the router's `guarded`: a deadline that fires there is only a
+    /// caller-visible error and never a recorded fact. Putting the deadline on
+    /// the invocation that enters `guarded` is what lets the router publish
+    /// `RuntimeEvent::TimedOut` for the run before it returns.
+    fn tool_call_deadline(&self, name: &str) -> Option<std::time::Duration> {
+        self.plugin_tool_declaration(name)
+            .map(|_| tact_plugin_host::DEFAULT_REQUEST_TIMEOUT)
+    }
+
     /// Returns all tool specs for the agent.
     pub fn all_tool_specs(&self) -> Vec<ToolSpec> {
         self.cached_tool_specs

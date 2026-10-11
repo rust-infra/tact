@@ -42,6 +42,10 @@ pub(crate) struct DoubleHost {
     /// plain result.
     host_call: Option<(String, Value)>,
     host_call_result: Arc<Mutex<Option<RecordedHostCall>>>,
+    /// When set, an `Invoke` never answers: it sleeps far past any bound a test
+    /// sets, modelling a plugin that hangs. The caller's own deadline is the
+    /// only thing that can cut the call.
+    hangs: bool,
 }
 
 impl DoubleHost {
@@ -53,6 +57,7 @@ impl DoubleHost {
             stopped: Arc::new(AtomicBool::new(false)),
             host_call: None,
             host_call_result: Arc::new(Mutex::new(None)),
+            hangs: false,
         }
     }
 
@@ -60,6 +65,12 @@ impl DoubleHost {
     /// next `Invoke`.
     fn with_host_call(mut self, capability: String, input: Value) -> Self {
         self.host_call = Some((capability, input));
+        self
+    }
+
+    /// Makes the double hang on every `Invoke` instead of answering.
+    fn with_hang(mut self) -> Self {
+        self.hangs = true;
         self
     }
 }
@@ -84,27 +95,36 @@ impl PluginHost for DoubleHost {
 
     async fn request(&mut self, request: PluginRequest) -> anyhow::Result<PluginResponse> {
         match request {
-            PluginRequest::Invoke { capability, input } => match self.host_call.take() {
-                Some((host_capability, host_input)) => Ok(PluginResponse::HostCall {
-                    host_request_id: RequestId::from("double-host-call"),
-                    capability: host_capability,
-                    input: host_input,
-                }),
-                None => Ok(PluginResponse::Result {
-                    // The envelope is a `ToolCallResult` plus the raw echo: the
-                    // one shape serves both the serving-router test
-                    // (`capability` / `echo`) and the Agent's tool path
-                    // (`content`), and an unknown field is ignored by the
-                    // decoder rather than fatal.
-                    output: json!({
-                        "content": format!("plugin:{capability}"),
-                        "effects": [],
-                        "image": Value::Null,
-                        "capability": capability,
-                        "echo": input,
+            PluginRequest::Invoke { capability, input } => {
+                // A hung plugin still has to be *interruptible* by the caller's
+                // deadline, so the sleep is a timer rather than a blocking wait:
+                // the double holds the host lock while it sleeps, exactly as a
+                // real host awaiting a silent plugin would.
+                if self.hangs {
+                    tokio::time::sleep(std::time::Duration::from_secs(3600)).await;
+                }
+                match self.host_call.take() {
+                    Some((host_capability, host_input)) => Ok(PluginResponse::HostCall {
+                        host_request_id: RequestId::from("double-host-call"),
+                        capability: host_capability,
+                        input: host_input,
                     }),
-                }),
-            },
+                    None => Ok(PluginResponse::Result {
+                        // The envelope is a `ToolCallResult` plus the raw echo: the
+                        // one shape serves both the serving-router test
+                        // (`capability` / `echo`) and the Agent's tool path
+                        // (`content`), and an unknown field is ignored by the
+                        // decoder rather than fatal.
+                        output: json!({
+                            "content": format!("plugin:{capability}"),
+                            "effects": [],
+                            "image": Value::Null,
+                            "capability": capability,
+                            "echo": input,
+                        }),
+                    }),
+                }
+            }
             // What the host answered the plugin's host call with. The plugin's
             // reply to *that* is its own result: the real plugin would use the
             // output; the double hands it straight back so the test can assert
@@ -176,6 +196,14 @@ pub(crate) fn hosted_double_with_host_call(
 /// A [`HostedPlugins`] holding one double that declares `capabilities`.
 pub(crate) fn hosted(id: &str, capabilities: Vec<CapabilityDeclaration>) -> HostedPlugins {
     HostedPlugins::from_hosts(vec![hosted_double(id, capabilities).0])
+}
+
+/// A [`HostedPlugins`] whose double declares `capabilities` but never answers an
+/// `Invoke`, modelling a plugin that hangs. The caller's deadline is the only
+/// thing that can end the call.
+pub(crate) fn hosted_hanging(id: &str, capabilities: Vec<CapabilityDeclaration>) -> HostedPlugins {
+    let double = DoubleHost::new(id, capabilities).with_hang();
+    HostedPlugins::from_hosts(vec![as_hosted(double, Vec::new())])
 }
 
 /// A declaration of the given kind and risk. Versions are fixed: nothing under

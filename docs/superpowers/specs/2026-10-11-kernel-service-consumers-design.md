@@ -175,9 +175,11 @@ Two limits are worth stating rather than implying:
   cancelled or the process exits: `GrantedHostCalls` puts the host's
   `DEFAULT_REQUEST_TIMEOUT` on the inner Kernel-service invoke, so a plugin's
   `interaction.request` fails on that bound. It still records nothing —
-  `RuntimeEvent::TimedOut` needs a run, and a host call has none — so the §7
-  timeout gap is narrower, not closed; that is a property of this wiring *and*
-  of the boundary decision, not of the broker.
+  `RuntimeEvent::TimedOut` needs a run, and a host call has none. The §7 timeout
+  gap this note used to leave open is closed elsewhere: a hosted plugin's *tool*
+  call is both deadline-bearing and run-carrying, so it publishes `TimedOut` for
+  its run (see the 2026-10-08 spec / plan). A host call recording nothing stays
+  a property of this wiring *and* of the boundary decision, not of the broker.
 
 ## Verification
 

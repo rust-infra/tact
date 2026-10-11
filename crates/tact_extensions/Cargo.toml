@@ -64,3 +64,6 @@ wiremock = "0.6"
 proptest = "1"
 rmcp = { workspace = true, features = ["server"] }
 tempfile = { workspace = true }
+# `test-util` pauses the clock, so a test can prove that a hanging plugin tool
+# is cut at the 30s `DEFAULT_REQUEST_TIMEOUT` without spending 30 real seconds.
+tokio = { workspace = true, features = ["test-util"] }
