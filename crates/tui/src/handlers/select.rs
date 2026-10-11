@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tact_protocol::{InteractionResponse, RequestId};
+use tact_protocol::InteractionResponse;
 use tact_view::UserCommand;
 
 use crate::i18n::Language;
@@ -151,7 +151,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                     SelectKind::Agent => {
                         if let Some(id) = request_id {
                             app.respond_ui(InteractionResponse::Selected {
-                                request_id: RequestId::from(id.to_string()),
+                                request_id: id,
                                 values: chosen.clone(),
                             });
                         }
@@ -184,7 +184,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                 SelectKind::Agent => {
                     if let Some(id) = request_id {
                         app.respond_ui(InteractionResponse::Selected {
-                            request_id: RequestId::from(id.to_string()),
+                            request_id: id,
                             values: vec![chosen.clone()],
                         });
                     }
@@ -309,7 +309,8 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
             app.select.move_up();
         }
         KeyCode::Esc => {
-            let was_agent = app.select.request_id.is_some();
+            let was_agent =
+                app.select.request_id.is_some() || app.select.broker_request_id.is_some();
             if let Some(response) = app.select.cancel() {
                 app.respond_ui(response);
             }

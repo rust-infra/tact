@@ -780,6 +780,41 @@ mod runtime_event_tests {
         assert!(app.select.log_confirm, "log_confirm must survive the wire");
     }
 
+    /// A prompt raised by the Kernel broker carries an opaque `RequestId`, so
+    /// it cannot be parsed into the legacy responder's number. It must still
+    /// open the popup, in the broker's own id space, or the interactive host
+    /// silently refuses a Kernel prompt.
+    #[test]
+    fn runtime_broker_interaction_opens_the_popup_in_the_broker_id_space() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::InteractionRequested {
+                request: InteractionRequest::Select {
+                    request_id: RequestId::from("6f1c0f6e-broker"),
+                    prompt: "Pick".into(),
+                    options: vec!["one".into(), "two".into()],
+                    log_confirm: false,
+                },
+            },
+        );
+
+        assert!(
+            matches!(app.input_mode, InputMode::Select),
+            "the popup must open"
+        );
+        assert_eq!(app.select.request_id, None, "the numeric space stays empty");
+        assert_eq!(
+            app.select.broker_request_id,
+            Some(RequestId::from("6f1c0f6e-broker")),
+            "the broker id is what the answer will carry"
+        );
+        assert!(
+            !app.select.filterable(),
+            "an agent prompt must not be narrowed by stray keystrokes"
+        );
+    }
+
     #[test]
     fn runtime_popup_notification_opens_the_modal() {
         let mut app = make_app();

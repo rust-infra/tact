@@ -18,7 +18,15 @@ pub struct SelectPopup {
     pub prompt: String,
     /// Request id for agent-originated selects (`RequestSelect` /
     /// `RequestMultiSelect`); `None` for local TUI flows like `/model`.
+    /// This is the *legacy in-process responder's* space, whose ids are
+    /// decimal.
     pub request_id: Option<u64>,
+    /// The Kernel broker's request id, when this popup answers a request that
+    /// arrived over the protocol. A broker id is opaque, so it cannot share
+    /// the numeric field above; both are carried and an answer prefers this
+    /// one. Without it a broker-raised prompt had nowhere to live and was
+    /// silently dropped.
+    pub broker_request_id: Option<tact_protocol::RequestId>,
     /// When true, Space toggles checkboxes; Enter submits all checked indices.
     pub multi: bool,
     /// Checkbox state per option (only used when `multi`).
@@ -48,6 +56,7 @@ impl Default for SelectPopup {
             list: FilteredList::default(),
             prompt: String::new(),
             request_id: None,
+            broker_request_id: None,
             multi: false,
             checked: Vec::new(),
             log_confirm: true,
@@ -67,8 +76,33 @@ impl SelectPopup {
         self.prompt = prompt;
         self.list.reset(options, selected);
         self.request_id = None;
+        self.broker_request_id = None;
         self.multi = false;
         self.checked.clear();
+        self.log_confirm = log_confirm;
+    }
+
+    /// Opens a popup for a request that arrived over the protocol, whose id
+    /// the Kernel broker owns.
+    ///
+    /// It is still an agent prompt (the agent is blocked, so it must not be
+    /// filterable), but the answer returns to the broker rather than to the
+    /// legacy responder.
+    pub fn set_broker(
+        &mut self,
+        prompt: String,
+        options: Vec<String>,
+        request_id: tact_protocol::RequestId,
+        multi: bool,
+        log_confirm: bool,
+    ) {
+        let n = options.len();
+        self.prompt = prompt;
+        self.list.reset(options, 0);
+        self.request_id = None;
+        self.broker_request_id = Some(request_id);
+        self.multi = multi;
+        self.checked = if multi { vec![false; n] } else { Vec::new() };
         self.log_confirm = log_confirm;
     }
 
@@ -83,6 +117,7 @@ impl SelectPopup {
         self.prompt = prompt;
         self.list.reset(options, 0);
         self.request_id = Some(request_id);
+        self.broker_request_id = None;
         self.multi = false;
         self.checked.clear();
         self.log_confirm = log_confirm;
@@ -100,6 +135,7 @@ impl SelectPopup {
         self.prompt = prompt;
         self.list.reset(options, 0);
         self.request_id = Some(request_id);
+        self.broker_request_id = None;
         self.multi = true;
         self.checked = vec![false; n];
         self.log_confirm = log_confirm;
@@ -113,12 +149,19 @@ impl SelectPopup {
     /// prompts are not: the agent is blocked waiting, and a stray keystroke
     /// must not hide the choices.
     pub fn filterable(&self) -> bool {
-        self.request_id.is_none()
+        self.request_id.is_none() && self.broker_request_id.is_none()
     }
 
-    /// Consume and return the pending request id, if this was agent-originated.
-    pub fn take_request_id(&mut self) -> Option<u64> {
-        self.request_id.take()
+    /// Consume and return the pending request id, if this was
+    /// agent-originated, in the protocol's own id space: the broker's
+    /// `RequestId` when the prompt arrived over the protocol, otherwise the
+    /// legacy responder's decimal id, as before.
+    pub fn take_request_id(&mut self) -> Option<tact_protocol::RequestId> {
+        self.broker_request_id.take().or_else(|| {
+            self.request_id
+                .take()
+                .map(|id| tact_protocol::RequestId::from(id.to_string()))
+        })
     }
 
     /// Focused index for single-select (no side effects). No-op for multi.

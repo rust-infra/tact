@@ -4,6 +4,30 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — §6 的 View 半边（第一步）：TUI 弹窗成为 broker 客户端，select 类 Kernel prompt 不再被静默丢弃
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat + fix（行为变化：交互会话里由 Kernel 发起的 `Select` / `MultiSelect` 现在会弹窗并可应答；此前被静默丢弃） |
+| **Related** | `crates/agent_tui_kit/src/state/select_popup.rs`、`crates/tui/src/widgets/state/app/agent.rs`、`crates/tui/src/handlers/select.rs`、`crates/tui/src/lib.rs` |
+
+**现象 / 动机：** broker 已装进交互宿主、`RespondInteraction` 也已路由给它，但弹窗只认**旧 responder 的十进制 id**：投影处写着 `let Ok(request_id) = request_id.as_str().parse::<u64>() else { return; };`——broker 的 `RequestId` 是不透明字符串，于是**整条 prompt 被 return 掉**，交互会话里 Kernel 发起的弹窗永远不会显示（`ARCHITECTURE.md` §15 记的就是这个缺口）。
+
+**决策：** 弹窗同时承载**两个 id 空间**，而不是把旧的换掉。`request_id: Option<u64>`（旧 UiResponder 数字空间，由它的 snapshot 对账写入）保持不变；新增 `broker_request_id: Option<RequestId>`（协议空间，由 `RuntimeEvent::InteractionRequested` 投影写入）。`take_request_id()` 改为返回**协议 id**：有 broker id 就优先用它，否则把旧的数字包成 `RequestId::from(n.to_string())`——这样两处应答点（`handlers/select.rs`）直接用回传的 id，旧路径一行行为都没变，现有数字断言全部不动。
+
+**顺带必须处理的两处不变量（否则新弹窗会被踩掉）：**
+- 投影不再丢弃非数字 id：能解析的走旧路径（队列/`set`/`set_multi`），不能解析的走新的 `set_broker(...)`，弹窗照常打开、只把 id 放进 broker 空间。
+- 快照对账（`reconcile_pending_selects`）在 broker 弹窗打开时**直接返回**：旧 responder 的 snapshot 里没有它，若按“无弹窗”处理就会把用户正看着的 prompt 覆盖掉。同理 `restore_pending_select_mode` 的“有待答弹窗”判据与 Esc 的 `was_agent` 都把 broker 字段算进来。
+
+**测试：** 新增 `runtime_broker_interaction_opens_the_popup_in_the_broker_id_space`（非数字 id → 弹窗打开、数字空间保持为空、`broker_request_id` 即应答将携带的 id、且 agent prompt 不可被键盘过滤）；`tui`/`agent_tui_kit` 既有 655 条 lib 测试全过（旧数字路径未变）。
+
+**改后行为：** 交互会话里 Kernel 的 `Select` / `MultiSelect` 会显示并可应答；`Input` 仍不渲染（缺文本输入模式，是下一步）。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2944 → 2945 passed / 0 failed / 22 ignored**（+1 测试）。
+
+**Pointers:** `crates/agent_tui_kit/src/state/select_popup.rs::{broker_request_id, set_broker, take_request_id}`、`crates/tui/src/widgets/state/app/agent.rs`（投影 + 对账的两处不变量）、设计/状态 `ARCHITECTURE.md` §15。
+
+
 ## 1. 2026-10-11 — headless 成为会重连的事件客户端：`--events` 按序号输出 NDJSON，lag 时用 `replay_from` 补齐
 
 | Field | Value |

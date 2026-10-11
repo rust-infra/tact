@@ -142,7 +142,9 @@ impl App {
     /// never be answered and its waiter hangs forever. Any agent update that
     /// reset the mode while a request is outstanding is corrected here.
     fn restore_pending_select_mode(&mut self) {
-        if self.select.request_id.is_some() && !matches!(self.input_mode, InputMode::Select) {
+        if (self.select.request_id.is_some() || self.select.broker_request_id.is_some())
+            && !matches!(self.input_mode, InputMode::Select)
+        {
             self.input_mode = InputMode::Select;
         }
     }
@@ -172,6 +174,12 @@ impl App {
         &mut self,
         pending: &[tact_extensions::ui_responder::PendingUiRequest],
     ) {
+        // A broker prompt is not part of the legacy responder's snapshot, so a
+        // snapshot pass must never treat it as "no popup open" and overwrite it.
+        if self.select.broker_request_id.is_some() {
+            return;
+        }
+
         if let Some(current_id) = self.select.request_id {
             if pending
                 .iter()
@@ -511,28 +519,41 @@ impl App {
                     // answer; the popup is reconciled from its snapshot.
                     _ => return,
                 };
-                // The popup keys on the in-process numeric id; the protocol's
-                // `RequestId` is that number as a decimal string.
-                let Ok(request_id) = request_id.as_str().parse::<u64>() else {
-                    return;
-                };
+                // A protocol `RequestId` belongs to whichever space issued it:
+                // the legacy in-process responder's ids are decimal, while a
+                // broker-raised prompt carries an opaque id the numeric field
+                // cannot hold. Dropping the latter is exactly what used to
+                // make a Kernel prompt invisible in the interactive host.
+                let legacy_id = request_id.as_str().parse::<u64>().ok();
                 if self.pending_ui.is_none() {
                     self.select_kind = SelectKind::Agent;
-                    if self.select.request_id.is_some() {
-                        // Legacy path: the event itself is authoritative.
-                        self.pending_agent_selects.push_back(AgentSelectRequest {
-                            prompt,
-                            options,
-                            request_id,
-                            multi,
-                            log_confirm,
-                        });
-                    } else if multi {
-                        self.select.set_multi(prompt, options, request_id, false);
-                        self.input_mode = InputMode::Select;
-                    } else {
-                        self.select.set(prompt, options, request_id, log_confirm);
-                        self.input_mode = InputMode::Select;
+                    match legacy_id {
+                        Some(legacy_id) => {
+                            if self.select.request_id.is_some() {
+                                // Legacy path: the event itself is authoritative.
+                                self.pending_agent_selects.push_back(AgentSelectRequest {
+                                    prompt,
+                                    options,
+                                    request_id: legacy_id,
+                                    multi,
+                                    log_confirm,
+                                });
+                            } else if multi {
+                                self.select.set_multi(prompt, options, legacy_id, false);
+                                self.input_mode = InputMode::Select;
+                            } else {
+                                self.select.set(prompt, options, legacy_id, log_confirm);
+                                self.input_mode = InputMode::Select;
+                            }
+                        }
+                        // A broker prompt: show it in the broker's own id
+                        // space, so the answer returns to the broker (the
+                        // driver routes `RespondInteraction` there first).
+                        None => {
+                            self.select
+                                .set_broker(prompt, options, request_id, multi, log_confirm);
+                            self.input_mode = InputMode::Select;
+                        }
                     }
                 }
                 // Broker path: this request is only a wake-up hint; the actual
