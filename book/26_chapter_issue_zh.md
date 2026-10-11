@@ -4,6 +4,30 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — 发版 v1.1.39：清单版本 1.1.38 → 1.1.39，与本次的子代理视图改动一起进 PR
+
+| Field | Value |
+|-------|-------|
+| **Type** | release（用户可见：`--version` 与升级接口报 1.1.39；`v1.1.39` 触发 `release.yml`，五个平台产出 `tact-ui-v1.1.39-*` 与 `SHA256SUMS`） |
+| **Related** | `Cargo.toml`（`[workspace.package].version`）、`Cargo.lock`（四个包条目）、`README.md`（徽章 + 发版命令片段）；`.github/workflows/release.yml` |
+
+**现象 / 动机：** v1.1.38 之后合入的改动里，子代理那笔是**用户可见的行为变化**（弹窗 → 视图、块可展开 / 可拖选、运行中的阶段行会转），但清单仍停在 `1.1.38`：本地 build 的 `--version`、`crates/tact/src/upgrade.rs`（`env!("CARGO_PKG_VERSION")`）与 `USER_AGENT` 都会对着一个已经打过的 tag 报版本。
+
+**决策：** 把清单推到 **1.1.39**，与子代理视图那笔改动**放进同一个 PR**（沿用 v1.1.38 定下的规矩：tag 与它引用的提交在同一个 PR 里，`v1.1.39` 打在**合并后的 `main` 提交**上）。
+
+- **`1.1.39` 无碰撞**：`v1.1.39` 这个 tag 本地与 `origin` 都没有，直接递增即可，不需要跳号。
+- `Cargo.lock` 的四个条目（`tact` / `tact-ui` / `tact_llm` / `tool_refactor_macros`，均为 `version.workspace = true`）随清单一起提升；`tact_protocol` / `agent_tui_kit` 是独立版本包（`0.1.0`），**不动**。
+- README 徽章与「发版」两行命令同步到 `v1.1.39`——那两行是照抄即用的指令，留在旧版本号上会把人引导去打一个已存在的 tag。
+- **tag 不在这笔提交上打**：`v1.1.39` 指向合并后的 `main` 提交；打在分支提交上会让 tag 引用一个不在 `main` 的提交（v1.1.38 的教训）。
+
+**改后行为：** `tact-ui --version` 报 1.1.39；`upgrade` 的 UA 与自报版本一致；推送 `v1.1.39` 触发 `release.yml`，五个 target 构建并发布 Release。
+
+**Verification：** `git diff Cargo.lock` 只有四条 `version = "1.1.x"` 行变化，无依赖增删（`cargo metadata --locked` 通过）；`scripts/check-rust.sh` 全绿。
+
+**Pointers:** `Cargo.toml`、`Cargo.lock`、`README.md`、`.github/workflows/release.yml`。
+
+---
+
 ## 1. 2026-10-11 — subagent 从弹窗改成「视图」：主区域整块换、面包屑退层、被封顶的块自己就是展开键
 
 | Field | Value |
