@@ -41,6 +41,30 @@
 
 ---
 
+## 1. 2026-10-11 — 发版 v1.1.40：清单版本 1.1.39 → 1.1.40，与本次的 skill 目录预算改动一起进 PR
+
+| Field | Value |
+|-------|-------|
+| **Type** | release（用户可见：`--version` 与升级接口报 1.1.40；`v1.1.40` 触发 `release.yml`，五个平台产出 `tact-ui-v1.1.40-*` 与 `SHA256SUMS`） |
+| **Related** | `Cargo.toml`（`[workspace.package].version`）、`Cargo.lock`（四个包条目）、`README.md`（徽章 + 发版命令片段）；`.github/workflows/release.yml` |
+
+**现象 / 动机：** v1.1.39 之后合入的改动里，skill 目录那笔是**用户可见的行为变化**（`# Available skills` 默认小了约一半、`<skill>` 块多了 `dir`、新增 `/skill disable|enable` 两个子命令及其补全），但清单仍停在 `1.1.39`：本地 build 的 `--version`、`crates/tact/src/upgrade.rs`（`env!("CARGO_PKG_VERSION")`）与 `USER_AGENT` 都会对着一个已经打过的 tag 报版本。
+
+**决策：** 把清单推到 **1.1.40**，与 skill 目录预算那笔改动**放进同一个 PR**（沿用 v1.1.38 定下的规矩：tag 与它引用的提交在同一个 PR 里，`v1.1.40` 打在**合并后的 `main` 提交**上）。
+
+- **`1.1.40` 无碰撞**：`v1.1.40` 这个 tag 本地与 `origin` 都没有（`origin` 上最新是 `v1.1.39`），直接递增即可，不需要跳号。
+- `Cargo.lock` 的四个条目（`tact` / `tact-ui` / `tact_llm` / `tool_refactor_macros`，均为 `version.workspace = true`）随清单一起提升；`tact_protocol` / `agent_tui_kit` 是独立版本包（`0.1.0`），**不动**。
+- README 徽章与「发版」两行命令同步到 `v1.1.40`——那两行是照抄即用的指令，留在旧版本号上会把人引导去打一个已存在的 tag。
+- **tag 不在这笔提交上打**：`v1.1.40` 指向合并后的 `main` 提交；打在分支提交上会让 tag 引用一个不在 `main` 的提交（v1.1.38 的教训）。
+
+**改后行为：** `tact-ui --version` 报 1.1.40；`upgrade` 的 UA 与自报版本一致；推送 `v1.1.40` 触发 `release.yml`，五个 target 构建并发布 Release。
+
+**Verification：** `git diff Cargo.lock` 只有四条 `version = "1.1.x"` 行变化，无依赖增删（`cargo metadata --locked` 通过，且**没有再改写 `Cargo.lock`**——说明手改的四条正是 cargo 期望的内容）；`scripts/check-rust.sh` 全绿。
+
+**Pointers:** `Cargo.toml`、`Cargo.lock`、`README.md`、`.github/workflows/release.yml`。
+
+---
+
 ## 1. 2026-10-11 — 发版 v1.1.39：清单版本 1.1.38 → 1.1.39，与本次的子代理视图改动一起进 PR
 
 | Field | Value |
