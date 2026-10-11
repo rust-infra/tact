@@ -2,17 +2,19 @@
 //!
 //! The `.codex-plugin/plugin.json` an installed package already carries may add
 //! a `runtime` object naming a program to spawn. At session bootstrap every such
-//! plugin is started through [`StdioPluginHost`], the capabilities it declares at
-//! handshake are registered on the session's serving router, and its manifest is
-//! registered in the session's Kernel plugin registry; the session stops it at
-//! teardown. The manifest names the command, so one stdio path serves a Node
-//! plugin (`node index.mjs`), a configured WASM runner, and a compiled binary
-//! alike — the language host crates stay thin layers over the same envelope
-//! protocol.
+//! plugin is started through [`StdioPluginHost`], its non-`Tool` capabilities are
+//! registered on the session's serving router, and its manifest is registered in
+//! the session's Kernel plugin registry; the session stops it at teardown. The
+//! manifest names the command, so one stdio path serves a Node plugin
+//! (`node index.mjs`), a configured WASM runner, and a compiled binary alike —
+//! the language host crates stay thin layers over the same envelope protocol.
 //!
-//! Nothing here makes a plugin capability a model-visible tool: tool dispatch is
-//! a separate per-wave path. A hosted capability is reachable through the serving
-//! router, which is the product path for the `Command` / `App` kinds.
+//! A capability of kind `Tool` is different from the rest: it *is* a
+//! model-visible tool, so it does not go on the serving router at all. The Agent
+//! registers it on the per-wave tool router, which is the one path that carries
+//! the tool preflight (sensitive-target guard, one-use approval ticket). The
+//! other kinds — `Command`, `App`, `Service`, … — stay serving-router
+//! capabilities, which is their product path.
 
 use std::{
     fs,
@@ -23,10 +25,13 @@ use std::{
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use tact::{CapabilityRouter, KernelError, PluginRegistry, RuntimePluginManifest};
-use tact_plugin_host::{DenyHostCalls, PluginHost, StdioPluginHost, register_host_with_router};
-use tact_protocol::{PluginId, ProtocolVersion};
+use tact_plugin_host::{
+    DenyHostCalls, PluginHost, StdioPluginHost, register_host_serving_capabilities_with_router,
+    register_host_tools_with_router,
+};
+use tact_protocol::{CapabilityDeclaration, CapabilityKind, PluginId, ProtocolVersion};
 
-use crate::consts::PluginHome;
+use crate::{ToolSpec, consts::PluginHome};
 
 use super::PluginStore;
 
@@ -169,6 +174,15 @@ pub struct HostedPlugins {
     /// The session registry, kept so `shutdown` can mark each plugin stopped.
     /// `None` until `register` runs.
     registry: Option<PluginRegistry>,
+    /// The `Tool`-kind declarations the kept hosts announced, cached at
+    /// [`Self::register`] time.
+    ///
+    /// Cached because the two readers of it must not lock a host: the Agent's
+    /// per-request tool-spec rebuild is sync and runs on the request path, and
+    /// preflight needs a tool's declared risk to pick its permission tier.
+    /// Taking the host lock per request would also serialize the turn behind a
+    /// plugin that is mid-call.
+    tool_declarations: Vec<CapabilityDeclaration>,
 }
 
 impl HostedPlugins {
@@ -197,6 +211,7 @@ impl HostedPlugins {
             hosts,
             notices,
             registry: None,
+            tool_declarations: Vec::new(),
         }
     }
 
@@ -210,17 +225,18 @@ impl HostedPlugins {
     ///
     /// `start` uses it once each host has handshaken; a test injects a
     /// [`PluginHost`] double through it so registration runs through the same
-    /// [`register_host_with_router`] path production does.
+    /// registration path production does.
     #[must_use]
     pub fn from_hosts(hosts: Vec<HostedPlugin>) -> Self {
         Self {
             hosts,
             notices: Vec::new(),
             registry: None,
+            tool_declarations: Vec::new(),
         }
     }
 
-    /// Registers each host's manifest and capabilities on the session.
+    /// Registers each host's manifest and non-`Tool` capabilities on the session.
     ///
     /// The manifest registers first: a duplicate plugin id is caught before the
     /// router is touched, so there is nothing to roll back. If capability
@@ -229,6 +245,12 @@ impl HostedPlugins {
     /// capability is not left running, and the router's duplicate rules stay
     /// intact. Either failure is recorded, never returned: the rest of the
     /// session must still start.
+    ///
+    /// `Tool`-kind capabilities are *not* registered here — see
+    /// [`Self::register_tools`] and
+    /// [`register_host_serving_capabilities_with_router`] — but they are cached
+    /// out of the kept manifests so the sync spec rebuild and preflight can read
+    /// them without a lock.
     pub async fn register(&mut self, router: &CapabilityRouter, registry: &PluginRegistry) {
         self.registry = Some(registry.clone());
         let mut kept = Vec::with_capacity(self.hosts.len());
@@ -244,7 +266,72 @@ impl HostedPlugins {
                 }
             }
         }
+        self.tool_declarations = kept
+            .iter()
+            .flat_map(|hosted| hosted.manifest.capabilities.iter())
+            .filter(|declaration| declaration.kind == CapabilityKind::Tool)
+            .cloned()
+            .collect();
         self.hosts = kept;
+    }
+
+    /// The model-visible specs for the plugin-declared `Tool` capabilities.
+    ///
+    /// Derived from the cached declarations rather than the host so the Agent's
+    /// tool-list rebuild stays sync (it runs once per request, and the tool list
+    /// is sent per request).
+    #[must_use]
+    pub fn tool_specs(&self) -> Vec<ToolSpec> {
+        self.tool_declarations.iter().map(tool_spec_for).collect()
+    }
+
+    /// The `Tool`-kind declaration named `name`, if a hosted plugin announced
+    /// one.
+    ///
+    /// Preflight reads the declared risk off this: a plugin tool must be
+    /// classified by the tier its author declared, not by a default.
+    #[must_use]
+    pub fn tool_declaration(&self, name: &str) -> Option<&CapabilityDeclaration> {
+        self.tool_declarations
+            .iter()
+            .find(|declaration| declaration.name == name)
+    }
+
+    /// Registers every plugin-declared `Tool` capability on the wave's tool
+    /// router, next to the native and MCP tools.
+    ///
+    /// Returns one line per host whose tools could not be registered instead of
+    /// failing the caller: registration is a single atomic batch, so the only
+    /// realistic failure is a name clash, and a clashing plugin must not stop the
+    /// turn's other tools from running. The lines are the same non-fatal kind the
+    /// bootstrap drains from [`Self::notice_lines`]; they are returned rather than
+    /// pushed because a wave has no notice channel of its own and the caller is
+    /// the one that can emit them.
+    pub async fn register_tools(&self, router: &CapabilityRouter) -> Vec<String> {
+        let mut failures = Vec::new();
+        for hosted in &self.hosts {
+            if hosted
+                .manifest
+                .capabilities
+                .iter()
+                .all(|declaration| declaration.kind != CapabilityKind::Tool)
+            {
+                continue;
+            }
+            if let Err(error) = register_host_tools_with_router(
+                Arc::clone(&hosted.host),
+                router,
+                Arc::new(DenyHostCalls),
+            )
+            .await
+            {
+                failures.push(format!(
+                    "plugin {} tools were not registered: {error}",
+                    hosted.manifest.id
+                ));
+            }
+        }
+        failures
     }
 
     /// The startup and registration findings, in the order they occurred, for
@@ -292,48 +379,59 @@ fn register_host(
     hosted: &HostedPlugin,
 ) -> Result<(), KernelError> {
     registry.register(hosted.manifest.clone())?;
-    if let Err(error) =
-        register_host_with_router(Arc::clone(&hosted.host), router, Arc::new(DenyHostCalls))
-    {
+    if let Err(error) = register_host_serving_capabilities_with_router(
+        Arc::clone(&hosted.host),
+        router,
+        Arc::new(DenyHostCalls),
+    ) {
         registry.unregister(&hosted.manifest.id).ok();
         return Err(error);
     }
     registry.start(&hosted.manifest.id)
 }
 
+/// The LLM-facing spec for one plugin `Tool` declaration.
+///
+/// `input_schema` is optional in the protocol but not on the wire: a function
+/// tool without a parameter object is malformed, so an absent schema becomes the
+/// empty object schema rather than `null`.
+fn tool_spec_for(declaration: &CapabilityDeclaration) -> ToolSpec {
+    ToolSpec {
+        name: declaration.name.clone(),
+        description: declaration.description.clone(),
+        input_schema: declaration
+            .input_schema
+            .clone()
+            .unwrap_or_else(|| serde_json::json!({ "type": "object", "properties": {} })),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use std::{
-        collections::BTreeMap,
-        fs,
-        sync::atomic::{AtomicBool, Ordering},
-        time::Duration,
-    };
+    use std::{collections::BTreeMap, fs, sync::atomic::Ordering, time::Duration};
 
     use async_trait::async_trait;
     use serde_json::{Value, json};
     use tact::{
         InvocationContext, PermissionService, PluginState, RuntimeContext, RuntimeServices,
     };
-    use tact_protocol::{
-        CapabilityDeclaration, CapabilityKind, CapabilityRisk, PluginRequest, PluginResponse,
-        RequestId,
-    };
+    use tact_protocol::{CapabilityDeclaration, CapabilityKind, CapabilityRisk, RequestId};
     use tempfile::tempdir;
 
     use super::*;
+    use crate::plugin::test_support::{declaration as declaration_of, hosted, hosted_double};
     use crate::plugin::{InstalledPlugin, InstalledState};
 
+    /// A serving capability (`Command` kind): the class that stays on the
+    /// serving router.
     fn declaration(name: &str) -> CapabilityDeclaration {
-        CapabilityDeclaration {
-            name: name.into(),
-            kind: CapabilityKind::Command,
-            version: "1".into(),
-            description: None,
-            input_schema: None,
-            output_schema: None,
-            risk: CapabilityRisk::ReadOnly,
-        }
+        declaration_of(name, CapabilityKind::Command, CapabilityRisk::ReadOnly)
+    }
+
+    /// A model-visible tool: the class that must *not* stay on the serving
+    /// router.
+    fn tool_declaration(name: &str, risk: CapabilityRisk) -> CapabilityDeclaration {
+        declaration_of(name, CapabilityKind::Tool, risk)
     }
 
     /// Writes `<root>/.codex-plugin/plugin.json` with the given body.
@@ -524,82 +622,9 @@ mod tests {
 
     // ── registration wiring with a host double ──────────────────────────
 
-    /// A `PluginHost` double. Registration reaches it through the *production*
-    /// path (`register_host_with_router`), so this exercises the same code a
-    /// spawned stdio host would.
-    struct DoubleHost {
-        id: PluginId,
-        capabilities: Vec<CapabilityDeclaration>,
-        state: PluginState,
-        stopped: Arc<AtomicBool>,
-    }
-
-    impl DoubleHost {
-        fn new(id: &str, capabilities: Vec<CapabilityDeclaration>) -> Self {
-            Self {
-                id: PluginId::from(id),
-                capabilities,
-                state: PluginState::Running,
-                stopped: Arc::new(AtomicBool::new(false)),
-            }
-        }
-    }
-
-    #[async_trait]
-    impl PluginHost for DoubleHost {
-        fn plugin_id(&self) -> &PluginId {
-            &self.id
-        }
-
-        fn protocol(&self) -> ProtocolVersion {
-            ProtocolVersion::CURRENT
-        }
-
-        fn capabilities(&self) -> &[CapabilityDeclaration] {
-            &self.capabilities
-        }
-
-        fn state(&self) -> PluginState {
-            self.state
-        }
-
-        async fn request(&mut self, request: PluginRequest) -> anyhow::Result<PluginResponse> {
-            match request {
-                PluginRequest::Invoke { capability, input } => Ok(PluginResponse::Result {
-                    output: json!({ "capability": capability, "echo": input }),
-                }),
-                PluginRequest::Shutdown => Ok(PluginResponse::Result {
-                    output: Value::Null,
-                }),
-                other => Err(anyhow::anyhow!("double cannot handle {other:?}")),
-            }
-        }
-
-        async fn shutdown(&mut self) -> anyhow::Result<()> {
-            self.state = PluginState::Stopped;
-            self.stopped.store(true, Ordering::SeqCst);
-            Ok(())
-        }
-    }
-
-    /// Builds a hosted double plus the flag its stop records.
-    fn hosted_double(
-        id: &str,
-        capabilities: Vec<CapabilityDeclaration>,
-    ) -> (HostedPlugin, Arc<AtomicBool>) {
-        let double = DoubleHost::new(id, capabilities);
-        let stopped = Arc::clone(&double.stopped);
-        let manifest = RuntimePluginManifest {
-            id: double.id.clone(),
-            version: "1".into(),
-            protocol: ProtocolVersion::CURRENT,
-            capabilities: double.capabilities.clone(),
-            dependencies: Vec::new(),
-        };
-        let host: Arc<tokio::sync::Mutex<dyn PluginHost>> =
-            Arc::new(tokio::sync::Mutex::new(double));
-        (HostedPlugin::new(host, manifest), stopped)
-    }
+    // The double itself lives in `plugin::test_support`: the Agent's
+    // tool-dispatch tests drive it through the same registration path, so one
+    // double serves both rather than two look-alikes.
 
     fn registry() -> PluginRegistry {
         PluginRegistry::new(ProtocolVersion::CURRENT)
@@ -718,5 +743,126 @@ mod tests {
 
         assert_eq!(output["capability"], json!("acme.echo.run"));
         assert_eq!(output["echo"], json!({ "hello": "world" }));
+    }
+
+    // ── `Tool` capabilities are tool-router capabilities ────────────────
+
+    /// The whole point of the split: a `Tool` declaration is a model-visible
+    /// tool, so the serving router must not carry it — that router's policy is
+    /// the capability policy, and a tool reaching it would skip the tool
+    /// preflight (sensitive-target guard, one-use approval ticket) entirely.
+    /// The non-`Tool` declaration is the control: it stays serving, which is its
+    /// product path.
+    #[tokio::test]
+    async fn a_tool_capability_stays_off_the_serving_router_but_a_command_does_not() {
+        let router = CapabilityRouter::new();
+        let mut hosted = hosted(
+            "acme.echo",
+            vec![
+                tool_declaration("acme.echo.search", CapabilityRisk::ReadOnly),
+                declaration("acme.echo.run"),
+            ],
+        );
+
+        hosted.register(&router, &registry()).await;
+
+        assert!(
+            router.describe("acme.echo.run").is_some(),
+            "a Command capability is a serving-router capability"
+        );
+        assert!(
+            router.describe("acme.echo.search").is_none(),
+            "a Tool capability must not be reachable as a serving capability"
+        );
+        assert_eq!(hosted.notice_lines().count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_tool_capability_becomes_a_tool_spec_and_an_invocable_wave_capability() {
+        let mut hosted = hosted(
+            "acme.echo",
+            vec![
+                tool_declaration("acme.echo.search", CapabilityRisk::ReadOnly),
+                declaration("acme.echo.run"),
+            ],
+        );
+        hosted.register(&CapabilityRouter::new(), &registry()).await;
+
+        // The model sees it...
+        let specs = hosted.tool_specs();
+        assert_eq!(specs.len(), 1, "only the Tool declaration is a tool spec");
+        assert_eq!(specs[0].name, "acme.echo.search");
+        assert_eq!(
+            specs[0].input_schema,
+            json!({ "type": "object", "properties": {} }),
+            "an absent input schema must still be a usable object schema"
+        );
+        // ...and preflight can classify it by the risk its author declared.
+        assert_eq!(
+            hosted
+                .tool_declaration("acme.echo.search")
+                .map(|declaration| declaration.risk),
+            Some(CapabilityRisk::ReadOnly)
+        );
+        assert!(hosted.tool_declaration("acme.echo.run").is_none());
+
+        // ...and it is invocable on the per-wave tool router.
+        let wave = RuntimeContext::with_services(
+            CapabilityRouter::new(),
+            RuntimeServices::with_permission(Arc::new(AllowAll)),
+        );
+        assert!(hosted.register_tools(wave.router()).await.is_empty());
+        let output = tokio::time::timeout(
+            Duration::from_secs(5),
+            wave.router().invoke(
+                "acme.echo.search",
+                wave.invocation(
+                    RequestId::from("tool-request"),
+                    PluginId::from("tact.agent"),
+                    "agent",
+                ),
+                json!({ "query": "rust" }),
+            ),
+        )
+        .await
+        .expect("invocation is bounded")
+        .expect("the plugin tool answers on the wave router");
+
+        assert_eq!(output["content"], json!("plugin:acme.echo.search"));
+        assert_eq!(output["echo"], json!({ "query": "rust" }));
+    }
+
+    /// One plugin whose tools clash with an existing name must not stop the
+    /// others: the failure is reported, and the rest of the batch still lands.
+    #[tokio::test]
+    async fn a_clashing_plugin_tool_is_reported_without_failing_the_others() {
+        let wave = CapabilityRouter::new();
+        let mut clashing = hosted(
+            "acme.clashing",
+            vec![tool_declaration("acme.taken", CapabilityRisk::ReadOnly)],
+        );
+        clashing
+            .register(&CapabilityRouter::new(), &registry())
+            .await;
+        let mut healthy = hosted(
+            "acme.healthy",
+            vec![tool_declaration("acme.free", CapabilityRisk::ReadOnly)],
+        );
+        healthy
+            .register(&CapabilityRouter::new(), &registry())
+            .await;
+
+        // Something else already owns `acme.taken` on this router.
+        wave.register_handler(
+            declaration("acme.taken"),
+            tact::FnCapabilityHandler::new(|_, _| async { Ok(Value::Null) }),
+        )
+        .unwrap();
+
+        let failures = clashing.register_tools(&wave).await;
+        assert_eq!(failures.len(), 1, "{failures:?}");
+        assert!(failures[0].contains("acme.clashing"), "{failures:?}");
+        assert!(healthy.register_tools(&wave).await.is_empty());
+        assert!(wave.describe("acme.free").is_some());
     }
 }

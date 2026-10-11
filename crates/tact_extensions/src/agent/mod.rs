@@ -471,7 +471,10 @@ pub struct Agent {
     /// Held by the Agent so it is stopped exactly when the session is: both
     /// frontends call [`Self::shutdown_hosted_plugins`] at teardown next to
     /// `shutdown_mcp`, so a plugin process never outlives the session. `None`
-    /// when the session hosts no plugin.
+    /// when the session hosts no plugin. It is also the source of the plugin
+    /// `Tool` capability declarations — the model-visible spec list and
+    /// preflight's risk lookup both read them from here, and the per-wave tool
+    /// router is where they are invoked.
     pub hosted_plugins: Option<crate::plugin::HostedPlugins>,
 }
 
@@ -580,13 +583,19 @@ impl Agent {
 
     /// Attach the installed plugins the session is hosting.
     ///
-    /// The bootstrap starts them and registers their capabilities on the serving
-    /// router; the Agent keeps the handle so both frontends stop them at
-    /// teardown. Separate from `with_serving_context` because the hosts are a
+    /// The bootstrap starts them and registers their capabilities — the
+    /// non-`Tool` kinds on the serving router, the `Tool` kind on the per-wave
+    /// tool router — and the Agent keeps the handle so both frontends stop them
+    /// at teardown. Separate from `with_serving_context` because the hosts are a
     /// lifecycle the Agent owns, not part of the serving context itself.
+    ///
+    /// The tool list is rebuilt here because the bootstrap attaches the plugins
+    /// *after* `Agent::new` has built it; a plugin tool has to reach the model
+    /// without waiting for an unrelated MCP refresh.
     #[must_use]
     pub fn with_hosted_plugins(mut self, hosted: crate::plugin::HostedPlugins) -> Self {
         self.hosted_plugins = Some(hosted);
+        self.rebuild_cached_tool_specs();
         self
     }
 
@@ -621,7 +630,12 @@ impl Agent {
     }
 
     /// Rebuild the cached tool specs from the native tools plus the current
-    /// MCP router. Called after any MCP router replacement.
+    /// MCP router and hosted plugins. Called after any MCP router replacement
+    /// and after the plugins are attached.
+    ///
+    /// Sync on purpose: the tool list is sent per request. The plugin tools are
+    /// already cached as declarations on [`crate::plugin::HostedPlugins`], so
+    /// nothing here touches a host's mutex.
     fn rebuild_cached_tool_specs(&mut self) {
         let native_specs = if matches!(self.runtime.client, LlmProvider::OpenAiResponses(_)) {
             self.tools
@@ -641,6 +655,15 @@ impl Agent {
             .chain(self.mcp_router.resource_tool_specs())
             // Same rule for the prompt pair.
             .chain(self.mcp_router.prompt_tool_specs())
+            // Hosted plugins' `Tool`-kind capabilities are model-visible tools
+            // like any other, so they belong in the list the model is sent; the
+            // dispatch half is the per-wave router, not the serving one.
+            .chain(
+                self.hosted_plugins
+                    .as_ref()
+                    .map(crate::plugin::HostedPlugins::tool_specs)
+                    .unwrap_or_default(),
+            )
             .collect();
     }
 
@@ -2042,6 +2065,16 @@ impl Agent {
             .collect()
     }
 
+    /// The `Tool` capability a hosted plugin declared under `name`, if any.
+    ///
+    /// Preflight's resolution order is native → MCP → MCP resource/prompt →
+    /// plugin → unknown; this is the plugin lookup in that chain. The
+    /// declarations are cached on [`crate::plugin::HostedPlugins`] so this is a
+    /// scan of a small `Vec`, with no host lock on the preflight path.
+    fn plugin_tool_declaration(&self, name: &str) -> Option<&tact_protocol::CapabilityDeclaration> {
+        self.hosted_plugins.as_ref()?.tool_declaration(name)
+    }
+
     /// Returns all tool specs for the agent.
     pub fn all_tool_specs(&self) -> Vec<ToolSpec> {
         self.cached_tool_specs
@@ -3359,6 +3392,90 @@ mod tests {
                 .unwrap()
                 .contains("mcp:through-router")
         );
+    }
+
+    /// A plugin-declared `Tool` capability is a model-visible tool. Two halves,
+    /// both required: it reaches the tool list the model is sent (the plugin
+    /// specs are rebuilt when the plugins are attached, so no unrelated MCP
+    /// refresh is needed), and it is invoked through the same per-wave router as
+    /// a native or MCP tool — not through the serving router, which would skip
+    /// the tool preflight.
+    #[tokio::test]
+    async fn a_hosted_plugin_tool_reaches_the_model_and_dispatches_through_the_wave_router() {
+        ensure_config();
+        use crate::plugin::test_support::{declaration, hosted};
+        use serde_json::json;
+        use tact_protocol::{CapabilityKind, CapabilityRisk, ProtocolVersion};
+
+        let mut plugins = hosted(
+            "acme.echo",
+            vec![
+                declaration(
+                    "acme.echo.search",
+                    CapabilityKind::Tool,
+                    CapabilityRisk::ReadOnly,
+                ),
+                // The control: a non-`Tool` capability is not a tool.
+                declaration(
+                    "acme.echo.run",
+                    CapabilityKind::Command,
+                    CapabilityRisk::ReadOnly,
+                ),
+            ],
+        );
+        plugins
+            .register(
+                &tact::CapabilityRouter::new(),
+                &tact::PluginRegistry::new(ProtocolVersion::CURRENT),
+            )
+            .await;
+
+        let mock = MockClient::new(vec![
+            (
+                vec![ContentBlock::ToolUse {
+                    id: "plugin-call-1".into(),
+                    name: "acme.echo.search".into(),
+                    input: json!({ "query": "rust" }),
+                }],
+                Some(StopReason::ToolUse),
+            ),
+            (vec![make_text_block("done")], Some(StopReason::EndTurn)),
+        ]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("plugin_tool_wave"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".into()),
+        )
+        .with_hosted_plugins(plugins);
+
+        let names: Vec<String> = agent
+            .all_tool_specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        assert!(
+            names.iter().any(|name| name == "acme.echo.search"),
+            "the plugin tool is in the list the model is sent"
+        );
+        assert!(
+            !names.iter().any(|name| name == "acme.echo.run"),
+            "a Command capability is not a model-visible tool"
+        );
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "call the plugin tool")))
+            .await
+            .expect("agent loop should finish");
+
+        let result = tool_result_for(&agent.runtime.context, "plugin-call-1")
+            .expect("the plugin tool answered");
+        assert!(result.contains("plugin:acme.echo.search"), "{result}");
     }
 
     #[tokio::test]

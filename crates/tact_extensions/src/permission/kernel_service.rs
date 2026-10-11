@@ -49,7 +49,12 @@ impl PermissionManagerService {
         }
     }
 
-    fn risk(risk: ProtocolRisk) -> CapabilityRisk {
+    /// The protocol's five risk tiers mapped onto this crate's three.
+    ///
+    /// `pub(crate)` because the tool preflight classifies a hosted plugin's
+    /// `Tool` declaration by the same rule: one mapping, so the tool path and
+    /// the serving path can never disagree about how risky a declaration is.
+    pub(crate) fn risk(risk: ProtocolRisk) -> CapabilityRisk {
         match risk {
             ProtocolRisk::ReadOnly | ProtocolRisk::Low => CapabilityRisk::Read,
             ProtocolRisk::Medium => CapabilityRisk::Write,

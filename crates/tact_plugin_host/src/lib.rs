@@ -16,7 +16,11 @@ mod transport;
 pub use host::PluginHost;
 pub use inprocess::InProcessPluginHost;
 pub use process::PluginProcess;
-pub use runtime::{DenyHostCalls, HostCallService, StdioPluginHost, register_host_with_router};
+pub use runtime::{
+    DenyHostCalls, HostCallService, StdioPluginHost,
+    register_host_serving_capabilities_with_router, register_host_tools_with_router,
+    register_host_with_router,
+};
 pub use transport::make_envelope;
 
 /// Default bound for a single host RPC, and the startup/shutdown budgets.

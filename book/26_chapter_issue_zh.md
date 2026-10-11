@@ -4,6 +4,31 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — 插件声明的 `Tool` 能力成为模型可见工具：改走逐波 tool router，serving router 不再承载工具
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat + fix（行为变化：声明 `Tool` 的托管插件会出现在模型工具列表里，并受工具 preflight 约束；只声明 `Command` / `App` 的插件行为不变） |
+| **Related** | `crates/tact_plugin_host/src/runtime.rs`、`crates/tact_extensions/src/{plugin/runtime.rs,plugin/test_support.rs,agent/mod.rs,agent/tool_dispatch.rs,permission/kernel_service.rs}` |
+
+**现象 / 动机：** 托管插件（`.codex-plugin/plugin.json` 的 `runtime` 半）握手时声明的**所有**能力此前一律注册到 serving router。对 `Tool` 而言这是错的：工具的执行路径是 Agent 的**逐波 tool router**，那里才有 tool preflight —— 敏感目标拦截（sensitive-target guard）与一次性审批票据（one-use approval ticket）。把工具挂到 serving router 上等于绕开这两道闸：它既不在模型工具列表里（模型看不见，等于白声明），又能经 capability 路径被直接调用，从而跳过 guard 与票据。两半都要修：**不注册到 serving router**，**注册到逐波 router 并进入模型工具列表、preflight 按声明风险解析**。
+
+**决策与实现：**
+- **注册入口泛化（`tact_plugin_host`）**：抽出唯一的注册实现 `register_declared_capabilities(host, declarations, request_timeout, router, host_calls, keep: 谓词)`，三个公开入口只是谓词不同——`register_host_with_router`（全部，行为逐字不变）、`register_host_serving_capabilities_with_router`（非 `Tool`，bootstrap 用，仍是 `try_lock`：启动期宿主动被占用是排序 bug，应当报告）、`register_host_tools_with_router`（仅 `Tool`，**async**：逐波 router 建在回合热路径上，宿主可能刚返回一次调用而被 momentarily 锁住，此时应等待而不是把这一波判失败）。`own_capabilities` 仍取**全部**声明，所以「插件不能递归调用自己的能力」这条护栏与「注册到哪个 router」无关。
+- **缓存声明（`HostedPlugins`）**：`register` 只在 serving router 上注册非 `Tool` 能力，同时把 `Tool` 声明缓存成普通 `Vec` 字段 `tool_declarations`。原因：Agent 的工具列表重建是**同步**的、preflight 取风险也在请求路径上，二者都不能去锁宿主的 tokio Mutex（也会把回合排在正在跑调用的插件后面）。新增 `tool_specs()`（协议里 `input_schema` 可缺省，缺省补 `{"type":"object","properties":{}}`——线上一个没有参数对象的 function tool 是坏的）、`tool_declaration(name)`（preflight 取声明风险）、`register_tools(router) -> Vec<String>`（逐波注册）。
+- **逐波装配**：`run_tool_waves` 在 `register_tool_capabilities` 之后把插件工具注册到**同一个** router，于是插件工具与 native / MCP 工具走完全相同的波。注册失败（名字冲突，`register_many` 原子拒绝整批）**不**返回错误、不拖垮该轮：按 bootstrap notices 的同一口径收成一行文本，在该处发一条 `[plugin] …` 的 info 事件（波内没有 notice 通道，只能由调用方发出）。
+- **preflight 解析**：顺序变为 native → MCP → MCP resource → MCP prompt → **plugin** → unknown；新增 `ResolvedTool::Plugin { name, risk }`，风险取**插件声明的档位**（协议五档 → 本地三档，复用 `PermissionManagerService::risk`：原先私有，现 `pub(crate)`，不写第二份映射，免得 preflight 与 serving 路径对同一份声明给出不同风险）。`stable_name` / 风险分支 / 资源调度（barrier）同步补齐。
+- **敏感目标护栏**：插件工具与 MCP 工具属于同一类（第三方声明、本地没有可据以判定目标的 `sensitive_paths` 元数据），显式与 MCP 一起落在 `None` 分支并写明理由；其**结果**依旧脱敏。
+- **装配点**：`Agent::with_hosted_plugins` 现在会重建工具列表——bootstrap 是在 `Agent::new` **之后**挂载插件的，否则插件工具要等到一次偶然的 MCP 刷新才会出现在模型面前。
+
+**改后行为：** 声明 `Tool` 的托管插件：名字进入模型工具列表 → preflight 用声明风险走同一权限阶梯（`ReadOnly` → Read 在 Default 直接放行；`High` 在 Default 且无 UI 时拒绝）→ 与 native / MCP 工具同波经逐波 router 执行（票据校验）。该工具**不再**在 serving router 上可见。只声明 `Command` / `App` / `Service` 的插件：行为完全不变（仍在 serving router，仍是 `ServingPermission` 管辖）。
+
+**有意不做 / 已知边界：** 工具名原样使用（插件 `runtime.id` 形如 `acme.echo`，故工具名带点；上游 provider 对函数名的字符集约束由插件作者承担，本仓不做改名或命名空间包装）；guest host call 仍 `DenyHostCalls`；无重启 / 监管、无健康面板。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2908 → 2915 passed / 0 failed / 22 ignored**（46 套件，+7 测试：`plugin::runtime` +3（`Tool` 不进 serving router 而 `Command` 进、`Tool` 变成 spec 且在全新逐波 router 上可调用、重名只报告不连坐），`agent::tool_dispatch::tests` +3（按声明风险解析、`High` 在 Default 无 UI 下拒绝、与 MCP 一样跳过敏感目标护栏），`agent::tests` +1（工具列表含插件工具，且一整轮里 mock provider 调用插件工具并拿到结果））。
+
+**Pointers:** `crates/tact_plugin_host/src/runtime.rs::{register_host_serving_capabilities_with_router, register_host_tools_with_router, register_declared_capabilities}`、`crates/tact_extensions/src/plugin/runtime.rs::{HostedPlugins::register_tools, tool_specs, tool_declaration}`、`crates/tact_extensions/src/agent/tool_dispatch.rs`（`ResolvedTool::Plugin`、preflight 解析顺序）、`crates/tact_extensions/src/agent/mod.rs::{rebuild_cached_tool_specs, with_hosted_plugins}`、设计 `docs/superpowers/specs/2026-10-11-hosted-runtime-plugins-design.md`（Non-goals 已被本条取代）。
+
 ## 1. 2026-10-11 — 已安装插件可被托管为运行时扩展：插件宿主边界终于有了生产调用者
 
 | Field | Value |

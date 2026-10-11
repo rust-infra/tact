@@ -12,8 +12,8 @@ use tact::{
 
 use crate::host::PluginHost;
 use tact_protocol::{
-    CapabilityDeclaration, ErrorCategory, PluginId, PluginRequest, PluginResponse, ProtocolVersion,
-    RequestId,
+    CapabilityDeclaration, CapabilityKind, ErrorCategory, PluginId, PluginRequest, PluginResponse,
+    ProtocolVersion, RequestId,
 };
 use tokio::{sync::Mutex, time::Instant};
 
@@ -439,8 +439,81 @@ pub fn register_host_with_router(
     router: &CapabilityRouter,
     host_calls: Arc<dyn HostCallService>,
 ) -> Result<(), KernelError> {
-    let (declarations, request_timeout) = host
-        .try_lock()
+    let (declarations, request_timeout) = try_declared_capabilities(&host)?;
+    register_declared_capabilities(
+        host,
+        declarations,
+        request_timeout,
+        router,
+        host_calls,
+        |_| true,
+    )
+}
+
+/// Registers a host's declared **serving** capabilities: everything that is not
+/// a [`CapabilityKind::Tool`].
+///
+/// A `Tool` declaration is deliberately kept *off* the serving router. A tool is
+/// dispatched through the Agent's per-wave tool router, and that is the only
+/// path carrying the tool preflight — the sensitive-target guard and the one-use
+/// approval ticket the tool router demands before a handler runs. Registering
+/// the same tool here as well would hand out exactly the authority those two
+/// checks exist to withhold: the serving router's policy is the *capability*
+/// policy (host control plane allow-listed, everything else by session policy),
+/// not the tool policy. This is the entry the hosted-plugin bootstrap uses for
+/// the `Command` / `App` / `Service` kinds.
+pub fn register_host_serving_capabilities_with_router(
+    host: Arc<Mutex<dyn PluginHost>>,
+    router: &CapabilityRouter,
+    host_calls: Arc<dyn HostCallService>,
+) -> Result<(), KernelError> {
+    let (declarations, request_timeout) = try_declared_capabilities(&host)?;
+    register_declared_capabilities(
+        host,
+        declarations,
+        request_timeout,
+        router,
+        host_calls,
+        |declaration| declaration.kind != CapabilityKind::Tool,
+    )
+}
+
+/// Registers only a host's [`CapabilityKind::Tool`] declarations on `router`,
+/// for the Agent's per-wave tool router.
+///
+/// Async, unlike the two bootstrap entries: the declarations live behind the
+/// host's `tokio::sync::Mutex`, and a tool router is built on the turn's hot
+/// path, where a host that is momentarily locked (its previous request has just
+/// returned) must be waited out rather than failed. "The host is busy" is a
+/// useful report at bootstrap and the wrong answer here.
+pub async fn register_host_tools_with_router(
+    host: Arc<Mutex<dyn PluginHost>>,
+    router: &CapabilityRouter,
+    host_calls: Arc<dyn HostCallService>,
+) -> Result<(), KernelError> {
+    let (declarations, request_timeout) = {
+        let host = host.lock().await;
+        (host.capabilities().to_vec(), host.request_timeout())
+    };
+    register_declared_capabilities(
+        host,
+        declarations,
+        request_timeout,
+        router,
+        host_calls,
+        |declaration| declaration.kind == CapabilityKind::Tool,
+    )
+}
+
+/// The declarations and request timeout of `host`, read without waiting.
+///
+/// Shared by the two bootstrap entries because neither may block on a host that
+/// is mid-request: a locked host at that point is a startup ordering bug to
+/// report, not a wait.
+fn try_declared_capabilities(
+    host: &Arc<Mutex<dyn PluginHost>>,
+) -> Result<(Vec<CapabilityDeclaration>, Duration), KernelError> {
+    host.try_lock()
         .map_err(|_| {
             KernelError::new(
                 ErrorCategory::InternalError,
@@ -449,7 +522,25 @@ pub fn register_host_with_router(
                 true,
             )
         })
-        .map(|host| (host.capabilities().to_vec(), host.request_timeout()))?;
+        .map(|host| (host.capabilities().to_vec(), host.request_timeout()))
+}
+
+/// The one registration body, shared by all three public entries: `keep`
+/// selects which declarations are registered, so "all", "serving only" and
+/// "tools only" differ by a predicate rather than by three copies of the
+/// handler wiring.
+fn register_declared_capabilities(
+    host: Arc<Mutex<dyn PluginHost>>,
+    declarations: Vec<CapabilityDeclaration>,
+    request_timeout: Duration,
+    router: &CapabilityRouter,
+    host_calls: Arc<dyn HostCallService>,
+    keep: impl Fn(&CapabilityDeclaration) -> bool,
+) -> Result<(), KernelError> {
+    // `own_capabilities` is the *whole* declared set, not the registered
+    // subset: the guard it feeds — "a plugin cannot recursively invoke its own
+    // capability" — is a property of the plugin, not of which router this
+    // registration targeted.
     let own_capabilities = Arc::new(
         declarations
             .iter()
@@ -458,6 +549,7 @@ pub fn register_host_with_router(
     );
     let registrations = declarations
         .into_iter()
+        .filter(keep)
         .map(|declaration| {
             let capability = declaration.name.clone();
             CapabilityRegistration::new(

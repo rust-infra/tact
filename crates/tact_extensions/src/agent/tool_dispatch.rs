@@ -130,6 +130,16 @@ enum ResolvedTool {
     McpPrompt {
         tool: crate::mcp::McpPromptTool,
     },
+    /// A capability a hosted plugin declared as kind `Tool`. It is a
+    /// third-party tool like an MCP one, but it is not discovered through an MCP
+    /// router: the declaration comes from the plugin handshake, and the risk it
+    /// carries is the one its author declared.
+    Plugin {
+        name: String,
+        /// Already mapped into this crate's three-tier [`CapabilityRisk`]; the
+        /// protocol's five tiers have no `Write` of their own.
+        risk: CapabilityRisk,
+    },
     Unknown {
         name: String,
     },
@@ -688,6 +698,10 @@ fn tool_resources_for(
             None => super::tool_schedule::ToolResources::barrier(),
         },
         ResolvedTool::McpPrompt { .. } => super::tool_schedule::ToolResources::barrier(),
+        // A plugin tool is arbitrary third-party code over an opaque schema:
+        // nothing here can prove what it touches, so it is a barrier exactly as
+        // an unknown MCP-backed tool is.
+        ResolvedTool::Plugin { .. } => super::tool_schedule::ToolResources::barrier(),
         ResolvedTool::Unknown { .. } => super::tool_schedule::ToolResources::barrier(),
     }
 }
@@ -838,6 +852,22 @@ impl Agent {
                         tool: crate::mcp::McpPromptTool::from_name(name)
                             .expect("guarded by is_mcp_prompt_tool"),
                     },
+                    // A hosted plugin's `Tool` capability resolves *after* MCP
+                    // and before the unknown fallthrough: it is a third-party
+                    // tool like an MCP one, and preflight is the only path that
+                    // carries the sensitive-target guard and the one-use
+                    // approval ticket the wave router checks. The risk is the
+                    // plugin author's declared tier, not a default.
+                    Ok(None) | Err(_) if self.plugin_tool_declaration(name).is_some() => {
+                        ResolvedTool::Plugin {
+                            name: name.clone(),
+                            risk: crate::permission::PermissionManagerService::risk(
+                                self.plugin_tool_declaration(name)
+                                    .expect("guarded by plugin_tool_declaration")
+                                    .risk,
+                            ),
+                        }
+                    }
                     Ok(None) | Err(_) => {
                         let msg = format!("unknown tool: {name}");
                         self.emit_update(runtime_event::step_added(tact_protocol::PlanStep::new(
@@ -918,6 +948,7 @@ impl Agent {
                 ResolvedTool::Mcp { full_name, .. } => full_name.as_str(),
                 ResolvedTool::McpResource { tool } => tool.name(),
                 ResolvedTool::McpPrompt { tool } => tool.name(),
+                ResolvedTool::Plugin { name, .. } => name.as_str(),
                 ResolvedTool::Unknown { name } => name.as_str(),
             };
             let risk = match &resolved {
@@ -930,6 +961,10 @@ impl Agent {
                 ResolvedTool::McpResource { tool } => crate::mcp::resource_tool_risk(*tool),
                 // Tact's own prompt tools: same rule, `[mcp]`'s prompt keys.
                 ResolvedTool::McpPrompt { tool } => crate::mcp::prompt_tool_risk(*tool),
+                // The plugin declared this one, so its tier is honoured as
+                // written (mapped into the three local tiers by the same
+                // function the Kernel service uses).
+                ResolvedTool::Plugin { risk, .. } => *risk,
                 ResolvedTool::Unknown { .. } => CapabilityRisk::High,
             };
 
@@ -948,9 +983,18 @@ impl Agent {
                 ResolvedTool::Native { metadata } => metadata
                     .permission
                     .sensitive(&tool_use.input, &self.runtime.security),
-                // MCP tools are third-party and High by default; no path field
-                // of theirs is known here. Their *results* are still redacted.
-                _ => None,
+                // Everything else is a third-party declaration — an MCP server's
+                // tool, one of Tact's MCP resource/prompt tools, or a hosted
+                // plugin's tool — and none of them carries local
+                // `sensitive_paths` metadata, so there is nothing here to
+                // classify a target with. A plugin tool is the same class as an
+                // MCP one and skips the guard for the same reason; its *result*
+                // is still redacted below.
+                ResolvedTool::Mcp { .. }
+                | ResolvedTool::McpResource { .. }
+                | ResolvedTool::McpPrompt { .. }
+                | ResolvedTool::Plugin { .. }
+                | ResolvedTool::Unknown { .. } => None,
             };
             if let Some(hit) = &sensitive_hit
                 && hit.tier == crate::security::sensitive::Tier::Credential
@@ -1341,6 +1385,20 @@ impl Agent {
                 self.runtime.security.clone(),
                 self.runtime.permission_manager.security_config().redaction,
             )?;
+            // Hosted plugin tools join the same router the native and MCP tools
+            // are on, so a plugin tool gets the identical wave: same preflight
+            // decision, same permission gate, same capability invocation. A
+            // plugin that could not register is reported as a notice (the
+            // bootstrap's non-fatal kind, emitted here because a wave has no
+            // notice channel) rather than returned — one clashing name must not
+            // stop the turn's other tools.
+            let plugin_failures = match &self.hosted_plugins {
+                Some(hosted) => hosted.register_tools(&router).await,
+                None => Vec::new(),
+            };
+            for failure in plugin_failures {
+                self.emit_update(runtime_event::info(format!("[plugin] {failure}")));
+            }
             let permission = Arc::new(PreflightPermissionGate::new(prepared));
             let services = match &self.runtime.runtime_event_service {
                 Some(events) => {
@@ -2030,6 +2088,98 @@ mod tests {
                 serde_json::json!({ "path": "src/main.rs" })
             ),
             "run"
+        );
+    }
+
+    // ── Hosted plugin tools ─────────────────────────────────────────────
+
+    /// A hosted plugin tool declaration of the given risk.
+    fn plugin_tool(name: &str, risk: CapabilityRisk) -> CapabilityDeclaration {
+        crate::plugin::test_support::declaration(name, CapabilityKind::Tool, risk)
+    }
+
+    /// An agent whose session hosts one plugin declaring `capabilities`,
+    /// registered the way the bootstrap registers a real one — so the
+    /// declarations preflight reads are the ones the handshake produced.
+    fn agent_with_plugin(
+        name: &str,
+        mode: crate::permission::PermissionMode,
+        capabilities: Vec<CapabilityDeclaration>,
+    ) -> Agent {
+        let mut plugins = crate::plugin::test_support::hosted("acme.echo", capabilities);
+        block_on(plugins.register(
+            &tact::CapabilityRouter::new(),
+            &tact::PluginRegistry::new(tact_protocol::ProtocolVersion::CURRENT),
+        ));
+        agent_with(name, mode).with_hosted_plugins(plugins)
+    }
+
+    /// A plugin tool resolves in preflight and takes the tier its *plugin*
+    /// declared. `ReadOnly` is the interesting one: were the declaration not
+    /// read at all the fallback would be `High`, which Default mode denies.
+    #[test]
+    fn a_plugin_tool_resolves_with_the_risk_its_plugin_declared() {
+        let mut agent = agent_with_plugin(
+            "plugin_tool_declared_risk",
+            crate::permission::PermissionMode::Default,
+            vec![plugin_tool("acme.echo.search", CapabilityRisk::ReadOnly)],
+        );
+
+        assert_eq!(
+            outcome(
+                &mut agent,
+                "acme.echo.search",
+                serde_json::json!({ "query": "anything" })
+            ),
+            "run",
+            "a ReadOnly plugin tool runs in Default mode; High (the unknown-tool \
+             default) would have asked and been denied"
+        );
+    }
+
+    /// The mirror of the MCP high-risk denial tests: a plugin tool that declares
+    /// `High` is denied headlessly in Default mode rather than slipping through
+    /// with a default tier.
+    #[test]
+    fn a_high_risk_plugin_tool_is_denied_in_default_mode_without_a_ui() {
+        let mut agent = agent_with_plugin(
+            "plugin_tool_high_risk",
+            crate::permission::PermissionMode::Default,
+            vec![plugin_tool("acme.echo.dangerous", CapabilityRisk::High)],
+        );
+
+        let text = outcome(
+            &mut agent,
+            "acme.echo.dangerous",
+            serde_json::json!({ "query": "anything" }),
+        );
+        assert!(
+            text.contains("Permission denied"),
+            "expected the high-risk denial, got: {text}"
+        );
+    }
+
+    /// A plugin tool is third-party like an MCP tool, so it skips the sensitive
+    /// target guard — there is no local metadata to classify its target with.
+    /// The point of the pair with `a_private_key_is_refused_even_in_auto_mode`:
+    /// Auto mode does not help the *native* tool, and the guard is not what
+    /// stops the plugin tool.
+    #[test]
+    fn a_plugin_tool_skips_the_sensitive_target_guard_like_an_mcp_tool() {
+        let mut agent = agent_with_plugin(
+            "plugin_tool_guard",
+            crate::permission::PermissionMode::Auto,
+            vec![plugin_tool("acme.echo.read", CapabilityRisk::ReadOnly)],
+        );
+
+        assert_eq!(
+            outcome(
+                &mut agent,
+                "acme.echo.read",
+                serde_json::json!({ "path": "~/.ssh/id_ed25519" })
+            ),
+            "run",
+            "a plugin tool must not be refused by the native-tool guard"
         );
     }
 

@@ -5,6 +5,10 @@ mod model;
 mod runtime;
 mod store;
 
+/// Host doubles shared by this crate's tests (plugin lifecycle, tool dispatch).
+#[cfg(test)]
+pub(crate) mod test_support;
+
 use anyhow::{Context, Result};
 
 // Runtime plugin lifecycle (manifest, registry, host boundary) is Kernel

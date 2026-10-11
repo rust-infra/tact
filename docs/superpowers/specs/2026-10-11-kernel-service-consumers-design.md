@@ -76,9 +76,18 @@ on the serving router (spec
 The verdicts above are unchanged, for a reason worth stating: the *host* exists,
 but guest **host calls** are denied by default (`DenyHostCalls`), so a plugin
 still cannot reach `storage.*` / `events.*` / `trajectory.*` /
-`permission.request` / `interaction.request`, and a hosted capability is not yet
-a model-visible tool. Granting a plugin host calls is the next decision, not a
-consequence of this one.
+`permission.request` / `interaction.request`. Granting a plugin host calls is the
+next decision, not a consequence of this one.
+
+One thing this document got wrong and has since been fixed: a hosted capability
+of kind `Tool` **is** a model-visible tool. It does not belong on the serving
+router at all — a tool reaching that router bypasses the tool preflight (the
+sensitive-target guard and the one-use approval ticket) — so a `Tool` declaration
+is registered on the Agent's per-wave tool router, appears in the tool list the
+model is sent, and is resolved in preflight with the risk its declaration
+carries. The non-`Tool` kinds (`Command` / `App` / `Service`) stay serving
+capabilities. See `crates/tact_extensions/src/plugin/runtime.rs` and
+`crates/tact_extensions/src/agent/tool_dispatch.rs`.
 
 The registry verdict is also unchanged: the hosted-plugin lifecycle now
 registers / starts / stops each plugin's manifest through

@@ -13,7 +13,9 @@ so the plugin-host boundary — and the capabilities `ARCHITECTURE.md` §15 call
 An **installed plugin** (a marketplace package under `~/.tact/plugins`) may
 declare a *runtime half*; the session bootstrap then spawns it through
 `StdioPluginHost`, registers the capabilities it declares at handshake on the
-session's **serving router**, registers its manifest in the session's
+session's **serving router** — except capabilities of kind `Tool`, which are
+model-visible tools and go on the Agent's per-wave tool router (see the
+superseded note under Non-goals) — registers its manifest in the session's
 `RuntimeContext::plugins()` registry, and stops it when the session ends.
 
 One generic stdio path serves all three host crates: a Node plugin is
@@ -23,11 +25,6 @@ over the same envelope protocol.
 
 ## Non-goals
 
-- Making plugin capabilities **model-visible tools**. Tool dispatch is a
-  separate, per-wave path (`crate::capability::register_tool_capabilities`, the
-  tool spec list, the preflight gate); it is untouched. A hosted capability is
-  reachable through the serving router, which is the product path for the
-  `Command` / `App` kinds.
 - A `HostCallService` bridge. Host calls stay `DenyHostCalls`, so a plugin still
   cannot reach the Kernel services (`storage.*`, `events.*`, …); that stays the
   reservation recorded in
@@ -35,6 +32,19 @@ over the same envelope protocol.
 - Supervision: no restart policy, no health surface. A crashed plugin stays
   failed.
 - Marketplace-installed *MCP servers*, which already have a product path.
+
+**Superseded 2026-10-11 (later the same day):** this design originally listed
+"making plugin capabilities model-visible tools" as a non-goal, keeping every
+declared capability on the serving router. That was wrong for capabilities of
+kind `Tool`: a tool is model-visible, and a tool reaching the serving router
+bypasses the tool preflight (the sensitive-target guard and the one-use approval
+ticket). A `Tool` declaration is now registered on the Agent's **per-wave tool
+router** instead, appears in the tool list the model is sent, and is resolved in
+preflight with the risk its declaration carries; the serving router keeps the
+non-`Tool` kinds (`Command` / `App` / `Service`), which is their product path.
+See `crates/tact_extensions/src/plugin/runtime.rs::{HostedPlugins::register,
+tool_specs, tool_declaration, register_tools}` and
+`crates/tact_extensions/src/agent/tool_dispatch.rs`.
 
 ## The manifest
 
@@ -77,11 +87,14 @@ compatibility keys; only `runtime` is read here.
   - `start(specs)`: `StdioPluginHost::start` (spawn + handshake) per plugin; a
     failure is recorded in `notice_lines()`, never returned.
   - `register(router, registry)`: registers each host's manifest in the registry
-    (`register` + `start`) and its declared capabilities on the router via the
-    generic `register_host_with_router`. A duplicate plugin id is caught before
-    the router is touched; if capability registration then fails (a name already
-    on the router), the manifest is `stop`ped + `unregister`ed and the host is
-    stopped, so a plugin that serves nothing is not left running.
+    (`register` + `start`) and its non-`Tool` capabilities on the router (via
+    `register_host_serving_capabilities_with_router`, the predicate form of the
+    generic `register_host_with_router`), caching the `Tool` declarations for the
+    spec rebuild and preflight. `register_tools(router)` registers those tools on
+    the per-wave tool router. A duplicate plugin id is caught before the router
+    is touched; if capability registration then fails (a name already on the
+    router), the manifest is `stop`ped + `unregister`ed and the host is stopped,
+    so a plugin that serves nothing is not left running.
   - `shutdown()`: `PluginHost::shutdown` + `PluginRegistry::stop` per host.
   - `empty()` / `from_hosts(..)`: the "no plugins" case, and the seam a test
     injects a `PluginHost` double through.
@@ -97,13 +110,18 @@ stdio-specific:
 - `register_host_with_router(Arc<Mutex<dyn PluginHost>>, &CapabilityRouter, Arc<dyn HostCallService>)`
   is public; `StdioPluginHost::register_with_router_and_host_calls` delegates to
   it, and `DenyHostCalls` is public so a direct caller lands on the same
-  fail-closed policy.
+  fail-closed policy. Two predicate entries share the one registration body:
+  `register_host_serving_capabilities_with_router` (everything that is not a
+  `Tool`, the sync bootstrap path) and the async `register_host_tools_with_router`
+  (only `Tool`s, for a router built on the turn's hot path).
 
 ## Session wiring
 
 `crates/tact_ui/src/session_bootstrap.rs`, next to the plugin MCP load: discover
 `PluginHome::from_environment()` → `HostedPlugins::start` → `register(serving.router(), serving.plugins())`
-→ drain `notice_lines()` into the session notices → `agent.with_hosted_plugins(..)`.
+→ drain `notice_lines()` into the session notices → `agent.with_hosted_plugins(..)`
+(which rebuilds the tool list, so the plugin tools are model-visible from the
+first request).
 
 Both frontends stop them at teardown next to `shutdown_mcp`
 (`Agent::shutdown_hosted_plugins`): the interactive driver's teardown block and
@@ -111,23 +129,35 @@ headless's end, so a plugin process never outlives the session.
 
 ## Permission
 
-Plugin capabilities land on the **serving router**, so `ServingPermission`
-governs them exactly as it governs any plugin-invoked capability: the host
-control-plane names stay allow-listed and everything else is decided by the
-session's configured policy (fail-closed in `ask`). Nothing is added to
-`HostControlPlanePermission`, and a plugin's `runtime.id` cannot shadow an
-official extension — the registry refuses a duplicate id.
+Non-`Tool` plugin capabilities land on the **serving router**, so
+`ServingPermission` governs them exactly as it governs any plugin-invoked
+capability: the host-control-plane names stay allow-listed and everything else is
+decided by the session's configured policy (fail-closed in `ask`). Nothing is
+added to `HostControlPlanePermission`, and a plugin's `runtime.id` cannot shadow
+an official extension — the registry refuses a duplicate id.
+
+A `Tool` capability is decided by the **tool** permission ladder instead, in
+preflight, from the risk tier its declaration carries — the same ladder a native
+or MCP tool goes through, and the one the serving router deliberately does not
+reach (see the superseded note above).
 
 ## Tests
 
-`plugin::runtime` (10): manifest parsing (present / absent / unknown key
+`plugin::runtime` (13): manifest parsing (present / absent / unknown key
 rejected), relative-arg rewriting only where a file exists, discovery over a
 temp plugin home (only runtime-declaring plugins; a malformed manifest skipped
 while the healthy ones are still found), `register` puts the declared
 capabilities on the router, a registered plugin capability is invocable through
-the serving router, a duplicate capability fails only the later plugin, and
-teardown stops every started host. The stdio path itself stays covered by the
-existing `tact_plugin_host` / `tact_plugin_node` / `tact_plugin_wasm` suites.
+the serving router, a `Tool` declaration stays off the serving router while a
+`Command` one does not, the plugin tool becomes a spec and is invocable on a
+per-wave router, a clashing plugin tool is reported without failing the others,
+a duplicate capability fails only the later plugin, and teardown stops every
+started host. The Agent side is covered in `agent::tool_dispatch::tests`
+(resolution with the declared risk, the high-risk headless denial, the
+sensitive-guard exemption) and `agent::tests` (the tool list plus a full turn
+whose mock provider calls the plugin tool). The stdio path itself stays covered
+by the existing `tact_plugin_host` / `tact_plugin_node` / `tact_plugin_wasm`
+suites.
 
 Not covered by a test: the bootstrap call site and the two teardown call sites
 (they are three lines each, and a bootstrap test would read the *real*
