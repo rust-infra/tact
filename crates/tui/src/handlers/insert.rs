@@ -93,6 +93,16 @@ fn execute_selected_slash_command(app: &mut App) -> bool {
 }
 
 fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSender<UserCommand>) {
+    // A pending Kernel `Input` prompt owns this Enter: the caller asked for
+    // text, the composer is the TUI's text entry, and answering here keeps
+    // the prompt to one path instead of a second input mode.
+    if app.pending_text_prompt.is_some() {
+        let value = std::mem::take(&mut app.input);
+        app.answer_pending_text_prompt(value);
+        app.input_cursor = 0;
+        return;
+    }
+
     // Deactivate slash command on submit.
     app.slash_command.active = false;
 

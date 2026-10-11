@@ -4,6 +4,28 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — §6 的 View 半边（收尾二）：`Input` 由输入框作答，五类交互全部闭合
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（行为变化：交互会话里 Kernel 的 `Input` 现在会显示问题并由用户输入作答；上一版是直接拒绝） |
+| **Related** | `crates/tui/src/widgets/state/mod.rs`、`crates/tui/src/widgets/state/app/{agent.rs,construct.rs}`、`crates/tui/src/handlers/insert.rs`、`crates/tui/src/lib.rs` |
+
+**现象 / 动机：** 上一版把 `Input` 从「挂死」改成「明确拒绝」，功能仍未闭合——因为 TUI 没有文本输入态，调用方拿不到文本。真正的成本不在交互协议，而在「新造一个输入模式」。
+
+**决策（关键降本点）：复用已有的 `InputMode::Insert`。** TUI 本来就有一个文本输入框，`Input` 不需要自己的模式：
+- `App` 上加一个待答状态 `pending_text_prompt: Option<RequestId>`；
+- 投影把 `Input { prompt, .. }` 记录进该状态、把问题作为一条系统消息显示、切到 `Insert`（**不再**直接拒绝）；
+- 但「解释这次 Enter」的逻辑抽成 `App::answer_pending_text_prompt(value)`（一个可测的缝），Enter 处理只做一件事：有待答提示时先取走输入框内容交给它、否则维持原有的提交消息行为。
+- 应答是协议已有的 `InteractionResponse::Text { request_id, value }`，经 `respond_ui` → driver → broker。
+
+**改后行为：** 五类交互（`Select` / `MultiSelect` / `Confirm` / `Permission` / `Input`）在交互会话里都有确定处理；两个 id 空间仍并存（旧 responder 的工具/权限提示走数字 id，broker 提示走 broker 的 id）。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2947 passed / 0 failed / 22 ignored**（新增 `runtime_broker_input_prompt_is_answered_from_the_composer`：记录提示、进入 `Insert`、`answer_pending_text_prompt` 发出的是 `Text` 且携带 broker id 与键入内容、且只答一次；同时**删除**了上一版那条「`Input` 被拒绝」的测试——它的前提已被这次升级取代）。
+
+**Pointers:** `crates/tui/src/widgets/state/app/agent.rs::answer_pending_text_prompt`、`crates/tui/src/handlers/insert.rs`（Enter 顶部）、`crates/tui/src/widgets/state/mod.rs::pending_text_prompt`、`ARCHITECTURE.md` §15。
+
+
 ## 1. 2026-10-11 — §6 的 View 半边（收尾一）：`Input` 不再是挂死而是被拒绝
 
 | Field | Value |

@@ -138,6 +138,13 @@ pub struct App {
     // Input
     pub(crate) input: String,
     pub(crate) input_cursor: usize,
+    /// A Kernel `Input` request waiting for the composer to answer it.
+    ///
+    /// The prompt is shown in the transcript and the answer is this
+    /// composer's text, sent back as `InteractionResponse::Text` on the next
+    /// Enter. `None` for the ordinary message composer — which is why the
+    /// prompt does not need an input mode of its own.
+    pub(crate) pending_text_prompt: Option<tact_protocol::RequestId>,
     pub(crate) input_scroll: u16,
     /// Messages queued while the agent is busy (Codex-style "submit after the
     /// current task"); auto-submitted on Idle/Done, or immediately on Esc.

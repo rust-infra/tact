@@ -1431,35 +1431,6 @@ thinking_budget = {thinking_budget}
         );
     }
 
-    /// A broker `Input` cannot be shown (the TUI has no text-entry mode), but
-    /// it must not be dropped either: the broker's caller would wait forever
-    /// for an answer that can never come. It is refused, visibly to the
-    /// protocol even though the UI has nothing to draw.
-    #[test]
-    fn broker_input_is_refused_instead_of_left_hanging() {
-        let mut app = make_app();
-        let (tx, mut user_rx) = tokio::sync::mpsc::unbounded_channel();
-        app.user_cmd_tx = tx;
-
-        crate::apply_runtime_event(
-            &mut app,
-            tact_protocol::RuntimeEvent::InteractionRequested {
-                request: tact_protocol::InteractionRequest::Input {
-                    request_id: tact_protocol::RequestId::from("input-broker"),
-                    prompt: "Secret?".into(),
-                    secret: false,
-                },
-            },
-        );
-
-        match user_rx.try_recv() {
-            Ok(UserCommand::Runtime(RuntimeCommand::RespondInteraction {
-                response: tact_protocol::InteractionResponse::Cancelled { request_id },
-            })) => assert_eq!(request_id.as_str(), "input-broker"),
-            other => panic!("an Input must be refused, not dropped: {other:?}"),
-        }
-    }
-
     #[test]
     fn broker_mode_enter_wakes_registered_waiter() {
         let mut app = make_app();

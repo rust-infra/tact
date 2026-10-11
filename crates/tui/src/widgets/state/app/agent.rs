@@ -103,16 +103,18 @@ impl App {
             // broker's `Confirm` / `Permission`, which are decisions over two
             // options — does, below.
             RuntimeEvent::InteractionRequested {
-                request: InteractionRequest::Input { request_id, .. },
+                request:
+                    InteractionRequest::Input {
+                        request_id, prompt, ..
+                    },
             } => {
-                // The TUI has no text-entry mode yet, so this prompt cannot be
-                // shown — but dropping it would leave the broker's caller
-                // waiting for an answer that can never come. Refuse it instead:
-                // an explicit refusal is something the caller can act on, a
-                // silent drop is a hang.
-                self.respond_ui(tact_protocol::InteractionResponse::Cancelled {
-                    request_id: request_id.clone(),
-                });
+                // The composer answers it: the question goes into the transcript
+                // and the next Enter in `Insert` sends the typed text to the
+                // broker. No second input mode is needed for that, and dropping
+                // the request would leave the caller waiting forever.
+                self.pending_text_prompt = Some(request_id.clone());
+                self.add_system_message(prompt.clone());
+                self.input_mode = InputMode::Insert;
                 return;
             }
             _ => {}
@@ -256,6 +258,20 @@ impl App {
             .send(UserCommand::Runtime(RuntimeCommand::RespondInteraction {
                 response,
             }));
+    }
+
+    /// Answers a pending Kernel `Input` prompt with `value`.
+    ///
+    /// Returns whether a prompt was waiting, so the composer's Enter can tell
+    /// "this text is the answer" from "this text is a message". The method
+    /// exists so that distinction is testable without driving a key event.
+    pub(crate) fn answer_pending_text_prompt(&mut self, value: String) -> bool {
+        let Some(request_id) = self.pending_text_prompt.take() else {
+            return false;
+        };
+        self.respond_ui(tact_protocol::InteractionResponse::Text { request_id, value });
+        self.input_mode = InputMode::Normal;
+        true
     }
 
     /// Cancel the current task. If an agent select is open, answer it with

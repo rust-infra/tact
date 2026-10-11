@@ -815,6 +815,52 @@ mod runtime_event_tests {
         );
     }
 
+    /// A Kernel `Input` prompt is answered from the composer rather than
+    /// refused: the question goes to the transcript, the state records the
+    /// request, and the answer carries the typed text back to the broker.
+    #[test]
+    fn runtime_broker_input_prompt_is_answered_from_the_composer() {
+        let mut app = make_app();
+        let (tx, mut user_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.user_cmd_tx = tx;
+
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::InteractionRequested {
+                request: InteractionRequest::Input {
+                    request_id: RequestId::from("input-broker"),
+                    prompt: "Secret?".into(),
+                    secret: false,
+                },
+            },
+        );
+        assert_eq!(
+            app.pending_text_prompt,
+            Some(RequestId::from("input-broker")),
+            "the prompt waits for the composer instead of being dropped"
+        );
+        assert!(matches!(app.input_mode, InputMode::Insert));
+
+        assert!(app.answer_pending_text_prompt("hunter2".into()));
+
+        match user_rx.try_recv() {
+            Ok(tact_view::UserCommand::Runtime(
+                tact_protocol::RuntimeCommand::RespondInteraction {
+                    response: tact_protocol::InteractionResponse::Text { request_id, value },
+                },
+            )) => {
+                assert_eq!(
+                    request_id.as_str(),
+                    "input-broker",
+                    "the broker's id, not a message"
+                );
+                assert_eq!(value, "hunter2", "the typed text is the answer");
+            }
+            other => panic!("expected a Text answer to the broker, got {other:?}"),
+        }
+        assert_eq!(app.pending_text_prompt, None, "answered once, not twice");
+    }
+
     /// A broker `Confirm` is a *decision*, not a value list: it opens the same
     /// popup, and confirming carries the protocol's `Approved` — answering
     /// `Selected` would leave the caller's `Confirm` unanswered.

@@ -85,6 +85,7 @@ impl App {
         registry.push(SubagentPanelComponent::new());
         registry.push(BackgroundPanelComponent::new());
         Self {
+            pending_text_prompt: None,
             input: String::new(),
             input_cursor: 0,
             input_scroll: 0,
