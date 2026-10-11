@@ -17,7 +17,7 @@ pub use host::PluginHost;
 pub use inprocess::InProcessPluginHost;
 pub use process::PluginProcess;
 pub use runtime::{
-    DenyHostCalls, HostCallService, StdioPluginHost,
+    DenyHostCalls, GrantedHostCalls, HostCallService, StdioPluginHost, default_handshake_features,
     register_host_serving_capabilities_with_router, register_host_tools_with_router,
     register_host_with_router,
 };

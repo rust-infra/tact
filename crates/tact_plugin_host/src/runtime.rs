@@ -7,7 +7,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 use tact::{
     CapabilityHandler, CapabilityRegistration, CapabilityRouter, InvocationContext, KernelError,
-    PluginState,
+    PluginState, RuntimeContext,
 };
 
 use crate::host::PluginHost;
@@ -24,6 +24,22 @@ use crate::{process::PluginProcess, transport::make_envelope};
 pub const DEFAULT_REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
 pub const SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(2);
 pub const STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
+
+/// The handshake features every stdio host asks for by default.
+///
+/// Exposed so a caller that must *add* a feature builds on the same list instead
+/// of restating it: `tact_extensions` starts a hosted runtime plugin with
+/// `host_calls` on top of this list when the plugin's manifest declares grants.
+/// [`StdioPluginHost::start_with_timeout`] asks for exactly this, so the default
+/// handshake cannot drift away from what a caller believes it is extending.
+#[must_use]
+pub fn default_handshake_features() -> Vec<String> {
+    vec![
+        "capability_registration".into(),
+        "events".into(),
+        "cancel".into(),
+    ]
+}
 
 pub struct StdioPluginHost {
     program: PathBuf,
@@ -61,11 +77,7 @@ impl StdioPluginHost {
             plugin_id,
             protocol,
             request_timeout,
-            vec![
-                "capability_registration".into(),
-                "events".into(),
-                "cancel".into(),
-            ],
+            default_handshake_features(),
         )
         .await
     }
@@ -598,6 +610,113 @@ impl HostCallService for DenyHostCalls {
         Err(KernelError::permission_denied(format!(
             "plugin host call is unavailable: {capability}"
         )))
+    }
+}
+
+/// The host-call policy for a plugin whose manifest **declares** the
+/// capabilities it may invoke.
+///
+/// Two checks stand between the plugin and the capability, and they answer
+/// different questions:
+///
+/// - The grant list is the *manifest's* own statement. A name the package did
+///   not declare is refused by name, before any policy is consulted, so the
+///   declaration is what bounds the reach and a plugin cannot talk its way into
+///   a capability its author never named.
+/// - The kind check reads the declaration off the **serving** router and refuses
+///   anything that is not a [`CapabilityKind::Service`]. One check, four
+///   exclusions: a `Tool` must keep its per-wave preflight path (the
+///   sensitive-target guard and the one-use approval ticket live there, not
+///   here), and `Command` / `App` / `View` / `EventHandler` are the product
+///   capabilities of an extension the plugin is not.
+///
+/// The router is the right source for that fact. `tact_plugin_wasm`'s runner
+/// keeps a hard-coded capability list (`host_functions.rs`), which is right for
+/// a sandbox that must decide *before* any router exists; here the Kernel has
+/// already registered its services on the router this call lands on, so asking
+/// it is what keeps this policy in step with every capability the Kernel ever
+/// adds — and it is the only source that can also tell a `Service` from a
+/// `Tool` of the same name.
+///
+/// The capability is then invoked on that same serving router, with a **fresh**
+/// invocation: a new [`RequestId`] (reusing the outer one would make two
+/// requests indistinguishable in the trajectory) and the plugin's own
+/// [`PluginId`], so the ordinary permission path decides this call exactly as it
+/// would decide any other. The plugin identity matters: it is the namespace
+/// `storage.*` authorizes against, and it is *not* a host identity, so the host
+/// control plane (`crates/tact_ui/src/permission.rs`) refuses `chat.submit` /
+/// `runs.*` for it.
+///
+/// The `router` argument the trait hands over is ignored on purpose. Kernel
+/// services live on the serving router; an inner invoke on the per-wave tool
+/// router would hit `PreflightPermissionGate`, whose one-use ticket belongs to
+/// the outer tool call and cannot be spent by a nested one.
+pub struct GrantedHostCalls {
+    serving: RuntimeContext,
+    plugin_id: PluginId,
+    grants: BTreeSet<String>,
+}
+
+impl GrantedHostCalls {
+    #[must_use]
+    pub fn new(
+        serving: RuntimeContext,
+        plugin_id: PluginId,
+        grants: impl IntoIterator<Item = String>,
+    ) -> Self {
+        Self {
+            serving,
+            plugin_id,
+            grants: grants.into_iter().collect(),
+        }
+    }
+}
+
+#[async_trait]
+impl HostCallService for GrantedHostCalls {
+    async fn handle(
+        &self,
+        _context: &InvocationContext,
+        _router: &CapabilityRouter,
+        capability: &str,
+        input: Value,
+    ) -> Result<Value, KernelError> {
+        if !self.grants.contains(capability) {
+            return Err(KernelError::permission_denied(format!(
+                "plugin {} was not granted the host call {capability}",
+                self.plugin_id
+            )));
+        }
+        let Some(declaration) = self.serving.router().describe(capability) else {
+            return Err(KernelError::permission_denied(format!(
+                "plugin {} cannot host-call {capability}: the serving router does not \
+                 carry it",
+                self.plugin_id
+            )));
+        };
+        if declaration.kind != CapabilityKind::Service {
+            return Err(KernelError::permission_denied(format!(
+                "plugin {} cannot host-call {capability}: it is a {:?} capability, \
+                 not a Kernel service",
+                self.plugin_id, declaration.kind
+            )));
+        }
+        let invocation = self.serving.invocation(
+            // A fresh request id: the outer call's id belongs to the caller's
+            // request, and reusing it would make the host call look like the
+            // same request in the trajectory.
+            RequestId::from(uuid::Uuid::new_v4().to_string()),
+            self.plugin_id.clone(),
+            // The plugin is the actor of its own call. Session-level hops that
+            // carry a caller forward (`chat.submit` → `runs.start`, a Workflow
+            // step → `chat.submit`) keep the caller's actor instead; there is no
+            // caller to carry here — the plugin process is the origin.
+            format!("plugin:{}", self.plugin_id),
+        );
+        self.serving
+            .router()
+            .invoke(capability, invocation, input)
+            .await
     }
 }
 

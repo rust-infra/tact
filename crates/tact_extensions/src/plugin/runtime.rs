@@ -15,6 +15,14 @@
 //! the tool preflight (sensitive-target guard, one-use approval ticket). The
 //! other kinds — `Command`, `App`, `Service`, … — stay serving-router
 //! capabilities, which is their product path.
+//!
+//! A plugin may also declare the Kernel **services** it will call back into
+//! (`runtime.grants`). Those calls arrive as protocol host calls during one of
+//! the plugin's own invocations, and the policy that answers them is
+//! [`tact_plugin_host::GrantedHostCalls`]: granted names only, services only,
+//! invoked on the serving router as the plugin. A plugin with no grants gets
+//! [`DenyHostCalls`] and is not offered the `host_calls` handshake feature, so
+//! the fail-closed default is also the *default manifest*.
 
 use std::{
     fs,
@@ -24,9 +32,10 @@ use std::{
 
 use anyhow::{Context, Result};
 use serde::Deserialize;
-use tact::{CapabilityRouter, KernelError, PluginRegistry, RuntimePluginManifest};
+use tact::{CapabilityRouter, KernelError, PluginRegistry, RuntimeContext, RuntimePluginManifest};
 use tact_plugin_host::{
-    DenyHostCalls, PluginHost, StdioPluginHost, register_host_serving_capabilities_with_router,
+    DEFAULT_REQUEST_TIMEOUT, DenyHostCalls, GrantedHostCalls, HostCallService, PluginHost,
+    StdioPluginHost, default_handshake_features, register_host_serving_capabilities_with_router,
     register_host_tools_with_router,
 };
 use tact_protocol::{CapabilityDeclaration, CapabilityKind, PluginId, ProtocolVersion};
@@ -48,6 +57,18 @@ pub struct PluginRuntimeSpec {
     pub command: String,
     #[serde(default)]
     pub args: Vec<String>,
+    /// The capabilities this plugin may invoke as **host calls**: the Kernel
+    /// services (`storage.*`, `events.*`, `trajectory.*`, `permission.request`,
+    /// `interaction.request`) it declared it needs.
+    ///
+    /// The list is a bound, not a promise: an absent or empty list is exactly
+    /// the behaviour of a plugin that never asked for host calls (its handshake
+    /// does not request the `host_calls` feature, so the plugin is told the host
+    /// will not answer one). A name in the list still has to be a
+    /// [`CapabilityKind::Service`] on the serving router, and the call is
+    /// permission-checked as the plugin.
+    #[serde(default)]
+    pub grants: Vec<String>,
 }
 
 impl PluginRuntimeSpec {
@@ -75,6 +96,22 @@ impl PluginRuntimeSpec {
             .collect();
         (PathBuf::from(&self.command), args)
     }
+}
+
+/// The handshake features a hosted plugin's process is started with.
+///
+/// `host_calls` is the one feature a plugin cannot ask for on its own behalf:
+/// the *host* is the side that answers `PluginResponse::HostCall`, so the
+/// feature is requested only for a plugin whose manifest declares grants. A
+/// plugin without grants is handed exactly [`default_handshake_features`] — it
+/// has no host-call path, and requesting the feature anyway would tell it
+/// otherwise.
+fn handshake_features(grants: &[String]) -> Vec<String> {
+    let mut features = default_handshake_features();
+    if !grants.is_empty() {
+        features.push("host_calls".into());
+    }
+    features
 }
 
 /// Reads the `runtime` half of an installed plugin's manifest, if it declares
@@ -143,6 +180,17 @@ pub fn discover_runtime_plugins(
 pub struct HostedPlugin {
     host: Arc<tokio::sync::Mutex<dyn PluginHost>>,
     manifest: RuntimePluginManifest,
+    /// The host calls this plugin's manifest declared (its `runtime.grants`).
+    grants: Vec<String>,
+    /// The policy its capabilities were registered under, chosen at
+    /// [`HostedPlugins::register`] time from `grants` and the session's serving
+    /// context.
+    ///
+    /// Kept rather than recomputed because both of a plugin's registration
+    /// paths must run under the *same* policy: the serving capabilities at
+    /// bootstrap, and its `Tool` capabilities on each wave's router, which is
+    /// built later and holds no session context to derive one from.
+    host_calls: Option<Arc<dyn HostCallService>>,
 }
 
 impl HostedPlugin {
@@ -151,7 +199,20 @@ impl HostedPlugin {
         host: Arc<tokio::sync::Mutex<dyn PluginHost>>,
         manifest: RuntimePluginManifest,
     ) -> Self {
-        Self { host, manifest }
+        Self {
+            host,
+            manifest,
+            grants: Vec::new(),
+            host_calls: None,
+        }
+    }
+
+    /// Declares the host calls this plugin may make (`runtime.grants`); the
+    /// policy that enforces them is chosen in [`HostedPlugins::register`].
+    #[must_use]
+    pub fn with_grants(mut self, grants: Vec<String>) -> Self {
+        self.grants = grants;
+        self
     }
 
     #[must_use]
@@ -196,10 +257,22 @@ impl HostedPlugins {
         let mut notices = Vec::new();
         for (spec, root) in specs {
             let (program, args) = spec.resolve(&root);
-            match StdioPluginHost::start(program, &args, spec.id.clone(), ProtocolVersion::CURRENT)
-                .await
+            // The feature list is the host's own promise of what it will answer,
+            // so it is the one thing the manifest's grants change about the
+            // handshake: `host_calls` is added for a plugin that declared some,
+            // and a plugin that declared none hands up exactly the default list.
+            let features = handshake_features(&spec.grants);
+            match StdioPluginHost::start_with_timeout_and_features(
+                program,
+                &args,
+                spec.id.clone(),
+                ProtocolVersion::CURRENT,
+                DEFAULT_REQUEST_TIMEOUT,
+                features,
+            )
+            .await
             {
-                Ok(host) => hosts.push(hosted_from_stdio(host)),
+                Ok(host) => hosts.push(hosted_from_stdio(host, spec.grants)),
                 Err(error) => notices.push(format!(
                     "plugin {} failed to start from {}: {error:#}",
                     spec.id,
@@ -251,12 +324,23 @@ impl HostedPlugins {
     /// [`register_host_serving_capabilities_with_router`] — but they are cached
     /// out of the kept manifests so the sync spec rebuild and preflight can read
     /// them without a lock.
-    pub async fn register(&mut self, router: &CapabilityRouter, registry: &PluginRegistry) {
+    ///
+    /// The serving context is taken by reference (rather than the bare router it
+    /// carries) because the host-call policy needs more of it than the router
+    /// does: [`GrantedHostCalls`] holds the session so a plugin's granted call
+    /// lands on the same router and services, as the plugin.
+    pub async fn register(&mut self, serving: &RuntimeContext, registry: &PluginRegistry) {
         self.registry = Some(registry.clone());
         let mut kept = Vec::with_capacity(self.hosts.len());
-        for hosted in std::mem::take(&mut self.hosts) {
-            match register_host(router, registry, &hosted) {
-                Ok(()) => kept.push(hosted),
+        for mut hosted in std::mem::take(&mut self.hosts) {
+            let host_calls = host_call_policy(&hosted, serving);
+            match register_host(serving, registry, &hosted, Arc::clone(&host_calls)) {
+                Ok(()) => {
+                    // Recorded only for a host that registered: a plugin that
+                    // was skipped has no capabilities left to answer a call on.
+                    hosted.host_calls = Some(host_calls);
+                    kept.push(hosted);
+                }
                 Err(error) => {
                     self.notices.push(format!(
                         "plugin {} was not registered: {error}",
@@ -321,7 +405,14 @@ impl HostedPlugins {
             if let Err(error) = register_host_tools_with_router(
                 Arc::clone(&hosted.host),
                 router,
-                Arc::new(DenyHostCalls),
+                // The same policy the plugin's serving capabilities run under:
+                // a granted host call must behave the same whether it is made
+                // while the plugin serves a routed capability or one of its own
+                // tools.
+                hosted
+                    .host_calls
+                    .clone()
+                    .unwrap_or_else(|| Arc::new(DenyHostCalls)),
             )
             .await
             {
@@ -356,7 +447,7 @@ impl HostedPlugins {
 
 /// Wraps a started stdio host behind the [`PluginHost`] boundary and lifts the
 /// capabilities it declared at handshake into a manifest.
-fn hosted_from_stdio(host: StdioPluginHost) -> HostedPlugin {
+fn hosted_from_stdio(host: StdioPluginHost, grants: Vec<String>) -> HostedPlugin {
     let manifest = RuntimePluginManifest {
         id: host.plugin_id().clone(),
         // The installed-plugin runtime declaration carries no plugin version;
@@ -368,21 +459,40 @@ fn hosted_from_stdio(host: StdioPluginHost) -> HostedPlugin {
         dependencies: Vec::new(),
     };
     let host: Arc<tokio::sync::Mutex<dyn PluginHost>> = Arc::new(tokio::sync::Mutex::new(host));
-    HostedPlugin::new(host, manifest)
+    HostedPlugin::new(host, manifest).with_grants(grants)
+}
+
+/// The host-call policy one plugin runs under.
+///
+/// A manifest that declares no grants gets the fail-closed default, unchanged
+/// from before grants existed. One that declares some gets [`GrantedHostCalls`]
+/// over the session's serving context, which is where the granted names are
+/// resolved and permission-checked.
+fn host_call_policy(hosted: &HostedPlugin, serving: &RuntimeContext) -> Arc<dyn HostCallService> {
+    if hosted.grants.is_empty() {
+        Arc::new(DenyHostCalls)
+    } else {
+        Arc::new(GrantedHostCalls::new(
+            serving.clone(),
+            hosted.manifest.id.clone(),
+            hosted.grants.iter().cloned(),
+        ))
+    }
 }
 
 /// Registers one host on the session, rolling the manifest back if its
 /// capabilities cannot be registered.
 fn register_host(
-    router: &CapabilityRouter,
+    serving: &RuntimeContext,
     registry: &PluginRegistry,
     hosted: &HostedPlugin,
+    host_calls: Arc<dyn HostCallService>,
 ) -> Result<(), KernelError> {
     registry.register(hosted.manifest.clone())?;
     if let Err(error) = register_host_serving_capabilities_with_router(
         Arc::clone(&hosted.host),
-        router,
-        Arc::new(DenyHostCalls),
+        serving.router(),
+        host_calls,
     ) {
         registry.unregister(&hosted.manifest.id).ok();
         return Err(error);
@@ -408,18 +518,29 @@ fn tool_spec_for(declaration: &CapabilityDeclaration) -> ToolSpec {
 
 #[cfg(test)]
 mod tests {
-    use std::{collections::BTreeMap, fs, sync::atomic::Ordering, time::Duration};
+    use std::{
+        collections::BTreeMap,
+        fs,
+        sync::{Arc, Mutex, atomic::Ordering},
+        time::Duration,
+    };
 
     use async_trait::async_trait;
     use serde_json::{Value, json};
     use tact::{
-        InvocationContext, PermissionService, PluginState, RuntimeContext, RuntimeServices,
+        EventService, InvocationContext, PermissionService, PluginState, RuntimeContext,
+        RuntimeServices, StorageService, TrajectoryService,
     };
-    use tact_protocol::{CapabilityDeclaration, CapabilityKind, CapabilityRisk, RequestId};
+    use tact_protocol::{
+        CapabilityDeclaration, CapabilityKind, CapabilityRisk, PluginId, RequestId, RunId,
+        RuntimeEvent, TrajectoryId,
+    };
     use tempfile::tempdir;
 
     use super::*;
-    use crate::plugin::test_support::{declaration as declaration_of, hosted, hosted_double};
+    use crate::plugin::test_support::{
+        declaration as declaration_of, hosted, hosted_double, hosted_double_with_host_call,
+    };
     use crate::plugin::{InstalledPlugin, InstalledState};
 
     /// A serving capability (`Command` kind): the class that stays on the
@@ -457,6 +578,53 @@ mod tests {
         assert_eq!(spec.id, PluginId::from("acme.echo"));
         assert_eq!(spec.command, "node");
         assert_eq!(spec.args, vec!["plugin.mjs".to_string()]);
+        assert!(
+            spec.grants.is_empty(),
+            "a manifest that declares no grants asks for no host calls"
+        );
+    }
+
+    #[test]
+    fn read_runtime_spec_parses_the_declared_host_call_grants() {
+        let root = tempdir().unwrap();
+        write_manifest(
+            root.path(),
+            r#"{"name":"echo","runtime":{"id":"acme.echo","command":"node",
+                "grants":["storage.get","storage.set","events.publish"]}}"#,
+        );
+
+        let spec = read_runtime_spec(root.path())
+            .unwrap()
+            .expect("runtime half");
+
+        assert_eq!(
+            spec.grants,
+            vec![
+                "storage.get".to_string(),
+                "storage.set".to_string(),
+                "events.publish".to_string()
+            ]
+        );
+    }
+
+    /// The feature list is the host's promise, so only a manifest that declared
+    /// a grant gets the `host_calls` feature — and one that declared none hands
+    /// up exactly the default list, not a list that happens to look like it.
+    #[test]
+    fn only_a_plugin_with_grants_requests_the_host_calls_feature() {
+        let without = handshake_features(&[]);
+        assert_eq!(without, default_handshake_features());
+        assert!(
+            !without.iter().any(|feature| feature == "host_calls"),
+            "a plugin with no grants must not be told the host answers host calls: {without:?}"
+        );
+
+        let with = handshake_features(&["storage.get".to_string()]);
+        assert_eq!(
+            with,
+            [default_handshake_features(), vec!["host_calls".to_string()]].concat(),
+            "a granted plugin asks for the default features plus host_calls"
+        );
     }
 
     #[test]
@@ -476,10 +644,13 @@ mod tests {
     fn read_runtime_spec_rejects_an_unknown_field_inside_runtime() {
         let root = tempdir().unwrap();
         // The top-level manifest may carry hooks/mcpServers/...; `runtime` may
-        // not carry anything this reader does not understand.
+        // not carry anything this reader does not understand. `grants` is a
+        // known key, so a typo'd *neighbour* of it must still be refused — the
+        // grant list did not become an "ignore the rest" escape hatch.
         write_manifest(
             root.path(),
-            r#"{"name":"echo","runtime":{"id":"acme.echo","command":"node","typo":true}}"#,
+            r#"{"name":"echo","runtime":{"id":"acme.echo","command":"node",
+                "grants":["storage.get"],"typo":true}}"#,
         );
 
         assert!(read_runtime_spec(root.path()).is_err());
@@ -498,6 +669,7 @@ mod tests {
                 "serve".into(),
                 "/etc/hosts".into(),
             ],
+            grants: Vec::new(),
         };
 
         let (program, args) = spec.resolve(root.path());
@@ -626,22 +798,25 @@ mod tests {
     // tool-dispatch tests drive it through the same registration path, so one
     // double serves both rather than two look-alikes.
 
-    fn registry() -> PluginRegistry {
-        PluginRegistry::new(ProtocolVersion::CURRENT)
+    /// A serving context over a bare router and its own session registry: what
+    /// the registration tests need, and nothing they do not. Its services are
+    /// the no-op set, so none of these tests can accidentally *invoke* a
+    /// capability it registered.
+    fn serving() -> RuntimeContext {
+        RuntimeContext::new(CapabilityRouter::new())
     }
 
     #[tokio::test]
     async fn register_puts_the_declared_capabilities_on_the_router() {
-        let router = CapabilityRouter::new();
-        let registry = registry();
+        let serving = serving();
         let (echo, _) = hosted_double("acme.echo", vec![declaration("acme.echo.run")]);
         let mut hosted = HostedPlugins::from_hosts(vec![echo]);
 
-        hosted.register(&router, &registry).await;
+        hosted.register(&serving, serving.plugins()).await;
 
-        assert!(router.describe("acme.echo.run").is_some());
+        assert!(serving.router().describe("acme.echo.run").is_some());
         assert_eq!(
-            registry.state(&PluginId::from("acme.echo")),
+            serving.plugins().state(&PluginId::from("acme.echo")),
             Some(PluginState::Running)
         );
         assert_eq!(hosted.notice_lines().count(), 0);
@@ -649,23 +824,27 @@ mod tests {
 
     #[tokio::test]
     async fn a_duplicate_capability_fails_only_the_later_plugin() {
-        let router = CapabilityRouter::new();
-        let registry = registry();
+        let serving = serving();
         let (first, first_stopped) = hosted_double("acme.first", vec![declaration("acme.shared")]);
         let (second, second_stopped) =
             hosted_double("acme.second", vec![declaration("acme.shared")]);
         let mut hosted = HostedPlugins::from_hosts(vec![first, second]);
 
-        hosted.register(&router, &registry).await;
+        hosted.register(&serving, serving.plugins()).await;
 
         // The first was kept, the second reported and skipped, and the router
         // still carries exactly the first host's capability.
-        assert!(router.describe("acme.shared").is_some());
+        assert!(serving.router().describe("acme.shared").is_some());
         assert_eq!(
-            registry.state(&PluginId::from("acme.first")),
+            serving.plugins().state(&PluginId::from("acme.first")),
             Some(PluginState::Running)
         );
-        assert!(registry.state(&PluginId::from("acme.second")).is_none());
+        assert!(
+            serving
+                .plugins()
+                .state(&PluginId::from("acme.second"))
+                .is_none()
+        );
         assert!(!first_stopped.load(Ordering::SeqCst));
         assert!(
             second_stopped.load(Ordering::SeqCst),
@@ -676,23 +855,22 @@ mod tests {
 
     #[tokio::test]
     async fn teardown_stops_every_started_host() {
-        let router = CapabilityRouter::new();
-        let registry = registry();
+        let serving = serving();
         let (one, one_stopped) = hosted_double("acme.one", vec![declaration("acme.one.run")]);
         let (two, two_stopped) = hosted_double("acme.two", vec![declaration("acme.two.run")]);
         let mut hosted = HostedPlugins::from_hosts(vec![one, two]);
-        hosted.register(&router, &registry).await;
+        hosted.register(&serving, serving.plugins()).await;
 
         hosted.shutdown().await;
 
         assert!(one_stopped.load(Ordering::SeqCst));
         assert!(two_stopped.load(Ordering::SeqCst));
         assert_eq!(
-            registry.state(&PluginId::from("acme.one")),
+            serving.plugins().state(&PluginId::from("acme.one")),
             Some(PluginState::Stopped)
         );
         assert_eq!(
-            registry.state(&PluginId::from("acme.two")),
+            serving.plugins().state(&PluginId::from("acme.two")),
             Some(PluginState::Stopped)
         );
     }
@@ -723,7 +901,7 @@ mod tests {
         );
         let (echo, _) = hosted_double("acme.echo", vec![declaration("acme.echo.run")]);
         let mut hosted = HostedPlugins::from_hosts(vec![echo]);
-        hosted.register(context.router(), context.plugins()).await;
+        hosted.register(&context, context.plugins()).await;
 
         let output = tokio::time::timeout(
             Duration::from_secs(5),
@@ -755,7 +933,7 @@ mod tests {
     /// product path.
     #[tokio::test]
     async fn a_tool_capability_stays_off_the_serving_router_but_a_command_does_not() {
-        let router = CapabilityRouter::new();
+        let serving = serving();
         let mut hosted = hosted(
             "acme.echo",
             vec![
@@ -764,14 +942,14 @@ mod tests {
             ],
         );
 
-        hosted.register(&router, &registry()).await;
+        hosted.register(&serving, serving.plugins()).await;
 
         assert!(
-            router.describe("acme.echo.run").is_some(),
+            serving.router().describe("acme.echo.run").is_some(),
             "a Command capability is a serving-router capability"
         );
         assert!(
-            router.describe("acme.echo.search").is_none(),
+            serving.router().describe("acme.echo.search").is_none(),
             "a Tool capability must not be reachable as a serving capability"
         );
         assert_eq!(hosted.notice_lines().count(), 0);
@@ -786,7 +964,8 @@ mod tests {
                 declaration("acme.echo.run"),
             ],
         );
-        hosted.register(&CapabilityRouter::new(), &registry()).await;
+        let serving = serving();
+        hosted.register(&serving, serving.plugins()).await;
 
         // The model sees it...
         let specs = hosted.tool_specs();
@@ -841,16 +1020,13 @@ mod tests {
             "acme.clashing",
             vec![tool_declaration("acme.taken", CapabilityRisk::ReadOnly)],
         );
-        clashing
-            .register(&CapabilityRouter::new(), &registry())
-            .await;
+        let serving = serving();
+        clashing.register(&serving, serving.plugins()).await;
         let mut healthy = hosted(
             "acme.healthy",
             vec![tool_declaration("acme.free", CapabilityRisk::ReadOnly)],
         );
-        healthy
-            .register(&CapabilityRouter::new(), &registry())
-            .await;
+        healthy.register(&serving, serving.plugins()).await;
 
         // Something else already owns `acme.taken` on this router.
         wave.register_handler(
@@ -864,5 +1040,185 @@ mod tests {
         assert!(failures[0].contains("acme.clashing"), "{failures:?}");
         assert!(healthy.register_tools(&wave).await.is_empty());
         assert!(wave.describe("acme.free").is_some());
+    }
+
+    // ── host calls: a granted plugin reaches the Kernel services ────────
+
+    /// One value in the plugin's own storage namespace, and nothing for any
+    /// other namespace — which is what makes the read below evidence that the
+    /// *plugin's* identity reached the service.
+    #[derive(Default)]
+    struct RecordingStorage {
+        namespaces: Mutex<Vec<String>>,
+    }
+
+    #[async_trait]
+    impl StorageService for RecordingStorage {
+        async fn get(&self, namespace: &str, key: &str) -> Result<Option<Value>, KernelError> {
+            self.namespaces.lock().unwrap().push(namespace.to_string());
+            Ok((namespace == "plugins/acme.echo" && key == "greeting")
+                .then(|| json!("hello from the plugin namespace")))
+        }
+
+        async fn set(
+            &self,
+            _namespace: &str,
+            _key: &str,
+            _value: Value,
+        ) -> Result<(), KernelError> {
+            Ok(())
+        }
+    }
+
+    /// The two services `storage.get` does not touch.
+    struct NoopEvents;
+
+    #[async_trait]
+    impl EventService for NoopEvents {
+        async fn publish(&self, _event: RuntimeEvent) -> Result<(), KernelError> {
+            Ok(())
+        }
+    }
+
+    struct NoopTrajectory;
+
+    #[async_trait]
+    impl TrajectoryService for NoopTrajectory {
+        async fn append(
+            &self,
+            _trajectory_id: Option<&TrajectoryId>,
+            _run_id: Option<&RunId>,
+            _event: RuntimeEvent,
+        ) -> Result<(), KernelError> {
+            Ok(())
+        }
+    }
+
+    /// A serving context carrying the Kernel's real service capabilities over
+    /// `storage`, with a policy that permits them.
+    fn service_context(storage: Arc<dyn StorageService>) -> RuntimeContext {
+        let context = RuntimeContext::with_services(
+            CapabilityRouter::new(),
+            RuntimeServices::new(
+                Arc::new(NoopEvents),
+                Arc::new(NoopTrajectory),
+                Arc::new(AllowAll),
+                storage,
+            ),
+        );
+        tact::services::register(context.router()).expect("the Kernel services register");
+        context
+    }
+
+    /// The whole host-call path, end to end: the plugin's `Invoke` returns a
+    /// `HostCall`, the granted policy runs the Kernel service on the serving
+    /// router as the plugin, and the service's real output travels back to the
+    /// plugin — which hands it straight back as its own result.
+    #[tokio::test]
+    async fn a_granted_host_call_reaches_the_kernel_service_and_returns_its_output() {
+        let storage = Arc::new(RecordingStorage::default());
+        let context = service_context(Arc::clone(&storage) as Arc<dyn StorageService>);
+        let (echo, host_call_result) = hosted_double_with_host_call(
+            "acme.echo",
+            vec![declaration("acme.echo.run")],
+            &["storage.get"],
+            "storage.get",
+            json!({ "namespace": "plugins/acme.echo", "key": "greeting" }),
+        );
+        let mut hosted = HostedPlugins::from_hosts(vec![echo]);
+        hosted.register(&context, context.plugins()).await;
+
+        let output = tokio::time::timeout(
+            Duration::from_secs(5),
+            context.router().invoke(
+                "acme.echo.run",
+                context.invocation(
+                    RequestId::from("host-call-request"),
+                    PluginId::from("tact.agent"),
+                    "agent",
+                ),
+                json!({ "ask": "the Kernel" }),
+            ),
+        )
+        .await
+        .expect("the invocation is bounded")
+        .expect("the hosted capability answers");
+
+        let recorded = host_call_result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the plugin was handed a host-call result");
+        assert_eq!(
+            recorded.output,
+            Some(json!("hello from the plugin namespace"))
+        );
+        assert!(recorded.error.is_none(), "{:?}", recorded.error);
+        assert_eq!(
+            output["host_call"]["output"],
+            json!("hello from the plugin namespace"),
+            "the service's real output is the plugin's own result, unaltered"
+        );
+        assert_eq!(
+            storage.namespaces.lock().unwrap().as_slice(),
+            ["plugins/acme.echo"],
+            "the read happened in the plugin's namespace, so the service saw the \
+             plugin's identity and not the caller's"
+        );
+    }
+
+    /// The fail-closed half, end to end: a manifest that declares no grants is
+    /// started with `DenyHostCalls`, and the plugin is told so instead of
+    /// reaching the service.
+    #[tokio::test]
+    async fn a_host_call_from_a_plugin_without_grants_comes_back_as_an_error() {
+        let storage = Arc::new(RecordingStorage::default());
+        let context = service_context(Arc::clone(&storage) as Arc<dyn StorageService>);
+        let (echo, host_call_result) = hosted_double_with_host_call(
+            "acme.echo",
+            vec![declaration("acme.echo.run")],
+            &[],
+            "storage.get",
+            json!({ "namespace": "plugins/acme.echo", "key": "greeting" }),
+        );
+        let mut hosted = HostedPlugins::from_hosts(vec![echo]);
+        hosted.register(&context, context.plugins()).await;
+
+        let output = tokio::time::timeout(
+            Duration::from_secs(5),
+            context.router().invoke(
+                "acme.echo.run",
+                context.invocation(
+                    RequestId::from("denied-host-call"),
+                    PluginId::from("tact.agent"),
+                    "agent",
+                ),
+                json!({ "ask": "the Kernel" }),
+            ),
+        )
+        .await
+        .expect("the invocation is bounded")
+        .expect("a denied host call is the plugin's problem, not the caller's");
+
+        let recorded = host_call_result
+            .lock()
+            .unwrap()
+            .take()
+            .expect("the plugin was handed a host-call result");
+        let error = recorded.error.expect("a plugin without grants is refused");
+        assert_eq!(
+            error.category,
+            tact_protocol::ErrorCategory::PermissionDenied
+        );
+        assert_eq!(recorded.output, None);
+        assert_eq!(
+            output["host_call"]["error"]["category"],
+            json!("permission_denied"),
+            "the refusal reaches the plugin as a protocol error it can handle"
+        );
+        assert!(
+            storage.namespaces.lock().unwrap().is_empty(),
+            "the service must not be entered for a plugin without grants"
+        );
     }
 }

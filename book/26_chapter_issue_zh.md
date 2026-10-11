@@ -4,6 +4,30 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — 插件可按清单声明的 `grants` 发 host call：`GrantedHostCalls` 让 `storage.*` / `events.*` / `trajectory.*` 首次在真实会话里可达
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（行为变化：清单声明 `runtime.grants` 的托管插件可以回调内核服务；不声明 grants 的插件握手与策略逐字不变） |
+| **Related** | `crates/tact_plugin_host/src/{runtime.rs,lib.rs}`（`GrantedHostCalls`、`default_handshake_features`）、`crates/tact_extensions/src/plugin/{runtime.rs,test_support.rs}`、`crates/tact_ui/src/session_bootstrap.rs`、`crates/tact_plugin_host/tests/host_call_policy.rs` |
+
+**现象 / 动机：** 协议的一半此前已经能用：`HostCapabilityHandler::invoke_plugin` 已经驱动 `PluginResponse::HostCall` → 宿主调用策略 → `PluginRequest::HostCallResult`，含「插件不能递归调用自己的能力」护栏与 64 次上限。缺的只有**策略与授权的接线**——策略恒为 `DenyHostCalls`，于是 §4 的 `storage.*` / `events.*` / `trajectory.*` / `permission.request` / `interaction.request` 对插件永远不可达，判定为「预留」的八个服务能力在真实会话里没有调用者。
+
+**决策与实现：**
+- **清单（`PluginRuntimeSpec`）**：`runtime` 增加 `#[serde(default)] grants: Vec<String>`——插件可以 host-call 的能力名。`deny_unknown_fields` 保留，所以 `grants` 旁边的错键仍是启动期就报的包 bug，而不是被静默忽略的设置。缺省/空 = 与今天完全一致（不发 host call，且**不**请求 `host_calls` 特性）。
+- **握手**：`HostedPlugins::start` 用 `handshake_features(&spec.grants)` 组特性表——`tact_plugin_host::default_handshake_features()`（新公开，`StdioPluginHost::start_with_timeout` 同一份，不会再漂移）在有 grants 时追加 `host_calls`；无 grants 时逐字等于旧默认表（同一份 `start_with_timeout_and_features` 入口、同一个 `DEFAULT_REQUEST_TIMEOUT`）。特性表是**宿主**的承诺，所以它由宿主按清单加，插件不能自己要求。
+- **策略（`tact_plugin_host::GrantedHostCalls`）**：持有会话的 serving `RuntimeContext`、插件自己的 `PluginId` 与 `BTreeSet` 形式的 grants。三道判据：① 名字不在 grants 里 → 按名拒绝（清单自身的边界）；② 在 **serving router** 上 `describe` 不到 → 拒绝；③ 声明 `kind != CapabilityKind::Service` → 拒绝。③ 这一个类型判断同时挡住四类：`Tool`（必须走逐波 preflight，那里才有敏感目标护栏与一次性票据）、`Command` / `App` / `View` / `EventHandler`（属于拥有它的扩展）。**用 router 的声明而不是第二份硬编码名单**：`tact_plugin_wasm` 的 runner 保留硬编码表是因为它在 router 出现**之前**就要决策；这里内核服务已经注册在那张 router 上，问它就是唯一能同时区分「同名 Tool / Service」的来源。命中后在该 serving router 上以**全新** invocation 调用：新 `RequestId` + 插件自己的 `PluginId`（+ `plugin:<id>` 作为 actor），于是走**普通权限路径**——身份是 `storage.*` 授权命名空间的依据，且它不是 host 身份，所以 host 控制面对它拒绝 `chat.submit` / `runs.*`。trait 递过来的 `router` 参数**故意忽略**并在注释里写明：内核服务在 serving router 上，而在逐波 tool router 上内层调用会撞上 `PreflightPermissionGate`，那张一次性票据属于外层工具调用。
+- **接线**：`HostedPlugins::register` 从 `(&CapabilityRouter, &PluginRegistry)` 改为 `(&RuntimeContext, &PluginRegistry)`——策略需要的不止 router。逐 host 选 `GrantedHostCalls`（grants 非空）或 `DenyHostCalls`，并把**同一个** `Arc<dyn HostCallService>` 同时交给 serving 能力注册与工具注册路径（`register_tools` → `register_host_tools_with_router`），所以插件的工具与命令行为一致；注册失败的 host 不保留策略，`register_tools` 回落到 `DenyHostCalls`。生产调用点一处（`session_bootstrap`），其余为测试调用点。
+- **测试**：清单（`grants` 解析；`grants` 与错键同时存在仍被拒；只有带 grants 才请求 `host_calls`，无 grants 时特性表逐字等于默认表）；策略（`crates/tact_plugin_host/tests/host_call_policy.rs`：授权的服务被调用且以插件身份读到自己命名空间、未授权名被拒且服务未被进入、授权的 `Tool` 被拒、授权的 `chat.submit` 被拒且**任何权限策略都没被咨询**、router 上不存在的名字被拒、插件身份不是 host 身份会被 host 控制面规则拒绝）；端到端（`plugin::runtime`：共享 `DoubleHost` 新增「回答一次 `HostCall` 并消费 `HostCallResult`」模式，真实 `RuntimeContext` + 录制型 storage / 事件 / 轨迹替身 + 放行权限，断言插件拿到服务**真实输出**且读发生在 `plugins/acme.echo`；无 grants 时断言拿到 `PermissionDenied` 结果且服务未被进入）。
+
+**改后行为：** 清单写 `"grants": ["storage.get"]` 的托管插件：握手时收到 `host_calls` 特性 → 它在处理自己某次调用时返回 `HostCall` → `GrantedHostCalls` 在 serving router 上以插件身份做一次权限检查后的调用 → 服务的真实输出经 `HostCallResult` 回到插件。`permission.request` / `interaction.request` 即使被授权也仍然 fail-closed（会话策略没有 responder），`runs.*` / `chat.submit` 连类型判断都过不去。不声明 `grants` 的插件：握手特性表、策略、可达能力与今天完全一致。
+
+**有意不做 / 已知边界：** 不给 grants 做通配 / 前缀（精确名，`capability:` 前缀是 WASM runner 自己的约定，内核路径不接受）；不做按插件版本的授权变更；`plugin::runtime` 的端到端测试用替身宿主，真 stdio 进程的 host-call 往返仍由既有 `tact_plugin_host` / `tact_plugin_node` / `tact_plugin_wasm` 套件覆盖；无重启 / 监管、无健康面板。
+
+**Verification：** `cargo test --workspace` **2915 → 2925 passed / 0 failed / 22 ignored**（46 + 1 套件：`plugin::runtime` +4、`tact_plugin_host` 新策略套件 +6）。
+
+**Pointers:** `crates/tact_plugin_host/src/runtime.rs::{GrantedHostCalls, default_handshake_features, HostCallService}`、`crates/tact_extensions/src/plugin/runtime.rs::{PluginRuntimeSpec::grants, handshake_features, host_call_policy, HostedPlugins::register}`、`crates/tact_plugin_host/tests/host_call_policy.rs`、设计 `docs/superpowers/specs/2026-10-11-hosted-runtime-plugins-design.md` §*Host calls*、判定 `docs/superpowers/specs/2026-10-11-kernel-service-consumers-design.md` §*Update 2*。
+
 ## 1. 2026-10-11 — 插件声明的 `Tool` 能力成为模型可见工具：改走逐波 tool router，serving router 不再承载工具
 
 | Field | Value |

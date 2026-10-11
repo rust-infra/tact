@@ -35,8 +35,20 @@ tool router (never the serving router, which would bypass the tool preflight),
 appears in the tool list the model is sent, and is resolved in preflight with the
 risk its declaration carries.
 
-**Not done (deliberate):** plugin *host calls* stay denied, so the Kernel
-services stay reserved; no supervision/restart and no health surface.
+**Not done (deliberate):** no supervision/restart and no health surface.
+
+**Follow-up 2026-10-11 (shipped):** plugin *host calls* are no longer always
+denied. `PluginRuntimeSpec` gained `#[serde(default)] grants`, a plugin with
+grants is started with the `host_calls` handshake feature
+(`handshake_features`, on top of `tact_plugin_host::default_handshake_features`)
+and registered under `tact_plugin_host::GrantedHostCalls`, which invokes the
+granted `Service` on the serving router as the plugin. `HostedPlugins::register`
+now takes `&RuntimeContext` and passes one policy to both the serving- and the
+tool-registration paths. Spec:
+`docs/superpowers/specs/2026-10-11-hosted-runtime-plugins-design.md` § *Host
+calls*; policy tests in `crates/tact_plugin_host/tests/host_call_policy.rs`; the
+end-to-end host-call loop is covered in `plugin::runtime`'s tests.
 
 **Verification:** `./scripts/check-rust.sh` ends with `Rust checks passed.`;
-whole-workspace `cargo test --workspace` counts recorded in the book entry.
+whole-workspace `cargo test --workspace` counts recorded in the book entry
+(2915 passed before the grant work, 2925 after).

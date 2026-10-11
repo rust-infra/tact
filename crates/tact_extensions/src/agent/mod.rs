@@ -3405,7 +3405,7 @@ mod tests {
         ensure_config();
         use crate::plugin::test_support::{declaration, hosted};
         use serde_json::json;
-        use tact_protocol::{CapabilityKind, CapabilityRisk, ProtocolVersion};
+        use tact_protocol::{CapabilityKind, CapabilityRisk};
 
         let mut plugins = hosted(
             "acme.echo",
@@ -3423,12 +3423,8 @@ mod tests {
                 ),
             ],
         );
-        plugins
-            .register(
-                &tact::CapabilityRouter::new(),
-                &tact::PluginRegistry::new(ProtocolVersion::CURRENT),
-            )
-            .await;
+        let serving = tact::RuntimeContext::new(tact::CapabilityRouter::new());
+        plugins.register(&serving, serving.plugins()).await;
 
         let mock = MockClient::new(vec![
             (

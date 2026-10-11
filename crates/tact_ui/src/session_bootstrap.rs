@@ -475,9 +475,7 @@ pub async fn bootstrap_session(
         }
         None => tact_extensions::plugin::HostedPlugins::empty(),
     };
-    hosted_plugins
-        .register(serving.router(), serving.plugins())
-        .await;
+    hosted_plugins.register(&serving, serving.plugins()).await;
     for line in hosted_plugins.notice_lines() {
         notices.notice("plugin", line);
     }

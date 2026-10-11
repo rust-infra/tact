@@ -25,10 +25,12 @@ over the same envelope protocol.
 
 ## Non-goals
 
-- A `HostCallService` bridge. Host calls stay `DenyHostCalls`, so a plugin still
-  cannot reach the Kernel services (`storage.*`, `events.*`, …); that stays the
-  reservation recorded in
-  `docs/superpowers/specs/2026-10-11-kernel-service-consumers-design.md`.
+- A `HostCallService` bridge. **Superseded 2026-10-11 (see below):** host calls
+  were `DenyHostCalls` when this was written, so a plugin could not reach the
+  Kernel services (`storage.*`, `events.*`, …). A manifest that declares
+  `runtime.grants` now gets `GrantedHostCalls`; the reservation recorded in
+  `docs/superpowers/specs/2026-10-11-kernel-service-consumers-design.md` is
+  updated there.
 - Supervision: no restart policy, no health surface. A crashed plugin stays
   failed.
 - Marketplace-installed *MCP servers*, which already have a product path.
@@ -54,7 +56,12 @@ time) gains an optional `runtime` object:
 ```json
 {
   "name": "echo",
-  "runtime": { "id": "acme.echo", "command": "node", "args": ["plugin.mjs"] }
+  "runtime": {
+    "id": "acme.echo",
+    "command": "node",
+    "args": ["plugin.mjs"],
+    "grants": ["storage.get", "events.publish"]
+  }
 }
 ```
 
@@ -66,8 +73,15 @@ time) gains an optional `runtime` object:
   that file exists**, so a package can ship its entry point without depending on
   the session's working directory, while a flag or a bare value (`--port`,
   `serve`) is left alone — no heuristic has to guess which args are paths.
+- `grants` — optional, default empty. The capability names the plugin may invoke
+  as **host calls** while it handles one of its own invocations. The list is the
+  manifest's own bound and nothing more: a granted name still has to be a
+  `Service` on the serving router, and the call is permission-checked as the
+  plugin. Absent or empty is exactly the behaviour of a plugin that never asked
+  for host calls — see *Host calls* below.
 - Unknown keys inside `runtime` are rejected (`deny_unknown_fields`), like the
-  other protocol-adjacent formats.
+  other protocol-adjacent formats. `grants` is a known key; a typo next to it is
+  still a rejection rather than a silently ignored setting.
 
 Absence of `runtime` is the normal case: a plugin that only ships skills,
 commands, hooks or MCP servers is untouched. The surrounding manifest keeps its
@@ -118,7 +132,7 @@ stdio-specific:
 ## Session wiring
 
 `crates/tact_ui/src/session_bootstrap.rs`, next to the plugin MCP load: discover
-`PluginHome::from_environment()` → `HostedPlugins::start` → `register(serving.router(), serving.plugins())`
+`PluginHome::from_environment()` → `HostedPlugins::start` → `register(&serving, serving.plugins())`
 → drain `notice_lines()` into the session notices → `agent.with_hosted_plugins(..)`
 (which rebuilds the tool list, so the plugin tools are model-visible from the
 first request).
@@ -141,18 +155,71 @@ preflight, from the risk tier its declaration carries — the same ladder a nati
 or MCP tool goes through, and the one the serving router deliberately does not
 reach (see the superseded note above).
 
+## Host calls
+
+A plugin may call **back into** the Kernel while it handles one of its own
+invocations: it returns `PluginResponse::HostCall { host_request_id, capability,
+input }`, and the host answers with a correlated `PluginRequest::HostCallResult`.
+The loop, the recursion guard (a plugin cannot invoke its own capability) and the
+64-call cap were already in `HostCapabilityHandler::invoke_plugin`; what grants
+add is the policy at the far end and the handshake that tells the plugin the host
+will answer at all.
+
+- **Handshake.** `HostedPlugins::start` builds its feature list with
+  `handshake_features(&spec.grants)`: `tact_plugin_host::default_handshake_features()`
+  plus `host_calls` when the manifest declared any grant. A plugin that declared
+  none is handed exactly the default list, which is what
+  `StdioPluginHost::start` asked for before grants existed — the fail-closed
+  path is byte-for-byte the old handshake.
+- **Policy.** `crates/tact_plugin_host/src/runtime.rs::GrantedHostCalls` holds
+  the plugin's `PluginId`, its grants as a `BTreeSet` and a clone of the
+  session's serving `RuntimeContext`. It refuses an ungranted name by name, then
+  reads the declaration off the **serving router** and refuses anything that is
+  not a `CapabilityKind::Service`. That one kind check is what keeps a `Tool` on
+  its per-wave preflight path (sensitive-target guard, one-use approval ticket)
+  and a `Command` / `App` / `View` / `EventHandler` with its owner extension. The
+  router is the right source: `tact_plugin_wasm`'s runner keeps a hard-coded
+  capability list because it decides *before* a router exists, while here the
+  Kernel's services are already registered on the router the call lands on.
+- **Invocation.** The granted capability is invoked on the serving router with a
+  **fresh** invocation — a new `RequestId` and the plugin's own `PluginId` — so
+  the ordinary permission path decides it. The identity is load-bearing: it is
+  the namespace `storage.*` authorizes against, and it is not a host identity, so
+  `HostControlPlanePermission` refuses `chat.submit` / `runs.*` for it. The
+  `router` argument the trait hands over is ignored on purpose: an inner invoke
+  on the per-wave tool router would hit `PreflightPermissionGate`, whose one-use
+  ticket belongs to the outer tool call.
+- **Wiring.** `HostedPlugins::register(&serving, registry)` picks the policy per
+  host (grants ⇒ `GrantedHostCalls`, none ⇒ `DenyHostCalls`) and passes the
+  *same* `Arc<dyn HostCallService>` to the serving-capability registration and to
+  `register_tools` → `register_host_tools_with_router`, so a plugin's tool and
+  its command behave alike. A plugin that fails registration keeps no policy;
+  `register_tools` falls back to `DenyHostCalls`.
+
 ## Tests
 
-`plugin::runtime` (13): manifest parsing (present / absent / unknown key
-rejected), relative-arg rewriting only where a file exists, discovery over a
-temp plugin home (only runtime-declaring plugins; a malformed manifest skipped
-while the healthy ones are still found), `register` puts the declared
-capabilities on the router, a registered plugin capability is invocable through
-the serving router, a `Tool` declaration stays off the serving router while a
-`Command` one does not, the plugin tool becomes a spec and is invocable on a
-per-wave router, a clashing plugin tool is reported without failing the others,
-a duplicate capability fails only the later plugin, and teardown stops every
-started host. The Agent side is covered in `agent::tool_dispatch::tests`
+`plugin::runtime` (17): manifest parsing (present / absent / unknown key
+rejected, with a valid `grants` next to the typo so the grant list is not an
+"ignore the rest" escape hatch; the declared grants themselves), the handshake
+feature list (a granted plugin gets the default list plus `host_calls`, a plugin
+without grants gets exactly the default list), relative-arg rewriting only where
+a file exists, discovery over a temp plugin home (only runtime-declaring plugins;
+a malformed manifest skipped while the healthy ones are still found), `register`
+puts the declared capabilities on the router, a registered plugin capability is
+invocable through the serving router, a `Tool` declaration stays off the serving
+router while a `Command` one does not, the plugin tool becomes a spec and is
+invocable on a per-wave router, a clashing plugin tool is reported without
+failing the others, a duplicate capability fails only the later plugin, teardown
+stops every started host, and the host-call path end to end twice: a granted
+plugin's `HostCall` reaches a real `storage.get` over a recording storage double
+and the service's output comes back to the plugin, while a plugin without grants
+is handed a `PermissionDenied` result and the service is never entered.
+`crates/tact_plugin_host/tests/host_call_policy.rs` (6) pins the policy itself:
+a granted service is invoked as the plugin, an ungranted name, a granted `Tool`,
+a granted `chat.submit` (refused by the kind check before any policy runs) and a
+name the router does not carry are all denied, and a plugin identity is refused
+by the host control plane's rule. The Agent side is covered in
+`agent::tool_dispatch::tests`
 (resolution with the declared risk, the high-risk headless denial, the
 sensitive-guard exemption) and `agent::tests` (the tool list plus a full turn
 whose mock provider calls the plugin tool). The stdio path itself stays covered

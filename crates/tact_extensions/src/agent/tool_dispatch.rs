@@ -2107,10 +2107,8 @@ mod tests {
         capabilities: Vec<CapabilityDeclaration>,
     ) -> Agent {
         let mut plugins = crate::plugin::test_support::hosted("acme.echo", capabilities);
-        block_on(plugins.register(
-            &tact::CapabilityRouter::new(),
-            &tact::PluginRegistry::new(tact_protocol::ProtocolVersion::CURRENT),
-        ));
+        let serving = tact::RuntimeContext::new(tact::CapabilityRouter::new());
+        block_on(plugins.register(&serving, serving.plugins()));
         agent_with(name, mode).with_hosted_plugins(plugins)
     }
 

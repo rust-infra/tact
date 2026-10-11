@@ -17,13 +17,13 @@ consumer is faked for them, because the honest consumer does not exist yet.
 
 | Capability | Verdict | Boundary that consumes it |
 |---|---|---|
-| `runs.start` / `runs.cancel` | **consumed** | the host control plane (`chat.submit`, the driver's cancel arms) |
-| `sessions.read` / `sessions.write` | reserved | the Session extension serves them for a plugin host or external View; the two hosts deliberately use `DynSessionStore` directly, and moving them behind the capabilities is the Command/View migration, not this |
-| `storage.get` / `storage.set` | reserved | a plugin host managing its own `plugins/<id>` namespace |
-| `events.subscribe` / `events.publish` | reserved | a plugin host subscribing to the session stream |
-| `trajectory.read` / `trajectory.append_plugin_event` | reserved | a plugin host / external View querying or appending history |
-| `permission.request` | reserved | a plugin host asking the host for a decision (fail-closed until a responder exists) |
-| `interaction.request` | reserved | a plugin host / View raising a prompt (fail-closed until a responder exists) |
+| `runs.start` / `runs.cancel` | **consumed** | the host control plane (`chat.submit`, the driver's cancel arms); a plugin may grant the *name*, but the kind check and the host control plane both refuse it (see *Update 2* below) |
+| `sessions.read` / `sessions.write` | reserved (reachable with a grant) | the Session extension serves them (`Service` kind) for a plugin host or external View; the two hosts deliberately use `DynSessionStore` directly, and moving them behind the capabilities is the Command/View migration, not this |
+| `storage.get` / `storage.set` | reserved (reachable with a grant) | a plugin host managing its own `plugins/<id>` namespace |
+| `events.subscribe` / `events.publish` | reserved (reachable with a grant) | a plugin host subscribing to the session stream |
+| `trajectory.read` / `trajectory.append_plugin_event` | reserved (reachable with a grant) | a plugin host / external View querying or appending history |
+| `permission.request` | reserved, fail-closed | a plugin host asking the host for a decision (fail-closed until a responder exists — a grant does not change that) |
+| `interaction.request` | reserved, fail-closed | a plugin host / View raising a prompt (fail-closed until a responder exists — a grant does not change that) |
 
 Evidence for "no in-repo consumer is missing": the only code that invokes the
 eight `tact::services::register` capabilities is a test
@@ -73,11 +73,11 @@ declares a `runtime` half is spawned at session bootstrap through
 on the serving router (spec
 `docs/superpowers/specs/2026-10-11-hosted-runtime-plugins-design.md`).
 
-The verdicts above are unchanged, for a reason worth stating: the *host* exists,
-but guest **host calls** are denied by default (`DenyHostCalls`), so a plugin
-still cannot reach `storage.*` / `events.*` / `trajectory.*` /
-`permission.request` / `interaction.request`. Granting a plugin host calls is the
-next decision, not a consequence of this one.
+When this was written the *host* existed but guest **host calls** were denied by
+default (`DenyHostCalls`), so a plugin still could not reach `storage.*` /
+`events.*` / `trajectory.*` / `permission.request` / `interaction.request`.
+Granting a plugin host calls was the next decision, not a consequence of this
+one — and it has since been taken (see *Update 2* below).
 
 One thing this document got wrong and has since been fixed: a hosted capability
 of kind `Tool` **is** a model-visible tool. It does not belong on the serving
@@ -93,6 +93,39 @@ The registry verdict is also unchanged: the hosted-plugin lifecycle now
 registers / starts / stops each plugin's manifest through
 `RuntimeContext::plugins()`, but nothing *reads* the state back — a health
 surface remains a product decision.
+
+## Update 2 — a declared grant makes the service capabilities reachable (2026-10-11)
+
+An installed plugin's `runtime` object gained `grants`: a list of capability
+names the plugin may invoke as **host calls** while it handles one of its own
+invocations. A plugin that declares none keeps `DenyHostCalls` and is not offered
+the `host_calls` handshake feature — the fail-closed default above is unchanged
+for it. A plugin that declares some is registered under
+`tact_plugin_host::GrantedHostCalls`, which answers a host call by invoking the
+named capability **on the serving router, as the plugin**:
+
+- the granted name must also be a `CapabilityKind::Service` on that router — the
+  one kind check that keeps a `Tool` on its per-wave preflight path and a
+  `Command` / `App` with its owner extension — so the per-capability verdicts
+  above become *reachable on the ordinary permission path*: `storage.*`,
+  `events.*`, `trajectory.*` and the Session extension's `sessions.*`;
+- `permission.request` / `interaction.request` stay fail-closed: the session's
+  policy is built without a responder, so the call is refused rather than hung;
+- `runs.start` / `runs.cancel` are `App` / `Command` on the serving router, so
+  the kind check refuses them before anything else — and were they `Service`, the
+  plugin's identity is not one of `HOST_CONTROL_PLANE_IDENTITIES`, so
+  `HostControlPlanePermission` would refuse them anyway.
+
+The verdicts above are therefore amended in exactly one direction: the eight
+Kernel-owned service capabilities and `sessions.*` have a **wired consumer
+surface** (a granted hosted plugin) without any in-repo caller changing. Nothing
+here invents a consumer for them, and a plugin still cannot reach anything its
+manifest did not name.
+
+See `docs/superpowers/specs/2026-10-11-hosted-runtime-plugins-design.md` § *Host
+calls*, `crates/tact_plugin_host/src/runtime.rs::GrantedHostCalls`,
+`crates/tact_extensions/src/plugin/runtime.rs::host_call_policy`, and the policy
+tests in `crates/tact_plugin_host/tests/host_call_policy.rs`.
 
 ## Verification
 
