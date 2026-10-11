@@ -48,9 +48,9 @@ register `WorkflowExtension` with `ChatTurnWorkflow`, which sequences steps by
 invoking `chat.submit` (spec
 `docs/superpowers/specs/2026-10-11-production-workflow-executor-design.md`); no
 product code invokes `workflow.run` yet. Still open: 10
-of the 12 service capabilities have no invoking caller, `Agent::runtime_plugins`
-is never read, and the submit paths are all routed.
-`ARCHITECTURE.md` §15 lists what remains unconsumed.
+of the 12 service capabilities have no invoking caller, and the session's
+plugin registry (`RuntimeContext::plugins`) has no reader. The submit paths are
+all routed; `ARCHITECTURE.md` §15 lists what remains unconsumed.
 
 Verification note (2026-10-10): the `tact_ui` integration suites now attach a
 serving context, so 10 of the 12 of them drive the **production** run path

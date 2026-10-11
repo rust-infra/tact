@@ -13,7 +13,8 @@ use tokio_util::sync::CancellationToken;
 
 use super::{CancellationService, CapabilityRouter, KernelError};
 use crate::{
-    EventService, InteractionService, PermissionService, StorageService, TrajectoryService,
+    EventService, InteractionService, PermissionService, PluginRegistry, StorageService,
+    TrajectoryService,
 };
 
 /// Event delivery supplied by a Runtime host.
@@ -97,6 +98,7 @@ pub struct RuntimeContext {
     router: CapabilityRouter,
     cancellation: CancellationService,
     services: RuntimeServices,
+    plugins: PluginRegistry,
 }
 
 impl RuntimeContext {
@@ -113,7 +115,21 @@ impl RuntimeContext {
             router,
             cancellation: CancellationService::new(),
             services,
+            plugins: PluginRegistry::new(tact_protocol::ProtocolVersion::CURRENT),
         }
+    }
+
+    /// The session's Kernel plugin registry: the official and loaded extension
+    /// manifests with their lifecycle state.
+    ///
+    /// It lives on the Runtime context rather than on an Agent because
+    /// extension lifecycle is *session* state, not model state: an Agent is one
+    /// participant in a session, while the registry describes the whole
+    /// runtime the session is serving. A host that reports extension health, or
+    /// that supervises plugins, reads it here.
+    #[must_use]
+    pub fn plugins(&self) -> &PluginRegistry {
+        &self.plugins
     }
 
     #[must_use]

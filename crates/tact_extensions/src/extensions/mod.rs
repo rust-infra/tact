@@ -96,6 +96,26 @@ mod tests {
     }
 
     #[test]
+    fn official_manifests_register_on_the_session_runtime_registry() {
+        // The bootstrap registers the official manifests through the *serving
+        // context's* registry (`RuntimeContext::plugins`), not through an Agent
+        // field: extension lifecycle is session state. A host reads the state
+        // back through a clone of that context — the same handle the frontends
+        // hold — so the clone must share the registry, not copy it.
+        let context = tact::RuntimeContext::new(tact::CapabilityRouter::new());
+        register_in_order(context.plugins(), ordered_manifests(Vec::new()))
+            .expect("the official order satisfies every declared dependency");
+
+        let host_view = context.clone();
+        let health = host_view.plugins().health_all();
+        assert_eq!(health.len(), 5);
+        assert!(
+            health.iter().all(|plugin| plugin.is_healthy()),
+            "every official extension is serving: {health:?}"
+        );
+    }
+
+    #[test]
     fn the_agent_extension_requires_the_tools_extension_first() {
         let registry = PluginRegistry::new(tact_protocol::ProtocolVersion::CURRENT);
         let error = registry

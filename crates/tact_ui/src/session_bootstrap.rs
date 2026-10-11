@@ -450,13 +450,19 @@ pub async fn bootstrap_session(
     )
     .with_session(session_id, session_store)
     .with_provider_kind(provider_kind);
-    let plugin_registry = tact::PluginRegistry::new(tact_protocol::ProtocolVersion::CURRENT);
-    tact_extensions::extensions::register_official_manifests(&plugin_registry, &agent)?;
-    agent = agent.with_plugin_registry(plugin_registry);
+    // The official extension manifests register in the session's Kernel
+    // registry, which lives on the serving context built above: extension
+    // lifecycle is session state, so it is not carried by the Agent (an Agent
+    // is one participant in the session). Registering is still a real startup
+    // step — it refuses a manifest whose declared dependencies are not
+    // registered yet — but no host reports extension health today, so nothing
+    // reads the state back yet.
+    tact_extensions::extensions::register_official_manifests(serving.plugins(), &agent)?;
     agent = agent.with_runtime_event_transport(runtime_events);
     // The serving context is held by the session's Agent: it is the only
-    // reference to the Kernel service router, so dropping it here would take
-    // `storage.*`, `events.*`, `trajectory.*` and the Session capabilities with
+    // reference to the Kernel service router and to the session's plugin
+    // registry, so dropping it here would take `storage.*`, `events.*`,
+    // `trajectory.*` and the Session capabilities with
     // it.
     agent = agent.with_serving_context(serving);
     // RTK filter is opt-in — `with_post_tool` no-ops unless the

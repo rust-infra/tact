@@ -4,6 +4,25 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — 内核服务能力与插件 registry 的「消费者判定」：判定预留，并把 PluginRegistry 从 Agent 挪到会话运行时
+
+| Field | Value |
+|-------|-------|
+| **Type** | refactor + decision（无用户可见变化；API 可见：删 `Agent::runtime_plugins` / `with_plugin_registry`，增 `RuntimeContext::plugins`） |
+| **Related** | `crates/tact/src/context.rs`、`crates/tact_extensions/src/agent/mod.rs`、`crates/tact_ui/src/session_bootstrap.rs` |
+
+**现象 / 动机：** `ARCHITECTURE.md` §15「declared but not yet consumed」挂了两个悬空项：§4 的 12 个服务能力里 **10 个没有任何生产调用者**；`Agent::runtime_plugins` **写入后从不读取**（`git grep` 只有声明、初始化、赋值三处）。逐项问同一个问题：**接真实消费者，还是判定预留并停止把它放在不该放的地方**。
+
+**决策 ①：12 个能力判定为「插件宿主 / 外部 View 边界」预留，不伪造仓内消费者。** 逐项映射：`runs.start` / `runs.cancel` 已被 host 控制面消费；`sessions.read/write` 由 Session 扩展为插件宿主/外部 View 服务于**同一份** store；`storage.*` / `events.*` / `trajectory.*` / `permission.request` / `interaction.request` 是插件宿主与 Web/Desktop View 的面。证据：全仓唯一调用 `tact::services::register` 那 8 个能力的代码是一个**测试**（`session_bootstrap::tests::the_serving_context_serves_the_kernel_capabilities_over_real_backing`），而两个 host 的自身路径**刻意**直连底层 store/service——这些能力是同一 backing 的*插件*面，不是第二套内部 API。因此正确的消费者是尚无产品调用者的通用插件宿主与 Web/Desktop，属于那两项工作，不是这里能凭空补上的接线。
+
+**决策 ②：PluginRegistry 的持有者错了，从 Agent 删除，读者仍是产品决策。** 扩展生命周期是**会话**状态，Agent 只是会话的一个参与者，registry 描述的是整个运行时——所以它挪到会话的 serving `RuntimeContext`（`RuntimeContext::plugins()`），与它本就同属的 router / services 放在一起；`Agent::runtime_plugins` 与 `Agent::with_plugin_registry` 删除。bootstrap 仍在**那里**注册官方 manifest（`register_official_manifests(serving.plugins(), &agent)`），保留其真正的启动效果：依赖顺序不满足即拒绝注册。至于「谁读回健康状态」——§15 早已记录那是产品决策（一个 `/plugins` 风格面板），本次**不发明**新界面。
+
+**改后行为：** 用户可见行为不变。API 可见变化如上。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2897 → 2898 passed / 0 failed / 22 ignored**（46 套件，+1 测试：`extensions::tests::official_manifests_register_on_the_session_runtime_registry`，钉住「注册进 RuntimeContext 的 registry，且 host 通过 clone 读回同一份状态」）。
+
+**Pointers:** `docs/superpowers/specs/2026-10-11-kernel-service-consumers-design.md`（逐项判定表）、`crates/tact/src/context.rs::RuntimeContext::plugins`、`crates/tact_ui/src/session_bootstrap.rs`（`register_official_manifests(serving.plugins(), &agent)`）。
+
 ## 1. 2026-10-11 — Workflow 扩展落地生产 executor：一个 workflow = 一串会话回合
 
 | Field | Value |
