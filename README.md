@@ -110,14 +110,14 @@ sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
 git clone https://github.com/rust-infra/tact.git
 cd tact
 rustup toolchain install stable   # if needed; rustc >= 1.85
-cargo build --release --locked -p tact-ui
+cargo build --release --locked -p tact_ui
 ./target/release/tact-ui --help
 ```
 
 Via Cargo (coming soon to crates.io):
 
 ```bash
-cargo install --path crates/tact-ui   # or: cargo install -p tact-ui from the repo root
+cargo install --path crates/tact_ui
 ```
 
 **Binary releases:** push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
@@ -269,13 +269,12 @@ Details: [`book/05_chapter_compact_zh.md`](./book/05_chapter_compact_zh.md), [`d
 
 | Category | Tools |
 |----------|-------|
-| **File System** | `read_file`, `write_file`, `edit_file` |
+| **File System** | `read_file`, `read_image`, `write_file`, `edit_file` |
 | **Shell** | `bash`, `background_run`, `check_background`, `wait_background`, `sleep` |
 | **Task Management** | `task_create`, `task_get`, `task_list`, `task_update` |
-| **Team & Sub-agents** | `spawn_subagent`, `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox` |
+| **Team & Sub-agents** | `spawn_subagent`, `check_subagent`, `wait_subagent`, `cancel_subagent`, `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox` |
 | **Memory & Knowledge** | `save_memory`, `load_skill`, `compact` |
-| **Git & Worktree** | `worktree_create`, `worktree_list`, `worktree_status`, `worktree_run`, `worktree_events` |
-| **Scheduling** | `cron_create`, `cron_list`, `cron_delete` |
+| **Git & Worktree** | `worktree_create`, `worktree_list`, `worktree_status`, `worktree_run`, `worktree_remove`, `worktree_events` |
 | **Interaction** | `ask_user`, `plan_approval`, `shutdown_request`, `shutdown_response` |
 
 In the interactive TUI, a running `bash` tool shows a bounded five-line live
@@ -295,14 +294,13 @@ auto      →  Auto-approve all actions (CI / trusted repos)
 ### 🪝 Hooks & Skills
 
 - **Pre/Post hooks** — intercept tool calls before/after execution. Run linters, format code, log usage.
-- **Skills** — `SKILL.md` playbooks under `<workdir>/.tact/skills/`, `~/.tact/skills/`, `~/.agents/skills/`, `.claude/skills/`, and optional `[agent].skill_dirs` (summaries in the system prompt; full body via `load_skill` or TUI `/skill-name`).
+- **Skills** — `SKILL.md` playbooks under `<workdir>/.tact/skills/`, `~/.tact/skills/`, `~/.agents/skills/`, and optional `[agent].skill_dirs` (summaries in the system prompt; full body via `load_skill` or TUI `/skill-name`).
 - **Model picker** — TUI `/model` uses configured `models = [...]` first and supplements OpenAI-compatible `openai`, `deepseek`, and `kimi` providers with a cached `GET {base_url}/models` result.
 - **Voice input** — optional microphone recording and transcription via OpenAI, Google Cloud Speech-to-Text, or a local `whisper.cpp` server, configured under `[voice]` (macOS-first). Google API-key mode uses synchronous recognition for recordings up to 60 seconds.
-- **Cron** — schedule recurring prompts. The agent checks in on your project automatically.
 
 ### 🧩 Plugin Marketplace
 
-Tact installs skill-only plugins natively. The built-in `claude-plugins-official` marketplace is available in every installation:
+Tact installs skill-only plugins natively. Two marketplaces are built in and available in every installation — `claude-plugins-official` and `openai-curated`:
 
 ```text
 /plugin install superpowers@claude-plugins-official
@@ -340,7 +338,7 @@ Attach workspace images with `@path/to.png` or `![alt](path)`. Raster files are 
 
 ### 💾 Persistent State
 
-Transcripts, tool results, memories, cron jobs, and task state all persist to `~/.tact/` and `<project>/.tact/`. Pick up where you left off.
+Transcripts, tool results, memories, background task logs, and task state all persist to `~/.tact/` and `<project>/.tact/`. Pick up where you left off.
 
 ---
 
@@ -392,6 +390,7 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 | Tool | Description |
 |------|-------------|
 | `read_file` | Read file contents with optional offset/limit; default page is 2000 lines / ~25k approx tokens with a PARTIAL continuation marker |
+| `read_image` | Read a PNG/JPEG/WebP/GIF file and return the image itself to a vision model |
 | `write_file` | Write or overwrite a file |
 | `edit_file` | Replace exact text in a file (first match, or all with `replace_all`) |
 | `bash` | Run a shell command |
@@ -400,6 +399,9 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 | `wait_background` | Wait for a background task to finish, returning as soon as it does |
 | `sleep` | Wait for N milliseconds (not for waiting on background tasks) |
 | `spawn_subagent` | Spawn a sub-agent with fresh context |
+| `check_subagent` | Check a background sub-agent's run status |
+| `wait_subagent` | Block until a background sub-agent finishes (or times out), returning its summary |
+| `cancel_subagent` | Cancel a running background sub-agent by child session id |
 | `task_create` | Create a persistent task |
 | `task_get` | Get task details by ID |
 | `task_list` | List all tasks with status |
@@ -419,10 +421,8 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 | `worktree_list` | List tracked worktrees |
 | `worktree_status` | Show git status in a worktree |
 | `worktree_run` | Run a command inside a worktree |
+| `worktree_remove` | Remove a tracked git worktree lane (fails if it has uncommitted changes) |
 | `worktree_events` | List worktree lifecycle events |
-| `cron_create` | Create a scheduled prompt |
-| `cron_list` | List scheduled prompts |
-| `cron_delete` | Delete a scheduled prompt |
 | `ask_user` | Ask the user (TUI popup; `multi_select` for checkboxes) |
 
 ---
