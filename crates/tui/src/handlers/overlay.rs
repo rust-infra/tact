@@ -31,8 +31,7 @@ pub(crate) fn handle_overlay_key(app: &mut App, key: KeyEvent) -> bool {
         KeyCode::Char('G')
             if app.code_popup.is_some()
                 || app.mermaid_popup.is_some()
-                || app.task_dag_popup.is_some()
-                || app.has_subagent_popup() =>
+                || app.task_dag_popup.is_some() =>
         {
             if let Some(ref mut p) = app.code_popup {
                 p.scroll = u16::MAX;
@@ -41,17 +40,13 @@ pub(crate) fn handle_overlay_key(app: &mut App, key: KeyEvent) -> bool {
                 p.scroll = u16::MAX;
             }
             if let Some(ref mut p) = app.task_dag_popup {
-                p.scroll = u16::MAX;
-            }
-            if let Some(ref mut p) = app.subagent_popup_mut() {
                 p.scroll = u16::MAX;
             }
         }
         KeyCode::Char('g')
             if app.code_popup.is_some()
                 || app.mermaid_popup.is_some()
-                || app.task_dag_popup.is_some()
-                || app.has_subagent_popup() =>
+                || app.task_dag_popup.is_some() =>
         {
             if let Some(ref mut p) = app.code_popup {
                 p.scroll = 0;
@@ -60,9 +55,6 @@ pub(crate) fn handle_overlay_key(app: &mut App, key: KeyEvent) -> bool {
                 p.scroll = 0;
             }
             if let Some(ref mut p) = app.task_dag_popup {
-                p.scroll = 0;
-            }
-            if let Some(ref mut p) = app.subagent_popup_mut() {
                 p.scroll = 0;
             }
         }

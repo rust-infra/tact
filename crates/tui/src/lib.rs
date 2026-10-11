@@ -457,9 +457,12 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                             handle_insert_mode(&mut app, key, &user_cmd_tx);
                         } else if handle_overlay_key(&mut app, key) {
                             // Overlay popup consumed the key.
-                        } else if (app.show_help || app.show_history) && key.code == KeyCode::Esc {
+                        } else if (app.show_help || app.show_history || app.show_subagent_view)
+                            && key.code == KeyCode::Esc
+                        {
                             app.show_help = false;
                             app.show_history = false;
+                            app.show_subagent_view = false;
                         } else {
                             // Dispatch to the key handler for the current input mode
                             match app.input_mode {

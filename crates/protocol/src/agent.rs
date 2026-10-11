@@ -259,6 +259,19 @@ pub enum AgentUpdate {
         tool_id: String,
         chunks: Vec<ToolOutputChunk>,
     },
+    /// One structured entry of a subagent's transcript, addressed to the
+    /// parent `spawn_subagent` card's popup.
+    ///
+    /// Emitted by the child's tagged forwarder **alongside** the flattened
+    /// [`Self::ToolProgress`] chunk for the same event: the flat text still
+    /// feeds the card's live preview and the popup's copy fallback, while this
+    /// carries the structure the popup renders. The flat stream cannot be
+    /// reversed into structure, which is why both exist.
+    ToolTranscript {
+        /// Parent-side tool id of the `spawn_subagent` card this belongs to.
+        tool_id: String,
+        entry: crate::subagent_transcript::SubagentTranscriptEntry,
+    },
     /// The entire task is complete
     TaskComplete(String),
     /// The in-flight task was cancelled by the user. TUI must leave

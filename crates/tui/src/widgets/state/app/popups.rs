@@ -142,7 +142,6 @@ impl App {
             || self.mermaid_popup.is_some()
             || self.task_dag_popup.is_some()
             || self.system_prompt_popup.is_some()
-            || self.has_subagent_popup()
     }
 
     fn overlay_scroll_mut(&mut self) -> Option<&mut u16> {
@@ -164,11 +163,6 @@ impl App {
             return Some(&mut p.scroll);
         }
         if let Some(p) = self.system_prompt_popup.as_mut() {
-            return Some(&mut p.scroll);
-        }
-        if let Some(id) = self.active_subagent_popup.as_ref()
-            && let Some(p) = self.subagent_popups.get_mut(id)
-        {
             return Some(&mut p.scroll);
         }
         None
@@ -199,8 +193,6 @@ impl App {
             self.task_dag_popup = None;
         } else if self.system_prompt_popup.is_some() {
             self.system_prompt_popup = None;
-        } else if self.has_subagent_popup() {
-            self.close_subagent_popup();
         }
     }
 
@@ -217,8 +209,6 @@ impl App {
             Some(self.mouse.area(SurfaceId::MermaidPopup))
         } else if self.task_dag_popup.is_some() {
             Some(self.mouse.area(SurfaceId::TaskDagPopup))
-        } else if self.has_subagent_popup() {
-            Some(self.mouse.area(SurfaceId::SubagentPopup))
         } else {
             None
         };
@@ -240,8 +230,6 @@ impl App {
             self.copy_code_popup();
         } else if self.mermaid_popup.is_some() {
             self.copy_mermaid_popup();
-        } else if self.has_subagent_popup() {
-            self.copy_subagent_popup();
         } else if self.task_dag_popup.is_some() {
             let src = self
                 .task_dag_popup
@@ -316,11 +304,15 @@ impl App {
                 title: output.title_raw.clone(),
                 scroll: 0,
                 tool_id: tool_id.to_string(),
-                cached_markdown: None,
                 selection: None,
-                layout_cache: None,
+                layout: None,
+                expanded_steps: std::collections::HashSet::new(),
+                expanded_rev: 0,
             });
         self.active_subagent_popup = Some(tool_id.to_string());
+        self.show_subagent_view = true;
+        self.show_history = false;
+        self.show_help = false;
     }
 
     pub(crate) fn subagent_popup(&self) -> Option<&crate::widgets::state::SubagentPopup> {
@@ -337,19 +329,78 @@ impl App {
         self.subagent_popups.get_mut(&id)
     }
 
-    /// True when a subagent popup is active (visible).
+    /// True when the subagent view is active (visible).
     pub(crate) fn has_subagent_popup(&self) -> bool {
-        self.active_subagent_popup.is_some()
+        self.show_subagent_view
     }
 
-    /// Deactivate the visible subagent popup (keep its entry so re-opening
-    /// preserves scroll / selection).
+    /// Close the subagent view (keep the popup entry so re-opening preserves
+    /// scroll / selection / which blocks are expanded).
     pub(crate) fn close_subagent_popup(&mut self) {
+        self.show_subagent_view = false;
         self.active_subagent_popup = None;
         self.mouse.clear_area(SurfaceId::SubagentPopup);
+        self.mouse.subagent_back_area = Rect::default();
+        self.mouse.subagent_block_toggles.clear();
         self.mouse.popup_text_body_area = Rect::default();
         self.mouse.popup_text_hit_rows.clear();
         self.mouse.popup_text_drag_origin = None;
+    }
+
+    /// Expand or collapse **one** child step's block — what a click on the
+    /// block's own overflow row does.
+    ///
+    /// The toggle is per block because a child can run dozens of steps: raising
+    /// every block's cap at once would bury the conversation the reader came
+    /// for. The set lives on the popup and the popup outlives the view, so
+    /// re-opening keeps the reader's choice — the same contract as `scroll`.
+    pub(crate) fn toggle_subagent_step_expanded(&mut self, step_key: &str) {
+        if let Some(popup) = self.subagent_popup_mut() {
+            if !popup.expanded_steps.remove(step_key) {
+                popup.expanded_steps.insert(step_key.to_string());
+            }
+            // The layout is keyed on the counter, not the set: bump it or the
+            // body on screen stays the one built before the click.
+            popup.expanded_rev += 1;
+            self.dirty = true;
+        }
+    }
+
+    /// The bulk gesture the view binds to `Enter`: every block, or none.
+    pub(crate) fn toggle_subagent_expanded(&mut self) {
+        let keys = self.subagent_step_keys();
+        if let Some(popup) = self.subagent_popup_mut() {
+            if popup.expanded_steps.is_empty() {
+                popup.expanded_steps.extend(keys);
+            } else {
+                popup.expanded_steps.clear();
+            }
+            popup.expanded_rev += 1;
+            self.dirty = true;
+        }
+    }
+
+    /// The child step ids of the visible subagent's transcript, in order.
+    fn subagent_step_keys(&self) -> Vec<String> {
+        let Some(id) = self.active_subagent_popup.as_ref() else {
+            return Vec::new();
+        };
+        self.tools()
+            .transcripts
+            .get(id)
+            .map(|transcript| {
+                transcript
+                    .entries
+                    .iter()
+                    .filter_map(|entry| match entry {
+                        tact_protocol::SubagentTranscriptEntry::Step(step) => {
+                            Some(step.tool_id.clone())
+                        }
+                        _ => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     /// Copy the visible subagent popup content to clipboard.
@@ -357,32 +408,21 @@ impl App {
         let Some(popup) = self.subagent_popup() else {
             return;
         };
-        // Prefer the text the popup actually laid out (markdown-rendered when
-        // completed) so mouse-selection byte offsets stay valid. Precompute
-        // the tool-sourced fallback before the closure (a second `&mut self`
-        // borrow cannot live inside it).
+        // Copy the text the popup actually laid out, so mouse-selection byte
+        // offsets stay valid. The layout is the popup's own selection buffer
+        // (the segments' text in order); the transcript is the fallback for a
+        // popup whose layout has not been built yet (opened before a frame).
         let tool_id = popup.tool_id.clone();
-        let (live_text, block_text) = {
-            let tools = self.tools();
-            (
-                tools
-                    .active
-                    .iter()
-                    .find(|a| a.tool_id == tool_id)
-                    .map(|a| a.live_output.full_detail_text()),
-                tools
-                    .blocks
-                    .iter()
-                    .find(|b| b.tool_id == tool_id)
-                    .and_then(|b| b.output.detail_full.clone()),
-            )
-        };
+        let transcript_text = self
+            .tools()
+            .transcripts
+            .get(&tool_id)
+            .map(crate::widgets::state::SubagentTranscript::selection_text);
         let full_text = popup
-            .layout_cache
+            .layout
             .as_ref()
-            .map(|c| c.raw_text.clone())
-            .or(live_text)
-            .or(block_text)
+            .map(|l| l.selection_text.clone())
+            .or(transcript_text)
             .unwrap_or_default();
         if full_text.is_empty() {
             return;
@@ -1577,9 +1617,10 @@ mod tests {
                 title: "A".into(),
                 scroll: 0,
                 tool_id: "sa-1".into(),
-                cached_markdown: None,
                 selection: None,
-                layout_cache: None,
+                layout: None,
+                expanded_steps: std::collections::HashSet::new(),
+                expanded_rev: 0,
             },
         );
         assert!(!app.has_subagent_popup());

@@ -173,6 +173,9 @@ impl ToolComponent {
                 rows: active.output.visual_rows(false),
             });
         }
+        // A restarted id is a new invocation, so its transcript starts empty:
+        // keeping the old entries would splice two conversations together.
+        self.state.transcripts.remove(tool_id);
         // Full live output for subagents (based on presentation metadata).
         let is_subagent = matches!(
             &presentation.popup,
@@ -556,6 +559,19 @@ impl Component for ToolComponent {
                     self.state.active[pos].live_output.push_chunks(chunks);
                 }
                 self.on_tool_progress(tool_id, ctx.tool_events);
+                true
+            }
+            // A subagent's structured conversation, kept beside the card so the
+            // popup can render it with the log's own cells. It survives
+            // finalization (a finished child's popup can be re-opened), which is
+            // why it lives on `ToolState` and not on the card's output — the log
+            // renderer clones every output once per frame.
+            AgentUpdate::ToolTranscript { tool_id, entry } => {
+                self.state
+                    .transcripts
+                    .entry(tool_id.clone())
+                    .or_default()
+                    .push(entry.clone());
                 true
             }
             AgentUpdate::ToolMeta {
@@ -1159,6 +1175,65 @@ mod tests {
         );
         assert!(!dirty);
         assert!(tool_events.is_empty());
+    }
+
+    #[test]
+    fn tool_transcript_accumulates_under_the_parent_tool_id() {
+        let mut c = comp();
+        step_added(&mut c, "sa-1");
+        let _ = step_started(&mut c, "sa-1");
+        let (mut log, mut pending, mut events, mut tool_events) = (
+            LogCoordinator::default(),
+            PendingQueue::default(),
+            Vec::new(),
+            Vec::new(),
+        );
+        for text in ["first", "second"] {
+            c.on_update(
+                &AgentUpdate::ToolTranscript {
+                    tool_id: "sa-1".into(),
+                    entry: crate::protocol::SubagentTranscriptEntry::Assistant(text.into()),
+                },
+                &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
+            );
+        }
+
+        let transcript = c.state().transcripts.get("sa-1").expect("transcript");
+        assert_eq!(transcript.entries.len(), 2);
+        assert_eq!(transcript.revision, 2, "the layout cache keys on this");
+    }
+
+    /// A restarted `tool_id` is a new invocation: splicing the old transcript
+    /// onto the new one would show two conversations as one.
+    #[test]
+    fn restarting_a_tool_id_clears_its_transcript() {
+        let mut c = comp();
+        step_added(&mut c, "sa-1");
+        let _ = step_started(&mut c, "sa-1");
+        let (mut log, mut pending, mut events, mut tool_events) = (
+            LogCoordinator::default(),
+            PendingQueue::default(),
+            Vec::new(),
+            Vec::new(),
+        );
+        c.on_update(
+            &AgentUpdate::ToolTranscript {
+                tool_id: "sa-1".into(),
+                entry: crate::protocol::SubagentTranscriptEntry::Assistant("old".into()),
+            },
+            &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
+        );
+        assert_eq!(c.state().transcripts["sa-1"].entries.len(), 1);
+
+        let _ = step_started(&mut c, "sa-1");
+
+        assert!(
+            c.state()
+                .transcripts
+                .get("sa-1")
+                .is_none_or(|t| t.entries.is_empty()),
+            "a restart must start the conversation over"
+        );
     }
 
     #[test]

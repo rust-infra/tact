@@ -39,6 +39,10 @@ pub enum AgentUpdate {
     StepAdded(PlanStep),
     StepStarted { idx, tool_id, tool_name, arg_summary, arg_full },
     ToolProgress { tool_id, chunks: Vec<ToolOutputChunk> },
+    /// 子 agent 会话的一条**结构化**记录，与上一条扁平 chunk 并行发出。
+    /// 扁平文本喂父工具卡的 live 预览与复制兜底；这条喂 subagent 弹窗
+    /// （用主日志的 cell 渲染）。扁平流无法反推结构，所以两条都要。
+    ToolTranscript { tool_id: String, entry: SubagentTranscriptEntry },
     StepFinished { idx, tool_id, result: StepResult },
     StepFailed { idx, tool_id, error },
     TaskComplete(String),

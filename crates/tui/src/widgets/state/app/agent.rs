@@ -506,7 +506,9 @@ impl App {
                 summary,
             } => self.on_subagent_finished_tail(&tool_id, &child_id, success, &summary),
             // ToolProgress → ToolComponent (live output + Resize event).
-            AgentUpdate::ToolProgress { .. } => {}
+            // ToolTranscript → ToolComponent (the subagent popup's structured
+            // body); the shell itself has no side effect to apply.
+            AgentUpdate::ToolProgress { .. } | AgentUpdate::ToolTranscript { .. } => {}
             AgentUpdate::TasksChanged { tasks, reason } => {
                 self.on_tasks_changed_tail(tasks, reason);
             }

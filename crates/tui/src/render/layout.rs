@@ -21,6 +21,10 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
         super::popups::help::render_help_panel(frame, area, app);
         return;
     }
+    if app.show_subagent_view {
+        super::popups::subagent_popup::render_subagent_view(frame, area, app);
+        return;
+    }
 
     let sticky_h = if super::task_panel::sticky_host_visible(app) {
         let content = super::task_panel::sticky_host_content_height(app) as u16;
@@ -79,9 +83,6 @@ pub(crate) fn render_main_area(frame: &mut Frame, area: Rect, app: &mut App) {
     }
     if app.task_dag_popup.is_some() {
         super::popups::task_dag_popup::render_task_dag_popup(frame, area, app);
-    }
-    if app.has_subagent_popup() {
-        super::popups::subagent_popup::render_subagent_popup(frame, area, app);
     }
 }
 

@@ -1,3 +1,5 @@
+use std::ops::Range;
+
 use ratatui::{
     buffer::CellWidth,
     style::{Modifier, Style},
@@ -88,6 +90,64 @@ impl DisplayRow {
             spans.push(Span::styled(content, style));
         }
         spans
+    }
+}
+
+/// Build a display row from an already-wrapped, already-styled line.
+///
+/// Used by surfaces that lay their rows out themselves (a subagent view's
+/// blocks: rails, code bands) instead of handing raw text to
+/// [`layout_display_rows`].
+///
+/// `prefix_cols` leading cells are **chrome**: a rail occupies columns so the
+/// text lines up, but it owns no bytes, so a drag across it selects nothing and
+/// the highlight starts where the content does. The content graphemes take
+/// consecutive slices of `bytes`, in order — which is why the caller passes the
+/// row's range in the popup's copy text rather than re-deriving offsets from the
+/// glyphs it drew.
+pub fn display_row_from_line(
+    line: &Line<'static>,
+    prefix_cols: usize,
+    bytes: Range<usize>,
+) -> DisplayRow {
+    let mut graphemes = Vec::new();
+    let mut cells = Vec::new();
+    let mut column = 0usize;
+    let mut cursor = bytes.start;
+
+    for span in &line.spans {
+        for symbol in span.content.as_ref().graphemes(true) {
+            let width = if symbol.contains(char::is_control) {
+                0
+            } else {
+                usize::from(symbol.cell_width())
+            };
+            let end = cursor + symbol.len();
+            let hit = if column < prefix_cols {
+                PopupTextHit::empty(bytes.start)
+            } else {
+                PopupTextHit::new(cursor, end)
+            };
+            graphemes.push(DisplayGrapheme {
+                symbol: symbol.to_owned(),
+                hit,
+                style: span.style,
+            });
+            if width > 0 {
+                cells.extend(std::iter::repeat_n(hit, width));
+            }
+            if column >= prefix_cols {
+                cursor = end;
+            }
+            column += width;
+        }
+    }
+
+    DisplayRow {
+        line_start: bytes.start,
+        line_end: bytes.end,
+        graphemes,
+        cells,
     }
 }
 

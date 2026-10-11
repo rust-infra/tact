@@ -10,6 +10,38 @@ pub(crate) fn handle_normal_mode(
     key: KeyEvent,
     _user_cmd_tx: &UnboundedSender<UserCommand>,
 ) {
+    // Subagent view mode: j/k/G/g/y/Esc scroll / copy / close the view, and
+    // Enter raises the cap on the tool blocks.
+    if app.show_subagent_view {
+        match key.code {
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(popup) = app.subagent_popup_mut() {
+                    popup.scroll = popup.scroll.saturating_add(1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(popup) = app.subagent_popup_mut() {
+                    popup.scroll = popup.scroll.saturating_sub(1);
+                }
+            }
+            KeyCode::Char('G') => {
+                if let Some(popup) = app.subagent_popup_mut() {
+                    popup.scroll = u16::MAX;
+                }
+            }
+            KeyCode::Char('g') => {
+                if let Some(popup) = app.subagent_popup_mut() {
+                    popup.scroll = 0;
+                }
+            }
+            KeyCode::Enter => app.toggle_subagent_expanded(),
+            KeyCode::Char('y') => app.copy_subagent_popup(),
+            KeyCode::Esc => app.close_subagent_popup(),
+            _ => {}
+        }
+        return;
+    }
+
     match key.code {
         KeyCode::Char('j') => {
             if app.mouse.in_task_panel && sticky_scrollable(app) {
@@ -172,6 +204,46 @@ mod tests {
         handle_normal_mode(&mut app, key(KeyCode::Enter), &tx);
 
         assert!(matches!(app.input_mode, InputMode::Insert));
+    }
+
+    /// The view's branch returns before the normal bindings, so `Enter` raises
+    /// the cap on the child's tool blocks (all of them — the per-block gesture
+    /// is a click) instead of focusing the input box.
+    #[test]
+    fn enter_in_the_subagent_view_toggles_expanded_blocks() {
+        let mut app = make_app();
+        crate::render::test_harness::seed_subagent_view(&mut app);
+        let (tx, _rx) = unbounded_channel();
+        let mode_before = app.input_mode;
+        assert!(
+            app.subagent_popup()
+                .expect("view is open")
+                .expanded_steps
+                .is_empty()
+        );
+
+        handle_normal_mode(&mut app, key(KeyCode::Enter), &tx);
+
+        assert!(
+            app.subagent_popup()
+                .expect("view is open")
+                .expanded_steps
+                .contains("c1"),
+            "every step is expanded"
+        );
+        assert_eq!(
+            app.input_mode, mode_before,
+            "Enter must not reach the input box while the view is up"
+        );
+
+        // And back: the bulk gesture is a toggle, not an expand.
+        handle_normal_mode(&mut app, key(KeyCode::Enter), &tx);
+        assert!(
+            app.subagent_popup()
+                .expect("view is open")
+                .expanded_steps
+                .is_empty()
+        );
     }
 
     #[test]

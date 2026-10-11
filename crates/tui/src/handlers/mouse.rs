@@ -106,7 +106,9 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
             handle_mouse_scroll_down(app, hit);
         }
         MouseEventKind::Down(MouseButton::Left)
-            if app.tools_mut().popup.is_some() || app.thinking_mut().popup.is_some() =>
+            if app.tools_mut().popup.is_some()
+                || app.thinking_mut().popup.is_some()
+                || app.has_subagent_popup() =>
         {
             handle_text_popup_mouse_down(app, mouse);
         }
@@ -137,6 +139,10 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
 pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
     if app.has_overlay_popup() {
         app.overlay_popup_scroll_up();
+    } else if app.show_subagent_view {
+        if let Some(popup) = app.subagent_popup_mut() {
+            popup.scroll = popup.scroll.saturating_sub(1);
+        }
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
         scroll_active_sticky(app, -1);
@@ -150,6 +156,10 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
 pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
     if app.has_overlay_popup() {
         app.overlay_popup_scroll_down();
+    } else if app.show_subagent_view {
+        if let Some(popup) = app.subagent_popup_mut() {
+            popup.scroll = popup.scroll.saturating_add(1);
+        }
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
         scroll_active_sticky(app, 1);
@@ -257,6 +267,30 @@ fn handle_voice_button_click(app: &mut App) {
 }
 
 fn handle_text_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
+    // The subagent view's breadcrumb row is its back affordance: the `‹` is the
+    // promise and the click is what makes it discoverable. The view's body is
+    // below it and means something else (a drag selects text), which is why the
+    // two rects are separate.
+    if app.has_subagent_popup()
+        && point_in_rect(mouse.column, mouse.row, app.mouse.subagent_back_area)
+    {
+        app.close_subagent_popup();
+        return;
+    }
+    // A capped block's overflow row (`⋯ 12 more lines · ▾ expand`) toggles that
+    // block — the row states the count, so it is the affordance, not chrome.
+    if app.has_subagent_popup() {
+        let toggled = app
+            .mouse
+            .subagent_block_toggles
+            .iter()
+            .find(|(_, rect)| point_in_rect(mouse.column, mouse.row, *rect))
+            .map(|(key, _)| key.clone());
+        if let Some(key) = toggled {
+            app.toggle_subagent_step_expanded(&key);
+            return;
+        }
+    }
     app.mouse.popup_text_drag_origin = None;
     let popup_area = if app.thinking_mut().popup.is_some() {
         app.mouse.area(SurfaceId::ThinkingPopup)
@@ -690,6 +724,133 @@ mod tests {
 
     fn mouse_up(column: u16, row: u16) -> MouseEvent {
         mouse_event(MouseEventKind::Up(MouseButton::Left), column, row)
+    }
+
+    /// The subagent view's breadcrumb row is its back affordance; the body below
+    /// it is still a text surface, so a click there must not return.
+    #[test]
+    fn clicking_the_subagent_breadcrumb_closes_the_view() {
+        let mut app = make_app();
+        crate::render::test_harness::seed_subagent_view(&mut app);
+        // The renderer is what records both rects; the handler only reads them.
+        crate::render::test_harness::render_main_area_terminal(&mut app, 100, 40);
+        let back = app.mouse.subagent_back_area;
+        let body = app.mouse.popup_text_body_area;
+        assert!(!back.is_empty(), "the breadcrumb row must be recorded");
+        assert!(!body.is_empty(), "the body must be recorded");
+
+        handle_mouse_event(&mut app, mouse_down(body.x + 1, body.y));
+        assert!(
+            app.has_subagent_popup(),
+            "a click in the body is not a return"
+        );
+
+        handle_mouse_event(&mut app, mouse_down(back.x + 1, back.y));
+        assert!(
+            !app.has_subagent_popup(),
+            "the breadcrumb must return to the log"
+        );
+        assert!(
+            app.mouse.subagent_back_area.is_empty(),
+            "closing must clear the hit rect, or a later click hits a stale one"
+        );
+    }
+
+    /// A drag across a tool block's output selects it: the view is a reading
+    /// surface, and the command a child ran plus what it printed is what a reader
+    /// copies. The rail is cells without bytes, so a drag that starts on it
+    /// selects from the line's start.
+    #[test]
+    fn dragging_over_a_block_row_selects_its_text() {
+        let mut app = make_app();
+        crate::render::test_harness::seed_subagent_view(&mut app);
+        crate::render::test_harness::render_main_area_terminal(&mut app, 100, 40);
+        let layout = app
+            .subagent_popup()
+            .expect("view")
+            .layout
+            .clone()
+            .expect("layout");
+        let at = layout
+            .selection_text
+            .find("line 3")
+            .expect("the output line is in the copy buffer");
+        let hit = app
+            .mouse
+            .popup_text_hit_rows
+            .iter()
+            .find(|hit| hit.line_start == at)
+            .cloned()
+            .expect("a block row is a hit row");
+
+        // `    │ line 3`: column `text_x + 6` is the first content cell.
+        handle_mouse_event(&mut app, mouse_down(hit.text_x + 6, hit.screen_y));
+        handle_mouse_event(&mut app, mouse_drag(hit.text_x + 11, hit.screen_y));
+
+        let popup = app.subagent_popup().expect("view");
+        let selection = popup.selection.expect("a selection");
+        let range = selection
+            .normalized_non_empty(&layout.selection_text)
+            .expect("a non-empty selection");
+        let selected = &layout.selection_text[range];
+        assert_eq!(
+            selected, "line 3",
+            "the drag selected the output line, not the rail"
+        );
+    }
+
+    /// A capped block's overflow row is its own toggle: the click expands *that*
+    /// block and the view stays open. The row says `⋯ 12 more lines · ▾ expand`
+    /// — the count is the affordance.
+    #[test]
+    fn clicking_a_block_overflow_row_expands_that_block() {
+        let mut app = make_app();
+        crate::render::test_harness::seed_subagent_view(&mut app);
+        crate::render::test_harness::render_main_area_terminal(&mut app, 100, 40);
+
+        let (key, rect) = app
+            .mouse
+            .subagent_block_toggles
+            .first()
+            .cloned()
+            .expect("a capped block draws a toggle row");
+        assert_eq!(key, "c1");
+        assert!(
+            app.subagent_popup()
+                .expect("view")
+                .expanded_steps
+                .is_empty(),
+            "nothing is expanded before the click"
+        );
+
+        handle_mouse_event(&mut app, mouse_down(rect.x + 1, rect.y));
+        assert!(app.has_subagent_popup(), "expanding is not a return");
+        assert!(
+            app.subagent_popup()
+                .expect("view")
+                .expanded_steps
+                .contains("c1")
+        );
+
+        // Redraw: the same row now reads as the collapse gesture, and clicking
+        // it puts the cap back.
+        crate::render::test_harness::render_main_area_terminal(&mut app, 100, 40);
+        let (key, rect) = app
+            .mouse
+            .subagent_block_toggles
+            .first()
+            .cloned()
+            .expect("an expanded block still offers the way back");
+        assert_eq!(key, "c1");
+
+        handle_mouse_event(&mut app, mouse_down(rect.x + 1, rect.y));
+        assert!(
+            app.subagent_popup()
+                .expect("view")
+                .expanded_steps
+                .is_empty(),
+            "the second click collapses it again"
+        );
     }
 
     #[test]

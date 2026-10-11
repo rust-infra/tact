@@ -11,6 +11,9 @@ pub use tact_protocol::agent::{
     TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolDetailKind, ToolPopupKind,
     ToolPresentationInfo, ToolVisualKind,
 };
+pub use tact_protocol::subagent_transcript::{
+    SubagentStep, SubagentStepStatus, SubagentTranscriptEntry,
+};
 pub use tact_protocol::tool_output::{
     ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
 };
