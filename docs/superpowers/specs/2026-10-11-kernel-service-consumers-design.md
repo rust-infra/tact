@@ -64,6 +64,27 @@ and never read. Two things follow:
   service capabilities (the Command/View migration).
 - A product caller for the generic plugin hosts.
 
+## Update — hosted runtime plugins implemented (2026-10-11)
+
+The "real plugin host" this document named as the consumer of most reserved
+capabilities now exists: an installed plugin whose `.codex-plugin/plugin.json`
+declares a `runtime` half is spawned at session bootstrap through
+`StdioPluginHost`, and the capabilities it registers at handshake are registered
+on the serving router (spec
+`docs/superpowers/specs/2026-10-11-hosted-runtime-plugins-design.md`).
+
+The verdicts above are unchanged, for a reason worth stating: the *host* exists,
+but guest **host calls** are denied by default (`DenyHostCalls`), so a plugin
+still cannot reach `storage.*` / `events.*` / `trajectory.*` /
+`permission.request` / `interaction.request`, and a hosted capability is not yet
+a model-visible tool. Granting a plugin host calls is the next decision, not a
+consequence of this one.
+
+The registry verdict is also unchanged: the hosted-plugin lifecycle now
+registers / starts / stops each plugin's manifest through
+`RuntimeContext::plugins()`, but nothing *reads* the state back — a health
+surface remains a product decision.
+
 ## Verification
 
 `crates/tact_extensions/src/extensions/mod.rs` gains a pin that the official

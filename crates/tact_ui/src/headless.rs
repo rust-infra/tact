@@ -130,6 +130,8 @@ async fn run_headless_locked(
     let _ = agent.dispatch_session_end_hooks().await;
 
     agent.shutdown_mcp().await;
+    // Session-scoped plugin hosts must not outlive the run.
+    agent.shutdown_hosted_plugins().await;
     Ok(())
 }
 

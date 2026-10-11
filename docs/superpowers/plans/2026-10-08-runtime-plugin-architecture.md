@@ -47,9 +47,16 @@ fire `TaskCompleted`). **Workflow now has a production executor**: both hosts
 register `WorkflowExtension` with `ChatTurnWorkflow`, which sequences steps by
 invoking `chat.submit` (spec
 `docs/superpowers/specs/2026-10-11-production-workflow-executor-design.md`); no
-product code invokes `workflow.run` yet. Still open: 10
-of the 12 service capabilities have no invoking caller, and the session's
-plugin registry (`RuntimeContext::plugins`) has no reader. The submit paths are
+product code invokes `workflow.run` yet. **The plugin-host boundary now has a
+product caller**: an installed plugin whose `.codex-plugin/plugin.json` declares
+a `runtime` half is spawned through `StdioPluginHost` at session bootstrap, its
+handshake capabilities register on the serving router, its manifest registers in
+the session's `PluginRegistry`, and both hosts stop it at teardown (spec
+`docs/superpowers/specs/2026-10-11-hosted-runtime-plugins-design.md`). Guest
+host calls stay denied, so the Kernel services stay reserved, and a hosted
+capability is not yet a model-visible tool. Still open: 10
+of the 12 service capabilities have no invoking caller, and nothing reads
+extension state back (no health surface). The submit paths are
 all routed; `ARCHITECTURE.md` §15 lists what remains unconsumed.
 
 Verification note (2026-10-10): the `tact_ui` integration suites now attach a

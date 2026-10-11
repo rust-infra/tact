@@ -361,6 +361,9 @@ pub async fn run_command_loop_with_account(
         let mut guard = agent.lock().await;
         let _ = guard.dispatch_session_end_hooks().await;
         guard.shutdown_mcp().await;
+        // Hosted plugin processes are session-scoped: stopping them here, next
+        // to MCP, is what keeps one from outliving the session.
+        guard.shutdown_hosted_plugins().await;
     }
     agent
 }

@@ -458,6 +458,30 @@ pub async fn bootstrap_session(
     // registered yet — but no host reports extension health today, so nothing
     // reads the state back yet.
     tact_extensions::extensions::register_official_manifests(serving.plugins(), &agent)?;
+    // Installed plugins that declare a runtime half are started here, next to
+    // the plugin MCP load: their capabilities register on the serving router so
+    // a hosted capability is reachable through the same permissioned path as
+    // every Kernel service, and their manifests register in the same session
+    // registry the official ones do. A failure is a notice, never fatal — one
+    // broken package must not take the session down — so nothing here uses `?`.
+    let mut hosted_plugins = match tact_extensions::consts::PluginHome::from_environment() {
+        Some(home) => {
+            let (specs, discovery_failures) =
+                tact_extensions::plugin::discover_runtime_plugins(&home);
+            for failure in &discovery_failures {
+                notices.notice("plugin", failure);
+            }
+            tact_extensions::plugin::HostedPlugins::start(specs).await
+        }
+        None => tact_extensions::plugin::HostedPlugins::empty(),
+    };
+    hosted_plugins
+        .register(serving.router(), serving.plugins())
+        .await;
+    for line in hosted_plugins.notice_lines() {
+        notices.notice("plugin", line);
+    }
+    agent = agent.with_hosted_plugins(hosted_plugins);
     agent = agent.with_runtime_event_transport(runtime_events);
     // The serving context is held by the session's Agent: it is the only
     // reference to the Kernel service router and to the session's plugin

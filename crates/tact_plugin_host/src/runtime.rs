@@ -413,47 +413,67 @@ impl StdioPluginHost {
         Self::register_with_router_and_host_calls(host, router, Arc::new(DenyHostCalls))
     }
 
+    /// The stdio host's registration is the generic [`register_host_with_router`]
+    /// over the `PluginHost` boundary: nothing here is stdio-specific, and going
+    /// through the trait is what lets a host double register exactly as
+    /// production does.
     pub fn register_with_router_and_host_calls(
         host: Arc<Mutex<Self>>,
         router: &CapabilityRouter,
         host_calls: Arc<dyn HostCallService>,
     ) -> Result<(), KernelError> {
-        let (declarations, request_timeout) = host
-            .try_lock()
-            .map_err(|_| {
-                KernelError::new(
-                    ErrorCategory::InternalError,
-                    "plugin host is busy",
-                    "plugin_host",
-                    true,
-                )
-            })
-            .map(|host| (host.capabilities.clone(), host.request_timeout))?;
-        let own_capabilities = Arc::new(
-            declarations
-                .iter()
-                .map(|declaration| declaration.name.clone())
-                .collect::<BTreeSet<_>>(),
-        );
-        let registrations = declarations
-            .into_iter()
-            .map(|declaration| {
-                let capability = declaration.name.clone();
-                CapabilityRegistration::new(
-                    declaration,
-                    Arc::new(HostCapabilityHandler {
-                        host: Arc::clone(&host),
-                        host_calls: Arc::clone(&host_calls),
-                        router: router.clone(),
-                        own_capabilities: Arc::clone(&own_capabilities),
-                        request_timeout,
-                        capability,
-                    }),
-                )
-            })
-            .collect();
-        router.register_many(registrations)
+        register_host_with_router(host, router, host_calls)
     }
+}
+
+/// Registers every capability a host declares on `router`, under the caller's
+/// host-call policy.
+///
+/// Generic over [`PluginHost`] rather than the stdio host on purpose: a test
+/// double registers through this same function, so what the registration tests
+/// exercise *is* the production path. Registration is a single `register_many`
+/// batch, so a name already on the router fails the whole host and none of its
+/// capabilities are inserted — the router's duplicate rules stay intact.
+pub fn register_host_with_router(
+    host: Arc<Mutex<dyn PluginHost>>,
+    router: &CapabilityRouter,
+    host_calls: Arc<dyn HostCallService>,
+) -> Result<(), KernelError> {
+    let (declarations, request_timeout) = host
+        .try_lock()
+        .map_err(|_| {
+            KernelError::new(
+                ErrorCategory::InternalError,
+                "plugin host is busy",
+                "plugin_host",
+                true,
+            )
+        })
+        .map(|host| (host.capabilities().to_vec(), host.request_timeout()))?;
+    let own_capabilities = Arc::new(
+        declarations
+            .iter()
+            .map(|declaration| declaration.name.clone())
+            .collect::<BTreeSet<_>>(),
+    );
+    let registrations = declarations
+        .into_iter()
+        .map(|declaration| {
+            let capability = declaration.name.clone();
+            CapabilityRegistration::new(
+                declaration,
+                Arc::new(HostCapabilityHandler {
+                    host: Arc::clone(&host),
+                    host_calls: Arc::clone(&host_calls),
+                    router: router.clone(),
+                    own_capabilities: Arc::clone(&own_capabilities),
+                    request_timeout,
+                    capability,
+                }),
+            )
+        })
+        .collect();
+    router.register_many(registrations)
 }
 
 /// Mediates guest-initiated host calls made during a routed capability call.
@@ -468,7 +488,11 @@ pub trait HostCallService: Send + Sync {
     ) -> Result<Value, KernelError>;
 }
 
-struct DenyHostCalls;
+/// The default host-call policy: every guest host call is denied, so a plugin
+/// cannot reach the Kernel services until a product surface grants it. Public so
+/// a caller that registers a host directly lands on the same fail-closed policy
+/// the stdio host uses by default.
+pub struct DenyHostCalls;
 
 #[async_trait]
 impl HostCallService for DenyHostCalls {
@@ -509,13 +533,29 @@ impl PluginHost for StdioPluginHost {
             .map_err(anyhow::Error::from)
     }
 
+    fn request_timeout(&self) -> Duration {
+        self.request_timeout
+    }
+
+    async fn request_with_context(
+        &mut self,
+        context: &InvocationContext,
+        request: PluginRequest,
+    ) -> Result<PluginResponse, KernelError> {
+        StdioPluginHost::request_with_context(self, context, request).await
+    }
+
+    async fn interrupt(&mut self) {
+        StdioPluginHost::interrupt(self).await;
+    }
+
     async fn shutdown(&mut self) -> Result<()> {
         self.stop().await
     }
 }
 
 struct HostCapabilityHandler {
-    host: Arc<Mutex<StdioPluginHost>>,
+    host: Arc<Mutex<dyn PluginHost>>,
     host_calls: Arc<dyn HostCallService>,
     router: CapabilityRouter,
     own_capabilities: Arc<BTreeSet<String>>,
@@ -552,7 +592,7 @@ impl CapabilityHandler for HostCapabilityHandler {
             }
         });
         let mut host = self.host.lock().await;
-        let result = self.invoke_plugin(&mut host, &context, input).await;
+        let result = self.invoke_plugin(&mut *host, &context, input).await;
         completed.store(true, std::sync::atomic::Ordering::Release);
         cleanup.abort();
         result
@@ -562,7 +602,7 @@ impl CapabilityHandler for HostCapabilityHandler {
 impl HostCapabilityHandler {
     async fn invoke_plugin(
         &self,
-        host: &mut StdioPluginHost,
+        host: &mut dyn PluginHost,
         context: &InvocationContext,
         input: Value,
     ) -> Result<Value, KernelError> {

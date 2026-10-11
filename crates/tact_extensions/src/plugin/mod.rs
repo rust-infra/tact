@@ -2,6 +2,7 @@ mod hooks;
 mod install;
 mod marketplace;
 mod model;
+mod runtime;
 mod store;
 
 use anyhow::{Context, Result};
@@ -14,6 +15,7 @@ pub use hooks::*;
 pub use install::*;
 pub use marketplace::*;
 pub use model::*;
+pub use runtime::*;
 pub use store::*;
 pub use tact::{PluginRegistry, PluginState, RuntimePluginManifest};
 pub use tact_plugin_host::PluginHost;

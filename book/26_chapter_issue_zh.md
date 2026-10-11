@@ -4,6 +4,28 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — 已安装插件可被托管为运行时扩展：插件宿主边界终于有了生产调用者
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（新能力；仅在插件清单声明 `runtime` 时生效，默认无行为变化） |
+| **Related** | `crates/tact_extensions/src/plugin/runtime.rs`、`crates/tact_plugin_host/src/{host.rs,runtime.rs}`、`crates/tact_ui/src/{session_bootstrap.rs,driver.rs,headless.rs}` |
+
+**现象 / 动机：** `tact_plugin_host` / `tact_plugin_node` / `tact_plugin_wasm` 三个宿主实现完备、各有测试，但**全仓没有任何产品调用者**（§15 原文：`no workspace crate depends on them; only their own tests`）。后果：§4 里判定为「插件宿主预留」的内核服务能力，在真实会话里永不可达——宿主边界等于一段只在测试里成立的代码。
+
+**决策与实现：**
+- **清单**：已安装插件的 `.codex-plugin/plugin.json` 增加可选 `runtime` 对象 `{ "id", "command", "args" }`。`id` 直接按 `PluginId` 反序列化（读取即校验形状）；`command` 原样交给 spawn；`args` **仅在根目录下确实存在该文件时**改写成绝对路径（包自带入口不依赖 cwd），flag / 纯值（`--port`、`serve`）不动，不需要猜测哪个参数是路径；`runtime` 内未知键拒绝。不声明 `runtime` 的插件（只带 skills / commands / hooks / MCP）完全不受影响。
+- **发现与生命周期**：`plugin::runtime::{read_runtime_spec, discover_runtime_plugins, HostedPlugins}`。**单个坏 manifest 只跳过该包并报告，不连坐**（与 `start`/`register` 的逐插件容错一致：用户一个键写错不应让所有插件都不被托管）。`HostedPlugins::{start, register, notice_lines, shutdown}`；启动/注册失败一律降级为启动 notice，**绝不让会话失败**；注册失败（能力重名）时把 manifest `stop`+`unregister` 并把 host 停掉，不留“在跑但答不了”的幽灵。
+- **装配**：bootstrap 在官方 manifest 注册之后启动；能力注册到 **serving router**，manifest 注册进会话的 `RuntimeContext::plugins()`；两个 host 在 `shutdown_mcp` 旁调 `Agent::shutdown_hosted_plugins`，插件进程不越界到会话之后。
+- **宿主边界泛化（关键）**：`PluginHost` 增加三个带默认实现的方法（`request_timeout` / `request_with_context` / `interrupt`），并公开 `register_host_with_router(Arc<Mutex<dyn PluginHost>>, &router, Arc<dyn HostCallService>)`，`StdioPluginHost::register_with_router_and_host_calls` 委托它、`DenyHostCalls` 公开。这样**测试替身走的是与生产完全相同的注册路径**，而不是另写一套。
+- **权限**：插件能力落在 serving router，沿用既有 `ServingPermission`（host 控制面白名单**不放宽**；`ask` 模式仍 fail-closed）；插件 `runtime.id` 无法顶替官方扩展——registry 拒绝重复 id。一条 stdio 路径同时服务三种宿主：Node 插件是 `node index.mjs`，WASM 插件是配置的 runner，编译好的二进制就是它自己。
+
+**明确不做（有意）：** ① 插件能力**还不是模型可见的工具**（tool dispatch 那条逐波 router / tool spec / preflight 路径未动）——托管能力经 serving router 可达，这是 `Command` / `App` 类的产品路径；② guest host call 仍默认拒绝（`DenyHostCalls`），所以 §4 的 `storage.*` / `events.*` / `trajectory.*` / `permission.request` / `interaction.request` **仍为预留**：给插件开 host call 是下一个决策，不是本次的推论；③ 无重启/监管、无健康面板。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2898 → 2908 passed / 0 failed / 22 ignored**（46 套件，+10 测试，全部在 `plugin::runtime`：清单解析/未知键拒绝、相对参数仅对存在的文件改写、发现只取声明 `runtime` 的插件、坏 manifest 跳过而健康插件仍被找到、能力进 router、托管能力经 serving router 可调用、重名只让后来的插件失败、teardown 停掉每个已启动 host）。stdio 路径本身仍由 `tact_plugin_host` / `tact_plugin_node` / `tact_plugin_wasm` 既有套件覆盖。未覆盖：bootstrap 装配点与两处 teardown 调用点（各三行；bootstrap 级测试会读到真实的 `$HOME/.tact/plugins`）。
+
+**Pointers:** `crates/tact_extensions/src/plugin/runtime.rs::{discover_runtime_plugins, HostedPlugins}`、`crates/tact_plugin_host/src/runtime.rs::register_host_with_router`、`crates/tact_ui/src/session_bootstrap.rs`（`runtime` 段装配）、设计 `docs/superpowers/specs/2026-10-11-hosted-runtime-plugins-design.md`。
+
 ## 1. 2026-10-11 — 内核服务能力与插件 registry 的「消费者判定」：判定预留，并把 PluginRegistry 从 Agent 挪到会话运行时
 
 | Field | Value |

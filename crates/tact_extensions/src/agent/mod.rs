@@ -466,6 +466,13 @@ pub struct Agent {
     /// is separate from the per-wave tool router: tool calls keep their own
     /// router and permission gate, so this cannot widen a tool's authority.
     pub serving_context: Option<tact::RuntimeContext>,
+    /// Installed plugins the session is hosting (a manifest `runtime` half).
+    ///
+    /// Held by the Agent so it is stopped exactly when the session is: both
+    /// frontends call [`Self::shutdown_hosted_plugins`] at teardown next to
+    /// `shutdown_mcp`, so a plugin process never outlives the session. `None`
+    /// when the session hosts no plugin.
+    pub hosted_plugins: Option<crate::plugin::HostedPlugins>,
 }
 
 impl Agent {
@@ -554,6 +561,7 @@ impl Agent {
             provider_kind,
             cached_tool_specs: Vec::new(),
             serving_context: None,
+            hosted_plugins: None,
         };
         agent.rebuild_cached_tool_specs();
         agent
@@ -568,6 +576,28 @@ impl Agent {
     pub fn with_serving_context(mut self, context: tact::RuntimeContext) -> Self {
         self.serving_context = Some(context);
         self
+    }
+
+    /// Attach the installed plugins the session is hosting.
+    ///
+    /// The bootstrap starts them and registers their capabilities on the serving
+    /// router; the Agent keeps the handle so both frontends stop them at
+    /// teardown. Separate from `with_serving_context` because the hosts are a
+    /// lifecycle the Agent owns, not part of the serving context itself.
+    #[must_use]
+    pub fn with_hosted_plugins(mut self, hosted: crate::plugin::HostedPlugins) -> Self {
+        self.hosted_plugins = Some(hosted);
+        self
+    }
+
+    /// Stop every hosted plugin, if the session started any.
+    ///
+    /// Called next to `shutdown_mcp` at teardown: a plugin process must not
+    /// outlive the session.
+    pub async fn shutdown_hosted_plugins(&mut self) {
+        if let Some(hosted) = &self.hosted_plugins {
+            hosted.shutdown().await;
+        }
     }
 
     /// Override the provider kind used for Responses compaction routing
