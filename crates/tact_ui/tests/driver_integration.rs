@@ -202,11 +202,19 @@ async fn cancel_during_task_does_not_emit_task_complete() {
             .any(|u| matches!(u, RuntimeEvent::TaskComplete { .. })),
         "cancelled task must not emit TaskComplete, got: {updates:?}"
     );
-    assert!(
-        updates
-            .iter()
-            .any(|u| matches!(u, RuntimeEvent::Cancelled { .. })),
-        "cancelled task must emit TaskCancelled so TUI leaves busy state, got: {updates:?}"
+    // Exactly one: the TUI draws its turn-boundary rule and bumps the
+    // bottom bar's turn count once per `Cancelled` (see
+    // `add_task_end_separator` and its `turn_done` accumulation). Two events
+    // for one cancel would draw two rules and count two turns — which is what
+    // happened while `runs.cancel` also published the fact, so pin the count
+    // rather than merely that one arrived.
+    let cancelled = updates
+        .iter()
+        .filter(|u| matches!(u, RuntimeEvent::Cancelled { .. }))
+        .count();
+    assert_eq!(
+        cancelled, 1,
+        "one user cancel must produce exactly one Cancelled fact, got: {updates:?}"
     );
 }
 
