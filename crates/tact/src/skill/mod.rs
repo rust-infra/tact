@@ -21,13 +21,23 @@
 //! - [`get_skill_registry`] / [`shared_skill_registry`] construct registries;
 //!   interactive mode shares [`SharedSkillRegistry`] between agent tools and the TUI
 //!   so `/skill reload` updates both without restart.
-//! - [`SkillRegistry::describe_available`] supplies name/description lines for
-//!   the system prompt (not full bodies).
+//! - [`SkillRegistry::describe_available_bounded`] supplies the system prompt's
+//!   catalog — name/description lines, each description capped, and the list
+//!   dropped to a context-window budget. [`SkillRegistry::describe_available`]
+//!   is the uncapped form the TUI snapshots.
 //! - Full bodies are wrapped in `<skill>` XML for `load_skill` tool results
-//!   and for TUI slash invocation (user task).
+//!   and for TUI slash invocation (user task). The wrapper carries the skill
+//!   directory, so a skill that ships `references/` or `scripts/` can say so.
+//! - `[agent].skill_disable` names skills to keep out of the catalog. They stay
+//!   loadable by name: the switch hides from automatic discovery, it does not
+//!   disable the capability.
+//!
+//! See `docs/superpowers/specs/2026-10-11-skill-catalog-budget-design.md` for
+//! why the catalog is bounded and why the path rides the body rather than the
+//! catalog.
 
 use std::{
-    collections::HashMap,
+    collections::{HashMap, HashSet},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -57,18 +67,61 @@ pub struct SkillManifest {
 pub struct SkillDocument {
     pub manifest: SkillManifest,
     pub body: String,
+    /// Directory holding the `SKILL.md` this body came from.
+    ///
+    /// Carried on the document rather than the manifest on purpose: it is
+    /// delivered inside the `<skill>` wrapper when the body is loaded, never in
+    /// the catalog. A path in the catalog costs every request, and the model
+    /// only needs it once it is acting on the skill.
+    pub dir: PathBuf,
+}
+
+/// Default cap on a catalog description, in characters.
+///
+/// A catalog line is a routing hint; the whole description is what `load_skill`
+/// returns. 200 holds a "what it does and when to use it" sentence pair, and
+/// halves the catalog on a machine carrying 79 skills.
+pub const DEFAULT_SKILL_DESCRIPTION_CAP: usize = 200;
+
+/// Catalog ceiling used when `model_context_window` is unknown (`0`).
+pub const CATALOG_BUDGET_FALLBACK_CHARS: usize = 8_000;
+
+/// How many dropped skill names the over-budget trailer will spell out.
+pub const TRAILER_NAME_CAP: usize = 40;
+
+/// Catalog ceiling for a model context window, in characters.
+///
+/// Two percent of the window at four bytes per token — the same estimate the
+/// `mcp get` cost line uses. `0` (window unknown, or auto-compaction off) falls
+/// back to [`CATALOG_BUDGET_FALLBACK_CHARS`].
+pub fn catalog_budget_chars(model_context_window: usize) -> usize {
+    if model_context_window == 0 {
+        return CATALOG_BUDGET_FALLBACK_CHARS;
+    }
+    // window / 100 * 8 == 2% of the window, in bytes at 4 bytes/token.
+    model_context_window.saturating_div(100).saturating_mul(8)
 }
 
 impl std::fmt::Display for SkillDocument {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            r#"<skill name="{}">
+            r#"<skill name="{}" dir="{}">
 {}
 </skill>"#,
-            self.manifest.name, self.body
+            escape_xml_attr(&self.manifest.name),
+            escape_xml_attr(&self.dir.display().to_string()),
+            self.body
         )
     }
+}
+
+/// Escape a value for use inside a double-quoted XML attribute.
+fn escape_xml_attr(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
 }
 
 /// Shared registry used by the agent tools and (in interactive mode) the TUI.
@@ -79,7 +132,9 @@ pub type SharedSkillRegistry = Arc<Mutex<SkillRegistry>>;
 pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry> {
     let workdir = workdir.as_ref();
     let mut dirs = TactPath::new(workdir).skill_search_dirs();
+    let mut disabled: Vec<String> = Vec::new();
     if let Some(cfg) = crate::config::try_settings() {
+        disabled = cfg.agent.skill_disable.clone();
         for raw in &cfg.agent.skill_dirs {
             let trimmed = raw.trim();
             if trimmed.is_empty() {
@@ -93,6 +148,7 @@ pub fn get_skill_registry(workdir: impl AsRef<Path>) -> Result<SkillRegistry> {
     }
     let mut registry = SkillRegistry::new(dirs);
     registry.load_skills()?;
+    registry.set_disabled(disabled);
     if let Some(plugin_home) = PluginHome::from_environment() {
         let store = PluginStore::new(plugin_home);
         let plugin_roots = store.installed_skill_roots()?;
@@ -139,6 +195,11 @@ pub fn lock_skills(reg: &SharedSkillRegistry) -> MutexGuard<'_, SkillRegistry> {
 pub struct SkillRegistry {
     skill_dirs: Vec<PathBuf>,
     skills: HashMap<String, SkillDocument>,
+    /// Registry names kept out of the catalog by `[agent].skill_disable`.
+    ///
+    /// Filtered at render time, never at load: `/skill list` still shows a
+    /// disabled skill, and `load_skill` still resolves it.
+    disabled: HashSet<String>,
 }
 
 impl SkillRegistry {
@@ -146,6 +207,7 @@ impl SkillRegistry {
         Self {
             skill_dirs: skill_dirs.into_iter().collect(),
             skills: HashMap::new(),
+            disabled: HashSet::new(),
         }
     }
 
@@ -263,6 +325,7 @@ impl SkillRegistry {
                 description,
             },
             body,
+            dir: path.parent().map(Path::to_path_buf).unwrap_or_default(),
         };
 
         self.skills.insert(name, document);
@@ -318,6 +381,7 @@ impl SkillRegistry {
                         .unwrap_or_else(|| "No description".to_string()),
                 },
                 body,
+                dir: path.parent().map(Path::to_path_buf).unwrap_or_default(),
             };
             self.skills.insert(name, document);
         }
@@ -325,38 +389,69 @@ impl SkillRegistry {
         Ok(())
     }
 
-    /// List available skills with name + description (metadata only).
+    /// List available skills with name + description (metadata only, uncapped).
+    ///
+    /// The TUI snapshots this into `skills_description`. The system prompt uses
+    /// [`Self::describe_available_bounded`] instead, because this form has no
+    /// ceiling: on a machine with 79 skills it measures 22.6 KB ≈ 5.6k tokens.
     pub fn describe_available(&self) -> String {
-        if self.skills.is_empty() {
+        let entries = self.catalog_entries();
+        if entries.is_empty() {
             return "(no skills available)".to_string();
         }
 
-        let mut names = self.skills.keys().cloned().collect::<Vec<_>>();
-        names.sort();
-
-        names
+        entries
             .into_iter()
-            .filter_map(|name| {
-                self.skills.get(&name).map(|skill| {
-                    format!("- {}: {}", skill.manifest.name, skill.manifest.description)
-                })
-            })
+            .map(|doc| format!("- {}: {}", doc.manifest.name, doc.manifest.description))
             .collect::<Vec<_>>()
             .join("\n")
     }
 
-    /// List available skills with full body injected (Claude Code style).
-    pub fn describe_available_with_body(&self) -> String {
-        if self.skills.is_empty() {
+    /// The system prompt's catalog: descriptions capped, list dropped to fit.
+    ///
+    /// `description_cap` of `0` leaves descriptions whole. When the capped
+    /// catalog still exceeds `budget_chars`, entries are dropped from the tail
+    /// of the name-sorted list and replaced by one trailer line naming them —
+    /// without the names, `load_skill` would be unusable for the dropped set.
+    ///
+    /// The tail is alphabetical because ranking by usefulness would need the
+    /// root each skill came from, which [`SkillManifest`] does not carry. A
+    /// deterministic, stated order beats a hidden heuristic.
+    pub fn describe_available_bounded(
+        &self,
+        budget_chars: usize,
+        description_cap: usize,
+    ) -> String {
+        let entries = self.catalog_entries();
+        if entries.is_empty() {
             return "(no skills available)".to_string();
         }
 
-        let mut names = self.skills.keys().cloned().collect::<Vec<_>>();
-        names.sort();
+        // Keep-loop: shrink the kept prefix until it plus the trailer fits.
+        // Terminates at `kept == 0` even if the trailer alone overflows.
+        let mut kept = entries.len();
+        loop {
+            let body = render_catalog(&entries[..kept], &entries[kept..], description_cap);
+            if kept == 0 || body.chars().count() <= budget_chars {
+                return body;
+            }
+            kept -= 1;
+        }
+    }
 
-        names
+    /// List available skills with full body injected (Claude Code style).
+    ///
+    /// Not capped or budgeted: `skill_body_auto_inject` is an explicit opt-in
+    /// to "everything, always", so trimming it would break its own promise.
+    pub fn describe_available_with_body(&self) -> String {
+        let entries = self.catalog_entries();
+        if entries.is_empty() {
+            return "(no skills available)".to_string();
+        }
+
+        entries
             .into_iter()
-            .filter_map(|name| self.skills.get(&name).map(|s| s.to_string()))
+            .map(std::string::ToString::to_string)
             .collect::<Vec<_>>()
             .join("\n")
     }
@@ -383,6 +478,106 @@ impl SkillRegistry {
     pub fn skill_dirs(&self) -> &[PathBuf] {
         &self.skill_dirs
     }
+
+    /// Replace the set of names kept out of the catalog.
+    pub fn set_disabled(&mut self, names: impl IntoIterator<Item = String>) {
+        self.disabled = names.into_iter().collect();
+    }
+
+    pub fn disabled(&self) -> &HashSet<String> {
+        &self.disabled
+    }
+
+    /// Whether `name` is kept out of the catalog. Still loadable by name.
+    pub fn is_disabled(&self, name: &str) -> bool {
+        self.disabled.contains(name)
+    }
+
+    /// Name-sorted catalog entries, disabled skills removed.
+    fn catalog_entries(&self) -> Vec<&SkillDocument> {
+        let mut entries: Vec<&SkillDocument> = self
+            .skills
+            .iter()
+            .filter(|(name, _)| !self.disabled.contains(*name))
+            .map(|(_, doc)| doc)
+            .collect();
+        entries.sort_by(|a, b| a.manifest.name.cmp(&b.manifest.name));
+        entries
+    }
+}
+
+/// Render the kept entries plus the over-budget trailer for the dropped ones.
+fn render_catalog(
+    kept: &[&SkillDocument],
+    dropped: &[&SkillDocument],
+    description_cap: usize,
+) -> String {
+    let mut out = kept
+        .iter()
+        .map(|doc| {
+            format!(
+                "- {}: {}",
+                doc.manifest.name,
+                cap_description(&doc.manifest.description, description_cap)
+            )
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    if let Some(trailer) = catalog_trailer(dropped) {
+        if !out.is_empty() {
+            out.push('\n');
+        }
+        out.push_str(&trailer);
+    }
+
+    out
+}
+
+/// The one line that stands in for skills the budget could not afford.
+///
+/// Names are spelled out, up to [`TRAILER_NAME_CAP`], because a bare count
+/// would leave `load_skill` unusable for the dropped set.
+fn catalog_trailer(dropped: &[&SkillDocument]) -> Option<String> {
+    if dropped.is_empty() {
+        return None;
+    }
+
+    let total = dropped.len();
+    let named = dropped
+        .iter()
+        .take(TRAILER_NAME_CAP)
+        .map(|doc| doc.manifest.name.as_str())
+        .collect::<Vec<_>>()
+        .join(", ");
+
+    Some(if total > TRAILER_NAME_CAP {
+        format!("- (+{total} omitted for the catalog budget: {named}, …)")
+    } else {
+        format!("- (+{total} omitted for the catalog budget: {named})")
+    })
+}
+
+/// Truncate a description on a word boundary, appending `…`.
+///
+/// `cap` of `0` means no cap. The cut falls back to the last space unless the
+/// tail after it is more than 40% of the cap, in which case the cap wins — a
+/// description with one very long token must still be bounded.
+fn cap_description(description: &str, cap: usize) -> String {
+    if cap == 0 || description.chars().count() <= cap {
+        return description.to_string();
+    }
+
+    let head: String = description.chars().take(cap).collect();
+    let trimmed = head.trim_end();
+    let cut = match trimmed.rfind(' ') {
+        Some(idx) if trimmed[idx..].chars().count().saturating_mul(5) <= cap * 2 => {
+            trimmed[..idx].trim_end()
+        }
+        _ => trimmed,
+    };
+
+    format!("{cut}…")
 }
 
 /// The only frontmatter keys Tact reads. Anything else in the block — Claude
@@ -794,5 +989,160 @@ mod tests {
                 .load_full_text(&unique)
                 .contains("v1 body")
         );
+    }
+
+    // ---- catalog budget ----
+
+    fn registry_with_skills(entries: &[(&str, &str)]) -> (tempfile::TempDir, SkillRegistry) {
+        let dir = tempdir().unwrap();
+        for (name, description) in entries {
+            write_skill(dir.path(), name, description, "body");
+        }
+        let mut registry = SkillRegistry::new([dir.path().to_path_buf()]);
+        registry.load_skills().unwrap();
+        (dir, registry)
+    }
+
+    #[test]
+    fn a_long_description_is_capped_on_a_word_boundary() {
+        let (_dir, registry) =
+            registry_with_skills(&[("long", "alpha beta gamma delta epsilon zeta eta theta")]);
+
+        let catalog = registry.describe_available_bounded(10_000, 20);
+
+        assert!(catalog.contains("- long: alpha beta gamma…"), "{catalog}");
+    }
+
+    #[test]
+    fn a_cap_of_zero_leaves_descriptions_whole() {
+        let (_dir, registry) =
+            registry_with_skills(&[("long", "alpha beta gamma delta epsilon zeta eta theta")]);
+
+        let catalog = registry.describe_available_bounded(10_000, 0);
+
+        assert!(
+            catalog.contains("- long: alpha beta gamma delta epsilon zeta eta theta"),
+            "{catalog}"
+        );
+    }
+
+    #[test]
+    fn the_catalog_drops_the_alphabetical_tail_when_over_budget() {
+        let description = "x".repeat(100);
+        let (_dir, registry) = registry_with_skills(&[
+            ("alpha", &description),
+            ("bravo", &description),
+            ("charlie", &description),
+        ]);
+
+        // Room for one entry plus the trailer, not two.
+        let catalog = registry.describe_available_bounded(200, 0);
+
+        assert!(catalog.contains("- alpha: "), "{catalog}");
+        assert!(!catalog.contains("- bravo: "), "{catalog}");
+        assert!(
+            catalog.contains("- (+2 omitted for the catalog budget: bravo, charlie)"),
+            "{catalog}"
+        );
+    }
+
+    #[test]
+    fn the_trailer_names_the_dropped_skills_and_stops_after_forty() {
+        let entries: Vec<(String, &str)> = (0..45).map(|i| (format!("s{i:02}"), "d")).collect();
+        let borrowed: Vec<(&str, &str)> = entries
+            .iter()
+            .map(|(name, description)| (name.as_str(), *description))
+            .collect();
+        let (_dir, registry) = registry_with_skills(&borrowed);
+
+        // Far below any render that keeps an entry, so only the trailer survives.
+        let catalog = registry.describe_available_bounded(100, 0);
+        let trailer = catalog.lines().next().unwrap_or_default();
+
+        assert!(
+            trailer.starts_with("- (+45 omitted for the catalog budget: "),
+            "{trailer}"
+        );
+        assert!(trailer.ends_with(", …)"), "{trailer}");
+        let names = trailer
+            .trim_start_matches("- (+45 omitted for the catalog budget: ")
+            .trim_end_matches(", …)");
+        assert_eq!(names.split(", ").count(), TRAILER_NAME_CAP, "{trailer}");
+    }
+
+    #[test]
+    fn the_budget_falls_back_to_eight_thousand_chars_without_a_window() {
+        assert_eq!(catalog_budget_chars(0), CATALOG_BUDGET_FALLBACK_CHARS);
+        assert_eq!(catalog_budget_chars(1_000_000), 80_000);
+        assert_eq!(catalog_budget_chars(200_000), 16_000);
+    }
+
+    /// The budget must not fire on a wide window: with 1M tokens the ceiling is
+    /// 80,000 chars and a real 79-skill catalog is nowhere near it.
+    #[test]
+    fn a_catalog_that_fits_is_not_touched() {
+        let description = "x".repeat(300);
+        let (_dir, registry) =
+            registry_with_skills(&[("alpha", &description), ("bravo", &description)]);
+
+        assert_eq!(
+            registry.describe_available_bounded(catalog_budget_chars(1_000_000), 0),
+            registry.describe_available()
+        );
+    }
+
+    /// `skill_body_auto_inject` is an explicit opt-in to "everything, always":
+    /// neither the cap nor the budget may reach it.
+    #[test]
+    fn describe_available_with_body_is_not_capped() {
+        let dir = tempdir().unwrap();
+        let long_body = "y".repeat(400);
+        write_skill(dir.path(), "alpha", "a description", &long_body);
+        let mut registry = SkillRegistry::new([dir.path().to_path_buf()]);
+        registry.load_skills().unwrap();
+
+        let catalog = registry.describe_available_with_body();
+
+        assert!(catalog.contains(&long_body), "the body must arrive whole");
+        assert!(
+            catalog.contains("<skill name=\"alpha\" dir=\""),
+            "{catalog}"
+        );
+    }
+
+    #[test]
+    fn a_disabled_skill_leaves_the_catalog_but_still_loads() {
+        let (_dir, mut registry) = registry_with_skills(&[("demo", "a description")]);
+
+        registry.set_disabled(["demo".to_string()]);
+
+        assert!(registry.is_disabled("demo"));
+        assert_eq!(registry.describe_available(), "(no skills available)");
+        assert_eq!(
+            registry.describe_available_bounded(10_000, 0),
+            "(no skills available)"
+        );
+        assert_eq!(
+            registry.describe_available_with_body(),
+            "(no skills available)"
+        );
+        assert!(
+            registry.load_full_text("demo").contains("body"),
+            "a disabled skill must stay loadable by name"
+        );
+    }
+
+    #[test]
+    fn the_skill_block_carries_the_skill_directory() {
+        let (dir, registry) = registry_with_skills(&[("demo", "a description")]);
+
+        let block = registry.load_full_text("demo");
+        let expected = dir.path().join("demo");
+
+        assert!(
+            block.contains(&format!(r#"dir="{}""#, expected.display())),
+            "{block}"
+        );
+        assert!(block.contains("<skill name=\"demo\""), "{block}");
     }
 }

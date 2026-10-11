@@ -371,6 +371,20 @@ pub fn persist_hook_output(enabled: bool) -> anyhow::Result<()> {
     persist::update_ui_hook_output_in_toml(path, enabled)
 }
 
+/// Persist `[agent].skill_disable` to the loaded config file.
+///
+/// `names` is the complete set the catalog excludes, not a delta: the writer
+/// replaces the key, so a partial list would silently re-enable the rest.
+/// Without a config file the change stays session-only, reported as such by the
+/// caller — the same contract as [`persist_theme`].
+pub fn persist_skill_disable(names: &[String]) -> anyhow::Result<()> {
+    let settings = settings();
+    let path = settings.config_path.as_ref().ok_or_else(|| {
+        anyhow::anyhow!("no config file to update (session-only skill catalog change)")
+    })?;
+    persist::update_agent_skill_disable_in_toml(path, names)
+}
+
 /// Persist `model` under the active `[llm.providers.<name>]` in the loaded config file.
 pub fn persist_active_provider_model(model: &str) -> anyhow::Result<()> {
     let settings = settings();
@@ -525,6 +539,8 @@ pub(crate) mod test_support {
                 memory_enabled: true,
                 skill_body_auto_inject: false,
                 skill_dirs: Vec::new(),
+                skill_description_cap: crate::skill::DEFAULT_SKILL_DESCRIPTION_CAP,
+                skill_disable: Vec::new(),
                 instruction_sources: super::InstructionSources::default(),
                 auto_memory_directory: None,
                 subagent: None,

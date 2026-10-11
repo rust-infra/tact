@@ -1012,6 +1012,9 @@ mod tests {
             name: "demo".into(),
             description: "Demo skill".into(),
             body: "Follow the checklist.".into(),
+
+            dir: String::new(),
+            disabled: false,
         }];
         app.input = "/skill dem".to_string();
         app.input_cursor = app.input.len();
@@ -1044,6 +1047,9 @@ mod tests {
             name: "demo".into(),
             description: "Demo skill".into(),
             body: "Follow the checklist.".into(),
+
+            dir: String::new(),
+            disabled: false,
         }];
         app.input = "/skill dem".to_string();
         app.input_cursor = app.input.len();
@@ -1065,13 +1071,50 @@ mod tests {
         match cmd {
             UserCommand::SubmitTask(task) => {
                 assert!(
-                    task.contains("<skill name=\"demo\">"),
+                    task.contains("<skill name=\"demo\""),
                     "expected skill wrapper, got: {task}"
                 );
                 assert!(task.contains("Follow the checklist."));
             }
             other => panic!("expected SubmitTask, got {other:?}"),
         }
+    }
+
+    /// `/skill disable ` keeps the popup open across the separating space and
+    /// offers the skills the verb can act on — and Enter runs it on the
+    /// highlighted one instead of only completing the path.
+    #[test]
+    fn slash_popup_offers_the_skills_a_verb_can_act_on() {
+        use crate::widgets::state::SkillEntry;
+
+        let (mut app, _rx) = TestApp::new().into_commands();
+        app.skills_data = vec![SkillEntry {
+            name: "demo".into(),
+            description: "Demo skill".into(),
+            body: String::new(),
+            dir: String::new(),
+            disabled: false,
+        }];
+        app.input = "/skill disable ".to_string();
+        app.input_cursor = app.input.len();
+        app.slash_command.active = true;
+        app.slash_command.start_pos = 0;
+        app.slash_command.selected = 0;
+
+        let paths: Vec<String> = app
+            .slash_candidates()
+            .into_iter()
+            .map(|candidate| candidate.path)
+            .collect();
+        assert_eq!(paths, ["skill disable demo"]);
+
+        press(&mut app, KeyCode::Enter);
+
+        assert!(
+            !app.slash_command.active,
+            "Enter ran it, not just completed"
+        );
+        assert!(app.input.is_empty(), "the command was consumed");
     }
 
     /// Types `input` one key at a time, exactly as the input box would.
@@ -1107,7 +1150,15 @@ mod tests {
             .into_iter()
             .map(|candidate| candidate.path)
             .collect();
-        assert_eq!(paths, ["skill list", "skill reload"]);
+        assert_eq!(
+            paths,
+            [
+                "skill list",
+                "skill reload",
+                "skill disable",
+                "skill enable"
+            ]
+        );
 
         // The next space ends it: `list` is a leaf.
         type_keys(&mut app, "list ");
@@ -1155,6 +1206,9 @@ mod tests {
             name: "code-reviewer".into(),
             description: "代码审查专家".into(),
             body: String::new(),
+
+            dir: String::new(),
+            disabled: false,
         }];
 
         type_keys(&mut app, "/skill li");
@@ -1230,6 +1284,9 @@ mod tests {
             name: "demo:review".into(),
             description: "Demo review skill".into(),
             body: "Review it.".into(),
+
+            dir: String::new(),
+            disabled: false,
         }];
 
         // Plugin skills keep their `plugin:name` namespace; it is just another
@@ -1262,6 +1319,9 @@ mod tests {
             name: "demo".into(),
             description: "Demo skill".into(),
             body: "Follow the checklist.".into(),
+
+            dir: String::new(),
+            disabled: false,
         }];
         app.input = "/demo".to_string();
         app.input_cursor = app.input.len();
@@ -1276,7 +1336,7 @@ mod tests {
         assert!(app.input.is_empty());
         match user_cmd_rx.try_recv().expect("SubmitTask") {
             UserCommand::SubmitTask(task) => {
-                assert!(task.contains("<skill name=\"demo\">"));
+                assert!(task.contains("<skill name=\"demo\""));
                 assert!(task.contains("Follow the checklist."));
                 assert!(!task.contains("ARGUMENTS:"));
             }
@@ -1298,6 +1358,9 @@ mod tests {
             name: "demo".into(),
             description: "Demo skill".into(),
             body: "Follow the checklist.".into(),
+
+            dir: String::new(),
+            disabled: false,
         }];
         app.input = "/demo fix auth".to_string();
         app.input_cursor = app.input.len();

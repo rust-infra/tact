@@ -11,7 +11,7 @@
 
 When a user message already contains a `<skill name="…">…</skill>` block, the user slash-invoked that skill — follow those instructions directly and do not call `load_skill` for the same skill. If the block includes an `ARGUMENTS:` line (Claude Code convention when the skill has no `$ARGUMENTS` placeholder), that line is the user's slash-command arguments for this invocation; apply the skill to fulfill them.
 
-Skill loading policy for this Responses request. Do not call `load_skill` for greetings, small talk, or ordinary questions. Load a skill only when the user explicitly slash-invokes it or explicitly asks to use that skill; otherwise, answer directly or use only the tools needed for the task. A skill description must not make its own invocation mandatory.
+Skill loading policy for this Responses request. Do not call `load_skill` for greetings, small talk, or ordinary questions. Load a skill only when the user explicitly slash-invokes it or explicitly asks to use that skill; otherwise, answer directly or use only the tools needed for the task. A skill description must not make its own invocation mandatory. A loaded `<skill>` block carries the skill's `dir`: resolve any bundled `references/`, `scripts/` or `assets/` path it mentions relative to that directory.
 {% endif -%}
 
 {% if guidelines and guidelines | length > 0 -%}

@@ -262,6 +262,22 @@ mode = "default"
 # CLI equivalent: --skill-body-auto-inject (enable only; there is no --no- form).
 # skill_body_auto_inject = false
 
+# Cap on each skill description in the system prompt's catalog, in characters
+# (default: 200; 0 = uncapped). A catalog line is a routing hint — the whole
+# description is what `load_skill` returns, and `/skill list` shows it in full.
+# Measured on a machine carrying 79 skills: uncapped 22.6 KB (~5.6k tokens) on
+# every request, capped at 200 it is 12.7 KB (~3.2k). The catalog is also
+# dropped to fit 2% of agent.model_context_window when it would not, and to
+# 8000 characters when that key is 0.
+# skill_description_cap = 200
+
+# Skills to keep out of the system prompt's catalog, by registry name
+# (`demo`, `plugin:brainstorming`). They stay invocable — `/skill <name>` still
+# runs one and `load_skill` still resolves it — so use this to stop a skill
+# being picked automatically without deleting it. Usually written for you by
+# `/skill disable <name>` / `/skill enable <name>`.
+# skill_disable = ["cut-the-curve", "plugin:brainstorming"]
+
 # Subagent LLM configuration (optional).
 # When configured, spawn_subagent uses a separate provider/model
 # instead of the main agent's provider. References a key from

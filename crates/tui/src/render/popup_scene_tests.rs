@@ -237,6 +237,9 @@ fn seed_slash_skills(app: &mut App, count: usize) {
             name: format!("skill-{i:02}"),
             description: format!("Skill number {i} description"),
             body: String::new(),
+
+            dir: String::new(),
+            disabled: false,
         })
         .collect();
 }

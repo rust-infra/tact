@@ -337,11 +337,17 @@ fn full_frame_skills_command_renders_list_with_separator() {
             name: "code-reviewer".into(),
             description: "代码审查专家".into(),
             body: String::new(),
+
+            dir: String::new(),
+            disabled: false,
         },
         crate::widgets::state::SkillEntry {
             name: "demo-test".into(),
             description: "测试 skill 加载功能".into(),
             body: String::new(),
+
+            dir: String::new(),
+            disabled: false,
         },
     ];
 

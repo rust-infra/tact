@@ -147,7 +147,15 @@ mod tests {
             .into_iter()
             .map(|candidate| candidate.path)
             .collect();
-        assert_eq!(paths, ["skill list", "skill reload"]);
+        assert_eq!(
+            paths,
+            [
+                "skill list",
+                "skill reload",
+                "skill disable",
+                "skill enable"
+            ]
+        );
     }
 
     #[test]
@@ -231,6 +239,9 @@ mod tests {
             name: "help".into(),
             description: "skill help".into(),
             body: "should not equip".into(),
+
+            dir: String::new(),
+            disabled: false,
         }];
         app.input_mode = InputMode::Palette;
         app.cmd_line = "help".into();
