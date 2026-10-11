@@ -346,6 +346,12 @@ pub struct AgentRuntime {
     /// is installed, kernel tool lifecycle events are broadcast and recorded
     /// by the session's trajectory subscriber.
     pub runtime_event_service: Option<Arc<dyn tact::EventService>>,
+    /// The concrete in-process transport this Agent publishes to, when one is
+    /// installed. It is kept beside the erased [`Self::runtime_event_service`]
+    /// because a host that must *replay* a sequence
+    /// ([`tact::EventTransport::replay_from`]) — the headless reconnecting
+    /// client — needs the concrete handle, which the trait object cannot give.
+    pub runtime_event_transport: Option<tact::EventTransport>,
     /// Stable identity for one agent loop. Tool calls within a turn share it
     /// so EventTransport and Trajectory can correlate their lifecycle facts.
     pub current_run_id: Option<RunId>,
@@ -533,6 +539,7 @@ impl Agent {
                 stats: Arc::new(RwLock::new(SessionStats::default())),
                 runtime_event_sink: None,
                 runtime_event_service: None,
+                runtime_event_transport: None,
                 current_run_id: None,
                 next_run_id: None,
                 cancel_flag,
@@ -919,9 +926,13 @@ impl Agent {
     #[must_use]
     pub fn with_runtime_event_transport(mut self, transport: tact::EventTransport) -> Self {
         let event_sink: Arc<dyn tact::RuntimeEventSink> = Arc::new(transport.clone());
-        let event_service: Arc<dyn tact::EventService> = Arc::new(transport);
+        let event_service: Arc<dyn tact::EventService> = Arc::new(transport.clone());
         self = self.with_runtime_event_sink(event_sink);
         self.runtime.runtime_event_service = Some(event_service);
+        // Kept as the concrete handle too: `replay_from` is inherent to the
+        // transport, not the erased `EventService`, so a reconnecting client
+        // cannot reach it through the trait object.
+        self.runtime.runtime_event_transport = Some(transport);
         self
     }
 

@@ -1,9 +1,10 @@
 use std::sync::Arc;
 
 use tact_extensions::{config::CliArgs, consts::TactPath, extract_text, store::DynSessionStore};
-use tact_protocol::{PluginId, RequestId};
+use tact_protocol::{PluginId, RequestId, RuntimeCommand};
 
 use crate::{
+    event_stream::EventStreamClient,
     session_bootstrap::{Notices, bootstrap_session, open_session},
     session_lock::SessionLockRegistry,
 };
@@ -11,6 +12,7 @@ use crate::{
 pub async fn run_headless(
     args: CliArgs,
     prompt: String,
+    event_command: Option<RuntimeCommand>,
     tact_path: TactPath,
     session_store: DynSessionStore,
     lock_registry: Arc<SessionLockRegistry>,
@@ -26,7 +28,15 @@ pub async fn run_headless(
 
     eprintln!("[session: {session_id}]");
 
-    let run_result = run_headless_locked(args, prompt, tact_path, session_store, session_id).await;
+    let run_result = run_headless_locked(
+        args,
+        prompt,
+        event_command,
+        tact_path,
+        session_store,
+        session_id,
+    )
+    .await;
 
     session_lock.release().await?;
     run_result
@@ -35,6 +45,7 @@ pub async fn run_headless(
 async fn run_headless_locked(
     _args: CliArgs,
     prompt: String,
+    event_command: Option<RuntimeCommand>,
     tact_path: TactPath,
     session_store: DynSessionStore,
     session_id: String,
@@ -70,6 +81,17 @@ async fn run_headless_locked(
         .expect("bootstrap installs the session's serving context");
     let cancel_flag = agent.runtime.cancel_flag.clone();
 
+    // The reconnecting event client, when the CLI asked for one. It subscribes
+    // to the *same* transport the session publishes to — before the turn starts,
+    // so no fact is missed — prints one NDJSON line per event with its durable
+    // trajectory sequence, and recovers a lagged window from the trajectory
+    // instead of dropping it. The `RuntimeCommand::{Subscribe, Resume}` the CLI
+    // maps to is routed here rather than ignored: `from_command` is the
+    // protocol's own attachment request.
+    let event_stream =
+        headless_event_stream(event_command, agent.runtime.runtime_event_transport.clone())
+            .map(|(transport, client)| (transport, tokio::spawn(print_event_stream(client))));
+
     // The run now goes through the Router, but the host keeps the Agent for
     // teardown: stats, the final message, session-end hooks, subagent
     // cancellation and MCP shutdown all read it after `chat.submit` returns.
@@ -95,6 +117,15 @@ async fn run_headless_locked(
         .invoke("chat.submit", invocation, input)
         .await
         .map_err(|error| anyhow::anyhow!("{}", error.message()))?;
+
+    // The turn is over: close the transport so the client's subscription ends,
+    // and let it recover any final fact the recorder wrote just after the last
+    // live event (the writer drains its own buffer once the transport closes).
+    // The NDJSON lines land before the human summary below.
+    if let Some((transport, printer)) = event_stream {
+        transport.close();
+        let _ = printer.await;
+    }
 
     eprintln!("[session id: {session_id}]");
 
@@ -135,6 +166,32 @@ async fn run_headless_locked(
     Ok(())
 }
 
+/// Prints the client's lines until the stream ends: one NDJSON line per event,
+/// each carrying its durable trajectory sequence. Recovery happens inside the
+/// client, so a printing loop only has to drain it.
+async fn print_event_stream(mut client: EventStreamClient) {
+    while let Some(line) = client.recv().await {
+        println!("{}", line.to_ndjson());
+    }
+}
+
+/// The event-stream client the headless host should attach, if the CLI asked
+/// for one.
+///
+/// `None` in three cases, all of which leave the default output path untouched:
+/// the host was not asked to stream (`--events` absent), the session has no
+/// event transport, or the command is not a subscription. A `Subscribe` /
+/// `Resume` command subscribes here — before the turn starts — and returns the
+/// transport beside the client so the host can close it once the turn is done.
+fn headless_event_stream(
+    command: Option<RuntimeCommand>,
+    transport: Option<tact::EventTransport>,
+) -> Option<(tact::EventTransport, EventStreamClient)> {
+    let transport = transport?;
+    let client = EventStreamClient::from_command(&transport, command.as_ref()?)?;
+    Some((transport, client))
+}
+
 /// The headless run's wiring: the run capabilities are registered on the
 /// **session's** serving context, not on a router of its own.
 ///
@@ -161,6 +218,70 @@ mod tests {
     use super::*;
     use tact_extensions::{permission::PermissionMode, store::open_sqlite_session_store};
     use tact_llm::{ContentBlock, MockClient, Role, StopReason};
+
+    /// The event stream is opt-in and routed: the host attaches a client only
+    /// for a `Subscribe` / `Resume` command, so `headless "p"` (no `--events`)
+    /// and every non-subscribe command keep the default output path exactly.
+    #[tokio::test]
+    async fn the_event_stream_is_built_only_for_subscribe_and_resume() {
+        let transport = tact::EventTransport::new(8);
+
+        // No flag → no stream.
+        assert!(headless_event_stream(None, Some(transport.clone())).is_none());
+        // A command that is not a subscription → no stream.
+        let start = RuntimeCommand::StartRun {
+            run_id: tact_protocol::RunId::from("r"),
+            input: serde_json::json!({}),
+        };
+        assert!(headless_event_stream(Some(start), Some(transport.clone())).is_none());
+        // A session with no transport (a degraded setup) → no stream.
+        assert!(
+            headless_event_stream(
+                Some(RuntimeCommand::Subscribe {
+                    from_sequence: None
+                }),
+                None,
+            )
+            .is_none()
+        );
+
+        // `Subscribe` subscribes *now* — before the turn — so a fact published
+        // immediately after is delivered rather than missed.
+        let (subscribed, mut client) = headless_event_stream(
+            Some(RuntimeCommand::Subscribe {
+                from_sequence: None,
+            }),
+            Some(transport.clone()),
+        )
+        .expect("Subscribe builds a client");
+        subscribed
+            .publish(tact_protocol::RuntimeEvent::RunStarted {
+                run_id: tact_protocol::RunId::from("live-run"),
+            })
+            .expect("publish to the subscribed transport");
+        let line = tokio::time::timeout(std::time::Duration::from_secs(1), client.recv())
+            .await
+            .expect("the subscribed client must see the fact")
+            .expect("a fact");
+        assert_eq!(line.sequence, 0);
+        assert!(matches!(
+            line.event,
+            tact_protocol::RuntimeEvent::RunStarted { .. }
+        ));
+
+        // `Resume` is the other subscription the host routes, to a known
+        // trajectory.
+        assert!(
+            headless_event_stream(
+                Some(RuntimeCommand::Resume {
+                    trajectory_id: tact_protocol::TrajectoryId::from("some-run"),
+                    from_sequence: 4,
+                }),
+                Some(transport),
+            )
+            .is_some()
+        );
+    }
 
     /// The headless host starts its turn by invoking `chat.submit` through the
     /// session's serving router; there is no direct `agent_loop` call and no

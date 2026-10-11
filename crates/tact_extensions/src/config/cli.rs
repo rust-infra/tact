@@ -92,6 +92,26 @@ pub enum CliCommand {
     Headless {
         /// The task prompt to execute
         prompt: String,
+
+        /// Stream this session's Runtime events as NDJSON — one line per event,
+        /// `{"seq": <u64>, "event": {...}}`, the durable trajectory sequence
+        /// first.
+        ///
+        /// A lagged subscription recovers the facts it missed from the
+        /// trajectory by sequence instead of dropping them, so the emitted
+        /// sequence has no gaps. Additive: without the flag the output is
+        /// exactly what it was.
+        #[arg(long)]
+        events: bool,
+
+        /// Start the event stream at this trajectory sequence (with `--events`).
+        #[arg(long, value_name = "SEQ", default_value_t = 0)]
+        events_from: u64,
+
+        /// Resume this trajectory id from `--events-from`, instead of
+        /// discovering the run's trajectory from its first fact (with `--events`).
+        #[arg(long, value_name = "TRAJECTORY_ID", requires = "events")]
+        events_resume: Option<String>,
     },
     /// Upgrade tact-ui to the latest GitHub release
     Upgrade {
@@ -319,7 +339,7 @@ mod tests {
         assert_eq!(before.model.as_deref(), Some("m"));
         assert!(matches!(
             before.command,
-            Some(CliCommand::Headless { ref prompt }) if prompt == "p"
+            Some(CliCommand::Headless { ref prompt, .. }) if prompt == "p"
         ));
 
         let after = CliArgs::try_parse_from(["tact-ui", "headless", "--model", "m", "p"]);
@@ -345,5 +365,61 @@ mod tests {
 
         let listed = CliArgs::parse_from(["tact-ui", "--list-sessions"]);
         assert!(listed.list_sessions);
+    }
+
+    /// The event-stream flags are opt-in and additive: `headless "p"` names no
+    /// stream, and `headless --events "p"` asks for one without changing the
+    /// prompt position the existing invocations rely on.
+    #[test]
+    fn the_event_stream_flags_are_opt_in() {
+        let plain = CliArgs::parse_from(["tact-ui", "headless", "p"]);
+        assert!(matches!(
+            plain.command,
+            Some(CliCommand::Headless {
+                events: false,
+                events_from: 0,
+                events_resume: None,
+                ..
+            })
+        ));
+
+        let streamed = CliArgs::parse_from(["tact-ui", "headless", "--events", "p"]);
+        assert!(matches!(
+            streamed.command,
+            Some(CliCommand::Headless {
+                events: true,
+                events_from: 0,
+                events_resume: None,
+                ..
+            })
+        ));
+
+        let from = CliArgs::parse_from([
+            "tact-ui",
+            "headless",
+            "--events",
+            "--events-from",
+            "7",
+            "--events-resume",
+            "traj",
+            "p",
+        ]);
+        assert!(matches!(
+            from.command,
+            Some(CliCommand::Headless {
+                events: true,
+                events_from: 7,
+                events_resume: Some(id),
+                ..
+            }) if id == "traj"
+        ));
+
+        // `--events-resume` only means something with `--events`.
+        let dangling =
+            CliArgs::try_parse_from(["tact-ui", "headless", "--events-resume", "traj", "p"]);
+        assert!(
+            dangling.is_err(),
+            "--events-resume must require --events, not silently do nothing"
+        );
     }
 }

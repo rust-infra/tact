@@ -10,6 +10,7 @@ use tact_extensions::{
     consts::TactPath,
     store::open_sqlite_session_store,
 };
+use tact_protocol::{RuntimeCommand, TrajectoryId};
 use tact_ui::{
     run_headless, run_interactive, session_lock::SessionLockRegistry, sessions::print_sessions,
 };
@@ -56,8 +57,41 @@ async fn main() -> anyhow::Result<()> {
     lock_registry.spawn_exit_listener();
 
     match args.command.take() {
-        Some(CliCommand::Headless { prompt }) => {
-            return run_headless(args, prompt, tact_path, session_store, lock_registry).await;
+        Some(CliCommand::Headless {
+            prompt,
+            events,
+            events_from,
+            events_resume,
+        }) => {
+            // The `--events` flags are the CLI's spelling of the protocol's
+            // reconnect commands, so they are mapped to a `RuntimeCommand` and
+            // routed to the headless client rather than re-implemented there.
+            let event_command = if events {
+                Some(match events_resume {
+                    Some(trajectory_id) => RuntimeCommand::Resume {
+                        trajectory_id: TrajectoryId::new(trajectory_id).map_err(|error| {
+                            anyhow::anyhow!("invalid --events-resume trajectory id: {error}")
+                        })?,
+                        from_sequence: events_from,
+                    },
+                    // `from_sequence: None` means "attach at the current head",
+                    // which is what an omitted `--events-from` asks for.
+                    None => RuntimeCommand::Subscribe {
+                        from_sequence: (events_from != 0).then_some(events_from),
+                    },
+                })
+            } else {
+                None
+            };
+            return run_headless(
+                args,
+                prompt,
+                event_command,
+                tact_path,
+                session_store,
+                lock_registry,
+            )
+            .await;
         }
         Some(CliCommand::Plugin { command }) => {
             if let Err(e) = tact_ui::plugin_cli::run_plugin_cli(command).await {

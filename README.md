@@ -329,6 +329,7 @@ Native [Model Context Protocol](https://modelcontextprotocol.io/) client. Connec
 
 - **TUI mode** (`tact-ui`) — streaming output, syntax-highlighted diffs, interactive permission dialogs
 - **Headless mode** (`tact-ui headless`) — CI/CD pipelines, scripts, or non-interactive workflows
+- **Event stream** (`tact-ui headless --events`) — one NDJSON line per runtime event carrying its durable trajectory sequence, gap-free: a lagged window is recovered from the trajectory (`--events-from SEQ`, `--events-resume TRAJECTORY_ID`)
 
 ### 🖼️ Image attachments (vision)
 

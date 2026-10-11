@@ -130,42 +130,7 @@ impl TrajectoryService for KernelTrajectoryRecorder {
         supplied_run_id: Option<&RunId>,
         event: RuntimeEvent,
     ) -> Result<(), KernelError> {
-        let run_id = supplied_run_id.cloned().or_else(|| match &event {
-            RuntimeEvent::RunStarted { run_id } => Some(run_id.clone()),
-            RuntimeEvent::RunFinished { run_id, .. } | RuntimeEvent::Cancelled { run_id } => {
-                run_id.clone()
-            }
-            RuntimeEvent::TimedOut { run_id }
-            | RuntimeEvent::ModelCallStarted { run_id, .. }
-            | RuntimeEvent::ModelCallFinished { run_id, .. }
-            | RuntimeEvent::ToolCallStarted { run_id, .. }
-            | RuntimeEvent::ToolCallFinished { run_id, .. } => Some(run_id.clone()),
-            RuntimeEvent::Text { run_id, .. }
-            | RuntimeEvent::Thinking { run_id, .. }
-            | RuntimeEvent::ModelInfo { run_id, .. }
-            | RuntimeEvent::TokenUsage { run_id, .. }
-            | RuntimeEvent::TurnStats { run_id, .. }
-            | RuntimeEvent::ToolProgress { run_id, .. }
-            | RuntimeEvent::StepAdded { run_id, .. }
-            | RuntimeEvent::StepStarted { run_id, .. }
-            | RuntimeEvent::StepFinished { run_id, .. }
-            | RuntimeEvent::StepFailed { run_id, .. }
-            | RuntimeEvent::TaskComplete { run_id, .. }
-            | RuntimeEvent::Info { run_id, .. }
-            | RuntimeEvent::MdInfo { run_id, .. }
-            | RuntimeEvent::HookContext { run_id, .. }
-            | RuntimeEvent::HookStatus { run_id, .. }
-            | RuntimeEvent::PopupMarkdown { run_id, .. }
-            | RuntimeEvent::TasksChanged { run_id, .. }
-            | RuntimeEvent::ToolMeta { run_id, .. }
-            | RuntimeEvent::BackgroundTaskFinished { run_id, .. }
-            | RuntimeEvent::SubagentFinished { run_id, .. }
-            | RuntimeEvent::SubagentsChanged { run_id, .. }
-            | RuntimeEvent::Compaction { run_id, .. }
-            | RuntimeEvent::Recovery { run_id, .. }
-            | RuntimeEvent::Retry { run_id, .. } => run_id.clone(),
-            _ => None,
-        });
+        let run_id = supplied_run_id.cloned().or_else(|| event_run_id(&event));
         let trajectory_id = supplied_trajectory_id
             .cloned()
             .unwrap_or_else(|| trajectory_for_run(run_id.as_ref()));
@@ -288,42 +253,7 @@ impl TrajectoryService for SqliteTrajectoryService {
         run_id: Option<&tact_protocol::RunId>,
         event: RuntimeEvent,
     ) -> Result<(), KernelError> {
-        let run_id = run_id.cloned().or_else(|| match &event {
-            RuntimeEvent::RunStarted { run_id } => Some(run_id.clone()),
-            RuntimeEvent::RunFinished { run_id, .. } | RuntimeEvent::Cancelled { run_id } => {
-                run_id.clone()
-            }
-            RuntimeEvent::TimedOut { run_id }
-            | RuntimeEvent::ModelCallStarted { run_id, .. }
-            | RuntimeEvent::ModelCallFinished { run_id, .. }
-            | RuntimeEvent::ToolCallStarted { run_id, .. }
-            | RuntimeEvent::ToolCallFinished { run_id, .. } => Some(run_id.clone()),
-            RuntimeEvent::Text { run_id, .. }
-            | RuntimeEvent::Thinking { run_id, .. }
-            | RuntimeEvent::ModelInfo { run_id, .. }
-            | RuntimeEvent::TokenUsage { run_id, .. }
-            | RuntimeEvent::TurnStats { run_id, .. }
-            | RuntimeEvent::ToolProgress { run_id, .. }
-            | RuntimeEvent::StepAdded { run_id, .. }
-            | RuntimeEvent::StepStarted { run_id, .. }
-            | RuntimeEvent::StepFinished { run_id, .. }
-            | RuntimeEvent::StepFailed { run_id, .. }
-            | RuntimeEvent::TaskComplete { run_id, .. }
-            | RuntimeEvent::Info { run_id, .. }
-            | RuntimeEvent::MdInfo { run_id, .. }
-            | RuntimeEvent::HookContext { run_id, .. }
-            | RuntimeEvent::HookStatus { run_id, .. }
-            | RuntimeEvent::PopupMarkdown { run_id, .. }
-            | RuntimeEvent::TasksChanged { run_id, .. }
-            | RuntimeEvent::ToolMeta { run_id, .. }
-            | RuntimeEvent::BackgroundTaskFinished { run_id, .. }
-            | RuntimeEvent::SubagentFinished { run_id, .. }
-            | RuntimeEvent::SubagentsChanged { run_id, .. }
-            | RuntimeEvent::Compaction { run_id, .. }
-            | RuntimeEvent::Recovery { run_id, .. }
-            | RuntimeEvent::Retry { run_id, .. } => run_id.clone(),
-            _ => None,
-        });
+        let run_id = run_id.cloned().or_else(|| event_run_id(&event));
         let trajectory_id = trajectory_id
             .cloned()
             .unwrap_or_else(|| trajectory_for_run(run_id.as_ref()));
@@ -373,6 +303,61 @@ const UNATTRIBUTED_TRAJECTORY: &str = "unattributed";
 fn trajectory_for_run(run_id: Option<&RunId>) -> TrajectoryId {
     let name = run_id.map_or(UNATTRIBUTED_TRAJECTORY, RunId::as_str);
     TrajectoryId::new(name).expect("run IDs and the constant are valid trajectory names")
+}
+
+/// The trajectory a live event belongs to, by the same rule the recorder
+/// persists it.
+///
+/// A replay client that fell behind holds the live [`RuntimeEvent`] but not the
+/// sequence the recorder gave it, so it must ask the *same* trajectory the
+/// writer used. Deriving the id here keeps a replay and a record from ever
+/// disagreeing about where a fact lives.
+pub fn trajectory_for_event(event: &RuntimeEvent) -> TrajectoryId {
+    trajectory_for_run(event_run_id(event).as_ref())
+}
+
+/// The run identity a fact carries, when its variant can express one.
+///
+/// The durable writer's classification: a fact about a run's execution carries
+/// that run's identity, while a connection or plugin-lifecycle fact carries
+/// none and is recorded as unattributed.
+fn event_run_id(event: &RuntimeEvent) -> Option<RunId> {
+    match event {
+        RuntimeEvent::RunStarted { run_id } => Some(run_id.clone()),
+        RuntimeEvent::RunFinished { run_id, .. } | RuntimeEvent::Cancelled { run_id } => {
+            run_id.clone()
+        }
+        RuntimeEvent::TimedOut { run_id }
+        | RuntimeEvent::ModelCallStarted { run_id, .. }
+        | RuntimeEvent::ModelCallFinished { run_id, .. }
+        | RuntimeEvent::ToolCallStarted { run_id, .. }
+        | RuntimeEvent::ToolCallFinished { run_id, .. } => Some(run_id.clone()),
+        RuntimeEvent::Text { run_id, .. }
+        | RuntimeEvent::Thinking { run_id, .. }
+        | RuntimeEvent::ModelInfo { run_id, .. }
+        | RuntimeEvent::TokenUsage { run_id, .. }
+        | RuntimeEvent::TurnStats { run_id, .. }
+        | RuntimeEvent::ToolProgress { run_id, .. }
+        | RuntimeEvent::StepAdded { run_id, .. }
+        | RuntimeEvent::StepStarted { run_id, .. }
+        | RuntimeEvent::StepFinished { run_id, .. }
+        | RuntimeEvent::StepFailed { run_id, .. }
+        | RuntimeEvent::TaskComplete { run_id, .. }
+        | RuntimeEvent::Info { run_id, .. }
+        | RuntimeEvent::MdInfo { run_id, .. }
+        | RuntimeEvent::HookContext { run_id, .. }
+        | RuntimeEvent::HookStatus { run_id, .. }
+        | RuntimeEvent::PopupMarkdown { run_id, .. }
+        | RuntimeEvent::TasksChanged { run_id, .. }
+        | RuntimeEvent::ToolMeta { run_id, .. }
+        | RuntimeEvent::BackgroundTaskFinished { run_id, .. }
+        | RuntimeEvent::SubagentFinished { run_id, .. }
+        | RuntimeEvent::SubagentsChanged { run_id, .. }
+        | RuntimeEvent::Compaction { run_id, .. }
+        | RuntimeEvent::Recovery { run_id, .. }
+        | RuntimeEvent::Retry { run_id, .. } => run_id.clone(),
+        _ => None,
+    }
 }
 
 fn parent_step_of(event: &RuntimeEvent) -> Option<StepId> {

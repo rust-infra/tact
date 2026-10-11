@@ -777,16 +777,21 @@ but still uninvoked — the table says so explicitly.
 | `RuntimeContext::plugins` (the session's Kernel plugin registry) | the session bootstrap registers the official manifests through it (`register_official_manifests`), and the hosted-plugin lifecycle registers/starts/stops each installed runtime plugin there too; **no host reads the state back** (no health surface). A plugin's `Tool` capabilities are not consumed *through the registry* at all — the Agent's per-wave tool router serves them | a host reporting extension health, or supervising plugins |
 | `crates/tact_plugin_node`, `crates/tact_plugin_wasm` | the **crates** still have no dependents (their own tests only); the host boundary they layer over does: `tact_extensions` hosts installed plugins through `tact_plugin_host::StdioPluginHost`, so the same stdio protocol now has a product path — a Node plugin is `node index.mjs`, a WASM plugin is the configured runner | a product path that loads external plugins |
 | Kernel `InteractionBroker` / `InteractionService` | **installed in the interactive host**: the frontend creates the broker, `bootstrap_session` installs it as the context's interaction service and as the serving policy's permission responder (`crates/tact_ui/src/interactive.rs`, `crates/tact_ui/src/session_bootstrap.rs`, `crates/tact_ui/src/permission.rs`), and the driver routes `RespondInteraction` into it before falling back to the local responder. **No View subscribes to it yet**, so a prompt raised in an interactive session is refused (`PluginUnavailable`, "no interaction client is subscribed") rather than displayed — the TUI's popup is still reconciled from `UiResponder::snapshot()` and keyed by that responder's decimal `u64` id | a client-neutral interaction path; the remaining work is the View adapter that turns broker requests into the TUI popup (arbitrary `RequestId`s plus the `Confirm` / `Input` / `Permission` kinds), after which `tact_extensions::ui_responder::UiResponder` is only the tool-prompt path |
-| `RuntimeCommand::{Subscribe, Resume, Invoke, Shutdown}` | none | protocol-driven external clients; the driver routes only `StartRun` / `CancelRun` / `RespondInteraction` |
+| `RuntimeCommand::{Subscribe, Resume, Invoke, Shutdown}` | `Subscribe` / `Resume` are consumed by the **headless event client** (`--events` / `--events-from` / `--events-resume`); `Invoke` and `Shutdown` have no caller | protocol-driven external clients; the interactive driver routes only `StartRun` / `CancelRun` / `RespondInteraction` (it renders the stream already, so the reconnect protocol owes it nothing) |
 
-`EventTransport::replay_from` is closer to wired than the rest: the durable
-replay *source* is installed by `start_trajectory_recorder`, so the method
-answers from the SQLite trajectory instead of `CapabilityNotFound`. But no
-production path calls it — the only caller is a test inside
-`session_bootstrap.rs`'s `#[cfg(test)] mod tests`. The acceptance item "a
-disconnected client reconnects from a Trajectory sequence" therefore still has
-no production caller, and `RuntimeCommand::{Subscribe, Resume}` have no
-consumer either.
+`EventTransport::replay_from` now has a production consumer: **headless is the
+reconnecting protocol client**. With `--events` (optionally `--events-from SEQ`
+or `--events-resume TRAJECTORY_ID`) it subscribes to the session's transport
+*before* the turn starts, prints one NDJSON line per fact carrying that fact's
+durable trajectory sequence, and when the subscription lags it recovers the
+dropped window from the trajectory (`replay_from`) instead of emitting a gapped
+sequence; closing the transport when the turn ends flushes the last fact the
+recorder wrote. The client is `crates/tact_ui/src/event_stream.rs`, and the two
+protocol commands are its attachment requests: `Subscribe` attaches to whatever
+run this session starts, `Resume` attaches to a known trajectory from a known
+sequence. The interactive driver deliberately consumes neither: a View that is
+already rendering the stream gains nothing from a second subscription
+re-delivering what it just drew.
 
 Two §7 facts are worth stating precisely, because the difference between *wired*
 and *reached* matters for anyone reading the acceptance list:

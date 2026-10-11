@@ -12,7 +12,7 @@ pub use model::{
     ActorId, Sensitivity, SqliteTrajectoryRecorder, TrajectoryEvent, TrajectoryEventType,
     TrajectoryRecorder,
 };
-pub use service::{KernelTrajectoryRecorder, SqliteTrajectoryService};
+pub use service::{KernelTrajectoryRecorder, SqliteTrajectoryService, trajectory_for_event};
 
 /// The redaction policy the durable recorder applies before persisting.
 pub use tact::redact::RedactionConfig as TrajectoryRedactionConfig;

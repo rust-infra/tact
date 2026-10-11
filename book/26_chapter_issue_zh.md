@@ -4,6 +4,31 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — headless 成为会重连的事件客户端：`--events` 按序号输出 NDJSON，lag 时用 `replay_from` 补齐
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（用户可见：headless 新增 opt-in 的 `--events` 输出；不带 flag 时输出与退出码不变） |
+| **Related** | `crates/tact_ui/src/event_stream.rs`（新）、`crates/tact_ui/src/{headless.rs,main.rs,lib.rs}`、`crates/tact_extensions/src/config/cli.rs`、`crates/tact_trajectory/src/{lib.rs,service.rs}` |
+
+**现象 / 动机：** `EventTransport::replay_from` 与 `RuntimeCommand::{Subscribe, Resume}` 此前**没有任何消费者**（`replay_from` 唯一的调用者在 `session_bootstrap` 的测试里），所以验收项「断开或落后的客户端从事件序列恢复、不丢轨迹事实」在生产里没有证据。目标客户端选定 **headless**：TUI 本身已在渲染这条流，再给它一个订阅只会重复投递已画出的内容；而按「无缺口序列」取数的无头管道正需要这条协议。
+
+**决策与实现：**
+- 新增模块 `crates/tact_ui/src/event_stream.rs`：`EventStreamMode::{Subscribe, Resume}`（由协议命令映射而来，其他命令一律 `None` → 不建立客户端）、`EventStreamLine { sequence, event }`（`to_ndjson()` 输出 `{"seq":N,"event":{…}}`，序号在前）、`EventStreamClient`。
+- CLI：`tact-ui headless --events "…"`，可配 `--events-from SEQ`、`--events-resume TRAJECTORY_ID`（后者需 `--events`）。opt-in、增量：不带 flag 时走原路径。
+- **在建 run 之前订阅**，所以第一个事实就不会漏；每条事实带**持久化轨迹序号**，读方可据序号跳变发现缺口。
+- 广播报 `Lagged`（丢窗口）时进入 recovery：用 `replay_from(trajectory_id, next)` 从 SQLite 轨迹把漏掉的事实补齐后再继续——序号不出现缺口。turn 结束后 close transport，并做**有界** flush（`FLUSH_POLL` / `FLUSH_IDLE_PASSES` / `MAX_FLUSH_PASSES`），把 recorder 最后落库的那笔补出来，避免 recorder 卡住时拖住退出。
+- 顺带把 event→run_id 的映射从 `KernelTrajectoryRecorder` 的巨型 `match` 抽成可复用的 `event_run_id`，并导出 `trajectory_for_event`——客户端要按事件映射轨迹 id，复用比复制一份映射正确。
+
+**判别性测试（不是只看错误）：** 容量 1 的 transport 强制丢掉八个事实中的七个 → 断言客户端从轨迹恢复后的序号恰为 `0..8`、每条内容逐条匹配、`close` 后终止；另有「resume 从指定序号开始」「subscribe 标注首个 live 事实」「stream 只为 Subscribe/Resume 建立（`StartRun` 不建立、无 transport 不建立）」「CLI flag 为 opt-in」。
+
+**改后行为：** 默认 headless 输出不变；带 `--events` 时先打印 NDJSON 流，再打印原有的人类可读摘要。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2938 → 2944 passed / 0 failed / 22 ignored**（+6 测试）。
+
+**Pointers:** `crates/tact_ui/src/event_stream.rs::{EventStreamClient, EventStreamMode, EventStreamLine}`、`crates/tact_ui/src/headless.rs::headless_event_stream`、`crates/tact_extensions/src/config/cli.rs`（三个 flag）、`crates/tact/src/event.rs::replay_from`。
+
+
 ## 1. 2026-10-11 — 插件工具调用补齐「既带 deadline 又带 run」：`TimedOut` 事实首次真正落进真实会话
 
 | Field | Value |
