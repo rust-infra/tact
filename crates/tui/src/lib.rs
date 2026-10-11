@@ -815,6 +815,35 @@ mod runtime_event_tests {
         );
     }
 
+    /// A broker `Confirm` is a *decision*, not a value list: it opens the same
+    /// popup, and confirming carries the protocol's `Approved` — answering
+    /// `Selected` would leave the caller's `Confirm` unanswered.
+    #[test]
+    fn runtime_broker_confirm_answers_with_the_decision_response() {
+        let mut app = make_app();
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::InteractionRequested {
+                request: InteractionRequest::Confirm {
+                    request_id: RequestId::from("confirm-broker"),
+                    prompt: "Proceed?".into(),
+                },
+            },
+        );
+
+        assert!(
+            matches!(app.input_mode, InputMode::Select),
+            "the popup must open"
+        );
+        assert_eq!(
+            app.select.take_answer(vec!["Yes".to_string()]),
+            Some(tact_protocol::InteractionResponse::Approved {
+                request_id: RequestId::from("confirm-broker"),
+            }),
+            "a decision answers Approved, and in the broker's id space"
+        );
+    }
+
     #[test]
     fn runtime_popup_notification_opens_the_modal() {
         let mut app = make_app();

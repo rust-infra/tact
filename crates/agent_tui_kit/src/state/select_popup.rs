@@ -1,5 +1,18 @@
 use super::filtered_list::FilteredList;
 
+/// How a popup's answer is expressed in the protocol.
+///
+/// `Select` / `MultiSelect` answer with the labels the user picked; a broker
+/// `Confirm` / `Permission` is a *decision*, which the protocol carries as its
+/// own `Approved` / `Rejected` variants rather than as a value list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PopupAnswer {
+    #[default]
+    Selected,
+    /// The first option is the affirmative one (`Allow` / `Yes`).
+    Decision,
+}
+
 /// Select popup state: a [`FilteredList`] plus the flags that make it a
 /// *prompt* rather than a picker.
 ///
@@ -27,6 +40,8 @@ pub struct SelectPopup {
     /// one. Without it a broker-raised prompt had nowhere to live and was
     /// silently dropped.
     pub broker_request_id: Option<tact_protocol::RequestId>,
+    /// Which protocol answer this popup produces when it is confirmed.
+    pub answer: PopupAnswer,
     /// When true, Space toggles checkboxes; Enter submits all checked indices.
     pub multi: bool,
     /// Checkbox state per option (only used when `multi`).
@@ -57,6 +72,7 @@ impl Default for SelectPopup {
             prompt: String::new(),
             request_id: None,
             broker_request_id: None,
+            answer: PopupAnswer::Selected,
             multi: false,
             checked: Vec::new(),
             log_confirm: true,
@@ -77,6 +93,7 @@ impl SelectPopup {
         self.list.reset(options, selected);
         self.request_id = None;
         self.broker_request_id = None;
+        self.answer = PopupAnswer::Selected;
         self.multi = false;
         self.checked.clear();
         self.log_confirm = log_confirm;
@@ -95,12 +112,14 @@ impl SelectPopup {
         request_id: tact_protocol::RequestId,
         multi: bool,
         log_confirm: bool,
+        answer: PopupAnswer,
     ) {
         let n = options.len();
         self.prompt = prompt;
         self.list.reset(options, 0);
         self.request_id = None;
         self.broker_request_id = Some(request_id);
+        self.answer = answer;
         self.multi = multi;
         self.checked = if multi { vec![false; n] } else { Vec::new() };
         self.log_confirm = log_confirm;
@@ -118,6 +137,7 @@ impl SelectPopup {
         self.list.reset(options, 0);
         self.request_id = Some(request_id);
         self.broker_request_id = None;
+        self.answer = PopupAnswer::Selected;
         self.multi = false;
         self.checked.clear();
         self.log_confirm = log_confirm;
@@ -136,6 +156,7 @@ impl SelectPopup {
         self.list.reset(options, 0);
         self.request_id = Some(request_id);
         self.broker_request_id = None;
+        self.answer = PopupAnswer::Selected;
         self.multi = true;
         self.checked = vec![false; n];
         self.log_confirm = log_confirm;
@@ -150,6 +171,36 @@ impl SelectPopup {
     /// must not hide the choices.
     pub fn filterable(&self) -> bool {
         self.request_id.is_none() && self.broker_request_id.is_none()
+    }
+
+    /// Builds the protocol answer for `values`, in the id space this popup
+    /// belongs to, and consumes the request.
+    ///
+    /// One place decides what a confirmation *means* — a value list or an
+    /// approve/reject decision — so the two answer sites in the TUI do not
+    /// each have to know which kind of prompt was on screen.
+    pub fn take_answer(
+        &mut self,
+        values: Vec<String>,
+    ) -> Option<tact_protocol::InteractionResponse> {
+        let request_id = self.take_request_id()?;
+        Some(match self.answer {
+            PopupAnswer::Selected => {
+                tact_protocol::InteractionResponse::Selected { request_id, values }
+            }
+            PopupAnswer::Decision => {
+                let affirmative = self
+                    .list
+                    .options
+                    .first()
+                    .is_some_and(|first| values.first() == Some(first));
+                if affirmative {
+                    tact_protocol::InteractionResponse::Approved { request_id }
+                } else {
+                    tact_protocol::InteractionResponse::Rejected { request_id }
+                }
+            }
+        })
     }
 
     /// Consume and return the pending request id, if this was

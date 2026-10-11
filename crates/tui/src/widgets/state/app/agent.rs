@@ -17,6 +17,7 @@ use crate::{
     },
     widgets::state::*,
 };
+use agent_tui_kit::state::select_popup::PopupAnswer;
 
 /// How long the popup footer shows `✓ Copied` in place of the copy hint.
 const COPY_FLASH_MS: u128 = 1_500;
@@ -97,13 +98,12 @@ impl App {
             | RuntimeEvent::Recovery { .. }
             | RuntimeEvent::Retry { .. }
             | RuntimeEvent::TimedOut { .. } => return,
-            // Permission / Confirm / Input prompts are the broker's to answer;
-            // only the select family drives the popup.
+            // `Input` needs a text-entry mode the TUI does not have yet, so it
+            // cannot drive the popup; every select-shaped kind — including the
+            // broker's `Confirm` / `Permission`, which are decisions over two
+            // options — does, below.
             RuntimeEvent::InteractionRequested {
-                request:
-                    InteractionRequest::Permission { .. }
-                    | InteractionRequest::Confirm { .. }
-                    | InteractionRequest::Input { .. },
+                request: InteractionRequest::Input { .. },
             } => return,
             _ => {}
         }
@@ -503,20 +503,57 @@ impl App {
                 self.open_markdown_popup(title, source);
             }
             RuntimeEvent::InteractionRequested { request } => {
-                let (request_id, prompt, options, log_confirm, multi) = match request {
+                let (request_id, prompt, options, log_confirm, multi, answer) = match request {
                     InteractionRequest::Select {
                         request_id,
                         prompt,
                         options,
                         log_confirm,
-                    } => (request_id, prompt, options, log_confirm, false),
+                    } => (
+                        request_id,
+                        prompt,
+                        options,
+                        log_confirm,
+                        false,
+                        PopupAnswer::Selected,
+                    ),
                     InteractionRequest::MultiSelect {
                         request_id,
                         prompt,
                         options,
-                    } => (request_id, prompt, options, false, true),
-                    // Permission / Confirm / Input prompts are the broker's to
-                    // answer; the popup is reconciled from its snapshot.
+                    } => (
+                        request_id,
+                        prompt,
+                        options,
+                        false,
+                        true,
+                        PopupAnswer::Selected,
+                    ),
+                    // A broker `Confirm` / `Permission` is a decision: the same
+                    // select family, but the answer is the protocol's
+                    // `Approved` / `Rejected` rather than a value list.
+                    InteractionRequest::Confirm { request_id, prompt } => (
+                        request_id,
+                        prompt,
+                        vec!["Yes".to_string(), "No".to_string()],
+                        false,
+                        false,
+                        PopupAnswer::Decision,
+                    ),
+                    InteractionRequest::Permission {
+                        request_id,
+                        capability,
+                        reason,
+                    } => (
+                        request_id,
+                        format!("Allow {capability}? {reason}"),
+                        vec!["Allow".to_string(), "Deny".to_string()],
+                        false,
+                        false,
+                        PopupAnswer::Decision,
+                    ),
+                    // `Input` needs a text-entry mode the TUI does not have
+                    // yet — the remaining View-adapter step.
                     _ => return,
                 };
                 // A protocol `RequestId` belongs to whichever space issued it:
@@ -550,8 +587,14 @@ impl App {
                         // space, so the answer returns to the broker (the
                         // driver routes `RespondInteraction` there first).
                         None => {
-                            self.select
-                                .set_broker(prompt, options, request_id, multi, log_confirm);
+                            self.select.set_broker(
+                                prompt,
+                                options,
+                                request_id,
+                                multi,
+                                log_confirm,
+                                answer,
+                            );
                             self.input_mode = InputMode::Select;
                         }
                     }

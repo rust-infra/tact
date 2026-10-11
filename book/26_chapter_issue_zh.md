@@ -4,6 +4,24 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — §6 的 View 半边（第二步）：broker 的 `Confirm` / `Permission` 也进弹窗，并以 `Approved` / `Rejected` 应答
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（行为变化：交互会话里 Kernel 发起的 `Confirm` / `Permission` 现在会弹窗；此前被一道更早的守卫直接 `return` 掉） |
+| **Related** | `crates/agent_tui_kit/src/state/select_popup.rs`、`crates/tui/src/widgets/state/app/agent.rs`、`crates/tui/src/handlers/select.rs`、`crates/tui/src/lib.rs` |
+
+**现象 / 动机（与第一步相关但不同的一处）：** 第一步只让 `Select` / `MultiSelect` 能落地。`Confirm` / `Permission` 仍然不显示，而且**卡点不在投影里**——`apply_runtime_event` 开头还有一道更早的守卫，把 `Permission | Confirm | Input` 一并 `return`；因此即便投影里加了分支也是死代码（我先是照着投影改的，测试立刻以「弹窗没打开」失败，才把真凶找出来）。
+
+**决策：** 这两类是**决策**而不是取值列表，所以口径必须分开：`Select` / `MultiSelect` 答 `Selected { values }`，`Confirm` / `Permission` 答 `Approved` / `Rejected`。为免两处应答点各自判类型，把「这次确认意味着什么」收敛到 kit 一处：新增 `PopupAnswer::{Selected, Decision}`，`set_broker(..., answer)` 记录口径，`take_answer(values)` 统一构造 `InteractionResponse`（`Decision` 时比较首个选项是否被选中 → `Approved` 否则 `Rejected`）。投影里 `Confirm` → 选项 `Yes`/`No`、`Permission` → `Allow <capability>? <reason>` + `Allow`/`Deny`，两者都走 `PopupAnswer::Decision`。守卫收窄为只 `return` `Input`。
+
+**改后行为：** 交互会话里 Kernel 的 `Select` / `MultiSelect` / `Confirm` / `Permission` 都会显示并可应答；`Input` 仍不渲染（缺文本输入模式，仍是最后一步）。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2945 → 2946 passed / 0 failed / 22 ignored**（+1：broker `Confirm` 弹窗且答 `Approved`，用 `Selected` 会让调用方的决策永远收不到回答）。这一次我先看到红灯（「弹窗没打开」）才定位到真凶，而不是只跑绿了事。
+
+**Pointers:** `crates/agent_tui_kit/src/state/select_popup.rs::{PopupAnswer, take_answer, set_broker}`、`crates/tui/src/widgets/state/app/agent.rs`（守卫 + 投影两处）、`ARCHITECTURE.md` §15。
+
+
 ## 1. 2026-10-11 — §6 的 View 半边（第一步）：TUI 弹窗成为 broker 客户端，select 类 Kernel prompt 不再被静默丢弃
 
 | Field | Value |
