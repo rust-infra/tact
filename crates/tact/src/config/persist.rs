@@ -94,6 +94,29 @@ pub(super) fn update_ui_hook_output_in_toml(path: &Path, enabled: bool) -> anyho
     })
 }
 
+/// Set `agent.skill_disable` in `path` and rewrite the file.
+///
+/// `names` is the whole list, not a delta — the key is replaced, so a partial
+/// list would silently re-enable everything left out.
+///
+/// An empty list is written as `skill_disable = []` rather than removed: the
+/// key is the record of what the catalog excludes, and a key that vanishes
+/// when the last skill is re-enabled makes the mechanism look like it was never
+/// there.
+pub(super) fn update_agent_skill_disable_in_toml(
+    path: &Path,
+    names: &[String],
+) -> anyhow::Result<()> {
+    update_toml(path, &["agent"], |t| {
+        let mut array = toml_edit::Array::new();
+        for name in names {
+            array.push(name.as_str());
+        }
+        set_scalar(t, "skill_disable", toml_edit::Value::Array(array));
+        Ok(())
+    })
+}
+
 /// Set `llm.providers.<provider>.model` in `path` and rewrite the file.
 pub(super) fn update_provider_model_in_toml(
     path: &Path,
@@ -291,6 +314,41 @@ provider = "kimi"
         let cfg: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
         assert_eq!(cfg["ui"]["hook_output"].as_bool(), Some(true));
         assert_eq!(cfg["llm"]["provider"].as_str(), Some("kimi"));
+    }
+
+    #[test]
+    fn writes_the_skill_disable_list_keeping_the_rest_of_the_agent_table() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[agent]\nmemory_enabled = true  # keep my comment\n").unwrap();
+
+        update_agent_skill_disable_in_toml(&path, &["cut-the-curve".to_string()]).unwrap();
+
+        let updated = std::fs::read_to_string(&path).unwrap();
+        let cfg: toml::Value = updated.parse().unwrap();
+        assert_eq!(
+            cfg["agent"]["skill_disable"][0].as_str(),
+            Some("cut-the-curve")
+        );
+        assert_eq!(cfg["agent"]["memory_enabled"].as_bool(), Some(true));
+        assert!(updated.contains("# keep my comment"), "{updated}");
+    }
+
+    /// Re-enabling the last skill leaves an explicit empty array rather than
+    /// deleting the key — the file is the record of what the catalog excludes.
+    #[test]
+    fn an_empty_disable_list_is_written_not_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.toml");
+        std::fs::write(&path, "[agent]\nskill_disable = [\"demo\"]\n").unwrap();
+
+        update_agent_skill_disable_in_toml(&path, &[]).unwrap();
+
+        let cfg: toml::Value = std::fs::read_to_string(&path).unwrap().parse().unwrap();
+        assert_eq!(
+            cfg["agent"]["skill_disable"].as_array().map(Vec::len),
+            Some(0)
+        );
     }
 
     /// The `/model` write used to swap the whole item, taking the line's

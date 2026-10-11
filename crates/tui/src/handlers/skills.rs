@@ -105,9 +105,12 @@ pub(super) fn render_skill_body(skill: &SkillEntry, args: &str) -> String {
 /// The system prompt explains that slash-invoked `<skill>` blocks (including
 /// `ARGUMENTS:`) are user invocations, not `load_skill` tool metadata.
 pub(super) fn format_skill_agent_task(skill: &SkillEntry, args: &str) -> String {
+    // Same wrapper shape as `SkillDocument::Display` — the `load_skill` result —
+    // so a skill cannot see its `dir` on one path and not the other.
     format!(
-        "<skill name=\"{}\">\n{}\n</skill>",
+        "<skill name=\"{}\" dir=\"{}\">\n{}\n</skill>",
         escape_xml_attr(&skill.name),
+        escape_xml_attr(&skill.dir),
         render_skill_body(skill, args)
     )
 }
@@ -193,7 +196,9 @@ pub(crate) fn flush_pending_when_idle(app: &mut App) {
 }
 
 /// `/skill` — the built-in command: `/skill list` shows the table, `/skill
-/// reload` rescans the roots, `/skill <name> [args]` runs one skill.
+/// reload` rescans the roots, `/skill disable <name>` / `/skill enable <name>`
+/// flip whether a skill appears in the system prompt's catalog, and
+/// `/skill <name> [args]` runs one skill.
 ///
 /// Subcommand parsing lives in the command's own module, like `/mcp` and
 /// `/plugin`: the palette only ever knows the command name, and the input box
@@ -226,8 +231,11 @@ pub(super) fn handle_skill_builtin_command(app: &mut App) -> CommandExecOutcome 
                 clear_input: true,
             }
         }
-        // `list`/`reload` win a name collision, exactly as a built-in wins it
-        // at the first level.
+        ["/skill", "disable", name, ..] => set_skill_catalog_visibility(app, name, false),
+        ["/skill", "enable", name, ..] => set_skill_catalog_visibility(app, name, true),
+        // The declared subcommands (`list` / `reload` / `disable` / `enable`)
+        // win a name collision, exactly as a built-in wins it at the first
+        // level.
         ["/skill", name, ..] if find_skill(app, name).is_some() => {
             let args = skill_args_from_subcommand_input(&app.input, name);
             let slash_line = if args.is_empty() {
@@ -253,6 +261,97 @@ pub(super) fn handle_skill_builtin_command(app: &mut App) -> CommandExecOutcome 
                 clear_input: false,
             }
         }
+    }
+}
+
+/// `/skill disable <name>` / `/skill enable <name>` — keep a skill out of the
+/// system prompt's catalog, or put it back, and write `[agent].skill_disable`.
+///
+/// The switch governs automatic discovery, not capability: a hidden skill still
+/// runs from `/skill <name>` and still resolves through `load_skill`. That is
+/// why the report says *hidden from the catalog* rather than *disabled*.
+///
+/// The registry is shared with the agent, so flipping it here changes the next
+/// turn's `# Available skills` with no reload — and the TUI's own list is
+/// rebuilt from that same registry, so the row is marked in the same breath
+/// instead of at the next `/skill reload`.
+fn set_skill_catalog_visibility(app: &mut App, name: &str, show: bool) -> CommandExecOutcome {
+    let msgs = app.msgs();
+
+    // Read the flag out before touching `app`: `find_skill` borrows it, and the
+    // arms below mutate it.
+    let Some(disabled) = find_skill(app, name).map(|skill| skill.disabled) else {
+        app.flash_msg = Some((
+            msgs.skill_unknown_tmpl.replace("{}", name),
+            std::time::Instant::now(),
+        ));
+        return CommandExecOutcome {
+            handled: true,
+            clear_input: false,
+        };
+    };
+
+    if disabled == !show {
+        let template = if show {
+            msgs.skill_already_shown_tmpl
+        } else {
+            msgs.skill_already_hidden_tmpl
+        };
+        app.add_system_message(template.replace("{}", name));
+        return CommandExecOutcome {
+            handled: true,
+            clear_input: true,
+        };
+    }
+
+    // Rebuild the whole set rather than applying a delta: this Vec is what gets
+    // written to the config file, and a partial list would silently re-enable
+    // everything left out of it.
+    let names = {
+        let mut reg = tact::skill::lock_skills(&app.skill_registry);
+        let mut names: Vec<String> = reg.disabled().iter().cloned().collect();
+        if show {
+            names.retain(|disabled| disabled != name);
+        } else if !names.iter().any(|disabled| disabled == name) {
+            names.push(name.to_string());
+        }
+        names.sort();
+        reg.set_disabled(names.clone());
+        names
+    };
+
+    {
+        let reg = tact::skill::lock_skills(&app.skill_registry);
+        app.skills_data = super::skills_snapshot_from(&reg);
+    }
+
+    let outcome = if !app.ui_config_available() {
+        msgs.skill_catalog_session_only
+    } else {
+        match tact::config::persist_skill_disable(&names) {
+            Ok(()) => msgs.skill_catalog_persisted,
+            Err(error) => {
+                app.add_system_message(
+                    msgs.skill_catalog_persist_failed_tmpl
+                        .replace("{}", &error.to_string()),
+                );
+                return CommandExecOutcome {
+                    handled: true,
+                    clear_input: true,
+                };
+            }
+        }
+    };
+
+    let template = if show {
+        msgs.skill_catalog_shown_tmpl
+    } else {
+        msgs.skill_catalog_hidden_tmpl
+    };
+    app.add_system_message(template.replacen("{}", name, 1).replacen("{}", outcome, 1));
+    CommandExecOutcome {
+        handled: true,
+        clear_input: true,
     }
 }
 
@@ -385,6 +484,9 @@ mod tests {
             name: "demo".into(),
             description: "d".into(),
             body: "Follow the checklist.".into(),
+
+            dir: String::new(),
+            disabled: false,
         }];
         app.input = "/skill demo fix auth".into();
         app.input_cursor = app.input.len();
@@ -395,7 +497,7 @@ mod tests {
         assert!(app.input.is_empty(), "an invoked skill clears the input");
         match user_cmd_rx.try_recv().expect("skill must submit a task") {
             tact_protocol::UserCommand::SubmitTask(task) => {
-                assert!(task.contains("<skill name=\"demo\">"), "{task}");
+                assert!(task.contains("<skill name=\"demo\""), "{task}");
                 assert!(task.contains("Follow the checklist."), "{task}");
                 assert!(task.contains("ARGUMENTS: fix auth"), "{task}");
             }
@@ -422,11 +524,35 @@ mod tests {
             name: "demo".into(),
             description: "d".into(),
             body: "Use Result.".into(),
+
+            dir: String::new(),
+            disabled: false,
         };
         let out = format_skill_agent_task(&skill, "refactor foo");
-        assert!(out.contains("<skill name=\"demo\">"));
+        assert!(out.contains("<skill name=\"demo\""), "{out}");
         assert!(out.contains("Use Result."));
         assert!(out.contains("ARGUMENTS: refactor foo"));
+    }
+
+    /// The slash path and the `load_skill` tool produce the same wrapper — a
+    /// skill must not see its `dir` on one path and not the other.
+    #[test]
+    fn format_skill_agent_task_carries_the_skill_directory() {
+        let skill = SkillEntry {
+            name: "demo".into(),
+            description: "d".into(),
+            body: "Read references/formats.md.".into(),
+            dir: "/skills/demo".into(),
+            disabled: false,
+        };
+
+        let out = format_skill_agent_task(&skill, "");
+
+        assert!(
+            out.contains(r#"<skill name="demo" dir="/skills/demo">"#),
+            "{out}"
+        );
+        assert!(out.contains("Read references/formats.md."));
     }
 
     #[test]
@@ -435,6 +561,9 @@ mod tests {
             name: "deploy".into(),
             description: "d".into(),
             body: "Deploy $ARGUMENTS to prod.".into(),
+
+            dir: String::new(),
+            disabled: false,
         };
         let out = format_skill_agent_task(&skill, "v2");
         assert!(out.contains("Deploy v2 to prod."));
@@ -448,6 +577,9 @@ mod tests {
             name: "deploy".into(),
             description: "d".into(),
             body: "First $ARGUMENTS[0]; all $ARGUMENTS.".into(),
+
+            dir: String::new(),
+            disabled: false,
         };
         let out = format_skill_agent_task(&skill, "v2");
         assert!(out.contains("First $ARGUMENTS[0]; all v2."));
@@ -459,6 +591,9 @@ mod tests {
             name: "deploy".into(),
             description: "d".into(),
             body: "See $ARGUMENTS2 and use $ARGUMENTS.".into(),
+
+            dir: String::new(),
+            disabled: false,
         };
         let out = format_skill_agent_task(&skill, "v2");
         assert!(out.contains("See $ARGUMENTS2 and use v2."));
@@ -470,6 +605,9 @@ mod tests {
             name: "demo".into(),
             description: "d".into(),
             body: "Just run.".into(),
+
+            dir: String::new(),
+            disabled: false,
         };
         let out = format_skill_agent_task(&skill, "");
         assert!(out.contains("Just run."));
@@ -482,9 +620,12 @@ mod tests {
             name: r#"weird"name"#.into(),
             description: "d".into(),
             body: "x".into(),
+
+            dir: String::new(),
+            disabled: false,
         };
         let out = format_skill_agent_task(&skill, "");
-        assert!(out.contains(r#"<skill name="weird&quot;name">"#));
+        assert!(out.contains(r#"<skill name="weird&quot;name""#), "{out}");
     }
 
     // ---- Codex-style queued submission (pending messages) ----

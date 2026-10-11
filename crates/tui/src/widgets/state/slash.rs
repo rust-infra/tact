@@ -229,8 +229,15 @@ const fn sub(
     }
 }
 
-const SKILL_SUBCOMMANDS: &[Subcommand] =
-    &[sub("list", "", &[], false), sub("reload", "", &[], false)];
+const SKILL_SUBCOMMANDS: &[Subcommand] = &[
+    sub("list", "", &[], false),
+    sub("reload", "", &[], false),
+    // Hide or show a skill in the system prompt's catalog, writing
+    // `[agent].skill_disable`. Declared here so `/skill ` completes them and
+    // `every_declared_subcommand_has_a_handler` holds them to a handler.
+    sub("disable", "<name>", &[], true),
+    sub("enable", "<name>", &[], true),
+];
 
 const MCP_SUBCOMMANDS: &[Subcommand] = &[
     sub("auth", "<server>", &[], true),

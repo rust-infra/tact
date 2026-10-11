@@ -541,6 +541,8 @@ struct NonLlmSettings {
     max_token_usage_bodies: usize,
     skill_body_auto_inject: bool,
     skill_dirs: Vec<String>,
+    skill_description_cap: usize,
+    skill_disable: Vec<String>,
     instruction_sources: InstructionSources,
     auto_memory_directory: Option<String>,
     theme: String,
@@ -595,6 +597,13 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         args.skill_body_auto_inject || toml_cfg.agent.skill_body_auto_inject.unwrap_or(false);
 
     let skill_dirs = toml_cfg.agent.skill_dirs.clone();
+
+    let skill_description_cap = toml_cfg
+        .agent
+        .skill_description_cap
+        .unwrap_or(crate::skill::DEFAULT_SKILL_DESCRIPTION_CAP);
+
+    let skill_disable = toml_cfg.agent.skill_disable.clone();
 
     // Unlike the old `.expect()` here, a bad value is reported to the caller.
     // This is library code reached from `main`, where a panic aborts the
@@ -664,6 +673,8 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         max_token_usage_bodies,
         skill_body_auto_inject,
         skill_dirs,
+        skill_description_cap,
+        skill_disable,
         instruction_sources,
         auto_memory_directory,
         theme,
@@ -714,6 +725,8 @@ pub(super) fn resolve_non_llm_settings(
             max_token_usage_bodies: non_llm.max_token_usage_bodies,
             skill_body_auto_inject: non_llm.skill_body_auto_inject,
             skill_dirs: non_llm.skill_dirs,
+            skill_description_cap: non_llm.skill_description_cap,
+            skill_disable: non_llm.skill_disable,
             instruction_sources: non_llm.instruction_sources,
             auto_memory_directory: non_llm.auto_memory_directory,
             subagent: None,
@@ -923,6 +936,8 @@ pub(super) fn resolve_config(
             max_token_usage_bodies: non_llm.max_token_usage_bodies,
             skill_body_auto_inject: non_llm.skill_body_auto_inject,
             skill_dirs: non_llm.skill_dirs,
+            skill_description_cap: non_llm.skill_description_cap,
+            skill_disable: non_llm.skill_disable,
             instruction_sources: non_llm.instruction_sources,
             auto_memory_directory: non_llm.auto_memory_directory,
             subagent,
@@ -1647,6 +1662,38 @@ skill_dirs = ["~/shared-skills", "./vendor/skills"]
         assert_eq!(
             resolved.agent.skill_dirs,
             vec!["~/shared-skills".to_string(), "./vendor/skills".to_string()]
+        );
+    }
+
+    #[test]
+    fn resolve_skill_description_cap_defaults_to_200() {
+        let toml_cfg: TactTomlConfig = toml::from_str("[agent]\n").unwrap();
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(
+            resolved.agent.skill_description_cap,
+            crate::skill::DEFAULT_SKILL_DESCRIPTION_CAP
+        );
+        assert!(resolved.agent.skill_disable.is_empty());
+    }
+
+    #[test]
+    fn resolve_skill_catalog_keys_from_toml() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[agent]
+skill_description_cap = 0
+skill_disable = ["cut-the-curve", "plugin:brainstorming"]
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.skill_description_cap, 0);
+        assert_eq!(
+            resolved.agent.skill_disable,
+            vec![
+                "cut-the-curve".to_string(),
+                "plugin:brainstorming".to_string()
+            ]
         );
     }
 

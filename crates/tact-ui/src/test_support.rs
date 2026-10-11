@@ -49,6 +49,8 @@ fn default_test_config() -> tact::config::ResolvedConfig {
             memory_enabled: true,
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
+            skill_description_cap: tact::skill::DEFAULT_SKILL_DESCRIPTION_CAP,
+            skill_disable: Vec::new(),
             instruction_sources: tact::config::InstructionSources::default(),
             auto_memory_directory: None,
             subagent: None,

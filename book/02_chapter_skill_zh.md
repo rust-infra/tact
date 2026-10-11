@@ -12,11 +12,20 @@ Skill 是一份 Markdown 文档，教 agent 如何完成专项任务（编码规
 
 | 阶段 | 模型看到的内容 |
 |------|----------------|
-| 每轮（系统提示词） | 默认是 `describe_available()` 得到的 skill **名称与描述**；开启 `[agent].skill_body_auto_inject` 后改为 `describe_available_with_body()` 的**全文** |
+| 每轮（系统提示词） | 默认是 `describe_available_bounded()` 得到的 skill **名称与描述**——每条描述按 `[agent].skill_description_cap`（默认 200 字符）截断，整份目录再压进 `model_context_window` 的 2%；开启 `[agent].skill_body_auto_inject` 后改为 `describe_available_with_body()` 的**全文** |
 | 按需（`load_skill` 工具） | 包在 `<skill>` XML 标签中的全文（工具结果） |
 | TUI 斜杠 `/skill-name` | 调用时在**用户任务**中注入同样的 `<skill>` 包装（见 [§7](#7-tui-斜杠调用) 与 [TUI](./23_chapter_tui_zh.md)） |
 
 启动时只有摘要；模型调用 `load_skill` 或用户通过斜杠调用时才加载全文。`[agent].skill_body_auto_inject`（默认 `false`，CLI `--skill-body-auto-inject`）把这层摘要整体换成全文，代价是每一轮请求都携带所有 skill 正文——除非某个 skill 必须无条件留在上下文中，否则保持默认；见 [配置](./21_chapter_config_zh.md)。Responses adapter 额外施加更严格的 skill 加载策略；见 [LLM Provider Layer](./22_chapter_llm_zh.md#62-responses-api)。
+
+**目录本身也是有上限的**（2026-10-11 起）。`# Available skills` 是系统提示词里唯一随"机器上装了多少 skill"增长的部分，此前没有任何约束：79 个 skill 实测 **22,605 字符 ≈ 5.6k tokens，每轮都在**，最长的一条描述 966 字符。现在两道闸：
+
+- **描述截断**：`[agent].skill_description_cap`（默认 200，`0` = 不限）在词边界截断并补 `…`。同一批 79 个 skill：默认值把目录压到 **12,672 字符 ≈ 3.2k tokens**（37 条被截）。全文没丢——`load_skill`、`/skill list`、`/skill ` 补全都是全文。
+- **目录预算**：`catalog_budget_chars(model_context_window)` = 窗口的 2%，按 4 字节/token 折成字符（窗口为 `0` 时回退 8,000 字符，与 Codex 的兜底一致）。超预算就从**名字排序的尾部**丢弃，换成一行 trailer 点名被丢的 skill（最多 40 个名字 + `…`）——不留名字的话 `load_skill` 对被丢的那批就无从下手。**窗口 1M 时预算是 80,000 字符，永不触发**；这道闸是为 128k / 200k 窗口兜底的（128k 会丢约 6 条）。
+
+`[agent].skill_disable = ["name", "plugin:name"]` 按 **registry 名字**把 skill 摘出目录（不是按路径：插件路径里带 revision，每次更新都会变）。被摘掉的仍然可用——`/skill <name>` 照跑、`load_skill` 照解析；`/skill list` 会把它标成 `(not in catalog)`。这道开关管的是**自动发现**，不是能力，所以列表里写错一个名字不会把人锁在外面。
+
+目录里**不带路径**：`<skill>` 包装在**加载时**才带上 `dir`（见 [§3](#3-数据模型)）。Codex / Pi 必须把路径放进目录，因为它们的 loader 就是"读那个路径的文件"；Tact 有 `load_skill` 这个工具，可以在模型真正要动手时才交付，常驻成本为零。
 
 ---
 
@@ -74,20 +83,23 @@ pub struct SkillManifest {
 pub struct SkillDocument {
     pub manifest: SkillManifest,
     pub body: String,    // frontmatter 之后的 markdown
+    pub dir: PathBuf,    // 装着这个 SKILL.md 的目录
 }
 ```
+
+`dir` 挂在 document 上而不是 manifest 上，是刻意的：它只在**正文被加载时**随 `<skill>` 包装交出去，从不进入目录。目录里的路径每轮都要付费，而模型只有在真正动手用这个 skill 时才需要它。
 
 ### 展示格式（完整加载）
 
 通过 `Display` 或 `load_full_text` 渲染时：
 
 ```xml
-<skill name="demo">
+<skill name="demo" dir="/abs/path/to/demo">
 Skill body content here.
 </skill>
 ```
 
-TUI 斜杠调用在 `$ARGUMENTS` 处理后的渲染正文外使用相同包装。
+`dir` 让正文里写的 `references/formats.md`、`scripts/extract.sh` 这类**相对 skill 目录**的路径可以被解析。TUI 斜杠调用在 `$ARGUMENTS` 处理后的渲染正文外使用**同一个**包装（`format_skill_agent_task`），两个产出点有一条测试钉住它们一致——否则同一个 skill 会在工具路径上看得到 `dir`、在斜杠路径上看不到。两个属性都做 XML 转义。
 
 ---
 
@@ -136,11 +148,15 @@ Claude Code 的 `argument-hint` / `allowed-tools` / `model` **不解析、不存
 |------|------|
 | `new(skill_dirs)` | 在一个或多个根上创建空注册表 |
 | `load_skills()` | 扫描所有根并填充 map |
-| `describe_available()` | 排序后的 `"- name: description"` 列表，供系统提示词使用 |
-| `describe_available_with_body()` | 同上，但每项是完整 `<skill>` 块（`skill_body_auto_inject` 开启时使用） |
-| `load_full_text(name)` | 完整 `<skill>` 块，或列出可用名称的错误字符串 |
+| `describe_available()` | 排序后的 `"- name: description"` 列表，**不截断**——TUI 的 `skills_description` 快照用它 |
+| `describe_available_bounded(budget_chars, description_cap)` | **系统提示词的目录**：描述按 cap 截断（`0` = 不限），列表压进预算，装不下的折成一行 trailer |
+| `describe_available_with_body()` | 同上，但每项是完整 `<skill>` 块（`skill_body_auto_inject` 开启时使用）；**不截断、不设预算** |
+| `load_full_text(name)` | 完整 `<skill>` 块（含 `dir`），或列出可用名称的错误字符串 |
+| `set_disabled(names)` / `is_disabled(name)` / `disabled()` | `[agent].skill_disable`；只在**渲染时**过滤，不禁用加载 |
 | `skills()` | 只读 map 访问 |
 | `skill_dirs()` | 只读根目录访问 |
+
+三个渲染器都由私有的 `catalog_entries()` 供数据——按名字排序、去掉 disabled。预算相关还有两个自由函数与两个常量：`catalog_budget_chars(window)`、`cap_description`（私有），以及 `DEFAULT_SKILL_DESCRIPTION_CAP`（200）、`CATALOG_BUDGET_FALLBACK_CHARS`（8,000）、`TRAILER_NAME_CAP`（40）。
 
 便捷构造函数与共享句柄：
 
@@ -164,12 +180,15 @@ pub fn lock_skills(reg: &SharedSkillRegistry) -> MutexGuard<'_, SkillRegistry> /
     if self.agent_settings.skill_body_auto_inject {
         reg.describe_available_with_body()
     } else {
-        reg.describe_available()
+        reg.describe_available_bounded(
+            crate::skill::catalog_budget_chars(self.model_context_window()),
+            self.agent_settings.skill_description_cap,
+        )
     }
 })
 ```
 
-在模板中渲染为 `# Available skills`。模板在 `skills_available` 内容之外**固定补两段**：一段解释用户斜杠调用留下的 `<skill name="…">…</skill>` / `ARGUMENTS:` 块（避免与 `load_skill` 元数据混淆），另一段是**加载策略**——「问候、闲聊、普通问题不要调用 `load_skill`；只有用户显式斜杠调用或明确要求时才加载；skill 描述不得把自己的调用写成强制」。策略段是模型不滥用 `load_skill` 的依据；Responses 模板同样带这两段。见 [系统提示词](./04_chapter_prompt_zh.md)——该节在动态边界之上（除非会话中途在磁盘上增删 skills 且未 reload，否则基本稳定）。
+在模板中渲染为 `# Available skills`。模板在 `skills_available` 内容之外**固定补两段**：一段解释用户斜杠调用留下的 `<skill name="…">…</skill>` / `ARGUMENTS:` 块（避免与 `load_skill` 元数据混淆），另一段是**加载策略**——「问候、闲聊、普通问题不要调用 `load_skill`；只有用户显式斜杠调用或明确要求时才加载；skill 描述不得把自己的调用写成强制」，并说明加载进来的 `<skill>` 块带 `dir`、正文里的相对路径要相对它解析。策略段是模型不滥用 `load_skill` 的依据；Responses 模板同样带这两段。见 [系统提示词](./04_chapter_prompt_zh.md)——该节在动态边界之上（除非会话中途在磁盘上增删 skills 且未 reload，否则基本稳定）。
 
 `# Available skills` **只来自磁盘**：注册表里从来不会有 MCP server 提供的东西。MCP server 是在*工具描述*里宣传自己 skill 的（`skill://<server>/<skill>/SKILL.md`），Tact 原样转发，因此请求确实携带它们，而 system prompt 对此一字不提。`/view-system-prompt` 弹窗的 "Assembled current prompt" 视图会在末尾的 `## MCP skills` 段列出这些路径。
 
@@ -208,22 +227,29 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 | 输入 | 行为 |
 |------|------|
 | `/skill demo` 或 `/skill demo args…` + Enter | **Invoke**：经 `handlers/skills.rs` 的 `invoke_skill` 提交 `<skill>` 任务（与直接形式共用同一实现，只是 log 里回显 `/skill demo args…`） |
-| `/skill `（或 `/skill re`）在弹出菜单中 | 列出 `list` / `reload` / 每个 skill；Tab 补全为 `/skill demo `，Enter 直接运行高亮的那个 |
+| `/skill `（或 `/skill re`）在弹出菜单中 | 列出 `list` / `reload` / `disable` / `enable` / 每个 skill；Tab 补全为 `/skill demo `，Enter 直接运行高亮的那个 |
 | `/demo` 或 `/demo args…`（直接形式，仍支持） | **Invoke**：仅凭输入解析，不走弹出菜单——skills 不再出现在一级列表里，这个形式保留给已经形成的习惯 |
-| `/skill list` | 列出已发现的 skills（分页 Markdown 表格，纯本地渲染，任务进行中也可用） |
+| `/skill list` | 列出已发现的 skills（分页 Markdown 表格，纯本地渲染，任务进行中也可用）；被 `skill_disable` 摘掉的行带 `(not in catalog)` 前缀 |
 | `/skill reload` | 重扫 skill 根到共享 registry（TUI + agent），失效 visual cache |
+| `/skill disable <name>` | 把该 skill 从系统提示的目录里摘掉：翻共享 registry 的 disabled 集合 → **立刻重建 TUI 列表**（`/skill list` 当场带标记）→ 把整份 `[agent].skill_disable` 写回配置文件 |
+| `/skill enable <name>` | 反向操作；重复执行只报状态，不重写文件 |
+| `/skill disable ` / `/skill enable ` 在弹出菜单中 | 列出该动词**能作用**的 skill——`disable` 列目录里还在的，`enable` 列已经被摘掉的（已经处于目标状态的行只会回一句「已经…」，所以不列）。继续打字按名字模糊匹配；Tab 补全为 `/skill disable demo`，Enter 直接执行 |
 | 高亮 | 输入框与用户 log 行把 `/skill demo` 整体标为 accent+bold（`split_skill_slash` 同时识别 `/demo` 与 `/skill demo`） |
 
-> 名字冲突有三条规则，都是「内置优先」：名为 `skill` 的 skill 被内置 `/skill` 顶掉（`/skill` 走 `list` / `reload`）；名为 `list` / `reload` 的 skill 在 `/skill ` 补全里被内置子命令顶掉（不出现重复行，直接形式 `/list` 仍可运行）；其余同名内置命令（`help`、`cancel`…）从来都是内置赢。
+> 名字冲突的规则是「内置优先」：名为 `skill` 的 skill 被内置 `/skill` 顶掉（`/skill` 走 `list` / `reload`）；名为 `list` / `reload` / `disable` / `enable` 的 skill 在 `/skill ` 补全里被内置子命令顶掉（不出现重复行，直接形式 `/list` 仍可运行）；其余同名内置命令（`help`、`cancel`…）从来都是内置赢。
+
+**`/skill disable` 的语义**（与 `[agent].skill_disable` 同一个开关，见 [§1](#1-skills-的用途) 与 [配置](./21_chapter_config_zh.md)）：管的是**自动发现**，不是能力。被摘掉的 skill 照样能用 `/skill <name>` 跑、`load_skill` 照样解析它——所以消息写的是「已从目录中隐藏」而不是「已禁用」。写入的是**整份列表**而不是增量，因为写盘会替换整个键，一份不完整的列表会把没写进去的 skill 全部静默恢复。没有配置文件时改动只留在本次会话，消息会这么说（与 `/theme` 同一套契约）。名字解析不到时只报名字、不落进用法提示——弹出菜单已经教过语法，而这条是命令中途报的错。
+
+**两个动词的值也是补全出来的**，不用盲敲名字。`slash_candidates()` 走子命令树时记下「落在一个收值的子命令上」，然后由 `skill_verb_candidates()` 把该动词**能作用**的那一半 skill 作为 `<path> <name>` 候选项交出去——`disable` 给目录里还在的，`enable` 给已经被摘掉的。已经处于目标状态的行不列：它们的唯一结局是一句「已经…」。`/skill disable ` 后面那个空格**不会关掉弹窗**（`slash_candidates()` 非空），所以列表是打完空格就跳出来的；继续打字按名字模糊匹配，Enter 直接执行而不是只补全路径（`incomplete: false`）。这也是整个补全体系里唯一一处「值是可补全的」——`/mcp auth <server>` 那类仍然是打完就关。未知动词返回空集而不是猜一半：两个分支就是声明的那对，将来加第三个动词必须自己在这里决定过滤哪一半。
 
 **发给 agent 的载荷**
 
 1. 日志/历史显示用户输入的斜杠行原样（如 `/skill demo foo` 或 `/demo foo`）。
-2. Agent 任务正文为 `<skill name="…">…</skill>`（与 Claude Code 兼容）：
+2. Agent 任务正文为 `<skill name="…" dir="…">…</skill>`（与 Claude Code 兼容，`dir` 是 Tact 的扩展，见 [§3](#3-数据模型)）：
    - 若 skill 正文含裸 `$ARGUMENTS`（非 `$ARGUMENTS[N]`）：替换为参数字符串（可为空）。
    - 否则若参数非空：在 skill 正文内追加 `\n\nARGUMENTS: {args}`。
    - 否则：正文原样。
-3. 系统提示词 `# Available skills` 节说明斜杠调用的 `<skill>` / `ARGUMENTS:`，并附上加载策略（问候 / 闲聊 / 普通问题不得调用 `load_skill`；skill 描述不得把自己的调用写成强制）。
+3. 系统提示词 `# Available skills` 节说明斜杠调用的 `<skill>` / `ARGUMENTS:`，并附上加载策略（问候 / 闲聊 / 普通问题不得调用 `load_skill`；skill 描述不得把自己的调用写成强制；`<skill>` 块带 `dir`，正文里的相对路径相对它解析）。
 4. 共享的 `submit_user_task` 与正常 Enter 提交一样驱动 Planning / 用户气泡 / 历史。
 
 `/skill reload` 将 skill 根重新扫描到 TUI 与 agent `ToolContext` **共享**的 `Arc<Mutex<SkillRegistry>>`，刷新 TUI `SkillEntry` 列表并 bump 视觉缓存。重扫在 `spawn_blocking` 里跑（扫描时持注册表锁，且同一时刻只允许一个在飞），结果经 oneshot 回到事件循环再落地，因此不会卡住 UI。下一任务的系统提示词 skill 摘要（及 `load_skill`）因此看到新注册表，无需重启。
@@ -242,7 +268,7 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 |------|--------|--------|
 | 位置 | `.tact/skills/` + `~/.tact/skills/` + `~/.agents/skills/`（+ 可选 `skill_dirs`） | `~/.tact/projects/<slug>/memory/`（按仓库） |
 | 格式 | `SKILL.md` + 可选 frontmatter | `{name}.md` + 必需 frontmatter |
-| 提示词注入 | 默认摘要（`skill_body_auto_inject` 可改为全文）；正文按需 / 斜杠 | 每轮全文（动态节） |
+| 提示词注入 | 默认摘要（`skill_description_cap` 截断 + 窗口 2% 预算；`skill_body_auto_inject` 可改为全文）；正文按需 / 斜杠 | 每轮全文（动态节） |
 | 写入路径 | 编辑磁盘文件（无 agent 工具） | `save_memory` 工具 |
 | 典型作者 | 开发者/团队 | 对话中的 agent |
 
@@ -252,14 +278,15 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 
 | 文件 | 角色 |
 |------|------|
-| `crates/tact/src/skill/mod.rs` | `SkillRegistry`、frontmatter 解析、插件扫描、`describe_available` / `describe_available_with_body`、`load_full_text`、`shared_skill_registry` / `lock_skills` |
+| `crates/tact/src/skill/mod.rs` | `SkillRegistry`、frontmatter 解析、插件扫描、`describe_available` / `describe_available_bounded` / `describe_available_with_body`、`catalog_budget_chars` / `cap_description`、disabled 集合、`load_full_text`、`shared_skill_registry` / `lock_skills` |
 | `crates/tact/src/consts.rs` | `tact_skills_dir()`、`skill_search_dirs()` |
 | `crates/tact/src/tool/load_skill.rs` | `load_skill` 原生工具 |
 | `crates/tact/src/agent/mod.rs` | `build_system_prompt` 中的 `describe_available[_with_body]()`（由 `skill_body_auto_inject` 选择） |
 | `crates/tact/src/tool/mod.rs` | `ToolContext.skill_registry` |
 | `crates/tact/src/tool/registry.rs` | `toolset()` 中的 `LoadSkillTool` |
 | `crates/tact-ui/src/interactive.rs`、`headless.rs` | `shared_skill_registry()` → TUI 的 `SkillEntry` |
-| `crates/tui/src/handlers/skills.rs` | `/skill` 子命令、斜杠调用、`$ARGUMENTS`、`submit_user_task` |
+| `crates/tui/src/handlers/skills.rs` | `/skill` 子命令（`list` / `reload` / `disable` / `enable`）、斜杠调用、`$ARGUMENTS`、`submit_user_task` |
+| `crates/tact/src/config/persist.rs` | `update_agent_skill_disable_in_toml`（`toml_edit` 就地改 `[agent].skill_disable`，保留注释与格式） |
 | `crates/tui/src/handlers/insert.rs` | 斜杠弹出 Enter / Tab 自动补全 |
 | `crates/tui/src/handlers/palette.rs` | 面板 `/skill` → Insert 预填 |
 | `crates/tui/src/widgets/state/slash.rs` | `SlashCommand` 枚举与 `SKILL_SUBCOMMANDS` |
@@ -276,10 +303,12 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 | 缺口 | 说明 |
 |------|------|
 | 无 `save_skill` 工具 | 运行时 agent 不能写 skills |
-| 重名静默覆盖 | 扫描时 last-wins，无警告 |
+| 重名静默覆盖 | 扫描时 last-wins，无警告（Pi / Codex 是 first-wins + 警告） |
 | 子 agent 无 `load_skill` | 受限工具集无法在隔离 worker 中加载 skills |
 | `load_skill` 无正文大小校验 | 工具路径把全文直接塞进上下文，没有上限；斜杠调用已受 `MAX_INPUT_CHARS`（500k 字符）保护，工具路径没有 |
-| 无 glob / 启用列表 | 所有发现的 skills 都出现在 `describe_available()` 与斜杠面板 |
+| 只有 deny list，没有 allow list / glob | `[agent].skill_disable` 按名字摘除（`/skill disable <name>` 写，或直接写 TOML）；没有白名单、没有通配，也没有 CLI flag |
+| 超预算的丢弃无有用性排序 | 从**名字排序的尾部**丢，不是"最不常用的先丢"——排序需要 root 来源，`SkillManifest` 不带。确定性且写明，胜过隐藏的启发式 |
+| 无按需检索 | 没有 `list_skills`，也没有按用户消息做 top-K 的注入。Codex 与 Pi 同样没做——目录总量的现有最优解就是"有上限 + 有降级顺序" |
 | `$ARGUMENTS[N]` 未用 | 索引占位符原样保留（仅 Claude 兼容的裸 `$ARGUMENTS`） |
 | Claude 专属 frontmatter 无效 | `argument-hint` / `allowed-tools` / `model` 不解析、不生效（见 [§4](#4-skillmd-文件格式)）——在 frontmatter 里声明它们既不会限制工具，也不会覆盖模型 |
 

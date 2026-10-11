@@ -4,6 +4,67 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — skill 目录有了上限：描述截断 + 窗口 2% 预算 + 每 skill 开关，路径改为随正文交付
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature / perf（用户可见：系统提示的 `# Available skills` 变小；`[agent]` 多两个键 `skill_description_cap` / `skill_disable`；新增 `/skill disable <name>` / `/skill enable <name>` 两个子命令，且 `/skill disable ` / `/skill enable ` 后面会弹出**该动词能作用**的 skill 列表供模糊匹配、Enter 直接执行；`<skill>` 块多了 `dir` 属性，`/skill list` 会把被摘掉的 skill 标成 `(not in catalog)`） |
+| **Related** | `crates/tact/src/skill/mod.rs`（预算 / 截断 / disabled / `dir`）、`crates/tact/src/config/{types,resolve,mod,persist}.rs`、`crates/tact/src/tool/read_image.rs`、`crates/tact/src/agent/mod.rs`（调用点）、`crates/tact/src/prompt/{system_prompt_template,responses_system_prompt_template}.md`、`crates/agent_tui_kit/src/state/ui_types.rs`（`SkillEntry`）、`crates/agent_tui_kit/src/i18n.rs`、`crates/tui/src/widgets/state/slash.rs`（子命令声明）、`crates/tui/src/handlers/{mod,skills,insert,select,palette}.rs`、`crates/tact-ui/src/interactive.rs`、`config.example.toml`；spec `docs/superpowers/specs/2026-10-11-skill-catalog-budget-design.md`、plan `docs/superpowers/plans/2026-10-11-skill-catalog-budget.md` |
+
+**现象 / 动机：** `# Available skills` 是系统提示里唯一随"机器上装了多少 skill"增长的部分，而它**没有任何上限**。实测这台机器（`~/.agents/skills` 79 个 + `~/.tact/skills` 2 个）：目录 **22,605 字符 ≈ 5.6k tokens，每轮请求都在**，最长的一条描述 966 字符（`cut-the-curve`）。四个独立的缺口：① 描述没有长度上限（Agent Skills 规范给 1024，Pi 执行，Tact 什么都不管）；② 列表没有天花板（调研的三个实现里只有 Codex 有：窗口 2%，窗口未知时 8,000 字符，先缩描述再丢 skill 并告警）；③ skill **引用不了自己的文件**——`SkillManifest` 的 `path` 在 2026-10-04 因"没有消费者"被删掉，而消费者恰恰是「skill 自带 `references/formats.md`」这件事，Codex 与 Pi 都靠把路径放进目录解决；④ 没有每 skill 开关，一个绝不该被自动匹配的 skill 只能靠删文件。
+
+**决策：**
+
+- **目录行是路由提示，不是文档。** 新增 `describe_available_bounded(budget_chars, description_cap)` 专供系统提示：每条描述按 `skill_description_cap`（默认 200，`0` = 不限）在词边界截断并补 `…`。`describe_available()` 保持**不截断**的原义（TUI 的 `skills_description` 快照用它），`describe_available_with_body()` 也不截断、不设预算——`skill_body_auto_inject` 是显式的"全都要"，裁它等于毁掉它自己的承诺。实测默认值把目录压到 **12,672 字符 ≈ 3.2k tokens**（37 条被截）；cap 512 是 20,124，cap 160 是 11,078。全文没丢：`load_skill`、`/skill list`、`/skill ` 补全都是全文。
+- **预算只作用于列表，且不可配置。** `catalog_budget_chars(window)` = 窗口的 2%，按 4 字节/token 折成字符（沿用 `mcp get` 成本行同一个估算），窗口为 `0` 时回退 8,000 字符（对齐 Codex 的兜底）。超预算就从**名字排序的尾部**丢弃，换成一行 trailer 点名被丢的（`TRAILER_NAME_CAP = 40` 个名字 + `…`）——不留名字的话 `load_skill` 对被丢的那批无从下手。**诚实的范围说明：本机窗口 1M → 预算 80,000 字符，永不触发**；这道闸是为 128k / 200k 窗口兜底的（128k 的 10,240 会丢约 6 条）。
+- **路径随正文到达，不进目录。** `SkillDocument` 与 `SkillEntry` 加 `dir`，`<skill>` 包装变成 `<skill name="demo" dir="/abs/dir">`，**两个产出点**都改：`SkillDocument::Display`（`load_skill` 结果）与 `format_skill_agent_task`（斜杠路径）。这是**有意偏离 Codex / Pi**：它们的 loader 就是"读那个路径的文件"，所以路径必须在目录里；Tact 有 `load_skill` 这个工具，可以在模型真正动手时才交付，常驻成本为零（根表方案 79 条要 ≈2 KB）。两个属性都做 XML 转义。
+- **每 skill 开关管发现，不管能力。** `[agent].skill_disable = ["name", "plugin:name"]` 按 **registry 名字**（不是路径：插件路径带 revision，每次更新都变）。被摘掉的 skill 离开目录，但 `/skill <name>` 照跑、`load_skill` 照解析，`/skill list` 标成 `(not in catalog)`——写错名字不会把人锁在外面。过滤在**渲染时**做而不是加载时，否则 `/skill list` 就没法标记它了。
+- **开关有命令面。** `/skill disable <name>` / `/skill enable <name>`（声明在 `SKILL_SUBCOMMANDS`，所以 `/skill ` 会补全、`every_declared_subcommand_has_a_handler` 会钉住）：解析名字（解析不到只报名字，**不落进用法提示**——弹出菜单已经教过语法，而这条是命令中途报的错）→ 重复执行只报状态、不重写文件 → 翻**共享** registry（下一轮 `# Available skills` 立刻变，无需 reload）→ 用同一个 registry 重建 TUI 列表（`/skill list` 当场带标记，不用等 `/skill reload`）→ 把**整份列表**写回 `[agent].skill_disable`（`toml_edit` 就地改，保留注释），按 `/hook-output` 的形状报「已写入 / 仅本次会话 / 写失败」。写全量而不是增量不是风格选择：写盘替换整个键，一份不完整的列表会把没写进去的全部静默恢复。空集合写成 `skill_disable = []` 而不是删键——文件是「目录排除了什么」的记录。仍然没有 CLI flag（同 `skill_dirs`）。
+- **动词的值是补全出来的，不用盲敲名字。** `subcommand_candidates` 走子命令树时记下「落在一个收值的子命令上」，`skill_verb_candidates` 把该动词**能作用**的那一半交出去：`disable` 给目录里还在的，`enable` 给已经被摘掉的（已经处于目标状态的行只会回一句「已经…」，不列）。`/skill disable ` 后面那个空格**不会关掉弹窗**（`slash_candidates()` 非空），所以打完空格列表就跳出来；继续打字模糊匹配，Enter **直接执行**而不是只补全路径（`incomplete: false`）。这是整个补全树里唯一一处「值可补全」——`/mcp auth <server>` 那类仍然是打完就关。未知动词返回空集，不猜一半。
+
+**改后行为：** 每轮系统提示的 `# Available skills` 默认约为原来的 56%（这台机器 22.6 KB → 12.7 KB）；128k 窗口下超预算会丢尾部并附一行 `- (+N omitted for the catalog budget: …)`；`load_skill` 与斜杠调用产出的 `<skill>` 块带 `dir`，skill 正文里的 `references/…` 因此可解析；`/skill list` 里被摘掉的 skill 显示 `(not in catalog)` 前缀，但照常可运行；`/skill disable <name>` / `/skill enable <name>` 翻转开关并把 `[agent].skill_disable` 写回配置文件，重复执行只报状态，未知名只报名字。
+
+**Verification：** `./scripts/check-rust.sh` 全绿（fmt + clippy `-D warnings` + 四包；tui 691）。用例：skill（`a_long_description_is_capped_on_a_word_boundary`、`a_cap_of_zero_leaves_descriptions_whole`、`the_catalog_drops_the_alphabetical_tail_when_over_budget`、`the_trailer_names_the_dropped_skills_and_stops_after_forty`、`the_budget_falls_back_to_eight_thousand_chars_without_a_window`、`a_catalog_that_fits_is_not_touched`、`describe_available_with_body_is_not_capped`、`a_disabled_skill_leaves_the_catalog_but_still_loads`、`the_skill_block_carries_the_skill_directory`）、config（`resolve_skill_description_cap_defaults_to_200`、`resolve_skill_catalog_keys_from_toml`、`writes_the_skill_disable_list_keeping_the_rest_of_the_agent_table`、`an_empty_disable_list_is_written_not_removed`）、tui（`format_skill_agent_task_carries_the_skill_directory`、`the_skill_list_marks_a_disabled_skill`、`skill_disable_then_enable_round_trips`、`disabling_twice_reports_the_state_instead_of_rewriting`、`disabling_an_unknown_skill_names_it`、`the_disable_verb_offers_the_skills_that_are_in_the_catalog`、`the_enable_verb_offers_only_what_is_out_of_the_catalog`、`the_disable_verb_filters_by_the_token_being_typed`、`the_enable_verb_offers_nothing_when_the_catalog_is_whole`、`slash_popup_offers_the_skills_a_verb_can_act_on`）。预算表里的数字用一份复刻 Rust 规则的脚本对真实的 79 个 skill 跑出来，不是估算。
+
+**踩坑（值得记）：**
+
+- **`describe_available_with_body()` 注入的是正文，不含描述。** 第一版测试断言"目录里有那条 300 字符的描述"，直接红——它渲染的是 `<skill name dir>body</skill>`，描述根本不在里面。这是既有行为（正文在场时描述本来就冗余），别把它当 bug 顺手"修"。
+- **trailer 会反向变大，丢弃不是单调的。** 一条 22 字符的短条目被丢掉后，它的名字在 trailer 里要占约 25 字符——描述极短时"丢尾部"反而更长。所以 keep 循环的终止条件是 `kept == 0`，不能假定越丢越小；真实描述（200+ 字符）下每丢一条净赚 200 多字符，单调性只是"实际上成立"。
+- **`SkillEntry` 加字段 = 43 处机械改动。** 全部是同一种形状（多行、只有 `name`/`description`/`body`），用脚本按平衡括号定位插入，比手改 43 处稳。真正的投影只有两处（`interactive.rs`、`handlers/mod.rs::reload_skills`），其余都是测试字面量。
+- **断言写死了闭合尖括号。** `<skill name="demo">` 在加 `dir` 后变成 `<skill name="demo" dir="…">`，4 处断言一起红（`skills.rs` ×2、`insert.rs` ×2）。改成只断言到 `name="demo"` 为止。
+- **4 处测试钉死了 `/skill ` 的补全列表。** 新增两个子命令后，`insert.rs`、`palette.rs`、`slash_command.rs` ×2 的 `assert_eq!(paths, ["skill list", "skill reload"])` 一起红。这是好事（列表是被钉住的），但加子命令时必须记得它们会一起响。
+- **测试里的 App registry 是空的。** `App::new` 用 `SkillRegistry::new(empty)` 起步，所以 `/skill disable` 在测试里没有可操作对象；而直接 `get_skill_registry(tmpdir)` 会把 `~/.agents/skills` 的 79 个真 skill 也扫进来（测试变成依赖机器）。helper 用 `SkillRegistry::new([tmp/.tact/skills])` 手工只扫临时根。
+- **`str::replace` 会替换全部 `{}`。** 一个模板带两个占位符时（名字 + 持久化结果）必须用 `replacen("{}", x, 1)` 链式调用，`replace` 会把两处都填成同一个值。仓库里的多占位符模板（`model_switched_with_budget_tmpl`、`copied_summary_tmpl`）都是这个写法。
+- **补全的模糊匹配是「子序列」不是「前缀」。** 写 `/skill disable cu` 的测试时想当然以为能匹配 `code-reviewer`——`cu` 里那个 `u` 在 `code-reviewer` 里根本不存在，`fuzzy_score` 返回 0，候选项为空。这类断言要挑一个真的按顺序出现的 query（`code`、`rev` 都行）。
+
+**Pointers:** `crates/tact/src/skill/mod.rs`、`crates/tact/src/agent/mod.rs`（`build_system_prompt` 的 `skills_available` 分支）、`crates/tact/src/config/persist.rs`（`update_agent_skill_disable_in_toml`）、`crates/tui/src/handlers/skills.rs`（`format_skill_agent_task` / `set_skill_catalog_visibility`）、`crates/tui/src/widgets/state/slash.rs`（`SKILL_SUBCOMMANDS`）、`crates/tui/src/widgets/state/slash_command.rs`（`subcommand_candidates` / `skill_verb_candidates`）、`config.example.toml`、`book/02_chapter_skill_zh.md` §1/§3/§5/§7/§9/§10、`book/21_chapter_config_zh.md`。
+
+---
+
+## 1. 2026-10-11 — 发版 v1.1.40：清单版本 1.1.39 → 1.1.40，与本次的 skill 目录预算改动一起进 PR
+
+| Field | Value |
+|-------|-------|
+| **Type** | release（用户可见：`--version` 与升级接口报 1.1.40；`v1.1.40` 触发 `release.yml`，五个平台产出 `tact-ui-v1.1.40-*` 与 `SHA256SUMS`） |
+| **Related** | `Cargo.toml`（`[workspace.package].version`）、`Cargo.lock`（四个包条目）、`README.md`（徽章 + 发版命令片段）；`.github/workflows/release.yml` |
+
+**现象 / 动机：** v1.1.39 之后合入的改动里，skill 目录那笔是**用户可见的行为变化**（`# Available skills` 默认小了约一半、`<skill>` 块多了 `dir`、新增 `/skill disable|enable` 两个子命令及其补全），但清单仍停在 `1.1.39`：本地 build 的 `--version`、`crates/tact/src/upgrade.rs`（`env!("CARGO_PKG_VERSION")`）与 `USER_AGENT` 都会对着一个已经打过的 tag 报版本。
+
+**决策：** 把清单推到 **1.1.40**，与 skill 目录预算那笔改动**放进同一个 PR**（沿用 v1.1.38 定下的规矩：tag 与它引用的提交在同一个 PR 里，`v1.1.40` 打在**合并后的 `main` 提交**上）。
+
+- **`1.1.40` 无碰撞**：`v1.1.40` 这个 tag 本地与 `origin` 都没有（`origin` 上最新是 `v1.1.39`），直接递增即可，不需要跳号。
+- `Cargo.lock` 的四个条目（`tact` / `tact-ui` / `tact_llm` / `tool_refactor_macros`，均为 `version.workspace = true`）随清单一起提升；`tact_protocol` / `agent_tui_kit` 是独立版本包（`0.1.0`），**不动**。
+- README 徽章与「发版」两行命令同步到 `v1.1.40`——那两行是照抄即用的指令，留在旧版本号上会把人引导去打一个已存在的 tag。
+- **tag 不在这笔提交上打**：`v1.1.40` 指向合并后的 `main` 提交；打在分支提交上会让 tag 引用一个不在 `main` 的提交（v1.1.38 的教训）。
+
+**改后行为：** `tact-ui --version` 报 1.1.40；`upgrade` 的 UA 与自报版本一致；推送 `v1.1.40` 触发 `release.yml`，五个 target 构建并发布 Release。
+
+**Verification：** `git diff Cargo.lock` 只有四条 `version = "1.1.x"` 行变化，无依赖增删（`cargo metadata --locked` 通过，且**没有再改写 `Cargo.lock`**——说明手改的四条正是 cargo 期望的内容）；`scripts/check-rust.sh` 全绿。
+
+**Pointers:** `Cargo.toml`、`Cargo.lock`、`README.md`、`.github/workflows/release.yml`。
+
+---
+
 ## 1. 2026-10-11 — 发版 v1.1.39：清单版本 1.1.38 → 1.1.39，与本次的子代理视图改动一起进 PR
 
 | Field | Value |

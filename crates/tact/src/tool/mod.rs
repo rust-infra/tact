@@ -723,7 +723,9 @@ mod tests {
             .await
             .unwrap();
 
-        assert!(output.contains("<skill name=\"demo\">"));
+        // The wrapper carries the skill directory so the body can resolve its
+        // own bundled `references/` / `scripts/` paths.
+        assert!(output.contains("<skill name=\"demo\" dir=\""), "{output}");
         assert!(output.contains("Skill body content."));
     }
 

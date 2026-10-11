@@ -140,6 +140,8 @@ async fn run_interactive_locked(
                         name: doc.manifest.name.clone(),
                         description: doc.manifest.description.clone(),
                         body: doc.body.clone(),
+                        dir: doc.dir.display().to_string(),
+                        disabled: reg.is_disabled(&doc.manifest.name),
                     })
                     .collect()
             },

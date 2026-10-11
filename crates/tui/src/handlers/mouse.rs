@@ -1419,6 +1419,9 @@ mod tests {
                 name: format!("skill-{i:02}"),
                 description: format!("Skill number {i} description"),
                 body: String::new(),
+
+                dir: String::new(),
+                disabled: false,
             })
             .collect();
         app.mouse

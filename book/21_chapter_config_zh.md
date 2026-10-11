@@ -177,6 +177,12 @@ max_token_usage_bodies = 1   # 每会话保留的请求正文条数（压缩行�
 # instruction_sources = ["agents_md"]
 # 每轮都把 skill 全文注入系统提示（默认 false）。
 # skill_body_auto_inject = false
+# 目录里每条 skill 描述的字符上限（默认 200；0 = 不限）。在词边界截断并补 …。
+# 目录行只是路由提示，全文仍由 load_skill / /skill list 提供。
+# skill_description_cap = 200
+# 按 registry 名字把 skill 摘出系统提示的目录（默认空）。仍可用 /skill <name> 与 load_skill 调用。
+# 通常由 /skill disable <name> / /skill enable <name> 写入。
+# skill_disable = ["cut-the-curve", "plugin:brainstorming"]
 
 # Subagent LLM 配置（可选）。配置后 spawn_subagent 改用该 provider/模型，
 # 而不是主 agent 的。只要设置了下面任一覆盖项，`provider` 就是必填；
@@ -286,6 +292,8 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 | `instruction_sources` | `["agents_md"]` | — |
 | `skill_dirs` | 空（无额外根） | — |
 | `skill_body_auto_inject` | `false` | — |
+| `skill_description_cap` | `200` | `0` = 不限；目录里每条描述的字符上限 |
+| `skill_disable` | 空 | 按 registry 名字把 skill 摘出目录（仍可 `/skill <name>` / `load_skill`） |
 | `tools.bash_timeout_secs` | `1_800`（`0` 禁用） | — |
 | `tools.sandbox` | `false` | `true` / `false`（Linux：bubblewrap） |
 | `ui.theme` | `"ink"` | — |
@@ -310,15 +318,21 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 
 **只影响显示。** hook 照常运行，stdout 照常作为 `<hook-context>` 消息进入对话——关掉它改的是读者看到的东西，不是模型拿到的东西；要停掉 hook 用 `/hooks`（或 `[hooks]`），不是这个键。门设在**行进入日志的那一刻**（`App::append_hook_context_markdown` / `App::apply_hook_status`），不是在渲染层：日志的物理索引是选区、卡片、滚动锚点的键，一行"画的时候跳过"仍会占掉一个索引。同一原因，进度行的**完成**那一半也必须先看这个开关——否则它会给开头被跳过的行补上一行孤儿。
 
-### `[agent]` — skill 根目录、指令文件、全文注入
+### `[agent]` — skill 根目录、指令文件、目录预算、全文注入
 
-三个 `[agent]` 字段决定除内建根与默认值之外还有什么进入提示。
+五个 `[agent]` 字段决定除内建根与默认值之外还有什么进入提示。
 
 `skill_dirs` 追加额外 skill 根目录。每个条目必须是一个包含 `*/SKILL.md` 的目录；相对路径按 **workdir** 解析，`~` 展开为 `$HOME`，空白条目被跳过。这些根按列出顺序追加在三个内建根（`~/.agents/skills`、`~/.tact/skills`、`<workdir>/.tact/skills`）之后，因此同名冲突时配置根胜过所有内建根；解析后与已有路径重复的条目会被丢弃。扫描方式与内建根完全一致，均为递归。`/skill reload` 可重新读取，无需重启。见 [Ch 2](./02_chapter_skill_zh.md)。
 
 `instruction_sources` 选择注入系统提示的项目指令文件。`agents_md` 是唯一可接受的值（默认 `["agents_md"]`）；空列表，或 `claude_md` 等任何其他值，都会导致配置 resolve 失败。见 [Ch 4](./04_chapter_prompt_zh.md)。
 
-`skill_body_auto_inject` 在「描述」与「全文」之间二选一。`false`（默认）时每轮只带 `describe_available()` 产出的 skill 名称与描述，全文按需经 `load_skill` 工具取得。`true` 时每个 skill 全文都会注入每一轮系统提示——精确，但每次调用都要付出代价，除非某个 skill 必须无条件在上下文中，否则建议保持默认。CLI 等价开关为 `--skill-body-auto-inject`。
+`skill_body_auto_inject` 在「描述」与「全文」之间二选一。`false`（默认）时每轮只带 `describe_available_bounded()` 产出的 skill 名称与描述，全文按需经 `load_skill` 工具取得。`true` 时每个 skill 全文都会注入每一轮系统提示——精确，但每次调用都要付出代价，除非某个 skill 必须无条件在上下文中，否则建议保持默认。CLI 等价开关为 `--skill-body-auto-inject`。
+
+`skill_description_cap`（默认 `200`，`0` = 不限）限制**目录里每条描述**的字符数：在词边界截断并补 `…`。目录行是路由提示，不是文档——全文由 `load_skill`、`/skill list` 和 `/skill ` 补全提供，都不受这个上限影响。机器上装 79 个 skill 时，默认值把目录从 22,605 字符（≈5.6k tokens）压到 12,672 字符（≈3.2k），37 条被截。
+
+`skill_disable`（默认空）按 **registry 名字**（`demo`、`plugin:brainstorming`）把 skill 摘出系统提示的目录。按名字而不是路径，是因为插件 skill 的路径里带 revision（`~/.tact/plugins/cache/<marketplace>/<plugin>/<revision>/skills/`），按路径写会在每次插件更新后失效。被摘掉的 skill **仍然可用**——`/skill <name>` 照跑、`load_skill` 照解析，`/skill list` 把它标成 `(not in catalog)`；这道开关管的是自动发现，不是能力，所以写错名字不会把人锁在外面。通常不必手写：`/skill disable <name>` / `/skill enable <name>` 会翻共享 registry 并把**整份列表**写回这里（写的是全量而不是增量——写盘替换整个键，一份不完整的列表会把没写进去的全部静默恢复）；没有配置文件时只改本次会话。两个键都没有 CLI flag，`skill_description_cap` 也仍然只在 TOML 里。
+
+目录本身还有一道**窗口预算**：`model_context_window` 的 2%（按 4 字节/token 折成字符；窗口为 `0` 时回退 8,000 字符）。超出就从名字排序的尾部丢弃，换成一行点名被丢 skill 的 trailer（最多 40 个名字）。它**不可配置**——128k 窗口下会丢约 6 条，1M 窗口下（预算 80,000 字符）永不触发。见 [Ch 2 §1](./02_chapter_skill_zh.md)。
 
 ### `[agent.subagent]` — 给 `spawn_subagent` 单独的 provider/模型
 

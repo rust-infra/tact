@@ -607,6 +607,14 @@ fn skills_table_markdown(
             .trim()
             .replace('\n', " ")
             .replace('|', "｜");
+        // A disabled skill is still listed and still invocable — say so. A row
+        // that silently vanished would be indistinguishable from a broken
+        // install.
+        let desc = if skill.disabled {
+            format!("(not in catalog) {desc}")
+        } else {
+            desc
+        };
         out.push_str(&format!("| `{}` | {} |\n", skill.name, desc));
     }
     out
@@ -627,16 +635,28 @@ pub(crate) fn reload_skills(
     // Keep search roots in sync with the current workdir (tests may set work_dir late).
     *reg = tact::skill::get_skill_registry(work_dir).map_err(|e| e.to_string())?;
     let description = reg.describe_available();
-    let data = reg
-        .skills()
+    let data = skills_snapshot_from(&reg);
+    Ok(SkillsSnapshot { description, data })
+}
+
+/// Project a registry into the TUI's `SkillEntry` list — no disk scan.
+///
+/// Shared by `/skill reload` (which rescans first) and `/skill disable` /
+/// `/skill enable` (which only flip the registry's disabled set), so the two
+/// cannot disagree about what the list shows or which rows are marked.
+pub(crate) fn skills_snapshot_from(
+    reg: &tact::skill::SkillRegistry,
+) -> Vec<crate::widgets::state::SkillEntry> {
+    reg.skills()
         .values()
         .map(|doc| crate::widgets::state::SkillEntry {
             name: doc.manifest.name.clone(),
             description: doc.manifest.description.clone(),
             body: doc.body.clone(),
+            dir: doc.dir.display().to_string(),
+            disabled: reg.is_disabled(&doc.manifest.name),
         })
-        .collect();
-    Ok(SkillsSnapshot { description, data })
+        .collect()
 }
 
 /// Open the `/theme` SelectPopup from the palette / slash command.
@@ -925,11 +945,17 @@ mod tests {
                 name: "code-reviewer".into(),
                 description: "代码审查专家".into(),
                 body: String::new(),
+
+                dir: String::new(),
+                disabled: false,
             },
             crate::widgets::state::SkillEntry {
                 name: "demo-test".into(),
                 description: "测试 skill 加载功能".into(),
                 body: String::new(),
+
+                dir: String::new(),
+                disabled: false,
             },
         ];
         let md = skills_list_markdown(&skills);
@@ -956,12 +982,46 @@ mod tests {
         );
     }
 
+    /// A disabled skill stays in the list, marked. A row that silently vanished
+    /// would be indistinguishable from a broken install — and it is still
+    /// invocable by name, so the marker is the only place that says so.
+    #[test]
+    fn the_skill_list_marks_a_disabled_skill() {
+        let skills = vec![
+            crate::widgets::state::SkillEntry {
+                name: "kept".into(),
+                description: "in the catalog".into(),
+                body: String::new(),
+                dir: String::new(),
+                disabled: false,
+            },
+            crate::widgets::state::SkillEntry {
+                name: "hidden".into(),
+                description: "hidden on purpose".into(),
+                body: String::new(),
+                dir: String::new(),
+                disabled: true,
+            },
+        ];
+
+        let md = skills_list_markdown(&skills);
+
+        assert!(md.contains("| `kept` | in the catalog |"), "{md}");
+        assert!(
+            md.contains("| `hidden` | (not in catalog) hidden on purpose |"),
+            "{md}"
+        );
+    }
+
     #[test]
     fn skills_list_markdown_preserves_namespaced_skill_name() {
         let skills = vec![crate::widgets::state::SkillEntry {
             name: "plugin:skill".into(),
             description: "Plugin-provided skill".into(),
             body: String::new(),
+
+            dir: String::new(),
+            disabled: false,
         }];
         let md = skills_list_markdown(&skills);
         assert!(
@@ -1057,6 +1117,9 @@ mod tests {
             name: "code-reviewer".into(),
             description: "代码审查专家".into(),
             body: String::new(),
+
+            dir: String::new(),
+            disabled: false,
         }];
 
         let outcome = run_skill_command(&mut app, "list");
@@ -1093,6 +1156,101 @@ mod tests {
         );
     }
 
+    /// Seed the shared registry with one skill.
+    ///
+    /// The fixture app starts with an **empty** registry (it is built from no
+    /// roots at all), so `/skill disable` has nothing to act on until a test
+    /// installs something. The root is the temp dir alone: scanning the real
+    /// skill roots would make the test depend on the machine.
+    fn install_registry_skill(app: &mut App, work_dir: &std::path::Path, name: &str) {
+        let skills_root = work_dir.join(".tact/skills");
+        let skill_dir = skills_root.join(name);
+        std::fs::create_dir_all(&skill_dir).unwrap();
+        std::fs::write(
+            skill_dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: a description\n---\n\nbody"),
+        )
+        .unwrap();
+
+        let mut registry = tact::skill::SkillRegistry::new([skills_root]);
+        registry.load_skills().unwrap();
+        *tact::skill::lock_skills(&app.skill_registry) = registry;
+        app.skills_data =
+            super::skills_snapshot_from(&tact::skill::lock_skills(&app.skill_registry));
+    }
+
+    /// `/skill disable` hides from the catalog and marks the row **in the same
+    /// breath** — the TUI list is rebuilt from the registry the handler just
+    /// flipped, not at the next `/skill reload`.
+    #[test]
+    fn skill_disable_then_enable_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _rx) = TestApp::new().into_commands();
+        install_registry_skill(&mut app, dir.path(), "demo");
+
+        let outcome = run_skill_command(&mut app, "disable demo");
+
+        assert!(outcome.handled);
+        assert!(outcome.clear_input, "the subcommand was consumed");
+        assert!(tact::skill::lock_skills(&app.skill_registry).is_disabled("demo"));
+        assert!(
+            app.skills_data
+                .iter()
+                .any(|s| s.name == "demo" && s.disabled),
+            "the row must be marked without a reload: {:?}",
+            app.skills_data
+        );
+
+        run_skill_command(&mut app, "enable demo");
+
+        assert!(!tact::skill::lock_skills(&app.skill_registry).is_disabled("demo"));
+        assert!(
+            app.skills_data
+                .iter()
+                .any(|s| s.name == "demo" && !s.disabled),
+            "the marker must clear: {:?}",
+            app.skills_data
+        );
+    }
+
+    /// The second ask reports the state instead of writing again — and does not
+    /// fall through to the usage hint.
+    #[test]
+    fn disabling_twice_reports_the_state_instead_of_rewriting() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut app, _rx) = TestApp::new().into_commands();
+        install_registry_skill(&mut app, dir.path(), "demo");
+
+        run_skill_command(&mut app, "disable demo");
+        let after_first = app.log.items.len();
+        let outcome = run_skill_command(&mut app, "disable demo");
+
+        assert!(outcome.handled);
+        assert!(app.flash_msg.is_none(), "not the usage hint");
+        assert!(
+            app.log.items[after_first..]
+                .iter()
+                .any(|item| item.raw.contains("already hidden")),
+            "expected an already-hidden report: {:?}",
+            app.log.items
+        );
+    }
+
+    /// A name that resolves to nothing names itself. The popup teaches the
+    /// syntax; this fires mid-command, so the usage hint would be noise.
+    #[test]
+    fn disabling_an_unknown_skill_names_it() {
+        let (mut app, _rx) = TestApp::new().into_commands();
+
+        let outcome = run_skill_command(&mut app, "disable nope");
+
+        assert!(outcome.handled);
+        assert!(!outcome.clear_input, "the name is left for the user to fix");
+        let (message, _) = app.flash_msg.clone().expect("a flash naming the skill");
+        assert!(message.contains("nope"), "{message}");
+        assert!(!message.contains("Usage"), "{message}");
+    }
+
     #[test]
     fn bare_skill_command_offers_the_usage_and_keeps_the_input() {
         // Same contract as bare `/mcp`: hand the user a runnable command
@@ -1119,11 +1277,17 @@ mod tests {
                 name: "code-reviewer".into(),
                 description: "代码审查专家".into(),
                 body: String::new(),
+
+                dir: String::new(),
+                disabled: false,
             },
             crate::widgets::state::SkillEntry {
                 name: "demo-test".into(),
                 description: "测试".into(),
                 body: String::new(),
+
+                dir: String::new(),
+                disabled: false,
             },
         ];
         let before = app.log.items.len();
@@ -1163,6 +1327,9 @@ mod tests {
                 name: format!("skill-{i:02}"),
                 description: "d".into(),
                 body: String::new(),
+
+                dir: String::new(),
+                disabled: false,
             })
             .collect();
         let before = app.log.items.len();
@@ -1206,6 +1373,9 @@ mod tests {
                 },
                 description: format!("desc {i}"),
                 body: String::new(),
+
+                dir: String::new(),
+                disabled: false,
             })
             .collect();
         if let Some(entry) = app
@@ -1407,6 +1577,9 @@ mod tests {
             name: "cancel".into(),
             description: "fake".into(),
             body: "should not run".into(),
+
+            dir: String::new(),
+            disabled: false,
         }];
         app.status = Status::Executing {
             current_step: 0,
@@ -1433,6 +1606,9 @@ mod tests {
             name: "help".into(),
             description: "skill help".into(),
             body: "x".into(),
+
+            dir: String::new(),
+            disabled: false,
         }];
         let help_rows: Vec<_> = app
             .palette_commands()
