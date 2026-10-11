@@ -429,7 +429,7 @@ no product code invokes it yet.
 | §6 adapters | TUI and headless exist; **Web and Desktop do not**. Headless drives the in-process router (not an envelope-speaking client), so "protocol client" means "starts runs through the capability protocol", not "speaks `RequestEnvelope` over a transport" |
 | §7 Trajectory | recording, ordering, query and redaction are implemented. User input, tool calls, hooks, permissions, errors, retries, cancellation, compaction and recovery all have producers. Plugin-lifecycle facts have none. Timeout facts have a producer — `CapabilityRouter::guarded` publishes `TimedOut` on the deadline path — and a **plugin tool call**, the host ↔ external-participant boundary, now carries both a deadline (`Agent::tool_call_deadline` puts the host's `DEFAULT_REQUEST_TIMEOUT` on the invocation that enters `guarded`) and a run, so a hung plugin publishes the fact for the run; a plugin's capability call and the host calls it makes still do not, because their deadline is applied below `guarded` or they are run-less, and the user's turn is deliberately never bounded |
 | §7 replay | implemented for the headless client (see §2); no other consumer yet |
-| §8 Storage | the facade and its namespace guard are real and now sit on the serving router; production session / task / team / worktree persistence still uses the existing stores directly, and Runtime-owned records are not written through the facade |
+| §8 Storage | the facade and its namespace guard are real and now sit on the serving router; production session / task / team / worktree persistence still uses the existing stores directly, and Runtime-owned records are not written through the facade. **Decided 2026-10-11: that stays true** — see the decided deferral below, which names the trigger rather than leaving the question open |
 | Error / timeout / cancellation model | error categories match and carry origin and retryability; cancellation propagates from client to handler; the production deadlines are the **plugin-facing** ones — a hosted plugin's *tool* call bounds the invocation that enters the router's `guarded`, so it publishes `TimedOut`, while its capability call and the host calls it makes are bounded inside `HostCapabilityHandler` / `GrantedHostCalls` — so a deadline never cuts a user's turn, and native and MCP tools stay unbounded |
 | Business-function preservation matrix | **verified by mapping**: twelve of the fourteen rows name the test that would fail if the behaviour regressed (table above), and ten of the twelve `tact_ui` integration suites drive the production path. Two rows say they are not covered end to end: voice (audio hardware) and the balance half of token/balance |
 
@@ -446,7 +446,19 @@ no product code invokes it yet.
 
 - Web and Desktop View adapters.
 - A second Chat implementation.
-- Migrating the existing stores onto the `MinimalStorage` facade.
+- **Migrating the existing stores onto the `MinimalStorage` facade — decided deferral (2026-10-11),
+  not an open question.** The hosts build the session / task / team / worktree stores directly
+  (`SharedTaskManager`, `SharedTeammateManager`, `SharedWorktreeManager`, `DynSessionStore` in the
+  session bootstrap), while the facade is instantiated there for one purpose: to back the `storage.*`
+  capabilities a plugin reaches in its own `plugins/<id>` namespace. So the facade has a consumer and
+  the stores do not need one — nothing today reads session/task/team/worktree data *through* the
+  facade. Swapping four stores' persistence under the hosts with no consumer to verify against is the
+  largest regression surface in this document and buys nothing yet.
+  **Trigger to revisit:** a second View (Web/Desktop) or a plugin that must read session / task /
+  team / worktree data through the namespaced facade. **First candidate when it fires:** the session
+  store (resume and history are what a second View wants first). **Guard:** a host's own authoritative
+  path stays direct until a consumer exercises the facade, so the migration lands consumer-first
+  rather than as a big-bang swap.
 - Semantic-authority capability naming.
 - `EventHandler` and `View` contributions.
 

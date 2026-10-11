@@ -4,6 +4,29 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — §8 store 迁移：判定继续延后，并写明触发条件（决策，无代码改动）
+
+| Field | Value |
+|-------|-------|
+| **Type** | decision（无行为变化；把「not planned」升级为带触发条件的决定） |
+| **Related** | `docs/superpowers/specs/2026-10-08-runtime-plugin-architecture-design.md` §8 |
+
+**现象 / 动机：** 清单里的 §8 是「把 session / task / team / worktree 四处持久化搬到 `MinimalStorage` facade」。动手前先核实两件事，结果是**不该现在做**：
+
+1. **本仓 spec 自己就把它列在 “Not planned for now (revisit when a second View or a plugin needs them)”**——它不是被遗漏的缺口，而是记录在案的延后。
+2. **没有驱动因素**（`git grep` 核实）：两处 host 是直连 `DynSessionStore` / `SharedTaskManager` / `SharedTeammateManager` / `SharedWorktreeManager` 的；facade 在 bootstrap 里只做一件事——支撑 serving router 上供插件使用的 `storage.*`（插件拿到的是它自己的 `plugins/<id>` 命名空间）。也就是说 **facade 有消费者，四处 store 不需要**：今天没有任何东西「经 facade」读 session/task/team/worktree 数据。
+
+**决策：继续延后，但把问题从「未决」变成「带触发的决定」**，并把判据写进 spec：
+- **触发条件**：出现第二个 View（Web/Desktop），或出现一个必须经命名空间 facade 读上述数据的插件。
+- **触发后的首选**：session store（第二个 View 最先要的就是 resume 与历史）。
+- **护栏**：host 自身的权威路径在有消费者实际走通 facade 之前保持直连——让迁移变成「消费者先行」，而不是一次性大搬家。
+- **为什么不做**：在没有任何消费者可验证的情况下，一次性换掉四处存储的持久化层，是这份文档里回归面最大的一步，而且此刻换不来任何东西。
+
+**改后行为：** 无（纯决策与文档）。
+
+**Pointers:** spec §8 状态行与 “Not planned” 列表（已改写为带触发条件的延后）；核实依据 `crates/tact_ui/src/session_bootstrap.rs`（直连四处 store + facade 仅用于 `storage.*`）。
+
+
 ## 1. 2026-10-11 — §6 的 View 半边（收尾二）：`Input` 由输入框作答，五类交互全部闭合
 
 | Field | Value |
