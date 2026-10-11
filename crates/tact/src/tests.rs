@@ -241,6 +241,144 @@ async fn expired_deadline_is_rejected_before_handler_runs() {
     assert!(!called.load(std::sync::atomic::Ordering::SeqCst));
 }
 
+/// A router whose only capability sleeps far past any deadline a test sets,
+/// plus the runtime that carries the given event service.
+///
+/// The kind matters to what a test can observe: a `Tool` invocation with a run
+/// additionally publishes its own lifecycle, a `Service` one publishes nothing
+/// but the deadline fact.
+fn timing_router(
+    events: Arc<dyn EventService>,
+    kind: CapabilityKind,
+) -> (CapabilityRouter, RuntimeContext) {
+    let router = CapabilityRouter::new();
+    router
+        .register_handler(
+            CapabilityDeclaration {
+                kind,
+                ..declaration("demo.slow")
+            },
+            FnCapabilityHandler::new(|_context: InvocationContext, _input| async {
+                tokio::time::sleep(Duration::from_secs(30)).await;
+                Ok(json!("late"))
+            }),
+        )
+        .unwrap();
+    let runtime = RuntimeContext::with_services(
+        router.clone(),
+        RuntimeServices::new(
+            events,
+            Arc::new(CapturedTrajectory::default()),
+            Arc::new(AllowPermission),
+            Arc::new(NoStorage),
+        ),
+    );
+    (router, runtime)
+}
+
+/// A deadline the Kernel enforces is a fact about a run, not only an error: the
+/// run it cut off receives `TimedOut`.
+#[tokio::test]
+async fn a_deadline_publishes_the_timeout_fact_for_the_run() {
+    let events = Arc::new(CapturedEvents::default());
+    let (router, runtime) = timing_router(
+        Arc::clone(&events) as Arc<dyn EventService>,
+        CapabilityKind::Tool,
+    );
+    let invocation = runtime
+        .invocation(
+            RequestId::from("timed-call"),
+            PluginId::from("plugin-1"),
+            "test",
+        )
+        .with_run_id(tact_protocol::RunId::from("run-9"))
+        .with_timeout(Duration::from_millis(10));
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        router.invoke("demo.slow", invocation, json!({})),
+    )
+    .await
+    .expect("the deadline fires within a bounded wait")
+    .expect_err("a handler past its deadline times out");
+
+    assert_eq!(error.category(), ErrorCategory::Timeout);
+    // The fact lands between the tool call's start and its terminal event: the
+    // deadline cuts the handler, and the failed call is reported after it.
+    assert!(matches!(
+        events.0.lock().await.as_slice(),
+        [
+            tact_protocol::RuntimeEvent::ToolCallStarted { .. },
+            tact_protocol::RuntimeEvent::TimedOut { run_id },
+            tact_protocol::RuntimeEvent::ToolCallFinished { success: false, .. },
+        ] if run_id == &tact_protocol::RunId::from("run-9")
+    ));
+}
+
+/// The documented boundary: `TimedOut` carries a **required** run id, so an
+/// invocation with no run records nothing rather than inventing an attribution.
+#[tokio::test]
+async fn a_deadline_without_a_run_publishes_nothing() {
+    let events = Arc::new(CapturedEvents::default());
+    let (router, runtime) = timing_router(
+        Arc::clone(&events) as Arc<dyn EventService>,
+        CapabilityKind::Tool,
+    );
+    let invocation = runtime
+        .invocation(
+            RequestId::from("run-less-call"),
+            PluginId::from("plugin-1"),
+            "test",
+        )
+        .with_timeout(Duration::from_millis(10));
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        router.invoke("demo.slow", invocation, json!({})),
+    )
+    .await
+    .expect("the deadline fires within a bounded wait")
+    .expect_err("a handler past its deadline times out");
+
+    assert_eq!(error.category(), ErrorCategory::Timeout);
+    assert!(
+        events.0.lock().await.is_empty(),
+        "a run-less invocation has no run the fact could be attributed to"
+    );
+}
+
+/// Recording is best effort: an event service that refuses the fact must not
+/// replace the timeout error the caller is about to receive.
+///
+/// The capability is a `Service` so the deadline fact is the only publish this
+/// invocation attempts — a `Tool` call would also try to publish its own
+/// lifecycle, and that terminal fact has its own (pre-existing) say in the
+/// caller's error.
+#[tokio::test]
+async fn a_failed_timeout_publish_keeps_the_timeout_error() {
+    let (router, runtime) = timing_router(Arc::new(FailingEvents), CapabilityKind::Service);
+    let invocation = runtime
+        .invocation(
+            RequestId::from("timed-call"),
+            PluginId::from("plugin-1"),
+            "test",
+        )
+        .with_run_id(tact_protocol::RunId::from("run-9"))
+        .with_timeout(Duration::from_millis(10));
+
+    let error = tokio::time::timeout(
+        Duration::from_secs(5),
+        router.invoke("demo.slow", invocation, json!({})),
+    )
+    .await
+    .expect("the deadline fires within a bounded wait")
+    .expect_err("a handler past its deadline times out");
+
+    assert_eq!(error.category(), ErrorCategory::Timeout);
+    assert_eq!(error.origin(), "kernel");
+    assert_eq!(error.message(), "invocation deadline exceeded");
+}
+
 #[test]
 fn protocol_error_conversion_preserves_metadata() {
     let mut protocol = ProtocolError::new(ErrorCategory::PluginCrashed, "crashed", "node", true);
@@ -304,6 +442,22 @@ impl EventService for CapturedEvents {
     async fn publish(&self, event: tact_protocol::RuntimeEvent) -> Result<(), KernelError> {
         self.0.lock().await.push(event);
         Ok(())
+    }
+}
+
+/// An event service that refuses every fact, standing in for a broken
+/// transport when the question is what the caller's error should be.
+struct FailingEvents;
+
+#[async_trait]
+impl EventService for FailingEvents {
+    async fn publish(&self, _event: tact_protocol::RuntimeEvent) -> Result<(), KernelError> {
+        Err(KernelError::new(
+            ErrorCategory::InternalError,
+            "event transport is down",
+            "test",
+            true,
+        ))
     }
 }
 

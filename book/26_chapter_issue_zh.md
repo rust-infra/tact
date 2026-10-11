@@ -4,6 +4,39 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — 超时事实有了生产者：`guarded` 发布 `TimedOut`，deadline 落在插件 / host call 边界，而不是用户的回合
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（行为变化：`RuntimeEvent::TimedOut` / `TrajectoryEventType::Timeout` 首次可能有生产者；插件发出的 host call 现在被宿主的 `DEFAULT_REQUEST_TIMEOUT` 限制，挂住的内核服务不再无限期挂住插件） |
+| **Related** | `crates/tact/src/capability.rs`（`guarded` / `record_timeout`）、`crates/tact_plugin_host/src/runtime.rs`（`GrantedHostCalls::handle`）、测试 `crates/tact/src/tests.rs`、`crates/tact_plugin_host/tests/host_call_policy.rs` |
+
+**现象 / 动机：** §7 的超时事实此前**没有生产者**。`CapabilityRouter::invoke` 里 `guarded` 的 deadline 分支只做两件事：`context.cancel()` 与返回 `KernelError::timeout()`，事实本身没人记录，于是 `TimedOut` / `TrajectoryEventType::Timeout` 永远不会进 trajectory。与此同时边界上有两个错配：① 托管插件的能力调用其实**已经带 deadline**（`HostCapabilityHandler::invoke` 在 context 没有 deadline 时补上 `request_timeout`），但超时只变成一个错误；② `GrantedHostCalls` 给内层内核服务调用建的是**全新的、无 deadline** 的 invocation，于是「内核服务不答」会无限期挂住插件进程——调用方自己的界（`HostCapabilityHandler` 施加在插件的调用上）盖不住这一跳，因为它在等一个永远不会来的答案。
+
+**决策与实现：**
+- **deadline 的归属是「宿主 ↔ 外部参与者」（插件、host call），不是用户自己的回合**：**不**给 `chat.submit` / `runs.start` / 驱动与 headless 自己的调用加 deadline。一个对话回合可以合法地跑很多分钟，把它砍掉是行为回归；这条边界同时决定了下面「什么时候不产出事实」。
+- **生产者（`crates/tact/src/capability.rs`）**：`guarded` 的 deadline 分支在 `context.cancel()` 之后、返回 `KernelError::timeout()` **之前**，经 `context.events()` 发布 `RuntimeEvent::TimedOut { run_id }`，抽成小函数 `record_timeout`。**best-effort**：发布失败只丢弃，不替换调用方即将拿到的超时错误，也不会把错误变成功（事实是记录，不是结果）。
+- **只在有 run 时发布**：协议的 `RuntimeEvent::TimedOut.run_id` **非可选**，所以 `context.run_id()` 为 `None` 时直接返回、什么都不发——无 run 的 invocation 没有能让协议归因的对象。host call 正是这种情况（`GrantedHostCalls` 的内层 invocation 由 serving context 构造，本来就没有 run），注释里逐字写明。**不改协议类型、不改 trajectory 映射。**
+- **给 host call 上界（`crates/tact_plugin_host/src/runtime.rs`）**：`GrantedHostCalls::handle` 的内层 invocation 追加 `.with_timeout(DEFAULT_REQUEST_TIMEOUT)`——复用同 crate 已有的 `with_timeout` 与常量。理由写在注释里：插件是外部参与者，内核服务不答必须让这次 host call 失败而不是挂住插件进程；`DEFAULT_REQUEST_TIMEOUT` 本来就是本 crate 给单次 host RPC 的值，于是 host call 与其它任何一次与宿主的交互同界。`GrantedHostCalls` 的文档注释也补了这一句。
+
+**测试（全部有界等待）：**
+- `crates/tact/src/tests.rs::a_deadline_publishes_the_timeout_fact_for_the_run`：处理器睡过短 deadline、调用带 run id ⇒ 返回 `Timeout` 错误，且捕获型 `EventService` 收到 `TimedOut{run-9}`，位置正好在 `ToolCallStarted` 与 `ToolCallFinished{success:false}` 之间。
+- `::a_deadline_without_a_run_publishes_nothing`：同样超时但无 run id ⇒ 超时错误 + 事件流为空（文档化的边界，不是缺陷）。
+- `::a_failed_timeout_publish_keeps_the_timeout_error`：事件服务对任何事实都返回错误 ⇒ 调用方拿到的仍是 `Timeout` / origin `kernel` / "invocation deadline exceeded"。
+- `crates/tact_plugin_host/tests/host_call_policy.rs::a_hung_kernel_service_fails_the_host_call_instead_of_hanging`：一个睡 `2 × DEFAULT_REQUEST_TIMEOUT` 的 `Service` 能力，经 `GrantedHostCalls` 调用 ⇒ 在宿主默认上界处被切断并返回 `Timeout`；断言 `DEFAULT_REQUEST_TIMEOUT ≤ 实际等待 < 2 × DEFAULT_REQUEST_TIMEOUT`（下界证明用的是宿主的界、不是更短的臆造值，上界证明调用是被切断而不是被服务答完）。该用例**暂停时钟**（`#[tokio::test(start_paused = true)]`，`tact_plugin_host` 为此加了 `tokio` 的 `test-util` 开发依赖），否则「超过上界」要真花 30 秒。
+
+**改后行为：** 任何**同时**带 deadline 与 run id 的能力调用一旦超时，内核会在返回超时错误前发布 `TimedOut`；交互式宿主的事件 / 轨迹订阅者按既有映射（`RuntimeEvent::TimedOut` → `TrajectoryEventType::Timeout`，本次未改）把它写进 trajectory（没有 run 的调用仍然什么都不记）。插件发出的、指向挂住内核服务的 host call 现在会以 `Timeout` 结束（不再挂住插件进程），插件自己的能力调用则继续由 `HostCapabilityHandler` 的 `request_timeout` 兜住；用户回合的时限行为**逐字不变**。
+
+**有意不做 / 已知边界：**
+- 不给用户自己的回合（`chat.submit` / `runs.start` / 驱动 / headless 自身的调用）加 deadline：这是本次的**决策**，不是遗漏。
+- 不把外层 invocation 的 run id 塞给 host call 的内层 invocation：协议要求 `run_id` 非空，而 host call 没有「它属于哪次 run」这个事实，硬塞就是伪造归因。
+- 因此真实会话里**仍然不会**有 `TimedOut` 落进 trajectory：插件自己的能力调用 deadline 由 `HostCapabilityHandler` 内部施加，位于 router `guarded` 之下（不经过生产者），而 host call 是 run-less。生产者与边界都已就位，缺的是「既带 deadline、又带 run」的生产调用者——这一点已如实写进 `ARCHITECTURE.md` §15、2026-10-08 spec 的 §7 / 超时两行、该 spec 的 §2 行、计划的状态行与现状段落，以及 `docs/superpowers/specs/2026-10-11-kernel-service-consumers-design.md` 的「两条限制」。
+- 不改协议 `TimedOut` 形状、不改 trajectory 映射、不给 host call 加 deadline 配置项（沿用宿主默认值）。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2932 → 2936 passed / 0 failed / 22 ignored**（47 套件不变，+4 测试：`tact` lib +3、`tact_plugin_host` 策略套件 +1）。
+
+**Pointers:** `crates/tact/src/capability.rs::{guarded, record_timeout}`、`crates/tact_plugin_host/src/runtime.rs::{GrantedHostCalls::handle, DEFAULT_REQUEST_TIMEOUT}`、`crates/tact/src/tests.rs`、`crates/tact_plugin_host/tests/host_call_policy.rs`、判定 `ARCHITECTURE.md` §15（§7 timeout 条）、`docs/superpowers/specs/2026-10-08-runtime-plugin-architecture-design.md`（§7 Trajectory / Error-timeout-cancellation 两行）、`docs/superpowers/plans/2026-10-08-runtime-plugin-architecture.md`（状态表 timeout 行 + 现状段落）。
+
 ## 1. 2026-10-11 — 交互面接入生产：交互式宿主安装 `InteractionBroker`，`interaction.request` / `permission.request` 不再恒为 fail-closed
 
 | Field | Value |

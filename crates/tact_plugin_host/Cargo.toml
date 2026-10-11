@@ -13,3 +13,9 @@ tact = { path = "../tact" }
 tact_protocol = { path = "../tact_protocol" }
 tokio = { workspace = true, features = ["io-util", "process", "sync", "time", "macros", "rt"] }
 uuid = { workspace = true }
+
+[dev-dependencies]
+# `test-util` is what lets a test pause the clock: the host-call bound is the
+# 30s `DEFAULT_REQUEST_TIMEOUT`, and proving that a hung service fails the call
+# must not cost 30 real seconds.
+tokio = { workspace = true, features = ["test-util"] }

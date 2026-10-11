@@ -170,9 +170,14 @@ Two limits are worth stating rather than implying:
   requests into the popup (arbitrary `RequestId`s plus the `Confirm` / `Input` /
   `Permission` kinds) is the remaining View-adapter work, and it is what would
   make `tact_extensions::ui_responder::UiResponder` the tool-prompt path alone.
-- **No production invocation carries a deadline**, so a *subscribed* client that
-  never answers leaves the invocation waiting until the run is cancelled or the
-  process exits. That is the §7 timeout gap, not a property of this wiring.
+- **A host call is run-less, and it is bounded now**, so a *subscribed* client
+  that never answers no longer leaves the invocation waiting until the run is
+  cancelled or the process exits: `GrantedHostCalls` puts the host's
+  `DEFAULT_REQUEST_TIMEOUT` on the inner Kernel-service invoke, so a plugin's
+  `interaction.request` fails on that bound. It still records nothing —
+  `RuntimeEvent::TimedOut` needs a run, and a host call has none — so the §7
+  timeout gap is narrower, not closed; that is a property of this wiring *and*
+  of the boundary decision, not of the broker.
 
 ## Verification
 

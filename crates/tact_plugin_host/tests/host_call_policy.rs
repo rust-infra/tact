@@ -19,12 +19,12 @@ use tact::{
     EventService, FnCapabilityHandler, InvocationContext, KernelError, PermissionService,
     RuntimeContext, RuntimeServices, StorageService, TrajectoryService,
 };
-use tact_plugin_host::{GrantedHostCalls, HostCallService};
+use tact_plugin_host::{DEFAULT_REQUEST_TIMEOUT, GrantedHostCalls, HostCallService};
 use tact_protocol::{
     CapabilityDeclaration, CapabilityKind, CapabilityRisk, PluginId, RequestId, RunId,
     RuntimeEvent, TrajectoryId,
 };
-use tokio::time::timeout;
+use tokio::time::{Instant, timeout};
 
 /// Every await in this file is bounded: a policy bug that hangs would otherwise
 /// hang the whole suite.
@@ -452,5 +452,65 @@ async fn a_granted_name_the_router_does_not_carry_is_denied() {
     assert_eq!(
         denied.category(),
         tact_protocol::ErrorCategory::PermissionDenied
+    );
+}
+
+/// A Kernel service that never answers must fail the host call, not hang the
+/// plugin: the inner invocation carries the host's own `DEFAULT_REQUEST_TIMEOUT`.
+///
+/// The mock clock is paused so "longer than the bound" costs no wall time. The
+/// service's sleep and the deadline are both timers on that clock, and the
+/// deadline is the earlier one — which is the point: the bound is the host's,
+/// not one this test invented.
+#[tokio::test(start_paused = true)]
+async fn a_hung_kernel_service_fails_the_host_call_instead_of_hanging() {
+    let context = serving(
+        Arc::new(AllowAll),
+        Arc::new(RecordingStorage::default()),
+        Arc::new(CountingEvents::default()),
+    );
+    context
+        .router()
+        .register_handler(
+            CapabilityDeclaration {
+                name: "acme.hang".into(),
+                kind: CapabilityKind::Service,
+                version: "1".into(),
+                description: None,
+                input_schema: None,
+                output_schema: None,
+                risk: CapabilityRisk::ReadOnly,
+            },
+            FnCapabilityHandler::new(|_context: InvocationContext, _input| async {
+                tokio::time::sleep(DEFAULT_REQUEST_TIMEOUT * 2).await;
+                Ok(json!(null))
+            }),
+        )
+        .expect("the hanging service registers on this router");
+    let policy = GrantedHostCalls::new(
+        context.clone(),
+        PluginId::from("acme.echo"),
+        ["acme.hang".to_string()],
+    );
+
+    let started = Instant::now();
+    let error = timeout(
+        DEFAULT_REQUEST_TIMEOUT * 2 + BOUND,
+        policy.handle(&outer(&context), context.router(), "acme.hang", json!({})),
+    )
+    .await
+    .expect("the host call is bounded by the host's own request timeout")
+    .expect_err("a Kernel service past the bound fails the host call");
+
+    assert_eq!(error.category(), tact_protocol::ErrorCategory::Timeout);
+    assert!(
+        started.elapsed() >= DEFAULT_REQUEST_TIMEOUT,
+        "the inner invocation waits out the host's default bound, not less: {:?}",
+        started.elapsed()
+    );
+    assert!(
+        started.elapsed() < DEFAULT_REQUEST_TIMEOUT * 2,
+        "the call was cut by the bound, not answered by the service: {:?}",
+        started.elapsed()
     );
 }

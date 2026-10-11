@@ -788,16 +788,26 @@ disconnected client reconnects from a Trajectory sequence" therefore still has
 no production caller, and `RuntimeCommand::{Subscribe, Resume}` have no
 consumer either.
 
-Two §7 facts are **unreachable rather than unwired**, and the distinction
-matters for anyone reading the acceptance list:
+Two §7 facts are worth stating precisely, because the difference between *wired*
+and *reached* matters for anyone reading the acceptance list:
 
-- `RuntimeEvent::TimedOut` (and therefore `TrajectoryEventType::Timeout`) has no
-  producer because **no production invocation carries a deadline**. The only
-  non-test caller of `InvocationContext::with_timeout` is inside
-  `crates/tact_plugin_host` (`runtime.rs:530`), and no product crate uses that
-  host, so the Kernel's `guarded` deadline path never fires in a real session.
-  A provider-level timeout surfaces as `Retry` / `Recovery` facts instead.
-  Recording timeouts needs a host that sets a deadline, not another emitter.
+- `RuntimeEvent::TimedOut` (and therefore `TrajectoryEventType::Timeout`) now has
+  a producer: `CapabilityRouter`'s `guarded` deadline path publishes the fact
+  (`crates/tact/src/capability.rs`) when the invocation it guards carries both a
+  deadline and a run. The deadline it records is the **host ↔
+  external-participant** bound, never the user's turn — `chat.submit` /
+  `runs.start` and the hosts' own invocations deliberately carry none, because a
+  conversational turn may legitimately run for many minutes and cutting it short
+  would be a behaviour regression. The bounded invocations are the plugin-facing
+  ones: a hosted plugin's capability call, and the host calls the plugin makes
+  from inside it (`GrantedHostCalls` puts the host's `DEFAULT_REQUEST_TIMEOUT` on
+  the inner Kernel-service invoke, so a service that never answers fails that
+  host call instead of hanging the plugin's process). One caveat keeps the fact
+  out of a real session today: a plugin's own capability deadline is applied
+  *inside* `HostCapabilityHandler`, below the router's `guarded`, and a host call
+  is run-less — and `TimedOut` carries a **required** `RunId`, so a run-less
+  invocation records nothing rather than inventing an attribution. A
+  provider-level timeout still surfaces as `Retry` / `Recovery` facts instead.
 - The session's **Kernel plugin registry** (`RuntimeContext::plugins`) is
   populated by the bootstrap and never read back, so a plugin's health/crash
   state still has no consumer. It used to hang off the `Agent` as

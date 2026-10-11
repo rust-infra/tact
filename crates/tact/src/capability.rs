@@ -313,6 +313,7 @@ where
                 _ = cancellation.cancelled() => Err(KernelError::cancelled()),
                 _ = time::sleep_until(deadline) => {
                     context.cancel();
+                    record_timeout(context).await;
                     Err(KernelError::timeout())
                 },
             }
@@ -324,6 +325,29 @@ where
             }
         }
     }
+}
+
+/// Publishes the `TimedOut` fact for a deadline the Kernel just enforced.
+///
+/// Best effort by design: this runs on the way to the timeout error the caller
+/// is about to receive, so an event service that is down must not replace that
+/// error with its own (and a publish that succeeds must not turn the error into
+/// a success either — the fact is a record, not the outcome).
+///
+/// `RuntimeEvent::TimedOut` carries a **required** `RunId`, so an invocation
+/// with no run records nothing: there is no run for the protocol to attribute
+/// the fact to. A host call is that case — `GrantedHostCalls` builds its inner
+/// invocation from the serving context, which has no run.
+async fn record_timeout(context: &InvocationContext) {
+    let Some(run_id) = context.run_id() else {
+        return;
+    };
+    let _ = context
+        .events()
+        .publish(RuntimeEvent::TimedOut {
+            run_id: run_id.clone(),
+        })
+        .await;
 }
 
 fn enrich_error(mut error: KernelError, context: &InvocationContext) -> KernelError {

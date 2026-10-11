@@ -640,9 +640,13 @@ impl HostCallService for DenyHostCalls {
 ///
 /// The capability is then invoked on that same serving router, with a **fresh**
 /// invocation: a new [`RequestId`] (reusing the outer one would make two
-/// requests indistinguishable in the trajectory) and the plugin's own
-/// [`PluginId`], so the ordinary permission path decides this call exactly as it
-/// would decide any other. The plugin identity matters: it is the namespace
+/// requests indistinguishable in the trajectory), the plugin's own
+/// [`PluginId`] — so the ordinary permission path decides this call exactly as
+/// it would decide any other — and the host's own `DEFAULT_REQUEST_TIMEOUT`, so
+/// a Kernel service that never answers fails the host call instead of hanging
+/// the plugin's process.
+///
+/// The plugin identity matters: it is the namespace
 /// `storage.*` authorizes against, and it is *not* a host identity, so the host
 /// control plane (`crates/tact_ui/src/permission.rs`) refuses `chat.submit` /
 /// `runs.*` for it.
@@ -701,18 +705,29 @@ impl HostCallService for GrantedHostCalls {
                 self.plugin_id, declaration.kind
             )));
         }
-        let invocation = self.serving.invocation(
-            // A fresh request id: the outer call's id belongs to the caller's
-            // request, and reusing it would make the host call look like the
-            // same request in the trajectory.
-            RequestId::from(uuid::Uuid::new_v4().to_string()),
-            self.plugin_id.clone(),
-            // The plugin is the actor of its own call. Session-level hops that
-            // carry a caller forward (`chat.submit` → `runs.start`, a Workflow
-            // step → `chat.submit`) keep the caller's actor instead; there is no
-            // caller to carry here — the plugin process is the origin.
-            format!("plugin:{}", self.plugin_id),
-        );
+        let invocation = self
+            .serving
+            .invocation(
+                // A fresh request id: the outer call's id belongs to the caller's
+                // request, and reusing it would make the host call look like the
+                // same request in the trajectory.
+                RequestId::from(uuid::Uuid::new_v4().to_string()),
+                self.plugin_id.clone(),
+                // The plugin is the actor of its own call. Session-level hops that
+                // carry a caller forward (`chat.submit` → `runs.start`, a Workflow
+                // step → `chat.submit`) keep the caller's actor instead; there is no
+                // caller to carry here — the plugin process is the origin.
+                format!("plugin:{}", self.plugin_id),
+            )
+            // The inner call is bounded by the host's own default request timeout.
+            // A plugin is an external participant, so a Kernel service that never
+            // answers must fail this host call rather than hang the plugin's
+            // process forever; and the caller's own bound cannot cover this hop —
+            // `HostCapabilityHandler` bounds the *plugin's* call, which is still
+            // waiting for an answer that will never come. `DEFAULT_REQUEST_TIMEOUT`
+            // is the value this crate already puts on one host RPC, so a host call
+            // is bounded exactly like any other exchange with the host.
+            .with_timeout(DEFAULT_REQUEST_TIMEOUT);
         self.serving
             .router()
             .invoke(capability, invocation, input)
