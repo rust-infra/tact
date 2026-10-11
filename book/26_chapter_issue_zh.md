@@ -4,6 +4,26 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — 插件生命周期事实有了产出者：`PluginStarted` / `PluginStopped`（#12 残余之一）
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（无用户可见变化；轨迹里多出两类事实） |
+| **Related** | `crates/tact_extensions/src/plugin/runtime.rs` |
+
+**现象 / 动机：** `RuntimeEvent::PluginStarted` / `PluginStopped` 全仓只出现在轨迹映射与一条测试里，**没有任何产出点**（`git grep` 核实）——即 §7 里记的「plugin-lifecycle facts have none」。而本会话已经让插件在生产里被托管，产出点其实就摆在托管生命周期的接缝上：注册成功 → `PluginRegistry::start`，会话收尾 → `stop`。
+
+**决策：** 由**宿主**发布，而不是由插件自报：事实的发布者身份是 `tact.plugin_host`，因为宿主是观察者，而这是**保留的宿主事实**（插件不得伪造自己的 start/stop）。发布是**尽力而为**——发不出去不改变会话行为（插件照样算注册、照样被停）。两个产出点：
+- `HostedPlugins::register`：只对**真正注册成功**（能力已上线）的插件发 `PluginStarted`；被跳过的插件不发——它没有可用能力，从未真正 start。
+- 托管收尾：停掉每个插件后发 `PluginStopped`。为此在该结构上记住 serving 上下文（`register` 本来就有它，收尾原本拿不到）。
+
+**改后行为：** 无用户可见变化；一条会话的轨迹里现在会出现每个被托管插件的 start/stop 事实。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2947 → 2948 passed / 0 failed / 22 ignored**（+1：`a_hosted_plugin_records_its_lifecycle_facts` 用一个捕获式 `EventService` 断言**两类事实都真的被发出**且携带插件 id——只断言状态翻转是证明不了事实存在的）。
+
+**Pointers:** `crates/tact_extensions/src/plugin/runtime.rs::{emit_plugin_fact, HostedPlugins::register, HostedPlugins}`、spec §7 状态行（已改写）。
+
+
 ## 1. 2026-10-11 — §8 store 迁移：判定继续延后，并写明触发条件（决策，无代码改动）
 
 | Field | Value |

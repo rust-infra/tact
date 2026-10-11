@@ -38,7 +38,9 @@ use tact_plugin_host::{
     StdioPluginHost, default_handshake_features, register_host_serving_capabilities_with_router,
     register_host_tools_with_router,
 };
-use tact_protocol::{CapabilityDeclaration, CapabilityKind, PluginId, ProtocolVersion};
+use tact_protocol::{
+    CapabilityDeclaration, CapabilityKind, PluginId, ProtocolVersion, RequestId, RuntimeEvent,
+};
 
 use crate::{ToolSpec, consts::PluginHome};
 
@@ -235,6 +237,10 @@ pub struct HostedPlugins {
     /// The session registry, kept so `shutdown` can mark each plugin stopped.
     /// `None` until `register` runs.
     registry: Option<PluginRegistry>,
+    /// The session's serving context, kept for the same reason: the teardown
+    /// publishes each stopped plugin's lifecycle fact through the session's
+    /// event service, which only `register` receives.
+    serving: Option<RuntimeContext>,
     /// The `Tool`-kind declarations the kept hosts announced, cached at
     /// [`Self::register`] time.
     ///
@@ -284,6 +290,7 @@ impl HostedPlugins {
             hosts,
             notices,
             registry: None,
+            serving: None,
             tool_declarations: Vec::new(),
         }
     }
@@ -305,6 +312,7 @@ impl HostedPlugins {
             hosts,
             notices: Vec::new(),
             registry: None,
+            serving: None,
             tool_declarations: Vec::new(),
         }
     }
@@ -331,6 +339,7 @@ impl HostedPlugins {
     /// lands on the same router and services, as the plugin.
     pub async fn register(&mut self, serving: &RuntimeContext, registry: &PluginRegistry) {
         self.registry = Some(registry.clone());
+        self.serving = Some(serving.clone());
         let mut kept = Vec::with_capacity(self.hosts.len());
         for mut hosted in std::mem::take(&mut self.hosts) {
             let host_calls = host_call_policy(&hosted, serving);
@@ -339,6 +348,16 @@ impl HostedPlugins {
                     // Recorded only for a host that registered: a plugin that
                     // was skipped has no capabilities left to answer a call on.
                     hosted.host_calls = Some(host_calls);
+                    // The lifecycle fact, for the hosts that are actually
+                    // live: a plugin skipped above has no capabilities to
+                    // answer with, so it never started.
+                    emit_plugin_fact(
+                        serving,
+                        RuntimeEvent::PluginStarted {
+                            plugin_id: hosted.manifest.id.to_string(),
+                        },
+                    )
+                    .await;
                     kept.push(hosted);
                 }
                 Err(error) => {
@@ -441,8 +460,34 @@ impl HostedPlugins {
             if let Some(registry) = &self.registry {
                 registry.stop(&hosted.manifest.id).ok();
             }
+            if let Some(serving) = &self.serving {
+                emit_plugin_fact(
+                    serving,
+                    RuntimeEvent::PluginStopped {
+                        plugin_id: hosted.manifest.id.to_string(),
+                    },
+                )
+                .await;
+            }
         }
     }
+}
+
+/// Publishes a plugin-lifecycle fact through the session's event service.
+///
+/// Best effort on purpose: a fact that cannot be recorded must not change what
+/// the session does — the plugin is still registered, and still stopped.
+///
+/// Published as `tact.plugin_host`, not as the plugin, because the host is the
+/// observer here: these are reserved host facts, and a plugin must not be able
+/// to forge its own start or stop.
+async fn emit_plugin_fact(serving: &RuntimeContext, event: RuntimeEvent) {
+    let context = serving.invocation(
+        RequestId::from(uuid::Uuid::new_v4().to_string()),
+        PluginId::from("tact.plugin_host"),
+        "plugin_host",
+    );
+    let _ = context.events().publish(event).await;
 }
 
 /// Wraps a started stdio host behind the [`PluginHost`] boundary and lifts the
@@ -518,6 +563,61 @@ fn tool_spec_for(declaration: &CapabilityDeclaration) -> ToolSpec {
 
 #[cfg(test)]
 mod tests {
+    /// Captures the facts the hosting lifecycle publishes, so the test can
+    /// assert them in order rather than trusting that a publisher exists.
+    #[derive(Default)]
+    struct RecordingEvents(std::sync::Mutex<Vec<RuntimeEvent>>);
+
+    #[async_trait::async_trait]
+    impl EventService for RecordingEvents {
+        async fn publish(&self, event: RuntimeEvent) -> Result<(), KernelError> {
+            self.0.lock().expect("events lock").push(event);
+            Ok(())
+        }
+    }
+
+    /// A hosted plugin's lifecycle is a fact, not just a state flip: it is
+    /// `PluginStarted` once its capabilities are live, and `PluginStopped`
+    /// when the session tears it down. Both used to have no producer at all.
+    #[tokio::test]
+    async fn a_hosted_plugin_records_its_lifecycle_facts() {
+        let recording = Arc::new(RecordingEvents::default());
+        let events: Arc<dyn EventService> = recording.clone();
+        let serving = RuntimeContext::with_services(
+            CapabilityRouter::new(),
+            RuntimeServices::with_event_and_permission(events, Arc::new(AllowAll)),
+        );
+        let registry = PluginRegistry::new(ProtocolVersion::CURRENT);
+        let mut hosted = hosted(
+            "acme.echo",
+            vec![tact_protocol::CapabilityDeclaration {
+                name: "acme.echo.cmd".into(),
+                kind: tact_protocol::CapabilityKind::Command,
+                version: "1".into(),
+                description: None,
+                input_schema: None,
+                output_schema: None,
+                risk: tact_protocol::CapabilityRisk::Medium,
+            }],
+        );
+
+        hosted.register(&serving, &registry).await;
+        hosted.shutdown().await;
+
+        let recorded = recording.0.lock().expect("events lock");
+        assert!(
+            recorded
+                .iter()
+                .any(|event| matches!(event, RuntimeEvent::PluginStarted { plugin_id } if plugin_id == "acme.echo")),
+            "a registered plugin is started: {recorded:?}"
+        );
+        assert!(
+            recorded
+                .iter()
+                .any(|event| matches!(event, RuntimeEvent::PluginStopped { plugin_id } if plugin_id == "acme.echo")),
+            "a torn-down plugin is stopped: {recorded:?}"
+        );
+    }
     use std::{
         collections::BTreeMap,
         fs,
