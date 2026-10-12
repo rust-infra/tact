@@ -406,7 +406,7 @@ Recovery mechanisms inside `agent_loop()`:
 
 | Failure | Action |
 |---|---|
-| Prompt too long | Retry after `compact_history()` (up to `MAX_RECOVERY_ATTEMPTS`). |
+| Prompt too long | Retry after `compact_history()` (up to `MAX_COMPACT_ATTEMPTS`, 3). |
 | Transient transport error | Exponential backoff retry. |
 | `max_tokens` truncation with pending tools | Execute pending tools, then continue with a continuation prompt. |
 
