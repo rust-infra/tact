@@ -125,7 +125,12 @@ pub(crate) enum SelectKind {
 pub(crate) struct AgentSelectRequest {
     pub prompt: String,
     pub options: Vec<String>,
-    pub request_id: u64,
+    /// The protocol id, as the popup carries it: whichever transport asked,
+    /// the queue only needs the id to hand back with the answer.
+    pub request_id: tact_protocol::RequestId,
+    /// How the answer is expressed (`Selected` or a decision) — a queued
+    /// `Confirm` / `Permission` must still answer `Approved` / `Rejected`.
+    pub answer: agent_tui_kit::state::select_popup::PopupAnswer,
     pub multi: bool,
     pub log_confirm: bool,
 }

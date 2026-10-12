@@ -4,6 +4,26 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — 弹窗只剩一个 id 空间：两个字段合并为一个协议 `RequestId`（#15）
+
+| Field | Value |
+|-------|-------|
+| **Type** | refactor（零行为变化；跨三个 crate 的机械扫动） |
+| **Related** | `crates/agent_tui_kit/src/state/select_popup.rs`、`crates/tui/src/widgets/state/{mod.rs,app/agent.rs}`、`crates/tui/src/handlers/select.rs` |
+
+**现象 / 动机：** §6 收尾后，弹窗带着**两个** id 字段——`: Option<u64>`（旧 UiResponder 的数字空间）与 `broker_request_id: Option<RequestId>`（协议空间），外加一个只为 broker 服务的 `set_broker`。这是迁移期的权宜，不是设计。
+
+**过程（如实）：** 我先估「约 20 处、在 View 内」，**估错了**：一改类型，编译器摊开的是 `agent_tui_kit` **自己的测试**、`select_popup_widget` 夹具、`render/popup_scene_tests`、`handlers/select.rs` 夹具，以及两处因失去 `Copy` 而需要 `.clone()` 的活代码——即**所有会戳弹窗的夹具、跨三个 crate**。当场回滚过一次（并把实测清单写进任务 #15），再按「单次机械扫动、独立提交、零行为变化」重做。
+
+**结果：** 弹窗只有 `request_id: Option<RequestId>`；`set_broker` 删除；`set`/`set_multi` 直接收协议 id；队列 `AgentSelectRequest` 也改为 `RequestId`，并**新增 `answer: PopupAnswer`**（否则一个被排队的 `Confirm`/`Permission` 会以 `Selected` 作答——这是合并过程中发现的真问题，不是顺带）。对账守卫改为：**旧快照只认十进制 id**，非十进制（broker 的）即视为「不在快照里」直接返回，绝不把用户正在看的弹窗关掉。
+
+**两套传输仍然并存**（这是刻意的）：`UiResponder` 内部仍是数字 id（并发子代理的排队与 `withdraw` 是承重的），它从应答里把十进制 id 解析回来（`ui_responder.rs:180`）；driver 仍按「先 broker、后旧 responder」路由。变的只是 **View 侧的 id 空间**。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；全仓 **2949 passed / 0 failed / 22 ignored**（数量不变：删掉了一条已无意义的断言「数字空间保持为空」，因为已无数字空间）。中途撞到一次 clippy `-D warnings`（`RequestId` 变成未使用导入）——**是在门禁上暴露的，不是靠猜**。
+
+**Pointers:** `crates/agent_tui_kit/src/state/select_popup.rs::{request_id, take_request_id, take_answer}`、`crates/tui/src/widgets/state/app/agent.rs`（投影 + 对账守卫）、`crates/tui/src/handlers/select.rs::dequeue_next_agent_select`。
+
+
 ## 1. 2026-10-11 — 拒绝一个待答的 `Input` 提示：Esc 以 `Cancelled` 应答（补上一处我自己引入的等待）
 
 | Field | Value |

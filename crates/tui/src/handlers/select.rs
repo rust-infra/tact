@@ -309,8 +309,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
             app.select.move_up();
         }
         KeyCode::Esc => {
-            let was_agent =
-                app.select.request_id.is_some() || app.select.broker_request_id.is_some();
+            let was_agent = app.select.request_id.is_some();
             if let Some(response) = app.select.cancel() {
                 app.respond_ui(response);
             }
@@ -392,6 +391,7 @@ fn dequeue_next_agent_select(app: &mut App) {
         app.select
             .set(req.prompt, req.options, req.request_id, req.log_confirm);
     }
+    app.select.answer = req.answer;
     app.input_mode = InputMode::Select;
 }
 
@@ -1166,7 +1166,7 @@ mod tests {
         app.select.set(
             "Pick one".into(),
             vec!["Allow once".into(), "Deny".into()],
-            1,
+            tact_protocol::RequestId::from("1".to_string()),
             true,
         );
         rx
@@ -1445,7 +1445,10 @@ thinking_budget = {thinking_budget}
             false,
         );
         app.reconcile_pending_ui();
-        assert_eq!(app.select.request_id, Some(request_id));
+        assert_eq!(
+            app.select.request_id,
+            Some(tact_protocol::RequestId::from(request_id.to_string()))
+        );
 
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
@@ -1482,7 +1485,10 @@ thinking_budget = {thinking_budget}
             false,
         );
         app.reconcile_pending_ui();
-        assert_eq!(app.select.request_id, Some(request_id));
+        assert_eq!(
+            app.select.request_id,
+            Some(tact_protocol::RequestId::from(request_id.to_string()))
+        );
 
         app.cancel_task();
 
@@ -1535,7 +1541,11 @@ thinking_budget = {thinking_budget}
                 log_confirm: false,
             },
         });
-        assert_eq!(app.select.request_id, Some(1), "first select stays open");
+        assert_eq!(
+            app.select.request_id,
+            Some(tact_protocol::RequestId::from("1".to_string())),
+            "first select stays open"
+        );
         assert_eq!(app.pending_agent_selects.len(), 1, "second select queued");
 
         // Confirm the first → emits Select(1) and dequeues the second.
@@ -1546,7 +1556,11 @@ thinking_budget = {thinking_budget}
             })) if request_id.as_str() == "1" => {}
             other => panic!("expected first protocol Select response, got {other:?}"),
         }
-        assert_eq!(app.select.request_id, Some(2), "second select dequeued");
+        assert_eq!(
+            app.select.request_id,
+            Some(tact_protocol::RequestId::from("2".to_string())),
+            "second select dequeued"
+        );
         assert!(matches!(app.input_mode, InputMode::Select));
 
         // Confirm the second → emits Select(2) and returns to Normal.

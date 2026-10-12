@@ -463,7 +463,7 @@ fn select_popup_multi_shows_toggle_footer_hint() {
     app.select.set_multi(
         "Pick options".into(),
         (0..3).map(|i| format!("opt-{i}")).collect(),
-        1,
+        tact_protocol::RequestId::from("1".to_string()),
         false,
     );
 
@@ -1128,8 +1128,12 @@ fn full_frame_done_status_renders_in_status_bar() {
 fn full_frame_select_mode_shows_in_status_bar() {
     let mut app = make_app();
     app.input_mode = InputMode::Select;
-    app.select
-        .set("Pick one".into(), vec!["A".into(), "B".into()], 0, false);
+    app.select.set(
+        "Pick one".into(),
+        vec!["A".into(), "B".into()],
+        tact_protocol::RequestId::from("0".to_string()),
+        false,
+    );
 
     let text = render_app_text(&mut app, 100, 24);
 

@@ -776,7 +776,10 @@ mod runtime_event_tests {
         );
 
         assert!(matches!(app.input_mode, InputMode::Select));
-        assert_eq!(app.select.request_id, Some(42));
+        assert_eq!(
+            app.select.request_id,
+            Some(tact_protocol::RequestId::from("42".to_string()))
+        );
         assert!(app.select.log_confirm, "log_confirm must survive the wire");
     }
 
@@ -803,9 +806,9 @@ mod runtime_event_tests {
             matches!(app.input_mode, InputMode::Select),
             "the popup must open"
         );
-        assert_eq!(app.select.request_id, None, "the numeric space stays empty");
+
         assert_eq!(
-            app.select.broker_request_id,
+            app.select.request_id,
             Some(RequestId::from("6f1c0f6e-broker")),
             "the broker id is what the answer will carry"
         );

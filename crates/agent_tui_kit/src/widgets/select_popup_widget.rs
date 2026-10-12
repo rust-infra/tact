@@ -374,7 +374,12 @@ mod tests {
     fn an_agent_prompt_has_no_filter_line() {
         let theme = Theme::from(ThemeName::Dark);
         let mut state = SelectPopup::default();
-        state.set("Allow?".into(), vec!["yes".into()], 7, true);
+        state.set(
+            "Allow?".into(),
+            vec!["yes".into()],
+            tact_protocol::RequestId::from("7".to_string()),
+            true,
+        );
         let area = Rect::new(0, 0, 60, 20);
         let mut buf = Buffer::empty(area);
         SelectPopupWidget::new(&state, &theme, "No options", "▶ ")

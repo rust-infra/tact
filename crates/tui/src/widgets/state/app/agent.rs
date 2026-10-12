@@ -4,8 +4,8 @@ use ratatui::{
     widgets::ScrollbarState,
 };
 use tact_protocol::{
-    InteractionRequest, InteractionResponse, PlanStep, RequestId, RuntimeCommand, RuntimeEvent,
-    StepResult, TaskSnapshot, TasksChangeReason, ThinkingChunk,
+    InteractionRequest, InteractionResponse, PlanStep, RuntimeCommand, RuntimeEvent, StepResult,
+    TaskSnapshot, TasksChangeReason, ThinkingChunk,
 };
 use tact_view::UserCommand;
 
@@ -154,9 +154,7 @@ impl App {
     /// never be answered and its waiter hangs forever. Any agent update that
     /// reset the mode while a request is outstanding is corrected here.
     fn restore_pending_select_mode(&mut self) {
-        if (self.select.request_id.is_some() || self.select.broker_request_id.is_some())
-            && !matches!(self.input_mode, InputMode::Select)
-        {
+        if self.select.request_id.is_some() && !matches!(self.input_mode, InputMode::Select) {
             self.input_mode = InputMode::Select;
         }
     }
@@ -186,16 +184,17 @@ impl App {
         &mut self,
         pending: &[tact_extensions::ui_responder::PendingUiRequest],
     ) {
-        // A broker prompt is not part of the legacy responder's snapshot, so a
-        // snapshot pass must never treat it as "no popup open" and overwrite it.
-        if self.select.broker_request_id.is_some() {
-            return;
-        }
-
-        if let Some(current_id) = self.select.request_id {
+        if let Some(current_id) = self.select.request_id.clone() {
+            // The legacy snapshot only knows the legacy responder's decimal ids.
+            // A Kernel broker id is opaque and simply absent from it, and
+            // absence must not be read as "the prompt is gone" — that would
+            // close the popup the user is looking at.
+            let Ok(legacy_id) = current_id.as_str().parse::<u64>() else {
+                return;
+            };
             if pending
                 .iter()
-                .any(|request| request.request_id == current_id)
+                .any(|request| request.request_id == legacy_id)
             {
                 // Same request: keep the popup (and the user's cursor) as-is,
                 // but never let another update hide it.
@@ -233,7 +232,7 @@ impl App {
                 self.select.set(
                     next.prompt.clone(),
                     next.options.clone(),
-                    next.request_id,
+                    tact_protocol::RequestId::from(next.request_id.to_string()),
                     next.log_confirm,
                 );
             }
@@ -241,7 +240,7 @@ impl App {
                 self.select.set_multi(
                     next.prompt.clone(),
                     next.options.clone(),
-                    next.request_id,
+                    tact_protocol::RequestId::from(next.request_id.to_string()),
                     false,
                 );
             }
@@ -289,9 +288,9 @@ impl App {
     /// Cancel the current task. If an agent select is open, answer it with
     /// `None` first so the permission waiter is not left hanging.
     pub(crate) fn cancel_task(&mut self) {
-        if let Some(request_id) = self.select.request_id {
+        if let Some(request_id) = self.select.request_id.clone() {
             self.respond_ui(InteractionResponse::Cancelled {
-                request_id: RequestId::from(request_id.to_string()),
+                request_id: request_id.clone(),
             });
         }
         if let Some(run_id) = self.runtime_run_id.clone() {
@@ -594,47 +593,32 @@ impl App {
                     // yet — the remaining View-adapter step.
                     _ => return,
                 };
-                // A protocol `RequestId` belongs to whichever space issued it:
-                // the legacy in-process responder's ids are decimal, while a
-                // broker-raised prompt carries an opaque id the numeric field
-                // cannot hold. Dropping the latter is exactly what used to
-                // make a Kernel prompt invisible in the interactive host.
-                let legacy_id = request_id.as_str().parse::<u64>().ok();
+                // One path for both transports: the id travels as the protocol
+                // `RequestId`, so a Kernel prompt (opaque id) and a legacy
+                // responder prompt (decimal id) need no different handling. Only
+                // the answer's route differs, and the driver picks that by asking
+                // the broker first and the legacy responder second.
                 if self.pending_ui.is_none() {
                     self.select_kind = SelectKind::Agent;
-                    match legacy_id {
-                        Some(legacy_id) => {
-                            if self.select.request_id.is_some() {
-                                // Legacy path: the event itself is authoritative.
-                                self.pending_agent_selects.push_back(AgentSelectRequest {
-                                    prompt,
-                                    options,
-                                    request_id: legacy_id,
-                                    multi,
-                                    log_confirm,
-                                });
-                            } else if multi {
-                                self.select.set_multi(prompt, options, legacy_id, false);
-                                self.input_mode = InputMode::Select;
-                            } else {
-                                self.select.set(prompt, options, legacy_id, log_confirm);
-                                self.input_mode = InputMode::Select;
-                            }
-                        }
-                        // A broker prompt: show it in the broker's own id
-                        // space, so the answer returns to the broker (the
-                        // driver routes `RespondInteraction` there first).
-                        None => {
-                            self.select.set_broker(
-                                prompt,
-                                options,
-                                request_id,
-                                multi,
-                                log_confirm,
-                                answer,
-                            );
-                            self.input_mode = InputMode::Select;
-                        }
+                    if self.select.request_id.is_some() {
+                        // A prompt is already on screen (concurrent subagents can
+                        // each ask): queue this one so the first is not lost.
+                        self.pending_agent_selects.push_back(AgentSelectRequest {
+                            prompt,
+                            options,
+                            request_id,
+                            multi,
+                            log_confirm,
+                            answer,
+                        });
+                    } else if multi {
+                        self.select.set_multi(prompt, options, request_id, false);
+                        self.select.answer = answer;
+                        self.input_mode = InputMode::Select;
+                    } else {
+                        self.select.set(prompt, options, request_id, log_confirm);
+                        self.select.answer = answer;
+                        self.input_mode = InputMode::Select;
                     }
                 }
                 // Broker path: this request is only a wake-up hint; the actual
@@ -2543,7 +2527,10 @@ mod lifecycle_tests {
         });
         assert!(matches!(app.input_mode, InputMode::Select));
         assert!(app.select.prompt.contains("Allow bash"));
-        assert_eq!(app.select.request_id, Some(1));
+        assert_eq!(
+            app.select.request_id,
+            Some(tact_protocol::RequestId::from("1".to_string()))
+        );
     }
 
     #[test]
@@ -2573,7 +2560,10 @@ mod lifecycle_tests {
             matches!(app.input_mode, InputMode::Select),
             "a pending select must stay rendered so it can still be answered"
         );
-        assert_eq!(app.select.request_id, Some(7));
+        assert_eq!(
+            app.select.request_id,
+            Some(tact_protocol::RequestId::from("7".to_string()))
+        );
     }
 
     #[test]
@@ -2593,7 +2583,10 @@ mod lifecycle_tests {
         // No RuntimeEvent::RequestSelect was delivered — reconcile still shows
         // the authoritative broker state.
         app.reconcile_pending_ui();
-        assert_eq!(app.select.request_id, Some(request_id));
+        assert_eq!(
+            app.select.request_id,
+            Some(tact_protocol::RequestId::from(request_id.to_string()))
+        );
         assert!(matches!(app.input_mode, InputMode::Select));
 
         responder.respond_by_index(request_id, Some(0));
@@ -2615,12 +2608,18 @@ mod lifecycle_tests {
             false,
         );
         app.reconcile_pending_ui();
-        assert_eq!(app.select.request_id, Some(request_id));
+        assert_eq!(
+            app.select.request_id,
+            Some(tact_protocol::RequestId::from(request_id.to_string()))
+        );
 
         app.input_mode = InputMode::Normal;
         app.reconcile_pending_ui();
         assert!(matches!(app.input_mode, InputMode::Select));
-        assert_eq!(app.select.request_id, Some(request_id));
+        assert_eq!(
+            app.select.request_id,
+            Some(tact_protocol::RequestId::from(request_id.to_string()))
+        );
     }
 
     #[test]
@@ -2633,12 +2632,18 @@ mod lifecycle_tests {
         let (second, _rx2) = responder.register_select("second".into(), vec!["2".into()], false);
 
         app.reconcile_pending_ui();
-        assert_eq!(app.select.request_id, Some(first));
+        assert_eq!(
+            app.select.request_id,
+            Some(tact_protocol::RequestId::from(first.to_string()))
+        );
         assert_eq!(app.select.prompt, "first");
 
         responder.respond_by_index(first, Some(0));
         app.reconcile_pending_ui();
-        assert_eq!(app.select.request_id, Some(second));
+        assert_eq!(
+            app.select.request_id,
+            Some(tact_protocol::RequestId::from(second.to_string()))
+        );
         assert_eq!(app.select.prompt, "second");
     }
 
