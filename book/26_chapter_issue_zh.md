@@ -4,6 +4,45 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-12 — 移植 main #90：子会话从弹窗变成「视图」
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature（用户可见：点 `spawn_subagent` 卡不再是盖在日志上的居中弹窗，而是主区域整块换成子会话；`Esc` 或点面包屑退回；工具块底部那行 `⋯ N more lines` 本身可点，把**那一块**的 8 行上限提到 50；`Enter` 是「全部展开 / 全部收起」的批量键） |
+| **Related** | `crates/tui/src/render/popups/subagent_popup.rs`（视图外壳）、`crates/tui/src/render/layout.rs`、`crates/tui/src/widgets/state/app/popups.rs`、`crates/tui/src/handlers/{normal,mouse,overlay}.rs`、`crates/tui/src/lib.rs`、`crates/agent_tui_kit/src/render/popups/subagent_popup.rs`（`render_subagent_body` / `expanded_steps`）、`crates/agent_tui_kit/src/render/popups/mod.rs`（`PopupMouseSurface::block_toggles`）、`crates/agent_tui_kit/src/state/mouse_state.rs`（`subagent_back_area` / `subagent_block_toggles`）、`crates/agent_tui_kit/src/i18n.rs`、`crates/tact_protocol/src/runtime.rs`（`RuntimeEvent::ToolTranscript`）、`crates/tact_protocol/src/subagent_transcript.rs`、`crates/tact_extensions/src/tool/subagent_ui.rs`；设计稿 `docs/design/subagent-presentation.html` / `subagent-oss-comparison.html`、spec `docs/superpowers/specs/2026-10-10-subagent-popup-redesign-design.md` |
+
+**现象 / 动机：** 上一版把子会话**渲染**对了，但**容器**错了。弹窗里工具块只能画成自包含块（`[ Open ]` 是死按钮——弹窗套弹窗正是这个表面唯一不能提供的），而块又把输出封顶 8 行；子 agent 跑的是完整 agent loop（实测 34 步、思考 `1/160 lines`），读者能看到的却是一列被截断的摘要。调研三个开源项目（Crush 树形内联 / OpenCode `/subagents` 面板 + 子会话视图 / Roo Code LIFO 视图）后定案：**交互可以借，容器不能借** —— overlay 盖**视图**是正常分层，盖**弹窗**才是套娃。
+
+**决策：**
+
+- **视图而不是弹窗。** `show_subagent_view` 让 `render_main_area` 走 `render_subagent_view`（优先于 sticky / log），布局 = 1 行面包屑 `‹ N. Subagent · 标题` + 可滚动 body + 最右 1 列 scrollbar。子代理从 `has_overlay_popup` / `overlay_scroll_mut` / `close_overlay_popup` / 底部 overlay 列表里**彻底摘除**——它不再是 overlay，只是另一种主区域形态。
+- **旧 overlay 渲染器退役。** `agent_tui_kit::render::popups::subagent_popup` 只留 `render_subagent_body`（无 chrome、无 scrollbar）；chrome 版 `render_subagent_popup` 与只服务它的 `title_close_suffix_width` 一并删除（零调用者）。
+- **面包屑就是返回键的鼠标面。** 整行是命中区（`MouseState::subagent_back_area`；2 格的 `‹` 不是可点的目标），点击与 `Esc` 同义；关闭时必须清矩形，否则下一帧点到的是陈旧矩形。
+- **展开是「每块」，而且那行计数本身就是按钮。** 块底部原本只写 `⋯ 12 more lines`；现在它是 `⋯ 12 more lines · ▾ expand`，**点它就是展开这一块**，展开后同一行变成 `▴ collapse`（若 50 行的上限仍截掉了内容，把计数附在后面）。粒度必须是每块：34 步的子会话里「全部展开」会把读者要找的那段对话埋掉。状态是 `SubagentPopup::expanded_steps: HashSet<step_id>`，渲染器把每行 toggle 的屏幕矩形随 `PopupMouseSurface::block_toggles` 交回 host（`MouseState::subagent_block_toggles`），host 命中即 `toggle_subagent_step_expanded`。
+- **`Enter` 保留为批量键**（全部展开 / 全部收起），提示词因此写成 `Enter expand all` / `Enter collapse all`——视图没有 footer（它不是弹窗），面包屑行右侧是唯一能广告真键位的地方；窄终端先丢提示，不先丢标题。
+- **50 行是安全上限而非「全给」**（`POPUP_TOOL_EXPANDED_LINES`）：`grep -r` 的 dump 可以几万行，而布局是整块重建的。取哪一端不变（普通输出取头、command 取尾）。
+- **滚动条要先把「滚动偏移」映射成「行号」。** `render_popup_scrollbar` 的调用方手里是偏移（`0..=total - viewport`），而 ratatui 的 `ScrollbarState::position` 是 `0..total` 的**行号**，拇指只有到 `total - 1` 才贴底。透传的后果就是 Rg 截图那一幕：内容已经到最后一行，拇指还差约一个视口才到底（所有弹窗共用这个 helper，所以 thinking/diff/code 也一样）。现在按 `offset * (total-1) / (total-viewport)` 映射——日志渲染器早就在做同一件事。
+- **钳制要写回状态，不能只在绘制时钳。** `G` 把 `scroll` 停在 `u16::MAX`；渲染器只在局部 `min(max_scroll)` 的话，下一次 `k` 会从 65535 往回滚，视图看起来卡死。视图现在在 prepare 阶段把钳制后的值写回 `SubagentPopup::scroll`（日志的做法是 `log_scroll.visual_top = visual_scroll`）。
+- **视图里凡是能读的文字都能选**（Rg：「其他区域的文字也要支持文本选择」）。原先只有 `Text` 段（提示词 / 助手文本 / Info / Error）可拖选，工具块与思考块只能整段 `y` 复制。现在块的行也按 `display_row_from_line` 构建：rail 是**有格无字节**（拖动经过它选不到东西，高亮从正文开始），copy 缓冲由行**自己按顺序追加**（所以每行的字节范围是构造出来的、绝对精确，不用从画出来的字形反推），`BlockCell` 走 `spans(selection)` 上 `REVERSED`。块的 copy 文本形状不变（`标题\n状态行\n输出行`；思考块只有推理正文，不含 `🧠 Thought` 标题）。
+- **运行中的阶段行会转**（Rg：「这个状态加点动画，因为还在运行中」）。布局里**烤进去**的是语义标记 `●`（copy 缓冲里也是它），绘制时只把**那一个格子**换成 `TOOL_RUNNING_SPINNER[spinner_frame % len]`（`BlockRow::spinner` 记列号）。**不能在布局里做动画**：body 是整块缓存 + 整块重建的，为了动一个字形每帧重排整条子会话是灾难。日志的活卡片是同一个套路（把 spinner 传给每帧现构的 cell）。
+
+**改后行为：** 点 `spawn_subagent` 卡 → 主区域变成子会话：面包屑 + 运行身份行 + 提示词（Markdown 渲染）+ 助手文本 + 思考块 + 自包含工具块。`j/k`、`g/G`、滚轮滚动；拖选 + `y` 复制；**点某个块底部的 `⋯ N more lines · ▾ expand` 只展开那一块**，再点同一行的 `▴ collapse` 收起；`Enter` 全部展开 / 收起；`Esc` 或点面包屑退回。视图是**看**的地方，输入框不参与。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束（`cargo fmt -- --check` + `cargo clippy --all-targets -- -D warnings` + 全仓测试）。全仓用例 **3016 → 3058 passed / 0 failed / 22 ignored（47 套；+42，全部为本笔自带用例）**：kit 的 `render/popups/subagent_popup.rs` 2 → 19、tui 的 `render/popup_scene_tests.rs` 59 → 71、转发层 `tool/subagent_ui.rs` 14 → 19。提交前用脚本 diff「被删除的 fn 名」：共有 9 个名字从 HEAD 消失，逐一核对**全部**是 main #90 自己删掉的 chrome 版渲染器与其 helper / 用例（`render_subagent_popup`（kit + tui）、`title_close_suffix_width` 及其用例、`live_tools` / `completed_tools` / `render_output` / `line_text`、`live_layout_prepends_prompt_to_transcript` / `completed_layout_prepends_prompt_to_summary`）——没有一条是移植过程误删，被删用例的覆盖面由重写后的 19 条用例接管。用例：kit（`the_overflow_row_is_the_toggle` 三种状态的行文与计数、`only_the_clicked_block_is_expanded` 两块只展开一块、`flipping_expansion_rebuilds_the_layout` 计数器是缓存键、`a_thinking_block_row_covers_the_reasoning_not_the_label` 标签是 chrome、`the_thumb_reaches_the_track_end_at_the_last_offset` 滚动条到底）、tui（`clicking_a_block_overflow_row_expands_that_block`、`dragging_over_a_block_row_selects_its_text`、`a_selection_over_a_tool_block_highlights_its_text` / `a_selection_over_a_later_text_segment_highlights_it`、`subagent_view_reports_the_overflow_row_as_a_click_target`、`the_view_scrollbar_reaches_the_bottom_at_the_tail`、`the_view_writes_the_clamped_scroll_back`、`enter_in_the_subagent_view_toggles_expanded_blocks`、`clicking_the_subagent_breadcrumb_closes_the_view`）。
+
+**移植方式（诚实记录）：** 本分支做过架构迁移（crate 搬家 + `/90` 所在的协议类型改名），所以是**移植**而不是合并，判断如下：
+
+1. **`AgentUpdate` 在本分支已叫 `RuntimeEvent`，且每个 variant 多一个 `run_id`。** 新增的那个 variant 因此落在 `crates/tact_protocol/src/runtime.rs`：`RuntimeEvent::ToolTranscript { run_id, tool_id, entry }`（并补进 `with_run_id` 的「按运行记账」分支），而不是 main 的 `crates/protocol/src/agent.rs`——那个 enum 在本分支已不在这里，该文件的 patch 应用后**故意还原成与 HEAD 零差异**。
+2. **结构体补派生：** `SubagentTranscriptEntry` / `SubagentStep` / `SubagentStepStatus` 加 `Serialize, Deserialize`（本分支的 `RuntimeEvent` 要上 protocol 线，main 的 `AgentUpdate` 不派生），status 加 `#[serde(rename_all = "snake_case")]` 与协议其余枚举一致。
+3. **本分支新增的 kernel 事件表要跟着补：** `crates/tact_trajectory/src/service.rs` 两处 `match event` 是**穷尽**匹配，`ToolTranscript` 归到 `TrajectoryEventType::ToolCall`（与 `ToolProgress` 同族）。main 没有这个文件。
+4. **名字漂移，patch 覆盖不到：** `handle_agent_update` → `handle_runtime_event`、`AgentUpdate::{StreamChunk,ThinkingChunk,StepStarted,StepFinished,StepFailed,TaskComplete,TaskCancelled}` → `RuntimeEvent::{Text,Thinking,Step*,TaskComplete,Cancelled}`（构造处补 `run_id: None`）；只改 patch 真正触碰到的行，其余保持本分支写法。
+5. **转发层 8 处冲突按「本分支结构 + main 语义」解决：** 保留 `RuntimeEvent` 的匹配形状与 `wire_child_to_parent_card` / `tagged_ui_channel_with_progress` 签名，取 main 的新语义（`emit_transcript` / `redacted_entry` / `flush_assistant` / `running_steps` / 思考实测耗时 / 通道关闭时 flush）。main 的 `Error(err) => format!("error: {err:?}")` 在本分支是 `Error { message: String }`，写成 `format!("error: {message}")`；main 新增的 `MdInfo` 分支（本分支原先没有）按 `Info` 同款补上并同样发结构化条目。
+6. **文档：** Ch 12 / 23 / 25 的 hunk 直接取（Ch 25 里那处 `AgentUpdate` 称谓是本分支既有的文档漂移，未顺手改）；新 spec 与三张设计稿内部的 `crates/tact/` → `crates/tact_extensions/`、`crates/protocol/` → `crates/tact_protocol/` 做 remap 并各加一行移植说明；HTML 里属于**终端记录**的路径（`crates/tact/src/agent/mod.rs`、`crates/tact-ui/tests/tool_integration.rs`）按「不改写转录」保留原样。`book/26` 取 main 的本条（v1.1.39 发版条目与版本号未移植，本分支停在 1.1.33，与前几笔一致）。
+
+**Pointers:** `docs/design/subagent-presentation.html`（三种容器的取舍 + 已落地的块形态）、`subagent-oss-comparison.html`（四家对照）、spec §8 / §9、Ch 12 §1「TUI 通道」行、Ch 23 组件表、Ch 25 `RuntimeEvent`。
+
+---
+
 ## 1. 2026-10-12 — 移植 main #87：窗口将满时，系统提示引导把大块工作拆给 subagent
 
 | Field | Value |

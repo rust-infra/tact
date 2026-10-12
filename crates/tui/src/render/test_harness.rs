@@ -16,6 +16,7 @@ use super::{
     render_status_bar,
 };
 use crate::widgets::state::App;
+use tact_protocol::SubagentStepStatus;
 
 /// Build a minimal `App` for render tests (ink theme, empty log).
 pub fn make_app() -> App {
@@ -148,4 +149,68 @@ pub fn render_app_text(app: &mut App, width: u16, height: u16) -> String {
         .draw(|frame| draw_full_ui(frame, frame.area(), app))
         .expect("draw");
     buffer_text(terminal.backend().buffer())
+}
+
+/// Open the subagent view on a live `spawn_subagent` card with one transcript
+/// entry — the same path the host takes, for handler tests that need the view
+/// up without caring how it was rendered.
+///
+/// The one step carries 20 lines of output, so its block is capped and draws
+/// the overflow row that doubles as the per-block toggle.
+pub fn seed_subagent_view(app: &mut App) {
+    seed_subagent_view_with(app, SubagentStepStatus::Success);
+}
+
+/// The same, with the step's status chosen by the caller — `Running` for tests
+/// about the live state (the animated phase glyph).
+pub fn seed_subagent_view_with(app: &mut App, status: SubagentStepStatus) {
+    use tact_protocol::{
+        RuntimeEvent, SubagentStep, SubagentTranscriptEntry, ToolDetailKind, ToolPopupKind,
+        ToolPresentationInfo, ToolVisualKind,
+    };
+
+    app.handle_runtime_event(RuntimeEvent::StepStarted {
+        run_id: None,
+        idx: 0,
+        tool_id: "sa-1".into(),
+        tool_name: "spawn_subagent".into(),
+        arg_summary: "research".into(),
+        arg_full: "## Task\n\n1. **Find** the price".into(),
+        presentation: ToolPresentationInfo {
+            visual_kind: ToolVisualKind::Subagent,
+            display_name: "🤖 Subagent".into(),
+            keep_full_live_output: true,
+            detail: ToolDetailKind::Result,
+            popup: ToolPopupKind::SubagentTranscript,
+            compact_result_to_meta: false,
+            keep_live: false,
+        },
+    });
+    app.handle_runtime_event(RuntimeEvent::ToolTranscript {
+        run_id: None,
+        tool_id: "sa-1".into(),
+        entry: SubagentTranscriptEntry::Step(SubagentStep {
+            tool_id: "c1".into(),
+            tool_name: "read_file".into(),
+            arg_summary: "src/main.rs".into(),
+            arg_full: "src/main.rs".into(),
+            status,
+            message: "20 lines".into(),
+            detail: Some(
+                (0..20)
+                    .map(|i| format!("line {i}"))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+            ),
+            duration_us: Some(1_400),
+            presentation: ToolPresentationInfo::generic("read_file"),
+        }),
+    });
+    app.handle_runtime_event(RuntimeEvent::ToolTranscript {
+        run_id: None,
+        tool_id: "sa-1".into(),
+        entry: SubagentTranscriptEntry::Assistant("Bitcoin is **up** today.".into()),
+    });
+    app.open_subagent_popup_by_id("sa-1");
+    assert!(app.has_subagent_popup(), "the view must be open");
 }

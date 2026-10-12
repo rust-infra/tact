@@ -107,6 +107,7 @@ impl App {
             log_scroll: LogScroll::new(),
             show_history: false,
             show_help: false,
+            show_subagent_view: false,
             focused_panel: FocusedPanel::Log,
             mouse: MouseState::new(),
             input_mode: InputMode::Insert,

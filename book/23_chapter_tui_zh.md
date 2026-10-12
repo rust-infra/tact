@@ -225,7 +225,7 @@ graph TD
 | `agent_tui_kit::render/renderable.rs` | `Renderable` trait |
 | `agent_tui_kit::render/util.rs` | `wrap_line`、tool 缩进常量 |
 | `agent_tui_kit::render/cells/` | `text`、`thinking`、`tool`、`code`、`separator`、`markdown` |
-| `agent_tui_kit::render/popups/` | 纯弹窗：thinking/diff/code/mermaid/system-prompt/subagent/history/select/task-dag + `scrollable_popup` 骨架 + chrome helpers（含 `render_popup_scrollbar` 与 `COPY_SCROLL_CLOSE` / `SCROLL_CLOSE` 两组 footer 提示） |
+| `agent_tui_kit::render/popups/` | 纯弹窗：thinking/diff/code/mermaid/system-prompt/history/select/task-dag + `scrollable_popup` 骨架 + chrome helpers（含 `render_popup_scrollbar` 与 `COPY_SCROLL_CLOSE` / `SCROLL_CLOSE` 两组 footer 提示）。子代理不在其中：`subagent_popup` 只导出**无 chrome 的 `render_subagent_body`**，由 `crates/tui/src/render/popups/subagent_popup.rs` 的视图外壳（面包屑 + scrollbar）调用（2026-10-11 弹窗退役） |
 | `agent_tui_kit::widgets/` | `ToolWidget`、`HelpWidget`、`PopupWidget`、`SelectPopupWidget` |
 
 支撑部分：`agent_tui_kit::state/`（`LogCoordinator`、`LogScroll`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`PlanPanel`、`TaskPanelState`、`SubagentPanelState`、`BackgroundPanelState`、`MouseState`、`FilteredList`、`sticky_panel`（两个 sticky 面板共用的滚动窗口与时长标签）、`TaskDagPopup`、弹窗状态 …）、`agent_tui_kit::theme` / `i18n`（颜色、`Messages` 字符串）；`crates/tui/src/widgets/state/` 持有 `App` 与应用层状态（`AccountState`、`VoiceState`、`FilePicker`、`SlashCommandState`、`InputHistory`、`SelectKind`）。
@@ -261,7 +261,7 @@ Cancelled 分组（`marker 短id 摘要首行 ⏱ 耗时`）；Background body �
 （`⏳ task-id command ⏱ 耗时`），其后跟着**留窗期内刚结束**的任务行
 （`✓`/`✗ task-id command ⏱ 距结束秒数`，`BACKGROUND_LINGER` = 8 s）。子代理明细永不进入
 sticky 或主 Log——仍留在父
-`spawn_subagent` 工具卡与其 popup。点击非活动 tab 会切换并展开该域；点击活动 tab（或条内空白）
+`spawn_subagent` 工具卡与其**子代理视图**（点卡片进入，`Esc` / 点面包屑退回）。点击非活动 tab 会切换并展开该域；点击活动 tab（或条内空白）
 收起；滚轮 / `jk` 滚动活动域。某域不可见即从 host 消失：Tasks 在无 open 任务时，Subagent 在收起
 且无 Running 时，Background 在最后一行消失时——最后一个在跑任务会由它的留窗行把条撑住，
 留窗过期后由下一次空闲 tick（≈1 s）把条一起收走，全程没有任何任务事件参与。留窗行也让标题

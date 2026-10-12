@@ -119,6 +119,32 @@ pub struct Messages {
     /// Keep it to a gesture glyph plus one short word — the icon carries "how",
     /// the word carries "what".
     pub tool_collapsed_output_action: &'static str,
+    /// Line count on a subagent popup's tool block (`{}` = lines).
+    ///
+    /// The popup draws a tool call as a *block* rather than the log's
+    /// interactive card — no border, no `[ Open ]` — because opening a popup
+    /// from inside a popup is exactly what it must not invite. So the count is
+    /// stated rather than offered as a button.
+    pub subagent_popup_lines: &'static str,
+    /// How many output lines a subagent popup's tool block left out
+    /// (`{}` = lines).
+    pub subagent_popup_more_lines: &'static str,
+    /// The click affordance on that same row: the count alone states a fact,
+    /// this states the gesture. A tool block's row reads
+    /// `⋯ 12 more lines · ▾ expand`.
+    pub subagent_popup_expand_action: &'static str, // "▾ expand" / "▾ 展开"
+    /// The same row once that block is expanded, and the gesture is to put the
+    /// cap back (`▴ collapse`, with the count appended if even the raised cap
+    /// hid something).
+    pub subagent_popup_collapse_action: &'static str, // "▴ collapse" / "▴ 收起"
+    /// Key hint on the subagent view's breadcrumb — the *bulk* gesture, since a
+    /// click on a block's own row is the per-block one.
+    ///
+    /// The view draws no footer (it is not a popup), so the breadcrumb row is
+    /// the only place a real key can be advertised.
+    pub subagent_view_expand_hint: &'static str, // "Enter expand all" / "Enter 全部展开"
+    /// The same hint once something is expanded. // "Enter collapse all" / "Enter 全部收起"
+    pub subagent_view_collapse_hint: &'static str,
     pub palette_title: &'static str,
     pub file_picker_title: &'static str,
     pub command_title: &'static str,
@@ -505,6 +531,12 @@ impl Messages {
             // The gesture icon says "how", the word says "what"; the brackets
             // around it are the chrome's.
             tool_collapsed_output_action: "󰜼 Open",
+            subagent_popup_lines: "{} lines",
+            subagent_popup_more_lines: "⋯ {} more lines",
+            subagent_popup_expand_action: "▾ expand",
+            subagent_popup_collapse_action: "▴ collapse",
+            subagent_view_expand_hint: "Enter expand all",
+            subagent_view_collapse_hint: "Enter collapse all",
             palette_title: " Palette /{} ",
             file_picker_title: " Attach file ",
             command_title: " ⌘ Command ",
@@ -831,6 +863,12 @@ impl Messages {
             tool_collapsed_output_hint_one: "{} 行 · {}",
             // 与英文同一枚字形（`md-gesture_double_tap`，U+F073C），中文只换动词。
             tool_collapsed_output_action: "󰜼 打开",
+            subagent_popup_lines: "{} 行",
+            subagent_popup_more_lines: "⋯ 还有 {} 行",
+            subagent_popup_expand_action: "▾ 展开",
+            subagent_popup_collapse_action: "▴ 收起",
+            subagent_view_expand_hint: "Enter 全部展开",
+            subagent_view_collapse_hint: "Enter 全部收起",
             palette_title: " 命令面板 /{} ",
             file_picker_title: " 附加文件 ",
             command_title: " ⌘ 命令 ",

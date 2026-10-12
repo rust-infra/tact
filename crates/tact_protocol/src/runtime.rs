@@ -165,6 +165,20 @@ pub enum RuntimeEvent {
         tool_id: String,
         chunks: Vec<ToolOutputChunk>,
     },
+    /// One structured entry of a subagent's transcript, addressed to the
+    /// parent `spawn_subagent` card.
+    ///
+    /// Emitted by the child's tagged forwarder **alongside** the flattened
+    /// [`Self::ToolProgress`] chunk for the same event: the flat text still
+    /// feeds the card's live preview and the copy fallback, while this carries
+    /// the structure the view renders. The flat stream cannot be reversed into
+    /// structure, which is why both exist.
+    ToolTranscript {
+        run_id: Option<RunId>,
+        /// Parent-side tool id of the `spawn_subagent` card this belongs to.
+        tool_id: String,
+        entry: crate::SubagentTranscriptEntry,
+    },
     ModelInfo {
         run_id: Option<RunId>,
         params: ModelCallParams,
@@ -299,6 +313,7 @@ impl RuntimeEvent {
             | RuntimeEvent::Text { run_id: slot, .. }
             | RuntimeEvent::Thinking { run_id: slot, .. }
             | RuntimeEvent::ToolProgress { run_id: slot, .. }
+            | RuntimeEvent::ToolTranscript { run_id: slot, .. }
             | RuntimeEvent::ModelInfo { run_id: slot, .. }
             | RuntimeEvent::TokenUsage { run_id: slot, .. }
             | RuntimeEvent::TurnStats { run_id: slot, .. }

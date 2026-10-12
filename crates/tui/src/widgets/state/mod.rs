@@ -39,7 +39,7 @@ pub(crate) use agent_tui_kit::state::task_dag::{
 pub(crate) use agent_tui_kit::state::thinking::{
     ActiveThinkingBlock, ThinkingBlock, ThinkingPopup,
 };
-pub(crate) use agent_tui_kit::state::tool_state::{DiffPopup, SubagentPopup};
+pub(crate) use agent_tui_kit::state::tool_state::{DiffPopup, SubagentPopup, SubagentTranscript};
 pub(crate) use agent_tui_kit::state::ui_types::{
     CodeBlock, CodePopup, FocusedPanel, InputMode, MermaidBlock, MermaidPopup, Status,
     SystemPromptPopup,
@@ -184,6 +184,7 @@ pub struct App {
     // Panels
     pub(crate) show_history: bool,
     pub(crate) show_help: bool,
+    pub(crate) show_subagent_view: bool,
     pub(crate) focused_panel: FocusedPanel,
     // Mouse interaction
     pub(crate) mouse: MouseState,

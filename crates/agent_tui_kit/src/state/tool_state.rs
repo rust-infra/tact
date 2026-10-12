@@ -1,9 +1,9 @@
 use std::time::Instant;
 
-use crate::protocol::ToolOutputBuffer;
+use crate::protocol::{SubagentTranscriptEntry, ToolOutputBuffer};
 use ratatui::text::Line;
 
-use crate::render::selectable_text::PopupLayoutCache;
+use crate::render::popups::subagent_popup::SubagentPopupLayout;
 use crate::widgets::tool_widget::ToolRenderOutput;
 
 use super::PopupTextSelection;
@@ -17,6 +17,55 @@ pub struct ToolState {
     pub blocks: Vec<ToolBlock>,
     /// Popup preview state for file write/read content.
     pub popup: Option<DiffPopup>,
+    /// Subagent conversations, keyed by the parent `spawn_subagent` tool id.
+    ///
+    /// Kept beside `active`/`blocks` rather than inside
+    /// [`ToolRenderOutput`]: the log renderer clones every output once per
+    /// frame, and a transcript is the whole child conversation. It outlives
+    /// the card (a finalized subagent's popup can be re-opened), so it is
+    /// never pruned on finalize.
+    pub transcripts: std::collections::HashMap<String, SubagentTranscript>,
+}
+
+/// One subagent's structured conversation.
+#[derive(Debug, Clone, Default)]
+pub struct SubagentTranscript {
+    pub entries: Vec<SubagentTranscriptEntry>,
+    /// Append counter — the popup layout cache's invalidation key, so frames
+    /// between two appends reuse the built layout instead of re-wrapping the
+    /// whole conversation.
+    pub revision: u64,
+}
+
+impl SubagentTranscript {
+    /// Append an entry, folding the second half of a tool call into the first.
+    ///
+    /// `StepStarted` and `StepFinished` / `StepFailed` share the child's local
+    /// `tool_id`, so the terminal half **rewrites** the in-flight entry rather
+    /// than appending a second card — the same shape as the main log's
+    /// `ActiveToolBlock` → `ToolBlock` transition.
+    pub fn push(&mut self, entry: SubagentTranscriptEntry) {
+        if let SubagentTranscriptEntry::Step(step) = &entry
+            && let Some(existing) = self.entries.iter_mut().rev().find(|existing| {
+                matches!(existing, SubagentTranscriptEntry::Step(s) if s.tool_id == step.tool_id)
+            })
+        {
+            *existing = entry;
+            self.revision += 1;
+            return;
+        }
+        self.entries.push(entry);
+        self.revision += 1;
+    }
+
+    /// Plain text of the whole conversation, for `y` copy.
+    pub fn selection_text(&self) -> String {
+        self.entries
+            .iter()
+            .map(SubagentTranscriptEntry::selection_text)
+            .collect::<Vec<_>>()
+            .join("\n\n")
+    }
 }
 
 /// A tool invocation that has started but not yet finished.
@@ -84,19 +133,35 @@ pub struct DiffPopup {
     pub highlighted_lines: Vec<Line<'static>>,
 }
 
-/// Popup preview state for subagent live output / markdown summary.
+/// Popup preview state for a subagent's structured transcript.
+///
+/// The body is rebuilt as **segments** (meta row, prompt, assistant Markdown,
+/// thinking cards, tool cards) and drawn through the log's own
+/// `LogColumnRenderer`, so a child conversation renders with the same cells as
+/// the main log — and renders the same way whether the child is still running
+/// or has finished.
 #[derive(Debug, Clone)]
 pub struct SubagentPopup {
     pub title: String,
     pub scroll: u16,
     /// Tool id of the spawn_subagent invocation this popup belongs to.
     pub tool_id: String,
-    /// Cached rendered markdown lines (populated once on first render after completion).
-    pub cached_markdown: Option<Vec<Line<'static>>>,
     /// Current text selection (mouse-drag), if any.
     pub selection: Option<PopupTextSelection>,
-    /// Wrapped-layout cache reused while content length and width are stable.
-    pub layout_cache: Option<PopupLayoutCache>,
+    /// Built segments + selection text, reused while `revision`, width, theme
+    /// and live-ness are unchanged.
+    pub layout: Option<SubagentPopupLayout>,
+    /// Child step ids whose tool block shows the raised cap.
+    ///
+    /// Per block, not per view: a child that ran 34 steps with every block at
+    /// 50 lines is unreadable, and the reader expands the block they are
+    /// actually looking at. Persists across re-opens, so re-entering the view
+    /// keeps the reader's place.
+    pub expanded_steps: std::collections::HashSet<String>,
+    /// Bumped on every expansion toggle — the layout cache key's expansion
+    /// component (a set has no cheap identity, and the layout only needs to
+    /// know *that* the set changed).
+    pub expanded_rev: u64,
 }
 
 #[cfg(test)]

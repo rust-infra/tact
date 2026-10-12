@@ -2,14 +2,17 @@
 
 use std::time::Duration;
 
-use ratatui::{Terminal, backend::TestBackend, style::Modifier, text::Line};
-use tact_protocol::RuntimeEvent;
+use ratatui::{Terminal, backend::TestBackend, buffer::CellWidth, style::Modifier, text::Line};
 
 use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
 use crate::test_fixtures::StepCall;
 use crate::widgets::state::{
     App, CodeBlock, CodePopup, DiffPopup, InputMode, LogItemKind, PopupTextSelection, SurfaceId,
     ThinkingBlock, ThinkingPopup,
+};
+use tact_protocol::{
+    RuntimeEvent, StepStatus, SubagentStep, SubagentStepStatus, SubagentTranscriptEntry,
+    ToolDetailKind, ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
 };
 
 fn seed_diff_popup(app: &mut App) {
@@ -2003,4 +2006,501 @@ fn the_popup_scrollbar_uses_the_popup_column_not_the_body_column() {
             "the bar spilled past the popup at row {y}"
         );
     }
+}
+
+// ── Subagent transcript popup ────────────────────────────────────────────
+//
+// The popup renders the child's *structured* transcript with the log's own
+// cells, so these assert on structure (a card, a rendered Markdown run) and on
+// the buffer invariant every render unit owes: blank cells carry `theme.bg`.
+
+fn subagent_presentation() -> ToolPresentationInfo {
+    ToolPresentationInfo {
+        visual_kind: ToolVisualKind::Subagent,
+        display_name: "🤖 Subagent".into(),
+        keep_full_live_output: true,
+        detail: ToolDetailKind::Result,
+        popup: ToolPopupKind::SubagentTranscript,
+        compact_result_to_meta: false,
+        keep_live: false,
+    }
+}
+
+fn subagent_step(tool_id: &str, status: StepStatus) -> SubagentStep {
+    SubagentStep {
+        tool_id: tool_id.into(),
+        tool_name: "read_file".into(),
+        arg_summary: "src/main.rs".into(),
+        arg_full: "src/main.rs".into(),
+        status: match status {
+            StepStatus::Success => SubagentStepStatus::Success,
+            StepStatus::Failed => SubagentStepStatus::Failed,
+        },
+        message: "20 lines".into(),
+        // Long enough to be capped: the overflow row that results is also the
+        // block's own toggle, which the click tests need on screen.
+        detail: Some(
+            (0..20)
+                .map(|i| format!("line {i}"))
+                .collect::<Vec<_>>()
+                .join("\n"),
+        ),
+        duration_us: Some(1_400),
+        presentation: ToolPresentationInfo::generic("read_file"),
+    }
+}
+
+/// Drive a real `spawn_subagent` card plus its transcript through the update
+/// pipeline, then open the popup — the same path the host takes.
+fn seed_subagent_popup(app: &mut App) {
+    app.handle_runtime_event(RuntimeEvent::StepStarted {
+        run_id: None,
+        idx: 0,
+        tool_id: "sa-1".into(),
+        tool_name: "spawn_subagent".into(),
+        arg_summary: "research".into(),
+        // A generated brief, so the prompt's Markdown rendering is covered too.
+        arg_full: "## Task\n\n1. **Find** the price".into(),
+        presentation: subagent_presentation(),
+    });
+    for entry in [
+        SubagentTranscriptEntry::Thinking {
+            text: "check two sources".into(),
+            duration_us: Some(1_200),
+        },
+        SubagentTranscriptEntry::Step(subagent_step("c1", StepStatus::Success)),
+        SubagentTranscriptEntry::Assistant("Bitcoin is **up** today.".into()),
+    ] {
+        app.handle_runtime_event(RuntimeEvent::ToolTranscript {
+            run_id: None,
+            tool_id: "sa-1".into(),
+            entry,
+        });
+    }
+    app.open_subagent_popup_by_id("sa-1");
+    assert!(app.has_subagent_popup(), "the popup must be open");
+}
+
+fn render_subagent_view_terminal(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
+    let backend = TestBackend::new(width, height);
+    let mut terminal = Terminal::new(backend).expect("terminal");
+    terminal
+        .draw(|frame| super::popups::subagent_popup::render_subagent_view(frame, frame.area(), app))
+        .expect("draw");
+    terminal
+}
+
+#[test]
+fn subagent_popup_draws_blocks_and_rendered_markdown() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    let terminal = render_subagent_view_terminal(&mut app, 100, 40);
+    let text = buffer_text(terminal.backend().buffer());
+
+    // The marker's emoji is two cells wide, so the buffer shows its
+    // continuation cell as a second space — assert on the glyph, not on the
+    // spacing.
+    assert!(
+        text.contains("💬") && text.contains("Task"),
+        "the prompt leads with the user marker:\n{text}"
+    );
+    assert!(
+        !text.contains("##") && !text.contains("**"),
+        "the prompt is a generated brief: its Markdown must render, not print:\n{text}"
+    );
+    assert!(
+        text.contains("🧠") && text.contains("Thought"),
+        "thinking block:\n{text}"
+    );
+    assert!(text.contains("📖  Read  src/main.rs"), "tool card:\n{text}");
+    assert!(
+        text.contains("Bitcoin is up today."),
+        "assistant Markdown must be rendered, not raw:\n{text}"
+    );
+    assert!(
+        !text.contains("**"),
+        "the Markdown source must not reach the screen:\n{text}"
+    );
+}
+
+/// The popup's body is drawn by units of our own (`TextRowsCell`, `BlockCell`);
+/// a `Paragraph` writes only the glyphs it has, so the row tails have to be
+/// painted explicitly or the previous frame's style survives there.
+///
+/// Two surfaces are legitimate — the panel background, and the code band under
+/// a tool's output — so the invariant is that every blank cell was *painted by
+/// a unit*, never that they all carry the same colour.
+#[test]
+fn subagent_popup_blank_cells_are_owned_by_a_unit() {
+    let mut app = make_app();
+    let surfaces = [app.theme.bg, app.theme.code_block_bg()];
+    seed_subagent_popup(&mut app);
+    let terminal = render_subagent_view_terminal(&mut app, 100, 40);
+    let buf = terminal.backend().buffer();
+
+    let body = app.mouse.popup_text_body_area;
+    assert!(!body.is_empty(), "the popup body must be recorded");
+    let mut blanks = 0;
+    for y in body.y..body.bottom() {
+        // The cell after a wide grapheme (emoji / CJK) is the one exception:
+        // ratatui marks it skipped in the buffer diff so the terminal draws
+        // both halves from the glyph itself, so it never reaches the screen
+        // and its background here is whatever the backend started with.
+        let mut continuation = false;
+        for x in body.x..body.right() {
+            let cell = &buf[(x, y)];
+            let is_continuation = std::mem::take(&mut continuation);
+            continuation = !is_continuation && cell.symbol().cell_width() > 1;
+            if is_continuation || cell.symbol() != " " {
+                continue;
+            }
+            blanks += 1;
+            assert!(
+                surfaces.contains(&cell.bg),
+                "blank cell at ({x}, {y}) was left at {:?} — no unit owns it",
+                cell.bg
+            );
+        }
+    }
+    assert!(blanks > 0, "the body should have blank cells to check");
+}
+
+#[test]
+fn subagent_popup_records_hit_rows_for_its_selectable_text() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    render_subagent_view_terminal(&mut app, 100, 40);
+    let body = app.mouse.popup_text_body_area;
+    let rows = &app.mouse.popup_text_hit_rows;
+
+    assert!(!rows.is_empty(), "text rows must be selectable");
+    assert!(
+        rows.iter()
+            .all(|row| row.screen_y >= body.y && row.screen_y < body.bottom()),
+        "every hit row must land inside the body"
+    );
+    // Screen order matters: `popup_text_hit` clamps a drag past either end to
+    // the first / last row.
+    let mut sorted = rows.iter().map(|row| row.screen_y).collect::<Vec<_>>();
+    sorted.sort_unstable();
+    assert_eq!(
+        sorted,
+        rows.iter().map(|row| row.screen_y).collect::<Vec<_>>(),
+        "hit rows must be in screen order"
+    );
+}
+
+/// The view draws no footer (it is not a popup), so the breadcrumb row is the
+/// only place its one real key can be advertised — and it must flip with the
+/// state it toggles. The key is the *bulk* gesture: per block is a click.
+#[test]
+fn subagent_view_breadcrumb_advertises_the_expand_toggle() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    let text = buffer_text(
+        render_subagent_view_terminal(&mut app, 100, 40)
+            .backend()
+            .buffer(),
+    );
+    assert!(text.contains("‹ 1. Subagent"), "{text}");
+    assert!(text.contains("Enter expand all"), "{text}");
+    assert!(!text.contains("Enter collapse all"), "{text}");
+
+    app.toggle_subagent_expanded();
+    let text = buffer_text(
+        render_subagent_view_terminal(&mut app, 100, 40)
+            .backend()
+            .buffer(),
+    );
+    assert!(text.contains("Enter collapse all"), "{text}");
+    assert!(!text.contains("Enter expand all"), "{text}");
+}
+
+/// A running child is still working, so its phase glyph animates: the drawn cell
+/// follows the tick, while the layout (and the copy buffer) keep the semantic
+/// `● Running` — the body is cached and must not be rebuilt to move one glyph.
+#[test]
+fn the_running_glyph_follows_the_animation_tick() {
+    let mut app = make_app();
+    crate::render::test_harness::seed_subagent_view_with(&mut app, SubagentStepStatus::Running);
+
+    let drawn_glyph = |app: &mut App| {
+        let terminal = render_subagent_view_terminal(app, 100, 40);
+        let buf = terminal.backend().buffer();
+        let mut found = None;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let symbol = buf[(x, y)].symbol();
+                let mut chars = symbol.chars();
+                if let (Some(glyph), None) = (chars.next(), chars.next())
+                    && agent_tui_kit::widgets::tool_widget::TOOL_RUNNING_SPINNER.contains(&glyph)
+                {
+                    found = Some(glyph);
+                }
+            }
+        }
+        found
+    };
+
+    app.spinner_frame = 0;
+    let first = drawn_glyph(&mut app).expect("the running glyph is drawn");
+    app.spinner_frame = 3;
+    let third = drawn_glyph(&mut app).expect("the running glyph is drawn");
+    assert_ne!(first, third, "the glyph must follow the tick");
+
+    let layout = app
+        .subagent_popup()
+        .expect("view")
+        .layout
+        .clone()
+        .expect("layout");
+    assert!(
+        layout.selection_text.contains("● Running"),
+        "the copy buffer keeps the semantic marker:\n{}",
+        layout.selection_text
+    );
+}
+
+/// A selection is one global byte range, and a row's grapheme hits are global
+/// too. A segment whose bytes start later than 0 — every segment but the first —
+/// must still highlight: intersecting in the segment's *own* space made the
+/// highlight vanish, which reads as "this text cannot be selected".
+#[test]
+fn a_selection_over_a_later_text_segment_highlights_it() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    render_subagent_view_terminal(&mut app, 100, 40);
+    let layout = app
+        .subagent_popup()
+        .expect("view")
+        .layout
+        .clone()
+        .expect("layout");
+    let at = layout
+        .selection_text
+        .find("Bitcoin")
+        .expect("the assistant text is in the copy buffer");
+    app.subagent_popup_mut().expect("view").selection =
+        Some(PopupTextSelection::new(at, at + "Bitcoin".len()));
+
+    let terminal = render_subagent_view_terminal(&mut app, 100, 40);
+    let buf = terminal.backend().buffer();
+    let row = app
+        .mouse
+        .popup_text_hit_rows
+        .iter()
+        .find(|hit| hit.line_start == at)
+        .expect("the assistant text is a hit row");
+
+    let reversed = |x: u16| buf[(x, row.screen_y)].modifier.contains(Modifier::REVERSED);
+    assert!(
+        (0.."Bitcoin".len() as u16).all(|i| reversed(row.text_x + i)),
+        "the selected word must be highlighted:\n{}",
+        buffer_text(buf)
+    );
+    assert!(
+        !reversed(row.text_x + "Bitcoin".len() as u16),
+        "the highlight stops at the selection's end:\n{}",
+        buffer_text(buf)
+    );
+}
+
+/// The view is a reading surface: a tool call's command and output are text like
+/// any other, so they are selectable. The rail is *cells without bytes*, so the
+/// highlight starts where the content does.
+#[test]
+fn a_selection_over_a_tool_block_highlights_its_text() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    render_subagent_view_terminal(&mut app, 100, 40);
+    let layout = app
+        .subagent_popup()
+        .expect("view")
+        .layout
+        .clone()
+        .expect("layout");
+    let at = layout
+        .selection_text
+        .find("line 3")
+        .expect("the output line is in the copy buffer");
+    app.subagent_popup_mut().expect("view").selection =
+        Some(PopupTextSelection::new(at, at + "line 3".len()));
+
+    let terminal = render_subagent_view_terminal(&mut app, 100, 40);
+    let buf = terminal.backend().buffer();
+    let row = app
+        .mouse
+        .popup_text_hit_rows
+        .iter()
+        .find(|hit| hit.line_start == at)
+        .expect("a block row is a hit row");
+
+    let reversed = |x: u16| buf[(x, row.screen_y)].modifier.contains(Modifier::REVERSED);
+    // The row draws `    │ line 3`: a 6-cell rail, then the text.
+    let content = row.text_x + 6;
+    assert!(
+        !(row.text_x..content).any(reversed),
+        "the rail must not be highlighted: {row:?}"
+    );
+    assert!(
+        (0.."line 3".len() as u16).all(|i| reversed(content + i)),
+        "the selected output line must be highlighted:\n{}",
+        buffer_text(buf)
+    );
+}
+
+/// Rg's report: the content sat on its last row while the bar still showed a gap
+/// at the bottom. At the tail the thumb has to sit flush against the `▼`.
+#[test]
+fn the_view_scrollbar_reaches_the_bottom_at_the_tail() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    // Short enough that the transcript actually scrolls.
+    render_subagent_view_terminal(&mut app, 100, 16);
+
+    app.subagent_popup_mut().expect("view").scroll = u16::MAX;
+    let terminal = render_subagent_view_terminal(&mut app, 100, 16);
+    let buf = terminal.backend().buffer();
+
+    // The bar owns the column right of the body; its first and last rows are the
+    // `▲` / `▼` arrow heads, so a flush thumb ends one row above the bottom.
+    let body = app.mouse.popup_text_body_area;
+    let bar_col = body.right();
+    let thumb_last = (body.y..body.bottom()).rfind(|y| buf[(bar_col, *y)].symbol() == "█");
+    assert!(
+        thumb_last.is_some(),
+        "the thumb must be drawn:\n{}",
+        buffer_text(buf)
+    );
+    assert_eq!(
+        thumb_last,
+        Some(body.bottom() - 2),
+        "the thumb must reach the end of the track at the last offset"
+    );
+}
+
+/// The scroll is clamped where it is **stored**, not only where it is drawn:
+/// `G` parks it at the `u16::MAX` sentinel, and a value that never comes back
+/// inside the range makes the next `k` scroll from 65535 — the view looks frozen.
+#[test]
+fn the_view_writes_the_clamped_scroll_back() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    // Short enough that the transcript overflows, so the clamp is not a no-op.
+    render_subagent_view_terminal(&mut app, 100, 16);
+    let body_height = app.mouse.popup_text_body_area.height as usize;
+    let total = app
+        .subagent_popup()
+        .expect("view")
+        .layout
+        .as_ref()
+        .expect("layout")
+        .total_rows;
+    assert!(
+        total > body_height,
+        "the seeded transcript must overflow the viewport ({total} rows in {body_height})"
+    );
+
+    app.subagent_popup_mut().expect("view").scroll = u16::MAX;
+    render_subagent_view_terminal(&mut app, 100, 16);
+
+    assert_eq!(
+        app.subagent_popup().expect("view").scroll as usize,
+        total - body_height,
+        "the sentinel must be replaced by the true bottom"
+    );
+}
+
+/// A capped block's overflow row states the count *and* the gesture, and the
+/// renderer reports that row's screen rect — the click ladder hit-tests against
+/// it, so it has to be the row the text is actually on.
+#[test]
+fn subagent_view_reports_the_overflow_row_as_a_click_target() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    let terminal = render_subagent_view_terminal(&mut app, 100, 40);
+    let text = buffer_text(terminal.backend().buffer());
+
+    assert!(text.contains("more lines"), "{text}");
+    assert!(
+        text.contains("expand"),
+        "the row states the gesture: {text}"
+    );
+
+    let (key, rect) = app
+        .mouse
+        .subagent_block_toggles
+        .first()
+        .cloned()
+        .expect("a capped block draws a toggle row");
+    assert_eq!(key, "c1");
+    assert_eq!(rect.height, 1, "a toggle is one row");
+    assert!(
+        rect.y > app.mouse.subagent_back_area.y,
+        "it lives in the body, not on the breadcrumb"
+    );
+    let drawn: String = (rect.x..rect.right())
+        .map(|x| terminal.backend().buffer()[(x, rect.y)].symbol())
+        .collect();
+    assert!(
+        drawn.contains("more lines"),
+        "the rect is on the row it describes: {drawn:?}"
+    );
+}
+
+/// The hint is dropped before it eats the title: the title is what says *which*
+/// subagent this is, and a clipped `Enter exp` helps nobody.
+#[test]
+fn subagent_view_drops_the_hint_before_it_eats_the_title() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    let text = buffer_text(
+        render_subagent_view_terminal(&mut app, 20, 40)
+            .backend()
+            .buffer(),
+    );
+
+    assert!(text.contains("‹"), "the chevron is the promise: {text}");
+    assert!(
+        !text.contains("Enter"),
+        "no room for the hint, so it must not be drawn: {text}"
+    );
+}
+
+/// The breadcrumb row is a `Paragraph` over a painted background, and a
+/// `Paragraph` writes only the glyphs it has — the row's tail must still carry
+/// `theme.bg` (AGENTS.md render invariant).
+#[test]
+fn subagent_view_breadcrumb_blank_cells_carry_the_theme_background() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    let terminal = render_subagent_view_terminal(&mut app, 100, 40);
+    let buf = terminal.backend().buffer();
+    let row = app.mouse.subagent_back_area;
+    assert!(!row.is_empty(), "the back affordance must be recorded");
+    assert_eq!(row.height, 1, "it is exactly the breadcrumb row");
+
+    // The title carries an emoji, so the cell after it is a wide-grapheme
+    // continuation: ratatui skips it in the diff (see the body's blank-cell
+    // test for the same exception).
+    let mut continuation = false;
+    let mut blanks = 0;
+    for x in row.x..row.right() {
+        let cell = &buf[(x, row.y)];
+        let is_continuation = std::mem::take(&mut continuation);
+        continuation = !is_continuation && cell.symbol().cell_width() > 1;
+        if is_continuation || cell.symbol() != " " {
+            continue;
+        }
+        blanks += 1;
+        assert_eq!(
+            cell.bg, app.theme.bg,
+            "blank cell at ({x}, {}) was left at {:?} — no unit owns it",
+            row.y, cell.bg
+        );
+    }
+    assert!(
+        blanks > 0,
+        "the breadcrumb should have blank cells to check"
+    );
 }

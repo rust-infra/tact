@@ -151,7 +151,8 @@ impl TrajectoryService for KernelTrajectoryRecorder {
             | RuntimeEvent::TurnStats { .. } => TrajectoryEventType::ModelCall,
             RuntimeEvent::ToolCallStarted { .. }
             | RuntimeEvent::ToolCallFinished { .. }
-            | RuntimeEvent::ToolProgress { .. } => TrajectoryEventType::ToolCall,
+            | RuntimeEvent::ToolProgress { .. }
+            | RuntimeEvent::ToolTranscript { .. } => TrajectoryEventType::ToolCall,
             RuntimeEvent::PermissionRequested { .. } | RuntimeEvent::PermissionResolved { .. } => {
                 TrajectoryEventType::Permission
             }
@@ -386,7 +387,8 @@ fn event_type(event: &RuntimeEvent) -> TrajectoryEventType {
         | RuntimeEvent::TurnStats { .. } => TrajectoryEventType::ModelCall,
         RuntimeEvent::ToolCallStarted { .. }
         | RuntimeEvent::ToolCallFinished { .. }
-        | RuntimeEvent::ToolProgress { .. } => TrajectoryEventType::ToolCall,
+        | RuntimeEvent::ToolProgress { .. }
+        | RuntimeEvent::ToolTranscript { .. } => TrajectoryEventType::ToolCall,
         RuntimeEvent::PermissionRequested { .. } | RuntimeEvent::PermissionResolved { .. } => {
             TrajectoryEventType::Permission
         }
