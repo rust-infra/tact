@@ -16,7 +16,7 @@
 |------|------|
 | `PermissionPolicy::resolve()` | 将 native 工具输入分类为 `CapabilityRisk` |
 | `PermissionManager::check()` | 将 risk + mode + settings + allowlist 映射为 `PermissionBehavior` |
-| `tool_dispatch.rs` | 通过 TUI `RequestSelect` 或 headless `ask_user(risk)` 处理 `Ask` |
+| `tool_dispatch.rs` | 通过 TUI `InteractionRequested` 或 headless `ask_user(risk)` 处理 `Ask` |
 | `bash` 工具 + `shell.rs` | 在执行时硬拦截一部分危险 shell 命令 |
 
 Shell 命令有 **两层** 防护：一层是权限提示，命中高风险模式就会弹；另一层更硬——一小批最危险的命令直接写死在 `bash` 工具里，就算用户已经点了批准也照样拒绝。
@@ -99,7 +99,7 @@ pub struct PermissionDecision {
 |----------|----------------------------------|
 | **Allow** | 工具进入 Phase 2（并行执行） |
 | **Deny** | `PreparedState::Resolved`，附带 `"Permission denied: …"`；模型收到失败的 tool result |
-| **Ask** | 交互式提示（TUI），或 headless `ask_user` 默认（允许 Write/Read，拒绝 High）；见 [§6 TUI RequestSelect 流程](#6-tui-requestselect-流程) |
+| **Ask** | 交互式提示（TUI），或 headless `ask_user` 默认（允许 Write/Read，拒绝 High）；见 [§6 TUI 选择提示流程](#6-tui-选择提示流程) |
 
 ---
 
@@ -214,14 +214,18 @@ graph TD
 
 ---
 
-## 6. TUI RequestSelect 流程
+## 6. TUI 选择提示流程
 
 当 `check()` 返回 `Ask` 且 agent 有 UI 通道（`runtime.ui_tx`）时，`tool_dispatch.rs` 发送：
 
 ```rust
-RuntimeEvent::RequestSelect {
-    prompt,      // 例如 "Allow bash: {\"command\":\"npm test\"}"
-    respond,     // 回 agent 的 oneshot channel
+RuntimeEvent::InteractionRequested {
+    request: InteractionRequest::Select {
+        request_id,  // 经反向通道应答（`UiResponse::Selected`）
+        prompt,      // 例如 "Allow bash: {\"command\":\"npm test\"}"
+        options,     // 候选选项
+        log_confirm, // false，避免选择项污染日志
+    },
 }
 ```
 
@@ -293,7 +297,7 @@ sequenceDiagram
     Agent->>Perm: check("bash", {command})
     alt High risk (e.g. sudo)
         Perm-->>Agent: Ask
-        Agent->>TUI: RequestSelect
+        Agent->>TUI: InteractionRequested
         TUI-->>Agent: Allow once
     else Write risk (e.g. npm test)
         Perm-->>Agent: Ask or Allow (mode/allowlist)
@@ -328,7 +332,7 @@ For each ToolUse (sequential):
   sensitive guard (Scanner)          ← Credential → 拒绝；Secret → High（§12.2）
   PreToolUse hooks                   ← 可变更 input 或 Block
   PermissionManager::check           ← 本章
-  Ask → RequestSelect (if needed)
+  Ask → InteractionRequested (if needed)
   PreparedState::Run | Resolved
 
 Phase 2: parallel waves (no permission re-check)
@@ -360,7 +364,7 @@ sequenceDiagram
             Agent-->>LLM: ToolResult (permission denied)
         else Ask
             Perm-->>Agent: Ask
-            Agent->>TUI: RequestSelect
+            Agent->>TUI: InteractionRequested
             TUI-->>Agent: user choice
             opt approved
                 Agent->>Tool: execute
@@ -433,7 +437,7 @@ mode = "default"   # "default" | "plan" | "auto"
 | `crates/tact_extensions/src/security/redact.rs` | `redact`、`level_for_call`、`StreamRedactor` |
 | `crates/tact_extensions/src/security/mod.rs` | `SecurityConfig` 解析与 global+project 合并 |
 | `crates/tact/src/shell.rs` | 共享高风险 shell 模式；执行时 `validate_shell_command` 拦截 |
-| `crates/tact_extensions/src/agent/tool_dispatch.rs` | 预检权限；`RequestSelect` 处理；`StepFinished` 上的 `permission_label` |
+| `crates/tact_extensions/src/agent/tool_dispatch.rs` | 预检权限；`InteractionRequested` 处理；`StepFinished` 上的 `permission_label` |
 | `crates/tact_extensions/src/agent/mod.rs` | `AgentRuntime.permission_manager` |
 | `crates/tact_extensions/src/tool/metadata.rs` | `PermissionPolicy`（`Read` / `Write` / `High` / `ReadPath` / `WritePath` / `PatchPaths` / `ShellCommand`）与其 `resolve` 分类入口、`PermissionPromptPolicy::PatchTarget` |
 | `crates/tact_extensions/src/tool/readonly_shell.rs` | `is_read_only_shell_command` — `ShellCommand` 的只读白名单 |
@@ -444,8 +448,8 @@ mode = "default"   # "default" | "plan" | "auto"
 | `crates/tact_ui/src/permission.rs` | `permission_mode_from_config()` |
 | `crates/tact_ui/src/session_bootstrap.rs` | `bootstrap_session` 里构造 `PermissionManager`（`try_new_with_settings`）；headless / 交互共用 |
 | `crates/tact_extensions/src/config/types.rs` | `[permission] mode` TOML schema |
-| `crates/tui/src/widgets/state/app/agent.rs` | 处理 `RuntimeEvent::RequestSelect` |
-| `crates/tact_protocol/src/lib.rs` | `RuntimeEvent::RequestSelect`、`StepResult.permission_label` |
+| `crates/tui/src/widgets/state/app/agent.rs` | 处理 `RuntimeEvent::InteractionRequested` |
+| `crates/tact_protocol/src/lib.rs` | `RuntimeEvent::InteractionRequested`、`StepResult.permission_label` |
 
 ---
 
@@ -589,7 +593,7 @@ sequenceDiagram
 | 3 | 敏感目标守卫 | `PermissionPolicy::sensitive(input, &Scanner)` | 用**配置化** Scanner；`Credential` → 拒绝 |
 | 4 | `PreToolUse` hook | 用户脚本 | 可 `Block`，也可**改写 input** |
 | 5 | 权限阶梯 | `PermissionManager::check_with_auto` | §4 那 11 条顺序；读 mode / settings / allowlist |
-| 6 | `Ask` 的出口 | TUI `RequestSelect` 或 headless `ask_user` | §6 |
+| 6 | `Ask` 的出口 | TUI `InteractionRequested` 或 headless `ask_user` | §6 |
 | 7 | 执行 | 工具自身（Phase 2 并行 wave） | 不再复查权限 |
 | 8 | 实时输出脱敏 | `StreamRedactor` | 级别在本 wave 开始前算好 |
 | 9 | 结果脱敏 | `redact(level_for_call(…))` | 单一收口，早于 `PostToolUse` |
@@ -607,7 +611,7 @@ graph TD
     e --> f{5. 阶梯}
     f -->|Allow| g[7. 执行]
     f -->|Deny| r2[Permission denied]
-    f -->|Ask| h[6. RequestSelect 或 ask_user]
+    f -->|Ask| h[6. InteractionRequested 或 ask_user]
     h --> g
     g --> i[8. 实时脱敏] --> j[9. 结果脱敏] --> k[10. hook TUI 存储]
 ```

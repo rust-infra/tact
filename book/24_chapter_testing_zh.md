@@ -75,7 +75,7 @@ Pre-push 运行 `./scripts/check-rust.sh`（fmt check、clippy、集成测试）
 - `build_test_agent` / `build_test_agent_with_mode` — mock LLM + 隔离 workspace（`unique_workspace_name` 避免并行测试冲突）
 - `run_command_loop` — 与交互模式相同代码路径，由 `UserCommand` channel 驱动
 - `run_single_task` / `run_commands` — 提交任务、自动响应权限提示、收集 `RuntimeEvent` 流
-- `wire_permission_responder` — 剥离 `RequestSelect` 并发送 allow/deny 选择
+- `wire_permission_responder` — 剥离 `InteractionRequested` 并发送 allow/deny 选择
 
 **测试文件：**
 
@@ -104,7 +104,7 @@ Pre-push 运行 `./scripts/check-rust.sh`（fmt check、clippy、集成测试）
 - `TestApp` — 每个测试要驱动的 App。`handlers/` 下曾有 6 份 `make_app()`（5 个 `unbounded_channel` + 12 参数的 `App::new`，差别只在返回哪个 receiver）。现在 `TestApp::new().into_commands()` / `into_plugin_requests()` 取回要断言的那个 receiver；`render` 侧的 `test_harness::make_app()` 也委托给它，用 `with_identity("render-test", "ink")` 显式要 `ink` 主题（渲染测试断言的是主题产出的颜色，不能吃默认值）。
 - `StepCall` — 一次工具调用：host 在调用开始时发的 `StepStarted` 与结束时的 `StepFinished`。这两个字面量分别有 8 行和 16 行，在渲染/处理器测试里出现了 75 次。默认值就是那些字面量绝大多数使用的值（成功、1µs、该工具的 generic presentation、`arg_full` 等于 summary），差异用 setter 表达——在意某个字段的测试就在那一行写出来。
 
-**覆盖包括：** idle/executing/done、tool cards、stream/thinking、errors、token/model info、command palette、slash commands、file picker（空 + 选中行）、diff/code/thinking popups（scroll + write_file gutter + bash output）、真实 `StepFinished` 后 `open_diff_popup`、Normal mode、`RequestSelect` 权限询问全帧（选择弹窗）、plan 多步、log 中 markdown/code cards、窄终端。
+**覆盖包括：** idle/executing/done、tool cards、stream/thinking、errors、token/model info、command palette、slash commands、file picker（空 + 选中行）、diff/code/thinking popups（scroll + write_file gutter + bash output）、真实 `StepFinished` 后 `open_diff_popup`、Normal mode、`InteractionRequested` 权限询问全帧（选择弹窗）、plan 多步、log 中 markdown/code cards、窄终端。
 
 **Handler 测试：** `file_picker.rs`、`select.rs`、`palette.rs`、`normal.rs`、`mouse.rs`（键盘、滚轮、tool 双击）。
 

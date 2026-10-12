@@ -402,7 +402,7 @@ session hooks 也适合一次性 setup：预热缓存、校验工作区不变量
 | 错误即步骤失败 | hook bug 表现为 tool 失败，而非静默 no-op。 |
 | 注册顺序 = 运行顺序 | 堆叠插件时 hook 优先级为 `<marketplace>/<plugin>` 键序（见 §6）；没有 priority 字段可设。 |
 
-**不要**在 hooks 里做权限 UI——用 `PermissionManager` 与现有 `RequestSelect` 流程。
+**不要**在 hooks 里做权限 UI——用 `PermissionManager` 与现有 `InteractionRequested` 流程。
 
 ---
 

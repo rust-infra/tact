@@ -125,7 +125,7 @@ Headless 运行设置 `ui_tx: None`，因此 `agent_loop` 从不向 TUI 发送 `
 
 - `StepStarted`、`StepFinished`、`StepAdded`
 - `Info`、`ModelInfo`、流式 token
-- 权限 prompt（`RequestSelect`）
+- 权限 prompt（`InteractionRequested`）
 - Thinking 块
 
 会话开始、压缩或 MCP 连接事件没有通知。

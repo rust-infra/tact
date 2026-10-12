@@ -77,7 +77,7 @@ graph TD
 
 | 流事件 | `RuntimeEvent` |
 |--------|---------------|
-| 文本 delta | `StreamChunk` |
+| 文本 delta | `Text` |
 | Thinking 生命周期 | `ThinkingChunk::{Started, Delta, Finished}` |
 | 模型元数据 | `ModelInfo` |
 | Token 计数 | `TokenUsage` |
@@ -103,7 +103,7 @@ Stats（`SessionStats`）累积 prompt/response/thinking 大小和 LLM 调用时
 **取消：** 每次迭代顶部以及工具执行前检查 `cancel_flag`。同一个
 `Arc<AtomicBool>` 也传入 `ToolContext`，因此执行中的 `bash` 会观察到取消，在
 Unix 终止 child process group，并在 agent loop 返回前 flush 已读输出。Driver
-仅在该返回之后发出 `TaskCancelled`。新的 `SubmitTask` 在再次调用 `agent_loop`
+仅在该返回之后发出 `Cancelled`。新的 `SubmitTask` 在再次调用 `agent_loop`
 前清除 `cancel_flag`。
 
 ---
@@ -116,7 +116,7 @@ Unix 终止 child process group，并在 agent loop 返回前 flush 已读输出
 - `StepFailed` → `notify_step_failed`
 
 大多数生命周期事件（`StepAdded`、`StepStarted`、`StepFinished`、
-`RequestSelect` 等）来自 `tool_dispatch.rs` 中的 `execute_tool_call`。执行中的工具
+`InteractionRequested` 等）来自 `tool_dispatch.rs` 中的 `execute_tool_call`。执行中的工具
 可在 `StepStarted` 与终态 `StepFinished` / `StepFailed` 之间发出信息性的
 `ToolProgress`；它本身不表示完成。
 
@@ -175,8 +175,8 @@ UserCommand::SubmitTask(task) => {
             }
         }
                 Ok(()) => {
-                    // 已取消 — 发出 TaskCancelled，让 TUI 离开 Planning/Executing
-                    agent.emit_update(RuntimeEvent::TaskCancelled);
+                    // 已取消 — 发出 Cancelled，让 TUI 离开 Planning/Executing
+                    agent.emit_update(RuntimeEvent::Cancelled);
                 }
         Err(e) => agent.emit_update(RuntimeEvent::Error(...)),
     }
@@ -186,7 +186,7 @@ UserCommand::Cancel => {
 }
 ```
 
-**`TaskComplete`** 仅在 `agent_loop` 返回 `Ok(())` **且** 用户未取消时发出。取消时 driver 改为发出 **`TaskCancelled`**，使 TUI 回到 `Idle` 并接受新 prompt。`TaskComplete` 的摘要文本来自 **最后一条 context 消息**（常为 tool 结果，不一定是最后 assistant turn）。错误以 `RuntimeEvent::Error` 呈现。
+**`TaskComplete`** 仅在 `agent_loop` 返回 `Ok(())` **且** 用户未取消时发出。取消时 driver 改为发出 **`Cancelled`**，使 TUI 回到 `Idle` 并接受新 prompt。`TaskComplete` 的摘要文本来自 **最后一条 context 消息**（常为 tool 结果，不一定是最后 assistant turn）。错误以 `RuntimeEvent::Error` 呈现。
 
 ---
 

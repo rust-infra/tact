@@ -24,9 +24,9 @@ graph LR
 | `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → driver | 提交任务、取消、余额查询、UI 响应 |
 | `account_tx` / `account_rx` | `AccountUpdate` | Account → TUI | 余额 / 配额（与 agent 协议分离） |
 
-所有通道均用 `tokio::sync::mpsc::unbounded_channel`。`RuntimeEvent` 是**纯数据**：`RequestSelect` / `RequestMultiSelect` 携带 `request_id` 而非内嵌的 `oneshot::Sender`，因此该 enum 不再携带传输句柄（后续可自由派生 `Serialize`/`Clone`）。TUI 通过反向通道发送 `UserCommand::UiResponse` 回 driver，driver 再经运行时共享的 [`UiResponder`] 注册表（`crates/tact_extensions/src/ui_responder.rs`）路由给等待中的调用方（父 agent 或 subagent）。
+所有通道均用 `tokio::sync::mpsc::unbounded_channel`。`RuntimeEvent` 是**纯数据**：`InteractionRequested` 内的 `InteractionRequest::Select` / `MultiSelect` 携带 `request_id` 而非内嵌的 `oneshot::Sender`，因此该 enum 不再携带传输句柄（后续可自由派生 `Serialize`/`Clone`）。TUI 通过反向通道发送 `UserCommand::UiResponse` 回 driver，driver 再经运行时共享的 [`UiResponder`] 注册表（`crates/tact_extensions/src/ui_responder.rs`）路由给等待中的调用方（父 agent 或 subagent）。
 
-交互模式下，共享的 `UiResponder` 还会暴露一个有序 pending snapshot；TUI 从该 snapshot reconcile `InputMode::Select`，并把 `RequestSelect` / `RequestMultiSelect` 当作 wake-up hint。没有 broker 的 headless/tests 仍以该事件为权威。
+交互模式下，共享的 `UiResponder` 还会暴露一个有序 pending snapshot；TUI 从该 snapshot reconcile `InputMode::Select`，并把 `InteractionRequested` 当作 wake-up hint。没有 broker 的 headless/tests 仍以该事件为权威。
 
 ---
 
@@ -87,7 +87,7 @@ pub enum UserCommand {
     SubmitTask(String),
     Cancel,
     QueryBalance,
-    UiResponse(UiResponse), // 回答 RequestSelect / RequestMultiSelect
+    UiResponse(UiResponse), // 回答 InteractionRequested
 }
 ```
 
@@ -136,12 +136,12 @@ graph TD
     d_failed --> e_end
 ```
 
-权限模式为 `Ask` 时，**`StepStarted` 之后、工具运行之前**可能出现 `RequestSelect` popup。`Status` 保持 `Executing`；仅 `InputMode` 切换到 `Select`（[§4.3](#43-inputmode-叠加-requestselect)）。
+权限模式为 `Ask` 时，**`StepStarted` 之后、工具运行之前**可能出现 `InteractionRequested` popup。`Status` 保持 `Executing`；仅 `InputMode` 切换到 `Select`（[§4.3](#43-inputmode-叠加-interactionrequested)）。
 
 ```mermaid
 graph TD
     a_planned[Planned] -->|StepStarted| b_running[Running]
-    b_running -->|RequestSelect| c_await[AwaitingChoice]
+    b_running -->|InteractionRequested| c_await[AwaitingChoice]
     c_await -->|用户选择选项| z_running[↩ 回到 Running]
     c_await -->|Esc / deny| d_failed[Failed]
     b_running -->|StepFinished| e_succeeded[Succeeded]
@@ -169,7 +169,7 @@ graph TD
 ```text
 StepAdded
   → StepStarted { arg_summary, arg_full }
-  → RequestSelect?          （仅 permission Ask）
+  → InteractionRequested?   （仅 permission Ask）
   → ToolProgress*           （执行开始后；信息性）
   → StepFinished | StepFailed
 ```
@@ -206,8 +206,8 @@ graph TD
     c_exec --> x_exec[仍为 Executing]
 ```
 
-> - `Planning`：`UserCommand::SubmitTask` 已发送。`StreamChunk` / `ThinkingChunk` 可能在首个 `StepAdded` 之前到达。
-> - `Executing`：`UserCommand::Cancel` 设置 `cancel_flag` 并发出 `Info` —— Status 仍为 busy，直到 `TaskCancelled` 回到 `Idle`。
+> - `Planning`：`UserCommand::SubmitTask` 已发送。`Text` / `Thinking` 可能在首个 `StepAdded` 之前到达。
+> - `Executing`：`UserCommand::Cancel` 设置 `cancel_flag` 并发出 `Info` —— Status 仍为 busy，直到 `Cancelled` 回到 `Idle`。
 
 | 从 | 到 | 触发 | 说明 |
 |----|-----|------|------|
@@ -215,12 +215,12 @@ graph TD
 | `Planning` | `Executing` | 首个 `RuntimeEvent::StepAdded` | `ensure_executing_status`；`total` 来自 plan 长度 |
 | `Executing` | `Executing` | `StepStarted { idx, … }` | 更新 `current_step`；可有并发 `ActiveToolBlock`s |
 | `Executing` | `Done` | `TaskComplete` | 设置 `task_done_time`；冻结 cost timer |
-| `Planning` / `Executing` | `Idle` | `TaskCancelled` | 取消后的 driver；释放输入 |
+| `Planning` / `Executing` | `Idle` | `Cancelled` | 取消后的 driver；释放输入 |
 | `Executing` | `Idle` | `StepFailed` 或 `Error(Other)` | 冻结 cost timer |
 | `Done` | `Idle` | `task_done_time` 后 2 s | 主循环调用 `maybe_expire_done_status` |
-| *（不变）* | *（不变）* | `UserCommand::Cancel` | `Info("Cancelling…")` + 设 `cancel_flag`；随后 `TaskCancelled` |
+| *（不变）* | *（不变）* | `UserCommand::Cancel` | `Info("Cancelling…")` + 设 `cancel_flag`；随后 `Cancelled` |
 
-`TaskComplete` 由 `crates/tact_ui/src/driver.rs` 在 `agent_loop` 返回 `Ok(())` 且 `cancel_flag` 为 false 时发送（[Ch 18 §7](./18_chapter_agent_loop_zh.md#7-tui-integration)）。取消路径改为发送 `TaskCancelled`。
+`TaskComplete` 由 `crates/tact_ui/src/driver.rs` 在 `agent_loop` 返回 `Ok(())` 且 `cancel_flag` 为 false 时发送（[Ch 18 §7](./18_chapter_agent_loop_zh.md#7-tui-integration)）。取消路径改为发送 `Cancelled`。
 
 ### 4.2 `RuntimeEvent` → `Status` 映射
 
@@ -230,12 +230,12 @@ graph TD
 graph TD
     a_plan[Planning] --> b_exec[Executing · StepAdded first]
     b_exec --> c_done[Done · TaskComplete]
-    a_plan --> z_idle[回到 Idle · TaskCancelled]
+    a_plan --> z_idle[回到 Idle · Cancelled]
     b_exec --> y_idle[回到 Idle · StepFailed / Error Other]
     c_done --> x_idle[回到 Idle · 2s]
 ```
 
-**不翻转 `Status` 的更新**：`StreamChunk`、`ThinkingChunk`、`TokenUsage`、`ModelInfo`、`Info`、`RequestSelect`、`StepStarted`、`ToolProgress`、`StepFinished`，以及 `Executing` 之后的 `StepAdded`。
+**不翻转 `Status` 的更新**：`Text`、`Thinking`、`TokenUsage`、`ModelInfo`、`Info`、`InteractionRequested`、`StepStarted`、`ToolProgress`、`StepFinished`，以及 `Executing` 之后的 `StepAdded`。
 ```
 
 | `RuntimeEvent` | TUI `Status` / mode | 说明 |
@@ -244,28 +244,28 @@ graph TD
 | `StepStarted` | `Executing`（更新 `current_step`） | 可有多个并发 `ActiveToolBlock`s |
 | `ToolProgress` | 无 status 变化 | 一个 active `tool_id` 的信息性 live output |
 | `StepFailed` / `Error(Other)` | `→ Idle` | Cost timer 冻结 |
-| `RequestSelect` | `InputMode::Select`（Status 保持 `Executing`） | 见 [Ch 10](./10_chapter_permission_zh.md) |
+| `InteractionRequested` | `InputMode::Select`（Status 保持 `Executing`） | 见 [Ch 10](./10_chapter_permission_zh.md) |
 | `TaskComplete` | `→ Done`（2s → `Idle`） | 由 driver 发出，非 `agent_loop` |
-| `TaskCancelled` | `→ Idle` | 取消后的 driver；解除新 prompt 阻塞 |
+| `Cancelled` | `→ Idle` | 取消后的 driver；解除新 prompt 阻塞 |
 | `TokenUsage` / `ModelInfo` | 无 status 变化 | 仅元数据；状态栏更新 |
-| `StreamChunk` / `ThinkingChunk` / `Info` | 无 status 变化 | 仅 log / stream |
+| `Text` / `Thinking` / `Info` | 无 status 变化 | 仅 log / stream |
 
-### 4.3 InputMode 叠加（`RequestSelect`）
+### 4.3 InputMode 叠加（`InteractionRequested`）
 
-权限提示使用独立输入模式状态机。`RequestSelect` **不**添加 `Status` variant — select popup 打开时状态栏仍可读 `Executing`。
+权限提示使用独立输入模式状态机。`InteractionRequested` **不**添加 `Status` variant — select popup 打开时状态栏仍可读 `Executing`。
 
-在交互/broker 模式下，`Select` 由 `pending != empty` 推导；`RequestSelect` 事件只负责唤醒 TUI，`UiResponder::snapshot()` 才是权威。下面的 event-driven 转换描述没有 broker 的 legacy/headless 路径。
+在交互/broker 模式下，`Select` 由 `pending != empty` 推导；`InteractionRequested` 事件只负责唤醒 TUI，`UiResponder::snapshot()` 才是权威。下面的 event-driven 转换描述没有 broker 的 legacy/headless 路径。
 
 ```mermaid
 graph TD
     a_normal[Normal] -->|i / Enter| b_insert[Insert]
     b_insert -->|Esc| z_normal[↩ 回到 Normal]
-    a_normal -->|RequestSelect| c_select[Select]
-    b_insert -->|RequestSelect| c_select
+    a_normal -->|InteractionRequested| c_select[Select]
+    b_insert -->|InteractionRequested| c_select
     c_select -->|Enter 确认 / Esc 取消| z_normal
 ```
 
-> `Select` 到达时 `Status = Executing`。Broker 模式：由 pending snapshot 推导；Legacy：`RequestSelect` → `UiResponse`。
+> `Select` 到达时 `Status = Executing`。Broker 模式：由 pending snapshot 推导；Legacy：`InteractionRequested` → `UiResponse`。
 
 ### 4.4 `Executing` 内逻辑阶段
 
@@ -281,7 +281,7 @@ graph TD
     b_tool --> y_loop[↩ 自环 / 回边]
 ```
 
-> 入口为 `Streaming`（首个 `StreamChunk` / `ThinkingChunk`）。`↩ 自环 / 回边` 是三条环的合并：`Streaming → Streaming`（更多 chunks）、`ToolPhase → ToolPhase`（`StepStarted` / `StepFinished` / `StepFailed`）、`ToolPhase → Streaming`（工具后 `StreamChunk`）。渲染器不支持环，故折成一个叶子节点。
+> 入口为 `Streaming`（首个 `Text` / `Thinking`）。`↩ 自环 / 回边` 是三条环的合并：`Streaming → Streaming`（更多 chunks）、`ToolPhase → ToolPhase`（`StepStarted` / `StepFinished` / `StepFailed`）、`ToolPhase → Streaming`（工具后 `Text`）。渲染器不支持环，故折成一个叶子节点。
 
 ---
 
@@ -289,9 +289,9 @@ graph TD
 
 | 类别 | Variants | TUI 副作用 |
 |------|----------|------------|
-| **内容产出** | `StepAdded`、`StepStarted`、`StepFinished`、`StepFailed`、`StreamChunk`、`ThinkingChunk`、`Info`、`TaskComplete`、`TaskCancelled`、`Error`、`RequestSelect`、`TasksChanged` | 优先 `ThinkingChunk::Finished` 关闭 thinking；其他内容更新上 safety-flush；移除 loading placeholder；变更 log / plan |
+| **内容产出** | `StepAdded`、`StepStarted`、`StepFinished`、`StepFailed`、`Text`、`Thinking`、`Info`、`TaskComplete`、`Cancelled`、`Error`、`InteractionRequested`、`TasksChanged` | 优先 `ThinkingChunk::Finished` 关闭 thinking；其他内容更新上 safety-flush；移除 loading placeholder；变更 log / plan |
 | **仅元数据** | `TokenUsage(TokenUsageInfo)`、`ModelInfo(ModelCallParams)` | 仅更新状态栏；保留 loading placeholder；**不**关闭已开 thinking 区域 |
-| **请求–响应** | `RequestSelect { request_id }`、`RequestMultiSelect { request_id }` | Broker 模式：`snapshot()` 是权威，`RequestSelect*` 仅作 wake-up hint。Legacy/headless：经共享 `UiResponder`（反向 `UiResponse`）阻塞等待用户选择。 |
+| **请求–响应** | `InteractionRequested { request: InteractionRequest::Select { … } }`、`InteractionRequested { request: InteractionRequest::MultiSelect { … } }` | Broker 模式：`snapshot()` 是权威，`InteractionRequested` 仅作 wake-up hint。Legacy/headless：经共享 `UiResponder`（反向 `UiResponse`）阻塞等待用户选择。 |
 
 Thinking 生命周期显式：`ThinkingChunk::Started` 打开区域，`Delta` 追加文本，`Finished` flush 并折叠。安全网：其他内容产出非 thinking 更新仍会在区域仍开时调用 `flush_and_close_thinking()`。`TokenUsage` / `ModelInfo` 从不关闭 thinking（可能 mid-stream 到达）。
 
@@ -316,18 +316,18 @@ graph TD
 graph TD
     a_st[SubmitTask] --> b_al[agent_loop]
     b_al -->|Ok 且未取消| c_tc[emit TaskComplete]
-    b_al -->|cancel_flag| d_xc[emit TaskCancelled]
+    b_al -->|cancel_flag| d_xc[emit Cancelled]
     e_cn[Cancel] --> f_cf[set cancel_flag + Info]
     g_qb[QueryBalance] --> h_qo[query_once]
     h_qo --> i_au[AccountUpdate → TUI]
 ```
 
-两处跨图连线：`Planning` 由 `SubmitTask` 触发（图 1 的 `Planning` ← 图 2 的 `SubmitTask`）；`Cancel` 设置的 `cancel_flag` 让 `Executing` 收到 `TaskCancelled` 而回到 `Idle`（图 2 的 `set cancel_flag` → 图 1 的 `Executing`）。
+两处跨图连线：`Planning` 由 `SubmitTask` 触发（图 1 的 `Planning` ← 图 2 的 `SubmitTask`）；`Cancel` 设置的 `cancel_flag` 让 `Executing` 收到 `Cancelled` 而回到 `Idle`（图 2 的 `set cancel_flag` → 图 1 的 `Executing`）。
 
 | 命令 | TUI 前置条件 | Handler 效果 |
 |------|--------------|--------------|
 | `SubmitTask(text)` | Insert 模式 Enter → `Status::Planning` | `build_user_message` → `agent_loop` |
-| `Cancel` | `/cancel` 或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环退出后 driver 发 `TaskCancelled` → `Idle` |
+| `Cancel` | `/cancel` 或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环退出后 driver 发 `Cancelled` → `Idle` |
 | `QueryBalance` | `/balance` 或 palette | `account::query_once()` → `AccountUpdate` channel |
 
 ---
@@ -351,8 +351,8 @@ sequenceDiagram
 
     Driver->>Agent: agent_loop(user_message)
     Agent->>LLM: stream_message
-    LLM-->>TUI: ThinkingChunk*（可选）
-    LLM-->>TUI: StreamChunk*
+    LLM-->>TUI: Thinking*（可选）
+    LLM-->>TUI: Text*
     Agent->>TUI: ModelInfo
 
     Agent->>TUI: StepAdded
@@ -360,7 +360,7 @@ sequenceDiagram
     Agent->>TUI: StepStarted
 
     opt permission Ask
-        Agent->>TUI: RequestSelect (request_id)
+        Agent->>TUI: InteractionRequested (request_id)
         TUI->>TUI: InputMode → Select
         User->>TUI: 选择选项
         TUI->>Driver: UserCommand::UiResponse
@@ -368,7 +368,7 @@ sequenceDiagram
     end
 
     Agent->>TUI: StepFinished | StepFailed
-    LLM-->>TUI: StreamChunk*（续写）
+    LLM-->>TUI: Text*（续写）
     Agent->>TUI: TokenUsage
 
     Agent-->>Driver: Ok(())
@@ -380,14 +380,14 @@ sequenceDiagram
 文本时间线（同一 turn）：
 
 ```text
-ThinkingChunk*          ← LLM 推理流（可选）
-StreamChunk*            ← 工具前/之间的 assistant 文本
+Thinking*               ← LLM 推理流（可选）
+Text*                   ← 工具前/之间的 assistant 文本
 ModelInfo               ← 模型名 / max_tokens（元数据）
 StepAdded               ← 内部 plan step 条目（无专用面板）
 StepStarted             ← 运行中 tool card（arg_summary + arg_full）
-RequestSelect?          ← permission Ask（可选）
+InteractionRequested?   ← permission Ask（可选）
 StepFinished | StepFailed
-StreamChunk*            ← assistant 续写文本
+Text*                   ← assistant 续写文本
 TokenUsage              ← 最终 usage chunk（元数据）
 TaskComplete            ← agent_loop Ok 后 driver
 ```
