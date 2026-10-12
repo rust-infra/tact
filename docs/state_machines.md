@@ -337,7 +337,7 @@ Transitions:
 | Event | Action |
 |---|---|
 | `StepStarted { tool_id, arg_full, … }` | `cancel_active_tool(tool_id)` if restarting; push new `ActiveToolBlock` + placeholder rows |
-| `StepFinished { tool_id, result }` | `finalize_tool_block()` — replace placeholders with final `ToolRenderOutput`, remove from `active` |
+| `StepFinished { tool_id, result }` | the tool component's finalize path (`crates/agent_tui_kit/src/components/tool.rs`, `finalize_push`) — replace placeholders with final `ToolRenderOutput`, remove from `active` |
 | `StepFailed { tool_id, error }` | Same finalize path, or fallback system message if no active block |
 | New task (`SubmitTask`) | `cancel_all_active_tools()` removed; stale blocks cleared per `StepStarted` restart |
 

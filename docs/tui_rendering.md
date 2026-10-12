@@ -320,7 +320,7 @@ The basic log rendering unit, supporting:
 
 Uses `tui-markdown` to convert Markdown into a list of `Line`s:
 
-- Custom `TuiStyleSheet`: headings, code, links, blockquotes
+- The kit's own styling on top of `ratatui_markdown` (`crates/agent_tui_kit/src/render/render_md.rs`): headings, code, links, blockquotes
 - Code block post-processing: unified dark blue-gray background
 - Table formatting: aligned columns, bold header
 - Horizontal rule detection
