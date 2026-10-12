@@ -53,8 +53,11 @@ a `runtime` half is spawned through `StdioPluginHost` at session bootstrap, its
 handshake capabilities register on the serving router, its manifest registers in
 the session's `PluginRegistry`, and both hosts stop it at teardown (spec
 `docs/superpowers/specs/2026-10-11-hosted-runtime-plugins-design.md`). Guest
-host calls stay denied, so the Kernel services stay reserved, and a hosted
-capability is not yet a model-visible tool. Still open: 10
+host calls are denied unless the manifest grants them (`grants` plus the `host_calls`
+handshake feature), so the Kernel services stay reserved; and a hosted capability of
+kind `Tool` **is** a model-visible tool, served by the Agent's per-wave tool router
+rather than the serving router (the "not a model-visible tool" non-goal in
+`2026-10-11-hosted-runtime-plugins.md` is superseded). Still open: 10
 of the 12 service capabilities have no invoking caller, and nothing reads
 extension state back (no health surface). The submit paths are
 all routed; `ARCHITECTURE.md` §15 lists what remains unconsumed. **The
