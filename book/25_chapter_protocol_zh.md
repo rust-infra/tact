@@ -47,15 +47,14 @@ pub enum RuntimeEvent {
     StepFailed { run_id: Option<RunId>, idx, tool_id, arg_summary, error },
     TaskComplete { run_id: Option<RunId>, content: String },
     /// 任务中取消 — TUI 必须离开 Planning/Executing
-    TaskCancelled,
+    Cancelled { run_id: Option<RunId> },
     Error { run_id: Option<RunId>, message: String },
     TokenUsage { run_id: Option<RunId>, usage: TokenUsageInfo },
     ModelInfo { run_id: Option<RunId>, params: ModelCallParams },
     Info { run_id: Option<RunId>, content: String },
-    RequestSelect { request_id, prompt, options, log_confirm }, // 单选；permission=`false`，ask_user=`true`
-    RequestMultiSelect { request_id, prompt, options },          // 多选；仅 ask_user（`multi_select`）
-    StreamChunk(String),
-    ThinkingChunk(ThinkingChunk),
+    InteractionRequested { request: InteractionRequest }, // 选择请求：Select / MultiSelect / Confirm / Input
+    Text { run_id: Option<RunId>, role: String, content: String },
+    Thinking { run_id: Option<RunId>, chunk: ThinkingChunk },
     /// 持久任务列表变更（`task_create` / `task_update`）
     TasksChanged {
         run_id: Option<RunId>,
