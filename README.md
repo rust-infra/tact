@@ -171,7 +171,7 @@ Optional agent settings (config file or CLI):
 | `snapshot_max_items` | `--snapshot-max-items` | `80` | Max entries in the system-prompt Project structure snapshot |
 | `model_context_window` | `--model-context-window` | `200000` | Model context window in tokens (80% auto-compact + TUI usage meter) |
 | `micro_compact_enabled` | `--no-micro-compact` | `false` | Stub old tool results before each LLM call when enabled |
-| `memory_enabled` | — | `true` | Inject `~/.tact/memory` + memory guidance and register `save_memory`; `false` disables both (files are kept) |
+| `memory_enabled` | — | `true` | Inject the per-repository memory **index** + memory guidance and register `save_memory` / `load_memory`; `false` disables both (files are kept) |
 
 ### 3. Run
 
@@ -273,7 +273,7 @@ Details: [`book/05_chapter_compact_zh.md`](./book/05_chapter_compact_zh.md), [`d
 | **Shell** | `bash`, `background_run`, `check_background`, `wait_background`, `sleep` |
 | **Task Management** | `task_create`, `task_get`, `task_list`, `task_update` |
 | **Team & Sub-agents** | `spawn_subagent`, `check_subagent`, `wait_subagent`, `cancel_subagent`, `spawn_teammate`, `list_teammates`, `send_message`, `broadcast`, `read_inbox` |
-| **Memory & Knowledge** | `save_memory`, `load_skill`, `compact` |
+| **Memory & Knowledge** | `save_memory`, `load_memory`, `load_skill`, `compact` |
 | **Git & Worktree** | `worktree_create`, `worktree_list`, `worktree_status`, `worktree_run`, `worktree_remove`, `worktree_events` |
 | **Interaction** | `ask_user`, `plan_approval`, `shutdown_request`, `shutdown_response` |
 
@@ -416,6 +416,7 @@ See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./b
 | `shutdown_request` | Request shutdown |
 | `shutdown_response` | Respond to shutdown request |
 | `save_memory` | Save persistent memory across sessions |
+| `load_memory` | Read one memory's full text by name (the injected index names them) |
 | `load_skill` | Load a named skill |
 | `compact` | Request conversation summarization (rewrites history only on success) |
 | `worktree_create` | Create a git worktree lane |
@@ -484,7 +485,8 @@ mode = "default"                 # default | plan | auto
 model_context_window = 200000     # tokens; 80% auto-compact + TUI meter
 snapshot_max_items = 80
 micro_compact_enabled = false     # stub old tool results before each LLM call
-memory_enabled = true             # false: no memory prompt / guidance / save_memory
+memory_enabled = true             # false: no memory index in the prompt, no guidance,
+                                  # and no save_memory / load_memory
 notifications_enabled = true
 skill_body_auto_inject = false
 # skill_dirs = ["~/shared-skills", "./vendor/skills"]
