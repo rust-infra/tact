@@ -41,6 +41,8 @@ fn tiny_context_config() -> tact_extensions::config::ResolvedConfig {
             memory_enabled: true,
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
+            skill_description_cap: tact_extensions::skill::DEFAULT_SKILL_DESCRIPTION_CAP,
+            skill_disable: Vec::new(),
             instruction_sources: tact_extensions::config::InstructionSources::default(),
             subagent: None,
         },

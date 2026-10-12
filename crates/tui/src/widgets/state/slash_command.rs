@@ -1,6 +1,6 @@
 use agent_tui_kit::state::clamp_step;
 
-use super::slash::SlashCommand;
+use super::slash::{SlashCommand, Subcommand};
 
 /// Slash command autocomplete popup state, triggered by '/' at the start of
 /// input or after whitespace in Insert mode.
@@ -63,6 +63,8 @@ impl super::App {
     ///   the token under the cursor — plus, for `/skill`, every installed
     ///   skill, which is where skills are offered now that they are not
     ///   first-level entries;
+    /// - the walk landed on a verb that takes a value (`/skill disable `) → the
+    ///   skills that verb can act on, so it is picked rather than typed;
     /// - anything else (`/code-reviewer fix`, `/mcp auth figma`) → nothing: the
     ///   rest is arguments, and there is nothing left to complete.
     pub(crate) fn slash_candidates(&self) -> Vec<Candidate> {
@@ -140,7 +142,8 @@ impl super::App {
     ///
     /// `/skill` is the one command whose children are not all static: every
     /// installed skill is one too, which is how skills reach the popup without
-    /// being first-level entries.
+    /// being first-level entries. And its two verbs are the one place where a
+    /// *value* is completable — see [`Self::skill_verb_candidates`].
     fn subcommand_candidates(
         &self,
         command: SlashCommand,
@@ -153,6 +156,10 @@ impl super::App {
         // last token.
         let mut path = command.name().to_string();
         let mut at_root = true;
+        // The subcommand the walk landed on, when it expects a value. Only
+        // `/skill disable|enable` qualify, and they are how a *value* gets
+        // completed instead of typed blind.
+        let mut value_sub: Option<&Subcommand> = None;
         for token in completed {
             // A skill is a child of `/skill` and a leaf: `/skill demo fix auth`
             // is an invocation with args, not a deeper path, and an unknown
@@ -164,6 +171,7 @@ impl super::App {
             path.push(' ');
             path.push_str(token);
             at_root = false;
+            value_sub = next.takes_value.then_some(next);
         }
 
         let mut scored: Vec<(i32, Candidate)> = node
@@ -196,8 +204,48 @@ impl super::App {
 
         if at_root && command == SlashCommand::Skill {
             candidates.extend(self.skill_candidates(partial));
+        } else if let Some(sub) = value_sub {
+            candidates.extend(self.skill_verb_candidates(&path, sub.name, partial));
         }
         candidates
+    }
+
+    /// The skills a `/skill disable|enable <name>` verb can act on, as
+    /// `<path> <name>` candidates — so the verb is picked from a list instead
+    /// of typed blind.
+    ///
+    /// Only the actionable ones: `disable` lists what is **in** the catalog and
+    /// `enable` what is out of it. Offering a skill that is already in the state
+    /// being asked for would be a row whose only outcome is the "already hidden"
+    /// message.
+    fn skill_verb_candidates(&self, path: &str, verb: &str, partial: &str) -> Vec<Candidate> {
+        // An unrecognised verb offers nothing rather than the wrong half of the
+        // list — the two arms are the declared pair, and a third one added later
+        // must decide its own filter here.
+        let actionable_disabled = match verb {
+            "disable" => false,
+            "enable" => true,
+            _ => return Vec::new(),
+        };
+
+        let mut skills: Vec<&crate::widgets::state::SkillEntry> = self
+            .skills_data
+            .iter()
+            .filter(|skill| skill.disabled == actionable_disabled)
+            .filter(|skill| partial.is_empty() || fuzzy_score(&skill.name, partial) > 0)
+            .collect();
+        skills.sort_by(|a, b| a.name.cmp(&b.name));
+        skills
+            .into_iter()
+            .map(|skill| Candidate {
+                path: format!("{path} {}", skill.name),
+                detail: skill.description.clone(),
+                is_skill: true,
+                // The name is the leaf: Enter runs the verb on the highlighted
+                // skill, which is the whole point of listing them.
+                incomplete: false,
+            })
+            .collect()
     }
 
     /// Every installed skill as a `/skill <name>` candidate, name order,
@@ -346,7 +394,12 @@ mod tests {
     fn a_trailing_space_offers_the_subcommands_of_a_builtin() {
         assert_eq!(
             paths(&app_typing("/skill ")),
-            ["skill list", "skill reload"]
+            [
+                "skill list",
+                "skill reload",
+                "skill disable",
+                "skill enable"
+            ]
         );
         assert_eq!(
             paths(&app_typing("/mcp ")),
@@ -430,6 +483,9 @@ mod tests {
             name: "skill-notes".into(),
             description: "Notes skill".into(),
             body: String::new(),
+
+            dir: String::new(),
+            disabled: false,
         }];
 
         let candidates = app.slash_candidates();
@@ -448,6 +504,51 @@ mod tests {
         );
     }
 
+    /// `/skill disable ` offers the skills that are **in** the catalog, so the
+    /// verb is picked from a list rather than typed blind.
+    #[test]
+    fn the_disable_verb_offers_the_skills_that_are_in_the_catalog() {
+        let mut app = app_typing("/skill disable ");
+        app.skills_data = seeded_skills();
+
+        assert_eq!(
+            paths(&app),
+            ["skill disable code-reviewer", "skill disable demo"]
+        );
+    }
+
+    /// `/skill enable ` offers the other half. A row for a skill already in the
+    /// catalog would only ever answer "already in the catalog".
+    #[test]
+    fn the_enable_verb_offers_only_what_is_out_of_the_catalog() {
+        let mut app = app_typing("/skill enable ");
+        let mut skills = seeded_skills();
+        skills[1].disabled = true;
+        app.skills_data = skills;
+
+        assert_eq!(paths(&app), ["skill enable demo"]);
+    }
+
+    /// The token under the cursor filters the list, through the same fuzzy
+    /// match every other candidate uses.
+    #[test]
+    fn the_disable_verb_filters_by_the_token_being_typed() {
+        let mut app = app_typing("/skill disable code");
+        app.skills_data = seeded_skills();
+
+        assert_eq!(paths(&app), ["skill disable code-reviewer"]);
+    }
+
+    /// Nothing left to act on closes the popup rather than showing an empty box
+    /// over an argument.
+    #[test]
+    fn the_enable_verb_offers_nothing_when_the_catalog_is_whole() {
+        let mut app = app_typing("/skill enable ");
+        app.skills_data = seeded_skills();
+
+        assert!(paths(&app).is_empty());
+    }
+
     #[test]
     fn the_first_level_is_builtins_only() {
         let mut app = app_typing("/");
@@ -456,6 +557,9 @@ mod tests {
                 name: format!("skill-{i:02}"),
                 description: format!("Skill {i}"),
                 body: String::new(),
+
+                dir: String::new(),
+                disabled: false,
             })
             .collect();
 
@@ -475,11 +579,17 @@ mod tests {
                 name: "code-reviewer".into(),
                 description: "代码审查专家".into(),
                 body: String::new(),
+
+                dir: String::new(),
+                disabled: false,
             },
             SkillEntry {
                 name: "demo".into(),
                 description: "Demo skill".into(),
                 body: String::new(),
+
+                dir: String::new(),
+                disabled: false,
             },
         ]
     }
@@ -501,6 +611,8 @@ mod tests {
             [
                 "skill list",
                 "skill reload",
+                "skill disable",
+                "skill enable",
                 "skill code-reviewer",
                 "skill demo"
             ]
@@ -533,6 +645,9 @@ mod tests {
                 name: "list".into(),
                 description: "shadowed".into(),
                 body: String::new(),
+
+                dir: String::new(),
+                disabled: false,
             }];
             app.slash_candidates()
         };
@@ -561,6 +676,9 @@ mod tests {
                 name: format!("skill-{i:02}"),
                 description: format!("Skill number {i} description"),
                 body: String::new(),
+
+                dir: String::new(),
+                disabled: false,
             })
             .collect();
         app

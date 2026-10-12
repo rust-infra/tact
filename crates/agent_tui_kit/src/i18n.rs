@@ -402,6 +402,21 @@ pub struct Messages {
     pub hook_output_persisted: &'static str,
     pub hook_output_session_only: &'static str,
     pub hook_output_persist_failed_tmpl: &'static str,
+    /// `/skill disable <name>` / `/skill enable <name>` report — the same two
+    /// halves `/hook-output` carries: what the catalog now excludes, and
+    /// whether it outlives the session. The name fills the first `{}`, the
+    /// outcome the second.
+    pub skill_catalog_hidden_tmpl: &'static str,
+    pub skill_catalog_shown_tmpl: &'static str,
+    pub skill_catalog_persisted: &'static str,
+    pub skill_catalog_session_only: &'static str,
+    pub skill_catalog_persist_failed_tmpl: &'static str,
+    /// The same subcommand asked twice — no write, no ceremony.
+    pub skill_already_hidden_tmpl: &'static str,
+    pub skill_already_shown_tmpl: &'static str,
+    /// A name that resolves to nothing. Deliberately **not** the usage hint:
+    /// the popup teaches the syntax, and this fires mid-command.
+    pub skill_unknown_tmpl: &'static str,
 
     // ---- 输入限制 ----
     pub input_too_long_tmpl: &'static str,
@@ -744,6 +759,14 @@ impl Messages {
             hook_output_persisted: "saved to config",
             hook_output_session_only: "this session only",
             hook_output_persist_failed_tmpl: "✗ Failed to save hook output: {}",
+            skill_catalog_hidden_tmpl: "🚫 `{}` is hidden from the catalog ({})",
+            skill_catalog_shown_tmpl: "✅ `{}` is back in the catalog ({})",
+            skill_catalog_persisted: "saved to config",
+            skill_catalog_session_only: "this session only",
+            skill_catalog_persist_failed_tmpl: "✗ Failed to save the skill catalog: {}",
+            skill_already_hidden_tmpl: "`{}` is already hidden from the catalog.",
+            skill_already_shown_tmpl: "`{}` is already in the catalog.",
+            skill_unknown_tmpl: "✗ Unknown skill `{}` — /skill list shows what is available.",
 
             input_too_long_tmpl: "⚠ Input too long (max {} characters). Please shorten your message.",
             skill_task_too_long_tmpl: "⚠ Skill payload too long (max {} characters). Shorten the skill body or args.",
@@ -1059,6 +1082,14 @@ impl Messages {
             hook_output_persisted: "已写入配置",
             hook_output_session_only: "仅本次会话",
             hook_output_persist_failed_tmpl: "✗ 保存 hook 输出开关失败: {}",
+            skill_catalog_hidden_tmpl: "🚫 `{}` 已从目录中隐藏（{}）",
+            skill_catalog_shown_tmpl: "✅ `{}` 已回到目录中（{}）",
+            skill_catalog_persisted: "已写入配置",
+            skill_catalog_session_only: "仅本次会话",
+            skill_catalog_persist_failed_tmpl: "✗ 保存 skill 目录设置失败: {}",
+            skill_already_hidden_tmpl: "`{}` 已经不在目录里了。",
+            skill_already_shown_tmpl: "`{}` 已经在目录里了。",
+            skill_unknown_tmpl: "✗ 未知 skill `{}` —— `/skill list` 会列出可用的。",
 
             input_too_long_tmpl: "⚠ 输入过长（最多 {} 个字符），请缩短后再发送。",
             skill_task_too_long_tmpl: "⚠ 技能内容过长（最多 {} 个字符），请缩短技能正文或参数。",

@@ -204,11 +204,17 @@ mod tests {
                 name: "help".into(),
                 description: "skill help".into(),
                 body: "x".into(),
+
+                dir: String::new(),
+                disabled: false,
             },
             SkillEntry {
                 name: "demo".into(),
                 description: "d".into(),
                 body: "y".into(),
+
+                dir: String::new(),
+                disabled: false,
             },
         ];
         let builtins: HashSet<&str> = ["help"].into_iter().collect();

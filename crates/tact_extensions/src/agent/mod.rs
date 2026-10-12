@@ -2827,7 +2827,10 @@ impl Agent {
                 if self.agent_settings.skill_body_auto_inject {
                     reg.describe_available_with_body()
                 } else {
-                    reg.describe_available()
+                    reg.describe_available_bounded(
+                        crate::skill::catalog_budget_chars(self.model_context_window()),
+                        self.agent_settings.skill_description_cap,
+                    )
                 }
             })
             .memory(memory)
@@ -3230,6 +3233,8 @@ mod tests {
             memory_enabled: true,
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
+            skill_description_cap: crate::skill::DEFAULT_SKILL_DESCRIPTION_CAP,
+            skill_disable: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
             subagent: None,
         };
@@ -4971,6 +4976,8 @@ mod tests {
             memory_enabled: true,
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
+            skill_description_cap: crate::skill::DEFAULT_SKILL_DESCRIPTION_CAP,
+            skill_disable: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
             subagent: None,
         };
@@ -5011,6 +5018,8 @@ mod tests {
             memory_enabled: true,
             skill_body_auto_inject: false,
             skill_dirs: Vec::new(),
+            skill_description_cap: crate::skill::DEFAULT_SKILL_DESCRIPTION_CAP,
+            skill_disable: Vec::new(),
             instruction_sources: crate::config::InstructionSources::default(),
             subagent: None,
         };

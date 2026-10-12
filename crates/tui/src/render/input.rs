@@ -160,6 +160,9 @@ mod render_tests {
             name: "demo-test".into(),
             description: "d".into(),
             body: "body".into(),
+
+            dir: String::new(),
+            disabled: false,
         }];
         app.input = "/demo-test hi".into();
         app.input_cursor = app.input.len();

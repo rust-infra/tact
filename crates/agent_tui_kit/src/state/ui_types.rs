@@ -35,6 +35,18 @@ pub struct SkillEntry {
     pub description: String,
     /// Markdown body after frontmatter (from disk at load / skill reload time).
     pub body: String,
+    /// Directory holding this skill's `SKILL.md`.
+    ///
+    /// Carried into the `<skill>` wrapper on invocation so the model can
+    /// resolve a bundled `references/` / `scripts/` path. Never sent in the
+    /// system prompt's catalog — see the catalog-budget spec.
+    pub dir: String,
+    /// Kept out of the system prompt's catalog by `[agent].skill_disable`.
+    ///
+    /// Still invocable by name; `/skill list` marks the row rather than hiding
+    /// it, because a row that silently vanishes is indistinguishable from a
+    /// broken install.
+    pub disabled: bool,
 }
 
 /// A persisted task-history entry.

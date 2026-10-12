@@ -174,6 +174,24 @@ pub struct AgentTomlConfig {
     #[serde(default)]
     pub skill_dirs: Vec<String>,
 
+    /// Cap on each skill description in the system prompt's catalog, in
+    /// characters (default: 200; `0` = uncapped).
+    ///
+    /// A catalog line is a routing hint — the whole description is what
+    /// `load_skill` returns. Measured on a machine carrying 79 skills, a
+    /// 200-char cap takes the catalog from 22.6 KB to 12.7 KB.
+    pub skill_description_cap: Option<usize>,
+
+    /// Skills kept out of the system prompt's catalog, by registry name
+    /// (`demo`, `plugin:brainstorming`).
+    ///
+    /// Hidden from automatic discovery only: `/skill <name>` and `load_skill`
+    /// still resolve them, so a typo cannot lock anyone out. Keyed on the name
+    /// rather than the path because a plugin skill's path carries the plugin
+    /// revision and changes on every update.
+    #[serde(default)]
+    pub skill_disable: Vec<String>,
+
     /// Project instruction files to inject into the system prompt (default: `["agents_md"]`).
     ///
     /// Supported values: `agents_md`.
@@ -434,6 +452,10 @@ pub struct AgentSettings {
     pub skill_body_auto_inject: bool,
     /// Extra skill roots from `[agent].skill_dirs` (unresolved path strings).
     pub skill_dirs: Vec<String>,
+    /// Cap on each catalog description, in characters (`0` = uncapped).
+    pub skill_description_cap: usize,
+    /// Registry names kept out of the catalog (still loadable by name).
+    pub skill_disable: Vec<String>,
     pub instruction_sources: crate::config::InstructionSources,
     /// Optional subagent provider/model configuration.
     pub subagent: Option<SubagentSettings>,

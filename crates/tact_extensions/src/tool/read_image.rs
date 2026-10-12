@@ -157,6 +157,8 @@ mod tests {
                 memory_enabled: true,
                 skill_body_auto_inject: false,
                 skill_dirs: Vec::new(),
+                skill_description_cap: crate::skill::DEFAULT_SKILL_DESCRIPTION_CAP,
+                skill_disable: Vec::new(),
                 instruction_sources: crate::config::InstructionSources::default(),
                 subagent: None,
             },
