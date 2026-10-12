@@ -14,7 +14,7 @@ use crate::{i18n::Messages, theme::Theme};
 /// frame); `'b` is the voice-label lifetime. They are deliberately separate:
 /// the label is usually a `String` built in the frame from the configured
 /// keybind, and a single shared lifetime would force the caller to leak it to
-/// reach `'a` (it did — see `book/26_chapter_issue_zh.md`, 2026-10-04).
+/// reach `'a` (it did — see `book/25_chapter_issue_zh.md`, 2026-10-04).
 pub struct HelpWidget<'a, 'b> {
     msgs: &'a Messages,
     theme: &'a Theme,

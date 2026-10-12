@@ -4,7 +4,7 @@
 //! [`biz`] defines account / quota structures. The Rust view-model and
 //! view-command types live in the `tact_view` crate, not here.
 //!
-//! State machine transitions: [book/25_chapter_protocol_zh.md](../book/25_chapter_protocol_zh.md).
+//! State machine transitions: [book/24_chapter_protocol_zh.md](../book/24_chapter_protocol_zh.md).
 
 pub mod agent;
 pub mod biz;

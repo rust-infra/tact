@@ -2055,7 +2055,7 @@ model = "gpt-4o"
     ///
     /// The report is serde's unknown-field error. Note it lists only the *real*
     /// agent fields — `thinking_budget` / `reasoning_effort` are absent, which is
-    /// what points the reader at `[llm]` (see Ch 21 §3).
+    /// what points the reader at `[llm]` (see Ch 20 §3).
     #[test]
     fn agent_thinking_keys_are_rejected() {
         for key in [

@@ -83,5 +83,5 @@ Status: **implemented**
 The spec's first draft claimed the drop order was "unchanged". It is **not**
 identical — the new segments necessarily interleave. The preserved invariant is
 the *relative* order of the pre-existing segments (`ctx > ∑ > cache`), with
-turns inserted between `ctx` and `∑` and timing dropping first. `book/23` and
+turns inserted between `ctx` and `∑` and timing dropping first. `book/22` and
 `docs/token_usage_schema.md` state the new order explicitly.

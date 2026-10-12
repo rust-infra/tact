@@ -174,7 +174,7 @@ fn format_mm_ss(secs: u64) -> String {
 
 /// Session user turns: `"⟳ 12"`. The `turns` word was dropped in the
 /// 2026-09-12 compaction — the glyph carries the meaning and the pair
-/// `⟳ 12 ⇅ 3` reads as one "turns" figure (see Ch 23 §6.6).
+/// `⟳ 12 ⇅ 3` reads as one "turns" figure (see Ch 22 §6.6).
 fn format_turn_user(count: u32) -> String {
     format!("{ICON_TURNS} {count}")
 }

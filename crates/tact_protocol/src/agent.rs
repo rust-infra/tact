@@ -4,7 +4,7 @@
 //! live in `tact_view`; this module keeps the serializable payloads both the
 //! Runtime protocol and the View contract refer to.
 //!
-//! State machine transitions: see [book/25_chapter_protocol_zh.md](../../book/25_chapter_protocol_zh.md).
+//! State machine transitions: see [book/24_chapter_protocol_zh.md](../../book/24_chapter_protocol_zh.md).
 
 use serde::{Deserialize, Serialize};
 
