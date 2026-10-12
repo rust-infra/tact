@@ -36,7 +36,7 @@ sequenceDiagram
 | `plugin_tx` / `plugin_request_rx` | `PluginRequest` | TUI → plugin worker |
 | `plugin_event_tx` / `plugin_rx` | `PluginEvent` | Plugin worker → TUI |
 
-`RuntimeEvent`、`UserCommand` 与 `AccountUpdate` 定义在 `tact_protocol`。`PluginRequest` 与 `PluginEvent` 定义在 `tact::plugin`；`tact-ui` 启动 worker，TUI 在渲染前 drain plugin event。
+`RuntimeEvent` 与 `AccountUpdate` 定义在 `tact_protocol`；`UserCommand` 是 **View 契约**类型，定义在 `tact_view`（不是跨语言的 Plugin Protocol）。`PluginRequest` 与 `PluginEvent` 定义在 `tact::plugin`；`tact-ui` 启动 worker，TUI 在渲染前 drain plugin event。
 
 **分层（2026-08）：** 可复用渲染面位于 `crates/agent_tui_kit`（设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`）。kit 只依赖 `tact_protocol` + ratatui；它拥有纯渲染函数（`render::bar` / `input` / `log` / `popups` / `task_panel` / `render_md` / `cells` …）、状态模型（`LogCoordinator`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`LogScroll` …）以及进出契约（`bridge::Command`、`AgentBridge`、`BridgeExtension`）。`crates/tui` 是 Tact 应用层：拥有 `App`、handlers、每帧 `prepare_*` 阶段（skill 样式、滚动缓存）以及应用层弹窗（palette、file picker、slash commands）。
 
@@ -786,7 +786,8 @@ TUI 本身不对流式事件直接调用 notification API。
 | `crates/tui/src/theme.rs` | 配色方案（从 kit re-export） |
 | `crates/agent_tui_kit` | 可复用 agent-TUI kit：纯渲染面板、状态模型、widgets、bridge 契约（设计 `docs/superpowers/specs/2026-08-18-tui-component-library-design.md`） |
 | `crates/agent_tui_kit/examples/mock_agent.rs` | Headless 端到端示例：`RuntimeEvent` 序列 → kit 状态 → 渲染帧（`cargo run -p agent_tui_kit --example mock_agent`） |
-| `tact_protocol` | `RuntimeEvent`、`UserCommand`、`AccountUpdate`、`BalanceInfo`（[Ch 25](./25_chapter_protocol_zh.md)） |
+| `tact_protocol` | `RuntimeEvent`、`AccountUpdate`、`BalanceInfo`（[Ch 25](./25_chapter_protocol_zh.md)） |
+| `tact_view` | `UserCommand`、`AgentErrorKind`——View 契约（[Ch 25](./25_chapter_protocol_zh.md)） |
 | `docs/tui_rendering.md` | 扩展渲染参考与扩展指南 |
 | `docs/tool_rendering.md` | Tool block 数据流与迁移说明 |
 

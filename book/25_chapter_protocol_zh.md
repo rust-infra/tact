@@ -275,7 +275,6 @@ graph TD
 ```
 
 **不翻转 `Status` 的更新**：`Text`、`Thinking`、`TokenUsage`、`ModelInfo`、`Info`、`InteractionRequested`、`StepStarted`、`ToolProgress`、`StepFinished`，以及 `Executing` 之后的 `StepAdded`。
-```
 
 | `RuntimeEvent` | TUI `Status` / mode | 说明 |
 |---------------|---------------------|------|
