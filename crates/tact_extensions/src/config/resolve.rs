@@ -544,6 +544,7 @@ struct NonLlmSettings {
     skill_description_cap: usize,
     skill_disable: Vec<String>,
     instruction_sources: InstructionSources,
+    auto_memory_directory: Option<String>,
     theme: String,
     language: String,
     vision_image: VisionImageSettings,
@@ -611,6 +612,15 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         InstructionSources::from_config(toml_cfg.agent.instruction_sources.clone())
             .map_err(|e| anyhow::anyhow!("invalid [agent].instruction_sources: {e}"))?;
 
+    // Kept as the raw string: `~` and relative forms need the workdir, which
+    // resolution does not have, so expansion happens in `memory::memory_root`.
+    let auto_memory_directory = toml_cfg
+        .agent
+        .auto_memory_directory
+        .clone()
+        .map(|raw| raw.trim().to_string())
+        .filter(|raw| !raw.is_empty());
+
     let theme = args
         .theme
         .clone()
@@ -666,6 +676,7 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
         skill_description_cap,
         skill_disable,
         instruction_sources,
+        auto_memory_directory,
         theme,
         language,
         vision_image,
@@ -717,6 +728,7 @@ pub(super) fn resolve_non_llm_settings(
             skill_description_cap: non_llm.skill_description_cap,
             skill_disable: non_llm.skill_disable,
             instruction_sources: non_llm.instruction_sources,
+            auto_memory_directory: non_llm.auto_memory_directory,
             subagent: None,
         },
         ui: UiSettings {
@@ -927,6 +939,7 @@ pub(super) fn resolve_config(
             skill_description_cap: non_llm.skill_description_cap,
             skill_disable: non_llm.skill_disable,
             instruction_sources: non_llm.instruction_sources,
+            auto_memory_directory: non_llm.auto_memory_directory,
             subagent,
         },
         ui: UiSettings {
@@ -1650,6 +1663,40 @@ skill_dirs = ["~/shared-skills", "./vendor/skills"]
             resolved.agent.skill_dirs,
             vec!["~/shared-skills".to_string(), "./vendor/skills".to_string()]
         );
+    }
+
+    /// The override stays an unresolved string: `~` and relative forms need the
+    /// workdir, which resolution does not have. Expansion is covered in
+    /// `crate::memory`.
+    #[test]
+    fn resolve_auto_memory_directory_from_toml() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[agent]
+auto_memory_directory = "~/my-memories"
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(
+            resolved.agent.auto_memory_directory.as_deref(),
+            Some("~/my-memories")
+        );
+
+        // Absent and blank both mean "derive the per-repository directory".
+        let resolved =
+            resolve_non_llm_settings(&empty_cli_args(), &TactTomlConfig::default(), None).unwrap();
+        assert_eq!(resolved.agent.auto_memory_directory, None);
+
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[agent]
+auto_memory_directory = "   "
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_non_llm_settings(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.agent.auto_memory_directory, None);
     }
 
     #[test]

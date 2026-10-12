@@ -149,9 +149,10 @@ pub struct AgentTomlConfig {
 
     /// Enable Tact's persistent memory (default: true).
     ///
-    /// When false, no memory block or memory guidance is injected into the
-    /// system prompt and the `save_memory` tool is not registered. Files under
-    /// `~/.tact/memory` are never deleted by this switch.
+    /// When false, no memory index or memory guidance is injected into the
+    /// system prompt and neither the `save_memory` nor the `load_memory` tool
+    /// is registered. Files under `~/.tact/projects/<slug>/memory` are never
+    /// deleted by this switch.
     pub memory_enabled: Option<bool>,
 
     /// How many ordinary LLM-call request bodies `token_usages` keeps per
@@ -196,6 +197,14 @@ pub struct AgentTomlConfig {
     ///
     /// Supported values: `agents_md`.
     pub instruction_sources: Option<Vec<String>>,
+
+    /// Where to keep persistent memory (optional).
+    ///
+    /// Overrides the derived per-repository directory
+    /// (`~/.tact/projects/<slug>/memory`). `~` / `~/…` expands to `$HOME`;
+    /// a relative path resolves against the workdir. Mirrors Claude Code's
+    /// `autoMemoryDirectory`.
+    pub auto_memory_directory: Option<String>,
 
     /// Subagent LLM configuration (optional).
     /// When configured, spawn_subagent uses a separate provider/model.
@@ -457,6 +466,10 @@ pub struct AgentSettings {
     /// Registry names kept out of the catalog (still loadable by name).
     pub skill_disable: Vec<String>,
     pub instruction_sources: crate::config::InstructionSources,
+    /// `[agent].auto_memory_directory` verbatim, or `None` to derive the
+    /// per-repository directory. Kept unresolved so path expansion stays at
+    /// the point of use, where the workdir is known.
+    pub auto_memory_directory: Option<String>,
     /// Optional subagent provider/model configuration.
     pub subagent: Option<SubagentSettings>,
 }

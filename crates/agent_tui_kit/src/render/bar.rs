@@ -526,7 +526,7 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             )
         }
         Status::Planning => {
-            let spinner = SPINNER_FRAMES[ctx.spinner_frame as usize];
+            let spinner = SPINNER_FRAMES[ctx.spinner_frame as usize % SPINNER_FRAMES.len()];
             (
                 format!(
                     "{} {} │ {} {}",
@@ -541,7 +541,7 @@ pub fn render_status_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
             current_step: _,
             total,
         } => {
-            let spinner = SPINNER_FRAMES[ctx.spinner_frame as usize];
+            let spinner = SPINNER_FRAMES[ctx.spinner_frame as usize % SPINNER_FRAMES.len()];
             // With parallel tools, `current_step` is no longer a reliable UI
             // progress anchor. Derive progress from completed + active steps.
             let completed = ctx

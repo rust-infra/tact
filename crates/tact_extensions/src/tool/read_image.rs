@@ -160,6 +160,7 @@ mod tests {
                 skill_description_cap: crate::skill::DEFAULT_SKILL_DESCRIPTION_CAP,
                 skill_disable: Vec::new(),
                 instruction_sources: crate::config::InstructionSources::default(),
+                auto_memory_directory: None,
                 subagent: None,
             },
             ui: crate::config::UiSettings {
