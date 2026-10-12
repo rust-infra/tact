@@ -580,6 +580,12 @@ pub(crate) fn handle_insert_mode(
             app.voice.cancel();
             app.dirty = true;
         }
+        KeyCode::Esc if app.pending_text_prompt.is_some() => {
+            // Esc declines a Kernel `Input` prompt: the caller gets
+            // `Cancelled` rather than waiting for text that will not come.
+            app.cancel_pending_text_prompt();
+            app.input_mode = InputMode::Normal;
+        }
         KeyCode::Esc => app.input_mode = InputMode::Normal,
         _ => {}
     }

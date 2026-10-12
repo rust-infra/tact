@@ -815,6 +815,42 @@ mod runtime_event_tests {
         );
     }
 
+    /// Esc declines a pending Kernel `Input` prompt: the caller is released
+    /// with `Cancelled` instead of waiting for text the user never typed.
+    #[test]
+    fn cancelling_a_pending_input_prompt_answers_the_broker() {
+        let mut app = make_app();
+        let (tx, mut user_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.user_cmd_tx = tx;
+
+        apply_runtime_event(
+            &mut app,
+            RuntimeEvent::InteractionRequested {
+                request: InteractionRequest::Input {
+                    request_id: RequestId::from("declined-input"),
+                    prompt: "Secret?".into(),
+                    secret: false,
+                },
+            },
+        );
+
+        assert!(app.cancel_pending_text_prompt(), "a prompt was waiting");
+
+        match user_rx.try_recv() {
+            Ok(tact_view::UserCommand::Runtime(
+                tact_protocol::RuntimeCommand::RespondInteraction {
+                    response: tact_protocol::InteractionResponse::Cancelled { request_id },
+                },
+            )) => assert_eq!(request_id.as_str(), "declined-input"),
+            other => panic!("declining must answer the broker, got {other:?}"),
+        }
+        assert_eq!(app.pending_text_prompt, None, "cancelled once, not twice");
+        assert!(
+            !app.cancel_pending_text_prompt(),
+            "nothing left to cancel: a second Esc is an ordinary Esc"
+        );
+    }
+
     /// A Kernel `Input` prompt is answered from the composer rather than
     /// refused: the question goes to the transcript, the state records the
     /// request, and the answer carries the typed text back to the broker.

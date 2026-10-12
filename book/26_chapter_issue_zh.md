@@ -4,6 +4,24 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — 拒绝一个待答的 `Input` 提示：Esc 以 `Cancelled` 应答（补上一处我自己引入的等待）
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（行为变化：Esc 会让 Kernel 的 `Input` 请求收到 `Cancelled`；此前调用方一直等） |
+| **Related** | `crates/tui/src/widgets/state/app/agent.rs`、`crates/tui/src/handlers/insert.rs`、`crates/tui/src/lib.rs` |
+
+**现象 / 动机：** 上一轮让 `Input` 由输入框作答，但没有「不作答」的出口：用户按 Esc 只是退出输入模式，`pending_text_prompt` 仍挂着，于是 broker 那侧继续等文本——直到会话结束才因通道关闭而失败。**这是我引入的等待**，与之前那处「丢弃即挂死」同一类问题。
+
+**决策：** 把「放弃」也做成一个明确的应答，并沿用同一个可测的缝：新增 `App::cancel_pending_text_prompt()`（返回是否真的取消了），Esc 在**有待答提示时**先取消（发 `InteractionResponse::Cancelled { request_id }`）再退出输入模式；没有待答提示时 Esc 行为完全不变（仍然只是回到 Normal）。这样「作答 / 放弃」两条出口都收敛在 `App` 的两个可测方法上。
+
+**改后行为：** Esc 拒绝一个待答的 `Input` → 调用方立刻收到 `Cancelled`；普通 Esc 不变。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；`cargo test --workspace` **2948 → 2949 passed / 0 failed / 22 ignored**（+1：`cancelling_a_pending_input_prompt_answers_the_broker` 断言实际发出的命令是携带 broker id 的 `Cancelled`、只取消一次、且第二次调用返回 false——即普通 Esc 不受影响）。诚实标注：该测试覆盖的是语义核心 `cancel_pending_text_prompt`，Esc 的**按键绑定本身**未被单独断言（`insert.rs` 既有的 Esc 测试仍全绿，因为守卫只在有待答提示时触发）。
+
+**Pointers:** `crates/tui/src/widgets/state/app/agent.rs::cancel_pending_text_prompt`、`crates/tui/src/handlers/insert.rs`（Esc 守卫）、`ARCHITECTURE.md` §15。
+
+
 ## 1. 2026-10-11 — 插件生命周期事实有了产出者：`PluginStarted` / `PluginStopped`（#12 残余之一）
 
 | Field | Value |

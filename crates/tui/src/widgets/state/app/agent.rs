@@ -274,6 +274,18 @@ impl App {
         true
     }
 
+    /// Abandons a pending Kernel `Input` prompt, if one is waiting.
+    ///
+    /// Returns whether it cancelled one, so Esc can answer `Cancelled` instead
+    /// of leaving the caller waiting for text the user declined to type.
+    pub(crate) fn cancel_pending_text_prompt(&mut self) -> bool {
+        let Some(request_id) = self.pending_text_prompt.take() else {
+            return false;
+        };
+        self.respond_ui(tact_protocol::InteractionResponse::Cancelled { request_id });
+        true
+    }
+
     /// Cancel the current task. If an agent select is open, answer it with
     /// `None` first so the permission waiter is not left hanging.
     pub(crate) fn cancel_task(&mut self) {
