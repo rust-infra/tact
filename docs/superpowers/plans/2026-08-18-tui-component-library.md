@@ -10,6 +10,8 @@
 
 **Design:** `docs/superpowers/specs/2026-08-18-tui-component-library-design.md`.
 
+> **Note on names below (added 2026-10-12):** this plan predates the render move into `agent_tui_kit`. Function and type names it uses for the app-side rewrite (`ChatItem`, `on_tool_meta`, `push_item`, `splice_stream_lines`, `remove_placeholder`, `remove_active_tool_rows`, `cancel_active_tool`, `finalize_tool_block`, `set_theme`, `format_task_elapsed`, `bottom_turns` / `bottom_llm_turns` / `format_turn_counters_labeled`) are **planning vocabulary**: most never existed in the shipped code, and the ones that did did not survive the move. The plan's own closing note ("the app side is deliberately not done") is still the honest reading; for what the code actually calls today, read `crates/agent_tui_kit/src/` (e.g. the tool component finalizes through `finalize_push`, not `finalize_tool_block`).
+
 ## Options
 
 - **A (target):** full extraction into `agent_tui_kit` with the `Component` trait; `crates/tui` becomes the app layer.
