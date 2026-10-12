@@ -247,6 +247,8 @@ impl MockShell {
                     ])
                     .split(size);
                 let ctx = RenderCtx {
+                    log_following: true,
+                    log_unseen: false,
                     theme: &self.theme,
                     messages: Messages::by_language(Language::English),
                     log_scroll: &self.log_scroll,

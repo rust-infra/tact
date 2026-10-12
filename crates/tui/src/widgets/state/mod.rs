@@ -140,6 +140,9 @@ pub(crate) struct AgentSelectRequest {
 /// TUI application main state, holding all UI state, scroll positions,
 /// communication channels, and current mode.
 pub struct App {
+    /// The back-to-bottom pill's hit area, recorded by render so a click can
+    /// return to the tail (see the mouse handler).
+    pub(crate) scroll_back_area: ratatui::layout::Rect,
     // Input
     pub(crate) input: String,
     pub(crate) input_cursor: usize,

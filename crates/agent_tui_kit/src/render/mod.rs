@@ -15,6 +15,7 @@ pub mod popups;
 pub mod pulldown;
 pub mod render_md;
 pub mod renderable;
+pub mod scroll_pill;
 pub mod selectable_text;
 pub mod slash_style;
 pub mod stats_line;

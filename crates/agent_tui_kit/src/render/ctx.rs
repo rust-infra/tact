@@ -29,6 +29,14 @@ pub struct RenderCtx<'a> {
     /// Owned copy (all-`&'static str`, built once per frame from the language).
     pub messages: Messages,
     pub log_scroll: &'a LogScroll,
+    /// Whether the log is following its tail (`LogScroll::follow`).
+    ///
+    /// Surfaced as a plain bool because render code must not re-derive it:
+    /// the visual caches it would have to consult are stale the moment a row
+    /// lands, which is exactly when the answer is asked for.
+    pub log_following: bool,
+    /// Rows arrived while the log was scrolled away — the "new activity" badge.
+    pub log_unseen: bool,
     pub log: &'a LogCoordinator,
     pub code_blocks: &'a [CodeBlock],
     pub mermaid_blocks: &'a [MermaidBlock],

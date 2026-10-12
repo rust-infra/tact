@@ -117,17 +117,55 @@ impl App {
         self.log_scroll.offset = u16::try_from(i).unwrap_or(u16::MAX);
     }
 
+    /// Record the back-to-bottom hint's hit area (render-time; clicking it
+    /// returns to the tail, see the mouse handler).
+    pub(crate) fn set_scroll_back_area(&mut self, area: ratatui::layout::Rect) {
+        self.scroll_back_area = area;
+    }
+
     /// Jump to the top of the log.
     pub(crate) fn scroll_log_to_top(&mut self) {
         self.log_scroll.visual_top = 0;
         self.log_scroll.offset = 0;
+        self.log_scroll.follow = false;
     }
 
     /// Pin the viewport to the bottom of the log (also the pre-render
     /// sentinel state used while new content streams in).
+    ///
+    /// The one place that re-arms the tail: it both pins *now* and clears the
+    /// "new activity" badge, because arriving at the bottom is what the badge
+    /// was asking for.
     pub(crate) fn scroll_log_to_bottom(&mut self) {
         self.log_scroll.visual_top = usize::MAX;
         self.log_scroll.offset = u16::MAX;
+        self.log_scroll.follow = true;
+        self.log_scroll.unseen = false;
+    }
+
+    /// After new rows land at the **end** of the log: keep the tail pinned if
+    /// we were following it, otherwise leave the reader where they are and
+    /// light the "new activity" badge.
+    ///
+    /// This is the whole follow-the-tail policy, and it lives here rather than
+    /// at the ~10 call sites that used to call `scroll_log_to_bottom()`
+    /// unconditionally — those yanked the viewport back down on every streamed
+    /// chunk, which made reading scrollback during a live turn impossible.
+    pub(crate) fn note_log_rows_appended(&mut self) {
+        if self.log_scroll.follow {
+            self.scroll_log_to_bottom();
+        } else {
+            self.log_scroll.unseen = true;
+        }
+    }
+
+    /// After rows **above** the viewport change height (a tool card or thinking
+    /// block growing in place): re-pin only if we were following. No badge —
+    /// nothing new appeared at the end, so there is nothing to scroll to.
+    pub(crate) fn keep_log_tail_pinned(&mut self) {
+        if self.log_scroll.follow {
+            self.scroll_log_to_bottom();
+        }
     }
 
     /// Scroll up by `step` visual lines inside a tall cell (row-boundary
@@ -136,6 +174,8 @@ impl App {
         let v = self.log_viewport_top();
         let vh = self.log_scroll.height as usize;
         self.log_scroll.visual_top = visual_step_up(&self.log_scroll.visual_start, vh, v, step);
+        // Any deliberate move up is a decision to stop following the tail.
+        self.log_scroll.follow = false;
         self.sync_log_offset_mirror();
     }
 
@@ -144,7 +184,17 @@ impl App {
     pub(crate) fn scroll_log_down(&mut self, step: usize) {
         let v = self.log_viewport_top();
         let vh = self.log_scroll.height as usize;
-        self.log_scroll.visual_top = visual_step_down(&self.log_scroll.visual_start, vh, v, step);
+        let next = visual_step_down(&self.log_scroll.visual_start, vh, v, step);
+        self.log_scroll.visual_top = next;
+        // Scrolling back down to the end resumes following — the reader asked
+        // for the tail, and the badge has nothing left to point at. An empty
+        // cache (nothing drawn yet) says nothing and must re-arm nothing.
+        if let Some(&total) = self.log_scroll.visual_start.last() {
+            let max_visual = total.saturating_sub(self.log_scroll.height as usize);
+            if next >= max_visual {
+                self.scroll_log_to_bottom();
+            }
+        }
         self.sync_log_offset_mirror();
     }
 }
@@ -152,6 +202,89 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::render::test_harness::{make_app, render_log_panel_text};
+
+    /// A reader who is at the bottom stays there as rows arrive.
+    #[test]
+    fn a_new_row_keeps_a_following_viewport_at_the_bottom() {
+        let mut app = make_app();
+
+        app.append_markdown("first");
+
+        assert!(app.is_log_pinned_to_bottom());
+        assert_eq!(app.log_scroll.visual_top, usize::MAX);
+        assert!(
+            !app.log_scroll.unseen,
+            "a following reader has nothing to be told about"
+        );
+    }
+
+    /// The point of the whole change: output arriving while the reader is
+    /// scrolled up must not move them, and must say that it arrived.
+    #[test]
+    fn a_new_row_does_not_move_a_scrolled_away_viewport_and_lights_the_badge() {
+        let mut app = make_app();
+        app.append_markdown("first");
+        app.scroll_log_up(1);
+        let top = app.log_scroll.visual_top;
+        assert!(!app.is_log_pinned_to_bottom());
+
+        app.append_markdown("second");
+
+        assert_eq!(
+            app.log_scroll.visual_top, top,
+            "the reader keeps their place"
+        );
+        assert!(app.log_scroll.unseen, "and is told there is more below");
+    }
+
+    #[test]
+    fn scrolling_back_down_to_the_end_resumes_following() {
+        let mut app = make_app();
+        for i in 0..40 {
+            app.append_markdown(format!("row-{i}"));
+        }
+        let _ = render_log_panel_text(&mut app, 60, 6);
+        app.scroll_log_up(1);
+        assert!(!app.is_log_pinned_to_bottom());
+
+        app.scroll_log_down(100);
+
+        assert!(
+            app.is_log_pinned_to_bottom(),
+            "reaching the end is asking for the tail again"
+        );
+        assert!(!app.log_scroll.unseen, "and clears the badge");
+    }
+
+    #[test]
+    fn jumping_to_the_top_stops_following() {
+        let mut app = make_app();
+        app.append_markdown("first");
+
+        app.scroll_log_to_top();
+
+        assert!(!app.is_log_pinned_to_bottom());
+    }
+
+    /// The one append that always follows: the user just pressed Enter.
+    #[test]
+    fn the_users_own_message_always_comes_into_view() {
+        let mut app = make_app();
+        for i in 0..40 {
+            app.append_markdown(format!("row-{i}"));
+        }
+        let _ = render_log_panel_text(&mut app, 60, 6);
+        app.scroll_log_up(3);
+        assert!(!app.is_log_pinned_to_bottom());
+
+        app.add_user_message("my question".into());
+
+        assert!(
+            app.is_log_pinned_to_bottom(),
+            "Enter means: show me my own words"
+        );
+    }
 
     /// Layout: 4 logical rows.
     ///   row0: visual [0..1)   short

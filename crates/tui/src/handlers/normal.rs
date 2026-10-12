@@ -124,7 +124,14 @@ pub(crate) fn handle_normal_mode(
             app.should_quit = true;
         }
         KeyCode::Esc => {
-            app.mouse.log_selection = None;
+            // Same ladder as Insert mode: a log scrolled away from its tail is
+            // a view state, so `esc` returns to the bottom first and only
+            // clears the selection once the reader is back at the tail.
+            if !app.is_log_pinned_to_bottom() {
+                app.scroll_log_to_bottom();
+            } else {
+                app.mouse.log_selection = None;
+            }
         }
         _ => {}
     }

@@ -12,6 +12,23 @@ pub struct LogScroll {
     /// of such cells stays reachable. `usize::MAX` is the pre-render
     /// "pin to bottom" sentinel; render clamps it to `total - height`.
     pub visual_top: usize,
+    /// Following the tail: new rows keep the viewport pinned to the bottom.
+    ///
+    /// **Explicit, not derived.** `visual_top == usize::MAX` is only the
+    /// pre-render spelling of this state — the render pass writes the clamped
+    /// value back, so after the first frame the sentinel is gone and the flag
+    /// is the only reliable record. Deriving it from the visual caches instead
+    /// fails exactly when it matters: those caches are versioned on
+    /// `items.len()`, so they are stale the moment a row is appended.
+    ///
+    /// Cleared by any scroll away from the bottom; set by
+    /// [`App::scroll_log_to_bottom`](crate::widgets::state::App::scroll_log_to_bottom)
+    /// and by scrolling down to the end.
+    pub follow: bool,
+    /// Rows arrived while `follow` was false — the "new activity" badge.
+    ///
+    /// Cleared whenever the viewport returns to the bottom.
+    pub unseen: bool,
     /// Derived logical offset mirror (row containing `visual_top`), kept in
     /// sync by render and scroll handlers for read-only consumers such as
     /// mouse hit-testing, the code-card popup, and tests.
@@ -47,6 +64,8 @@ impl LogScroll {
     pub fn new() -> Self {
         Self {
             visual_top: 0,
+            follow: true,
+            unseen: false,
             offset: 0,
             state: ScrollbarState::new(0),
             height: 10,

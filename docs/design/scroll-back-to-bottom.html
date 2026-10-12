@@ -1,0 +1,354 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Tact · 「回到最新」悬浮药丸 — 设计</title>
+<style>
+  :root{
+    --page-bg:#f7f7f5;--page-fg:#1d1d1f;--page-dim:#6b6b70;--card:#fff;--line:#e3e3df;--chip:#f0f0ec;
+    /* Japanese theme —— 与截图里 Tact 实际用的主题一致 */
+    --bg:#191e2d;--fg:#e6dcc8;--accent:#c83c28;--muted:#808080;--border:#322d28;
+    --success:#64a046;--warning:#d2a032;--highlight:#3c5078;--think:#8c8cdc;--think-fg:#b4b4c8;
+    --bar:#232837;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;padding:30px 24px 64px;background:var(--page-bg);color:var(--page-fg);
+       font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC",sans-serif;font-size:14px;line-height:1.6}
+  .wrap{max-width:1100px;margin:0 auto}
+  h1{font-size:21px;margin:0 0 6px}
+  h2{font-size:14.5px;margin:28px 0 10px}
+  .sub{color:var(--page-dim);margin:0 0 4px}
+  code{font-family:ui-monospace,Menlo,monospace;font-size:12px;background:var(--chip);border-radius:4px;padding:1px 5px}
+
+  .seg{display:inline-flex;background:var(--chip);border-radius:9px;padding:3px;gap:2px;margin:10px 0 14px}
+  .seg button{border:0;background:transparent;font:inherit;font-size:12.5px;color:var(--page-dim);padding:5px 11px;border-radius:7px;cursor:pointer}
+  .seg button[aria-pressed="true"]{background:#fff;color:var(--page-fg);box-shadow:0 1px 2px rgba(0,0,0,.1)}
+
+  .term{background:var(--bg);border-radius:10px;padding:10px 0 0;overflow:hidden;
+        font-family:"JetBrainsMono NFM","JetBrainsMonoNL NFM","Hack Nerd Font Mono",ui-monospace,Menlo,"PingFang SC",monospace;
+        font-size:12.5px;line-height:1.5;box-shadow:0 6px 22px rgba(20,20,30,.16)}
+  .trow{white-space:pre;overflow:hidden;padding:0 14px;color:var(--fg)}
+  .trow.dim{color:var(--muted)}
+  .tbar{background:var(--bar);padding:3px 14px;font-size:12px}
+  .tbar .acc{color:var(--accent)}.tbar .dim{color:var(--muted)}
+  .think{color:var(--think)}.thinkfg{color:var(--think-fg)}
+  .ok{color:var(--success)}.link{color:var(--accent)}.num{color:var(--accent)}
+
+  /* Log 面板：下边框单独一行，因为药丸要和它共用那一行 */
+  .panel{position:relative;border:1px solid var(--border);border-bottom:0;border-radius:8px 8px 0 0;
+         margin:4px 10px 0;overflow:hidden}
+  .panel .trow{padding:0 12px}
+  .srow{position:relative;text-align:center;white-space:pre;overflow:hidden;color:var(--accent)}
+
+  /* 日志区的最后一行：终端里「下边框字形」和「药丸」就是同一行的不同格子，不会重叠。
+     CSS 里用一行高度 + 中间一条 1px 线来还原这个事实。 */
+  .borderrow{position:relative;height:1.5em;margin:0 10px;
+             border-left:1px solid var(--border);border-right:1px solid var(--border);
+             border-bottom:1px solid var(--border);border-radius:0 0 8px 8px}
+  .borderrow::before{content:"";position:absolute;left:1ch;right:1ch;top:calc(50% - .5px);
+                     height:1px;background:var(--border)}
+
+  /* 粘性条（Tasks/Subagent/Background）—— 可见时它接管这一行 */
+  .sticky{position:relative;height:1.5em;margin:0 10px;padding:0 1ch;
+          border-left:1px solid var(--border);border-right:1px solid var(--border);
+          border-bottom:1px solid var(--border);border-radius:0 0 8px 8px;color:var(--fg);font-size:12.5px}
+  .sticky .on{color:var(--accent);font-weight:600}
+  /* 域摘要必须在药丸左边界前被裁掉 —— 终端里两个 span 不会互相盖住 */
+  .stickytext{display:inline-block;max-width:calc(100% - 30ch);overflow:hidden;white-space:pre;vertical-align:top}
+
+  /* 药丸本体：占同一行里靠右的一段。靠右而不是居中 —— 实时统计行是居中的，
+     两条居中的行上下叠着会读成一坨（见下面 ✗ 那张）。
+     border-radius = 终端里的两个圆角端字形（U+E0B6 / U+E0B4）：终端没有 border-radius，
+     端格用 band 色画在面板底色上，圆角才看得见。 */
+  .pill{position:absolute;right:1ch;top:50%;transform:translateY(-50%);white-space:pre;
+        background:var(--bar);color:var(--warning);padding:0 1ch;z-index:3;border-radius:999px}
+  .pill .badge{color:var(--muted)}
+  .pill.centered{right:auto;left:50%;transform:translate(-50%,-50%)}
+  .anno{position:absolute;right:1ch;top:100%;color:#f0c020;font-size:11.5px;z-index:4;white-space:nowrap}
+
+  .inputbox{position:relative;margin:6px 10px 0;border:1px solid var(--border);border-radius:8px;height:42px}
+  .inputbox .title,.inputbox .voice{position:absolute;top:-9px;background:var(--bg);padding:0 6px;font-size:12.5px;color:var(--accent)}
+  .inputbox .title{left:10px}.inputbox .voice{right:10px}
+  .inputbox .ph{padding:7px 14px;color:var(--muted);font-size:12.5px}
+
+  /* ── B 档：提示挂在输入框上边框（ratatui 的 Block 多 title 模式）── */
+  /* 三个 title 同挂一条上边框：左 input_box_title / 中 语音 / 右 本提示。
+     它们不是新的渲染单元 —— 就是 Block 的 title，所以没有 band、没有 overlay。 */
+  .inputrow{position:relative;height:1.5em;margin:0 10px;
+            border-left:1px solid var(--border);border-right:1px solid var(--border);
+            border-top:1px solid var(--border);border-radius:8px 8px 0 0}
+  .inputrow::before{content:"";position:absolute;left:1ch;right:1ch;top:calc(50% - .5px);
+                    height:1px;background:var(--border)}
+  .ttl{position:absolute;top:50%;transform:translateY(-50%);background:var(--bg);padding:0 .5ch;white-space:pre}
+  .ttl.left{left:1ch;color:var(--accent)}
+  .ttl.mid{left:50%;transform:translate(-50%,-50%);color:var(--accent)}
+  .ttl.right{right:1ch;color:var(--warning)}
+  .ttl .badge{color:var(--muted)}
+  .inputbody{border-left:1px solid var(--border);border-right:1px solid var(--border);
+             border-bottom:1px solid var(--border);border-radius:0 0 8px 8px;margin:0 10px;height:2.4em;
+             display:flex;align-items:center;padding:0 12px;color:var(--muted);font-size:12.5px}
+  .bottom{margin-top:8px;color:var(--accent);padding:2px 14px 10px;font-size:12px}
+
+  /* Esc 梯子 */
+  .ladder{display:flex;flex-wrap:wrap;align-items:center;gap:6px;margin-top:6px}
+  .step{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:6px 11px;font-size:12.5px}
+  .step.now{background:#e8f2e4;border-color:#bcd9b0;font-weight:600}
+  .arw{color:var(--page-dim)}
+
+  .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(330px,1fr));gap:14px;margin-top:8px}
+  .card{background:var(--card);border:1px solid var(--line);border-radius:10px;padding:13px 16px}
+  .card h3{margin:0 0 8px;font-size:13.5px}
+  .card ul{margin:0;padding-left:18px}.card li{margin:4px 0}
+  .no{color:#a33}.yes{color:#2f6b1f}
+  .cap{color:var(--page-dim);font-size:12px;margin:6px 0 0}
+  footer{color:var(--page-dim);font-size:12px;margin-top:26px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <h1>「回到最新」悬浮药丸</h1>
+  <p class="sub">滚离底部时，在日志区最后一行<b>靠右下停靠</b>一行药丸；有新输出时多一段 <code>New activity · </code> 徽章。点它或按 <code>esc</code> 回到最新。</p>
+  <p class="sub" style="margin-top:4px"><b>为什么靠右不居中：</b>实时统计行是居中的，两条居中的行上下叠在一起会读成一坨（见下面 ✗ 那张）。停靠右侧就把两者的轴分开了 —— 左边是内容，右下是 chrome。</p>
+
+  <div class="seg" id="seg">
+    <button data-s="new" aria-pressed="true">滚离 + 有新活动</button>
+    <button data-s="away">滚离，无新活动</button>
+    <button data-s="bottom">贴着底部</button>
+  </div>
+
+  <div class="term">
+    <div class="tbar"><span class="acc">tact</span> <span class="dim">·</span> main <span class="dim">·</span> <span class="acc">Japanese</span> <span class="dim">·</span> ~/Projects/tact</div>
+
+    <div class="panel">
+      <div class="trow"><span class="think">▎</span> <span class="think">Thought</span></div>
+      <div class="trow thinkfg">Let me check the append paths.</div>
+      <div class="trow dim">○ 4.2s  ⧉ 1/38 Lines  <span class="link">[ Open ]</span></div>
+      <div class="trow"><span class="num">1. ⚡ Bash</span>  <span>cd /Users/rg/Projects/tact &amp;&amp; grep -rn "scroll_log_to_bottom" crates/tui/src</span></div>
+      <div class="trow dim">   <span class="ok">✓ Success</span> · 12.1ms · 11 lines · <span class="link">[ Open ]</span></div>
+      <div class="trow">往上翻到这里看输出 —— 下面还在继续写。</div>
+      <div class="trow dim">↑ 你已经不在最新处了（这一屏比底部早 27 行）</div>
+
+    </div>
+    <!-- 日志区的最后一行：边框字形与药丸共用它 -->
+    <div class="borderrow">
+      <span class="pill" id="pill"></span>
+      <span class="anno" id="anno">↖ 药丸和边框共用这一行，靠右停靠</span>
+    </div>
+
+    <div class="inputbox">
+      <span class="title">❯ Input (Shift/Alt+Enter=newline)</span>
+      <span class="voice">⏺ Voice</span>
+      <div class="ph">Type a task and press Enter…</div>
+    </div>
+    <div class="bottom">? Task list · Ctrl+C 中断 · Ctrl+T 主题 · /help</div>
+  </div>
+  <p class="cap" id="cap"></p>
+
+  <h2>三处需要长眼睛看的地方</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>① 与实时统计行共存（任务在飞）<span style="color:#2f6b1f;font-weight:600"> · 靠右下</span></h3>
+      <div class="term" style="padding:6px 0">
+        <div class="panel" style="margin:0 6px">
+          <div class="trow dim">… 上面的日志 …</div>
+          <div class="srow">Task stats:⏱ 02:50 · deepseek-flash · 256460 tok…</div>
+        </div>
+        <div class="borderrow" style="margin:0 6px">
+          <span class="pill"><span class="badge">New activity · </span>↓ Back to bottom · esc</span>
+        </div>
+      </div>
+      <p class="cap">统计行占最后一行<b>内容</b>行且<b>居中</b>；药丸占<b>下边框</b>行、<b>靠右</b>。不同行 + 不同轴 = 两件东西。</p>
+    </div>
+
+    <div class="card" style="border-color:#e8c9c0;background:#fffaf9">
+      <h3 style="color:#a33">✗ 之前：药丸也居中</h3>
+      <div class="term" style="padding:6px 0">
+        <div class="panel" style="margin:0 6px">
+          <div class="trow dim">… 上面的日志 …</div>
+          <div class="srow">Task stats:⏱ 02:50 · deepseek-flash · 256460 tok…</div>
+        </div>
+        <div class="borderrow" style="margin:0 6px">
+          <span class="pill centered"><span class="badge">New activity · </span>↓ Back to bottom · esc</span>
+        </div>
+      </div>
+      <p class="cap">两条<b>居中的行</b>上下叠着 —— 统计行的数字和药丸读成一坨。Codex 之所以不糊，是因为它上面那行 <code>• Working</code> 是<b>左对齐</b>的：它从来没有两条同轴的行。</p>
+    </div>
+
+    <div class="card">
+      <h3>② 与粘性条共存</h3>
+      <div class="term" style="padding:6px 0">
+        <div class="panel" style="margin:0 6px">
+          <div class="trow dim">… 上面的日志 …</div>
+        </div>
+        <div class="sticky" style="margin:0 6px">
+          <span class="stickytext"><span class="on">[Tasks]</span> <span style="color:var(--muted)">1/3 · focus · 2 running · 1 blocked</span></span>
+          <span class="pill">↓ Back to bottom · esc</span>
+        </div>
+      </div>
+      <p class="cap">粘性条可见时，它接管最后一行 —— 药丸落在同一行的右端。左边是域摘要，右下是 chrome，不抢轴。</p>
+    </div>
+
+    <div class="card">
+      <h3>③ 贴着底部：什么都不画</h3>
+      <div class="term" style="padding:6px 0">
+        <div class="panel" style="margin:0 6px">
+          <div class="trow dim">… 上面的日志 …</div>
+          <div class="trow">最新一行就在底部</div>
+        </div>
+        <div class="borderrow" style="margin:0 6px"></div>
+      </div>
+      <p class="cap">贴底时那一行就是普通的下边框。药丸是 overlay，<b>0 行成本</b>。</p>
+    </div>
+  </div>
+
+  <h2>B 档（推荐）：提示挂在输入框上边框右端</h2>
+  <p class="sub">不是新渲染单元 —— 就是 <code>Block</code> 的第三个 title（左边 <code>input_box_title</code>、中间语音标签已经在用同一个模式）。所以<b>没有 band、没有 overlay</b>，宽度不够时跟左侧 title 一起被 block 裁掉。</p>
+  <p class="sub" style="margin-top:4px">但它是<b>可点的</b>：渲染时顺手算出那串字形的矩形返回给 host（和现有 <code>[Cancel]</code> 按钮同一个契约），点它 = 按 <code>esc</code>。命中矩形精确覆盖字形、不碰左右边框。</p>
+  <div class="seg" id="segB">
+    <button data-b="new" aria-pressed="true">滚离 + 有新活动</button>
+    <button data-b="away">滚离，无新活动</button>
+    <button data-b="bottom">贴着底部</button>
+  </div>
+
+  <div class="term" style="padding:8px 0 10px">
+    <div class="tbar"><span class="acc">tact</span> <span class="dim">·</span> main <span class="dim">·</span> <span class="acc">Japanese</span> <span class="dim">·</span> ~/Projects/tact</div>
+    <div class="panel" style="margin:4px 10px 0;border-radius:8px">
+      <div class="trow dim">… 上面的日志（你正在往上翻）…</div>
+    </div>
+    <div class="inputrow" style="margin-top:6px">
+      <span class="ttl left">❯ Input (Shift/Alt+Enter=newline)</span>
+      <span class="ttl mid">⏺ Voice</span>
+      <span class="ttl right" id="hintB"></span>
+    </div>
+    <div class="inputbody">Type a task and press Enter…</div>
+    <div class="bottom" style="margin-top:6px">? Task list · Ctrl+C 中断 · Ctrl+T 主题 · /help</div>
+  </div>
+  <p class="cap" id="capB"></p>
+
+  <div class="grid">
+    <div class="card">
+      <h3>三档并排：同一件事，三种说法</h3>
+      <div class="term" style="padding:8px 0 10px">
+        <div class="trow dim" style="padding-bottom:4px">A · 什么都不画（只有行为变化）</div>
+        <div class="inputrow" style="margin-top:0">
+          <span class="ttl left">❯ Input (Shift/Alt+Enter=newline)</span>
+          <span class="ttl mid">⏺ Voice</span>
+        </div>
+        <div class="inputbody">Type a task and press Enter…</div>
+
+        <div class="trow dim" style="padding:8px 0 4px">B · 输入框上边框右端（推荐）</div>
+        <div class="inputrow" style="margin-top:0">
+          <span class="ttl left">❯ Input (Shift/Alt+Enter=newline)</span>
+          <span class="ttl mid">⏺ Voice</span>
+          <span class="ttl right"><span class="badge">新活动 · </span>↓ 回到最新 · esc</span>
+        </div>
+        <div class="inputbody">Type a task and press Enter…</div>
+
+        <div class="trow dim" style="padding:8px 0 4px">C · 日志下边框上的悬浮药丸（有 band、可点）</div>
+        <div class="borderrow" style="margin:0 10px">
+          <span class="pill"><span class="badge">New activity · </span>↓ Back to bottom · esc</span>
+        </div>
+      </div>
+      <p class="cap">B 与 C 现在只差一件事：<b>band 背景</b>（C 有，B 没有 —— B 就是边框上的文字）。<b>两者都能点</b>：B 的命中矩形就是那串字形本身（照 <code>cancel_area</code> 那套，<code>render_input_box</code> 返回、host 记录），点它和按 <code>esc</code> 是同一个动作。位置差一行。</p>
+    </div>
+    <div class="card">
+      <h3>配色与文案</h3>
+      <ul>
+        <li><code>新活动</code> / <code>New activity</code> → <code>theme.muted_fg()</code>（状态）</li>
+        <li><code>↓ 回到最新 · esc</code> / <code>↓ Back to bottom · esc</code> → <b><code>theme.warning</code></b>（动作）</li>
+        <li>为什么不用 <code>theme.accent</code>：输入框左边那行 <code>❯ Input (…)</code> 和中间的 <code>⏺ Voice</code> 已经是 accent 红了，第三个红字会读成标题的一部分。amber 是「这一层在动」的颜色（吉祥物也是它）。</li>
+        <li>徽章不存在时连分隔符一起省略：<code>↓ 回到最新 · esc</code>。</li>
+        <li>列数 &lt; 70 时不画（会和左侧 title 挤在一起）。</li>
+      </ul>
+    </div>
+  </div>
+
+  <h2>Esc 是「退出当前视图状态」的梯子 —— 新加一级</h2>
+  <div class="ladder">
+    <span class="step">slash 弹窗打开 → 关弹窗</span><span class="arw">›</span>
+    <span class="step">语音中 → 取消语音</span><span class="arw">›</span>
+    <span class="step now">滚离底部 → 回到最新</span><span class="arw">›</span>
+    <span class="step">Insert → 回 Normal</span><span class="arw">›</span>
+    <span class="step">Normal → 清选区</span>
+  </div>
+  <p class="cap">「滚离底部」也是一种视图状态，所以这一级插在「退出 Insert」<b>之上</b>：滚离时按一次 <code>esc</code> 回底部，再按一次才退 Insert。药丸把 <code>esc</code> 写在脸上，所以是可发现的。另一个原因是 <code>End</code> 在 Insert 模式已经绑给输入光标了。</p>
+
+  <div class="grid">
+    <div class="card">
+      <h3>真正的难点不是药丸</h3>
+      <ul>
+        <li class="no">今天<b>两套行为并存</b>：工具卡 Resize 路径用 <code>was_pinned</code> 尊重你的滚动位置（<code>agent.rs:283</code>），而消息追加路径（8 处）<b>无条件</b>把你拽回底部。</li>
+        <li>所以现在往上翻、来一条流式输出，你<b>有时</b>被弹走、<b>有时</b>不会 —— 药丸在这种状态下没有意义。</li>
+        <li class="yes">先把「跟尾」策略收进 <code>append_msg</code> / <code>extend_msgs</code> 两个原语，删掉那 8 处无条件调用，药丸才成立。</li>
+      </ul>
+    </div>
+    <div class="card">
+      <h3>状态只有两个</h3>
+      <ul>
+        <li><code>visual_top</code>（已有）：<code>usize::MAX</code> = 跟尾；具体值 = 用户自己定的位置。</li>
+        <li><code>unseen: bool</code>（新）：离开底部期间有新行到达 → 徽章。</li>
+        <li>显示 = <code>!is_log_pinned_to_bottom()</code>（这个 helper 已经存在，且能同时认出 sentinel 和「手动滚到底」）。</li>
+      </ul>
+    </div>
+  </div>
+
+  <footer>设计稿 · 2026-10-10 · 主题 Japanese（bg #191E2D / band #232837 / accent #C83C28）· 规格：<code>docs/superpowers/specs/2026-10-10-scroll-back-to-bottom-pill-design.md</code></footer>
+</div>
+
+<script>
+(function(){
+  const PILL = { new:'<span class="badge">New activity · </span>↓ Back to bottom · esc',
+                 away:'↓ Back to bottom · esc', bottom:'' };
+  const CAP = {
+    new:'滚离底部 + 有新行到达 → 徽章点亮。点药丸 / 按 esc 回到底部。',
+    away:'滚离底部但还没有新行 → 药丸仍在（位置本身就是提示），徽章收起，分隔符一起消失。',
+    bottom:'贴着底部 → 不画药丸，那一行就是普通的下边框。',
+  };
+  let state = 'new';
+  const pill = document.getElementById('pill');
+  const anno = document.getElementById('anno');
+  function render(){
+    const text = PILL[state];
+    pill.innerHTML = text;
+    pill.style.display = text ? '' : 'none';
+    anno.style.display = (state === 'bottom') ? 'none' : '';
+    document.getElementById('cap').textContent = CAP[state];
+  }
+  document.getElementById('seg').addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    state = b.dataset.s;
+    [...e.currentTarget.children].forEach(x=>x.setAttribute('aria-pressed', String(x===b)));
+    render();
+  });
+  render();
+
+  // ── B 档：输入框上边框右端 ──
+  const HINT = {
+    new:'<span class="badge">新活动 · </span>↓ 回到最新 · esc',
+    away:'↓ 回到最新 · esc',
+    bottom:'',
+  };
+  const CAPB = {
+    new:'滚离底部 + 有新行到达 → 徽章点亮。按 <code>esc</code> 回到底部。',
+    away:'滚离底部但没有新行 → 只剩动作本身（分隔符跟着徽章一起消失）。',
+    bottom:'贴着底部 → 输入框上边框只剩原有的两个 title，跟今天一模一样。',
+  };
+  let stateB = 'new';
+  const hintB = document.getElementById('hintB');
+  function renderB(){
+    hintB.innerHTML = HINT[stateB];
+    hintB.style.display = HINT[stateB] ? '' : 'none';
+    document.getElementById('capB').innerHTML = CAPB[stateB];
+  }
+  document.getElementById('segB').addEventListener('click', e=>{
+    const b = e.target.closest('button'); if(!b) return;
+    stateB = b.dataset.b;
+    [...e.currentTarget.children].forEach(x=>x.setAttribute('aria-pressed', String(x===b)));
+    renderB();
+  });
+  renderB();
+})();
+</script>
+</body>
+</html>

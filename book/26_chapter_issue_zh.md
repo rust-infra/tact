@@ -4,6 +4,26 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — 移植 main #88 的 TUI 切片：「回到最新」药丸与跟尾策略统一
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（用户可见：往上翻日志时新输出不再把你拽回底部；底部出现「New activity · ↓ Back to bottom · esc」药丸；Esc 先把日志拉回尾部，再按一次才退出输入） |
+| **Related** | `crates/agent_tui_kit/src/{state/log_scroll.rs,render/scroll_pill.rs,render/ctx.rs,render/input.rs,i18n.rs}`、`crates/tui/src/widgets/state/app/{scroll.rs,visibility.rs,messages.rs,agent.rs,popups.rs,config.rs}`、`crates/tui/src/handlers/{insert.rs,mouse.rs,normal.rs}`、`crates/tui/src/render/layout.rs` |
+
+**背景：** main 的 #88（`42478984`）里含 TUI 抛光：**统一「跟尾」策略** + 「回到最新」悬浮药丸。本分支做过架构迁移，所以这是**移植**。**只移植了 #88 的 TUI 切片**——该 PR 的另外两块（repo-scoped memory、subagent steering）与 #87 仍未移植。
+
+**核心不是药丸（设计文档 `docs/superpowers/specs/2026-10-10-scroll-back-to-bottom-pill-design.md` 已一并移植）。** 药丸只有在「新行不会把你拽回底部」时才有意义，而此前两套行为并存：工具卡 resize 尊重滚动位置，而**消息追加路径无条件把你拽回底部（8 处）**。本次把策略收敛进 `App::receive/note_log_rows_appended` + `keep_log_tail_pinned`，删除那 8 处无条件调用，并**保留一处**提交路径的显式重跟尾（否则「发了消息看不到自己发的」）。状态显式化为 `LogScroll::{follow, unseen}`——设计文档明确警告：从 `visual_top` 与缓存版本反推「在单测里能过，但会在真实使用中偶发『日志不跟尾』且难复现」。
+
+**移植方式（诚实记录）：** 协议无关的部分用 `git apply --3way` **机械应用**（`log_scroll.rs`、`scroll.rs`、`visibility.rs`、`state/mod.rs`、`construct.rs`、`popups.rs`、`agent.rs`、`messages.rs`、`config.rs`、`handlers/normal.rs`、`handlers/mouse.rs`、kit 的 `render/{mod,input,ctx}.rs`、`i18n.rs`）；`scroll_pill.rs`（新）整取。只有两处冲突需手工：`insert.rs`（我的「Esc 拒绝待答 Input」与 main 的新梯级——**两条都留**，我的在前，并在注释里写明「欠调用方答复优先于视图便利」）与 `layout.rs`（仅测试导入块：取我的 `RuntimeEvent`，丢弃 main 的 `AgentUpdate`；`AgentErrorKind` 在本分支位于 `tact_view`）。
+
+**改后行为：** 往上翻看内容时，新输出**不再**把你拽走，底部出现药丸提示有新内容；点药丸或按 Esc 回到尾部；Esc 的梯级顺序为：拒绝待答 `Input` → 拉回日志尾部 → 退出输入模式。
+
+**Verification：** `./scripts/check-rust.sh` 以 `Rust checks passed.` 结束；全仓 **2947 → 2964 passed / 0 failed / 22 ignored**（+17，都是 #88 自带的行为测试，如「贴底时新行仍贴底」「滚走后新行不移动且点亮徽标」「Enter 必须让用户看到自己发的话」）。**并按 #89 的教训在提交前 diff 了被删除的测试名：本次为 0**。
+
+**未完成：** `book/23`（TUI 章节）尚未补该特性的段落；#88 的 repo-scoped memory 与 subagent steering、以及 #87/#90/#91 仍未移植。
+
+
 ## 1. 2026-10-11 — 移植 main #89：权限弹窗去掉「Allow for this session」选项
 
 | Field | Value |
