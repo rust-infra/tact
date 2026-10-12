@@ -79,7 +79,7 @@ and scope creep. Verdicts: Critical / Important / Minor.
 - 未知 `skill` 使 spawn 失败并列出可用卡。
 - 会话启动时 `spawn_subagent` 工具描述会附加可用卡名（单行、长度截断、上限 30 张），主 agent 无需看到卡正文即可发现合法 `skill:` 值。
 - 工具集、权限继承、worktree 隔离与 `[agent.subagent]` 模型配置均不受影响 ——
-  该段的解析规则见[配置](./21_chapter_config_zh.md)。
+  该段的解析规则见[配置](./20_chapter_config_zh.md)。
 
 ---
 
@@ -178,7 +178,7 @@ You are a principal reviewer. …
 
 **权限继承（Claude 风格）：** `execute_tool_call` 在 wave 运行前将 `PermissionSnapshot`（mode + 会话内 always-allowed 列表 + 已加载 settings）stamp 到 `ToolContext` 上，`spawn_subagent` 用 `PermissionManager::from_snapshot(...)` 构建子级 manager。父级 `Default` → 子 `Default`，`Plan` → 子 `Plan`（只读），`Auto` → 子 `Auto`（sticky）。子级 `consecutive_denials` 计数归零。无父 agent 的 orphan/test context 回退到旧行为：`PermissionMode::Default` + 从磁盘加载 settings。这也修复了只读逃逸：`Plan` 父级不再能 spawn 一个可写文件的 `Default` 子级。
 
-若父级有 TUI 通道，子 agent 使用**打标**通道（`tagged_ui_channel_with_progress`）：流式、步骤、思考与工具结果以 `RuntimeEvent::ToolProgress`（卡头为 `ToolMeta`）转发进父工具卡，该卡在 Log 历史中渲染为 `ToolVisualKind::Subagent`。点击该卡进入**子代理视图**（`ToolPopupKind::SubagentTranscript`）：主区域整块换成子会话，顶部一行面包屑 `‹ N. Subagent · 标题`，`Esc` 或点击面包屑退回主日志；子会话的工具调用渲染成**自包含块**（`▎ N. ⚡ Bash args` / `✓ Success · 133ms · 42 lines` / code band 输出 / 溢出行），输出封顶 8 行，而块底部那行 `⋯ N more lines · ▾ expand` **本身就是展开键**（点开把这一块提到 50 行，同一行随后变 `▴ collapse`；`Enter` 是全部展开 / 收起）——与主日志的可交互卡片刻意不同，原地变长不是「弹窗套弹窗」。`InteractionRequested` 仍透传（加 `[Subagent]` 前缀），权限弹窗走主 TUI；并发子 agent 权限请求排队，逐个处理。**状态级总览**另由 TUI 的 Log 下方 Subagent sticky tab 承担（`RuntimeEvent::SubagentsChanged` 快照当前进程的子代理运行，按状态分组并显示摘要首行）——明细仍留在工具卡 / 视图，绝不进入 sticky 或主 Log。见 [权限模型](./10_chapter_permission_zh.md) 与 [TUI](./23_chapter_tui_zh.md)。
+若父级有 TUI 通道，子 agent 使用**打标**通道（`tagged_ui_channel_with_progress`）：流式、步骤、思考与工具结果以 `RuntimeEvent::ToolProgress`（卡头为 `ToolMeta`）转发进父工具卡，该卡在 Log 历史中渲染为 `ToolVisualKind::Subagent`。点击该卡进入**子代理视图**（`ToolPopupKind::SubagentTranscript`）：主区域整块换成子会话，顶部一行面包屑 `‹ N. Subagent · 标题`，`Esc` 或点击面包屑退回主日志；子会话的工具调用渲染成**自包含块**（`▎ N. ⚡ Bash args` / `✓ Success · 133ms · 42 lines` / code band 输出 / 溢出行），输出封顶 8 行，而块底部那行 `⋯ N more lines · ▾ expand` **本身就是展开键**（点开把这一块提到 50 行，同一行随后变 `▴ collapse`；`Enter` 是全部展开 / 收起）——与主日志的可交互卡片刻意不同，原地变长不是「弹窗套弹窗」。`InteractionRequested` 仍透传（加 `[Subagent]` 前缀），权限弹窗走主 TUI；并发子 agent 权限请求排队，逐个处理。**状态级总览**另由 TUI 的 Log 下方 Subagent sticky tab 承担（`RuntimeEvent::SubagentsChanged` 快照当前进程的子代理运行，按状态分组并显示摘要首行）——明细仍留在工具卡 / 视图，绝不进入 sticky 或主 Log。见 [权限模型](./10_chapter_permission_zh.md) 与 [TUI](./22_chapter_tui_zh.md)。
 
 ---
 
@@ -282,7 +282,7 @@ let summary = subagent
 ```mermaid
 graph TD
     a_t1[Task 1 纯格式化函数 + i18n 清理 — 产出 6 个 icon 常量 + 5 个格式化函数] --> b_t2[Task 2 重写 render_bottom_bar — 引用 T1 的 helper]
-    b_t2 --> c_t3[Task 3 文档 + Ch 26 日志 — 反映最终代码状态]
+    b_t2 --> c_t3[Task 3 文档 + Ch 25 日志 — 反映最终代码状态]
 ```
 
 三个任务都改 `crates/tui/src/render/bar.rs`。SDD 禁止对共享文件并行 dispatch——控制器层面强制。

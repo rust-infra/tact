@@ -109,4 +109,4 @@ error rather than rebuilding it.
 
 `ARCHITECTURE.md` §15 (the `WorkflowExtension::register` row and the
 "what is still not wired" prose), the 2026-10-08 spec's `Implementation status`
-rows, the plan's status note, and a `book/26_chapter_issue_zh.md` entry.
+rows, the plan's status note, and a `book/25_chapter_issue_zh.md` entry.

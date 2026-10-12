@@ -78,9 +78,9 @@ Status: implemented (2026-09-15) — see "Result and deviations" at the end
      Sandbox = execution boundary.
    - `book/13_chapter_background_zh.md`: `background_run` stays unsandboxed.
    - `book/15_chapter_worktree_zh.md`: `worktree_run` / lane git stay unsandboxed.
-   - `book/21_chapter_config_zh.md`: `[tools] sandbox` field.
+   - `book/20_chapter_config_zh.md`: `[tools] sandbox` field.
    - `config.example.toml`: the key + comment (already in item 2).
-   - `book/26_chapter_issue_zh.md`: newest-first entry (opt-in sandbox,
+   - `book/25_chapter_issue_zh.md`: newest-first entry (opt-in sandbox,
      degradation semantics).
    - `docs/agent_guidelines.md`: bash/`/workspace` path-space note.
 

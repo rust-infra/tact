@@ -4,7 +4,7 @@
 
 实现：`crates/tact_protocol/src/agent.rs`、`crates/tact_protocol/src/biz.rs`、`crates/tact_protocol/src/runtime.rs`、`crates/tact_protocol/src/interaction.rs`。反向命令（`UserCommand`）在 View 契约 crate：`crates/tact_view/src/lib.rs`。TUI 消费者：`crates/tui/src/widgets/state/app/agent.rs`。Agent 发出者：`crates/tact_extensions/src/agent/tool_dispatch.rs`、`crates/tact_llm`（流式）。
 
-相关章节：[Ch 18 Agent Loop](./18_chapter_agent_loop_zh.md)、[Ch 23 TUI](./23_chapter_tui_zh.md)。其他状态机（输入模式、权限、任务）见 [docs/state_machines.md](../docs/state_machines.md)。
+相关章节：[Ch 17 Agent Loop](./17_chapter_agent_loop_zh.md)、[Ch 22 TUI](./22_chapter_tui_zh.md)。其他状态机（输入模式、权限、任务）见 [docs/state_machines.md](../docs/state_machines.md)。
 
 ---
 
@@ -120,7 +120,7 @@ pub enum UserCommand {
 
 ### `InteractionResponse` 与应答路径
 
-**View 侧不再有自己的一套选择应答 enum** —— 它的旧名字在 `crates/` 里已经搜不到任何定义或使用（移除过程记在 [Ch 26](./26_chapter_issue_zh.md)）。**View 发回的是协议自己的 `InteractionResponse`**（`crates/tact_protocol/src/interaction.rs`），与请求同一 crate：
+**View 侧不再有自己的一套选择应答 enum** —— 它的旧名字在 `crates/` 里已经搜不到任何定义或使用（移除过程记在 [Ch 25](./25_chapter_issue_zh.md)）。**View 发回的是协议自己的 `InteractionResponse`**（`crates/tact_protocol/src/interaction.rs`），与请求同一 crate：
 
 ```rust
 pub enum InteractionResponse {
@@ -259,7 +259,7 @@ graph TD
 | `Done` | `Idle` | `task_done_time` 后 2 s | 主循环调用 `maybe_expire_done_status` |
 | *（不变）* | *（不变）* | `UserCommand::Cancel` | `Info("Cancelling…")` + 设 `cancel_flag`；随后 `Cancelled` |
 
-`TaskComplete` 由 `crates/tact_ui/src/driver.rs` 在 `agent_loop` 返回 `Ok(())` 且 `cancel_flag` 为 false 时发送（[Ch 18 §7](./18_chapter_agent_loop_zh.md#7-tui-integration)）。取消路径改为发送 `Cancelled`。
+`TaskComplete` 由 `crates/tact_ui/src/driver.rs` 在 `agent_loop` 返回 `Ok(())` 且 `cancel_flag` 为 false 时发送（[Ch 17 §7](./17_chapter_agent_loop_zh.md#7-tui-integration)）。取消路径改为发送 `Cancelled`。
 
 ### 4.2 `RuntimeEvent` → `Status` 映射
 

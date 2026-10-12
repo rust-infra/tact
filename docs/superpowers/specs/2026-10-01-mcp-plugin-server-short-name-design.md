@@ -2,7 +2,7 @@
 
 Status: **shipped** (`ebd5a18b`, 2026-10-01).
 Retroactive record, written 2026-10-02 from the shipped code, that commit's message, and the
-Ch 26 entry.
+Ch 25 entry.
 
 ## Problem
 
@@ -74,5 +74,5 @@ sees nothing; this is a presentation change with one input-side affordance.
   `report_notes_name_a_plugin_server_short_too`,
   `the_detail_view_heads_a_plugin_server_short_but_keeps_its_tool_prefix`,
   `live_listing_shows_a_plugin_server_under_its_short_name`.
-- Docs: [Ch 08](../../../book/08_chapter_mcp_zh.md), [Ch 26](../../../book/26_chapter_issue_zh.md)
+- Docs: [Ch 08](../../../book/08_chapter_mcp_zh.md), [Ch 25](../../../book/25_chapter_issue_zh.md)
   2026-10-01 entry.

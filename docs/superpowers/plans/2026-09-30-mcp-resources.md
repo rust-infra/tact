@@ -27,4 +27,4 @@ Spec: [2026-09-30-mcp-resources-design.md](../specs/2026-09-30-mcp-resources-des
 7. **Docs sync**
    - `book/08_chapter_mcp_zh.md`: Step 9 rewritten around the two tools, the code map gains
      the module, and the Gaps row splits templates/prompts from resources.
-   - `book/26_chapter_issue_zh.md`: newest-first entry.
+   - `book/25_chapter_issue_zh.md`: newest-first entry.

@@ -83,4 +83,4 @@ Declaring `read` for `read_mcp_resource` therefore bypasses plan mode — the sa
 - `book/08_chapter_mcp_zh.md`: the §10 row is replaced, and the resource section names the
   keys.
 - `config.example.toml`: the `[mcp]` block gains both keys.
-- `book/26_chapter_issue_zh.md`: newest-first entry.
+- `book/25_chapter_issue_zh.md`: newest-first entry.

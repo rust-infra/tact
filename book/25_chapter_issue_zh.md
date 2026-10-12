@@ -37,9 +37,9 @@
 3. **本分支新增的 kernel 事件表要跟着补：** `crates/tact_trajectory/src/service.rs` 两处 `match event` 是**穷尽**匹配，`ToolTranscript` 归到 `TrajectoryEventType::ToolCall`（与 `ToolProgress` 同族）。main 没有这个文件。
 4. **名字漂移，patch 覆盖不到：** `handle_agent_update` → `handle_runtime_event`、`AgentUpdate::{StreamChunk,ThinkingChunk,StepStarted,StepFinished,StepFailed,TaskComplete,TaskCancelled}` → `RuntimeEvent::{Text,Thinking,Step*,TaskComplete,Cancelled}`（构造处补 `run_id: None`）；只改 patch 真正触碰到的行，其余保持本分支写法。
 5. **转发层 8 处冲突按「本分支结构 + main 语义」解决：** 保留 `RuntimeEvent` 的匹配形状与 `wire_child_to_parent_card` / `tagged_ui_channel_with_progress` 签名，取 main 的新语义（`emit_transcript` / `redacted_entry` / `flush_assistant` / `running_steps` / 思考实测耗时 / 通道关闭时 flush）。main 的 `Error(err) => format!("error: {err:?}")` 在本分支是 `Error { message: String }`，写成 `format!("error: {message}")`；main 新增的 `MdInfo` 分支（本分支原先没有）按 `Info` 同款补上并同样发结构化条目。
-6. **文档：** Ch 12 / 23 / 25 的 hunk 直接取（Ch 25 里那处 `AgentUpdate` 称谓是本分支既有的文档漂移，未顺手改）；新 spec 与三张设计稿内部的 `crates/tact/` → `crates/tact_extensions/`、`crates/protocol/` → `crates/tact_protocol/` 做 remap 并各加一行移植说明；HTML 里属于**终端记录**的路径（`crates/tact/src/agent/mod.rs`、`crates/tact-ui/tests/tool_integration.rs`）按「不改写转录」保留原样。`book/26` 取 main 的本条（v1.1.39 发版条目与版本号未移植，本分支停在 1.1.33，与前几笔一致）。
+6. **文档：** Ch 12 / 23 / 25 的 hunk 直接取（Ch 24 里那处 `AgentUpdate` 称谓是本分支既有的文档漂移，未顺手改）；新 spec 与三张设计稿内部的 `crates/tact/` → `crates/tact_extensions/`、`crates/protocol/` → `crates/tact_protocol/` 做 remap 并各加一行移植说明；HTML 里属于**终端记录**的路径（`crates/tact/src/agent/mod.rs`、`crates/tact-ui/tests/tool_integration.rs`）按「不改写转录」保留原样。`book/26` 取 main 的本条（v1.1.39 发版条目与版本号未移植，本分支停在 1.1.33，与前几笔一致）。
 
-**Pointers:** `docs/design/subagent-presentation.html`（三种容器的取舍 + 已落地的块形态）、`subagent-oss-comparison.html`（四家对照）、spec §8 / §9、Ch 12 §1「TUI 通道」行、Ch 23 组件表、Ch 25 `RuntimeEvent`。
+**Pointers:** `docs/design/subagent-presentation.html`（三种容器的取舍 + 已落地的块形态）、`subagent-oss-comparison.html`（四家对照）、spec §8 / §9、Ch 12 §1「TUI 通道」行、Ch 22 组件表、Ch 24 `RuntimeEvent`。
 
 ---
 
@@ -79,7 +79,7 @@
 | Field | Value |
 |-------|-------|
 | **Type** | feature（用户可见：任务在跑时，实时统计行两侧各出现一只吉祥物来回走动，掉头时换成朝另一侧的字形；文字与数字一格不动） |
-| **Related** | `crates/agent_tui_kit/src/render/stats_line.rs`（`mascot_step` / `mascot_cells` / `MASCOT_RIGHT` / `MASCOT_LEFT` / `MASCOT_MIN_RUNWAY`）、`crates/agent_tui_kit/src/render/{ctx,bar,log}.rs`（tick 语义）、`crates/tui/src/lib.rs`、`crates/tui/src/widgets/state/mod.rs`、`crates/tui/src/render/log_render_tests.rs`；Ch 23 §6.6、Ch 26 2026-10-05 条 |
+| **Related** | `crates/agent_tui_kit/src/render/stats_line.rs`（`mascot_step` / `mascot_cells` / `MASCOT_RIGHT` / `MASCOT_LEFT` / `MASCOT_MIN_RUNWAY`）、`crates/agent_tui_kit/src/render/{ctx,bar,log}.rs`（tick 语义）、`crates/tui/src/lib.rs`、`crates/tui/src/widgets/state/mod.rs`、`crates/tui/src/render/log_render_tests.rs`；Ch 22 §6.6、Ch 25 2026-10-05 条 |
 
 **现象 / 动机：** 任务跑着的时候，实时统计行是**全屏唯一不动的东西**——工具行有 `⠋` 转圈、thinking 卡片有时间轴、底栏有 spinner，只有这一行是一串静止的数字。用户的原话是「这里可以加一个动画，用于表示当前正在处理中？」。
 
@@ -96,7 +96,7 @@
 
 **Verification：** 纯函数用例 6 条（往返不跳端点、掉头恰在两端、两只朝向永远相反、任何 tick × 任何宽度都不碰文字列、留白不足返回 `None`、退化跑道 0/1 列与计数器回绕不 panic）+ 缓冲区用例 `the_live_row_walks_a_mascot_on_both_paddings`（恰好两只、都在文字区间之外、朝向相反、背景仍是 `theme.bg`）。既有 `stats_row_padding` 改为把吉祥物字形视为空白——否则「居中」用例会去过量吉祥物的位置，**用例仍会通过但测的东西已经变了**。推送门四个包全绿。
 
-**Pointers:** `docs/superpowers/specs/2026-10-10-live-stats-mascot-design.md`、可视稿 `docs/design/live-stats-activity.html`（7 组图标 × 3 种朝向 × 3 条跑道 × 3 档速度的对比板）、`docs/token_usage_schema.md` § Per-Turn Stats Line → "The mascot on the live row"、Ch 23 §6.6。
+**Pointers:** `docs/superpowers/specs/2026-10-10-live-stats-mascot-design.md`、可视稿 `docs/design/live-stats-activity.html`（7 组图标 × 3 种朝向 × 3 条跑道 × 3 档速度的对比板）、`docs/token_usage_schema.md` § Per-Turn Stats Line → "The mascot on the live row"、Ch 22 §6.6。
 
 ---
 
@@ -105,7 +105,7 @@
 | Field | Value |
 |-------|-------|
 | **Type** | optimization（用户可见：记忆目录从全局一份改为**每仓库一份**；系统提示只注入 `MEMORY.md` 索引，正文改用 `load_memory` 读取；旧全局记忆自动迁移；新增 `[agent].auto_memory_directory` 覆盖） |
-| **Related** | `crates/tact_extensions/src/memory/mod.rs`、`crates/tact_extensions/src/tool/memory.rs`、`crates/tact_extensions/src/tool/registry.rs`、`crates/tact_extensions/src/consts.rs`、`crates/tact_extensions/src/config/{types,resolve}.rs`、`crates/tact_ui/src/session_bootstrap.rs`；Ch 03 §2 §5 §6、Ch 21 |
+| **Related** | `crates/tact_extensions/src/memory/mod.rs`、`crates/tact_extensions/src/tool/memory.rs`、`crates/tact_extensions/src/tool/registry.rs`、`crates/tact_extensions/src/consts.rs`、`crates/tact_extensions/src/config/{types,resolve}.rs`、`crates/tact_ui/src/session_bootstrap.rs`；Ch 03 §2 §5 §6、Ch 20 |
 
 **现象 / 动机：** 记忆复刻了 Claude Code 的**格式**（YAML frontmatter、`type`、`MEMORY.md`）却没复刻**结构**，两个后果都很具体：**(1) 项目事实外泄**——单一全局 `~/.tact/memory/` 让某个仓库的发布分支约定被注入进所有无关项目，读者无从判断记忆属于哪个项目；**(2) 提示词无上界**——`load_memory_prompt` 把每条记忆的**完整正文**拼进系统提示，而 200 行上限只作用在索引文件 `rebuild_index` 上，那份索引在加载时又被 `!= MEMORY_INDEX_FILE` 过滤掉、根本不进提示词——上限守着一个从不被注入的产物，真正的注入量没有任何约束。
 
@@ -119,7 +119,7 @@
 
 **Verification：** `cargo fmt -- --check`、`cargo clippy --all-targets -- -D warnings` 干净；推送门四个包全绿（tact 1245）。新增：`a_worktree_and_its_checkout_resolve_to_one_directory`（**钉住 worktree 共享**：fixture 复刻 git 真实布局 `.git/worktrees/<name>` + `commondir`）、`the_real_worktrees_in_this_repository_share_the_main_directory`（直接跑真实 `.worktrees/`；本分支把「一个都没有」也视作布局缺席而跳过——见移植方式 ④，fixture 仍覆盖 `commondir` 逻辑）、`different_repositories_get_different_directories`（隔离）、`a_dotted_workdir_resolves_like_its_normal_form`（`..` 词法折叠——**实测踩到**：第一版把 `<repo>/crates/tact/../..` slug 成另一个目录，等于给 tact 建了第二份记忆）、`outside_a_repository_the_workdir_owns_the_directory`、`a_configured_directory_overrides_the_derived_one`（覆盖优先于派生、且在 `$HOME` 未设时仍生效）、`expand_memory_dir_follows_the_skill_dirs_rules`、`prompt_carries_the_index_and_not_the_bodies`（正文**不在**提示词里）、`a_hand_written_directory_gets_an_index_on_load`、`load_topic_returns_the_full_file`、`byte_cap_truncates_a_long_index`、`migration_copies_memories_once_and_never_overwrites`、`load_memory_returns_a_saved_body_and_lists_the_known_names`、`resolve_auto_memory_directory_from_toml`（含空串 = 未设）；工具集测试补断言 `load_memory` 与 `save_memory` 同开同关。真机迁移实测：`~/.tact/memory` 的 12 个 `.md`（第 13 个是 `MEMORY.md`）→ `~/.tact/projects/-Users-rg-Projects-tact/memory/`，主 checkout 与两个真实 worktree 解出同一目录，二次运行 `copied = 0`（幂等），索引 2367 字节。
 
-**Pointers:** `docs/superpowers/specs/2026-10-09-memory-claude-alignment-design.md`；Ch 03（§2 架构 / §4 生命周期 / §5 集成点 / §6 存储布局与迁移）、Ch 01、Ch 02、Ch 04、Ch 07、Ch 21、`README.md`、`ARCHITECTURE.md`、`config.example.toml`。
+**Pointers:** `docs/superpowers/specs/2026-10-09-memory-claude-alignment-design.md`；Ch 03（§2 架构 / §4 生命周期 / §5 集成点 / §6 存储布局与迁移）、Ch 01、Ch 02、Ch 04、Ch 07、Ch 20、`README.md`、`ARCHITECTURE.md`、`config.example.toml`。
 
 ---
 
@@ -158,7 +158,7 @@
 - **`str::replace` 会替换全部 `{}`。** 一个模板带两个占位符时（名字 + 持久化结果）必须用 `replacen("{}", x, 1)` 链式调用，`replace` 会把两处都填成同一个值。仓库里的多占位符模板（`model_switched_with_budget_tmpl`、`copied_summary_tmpl`）都是这个写法。
 - **补全的模糊匹配是「子序列」不是「前缀」。** 写 `/skill disable cu` 的测试时想当然以为能匹配 `code-reviewer`——`cu` 里那个 `u` 在 `code-reviewer` 里根本不存在，`fuzzy_score` 返回 0，候选项为空。这类断言要挑一个真的按顺序出现的 query（`code`、`rev` 都行）。
 
-**Pointers:** `crates/tact_extensions/src/skill/mod.rs`、`crates/tact_extensions/src/agent/mod.rs`（`build_system_prompt` 的 `skills_available` 分支）、`crates/tact_extensions/src/config/persist.rs`（`update_agent_skill_disable_in_toml`）、`crates/tui/src/handlers/skills.rs`（`format_skill_agent_task` / `set_skill_catalog_visibility`）、`crates/tui/src/widgets/state/slash.rs`（`SKILL_SUBCOMMANDS`）、`crates/tui/src/widgets/state/slash_command.rs`（`subcommand_candidates` / `skill_verb_candidates`）、`config.example.toml`、`book/02_chapter_skill_zh.md` §1/§3/§5/§7/§9/§10、`book/21_chapter_config_zh.md`。
+**Pointers:** `crates/tact_extensions/src/skill/mod.rs`、`crates/tact_extensions/src/agent/mod.rs`（`build_system_prompt` 的 `skills_available` 分支）、`crates/tact_extensions/src/config/persist.rs`（`update_agent_skill_disable_in_toml`）、`crates/tui/src/handlers/skills.rs`（`format_skill_agent_task` / `set_skill_catalog_visibility`）、`crates/tui/src/widgets/state/slash.rs`（`SKILL_SUBCOMMANDS`）、`crates/tui/src/widgets/state/slash_command.rs`（`subcommand_candidates` / `skill_verb_candidates`）、`config.example.toml`、`book/02_chapter_skill_zh.md` §1/§3/§5/§7/§9/§10、`book/20_chapter_config_zh.md`。
 
 ---
 
@@ -1000,7 +1000,7 @@
 | Field | Value |
 |-------|-------|
 | **Type** | removal（用户可见：底栏第 1 行不再有 `⏱ 耗时 mm:ss` / `⏱ Elapsed mm:ss` 段） |
-| **Related** | `crates/agent_tui_kit/src/render/bar.rs`、`crates/agent_tui_kit/src/i18n.rs`（`bottom_elapsed` 删除）、`crates/tui/src/render/bar.rs`（测试）；`docs/tui_rendering.md`、`docs/token_usage_schema.md`、Ch 23 §6.6 |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`、`crates/agent_tui_kit/src/i18n.rs`（`bottom_elapsed` 删除）、`crates/tui/src/render/bar.rs`（测试）；`docs/tui_rendering.md`、`docs/token_usage_schema.md`、Ch 22 §6.6 |
 
 **现象 / 动机：** 实时任务耗时在底栏第 1 行又出现一次。同一只钟在日志的 task-stats 行（2026-10-05 那条，居中常驻）已经每秒读得到，底栏那一段是第二份；它当初（2026-09-14）从顶栏搬下来，是为了给"本次运行花了多久"找地方，而那个地方现在有了。
 
@@ -1010,7 +1010,7 @@
 
 **Verification:** `bottom_bar_never_shows_the_live_task_clock`（设了 `task_start_time` 后两行都不出现 `Elapsed`/`01:05`/`⏱`）、`bottom_bar_fits_row_1_in_100_columns`（原 `…_fits_the_task_elapsed_on_row_1_in_100_columns`，改为断言第 1 行没有时钟）、`bottom_bar_drops_uptime_before_path`（原 `…_drops_the_task_elapsed_before_uptime_and_path`）。fmt/clippy 干净；推送门全绿（tact 1183、tui 638、agent_tui_kit 378、tact-ui 272）。
 
-**Pointers:** `crates/agent_tui_kit/src/render/bar.rs`（第 1 行 groups）、`crates/tui/src/render/bar.rs`（测试）；Ch 23 §6.6、`docs/tui_rendering.md`、`docs/token_usage_schema.md`。
+**Pointers:** `crates/agent_tui_kit/src/render/bar.rs`（第 1 行 groups）、`crates/tui/src/render/bar.rs`（测试）；Ch 22 §6.6、`docs/tui_rendering.md`、`docs/token_usage_schema.md`。
 
 ---
 
@@ -1019,7 +1019,7 @@
 | Field | Value |
 |-------|-------|
 | **Type** | optimization（用户可见：回合结束的实线不再居中写 `耗时 MM:SS` / `Elapsed MM:SS`） |
-| **Related** | `crates/agent_tui_kit/src/render/cells/separator.rs`、`crates/agent_tui_kit/src/render/log.rs`、`crates/tui/src/widgets/state/app/popups.rs`；Ch 23 §6.6 / §6.11 |
+| **Related** | `crates/agent_tui_kit/src/render/cells/separator.rs`、`crates/agent_tui_kit/src/render/log.rs`、`crates/tui/src/widgets/state/app/popups.rs`；Ch 22 §6.6 / §6.11 |
 
 **现象 / 动机：** 同一轮耗时在一屏里出现三次：task-end 分隔线居中一处、紧跟其下的 task-stats 行 `⏱ mm:ss`、底栏第 2 行 `⏱ mm:ss · 均 …`。实时统计行上线后（同日上一条），第一处纯属重复——它离统计行只有两行。
 
@@ -1029,7 +1029,7 @@
 
 **Verification:** kit `task_end_separator_draws_no_elapsed_label`（40 列逐格等于 `─`×40）；tui `log_task_end_separator_renders_solid_rule` 改为断言不出现 `Elapsed`、且 `last_prompt_elapsed_secs == Some(65)`（冻结值仍到达统计行）。fmt/clippy 干净；推送门全绿（tact 1183、tui 637、agent_tui_kit 378、tact-ui 272）。
 
-**Pointers:** `crates/agent_tui_kit/src/render/cells/separator.rs`、`render_log_panel_pure` 的 task-end 分支、`crates/tui/src/widgets/state/app/popups.rs::add_task_end_separator`；Ch 23 §6.6 / §6.11。
+**Pointers:** `crates/agent_tui_kit/src/render/cells/separator.rs`、`render_log_panel_pure` 的 task-end 分支、`crates/tui/src/widgets/state/app/popups.rs::add_task_end_separator`；Ch 22 §6.6 / §6.11。
 
 ---
 
@@ -1038,7 +1038,7 @@
 | Field | Value |
 |-------|-------|
 | **Type** | optimization（用户可见：任务在跑时，日志面板最后一行常驻 `Task stats:⏱ mm:ss · model · N tokens (…)`，每秒与每次 LLM 调用刷新） |
-| **Related** | `crates/agent_tui_kit/src/render/stats_line.rs`（新）、`crates/agent_tui_kit/src/render/{log,mod}.rs`、`crates/tui/src/render/log.rs`（`prepare_log_frame`）、`crates/tui/src/widgets/state/app/messages.rs`（`add_task_stats_block`）；`docs/token_usage_schema.md`、Ch 23 §6.6 / §6.11 |
+| **Related** | `crates/agent_tui_kit/src/render/stats_line.rs`（新）、`crates/agent_tui_kit/src/render/{log,mod}.rs`、`crates/tui/src/render/log.rs`（`prepare_log_frame`）、`crates/tui/src/widgets/state/app/messages.rs`（`add_task_stats_block`）；`docs/token_usage_schema.md`、Ch 22 §6.6 / §6.11 |
 
 **现象 / 动机：** 每轮结束的统计行（耗时 · 模型 · tokens 明细）只在回合**结束**时写进日志，而它读的正是底栏一直在维护的计数器。于是任务跑到一半想看"这轮烧了多少 token / 模型是谁 / 跑了多久"，只能等；等它出现时又被后续内容顶上去，要翻回去找。
 
@@ -1055,7 +1055,7 @@
 
 **Verification:** 新增 tui `live_stats_row_sits_on_the_last_content_row_while_a_task_runs`、`live_stats_row_is_absent_when_no_task_is_in_flight`、`live_stats_row_takes_its_row_from_the_viewport_not_from_the_log`（最新一行日志仍可见）、`live_stats_row_paints_the_theme_bg_across_its_tail`、`live_stats_row_is_centered_in_the_panel`、`frozen_stats_row_is_centered_like_the_live_row`（都按缓冲区单元格量两侧留白，差 ≤1）、`the_live_row_hands_off_to_the_frozen_row`、`a_click_on_a_row_below_the_viewport_starts_no_selection`、`a_click_on_the_centered_stats_button_copies_the_turn`（瞄的是画出来的 `⎘`，验证 pad 在点击路径里被减掉）、`a_click_on_a_stats_row_body_starts_no_selection`；`task_stats_copy_only_triggers_inside_button` 的列号改为按 `stats_row_pad` 推导（它原先硬编码 glyph 在第 4 列）；kit `body_matches_the_frozen_row_shape`（逐字节锁定与冻结行同形）、`body_skips_the_model_and_the_token_detail_when_empty`、`body_is_localized_and_clamps_negative_seconds`。fmt/clippy 干净；推送门全绿（tact 1183、tui 641、agent_tui_kit 378、tact-ui 272）。
 
-**Pointers:** `crates/agent_tui_kit/src/render/stats_line.rs`（`task_stats_body` / `live_stats_reserve` / `live_stats_row` / `render_live_stats_band`）、`render_log_panel_pure` 末尾的调用点、`crates/tui/src/render/log.rs::prepare_log_frame`、`crates/tui/src/handlers/mouse.rs::below_log_viewport`；Ch 23 §6.6（底栏）与 §6.11（Log 消息模型）、`docs/token_usage_schema.md` 的 "Per-Turn Stats Line (TUI)"。
+**Pointers:** `crates/agent_tui_kit/src/render/stats_line.rs`（`task_stats_body` / `live_stats_reserve` / `live_stats_row` / `render_live_stats_band`）、`render_log_panel_pure` 末尾的调用点、`crates/tui/src/render/log.rs::prepare_log_frame`、`crates/tui/src/handlers/mouse.rs::below_log_viewport`；Ch 22 §6.6（底栏）与 §6.11（Log 消息模型）、`docs/token_usage_schema.md` 的 "Per-Turn Stats Line (TUI)"。
 
 ---
 
@@ -1064,7 +1064,7 @@
 | Field | Value |
 |-------|-------|
 | **Type** | optimization（用户可见：新增 `[ui] hook_output`（默认 `true`）与 `/hook-output`，关掉后日志里不再出现 hook 的进度行与注入的上下文块） |
-| **Related** | `crates/tact_extensions/src/config/{types,resolve,persist,mod}.rs`、`crates/tui/src/{lib,handlers/mod,handlers/palette,widgets/state/mod}.rs`、`crates/tui/src/widgets/state/app/{config,construct,messages}.rs`、`crates/agent_tui_kit/src/i18n.rs`；`config.example.toml`；Ch 21 §5、Ch 09 §10 |
+| **Related** | `crates/tact_extensions/src/config/{types,resolve,persist,mod}.rs`、`crates/tui/src/{lib,handlers/mod,handlers/palette,widgets/state/mod}.rs`、`crates/tui/src/widgets/state/app/{config,construct,messages}.rs`、`crates/agent_tui_kit/src/i18n.rs`；`config.example.toml`；Ch 20 §5、Ch 09 §10 |
 
 **Symptom / motivation:** hook 注入的上下文块（同日的 hook context 条目，见本条目下方）与进度行都是**无条件**画进日志的。对 basic-memory 这类每轮都说话的插件，一屏里插一段简报是噪音；而读者能做的只有关掉整个 hook——那会让模型也拿不到上下文。要的是"我不看，但它照旧进模型"。
 
@@ -1079,7 +1079,7 @@
 
 **Verification:** 新增 tui `hook_output_off_keeps_hook_rows_out_of_the_log`（关掉后进度行的**开与合**都不产生行；再打开能恢复）、`toggle_hook_output_flips_and_says_session_only_without_a_file`；tact `updates_ui_hook_output_keeping_the_other_preferences`（落成 TOML **布尔**而不是字符串——`Option<bool>` 读回 `"false"` 会解析失败并静默回到默认）、`ui_hook_output_is_created_when_the_table_is_missing`、resolve 默认值断言。`palette_commands_are_all_handled` 自动覆盖新命令的分派。fmt/clippy 干净；推送门全绿（tact 1183、tui 631、agent_tui_kit 375、tact-ui 272）。
 
-**Pointers:** `crates/tact_extensions/src/config/mod.rs::persist_hook_output`、`crates/tact_ui/src/interactive.rs`（`TuiConfig.hook_output`）、`crates/tui/src/widgets/state/app/config.rs::toggle_hook_output`、`crates/tui/src/widgets/state/slash.rs::SlashCommand::HookOutput`；Ch 21 §5、Ch 09 §10、`config.example.toml` 的 `[ui]`。
+**Pointers:** `crates/tact_extensions/src/config/mod.rs::persist_hook_output`、`crates/tact_ui/src/interactive.rs`（`TuiConfig.hook_output`）、`crates/tui/src/widgets/state/app/config.rs::toggle_hook_output`、`crates/tui/src/widgets/state/slash.rs::SlashCommand::HookOutput`；Ch 20 §5、Ch 09 §10、`config.example.toml` 的 `[ui]`。
 
 ---
 
@@ -1162,7 +1162,7 @@ Overridden declarations:
 | Field | Value |
 |-------|-------|
 | **Type** | optimization（含一处可见变化、一处 API 可见变化） |
-| **Related** | `agent_tui_kit::render::popups/mod.rs`（`COPY_SCROLL_CLOSE` / `SCROLL_CLOSE`）、`agent_tui_kit::state/sticky_panel.rs`、**删除** `agent_tui_kit::render/{mod,task_panel}.rs` 中的 `task_panel` 模块、`tact-ui/src/session_bootstrap.rs`（`open_session`）；Ch 23 §分层 + §Headless/交互启动、Ch 24 §测试 fixture、Ch 7 §元数据常量、`README.md` |
+| **Related** | `agent_tui_kit::render::popups/mod.rs`（`COPY_SCROLL_CLOSE` / `SCROLL_CLOSE`）、`agent_tui_kit::state/sticky_panel.rs`、**删除** `agent_tui_kit::render/{mod,task_panel}.rs` 中的 `task_panel` 模块、`tact-ui/src/session_bootstrap.rs`（`open_session`）；Ch 22 §分层 + §Headless/交互启动、Ch 23 §测试 fixture、Ch 7 §元数据常量、`README.md` |
 
 **Symptom / motivation:** 第一轮（上一章条目）把弹窗侧收成组件后重跑重复扫描器，又暴露出五处「同一件事写多遍」。其一，六个弹窗各自把 `y copy / j/k scroll / Esc close` 三条 footer 提示抄一遍，且**顺序分两派**：`diff` / `subagent` / `thinking` 画 `Esc close` 在前，其余画它在前一条之后——没有任何理由说明 diff 弹窗的 footer 该和 code 弹窗不同。其二，`state/task_panel.rs` 与 `state/subagent_panel.rs` 是同一形状（分组行 + viewport 窗口 + 一行标题），`scroll_window`（含 `⋯ +N more · scroll ▼` 标记）与时长格式化逐字节相同。其三，`tact-ui` 的 `run_headless` / `run_interactive` 各自解析 session id（`--session` / `--resume-last` / 新 UUID）、建行、抢锁、注册、touch，21 行完全相同——上一轮只统一了 agent 构建，没到最外层。
 
@@ -1205,7 +1205,7 @@ Usage: tact-ui headless <PROMPT>
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/agent_tui_kit/src/widgets/help_widget.rs`（结构体与 `new`）、`crates/tui/src/render/popups/help.rs`；Ch 23 §弹窗 |
+| **Related** | `crates/agent_tui_kit/src/widgets/help_widget.rs`（结构体与 `new`）、`crates/tui/src/render/popups/help.rs`；Ch 22 §弹窗 |
 
 **Symptom / motivation:** `Ctrl+/` 打开帮助面板期间，每一帧都执行一次 `Box::leak(key_str.into_boxed_str())`。泄漏量很小（十来个字节／帧），但它是**无条件且持续**的——面板开着就一直漏，长时间挂着就是无界增长。根因不在泄漏点而在 API：`HelpWidget<'a>` 把 `msgs: &'a Messages`、`theme: &'a Theme` 与 `voice_keybind_label: Option<&'a str>` 绑成同一个生命周期，而标签是每帧从配置里的按键现拼的临时 `String`，要活到和 `msgs` 一样长就只能泄漏。
 
@@ -1222,7 +1222,7 @@ Usage: tact-ui headless <PROMPT>
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `agent_tui_kit::state::{mouse_state (SurfaceId), filtered_list, task_dag}`、`agent_tui_kit::render::popups::{scrollable_popup, task_dag_popup}`、`crates/tui/src/render/popups/`、`crates/tui/src/handlers/mouse.rs`；Ch 23 §分层 |
+| **Related** | `agent_tui_kit::state::{mouse_state (SurfaceId), filtered_list, task_dag}`、`agent_tui_kit::render::popups::{scrollable_popup, task_dag_popup}`、`crates/tui/src/render/popups/`、`crates/tui/src/handlers/mouse.rs`；Ch 22 §分层 |
 
 **Symptom / motivation:** kit/app 拆分完成后，弹窗侧还留着三处「同一件事写三遍以上」：其一，`MouseState` 有 13 个彼此独立的 `*_area` 字段，同一份"哪个弹窗在哪个矩形里"的信息还要在 `PopupMouseSurface`（5 选 1 的联合结构）和 `mouse.rs` 的命中阶梯里各写一遍——`mouse.rs` 的注释自己记着 palette 与 file picker 曾经**漏写**命中区、滚轮一直在滚背后的 log；其二，`SelectPopup` / `FilePicker` / palette / slash 各自实现了一份"过滤 + 游标"（第三条规则——游标索引的是**原始** options 而非可见子集——只在一处有注释解释，靠约定维持）；其三，`ScrollableTextPopup` 骨架只有 `code_popup` 用，另有四个弹窗手写 chrome + `Paragraph` + `Scrollbar`，`task_dag_popup` 甚至是唯一还在**应用层**手画边框的弹窗。
 
@@ -1258,7 +1258,7 @@ Usage: tact-ui headless <PROMPT>
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/tui/src/widgets/state/app/messages.rs`（新增 `add_startup_banner`，`add_startup_logo` 尾部空行改两行）、`crates/tui/src/lib.rs`（启动三连调用收成一次）；Ch 23 |
+| **Related** | `crates/tui/src/widgets/state/app/messages.rs`（新增 `add_startup_banner`，`add_startup_logo` 尾部空行改两行）、`crates/tui/src/lib.rs`（启动三连调用收成一次）；Ch 22 |
 
 **Symptom / motivation:** 启动输出是三块——logo + `Tact Agent` + 一句随机标语、`Agent TUI started…` + `Current mode…`、以及之后的一切——但 log 只有一列，块与块之间只靠一行空行甚至零行分隔。横幅与欢迎语之间只有 1 行；欢迎语与**紧随其后的第一条系统消息**之间是 0 行，于是 `/theme`、`/model` 的写入回执、插件的 `SessionStart` 简报、恢复的会话历史，看上去都像横幅的又一行。
 
@@ -1273,7 +1273,7 @@ Usage: tact-ui headless <PROMPT>
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tui/src/widgets/state/app/config.rs`（`toggle_theme` / `toggle_language` / `persist_*_choice` / `ui_config_available` / `set_ui_config_path`）、`crates/tui/src/widgets/state/mod.rs`（`App::ui_config_path`）、`crates/tui/src/lib.rs`（`TuiConfig::ui_config_path`、启动时 `set_ui_config_path`）、`crates/tact_ui/src/interactive.rs`（传入 `settings().config_path`）、`crates/tui/src/handlers/select.rs`（`open_theme_persist_step` / `open_language_persist_step` 改用 `app.ui_config_available()`）、`crates/agent_tui_kit/src/i18n.rs`（删掉 `theme_changed_tmpl` / `lang_changed_tmpl`）；spec `docs/superpowers/specs/2026-10-01-tui-theme-picker-design.md`、`2026-10-02-ui-language-persistence-design.md`；Ch 23 §6.10 |
+| **Related** | `crates/tui/src/widgets/state/app/config.rs`（`toggle_theme` / `toggle_language` / `persist_*_choice` / `ui_config_available` / `set_ui_config_path`）、`crates/tui/src/widgets/state/mod.rs`（`App::ui_config_path`）、`crates/tui/src/lib.rs`（`TuiConfig::ui_config_path`、启动时 `set_ui_config_path`）、`crates/tact_ui/src/interactive.rs`（传入 `settings().config_path`）、`crates/tui/src/handlers/select.rs`（`open_theme_persist_step` / `open_language_persist_step` 改用 `app.ui_config_available()`）、`crates/agent_tui_kit/src/i18n.rs`（删掉 `theme_changed_tmpl` / `lang_changed_tmpl`）；spec `docs/superpowers/specs/2026-10-01-tui-theme-picker-design.md`、`2026-10-02-ui-language-persistence-design.md`；Ch 22 §6.10 |
 
 **Symptom / motivation:** 偏好有两条路：`/theme`、`/lang` 会先静默应用再问「保存到配置？」（默认 `No`），而 `Ctrl+T`、`Ctrl+L` 只应用 + 播报一行，**从不写盘**。于是同一个选择，走选择器可能留住、走快捷键一定丢——下次启动回到配置里的那个主题/语言。`Ctrl+T` 是"快速下一个"，恰恰是最常用的那条路。
 
@@ -1288,7 +1288,7 @@ Usage: tact-ui headless <PROMPT>
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/agent_tui_kit/src/state/select_popup.rs`（`query` / `filterable` / `filtered_indices` / `push_query`…）、`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`（筛选行 + 可见行映射）、`crates/agent_tui_kit/src/render/popups/select.rs`（footer 提示、空态文案）、`crates/agent_tui_kit/src/i18n.rs`（`select_hint_filter`、`select_filter_placeholder`、`select_no_match`）、`crates/tui/src/handlers/select.rs`（字符 / Backspace / Esc 三档语义）；spec `docs/superpowers/specs/2026-10-04-list-popup-component-design.md`；Ch 23 |
+| **Related** | `crates/agent_tui_kit/src/state/select_popup.rs`（`query` / `filterable` / `filtered_indices` / `push_query`…）、`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`（筛选行 + 可见行映射）、`crates/agent_tui_kit/src/render/popups/select.rs`（footer 提示、空态文案）、`crates/agent_tui_kit/src/i18n.rs`（`select_hint_filter`、`select_filter_placeholder`、`select_no_match`）、`crates/tui/src/handlers/select.rs`（字符 / Backspace / Esc 三档语义）；spec `docs/superpowers/specs/2026-10-04-list-popup-component-design.md`；Ch 22 |
 
 **Symptom / motivation:** `/model` 的候选是配置里的 `models = [...]` 与端点 `/v1/models` 的并集，可能几十上百条，而弹窗只能 ↑↓/j/k 一行行挪——没有任何办法按名字缩小范围。palette 与 slash 都能筛，是因为它们的状态里本来就有输入串；`SelectPopup` 从来没有查询字段，所以列表再长也只能翻。2026-10-04 把四处列表弹窗收进 `ListPopup` 之后这个问题更显眼：组件负责"渲染一组行"，而"哪些行"是调用方的数据问题，筛选需要的是状态而不是渲染。
 
@@ -1303,7 +1303,7 @@ Usage: tact-ui headless <PROMPT>
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix（含重构） |
-| **Related** | `crates/agent_tui_kit/src/widgets/list_popup.rs`（新组件：`ListRow` / `ListPopup` / `window_offset` / `SelectionStyle`）、`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`（改为委托渲染）、`crates/tui/src/render/popups/{command_palette,file_picker,slash_command}.rs`、`crates/tui/src/handlers/mouse.rs`（`list_popup_at` / `scroll_list_popup`）、`crates/agent_tui_kit/src/state/mouse_state.rs`（`palette_popup_area`、`file_picker_popup_area`）、`crates/tui/src/widgets/state/app/config.rs`（`palette_filtered`、`step_palette_selection`）；spec `docs/superpowers/specs/2026-10-04-list-popup-component-design.md`；Ch 23；前身见下方 2026-08-29 条目 |
+| **Related** | `crates/agent_tui_kit/src/widgets/list_popup.rs`（新组件：`ListRow` / `ListPopup` / `window_offset` / `SelectionStyle`）、`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`（改为委托渲染）、`crates/tui/src/render/popups/{command_palette,file_picker,slash_command}.rs`、`crates/tui/src/handlers/mouse.rs`（`list_popup_at` / `scroll_list_popup`）、`crates/agent_tui_kit/src/state/mouse_state.rs`（`palette_popup_area`、`file_picker_popup_area`）、`crates/tui/src/widgets/state/app/config.rs`（`palette_filtered`、`step_palette_selection`）；spec `docs/superpowers/specs/2026-10-04-list-popup-component-design.md`；Ch 22；前身见下方 2026-08-29 条目 |
 
 **Symptom / motivation:** 列表型弹窗有四处（palette、file picker、slash、select），其中三处各自手写 chrome、选中行样式、空态与滚动逻辑。2026-08-29 只修了 slash 与 select：palette 与 file picker 仍然按 `count + 6` / `count + 5` 定高、把全部行交给 `List`，`List` 从第 0 行开始裁切——过滤后的列表一旦超出弹窗高度，选中行就落到折叠线以下，看起来像"列表卡住不滚动"。同样因为 `lib.rs` 按 `input_mode` 门控调用，这两个弹窗不记录鼠标矩形，滚轮落在它们身上会去滚背后的日志。此外：滚动 pin 公式 `visible - 3` 被写了三遍；空态、高亮样式（含"亮色主题下白底白字"的注释）各三遍；`truncate_chars` 在 palette 与 slash 各一份逐字相同；palette 的过滤谓词在渲染器与 Enter 处理器各一份，且光标只在渲染时被 clamp，键盘 ↓ 可以无限增长。
 
@@ -1355,7 +1355,7 @@ Usage: tact-ui headless <PROMPT>
 | 字段 | 值 |
 |-------|-------|
 | **类型** | optimization |
-| **相关** | `crates/tact_extensions/src/config/{types,resolve}.rs`；`crates/tact_extensions/src/agent/mod.rs`；`crates/tact_extensions/src/tool/{mod,registry}.rs`；`crates/tact_ui/src/{headless,interactive}.rs`；[Ch 3](./03_chapter_memory_zh.md)、[Ch 4](./04_chapter_prompt_zh.md)、[Ch 21](./21_chapter_config_zh.md)、`config.example.toml` |
+| **相关** | `crates/tact_extensions/src/config/{types,resolve}.rs`；`crates/tact_extensions/src/agent/mod.rs`；`crates/tact_extensions/src/tool/{mod,registry}.rs`；`crates/tact_ui/src/{headless,interactive}.rs`；[Ch 3](./03_chapter_memory_zh.md)、[Ch 4](./04_chapter_prompt_zh.md)、[Ch 20](./20_chapter_config_zh.md)、`config.example.toml` |
 
 **症状 / 动机：** 在此之前 Tact 的记忆是强制的：只要 `~/.tact/memory/` 里有文件，每个任务开始时都会注入系统提示；`MEMORY_GUIDANCE` 无条件教模型何时保存；`save_memory` 工具也始终注册。想用 MCP（例如 Basic Memory）或其他方式管理长期记忆的用户无法关掉它，只能接受两套记忆并存、上下文被重复占用。
 
@@ -1394,7 +1394,7 @@ Usage: tact-ui headless <PROMPT>
 | 字段 | 值 |
 |-------|-------|
 | **类型** | optimization |
-| **相关** | `scripts/check-rust.sh`（`cargo test … --verbose` → `--quiet`）；移出 `.githooks/pre-commit.sh`（版本控制内）与 `.git/hooks/{pre-push,post-commit}`（本地）；`scripts/install-git-hooks.sh`；[Ch 24](./24_chapter_testing_zh.md) §提交前 |
+| **相关** | `scripts/check-rust.sh`（`cargo test … --verbose` → `--quiet`）；移出 `.githooks/pre-commit.sh`（版本控制内）与 `.git/hooks/{pre-push,post-commit}`（本地）；`scripts/install-git-hooks.sh`；[Ch 23](./23_chapter_testing_zh.md) §提交前 |
 
 **症状 / 动机：** 一次**成功**的 push 会打出约 200 KB 的测试日志。来源是 `cargo test --verbose`：它会回显每个 target 的完整 rustc/rustdoc 命令行，`-L native=…` 一行就几 KB（`git push` 输出的**最后 25 行**就有 86 KB）。这段 stdout 不只给人看，也会进 agent 的上下文，等于每次绿灯 push 都白烧一次。
 
@@ -1417,7 +1417,7 @@ Usage: tact-ui headless <PROMPT>
 | 字段 | 值 |
 |-------|-------|
 | **类型** | bugfix |
-| **相关** | `crates/tui/src/handlers/mod.rs`（新增 `handle_global_shortcut` 与 `GLOBAL_SHORTCUTS` 表、`is_global_shortcut` / `global_shortcut_label(s)`）、`crates/tui/src/lib.rs`（`run_tui` 事件分发、`voice_keybind_conflict`）、`handlers/insert.rs`、`handlers/palette.rs`、`handlers/file_picker.rs`；`config.example.toml`、[Ch 21](./21_chapter_config_zh.md) §`[voice]`、[Ch 23](./23_chapter_tui_zh.md) §7 |
+| **相关** | `crates/tui/src/handlers/mod.rs`（新增 `handle_global_shortcut` 与 `GLOBAL_SHORTCUTS` 表、`is_global_shortcut` / `global_shortcut_label(s)`）、`crates/tui/src/lib.rs`（`run_tui` 事件分发、`voice_keybind_conflict`）、`handlers/insert.rs`、`handlers/palette.rs`、`handlers/file_picker.rs`；`config.example.toml`、[Ch 20](./20_chapter_config_zh.md) §`[voice]`、[Ch 22](./22_chapter_tui_zh.md) §7 |
 
 **症状 / 动机：** 全局快捷键（`Ctrl+C/H/T/L/?`）在 `run_tui` 里只是「顺带执行一下」，事件**没有被消费**——同一个 `KeyEvent` 继续往下派发给当前输入模式的 handler，而那些 handler 的兜底分支只匹配 `KeyCode::Char(c)`、不看修饰键。于是按一次 `Ctrl+T` 做两件事：主题切到下一个，**同时**输入框里多出一个 `t`。`Ctrl+H`、`Ctrl+L`、`Ctrl+?`、`Ctrl+C` 同理；Palette 模式把字母塞进 `cmd_line`，FilePicker 模式把它塞进过滤词。
 
@@ -1427,14 +1427,14 @@ Usage: tact-ui headless <PROMPT>
 
 **变更后行为：** `Ctrl+T` 只切主题，输入框不再出现 `t`；未绑定的 `Ctrl+<char>`（如 `Ctrl+G`）在三种模式里都不产生任何字符；无修饰键的普通字母照常输入。Insert 模式内既有的 `Ctrl+W/A/E/K/U/D/P/N/Z/Y`、`Ctrl+←/→`、`Ctrl+Home/End`、`Ctrl+Backspace` 不受影响——它们在兜底分支**之前**。`voice_keybind` 与 `Ctrl+C/H/T/L/?` 重合时启动即失败（实测：`ctrl+t` → `Error: voice.voice_keybind = "ctrl+t" is already taken by the built-in Ctrl+T shortcut. …`，exit 1，终端未被触碰）；`ctrl+g` / `ctrl+r` / `ctrl+,` 照常接受。
 
-**指针：** `crates/tui/src/handlers/mod.rs::handle_global_shortcut` / `GLOBAL_SHORTCUTS` / `is_global_shortcut`；`crates/tui/src/lib.rs`（`let global_handled = handle_global_shortcut(&mut app, &key);` 之后 `if global_handled { /* nothing else */ } else if voice_key_handled { … }`；`voice_keybind_conflict` 在 `run_tui` 解构 `TuiConfig` 之后、`enable_raw_mode()` 之前 `bail!`）；测试 `handlers::tests::every_global_shortcut_is_consumed` / `the_reserved_set_matches_the_dispatcher` / `an_unbound_ctrl_key_is_left_to_the_mode_handler` / `a_plain_letter_is_left_to_the_mode_handler`、`handlers::insert::tests::an_unbound_ctrl_key_types_nothing` / `a_plain_letter_still_types_itself`、`handlers::palette::tests::an_unbound_ctrl_key_does_not_type_into_the_palette`、`handlers::file_picker::tests::an_unbound_ctrl_key_does_not_filter_the_picker`、`voice_keybind_tests::a_binding_on_a_global_shortcut_is_refused` / `every_reserved_key_is_refused` / `a_free_binding_is_accepted`；[Ch 23](./23_chapter_tui_zh.md) §7、[Ch 21](./21_chapter_config_zh.md)。
+**指针：** `crates/tui/src/handlers/mod.rs::handle_global_shortcut` / `GLOBAL_SHORTCUTS` / `is_global_shortcut`；`crates/tui/src/lib.rs`（`let global_handled = handle_global_shortcut(&mut app, &key);` 之后 `if global_handled { /* nothing else */ } else if voice_key_handled { … }`；`voice_keybind_conflict` 在 `run_tui` 解构 `TuiConfig` 之后、`enable_raw_mode()` 之前 `bail!`）；测试 `handlers::tests::every_global_shortcut_is_consumed` / `the_reserved_set_matches_the_dispatcher` / `an_unbound_ctrl_key_is_left_to_the_mode_handler` / `a_plain_letter_is_left_to_the_mode_handler`、`handlers::insert::tests::an_unbound_ctrl_key_types_nothing` / `a_plain_letter_still_types_itself`、`handlers::palette::tests::an_unbound_ctrl_key_does_not_type_into_the_palette`、`handlers::file_picker::tests::an_unbound_ctrl_key_does_not_filter_the_picker`、`voice_keybind_tests::a_binding_on_a_global_shortcut_is_refused` / `every_reserved_key_is_refused` / `a_free_binding_is_accepted`；[Ch 22](./22_chapter_tui_zh.md) §7、[Ch 20](./20_chapter_config_zh.md)。
 
 ## 1. 2026-10-02 — 启动期间退出不再等 MCP 连完
 
 | 字段 | 值 |
 |-------|-------|
 | **类型** | bugfix |
-| **相关** | `crates/tact_ui/src/interactive.rs`（`run_interactive`：`build_agent_for_interactive` 与 `tui_handle` 的 `tokio::select!`）；[Ch 23](./23_chapter_tui_zh.md) §1 |
+| **相关** | `crates/tact_ui/src/interactive.rs`（`run_interactive`：`build_agent_for_interactive` 与 `tui_handle` 的 `tokio::select!`）；[Ch 22](./22_chapter_tui_zh.md) §1 |
 
 **症状 / 动机：** 启动后头十秒内按 `q`，终端已经恢复、`Bye! 🔔` 已经打印，但进程要再挂几秒到十几秒才真正退出——屏幕看起来已经结束了，shell 提示符就是不来。用 pty 探针量「打印 `Bye!`」到「进程真正退出」的差值（注意 TUI 默认是 **Insert** 模式，探针要先发 `Esc` 再发 `q`，否则 `q` 只是打进输入框）：
 
@@ -1451,14 +1451,14 @@ Usage: tact-ui headless <PROMPT>
 
 **变更后行为：** 启动任意时刻退出都是立即的（三档 dwell 实测均为 0.00 s）；正常路径不变——启动已完成后退出仍打印 `[session id: ...]` 与 stats，仍走 SessionEnd hook + `shutdown_mcp`。
 
-**指针：** `crates/tact_ui/src/interactive.rs::run_interactive`（`let mut build = Box::pin(...)` + `tokio::select!`，TUI 分支 `tui??; return Ok(())`）；[Ch 23](./23_chapter_tui_zh.md) §1。**无自动化测试**：要稳定复现需要给构建注入可观测的延迟，现有 harness 的构建太快、跑不到这个竞态；证据是 pty 探针的前后对照（上表），改动后三档均为 0.00 s。
+**指针：** `crates/tact_ui/src/interactive.rs::run_interactive`（`let mut build = Box::pin(...)` + `tokio::select!`，TUI 分支 `tui??; return Ok(())`）；[Ch 22](./22_chapter_tui_zh.md) §1。**无自动化测试**：要稳定复现需要给构建注入可观测的延迟，现有 harness 的构建太快、跑不到这个竞态；证据是 pty 探针的前后对照（上表），改动后三档均为 0.00 s。
 
 ## 1. 2026-10-02 — `/lang` 现在能把语言写进 `[ui] language`，下次启动读得回来
 
 | 字段 | 值 |
 |-------|-------|
 | **类型** | optimization |
-| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`Language::as_str` / `parse`、`Eq`，新增 `lang_persist_prompt` / `lang_persisted_tmpl` / `lang_persist_failed_tmpl` / `lang_session_only_tmpl`）；`crates/tact_extensions/src/config/types.rs`（`UiTomlConfig.language`、`UiSettings.language`）、`resolve.rs`（`resolve_non_llm`，无 CLI flag）、`persist.rs`（`update_ui_language_in_toml`）、`mod.rs`（`persist_language`）；`crates/tui/src/widgets/state/mod.rs`（`SelectKind::PersistLang`）、`handlers/select.rs`（`start_language_toggle` / `open_language_persist_step` / `finish_language_persist`、`theme_config_available` → `ui_config_available`）、`widgets/state/app/config.rs`（`apply_language` 从 `toggle_language` 拆出）、`construct.rs`（`set_configured_language`）、`lib.rs`（`TuiConfig.language`）；spec `docs/superpowers/specs/2026-10-02-ui-language-persistence-design.md`；[Ch 23](./23_chapter_tui_zh.md) §6.10、[Ch 21](./21_chapter_config_zh.md) §4/§5/§6 |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`Language::as_str` / `parse`、`Eq`，新增 `lang_persist_prompt` / `lang_persisted_tmpl` / `lang_persist_failed_tmpl` / `lang_session_only_tmpl`）；`crates/tact_extensions/src/config/types.rs`（`UiTomlConfig.language`、`UiSettings.language`）、`resolve.rs`（`resolve_non_llm`，无 CLI flag）、`persist.rs`（`update_ui_language_in_toml`）、`mod.rs`（`persist_language`）；`crates/tui/src/widgets/state/mod.rs`（`SelectKind::PersistLang`）、`handlers/select.rs`（`start_language_toggle` / `open_language_persist_step` / `finish_language_persist`、`theme_config_available` → `ui_config_available`）、`widgets/state/app/config.rs`（`apply_language` 从 `toggle_language` 拆出）、`construct.rs`（`set_configured_language`）、`lib.rs`（`TuiConfig.language`）；spec `docs/superpowers/specs/2026-10-02-ui-language-persistence-design.md`；[Ch 22](./22_chapter_tui_zh.md) §6.10、[Ch 20](./20_chapter_config_zh.md) §4/§5/§6 |
 
 **症状 / 动机：** 上一轮的 `/theme` 已经能问一句「保存到配置文件？」并写 `[ui] theme`，`Ctrl+L` 旁边的 `/lang` 却仍然只有 `app.toggle_language()`：换完语言、本轮生效，下次启动回到英文，而且**没有任何地方能改这个结果**——`[ui]` 里根本没有语言这个键，TOML 里写了也没人读。于是「我明明切成中文了」只能靠每次重开再按一次来对抗。
 
@@ -1468,7 +1468,7 @@ Usage: tact-ui headless <PROMPT>
 
 **播报只发生一次。** 原先 `toggle_language` 一个函数同时做「翻转」和「播报」，`/lang` 若直接复用会先打印 `🌐 语言: 中文`、紧接着再打印「已保存 / 仅本次会话」——同一件事说两遍。拆成 `apply_language`（静默切换，并把新 `Messages` 快照推给 thinking / stream / tools 三个持有者）与 `toggle_language`（`apply_language` + 播报）后，`Ctrl+L` 走后者、`/lang` 走前者并让持久化步骤承担播报。这个拆分不是风格问题：`self.language` 是**渲染**路径读的，而组件的 `Messages` 在构造时就冻结了，只翻 `self.language` 会让切换前已存在的行在旧语言的外壳里被重绘。
 
-**变更后行为：** `/lang` 翻转语言后追加一步「将语言保存到配置文件？」（默认**否**，与 `/theme`、`/model` 手感一致）：选「是」写 `[ui] language`（`en` / `zh`），`config_path` 为空时不开这一步、直接播报「仅本次会话」；`Ctrl+L` 行为不变，只翻转不写文件。启动时读回 `[ui] language`，无法识别则告警 + 英文。**没有 CLI flag**：主题可能随终端而变，一次启动换一个说得通；语言属于使用者本人，`/lang` 写一次就够了——因此解析链只有「TOML → 默认值」两级。`config.example.toml` 与 [Ch 21](./21_chapter_config_zh.md) 的 `[ui]` 段、默认值表、§6 均同步。
+**变更后行为：** `/lang` 翻转语言后追加一步「将语言保存到配置文件？」（默认**否**，与 `/theme`、`/model` 手感一致）：选「是」写 `[ui] language`（`en` / `zh`），`config_path` 为空时不开这一步、直接播报「仅本次会话」；`Ctrl+L` 行为不变，只翻转不写文件。启动时读回 `[ui] language`，无法识别则告警 + 英文。**没有 CLI flag**：主题可能随终端而变，一次启动换一个说得通；语言属于使用者本人，`/lang` 写一次就够了——因此解析链只有「TOML → 默认值」两级。`config.example.toml` 与 [Ch 20](./20_chapter_config_zh.md) 的 `[ui]` 段、默认值表、§6 均同步。
 
 **指针：** `crates/tui/src/handlers/select.rs::start_language_toggle` / `open_language_persist_step` / `finish_language_persist`、`crates/tui/src/widgets/state/app/construct.rs::set_configured_language`、`crates/tact_extensions/src/config/persist.rs::update_ui_language_in_toml`。测试：`language_persist_step_asks_and_defaults_to_no`、`language_persist_step_reports_session_only_without_a_config_file`、`declining_to_persist_reports_a_session_only_language`、`confirming_save_writes_the_locale_tag_and_leaves_the_other_tables`、`apply_language_switches_without_announcing`、`language_names_round_trip_through_the_config_spelling`、`updates_ui_language_keeping_the_theme_line`、`ui_language_is_created_when_the_table_is_missing`。
 
@@ -1567,7 +1567,7 @@ Policy overlays:
 | 字段 | 值 |
 |-------|-------|
 | **类型** | optimization |
-| **相关** | `crates/tui/src/widgets/state/mod.rs`（`SelectKind::ThemePick` / `PersistTheme`）；`crates/tact_extensions/src/config/{mod.rs,persist.rs}`（`persist_theme`、`update_ui_theme_in_toml`、`set_scalar`）；`crates/tui/src/handlers/mod.rs`（`start_theme_picker`）；`crates/tui/src/handlers/select.rs`（确认/取消分支）；`crates/tui/src/widgets/state/app/config.rs`（`set_theme`、`theme_label`，`toggle_theme` 改为调用前者）；`crates/agent_tui_kit/src/theme.rs`（`ThemeName::all()` 转 pub、新增 `as_str()`）；`crates/agent_tui_kit/src/i18n.rs`（`theme_select_prompt` / `theme_persist_*` / `theme_session_only_tmpl`，`model_persist_yes|no` 更名 `persist_yes|no`，`cmd_theme` 描述）；spec `docs/superpowers/specs/2026-10-01-tui-theme-picker-design.md`；[Ch 23](./23_chapter_tui_zh.md) §主题 |
+| **相关** | `crates/tui/src/widgets/state/mod.rs`（`SelectKind::ThemePick` / `PersistTheme`）；`crates/tact_extensions/src/config/{mod.rs,persist.rs}`（`persist_theme`、`update_ui_theme_in_toml`、`set_scalar`）；`crates/tui/src/handlers/mod.rs`（`start_theme_picker`）；`crates/tui/src/handlers/select.rs`（确认/取消分支）；`crates/tui/src/widgets/state/app/config.rs`（`set_theme`、`theme_label`，`toggle_theme` 改为调用前者）；`crates/agent_tui_kit/src/theme.rs`（`ThemeName::all()` 转 pub、新增 `as_str()`）；`crates/agent_tui_kit/src/i18n.rs`（`theme_select_prompt` / `theme_persist_*` / `theme_session_only_tmpl`，`model_persist_yes|no` 更名 `persist_yes|no`，`cmd_theme` 描述）；spec `docs/superpowers/specs/2026-10-01-tui-theme-picker-design.md`；[Ch 22](./22_chapter_tui_zh.md) §主题 |
 
 **症状 / 动机：** `/theme` 只做一件事：`C::Theme => app.toggle_theme()`，即 `ThemeName::next()` 循环。内置主题有 12 个，想从 `ink`（config 默认）切到 `kawaii` 要按 6 次，而且每次都得盯着底栏看现在到哪了；`/model`、`/permission` 早就是选择器（列表 + 当前项标记 + Enter 确认），只有主题是异类。同一批主题名还散在两处：`toggle_theme` 里一个 12 分支的 `match`，以及（新加的）选择器需要同样的标签。
 
@@ -1584,7 +1584,7 @@ Policy overlays:
 | 字段 | 值 |
 |-------|-------|
 | **类型** | bugfix |
-| **相关** | `crates/tui/src/render/popups/{slash_command,command_palette,file_picker}.rs`；`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`、`crates/agent_tui_kit/src/render/popups/select.rs`；`crates/tui/src/render/popup_scene_tests.rs`（4 个亮色主题回归测试）；[Ch 23](./23_chapter_tui_zh.md) §覆层弹窗 |
+| **相关** | `crates/tui/src/render/popups/{slash_command,command_palette,file_picker}.rs`；`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`、`crates/agent_tui_kit/src/render/popups/select.rs`；`crates/tui/src/render/popup_scene_tests.rs`（4 个亮色主题回归测试）；[Ch 22](./22_chapter_tui_zh.md) §覆层弹窗 |
 
 **症状：** 覆层弹窗的**行内容**用字面量取色：`Color::White`（未选中行、选中行前景）、`Color::Cyan`（选中行）、`Color::DarkGray`（描述与分组标题）、`Color::Gray`（空提示）。而 chrome（`render_popup_chrome`）是 theme 感知的，它给弹窗铺 `bg(theme.bg)`——亮色主题的 `bg` 是 **White**。于是 `Light` / `InkLight` / `SolarizedLight` 下：未选中行 = 白底白字，**整张命令列表不可见**（实测缓冲：`fg=White bg=Reset` 叠在 `bg=White` 的框内）；选中行是 Dark 的 cyan，恰好等于 `Light` 的 `highlight`，而它的 `accent` 是蓝——高亮与强调色都不属于当前主题。`select`（权限/模型选择器）与 file picker 的选中行同样是 `White on highlight`，亮色主题高亮为亮色时读不清。
 
@@ -1599,7 +1599,7 @@ Policy overlays:
 | 字段 | 值 |
 |-------|-------|
 | **类型** | optimization / breaking（发现层） |
-| **相关** | `crates/tui/src/widgets/state/app/config.rs`（`palette_commands` 只返内置）；`crates/tui/src/widgets/state/slash_command.rs`（`skill_candidates`：`/skill` 的动态子命令）；`crates/tui/src/handlers/skills.rs`（`invoke_skill`、`skill_args_from_subcommand_input`）；`crates/tui/src/handlers/palette.rs`；`crates/agent_tui_kit/src/render/slash_style.rs`（`SKILL_COMMAND`、`/skill <name>` 高亮）；`crates/agent_tui_kit/src/i18n.rs`（`skill_usage` / `cmd_skill`）；spec `docs/superpowers/specs/2026-10-01-tui-skill-command-and-completion-design.md`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
+| **相关** | `crates/tui/src/widgets/state/app/config.rs`（`palette_commands` 只返内置）；`crates/tui/src/widgets/state/slash_command.rs`（`skill_candidates`：`/skill` 的动态子命令）；`crates/tui/src/handlers/skills.rs`（`invoke_skill`、`skill_args_from_subcommand_input`）；`crates/tui/src/handlers/palette.rs`；`crates/agent_tui_kit/src/render/slash_style.rs`（`SKILL_COMMAND`、`/skill <name>` 高亮）；`crates/agent_tui_kit/src/i18n.rs`（`skill_usage` / `cmd_skill`）；spec `docs/superpowers/specs/2026-10-01-tui-skill-command-and-completion-design.md`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 22](./22_chapter_tui_zh.md) |
 
 **症状 / 动机：** 每装一个 skill，它就变成一条一级斜杠命令（`/code-reviewer`、`/lark-doc`…），混进 palette 与 `/` 弹出菜单。装几十个之后，`/mcp`、`/compact`、`/help` 淹没在一列 skill 名里；一级列表还随安装/卸载整体挪位（补全索引、分组标题、视觉记忆全部失效）。上一轮刚把 `/skills` 收成 `/skill list`，等于承认这条路径该有统一入口，但 skill 仍然各自占据一级。
 
@@ -1620,7 +1620,7 @@ Policy overlays:
 | 字段 | 值 |
 |-------|-------|
 | **类型** | optimization |
-| **相关** | `crates/tui/src/widgets/state/slash.rs`（`Subcommand` + `subcommands()`）；`crates/tui/src/widgets/state/slash_command.rs`（`Candidate` + `App::slash_candidates`，取代 `matched_commands`）；`crates/tui/src/handlers/insert.rs`（空格 / Tab / Enter）；`crates/tui/src/render/popups/slash_command.rs`；spec `docs/superpowers/specs/2026-10-01-tui-skill-command-and-completion-design.md`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
+| **相关** | `crates/tui/src/widgets/state/slash.rs`（`Subcommand` + `subcommands()`）；`crates/tui/src/widgets/state/slash_command.rs`（`Candidate` + `App::slash_candidates`，取代 `matched_commands`）；`crates/tui/src/handlers/insert.rs`（空格 / Tab / Enter）；`crates/tui/src/render/popups/slash_command.rs`；spec `docs/superpowers/specs/2026-10-01-tui-skill-command-and-completion-design.md`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 22](./22_chapter_tui_zh.md) |
 
 **症状 / 动机：** 斜杠弹窗只认命令名，而且空格一律关闭它（`KeyCode::Char(' ') if slash_command.active` 直接 `active = false`）。于是 `/skill ` 之后既没有提示也没有补全——`list` / `reload` 只存在于 `skill_usage` 这类用法字符串和文档里；`/plugin`（5 个子命令）、`/hooks`（3 个，还带 `--all` / `--source <label>`）、`/mcp`（3 个）同样如此。上一轮把 `/skills` 收成 `/skill list` 之后，这个缺口更明显了：命令变得需要记子命令，而补全只帮到命令名那一步。
 
@@ -1639,7 +1639,7 @@ Policy overlays:
 | 字段 | 值 |
 |-------|-------|
 | **类型** | optimization / breaking rename |
-| **相关** | `crates/tui/src/widgets/state/slash.rs`（`Skill` 取代 `Skills` + `SkillReload`）；`crates/tui/src/handlers/skills.rs`（新增 `handle_skill_builtin_command`）；`crates/tui/src/handlers/mod.rs`；`crates/tui/src/render/popups/command_palette.rs`；`crates/agent_tui_kit/src/i18n.rs`（`cmd_skill` 取代 `cmd_skills`/`cmd_skill_reload`，新增 `skill_usage`）；spec `docs/superpowers/specs/2026-10-01-tui-skill-command-and-completion-design.md`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 21](./21_chapter_config_zh.md)、[Ch 23](./23_chapter_tui_zh.md) |
+| **相关** | `crates/tui/src/widgets/state/slash.rs`（`Skill` 取代 `Skills` + `SkillReload`）；`crates/tui/src/handlers/skills.rs`（新增 `handle_skill_builtin_command`）；`crates/tui/src/handlers/mod.rs`；`crates/tui/src/render/popups/command_palette.rs`；`crates/agent_tui_kit/src/i18n.rs`（`cmd_skill` 取代 `cmd_skills`/`cmd_skill_reload`，新增 `skill_usage`）；spec `docs/superpowers/specs/2026-10-01-tui-skill-command-and-completion-design.md`；[Ch 02](./02_chapter_skill_zh.md)、[Ch 20](./20_chapter_config_zh.md)、[Ch 22](./22_chapter_tui_zh.md) |
 
 **症状 / 动机：** 技能那两条命令是全表里唯一不成对的：`/skills` 平级列出技能，`/skill-reload` 平级重扫，而同类能力在别处都是「一个命令 + 子命令」——`/mcp list`、`/plugin list|reload|install`、`/hooks list|trust`。结果弹出面板里多出一条命令、两张图标、两个描述字段（`cmd_skills` / `cmd_skill_reload`），用户还得记住哪条是横线哪条是下划线。
 
@@ -1677,7 +1677,7 @@ Policy overlays:
 | 字段 | 值 |
 |-------|-------|
 | **类型** | bugfix / refactor |
-| **相关** | 新增 `crates/tui/src/widgets/state/slash.rs`（`SlashCommand`）；`crates/tui/src/{widgets/state/mod.rs,widgets/state/app/config.rs,render/slash_style.rs,handlers/mod.rs}`；`crates/agent_tui_kit/src/i18n.rs`（5 个新字段 × 2 语言）；[Ch 23](./23_chapter_tui_zh.md) §3 |
+| **相关** | 新增 `crates/tui/src/widgets/state/slash.rs`（`SlashCommand`）；`crates/tui/src/{widgets/state/mod.rs,widgets/state/app/config.rs,render/slash_style.rs,handlers/mod.rs}`；`crates/agent_tui_kit/src/i18n.rs`（5 个新字段 × 2 语言）；[Ch 22](./22_chapter_tui_zh.md) §3 |
 
 **症状 / 动机：** 22 个内置斜杠命令的名字被平行列在 5 个地方，其中两处已经漂移。
 
@@ -2057,7 +2057,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix (文案) |
-| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`thinking_card_title_active` / `_done`、`thinking_title_active` / `_done`；删除 `thinking_popup_title`）、`crates/agent_tui_kit/src/render/cells/thinking.rs`、`crates/agent_tui_kit/src/components/thinking.rs`、`crates/tui/src/widgets/state/app/popups.rs`；[第 23 章](./23_chapter_tui_zh.md) |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`thinking_card_title_active` / `_done`、`thinking_title_active` / `_done`；删除 `thinking_popup_title`）、`crates/agent_tui_kit/src/render/cells/thinking.rs`、`crates/agent_tui_kit/src/components/thinking.rs`、`crates/tui/src/widgets/state/app/popups.rs`；[第 22 章](./22_chapter_tui_zh.md) |
 
 **症状 / 动机：** 卡片与弹窗两种状态共用同一个标题字符串，于是已完成的卡片一直沿用运行中才需要的措辞——同一个字段错了两次，而第二次就发生在中文文案刚被改成不再显示 `思考中` 的下一个提交里。
 
@@ -2074,7 +2074,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix (文案) |
-| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`thinking_card_title`、`thinking_title`）；[第 23 章](./23_chapter_tui_zh.md) |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`thinking_card_title`、`thinking_title`）；[第 22 章](./22_chapter_tui_zh.md) |
 
 **症状 / 动机：** 运行中与已完成的 thinking 卡片共用同一个标题字符串，而中文那条写的是 `🧠 思考中`。于是卡片跑完之后还在宣称自己正在思考——标记「运行中」的是标题前缀的 spinner，文案不该也来抢这个活。
 
@@ -2091,7 +2091,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix (UI) |
-| **相关** | `crates/agent_tui_kit/src/render/cells/thinking.rs`（`ThinkingCell::card_geometry`、`footer_button_rect`）、`crates/agent_tui_kit/src/render/log.rs`（`LogRenderOutput`）、`crates/agent_tui_kit/src/render/log_column.rs`（`LogColumnRenderer::cell_slice`）、`crates/agent_tui_kit/src/state/mouse_state.rs`（`thinking_open_btn_areas`）、`crates/tui/src/handlers/mouse.rs`（`handle_log_click`）；[第 23 章](./23_chapter_tui_zh.md) |
+| **相关** | `crates/agent_tui_kit/src/render/cells/thinking.rs`（`ThinkingCell::card_geometry`、`footer_button_rect`）、`crates/agent_tui_kit/src/render/log.rs`（`LogRenderOutput`）、`crates/agent_tui_kit/src/render/log_column.rs`（`LogColumnRenderer::cell_slice`）、`crates/agent_tui_kit/src/state/mouse_state.rs`（`thinking_open_btn_areas`）、`crates/tui/src/handlers/mouse.rs`（`handle_log_click`）；[第 22 章](./22_chapter_tui_zh.md) |
 
 **症状 / 动机：** 双击 thinking 卡片的任何位置都会弹出详情——标题、summary、前后的空白行全算命中。而这张卡片本来也不是可选文本（它把 tail 或 summary 画在承载转录原始 thinking 文本的行上），所以那些点击既弹了窗、也不可能选中任何东西。底栏画着 `[󰜼 打开]` 按钮说的是「点这里」，卡片回答的却是「点哪都行」。
 
@@ -2099,7 +2099,7 @@ Policy overlays:
 
 **之后的行为：** 双击 `[󰜼 Open]` / `[󰜼 打开]` 打开详情弹窗；同样的双击落在卡片标题、卡片正文、空白行、按钮左侧的读数或按钮右侧那一列，都什么都不做，也不留下选择。
 
-**指针：** `ThinkingCell::{card_geometry, footer_button_rect}`、`LogColumnRenderer::cell_slice`（绘制与命中区共用一条公式）、`LogRenderOutput`、`render_log_panel_pure` 的 thinking 分支、`MouseState::thinking_open_btn_areas`、`handle_log_click` 的 thinking 分支。测试：`agent_tui_kit::render::cells::thinking::tests::{the_footer_button_rect_is_the_drawn_button, a_clipped_footer_has_no_button_rect, the_button_rect_follows_a_scrolled_card}` 与 `tui::handlers::mouse::tests::{thinking_popup_opens_from_the_drawn_button_only, clicking_a_thinking_card_body_leaves_no_selection}`（后一对已验证对「整张卡片是目标」的旧行为是红的）。文档：第 23 章（`ThinkingCell` 行、卡片表、弹窗表）。
+**指针：** `ThinkingCell::{card_geometry, footer_button_rect}`、`LogColumnRenderer::cell_slice`（绘制与命中区共用一条公式）、`LogRenderOutput`、`render_log_panel_pure` 的 thinking 分支、`MouseState::thinking_open_btn_areas`、`handle_log_click` 的 thinking 分支。测试：`agent_tui_kit::render::cells::thinking::tests::{the_footer_button_rect_is_the_drawn_button, a_clipped_footer_has_no_button_rect, the_button_rect_follows_a_scrolled_card}` 与 `tui::handlers::mouse::tests::{thinking_popup_opens_from_the_drawn_button_only, clicking_a_thinking_card_body_leaves_no_selection}`（后一对已验证对「整张卡片是目标」的旧行为是红的）。文档：第 22 章（`ThinkingCell` 行、卡片表、弹窗表）。
 
 ---
 
@@ -2108,7 +2108,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | feature (UI) |
-| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`thinking_card_bottom`、`thinking_card_action`）、`crates/agent_tui_kit/src/render/cells/thinking.rs`（`ThinkingCell::footer`、`ThinkingCell::bottom_line`）、`crates/agent_tui_kit/src/widgets/button.rs`（`ButtonChrome::wrap`）；[第 23 章](./23_chapter_tui_zh.md) |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`thinking_card_bottom`、`thinking_card_action`）、`crates/agent_tui_kit/src/render/cells/thinking.rs`（`ThinkingCell::footer`、`ThinkingCell::bottom_line`）、`crates/agent_tui_kit/src/widgets/button.rs`（`ButtonChrome::wrap`）；[第 22 章](./22_chapter_tui_zh.md) |
 
 **症状 / 动机：** thinking 卡片的底栏是 `⇕ 1/2 lines | Double-click for full content | ⏱ 1.5s`——54 列散文，画面上没有任何标记指出「可点」的位置；而这距离折叠 tool 卡片把同一类句子换成方括号按钮只隔了一次会话。两张表达同一件事（「双击我，看剩下的」）的卡片，用了两种教法。
 
@@ -2116,7 +2116,7 @@ Policy overlays:
 
 **之后的行为：** `╰ ⏱ 1.5s | ↕ 1/2 lines | [󰜼 Open] ────╯`——33 列而不是 54 列（中文 30 列而不是 38 列），按钮用主题的 `muted` 色画在 border 色的读数里。两段读数在同一天按用户要求对调了位置：耗时在前、行数在后，各自的标签跟着自己那段读数走（cell 就是按这个顺序填模板）。没有 Nerd Font 的终端在这里同样会画出替代框，与 tool 卡片按钮是同一笔已接受的代价。
 
-**指针：** `ButtonChrome::wrap`（方括号归 chrome 所有；`wrap_is_what_the_chrome_draws` 把它和 `Button::line` 钉在一起）、`ThinkingCell::footer`（填模板 + 后缀切分）、`ThinkingCell::bottom_line`（用 `Button` 画成卡片的 `title_bottom`）。测试：`render::cells::thinking::tests::{the_footer_ends_in_the_shared_button, the_footer_button_is_drawn_in_the_button_color, every_locale_ends_its_footer_with_the_action}`、`widgets::button::tests::wrap_is_what_the_chrome_draws`。文档：第 23 章（`ThinkingCell` 行与卡片表）。
+**指针：** `ButtonChrome::wrap`（方括号归 chrome 所有；`wrap_is_what_the_chrome_draws` 把它和 `Button::line` 钉在一起）、`ThinkingCell::footer`（填模板 + 后缀切分）、`ThinkingCell::bottom_line`（用 `Button` 画成卡片的 `title_bottom`）。测试：`render::cells::thinking::tests::{the_footer_ends_in_the_shared_button, the_footer_button_is_drawn_in_the_button_color, every_locale_ends_its_footer_with_the_action}`、`widgets::button::tests::wrap_is_what_the_chrome_draws`。文档：第 22 章（`ThinkingCell` 行与卡片表）。
 
 ---
 
@@ -2125,7 +2125,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | feature (UI) |
-| **Related** | `crates/agent_tui_kit/src/i18n.rs`（`tool_collapsed_output_hint{,_one}`、`tool_collapsed_output_action`）、`crates/agent_tui_kit/src/widgets/tool_widget.rs`（`collapsed_action_text`、`collapsed_output_hint`、`collapsed_action_cols`）、`crates/agent_tui_kit/src/render/cells/tool.rs`（`meta_line`）；[第 23 章](./23_chapter_tui_zh.md) |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs`（`tool_collapsed_output_hint{,_one}`、`tool_collapsed_output_action`）、`crates/agent_tui_kit/src/widgets/tool_widget.rs`（`collapsed_action_text`、`collapsed_output_hint`、`collapsed_action_cols`）、`crates/agent_tui_kit/src/render/cells/tool.rs`（`meta_line`）；[第 22 章](./22_chapter_tui_zh.md) |
 
 **症状 / 动机：** 无卡片的已完成命令用 `double-click-result` 这几个字来宣告它的弹窗——19 列用 phase 色画的散文，而画面上没有任何标记说它可点，因为整条 meta 行就是**一个 span**：文字本身就是那个控件。于是这行把它最长的一段列数花在了「一个控件靠形状就能说清的事」上。
 
@@ -2133,7 +2133,7 @@ Policy overlays:
 
 **之后的行为：** `✓ Success · 34ms · 3 lines · [󰜼 Open]` 是 37 列而不是 48；中文行 `✓ 成功 · 34ms · 3 行 · [󰜼 打开]` 是 31 列而不是 35。按钮用主题的 `muted` 色画在该行自己的背景上，所以在 phase 色的句子里读起来就是一个控件。接受两点代价：这是仓库第一个 Nerd Font（plane-15 PUA）字形，因此没有 Nerd Font 的终端在这一行会画出替代框；以及字形必须保持一列宽——命中区是从行尾往回量的，终端若把某个字形画得比 `unicode-width` 量的更宽，整个目标都会跟着偏。
 
-**指针：** `i18n.rs`（两个模板的第一个 `{}` 填行数、第二个填按钮字形；action 键只放裸 label，绝不含方括号）、`tool_widget.rs::collapsed_action_text`（这几个字形的唯一定义）、`render/cells/tool.rs::meta_line`（把该行拆开、行尾走 `Button` 画）。测试：`widgets::tool_widget::tests::{collapsed_output_hint_ends_with_its_action,finished_block_meta_row_matches_its_hit_range}`、`render::cells::tool::tests::{collapsed_command_meta_row_reports_hidden_output,collapsed_command_meta_row_draws_its_action_as_a_button,open_card_meta_row_has_no_collapsed_hint}`，以及两个读**真实渲染帧**定位字形的用例——`render::log_render_tests::completed_command_renders_header_rows_only`、`handlers::mouse::tests::collapsed_hint_click_window_matches_the_drawn_glyphs`。文档：`docs/tool_rendering.md` §5「Collapsed output」、[第 23 章](./23_chapter_tui_zh.md)。
+**指针：** `i18n.rs`（两个模板的第一个 `{}` 填行数、第二个填按钮字形；action 键只放裸 label，绝不含方括号）、`tool_widget.rs::collapsed_action_text`（这几个字形的唯一定义）、`render/cells/tool.rs::meta_line`（把该行拆开、行尾走 `Button` 画）。测试：`widgets::tool_widget::tests::{collapsed_output_hint_ends_with_its_action,finished_block_meta_row_matches_its_hit_range}`、`render::cells::tool::tests::{collapsed_command_meta_row_reports_hidden_output,collapsed_command_meta_row_draws_its_action_as_a_button,open_card_meta_row_has_no_collapsed_hint}`，以及两个读**真实渲染帧**定位字形的用例——`render::log_render_tests::completed_command_renders_header_rows_only`、`handlers::mouse::tests::collapsed_hint_click_window_matches_the_drawn_glyphs`。文档：`docs/tool_rendering.md` §5「Collapsed output」、[第 22 章](./22_chapter_tui_zh.md)。
 
 ---
 
@@ -2142,7 +2142,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix |
-| **相关** | `crates/agent_tui_kit/src/components/tool.rs`（`ToolComponent::on_tool_progress`）；`crates/agent_tui_kit/src/state/background_panel.rs`、`crates/tui/src/render/task_panel.rs`（测试）；[第 13 章](./13_chapter_background_zh.md)、[第 23 章](./23_chapter_tui_zh.md) |
+| **相关** | `crates/agent_tui_kit/src/components/tool.rs`（`ToolComponent::on_tool_progress`）；`crates/agent_tui_kit/src/state/background_panel.rs`、`crates/tui/src/render/task_panel.rs`（测试）；[第 13 章](./13_chapter_background_zh.md)、[第 22 章](./22_chapter_tui_zh.md) |
 
 **症状 / 动机：** 同时跑着几个 `background_run` 任务时，`[Background]` 条**只出现不到一秒**就消失了，而且之后一直空着，直到进程重启才恢复。任务卡片本身运行正常，`/background` 也列得出这些任务——只有这条 sticky 丢了它们。触发条件是**输出**：命令会打印东西的任务（`echo hello; sleep 300`）立刻丢行，而纯 `sleep 300` 的行会留着——这正是它看起来"时有时无"的原因，也是为什么条此后"再也不回来"（id 只在启动时发一次）。
 
@@ -2159,7 +2159,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix（体验） |
-| **相关** | `crates/agent_tui_kit/src/state/background_panel.rs`（`BACKGROUND_LINGER`、`FinishedBackgroundTask`、`note_finished`/`prune_finished`、`format_background_lines`/`format_sticky_title_line`）、`crates/agent_tui_kit/src/render/sticky_host.rs`、`crates/agent_tui_kit/src/i18n.rs`（`background_sticky_done`）；`crates/tui/src/widgets/state/app/{background,agent}.rs`、`crates/tui/src/render/task_panel.rs`；[第 13 章](./13_chapter_background_zh.md)、[第 23 章](./23_chapter_tui_zh.md) |
+| **相关** | `crates/agent_tui_kit/src/state/background_panel.rs`（`BACKGROUND_LINGER`、`FinishedBackgroundTask`、`note_finished`/`prune_finished`、`format_background_lines`/`format_sticky_title_line`）、`crates/agent_tui_kit/src/render/sticky_host.rs`、`crates/agent_tui_kit/src/i18n.rs`（`background_sticky_done`）；`crates/tui/src/widgets/state/app/{background,agent}.rs`、`crates/tui/src/render/task_panel.rs`；[第 13 章](./13_chapter_background_zh.md)、[第 22 章](./22_chapter_tui_zh.md) |
 
 **症状 / 动机：** 用户看着 5 个并发的 `background_run` 任务，先报「没有 sticky」，再报「只显示一个」，最后报「什么都没有」——三次读起来都像「这条丢了任务」。排查（tmux `capture-pane` 读真 TUI + 在 `sync_background_sticky` 里临时打点）**没有发现派生逻辑的缺陷**：行数始终等于真正在跑的任务数。找到的是这条域很容易被读错：
 1. 任务一结束，那一行就在同一帧里消失，看起来像丢了行；
@@ -2179,7 +2179,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | feature |
-| **相关** | `crates/agent_tui_kit/src/state/background_panel.rs`、`crates/agent_tui_kit/src/components/background_panel.rs`、`crates/agent_tui_kit/src/render/sticky_host.rs`、`crates/agent_tui_kit/src/state/ui_types.rs`（`StickyTab`）；`crates/tui/src/widgets/state/app/{background,agent,registry,config,construct}.rs`、`crates/tui/src/render/task_panel.rs`、`crates/tui/src/handlers/{mouse,mod}.rs`；[第 13 章](./13_chapter_background_zh.md)、[第 23 章](./23_chapter_tui_zh.md) |
+| **相关** | `crates/agent_tui_kit/src/state/background_panel.rs`、`crates/agent_tui_kit/src/components/background_panel.rs`、`crates/agent_tui_kit/src/render/sticky_host.rs`、`crates/agent_tui_kit/src/state/ui_types.rs`（`StickyTab`）；`crates/tui/src/widgets/state/app/{background,agent,registry,config,construct}.rs`、`crates/tui/src/render/task_panel.rs`、`crates/tui/src/handlers/{mouse,mod}.rs`；[第 13 章](./13_chapter_background_zh.md)、[第 22 章](./22_chapter_tui_zh.md) |
 
 **症状 / 动机：** Tasks 与 Subagent 各有一条 Log 下方的常驻条，而后台任务只以「启动它的那张工具卡」（id + 耗时，见 2026-09-25 条目）或一次 `/background` 弹窗的形式存在——于是「还有哪些在跑」在那张卡片滚出视口之后就消失了，而这恰恰是同时压着几个长构建时最需要看的信息。
 
@@ -2213,7 +2213,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix |
-| **相关** | `crates/tact_extensions/src/config/mod.rs`（`BUILTIN_MODEL_PROFILES`）；`crates/tact_extensions/src/agent/mod.rs`（`effort_after_provider_fold`、`compact_effort_reserve_tokens`、`compact_summary_effort`）；[第 21 章](./21_chapter_config_zh.md)；`config.example.toml` |
+| **相关** | `crates/tact_extensions/src/config/mod.rs`（`BUILTIN_MODEL_PROFILES`）；`crates/tact_extensions/src/agent/mod.rs`（`effort_after_provider_fold`、`compact_effort_reserve_tokens`、`compact_summary_effort`）；[第 20 章](./20_chapter_config_zh.md)；`config.example.toml` |
 
 **现象 / 动机：** 两处与官方文档对不上的地方（`api-docs.deepseek.com/guides/thinking_mode` 与 `/api/create-chat-completion`）。(a) 内建档位表把 `deepseek-v4-pro` 收窄成 `[High, Max]`，可它的模块注释引用的就是那张全族表，而 API 参考把 `deepseek-flash` / `deepseek-v4-pro` 列在同一个 `reasoning_effort` 枚举下——于是 `/model` 对这个 id 藏掉了 `low`，且与文档行为无法自洽。(b) DeepSeek **接受** `minimal`/`medium`/`xhigh` 但会折叠（`minimal`→`low`、`medium`/`xhigh`→`high`）；Tact 原样发送配置值，所以配置 `reasoning_effort = "medium"` 时预留按 4,000 的 medium 桶算，而模型实际以 `high`（8,000）推理——正是会饿死摘要信封的那种低估。
 
@@ -2221,7 +2221,7 @@ Policy overlays:
 
 **变更后行为：** 在 DeepSeek 上，`[llm] reasoning_effort = "medium"` 依然发送 `medium`（`[compact summary …] request … reasoning_effort=medium` 可见），但摘要预留按 `high` 桶：`(text 2000 + reasoning 8000)` 而不是 `(text 2000 + reasoning 4000)`。`/model` 第二步对 `deepseek-flash` 与 `deepseek-v4-pro` 都给出 `low`/`high`/`max`。`compact_summary_effort` 里「DeepSeek 无法彻底关闭思考」这句过期说法已修正：开关是存在的（`reasoning.effort = "none"`，chat 格式为 `thinking.type = "disabled"`），而阶梯仍**故意**只降到 `low`——handoff 里的标识符细节正来自那段思考。测试：`agent::tests::{effort_folds_to_what_deepseek_actually_runs,local_compact_folds_deepseek_effort_for_the_reserve}`（两个方向的折叠、线上值原样、打印出的信封用 high 桶）、`config::tests::deepseek_ids_share_the_official_tier_table`。
 
-**指针：** `crates/tact_extensions/src/config/mod.rs`、`crates/tact_extensions/src/agent/mod.rs`。文档：第 21 章 `reasoning_effort` 一节（折叠表 + 派生预算规则）、`config.example.toml` 的 model-profiles 注释（记账 + 官方列出的 id）。
+**指针：** `crates/tact_extensions/src/config/mod.rs`、`crates/tact_extensions/src/agent/mod.rs`。文档：第 20 章 `reasoning_effort` 一节（折叠表 + 派生预算规则）、`config.example.toml` 的 model-profiles 注释（记账 + 官方列出的 id）。
 
 ---
 
@@ -2264,7 +2264,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | docs（日志输出） |
-| **相关** | `crates/tact_extensions/src/agent/mod.rs`（`compact_response_note`、`compact_truncation_note`，以及 `[compact summary …]` / `[compact continue …]` / `[compact fallback]` 三处 emit）；[第 5 章](./05_chapter_compact_zh.md)；[第 23 章](./23_chapter_tui_zh.md) |
+| **相关** | `crates/tact_extensions/src/agent/mod.rs`（`compact_response_note`、`compact_truncation_note`，以及 `[compact summary …]` / `[compact continue …]` / `[compact fallback]` 三处 emit）；[第 5 章](./05_chapter_compact_zh.md)；[第 22 章](./22_chapter_tui_zh.md) |
 
 **现象 / 动机：** 一次真实 `/compact` 把每次尝试的状态打成了内部 Rust 类型的 `{:?}` dump——`response stop=Some(MaxTokens) usage=Some(TokenUsageInfo { prompt: 23470, completion: 4000, total: 27470, prompt_cache_hit_tokens: 0, prompt_cache_miss_tokens: 23470, reasoning_tokens: 4000 })`——本该是一句话的地方成了一串结构体字段，把唯一重要的数字（整个输出预算都被 `reasoning_tokens` 吃掉）埋在五个无关字段里。续写提示则是镜像的问题：`summary truncated (15314 think bytes)` 把**字节**数与 token 预算并排打印，拿它去比 2,000 的文本预算或 4,000 的 reasoning tokens 只会得到相反的结论；而 fallback 那行还写着 `truncated after 5 attempts`，可阶梯实际跑了 6 级。
 
@@ -2272,7 +2272,7 @@ Policy overlays:
 
 **变更后行为：** 每次尝试前一行 `[compact summary n/6] request … max_tokens=… (text … + reasoning …), reasoning_effort=…, input … chars`，后一行 `[compact summary n/6] response stop=…, prompt …, completion … (reasoning …), cache …/…`——覆盖面与 2026-09-14 那条一致，但现在可读也可 grep：`stop=max_tokens, prompt 23470, completion 4000 (reasoning 4000), cache 0/23470`。截断时发出 `[compact continue 1/5] summary truncated (4000 reasoning tokens, thinking block 15314 bytes), next attempt max_tokens=2000`；阶梯耗尽时发出 `[compact fallback] summary still truncated at stage 6/6; using the best-effort partial summary`。测试：`agent::tests::{compact_response_note_renders_the_providers_numbers,compact_truncation_note_labels_both_units}`（两种单位 + 无 usage / 未知 stop 两路），以及既有的信封测试（现在断言 `[compact summary 1/6] response stop=end_turn, no usage reported`）。
 
-**指针：** `crates/tact_extensions/src/agent/mod.rs`（`compact_response_note`、`compact_truncation_note`，阶梯循环里的三处 `emit_update`）。文档：第 5 章 §摘要阶梯记录新的行形状；第 23 章 §`/compact` 状态消息列出的是标签，未变。
+**指针：** `crates/tact_extensions/src/agent/mod.rs`（`compact_response_note`、`compact_truncation_note`，阶梯循环里的三处 `emit_update`）。文档：第 5 章 §摘要阶梯记录新的行形状；第 22 章 §`/compact` 状态消息列出的是标签，未变。
 
 ---
 
@@ -2372,7 +2372,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix |
-| **相关** | `crates/tact_extensions/src/agent/mod.rs`（`agent_loop` 的 stop reason 分支、`abandon_pending_tools`）；`crates/tact_extensions/src/agent/tool_dispatch.rs`（`unexecuted_tool_results`、`append_unexecuted_tool_uses`、各 `TOOL_*_MSG` 原因文本）；`crates/tact_llm/src/anthropic/mod.rs`（`prepare_body`）；`crates/tact_llm/src/convert.rs`（`sanitize_assistant_messages`、`drop_orphaned_tool_messages`）；[Ch 18](./18_chapter_agent_loop_zh.md) |
+| **相关** | `crates/tact_extensions/src/agent/mod.rs`（`agent_loop` 的 stop reason 分支、`abandon_pending_tools`）；`crates/tact_extensions/src/agent/tool_dispatch.rs`（`unexecuted_tool_results`、`append_unexecuted_tool_uses`、各 `TOOL_*_MSG` 原因文本）；`crates/tact_llm/src/anthropic/mod.rs`（`prepare_body`）；`crates/tact_llm/src/convert.rs`（`sanitize_assistant_messages`、`drop_orphaned_tool_messages`）；[Ch 17](./17_chapter_agent_loop_zh.md) |
 
 **症状 / 动机：** 一轮对话会把没有结果的工具调用存进历史。assistant 消息在流结束的那一刻就被 push 并持久化（`agent_loop`），而取消标志是在 stop reason 分类**之后**才检查的——所以落在这个窗口里的取消（或恰好在此刻死掉的进程）会留下一个已持久化的 `ToolUse`，却没有任何 `ToolResult`，然后代码用 `Ok(())` 返回，仿佛这一轮正常结束。这个形状在加载时没有任何客户端校验会拦下，而各 provider 的上线行为并不一致：chat completions 会在 wire 层兜底修复（`sanitize_assistant_messages` 剥掉孤立的 `tool_calls`、`drop_orphaned_tool_messages` 丢弃孤立的结果，两者都带 `tracing::warn!`）；Anthropic 把请求体原样序列化发出，得到 `tool_use ids were found without tool_result blocks`（400）；Responses 的 baseline 则把这个 `function_call` 留在已提交的 `input_items` 里。由于这个坏形状是**持久化**的，它能活过一次 resume——取消、退出、恢复，会话就再也跑不下去了。同一形状还有三个**非取消**的来源：`Refusal`、未知 stop reason、以及 `MaxTokens` 续写次数耗尽后放弃的那一支——三处都在 assistant 消息落库之后直接 `return`。
 
@@ -2387,7 +2387,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | optimization |
-| **相关** | `crates/agent_tui_kit/src/state/tool_state.rs`（`DiffPopup.tool_name`）、`crates/agent_tui_kit/src/render/popups/{mod,diff_popup}.rs`（`render_popup_chrome`、`TOOL_POPUP_FOOTER`）、`crates/tui/src/widgets/state/app/popups.rs`（`popup_from_tool_output`）、`docs/tool_rendering.md` §8；[Ch 23](./23_chapter_tui_zh.md) |
+| **相关** | `crates/agent_tui_kit/src/state/tool_state.rs`（`DiffPopup.tool_name`）、`crates/agent_tui_kit/src/render/popups/{mod,diff_popup}.rs`（`render_popup_chrome`、`TOOL_POPUP_FOOTER`）、`crates/tui/src/widgets/state/app/popups.rs`（`popup_from_tool_output`）、`docs/tool_rendering.md` §8；[Ch 22](./22_chapter_tui_zh.md) |
 
 **症状 / 动机：** 工具详情弹窗只靠标题自证身份，而标题是"内容形状"的——`read_file` 是文件路径、命令是 `bash (<完整命令>)`、失败工具是本地化的卡片标题——所以从一次文件读取打开的弹窗从不说自己是哪个工具产生的。同时它的底部边框是空的（`render_popup_chrome(…, None)`），而所有同类弹窗（thinking、subagent、mermaid、code、dag、system prompt）都在那里打印按键，于是工具弹窗成了唯一一个不提示 `y` 复制、`Esc` 关闭、`j`/`k` 滚动的浮层。
 
@@ -2402,7 +2402,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix |
-| **相关** | `crates/tact_extensions/src/config/{mod,types,resolve}.rs`（`supports_vision`、`ModelProfileToml`、`model_profiles` 合并）、`crates/tact_extensions/src/tool/read_image.rs`、`crates/tact_ui/src/driver.rs`、`crates/tact_llm/src/{provider,profile,types}.rs`；[Ch 21](./21_chapter_config_zh.md) §4；[Ch 22](./22_chapter_llm_zh.md) |
+| **相关** | `crates/tact_extensions/src/config/{mod,types,resolve}.rs`（`supports_vision`、`ModelProfileToml`、`model_profiles` 合并）、`crates/tact_extensions/src/tool/read_image.rs`、`crates/tact_ui/src/driver.rs`、`crates/tact_llm/src/{provider,profile,types}.rs`；[Ch 20](./20_chapter_config_zh.md) §4；[Ch 21](./21_chapter_llm_zh.md) |
 
 **症状 / 动机：** `read_image` 对一个其实能读图的模型拒了图片。门禁是 `tact_llm::supports_vision()`，一条纯名字启发式：provider 类型、base_url 或**模型 id** 任一含 `deepseek` 就算"deepseek 系"，而 deepseek 系目标除非 id 里同时含 `vision`，否则算纯文本。指向一个 OpenAI-compatible 代理入口时（`https://opencode.ai/zen/go/v1`、`[llm] provider = "openai"`、`model = "deepseek-flash"`），这个 id 落进了 deepseek 分支，门禁关闭。用手工构造的 8×8 PNG 打真实端点实测：`deepseek-flash` 与 `deepseek-v4.1-flash` 接受 `image_url` 且能正确描述画面（深绿底、中间一个白方块——猜不出来），而 `deepseek-v4-flash` 回 400 `Model only supports text input`，`deepseek-v4-pro` 自述看到的是 `[Unsupported Image]`。四个 id 里两个是假阴性，而且没有任何本地规则能把它俩分开：该端点的 `/v1/models` 对全部 35 个 id 只返回 `id / object / created / owned_by`，也没有模态元数据可读。
 
@@ -2417,7 +2417,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix |
-| **相关** | `crates/tact_extensions/src/background.rs`（`terminate_tree`、`run_background_process` 的 spawn、`OutputAccumulator`、`output_tail`）；`crates/tact_extensions/src/tool/subagent.rs`（子进程的 toolset）；[Ch 13](./13_chapter_background_zh.md) §1；[Ch 07](./07_chapter_tool_zh.md) §7.1；[Ch 27](./27_chapter_sandbox_zh.md) §3 |
+| **相关** | `crates/tact_extensions/src/background.rs`（`terminate_tree`、`run_background_process` 的 spawn、`OutputAccumulator`、`output_tail`）；`crates/tact_extensions/src/tool/subagent.rs`（子进程的 toolset）；[Ch 13](./13_chapter_background_zh.md) §1；[Ch 07](./07_chapter_tool_zh.md) §7.1；[Ch 26](./26_chapter_sandbox_zh.md) §3 |
 
 **症状 / 动机：** 合并前 review 的三项发现，都是实测而非推断。
 
@@ -2438,7 +2438,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix |
-| **相关** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`title_text` 的 `Sleep` 分支、`display_name_from_presentation`、`is_written_argument`）、`crates/tact_extensions/src/tool/metadata.rs`（`ArgumentSummaryPolicy::Id`）、`crates/tact_extensions/src/tool/background_run.rs`（`CHECK_BACKGROUND_METADATA`、`WAIT_BACKGROUND_METADATA`）、`crates/tact_extensions/src/agent/tool_dispatch.rs`（`tool_arg_full`）；[第 13 章](./13_chapter_background_zh.md) §1；[第 23 章](./23_chapter_tui_zh.md) §6.16 |
+| **相关** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`title_text` 的 `Sleep` 分支、`display_name_from_presentation`、`is_written_argument`）、`crates/tact_extensions/src/tool/metadata.rs`（`ArgumentSummaryPolicy::Id`）、`crates/tact_extensions/src/tool/background_run.rs`（`CHECK_BACKGROUND_METADATA`、`WAIT_BACKGROUND_METADATA`）、`crates/tact_extensions/src/agent/tool_dispatch.rs`（`tool_arg_full`）；[第 13 章](./13_chapter_background_zh.md) §1；[第 22 章](./22_chapter_tui_zh.md) §6.16 |
 
 **现象 / 动机：** `wait_background` 复用了 `ToolVisualKind::Sleep`，而那个分支把标签写死成 `⏳ Sleep · {}`，`{}` 里是序列化后的输入。一行里两个 bug。标签完全无视工具自己的 `display_name`（`⏳ Wait Background` 成了构造上就不可能被读到的死字段），同一个硬编码还意味着 `sleep` **从来没有**画出过它元数据里声明的 `💤 Sleep`。参数同样错位：两个后台工具都用 `ArgumentSummaryPolicy::Json`，于是标题里带的是 `{"task_id":"abc123"}` 这种 dump——可选的 id 没传时就是一个光秃秃的 `{}`——而这里本该是给人读的 id。
 
@@ -2455,7 +2455,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix |
-| **相关** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`with_command_detail`、`popup_detail`、`argument_line`、`is_written_argument`、`command_detail`）、`crates/agent_tui_kit/src/components/tool.rs`（`on_background_task_finished`）、`crates/agent_tui_kit/src/render/popups/subagent_popup.rs`（既有的 `Prompt:` 前置）；[第 13 章](./13_chapter_background_zh.md) §1；[第 23 章](./23_chapter_tui_zh.md) §6.16 |
+| **相关** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`with_command_detail`、`popup_detail`、`argument_line`、`is_written_argument`、`command_detail`）、`crates/agent_tui_kit/src/components/tool.rs`（`on_background_task_finished`）、`crates/agent_tui_kit/src/render/popups/subagent_popup.rs`（既有的 `Prompt:` 前置）；[第 13 章](./13_chapter_background_zh.md) §1；[第 22 章](./22_chapter_tui_zh.md) §6.16 |
 
 **症状 / 动机：** 弹窗是读取已折叠块内容的唯一途径，所以它既要显示结果、也要显示调用本身。已完成的 `bash` 块与**运行中**的 `background_run` 卡片都以 `$ <命令>` 开头；有三处比用户刚刚在读的那张卡片显示得更少。(1) **收尾后**的 `background_run` 卡片：`BackgroundTaskFinished` 不携带 `StepResult`，该路径只用进程输出拼 detail。(2) **失败**的命令（`bash`、`worktree_run`、`web_search`、`background_run`）：`from_step_result` 对失败刻意不加前缀，好让报错占住卡片前几行预览——而失败弹窗的标题是通用的错误卡片标题，于是失败命令的参数在弹窗里彻底消失。(3) **Task** 类工具（`task_create/get/list/update`）与 `ask_user`：弹窗正文只有结果，任务标题、以及用户正在回答的那个问题，都不在弹窗里。
 
@@ -2489,7 +2489,7 @@ Policy overlays:
 | 字段 | 值 |
 |------|-----|
 | **类型** | optimization |
-| **相关** | `crates/tact_extensions/src/sandbox/bwrap.rs`（`--share-net`、`RESOLVER_PATHS`、`PROXY_ENV_VARS`、`bwrap_args_with(work_dir, exists, env)`）；`crates/tact_extensions/src/tool/bash.rs`（`SANDBOXED_BASH_DESCRIPTION`）；spec `docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md` §8/§17/§Tests 7；[第 27 章](./27_chapter_sandbox_zh.md) §3 |
+| **相关** | `crates/tact_extensions/src/sandbox/bwrap.rs`（`--share-net`、`RESOLVER_PATHS`、`PROXY_ENV_VARS`、`bwrap_args_with(work_dir, exists, env)`）；`crates/tact_extensions/src/tool/bash.rs`（`SANDBOXED_BASH_DESCRIPTION`）；spec `docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md` §8/§17/§Tests 7；[第 26 章](./26_chapter_sandbox_zh.md) §3 |
 
 **症状 / 动机：** 打开 `[tools] sandbox = true` 后 shell 是个"网络死人"：没有 DNS、没有默认路由，宿主的代理 `127.0.0.1:7890` 甚至都不可达——连接 0 ms 就被拒，看起来像"代理坏了"而不是"没有网络"。`curl` / `git fetch` / `npm install` / `cargo fetch` 全都跑不通。文档里给的绕行方案（`background_run`，未沙箱化的宿主 shell）对 subagent 不成立——它们的受限工具集里没有 `background_run`——所以 subagent 什么都抓不到，本次实测三个 research lane 全部报 `curl` exit 6/7。用户要求把网络还给沙箱，并选择同时透传代理变量。
 
@@ -2499,7 +2499,7 @@ Policy overlays:
 
 **两个坑，均为实测：** 只共享命名空间**不足以**解析 DNS——宿主的 `/etc/resolv.conf` 是指向 `/run/systemd/resolve` 的符号链接，而 `/run` 不在挂载列表里，于是链接悬空，每次解析都报 "Temporary failure in name resolution"；而直接绑定 `/etc/resolv.conf` 会被 bwrap 拒绝（`Can't mount on symlink destination /etc/resolv.conf`），因此必须挂目录。回归测试因此刻意不碰外网：它连接由测试自己在宿主 loopback 上开的监听端口，只有命名空间共享时才连得通。
 
-**指向：** `crates/tact_extensions/src/sandbox/bwrap.rs`（`RESOLVER_PATHS`、`PROXY_ENV_VARS`、flag 列表、可注入的环境查询）；测试 `sandbox::bwrap::tests::shares_the_host_network_and_binds_the_resolver`、`sandbox::bwrap::tests::carries_proxy_variables_and_nothing_else`、`tool::bash::sandbox_tests::shares_the_host_network_namespace`、`tool::bash::sandbox_tests::system_files_are_readable_and_proxies_follow_the_host`；[第 27 章](./27_chapter_sandbox_zh.md) §3。
+**指向：** `crates/tact_extensions/src/sandbox/bwrap.rs`（`RESOLVER_PATHS`、`PROXY_ENV_VARS`、flag 列表、可注入的环境查询）；测试 `sandbox::bwrap::tests::shares_the_host_network_and_binds_the_resolver`、`sandbox::bwrap::tests::carries_proxy_variables_and_nothing_else`、`tool::bash::sandbox_tests::shares_the_host_network_namespace`、`tool::bash::sandbox_tests::system_files_are_readable_and_proxies_follow_the_host`；[第 26 章](./26_chapter_sandbox_zh.md) §3。
 
 ---
 
@@ -2559,15 +2559,15 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tact_llm/src/openai/responses/stream.rs`（`ResponsesStreamState`、`finish()`）；[Ch 22](./22_chapter_llm_zh.md) §6.2 |
+| **Related** | `crates/tact_llm/src/openai/responses/stream.rs`（`ResponsesStreamState`、`finish()`）；[Ch 21](./21_chapter_llm_zh.md) §6.2 |
 
 **症状 / 动机：** 在一个兼容端点上（`protocol = "responses"` + `https://opencode.ai/zen/go/v1`，模型 `deepseek-v4.1-flash`，`reasoning_effort = "low"`），只产出 reasoning 的一轮以 `unsupported response state: OpenAI Responses stream ended without a terminal event` 结束。这条文案描述的是**空流**，排查方向也就被带偏了——实际上 reasoning delta 是到达过的（TUI 上显示为 thinking）。它们只被转发给 UI、哪里都没存，于是在 `finish()` 内部，"只收到 reasoning 的流"和"什么都没收到的流"完全无法区分。
 
-**决策：** 保持硬失败不变——既没有可见文本、也没有已完成 output item 的回合不是完整回合；而"恢复"它只会产出一条仅含 thinking block 的 assistant 消息，正是 `sanitize_assistant_messages` 专门在打补丁的形态（[Ch 22](./22_chapter_llm_zh.md) §6.1）——但让状态可观测：在流状态里统计 reasoning delta 数，把判定所依据的三个量（reasoning delta 数、已完成 output item 数、已 announce 但未完成数）都报出来，并按"是否收到过 reasoning"分流文案。该端点上的根因是网关未发送终态事件就关闭了流；把该条目改成 `protocol = "chat_completions"` 可以完全绕开。
+**决策：** 保持硬失败不变——既没有可见文本、也没有已完成 output item 的回合不是完整回合；而"恢复"它只会产出一条仅含 thinking block 的 assistant 消息，正是 `sanitize_assistant_messages` 专门在打补丁的形态（[Ch 21](./21_chapter_llm_zh.md) §6.1）——但让状态可观测：在流状态里统计 reasoning delta 数，把判定所依据的三个量（reasoning delta 数、已完成 output item 数、已 announce 但未完成数）都报出来，并按"是否收到过 reasoning"分流文案。该端点上的根因是网关未发送终态事件就关闭了流；把该条目改成 `protocol = "chat_completions"` 可以完全绕开。
 
 **行为变化：** "只有 reasoning 的流"与"真正的空流"现在给出不同的句子，前者会同时点明端点行为，以及为什么这是协议失败而不是空回答。除此之外没有变化：完整 `output_item.done` 序列与已流式可见文本这两条恢复路径未被触碰，判定逻辑本身也未改。
 
-**指针：** `crates/tact_llm/src/openai/responses/stream.rs`（`reasoning_deltas`、`thinking_delta`、`finish()` 的终态事件分支）；测试 `no_terminal_event_after_reasoning_only_names_the_reasoning` 与 `no_terminal_event_empty_stream_is_error`；[Ch 22](./22_chapter_llm_zh.md) §6.2。
+**指针：** `crates/tact_llm/src/openai/responses/stream.rs`（`reasoning_deltas`、`thinking_delta`、`finish()` 的终态事件分支）；测试 `no_terminal_event_after_reasoning_only_names_the_reasoning` 与 `no_terminal_event_empty_stream_is_error`；[Ch 21](./21_chapter_llm_zh.md) §6.2。
 
 ---
 
@@ -2576,7 +2576,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/tact_extensions/src/sandbox/{mod,bwrap}.rs`；`crates/tact_extensions/src/tool/bash.rs`；`crates/tact_extensions/src/config/types.rs`（`tools.sandbox` 开关）；[Ch 7](./07_chapter_tool_zh.md) §7.1；[Ch 10](./10_chapter_permission_zh.md)；[Ch 21](./21_chapter_config_zh.md)；[Ch 27](./27_chapter_sandbox_zh.md)；[设计](../docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md)；[实施计划](../docs/superpowers/plans/2026-09-15-bwrap-sandbox.md) |
+| **Related** | `crates/tact_extensions/src/sandbox/{mod,bwrap}.rs`；`crates/tact_extensions/src/tool/bash.rs`；`crates/tact_extensions/src/config/types.rs`（`tools.sandbox` 开关）；[Ch 7](./07_chapter_tool_zh.md) §7.1；[Ch 10](./10_chapter_permission_zh.md)；[Ch 20](./20_chapter_config_zh.md)；[Ch 26](./26_chapter_sandbox_zh.md)；[设计](../docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md)；[实施计划](../docs/superpowers/plans/2026-09-15-bwrap-sandbox.md) |
 
 **症状 / 动机：** 被批准的 `bash` 命令此前以普通宿主进程运行：可以读取用户 home（SSH 密钥、云凭证）、任何无关仓库，以及宿主网络。权限回答的是*这条命令能不能运行*，而不是*它能触达什么*；真正要紧的失败面也不是 agent 自己写的命令，而是它引入的第三方代码——`cargo` 构建脚本、`npm` 生命周期脚本、测试二进制、`make` 配方。
 
@@ -2593,7 +2593,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/tact_extensions/src/consts.rs`（`MCP_CONFIG_FILE`）；`crates/tact_ui/src/mcp_cli.rs`；[第 8 章](./08_chapter_mcp_zh.md)；[第 21 章](./21_chapter_config_zh.md) |
+| **Related** | `crates/tact_extensions/src/consts.rs`（`MCP_CONFIG_FILE`）；`crates/tact_ui/src/mcp_cli.rs`；[第 8 章](./08_chapter_mcp_zh.md)；[第 20 章](./20_chapter_config_zh.md) |
 
 **现象 / 动机：** Tact 的两个原生配置文件叫 `mcp.json`（`~/.tact/mcp.json`、`<workdir>/.tact/mcp.json`），而同一份东西在整个生态里都叫 `.mcp.json`：Claude Code 的项目文件、插件包 `mcpServers` 指向的文件、VS Code 的 `.vscode/mcp.json`。同一个概念挂两个名字，唯一的效果是让人在"我这份该叫哪个"上多犹豫一次。
 
@@ -2610,7 +2610,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/tact_extensions/src/mcp/mod.rs`（`collect_sourced_servers`、`resolve_servers`、`McpProjectConfig`、`report_unmodelled_keys`）；`crates/tact_ui/src/mcp_cli.rs`（`scope_hint`、`disabled_text`）；[第 8 章](./08_chapter_mcp_zh.md)；[第 21 章](./21_chapter_config_zh.md) |
+| **Related** | `crates/tact_extensions/src/mcp/mod.rs`（`collect_sourced_servers`、`resolve_servers`、`McpProjectConfig`、`report_unmodelled_keys`）；`crates/tact_ui/src/mcp_cli.rs`（`scope_hint`、`disabled_text`）；[第 8 章](./08_chapter_mcp_zh.md)；[第 20 章](./20_chapter_config_zh.md) |
 
 **现象 / 动机：** 与 Codex / Claude Code 生态有两处不一致。其一，工作目录下的 `.mcp.json`——Claude Code 的项目作用域文件，也就是团队随仓库提交的那一份——被刻意忽略，于是检出别人的仓库后，随仓库共享的 server 必须手工抄进 `.tact/mcp.json` 才能用。其二，Codex 的条目级字段被静默丢弃：`McpProjectConfig` 没有 `deny_unknown_fields`，于是 `"enabled": false`（OpenAI 自带的 `unified-computer-use` 正是这么写的）被解析成一个普通条目并**照常连接**——一个声明"关掉"的 server 反被拉起；`enabled_tools`、`omit_tools_from`、`startup_timeout_sec`、`tools.<name>.output_token_limit` 更是连痕迹都不留。
 
@@ -2618,7 +2618,7 @@ Policy overlays:
 
 **改后行为：** `mcp list` 多出一块「Entry keys Tact does not model」，点名哪个 server、被忽略的键、以及来源于哪个文件。检出仓库后，仓库 `.mcp.json` 里的 server 直接可用，工具名与原生 `mcp.json` 一样是 `mcp__<key>__<tool>`（不带前缀）。同名冲突时赢的永远是 Tact 自己的文件，且胜负会在启动提示与 `mcp list` 的 "Overridden declarations" 里点名。被 `enabled: false` 关掉的 server 不占启动时间、不出现在工具列表里，但仍在 `mcp list` / `/mcp list` / `mcp get` 里可见并标为 disabled。Codex 专有字段会在日志里逐条点名，配置不再无声消失。解析失败的外来 `.mcp.json` 只产生一条 warning。
 
-**指针：** `crates/tact_extensions/src/mcp/mod.rs`（`collect_sourced_servers` 的来源顺序与前缀；`resolve_servers` 的 `Resolution` / `disabled`；`unmodelled_keys` 与 `McpLoadReport::unmodelled`）；`crates/tact_ui/src/mcp_cli.rs`（`disabled_text`、`scope_hint` 的 Claude 项目文件分支）；[第 8 章](./08_chapter_mcp_zh.md) Step 1 的来源表；[第 21 章](./21_chapter_config_zh.md)。
+**指针：** `crates/tact_extensions/src/mcp/mod.rs`（`collect_sourced_servers` 的来源顺序与前缀；`resolve_servers` 的 `Resolution` / `disabled`；`unmodelled_keys` 与 `McpLoadReport::unmodelled`）；`crates/tact_ui/src/mcp_cli.rs`（`disabled_text`、`scope_hint` 的 Claude 项目文件分支）；[第 8 章](./08_chapter_mcp_zh.md) Step 1 的来源表；[第 20 章](./20_chapter_config_zh.md)。
 
 ---
 
@@ -2627,7 +2627,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tact_extensions/src/config/resolve.rs`（`model_context_window_for_model` 的 `deepseek-v4-` 前缀臂；`resolve_model_context_window_maps_deepseek_v4_variants`）；`config.example.toml`；[第 21 章](./21_chapter_config_zh.md)；[第 5 章](./05_chapter_compact_zh.md) |
+| **Related** | `crates/tact_extensions/src/config/resolve.rs`（`model_context_window_for_model` 的 `deepseek-v4-` 前缀臂；`resolve_model_context_window_maps_deepseek_v4_variants`）；`config.example.toml`；[第 20 章](./20_chapter_config_zh.md)；[第 5 章](./05_chapter_compact_zh.md) |
 
 **现象 / 动机：** 使用 `deepseek-v4.1-flash` 的会话窗口报成了 200K。V4 家族那条臂只匹配**连字符**前缀 `deepseek-v4-`，而这个 id 在小版本号前用的是点号（`v4` `.` `1`），于是没有任何一条臂命中，解析落到 `200_000` 默认值。这个回退是静默的，代价也不止于显示：底栏 `ctx` 显示 `/200K`，而在 `protocol = "responses"` 下推导出的 `responses_compact_threshold` 是 `窗口 − max_tokens − 10% 余量`——200K 且 `max_tokens = 65536` 时为 114,464，1M 时为 834,464——也就是说 1M 上下文的模型提前约 7 倍触发压缩。
 
@@ -2635,7 +2635,7 @@ Policy overlays:
 
 **改后行为：** `deepseek-v4.1-flash`——以及任何 `deepseek-v4.*` 兄弟 id——无需改配置即解析为 `1_000_000`，`ctx` 用量条与推导出的 Responses 压缩阈值随真实窗口走。用户显式配置过的模型不受影响；其它未知 id 仍回退到 200,000。
 
-**指针：** `crates/tact_extensions/src/config/resolve.rs`（`model_context_window_for_model`）；`config.example.toml`（模型→窗口清单）；[第 21 章](./21_chapter_config_zh.md)「模型 → 窗口映射」；[第 5 章](./05_chapter_compact_zh.md)（窗口 → 自动压缩阈值）。
+**指针：** `crates/tact_extensions/src/config/resolve.rs`（`model_context_window_for_model`）；`config.example.toml`（模型→窗口清单）；[第 20 章](./20_chapter_config_zh.md)「模型 → 窗口映射」；[第 5 章](./05_chapter_compact_zh.md)（窗口 → 自动压缩阈值）。
 
 ---
 
@@ -2661,7 +2661,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/agent_tui_kit/src/i18n.rs`（`status_idle_tmpl`，中英各一处）；`crates/agent_tui_kit/src/render/bar.rs`（`render_status_bar` 的 `Status::Idle` 分支）；`crates/tui/src/render/bar.rs`（`status_bar_idle_keeps_focus_theme_and_language_in_their_own_slots`）；[第 23 章](./23_chapter_tui_zh.md) §6.6 |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs`（`status_idle_tmpl`，中英各一处）；`crates/agent_tui_kit/src/render/bar.rs`（`render_status_bar` 的 `Status::Idle` 分支）；`crates/tui/src/render/bar.rs`（`status_bar_idle_keeps_focus_theme_and_language_in_their_own_slots`）；[第 22 章](./22_chapter_tui_zh.md) §6.6 |
 
 **现象 / 动机：** 空闲时顶栏一次搞错了两个读数，还悄悄丢掉了第三个。`status_idle_tmpl`——`"{} │ ⌨H Hist │ 🎨 {} │ 🌐 {} │ ? Help │ ✕ Quit"`——只有**三个**占位符，而 `render_status_bar` 的 `Status::Idle` 分支按固定顺序替换**四个**值：模式、聚焦面板、主题、语言。`str::replacen("{}", …, 1)` 完全按位置替换，于是每个槽位整体左移一格：聚焦标签落到了 🎨 主题的字符下，主题标签落到了 🌐 语言的字符下，而第四次替换已经找不到 `{}`——`replacen` 匹配不到时原样返回字符串，**不会**追加——语言标签就此彻底消失。空闲时因此渲染成 `◇ 插入 │ ⌨H Hist │ 🎨 Log │ 🌐 Dark │ ? Help │ ✕ Quit`：主题的位置上放着面板名，语言的位置上放着主题，而语言本身没了。鼠标点击判定以及其他 `render_status_bar` 分支都不受影响——Planning、Executing、Done 都用显式的 `format!("{} {} │ …", mode_str, focus_str, …)` 拼行，根本不碰这个模板。
 
@@ -2669,7 +2669,7 @@ Policy overlays:
 
 **改后行为：** 空闲时英文渲染 `◇ 插入 Log │ ⌨H Hist │ 🎨 Dark │ 🌐 English │ ? Help │ ✕ Quit`，中文为对应镜像，聚焦面板、主题、语言各就其位。由 `status_bar_idle_keeps_focus_theme_and_language_in_their_own_slots` 钉住：它断言聚焦标签被画出、且**不在** 🎨 槽里，同时断言 `🌐 EN` 存在。（测试里带了一条测试桩说明：`buffer_text` 会把宽字符（`🎨`、`🌐`）的续格读成空格，所以匹配前要先折叠连续空白——否则即使槽位真的错位，`🎨  Log` 也会满足 `!contains("🎨 Log")` 这类守卫。）
 
-**指针：** `crates/agent_tui_kit/src/i18n.rs`（`status_idle_tmpl`，中英）；`crates/agent_tui_kit/src/render/bar.rs`（`render_status_bar`、`Status::Idle`）；`crates/tui/src/render/bar.rs`（上述测试）；[第 23 章](./23_chapter_tui_zh.md) §6.6（顶栏）。
+**指针：** `crates/agent_tui_kit/src/i18n.rs`（`status_idle_tmpl`，中英）；`crates/agent_tui_kit/src/render/bar.rs`（`render_status_bar`、`Status::Idle`）；`crates/tui/src/render/bar.rs`（上述测试）；[第 22 章](./22_chapter_tui_zh.md) §6.6（顶栏）。
 
 ---
 
@@ -2678,7 +2678,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/agent_tui_kit/src/i18n.rs`（`status_executing_tmpl`，中英各一处）；`crates/agent_tui_kit/src/render/bar.rs`（`Status::Executing` 分支）；`crates/tui/src/render/bar.rs`（`status_bar_executing_shows_the_step_label_without_a_gauge`）；[Ch 23](./23_chapter_tui_zh.md) §6.6 |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs`（`status_executing_tmpl`，中英各一处）；`crates/agent_tui_kit/src/render/bar.rs`（`Status::Executing` 分支）；`crates/tui/src/render/bar.rs`（`status_bar_executing_shows_the_step_label_without_a_gauge`）；[Ch 22](./22_chapter_tui_zh.md) §6.6 |
 
 **现象 / 动机：** 顶栏渲染 `⠋ 正在执行步骤 4/10` / `⠋ Executing step 4/10`。分母描述的是**计划**而不是这次运行：`total` 是计划的步骤数，而分子是由「已完成 + 进行中」推导出来的，并不来自计划的顺序——于是有并行工具时，`n/total` 其实是两个不同的测量被印成一个分数。
 
@@ -2686,7 +2686,7 @@ Policy overlays:
 
 **改后行为：** `Executing` 渲染 `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4 │ 并行中 1`；除步骤数与并行工具数之外，顶栏依旧不渲染任何自有数字。由 `status_bar_executing_shows_the_step_label_without_a_gauge` 钉住——它现在同时断言标签存在、且 `1/4` 与 `step 1/` 都不会被画出。
 
-**指针：** `crates/agent_tui_kit/src/i18n.rs`（`status_executing_tmpl`）；`crates/agent_tui_kit/src/render/bar.rs`（`Status::Executing`）；`crates/tui/src/render/bar.rs`（上述测试）；[Ch 23](./23_chapter_tui_zh.md) §6.6（顶栏）。
+**指针：** `crates/agent_tui_kit/src/i18n.rs`（`status_executing_tmpl`）；`crates/agent_tui_kit/src/render/bar.rs`（`Status::Executing`）；`crates/tui/src/render/bar.rs`（上述测试）；[Ch 22](./22_chapter_tui_zh.md) §6.6（顶栏）。
 
 ---
 
@@ -2695,7 +2695,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tact_extensions/src/skill/mod.rs`（`load_skills_from_dir_with_namespace`、`load_direct_plugin_skills` + `symlinked_skill_dir_is_loaded`、`symlinked_plugin_skill_dir_is_loaded`）；`crates/tui/src/system_prompt.rs`（`extract_mcp_skill_paths`、`assemble_prompt_view`）；`crates/tui/src/handlers/select.rs`（`SelectKind::ViewSystemPrompt`）；[Ch 2](./02_chapter_skill_zh.md) §2·§6；Ch 26 2026-09-10（skill 根收敛） |
+| **Related** | `crates/tact_extensions/src/skill/mod.rs`（`load_skills_from_dir_with_namespace`、`load_direct_plugin_skills` + `symlinked_skill_dir_is_loaded`、`symlinked_plugin_skill_dir_is_loaded`）；`crates/tui/src/system_prompt.rs`（`extract_mcp_skill_paths`、`assemble_prompt_view`）；`crates/tui/src/handlers/select.rs`（`SelectKind::ViewSystemPrompt`）；[Ch 2](./02_chapter_skill_zh.md) §2·§6；Ch 25 2026-09-10（skill 根收敛） |
 
 **现象 / 动机：** 已安装的 skill 有两条路会在 `/view-system-prompt` 里消失，用户都是在 "Assembled current prompt" 弹窗上发现的。(1) skill 根目录是靠**符号链接**组装出来的——Omarchy 提供 `~/.agents/skills/omarchy -> /usr/share/omarchy/default/agents/skills/omarchy`——而 `load_skills_from_dir_with_namespace` 用 `WalkDir` 的默认 `follow_links(false)` 遍历：符号链接的**目录**既不会被下降进入、也不满足 `is_file()`，于是 `omarchy` 与 `diagnose-crash` 从 `# Available skills` 里静默消失（`~/.agents/skills` 下 32 个条目只出现 30 个）。(2) MCP server 是在**工具描述**里宣传自己 skill 的——Figma：`prefer the /figma-use skill if available, otherwise read skill://figma/figma-use/SKILL.md`——而 Tact 原样转发 MCP 描述，所以一个普通请求确实携带 `skill://figma/{figma-use,figma-shaders,figma-design-to-code,figma-generative-plugins}/SKILL.md`。弹窗只渲染 system prompt，于是这些路径除了翻原始请求体之外无处可读。
 
@@ -2703,7 +2703,7 @@ Policy overlays:
 
 **改后行为：** 符号链接形式的 skill 条目——无论是独立根还是插件的 `skills/` 子项——都会出现在 `# Available skills` 中，并可通过 `load_skill` / `/skill-name` 加载，与复制目录一致。`/view-system-prompt` → "Assembled current prompt" 只在该请求确实引用了 MCP skill 时才追加 `## MCP skills`（本仓库的 Figma server 为 4 条路径）；没有时视图与被提取的 prompt 逐字节相同。由 `symlinked_skill_dir_is_loaded` 与 `symlinked_plugin_skill_dir_is_loaded`（两者对修复前的判断方式都会失败）、`plugin_skills_only_load_direct_skill_children`（深度不变）、`mcp_skill_paths_are_deduped_and_sorted`、`mcp_skill_paths_ignore_non_tool_text`、`assembled_view_keeps_the_prompt_and_appends_mcp_skills` 钉住。
 
-**指针：** `crates/tact_extensions/src/skill/mod.rs`（`load_skills_from_dir_with_namespace`、`load_direct_plugin_skills`、`symlinked_skill_dir_is_loaded`、`symlinked_plugin_skill_dir_is_loaded`）；`crates/tui/src/system_prompt.rs`（`SKILL_PATH`、`extract_mcp_skill_paths`、`assemble_prompt_view` 及其 4 个测试）；`crates/tui/src/handlers/select.rs`（`SelectKind::ViewSystemPrompt`）；[Ch 2](./02_chapter_skill_zh.md) §2（发现根目录）· §6（系统提示词集成）；Ch 26 2026-09-10（skill 根收敛）。
+**指针：** `crates/tact_extensions/src/skill/mod.rs`（`load_skills_from_dir_with_namespace`、`load_direct_plugin_skills`、`symlinked_skill_dir_is_loaded`、`symlinked_plugin_skill_dir_is_loaded`）；`crates/tui/src/system_prompt.rs`（`SKILL_PATH`、`extract_mcp_skill_paths`、`assemble_prompt_view` 及其 4 个测试）；`crates/tui/src/handlers/select.rs`（`SelectKind::ViewSystemPrompt`）；[Ch 2](./02_chapter_skill_zh.md) §2（发现根目录）· §6（系统提示词集成）；Ch 25 2026-09-10（skill 根收敛）。
 
 ---
 
@@ -2712,7 +2712,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **类型** | optimization |
-| **相关** | `crates/agent_tui_kit/src/render/bar.rs`（删除 `render_progress_bar` 与 `PROGRESS_BAR_WIDTH`、`Status::Executing` / `Status::Planning` 分支、第 1 行 group 推入顺序）；`crates/tui/src/render/bar.rs`（测试）；[第 23 章](./23_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md` |
+| **相关** | `crates/agent_tui_kit/src/render/bar.rs`（删除 `render_progress_bar` 与 `PROGRESS_BAR_WIDTH`、`Status::Executing` / `Status::Planning` 分支、第 1 行 group 推入顺序）；`crates/tui/src/render/bar.rs`（测试）；[第 22 章](./22_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md` |
 
 **症状 / 动机：** 任务运行期间，顶栏自己带着两个数字：步骤标签后面的 `[██████░░░░░] 88%` 进度条，以及行尾的实时任务耗时——`◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1 [██████░░░░░] 88%  ⏱ 耗时 00:12`。进度条只是把步骤数（`4/10`）用字符重画了一遍；而那只时钟放错了地方——它是这套 bar 拥有的第三只墙钟，而它的两个同类（进程运行 `⊙ 运行`、冻结合耗时 `⏱ 02:05 均 01:45`）都在底栏、却各占一行。
 
@@ -2720,7 +2720,7 @@ Policy overlays:
 
 **之后的行为：** `Executing` 渲染 `◇ 插入 ◆ Log │ ⠋ 正在执行步骤 4/10 │ 并行中 1`；第 1 行在任务运行时渲染 `… │ ⊙ 运行 00:03 │ ⏱ 耗时 00:12 │ ⎇ main`，无任务在跑时该段直接**不渲染**（不是渲染成空）——`task_start_time` 为 `None`，`format_task_elapsed` 返回 `""`。它作为第 1 行最后一个可丢弃段推入，因此丢弃顺序为 `实时耗时 > 运行 > cwd`：先丢临时的任务时钟，再丢会话运行，最后才是路径（权限模式、分支与账户永不丢弃）。第 2 行恢复原样：所有段填充时 85–86 列；第 1 行五段在 100 列内仍全部保留，由 `bottom_bar_fits_the_task_elapsed_on_row_1_in_100_columns` 与 `bottom_bar_drops_the_task_elapsed_before_uptime_and_path` 钉住。位置由 `bottom_bar_puts_live_elapsed_next_to_uptime_on_row_1`（断言第 1 行顺序，并断言第 2 行**不带**该时钟）与 `bottom_bar_omits_live_elapsed_without_a_task` 钉住；状态栏一侧由 `status_bar_executing_shows_the_step_label_without_a_gauge` 与 `status_bar_planning_has_no_elapsed` 钉住。第 2 行的预算测试 `bottom_bar_fits_every_segment_in_100_columns` 回到 2026-09-14 之前的形式，因为第 2 行不再有时钟。*（同日稍后被取代：步骤标签去掉了分母，`Executing` 渲染 `正在执行步骤 4` / `Executing step 4`——见最新条目。）*
 
-**指针：** `crates/agent_tui_kit/src/render/bar.rs`（`format_task_elapsed` 文档、`render_bottom_bar` 第 1 行 groups、`Status::Executing` 分支）；`crates/tui/src/render/bar.rs`（上面六个测试）；[第 23 章](./23_chapter_tui_zh.md) §6.6（顶栏、第 1 行、第 2 行、瘦身与回合耗时各段）；`docs/token_usage_schema.md` §"Session Stats Display"。
+**指针：** `crates/agent_tui_kit/src/render/bar.rs`（`format_task_elapsed` 文档、`render_bottom_bar` 第 1 行 groups、`Status::Executing` 分支）；`crates/tui/src/render/bar.rs`（上面六个测试）；[第 22 章](./22_chapter_tui_zh.md) §6.6（顶栏、第 1 行、第 2 行、瘦身与回合耗时各段）；`docs/token_usage_schema.md` §"Session Stats Display"。
 
 **已被取代（2026-10-05）：** 实时任务耗时不再落在底栏第 1 行——它现在是日志的 task-stats 行；`format_task_elapsed` 与第 1 行那一段已删除（见 2026-10-06 那条）。第 2 行的冻结合耗时不变。
 
@@ -2731,7 +2731,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **类型** | bugfix |
-| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`tool_card_progress_tmpl`、`code_card_progress_tmpl`）；`crates/agent_tui_kit/src/render/cells/tool.rs`（`card_bottom_text`）；`crates/agent_tui_kit/src/render/cells/code.rs`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5 |
+| **相关** | `crates/agent_tui_kit/src/i18n.rs`（`tool_card_progress_tmpl`、`code_card_progress_tmpl`）；`crates/agent_tui_kit/src/render/cells/tool.rs`（`card_bottom_text`）；`crates/agent_tui_kit/src/render/cells/code.rs`；[Ch 22](./22_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5 |
 
 **症状 / 动机：** 只预览了部分行的卡片会在底栏标签前标出省略量——` 3/10 lines |  Double-click for full code `。这个前缀是硬编码英文 `" {}/{} lines | {} "`，于是中文界面读到 ` 3/10 lines |  双击查看完整代码 `。代码卡片有同样的前缀（` +{} lines | {}`），问题相同。
 
@@ -2739,7 +2739,7 @@ Policy overlays:
 
 **之后的行为：** 中文显示 ` 3/10 行 |  双击查看完整代码 `；英文不变。由 `overflow_prefix_is_localized` 钉住（断言中文前缀，并断言底栏里不再残留 `lines`）。
 
-**指针：** 测试 `overflow_prefix_is_localized`、`overflow_is_merged_into_bottom_hint`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5。
+**指针：** 测试 `overflow_prefix_is_localized`、`overflow_is_merged_into_bottom_hint`；[Ch 22](./22_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5。
 
 ---
 
@@ -2748,7 +2748,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **类型** | bugfix |
-| **相关** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`ToolRenderOutput::meta_text`、`collapsed_action_cols`、`hits_collapsed_action`、`card_title`、`card_bottom`、`card_title_text`）；`crates/agent_tui_kit/src/render/cells/tool.rs`（`from_output`、`title_line`）；`crates/tui/src/widgets/state/app/popups.rs`（`open_diff_popup_at`、`popup_from_tool_output`）；`crates/tui/src/widgets/state/app/config.rs`（`toggle_language`）；`crates/tui/src/widgets/state/app/construct.rs`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5 |
+| **相关** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`ToolRenderOutput::meta_text`、`collapsed_action_cols`、`hits_collapsed_action`、`card_title`、`card_bottom`、`card_title_text`）；`crates/agent_tui_kit/src/render/cells/tool.rs`（`from_output`、`title_line`）；`crates/tui/src/widgets/state/app/popups.rs`（`open_diff_popup_at`、`popup_from_tool_output`）；`crates/tui/src/widgets/state/app/config.rs`（`toggle_language`）；`crates/tui/src/widgets/state/app/construct.rs`；[Ch 22](./22_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5 |
 
 **症状 / 动机：** `/lang`（或 Ctrl-L）切到中文后，已完成折叠命令的 meta 行确实用新语言绘制——`✓ 成功 · 1us · 3 行 · 双击查看结果`——但提示只在**旧语言**会放它的位置可点。在 100 列的画面上实测：字形落在 x=31..43，而真实可点的列是 x=37..55，也就是这个块构建时那行英文（`✓ Success · 1us · 3 lines · double-click-result`）的尾部。于是看得见的提示前几个字点了没反应，反而提示右侧的空白能弹出弹窗。同一份冻结还让卡片外壳停在构建时的语言：中文界面里的失败卡片在中文 meta 行上方画出 `┌ Error ─` / `└ Double-click for full error ─┘`。
 
@@ -2758,7 +2758,7 @@ Policy overlays:
 
 **之后的行为：** 提示恰好在自己被画出来的位置可点，两种语言都如此，**切换之前就已存在的块**也一样——切换是重绘已有行，不是重建它们。中文界面下，切换之前建的卡片也显示中文外壳。工具卡片在切主题后颜色随主题走（含标题行）。builder 也不再接收主题与语言（`ToolWidget::new()`、`ToolWidget::from_step_result(&result)`）：规格里已经没有语言相关内容可让它们决定，而一个拿不到语言的构造函数也就无法冻结语言。把标题行的上色搬进 cell 是唯一会碰到渲染的改动，已逐格比对过上一版：100×30 帧（折叠命令、截断的失败卡片、实时卡片、代码卡片）的 fg/bg/modifier 完全一致，只有运行中卡片的走动耗时不同；新行为由 `theme_change_repaints_existing_tool_title_rows` 钉住。两条新增回归测试均已对旧行为验证过、在旧实现上失败：`collapsed_hint_click_window_matches_the_drawn_glyphs`（渲染整帧、从 buffer 量出动作词的字形列，断言这些列——且仅这些列——能打开弹窗，覆盖两种语言以及「切换前建好的块」）与 `language_toggle_repaints_tool_card_chrome`。
 
-**指针：** 测试 `collapsed_hint_click_window_matches_the_drawn_glyphs`、`language_toggle_repaints_tool_card_chrome`、`widget_meta_text_matches_the_rendered_meta_row`、`completed_command_renders_header_rows_only`、`double_click_collapsed_command_hint_opens_diff_popup`、`finished_block_meta_row_matches_its_hit_range`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5「Collapsed output」。
+**指针：** 测试 `collapsed_hint_click_window_matches_the_drawn_glyphs`、`language_toggle_repaints_tool_card_chrome`、`widget_meta_text_matches_the_rendered_meta_row`、`completed_command_renders_header_rows_only`、`double_click_collapsed_command_hint_opens_diff_popup`、`finished_block_meta_row_matches_its_hit_range`；[Ch 22](./22_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5「Collapsed output」。
 
 ---
 
@@ -2767,7 +2767,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/agent_tui_kit/src/i18n.rs`（`tool_collapsed_output_action`、`tool_collapsed_output_hint`、`tool_collapsed_output_hint_one`）；`crates/agent_tui_kit/src/widgets/tool_widget.rs`（`collapsed_output_hint`、`collapsed_action_cols`）；`crates/tui/src/widgets/state/app/popups.rs`（`open_diff_popup_at`）；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5 |
+| **Related** | `crates/agent_tui_kit/src/i18n.rs`（`tool_collapsed_output_action`、`tool_collapsed_output_hint`、`tool_collapsed_output_hint_one`）；`crates/agent_tui_kit/src/widgets/tool_widget.rs`（`collapsed_output_hint`、`collapsed_action_cols`）；`crates/tui/src/widgets/state/app/popups.rs`（`open_diff_popup_at`）；[Ch 22](./22_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5 |
 
 **症状 / 动机：** 无卡片 block 的 meta 行只说出了手势，没说出手势的效果：`… · 4 lines · double-click` 与 `… · 4 行 · 双击查看`。同样的字也出现在**仍然画卡片**的弹窗卡片底栏上，于是这一行里唯一可点的字符串始终没有说明：它打开的是**这次工具的结果**。
 
@@ -2775,7 +2775,7 @@ Policy overlays:
 
 **之后的行为：** 无卡片的已完成 block 显示为 `✓ Success · 21ms · 4 lines · double-click-result` / `✓ 成功 · 21ms · 4 行 · 双击查看结果`。可点范围恰好是这几个字形、其余都不响应——行数与同一行前面的文字照旧无响应，与上面 2026-09-13 那条一致。
 
-**Pointers:** 测试 `collapsed_output_hint_ends_with_its_action`、`collapsed_command_meta_row_reports_hidden_output`、`double_click_collapsed_command_hint_opens_diff_popup`、`collapsed_command_ignores_clicks_off_the_hint`、`edit_file_collapses_its_detail_card`、`read_file_collapses_its_detail_card`、`write_file_collapses_its_detail_card`、`multiline_result_of_a_cardless_kind_becomes_expandable`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5「Collapsed output」。
+**Pointers:** 测试 `collapsed_output_hint_ends_with_its_action`、`collapsed_command_meta_row_reports_hidden_output`、`double_click_collapsed_command_hint_opens_diff_popup`、`collapsed_command_ignores_clicks_off_the_hint`、`edit_file_collapses_its_detail_card`、`read_file_collapses_its_detail_card`、`write_file_collapses_its_detail_card`、`multiline_result_of_a_cardless_kind_becomes_expandable`；[Ch 22](./22_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5「Collapsed output」。
 
 ---
 
@@ -2786,7 +2786,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`ToolLayout::detail_collapsed`、`ToolWidget::collapses_detail`）；`crates/agent_tui_kit/src/render/cells/tool.rs`（meta 行提示）；`crates/agent_tui_kit/src/i18n.rs`（`tool_collapsed_output_hint`、`tool_collapsed_output_action`）；`crates/tui/src/widgets/state/app/popups.rs`（`popup_from_tool_output`、`open_diff_popup_at`）；`crates/tact_extensions/src/tool/read_file.rs`（`DetailPolicy::Result`）；`crates/tact_extensions/src/tool/write_file.rs`（`DetailPolicy::InputField("content")`）；`crates/tact_extensions/src/tool/edit_file.rs`（`DetailPolicy::InputField("new_text")`）；`crates/tact_extensions/src/agent/tool_dispatch.rs`（MCP / 插件工具都以 `Generic` 到达）；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5/§8 |
+| **Related** | `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`ToolLayout::detail_collapsed`、`ToolWidget::collapses_detail`）；`crates/agent_tui_kit/src/render/cells/tool.rs`（meta 行提示）；`crates/agent_tui_kit/src/i18n.rs`（`tool_collapsed_output_hint`、`tool_collapsed_output_action`）；`crates/tui/src/widgets/state/app/popups.rs`（`popup_from_tool_output`、`open_diff_popup_at`）；`crates/tact_extensions/src/tool/read_file.rs`（`DetailPolicy::Result`）；`crates/tact_extensions/src/tool/write_file.rs`（`DetailPolicy::InputField("content")`）；`crates/tact_extensions/src/tool/edit_file.rs`（`DetailPolicy::InputField("new_text")`）；`crates/tact_extensions/src/agent/tool_dispatch.rs`（MCP / 插件工具都以 `Generic` 到达）；[Ch 22](./22_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5/§8 |
 
 **症状 / 动机：** 每个跑完的 `bash` 都会留一张内联卡片：两行 header 加上下边框再加 1 行预览。一次会话里几十条短命令下来，日志大部分是卡片边框，而留下的那一行是输出的**尾部**（`1/27 lines | Double-click for full code`）——通常不是想看的那行，而且想读到任何内容都得先打开卡片。不管输出多少，预览开销都是固定的：一行输出的命令和 27 行输出的命令付一样多的卡片行。跑完的 `read_file` / `write_file` / `edit_file` 也在为「本来就要打开弹窗去读」的内容付同一笔开销——卡片里只留了整份文件的一行。
 
@@ -2796,7 +2796,7 @@ Policy overlays:
 
 **已被取代（2026-09-14）：** 已完成块的 meta 行不再**存**进 `ToolRenderOutput`，而是按绘制时所用语言现推，这样 `/lang` 切换不会把点击窗口落在后面（见上面那条）。卡片标题与底栏同理。
 
-**Pointers:** `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`collapses_detail`、`layout`、`build`、`collapsed_action_cols`、`hits_collapsed_action`、`meta_suffixes`、`collapsed_output_hint`）；`crates/agent_tui_kit/src/i18n.rs`（`tool_collapsed_output_action`）；`crates/agent_tui_kit/src/render/cells/tool.rs`；`crates/tui/src/widgets/state/app/popups.rs`（`open_diff_popup_at`）；`crates/tui/src/handlers/mouse.rs`（点击列）；测试 `completed_command_renders_header_rows_only`、`double_click_collapsed_command_hint_opens_diff_popup`、`collapsed_command_ignores_clicks_off_the_hint`、`collapsed_output_hint_ends_with_its_action`、`double_click_collapsed_edit_hint_opens_diff_popup`、`double_click_collapsed_read_hint_opens_diff_popup`、`double_click_cardless_tool_hint_opens_result_popup`、`edit_file_collapses_its_detail_card`、`read_file_collapses_its_detail_card`、`write_file_collapses_its_detail_card`、`read_file_has_plain_gutter`、`read_image_collapses_with_the_file_read_kind`、`multiline_result_of_a_cardless_kind_becomes_expandable`、`multiline_mcp_result_becomes_expandable`、`one_line_result_of_a_cardless_kind_stays_plain`、`result_already_on_the_meta_row_is_not_collapsed`、`full_frame_edit_file_tool_shows_in_log`、`full_frame_read_file_tool_shows_in_log`、`full_frame_write_file_tool_shows_in_log`、`full_frame_cardless_tool_result_is_openable`、`double_click_subagent_header_does_not_open_diff_popup`、`failed_command_keeps_its_error_card`、`collapse_spares_running_commands_and_subagents`、`collapsed_command_meta_row_reports_hidden_output`、`widget_meta_text_matches_the_rendered_meta_row`、`finished_block_meta_row_matches_its_hit_range`；[Ch 23](./23_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5「Collapsed output」。
+**Pointers:** `crates/agent_tui_kit/src/widgets/tool_widget.rs`（`collapses_detail`、`layout`、`build`、`collapsed_action_cols`、`hits_collapsed_action`、`meta_suffixes`、`collapsed_output_hint`）；`crates/agent_tui_kit/src/i18n.rs`（`tool_collapsed_output_action`）；`crates/agent_tui_kit/src/render/cells/tool.rs`；`crates/tui/src/widgets/state/app/popups.rs`（`open_diff_popup_at`）；`crates/tui/src/handlers/mouse.rs`（点击列）；测试 `completed_command_renders_header_rows_only`、`double_click_collapsed_command_hint_opens_diff_popup`、`collapsed_command_ignores_clicks_off_the_hint`、`collapsed_output_hint_ends_with_its_action`、`double_click_collapsed_edit_hint_opens_diff_popup`、`double_click_collapsed_read_hint_opens_diff_popup`、`double_click_cardless_tool_hint_opens_result_popup`、`edit_file_collapses_its_detail_card`、`read_file_collapses_its_detail_card`、`write_file_collapses_its_detail_card`、`read_file_has_plain_gutter`、`read_image_collapses_with_the_file_read_kind`、`multiline_result_of_a_cardless_kind_becomes_expandable`、`multiline_mcp_result_becomes_expandable`、`one_line_result_of_a_cardless_kind_stays_plain`、`result_already_on_the_meta_row_is_not_collapsed`、`full_frame_edit_file_tool_shows_in_log`、`full_frame_read_file_tool_shows_in_log`、`full_frame_write_file_tool_shows_in_log`、`full_frame_cardless_tool_result_is_openable`、`double_click_subagent_header_does_not_open_diff_popup`、`failed_command_keeps_its_error_card`、`collapse_spares_running_commands_and_subagents`、`collapsed_command_meta_row_reports_hidden_output`、`widget_meta_text_matches_the_rendered_meta_row`、`finished_block_meta_row_matches_its_hit_range`；[Ch 22](./22_chapter_tui_zh.md) §6.16；`docs/tool_rendering.md` §5「Collapsed output」。
 
 ---
 
@@ -2807,7 +2807,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tact_extensions/src/config/types.rs`（`AgentTomlConfig`、`SubagentTomlConfig`）；`crates/tact_extensions/src/config/resolve.rs`（`resolve_config`）；`config.example.toml`；[Ch 21](./21_chapter_config_zh.md) §4 |
+| **Related** | `crates/tact_extensions/src/config/types.rs`（`AgentTomlConfig`、`SubagentTomlConfig`）；`crates/tact_extensions/src/config/resolve.rs`（`resolve_config`）；`config.example.toml`；[Ch 20](./20_chapter_config_zh.md) §4 |
 
 **症状 / 动机：** `AgentTomlConfig` 是 `#[serde(default)]` 且没有 `deny_unknown_fields`，因此任何非 agent 字段的键都会被丢弃——不报错、不警告、无效果。危险的不是拼写错误，而是那些**在别处确实存在、写在这里看起来合理**的键：`thinking_budget` 与 `reasoning_effort` 是**运行时** agent 设置（`AgentSettings`）的字段（subagent 段亦然），但作为 TOML 键它们属于 `[llm]`（全局）或 `[llm.providers.<name>]` 条目；`model` 属于 provider 条目。修复前实测：`[agent] max_tokens = "abc"`（已知键、类型错）解析即失败，而 `[agent] thinking_budget = "abc"` 加 `[agent] reasoning_effort = 123` 却正常启动、两个值全丢——与同日移除的 `[llm].max_tokens` 属同一"配了却被忽略"类别。
 
@@ -2815,7 +2815,7 @@ Policy overlays:
 
 **之后的行为：** `[agent]` 或 `[agent.subagent]` 下任何非真实字段的键在解析阶段即失败，报 `unknown field \`thinking_budget\`, expected one of \`max_tokens\`, \`model_context_window\`, …`。只使用合法键的配置不受影响（随包发布的 `config.example.toml`、进程自身的 `persist` 写入方、以及测试套件中的全部夹具均照常解析）。
 
-**Pointers:** `AgentTomlConfig` / `SubagentTomlConfig` in `crates/tact_extensions/src/config/types.rs`; tests `agent_thinking_keys_are_rejected`, `agent_unknown_key_is_rejected`, `subagent_unknown_key_is_rejected` in `crates/tact_extensions/src/config/resolve.rs`; [Ch 21](./21_chapter_config_zh.md) §4「未知键会被拒绝」; `config.example.toml`.
+**Pointers:** `AgentTomlConfig` / `SubagentTomlConfig` in `crates/tact_extensions/src/config/types.rs`; tests `agent_thinking_keys_are_rejected`, `agent_unknown_key_is_rejected`, `subagent_unknown_key_is_rejected` in `crates/tact_extensions/src/config/resolve.rs`; [Ch 20](./20_chapter_config_zh.md) §4「未知键会被拒绝」; `config.example.toml`.
 
 ---
 
@@ -2826,7 +2826,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | removal |
-| **Related** | `crates/tact_extensions/src/config/types.rs`（`LlmTomlConfig`、`AgentTomlConfig`）；`crates/tact_extensions/src/config/resolve.rs`（`resolve_config`）；`config.example.toml`；[Ch 21](./21_chapter_config_zh.md) §3/§4 |
+| **Related** | `crates/tact_extensions/src/config/types.rs`（`LlmTomlConfig`、`AgentTomlConfig`）；`crates/tact_extensions/src/config/resolve.rs`（`resolve_config`）；`config.example.toml`；[Ch 20](./20_chapter_config_zh.md) §3/§4 |
 
 **症状 / 动机：** 输出预算解析链有五个层级（`--max-tokens` > provider 条目 > `[agent].max_tokens` > `[llm].max_tokens` > 内置默认），而 `[llm]` 全局是唯一一个**永远不会被观察到**的层级：它排在 `[agent]` **之下**，只对"没在 `[agent]` 里设过"的用户生效。两级都设的人，其中一个值被静默忽略——正是当初新增 `[agent]` 一级要消灭的"配了却被忽略"类别，只是下沉了一层。一个对最可能设置它的用户都不生效的全局，比没有全局更糟：它诱使人写下一个看起来生效的键。
 
@@ -2834,7 +2834,7 @@ Policy overlays:
 
 **之后的行为：** 设置 `[llm] max_tokens` 的配置启动失败，报 `[llm].max_tokens was removed. Set [agent].max_tokens instead (or [llm.providers.<name>].max_tokens for a per-provider value), or delete the key.`，随后给出解析顺序。从未设置该键的配置不受影响；`thinking_budget` 保留其 `[llm]` 全局（它没有 `[agent]` 对应键，因此全局是唯一的非 provider 开关）。`responses_compact_threshold` 的校验文案不再写死 `llm.max_tokens`，改为 `max_tokens`——该值可能来自 CLI、provider 条目或 `[agent]`。
 
-**Pointers:** `resolve_config` in `crates/tact_extensions/src/config/resolve.rs`; tests `llm_max_tokens_is_rejected`, `absent_llm_max_tokens_still_resolves`, `agent_max_tokens_overrides_default`, `per_provider_max_tokens_overrides_default`, `cli_max_tokens_overrides_entry`, `parse_removed_llm_max_tokens_is_captured`; [Ch 21](./21_chapter_config_zh.md) §3 优先级表 + §4 schema; `config.example.toml`.
+**Pointers:** `resolve_config` in `crates/tact_extensions/src/config/resolve.rs`; tests `llm_max_tokens_is_rejected`, `absent_llm_max_tokens_still_resolves`, `agent_max_tokens_overrides_default`, `per_provider_max_tokens_overrides_default`, `cli_max_tokens_overrides_entry`, `parse_removed_llm_max_tokens_is_captured`; [Ch 20](./20_chapter_config_zh.md) §3 优先级表 + §4 schema; `config.example.toml`.
 
 ---
 
@@ -2845,7 +2845,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/agent_tui_kit/src/render/bar.rs`（`format_max_out_tokens`）；`crates/tact_llm/src/openai/responses/convert.rs`、`crates/tact_llm/src/convert.rs`、`crates/tact_llm/src/anthropic/mod.rs`；[Ch 23](./23_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md` |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`（`format_max_out_tokens`）；`crates/tact_llm/src/openai/responses/convert.rs`、`crates/tact_llm/src/convert.rs`、`crates/tact_llm/src/anthropic/mod.rs`；[Ch 22](./22_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md` |
 
 **症状 / 动机：** 底栏 `out` 段对 effort 语义模型（openai / deepseek / kimi k3）渲染 `max_tokens × 100/(100+pct)`，按 effort 分档表扣掉 reasoning 份额（`high` → 75%）。这让读数与线上请求不一致：请求发出的是**完整**的 `max_output_tokens` / `max_tokens`，信封内推理与正文的切分由服务端按次请求决定。固定的 75% 只是猜测——于是在 `[agent] max_tokens = 65536` + `high` 的配置下，底栏显示 `37.4K`，而接口实际收到的是 65536。该扣减约定原本借自压缩预留：那里必须在调用前**先定下一个尺寸**，与"把已知数字读出来"是两回事。
 
@@ -2853,7 +2853,7 @@ Policy overlays:
 
 **之后的行为：** 在 `[agent] max_tokens = 65536` 配置下，无论 effort 为何，底栏都显示 `out 65.5K`——即真正发出去的数字；按构造与 `ModelInfo.max_tokens` 及请求体（`max_output_tokens` / `max_tokens`）一致。该段在 `/model` 切换 effort 时、跨会话边界时都保持稳定。
 
-**Pointers:** `format_max_out_tokens` in `crates/agent_tui_kit/src/render/bar.rs`; test `format_max_out_tokens_is_the_wire_value`; [Ch 23](./23_chapter_tui_zh.md) §6.6; `docs/token_usage_schema.md`.
+**Pointers:** `format_max_out_tokens` in `crates/agent_tui_kit/src/render/bar.rs`; test `format_max_out_tokens_is_the_wire_value`; [Ch 22](./22_chapter_tui_zh.md) §6.6; `docs/token_usage_schema.md`.
 
 ---
 
@@ -2864,7 +2864,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tact_extensions/src/config/resolve.rs`（`resolve_config`、`resolve_subagent`）；`config.example.toml`；[Ch 21](./21_chapter_config_zh.md) §3 |
+| **Related** | `crates/tact_extensions/src/config/resolve.rs`（`resolve_config`、`resolve_subagent`）；`config.example.toml`；[Ch 20](./20_chapter_config_zh.md) §3 |
 
 **症状 / 动机：** 同一类 bug 的两个实例——配置**看起来**生效，却从未到达请求。
 
@@ -2875,7 +2875,7 @@ Policy overlays:
 
 **之后的行为：** 为 `deepseek-v4-pro`（内置 1M）设置 `[agent] model_context_window = 128000` 现在得到 128,000，且 `--model-context-window` 优先级高于两者。带有 subagent 覆盖项却缺 `provider` 的配置会启动失败并报 `[agent.subagent] sets overrides but \`provider\` is missing, so the whole section is ignored. … Set \`provider\` to a key from [llm.providers.*], or remove the section.`——这类错误此前需要读 resolve 源码才能发现。
 
-**指针：** `crates/tact_extensions/src/config/resolve.rs` 的 `resolve_config` + `resolve_subagent`；测试 `resolve_model_context_window_toml_overrides_mapping`、`resolve_model_context_window_cli_overrides_toml_and_mapping`、`resolve_model_context_window_mapping_is_the_fallback`、`subagent_overrides_without_provider_errors`、`subagent_empty_section_without_provider_is_ignored`；[Ch 21](./21_chapter_config_zh.md) §3。
+**指针：** `crates/tact_extensions/src/config/resolve.rs` 的 `resolve_config` + `resolve_subagent`；测试 `resolve_model_context_window_toml_overrides_mapping`、`resolve_model_context_window_cli_overrides_toml_and_mapping`、`resolve_model_context_window_mapping_is_the_fallback`、`subagent_overrides_without_provider_errors`、`subagent_empty_section_without_provider_is_ignored`；[Ch 20](./20_chapter_config_zh.md) §3。
 
 ---
 
@@ -2886,7 +2886,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/agent_tui_kit/src/render/bar.rs`（`format_max_out_tokens`）；`crates/tact_extensions/src/agent/mod.rs`（`emit_model_status`、回合内 `ModelInfo`）；[Ch 23](./23_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md` |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`（`format_max_out_tokens`）；`crates/tact_extensions/src/agent/mod.rs`（`emit_model_status`、回合内 `ModelInfo`）；[Ch 22](./22_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md` |
 
 **症状 / 动机：** 配置未变的情况下，底栏 `out` 段在启动时显示一个值、发出首个 prompt 后变成另一个更大的值。`out` 是**有效**文本输出额度：effort 语义模型（openai / deepseek / kimi k3）的 reasoning 与文本共享 `max_tokens` 信封，因此扣除 reasoning 份额（`max_tokens × 100/(100+pct)`）；budget 语义模型（Anthropic 式 `thinking_budget`）的 thinking 走独立信封，显示完整值。原判定条件是 `thinking_budget.is_some()`，但两个发送方对"thinking 关闭"的编码不同：`/model` 路径发 `None`（`(budget > 0).then_some(..)`），而回合内请求路径发 `Some(0)`——它映射的是 `with_thinking` 里那个恒存在的 `Thinking` 结构。于是会话首个 prompt 就把渲染端从"共享信封"翻成"独立信封"，`out` 从扣减后的值跳到完整 `max_tokens`，例如 64000 信封 + `high` 下 `36.6K` → `64K`。
 
@@ -2894,7 +2894,7 @@ Policy overlays:
 
 **之后的行为：** 配置不变时 `out` 跨会话边界保持稳定：64000 信封 + `high` effort 在首个 prompt 前后都显示 `36.6K`，不再出现 `36.6K` → `64K`。真正的 budget 语义模型（`thinking_budget > 0`）仍显示完整 `max_tokens`。
 
-**指针：** `crates/agent_tui_kit/src/render/bar.rs` 的 `format_max_out_tokens`；测试 `format_max_out_tokens_zero_budget_subtracts_effort_share`；[Ch 23](./23_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md`。
+**指针：** `crates/agent_tui_kit/src/render/bar.rs` 的 `format_max_out_tokens`；测试 `format_max_out_tokens_zero_budget_subtracts_effort_share`；[Ch 22](./22_chapter_tui_zh.md) §6.6；`docs/token_usage_schema.md`。
 
 ---
 
@@ -2905,7 +2905,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tact_extensions/src/config/types.rs`（`AgentTomlConfig::max_tokens`）；`crates/tact_extensions/src/config/resolve.rs`（`resolve_config`）；`config.example.toml`；[Ch 21](./21_chapter_config_zh.md) §3 |
+| **Related** | `crates/tact_extensions/src/config/types.rs`（`AgentTomlConfig::max_tokens`）；`crates/tact_extensions/src/config/resolve.rs`（`resolve_config`）；`config.example.toml`；[Ch 20](./20_chapter_config_zh.md) §3 |
 
 **症状 / 动机：** `[agent] max_tokens = 64000` 完全没有效果。`AgentTomlConfig` 没有这个字段，且该结构是 `#[serde(default)]` **没有** `deny_unknown_fields`，于是 serde 静默丢弃该键——不报错、不警告。原解析链是 `--max-tokens` > `[llm.providers.<active>].max_tokens` > `[llm].max_tokens` > 默认 8000，因此只配 `[agent] max_tokens` 的配置实际跑在 8000，**看起来却是配好的**。实测：配置文件带 `[agent] max_tokens = 64000`（mtime 14:32），14:34 发出的请求仍是 `"max_tokens": 8000`，且项目 DB 的 `token_usages.request_body` 里从未出现过 64000。同一文件里的 `[agent.subagent] max_tokens = 64000` 还因第二个原因失效——该段没有 `provider` 时 `resolve_subagent` 直接返回 `Ok(None)`。
 
@@ -2913,7 +2913,7 @@ Policy overlays:
 
 **之后的行为：** 只配 `[agent] max_tokens = 64000` 时，凡 provider 条目未设 `max_tokens` 的 provider 都跑在 64000；provider 条目仍然优先，`--max-tokens` 优先级最高。未设 `[agent.subagent].max_tokens` 的子 agent 继承已解析的主值（含 `[agent]` 这一级）。窗口校验报错改为 `invalid token limits: max_tokens (N) must be less than agent.model_context_window (M)`。
 
-**指针：** `crates/tact_extensions/src/config/resolve.rs` 的 `resolve_config`；测试 `agent_max_tokens_overrides_global`、`per_provider_max_tokens_overrides_agent`、`cli_max_tokens_overrides_agent`、`subagent_inherits_agent_max_tokens`；[Ch 21](./21_chapter_config_zh.md) §3 优先级表 + §4 schema。
+**指针：** `crates/tact_extensions/src/config/resolve.rs` 的 `resolve_config`；测试 `agent_max_tokens_overrides_global`、`per_provider_max_tokens_overrides_agent`、`cli_max_tokens_overrides_agent`、`subagent_inherits_agent_max_tokens`；[Ch 20](./20_chapter_config_zh.md) §3 优先级表 + §4 schema。
 
 ---
 
@@ -3144,7 +3144,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/agent_tui_kit/src/render/bar.rs`；`crates/tui/src/render/bar.rs`；`docs/token_usage_schema.md`；第 23 章 §6.6 |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`；`crates/tui/src/render/bar.rs`；`docs/token_usage_schema.md`；第 22 章 §6.6 |
 
 **症状 / 动机：** 同日的第 2 行瘦身（见下一条）删掉了 ctx 的 `pct%` 却保留了 `■`/`·` 进度条，于是显示为 `ctx [▍···] 45K/1M`。要回答这个段存在的唯一问题——"离自动压缩还有多远"——读者得自己心算除法，而进度条不过把这个百分比用字符又画了一遍。
 
@@ -3155,7 +3155,7 @@ Policy overlays:
 
 **Behavior after：** 第 2 行渲染为 `deepseek-v4  out 73.1K  think high  ctx 4% 45K/1M  ▣ 30%  ⟳ 12  ⇅ 3  ⏱ 02:05 avg 01:45`——**86 列**（原 90）。顺序与 100 列预算分别由 `bottom_bar_orders_cache_before_turn_counters` 与 `bottom_bar_fits_every_segment_in_100_columns` 锁定；`format_context_meter_leads_with_the_percentage` 断言进度条字符不会回归。
 
-**Pointers：** `crates/agent_tui_kit/src/render/bar.rs`（`format_context_meter`、`context_usage_pct`、第 2 行 `DropGroup` push 顺序）；`crates/tui/src/render/bar.rs`；`docs/token_usage_schema.md`；第 23 章 §6.6。
+**Pointers：** `crates/agent_tui_kit/src/render/bar.rs`（`format_context_meter`、`context_usage_pct`、第 2 行 `DropGroup` push 顺序）；`crates/tui/src/render/bar.rs`；`docs/token_usage_schema.md`；第 22 章 §6.6。
 
 ---
 
@@ -3181,7 +3181,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/agent_tui_kit/src/render/bar.rs`；`crates/agent_tui_kit/src/i18n.rs`；`crates/tui/src/render/bar.rs`；`docs/token_usage_schema.md`；Ch 23 §6.6 |
+| **Related** | `crates/agent_tui_kit/src/render/bar.rs`；`crates/agent_tui_kit/src/i18n.rs`；`crates/tui/src/render/bar.rs`；`docs/token_usage_schema.md`；Ch 22 §6.6 |
 
 **Symptom / motivation：** 新增回合计数与回合耗时后，第 2 行涨到约 138 列，普通终端上 `fit_row_spans` 开始静默丢段——这一行被塞满了。审计内容后发现同一个比例或数值被渲染了两三遍：`∑ₜₒₖ {total}` 与 `ctx` 进度条的 `used` 都读 `StatusBarState.token_total`；而 ctx 段自身又把比例同时编码成进度条、`pct%` 和 `used/window` 三种形式。
 
@@ -3197,7 +3197,7 @@ Policy overlays:
 
 **Behavior after：** 所有段都填充时，整行在 90 列内渲染完毕（`deepseek-v4  out 73.1K  think high  ctx [▍···] 45K/1M  ⟳ 12  ⇅ 3  ▣ 30%  ⏱ 02:05 avg 01:45`），普通终端不再丢段。丢弃顺序为 `ctx > 回合 > 缓存 > 耗时`。宽度预算测试（`bottom_bar_fits_every_segment_in_100_columns`）会在将来某段把行推回约 100 列以上时失败——正是本次修掉的那种失效模式。（行宽、丢弃顺序以及下文提到的 ctx 进度条辅助函数均在同日稍后被改动，见最新一条。）
 
-**Pointers：** `crates/agent_tui_kit/src/render/bar.rs`（`USAGE_BAR_WIDTH`、`format_context_meter`、`format_cache_pct`、`format_turn_user`、`format_turn_llm`、`format_turn_timing`、第 2 行 group 推入顺序；已删除 `ICON_TOKENS`/`format_token_total`）；`crates/agent_tui_kit/src/i18n.rs`（`bottom_out`、`bottom_avg`；移除三个字段）；`crates/tui/src/render/bar.rs`（`bottom_bar_fits_every_segment_in_100_columns`）；`docs/token_usage_schema.md`；Ch 23 §6.6。
+**Pointers：** `crates/agent_tui_kit/src/render/bar.rs`（`USAGE_BAR_WIDTH`、`format_context_meter`、`format_cache_pct`、`format_turn_user`、`format_turn_llm`、`format_turn_timing`、第 2 行 group 推入顺序；已删除 `ICON_TOKENS`/`format_token_total`）；`crates/agent_tui_kit/src/i18n.rs`（`bottom_out`、`bottom_avg`；移除三个字段）；`crates/tui/src/render/bar.rs`（`bottom_bar_fits_every_segment_in_100_columns`）；`docs/token_usage_schema.md`；Ch 22 §6.6。
 
 ---
 
@@ -3206,7 +3206,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | feature |
-| **Related** | `crates/tact_protocol/src/agent.rs`（`AgentUpdate::TurnStats`）；`crates/tact_extensions/src/agent/mod.rs`（`agent_loop`）；`crates/agent_tui_kit/src/state/status_bar_state.rs`；`crates/agent_tui_kit/src/components/status_bar.rs`；`crates/agent_tui_kit/src/render/bar.rs`；`crates/tui/src/handlers/skills.rs`；`crates/tui/src/widgets/state/app/popups.rs`；`docs/token_usage_schema.md`；Ch 23 §6.6 |
+| **Related** | `crates/tact_protocol/src/agent.rs`（`AgentUpdate::TurnStats`）；`crates/tact_extensions/src/agent/mod.rs`（`agent_loop`）；`crates/agent_tui_kit/src/state/status_bar_state.rs`；`crates/agent_tui_kit/src/components/status_bar.rs`；`crates/agent_tui_kit/src/render/bar.rs`；`crates/tui/src/handlers/skills.rs`；`crates/tui/src/widgets/state/app/popups.rs`；`docs/token_usage_schema.md`；Ch 22 §6.6 |
 
 **Symptom / motivation：** 底栏此前只报告 token、缓存命中率与上下文占用，对**回合**一无所知。唯一的耗时显示是 task-end 分隔线上冻结的 `⏱ mm:ss` 以及任务结束 stats 块——都是历史日志行，不是实时计数。会话跑了多少回合、当前任务占用了多少次 agent-loop 迭代、平均每回合耗时多久，全都看不到。
 
@@ -3219,7 +3219,7 @@ Policy overlays:
 
 **Behavior after：** 第 2 行显示 `⟳ 12 轮 ⇅ 3 轮次  ∑ₜₒₖ …  ▣ 缓存% 5%  ⏱ 02:05 · 均 01:45`（英文对应 `⟳ 12 turns ⇅ 3 turns … ⏱ 02:05 · avg 01:45`）。任务的首次 LLM 调用前隐藏 `⇅` 段；回合完成前隐藏 `avg`；尚无回合完成时隐藏整个耗时组。运行中的实时耗时仍只在顶栏——底栏只显示冻结值。*（2026-09-14 起已取代：实时耗时现在是底栏第 1 行紧挨运行的那一段，顶栏不再渲染时钟；见最新一条。）* 窄终端下新段可被丢弃，存活顺序 `ctx > 回合 > ∑ₜₒₖ > 缓存 > 耗时`，原有 `ctx > ∑ > cache` 优先级不变。*（同日稍后已被取代——本条记录的是回合统计刚落地时的状态；当前 90 列的行见上方"第 2 行瘦身"条目。）*
 
-**Pointers：** `crates/tact_protocol/src/agent.rs`（`AgentUpdate::TurnStats`）；`crates/tact_extensions/src/agent/mod.rs`（`agent_loop` 发送）；`crates/agent_tui_kit/src/state/status_bar_state.rs`（`turn_user`、`turn_llm`、`turn_llm_cap`、`turn_last_secs`、`turn_done`、`turn_total_secs`）；`crates/agent_tui_kit/src/render/bar.rs`（`ICON_TURNS`/`ICON_LLM_TURNS`/`ICON_ELAPSED`、`format_turn_user`、`format_turn_llm`、`format_turn_timing`）；`crates/tui/src/widgets/state/app/popups.rs`（`add_task_end_separator`）；`crates/tui/src/widgets/state/app/messages.rs`（`load_history` 播种）；spec `docs/superpowers/specs/2026-09-12-turn-stats-bottom-bar-design.md`；Ch 23 §6.6；`docs/token_usage_schema.md`。
+**Pointers：** `crates/tact_protocol/src/agent.rs`（`AgentUpdate::TurnStats`）；`crates/tact_extensions/src/agent/mod.rs`（`agent_loop` 发送）；`crates/agent_tui_kit/src/state/status_bar_state.rs`（`turn_user`、`turn_llm`、`turn_llm_cap`、`turn_last_secs`、`turn_done`、`turn_total_secs`）；`crates/agent_tui_kit/src/render/bar.rs`（`ICON_TURNS`/`ICON_LLM_TURNS`/`ICON_ELAPSED`、`format_turn_user`、`format_turn_llm`、`format_turn_timing`）；`crates/tui/src/widgets/state/app/popups.rs`（`add_task_end_separator`）；`crates/tui/src/widgets/state/app/messages.rs`（`load_history` 播种）；spec `docs/superpowers/specs/2026-09-12-turn-stats-bottom-bar-design.md`；Ch 22 §6.6；`docs/token_usage_schema.md`。
 
 ---
 
@@ -3265,7 +3265,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/agent_tui_kit/src/render/popups/mermaid_popup.rs`；`crates/agent_tui_kit/src/state/ui_types.rs`（`MermaidPopupView`、`MermaidPopup::new`）；`crates/tui/src/handlers/overlay.rs`；Ch 23 §6.7 |
+| **Related** | `crates/agent_tui_kit/src/render/popups/mermaid_popup.rs`；`crates/agent_tui_kit/src/state/ui_types.rs`（`MermaidPopupView`、`MermaidPopup::new`）；`crates/tui/src/handlers/overlay.rs`；Ch 22 §6.7 |
 
 **Symptom / motivation:** 日志面板虽然会渲染 Mermaid 图，但只能在日志栏的宽度下渲染；而双击弹窗原本**只用来复制源码**，从不显示图。密集的 flowchart（agent 自己画的图通常如此）在主区域被挤压得难以阅读，弹窗又没有提供更好的视图。更糟的是，使用 Mermaid `style` / `classDef` / `linkStyle` 的 fence 会静默失败：上游 `ratatui-markdown` 的 grammar 只接受 `chain` / `nodedef` / `comment` 语句，于是整个 block 回退为原始代码，且没有任何提示说明原因。
 
@@ -3305,7 +3305,7 @@ Policy overlays:
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tact_extensions/src/config/resolve.rs`（`model_context_window_for_model`）；`config.example.toml`；Ch 21 §5、Ch 5 设置表 |
+| **Related** | `crates/tact_extensions/src/config/resolve.rs`（`model_context_window_for_model`）；`config.example.toml`；Ch 20 §5、Ch 5 设置表 |
 
 **现象 / 动机：** 模型→上下文窗口映射按精确 id 匹配 DeepSeek V4（`deepseek-v4-pro`、`deepseek-v4-flash`、`deepseek-reasoner`）。任何带后缀的变体——`deepseek-v4-flash-version-exp`、`deepseek-v4-flash-vision-exp`——都匹配不到，落到 `200_000` 默认值。底栏 `ctx` 计量因此对真实 1M 的模型显示 `…/200K`，派生的自动压缩阈值（窗口的 80%）在 ~160k 而非 ~800k 处触发，压缩掉本还有大量余量的会话。
 
@@ -3475,7 +3475,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 
 **行为变化：** `tact-ui mcp add figma --url https://mcp.figma.com/mcp` 会创建或扩充 `.tact/mcp.json`，并打印路径与新条目的传输方式；`--oauth` 还会打印后续的 `tact-ui mcp login figma` 提示。`mcp get figma` 打印传输方式、来源、状态，以及 agent 实际必须调用的工具名（`mcp__figma__<tool>`），且只连接该 server。`mcp remove` 只删除一条声明；名字在别处时它会指出该去哪里找。`mcp logout` 删除凭据文件，无凭据时幂等成功，且声明已被删除后依然可用。重复添加同名条目会报错，除非给出 `--force`。Tact 未建模的键在往返后保留；对象键以排序后的 pretty JSON 重新序列化，因此手写格式的文件会在首次写入时被重新格式化一次。
 
-**指针：** `crates/tact_extensions/src/mcp/edit.rs`（`McpConfigScope`、`McpDraftTransport`、`McpServerDraft::{new,transport_kind}`、`add_mcp_server`、`RemovedMcpServer`、`remove_mcp_server`、`read_document`、`write_document`、`validate_remote_url`）；`crates/tact_extensions/src/mcp/mod.rs`（`is_safe_server_name`、`validate_server_name`、`McpServerStatus`、`McpServerInspection`、`ConnectOutcome`、`connect_server`、`resolved_server_for`、`inspect_server`、重构后的 `load_mcp_router_with_report_inner`）；`crates/tact_extensions/src/mcp/remote.rs`（`oauth_credential_path` 加固、`forget_credentials`）；`crates/tact_extensions/src/config/cli.rs`（`McpSubcommand::{List,Get,Add,Remove,Login,Logout}`）；`crates/tact_ui/src/mcp_cli.rs`（`get_server`、`render_server_detail`、`status_text`、`remove`、`scope_hint`、`scope_of`、`add`、`draft_from_args`、`parse_pairs`、`logout`）；`crates/tui/src/handlers/mcp.rs`。测试：`mcp::edit::tests::{creates_a_project_file_for_a_remote_server,writes_oauth_declaration_for_remote_server,writes_stdio_entry_with_args_and_env,adding_a_second_server_keeps_unknown_keys_and_the_first_server,refuses_to_replace_without_force_and_replaces_with_it,an_unparseable_file_is_never_overwritten,a_flat_mcp_servers_value_is_rejected,written_entries_load_back_through_the_reader,the_written_file_has_no_leftover_temp_sibling,invalid_names_and_transports_are_rejected_before_writing,project_scope_targets_the_workdir_and_user_scope_the_home_dir,remove_deletes_only_that_entry_and_keeps_everything_else,removing_the_last_server_leaves_an_empty_but_valid_config,remove_reports_an_absent_name_instead_of_succeeding_silently,an_unsafe_server_name_is_rejected_by_both_add_and_remove}`、`mcp::remote::tests::{an_unsafe_server_name_never_derives_a_credential_path,forgetting_credentials_rejects_an_unsafe_name_before_touching_disk,forgetting_a_missing_credential_is_not_an_error}`、`mcp_cli::tests::{overridden_declarations_name_the_file_that_wins,a_report_without_overrides_has_no_override_section,detail_view_shows_transport_source_status_and_qualified_tool_names,detail_view_reuses_the_list_wording_for_pending_and_failed_servers,detail_view_never_prints_an_empty_tool_list_as_success,scope_of_maps_the_user_flag,a_url_becomes_a_remote_draft_with_headers_and_oauth,a_command_becomes_a_stdio_draft_with_args_and_env,neither_or_both_transports_are_rejected,malformed_pairs_fail_without_echoing_the_value,pair_parsing_trims_the_name_and_value}`、`tui::handlers::mcp::tests::mcp_login_is_an_alias_for_auth`。文档：Ch 8 Step 1 + Step 1c（双语）、Ch 21 插件段（双语）、`README.md`。
+**指针：** `crates/tact_extensions/src/mcp/edit.rs`（`McpConfigScope`、`McpDraftTransport`、`McpServerDraft::{new,transport_kind}`、`add_mcp_server`、`RemovedMcpServer`、`remove_mcp_server`、`read_document`、`write_document`、`validate_remote_url`）；`crates/tact_extensions/src/mcp/mod.rs`（`is_safe_server_name`、`validate_server_name`、`McpServerStatus`、`McpServerInspection`、`ConnectOutcome`、`connect_server`、`resolved_server_for`、`inspect_server`、重构后的 `load_mcp_router_with_report_inner`）；`crates/tact_extensions/src/mcp/remote.rs`（`oauth_credential_path` 加固、`forget_credentials`）；`crates/tact_extensions/src/config/cli.rs`（`McpSubcommand::{List,Get,Add,Remove,Login,Logout}`）；`crates/tact_ui/src/mcp_cli.rs`（`get_server`、`render_server_detail`、`status_text`、`remove`、`scope_hint`、`scope_of`、`add`、`draft_from_args`、`parse_pairs`、`logout`）；`crates/tui/src/handlers/mcp.rs`。测试：`mcp::edit::tests::{creates_a_project_file_for_a_remote_server,writes_oauth_declaration_for_remote_server,writes_stdio_entry_with_args_and_env,adding_a_second_server_keeps_unknown_keys_and_the_first_server,refuses_to_replace_without_force_and_replaces_with_it,an_unparseable_file_is_never_overwritten,a_flat_mcp_servers_value_is_rejected,written_entries_load_back_through_the_reader,the_written_file_has_no_leftover_temp_sibling,invalid_names_and_transports_are_rejected_before_writing,project_scope_targets_the_workdir_and_user_scope_the_home_dir,remove_deletes_only_that_entry_and_keeps_everything_else,removing_the_last_server_leaves_an_empty_but_valid_config,remove_reports_an_absent_name_instead_of_succeeding_silently,an_unsafe_server_name_is_rejected_by_both_add_and_remove}`、`mcp::remote::tests::{an_unsafe_server_name_never_derives_a_credential_path,forgetting_credentials_rejects_an_unsafe_name_before_touching_disk,forgetting_a_missing_credential_is_not_an_error}`、`mcp_cli::tests::{overridden_declarations_name_the_file_that_wins,a_report_without_overrides_has_no_override_section,detail_view_shows_transport_source_status_and_qualified_tool_names,detail_view_reuses_the_list_wording_for_pending_and_failed_servers,detail_view_never_prints_an_empty_tool_list_as_success,scope_of_maps_the_user_flag,a_url_becomes_a_remote_draft_with_headers_and_oauth,a_command_becomes_a_stdio_draft_with_args_and_env,neither_or_both_transports_are_rejected,malformed_pairs_fail_without_echoing_the_value,pair_parsing_trims_the_name_and_value}`、`tui::handlers::mcp::tests::mcp_login_is_an_alias_for_auth`。文档：Ch 8 Step 1 + Step 1c（双语）、Ch 20 插件段（双语）、`README.md`。
 
 ---
 
@@ -3496,7 +3496,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 
 **行为变化：** `{ "url": … }` / `type: "http"` 的 server 会被连接而非跳过；`skipped_remote` 现在只表示传输不受支持或不完整。已安装插件也可提供远程 server。OAuth server 只出现一条待授权提示——无论是声明了 `auth` 还是被 401 识别——`/mcp auth <server>` 之后其工具在同一会话内即可用，后续会话无需再授权。过期且无法刷新的 token 回到 `pending_auth` 而不是表现为连接失败。连接失败依旧绝不致命。
 
-**指针：** `crates/tact_extensions/src/mcp/remote.rs`（`McpRemoteConfig`、`McpAuthConfig`、`serve_remote`、`resolve_remote_auth`、`stored_access_token_at`、`oauth_parameters`、`is_auth_required_error`、`authorize_remote_server`、`FileCredentialStore`、`await_oauth_callback`、`percent_decode`）；`crates/tact_extensions/src/mcp/mod.rs`（`McpTransportConfig`、`McpTransportKind`、`ConfiguredServer`、`to_transport`、`resolve_servers`、`ResolvedServers::configured`、`load_mcp_router_with_report`、`remote_config_for`、`authorize_server`、`McpLoadReport::{configured,pending_auth,notice_lines}`）；`crates/tact_ui/src/mcp_cli.rs`（`run_mcp_cli`、`render_report`、`status_for`）；`crates/tact_extensions/src/config/cli.rs`（`McpSubcommand`）；`crates/tact_extensions/src/agent/mod.rs`（`rebuild_cached_tool_specs`、`reload_mcp_router`）；`crates/tact_extensions/src/consts.rs`（`home_mcp_oauth_dir`）。测试：`remote_config_parses_url_headers_and_oauth`、`invalid_header_names_are_dropped_from_the_transport_config`、`oauth_token_becomes_the_bearer_auth_header`、`file_credential_store_round_trips_and_clears`、`callback_listener_{extracts_code_and_state,surfaces_denied_authorization,times_out_without_a_request}`、`commandless_entries_are_skipped_not_fatal_while_remote_entries_connect`、`remote_entry_with_oauth_needs_authorization_without_credentials`、`load_report_renders_pending_authorization`、`auth_required_detection_ignores_unrelated_errors`、`undeclared_auth_still_uses_a_stored_credential`、`oauth_parameters_default_when_auth_is_not_declared`、`mcp_cli::tests::{empty_report_explains_how_to_configure,renders_each_server_with_its_status,skipped_servers_are_listed_even_though_they_are_not_configured,a_server_with_no_recorded_outcome_is_not_reported_as_healthy}`。公网远程 server 的实网（可选）端到端检查：`crates/tact/tests/live_remote_mcp.rs`（`cargo test -p tact --test live_remote_mcp -- --ignored --nocapture`），覆盖 DeepWiki + Cloudflare Docs 连接并暴露 `mcp__<key>__*` 工具、Linear 的 401 被升级为 `pending_auth`、以及声明与不声明 `auth` 两种情况下都能产出授权 URL（对真实 provider 验证发现、动态注册与 PKCE S256）。文档：Ch 8 §3.2/Step 1b/1c/FAQ/缺口（双语）、Ch 21 插件段（双语）。
+**指针：** `crates/tact_extensions/src/mcp/remote.rs`（`McpRemoteConfig`、`McpAuthConfig`、`serve_remote`、`resolve_remote_auth`、`stored_access_token_at`、`oauth_parameters`、`is_auth_required_error`、`authorize_remote_server`、`FileCredentialStore`、`await_oauth_callback`、`percent_decode`）；`crates/tact_extensions/src/mcp/mod.rs`（`McpTransportConfig`、`McpTransportKind`、`ConfiguredServer`、`to_transport`、`resolve_servers`、`ResolvedServers::configured`、`load_mcp_router_with_report`、`remote_config_for`、`authorize_server`、`McpLoadReport::{configured,pending_auth,notice_lines}`）；`crates/tact_ui/src/mcp_cli.rs`（`run_mcp_cli`、`render_report`、`status_for`）；`crates/tact_extensions/src/config/cli.rs`（`McpSubcommand`）；`crates/tact_extensions/src/agent/mod.rs`（`rebuild_cached_tool_specs`、`reload_mcp_router`）；`crates/tact_extensions/src/consts.rs`（`home_mcp_oauth_dir`）。测试：`remote_config_parses_url_headers_and_oauth`、`invalid_header_names_are_dropped_from_the_transport_config`、`oauth_token_becomes_the_bearer_auth_header`、`file_credential_store_round_trips_and_clears`、`callback_listener_{extracts_code_and_state,surfaces_denied_authorization,times_out_without_a_request}`、`commandless_entries_are_skipped_not_fatal_while_remote_entries_connect`、`remote_entry_with_oauth_needs_authorization_without_credentials`、`load_report_renders_pending_authorization`、`auth_required_detection_ignores_unrelated_errors`、`undeclared_auth_still_uses_a_stored_credential`、`oauth_parameters_default_when_auth_is_not_declared`、`mcp_cli::tests::{empty_report_explains_how_to_configure,renders_each_server_with_its_status,skipped_servers_are_listed_even_though_they_are_not_configured,a_server_with_no_recorded_outcome_is_not_reported_as_healthy}`。公网远程 server 的实网（可选）端到端检查：`crates/tact/tests/live_remote_mcp.rs`（`cargo test -p tact --test live_remote_mcp -- --ignored --nocapture`），覆盖 DeepWiki + Cloudflare Docs 连接并暴露 `mcp__<key>__*` 工具、Linear 的 401 被升级为 `pending_auth`、以及声明与不声明 `auth` 两种情况下都能产出授权 URL（对真实 provider 验证发现、动态注册与 PKCE S256）。文档：Ch 8 §3.2/Step 1b/1c/FAQ/缺口（双语）、Ch 20 插件段（双语）。
 
 ---
 
@@ -3539,7 +3539,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tact_extensions/src/ui_responder.rs`、`crates/tui/src/widgets/state/app/agent.rs`、`crates/tui/src/handlers/select.rs`、`crates/tact_ui/src/interactive.rs`；Ch 25 §4.3；`docs/state_machines.md` §2/§8 |
+| **Related** | `crates/tact_extensions/src/ui_responder.rs`、`crates/tui/src/widgets/state/app/agent.rs`、`crates/tui/src/handlers/select.rs`、`crates/tact_ui/src/interactive.rs`；Ch 24 §4.3；`docs/state_machines.md` §2/§8 |
 
 **症状 / 动机:** 权限提示可能永久停在 `Running`：唯一的 `AgentUpdate::RequestSelect` 事件丢失，或在另一条 update 重置 `input_mode` 时被处理。此前的 `restore_pending_select_mode` 只修了已知的 `SessionStats` 失同步；事件本身仍是唯一真相来源，一旦它丢失或 TUI 没处理到，`UiResponder` 的等待者就没有任何东西能回答。交互式 `edit_file` 提示也命中同类问题；实际观察到某一步停在 Running 约 30 分钟，文件未写入，也没有产生 `tool_result`。
 
@@ -3547,7 +3547,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 
 **变更后行为:** 丢失或重复的 `RequestSelect` 不再让工具卡在 Running：TUI 会拉取 pending snapshot 并显示弹窗。多个提示（并发 subagent / `ask_user`）按 request id 排队在 broker 中，而不是单独的 `VecDeque`。Enter/Esc 直接回答 broker；`/cancel` 会先用 `None` 回答当前提示，再发送 `UserCommand::Cancel`；等待者被 abort 会移除 pending entry。`tact_protocol` enum 与 wire shape 未变；这是 in-process reconciliation 层，后续做 server transport 前应提升为带版本的 snapshot protocol。
 
-**指针:** `crates/tact_extensions/src/ui_responder.rs`（`PendingUiRequest`、`snapshot`、`respond`、`withdraw`、`PendingRequestGuard`）；`crates/tui/src/widgets/state/app/agent.rs`（`reconcile_pending_ui`）；`crates/tui/src/handlers/select.rs`；`crates/tact_ui/src/interactive.rs`；`crates/tui/src/lib.rs`；Ch 25 §4.3；`docs/state_machines.md` §2/§8。测试：`ui_responder::tests::*`、`broker_snapshot_*`、`broker_mode_enter_wakes_registered_waiter`、`broker_mode_cancel_answers_pending_select_with_none`。
+**指针:** `crates/tact_extensions/src/ui_responder.rs`（`PendingUiRequest`、`snapshot`、`respond`、`withdraw`、`PendingRequestGuard`）；`crates/tui/src/widgets/state/app/agent.rs`（`reconcile_pending_ui`）；`crates/tui/src/handlers/select.rs`；`crates/tact_ui/src/interactive.rs`；`crates/tui/src/lib.rs`；Ch 24 §4.3；`docs/state_machines.md` §2/§8。测试：`ui_responder::tests::*`、`broker_snapshot_*`、`broker_mode_enter_wakes_registered_waiter`、`broker_mode_cancel_answers_pending_select_with_none`。
 
 ---
 
@@ -3573,7 +3573,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/tact_extensions/src/plugin/{model,install,hooks}.rs`；测试 `codex_manifest_accepts_string_mcp_servers_and_inline_hooks`、`parses_inline_manifest_hooks`；Ch 21 §plugin |
+| **Related** | `crates/tact_extensions/src/plugin/{model,install,hooks}.rs`；测试 `codex_manifest_accepts_string_mcp_servers_and_inline_hooks`、`parses_inline_manifest_hooks`；Ch 20 §plugin |
 
 **症状 / 动机:** Tact 只有 `claude-plugins-official` 一个内置 marketplace。OpenAI 的 Codex 官方目录 `github.com/openai/plugins`（catalog `openai-curated`）无法开箱即用；而且其 manifest 并不内联 `mcpServers`/`hooks`——`mcpServers` 是相对文件路径 `"./.mcp.json"`，`hooks` 可能是内联对象——导致安装阶段解析失败。
 
@@ -3729,7 +3729,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tact_llm/src/opencode.rs`（重建；`endpoint_headers(base_url, session)`）、`crates/tact_llm/src/openai/responses/mod.rs`（`OpenAiResponsesAdapter::set_session_id`、`ResponsesCompatConfig.opencode_session`、compact POST）、`crates/tact_llm/src/openai/compatible/mod.rs`（`OpenAiAdapter::set_session_id`、`request_headers`、`CompatibleConfig::headers`）、`crates/tact_llm/src/openai/compatible/multi_model.rs`（`ChatCompletionsAdapter::set_user_id` 转发会话）、`crates/tact_llm/src/models.rs`（`fetch_model_ids`）、`crates/tact_llm/src/client.rs`（`LlmProvider::set_user_id`）；Ch 21 |
+| **Related** | `crates/tact_llm/src/opencode.rs`（重建；`endpoint_headers(base_url, session)`）、`crates/tact_llm/src/openai/responses/mod.rs`（`OpenAiResponsesAdapter::set_session_id`、`ResponsesCompatConfig.opencode_session`、compact POST）、`crates/tact_llm/src/openai/compatible/mod.rs`（`OpenAiAdapter::set_session_id`、`request_headers`、`CompatibleConfig::headers`）、`crates/tact_llm/src/openai/compatible/multi_model.rs`（`ChatCompletionsAdapter::set_user_id` 转发会话）、`crates/tact_llm/src/models.rs`（`fetch_model_ids`）、`crates/tact_llm/src/client.rs`（`LlmProvider::set_user_id`）；Ch 20 |
 
 **症状 / 动机:** OpenCode 发布的 OpenCode Go（`https://opencode.ai/zen/go/v1`）客户端要求再次要求各类 coding-agent 客户端自报身份，并在每个请求里发送**稳定的会话 id**（`x-opencode-session`，用于路由与 prompt 缓存）；会话支持不全的客户端会被列入 "Known Problematic"。09-05 的 `revert(llm)`（ed480ec）在该头还属可选时把整套机制（绑定会话的头 + `tact/<version>` User-Agent）删掉了，于是 OpenCode Go 请求又变成裸奔。
 
@@ -3774,7 +3774,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | Field | Value |
 |-------|-------|
 | **Type** | removal |
-| **Related** | 移除 `crates/tact_llm/src/opencode.rs`；`crates/tact_llm/src/openai/responses/mod.rs`（`OpenAiResponsesAdapter`、`ResponsesCompatConfig`）、`crates/tact_llm/src/openai/compatible/mod.rs`（`CompatibleConfig::headers`）、`crates/tact_llm/src/models.rs`（`fetch_model_ids`）、`crates/tact_llm/src/client.rs`（`LlmProvider::set_user_id`）；Ch 21 |
+| **Related** | 移除 `crates/tact_llm/src/opencode.rs`；`crates/tact_llm/src/openai/responses/mod.rs`（`OpenAiResponsesAdapter`、`ResponsesCompatConfig`）、`crates/tact_llm/src/openai/compatible/mod.rs`（`CompatibleConfig::headers`）、`crates/tact_llm/src/models.rs`（`fetch_model_ids`）、`crates/tact_llm/src/client.rs`（`LlmProvider::set_user_id`）；Ch 20 |
 
 **症状 / 动机:** OpenCode 托管端点不再要求 `x-opencode-session` 头（也不需要自定义 `tact/<version>` User-Agent），因此整套「检测 `opencode.ai` 端点并为每个请求附加该头」的机制成为死代码——而且它迫使把 Tact session id 一路透传（`Agent::with_session` → `LlmProvider::set_user_id` → `OpenAiResponsesAdapter::set_session_id`）仅仅是为了填充这一个头的值。
 
@@ -3789,7 +3789,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/tact_llm/src/openai/responses/convert.rs`（`ResponsesRequestPolicy`、`create_response_with_policy`）、`crates/tact_llm/src/openai/responses/mod.rs`（`OpenAiResponsesAdapter::with_replay_prior_reasoning`、`is_official_openai_base_url`、compact POST）；task #58；Ch 22 §6.2/§6.2.3 |
+| **Related** | `crates/tact_llm/src/openai/responses/convert.rs`（`ResponsesRequestPolicy`、`create_response_with_policy`）、`crates/tact_llm/src/openai/responses/mod.rs`（`OpenAiResponsesAdapter::with_replay_prior_reasoning`、`is_official_openai_base_url`、compact POST）；task #58；Ch 21 §6.2/§6.2.3 |
 
 **Symptom / motivation:** 每个 `/responses` 请求都把完整的历史 `reasoning` item（持久化的 opaque encrypted payload signature）重放进 `input`。官方 OpenAI 需要它来延续 turn，但兼容端点（OpenCode Go、自定义 OpenAI-compatible 代理）每轮都会自行重新生成 reasoning，回放每一条历史思维链纯属浪费 input token——实测约占请求字节的 ~17%（DeepSeek 类端点按 token 计高达 ~47%）。
 
@@ -3804,7 +3804,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tact_llm/src/opencode.rs`（`endpoint_headers(base_url, session)`）、`crates/tact_llm/src/openai/responses/mod.rs`（`OpenAiResponsesAdapter::set_session_id`、`ResponsesCompatConfig.opencode_session`、compact POST）、`crates/tact_llm/src/client.rs`（`LlmProvider::set_user_id`）、`crates/tact_extensions/src/agent/mod.rs`（`Agent::with_session`）；Ch 21 |
+| **Related** | `crates/tact_llm/src/opencode.rs`（`endpoint_headers(base_url, session)`）、`crates/tact_llm/src/openai/responses/mod.rs`（`OpenAiResponsesAdapter::set_session_id`、`ResponsesCompatConfig.opencode_session`、compact POST）、`crates/tact_llm/src/client.rs`（`LlmProvider::set_user_id`）、`crates/tact_extensions/src/agent/mod.rs`（`Agent::with_session`）；Ch 20 |
 
 **Symptom / motivation:** 第一版 OpenCode 修复以按进程、按 `base_url` 的 token 作为 `x-opencode-session`。但 OpenCode 用该头作为**区分各会话缓存的键**：两个不同 Tact 会话共享同一 token 会共享/污染彼此的 OpenCode 缓存，而 resume 一个 Tact 会话也不会续上同一 OpenCode 缓存。
 
@@ -3819,7 +3819,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tact_llm/src/opencode.rs`（新增）、`crates/tact_llm/src/openai/responses/mod.rs`（`ResponsesCompatConfig::headers`、compact POST）、`crates/tact_llm/src/openai/compatible/mod.rs`（`CompatibleConfig::headers`）、`crates/tact_llm/src/models.rs`（`fetch_model_ids`）；Ch 21 |
+| **Related** | `crates/tact_llm/src/opencode.rs`（新增）、`crates/tact_llm/src/openai/responses/mod.rs`（`ResponsesCompatConfig::headers`、compact POST）、`crates/tact_llm/src/openai/compatible/mod.rs`（`CompatibleConfig::headers`）、`crates/tact_llm/src/models.rs`（`fetch_model_ids`）；Ch 20 |
 
 **Symptom / motivation:** 发往 OpenCode Go（`https://opencode.ai/zen/go/v1`）的请求没有 `x-opencode-session` 头，且只有 reqwest 的通用 `User-Agent`，导致 OpenCode 无法关联/优化会话并把这些请求报为「Unknown client」；09/06 起缺该头的请求可能报错。
 
@@ -3933,7 +3933,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | `crates/tui/src/render/popups/slash_command.rs`（滚动窗口 / offset）、`crates/tui/src/widgets/state/slash_command.rs`（`step_slash_selection`）、`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`（`select_popup_layout`、footer）、`crates/agent_tui_kit/src/render/popups/select.rs`、`crates/agent_tui_kit/src/render/popups/system_prompt_popup.rs`（session-stats footer）、`crates/agent_tui_kit/src/i18n.rs`（footer 文案）、`crates/tui/src/render/popups/select.rs`（鼠标区域）、`crates/tui/src/handlers/mouse.rs`（滚轮路由）、`crates/tui/src/handlers/insert.rs`（↑/↓ 复用）、`crates/agent_tui_kit/src/state/mouse_state.rs`（`slash_popup_area`、`select_popup_area`）；Ch 23 |
+| **Related** | `crates/tui/src/render/popups/slash_command.rs`（滚动窗口 / offset）、`crates/tui/src/widgets/state/slash_command.rs`（`step_slash_selection`）、`crates/agent_tui_kit/src/widgets/select_popup_widget.rs`（`select_popup_layout`、footer）、`crates/agent_tui_kit/src/render/popups/select.rs`、`crates/agent_tui_kit/src/render/popups/system_prompt_popup.rs`（session-stats footer）、`crates/agent_tui_kit/src/i18n.rs`（footer 文案）、`crates/tui/src/render/popups/select.rs`（鼠标区域）、`crates/tui/src/handlers/mouse.rs`（滚轮路由）、`crates/tui/src/handlers/insert.rs`（↑/↓ 复用）、`crates/agent_tui_kit/src/state/mouse_state.rs`（`slash_popup_area`、`select_popup_area`）；Ch 22 |
 
 **Symptom / motivation:** 列表过长时弹窗看起来没有滚动效果。slash 弹窗滚动窗口固定按 `max_visible + 2` 计算，没有考虑弹窗真实内容高度（`area.height - 2`）；在矮终端上 `List` 组件会裁掉底部行，而选中项锚定在窗口索引 `max_visible - 1` —— 落在可见内容之外，按 ↑/↓ 时高亮跑到屏幕外、可见行看起来像冻结。select 弹窗（`/model`、permission、ask_user）有同样问题：其 List 区块按 `Constraint::Length(option_count)`（完整选项数）分配，即使弹窗高度已被上限截断，选中项落到弹窗边框之外、列表从不滚动。鼠标滚轮在两类弹窗上同样无效：它们都不属于 overlay 弹窗，滚轮事件落到背后的日志面板。
 
@@ -3977,7 +3977,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | Field | Value |
 |-------|-------|
 | **类型** | optimization |
-| **相关** | `crates/tact_protocol/src/agent.rs`、`crates/tact_extensions/src/ui_responder.rs`（新增）、`crates/tact_extensions/src/tool/ask_user.rs`、`crates/tact_extensions/src/tool/subagent_ui.rs`、`crates/tact_extensions/src/agent/tool_dispatch.rs`、`crates/tact_ui/src/driver.rs`、`crates/agent_tui_kit/src/state/select_popup.rs`、`crates/tui/src/handlers/select.rs`；Ch 25 |
+| **相关** | `crates/tact_protocol/src/agent.rs`、`crates/tact_extensions/src/ui_responder.rs`（新增）、`crates/tact_extensions/src/tool/ask_user.rs`、`crates/tact_extensions/src/tool/subagent_ui.rs`、`crates/tact_extensions/src/agent/tool_dispatch.rs`、`crates/tact_ui/src/driver.rs`、`crates/agent_tui_kit/src/state/select_popup.rs`、`crates/tui/src/handlers/select.rs`；Ch 24 |
 
 **症状 / 动机：** `AgentUpdate::RequestSelect` / `RequestMultiSelect` 内嵌了 `tokio::sync::oneshot::Sender`，把协议 enum 耦合到了进程内传输句柄。该 enum 无法派生 `Clone`/`Serialize`，每个请求只有一个进程内响应者，且每新增一种「向 UI 提问」都需要一个携带 sender 的新变体。
 
@@ -3992,7 +3992,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | Field | Value |
 |-------|-------|
 | **类型** | feature |
-| **相关** | `crates/tact_extensions/src/plugin/{mod,install}.rs`、`crates/tact_extensions/src/config/cli.rs`、`crates/tact_ui/src/plugin_cli.rs`、`crates/tact_ui/tests/plugin_cli_tests.rs`、`crates/tui/src/handlers/plugin.rs`、`crates/tui/src/widgets/state/app/extensions.rs`、`crates/agent_tui_kit/src/i18n.rs`；Ch 2 § 插件 skills、Ch 23 §7 |
+| **相关** | `crates/tact_extensions/src/plugin/{mod,install}.rs`、`crates/tact_extensions/src/config/cli.rs`、`crates/tact_ui/src/plugin_cli.rs`、`crates/tact_ui/tests/plugin_cli_tests.rs`、`crates/tui/src/handlers/plugin.rs`、`crates/tui/src/widgets/state/app/extensions.rs`、`crates/agent_tui_kit/src/i18n.rs`；Ch 2 § 插件 skills、Ch 22 §7 |
 
 **症状 / 动机：** 已安装插件按 revision 锁定，上游 marketplace 发布新版本后只能先卸载再重装才能前移——还会隐式丢失 marketplace 来源关联。
 
@@ -4007,7 +4007,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | Field | Value |
 |-------|-------|
 | **类型** | feature |
-| **相关** | `crates/tact_extensions/src/plugin/{mod,install,store}.rs`、`crates/tact_extensions/src/config/cli.rs`、`crates/tact_ui/src/plugin_cli.rs`、`crates/tact_ui/tests/plugin_cli_tests.rs`、`crates/tui/src/handlers/plugin.rs`、`crates/tui/src/widgets/state/app/extensions.rs`、`crates/agent_tui_kit/src/i18n.rs`；Ch 2 § 插件 skills、Ch 23 §7 |
+| **相关** | `crates/tact_extensions/src/plugin/{mod,install,store}.rs`、`crates/tact_extensions/src/config/cli.rs`、`crates/tact_ui/src/plugin_cli.rs`、`crates/tact_ui/tests/plugin_cli_tests.rs`、`crates/tui/src/handlers/plugin.rs`、`crates/tui/src/widgets/state/app/extensions.rs`、`crates/agent_tui_kit/src/i18n.rs`；Ch 2 § 插件 skills、Ch 22 §7 |
 
 **症状 / 动机：** 插件可以安装、列出、重载，却无法卸载；卸载只能手动编辑 `installed.json` 并手动删除缓存目录。
 
@@ -4022,7 +4022,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/tact_ui/src/user_message.rs` (`build_user_message`), `crates/tact_ui/src/{lib,image_attach}.rs` (移除 `image_attach`), `crates/tact_ui/Cargo.toml` (去除 `image` 依赖); Ch 22 § image attachments |
+| **Related** | `crates/tact_ui/src/user_message.rs` (`build_user_message`), `crates/tact_ui/src/{lib,image_attach}.rs` (移除 `image_attach`), `crates/tact_ui/Cargo.toml` (去除 `image` 依赖); Ch 21 § image attachments |
 
 **Symptom / motivation:** `build_user_message` 在 attach 时把图片文件 base64 内联为 `ContentBlock::Image`、把文本文件整体内联为 `ContentBlock::Text`。这会在模型未必需要时就把图片字节与大文件内容塞进每次请求；且纯文本模型完全无法读图。
 
@@ -4037,7 +4037,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | `crates/tact_extensions/src/tool/read_image.rs`, `crates/tact_extensions/src/tool/{mod,registry}.rs`, `crates/tact_extensions/src/agent/tool_dispatch.rs` (`ToolCallResult.image` / `ExecResult`), `crates/tact_llm/src/convert.rs` (`messages_to_openai` 工具结果图片折叠); Ch 22 § image attachments |
+| **Related** | `crates/tact_extensions/src/tool/read_image.rs`, `crates/tact_extensions/src/tool/{mod,registry}.rs`, `crates/tact_extensions/src/agent/tool_dispatch.rs` (`ToolCallResult.image` / `ExecResult`), `crates/tact_llm/src/convert.rs` (`messages_to_openai` 工具结果图片折叠); Ch 21 § image attachments |
 
 **Symptom / motivation:** 图片处理只支持用户 attach：`@file.png` 变成内联 `ContentBlock::Image`，纯文本模型无法按需读取本地图片。缺少模型可调用的图片工具，vision 模型无法在不重新 attach 的情况下按路径取图。
 
@@ -4052,7 +4052,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | 字段 | 值 |
 |------|------|
 | **类型** | bugfix |
-| **相关** | 任务 #43（ToolEvent outbox：`crates/agent_tui_kit/src/components/tool.rs`）；`crates/agent_tui_kit/src/components/plan.rs`；`crates/tui/src/widgets/state/app/agent.rs`；下文条目（ComponentRegistry，任务 #42）；Ch 23 §1 |
+| **相关** | 任务 #43（ToolEvent outbox：`crates/agent_tui_kit/src/components/tool.rs`）；`crates/agent_tui_kit/src/components/plan.rs`；`crates/tui/src/widgets/state/app/agent.rs`；下文条目（ComponentRegistry，任务 #42）；Ch 22 §1 |
 
 **症状 / 动机：** ToolEvent outbox 提取（任务 #43）之后，步骤索引出现三处
 漂移，在 tool id 乱序或重启时出错：
@@ -4088,7 +4088,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 
 **指针：** `crates/agent_tui_kit/src/components/{plan,tool}.rs`、
 `crates/tui/src/widgets/state/app/agent.rs`（`apply_tool_events` /
-`on_step_failed_tail`）、Ch 23 §1。
+`on_step_failed_tail`）、Ch 22 §1。
 
 ---
 
@@ -4097,7 +4097,7 @@ Registration failed: Dynamic registration failed: Registration failed: HTTP 403 
 | 字段 | 值 |
 |------|------|
 | **类型** | optimization |
-| **相关** | 设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`（+ `-ctx-design.md`）；计划：`docs/superpowers/plans/2026-08-18-tui-component-library.md`；Ch 23 |
+| **相关** | 设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`（+ `-ctx-design.md`）；计划：`docs/superpowers/plans/2026-08-18-tui-component-library.md`；Ch 22 |
 
 **症状 / 动机：** 整个渲染栈在 `crates/tui` 单个 crate 内，与 `tact` /
 `tact_llm` 强耦合（`App` 持有所有面板状态；render 函数接收 `&App`）。其他
@@ -4137,7 +4137,7 @@ task_panel、render_md、cells）、`state/*`、`bridge.rs`、
 | 字段 | 值 |
 |------|------|
 | **类型** | optimization |
-| **相关** | 计划：`docs/superpowers/plans/2026-08-18-tui-component-library.md`（步骤 9）；设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`；Ch 23 |
+| **相关** | 计划：`docs/superpowers/plans/2026-08-18-tui-component-library.md`（步骤 9）；设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`；Ch 22 |
 
 **症状 / 动机：** kit 的 `Component` trait 与六个组件
 （Thinking/Stream/StatusBar/TaskPanel/Plan/Tool）已存在，但 Tact 应用仍把
@@ -4172,7 +4172,7 @@ host 以 `app.plan()` / `app.tools_mut()` 替代字段访问。无用户可见�
 status_bar,task_panel,plan,tool}.rs`、`crates/tui/src/widgets/state/app/
 {agent.rs（dispatch_components / shell_handle / apply_stream_events）、
 registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
-（prepare 的字段拆分借用）、Ch 23 §1。
+（prepare 的字段拆分借用）、Ch 22 §1。
 
 ---
 
@@ -4181,7 +4181,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Field | Value |
 |-------|-------|
 | **类型** | bugfix |
-| **相关** | 第 22 章（LLM / Responses）；`crates/tact_llm/src/openai/responses/wire.rs`、`crates/tact_llm/src/openai/responses/convert.rs` |
+| **相关** | 第 21 章（LLM / Responses）；`crates/tact_llm/src/openai/responses/wire.rs`、`crates/tact_llm/src/openai/responses/convert.rs` |
 
 **现象 / 动机：** 在同一个 Responses 端点上从 OpenAI 模型切换到 DeepSeek 兼容模型后，旧的 `web_search_call` 使用 `action.query` 被回放，而目标端点要求 `action.queries`，最终返回 HTTP 400：`missing field queries`。
 
@@ -4189,7 +4189,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 **改后行为：** 模型切换不再发送上一个模型不兼容的 `query` / `queries` 字段形状，其余 opaque Responses 基线和逻辑会话保持不变。
 
-**指针：** `crates/tact_llm/src/openai/responses/wire.rs` 的 `normalize_web_search_call_query_shape_in_items`；`crates/tact_llm/src/openai/responses/convert.rs` 的 `create_response` outgoing baseline 处理；双向转换回归测试；第 22 章。
+**指针：** `crates/tact_llm/src/openai/responses/wire.rs` 的 `normalize_web_search_call_query_shape_in_items`；`crates/tact_llm/src/openai/responses/convert.rs` 的 `create_response` outgoing baseline 处理；双向转换回归测试；第 21 章。
 
 ---
 
@@ -4198,7 +4198,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Field | Value |
 |-------|-------|
 | **类型** | bugfix |
-| **相关** | Ch 23（TUI）；`crates/tui/src/render/input.rs`、`crates/tui/src/handlers/mouse.rs`、`crates/tui/src/widgets/state/app/pending.rs` |
+| **相关** | Ch 22（TUI）；`crates/tui/src/render/input.rs`、`crates/tui/src/handlers/mouse.rs`、`crates/tui/src/widgets/state/app/pending.rs` |
 
 **现象 / 动机：** pending 队列的 `[Cancel]` 控件曾经右对齐在提示行最右侧，虽然它只控制旁边的 pending prompt 区域，但实际操作距离较远、不易点击。
 
@@ -4206,7 +4206,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 **改后行为：** 宽终端显示 `Message will be submitted after the current task [Cancel]`；按钮紧挨解释性文案，点击只清空排队 prompt，窄终端仍隐藏按钮。
 
-**指针：** `crates/tui/src/render/input.rs` 的 `render_pending_block`；`crates/tui/src/handlers/mouse.rs` 的 `handle_mouse_down` 与 `pending_cancel_click_hits_the_rendered_button`；`widgets/state/app/pending.rs` 的 `App::clear_pending_messages`；Ch 23；`docs/superpowers/specs/2026-08-17-pending-cancel-button-placement-design.md`。
+**指针：** `crates/tui/src/render/input.rs` 的 `render_pending_block`；`crates/tui/src/handlers/mouse.rs` 的 `handle_mouse_down` 与 `pending_cancel_click_hits_the_rendered_button`；`widgets/state/app/pending.rs` 的 `App::clear_pending_messages`；Ch 22；`docs/superpowers/specs/2026-08-17-pending-cancel-button-placement-design.md`。
 
 ---
 
@@ -4215,7 +4215,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Field | Value |
 |-------|-------|
 | **类型** | bugfix / optimization |
-| **相关** | Ch 23（TUI）；`crates/tui/src/widgets/state/mod.rs`、`crates/tui/src/widgets/state/app/popups.rs`、`crates/tui/src/render/log.rs` |
+| **相关** | Ch 22（TUI）；`crates/tui/src/widgets/state/mod.rs`、`crates/tui/src/widgets/state/app/popups.rs`、`crates/tui/src/render/log.rs` |
 
 **现象 / 动机：** Log 通过原始前缀和缩进推断 user / system 归属。普通 item 只要以两个空格开头就可能进入系统纯文本路径，导致 `  **粗体文本**` 显示字面量 `**`。用户续行识别和行缩进也依赖相邻 raw 字符串，容易被内容格式误导。
 
@@ -4223,7 +4223,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 **改后行为：** 缩进的 assistant / system Markdown 保留 Markdown 样式；user 行和续行使用记录好的来源；tool 与 Thinking placeholder 保留专用缩进；raw 文本不再用于推断行归属或类别。主 Log 路径移除 `RawMessageType`、`is_user_message_line`、`user_line_mask` 和 `classify_system_message`。
 
-**指针：** `crates/tui/src/widgets/state/mod.rs` 的 `LogItemKind` / `SystemMsgStyle`；`app/popups.rs` 的 metadata 同步操作；`app/messages.rs`、`app/agent.rs`、`handlers/mod.rs` 的显式插入路径；`render/log.rs`、`render/log_style.rs`、`app/visibility.rs` 的 metadata 驱动渲染；Ch 23。
+**指针：** `crates/tui/src/widgets/state/mod.rs` 的 `LogItemKind` / `SystemMsgStyle`；`app/popups.rs` 的 metadata 同步操作；`app/messages.rs`、`app/agent.rs`、`handlers/mod.rs` 的显式插入路径；`render/log.rs`、`render/log_style.rs`、`app/visibility.rs` 的 metadata 驱动渲染；Ch 22。
 
 ---
 
@@ -4232,7 +4232,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Field | Value |
 |-------|-------|
 | **类型** | bugfix |
-| **相关** | Ch 23（TUI）；`crates/tui/src/render/pulldown.rs`（`Writer::start_tag`、`Tag::List`） |
+| **相关** | Ch 22（TUI）；`crates/tui/src/render/pulldown.rs`（`Writer::start_tag`、`Tag::List`） |
 
 **现象 / 动机：** pulldown-cmark 事件流进入嵌套 `Tag::List` 时，父列表项的行内 span 仍保存在 `pending` 中。因此第一个子项的 marker 会被拼到父项行尾（`• parent    • child one`），后续子项才会单独换行。
 
@@ -4240,7 +4240,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 **改后行为：** 父项与每个嵌套项均渲染为独立行；嵌套 bullet 继续按每级四列缩进。已有有序列表与任务列表行为不变。
 
-**指针：** `crates/tui/src/render/pulldown.rs` 的 `Writer::start_tag`；回归测试 `nested_list_items_render_on_separate_lines`；Ch 23。
+**指针：** `crates/tui/src/render/pulldown.rs` 的 `Writer::start_tag`；回归测试 `nested_list_items_render_on_separate_lines`；Ch 22。
 
 ---
 
@@ -4249,7 +4249,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | Ch 23（TUI）；`crates/tui/src/render/render_md.rs`（`render_table_chunk`、`push_separator`） |
+| **Related** | Ch 22（TUI）；`crates/tui/src/render/render_md.rs`（`render_table_chunk`、`push_separator`） |
 
 **现象 / 动机：** 管道表格只有表头分隔线；多行数据体渲染成一串连续换行块，长行之间难以区分，表格不像网格。
 
@@ -4266,7 +4266,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | Ch 23（TUI）；`crates/tui/src/render/render_md.rs`（`format_table`、`fit_columns_to_width`、`MIN_COL_WIDTH` / `COMPACT_COL_WIDTH`），`crates/tui/src/render/cells/markdown.rs`（渲染宽度回归测试） |
+| **Related** | Ch 22（TUI）；`crates/tui/src/render/render_md.rs`（`format_table`、`fit_columns_to_width`、`MIN_COL_WIDTH` / `COMPACT_COL_WIDTH`），`crates/tui/src/render/cells/markdown.rs`（渲染宽度回归测试） |
 
 **现象 / 动机：** 表格自然宽度超过主区域时，`format_table` 先把列压缩到可读地板（`MIN_COL_WIDTH = 8`），仍放不下就拆成列块、每块重复表头。贪心拆块产生悬殊的块（如 12 列在 95 宽拆成 8+4，第二块只用一半宽度；4 列长表格在 35 宽拆成 3+1，第二块孤零零一列），即使整张表在更窄列宽下本可以完整显示。
 
@@ -4283,7 +4283,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | Ch 23（TUI）；`crates/tui/src/widgets/state/app/visibility.rs`（`App::table_layout_width`），`crates/tui/src/widgets/state/app/agent.rs` + `visibility.rs`（`format_table_lines` 调用点），`crates/tui/src/render/render_md.rs`（`format_table`），`crates/tui/src/render/cells/markdown.rs`（回归测试） |
+| **Related** | Ch 22（TUI）；`crates/tui/src/widgets/state/app/visibility.rs`（`App::table_layout_width`），`crates/tui/src/widgets/state/app/agent.rs` + `visibility.rs`（`format_table_lines` 调用点），`crates/tui/src/render/render_md.rs`（`format_table`），`crates/tui/src/render/cells/markdown.rs`（回归测试） |
 
 **现象 / 动机：** 流式与系统管道表格在构建时按 `log_scroll.width`（日志面板的完整内容宽度）布局；渲染时 assistant / 系统行有缩进（`nested_log_indent` 对 LLM 行至少返回 `LOG_THINKING_INDENT + 1 = 3`），实际可用宽度少 3 列。被压缩到满宽的长表格行因此裁掉尾部管道与最右列，竖线看起来对不齐。`MarkdownCell` 路径一直没有此问题（`render_if_needed` 的 `content_width` 已扣缩进），所以只有流式 / 系统表格错位。
 
@@ -4300,7 +4300,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | Ch 23（TUI）; `crates/tui/src/render/render_md.rs`（`format_table`、`format_table_lines`）、`crates/tui/src/render/pulldown.rs`（`flush_table`）、`crates/tui/src/widgets/state/app/agent.rs` + `visibility.rs`（流式刷出点） |
+| **Related** | Ch 22（TUI）; `crates/tui/src/render/render_md.rs`（`format_table`、`format_table_lines`）、`crates/tui/src/render/pulldown.rs`（`flush_table`）、`crates/tui/src/widgets/state/app/agent.rs` + `visibility.rs`（流式刷出点） |
 
 **Symptom / motivation:** `format_table` 接收 `| a | b |` 原始字符串并按 `'|'` 重新切分。`pulldown.rs::flush_table` 把收集到的单元格拼回这种字符串再传进去，所以单元格里含有字面量管道（转义 `\|`、行内代码）时会多出幻影列、整行错位。行式流式渲染器（`agent.rs` / `visibility.rs` 的 table_buffer）也有同样的隐患。
 
@@ -4317,7 +4317,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Field | Value |
 |-------|-------|
 | **Type** | bugfix |
-| **Related** | Ch 23（TUI）; `crates/tui/src/render/render_md.rs`（`format_table`、`split_into_fitting_chunks`、`render_table_chunk`、`row_width`）、`crates/tui/src/render/pulldown.rs`（`flush_table`）、`crates/tui/src/render/cells/markdown.rs`（`wide_table_chunks_into_fitting_blocks` 测试） |
+| **Related** | Ch 22（TUI）; `crates/tui/src/render/render_md.rs`（`format_table`、`split_into_fitting_chunks`、`render_table_chunk`、`row_width`）、`crates/tui/src/render/pulldown.rs`（`flush_table`）、`crates/tui/src/render/cells/markdown.rs`（`wide_table_chunks_into_fitting_blocks` 测试） |
 
 **Symptom / motivation:** 宽度超过面板的 Markdown 管道表格（例如 40 列面板里的 10 列表格）渲染出的行比可用宽度还宽：`fit_columns_to_width` 收缩到 `MIN_COL_WIDTH = 8` 可读性下限就停（10×8 + 3×10 + 1 = 111 列放不进 40 列）。随后 `MarkdownCell::render_if_needed` 里面板级的 `wrap_line` 把每个表格行拦腰折断，丢失行首管道符、后续所有行全部错位——表格看起来像被撕碎了一样。
 
@@ -4334,7 +4334,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Field | Value |
 |-------|-------|
 | **Type** | optimization |
-| **Related** | Ch 25; `crates/tact_extensions/src/stats.rs`、`crates/tact_extensions/src/agent/mod.rs`、`crates/tact_extensions/src/agent/tool_dispatch.rs`、`crates/tact_extensions/src/hook/rtk_filter.rs`、`crates/tact_ui/src/driver.rs` |
+| **Related** | Ch 24; `crates/tact_extensions/src/stats.rs`、`crates/tact_extensions/src/agent/mod.rs`、`crates/tact_extensions/src/agent/tool_dispatch.rs`、`crates/tact_extensions/src/hook/rtk_filter.rs`、`crates/tact_ui/src/driver.rs` |
 
 **Symptom / motivation:** `UserCommand::QueryStats` 落在命令驱动的 `other =>` 分支，该分支会先 await 在途的 `SubmitTask` handle 才能访问 `Agent`（运行中的任务独占 Agent 所有权）。长任务期间 `/stats` 看起来毫无响应，直到任务结束——有时要等好几分钟。
 
@@ -4351,7 +4351,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Field | Value |
 |-------|-------|
 | **Type** | feature |
-| **Related** | Ch 23; `crates/tui/src/handlers/insert.rs`、`crates/tui/src/handlers/skills.rs`、`crates/tui/src/widgets/state/app/pending.rs`、`crates/tui/src/render/input.rs`、`crates/tui/src/lib.rs` |
+| **Related** | Ch 22; `crates/tui/src/handlers/insert.rs`、`crates/tui/src/handlers/skills.rs`、`crates/tui/src/widgets/state/app/pending.rs`、`crates/tui/src/render/input.rs`、`crates/tui/src/lib.rs` |
 
 **Symptom / motivation:** agent 处于 `Planning`/`Executing` 时按 Enter 只会闪现"⏳ 上一个任务还在处理中"并丢弃输入——工具运行期间打的消息全丢了。Codex CLI 的做法是排队："Messages to be submitted after next tool call (press esc to interrupt and send immediately)"。
 
@@ -4359,7 +4359,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 **Behavior after:** 忙时输入的消息被排队，显示在输入框上方并带 Codex 风格提示，当前任务结束后自动提交（包括被 `/cancel` 结束的任务）；`[Cancel]` 按钮只丢弃队列。多条排队消息按顺序各自成为独立回合。超长消息在入队时即被拒绝。忙时提交不再丢失。
 
-**Pointers:** `handlers/insert.rs`（`handle_enter_submit`、Esc 分支）、`handlers/skills.rs`（`submit_user_task`、`flush_pending_when_idle`、`interrupt_and_submit_pending`）、`widgets/state/app/pending.rs`、`render/input.rs`（`render_pending_block`、`truncate_to_width`）；测试 `submit_queued_while_agent_busy`、`esc_with_pending_interrupts_and_submits_immediately`、`flush_pending_when_idle_submits_all_queued_in_order`、`input_box_renders_pending_block_above_input`；Ch 23 §6.6。
+**Pointers:** `handlers/insert.rs`（`handle_enter_submit`、Esc 分支）、`handlers/skills.rs`（`submit_user_task`、`flush_pending_when_idle`、`interrupt_and_submit_pending`）、`widgets/state/app/pending.rs`、`render/input.rs`（`render_pending_block`、`truncate_to_width`）；测试 `submit_queued_while_agent_busy`、`esc_with_pending_interrupts_and_submits_immediately`、`flush_pending_when_idle_submits_all_queued_in_order`、`input_box_renders_pending_block_above_input`；Ch 22 §6.6。
 
 ---
 
@@ -4368,7 +4368,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 内容 |
 |-------|-------|
 | **类型** | bugfix |
-| **相关** | Ch 23；`crates/tui/src/render/pulldown.rs`、`crates/tui/src/render/log_style.rs` |
+| **相关** | Ch 22；`crates/tui/src/render/pulldown.rs`、`crates/tui/src/render/log_style.rs` |
 
 **现象 / 动机：** 上一个修复已经阻止含行内代码的正文行被重绘成整行代码块，但行内代码 span 自身仍携带窄的 `code_block_bg` 背景补丁。这个矩形背景在普通正文和列表中仍然显得过重，换行后尤其明显。
 
@@ -4376,7 +4376,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 **变更后行为：** 行内代码通过强调色文字区分，不再出现矩形背景补丁。围栏代码块仍保留主题背景和前景色，因此代码块边界仍然清晰。
 
-**指针：** `crates/tui/src/render/pulldown.rs`（`push_inline_code`）、`crates/tui/src/render/log_style.rs`（`restyle_log_line_with_skills`）；两个模块中的 `inline_code_uses_accent_without_background` 测试；Ch 23。
+**指针：** `crates/tui/src/render/pulldown.rs`（`push_inline_code`）、`crates/tui/src/render/log_style.rs`（`restyle_log_line_with_skills`）；两个模块中的 `inline_code_uses_accent_without_background` 测试；Ch 22。
 
 ---
 
@@ -4385,7 +4385,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 内容 |
 |-------|-------|
 | **类型** | bugfix |
-| **相关** | Ch 23；`crates/tui/src/render/log_style.rs` |
+| **相关** | Ch 22；`crates/tui/src/render/log_style.rs` |
 
 **现象 / 动机：** `restyle_log_line_with_skills` 只要某行的 span 里出现 `theme.code_block_bg()` 就把整行当作围栏代码行，重绘成整行代码背景。像 `- run `cargo build`` 这种常见列表项因此渲染成一整块高亮背景；当条目换行时，`wrap_line` 会把背景重新切片到每一续行，帧间残留成阴影状色带（反复出现的 "shadow" 类问题）。
 
@@ -4393,7 +4393,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 **变更后行为：** 含行内代码的列表项与段落不再渲染成整行代码块，换行续行不再出现阴影色带。围栏代码块仍带主题代码背景（浅色主题下仍通过 `restyle_code_line` 修正前景色）。
 
-**指针：** `crates/tui/src/render/log_style.rs`（`restyle_log_line_with_skills`、`restyle_code_line`）；测试 `inline_code_line_keeps_narrow_patch_not_full_block_bg`；Ch 23 渲染管线。
+**指针：** `crates/tui/src/render/log_style.rs`（`restyle_log_line_with_skills`、`restyle_code_line`）；测试 `inline_code_line_keeps_narrow_patch_not_full_block_bg`；Ch 22 渲染管线。
 
 ---
 
@@ -4402,7 +4402,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 内容 |
 |-------|-------|
 | **类型** | bugfix |
-| **相关** | Ch 23；`crates/tui/src/i18n.rs`、`crates/tui/src/widgets/state/app/messages.rs`、`crates/tui/src/handlers/mouse.rs` |
+| **相关** | Ch 22；`crates/tui/src/i18n.rs`、`crates/tui/src/widgets/state/app/messages.rs`、`crates/tui/src/handlers/mouse.rs` |
 
 **现象 / 动机：** 每轮结束的统计行被硬编码为 `📊 任务统计：…`（`messages.rs` 中的 `TASK_STATS_PREFIX`），即使 UI 切到英文模式仍是中文，且过宽的 `📊` emoji 在日志里显得太大。`[copy]` 按钮同样是一段硬编码英文。
 
@@ -4453,7 +4453,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 内容 |
 |-------|-------|
 | **类型** | bugfix |
-| **相关** | Ch 23；`crates/tui/src/lib.rs`、`crates/tui/src/render/test_harness.rs` |
+| **相关** | Ch 22；`crates/tui/src/lib.rs`、`crates/tui/src/render/test_harness.rs` |
 
 **现象 / 动机：** 主帧循环里渲染的四个覆盖式弹窗（`command_palette`、`select`、`file_picker`、`slash_command`）以**整屏**为基准居中，高度上限是 `frame.height - 4`。终端较矮、命令/文件/选项较多时，弹窗高过日志面板，盖住命令行输入框和底栏；弹窗列表行与输入框边框字形（弹窗 `Clear` 矩形之外的部分）交错，看起来像一团阴影/错乱，用户也看不到正在输入的过滤词。
 
@@ -4461,7 +4461,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 **变更后行为：** palette / select / 文件选择 / 斜杠命令弹窗无论列表多长、终端多矮，都保持在输入框和底栏之上；过滤输入时输入框始终完整可见。
 
-**指针：** `crates/tui/src/lib.rs`（帧循环弹窗调用）、`crates/tui/src/render/test_harness.rs`（`draw_full_ui`，同步保持）、`crates/tui/src/render/popup_scene_tests.rs`（`full_frame_palette_popup_stays_inside_main_area`）；Ch 23。
+**指针：** `crates/tui/src/lib.rs`（帧循环弹窗调用）、`crates/tui/src/render/test_harness.rs`（`draw_full_ui`，同步保持）、`crates/tui/src/render/popup_scene_tests.rs`（`full_frame_palette_popup_stays_inside_main_area`）；Ch 22。
 
 ---
 
@@ -4470,7 +4470,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 内容 |
 |-------|-------|
 | **类型** | bugfix |
-| **相关** | Ch 23；`crates/tui/src/render/log_style.rs` |
+| **相关** | Ch 22；`crates/tui/src/render/log_style.rs` |
 
 **现象 / 动机：** restyle 通道（pulldown-cmark 迁移 #69 时加入）会给 H1 标题涂上 `theme.highlight` 背景——这是 tui-markdown 直接给 H1 上背景的遗留行为。日志面板里色块只覆盖标题的字形列；标题换行时每一行都会带色块，于是「长标题 + 列表」在文字后面形成一大片类似阴影的色块。整段 Markdown 路径（`MarkdownCell`，如 `/skills` 分页）从不绘制该色块，两条主区域路径表现不一致。
 
@@ -4478,7 +4478,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 **变更后行为：** H1 标题在两条主区域路径中都渲染为无背景的加粗+下划线标题色文本；（换行的）列表标题后面不再出现高亮阴影块。
 
-**指针：** `crates/tui/src/render/log_style.rs`（`restyle_log_line_with_skills`、`heading_keeps_no_background`）、`crates/tui/src/render/log_render_tests.rs`（`heading_rows_carry_no_highlight_band`）；Ch 23 渲染管线。
+**指针：** `crates/tui/src/render/log_style.rs`（`restyle_log_line_with_skills`、`heading_keeps_no_background`）、`crates/tui/src/render/log_render_tests.rs`（`heading_rows_carry_no_highlight_band`）；Ch 22 渲染管线。
 
 ---
 
@@ -4514,7 +4514,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 现象 / 动机 | 底栏输出段此前标记为 `out`/`输出`，直接显示原始 `max_tokens` 信封。对 effort 语义模型（openai / deepseek / kimi k3），reasoning 与输出文本算在同一个信封内，`think high` 旁边的 `out 128K` 高估了真正留给文本的 token——用户要求该段显示 **max output token** 值，并扣除 reasoning 份额。 |
 | 决策 | 标签改为 `max_out_token`（两种语言统一用该标识符），数值改为真正的文本输出额度：effort 语义模型按压缩预留的同一分档约定扣除 reasoning 份额（预留为文本预算的百分比并追加在文本之上 → 文本 = 信封 × `100/(100+pct)`；128K 信封 + `high` → 73K）。budget 语义模型（Anthropic 式 `thinking_budget`）的 thinking 走独立信封，仍显示完整 `max_tokens`。在 TUI 内由 `status_bar.model_max_tokens` + `model_thinking_budget` + `model_reasoning_effort` 计算，无协议改动。 |
 | 改后行为 | 底栏第 2 行显示 `max_out_token {n}` 取代 `out {n}`；无 think / budget 语义时 `n` = `max_tokens`，显示 effort 时 `n` = `max_tokens × 100/(100+pct)`（`none`/无 effort → 不变，`low` → 80%，`medium` → ~67%，`high` → ~57%，`xhigh`/`max` → 50%）。 |
-| 指针 | `crates/tui/src/render/bar.rs`（`format_max_out_tokens`）、`crates/tui/src/i18n.rs`（`bottom_out`）、book [Ch 23](./23_chapter_tui_zh.md) §6.6、`docs/token_usage_schema.md`。 |
+| 指针 | `crates/tui/src/render/bar.rs`（`format_max_out_tokens`）、`crates/tui/src/i18n.rs`（`bottom_out`）、book [Ch 22](./22_chapter_tui_zh.md) §6.6、`docs/token_usage_schema.md`。 |
 
 ---
 
@@ -4526,7 +4526,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 现象 / 动机 | `agent.model_context_window` 此前完全手工指定（CLI/TOML，默认 `200_000`），没有任何模型推断。使用 `deepseek-v4-pro`（真实窗口 1M）时，底栏 `ctx` 计量因残留的 256k 配置显示 `…/256K`，自动压缩也在 ~80%（约 205k）处触发而非 ~800k，导致过早压缩。`max_tokens` 已有按模型的默认值可参照（`kimi_k2x → 32_000`），而窗口没有等价机制。 |
 | 决策 | 在 `resolve.rs` 新增 `model_context_window_for_model(model)`，并按 **模型→窗口映射（最高）→ CLI/TOML → 默认 `200_000`** 解析窗口。数值依据官方模型文档（2026-08）：OpenAI `gpt-5.6` 系列 + `gpt-5.5` → `1_050_000`、`gpt-5.4` → `1_000_000`、`gpt-5`…`gpt-5.3`/`gpt-5.4-mini` → `400_000`、`gpt-4o` 系列 → `128_000`；Anthropic（API 与 Claude Code 同 ID）`claude-sonnet-5`/`claude-fable-5`/`claude-opus-5`/`claude-opus-4-8`/`claude-opus-4-7`/`claude-opus-4-6`/`claude-sonnet-4-6` → `1_000_000`、`claude-sonnet-4-20250514`/`claude-opus-4-20250514`/`claude-haiku-4-5`/`claude-haiku-4-20250514` → `200_000`；DeepSeek V4 → `1_000_000`、`k3-256k` → `256_000`。命中映射时**刻意**覆盖用户文件配置，避免过时的手工窗口低估已知模型。 |
 | 改后行为 | `ctx` 底栏计量与派生的自动压缩阈值（窗口的 80%）对已映射模型使用映射后的窗口。GPT-5.6/5.5 系列显示 `…/1.05M`、Claude 1M 模型（含 Claude Code ID）`…/1M`、DeepSeek V4 `…/1M`、GPT-5.x `…/400K`、GPT-4o `…/128K`、`k3-256k` `…/256K`。手工 `model_context_window` 仅对无内置映射的模型生效。非零 `model_context_window > max_tokens` 的校验仍作用于解析后的最终值。 |
-| 指针 | `crates/tact_extensions/src/config/resolve.rs`（`model_context_window_for_model`，解析位于 ~`:587`）；`config.example.toml` `[agent]`；book [Ch 21](./21_chapter_config_zh.md) §5、[Ch 5](./05_chapter_compact_zh.md) 设置表。 |
+| 指针 | `crates/tact_extensions/src/config/resolve.rs`（`model_context_window_for_model`，解析位于 ~`:587`）；`config.example.toml` `[agent]`；book [Ch 20](./20_chapter_config_zh.md) §5、[Ch 5](./05_chapter_compact_zh.md) 设置表。 |
 
 *（2026-09-13 被取代——优先级已反转：显式的 CLI 标志或 `[agent]` 配置现在优先，映射降级为未配置模型时的回退。见最新条目；其中还保留"过时手工窗口会低估长上下文模型"这一代价，但改为文档说明而非强制。）*
 
@@ -4541,7 +4541,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Symptom / motivation | 下方条目所述的整合方案最终落在本地 `ratatui-markdown` fork 上，仅为了让 Tact 的正文渲染对齐 `tui-markdown` 的输出，就携带了约 350 行、跨 8 个文件的补丁（H4–H6、有序编号、硬换行、嵌套强调、CJK 左翼、主题代码色槽）。fork 是 rebase 负担，且是只在本机可解析的 path 依赖；`steer` 与 xAI 的 `grok-build` 都用 `pulldown-cmark` 解析 CommonMark、在自己代码里渲染，而非 fork 一个 Markdown 库。 |
 | Decision | 用 `pulldown-cmark` 0.13 的事件循环（`crates/tui/src/render/pulldown.rs`）替代 fork 的块渲染器，复用 Tact 的宽度感知管道表 `format_table`、`▎` 引用块 gutter、fenced-code 无框主题样式与 Mermaid 路由。`ratatui-markdown` 改为上游 git 依赖（`celestia-island/ratatui-markdown` @ `3a8bcbe`，仅 `mermaid` feature），只用于非 sequence 的 Mermaid 图；`sequenceDiagram` 仍是 Tact 自研的 `mermaid_sequence.rs`。删除 `feat/tact` fork 与 `TuiRenderHooks`/`RenderHooks` 适配器。 |
 | Behavior after | 正文/标题/列表/任务/表格/引用块渲染由 Tact 依据 `pulldown-cmark` 事件自持。刻意关闭 `ENABLE_SMART_PUNCTUATION`，使 `...` 不被转成 `…`（系统消息与用户文本保持字节稳定）。GFM 任务列表现在同样作用于有序列表（`1. [X]` → `1. ☑`）。Mermaid 输出不变。 |
-| Pointers | `crates/tui/src/render/pulldown.rs`、`render_md.rs`；`Cargo.toml`（`ratatui-markdown` git 依赖 + `pulldown-cmark`）；book [Ch 23](./23_chapter_tui_zh.md) §6.7；下方条目记录了中间的 fork 方案。 |
+| Pointers | `crates/tui/src/render/pulldown.rs`、`render_md.rs`；`Cargo.toml`（`ratatui-markdown` git 依赖 + `pulldown-cmark`）；book [Ch 22](./22_chapter_tui_zh.md) §6.7；下方条目记录了中间的 fork 方案。 |
 
 ---
 
@@ -4554,7 +4554,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 症状 / 动机 | TUI 主区域并行维护两套 Markdown 栈：`tui-markdown` 0.3.x（crates.io）渲染日志面板的正文 / 标题 / 列表，`ratatui-markdown`（celestia-island git fork，按分支固定）渲染 Mermaid 与 `/tasks-dag` 弹窗。两套样式适配器、两套调色板，以及各种 fork 规避（任务列表标记转义、`log_style.rs` 中的硬编码色重映射、围栏标记簿记）都必须同步维护。 |
 | 决策 | 统一到 `ratatui-markdown`（本地 fork 位于 `../ratatui-markdown`，分支 `feat/tact`，基于 `chore/update-ratatui-0.30` @ `3a8bcbe`）并补齐能力：H4–H6 标题、有序列表保留编号、每级 4 列嵌套缩进、递归嵌套强调（`**bold _x_ italic**`）、链接保留 URL 后缀、行内代码 / 围栏代码的主题色槽位、软换行折叠为空格 + 硬换行保留、连续空格保留、CJK 标点友好的强调判定。Tact 侧：`render_plain_markdown` 用 fork 的 parse+render 替换 `tui_markdown::from_str_with_options`，并通过 `TuiRenderHooks`（隐藏围栏 / 边框装饰、直接上代码背景）；引用 `▎` gutter 与 H1 高亮背景移入后处理 / restyle 阶段；表格通过 `table` RenderHooks 适配器委托给 Tact 的宽度感知 `format_table`（管道风格），因此 fork 自带的 `render_table` 不再被使用、保持上游原样；三击代码块检测改为匹配代码背景而非 ````` ``` ````` 标记；diff 弹窗直接使用 `syntect` 高亮（同一 Base16 Ocean Dark 主题），从而移除 `tui-markdown` 与直接依赖的 `pulldown-cmark`。 |
 | 行为后 | 日志面板经单一 crate 渲染 Markdown。无序列表渲染为 `•`，任务项渲染为 `☐` / `☑`（原先为字面 `-` / `[ ]` 文本）；围栏代码保持主题背景且无围栏标记；raw 复制行镜像渲染文本（标记在解析阶段被消费）；`/stats` 的 GFM 表格经 `format_table` 渲染为管道表；diff 弹窗保留语法高亮。 |
-| 指针 | `crates/tui/src/render/render_md.rs`（`TuiRenderHooks`、`render_plain_markdown`、`apply_blockquote_indicator`）、`crates/tui/src/render/log_style.rs`（H1 高亮规则）、`crates/tui/src/render/popups/diff_popup.rs`（syntect）、`crates/tui/src/widgets/state/app/popups.rs`（`find_code_block_containing_logical`）、`Cargo.toml`（`ratatui-markdown` path 依赖 + `syntect`）；fork 仓库 `../ratatui-markdown` `feat/tact`；[Ch 23](./23_chapter_tui_zh.md) §6.7。 |
+| 指针 | `crates/tui/src/render/render_md.rs`（`TuiRenderHooks`、`render_plain_markdown`、`apply_blockquote_indicator`）、`crates/tui/src/render/log_style.rs`（H1 高亮规则）、`crates/tui/src/render/popups/diff_popup.rs`（syntect）、`crates/tui/src/widgets/state/app/popups.rs`（`find_code_block_containing_logical`）、`Cargo.toml`（`ratatui-markdown` path 依赖 + `syntect`）；fork 仓库 `../ratatui-markdown` `feat/tact`；[Ch 22](./22_chapter_tui_zh.md) §6.7。 |
 
 ---
 
@@ -4566,7 +4566,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 症状 / 动机 | Thinking 卡片把总行数显示了两遍——顶部标题（`🧠 Thinking (N lines)`）与底部栏（`↕ 可见/N 行 …`）各一次；`bash` 命令输出卡片同样重复（顶部 `Live output (N lines)` / `Command output (N lines)`，底部 `preview/total 行` 提示）；`read_file` 卡片也是如此（顶部 `Read <路径> (N lines)`）。两者同时可见时，顶部计数与底部栏数字冗余。 |
 | 决策 | 卡片顶部标题不再携带行数：`🧠 Thinking`（active 与 completed 一致）、`Live output`（运行中 bash）、`Command output`（已完成 bash）、`Read <路径>`（read_file）。底部栏成为唯一计数来源（Thinking 的 `↕ visible/total 行`；命令输出溢出预览时的 `preview/total 行`）。删除不再使用的 `thinking_card_title_pl` 字段；`tool_live_output_title_tmpl` 去掉 `{}` 占位符并更名为 `tool_live_output_title`。 |
 | 改后行为 | Thinking 卡片显示 `🧠 Thinking` / `🧠 思考中`；运行中的 bash 卡片显示 `Live output` / `实时输出`；完成的命令卡片显示 `Command output`；Read 卡片显示 `Read <路径>`。所有行数都在卡片底部栏。Popup 标题不变（本就用命令文本或裸 `Command output`）。 |
-| 指针 | `crates/tui/src/i18n.rs`、`crates/tui/src/render/cells/thinking.rs`、`crates/tui/src/widgets/tool_widget.rs`（`detail_card_title`）、`crates/tui/src/render/cells/tool.rs`（`card_bottom_text`）；测试 `live_output_total_excludes_command_prefix_but_popup_keeps_it`、`log_tool_card_renders_when_scrolled_into_placeholder_rows`；[Ch 23](./23_chapter_tui_zh.md) §render pipeline。 |
+| 指针 | `crates/tui/src/i18n.rs`、`crates/tui/src/render/cells/thinking.rs`、`crates/tui/src/widgets/tool_widget.rs`（`detail_card_title`）、`crates/tui/src/render/cells/tool.rs`（`card_bottom_text`）；测试 `live_output_total_excludes_command_prefix_but_popup_keeps_it`、`log_tool_card_renders_when_scrolled_into_placeholder_rows`；[Ch 22](./22_chapter_tui_zh.md) §render pipeline。 |
 
 ## 2. 2026-08-15 — Log 按词边界折行；文字选择交互对称化
 
@@ -4576,7 +4576,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Symptom / motivation | （1）`wrap_line` 在显示宽度处硬切每行（`split_at_display_width`），长 URL、路径与单词从中间断开且无续行提示；（2）跨折行的部分选择在续行上丢失 REVERSED 高亮——旧折行路径把所有 span 摊平为一个基础样式；（3）双击选词只认 ASCII，双击中文选不中任何内容；（4）选择交互不对称：点击/拖入整段 Markdown 行会产生看不见的选择（MarkdownCell 渲染器不画叠加层），点空白区或面板外则保留过期选择；（5）鼠标 hit-test 按面板宽度模拟硬折行，而渲染按宽度 − 缩进折行，缩进行上最多偏移一个缩进宽。 |
 | Decision | 新增共享的 `wrap_break_offsets` 一次性计算视觉行起始偏移，`wrap_line` 与 `visual_pos_to_byte_offset` 共用，渲染与 hit-test 不可能再分歧。折行改为贪心词边界折行：在最后一个放得下的空白处断开；仅当连续词超过行宽才硬切；尾随空白留在上一行（不可见），保证分段字节连续。`wrap_line` 按分段重新切片原始样式 span，使逐段样式（含 REVERSED）延续到续行。`find_word_bounds` 按光标下字符分类为 ASCII 词或 CJK 连续段（汉字/假名/谚文）并在同类内扩展。`handle_log_click`/`handle_mouse_drag`/`handle_log_triple_click` 拒绝在 Markdown 行上开始或扩展选择；点击日志下方空白或面板外的任意位置清除选择。hit-test 的折行宽度减去行缩进。 |
 | Behavior after | 单词不再从中间断开（URL/路径/CJK 保持完整直到确实超宽）；选择高亮在每条续行都可见；双击可选中整段中文；Markdown 卡片不再被"静默选中"；误点击清除过期选择而非保留；缩进行上的点击映射到正确字节。 |
-| Pointers | `crates/tui/src/render/util.rs`（`wrap_break_offsets`、`wrap_line`、`visual_pos_to_byte_offset`、`col_to_byte_offset`）、`crates/tui/src/widgets/state/app/visibility.rs`（`find_word_bounds`、`is_markdown_row`、`byte_offset_from_log_position`）、`crates/tui/src/handlers/mouse.rs`（点击/拖拽/三击守卫与面板外点击清除）、`crates/tui/src/render/cells/text.rs`；测试 `wrap_break_offsets_prefers_word_boundaries`、`wrap_line_keeps_word_intact_and_preserves_span_styles`、`wrap_break_offsets_agree_with_byte_offset_hit_testing`、`partial_selection_reverses_target_span_across_wrapped_lines`、`double_click_selects_cjk_run`、`click_below_last_message_clears_selection`、`click_on_markdown_row_does_not_create_invisible_selection`、`drag_into_markdown_row_does_not_extend_selection`、`click_outside_log_clears_selection`；[第 23 章](./23_chapter_tui_zh.md) 渲染管线节。 |
+| Pointers | `crates/tui/src/render/util.rs`（`wrap_break_offsets`、`wrap_line`、`visual_pos_to_byte_offset`、`col_to_byte_offset`）、`crates/tui/src/widgets/state/app/visibility.rs`（`find_word_bounds`、`is_markdown_row`、`byte_offset_from_log_position`）、`crates/tui/src/handlers/mouse.rs`（点击/拖拽/三击守卫与面板外点击清除）、`crates/tui/src/render/cells/text.rs`；测试 `wrap_break_offsets_prefers_word_boundaries`、`wrap_line_keeps_word_intact_and_preserves_span_styles`、`wrap_break_offsets_agree_with_byte_offset_hit_testing`、`partial_selection_reverses_target_span_across_wrapped_lines`、`double_click_selects_cjk_run`、`click_below_last_message_clears_selection`、`click_on_markdown_row_does_not_create_invisible_selection`、`drag_into_markdown_row_does_not_extend_selection`、`click_outside_log_clears_selection`；[第 22 章](./22_chapter_tui_zh.md) 渲染管线节。 |
 
 ## 2. 2026-08-15 — Log 滚动改为视觉行；`/skills` 分页
 
@@ -4586,7 +4586,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Symptom / motivation | Log 面板按逻辑消息行滚动（`j`/`k`/滚轮每格 `log_scroll.offset ± 1`）。高于 viewport 的整段 Markdown 消息——例如 `/skills` 约 60 个 skill、400+ 渲染行的管道表格——只能看到首尾两屏：`resolve_visual_scroll` 在最大逻辑偏移处钉底，位于中间的行（按字母序排列的 `lark-*`）双向都滚不到。 |
 | Decision | viewport 的首条可见**视觉**行成为权威状态（`LogScroll.visual_top`，`usize::MAX` = 钉底哨兵）；`offset` 变为派生的逻辑镜像，仅供只读消费方（鼠标 hit-test、code 弹窗）使用。纯函数 `visual_step_up/down` 在高于 viewport 的 cell 内部按 `j`/`k` 半屏、滚轮 3 行步进，其余情况按行边界跳转；从下方进入高 cell 时落在其底部，保证向上遍历连续。删除 `resolve_visual_scroll` / `effective_max_logical_scroll`。`/skills` 输出额外按 15 个 skill 一页分块，每块一条带 `(n/k)` 标题的 Markdown 消息。 |
 | Behavior after | 任何高于 viewport 的 cell（长表格、展开的工具卡片）都可用 `j`/`k`/滚轮双向完整遍历；`g`/`G` 仍跳转顶/底，自动跟随流式输出保持可用（`is_log_pinned_to_bottom` 改为比较视觉位置）。`/skills` 每页渲染 15 个 skill 并带页码标题。 |
-| Pointers | `crates/tui/src/widgets/state/app/scroll.rs`（步进函数与滚动 API）、`crates/tui/src/widgets/state/log_scroll.rs`（`visual_top`）、`crates/tui/src/render/log.rs`（视觉钳制与镜像派生）、`crates/tui/src/handlers/{normal,mouse,mod}.rs`（按键、滚轮、`/skills` 分页）、`crates/tui/src/widgets/state/app/{agent,messages,visibility}.rs`（钉底辅助）；回归测试 `tall_markdown_cell_is_fully_traversable`、`skills_command_paginates_long_lists`；[第 23 章](./23_chapter_tui_zh.md) 渲染管线节。 |
+| Pointers | `crates/tui/src/widgets/state/app/scroll.rs`（步进函数与滚动 API）、`crates/tui/src/widgets/state/log_scroll.rs`（`visual_top`）、`crates/tui/src/render/log.rs`（视觉钳制与镜像派生）、`crates/tui/src/handlers/{normal,mouse,mod}.rs`（按键、滚轮、`/skills` 分页）、`crates/tui/src/widgets/state/app/{agent,messages,visibility}.rs`（钉底辅助）；回归测试 `tall_markdown_cell_is_fully_traversable`、`skills_command_paginates_long_lists`；[第 22 章](./22_chapter_tui_zh.md) 渲染管线节。 |
 
 ## 2. 2026-08-15 — 主区域渲染打磨：Markdown 缩进、主题化链接、代码背景、隐藏标记
 
@@ -4596,7 +4596,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Symptom / motivation | 渲染路径审查发现：(1) 整段 Markdown 消息（`MarkdownCell`，如 `/skills`）贴左边渲染，而流式回复/工具卡有缩进；(2) 链接使用硬编码调色板 `Blue`，永不随主题变化；(3) `is_user_message_line` 每渲染一行就向块头回退扫描，长段粘贴时呈平方复杂度；(4) `TextCell` 把所有 span 背景压平为面板底色，流式回复里的围栏代码丢失背景（与 `MarkdownCell` 不一致）；(5) 原始 Markdown 标记（`# `、`> `、``` 围栏）泄漏进渲染文本。 |
 | Decision | (1) `append_markdown` 统一使用 `LOG_THINKING_INDENT + 1` 缩进；(2) 链接改用 `theme.heading`，restyle 里旧 `Blue` 重映射；(3) 每帧预计算单遍 `user_line_mask`，restyle 与缩进共用；(4) `TextCell` 保留 span 自带背景（代码 bg、H1 highlight），restyle 仅把代码背景的 span 当代码处理；(5) styled 行隐藏围栏行（渲染为空白）并剥除 `#{1,6} ` / `> ` 前缀，`raw_messages` 保留原始 Markdown 供复制、代码块检测与 hit-test；流式文本改用与最终行一致的 fg，回复完成时不再变色。 |
 | Behavior after | 流式回复中的代码块有背景；H1 保留 highlight 色带；引用渲染为 `▎ text`；标题不带 `## `；链接随主题适配；长粘贴不再触发平方级回退扫描；`/skills` 等 Markdown 通知与回复对齐。 |
-| Pointers | `crates/tui/src/render/{log.rs,log_style.rs,render_md.rs}`、`crates/tui/src/render/cells/{text.rs,markdown.rs}`、`crates/tui/src/widgets/state/app/{popups.rs,visibility.rs}`；测试 `span_backgrounds_survive_rendering`、`heading_keeps_no_background`、`user_line_mask_matches_the_per_row_walk`、`hardcoded_blue_links_remap_to_theme_heading`、`render_markdown_fenced_code_block`、`render_markdown_heading_markers_are_stripped`、`indented_cell_shifts_content_right`；[第 23 章](./23_chapter_tui_zh.md) 渲染管线节。 |
+| Pointers | `crates/tui/src/render/{log.rs,log_style.rs,render_md.rs}`、`crates/tui/src/render/cells/{text.rs,markdown.rs}`、`crates/tui/src/widgets/state/app/{popups.rs,visibility.rs}`；测试 `span_backgrounds_survive_rendering`、`heading_keeps_no_background`、`user_line_mask_matches_the_per_row_walk`、`hardcoded_blue_links_remap_to_theme_heading`、`render_markdown_fenced_code_block`、`render_markdown_heading_markers_are_stripped`、`indented_cell_shifts_content_right`；[第 22 章](./22_chapter_tui_zh.md) 渲染管线节。 |
 
 ## 2. 2026-08-14 — 移除 cron 调度功能
 
@@ -4636,7 +4636,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 现象 / 动机 | OpenAI 兼容适配器把发送/连接/读响应失败报成 `LlmError::Unsupported("HTTP request failed: …")`，混淆了"端点不支持"与"请求根本没发出去"；token 数用 `u64 as u32` 强转（超限时截断误导）；工具调用 `arguments` 载荷非法 JSON 时被静默替换为 `{}`，无任何痕迹。 |
 | 决策 | 新增 `LlmError::Request(String)` 变体承载请求传输/反序列化错误（API HTTP 错误仍走 `HttpError`）。流式与非流式路径都改发已序列化的 JSON 字节（`body` + 显式 `Content-Type`），不再用 `.json()` 二次序列化。token 数 `u64 → u32` 饱和转换（`u32_token_count`）。非法工具参数在 `debug` 级记录（error、工具名、原始 args）后回退为空对象。 |
 | 改后行为 | 端点不可达/连接断开时显示 `request error: …` 而非 `unsupported: …`；超限 token 数饱和而非回绕；非法工具参数可在 debug 日志中看到。 |
-| 指针 | `crates/tact_llm/src/error.rs`（`LlmError::Request`）、`crates/tact_llm/src/openai/compatible/mod.rs`（`OpenAiAdapter` chat/流式路径、`u32_token_count`、`tool_use_block_from_parts`）；[Ch 22](./22_chapter_llm_zh.md)。 |
+| 指针 | `crates/tact_llm/src/error.rs`（`LlmError::Request`）、`crates/tact_llm/src/openai/compatible/mod.rs`（`OpenAiAdapter` chat/流式路径、`u32_token_count`、`tool_use_block_from_parts`）；[Ch 21](./21_chapter_llm_zh.md)。 |
 
 ## 2. 2026-08-13 — TUI 输入框长行软换行，光标随折行后的显示行定位
 
@@ -4646,7 +4646,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 现象 / 动机 | 输入框高度与行数统计只数显式 `\n`，单条超长行会溢出 3 行上限；光标/滚动按逻辑行计算，与实际渲染不一致（长输入时光标画错行列）。 |
 | 决策 | `render/input.rs` 新增 `wrap_line`（按字符边界软换行、CJK 双宽感知；`Paragraph` 保持不换行、逐行绘制这些切分）与 `caret_in_wrapped`（逻辑光标列 → 显示行列）。框高、行数统计、滚动钳制与光标定位全部改用显示行。 |
 | 改后行为 | 长行在框内折行而非溢出；高度随折行自动扩展（1–3 显示行 + border）；光标与滚动跟随折行行。提交文本不变。 |
-| 指针 | `crates/tui/src/render/input.rs`（`wrap_line`、`caret_in_wrapped`）；`crates/tui/src/lib.rs`（输入框高度）；测试见 `input.rs`（`wrap_line_splits_at_column_width`、`caret_in_wrapped_maps_logical_column_to_display_row`、`input_box_soft_wraps_overlong_line`、`input_box_scrolls_to_caret_on_wrapped_line`）；[第 23 章](./23_chapter_tui_zh.md) §6.2、§6.6。 |
+| 指针 | `crates/tui/src/render/input.rs`（`wrap_line`、`caret_in_wrapped`）；`crates/tui/src/lib.rs`（输入框高度）；测试见 `input.rs`（`wrap_line_splits_at_column_width`、`caret_in_wrapped_maps_logical_column_to_display_row`、`input_box_soft_wraps_overlong_line`、`input_box_scrolls_to_caret_on_wrapped_line`）；[第 22 章](./22_chapter_tui_zh.md) §6.2、§6.6。 |
 
 ## 2. 2026-08-13 — Plan mode 可运行可证明只读的 shell 命令（`ls`、`grep` 等）
 
@@ -4666,7 +4666,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 症状 / 动机 | `vendor/async-openai` 下的 vendored 拷贝（2026-08-10 条目）能用，但把整个 crate 复制进了仓库：每次同步上游都要 diff、重新打补丁，还要在 Tact 的最小 feature 集下保持 crate 级 doctest 可编译。 |
 | 决策 | fork 改为独立仓库，位于 `../async-openai`（克隆自 `https://github.com/rust-infra/async-openai`，分支 `feat/tact`，commit `ca74607` = 上游 main 0.41.3），直接维护并包含四个本地提交：(1) `CreateResponse` 增加类型化字段 `context_management: Option<Vec<ContextManagementParam>>`；(2) `ReasoningEffort` 增加 `Max` 变体；(3) 两个调用 `client.chat()` 的 doctest 增加 feature gate；(4) package 改名为 `async-openai-local` 并显式 `[lib] name = "async_openai"`（fork workspace 移除 examples，因为它们仍引用上游包名）。Tact workspace 依赖变为 `async-openai-responses = { package = "async-openai-local", path = "../async-openai/async-openai", version = "0.41.3", features = ["responses", "byot"] }`；删除 `vendor/async-openai/`。代码仍 `use async_openai_responses::…`，无需改引用。 |
 | 改后行为 | 无用户可见变化：配置阈值时 wire body 仍携带 `context_management`。维护移到仓库外：直接改本地 fork（`/Users/rg/Projects/async-openai`，分支 `feat/tact`），不再 re-vendor。 |
-| 指针 | `/Users/rg/Projects/async-openai`（fork，`feat/tact` 上提交 `7de8bb4` / `5e22785` / `12488eb`）；`Cargo.toml` 的 `async-openai-responses` 依赖；`crates/tact_llm/src/openai/responses/convert.rs`（`create_response` builder 注入）；[Ch 22](./22_chapter_llm_zh.md) §6.2。 |
+| 指针 | `/Users/rg/Projects/async-openai`（fork，`feat/tact` 上提交 `7de8bb4` / `5e22785` / `12488eb`）；`Cargo.toml` 的 `async-openai-responses` 依赖；`crates/tact_llm/src/openai/responses/convert.rs`（`create_response` builder 注入）；[Ch 21](./21_chapter_llm_zh.md) §6.2。 |
 
 ## 2. 2026-08-12 — Worktree 存储从 JSON 文件迁移到 SQLite（`WorktreeStore`）
 
@@ -4706,7 +4706,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 症状 / 动机 | 任务以每条记录一个 JSON 文件（`tasks/task_{id}.json`）加 `tasks/index.json` 的 next-id 计数器持久化。ID 分配与依赖边（`blockedBy` / `blocks` 在两条记录上互相镜像）都是无事务的读-改-写，且没有跨进程锁；完成任务需要 O(n) 全表扫描来清理边。 |
 | 决策 | 任务移入现有 `<workdir>/.tact/tact.db`，建 `tasks` + `task_dependencies` 表，通过新的 `TaskStore` trait（`crates/tact_extensions/src/store/task_store/`，sqlx 实现的 `SqliteTaskStore`）访问。边为行（复合主键，`INSERT OR IGNORE`），无镜像字段、无外键；每次变更都在 `BEGIN IMMEDIATE` 事务内，完成时用一条 `DELETE` 清边。ID 由 `INTEGER PRIMARY KEY AUTOINCREMENT` 分配（删除 `TaskIndex`）。`TaskManager` 变为 `Box<dyn TaskStore>` 之上的 async 门面；`SharedTaskManager` 去掉 mutex（`Arc<TaskManager>`，连接池已串行化写入）。新增 `session_id` 列与索引，`task_create` 时从工具上下文填充。旧 JSON 文件不再读取、留在磁盘。`crates/tact/Cargo.toml` 的 tokio features 增加 `macros` + `rt-multi-thread`，使 `-p tact` 单独构建时 `#[tokio::test]` 可用。 |
 | 改后行为 | 新任务 ID 从 1 开始（旧的 1–233 条记录若不从 `.tact/tasks/` 手动导出则丢失）；依赖更新原子化；`task_*` 工具表面不变（`session_id` 出现在任务 JSON / 快照中）。 |
-| 指针 | `crates/tact_extensions/src/store/task_store/{mod,sqlite}.rs`、`crates/tact_extensions/src/task/mod.rs`、`crates/tact_extensions/src/tool/task.rs`；[Ch 1](./01_chapter_store_zh.md) §6、[Ch 19](./19_chapter_persistent_tasks_zh.md) §2–3。 |
+| 指针 | `crates/tact_extensions/src/store/task_store/{mod,sqlite}.rs`、`crates/tact_extensions/src/task/mod.rs`、`crates/tact_extensions/src/tool/task.rs`；[Ch 1](./01_chapter_store_zh.md) §6、[Ch 18](./18_chapter_persistent_tasks_zh.md) §2–3。 |
 
 ## 2. 2026-08-11 — 摘要器 thinking budget 限制在 `max_tokens` 之下；Kimi K3 默认 reasoning 预留
 
@@ -4726,7 +4726,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 症状 / 动机 | OpenAI Responses API 官方支持 `context_management` / `compact_threshold`（服务端压缩），官方 Python/Node SDK 也有类型化支持；但 Rust 的 `async-openai` crate（截至 2026-08-10 最新 0.41.3）只定义了 `ContextManagementParam` 类型，从未把它接进 `CreateResponseArgs` builder——Tact 只能通过 byot JSON 路径注入（`body["context_management"] = serde_json::json!(...)`）。 |
 | 决策 | 将 async-openai 0.41.3 源码 vendor 到 `vendor/async-openai`，并把 package 名改为 `async-openai-local`，使 path 依赖只命中 Responses 协议的 0.41.x、不会与 Chat Completions 路径使用的旧版 `async-openai 0.20` 冲突（workspace 清单：`async-openai-responses = { package = "async-openai-local", path = "vendor/async-openai", ... }`；代码仍 `use async_openai_responses::…`，无需改引用）。与上游源码有两处差异：给 `CreateResponse` 加类型化字段 `context_management: Option<Vec<ContextManagementParam>>`；给 `ReasoningEffort` 加 `Max` 变体（上游只到 `Xhigh`；DeepSeek / Kimi K3 接受 `max`）。`convert.rs` 现在全部通过类型化 builder 构造——`context_management(...)` setter，以及 `Reasoning { effort: request.reasoning_effort.map(Into::into), summary }`（经 `crates/tact_llm/src/types.rs` 中的 `impl From<OpenAiReasoningEffort> for ReasoningEffort`）——不再使用 `serde_json::json!` / `Value::String` 注入。`vendor/async-openai/README.fork.md` 记录与上游同步的方法。 |
 | 改后行为 | 无用户可见变化：配置阈值时 wire body 仍携带 `context_management`。维护改为本地化：新的 Responses 字段可以直接加到 vendor，不必等待上游 Rust crate。 |
-| 指针 | `vendor/async-openai/`（`README.fork.md`、`src/types/responses/response.rs`）；`Cargo.toml` 的 `async-openai-responses` 依赖；`crates/tact_llm/src/openai/responses/convert.rs`（`create_response` builder 注入）；[Ch 22](./22_chapter_llm_zh.md) §6.2。 |
+| 指针 | `vendor/async-openai/`（`README.fork.md`、`src/types/responses/response.rs`）；`Cargo.toml` 的 `async-openai-responses` 依赖；`crates/tact_llm/src/openai/responses/convert.rs`（`create_response` builder 注入）；[Ch 21](./21_chapter_llm_zh.md) §6.2。 |
 
 ## 2. 2026-08-10 — Responses 端点未实现 `/responses/compact` 时给出明确报错
 
@@ -4736,7 +4736,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 症状 / 动机 | 兼容 `/responses` 端点（如 `opencode.ai/zen/go/v1`）往往不实现 `POST /responses/compact`，返回 404 HTML 页面。SDK 的 `compact_byot` 随后会抛出把整个 HTML body 塞进错误的 JSON 反序列化错误；且该消息可能命中瞬时错误重试列表（"unavailable"），导致无意义的退避重试后才失败。 |
 | 决策 | Responses 适配器的 `compact()` 改为通过共享原始 HTTP client 发送 compact 请求（与 SDK 同一传输层），从而可以检查状态码。HTTP 404/405 映射为 `LlmError::Unsupported("endpoint does not support POST /responses/compact (HTTP {status}): native Responses compaction is not implemented by base URL {base_url}")` —— 措辞刻意避开瞬时错误关键词，避免进入重试循环。其它非 2xx 状态沿用既有 `LlmError::HttpError { status, body }`。 |
 | 改后行为 | 在未实现 `/responses/compact` 的端点上触发压缩时，会立即显示点名缺失端点和 base URL 的明确错误（无 HTML 倾倒、无重试）；会话状态保持不变。 |
-| 指针 | `crates/tact_llm/src/openai/responses/mod.rs` 的 `compact()`；测试 `compact_reports_missing_endpoint_clearly`；[Ch 22](./22_chapter_llm_zh.md) §6.2、[Ch 5](./05_chapter_compact_zh.md)。 |
+| 指针 | `crates/tact_llm/src/openai/responses/mod.rs` 的 `compact()`；测试 `compact_reports_missing_endpoint_clearly`；[Ch 21](./21_chapter_llm_zh.md) §6.2、[Ch 5](./05_chapter_compact_zh.md)。 |
 
 ## 2. 2026-08-10 — Responses 适配器在兼容端点无终态事件关闭流时恢复
 
@@ -4746,7 +4746,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 症状 / 动机 | 兼容 `/responses` 端点（如 `opencode.ai/zen/go/v1`）偶尔会在没有任何终态事件（`response.completed` / `response.incomplete` / `response.failed`）的情况下关闭 SSE 流。`ResponsesStreamState::finish()` 会以 `unsupported response state: OpenAI Responses stream ended without a terminal event` 硬失败，即使流已经交付了完整的 `output_item.done` 序列或可见文本，也会中止整个 agent 回合。 |
 | 决策 | 当流本身完整时，无终态事件的干净 EOF 现在被视为终态：若所有已 announce 的 item 均完成（`output_item.done` 序列连续且无 pending `added`），则从 done 序列重建输出；否则恢复已流式输出的可见文本（与既有兼容端点恢复同一分支）。合成一个最小 completed `Response` 后走既有的 normalize/恢复路径，因此 stop reason 推断（含工具调用时的 `ToolUse`）与 provider-state baseline 构建保持不变。缺失 compaction 边界（`pending_compactions` 非空）与空流仍然是硬协议错误——恢复绝不能静默丢弃已压缩的 baseline。 |
 | 改后行为 | 之前因 "stream ended without a terminal event" 直接失败的回合，现在在响应已完整交付时从 done 序列/流式文本正常完成；真正空流或 compaction 不完整的流仍会大声失败。 |
-| 指针 | `crates/tact_llm/src/openai/responses/stream.rs` 的 `finish()`；测试 `no_terminal_event_recovers_from_complete_done_sequence`、`no_terminal_event_recovers_visible_text`、`no_terminal_event_empty_stream_is_error`、`no_terminal_event_with_pending_compaction_is_error`；[Ch 22](./22_chapter_llm_zh.md) §6.2。 |
+| 指针 | `crates/tact_llm/src/openai/responses/stream.rs` 的 `finish()`；测试 `no_terminal_event_recovers_from_complete_done_sequence`、`no_terminal_event_recovers_visible_text`、`no_terminal_event_empty_stream_is_error`、`no_terminal_event_with_pending_compaction_is_error`；[Ch 21](./21_chapter_llm_zh.md) §6.2。 |
 
 ## 2. 2026-08-10 — 本地压缩为 reasoning / thinking token 预留输出预算
 
@@ -4766,7 +4766,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 症状 / 动机 | `background_run` 用 `Command::output()` 一次性缓冲全部输出，工具卡片立即终结（"started"），用户不轮询 `check_background` 就看不到任何内容 —— 与 `bash` 卡片实时流出输出完全不同。 |
 | 决策 | 新增 keep-live 卡片契约：`ToolPresentationInfo.keep_live`（由新 `LiveOutputPolicy::Background` 映射）让 TUI 在 `StepFinished` 后仍保留卡片活动；manager 改为增量读取 stdout/stderr（`read_pipe` + `Utf8Decoder` + 约 50ms 节流的 `ToolProgress`，实时预览保留最近 ~4 KB），并以新 `AgentUpdate::BackgroundTaskFinished { tool_id, success, message, output }` 关闭卡片，携带 ✓/✗、耗时与有上限的最终输出。`background_run` 将 `BackgroundProgressSink`（tool_id + `ui_tx`）传入 `SharedBackgroundManager::run`；记录持久化与 120s 超时不变。 |
 | 改后行为 | `background_run cargo build` 在 TUI 卡片中显示 spinner + 实时构建输出，进程退出时以 ✓/✗ 与耗时收尾 —— 即使 agent 那一轮早已结束。模型仍无完成 push，须轮询 `check_background`。 |
-| 指针 | `crates/tact_extensions/src/background.rs`（`BackgroundProgressSink`、`run_background_process`）；`crates/tact_extensions/src/tool/background_run.rs`；`crates/tact_extensions/src/tool/metadata.rs` 的 `LiveOutputPolicy::Background`；`crates/tact_protocol/src/agent.rs` 的 `AgentUpdate::BackgroundTaskFinished`；TUI `on_step_finished` / `on_background_task_finished`（`crates/tui/src/widgets/state/app/agent.rs`）；[Ch 13](./13_chapter_background_zh.md)、[Ch 25](./25_chapter_protocol_zh.md)。 |
+| 指针 | `crates/tact_extensions/src/background.rs`（`BackgroundProgressSink`、`run_background_process`）；`crates/tact_extensions/src/tool/background_run.rs`；`crates/tact_extensions/src/tool/metadata.rs` 的 `LiveOutputPolicy::Background`；`crates/tact_protocol/src/agent.rs` 的 `AgentUpdate::BackgroundTaskFinished`；TUI `on_step_finished` / `on_background_task_finished`（`crates/tui/src/widgets/state/app/agent.rs`）；[Ch 13](./13_chapter_background_zh.md)、[Ch 24](./24_chapter_protocol_zh.md)。 |
 
 ## 2. 2026-08-10 — `/background` slash 命令查看后台任务状态
 
@@ -4776,7 +4776,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 症状 / 动机 | `background_run` 启动的后台任务只能通过让模型调用 `check_background` 工具来查看；TUI 没有直接入口，用户要轮询任务必须专门输入一句 prompt。 |
 | 决策 | 新增 TUI slash 命令 `/background`（`/background <id>` 查看单个任务），由新协议变体 `UserCommand::QueryBackground(Option<String>)` 承载。命令 driver（`crates/tact_ui/src/driver.rs`）调用共享的 `ToolContext.background_manager.check(id)` —— 与 `check_background` 工具同一代码路径 —— 并发出 `AgentUpdate::MdInfo`，内容为 `## ⚙️ Background Tasks` 围栏代码块（未知 id 则发出 `AgentUpdate::Error`）。命令加入 `PALETTE_COMMANDS`、`i18n.rs`（中/英）本地化，面板图标为 `🖥`。 |
 | 改后行为 | `/background` 每行输出一个任务（id、状态、命令）；`/background <id>` 输出该任务 pretty JSON；未知 id 显示错误。不新增状态、不做完成推送 —— 命令只读取持久化/内存中的记录。 |
-| 指针 | `crates/tact_protocol/src/agent.rs` 中的 `UserCommand::QueryBackground`；`crates/tact_ui/src/driver.rs` 的 driver 分支；`crates/tui/src/widgets/state/mod.rs` 的 `PALETTE_COMMANDS`；`crates/tui/src/handlers/mod.rs` 的 `execute_palette_command`；[Ch 13](./13_chapter_background_zh.md)、[Ch 23](./23_chapter_tui_zh.md) §3。 |
+| 指针 | `crates/tact_protocol/src/agent.rs` 中的 `UserCommand::QueryBackground`；`crates/tact_ui/src/driver.rs` 的 driver 分支；`crates/tui/src/widgets/state/mod.rs` 的 `PALETTE_COMMANDS`；`crates/tui/src/handlers/mod.rs` 的 `execute_palette_command`；[Ch 13](./13_chapter_background_zh.md)、[Ch 22](./22_chapter_tui_zh.md) §3。 |
 
 ## 2. 2026-08-09 — OpenAI Responses 托管 web search（`protocol = "responses"`）
 
@@ -4787,7 +4787,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 症状 / 动机 | Responses adapter 只发送 function tools，OpenAI `protocol = "responses"` 会话没有托管（provider 执行）web search；用户只能自接 MCP `web_search` function tool，或退回 Chat Completions。 |
 | 决策 | Hosted web search 是 **Responses 协议级能力**，与协议背后的端点/provider 无关：只要选择 `protocol = "responses"`，adapter 就在每次普通 `/responses` 请求中注入 `Tool::WebSearch`（`create_response(..., native_web_search = true)`；只有 `/responses/compact` 传 `false`——压缩端点不接受 tools）——OpenAI、DeepSeek 与 custom OpenAI-compatible 端点一视同仁，没有按 provider 的开关（`OpenAiResponsesAdapter` 不再有 `native_web_search` 标志；`ResponsesCapabilities::hosted_tools` 对每个 Responses 端点都包含 `WebSearch`）。Provider 在服务端执行搜索，Tact 只通过真实 Step 事件渲染工具卡片（`output_item.added` → `StepStarted`，每个 index 首次 `output_item.done` → `StepFinished`/`StepFailed`；`done` 时仍为 `in_progress`/`searching` 一律判失败）。`web_search_call` 永远不会变成 `ContentBlock::ToolUse`，stop reason 保持 `completed`。兼容端点若在 search action 返回 `queries` 数组而非单数 `query`，由 `wire::normalize_web_search_call_query` 处理（仅在 typed 解析时回填 `query`，原始 item 按原样回放）。`AgentUpdate::StepFailed` 新增 `arg_summary`，失败卡片标题能保留 query。DeepSeek 保留代码路径，但配置解析仍按 #57 拒绝，直到其 Responses 支持重新启用。 |
 | 改后行为 | 任意 `protocol = "responses"` 会话——OpenAI、DeepSeek 或 custom OpenAI-compatible——都自动获得托管 web search；TUI 显示 `🔍 Web Search` 卡片，标题为 query，sources 为可展开详情；失败携带 status/query/action 诊断。 |
-| 指针 | `crates/tact_llm/src/openai/responses/{convert,stream,wire,mod}.rs`、`crates/tact_llm/src/provider.rs`（`build_openai_responses`）、`crates/tui/src/widgets/tool_widget.rs`、AGENTS.md "Hosted tools (Provider-executed) — design invariants"、[Ch 22 §6.2.1.1](./22_chapter_llm_zh.md)。 |
+| 指针 | `crates/tact_llm/src/openai/responses/{convert,stream,wire,mod}.rs`、`crates/tact_llm/src/provider.rs`（`build_openai_responses`）、`crates/tui/src/widgets/tool_widget.rs`、AGENTS.md "Hosted tools (Provider-executed) — design invariants"、[Ch 21 §6.2.1.1](./21_chapter_llm_zh.md)。 |
 
 ## 2. 2026-08-09 — 任务统计行 `[copy]` 复制最近一轮
 
@@ -4874,11 +4874,11 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | 类型  | `optimization` |
-| 相关 | `crates/tui/src/render/render_md.rs`、`crates/tui/src/widgets/state/app/agent.rs`、`crates/tui/src/widgets/state/app/visibility.rs`、`crates/tui/src/widgets/state/stream_state.rs`、第 23 章 §6.7 |
+| 相关 | `crates/tui/src/render/render_md.rs`、`crates/tui/src/widgets/state/app/agent.rs`、`crates/tui/src/widgets/state/app/visibility.rs`、`crates/tui/src/widgets/state/stream_state.rs`、第 22 章 §6.7 |
 | 症状 / 动机 | 所有带显式语言标签的流式 fence——包括 ```mermaid——闭合时都会被提升为 `CodeBlock` card overlay，因此 Mermaid 源码只显示为语法着色的代码，而不是图。 |
 | 决策 | 在 `render_md.rs` 中把完整、顶层 `mermaid` fence 路由到共享的 `render_mermaid_block` 辅助函数（`ratatui-markdown::mermaid::render_mermaid` + 应用主题适配器）；在 `stream_state.rs` 中标记当前缓冲的流式 fence 是否为 Mermaid；`agent.rs` / `visibility.rs` 在合法闭合 fence 时直接把 diagram 行拼接进日志，而不是 push `CodeBlock`。无效、不支持或未闭合的 Mermaid 保留 code-card 回退，绝不丢弃源码。 |
 | 变更后行为 | 完整的 ```mermaid fence 以日志宽度渲染为带主题的终端图（定宽 Markdown 路径使用名义 80 列）；合法的流式 Mermaid block 闭合后不再创建 code card；无效/不支持/未闭合的 Mermaid 与普通显式语言 fence 仍走原有 code-card 路径；宽度重排与视口滚动沿用现有 log 布局/缓存行为。 |
-| 指针 | `render_md.rs`（`render_mermaid_block`、`route_mermaid_fences`）及测试 `render_mermaid_sequence_returns_terminal_lines`、`render_markdown_mermaid_flowchart_uses_box_art`、`render_markdown_invalid_mermaid_falls_back_to_code`、`render_markdown_unclosed_mermaid_fence_keeps_source`；`stream_state.rs`（`code_block_is_mermaid`）；`agent.rs`（`finish_stream_code_block`）、`visibility.rs`（`flush_stream_pending`）；`render_gap_tests.rs` 回归测试（`log_renders_streamed_mermaid_without_code_card`、`log_falls_back_to_code_card_for_invalid_streamed_mermaid`、`flush_renders_streamed_mermaid_without_trailing_newline`、`flush_falls_back_to_code_card_for_unclosed_streamed_mermaid`）、`cells/markdown.rs`（`markdown_cell_renders_mermaid_at_the_requested_width`）；spec `docs/superpowers/specs/2026-08-08-mermaid-main-rendering-design.md`；plan `docs/superpowers/plans/2026-08-08-mermaid-main-rendering.md`；文档 `book/23_chapter_tui*.md` §6.7 |
+| 指针 | `render_md.rs`（`render_mermaid_block`、`route_mermaid_fences`）及测试 `render_mermaid_sequence_returns_terminal_lines`、`render_markdown_mermaid_flowchart_uses_box_art`、`render_markdown_invalid_mermaid_falls_back_to_code`、`render_markdown_unclosed_mermaid_fence_keeps_source`；`stream_state.rs`（`code_block_is_mermaid`）；`agent.rs`（`finish_stream_code_block`）、`visibility.rs`（`flush_stream_pending`）；`render_gap_tests.rs` 回归测试（`log_renders_streamed_mermaid_without_code_card`、`log_falls_back_to_code_card_for_invalid_streamed_mermaid`、`flush_renders_streamed_mermaid_without_trailing_newline`、`flush_falls_back_to_code_card_for_unclosed_streamed_mermaid`）、`cells/markdown.rs`（`markdown_cell_renders_mermaid_at_the_requested_width`）；spec `docs/superpowers/specs/2026-08-08-mermaid-main-rendering-design.md`；plan `docs/superpowers/plans/2026-08-08-mermaid-main-rendering.md`；文档 `book/22_chapter_tui*.md` §6.7 |
 
 ---
 
@@ -4905,11 +4905,11 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | Field | Value |
 |-------|-------|
 | Type  | `bugfix` |
-| Related | `crates/tact_extensions/src/agent/mod.rs`（`set_thinking_budget` / `set_reasoning_effort`）、`crates/tact_extensions/src/config/mod.rs`（`update_llm_model_and_*`、`update_subagent_*`）、`crates/tact_extensions/src/config/persist.rs`（TOML 移除）、`crates/tui/src/render/bar.rs`（`format_think_segment`）、第 23 章 §6.6 |
+| Related | `crates/tact_extensions/src/agent/mod.rs`（`set_thinking_budget` / `set_reasoning_effort`）、`crates/tact_extensions/src/config/mod.rs`（`update_llm_model_and_*`、`update_subagent_*`）、`crates/tact_extensions/src/config/persist.rs`（TOML 移除）、`crates/tui/src/render/bar.rs`（`format_think_segment`）、第 22 章 §6.6 |
 | Symptom / motivation | 使用 OpenAI Chat Completions（effort 语义）时，底栏显示 `think high(32K)`：`high` 是真实的 `reasoning_effort`，而 `32K` 是之前预算语义模型（claude / kimi-for-coding）残留的 `thinking_budget`。预算对 effort 模型毫无意义、也绝不会发到线上，但由于运行时 setter、内存配置更新函数、TOML 持久化路径都不会清掉另一字段，它仍会显示在 effort 旁边。 |
 | Decision | 端到端地让 effort 与预算**互斥**：`set_thinking_budget` 清掉 `reasoning_effort`，`set_reasoning_effort` 将 `thinking_budget` 归零；配置更新函数（`update_llm_model_and_thinking_budget` / `update_llm_model_and_reasoning_effort` 及其 subagent 对应项）同样处理；TOML 持久化函数从 provider/subagent 条目中移除相反键。状态栏 `format_think_segment` 改为 effort 优先（有 effort → `think high`，忽略残留预算；只有预算 → `think 32K`），且仅有 effort 时仍会渲染而不是消失。 |
 | Behavior after | effort 语义模型显示 `think high`（绝不会是 `think high(32K)`）；预算语义模型显示 `think 32K`。选择 effort 会从 config.toml 移除已存的 `thinking_budget`；选择预算会移除 `reasoning_effort`。旧配置若同时包含两个字段，显示只取 effort，并在下次 `/model` 持久化时自愈。 |
-| Pointers | `format_think_segment` 及其测试位于 `crates/tui/src/render/bar.rs`；setter 位于 `crates/tact_extensions/src/agent/mod.rs`；配置更新函数位于 `crates/tact_extensions/src/config/mod.rs`；TOML 移除及其测试位于 `crates/tact_extensions/src/config/persist.rs`；driver 测试 `set_reasoning_effort_clears_stale_thinking_budget`；TUI 测试 `applying_effort_pick_clears_stale_thinking_budget`；文档 `book/23_chapter_tui*.md` §6.6 |
+| Pointers | `format_think_segment` 及其测试位于 `crates/tui/src/render/bar.rs`；setter 位于 `crates/tact_extensions/src/agent/mod.rs`；配置更新函数位于 `crates/tact_extensions/src/config/mod.rs`；TOML 移除及其测试位于 `crates/tact_extensions/src/config/persist.rs`；driver 测试 `set_reasoning_effort_clears_stale_thinking_budget`；TUI 测试 `applying_effort_pick_clears_stale_thinking_budget`；文档 `book/22_chapter_tui*.md` §6.6 |
 
 ---
 
@@ -4931,11 +4931,11 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | 类型  | `optimization` |
-| 相关 | `crates/tact_llm/src/types.rs`（`ProviderKind::Custom`、`FromStr`）、`crates/tact_llm/src/provider.rs`（`build_client`、`model_uses_effort`）、`crates/tact_llm/src/hook_select.rs`（`body_hook_for`）、`crates/tact_llm/src/models.rs`（`is_models_query_supported`）、`crates/tact_extensions/src/config/resolve.rs`（`resolve_provider_kind`、`resolve_llm`、`resolve_subagent`）、Ch 21 §3–§4 |
+| 相关 | `crates/tact_llm/src/types.rs`（`ProviderKind::Custom`、`FromStr`）、`crates/tact_llm/src/provider.rs`（`build_client`、`model_uses_effort`）、`crates/tact_llm/src/hook_select.rs`（`body_hook_for`）、`crates/tact_llm/src/models.rs`（`is_models_query_supported`）、`crates/tact_extensions/src/config/resolve.rs`（`resolve_provider_kind`、`resolve_llm`、`resolve_subagent`）、Ch 20 §3–§4 |
 | 症状 / 动机 | `ProviderKind::from_str` 拒绝 `anthropic | openai | deepseek | kimi` 之外的任何名称，因此 `llm.provider = "moonshot"`（或任何自建 / 网关 provider）即使条目里配好了可用的 OpenAI 兼容 `base_url`，也会报 "unknown provider"。配置层无法表达第三方 OpenAI 兼容端点。 |
 | 决策 | 为所有非内建名称新增 `ProviderKind::Custom(String)`。自定义 provider 全链路复用 OpenAI 协议：`build_client` 派发到 OpenAI 兼容适配器（默认 `chat_completions`，可选 `responses`），`body_hook_for` 与 `openai` 使用相同的端点启发式，支持 `/v1/models` 补充，并接受 `reasoning_effort`。它们**没有默认 `base_url`**——条目未设置时 resolve 报 "base_url not configured"。内建门禁不变：`responses` 协议仍限 `openai | deepseek | custom`，`reasoning_effort` 限 OpenAI 兼容 provider（即除 anthropic 外全部）；`resolve_llm` 中的 map key 校验循环已删除（自定义 key 不再报错）。`ProviderKind` 失去 `Copy`（现在持有 `String`），方法接收者改为 `&self`。 |
 | 变更后行为 | `llm.provider` / `--provider` 接受任意名称。非内建名称按自定义 OpenAI 兼容 provider 处理，必须在 `[llm.providers.<name>]` 中显式配置 `base_url`。缺失活跃条目仍在 resolve 时报错。 |
-| 指向 | `ProviderKind` 位于 `crates/tact_llm/src/types.rs`；测试 `provider_kind_from_str_accepts_unknown_as_custom`（tact_llm）、`custom_provider_resolves_with_openai_protocol` / `custom_provider_without_base_url_errors` / `custom_provider_in_map_resolves`（tact config resolve）；文档 `book/21_chapter_config*.md` §3–§4、`config.example.toml` |
+| 指向 | `ProviderKind` 位于 `crates/tact_llm/src/types.rs`；测试 `provider_kind_from_str_accepts_unknown_as_custom`（tact_llm）、`custom_provider_resolves_with_openai_protocol` / `custom_provider_without_base_url_errors` / `custom_provider_in_map_resolves`（tact config resolve）；文档 `book/20_chapter_config*.md` §3–§4、`config.example.toml` |
 
 ---
 
@@ -4944,11 +4944,11 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | 类型  | `optimization` |
-| 关联 | `crates/tact_ui/src/account.rs`（`poll_loop`、`spawn_poller`）、`crates/tui/src/widgets/state/app/agent.rs`（`handle_account_update` flash）、Ch 22 §9 |
+| 关联 | `crates/tact_ui/src/account.rs`（`poll_loop`、`spawn_poller`）、`crates/tui/src/widgets/state/app/agent.rs`（`handle_account_update` flash）、Ch 21 §9 |
 | 症状 / 动机 | `spawn_poller` 把每次失败的余额 / 用量查询都转发为 `AccountUpdate::Error`。在持续故障（如断网）时，TUI 每 10 s → 20 s → … → 5 min 弹一次错误提示，永不停歇——变成通知风暴（「骚扰」），掩盖了应用的真实状态。 |
 | 决策 | 把循环抽取为可测试的 `poll_loop(query, tx, next_delay)`，并加入 `error_notified` 标志：连续故障期间只转发**第一条**失败；后续重试保持静默，退避继续。一次成功查询会复位标志，因此恢复后的新一轮故障会再次提示一次。`NotSupported` 仍静默终止循环（不变）；启动查询与 `/balance` 命令保留一次性错误上报（用户主动触发，不算骚扰）。 |
 | 行为变化 | 一次故障 = 一条 flash 提示，之后静默退避重试直到恢复；恢复后恢复正常 5–15 s 轮询，下一次故障再提示一次。 |
-| 指针 | `crates/tact_ui/src/account.rs` 中的 `poll_loop` / `spawn_poller`；测试 `poller_forwards_error_once_per_outage_then_resumes`、`poller_stops_on_not_supported_without_error_flash`；文档 `book/22_chapter_llm*.md` §9 |
+| 指针 | `crates/tact_ui/src/account.rs` 中的 `poll_loop` / `spawn_poller`；测试 `poller_forwards_error_once_per_outage_then_resumes`、`poller_stops_on_not_supported_without_error_flash`；文档 `book/21_chapter_llm*.md` §9 |
 
 ---
 
@@ -4957,11 +4957,11 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | 类型  | `bugfix` |
-| 关联 | `crates/tact_llm/src/account.rs`（`query_kimi_code_usage`、`kimi_usage_url_from_base_url`）、`crates/tact_llm/src/provider.rs`（`is_kimi_usage_supported`、`is_account_query_supported`）、`crates/tact_ui/src/account.rs`（`query_once`）、Ch 22 §3 / §9 |
+| 关联 | `crates/tact_llm/src/account.rs`（`query_kimi_code_usage`、`kimi_usage_url_from_base_url`）、`crates/tact_llm/src/provider.rs`（`is_kimi_usage_supported`、`is_account_query_supported`）、`crates/tact_ui/src/account.rs`（`query_once`）、Ch 21 §3 / §9 |
 | 症状 / 动机 | `kimi_usage_url_from_base_url` 从任意配置的 base URL 推导 `{origin}/v1/usages`，导致 `kimi-for-coding` 模型挂在自定义 OpenAI 兼容代理后时，会把代理的 API key 发往猜测出来的用量端点。`is_kimi_usage_supported` 此前等于 `is_kimi_coding(&model)`——任何提供 `kimi-for-coding` 的代理都返回 true，因此 TUI 配额组件也会轮询代理。 |
 | 决策 | 与 DeepSeek / Kimi 余额的「凭据边界」对齐：`kimi_usage_url_from_base_url` 仅在 HTTPS 且主机精确为 `api.kimi.com`、路径含 `/coding`（允许 `/v1` 后缀）时返回官方 URL；其余返回 `None`，`query_kimi_code_usage` 报错「Kimi Code usage API is only available for the official endpoint https://api.kimi.com/coding」。`ProviderInfo::is_kimi_usage_supported` 要求同样的官方主机 / 路径，因此代理配置下 `is_account_query_supported` 为 false，TUI 隐藏配额组件。`is_kimi_coding` 本身不变——它仍用于识别 Kimi Code 平台（含代理）以决定 wire shape。 |
 | 行为变化 | Kimi Code 用量轮询仅在 `base_url` 指向官方 `https://api.kimi.com/coding` 端点时可用。自定义代理（即使 model 是 `kimi-for-coding`）视为不支持；代理配置的 API key 永远不会发送到 `api.kimi.com`。 |
-| 指针 | `crates/tact_llm/src/account.rs` 中的 `kimi_usage_url_from_base_url` + 测试 `kimi_usage_url_derivation`；`crates/tact_llm/src/provider.rs` 中的 `is_kimi_usage_supported` + 测试 `is_kimi_usage_supported_only_for_official_endpoint`；文档 `book/22_chapter_llm*.md` §3 / §9 |
+| 指针 | `crates/tact_llm/src/account.rs` 中的 `kimi_usage_url_from_base_url` + 测试 `kimi_usage_url_derivation`；`crates/tact_llm/src/provider.rs` 中的 `is_kimi_usage_supported` + 测试 `is_kimi_usage_supported_only_for_official_endpoint`；文档 `book/21_chapter_llm*.md` §3 / §9 |
 
 ---
 
@@ -4970,11 +4970,11 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | 类型  | `bugfix` |
-| 关联 | `crates/tact_llm/src/account.rs`（`query_deepseek_balance`、`deepseek_balance_url_from_base_url`）、`crates/tact_llm/src/provider.rs`（`is_deepseek_balance_supported`、`is_account_query_supported`）、`crates/tact_ui/src/account.rs`（`query_once`）、Ch 22 §3 / §9 |
+| 关联 | `crates/tact_llm/src/account.rs`（`query_deepseek_balance`、`deepseek_balance_url_from_base_url`）、`crates/tact_llm/src/provider.rs`（`is_deepseek_balance_supported`、`is_account_query_supported`）、`crates/tact_ui/src/account.rs`（`query_once`）、Ch 21 §3 / §9 |
 | 症状 / 动机 | `query_deepseek_balance` 从任意配置的 base URL 推导 `{origin}/user/balance`，导致 DeepSeek 模型挂在自定义 OpenAI 兼容代理后时，会把代理的 API key 发往猜测出来的余额端点。DeepSeek 只在官方主机提供 `GET /user/balance`；该回退逻辑错误，可能把凭据泄露到错误主机或产生令人困惑的 404/403。 |
 | 决策 | 与 Kimi 的「凭据边界」对齐：`deepseek_balance_url_from_base_url` 仅在 base URL 为空（配置默认）或为 HTTPS 且主机精确为 `api.deepseek.com`（允许 `/v1` 后缀）时返回官方 URL；其余返回 `None`，`query_deepseek_balance` 报错「DeepSeek balance API is only available for the official endpoint https://api.deepseek.com」。`ProviderInfo::is_deepseek_balance_supported` 门控 `is_account_query_supported`，因此代理配置下 TUI 底栏余额组件直接隐藏而非反复报错。 |
 | 行为变化 | DeepSeek 余额轮询 / `/balance` 仅在 `base_url` 指向官方端点时可用。自定义代理（即使 model 是 `deepseek-*`）视为不支持；代理配置的 API key 永远不会发送到 `api.deepseek.com`。 |
-| 指针 | `crates/tact_llm/src/account.rs` 中的 `deepseek_balance_url_from_base_url` + 测试 `deepseek_balance_url_derivation`；`crates/tact_llm/src/provider.rs` 中的 `is_deepseek_balance_supported` + 测试 `is_deepseek_balance_supported_only_for_official_endpoint`；文档 `book/22_chapter_llm*.md` §3 / §9 |
+| 指针 | `crates/tact_llm/src/account.rs` 中的 `deepseek_balance_url_from_base_url` + 测试 `deepseek_balance_url_derivation`；`crates/tact_llm/src/provider.rs` 中的 `is_deepseek_balance_supported` + 测试 `is_deepseek_balance_supported_only_for_official_endpoint`；文档 `book/21_chapter_llm*.md` §3 / §9 |
 
 ---
 
@@ -4983,7 +4983,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | 类型  | `bugfix` |
-| 关联 | `crates/tui/src/widgets/state/app/agent.rs`（`on_tasks_changed`）、`crates/tui/src/render/popups/task_dag_popup.rs`、Ch 23（TUI） |
+| 关联 | `crates/tui/src/widgets/state/app/agent.rs`（`on_tasks_changed`）、`crates/tui/src/render/popups/task_dag_popup.rs`、Ch 22（TUI） |
 | 症状 / 动机 | `/tasks-dag` 弹窗打开时渲染一次 Mermaid 行。`TasksChanged` 更新只刷新 `task_panel.snapshot`，从不刷新弹窗内容；渲染循环只在弹窗宽度变化时重渲染——因此弹窗打开期间新建的任务（或在打开与渲染之间加入的任务）在关闭重开前永远不会显示。 |
 | 决策 | `on_tasks_changed` 现在会刷新已打开的 DAG 弹窗：用最新快照在弹窗当前 `render_width`（首帧宽度感知前回退到 `DEFAULT_DAG_RENDER_WIDTH`）重新执行 `render_task_dag_lines`，原地替换 `lines`/`mermaid_source`，保持滚动偏移。与 `render_task_dag_popup` 中既有的宽度变化重渲染互补，两条路径均幂等。 |
 | 行为变化 | 弹窗打开期间新建的任务会在下一渲染帧立即出现，无需关闭弹窗。 |
@@ -4996,7 +4996,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | 类型  | `bugfix` |
-| 关联 | `crates/tact_extensions/src/task/mod.rs`（`update`、`clear_dependency`）、`crates/tui/src/widgets/state/task_dag.rs`、Ch 23（TUI） |
+| 关联 | `crates/tact_extensions/src/task/mod.rs`（`update`、`clear_dependency`）、`crates/tui/src/widgets/state/task_dag.rs`、Ch 22（TUI） |
 | 症状 / 动机 | `/tasks-dag` 只显示任务节点，**不显示通过 `task_update` 的 `addBlockedBy` 建立的依赖箭头**：`update` 会把 `addBlocks` 镜像到被阻塞任务的 `blocked_by`，但 `addBlockedBy` 从不镜像 blocker 的 `blocks`（DAG 出边）。`tasks_to_mermaid` 只从 `blocks` 画边，因此这类依赖完全不可见。另外，`clear_dependency`（任务完成时）只把已完成 id 从他人 `blocked_by` 移除，却留下已完成任务自己的 `blocks`，成为幽灵边来源。 |
 | 决策 | `update` 现在双向镜像：`add_blocked_by` 也会把当前任务 id 写入每个 blocker 的 `blocks`（去重排序），与既有 `add_blocks` 分支对称。`clear_dependency` 额外清空已完成任务的 `blocks`；由于 `update` 持有的是 `clear_dependency` 之前取的副本，本地副本也同步清空，避免最终写回复活幽灵边。 |
 | 行为变化 | 无论通过 `addBlocks` 还是 `addBlockedBy` 建立的依赖，都会在 `/tasks-dag` 中渲染为 `T{blocker} --> T{blocked}`。完成任务后其出边被移除。 |
@@ -5009,7 +5009,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | 类型  | `optimization` |
-| 关联 | `crates/tui/src/widgets/state/app/messages.rs`（`add_task_stats_block`）、`crates/tui/src/widgets/state/app/agent.rs`（`TaskComplete` 分支）、Ch 23（TUI） |
+| 关联 | `crates/tui/src/widgets/state/app/messages.rs`（`add_task_stats_block`）、`crates/tui/src/widgets/state/app/agent.rs`（`TaskComplete` 分支）、Ch 22（TUI） |
 | 症状 / 动机 | 任务结束后日志区只有任务结束分隔线（耗时标签），token 消耗与模型名仅显示在底部状态栏，且下一个任务开始时会被重置。`TaskComplete` 分支中留有 `// TODO Add task stats block` 标记。 |
 | 决策 | `TaskComplete` 分支在 `add_task_end_separator()` 之后调用 `add_task_stats_block()`。统计块直接读取已冻结的状态——`last_prompt_elapsed_secs`（由分隔线设置）、`status_bar.model_name`（来自 `ModelInfo`）与 `status_bar.token_*`（来自 `TokenUsage`）——因此不新增统计结构体或重复收集（YAGNI）。通过现有 `add_system_message` 路径渲染一行 markdown：`📊 任务统计：⏱ mm:ss · 🧠 model · N tokens (prompt X · completion Y · cache Z · reasoning W)`；无模型或零 token 时省略相应片段。 |
 | 行为变化 | 每个完成的任务都会在结束分隔线下方留下一行持久统计：耗时、模型名以及可用的 token 明细。取消或失败的任务不显示统计块。 |
@@ -5022,7 +5022,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | 类型 | `optimization` |
-| 相关 | `crates/tui/src/widgets/state/task_dag.rs`、`crates/tui/src/render/popups/task_dag_popup.rs`、`crates/tui/src/theme.rs`、根 `Cargo.toml`（`ratatui-markdown` git 依赖）、Ch 23（TUI） |
+| 相关 | `crates/tui/src/widgets/state/task_dag.rs`、`crates/tui/src/render/popups/task_dag_popup.rs`、`crates/tui/src/theme.rs`、根 `Cargo.toml`（`ratatui-markdown` git 依赖）、Ch 22（TUI） |
 | 现象 / 动机 | DAG 弹窗原先用 `meraid` crate 的 Mono 渲染器（纯文本、无主题、无 markdown 结构）；而 workspace 里已有一个闲置的 `ratatui-markdown` git 依赖，且其分支名 `update-ratatui-0.30` 已失效（真实分支是 `chore/update-ratatui-0.30`），该依赖根本无法解析。 |
 | 决策 | `/tasks-dag` 改走 `ratatui-markdown`：`tasks_to_mermaid` 仍生成 `flowchart TD`，`render_task_dag_lines` 将其包装为 `## Tasks DAG` + ` ```mermaid ` 代码块 + `### Legend` 列表（把 `#id` 映射回各任务 subject；节点标签保持窄：状态字形 `○`/`◐`/`✓` + `#id`，因为 fork 的 mermaid 语法遇到第一个 `]` 就结束 `[...]` 文本）。新增 `DagTheme` 适配器把应用 `Theme` 映射为 `RichTextTheme`/`MermaidTheme`（明暗主题由 `MermaidTheme::for_background` 决定），弹窗在首帧按真实宽度重渲染（`render_width` 缓存）。根依赖修正为正确分支并精简为 `default-features = false, features = ["markdown", "mermaid"]`（去掉 `image`/`scroll`/`tree`/`viewer`）。 |
 | 改后行为 | 弹窗显示带主题的框线流程图 + 列出任务 subject 的图例；`y` 复制快捷键仍复制原始 Mermaid 源码。`meraid` 不再是 tui crate 的依赖。 |
@@ -5048,11 +5048,11 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | 类型 | `feature` |
-| 相关 | Ch 21 §3（配置来源与优先级）、`config.example.toml`、`crates/tact_extensions/src/config/load.rs` |
+| 相关 | Ch 20 §3（配置来源与优先级）、`config.example.toml`、`crates/tact_extensions/src/config/load.rs` |
 | 症状/动机 | 安装脚本只装二进制，不带配置。首次启动无配置文件时必然在 resolve 阶段报 "LLM provider not configured" 退出，用户只能靠文档才知道要手动复制 `config.example.toml`——运行时没有任何提示。 |
 | 决策 | `load_toml_config` 在所有搜索路径都找不到配置时，向 `~/.tact/config.toml` 写入默认模板并解析返回。模板通过 `include_str!("../../../../config.example.toml")` 在编译期嵌入，首启默认值永远与仓库内 example 同步（当前为 `deepseek` + `protocol = "chat_completions"`）。只有用户全局位置会被自动创建；项目级候选（`./.tact/config.toml`、`./config.toml`）从不写入，避免污染仓库。打印提示：`[config] no config found; wrote default template to ... — edit it to add your API key`。 |
 | 改后行为 | 首次运行且任何位置都没有配置：tact-ui 创建 `~/.tact/config.toml`（模板，`api_key` 为占位符）、打印编辑提示，随后仍在占位符 key 处按原样 resolve 报错——用户编辑文件后再次启动即可。已有配置永不被触碰或覆盖。显式 `--config /path` 不存在时仍报错（不会自动创建）。写入失败（HOME 未知/不可写）回退到原先的空默认行为。 |
-| 指针 | `crates/tact_extensions/src/config/load.rs`（`DEFAULT_CONFIG_TEMPLATE`、`write_default_config`、`load_toml_config`）、`config.example.toml`（头部注释）、Ch 21 §3 |
+| 指针 | `crates/tact_extensions/src/config/load.rs`（`DEFAULT_CONFIG_TEMPLATE`、`write_default_config`、`load_toml_config`）、`config.example.toml`（头部注释）、Ch 20 §3 |
 
 ---
 
@@ -5074,7 +5074,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | 类型 | `optimization` |
-| 相关 | Ch 7、Ch 26（2026-07-28 条目：工具卡片标签区分） |
+| 相关 | Ch 7、Ch 25（2026-07-28 条目：工具卡片标签区分） |
 | 症状/动机 | 两个工具族文案仍不统一：`background_run`（`⚙️ Background Run`）vs `check_background`（`🔍 Check`）——孤零零的 `Check` 看不出在检查什么；team 协作工具 `send_message` / `broadcast` / `read_inbox` / `plan_approval`（`✉️ Send` / `📢 Broadcast` / `📬 Inbox` / `✅ Approve`）不带 `Team` 前缀，而 `spawn_teammate` / `list_teammates`（`👥 Team Spawn` / `👥 Team List`）带。 |
 | 决策 | Background 族：`check_background` 改为 `⚙️ Background Check`，与 `background_run` 共用 `⚙️ Background` 前缀。Team 族：四个协作工具补上 `Team` 族名，保留各自图标（`✉️ Team Send` / `📢 Team Broadcast` / `📬 Team Inbox` / `✅ Team Approve`）。两族的 TUI `tool_display_name` fallback 同步为与 metadata 一致。Task 保持 `format_task_tool_title` 的 `# Task…` 人类标题。 |
 | 改后行为 | 每个工具族呈现为同一族：`⚙️ Background Run` / `⚙️ Background Check`；`👥 Team Spawn` / `👥 Team List` / `✉️ Team Send` / `📢 Team Broadcast` / `📬 Team Inbox` / `✅ Team Approve`；`⏰ Cron …`；`🌿 Worktree …`；`🔌 Shutdown …`。 |
@@ -5087,11 +5087,11 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | 类型 | `feature` |
-| 相关 | `docs/superpowers/specs/2026-08-05-llm-presets-design.md`、Ch 21（配置：`[llm.model_profiles]`、`reasoning_effort` 校验）、Ch 22（§2 ProviderInfo 静态化、§6.3 wire 表） |
+| 相关 | `docs/superpowers/specs/2026-08-05-llm-presets-design.md`、Ch 20（配置：`[llm.model_profiles]`、`reasoning_effort` 校验）、Ch 21（§2 ProviderInfo 静态化、§6.3 wire 表） |
 | 症状/动机 | `/model` 对任何 provider 都弹同一 5 档 thinking budget，但 openai/deepseek/kimi-k3 实际发的是 `reasoning_effort`；effort 无选择入口、运行时不可改；effort 是进程全局共享（subagent 会污染主 agent）；OpenAI Responses 的 effort 是 client 构建时 snapshot，运行时修改不生效；"模型↔档位"没有静态配置表达。 |
 | 决策 | 1) `/model`（及 `/model-subagent`）第二步按 `model_uses_effort` 分流：openai/deepseek/kimi k3/k3-256k → effort 选择器（deepseek 3 档 low/high/max、kimi k3 3 档、openai 6 档 minimal..max，无 none 档）；anthropic/kimi coding 系 → budget 选择器。2) 新增 `[llm.model_profiles."<model>"]`（`thinking_budgets` / `reasoning_efforts` 数组）限定第二步档位，TOML 逐字段覆盖内置 `builtin_model_profiles()`。3) **effort/model per-agent**：`CreateMessageParams.reasoning_effort` + `AgentSettings.model/reasoning_effort`；删除全局 `set_model`、`ProviderInfo.reasoning_effort`、`current_reasoning_effort_from_budget` 及 budget→effort 波段映射（不做存量兼容）；`/model` 改发 `UserCommand::SetModel` / `SetReasoningEffort`（busy 排队）。4) wire 注入全部从 request 读；DeepSeek 纯 effort 驱动（None=不传，默认 ON+high，按官方文档）；Kimi k3 支持 effort（None=默认 high；不提供关闭 thinking——会路由到 K2.6）；OpenAI Responses `create_response` 不再 snapshot effort。5) 持久化：effort 语义写 provider/subagent 的 `reasoning_effort` 字段（`[llm.model_profiles]` 是静态选项集合，不被持久化触碰）；resolve 校验放宽为 openai/deepseek/kimi。 |
 | 行为变化 | `/model` 选 openai/deepseek/kimi-k3 模型 → effort 选择器（映射档位或 provider 默认）；选 anthropic/kimi-coding 模型 → budget 选择器（现状）。运行中改 model/effort 只影响当前 agent（主/subagent 独立），wire 立即跟随；Responses 也跟随。持久化后重启生效。Kimi 关闭 thinking 会被路由到 K2.6，本期不提供该 UI 入口。 |
-| 指针 | `crates/tui/src/handlers/select.rs`（分流/选择器）、`crates/tact_extensions/src/config/{types,resolve,persist,mod}.rs`（model_profiles/校验/持久化）、`crates/tact_llm/src/{provider,deepseek,kimi,openai/*}.rs`（per-request effort/wire）、`crates/tact_extensions/src/agent/mod.rs`（SetModel/SetReasoningEffort）、Ch 21/22。 |
+| 指针 | `crates/tui/src/handlers/select.rs`（分流/选择器）、`crates/tact_extensions/src/config/{types,resolve,persist,mod}.rs`（model_profiles/校验/持久化）、`crates/tact_llm/src/{provider,deepseek,kimi,openai/*}.rs`（per-request effort/wire）、`crates/tact_extensions/src/agent/mod.rs`（SetModel/SetReasoningEffort）、Ch 20/22。 |
 
 ---
 
@@ -5100,7 +5100,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|------|
 | 类型 | `feature` |
-| 相关 | README（CLI / 自升级）、第 21 章（配置：`install_without_llm` 路径） |
+| 相关 | README（CLI / 自升级）、第 20 章（配置：`install_without_llm` 路径） |
 | 现象 / 动机 | 用户没有就地升级到新版本的方式；升级只能手动重跑 `scripts/install.sh`（或重新源码构建）。 |
 | 决策 | 新增 `tact upgrade` CLI 子命令。它会扫描 GitHub release 列表（`GET /repos/{repo}/releases?per_page=100`），找到最新一个非 draft、非 prerelease、且资产里包含当前平台 `tact-ui-v<ver>-<triple>.tar.gz` 的 release——跳过没有构建资产的 tag（例如 `v1.1.1` 最初发布时资产为 0）——下载归档，对照该 release 发布的 `SHA256SUMS` 校验，然后在 Unix 上原子替换正在运行的二进制。参数：`--check`（只打印）、`--yes`（跳过 y/N 确认）、`--repo owner/name` 或 `TACT_UPGRADE_REPO`（跟踪 fork）。Windows 暂不支持就地升级，命令会引导用户重跑 `scripts/install.ps1`。该命令经 `install_without_llm` 解析配置，无需配置任何 LLM provider。 |
 | 改后行为 | `tact-ui upgrade --check` 打印当前版本与最新可安装版本；`tact-ui upgrade` 提示确认后（`y` 或 `--yes`）下载、校验 SHA-256 并替换可执行文件，最后提示重启。校验和不匹配会在替换前中止。 |
@@ -5117,7 +5117,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 现象 / 动机 | Google Speech-to-Text 客户端通过 `reqwest::ClientBuilder::no_proxy()` 构建。在只能经 `HTTP_PROXY` / `HTTPS_PROXY` / `ALL_PROXY` 访问 `speech.googleapis.com` 的网络中，录音虽能完成，转写请求却会绕过已配置代理，最终超时或连接失败。 |
 | 决策 | 移除 Google 客户端强制绕过代理的设置，改为使用 reqwest 的标准代理环境解析。继续保持 API key 安全的错误输出：由于 Google API key 目前位于查询参数中，连接错误不会连同可能含完整请求 URL 的底层错误一起展示。 |
 | 改后行为 | Google 语音转写会遵循进程代理环境，包括对应的小写变量和 `NO_PROXY`；未配置代理时仍直接连接。子进程回归测试会验证请求抵达已配置的 HTTP 代理，而不是原始主机。 |
-| 指针 | `crates/tact_extensions/src/voice/transcriber.rs`（`GoogleTranscriber::new`、`google_transcriber_honors_http_proxy`）；第 21 章（语音配置）、第 23 章（TUI 语音流程） |
+| 指针 | `crates/tact_extensions/src/voice/transcriber.rs`（`GoogleTranscriber::new`、`google_transcriber_honors_http_proxy`）；第 20 章（语音配置）、第 22 章（TUI 语音流程） |
 
 ---
 
@@ -5167,7 +5167,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 现象 / 动机 | `protocol = "responses"` 对除 OpenAI 外的所有 provider 一律拒绝，DeepSeek 因此被钉死在 Chat Completions，尽管 Responses 适配器本身与端点无关，DeepSeek 端点可以服务 `/responses`。 |
 | 决策 | 在 `resolve_llm` 中接受 DeepSeek 使用 `responses`，并让 `ProviderInfo::build_client()` 按 protocol 路由：DeepSeek + `chat_completions` 继续使用专用 `DeepSeekAdapter`；DeepSeek + `responses` 构建与 OpenAI 相同的通用 `OpenAiResponsesAdapter`，指向 DeepSeek `base_url`。自动 `context_management` 压缩、由 `thinking_budget` 派生的 `reasoning.effort`、Responses 会话状态续传原样生效。Kimi 与 Anthropic 仍拒绝 `responses`。 |
 | 改后行为 | DeepSeek 条目可设置 `protocol = "responses"`；请求发往 `{base_url}/responses`，具备自动压缩与 reasoning 语义。显式 `POST /responses/compact` 在 DeepSeek 端点未实现（2026-08-02 实测），因此 DeepSeek + Responses 走本地摘要压缩并清掉失效基线；OpenAI Responses 仍保持严格"不回退"契约。默认仍为 `chat_completions`。 |
-| 指针 | `crates/tact_extensions/src/config/resolve.rs`（`resolve_llm` 校验）；`crates/tact_llm/src/provider.rs`（`build_client`）；`docs/superpowers/specs/2026-08-02-deepseek-responses-design.md`；`docs/superpowers/plans/2026-08-02-deepseek-responses.md`；第 21 章（配置）、第 5 章（压缩） |
+| 指针 | `crates/tact_extensions/src/config/resolve.rs`（`resolve_llm` 校验）；`crates/tact_llm/src/provider.rs`（`build_client`）；`docs/superpowers/specs/2026-08-02-deepseek-responses-design.md`；`docs/superpowers/plans/2026-08-02-deepseek-responses.md`；第 20 章（配置）、第 5 章（压缩） |
 
 ## 2. 2026-08-01 — Responses 压缩阈值现在会进入普通 `/responses` 请求（原生 `context_management`）
 
@@ -5198,7 +5198,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|------|
 | 类型 | `bugfix` |
-| 相关 | 第 23 章 |
+| 相关 | 第 22 章 |
 | 现象 / 动机 | `detect_terminal_theme()` 文档注释写「Fallback: Retro」，但代码返回的是 `ThemeName::Ink`。对应的单测接受 `Dark`、`Light`、`Retro` 三者之一，`Ink` 不在其中，导致任何未设置 `COLORFGBG` / `COLORTERM` 环境变量且无 macOS 深色模式覆盖的 CI runner 都会稳定失败。 |
 | 决策 | 将回退值从 `ThemeName::Ink` 改为 `ThemeName::Retro`，与文档注释及测试预期保持一致。 |
 | 改后行为 | 当无终端主题环境变量设置时，`detect_terminal_theme()` 返回 `Retro`（中性暗色），而非 `Ink`。 |
@@ -5211,7 +5211,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|------|
 | 类型 | `bugfix` |
-| 相关 | 第 23 章 |
+| 相关 | 第 22 章 |
 | 现象 / 动机 | Ink 等主题下，Thinking 卡片标题含宽字符（如 🧠）时，部分终端光标会短暂错位；右侧 accent 色滚动条滑块（原 `█`）的残影会留在 Log 左边框上，看起来像间断的浅蓝「阴影」。因为左边框单元格在后续帧未变，`Buffer::diff` 不再重发，残影会一直挂着。 |
 | 决策 | 每帧在内容与滚动条绘制之后强制重印左边框竖线，并标记 `CellDiffOption::AlwaysUpdate`。滑块改为半块 `▐`，降低瞬时错位时的视觉冲击。 |
 | 改后行为 | 左边框每帧都会以主题 `border` 色重绘到终端；宽字符标题导致的左侧 accent 残影无法持久残留。 |
@@ -5254,7 +5254,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 现象 / 动机 | 配置了 `voice.voice_keybind` 后，TUI 用 `if let Some(keybind) = … else if …`：只要 option 存在就把整条分发链占住；未命中快捷键的按键到不了 `handle_insert_mode` / Normal，输入框表现为无法打字。 |
 | 决策 | 先精确匹配快捷键；仅命中时跳过常规分发。未命中则照常走 slash / overlay / 模式处理。 |
 | 改后行为 | `voice_keybind = "ctrl+g"` 仅对该组合键切换录制。其它键输入与导航与从前一致。未配置快捷键时仍为仅鼠标。 |
-| 指针 | `crates/tui/src/lib.rs`（按键分发）；`crates/tui/src/widgets/state/app/voice.rs`（`toggle_voice_recording`）；第 21 章 `[voice]`、第 23 章 §6.6 |
+| 指针 | `crates/tui/src/lib.rs`（按键分发）；`crates/tui/src/widgets/state/app/voice.rs`（`toggle_voice_recording`）；第 20 章 `[voice]`、第 22 章 §6.6 |
 
 ---
 
@@ -5263,11 +5263,11 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|------|
 | 类型 | `bugfix` |
-| 相关 | 第 23 章 |
+| 相关 | 第 22 章 |
 | 现象 / 动机 | 用空格填充把语音标签“居中”，并带背景色时，会盖住 Input 标题与 `🎙 Voice` 之间的 Block 顶边单元格，横线看起来被“吃掉”。 |
 | 决策 | 左侧 Input 标题与语音标签拆成两个 `Block` title（左对齐 + `Alignment::Center`），不再用带背景的填充空格。点击热区使用同一居中几何。 |
 | 改后行为 | 启用语音时，足够宽的终端上 Input 标签与居中语音控件之间顶边可见。过窄时仍可能与左侧标题碰撞（ratatui 左侧 title 后画）。 |
-| 指针 | `crates/tui/src/render/input.rs`（`voice_title`、`update_voice_button_area`）；第 23 章 §6.6 |
+| 指针 | `crates/tui/src/render/input.rs`（`voice_title`、`update_voice_button_area`）；第 22 章 §6.6 |
 
 ---
 
@@ -5371,7 +5371,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix |
-| **相关** | 第 23 章；`docs/superpowers/specs/2026-07-27-log-scroll-artifact-design.md`；`docs/superpowers/plans/2026-07-27-log-scroll-artifact-fix.md` |
+| **相关** | 第 22 章；`docs/superpowers/specs/2026-07-27-log-scroll-artifact-design.md`；`docs/superpowers/plans/2026-07-27-log-scroll-artifact-fix.md` |
 
 **现象 / 动机：** 从 code-card 或其他带样式的 Log 内容滚动离开后，普通文本行可能保留前一帧的背景样式。深色 Ink 主题下该问题尤其明显，文字后方会出现阴影。
 
@@ -5379,7 +5379,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 
 **改后行为：** 滚动新露出的任意普通 Log 行都使用当前主题背景，同时保留前景样式和选区反色 modifier。不使用 Ink 专用分支或全局终端清屏策略。
 
-**指针：** `crates/tui/src/render/log.rs`；`crates/tui/src/render/cells/text.rs`；`crates/tui/src/render/log_render_tests.rs`；`docs/superpowers/specs/2026-07-27-log-scroll-artifact-design.md`；第 23 章。
+**指针：** `crates/tui/src/render/log.rs`；`crates/tui/src/render/cells/text.rs`；`crates/tui/src/render/log_render_tests.rs`；`docs/superpowers/specs/2026-07-27-log-scroll-artifact-design.md`；第 22 章。
 
 ---
 
@@ -5456,7 +5456,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix |
-| **相关** | 第 23 章 |
+| **相关** | 第 22 章 |
 
 **现象 / 动机：** `sticky_host_content_height` 只预留 `1 + body` 行，渲染器把正文画在 `inner.y + 1`，于是 tab 行（`[Tasks] [Subagent] …`）紧贴 `── Pending ──` / 子 agent 日志，上方又紧邻 Log 框边框，整体挤成一块。
 
@@ -5524,7 +5524,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix |
-| **相关** | 第 23 章；`docs/token_usage_schema.md` |
+| **相关** | 第 22 章；`docs/token_usage_schema.md` |
 
 **现象 / 动机：** 上下文窗口为 1M 时，约 1%（`13.7K/1M`）会画 `▏`（1/8 格）。紧挨 `·` 时这条发丝几乎看不见，数字已是 `1%` 但条看起来仍是空的。
 
@@ -5613,7 +5613,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | **类型** | removal |
-| **相关** | 第 23 章 |
+| **相关** | 第 22 章 |
 
 **现象 / 动机：** 底栏第 1 行总是以 `[Log]` 开头，但界面已永久单列日志，焦点标签无信息量，只占空间。
 
@@ -5631,7 +5631,7 @@ registry.rs、construct.rs、config.rs}`、`crates/tui/src/render/log.rs`
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix |
-| **相关** | 第 23 章 |
+| **相关** | 第 22 章 |
 
 **现象 / 动机：** Agent 忙碌时打开 `/` 容易感觉「卡住」：标题没有 Esc 关闭提示，
 且 Esc 可能被 thinking/diff overlay 先吃掉，关不掉 slash 列表。
@@ -5652,7 +5652,7 @@ Insert + slash 活跃时，按键路由优先于 `handle_overlay_key`，保证 E
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix |
-| **相关** | 第 23 章 |
+| **相关** | 第 22 章 |
 
 **现象 / 动机：** 完全 Idle 时 poll 超时不 dirty，`Up MM:SS` 会一直停住，直到
 下一次按键/鼠标/agent 事件。
@@ -5672,7 +5672,7 @@ spinner dirty；轮询间隔不变。Done 继续靠 `should_repaint` 强制重�
 | 字段 | 值 |
 |------|-----|
 | **类型** | optimization |
-| **相关** | 第 23 章 |
+| **相关** | 第 22 章 |
 
 **现象 / 动机：** 底栏 `Elapsed` 与路径/分支/余额挤在一起，和它度量的那次
 回复距离远，不好扫。
@@ -5696,7 +5696,7 @@ spinner dirty；轮询间隔不变。Done 继续靠 `should_repaint` 强制重�
 | 字段 | 值 |
 |------|-----|
 | **类型** | optimization |
-| **相关** | 第 23 章、`docs/token_usage_schema.md` |
+| **相关** | 第 22 章、`docs/token_usage_schema.md` |
 
 **现象 / 动机：** 图标-only polish 之后，底栏难解读（`8K/32K`、裸 `∑` / `▣`、
 偏淡的 ` · ` 分隔）。thinking 档位虽已有 `model_reasoning_effort`，却未外显。
@@ -5721,7 +5721,7 @@ ctx 进度条填充改用中线高度 `■` / `·`，避免溢出 `[]`。
 | 字段 | 值 |
 |------|-----|
 | **类型** | bugfix |
-| **相关** | 第 2 章、第 23 章 |
+| **相关** | 第 2 章、第 22 章 |
 
 **现象 / 动机：** 恢复 Insert 模式 `Tab` 给 slash 弹出后，对 skill 来说 **Tab**
 与 **Enter** 仍相同（都只填 `/name `），分不清「补全」和「执行」。
@@ -5732,7 +5732,7 @@ Enter 仍预填 Insert（便于 undo）。
 
 **改后行为：** `/` 选中 skill → Tab 可改 args，或 Enter 立刻跑。
 
-**指针：** `crates/tui/src/handlers/insert.rs`、第 2 章 §7、第 23 章 slash skills。
+**指针：** `crates/tui/src/handlers/insert.rs`、第 2 章 §7、第 22 章 slash skills。
 
 ---
 
@@ -5741,7 +5741,7 @@ Enter 仍预填 Insert（便于 undo）。
 | Field | Value |
 |-------|-------|
 | **类型** | removal |
-| **相关** | Ch 23、Ch 25 |
+| **相关** | Ch 22、Ch 24 |
 
 **症状 / 动机：** 左侧 plan 面板与 log 中已有信息重复（tool block 在
 `StepStarted` 时已出现在 log 中），却额外带来 `Tab` 焦点切换、`e` 可见性切换、
@@ -5762,7 +5762,7 @@ Insert 模式下 `Tab` 用于 slash-command 自动补全（此前被全局 `Tab`
 **指针：** `crates/tui/src/widgets/state/plan_panel.rs`、
 `crates/tui/src/render/layout.rs`、`crates/tui/src/widgets/state/mod.rs`
 （`FocusedPanel`）、`crates/tui/src/handlers/normal.rs`、
-`crates/tui/src/handlers/mouse.rs`、`book/23_chapter_tui*.md`。
+`crates/tui/src/handlers/mouse.rs`、`book/22_chapter_tui*.md`。
 
 ---
 
@@ -5771,7 +5771,7 @@ Insert 模式下 `Tab` 用于 slash-command 自动补全（此前被全局 `Tab`
 | 字段 | 值 |
 |------|-----|
 | **类型** | docs |
-| **相关** | 第 21 章 |
+| **相关** | 第 20 章 |
 
 **现象 / 动机：** 自动发现列表里是 `./tact.toml`，而用户全局 / `.tact/` 路径已是
 `config.toml`，容易放错文件名。
@@ -5782,7 +5782,7 @@ Insert 模式下 `Tab` 用于 slash-command 自动补全（此前被全局 `Tab`
 **改后行为：** 发现顺序为 `./.tact/config.toml`、`./config.toml`、
 `~/.tact/config.toml`。显式 `--config` 不变。
 
-**指针：** `crates/tact_extensions/src/config/load.rs`、`book/21_chapter_config*.md`、
+**指针：** `crates/tact_extensions/src/config/load.rs`、`book/20_chapter_config*.md`、
 `config.example.toml`。
 
 ---
@@ -5906,9 +5906,9 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 **决策：** Config 保持优先；API 附加不在 config 中的 id；冲突时 config 保持；每个 `(base_url, api_key)` 在首次 `/model` 时仅获取一次；跳过 Anthropic；失败时降级为仅用 config 或空提示。
 
-**改后行为：** 见第 21 章 `/model` 节。
+**改后行为：** 见第 20 章 `/model` 节。
 
-**指针：** `crates/tact_llm/src/models.rs`、`crates/tui/src/handlers/select.rs`、第 21 章、第 22 章（账户类查询）。
+**指针：** `crates/tact_llm/src/models.rs`、`crates/tui/src/handlers/select.rs`、第 20 章、第 21 章（账户类查询）。
 
 ---
 
@@ -5923,7 +5923,7 @@ Session Stats 不同）：目录描述对 log 固定列宽来说太宽。
 
 ### 6.1 现象
 
-`read_file` 用 `read_to_string` 整文件读入，再以 `chars().take(50000)` **静默**丢掉尾部。这与按行的 `offset` / `limit` 语义冲突，模型没有续读信号（幻觉风险见 [第 20 章](./20_chapter_hallucination_zh.md)），并与 dispatch 层的 `persist_large_output`（30k 字符 → `<persisted-output>`）形成双重、不一致的大小策略。
+`read_file` 用 `read_to_string` 整文件读入，再以 `chars().take(50000)` **静默**丢掉尾部。这与按行的 `offset` / `limit` 语义冲突，模型没有续读信号（幻觉风险见 [第 19 章](./19_chapter_hallucination_zh.md)），并与 dispatch 层的 `persist_large_output`（30k 字符 → `<persisted-output>`）形成双重、不一致的大小策略。
 
 `batch_read` 是第二套多文件 API，另有 200k 字符硬顶，并在调度 / recent-file 上重复特例。
 
@@ -5995,7 +5995,7 @@ Token 估算：现有 `approx_token_count`（`ceil(UTF-8 字节数 / 4)`）。
 | 实现计划 | `docs/superpowers/plans/2026-07-24-bottom-bar-polish.md` |
 | 实现 | `crates/tui/src/render/bar.rs`、`crates/tui/src/i18n.rs` |
 | 文档 | `docs/tui_rendering.md`（底部栏章节） |
-| 渲染框架 | [第 23 章](./23_chapter_tui_zh.md) |
+| 渲染框架 | [第 22 章](./22_chapter_tui_zh.md) |
 
 ---
 
@@ -6003,5 +6003,5 @@ Token 估算：现有 `approx_token_count`（`ceil(UTF-8 字节数 / 4)`）。
 
 - [工具系统](./07_chapter_tool_zh.md)
 - [上下文压缩](./05_chapter_compact_zh.md)
-- [Agent 循环中的幻觉](./20_chapter_hallucination_zh.md)
+- [Agent 循环中的幻觉](./19_chapter_hallucination_zh.md)
 - [AGENTS.md](../AGENTS.md) — 含本章的文档同步触发条件

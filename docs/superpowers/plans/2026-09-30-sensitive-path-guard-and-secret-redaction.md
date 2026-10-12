@@ -148,7 +148,7 @@ Each task is independently testable and committable. Suggested commit types foll
      precedence table; §7 gains the `bash` tilde paragraph and the corrected rationale; §10 code map
      gains `security/sensitive.rs` + `security/redact.rs`; §11 Current Gaps gains the "the guard is a
      name-based heuristic; the real boundary is the Linux-only, opt-in sandbox" row.
-   - `book/26_chapter_issue_zh.md`: two newest-first entries — (a) the leak: `cat
+   - `book/25_chapter_issue_zh.md`: two newest-first entries — (a) the leak: `cat
      ~/.ssh/id_ed25519` ran silently as a `Read`, and `~/.claude/settings.json` printed a live token;
      (b) the `apply_patch` bare-rule bug (§1.4 of the spec), which is a permission-scope bug worth its
      own row. Both need date, symptom, decision, observable behaviour, pointers.

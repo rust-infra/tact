@@ -167,5 +167,5 @@ test asserts the risk is unchanged when a server declares read-only.
 - `book/08_chapter_mcp_zh.md`: field-table rows, a subsection under "Per-server tool policy"
   for the risk axis and the plan-mode table, and the §10 gap row replaced by an accurate one.
 - `config.example.toml`: the `[mcp]` comment block gains both keys with the tier warning.
-- `book/26_chapter_issue_zh.md`: two newest-first entries — the facet-A bugfix, and the
+- `book/25_chapter_issue_zh.md`: two newest-first entries — the facet-A bugfix, and the
   facet-B/C feature.

@@ -39,5 +39,5 @@ One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`)
      "Per-server tool policy" carrying the plan-mode table, and the §10 gap row replaced.
    - `config.example.toml`: the `[mcp]` comment block gains `default_tool_risk` and `tools.<name>.risk`
      with the tier warning.
-   - `book/26_chapter_issue_zh.md`: two newest-first entries — the facet-A bugfix, then the
+   - `book/25_chapter_issue_zh.md`: two newest-first entries — the facet-A bugfix, then the
      facet-B/C feature.

@@ -193,6 +193,6 @@ let mock = MockClient::with_usage(vec![(/* blocks */, stop, usage)]]);
 
 ## 相关
 
-- TUI 架构：[23_chapter_tui_zh.md](./23_chapter_tui_zh.md)
+- TUI 架构：[22_chapter_tui_zh.md](./22_chapter_tui_zh.md)
 - 并行工具：[../docs/parallel_tool_execution.md](../docs/parallel_tool_execution.md)
 - Tool 渲染：[../docs/tool_rendering.md](../docs/tool_rendering.md)

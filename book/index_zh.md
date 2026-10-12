@@ -24,22 +24,22 @@
 | 8 | [MCP 协议与集成](./08_chapter_mcp_zh.md) | MCP 基础、协议流程、Tact 中的配置 / 握手 / 工具调用 / 动态更新 / 优雅关闭 |
 | 9 | [Agent 生命周期 Hooks](./09_chapter_hook_zh.md) | PreToolUse / PostToolUse、`HookControl`、注册 API、在工具管线中的位置 |
 | 10 | [权限模型](./10_chapter_permission_zh.md) | 能力风险分级、权限模式、白名单、TUI 审批流、shell 高风险检测、敏感路径守卫与脱敏（§12）、四个目标感知策略的逐例流程（§13） |
-| 11 | [任务与工具调度](./11_chapter_task_zh.md) | 一回合的三阶段流水线、权限 / hook 位置、`ToolScheduleSummary` 落库 — 非 [Ch 19 持久任务](./19_chapter_persistent_tasks_zh.md)；调度算法本身在 [Ch 7 §9](./07_chapter_tool_zh.md) |
+| 11 | [任务与工具调度](./11_chapter_task_zh.md) | 一回合的三阶段流水线、权限 / hook 位置、`ToolScheduleSummary` 落库 — 非 [Ch 18 持久任务](./18_chapter_persistent_tasks_zh.md)；调度算法本身在 [Ch 7 §9](./07_chapter_tool_zh.md) |
 | 12 | [子 Agent](./12_chapter_subagent_zh.md) | `spawn_subagent` 工具：嵌套 `agent_loop`、受限工具集、静态 prompt、权限继承、摘要返回 |
 | 13 | [后台任务](./13_chapter_background_zh.md) | `background_run` / `check_background`、tokio spawn、超时、启动修复 |
 | 14 | [团队协作](./14_chapter_team_zh.md) | `.tact/team/` 队友名册、JSONL 收件箱、广播、计划审批 / 关机协议 |
 | 15 | [Worktree 泳道](./15_chapter_worktree_zh.md) | 隔离 `git worktree`：`create` / `list` / `status` / `run` / `events`、索引与审计日志 |
-| 17 | [桌面通知](./17_chapter_notify_zh.md) | macOS 原生通知（任务完成 / 步骤失败）、配置开关、平台缺口 |
-| 18 | [Agent 主循环](./18_chapter_agent_loop_zh.md) | 收束章：`agent_loop` 回合、流式、`cancel_flag`、`RuntimeEvent`、TUI `TaskComplete` |
-| 19 | [持久任务管理器](./19_chapter_persistent_tasks_zh.md) | `TaskManager`、`task_create` / `get` / `list` / `update`、`.tact/tasks/` 依赖 |
-| 20 | [Agent 循环中的幻觉](./20_chapter_hallucination_zh.md) | LLM 编造文件、摘要和工具结果；压缩摘要编造案例；截断占位符引发的内容编造；缓解策略 |
-| 21 | [配置](./21_chapter_config_zh.md) | TOML/CLI 合并、`ResolvedConfig`、`init()` → `tact_llm::init_provider` |
-| 22 | [LLM Providers](./22_chapter_llm_zh.md) | `tact_llm` 适配器、流式、thinking、`user_id`、余额查询 |
-| 23 | [终端 UI](./23_chapter_tui_zh.md) | `tui` crate、`RuntimeEvent` / `UserCommand` 通道、`tact-ui` 接线 |
-| 24 | [测试策略](./24_chapter_testing_zh.md) | Mock LLM、tact-ui driver、TUI TestBackend、CI |
-| 25 | [Agent–TUI 协议](./25_chapter_protocol_zh.md) | `tact_protocol` 消息类型、计划步骤生命周期、任务级状态迁移 |
-| 26 | [工程问题与优化日志](./26_chapter_issue_zh.md) | 已交付优化与 bugfix的倒序日志（现象 → 决策 → 指针） |
-| 27 | [Bash 沙箱](./27_chapter_sandbox_zh.md) | `bash` 的可选 OS 级沙箱：布尔开关、按平台选后端、bubblewrap 策略、降级与非覆盖范围 |
+| 16 | [桌面通知](./16_chapter_notify_zh.md) | macOS 原生通知（任务完成 / 步骤失败）、配置开关、平台缺口 |
+| 17 | [Agent 主循环](./17_chapter_agent_loop_zh.md) | 收束章：`agent_loop` 回合、流式、`cancel_flag`、`RuntimeEvent`、TUI `TaskComplete` |
+| 18 | [持久任务管理器](./18_chapter_persistent_tasks_zh.md) | `TaskManager`、`task_create` / `get` / `list` / `update`、`.tact/tasks/` 依赖 |
+| 19 | [Agent 循环中的幻觉](./19_chapter_hallucination_zh.md) | LLM 编造文件、摘要和工具结果；压缩摘要编造案例；截断占位符引发的内容编造；缓解策略 |
+| 20 | [配置](./20_chapter_config_zh.md) | TOML/CLI 合并、`ResolvedConfig`、`init()` → `tact_llm::init_provider` |
+| 21 | [LLM Providers](./21_chapter_llm_zh.md) | `tact_llm` 适配器、流式、thinking、`user_id`、余额查询 |
+| 22 | [终端 UI](./22_chapter_tui_zh.md) | `tui` crate、`RuntimeEvent` / `UserCommand` 通道、`tact-ui` 接线 |
+| 23 | [测试策略](./23_chapter_testing_zh.md) | Mock LLM、tact-ui driver、TUI TestBackend、CI |
+| 24 | [Agent–TUI 协议](./24_chapter_protocol_zh.md) | `tact_protocol` 消息类型、计划步骤生命周期、任务级状态迁移 |
+| 25 | [工程问题与优化日志](./25_chapter_issue_zh.md) | 已交付优化与 bugfix的倒序日志（现象 → 决策 → 指针） |
+| 26 | [Bash 沙箱](./26_chapter_sandbox_zh.md) | `bash` 的可选 OS 级沙箱：布尔开关、按平台选后端、bubblewrap 策略、降级与非覆盖范围 |
 
 ---
 
@@ -64,7 +64,7 @@ graph TD
 ## 如何阅读
 
 - 常量、代码地图与类型名保留英文原文，便于直接对照源码。
-- **运行时顺序**：第 1–11 章跟随 `agent_loop` 一回合；12–15 为工具族；**Ch 18** 收束主循环；**19** 深挖 TaskManager；**20** 幻觉模式；**21–22** 为启动与 UI；**24** 测试；**25** 协议状态机；**26** 为工程优化 / bugfix日志（有行为变更时按 `AGENTS.md` 追加）。
+- **运行时顺序**：第 1–11 章跟随 `agent_loop` 一回合；12–15 为工具族；**Ch 17** 收束主循环；**19** 深挖 TaskManager；**20** 幻觉模式；**21–22** 为启动与 UI；**24** 测试；**25** 协议状态机；**26** 为工程优化 / bugfix日志（有行为变更时按 `AGENTS.md` 追加）。
 - **压缩与恢复**：[上下文压缩](./05_chapter_compact_zh.md)、[错误恢复](./06_chapter_recovery_zh.md)。
 
 ---

@@ -24,7 +24,7 @@
   (`workflow_run_sequences_turns_through_the_serving_router`: two steps, two
   turns, `workflow.run` → `chat.submit` → `runs.start` all on the Router).
 - [x] Sync `ARCHITECTURE.md` §15, the 2026-10-08 spec status rows, that plan's
-  status note, and `book/26_chapter_issue_zh.md`.
+  status note, and `book/25_chapter_issue_zh.md`.
 
 **Verification:** `./scripts/check-rust.sh` ends with `Rust checks passed.`;
 `cargo test --workspace` **2893 → 2897 passed / 0 failed / 22 ignored** (46

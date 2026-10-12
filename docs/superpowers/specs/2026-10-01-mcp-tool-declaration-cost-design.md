@@ -2,7 +2,7 @@
 
 Status: **shipped** (`baa1a4f9`, 2026-10-01).
 Retroactive record, written 2026-10-02 from the shipped code, that commit's message, and the
-Ch 26 entry.
+Ch 25 entry.
 
 ## Problem
 
@@ -65,5 +65,5 @@ policy it drafts.
   (the draft is a suggestion and cannot loosen anything).
 - `crates/tact_extensions/src/mcp/mod.rs`: the measurement rides on `derive_exposed`, covered through the detail
   view rather than by a direct unit test.
-- Docs: [Ch 08](../../../book/08_chapter_mcp_zh.md), [Ch 26](../../../book/26_chapter_issue_zh.md)
+- Docs: [Ch 08](../../../book/08_chapter_mcp_zh.md), [Ch 25](../../../book/25_chapter_issue_zh.md)
   2026-10-01 entry.

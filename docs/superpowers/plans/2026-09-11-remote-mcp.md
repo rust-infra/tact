@@ -62,7 +62,7 @@ Shipped as designed. Deviations from the original work items:
     parse in `crates/tui/src/handlers/mcp.rs`; i18n strings (EN + ZH).
 11. **Tests** — config parse, resolver, transport dispatch (mock service), credential
     store round-trip, callback parsing/state check, report lines, reload.
-12. **Docs** — Ch 08 (EN+ZH) remote+OAuth section; Ch 21 (EN+ZH) config fields; Ch 26
+12. **Docs** — Ch 08 (EN+ZH) remote+OAuth section; Ch 20 (EN+ZH) config fields; Ch 25
     (EN+ZH) newest-first entry; update the stale "stdio only" limitations.
 
 ## Verification

@@ -97,4 +97,4 @@ loop by being broken. A tool that returns a decision is honoured exactly as a co
 - `book/09_chapter_hook_zh.md`: the "Command hooks" section gains the second kind, the code
   map gains `run_hook` / `run_mcp_tool_hook`, and the §13 deliberate-gaps table loses the `mcp_tool`
   row (keeping the other two, with their reasons).
-- `book/26_chapter_issue_zh.md`: newest-first entry.
+- `book/25_chapter_issue_zh.md`: newest-first entry.

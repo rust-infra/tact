@@ -2,7 +2,7 @@
 
 Status: **implemented.** ~/.agents is kept; Claude-directory compat code is deleted
 outright (not gated). All crates compile; skill / instruction-sources / prompt /
-plugin / mcp / tui / tact-ui test suites pass. Bilingual docs + Ch 26 synced.
+plugin / mcp / tui / tact-ui test suites pass. Bilingual docs + Ch 25 synced.
 
 ## Decision (confirmed)
 

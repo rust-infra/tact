@@ -235,4 +235,4 @@ Not covered by a test: the bootstrap call site and the two teardown call sites
 `ARCHITECTURE.md` §15, the 2026-10-08 spec/plan status notes,
 `docs/plugin_protocol.md`, the consumer verdicts in
 `docs/superpowers/specs/2026-10-11-kernel-service-consumers-design.md`, and a
-`book/26_chapter_issue_zh.md` entry.
+`book/25_chapter_issue_zh.md` entry.

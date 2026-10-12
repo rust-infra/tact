@@ -21,7 +21,7 @@ Spec: `docs/superpowers/specs/2026-09-08-five-more-hooks-design.md`
 7. **drivers** — `interactive.rs`/`headless.rs` stamp `subagent_stop_hooks`; `driver.rs`
    `/compact` → `Command` trigger, Stop continuation loop, SessionEnd dispatch; `headless.rs`
    SessionEnd before `shutdown_mcp`.
-8. **docs** — `book/09_chapter_hook*.md` (EN+ZH) §2 table + §6 bullets; Ch 26 issue entries.
+8. **docs** — `book/09_chapter_hook*.md` (EN+ZH) §2 table + §6 bullets; Ch 25 issue entries.
 
 ## Verification
 

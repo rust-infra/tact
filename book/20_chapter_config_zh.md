@@ -10,12 +10,12 @@
 
 | 关注点 | Resolved 字段 | 主要消费者 |
 |--------|---------------|------------|
-| LLM 凭证 | `ResolvedConfig::llm` → `tact_llm::init_provider` | [Ch 22 LLM](./22_chapter_llm_zh.md)、`Agent::stream_message` |
-| Agent 限制 | `agent.*` | [Ch 5 压缩](./05_chapter_compact_zh.md)、[Ch 4 Prompt](./04_chapter_prompt_zh.md)、[Ch 17 通知](./17_chapter_notify_zh.md) |
+| LLM 凭证 | `ResolvedConfig::llm` → `tact_llm::init_provider` | [Ch 21 LLM](./21_chapter_llm_zh.md)、`Agent::stream_message` |
+| Agent 限制 | `agent.*` | [Ch 5 压缩](./05_chapter_compact_zh.md)、[Ch 4 Prompt](./04_chapter_prompt_zh.md)、[Ch 16 通知](./16_chapter_notify_zh.md) |
 | 权限模式字符串 | `permission_mode: Option<String>` | 仅 headless — 见 [§6 缺口](#6-当前缺口) |
-| UI 主题 | `ui.theme` | [Ch 23 TUI](./23_chapter_tui_zh.md) |
-| UI 语言 | `ui.language` | [Ch 23 TUI](./23_chapter_tui_zh.md) |
-| hook 输出的显示开关 | `ui.hook_output` | [Ch 9 Hook](./09_chapter_hook_zh.md)、[Ch 23 TUI](./23_chapter_tui_zh.md) |
+| UI 主题 | `ui.theme` | [Ch 22 TUI](./22_chapter_tui_zh.md) |
+| UI 语言 | `ui.language` | [Ch 22 TUI](./22_chapter_tui_zh.md) |
+| hook 输出的显示开关 | `ui.hook_output` | [Ch 9 Hook](./09_chapter_hook_zh.md)、[Ch 22 TUI](./22_chapter_tui_zh.md) |
 | 调试 | `tokio_console` | `tact-ui` 的 `main()` |
 
 每个二进制入口在启动时应**调用一次** `tact::config::init()`（或 `init_config()`）。
@@ -55,7 +55,7 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 
 `install()` 做两件事：
 
-1. **`tact_llm::init_provider(config.llm.provider_info())`** — 存储 `ProviderInfo` 供 `get_llm_client()` 使用（[Ch 22](./22_chapter_llm_zh.md)）。
+1. **`tact_llm::init_provider(config.llm.provider_info())`** — 存储 `ProviderInfo` 供 `get_llm_client()` 使用（[Ch 21](./21_chapter_llm_zh.md)）。
 2. **`SETTINGS.set(config)`** — 使进程其余部分可通过 `config::settings()` 访问配置。
 
 `install_without_llm()` 跳过 provider 初始化，用于 `--list-sessions`、`tact upgrade`、插件 CLI 等从不调用模型的命令。
@@ -99,7 +99,7 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
 `max_tokens` 是唯一**没有 `[llm]` 全局**的字段（2026-09-13 移除）：该级原本排在
 `[agent]` **之下**，因此只对"没在 `[agent]` 里设过"的用户生效，两级同时设置时必然静默忽略其一。
 现在残留的 `[llm] max_tokens` 会触发**resolve 阶段的硬报错**并指明替代键，而不是被静默丢弃——
-详见 §3 与 [Ch 26](./26_chapter_issue_zh.md)。
+详见 §3 与 [Ch 25](./25_chapter_issue_zh.md)。
 
 必填：**`llm.provider`**，以及活跃条目上的 **`api_key`** 和 **`model`**。`anthropic` 没有默认 `base_url`，必须显式设置。缺失活跃条目会在 resolve 时报错。
 
@@ -200,7 +200,7 @@ theme = "ink"
 # "en" | "zh"（也接受 "english" / "cn" / "chinese"）；无法识别时告警并回落英文。
 # language = "en"
 # 附加图片（`@file.png`、`![alt](path)`）；compress 仅减少 token —
-# 模型/端点仍须支持 vision（见 Ch 22 / Ch 23）。
+# 模型/端点仍须支持 vision（见 Ch 21 / Ch 22）。
 # vision_image.compress = true
 # vision_image.max_edge = 1280
 # vision_image.jpeg_quality = 80
@@ -312,7 +312,7 @@ Resolved 运行时仍暴露扁平的 `LlmSettings { provider: ProviderKind, prot
 
 ### `[ui]` — 主题、语言、hook 输出的显示开关
 
-`ui.theme` / `ui.language` 见 [Ch 23](./23_chapter_tui_zh.md)；两者都能在运行时改（`/theme`、`Ctrl+T`、`/lang`、`Ctrl+L`），写回同一个 `[ui]` 表。
+`ui.theme` / `ui.language` 见 [Ch 22](./22_chapter_tui_zh.md)；两者都能在运行时改（`/theme`、`Ctrl+T`、`/lang`、`Ctrl+L`），写回同一个 `[ui]` 表。
 
 `ui.hook_output`（默认 `true`）决定 TUI 是否在日志里画 hook 相关内容——**一条进度行**（`LogItemKind::HookStatus`）和**注入的上下文块**（`LogItemKind::HookContext`）。它由 `/hook-output` 翻转（与 `/theme` 不同，布尔没有列表可选，所以走 `Ctrl+T` 那种"翻转 + 写盘 + 一条消息说清两半"的形状），也可直接写文件。
 
@@ -389,10 +389,10 @@ Cloud 项目中启用 Speech-to-Text API。Google API key 模式不支持 Servic
 仅精确匹配时消费按键（其它键仍进入 Insert/Normal）。未设置则仅鼠标控制。配置的快捷键会显示在
 帮助面板（`Ctrl+?`）。空字符串、多字符键、非 `ctrl` 修饰符会在配置解析阶段失败；与内置全局快捷键
 （`Ctrl+C/H/T/L/?`）重合的绑定会在**启动时被拒绝**并指名冲突的键——全局快捷键先派发且消费事件，
-这种绑定永远不可能触发（[Ch 23](./23_chapter_tui_zh.md) §7）。凭证不会写入
+这种绑定永远不可能触发（[Ch 22](./22_chapter_tui_zh.md) §7）。凭证不会写入
 日志或会话历史。
 
-Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 22](./22_chapter_llm_zh.md)）。
+Kimi K2.x 检测在 resolve 时通过 `provider_info.is_kimi_k2x()`（[Ch 21](./21_chapter_llm_zh.md)）。
 
 `model_context_window` 按四级优先级解析（从高到低）：
 
@@ -465,7 +465,7 @@ tact-ui headless "Summarize this repo"
 
 `tools.sandbox` 在 v1 仅可由 TOML 设置，**默认关闭**，且只是一个布尔开关：
 `false`（默认）时 `bash` 行为与以前完全一致，`true` 请求
-[工具系统 §7.1](./07_chapter_tool_zh.md) 与 [Bash 沙箱](./27_chapter_sandbox_zh.md) 描述的沙箱。该开关刻意**不**指定后端——
+[工具系统 §7.1](./07_chapter_tool_zh.md) 与 [Bash 沙箱](./26_chapter_sandbox_zh.md) 描述的沙箱。该开关刻意**不**指定后端——
 用什么机制是平台决策，写在 `crates/tact_extensions/src/sandbox/` 里（Linux 用 bubblewrap；其他
 平台尚无实现，开关在那里是空操作）。开关只是**请求**：实际生效的沙箱在启动时解析
 一次，任何导致无法启动的原因（平台无实现、缺少 `bwrap`、内核限制 user namespace）
@@ -495,7 +495,7 @@ let theme = config::settings().ui.theme.clone();
 
 若未调用 `init()`，`settings()` 会 panic — 对错误接线的二进制有意 fail-fast。
 
-Agent 循环在构建每次 LLM 请求时从 `settings()` 读取 `model_context_window`、`max_tokens` 和 `thinking_budget`（[Ch 18](./18_chapter_agent_loop_zh.md)）。
+Agent 循环在构建每次 LLM 请求时从 `settings()` 读取 `model_context_window`、`max_tokens` 和 `thinking_budget`（[Ch 17](./17_chapter_agent_loop_zh.md)）。
 
 **破坏性重命名：** `agent.context_limit_chars` / `--context-limit-chars` → `agent.model_context_window` / `--model-context-window`（tokens，默认 200_000）。旧 TOML 键**无静默别名** — 请更新现有配置。
 
@@ -528,7 +528,7 @@ Agent 循环在构建每次 LLM 请求时从 `settings()` 读取 `model_context_
 
 ## 相关文档
 
-- [LLM Providers](./22_chapter_llm_zh.md) — `install()` 初始化内容
-- [Agent Main Loop](./18_chapter_agent_loop_zh.md) — agent 设置的运行时消费者
+- [LLM Providers](./21_chapter_llm_zh.md) — `install()` 初始化内容
+- [Agent Main Loop](./17_chapter_agent_loop_zh.md) — agent 设置的运行时消费者
 - [Permission Model](./10_chapter_permission_zh.md) — 模式字符串 vs TUI 接线
-- [TUI](./23_chapter_tui_zh.md) — 主题与 channel 引导
+- [TUI](./22_chapter_tui_zh.md) — 主题与 channel 引导

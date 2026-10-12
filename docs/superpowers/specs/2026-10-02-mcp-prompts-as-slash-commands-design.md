@@ -98,5 +98,5 @@ place, next to the router that can also say "no such prompt".
 
 - `book/08_chapter_mcp_zh.md`: Step 9 gains the two commands; the §10 gap row's prompts clause is
   updated to name what is still missing (completion).
-- `book/23_chapter_tui_zh.md` §7: the `/mcp` subcommand list.
-- `book/26_chapter_issue_zh.md`: newest-first entry.
+- `book/22_chapter_tui_zh.md` §7: the `/mcp` subcommand list.
+- `book/25_chapter_issue_zh.md`: newest-first entry.

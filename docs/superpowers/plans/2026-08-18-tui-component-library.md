@@ -25,14 +25,14 @@
 - The AGENTS.md TUI shadow/residue invariants (six rules) carry over verbatim into the kit; every moved render unit keeps its buffer-level tests.
 - Pure refactor: **no behavior change, no visual change** until the kit crate exists. Any visual change is a separate, reviewed diff.
 - One independently revertable commit per phase.
-- Update `book/23_chapter_tui{,_zh}.md` and `book/26_chapter_issue{,_zh}.md` in the same change when the architecture ships (Phase 5).
+- Update `book/22_chapter_tui{,_zh}.md` and `book/25_chapter_issue{,_zh}.md` in the same change when the architecture ships (Phase 5).
 
 ## File Map
 
 - New: `crates/agent_tui_kit/**` (lib.rs, protocol.rs, theme.rs, i18n.rs, shell.rs, components/, render/, handlers/, bridge.rs, examples/mock_agent.rs), `docs/superpowers/specs/2026-08-18-tui-component-library-design.md`, `docs/superpowers/plans/2026-08-18-tui-component-library.md` (this plan).
 - Modify: root `Cargo.toml` (workspace member `agent_tui_kit`), `crates/tui/Cargo.toml` (depend on kit; keep tact/tact_llm only for the app layer), `crates/tui/**` (remove moved code; App becomes shell assembly + extension impl).
 - Untouched (Phase 1 guarantee): `crates/tact_protocol/**`, `crates/tact/**`, `crates/tact_llm/**` (Phase 4 only removes *TUI-side* imports of tact/tact_llm; the crates themselves stay put).
-- Book/docs sync (Phase 5): `book/23_chapter_tui{,_zh}.md`, `book/26_chapter_issue{,_zh}.md`.
+- Book/docs sync (Phase 5): `book/22_chapter_tui{,_zh}.md`, `book/25_chapter_issue{,_zh}.md`.
 
 ---
 
@@ -80,7 +80,7 @@
 ## Phase 5 — External-consumer validation, docs, ship
 
 - [x] **T5.1 Mock consumer.** Write `crates/agent_tui_kit/examples/mock_agent.rs`: a mock agent emits a full `AgentUpdate` sequence (thinking → step started → tool progress → stream chunk → task complete) and receives `Command`s; run it headless end-to-end.
-- [x] **T5.2 Book/docs sync.** `book/23_chapter_tui{,_zh}.md` (architecture: kit + app layer), `book/26_chapter_issue{,_zh}.md` newest-first entry (type `optimization`; symptom/motivation, decision + observable behavior, code/spec/plan pointers, link this plan and the design spec), kit README (contract, component inventory, mock example).
+- [x] **T5.2 Book/docs sync.** `book/22_chapter_tui{,_zh}.md` (architecture: kit + app layer), `book/25_chapter_issue{,_zh}.md` newest-first entry (type `optimization`; symptom/motivation, decision + observable behavior, code/spec/plan pointers, link this plan and the design spec), kit README (contract, component inventory, mock example).
 - [x] **T5.3 Full verification.** `cargo fmt --all`; `cargo clippy`; `env -u http_proxy -u https_proxy -u all_proxy cargo test -p tui --lib`; `cargo test -p tact-ui`; run the example; eyeball `cargo tree -p agent_tui_kit`.
 
 ## Acceptance criteria
@@ -88,7 +88,7 @@
 1. `cargo tree -p agent_tui_kit` contains no `tact` / `tact_llm`.
 2. All test gates green with no reduction in test count; existing render/scene tests pass **without expectation edits** (proof of no visual regression).
 3. `mock_agent` example runs headless through the full flow.
-4. Design spec and this plan are checked in; book chapters and Ch 26 entries are synced.
+4. Design spec and this plan are checked in; book chapters and Ch 25 entries are synced.
 
 ## Risk Register
 
@@ -323,7 +323,7 @@ panel, markdown/mermaid, cells, widgets — all via `RenderCtx`.
   **607** (≥ baseline 604; +2 bridge contract tests, +1 tui slash-wrapper
   test), `tact-ui` **105**, clippy zero warnings, fmt clean.
 - **T5.2 — docs sync (partial):** plan updated with Phase 3/4/5 results;
-  `book/23_chapter_tui{,_zh}.md` + `book/26_chapter_issue{,_zh}.md` +
+  `book/22_chapter_tui{,_zh}.md` + `book/25_chapter_issue{,_zh}.md` +
   kit README remain TODO for the final ship (component-registry slice
   included), so they are deferred to the step-9 follow-up rather than written
   twice.
@@ -458,7 +458,7 @@ edits):
   the component applied the snapshot.
 
 **Task #42 is now complete.** T5.2 book/docs sync done in this commit
-(`book/23_chapter_tui{,_zh}.md` §1 registry paragraph; `book/26` newest
+(`book/22_chapter_tui{,_zh}.md` §1 registry paragraph; `book/26` newest
 entry). R4 (ratatui-markdown fork) was resolved 2026-08-16 (#69) — upstream
 git rev `3a8bcbe`, no fork push needed.
 

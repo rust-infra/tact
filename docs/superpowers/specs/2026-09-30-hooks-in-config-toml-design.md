@@ -98,4 +98,4 @@ noise.
 - `book/09_chapter_hook_zh.md`: the origins table gains `config.toml`, the registration order
   is stated, and the §13 row is removed.
 - `config.example.toml`: a commented `[hooks]` example.
-- `book/26_chapter_issue_zh.md`: newest-first entry.
+- `book/25_chapter_issue_zh.md`: newest-first entry.

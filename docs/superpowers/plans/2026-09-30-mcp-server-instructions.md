@@ -29,5 +29,5 @@ time (AGENTS.md — parallel runs contend on `target/`).
 7. **Docs sync**
    - `book/08_chapter_mcp_zh.md`: a "Server instructions" subsection (capture, fence, cap,
      boundary placement) and the Gaps row for `InitializeResult.instructions` flipped to done.
-   - `book/26_chapter_issue_zh.md`: newest-first entry.
+   - `book/25_chapter_issue_zh.md`: newest-first entry.
    - `ARCHITECTURE.md` only if the prompt-composition description drifts.

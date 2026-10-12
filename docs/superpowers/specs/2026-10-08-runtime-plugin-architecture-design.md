@@ -464,4 +464,4 @@ no product code invokes it yet.
 
 ## Documentation synchronization
 
-Implementation work must update `ARCHITECTURE.md` to match the final dependency graph, add protocol and trajectory documentation under `docs/`, and add a newest-first user-visible migration entry to `book/26_chapter_issue_zh.md` if behavior or configuration changes are observable.
+Implementation work must update `ARCHITECTURE.md` to match the final dependency graph, add protocol and trajectory documentation under `docs/`, and add a newest-first user-visible migration entry to `book/25_chapter_issue_zh.md` if behavior or configuration changes are observable.

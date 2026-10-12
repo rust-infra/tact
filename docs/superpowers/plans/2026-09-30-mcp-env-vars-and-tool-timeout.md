@@ -23,4 +23,4 @@ Spec: [2026-09-30-mcp-env-vars-and-tool-timeout-design.md](../specs/2026-09-30-m
    - `book/08_chapter_mcp_zh.md`: the field table gains both rows, the prose explains
      resolution order and the two refusals, the `enabled: false` paragraph drops `tool_timeout_sec`,
      and the Gaps table trades its two rows for accurate ones.
-   - `book/26_chapter_issue_zh.md`: newest-first entry.
+   - `book/25_chapter_issue_zh.md`: newest-first entry.

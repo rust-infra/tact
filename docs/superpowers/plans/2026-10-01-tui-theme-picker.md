@@ -41,5 +41,5 @@ took, not a forecast.
    - `cargo test -p agent_tui_kit --lib theme` — the round-trip.
    - `cargo test -p tact --lib config` — the two persist tests.
 7. **Docs sync**
-   - `book/23_chapter_tui_zh.md` §6.10: the picker, `apply_theme` vs `set_theme`, the persist step.
-   - `book/26_chapter_issue_zh.md`: 2026-10-01 entry, including the `set_scalar` defect.
+   - `book/22_chapter_tui_zh.md` §6.10: the picker, `apply_theme` vs `set_theme`, the persist step.
+   - `book/25_chapter_issue_zh.md`: 2026-10-01 entry, including the `set_scalar` defect.

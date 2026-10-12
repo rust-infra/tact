@@ -14,9 +14,9 @@ Skill 是一份 Markdown 文档，教 agent 如何完成专项任务（编码规
 |------|----------------|
 | 每轮（系统提示词） | 默认是 `describe_available_bounded()` 得到的 skill **名称与描述**——每条描述按 `[agent].skill_description_cap`（默认 200 字符）截断，整份目录再压进 `model_context_window` 的 2%；开启 `[agent].skill_body_auto_inject` 后改为 `describe_available_with_body()` 的**全文** |
 | 按需（`load_skill` 工具） | 包在 `<skill>` XML 标签中的全文（工具结果） |
-| TUI 斜杠 `/skill-name` | 调用时在**用户任务**中注入同样的 `<skill>` 包装（见 [§7](#7-tui-斜杠调用) 与 [TUI](./23_chapter_tui_zh.md)） |
+| TUI 斜杠 `/skill-name` | 调用时在**用户任务**中注入同样的 `<skill>` 包装（见 [§7](#7-tui-斜杠调用) 与 [TUI](./22_chapter_tui_zh.md)） |
 
-启动时只有摘要；模型调用 `load_skill` 或用户通过斜杠调用时才加载全文。`[agent].skill_body_auto_inject`（默认 `false`，CLI `--skill-body-auto-inject`）把这层摘要整体换成全文，代价是每一轮请求都携带所有 skill 正文——除非某个 skill 必须无条件留在上下文中，否则保持默认；见 [配置](./21_chapter_config_zh.md)。Responses adapter 额外施加更严格的 skill 加载策略；见 [LLM Provider Layer](./22_chapter_llm_zh.md#62-responses-api)。
+启动时只有摘要；模型调用 `load_skill` 或用户通过斜杠调用时才加载全文。`[agent].skill_body_auto_inject`（默认 `false`，CLI `--skill-body-auto-inject`）把这层摘要整体换成全文，代价是每一轮请求都携带所有 skill 正文——除非某个 skill 必须无条件留在上下文中，否则保持默认；见 [配置](./20_chapter_config_zh.md)。Responses adapter 额外施加更严格的 skill 加载策略；见 [LLM Provider Layer](./21_chapter_llm_zh.md#62-responses-api)。
 
 **目录本身也是有上限的**（2026-10-11 起）。`# Available skills` 是系统提示词里唯一随"机器上装了多少 skill"增长的部分，此前没有任何约束：79 个 skill 实测 **22,605 字符 ≈ 5.6k tokens，每轮都在**，最长的一条描述 966 字符。现在两道闸：
 
@@ -75,7 +75,7 @@ pub struct SkillManifest {
 }
 ```
 
-**刻意收窄**：只保留真正被读取的两个字段。`path` 与 Claude Code 的 `argument-hint` / `allowed-tools` / `model` 曾在这里，但全仓库没有任何消费者——`pub` 字段在库 crate 里不触发 `dead_code`，所以编译器不会提示。存一个永不生效的字段等于向作者承诺它生效，2026-10-04 一并删除（见 [Ch 26](./26_chapter_issue_zh.md)）。要加字段，就在同一次改动里带上读它的代码。
+**刻意收窄**：只保留真正被读取的两个字段。`path` 与 Claude Code 的 `argument-hint` / `allowed-tools` / `model` 曾在这里，但全仓库没有任何消费者——`pub` 字段在库 crate 里不触发 `dead_code`，所以编译器不会提示。存一个永不生效的字段等于向作者承诺它生效，2026-10-04 一并删除（见 [Ch 25](./25_chapter_issue_zh.md)）。要加字段，就在同一次改动里带上读它的代码。
 
 ### SkillDocument
 
@@ -122,7 +122,7 @@ description: Comprehensive Rust coding guidelines
 | `name` | `SKILL.md` 的父目录名 |
 | `description` | `"No description"` |
 
-Claude Code 的 `argument-hint` / `allowed-tools` / `model` **不解析、不存储、不生效**：`SkillFrontmatter` 只声明 `name` 与 `description`，其余键由 serde 静默忽略。它们此前也只是被存进 `SkillManifest` 而没有读取者；留下一个"看起来支持"的字段会让作者以为工具被限制了、模型被覆盖了（2026-10-04 删除，见 [Ch 26](./26_chapter_issue_zh.md)）。因此带这些键的 Claude skill 照常加载，只是这些键什么也不做。
+Claude Code 的 `argument-hint` / `allowed-tools` / `model` **不解析、不存储、不生效**：`SkillFrontmatter` 只声明 `name` 与 `description`，其余键由 serde 静默忽略。它们此前也只是被存进 `SkillManifest` 而没有读取者；留下一个"看起来支持"的字段会让作者以为工具被限制了、模型被覆盖了（2026-10-04 删除，见 [Ch 25](./25_chapter_issue_zh.md)）。因此带这些键的 Claude skill 照常加载，只是这些键什么也不做。
 
 **无** frontmatter 的文件仍可加载——整文件作为正文（trim 后）。CRLF 行尾会规范化。
 
@@ -238,7 +238,7 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 
 > 名字冲突的规则是「内置优先」：名为 `skill` 的 skill 被内置 `/skill` 顶掉（`/skill` 走 `list` / `reload`）；名为 `list` / `reload` / `disable` / `enable` 的 skill 在 `/skill ` 补全里被内置子命令顶掉（不出现重复行，直接形式 `/list` 仍可运行）；其余同名内置命令（`help`、`cancel`…）从来都是内置赢。
 
-**`/skill disable` 的语义**（与 `[agent].skill_disable` 同一个开关，见 [§1](#1-skills-的用途) 与 [配置](./21_chapter_config_zh.md)）：管的是**自动发现**，不是能力。被摘掉的 skill 照样能用 `/skill <name>` 跑、`load_skill` 照样解析它——所以消息写的是「已从目录中隐藏」而不是「已禁用」。写入的是**整份列表**而不是增量，因为写盘会替换整个键，一份不完整的列表会把没写进去的 skill 全部静默恢复。没有配置文件时改动只留在本次会话，消息会这么说（与 `/theme` 同一套契约）。名字解析不到时只报名字、不落进用法提示——弹出菜单已经教过语法，而这条是命令中途报的错。
+**`/skill disable` 的语义**（与 `[agent].skill_disable` 同一个开关，见 [§1](#1-skills-的用途) 与 [配置](./20_chapter_config_zh.md)）：管的是**自动发现**，不是能力。被摘掉的 skill 照样能用 `/skill <name>` 跑、`load_skill` 照样解析它——所以消息写的是「已从目录中隐藏」而不是「已禁用」。写入的是**整份列表**而不是增量，因为写盘会替换整个键，一份不完整的列表会把没写进去的 skill 全部静默恢复。没有配置文件时改动只留在本次会话，消息会这么说（与 `/theme` 同一套契约）。名字解析不到时只报名字、不落进用法提示——弹出菜单已经教过语法，而这条是命令中途报的错。
 
 **两个动词的值也是补全出来的**，不用盲敲名字。`slash_candidates()` 走子命令树时记下「落在一个收值的子命令上」，然后由 `skill_verb_candidates()` 把该动词**能作用**的那一半 skill 作为 `<path> <name>` 候选项交出去——`disable` 给目录里还在的，`enable` 给已经被摘掉的。已经处于目标状态的行不列：它们的唯一结局是一句「已经…」。`/skill disable ` 后面那个空格**不会关掉弹窗**（`slash_candidates()` 非空），所以列表是打完空格就跳出来的；继续打字按名字模糊匹配，Enter 直接执行而不是只补全路径（`incomplete: false`）。这也是整个补全体系里唯一一处「值是可补全的」——`/mcp auth <server>` 那类仍然是打完就关。未知动词返回空集而不是猜一半：两个分支就是声明的那对，将来加第三个动词必须自己在这里决定过滤哪一半。
 
@@ -321,5 +321,5 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 - [系统提示词](./04_chapter_prompt_zh.md) — `# Available skills` 节与缓存边界
 - [工具系统](./07_chapter_tool_zh.md) — `load_skill` 与 `ToolContext`
 - [持久化记忆](./03_chapter_memory_zh.md) — 互补的持久化模型
-- [TUI](./23_chapter_tui_zh.md) — 斜杠弹出、面板、高亮
+- [TUI](./22_chapter_tui_zh.md) — 斜杠弹出、面板、高亮
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — 提示词组装表中的 skills

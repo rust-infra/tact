@@ -25,4 +25,4 @@ Shipped as `baa1a4f9`. Retroactive record (2026-10-02).
      `the_detail_view_drafts_a_risk_policy_from_the_servers_own_claim`.
 6. **Docs sync**
    - `book/08_chapter_mcp_zh.md`: the cost line and the risk-policy draft.
-   - `book/26_chapter_issue_zh.md`: 2026-10-01 entry.
+   - `book/25_chapter_issue_zh.md`: 2026-10-01 entry.

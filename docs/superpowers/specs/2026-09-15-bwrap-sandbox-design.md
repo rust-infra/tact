@@ -1018,7 +1018,7 @@ still fail — that is §8, not an oversight.
 ### 18. Sandbox scope: every process-spawning path
 
 §"What the sandbox does and does not bound" states the threat model. For
-implementation, review, and the Ch 26 entry, here is the inventory of paths that
+implementation, review, and the Ch 25 entry, here is the inventory of paths that
 spawn processes today; v1 sandboxes exactly one of them:
 
 | Path | v1 | Agent-callable |
@@ -1357,8 +1357,8 @@ must be updated in the same commit):
 | Permission vs Sandbox as separate layers | `book/10_chapter_permission_zh.md` + `book/10_chapter_permission_zh.md` |
 | `background_run` remains unsandboxed | `book/13_chapter_background_zh.md` |
 | `worktree_run` / lane git calls remain unsandboxed | `book/15_chapter_worktree_zh.md` (the chapter already states a worktree is not an OS sandbox) |
-| `[tools] sandbox` config key | `config.example.toml` + `book/21_chapter_config_zh.md` |
-| Shipped user-visible change | `book/26_chapter_issue_zh.md` + `book/26_chapter_issue_zh.md`, newest-first entry (date, type, symptom, decision, observable behaviour, pointers) |
+| `[tools] sandbox` config key | `config.example.toml` + `book/20_chapter_config_zh.md` |
+| Shipped user-visible change | `book/25_chapter_issue_zh.md` + `book/25_chapter_issue_zh.md`, newest-first entry (date, type, symptom, decision, observable behaviour, pointers) |
 | Agent-facing conventions for the split path space (§19) | `docs/agent_guidelines.md` (bash/tool-usage section) |
 
 If an existing security or tool-execution document already describes Permission as the execution boundary, update it to explicitly distinguish:
@@ -1464,7 +1464,7 @@ This is not a small inconsistency: both remaining paths are **agent-callable
 tools**, so the sandbox does not bound the agent at all — it bounds the
 *third-party code an approved command runs*. §18 lists every process-spawning
 path; §"What the sandbox does and does not bound" is the wording the shipped docs
-and the Ch 26 entry must reuse.
+and the Ch 25 entry must reuse.
 
 Mitigation:
 

@@ -89,8 +89,8 @@ entries in the original PR were not carried over.
 ## 7. Docs sync (one pass, at the end)
 
 - `book/02_chapter_skill_zh.md`: §1 table, §3 wrapper, §5 API table, §7 the verbs, §9 map, §10 gaps.
-- `book/21_chapter_config_zh.md`: the two keys and how `skill_disable` is usually written.
-- `book/26_chapter_issue_zh.md`: 2026-10-11 entry.
+- `book/20_chapter_config_zh.md`: the two keys and how `skill_disable` is usually written.
+- `book/25_chapter_issue_zh.md`: 2026-10-11 entry.
 
 ## 8. Gate
 

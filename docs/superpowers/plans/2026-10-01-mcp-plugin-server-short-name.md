@@ -27,4 +27,4 @@ Shipped as `ebd5a18b`. Retroactive record (2026-10-02).
    - `cargo test -p tact-ui --lib mcp_cli` — the four report/detail/listing tests.
 5. **Docs sync**
    - `book/08_chapter_mcp_zh.md`: the short-name rule and the full-name identity.
-   - `book/26_chapter_issue_zh.md`: 2026-10-01 entry.
+   - `book/25_chapter_issue_zh.md`: 2026-10-01 entry.

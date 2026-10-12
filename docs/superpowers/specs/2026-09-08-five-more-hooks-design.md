@@ -164,7 +164,7 @@ exactly Codex's continuation fragment. This is the only place tact's `Block` mea
 - `crates/tact_ui/src/interactive.rs`, `headless.rs`, `driver.rs` — stamp `subagent_stop_hooks`,
   SessionEnd/Stop dispatch sites, driver Stop re-run loop.
 - `book/09_chapter_hook_zh.md` — §2 table, §6 mapped-events bullets (both languages).
-- `book/26_chapter_issue*.md` — user-visible change entry (per AGENTS.md).
+- `book/25_chapter_issue*.md` — user-visible change entry (per AGENTS.md).
 
 ## 4. Deviations from Codex (explicit)
 

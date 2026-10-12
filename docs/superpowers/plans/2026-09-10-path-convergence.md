@@ -61,8 +61,8 @@ on-disk contracts and are gated behind their own tests.
 
 18. `book/08_chapter_mcp_zh.md`: `mcp.json`, source list, naming,
     failure reporting, gaps table. Keep the bilingual pair aligned.
-19. `book/21_chapter_config*.md`: plugin state file location, MCP scope rule.
-20. `book/26_chapter_issue_zh.md`: one dated entry covering the
+19. `book/20_chapter_config*.md`: plugin state file location, MCP scope rule.
+20. `book/25_chapter_issue_zh.md`: one dated entry covering the
     user-visible changes (MCP config file, silent failures now reported,
     skill precedence flip, cwd manifest no longer read).
 21. Correct the stale Ch 8 claim about cwd `.codex-plugin/plugin.json` and the

@@ -351,7 +351,7 @@ OpenAI Responses 的回退方案。DeepSeek 与 Kimi 的 Responses 配置目前�
 **尚未**经过真实端点验证。硬性校验仍然生效：零个或多个 `compaction` item、
 空的 `encrypted_content` 都是协议错误；格式错误的已知输出 item 会被 typed
 normalizer 拒绝，真正未知的输出 item 会由 raw wire 边界保留并在下一轮请求中回放（见
-[Ch 22 §6.2.2](./22_chapter_llm_zh.md#the-compaction-item-round-trip)）。
+[Ch 21 §6.2.2](./21_chapter_llm_zh.md#the-compaction-item-round-trip)）。
 与 fixture 契约不同的端点会以协议错误的方式响亮失败，而不会被掩盖。
 
 **流式中未完成的压缩** — 在流中被宣布但从未完成的 `compaction` item — 同样是
@@ -715,7 +715,7 @@ flowchart LR
 ## 相关文档
 
 - [Error Recovery](./06_chapter_recovery_zh.md) — 作为 prompt-too-long 策略的压缩  
-- [Agent Main Loop](./18_chapter_agent_loop_zh.md) — 这些挂钩周围的完整循环  
+- [Agent Main Loop](./17_chapter_agent_loop_zh.md) — 这些挂钩周围的完整循环  
 - [System Prompt](./04_chapter_prompt_zh.md) — 每轮重建；含压缩工具指引  
 - [Store and Persistence](./01_chapter_store_zh.md) — 压缩后的会话消息重写  
 - [Tasks and Tool Scheduling](./11_chapter_task_zh.md) — dispatch 中检测 `manual_compact`  

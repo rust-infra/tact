@@ -10,7 +10,7 @@
 1. T1：实现技能卡读取 helper + `SubagentInput.skill` + spawn 装配（单文件改动为主）。
 2. T2：单元测试。
 3. T3：`cargo check --workspace --all-targets` + 定向测试。
-4. T4：双语文档同步（Ch 12）+ Ch 26 条目。
+4. T4：双语文档同步（Ch 12）+ Ch 25 条目。
 5. T5：最终核查（grep 残留 / diff review）。
 
 ---
@@ -91,10 +91,10 @@ pub skill: Option<String>,
   - 原 §2.1 位置新增小节「Subagent skill cards」：目录 `~/.tact/subagent/`、frontmatter、
     正文即角色、spawn 拼装示例、与主 agent skill 隔离说明（两端结构对齐）；
   - §5 静态 prompt 段：补技能卡拼接示例代码块。
-- `book/26_chapter_issue*.md`：各加一条 newest-first 条目（date 2026-09-06 · type `feat`），
+- `book/25_chapter_issue*.md`：各加一条 newest-first 条目（date 2026-09-06 · type `feat`），
   指针指向本 spec/plan、`subagent.rs`、Ch 12；注明动机为「8c74f4e 删除 agent-def 后补回隔离的角色注入」。
 
 ## T5 收尾核查
 
 - re-grep：无 `skill` 相关残留、无主 agent skill 污染路径；
-- `git diff` 复核：改动应集中在 `subagent.rs` + 两份 book（双语）+ Ch 26（双语）+ 本 spec/plan。
+- `git diff` 复核：改动应集中在 `subagent.rs` + 两份 book（双语）+ Ch 25（双语）+ 本 spec/plan。

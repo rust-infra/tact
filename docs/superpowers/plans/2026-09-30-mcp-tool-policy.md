@@ -38,5 +38,5 @@ invocation at a time (see AGENTS.md — parallel runs contend on `target/`).
      section, and the Current Gaps row for `enabled_tools` / `omit_tools_from` /
      `startup_timeout_sec`.
    - `config.example.toml` — an `[mcp]` comment block pointing at the new fields.
-   - `book/26_chapter_issue_zh.md` — one newest-first entry (date, type, symptom,
+   - `book/25_chapter_issue_zh.md` — one newest-first entry (date, type, symptom,
      decision, observable behaviour, pointers).

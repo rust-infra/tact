@@ -38,7 +38,7 @@
 
 - `crates/agent_tui_kit/src/render/stats_line.rs`：`MASCOT_RIGHT` / `MASCOT_LEFT` / `MASCOT_MIN_RUNWAY`、`mascot_step`（往返）、`mascot_cells`（两只的列与字形，纯函数），`render_live_stats_band` 末尾落笔。
 - **tick 语义变更**：`App::spinner_frame` 与 `RenderCtx::spinner_frame` 从 `u8`（宿主已 `% 10`）改为**单调 `u32`**。转圈类动效自己取模（`bar.rs` 原本**没有**取模、依赖宿主，必须补上），吉祥物直接用长计数做往返。
-- 文档：`docs/token_usage_schema.md` § Per-Turn Stats Line → "The mascot on the live row"；`book/23_chapter_tui_zh.md`；`book/26_chapter_issue_zh.md`。
+- 文档：`docs/token_usage_schema.md` § Per-Turn Stats Line → "The mascot on the live row"；`book/22_chapter_tui_zh.md`；`book/25_chapter_issue_zh.md`。
 
 ## 已知风险
 

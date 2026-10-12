@@ -2,7 +2,7 @@
 
 本章涵盖 `tact_llm` crate：provider 选择、adapter 构建、流式与非流式调用、token 用量、session 级 cache 键，以及 DeepSeek 与 Kimi 的余额查询。
 
-本层配置在 [Ch 21 配置](./21_chapter_config_zh.md) 中 resolve。Agent 循环通过 `Agent::stream_message` 消费 client（[Ch 18 Agent Main Loop](./18_chapter_agent_loop_zh.md)）。
+本层配置在 [Ch 20 配置](./20_chapter_config_zh.md) 中 resolve。Agent 循环通过 `Agent::stream_message` 消费 client（[Ch 17 Agent Main Loop](./17_chapter_agent_loop_zh.md)）。
 
 实现：`crates/tact_llm/src/`（`lib.rs`、`client.rs`、`provider.rs`、`profile.rs`、`auth.rs`、`transport.rs`、`types.rs`、`content.rs`、`anthropic/`、`openai/`、`convert.rs`）。
 
@@ -138,7 +138,7 @@ sequenceDiagram
     Build-->>Provider: 扁平化 provider adapter
 ```
 
-Provider 初始化从 Ch 21 的 resolved 配置流入 `tact_llm`。活跃 `ProviderInfo` 是**静态快照**；mid-session 的 `/model` 切换更新 `AgentSettings.model`（per-agent），请求模型随 `CreateMessageParams.model` 传递。
+Provider 初始化从 Ch 20 的 resolved 配置流入 `tact_llm`。活跃 `ProviderInfo` 是**静态快照**；mid-session 的 `/model` 切换更新 `AgentSettings.model`（per-agent），请求模型随 `CreateMessageParams.model` 传递。
 
 ---
 
@@ -208,7 +208,7 @@ pub enum StopReason {
 | `StopReason::from_anthropic` | Messages API `stop_reason` 字符串 | `model_context_window_exceeded` → `MaxTokens`（视为截断） |
 | `StopReason::from_openai` | Chat Completions `finish_reason` 字符串 | 旧版 `function_call` → `ToolUse`；`content_filter` → `StopSequence` |
 
-未知值变为 `Unknown(raw)` 而非解析失败，新 provider 值可优雅降级。各 variant 如何驱动循环（继续 / 工具 / 错误）见 [Ch 18 §4](./18_chapter_agent_loop_zh.md#4-stop-reasons-and-loop-exit)。
+未知值变为 `Unknown(raw)` 而非解析失败，新 provider 值可优雅降级。各 variant 如何驱动循环（继续 / 工具 / 错误）见 [Ch 17 §4](./17_chapter_agent_loop_zh.md#4-stop-reasons-and-loop-exit)。
 
 ```mermaid
 sequenceDiagram
@@ -242,7 +242,7 @@ sequenceDiagram
     AgentLoop->>Store: persist_llm_call(...)
 ```
 
-流式 turn 是 [Ch 18](./18_chapter_agent_loop_zh.md) 的热路径：adapter 翻译共享请求、流式 provider 特定 SSE、可选发出 UI 更新，并向循环返回规范化 assistant 内容。
+流式 turn 是 [Ch 17](./17_chapter_agent_loop_zh.md) 的热路径：adapter 翻译共享请求、流式 provider 特定 SSE、可选发出 UI 更新，并向循环返回规范化 assistant 内容。
 
 ```mermaid
 sequenceDiagram
@@ -721,8 +721,8 @@ sequenceDiagram
 
 ## 相关文档
 
-- [Configuration](./21_chapter_config_zh.md) — 凭证与默认值
-- [Agent Main Loop](./18_chapter_agent_loop_zh.md) — 流式集成
+- [Configuration](./20_chapter_config_zh.md) — 凭证与默认值
+- [Agent Main Loop](./17_chapter_agent_loop_zh.md) — 流式集成
 - [Context Compaction](./05_chapter_compact_zh.md) — 非流式 `create_message`
 - [Error Recovery](./06_chapter_recovery_zh.md) — LLM 失败处理
-- [TUI](./23_chapter_tui_zh.md) — 余额显示与流渲染
+- [TUI](./22_chapter_tui_zh.md) — 余额显示与流渲染

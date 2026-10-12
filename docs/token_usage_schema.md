@@ -296,7 +296,7 @@ The second row shows:
   segment is hidden until the task's first LLM call. `max_turns` is carried into
   `StatusBarState.turn_llm_cap` but **not rendered**: only `spawn_subagent` sets
   a cap, so the main-agent bar would never show one. The `turns` word label was
-  dropped in the compaction; the glyph pair carries it (see Ch 23 §6.6).
+  dropped in the compaction; the glyph pair carries it (see Ch 22 §6.6).
 - **Turn timing** — `⏱ {mm:ss}` for the most recently finished turn plus
   `avg {mm:ss}` across the session. Accumulated in
   `add_task_end_separator` (the only place that freezes `task_start_time`);

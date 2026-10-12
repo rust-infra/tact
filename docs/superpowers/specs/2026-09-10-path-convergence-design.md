@@ -245,7 +245,7 @@ case, so allow-lists keyed on `mcp__{plugin}__{server}__*` need updating.
 - `book/01_chapter_store*.md` — plugin state path, if the chapter mentions it.
 - `book/21_*` (marketplace) — state file location.
 - `config.example.toml` — only if a new knob is added (none planned).
-- `book/26_chapter_issue_zh.md` — issue-log entry (user-visible
+- `book/25_chapter_issue_zh.md` — issue-log entry (user-visible
   change: silent MCP failures now reported; MCP gets a config file).
 
 ## Risks
@@ -256,7 +256,7 @@ case, so allow-lists keyed on `mcp__{plugin}__{server}__*` need updating.
   clean.
 - **Skill precedence flip is observable**: a user with the same skill name in
   both roots will see different content after upgrade. This is the intended
-  fix, but it must be called out in the Ch 26 entry.
+  fix, but it must be called out in the Ch 25 entry.
 
 ## Resolved questions
 

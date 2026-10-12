@@ -28,4 +28,4 @@ One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`)
 5. **Docs sync**
    - `book/08_chapter_mcp_zh.md`: Step 4 names the refresh point, Step 10 gains the handling,
      and the §10 gap row is replaced.
-   - `book/26_chapter_issue_zh.md`: newest-first entry.
+   - `book/25_chapter_issue_zh.md`: newest-first entry.

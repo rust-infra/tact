@@ -26,7 +26,7 @@
   duplicate-capability isolation, teardown) plus the Agent-level plugin-tool
   tests in `agent::tests` / `agent::tool_dispatch::tests`.
 - [x] Docs: `ARCHITECTURE.md` §15, 2026-10-08 spec/plan status notes,
-  `docs/plugin_protocol.md`, the consumer verdicts, `book/26_chapter_issue_zh.md`.
+  `docs/plugin_protocol.md`, the consumer verdicts, `book/25_chapter_issue_zh.md`.
 
 **Superseded 2026-10-11 (later the same day):** the "plugin capabilities are not
 model-visible tools" non-goal was wrong for capabilities of kind `Tool`. A `Tool`

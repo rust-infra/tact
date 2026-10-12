@@ -19,9 +19,9 @@ Code first, then before pushing diff against the trigger table and sync all touc
 | TUI bottom-bar / token / cache display | `docs/token_usage_schema.md` + book section describing the bar |
 | New multi-step feature | Spec `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` (after approval) + plan `docs/superpowers/plans/YYYY-MM-DD-<topic>.md` |
 | Store / session persistence contracts | `book/01_chapter_store_zh.md` (+ `docs/token_usage_schema.md` if usage tables change) |
-| Shipped optimization / bugfix with user-visible change | Newest-first entry in `book/26_chapter_issue_zh.md` (date, type, symptom, decision, observable behavior, pointers). Don't replace subsystem chapters |
+| Shipped optimization / bugfix with user-visible change | Newest-first entry in `book/25_chapter_issue_zh.md` (date, type, symptom, decision, observable behavior, pointers). Don't replace subsystem chapters |
 
-Skip Ch 26 for pure refactors, test-only, and comment/typo-only edits.
+Skip Ch 25 for pure refactors, test-only, and comment/typo-only edits.
 
 ## TUI rendering — no shadow / residue
 
@@ -34,7 +34,7 @@ Root cause: ratatui diffs cells and emits only changed ones, so a cell "restored
 5. **After wide graphemes (emoji/CJK, width 2)**, the row remainder must still carry base bg.
 6. **Every new render unit ships a buffer-level test** asserting blank cells carry `theme.bg` (patterns in `crates/tui/src/render/*_tests.rs`).
 
-Why: `book/26_chapter_issue_zh.md` — 2026-07-27 "Log scroll restores the theme background", 2026-07-28 "Log left-border scrollbar residue", 2026-08-16 heading-band / overlay-popup entries.
+Why: `book/25_chapter_issue_zh.md` — 2026-07-27 "Log scroll restores the theme background", 2026-07-28 "Log left-border scrollbar residue", 2026-08-16 heading-band / overlay-popup entries.
 
 ## Compaction
 

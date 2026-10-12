@@ -2,7 +2,7 @@
 
 Status: **shipped** (`a898dbde`, 2026-10-01).
 Retroactive record, written 2026-10-02 from the shipped code, that commit's message, and the
-Ch 26 entry. Nothing here is a new decision — it is the design the code already implements, put
+Ch 25 entry. Nothing here is a new decision — it is the design the code already implements, put
 where the other designs live.
 
 ## Problem
@@ -32,7 +32,7 @@ where the other designs live.
 > **Updated 2026-10-04.** `Ctrl+T` originally applied and announced only, so the
 > theme reverted on the next launch while the picker's answer could stick. It now
 > persists too, and the single message reports the change *and* the write. See
-> the Ch 26 entry for 2026-10-04; `Ctrl+L` was given the same treatment.
+> the Ch 25 entry for 2026-10-04; `Ctrl+L` was given the same treatment.
 
 `ThemeName::all()` changed from private to `pub` for this: the picker needs the cycle order, and a
 caller should not have to reconstruct it by calling `next()` until it wraps.
@@ -94,5 +94,5 @@ subagent / effort / theme) go through it. `replacing_a_model_keeps_its_trailing_
 - `crates/agent_tui_kit/src/theme.rs`: `theme_name_round_trips_through_as_str`.
 - `crates/tact_extensions/src/config/persist.rs`: `replacing_a_model_keeps_its_trailing_comment`,
   `updates_ui_theme_keeping_the_rest_of_the_file`.
-- Docs: [Ch 23](../../../book/23_chapter_tui_zh.md) §6.10, [Ch 26](../../../book/26_chapter_issue_zh.md)
+- Docs: [Ch 22](../../../book/22_chapter_tui_zh.md) §6.10, [Ch 25](../../../book/25_chapter_issue_zh.md)
   2026-10-01 entry.

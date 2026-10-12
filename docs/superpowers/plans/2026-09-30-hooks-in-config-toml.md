@@ -21,4 +21,4 @@ One `cargo` invocation at a time (AGENTS.md: parallel runs contend on `target/`)
 4. **Docs sync**
    - `book/09_chapter_hook_zh.md`: origins table row + registration order, §13 row removed.
    - `config.example.toml`: a commented `[hooks]` block.
-   - `book/26_chapter_issue_zh.md`: newest-first entry.
+   - `book/25_chapter_issue_zh.md`: newest-first entry.

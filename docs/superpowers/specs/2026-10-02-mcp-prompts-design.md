@@ -143,4 +143,4 @@ a name per primitive would only invite the ceilings to drift apart for no reason
 - `book/08_chapter_mcp_zh.md`: Step 9 gains the two tools, the prompts paragraph that answers the old
   non-goal, the four risk keys, the code map row, and the §10 gap row is deleted.
 - `config.example.toml`: the two keys beside the resource pair.
-- `book/26_chapter_issue_zh.md`: newest-first entry.
+- `book/25_chapter_issue_zh.md`: newest-first entry.

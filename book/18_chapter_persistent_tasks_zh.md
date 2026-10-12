@@ -145,7 +145,7 @@ pub fn render_task_list(tasks: Vec<TaskRecord>) -> String;
 
 工具直接返回这些字符串作为 tool 结果（create/get/update 为 JSON，`task_list` 为文本列表）。
 
-成功的 `task_create` / `task_update` 还会发出 [`RuntimeEvent::TasksChanged`](./25_chapter_protocol_zh.md)（过滤已删除项的快照），供 TUI 刷新 Log 下方的 sticky 进度条并追加 Log 详情卡片。`task_get` / `task_list` 不发射。设计见 `docs/superpowers/specs/2026-07-24-task-progress-panel-design.md`。
+成功的 `task_create` / `task_update` 还会发出 [`RuntimeEvent::TasksChanged`](./24_chapter_protocol_zh.md)（过滤已删除项的快照），供 TUI 刷新 Log 下方的 sticky 进度条并追加 Log 详情卡片。`task_get` / `task_list` 不发射。设计见 `docs/superpowers/specs/2026-07-24-task-progress-panel-design.md`。
 
 ---
 

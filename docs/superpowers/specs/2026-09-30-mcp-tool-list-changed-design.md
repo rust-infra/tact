@@ -104,4 +104,4 @@ was asked and failed gets its own line naming the reason.
 
 - `book/08_chapter_mcp_zh.md`: Step 10 (Notifications) gains the handling, Step 4 the refresh
   point, and the §10 gap row is replaced.
-- `book/26_chapter_issue_zh.md`: newest-first entry.
+- `book/25_chapter_issue_zh.md`: newest-first entry.

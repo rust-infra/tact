@@ -224,7 +224,7 @@ sequenceDiagram
 
 - [工具系统](./07_chapter_tool_zh.md) §7.1——沙箱在工具管线中的位置
 - [权限模型](./10_chapter_permission_zh.md)——为什么沙箱是独立于权限的另一层
-- [配置](./21_chapter_config_zh.md)——配置面上的 `tools.sandbox`
+- [配置](./20_chapter_config_zh.md)——配置面上的 `tools.sandbox`
 - [后台任务](./13_chapter_background_zh.md)、[Worktree 泳道](./15_chapter_worktree_zh.md)——未沙箱的 shell 路径
-- [工程问题与优化日志](./26_chapter_issue_zh.md)——交付本功能的 2026-09-15 条目
+- [工程问题与优化日志](./25_chapter_issue_zh.md)——交付本功能的 2026-09-15 条目
 - 设计记录：[`docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md`](../docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md)；含偏差说明的实施计划：[`docs/superpowers/plans/2026-09-15-bwrap-sandbox.md`](../docs/superpowers/plans/2026-09-15-bwrap-sandbox.md)

@@ -24,4 +24,4 @@ Spec: [2026-09-30-tui-hooks-command-design.md](../specs/2026-09-30-tui-hooks-com
 6. **Docs sync**
    - `book/09_chapter_hook_zh.md`: the Reviewing bullet names the TUI spelling and the idle
      gate; the code map gains the handler and driver rows.
-   - `book/26_chapter_issue_zh.md`: newest-first entry.
+   - `book/25_chapter_issue_zh.md`: newest-first entry.

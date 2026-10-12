@@ -221,7 +221,7 @@ pub(crate) fn safe_path_allow_missing(work_dir: &Path, path: &str) -> Result<Pat
 Hook → Permission → bash 工具 → Sandbox（可选）→ bwrap → sh -c → command
 ```
 
-由 `[tools] sandbox = true` 开启（默认 `false`，见[配置](./21_chapter_config_zh.md)），
+由 `[tools] sandbox = true` 开启（默认 `false`，见[配置](./20_chapter_config_zh.md)），
 在**启动时解析一次**（`crates/tact_extensions/src/sandbox/`），并挂在 `ToolContext` 上
 （`sandbox`、`sandbox_degraded`）。开关特意做成布尔值：用什么机制实现是平台决策
 （Linux 用 bubblewrap；其他平台尚无实现，开关在那里是空操作）。任何导致沙箱无法
@@ -240,7 +240,7 @@ Hook → Permission → bash 工具 → Sandbox（可选）→ bwrap → sh -c �
 仍会启动未沙箱的 shell（[后台任务](./13_chapter_background_zh.md)、
 [Worktree](./15_chapter_worktree_zh.md)）。
 
-开关、按平台解析、完整 flag 列表、降级与现存缺口见 [Bash 沙箱](./27_chapter_sandbox_zh.md)。
+开关、按平台解析、完整 flag 列表、降级与现存缺口见 [Bash 沙箱](./26_chapter_sandbox_zh.md)。
 
 ---
 
@@ -560,7 +560,7 @@ codex 侧没有时序意识是已知问题（`git add` 与 `git commit` 被并�
 | `background_run.rs` | `background_run`、`check_background`、`wait_background` | 见 [后台任务](./13_chapter_background_zh.md) |
 | `memory.rs` | `save_memory` | 见 [持久化 Memory](./03_chapter_memory_zh.md) |
 | `load_skill.rs` | `load_skill` | 见 [Skill Registry](./02_chapter_skill_zh.md) |
-| `task.rs` | `task_create` / `task_get` / `task_list` / `task_update` | 见 [持久任务](./19_chapter_persistent_tasks_zh.md) |
+| `task.rs` | `task_create` / `task_get` / `task_list` / `task_update` | 见 [持久任务](./18_chapter_persistent_tasks_zh.md) |
 | `subagent.rs` | `spawn_subagent` / `check_subagent` / `wait_subagent` / `cancel_subagent` | 用 `subagent_toolset()` spawn 子 agent |
 | `compact.rs` | `compact` | 上下文压缩触发（Responses 下不注册） |
 | `apply_patch.rs` | —（未注册） | 模块与元数据保留，但没有任何 toolset 注册它 |

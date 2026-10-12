@@ -261,7 +261,7 @@ sequenceDiagram
 
 - [第 11 章 工具调度](./11_chapter_task_zh.md) — wave/barrier 模型（含 `spawn_subagent` 工具作为 barrier，非 TaskManager API）
 - [第 12 章 子 agent](./12_chapter_subagent_zh.md) — `subagent_runs` 的生命周期、orphan 修复与 `resume` 校验
-- [第 23 章 TUI](./23_chapter_tui_zh.md) — `open_session` / `bootstrap_session` 在启动时序里的位置
+- [第 22 章 TUI](./22_chapter_tui_zh.md) — `open_session` / `bootstrap_session` 在启动时序里的位置
 - [持久化记忆](./03_chapter_memory_zh.md) — Markdown 记忆（非 JSON store）
 - [ARCHITECTURE.md](../ARCHITECTURE.md#12-configuration) — session store 与 token 用量说明
 - [docs/token_usage_schema.md](../docs/token_usage_schema.md) — `token_usages` 列详情

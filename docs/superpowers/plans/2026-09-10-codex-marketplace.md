@@ -18,7 +18,7 @@ Spec: `docs/superpowers/specs/2026-09-10-codex-marketplace-design.md`
    catalog root.
 8. Make bare `plugin install <name>` prefer discovered Codex marketplaces and
    fall back to `claude-plugins-official`.
-9. Update Ch 21 marketplace wording and add a Ch 26 issue-log entry.
+9. Update Ch 20 marketplace wording and add a Ch 25 issue-log entry.
 10. Verify with targeted plugin tests and a manual `marketplace list`.
 
 ## Verification

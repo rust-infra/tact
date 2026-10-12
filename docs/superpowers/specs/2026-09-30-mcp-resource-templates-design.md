@@ -87,4 +87,4 @@ from "the server publishes none", which is the one distinction the resources wor
 
 - `book/08_chapter_mcp_zh.md`: Step 9 gains templates, the code map and Quick Reference rows
   follow, and the §10 gap row is narrowed to Prompts.
-- `book/26_chapter_issue_zh.md`: newest-first entry.
+- `book/25_chapter_issue_zh.md`: newest-first entry.

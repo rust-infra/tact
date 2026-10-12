@@ -50,7 +50,7 @@ sequenceDiagram
 
 `crates/tact_ui/src/interactive.rs` 中的 `run_interactive`（由 `main.rs` 分发）：
 
-1. `tact::config::init()` — 设置 + LLM provider（[Ch 21](./21_chapter_config_zh.md)）。
+1. `tact::config::init()` — 设置 + LLM provider（[Ch 20](./20_chapter_config_zh.md)）。
 2. 打开 SQLite session store，resolve `session_id`（`--session`、`--resume-last` 或新 UUID）。`--resume-last` 与 `--list-sessions` 按当前工作目录的 `root_dir` 过滤 session，忽略其他项目行。`SessionLockGuard` 在争用前重试 `try_lock_session`。这一步连同建行、抢锁、注册、touch 一起由 `session_bootstrap::open_session` 完成，两个前端共用（它返回**已持有**的锁，何时释放由调用方决定）。
 3. 建好 channel / session store / skill registry 等，**先在独立 tokio task 上 spawn `tui::run_tui(...)`** —— 这些都不依赖 Agent，所以 TUI 先可见。
 4. **与 TUI 竞速**地跑 `build_agent_for_interactive(...)`。构建本身（`toolset()`、MCP router、五个 manager、`ToolContext`、`with_ui_channel(agent_tx)`）与 headless 共用 `crates/tact_ui/src/session_bootstrap.rs` 的 `bootstrap_session`；两个前端只在两处不同：启动提示的出口（`Notices`：stderr 或 `RuntimeEvent::Info`），以及有没有 UI 通道（`UiWiring`）。构建期间用户退出（`q` / `/quit`）就**放弃构建**直接返回：这一步最慢的是逐个 MCP server 握手，远端 server 的 OAuth 发现可以耗掉数秒，无条件 await 会让 `q` 看起来像卡住。丢弃构建是安全的——每个 MCP transport 在 drop 时杀掉自己的子进程——代价是这条路不打印 session id / stats，因为根本没有 agent 可总结。
@@ -82,9 +82,9 @@ pub enum UserCommand {
 | 命令 | 来源 | `tui.rs` 中 handler |
 |------|------|---------------------|
 | **`SubmitTask`** | Insert 模式 Enter、slash 命令、`@` 文件选择器提交 —— **Planning/Executing 期间 Enter 改为排队**（Codex 风格"当前任务结束后提交"，见 §6.6） | 重置 `tool_use_counter`、清除 `cancel_flag`、`build_user_message`、`agent_loop`；仅 loop 成功且未取消时发出 `TaskComplete` |
-| **`Cancel`** | `/cancel`，或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环在下次检查时退出；下次 `SubmitTask` 清除 flag（[Ch 18](./18_chapter_agent_loop_zh.md)） |
+| **`Cancel`** | `/cancel`，或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环在下次检查时退出；下次 `SubmitTask` 清除 flag（[Ch 17](./17_chapter_agent_loop_zh.md)） |
 | **`Compact`** | `/compact`（仅 idle 时） | `agent.compact_history(None)` → Responses provider 走原生 `/responses/compact`，其余 provider 走本地摘要（[Ch 5](./05_chapter_compact_zh.md)） |
-| **`QueryBalance`** | `/balance`（仅 DeepSeek/Kimi） | `account::query_once()` → `AccountUpdate` channel（[Ch 25](./25_chapter_protocol_zh.md)） |
+| **`QueryBalance`** | `/balance`（仅 DeepSeek/Kimi） | `account::query_once()` → `AccountUpdate` channel（[Ch 24](./24_chapter_protocol_zh.md)） |
 | **`QueryBackground`** | `/background` 或 `/background <id>` | `tool_context.background_manager.check(id)` → `MdInfo` 输出任务列表 / 单个任务 JSON（[Ch 13](./13_chapter_background_zh.md)） |
 
 ### `/compact` 状态消息
@@ -127,13 +127,13 @@ id=cmp_sanitize]` 只显示 id 的前几个字符）。压缩失败会显示 `Er
 
 `build_user_message`（`crates/tact_ui/src/user_message.rs`）将行内 `![alt](path)` 图片与 `@file` 引用解析为多模态 `ContentBlock`。栅格图使用 config 中 `[ui.vision_image]`：`compress`（默认 `true`）缩小并重编码为 JPEG（`max_edge` 1280、`jpeg_quality` 80）；设 `compress = false` 发送原始文件字节。文件路径用 `tact::tool::safe_path` 解析 — 工作区外引用在 prompt 文本中保持不变。
 
-**需要 vision 能力。** 压缩仅缩小 payload；不会让纯文本模型接受图片。OpenAI 兼容 provider（`openai` / `deepseek` / `kimi`）上 `ContentBlock::Image` 转为 Chat Completions `image_url` part（[Ch 22](./22_chapter_llm_zh.md)）。仅反序列化 `text` content part 的端点返回 HTTP 400（`unknown variant image_url, expected text`）。Anthropic 使用原生 Messages API image block。请用多模态模型，或不附加图片。
+**需要 vision 能力。** 压缩仅缩小 payload；不会让纯文本模型接受图片。OpenAI 兼容 provider（`openai` / `deepseek` / `kimi`）上 `ContentBlock::Image` 转为 Chat Completions `image_url` part（[Ch 21](./21_chapter_llm_zh.md)）。仅反序列化 `text` content part 的端点返回 HTTP 400（`unknown variant image_url, expected text`）。Anthropic 使用原生 Messages API image block。请用多模态模型，或不附加图片。
 
 ---
 
 ## 4. `RuntimeEvent` 处理
 
-协议类型、step 生命周期与任务级转换：[Ch 25](./25_chapter_protocol_zh.md)。
+协议类型、step 生命周期与任务级转换：[Ch 24](./24_chapter_protocol_zh.md)。
 
 TUI 在 `crates/tui/src/widgets/state/app/agent.rs` → `handle_agent_update` 消费更新。
 
@@ -167,7 +167,7 @@ match agent.agent_loop(Some(task_message)).await {
 }
 ```
 
-见 [Ch 18 §7](./18_chapter_agent_loop_zh.md#7-tui-integration)。
+见 [Ch 17 §7](./17_chapter_agent_loop_zh.md#7-tui-integration)。
 
 ---
 
@@ -266,8 +266,8 @@ sticky 或主 Log——仍留在父
 且无 Running 时，Background 在最后一行消失时——最后一个在跑任务会由它的留窗行把条撑住，
 留窗过期后由下一次空闲 tick（≈1 s）把条一起收走，全程没有任何任务事件参与。留窗行也让标题
 同时表达两件事：`[Background] 1 · 2 已完成` 表示 1 个在跑、2 个刚结束。Tasks 可见性仍要求本会话出现过
-`TasksChanged` 且有 pending/in_progress 项（见 [第 19 章](./19_chapter_persistent_tasks_zh.md)、
-[第 25 章](./25_chapter_protocol_zh.md)）。
+`TasksChanged` 且有 pending/in_progress 项（见 [第 18 章](./18_chapter_persistent_tasks_zh.md)、
+[第 24 章](./24_chapter_protocol_zh.md)）。
 
 与另两个域不同，Background 域是**派生**的而非被推送的：没有任何 `RuntimeEvent` 携带它的行，
 因为 `background_run` 的存活卡片本身就持有 task id（`ToolMeta { task_id }`）、命令与启动时刻——
@@ -378,9 +378,9 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 **回合计数与耗时（2026-09-12）：** `⟳` 统计本会话已派发的用户回合——在唯一派发入口（`handlers/skills.rs::dispatch_user_task`，同时服务排队刷新与 skill 派发）自增；断点续传时由 `load_history` 统计已持久化的 user 消息播种。`⇅` 统计当前任务的 agent-loop 迭代：agent 每次循环发一次 `RuntimeEvent::TurnStats { turns_taken, max_turns }`（`crates/tact_extensions/src/agent/mod.rs`），kit 的 `StatusBarComponent` 存入状态，shell 在派发时重置。`max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**——只有 `spawn_subagent` 会设置 cap，主 agent 底栏永远不会显示。耗时在 `add_task_end_separator`（`widgets/state/app/popups.rs`）累计，这是唯一真正冻结 `task_start_time` 的位置；被取消的回合计入，合成分隔线（无 start time）不计入。运行中的实时耗时**不在底栏**：2026-09-14 它一度落在第 1 行紧挨运行，2026-10-05 移到日志的 **task-stats 行**（见上），底栏与顶栏都不再显示任何实时时钟。第 2 行的 `⏱` 只回答"已结束的回合各花多久"（上一回合 + 会话平均），与实时那只钟互不相干。
 
-**输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；长行按字符边界软换行（`wrap_line`，CJK 双宽感知——`Paragraph` 保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（`caret_in_wrapped`）；CJK 感知光标宽度；无批准横幅（agent 的权限询问是 `InteractionRequested` 更新，会以 `InputMode::Select` 打开选择弹窗）。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact_extensions/src/voice/`。
+**输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；长行按字符边界软换行（`wrap_line`，CJK 双宽感知——`Paragraph` 保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（`caret_in_wrapped`）；CJK 感知光标宽度；无批准横幅（agent 的权限询问是 `InteractionRequested` 更新，会以 `InputMode::Select` 打开选择弹窗）。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 20 章](./20_chapter_config_zh.md) 与 `crates/tact_extensions/src/voice/`。
 
-**忙时排队消息**（Codex 风格"当前任务结束后提交"，2026-08-16 起）：agent 处于 `Planning`/`Executing` 时按 Enter 不再弹"busy"提示——文本进入 `App.pending_messages` 队列（输入框清空，提示"消息将在当前任务结束后自动提交（按 esc 立即中断并发送）"及每条排队消息一行 `↳ 消息` **渲染在输入框上方**）。队列在 agent 进入 `Idle`/`Done` 时自动提交（`handlers::skills::flush_pending_when_idle`，主循环在 `agent_rx` 排空后调用）：每条排队消息按序各自派发为一个 `SubmitTask`——命令驱动（`tact-ui/src/driver.rs`）本就会串行处理在途的 `SubmitTask`，因此每条排队消息都成为下一个用户回合。**Esc 保持原语义不变**——始终退出插入模式、队列保留（绝不中断运行中的任务）。**没有"立即发送"操作**：排队消息纯自动——当前任务结束后自动提交。丢弃排队消息的**唯一**途径是 pending 提示行文案后紧接的可点击 **`[Cancel]` 按钮**（鼠标；窄终端隐藏）：只清空队列、不影响运行中的任务。`/cancel`（及 Normal 模式 `c`）与队列无关——只取消在途任务（Idle/Done 时 noop 提示），与功能引入前完全一致；被 `/cancel` 结束的任务同样会触发排队消息的自动提交（与任务自然结束相同）。字符长度校验在入队时执行，超长消息不会进入队列。排队状态位于 `widgets/state/app/pending.rs`；排队块自行绘制背景（无残影，见 Ch 26 2026-08-16 条目）。
+**忙时排队消息**（Codex 风格"当前任务结束后提交"，2026-08-16 起）：agent 处于 `Planning`/`Executing` 时按 Enter 不再弹"busy"提示——文本进入 `App.pending_messages` 队列（输入框清空，提示"消息将在当前任务结束后自动提交（按 esc 立即中断并发送）"及每条排队消息一行 `↳ 消息` **渲染在输入框上方**）。队列在 agent 进入 `Idle`/`Done` 时自动提交（`handlers::skills::flush_pending_when_idle`，主循环在 `agent_rx` 排空后调用）：每条排队消息按序各自派发为一个 `SubmitTask`——命令驱动（`tact-ui/src/driver.rs`）本就会串行处理在途的 `SubmitTask`，因此每条排队消息都成为下一个用户回合。**Esc 保持原语义不变**——始终退出插入模式、队列保留（绝不中断运行中的任务）。**没有"立即发送"操作**：排队消息纯自动——当前任务结束后自动提交。丢弃排队消息的**唯一**途径是 pending 提示行文案后紧接的可点击 **`[Cancel]` 按钮**（鼠标；窄终端隐藏）：只清空队列、不影响运行中的任务。`/cancel`（及 Normal 模式 `c`）与队列无关——只取消在途任务（Idle/Done 时 noop 提示），与功能引入前完全一致；被 `/cancel` 结束的任务同样会触发排队消息的自动提交（与任务自然结束相同）。字符长度校验在入队时执行，超长消息不会进入队列。排队状态位于 `widgets/state/app/pending.rs`；排队块自行绘制背景（无残影，见 Ch 25 2026-08-16 条目）。
 
 ### 6.7 Markdown
 
@@ -465,7 +465,7 @@ UI 字符串集中在 `crates/agent_tui_kit/src/i18n.rs`（`Language::English` /
 
 `apply_language` 与 `toggle_language` 的分工不是风格问题：`self.language` 是**渲染**路径读的，而持有 `Messages` 快照的组件（thinking / stream / tools）在构造时就冻结了语言，所以两者都必须经 `apply_language` 把新快照推下去，否则日志里已存在的行会在旧语言的外壳里被重绘。`/lang` 之所以要拆出静默版，正是因为它的持久化步骤承担了播报。
 
-第三个 `[ui]` 偏好是 `/hook-output`（`[ui] hook_output`，布尔，默认 `true`；语义见 [Ch 21 §5](./21_chapter_config_zh.md)）：它走 `Ctrl+T` 那种形状——翻转 → 写盘 → **一条**消息说清「现在是开还是关」和「存了没存」——而不是 `/theme` 那种「先静默应用、再问要不要保存」。差别是信息结构上的：布尔没有列表可选，就没有 picker step 可以挂那个问题。`App::toggle_hook_output` 只改 `self.hook_output`（**不**回收日志里已经画出来的行，它管的是之后进日志的东西），再经 `App::persist_hook_output_choice` 落盘并播报。
+第三个 `[ui]` 偏好是 `/hook-output`（`[ui] hook_output`，布尔，默认 `true`；语义见 [Ch 20 §5](./20_chapter_config_zh.md)）：它走 `Ctrl+T` 那种形状——翻转 → 写盘 → **一条**消息说清「现在是开还是关」和「存了没存」——而不是 `/theme` 那种「先静默应用、再问要不要保存」。差别是信息结构上的：布尔没有列表可选，就没有 picker step 可以挂那个问题。`App::toggle_hook_output` 只改 `self.hook_output`（**不**回收日志里已经画出来的行，它管的是之后进日志的东西），再经 `App::persist_hook_output_choice` 落盘并播报。
 
 ### 6.11 Log 消息模型
 
@@ -496,7 +496,7 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 
 hook 块用的是 `LOG_TOOL_BLOCK_INDENT` 而不是 `LOG_TOOL_INDENT`：后者属于被工具卡覆盖掉的空白占位行，屏幕上根本没有这一列，按它对齐会让竖条停在每条工具行左边 4 列（详见 [第 9 章 §10](./09_chapter_hook_zh.md)）。
 
-这两个 hook kind 还受 `[ui] hook_output`（默认 `true`，`/hook-output` 翻转）门控——关掉就**一行都不进**日志。门设在行被 append 的那一刻（`App::append_hook_context_markdown` / `App::apply_hook_status`），而不是渲染层：上面这张表的 physical 索引是选区、卡片与滚动锚点的键，一行「画的时候跳过」仍然会占掉一个索引。参见 [Ch 21 §5](./21_chapter_config_zh.md)。
+这两个 hook kind 还受 `[ui] hook_output`（默认 `true`，`/hook-output` 翻转）门控——关掉就**一行都不进**日志。门设在行被 append 的那一刻（`App::append_hook_context_markdown` / `App::apply_hook_status`），而不是渲染层：上面这张表的 physical 索引是选区、卡片与滚动锚点的键，一行「画的时候跳过」仍然会占掉一个索引。参见 [Ch 20 §5](./20_chapter_config_zh.md)。
 
 `SystemMsgStyle` 是独立的视觉 metadata（`Default`、`Success`、`Error`、`Warning`、`Accent`）。只有调用方已经确认该行是 system 后，显式可见前缀才会用于选择颜色。
 
@@ -699,7 +699,7 @@ sequenceDiagram
     R->>R: persist visual_start for mouse
 ```
 
-交叉引用：[Ch 25 Agent–TUI Protocol](./25_chapter_protocol_zh.md) 消息类型与状态转换；[§4 RuntimeEvent 处理](#4-runtimeevent-处理) TUI 特定效果；[docs/tui_rendering.md §6](../docs/tui_rendering.md) 扩展配方。
+交叉引用：[Ch 24 Agent–TUI Protocol](./24_chapter_protocol_zh.md) 消息类型与状态转换；[§4 RuntimeEvent 处理](#4-runtimeevent-处理) TUI 特定效果；[docs/tui_rendering.md §6](../docs/tui_rendering.md) 扩展配方。
 
 ---
 
@@ -734,7 +734,7 @@ sequenceDiagram
 
 输入框与用户 log 行经 `render/slash_style.rs` 高亮 `/skill-name`（accent+bold）与 args（`theme.fg`）。完整发现路径与 `$ARGUMENTS` 规则：[Ch 2](./02_chapter_skill_zh.md)。与模型 mid-turn 调用 `load_skill` 分离。
 
-`theme.rs` 中十二个 built-in 主题：`dark`、`light`、`solarized-dark/light`、`gruvbox-dark`、`nord`、`retro`、`kawaii`、`japanese`、`brutal`、`ink`、`ink-light`。初始主题来自 config（[Ch 21](./21_chapter_config_zh.md)）；`/theme` 选择、`Ctrl+T` 循环。选完会像 `/model` 一样问一句「将主题保存到配置文件？」（默认 **否**），选「是」写 `[ui] theme`（`tact::config::persist_theme`，`toml_edit` 只改这一行、保留行尾注释），没有配置文件或选「否」/Esc 时只对本次会话生效。
+`theme.rs` 中十二个 built-in 主题：`dark`、`light`、`solarized-dark/light`、`gruvbox-dark`、`nord`、`retro`、`kawaii`、`japanese`、`brutal`、`ink`、`ink-light`。初始主题来自 config（[Ch 20](./20_chapter_config_zh.md)）；`/theme` 选择、`Ctrl+T` 循环。选完会像 `/model` 一样问一句「将主题保存到配置文件？」（默认 **否**），选「是」写 `[ui] theme`（`tact::config::persist_theme`，`toml_edit` 只改这一行、保留行尾注释），没有配置文件或选「否」/Esc 时只对本次会话生效。
 
 ---
 
@@ -759,7 +759,7 @@ DeepSeek/Kimi 启动时后台 task 查询一次余额并经 account channel 发�
 
 ## 9. 通知与配置
 
-桌面通知在 `Agent::emit_update` 内对 `TaskComplete` 与 `StepFailed` 触发，当 `config::settings().agent.notifications_enabled` 为 true（[Ch 17](./17_chapter_notify_zh.md)）。
+桌面通知在 `Agent::emit_update` 内对 `TaskComplete` 与 `StepFailed` 触发，当 `config::settings().agent.notifications_enabled` 为 true（[Ch 16](./16_chapter_notify_zh.md)）。
 
 TUI 本身不对流式事件直接调用 notification API。
 
@@ -786,8 +786,8 @@ TUI 本身不对流式事件直接调用 notification API。
 | `crates/tui/src/theme.rs` | 配色方案（从 kit re-export） |
 | `crates/agent_tui_kit` | 可复用 agent-TUI kit：纯渲染面板、状态模型、widgets、bridge 契约（设计 `docs/superpowers/specs/2026-08-18-tui-component-library-design.md`） |
 | `crates/agent_tui_kit/examples/mock_agent.rs` | Headless 端到端示例：`RuntimeEvent` 序列 → kit 状态 → 渲染帧（`cargo run -p agent_tui_kit --example mock_agent`） |
-| `tact_protocol` | `RuntimeEvent`、`AccountUpdate`、`BalanceInfo`（[Ch 25](./25_chapter_protocol_zh.md)） |
-| `tact_view` | `UserCommand`、`AgentErrorKind`——View 契约（[Ch 25](./25_chapter_protocol_zh.md)） |
+| `tact_protocol` | `RuntimeEvent`、`AccountUpdate`、`BalanceInfo`（[Ch 24](./24_chapter_protocol_zh.md)） |
+| `tact_view` | `UserCommand`、`AgentErrorKind`——View 契约（[Ch 24](./24_chapter_protocol_zh.md)） |
 | `docs/tui_rendering.md` | 扩展渲染参考与扩展指南 |
 | `docs/tool_rendering.md` | Tool block 数据流与迁移说明 |
 
@@ -809,9 +809,9 @@ TUI 本身不对流式事件直接调用 notification API。
 
 ## 相关文档
 
-- [Agent Main Loop](./18_chapter_agent_loop_zh.md) — TUI 驱动内容
-- [Configuration](./21_chapter_config_zh.md) — 主题与启动标志
-- [LLM Providers](./22_chapter_llm_zh.md) — 流式与余额 API
+- [Agent Main Loop](./17_chapter_agent_loop_zh.md) — TUI 驱动内容
+- [Configuration](./20_chapter_config_zh.md) — 主题与启动标志
+- [LLM Providers](./21_chapter_llm_zh.md) — 流式与余额 API
 - [Permission Model](./10_chapter_permission_zh.md) — 选择提示流程
 - [docs/tui_rendering.md](../docs/tui_rendering.md) — 扩展配方与性能分析
 - [docs/tool_rendering.md](../docs/tool_rendering.md) — tool block 渲染管线

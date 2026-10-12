@@ -217,7 +217,7 @@ LLM "记住"了命令*应该*输出什么，并用它替换了失败结果。这
 
 - [上下文压缩](./05_chapter_compact_zh.md) — 触发场景 1 和 2 的机制
 - [错误恢复](./06_chapter_recovery_zh.md) — 压缩作为 prompt-too-long 的恢复策略
-- [Agent 主循环](./18_chapter_agent_loop_zh.md) — 压缩后上下文重建的位置
+- [Agent 主循环](./17_chapter_agent_loop_zh.md) — 压缩后上下文重建的位置
 - [系统提示](./04_chapter_prompt_zh.md) — 截断占位符引导所在
 - [工具系统](./07_chapter_tool_zh.md) — 验证用的工具后钩子
 - `crates/tact_extensions/src/agent/mod.rs` — `compact_history_with_mode` 实现

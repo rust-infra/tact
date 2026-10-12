@@ -81,5 +81,5 @@ over. `./scripts/check-rust.sh` → `Rust checks passed.`; whole-workspace tests
 
 - `docs/token_usage_schema.md` § Per-Turn Stats Line → "The mascot on the live
   row" (line ~432).
-- `book/23_chapter_tui_zh.md` (the live-stats mascot paragraph, ~§6.6).
-- `book/26_chapter_issue_zh.md` — the 2026-10-12 `移植 main #87：…吉祥物` entry.
+- `book/22_chapter_tui_zh.md` (the live-stats mascot paragraph, ~§6.6).
+- `book/25_chapter_issue_zh.md` — the 2026-10-12 `移植 main #87：…吉祥物` entry.

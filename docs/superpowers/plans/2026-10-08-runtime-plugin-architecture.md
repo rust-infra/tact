@@ -113,7 +113,7 @@ suite. The driver's fallback path — which the shared builders no longer exerci
 - All plugin languages use the same serialized protocol concepts and centralized permission path.
 - Every new async test that waits on a channel uses a bounded timeout.
 - Run only one Cargo test/build/clippy command at a time in this workspace.
-- Keep `book/` Chinese-only; sync `ARCHITECTURE.md`, protocol/trajectory docs, and `book/26_chapter_issue_zh.md` when behavior becomes user-visible.
+- Keep `book/` Chinese-only; sync `ARCHITECTURE.md`, protocol/trajectory docs, and `book/25_chapter_issue_zh.md` when behavior becomes user-visible.
 - Do not commit implementation changes unless the user explicitly requests commits.
 
 ## Review Focus
@@ -386,7 +386,7 @@ suite. The driver's fallback path — which the shared builders no longer exerci
 - Modify: `ARCHITECTURE.md`
 - Create: `docs/plugin_protocol.md`
 - Create: `docs/trajectory.md`
-- Modify: `book/26_chapter_issue_zh.md` if user-visible behavior changed
+- Modify: `book/25_chapter_issue_zh.md` if user-visible behavior changed
 - Test: repository dependency and protocol integration tests
 
 - [x] Remove every Agent-to-TUI channel and replace it with RuntimeEvent/EventTransport.

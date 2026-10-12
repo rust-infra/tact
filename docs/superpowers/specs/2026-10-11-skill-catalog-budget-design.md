@@ -209,8 +209,8 @@ Still no CLI flag, like `skill_dirs`.
   `resolve_skill_disable_from_toml`.
 - Docs: [Ch 02](../../../book/02_chapter_skill_zh.md) §1 (the per-turn table), §5 (`describe_available`
   signature), §7 (the `/skill` table and the new verbs), §10 (three rows close),
-  [Ch 21](../../../book/21_chapter_config_zh.md) (the two keys),
-  [Ch 26](../../../book/26_chapter_issue_zh.md) entry.
+  [Ch 20](../../../book/20_chapter_config_zh.md) (the two keys),
+  [Ch 25](../../../book/25_chapter_issue_zh.md) entry.
 
 ## Related
 

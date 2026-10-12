@@ -2,7 +2,7 @@
 
 本章说明 Tact 的 agent 循环如何在**不丢失会话**的前提下扛过失败：瞬态传输错误用指数退避重试，过大的 prompt 触发上下文压缩，被截断的模型输出则在句中续写。分类逻辑在 `crates/tact_extensions/src/recovery.rs`；决策接入 `crates/tact_extensions/src/agent/mod.rs` 中的 `agent_loop`。
 
-完整循环结构见 [Agent 主循环](./18_chapter_agent_loop_zh.md)（英文）。
+完整循环结构见 [Agent 主循环](./17_chapter_agent_loop_zh.md)（英文）。
 
 恢复与 [上下文压缩](./05_chapter_compact_zh.md) 协同工作——三种策略之一**就是**压缩。
 

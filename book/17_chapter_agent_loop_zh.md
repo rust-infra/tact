@@ -112,7 +112,7 @@ Unix 终止 child process group，并在 agent loop 返回前 flush 已读输出
 
 `emit_update` 在可选 `ui_tx` 通道上发送事件，并为以下触发桌面通知：
 
-- `TaskComplete` → `notify_task_complete`（[第 17 章](./17_chapter_notify_zh.md)）
+- `TaskComplete` → `notify_task_complete`（[第 16 章](./16_chapter_notify_zh.md)）
 - `StepFailed` → `notify_step_failed`
 
 大多数生命周期事件（`StepAdded`、`StepStarted`、`StepFinished`、
@@ -208,7 +208,7 @@ UserCommand::Cancel => {
 | 缺口 | 详情 |
 |------|------|
 | **`TaskComplete` 启发式** | TUI 在未取消时用 context 中最后一条消息；非显式最后 assistant 文本 |
-| **Headless 路径** | 无 `ui_tx`；无 `TaskComplete` emit — stdout 后单次直接 `notify_task_complete`（[第 17 章](./17_chapter_notify_zh.md)） |
+| **Headless 路径** | 无 `ui_tx`；无 `TaskComplete` emit — stdout 后单次直接 `notify_task_complete`（[第 16 章](./16_chapter_notify_zh.md)） |
 | **Agent 上无专用 cancel API** | 只有 atomic flag；子 agent 有独立 flag |
 | **`PlanGenerated` 已弃用** | `#[deprecated(since = "0.19.0")]`；TUI 处理器保留 — plan 面板由 `StepAdded` 驱动 |
 
@@ -222,6 +222,6 @@ UserCommand::Cancel => {
 - [任务与工具调度](./11_chapter_task_zh.md) — 循环的工具分支
 - [Subagents](./12_chapter_subagent_zh.md) — 嵌套 `agent_loop`
 - [ARCHITECTURE.md](../ARCHITECTURE.md) — §2 Agent Task Execution Flow
-- [Configuration](./21_chapter_config_zh.md) — `max_tokens`、`model_context_window`、`thinking_budget`
-- [LLM Providers](./22_chapter_llm_zh.md) — `stream_message` 适配器
-- [Terminal UI](./23_chapter_tui_zh.md) — `TaskComplete` 与通道接线
+- [Configuration](./20_chapter_config_zh.md) — `max_tokens`、`model_context_window`、`thinking_budget`
+- [LLM Providers](./21_chapter_llm_zh.md) — `stream_message` 适配器
+- [Terminal UI](./22_chapter_tui_zh.md) — `TaskComplete` 与通道接线
