@@ -38,7 +38,6 @@ use crate::mcp::MCPToolRouter;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PermissionChoice {
     AllowOnce,
-    AllowForSession,
     AlwaysAllow,
     AlwaysAllowProgram,
     Deny,
@@ -50,11 +49,15 @@ enum PermissionChoice {
 /// the list is stated once. `Deny` keeps index 1 and "always allow this tool"
 /// keeps index 2, because those positions are muscle memory; every later option
 /// is appended rather than inserted.
-const PERMISSION_OPTIONS: [&str; 5] = [
+///
+/// "Allow for this session" used to sit at index 3. It was removed because it
+/// generated the exact same narrow rule as "Always allow this tool" and
+/// differed only in never reaching settings — one decision behind two
+/// buttons — so the pattern option is the only appended one left.
+const PERMISSION_OPTIONS: [&str; 4] = [
     "Allow once",
     "Deny",
     "Always allow this tool",
-    "Allow for this session",
     "Always allow this pattern",
 ];
 
@@ -90,8 +93,7 @@ fn permission_choice_for(selection: Option<usize>) -> PermissionChoice {
     match selection {
         Some(0) => PermissionChoice::AllowOnce,
         Some(2) => PermissionChoice::AlwaysAllow,
-        Some(3) => PermissionChoice::AllowForSession,
-        Some(4) => PermissionChoice::AlwaysAllowProgram,
+        Some(3) => PermissionChoice::AlwaysAllowProgram,
         _ => PermissionChoice::Deny,
     }
 }
@@ -1191,22 +1193,6 @@ impl Agent {
                                             permission_label = Some("Allow once".to_string());
                                             PreparedState::Run
                                         }
-                                        PermissionChoice::AllowForSession => {
-                                            permission_label =
-                                                Some("Allow for this session".to_string());
-                                            let outcome = self
-                                                .runtime
-                                                .permission_manager
-                                                .allow_tool_for_session(
-                                                    stable_name,
-                                                    permit_prompt,
-                                                    &tool_use.input,
-                                                );
-                                            if !outcome.is_recorded() {
-                                                self.report_unrecorded_approval(stable_name);
-                                            }
-                                            PreparedState::Run
-                                        }
                                         PermissionChoice::AlwaysAllowProgram => {
                                             permission_label =
                                                 Some("Always allow this pattern".to_string());
@@ -1989,10 +1975,6 @@ mod tests {
         );
         assert_eq!(
             permission_choice_for(Some(3)),
-            PermissionChoice::AllowForSession
-        );
-        assert_eq!(
-            permission_choice_for(Some(4)),
             PermissionChoice::AlwaysAllowProgram
         );
 
@@ -2041,7 +2023,6 @@ mod tests {
             PermissionChoice::AllowOnce,
             PermissionChoice::Deny,
             PermissionChoice::AlwaysAllow,
-            PermissionChoice::AllowForSession,
             PermissionChoice::AlwaysAllowProgram,
         ];
         assert_eq!(PERMISSION_OPTIONS.len(), expected.len());

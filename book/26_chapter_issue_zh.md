@@ -4,6 +4,24 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-11 — 移植 main #89：权限弹窗去掉「Allow for this session」选项
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（用户可见：权限弹窗少一个选项；索引 4→3 只影响被追加的 pattern 项） |
+| **Related** | `crates/tact_extensions/src/agent/tool_dispatch.rs`、`crates/tact_extensions/src/permission/mod.rs` |
+
+**背景：** main 的 #89（`89e3ed47`）删掉了「Allow for this session」，理由是它与「Always allow this tool」生成**完全相同**的窄规则、只是不进 settings——同一个决定配了两个按钮。这条 PR 写在迁移前的布局（`crates/tact/src/permission/…`），所以本次是**移植**到我这边的新布局（`crates/tact_extensions/…`），不是合并。
+
+**改了什么（与 #89 对齐）：** 删除 `PermissionChoice::AllowForSession` 变体与其在权限梯级里的分支；`PERMISSION_OPTIONS` 由 5 项变 4 项（`Deny` 仍在 1、`Always allow this tool` 仍在 2——肌肉记忆位置不动，被追加的 pattern 项由 4 变 3）；`permission_choice_for(Some(3))` 改为映射到 `AlwaysAllowProgram`；删除 `PermissionManager::allow_tool_for_session`；两处索引测试同步到 4 项世界。
+
+**保留的安全守卫：** #89 明确要保住那条「规则无法收窄时绝不退化成裸放行」的测试（历史上 `bash` 命令里一个 `:` 曾能一次批准此后所有命令）。它改挂到存活下来的 `allow_tool_with_input`，命名为 `an_unnarrowable_approval_records_nothing`——**移植过程中我一度把它连带删掉，是回看 #89 的说明后补回的**，这点如实记下。
+
+**Verification：** 见本轮 `./scripts/check-rust.sh` 结果与全仓计数（写入提交消息）。
+
+**Pointers:** `crates/tact_extensions/src/agent/tool_dispatch.rs::{PERMISSION_OPTIONS, permission_choice_for}`、`crates/tact_extensions/src/permission/mod.rs::tests::an_unnarrowable_approval_records_nothing`、来源 `main@89e3ed47`。
+
+
 ## 1. 2026-10-11 — 弹窗只剩一个 id 空间：两个字段合并为一个协议 `RequestId`（#15）
 
 | Field | Value |
