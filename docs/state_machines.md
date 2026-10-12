@@ -151,7 +151,7 @@ stateDiagram-v2
 
 - `blocked_by`: list of task IDs that must be completed before this task is unblocked.
 - `blocks`: list of task IDs that this task blocks.
-- When a task is marked `Completed`, its ID is removed from all other tasks' `blocked_by` lists (`clear_dependency`).
+- When a task is marked `Completed`, its ID is removed from all other tasks' `blocked_by` lists (`crates/tact_extensions/src/task/mod.rs`, pinned by `completing_task_clears_blocked_by`).
 - Rendering markers: `[ ]` Pending, `[>]` InProgress, `[x]` Completed, `[-]` Deleted.
 
 ---

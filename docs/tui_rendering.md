@@ -370,7 +370,7 @@ Popups usually:
 | `visual_cache` | `log_scroll` | `messages.len()` or width changes |
 | `phys_to_logical_cache` | `log_scroll` | `messages.len()` changes |
 | code block `styled` | `CodeBlock` | block creation |
-| diff preview rows | `DiffBlock` | block creation |
+| diff preview rows | `DiffPopup` (`crates/agent_tui_kit/src/render/popups/diff_popup.rs`) | popup preparation — `prepare_diff_popup` lazy-loads the `git diff` / file read and caches it on the popup state |
 
 ### 10.3 Viewport Clipping
 
