@@ -221,7 +221,7 @@ graph TD
 ```rust
 RuntimeEvent::InteractionRequested {
     request: InteractionRequest::Select {
-        request_id,  // 经反向通道应答（`UiResponse::Selected`）
+        request_id,  // 经反向通道应答（`InteractionResponse::Selected { request_id, values }`）
         prompt,      // 例如 "Allow bash: {\"command\":\"npm test\"}"
         options,     // 候选选项
         log_confirm, // false，避免选择项污染日志

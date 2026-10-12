@@ -2,7 +2,7 @@
 
 本章文档化 `tact_protocol` crate：agent 运行时与终端 UI 之间交换的消息类型，以及各 `RuntimeEvent` variant 如何在两侧驱动状态转换。
 
-实现：`crates/tact_protocol/src/agent.rs`、`crates/tact_protocol/src/biz.rs`。TUI 消费者：`crates/tui/src/widgets/state/app/agent.rs`。Agent 发出者：`crates/tact_extensions/src/agent/tool_dispatch.rs`、`crates/tact_llm`（流式）。
+实现：`crates/tact_protocol/src/agent.rs`、`crates/tact_protocol/src/biz.rs`、`crates/tact_protocol/src/runtime.rs`、`crates/tact_protocol/src/interaction.rs`。反向命令（`UserCommand`）在 View 契约 crate：`crates/tact_view/src/lib.rs`。TUI 消费者：`crates/tui/src/widgets/state/app/agent.rs`。Agent 发出者：`crates/tact_extensions/src/agent/tool_dispatch.rs`、`crates/tact_llm`（流式）。
 
 相关章节：[Ch 18 Agent Loop](./18_chapter_agent_loop_zh.md)、[Ch 23 TUI](./23_chapter_tui_zh.md)。其他状态机（输入模式、权限、任务）见 [docs/state_machines.md](../docs/state_machines.md)。
 
@@ -14,17 +14,18 @@
 graph LR
     Agent[Agent runtime] -->|RuntimeEvent| TUI[TUI App]
     TUI -->|UserCommand| Driver[tact-ui driver]
-    TUI -->|UiResponse| Driver
     Account[account service] -->|AccountUpdate| TUI
 ```
 
 | Channel | 类型 | 方向 | 用途 |
 |---------|------|------|------|
-| `agent_tx` / `agent_rx` | `RuntimeEvent` | Agent → TUI | 进度、流式、元数据、选择请求 |
-| `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → driver | 提交任务、取消、余额查询、UI 响应 |
+| `agent_tx` / `agent_rx` | `RuntimeEvent` | Agent → TUI | 进度、流式、元数据、交互请求 |
+| `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → driver | 提交任务、取消、交互应答、余额 / 统计查询、MCP / hooks 操作 |
 | `account_tx` / `account_rx` | `AccountUpdate` | Account → TUI | 余额 / 配额（与 agent 协议分离） |
 
-所有通道均用 `tokio::sync::mpsc::unbounded_channel`。`RuntimeEvent` 是**纯数据**：`InteractionRequested` 内的 `InteractionRequest::Select` / `MultiSelect` 携带 `request_id` 而非内嵌的 `oneshot::Sender`，因此该 enum 不再携带传输句柄（后续可自由派生 `Serialize`/`Clone`）。TUI 通过反向通道发送 `UserCommand::UiResponse` 回 driver，driver 再经运行时共享的 [`UiResponder`] 注册表（`crates/tact_extensions/src/ui_responder.rs`）路由给等待中的调用方（父 agent 或 subagent）。
+所有通道均用 `tokio::sync::mpsc::unbounded_channel`。`RuntimeEvent` 是**纯数据**：`InteractionRequested` 内的 `InteractionRequest::Select` / `MultiSelect` 携带 `request_id` 而非内嵌的 `oneshot::Sender`，因此该 enum 不再携带传输句柄（后续可自由派生 `Serialize`/`Clone`）。
+
+反向方向只有一条通道：`UserCommand`（[§2](#usercommand)）。回答交互请求是其中的 `UserCommand::Runtime(RuntimeCommand::RespondInteraction { response: InteractionResponse })`。driver 先问会话的 Kernel interaction broker；broker 没有该 `request_id` 时才交给运行时共享的 [`UiResponder`] 注册表（`crates/tact_extensions/src/ui_responder.rs`）路由给等待中的调用方（父 agent 或 subagent）。应答走哪条路由由"哪个 id 空间接受它"决定，而不是在 driver 里按提示来源猜测。
 
 交互模式下，共享的 `UiResponder` 还会暴露一个有序 pending snapshot；TUI 从该 snapshot reconcile `InputMode::Select`，并把 `InteractionRequested` 当作 wake-up hint。没有 broker 的 headless/tests 仍以该事件为权威。
 
@@ -82,25 +83,63 @@ pub enum ThinkingChunk {
 
 ### `UserCommand`
 
+定义在 View 契约 crate：`crates/tact_view/src/lib.rs`（`/// User commands sent from the TUI to the Agent.`）。它是 TUI 的视图模型类型，不是跨语言的 Plugin Protocol，所以不放在 `tact_protocol`。
+
 ```rust
 pub enum UserCommand {
-    SubmitTask(String),
-    Cancel,
-    QueryBalance,
-    UiResponse(UiResponse), // 回答 InteractionRequested
+    SubmitTask(String),                        // 提交一个自然语言任务
+    Cancel,                                    // 取消进行中的任务（协作式 cancel_flag）
+    Compact,                                   // 压缩会话历史（/compact）
+    QueryBalance,                              // 查询账户余额
+    QueryStats,                                // 查询会话统计（/stats）
+    QueryBackground(Option<String>),           // 后台任务状态；None 列出全部（/background [id]）
+    SetPermissionMode(String),                 // 设置权限模式（/permission 弹窗）
+    SetThinkingBudget(usize),                  // 设置本会话 thinking budget（/model 弹窗）
+    SetReasoningEffort(Option<String>),        // 设置 / 清除 reasoning effort（/model 弹窗）
+    SetModel(String),                          // 设置本 agent 会话的模型（/model 弹窗）
+    SubagentFinishedNotification { child_id, summary, success }, // 后台 subagent 完成
+    CancelSubagent { child_id },               // 取消运行中的后台 subagent
+    McpAuth { server },                        // MCP 远程服务器交互式 OAuth（/mcp auth）
+    McpList,                                   // 列出 MCP server 与实时状态（/mcp list）
+    McpPrompts { server: Option<String> },     // 已连接 server 发布的 prompt（/mcp prompts）
+    RunMcpPrompt { server, name, arguments },  // 取一个 MCP prompt 并作为任务运行
+    HooksList,                                 // 列出 hook 与审查状态（/hooks list）
+    HooksTrust { all, source },                // 批准待审查 hook（/hooks trust）
+    HooksForget,                               // 撤销所有 hook 批准（/hooks forget --all）
+    Runtime(RuntimeCommand),                   // 客户端中立命令（迁移中的 catch-all）
 }
 ```
 
-### `UiResponse`
+共 20 个 variant。几个约定：
+
+- 设置类（`SetPermissionMode` / `SetThinkingBudget` / `SetReasoningEffort` / `SetModel`）只改内存中的会话；持久化到 config 是另一条可选流程。
+- `QueryStats` / `QueryBackground` 由 driver 主循环从共享快照直接回答，**不**等 in-flight 任务，弹出 read-out popup 而不是往会话里塞消息。
+- `RunMcpPrompt.arguments` 是 `BTreeMap<String, String>`（源里写全了类型，这里从简）。
+- `SubagentFinishedNotification` 由 driver 内部投递，不是用户操作。
+- 最后一个是迁移期的客户端中立出口：`RuntimeCommand`（`crates/tact_protocol/src/runtime.rs`）的 `StartRun { run_id, input }`、`CancelRun { run_id }`、`RespondInteraction { response }`、`Subscribe { from_sequence }`、`Resume { trajectory_id, from_sequence }`、`Invoke { capability, input }`、`Shutdown` 都从这里进。
+
+### `InteractionResponse` 与应答路径
+
+**View 侧不再有自己的一套选择应答 enum** —— 它的旧名字在 `crates/` 里已经搜不到任何定义或使用（移除过程记在 [Ch 26](./26_chapter_issue_zh.md)）。**View 发回的是协议自己的 `InteractionResponse`**（`crates/tact_protocol/src/interaction.rs`），与请求同一 crate：
 
 ```rust
-pub enum UiResponse {
-    Select { request_id, choice: Option<usize> },
-    MultiSelect { request_id, choices: Option<Vec<usize>> },
+pub enum InteractionResponse {
+    Approved { request_id: RequestId },                  // 批准权限请求
+    Rejected { request_id: RequestId },                  // 拒绝权限请求
+    Selected { request_id, values: Vec<String> },        // Select / MultiSelect 的选项
+    Text { request_id, value: String },                  // Input 的文本
+    Cancelled { request_id: RequestId },                 // 弹窗关闭 / Esc
 }
 ```
 
-`UiResponse` 是回答选择请求的反向消息，携带请求的 `request_id`，以便运行时路由到精确的等待方。driver 在 `user_cmd_rx` 上收到它，**不**等待 in-flight 任务，直接交给共享的 `UiResponder::handle_response`，由其按 id 触发等待方（父 agent 或 subagent）。
+它经 `UserCommand::Runtime(RuntimeCommand::RespondInteraction { response })` 回到 driver，driver 再按下面的顺序路由：
+
+1. 先问会话的 **Kernel interaction broker**（`respond` 返回 `false` 表示没有这个 id 在等）。
+2. 没人接，就交给共享的 **`UiResponder`**（`UiResponder::respond(response) -> bool`，`crates/tact_extensions/src/ui_responder.rs`）；它的 pending 表用数字 id，应答里的 `RequestId` 字符串解析回数字后查表。
+
+两条路由并存是迁移中的事实，不是二选一的抽象：broker 的 id 空间属于**调用方**（插件自己选的 `RequestId`），`UiResponder` 的 id 由它自己分配，所以由"哪个接受"决定去向。
+
+**为什么必须带 `request_id`：** 运行时要用它把应答送到**那一个**等待方 —— 父 agent、某个 subagent、或某个插件 invocation。driver 在 `user_cmd_rx` 上收到应答时**不**等待 in-flight 任务：它没有任何共享的可变 UI 状态要读，直接转发即可，这也是权限弹窗能在任务中途立刻被应答的原因。
 
 ### `PlanStep`
 
@@ -206,12 +245,12 @@ graph TD
     c_exec --> x_exec[仍为 Executing]
 ```
 
-> - `Planning`：`UserCommand::SubmitTask` 已发送。`Text` / `Thinking` 可能在首个 `StepAdded` 之前到达。
+> - `Planning`：`UserCommand::Runtime(RuntimeCommand::StartRun)` 已发送。`Text` / `Thinking` 可能在首个 `StepAdded` 之前到达。
 > - `Executing`：`UserCommand::Cancel` 设置 `cancel_flag` 并发出 `Info` —— Status 仍为 busy，直到 `Cancelled` 回到 `Idle`。
 
 | 从 | 到 | 触发 | 说明 |
 |----|-----|------|------|
-| `Idle` | `Planning` | Insert 模式按 `Enter` | 清空 `app.plan.steps`；发送 `UserCommand::SubmitTask` |
+| `Idle` | `Planning` | Insert 模式按 `Enter` | 清空 `app.plan.steps`；发送 `UserCommand::Runtime(RuntimeCommand::StartRun)` |
 | `Planning` | `Executing` | 首个 `RuntimeEvent::StepAdded` | `ensure_executing_status`；`total` 来自 plan 长度 |
 | `Executing` | `Executing` | `StepStarted { idx, … }` | 更新 `current_step`；可有并发 `ActiveToolBlock`s |
 | `Executing` | `Done` | `TaskComplete` | 设置 `task_done_time`；冻结 cost timer |
@@ -265,7 +304,7 @@ graph TD
     c_select -->|Enter 确认 / Esc 取消| z_normal
 ```
 
-> `Select` 到达时 `Status = Executing`。Broker 模式：由 pending snapshot 推导；Legacy：`InteractionRequested` → `UiResponse`。
+> `Select` 到达时 `Status = Executing`。Broker 模式：由 pending snapshot 推导；Legacy/headless：`InteractionRequested` 事件驱动弹窗，应答经 `UiResponder::respond(InteractionResponse)`。
 
 ### 4.4 `Executing` 内逻辑阶段
 
@@ -291,7 +330,7 @@ graph TD
 |------|----------|------------|
 | **内容产出** | `StepAdded`、`StepStarted`、`StepFinished`、`StepFailed`、`Text`、`Thinking`、`Info`、`TaskComplete`、`Cancelled`、`Error`、`InteractionRequested`、`TasksChanged` | 优先 `ThinkingChunk::Finished` 关闭 thinking；其他内容更新上 safety-flush；移除 loading placeholder；变更 log / plan |
 | **仅元数据** | `TokenUsage(TokenUsageInfo)`、`ModelInfo(ModelCallParams)` | 仅更新状态栏；保留 loading placeholder；**不**关闭已开 thinking 区域 |
-| **请求–响应** | `InteractionRequested { request: InteractionRequest::Select { … } }`、`InteractionRequested { request: InteractionRequest::MultiSelect { … } }` | Broker 模式：`snapshot()` 是权威，`InteractionRequested` 仅作 wake-up hint。Legacy/headless：经共享 `UiResponder`（反向 `UiResponse`）阻塞等待用户选择。 |
+| **请求–响应** | `InteractionRequested { request: InteractionRequest::Select { … } }`、`InteractionRequested { request: InteractionRequest::MultiSelect { … } }` | Broker 模式：`snapshot()` 是权威，`InteractionRequested` 仅作 wake-up hint。Legacy/headless：经共享 `UiResponder`（反向的 `InteractionResponse`）阻塞等待用户选择。 |
 
 Thinking 生命周期显式：`ThinkingChunk::Started` 打开区域，`Delta` 追加文本，`Finished` flush 并折叠。安全网：其他内容产出非 thinking 更新仍会在区域仍开时调用 `flush_and_close_thinking()`。`TokenUsage` / `ModelInfo` 从不关闭 thinking（可能 mid-stream 到达）。
 
@@ -314,21 +353,43 @@ graph TD
 
 ```mermaid
 graph TD
-    a_st[SubmitTask] --> b_al[agent_loop]
+    a_st[Runtime StartRun / SubmitTask] --> b_al[agent_loop]
     b_al -->|Ok 且未取消| c_tc[emit TaskComplete]
     b_al -->|cancel_flag| d_xc[emit Cancelled]
-    e_cn[Cancel] --> f_cf[set cancel_flag + Info]
+    e_cn[Cancel / Runtime CancelRun] --> f_cf[set cancel_flag + Info]
     g_qb[QueryBalance] --> h_qo[query_once]
     h_qo --> i_au[AccountUpdate → TUI]
+    j_ri[Runtime RespondInteraction] --> k_ri[broker / UiResponder::respond]
 ```
 
-两处跨图连线：`Planning` 由 `SubmitTask` 触发（图 1 的 `Planning` ← 图 2 的 `SubmitTask`）；`Cancel` 设置的 `cancel_flag` 让 `Executing` 收到 `Cancelled` 而回到 `Idle`（图 2 的 `set cancel_flag` → 图 1 的 `Executing`）。
+两处跨图连线：`Planning` 由 `Runtime(StartRun)` 触发（图 1 的 `Planning` ← 图 2 的 `StartRun`）；`Cancel` 设置的 `cancel_flag` 让 `Executing` 收到 `Cancelled` 而回到 `Idle`（图 2 的 `set cancel_flag` → 图 1 的 `Executing`）。
+
+下表把 TUI 侧的手势 / slash command 映射到真实 variant。"TUI 前置条件"列已逐条对过 `crates/tui/src/handlers/*` 与 `crates/tact_ui/src/driver.rs` 的 `match`。
 
 | 命令 | TUI 前置条件 | Handler 效果 |
 |------|--------------|--------------|
-| `SubmitTask(text)` | Insert 模式 Enter → `Status::Planning` | `build_user_message` → `agent_loop` |
-| `Cancel` | `/cancel` 或 Planning/Executing 时 Normal 模式 `c` | 设置 `cancel_flag`；循环退出后 driver 发 `Cancelled` → `Idle` |
-| `QueryBalance` | `/balance` 或 palette | `account::query_once()` → `AccountUpdate` channel |
+| `Runtime(StartRun { run_id, input })` | Insert 模式 `Enter`（`dispatch_user_task`，busy 时先入队）；任务文本在 `input["message"]`，`run_id` 由 TUI 生成 | 取出文本 → `run_submit`：有 serving 时 `chat.submit` invoke，否则直接跑一个 turn |
+| `SubmitTask(text)` | 直接调用方（测试 / 非 View 通道）；TUI 自己已不再发它 | `run_chat_turn` 同步跑一个 turn |
+| `Cancel` | `/cancel`，或 Planning / Executing 时 Normal 模式 `c`（`app.cancel_task()`） | 设 `cancel_flag` + `Info("Cancelling...")`；`runs.cancel` invoke；循环退出后 driver 发 `Cancelled` → `Idle` |
+| `Runtime(CancelRun { run_id })` | 运行时通道的等价取消（带具体 run id） | 同上；`runs.cancel` 指名该 run |
+| `Compact` | `/compact`（仅 Idle / Done） | 等 in-flight 结束后 `chat.compact` invoke |
+| `QueryBalance` | `/balance`（仅 DeepSeek / Kimi） | `account::query_once()` → `AccountUpdate` channel |
+| `QueryStats` | `/stats` | 从共享 stats 快照直接回答 → `PopupMarkdown`，不等 in-flight |
+| `QueryBackground(task_id)` | `/background`、`/background <id>` | 从共享 background manager 回答 → popup |
+| `CancelSubagent { child_id }` | `/subagent_cancel <child-id>`，或 subagent 工具卡上的取消按钮 | 置子 agent 协作取消位，标 run 为 Cancelled → `SubagentsChanged` |
+| `SetPermissionMode(mode)` | `/permission` 弹窗确认 | 设置本会话权限模式（不写 config） |
+| `SetThinkingBudget(n)` | `/model` 弹窗确认 budget | 改本会话 thinking budget |
+| `SetReasoningEffort(Some/None)` | `/model` 弹窗确认 effort | 设置 / 清除本会话 reasoning effort |
+| `SetModel(model)` | `/model` 弹窗确认模型 | 改本 agent 会话的模型 |
+| `McpAuth { server }` | `/mcp auth <server>`（`/mcp login` 同义） | 跑 OAuth 流程，成功后重载 MCP router |
+| `McpList` | `/mcp list` | 从**已连接**的 router 列出 server 与实时状态 |
+| `McpPrompts { server }` | `/mcp prompts`、`/mcp prompts <server>` | 从已连接 router 列出 prompt（只读） |
+| `RunMcpPrompt { server, name, arguments }` | `/mcp prompt <server> <name> [key=value …]` | 取回并渲染 prompt → 当普通任务提交；空 `name` 由 driver 拒绝 |
+| `HooksList` | `/hooks list`（或裸 `/hooks`） | 读 hook 源与审查记录，列出状态 |
+| `HooksTrust { all, source }` | `/hooks trust --all` 或 `/hooks trust --source <label>` | 批准待审查 hook；裸 `trust` 只给用法提示 |
+| `HooksForget` | `/hooks forget --all` | 撤销全部 hook 批准 |
+| `SubagentFinishedNotification { … }` | 后台 subagent 完成（driver 内部投递，非用户操作） | 父 agent 空闲则合成唤醒 turn，忙则挂起到当前 turn 结束 |
+| `Runtime(RespondInteraction { response })` | `Select` / `MultiSelect` 弹窗的 `Enter`/`Esc`，权限弹窗的批准 / 拒绝，或 Kernel `Input` prompt 提交文本 | broker 先收（id 匹配才收），否则 `UiResponder::respond` |
 
 ---
 
@@ -347,7 +408,7 @@ sequenceDiagram
 
     User->>TUI: Enter（任务文本）
     TUI->>TUI: Status → Planning
-    TUI->>Driver: UserCommand::SubmitTask
+    TUI->>Driver: UserCommand::Runtime(RuntimeCommand::StartRun)
 
     Driver->>Agent: agent_loop(user_message)
     Agent->>LLM: stream_message
@@ -363,8 +424,8 @@ sequenceDiagram
         Agent->>TUI: InteractionRequested (request_id)
         TUI->>TUI: InputMode → Select
         User->>TUI: 选择选项
-        TUI->>Driver: UserCommand::UiResponse
-        Driver->>Agent: UiResponder::handle_response
+        TUI->>Driver: UserCommand::Runtime(RuntimeCommand::RespondInteraction { response })
+        Driver->>Agent: broker / UiResponder 按 request_id 唤醒等待方
     end
 
     Agent->>TUI: StepFinished | StepFailed
@@ -400,22 +461,28 @@ TaskComplete            ← agent_loop Ok 后 driver
 
 | 类型 | 文件 | 角色 |
 |------|------|------|
-| `RuntimeEvent` | `agent.rs` | Agent → TUI 事件 enum |
-| `ThinkingChunk` | `agent.rs` | Thinking 流生命周期（`Started` / `Delta` / `Finished`） |
-| `UserCommand` | `agent.rs` | TUI → agent 命令 enum |
-| `PlanStep` | `agent.rs` | 内部 plan step 条目（无专用面板）；serde 供 session 持久化 |
-| `StepResult` / `StepStatus` | `agent.rs` | 结构化工具结果 |
-| `TokenUsageInfo` | `agent.rs` | LLM token 计数（含 cache / reasoning） |
-| `ModelCallParams` | `agent.rs` | 活跃模型配置快照 |
-| `AgentErrorKind` | `agent.rs` | 致命错误分类（`Display` + `Error`） |
-| `BalanceInfo` / `UsageQuotaInfo` | `biz.rs` | 账户查询结果（`f64` 金额、`Option<f64>` 配额） |
-| `AccountUpdate` / `AccountError` | `biz.rs` | Account channel 消息 |
+| `RuntimeEvent` | `crates/tact_protocol/src/runtime.rs` | Agent → TUI 事件 enum |
+| `RuntimeCommand` | `crates/tact_protocol/src/runtime.rs` | 客户端中立命令（`StartRun` / `CancelRun` / `RespondInteraction` / `Subscribe` / `Resume` / `Invoke` / `Shutdown`） |
+| `InteractionRequest` | `crates/tact_protocol/src/interaction.rs` | 交互请求（`Permission` / `Select` / `MultiSelect` / `Confirm` / `Input`），全部携带 `request_id` |
+| `InteractionResponse` | `crates/tact_protocol/src/interaction.rs` | 交互应答（`Approved` / `Rejected` / `Selected` / `Text` / `Cancelled`） |
+| `ThinkingChunk` | `crates/tact_protocol/src/agent.rs` | Thinking 流生命周期（`Started` / `Delta` / `Finished`） |
+| `UserCommand` | `crates/tact_view/src/lib.rs` | TUI → agent 命令 enum |
+| `PlanStep` | `crates/tact_protocol/src/agent.rs` | 内部 plan step 条目（无专用面板）；serde 供 session 持久化 |
+| `StepResult` / `StepStatus` | `crates/tact_protocol/src/agent.rs` | 结构化工具结果 |
+| `TokenUsageInfo` | `crates/tact_protocol/src/agent.rs` | LLM token 计数（含 cache / reasoning） |
+| `ModelCallParams` | `crates/tact_protocol/src/agent.rs` | 活跃模型配置快照 |
+| `AgentErrorKind` | `crates/tact_view/src/lib.rs` | 致命错误分类（`Display` + `Error`） |
+| `BalanceInfo` / `UsageQuotaInfo` | `crates/tact_protocol/src/biz.rs` | 账户查询结果（`f64` 金额、`Option<f64>` 配额） |
+| `AccountUpdate` / `AccountError` | `crates/tact_protocol/src/biz.rs` | Account channel 消息 |
 
 ---
 
 ## 9. 相关资源
 
 - 协议源码：[crates/tact_protocol/src/agent.rs](../crates/tact_protocol/src/agent.rs)
+- 运行时消息（`RuntimeEvent` / `RuntimeCommand`）：[crates/tact_protocol/src/runtime.rs](../crates/tact_protocol/src/runtime.rs)
+- 交互请求 / 应答：[crates/tact_protocol/src/interaction.rs](../crates/tact_protocol/src/interaction.rs)
+- View 契约（`UserCommand` / `AgentErrorKind`）：[crates/tact_view/src/lib.rs](../crates/tact_view/src/lib.rs)
 - Biz 类型：[crates/tact_protocol/src/biz.rs](../crates/tact_protocol/src/biz.rs)
 - TUI handler：[crates/tui/src/widgets/state/app/agent.rs](../crates/tui/src/widgets/state/app/agent.rs)
 - Tool dispatch 发出者：[crates/tact_extensions/src/agent/tool_dispatch.rs](../crates/tact_extensions/src/agent/tool_dispatch.rs)
