@@ -149,9 +149,10 @@ pub struct Messages {
     pub file_picker_title: &'static str,
     pub command_title: &'static str,
     pub input_box_title: &'static str,
-    /// Shown on the input box's top border, right-aligned, only while the log
-    /// is scrolled away from its tail. The badge is the "new activity" half
-    /// and is omitted (with its separator) when nothing arrived.
+    /// Shown in the scroll-back pill on the Log panel's bottom border row,
+    /// only while the log is scrolled away from its tail. The badge is the
+    /// "new activity" half and is omitted (with its separator) when nothing
+    /// arrived.
     pub scroll_back_badge: &'static str,
     pub scroll_back_action: &'static str,
     pub input_box_placeholder: &'static str,
