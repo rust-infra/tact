@@ -30,12 +30,12 @@
 | 14 | [团队协作](./14_chapter_team_zh.md) | `.tact/team/` 队友名册、JSONL 收件箱、广播、计划审批 / 关机协议 |
 | 15 | [Worktree 泳道](./15_chapter_worktree_zh.md) | 隔离 `git worktree`：`create` / `list` / `status` / `run` / `events`、索引与审计日志 |
 | 17 | [桌面通知](./17_chapter_notify_zh.md) | macOS 原生通知（任务完成 / 步骤失败）、配置开关、平台缺口 |
-| 18 | [Agent 主循环](./18_chapter_agent_loop_zh.md) | 收束章：`agent_loop` 回合、流式、`cancel_flag`、`AgentUpdate`、TUI `TaskComplete` |
+| 18 | [Agent 主循环](./18_chapter_agent_loop_zh.md) | 收束章：`agent_loop` 回合、流式、`cancel_flag`、`RuntimeEvent`、TUI `TaskComplete` |
 | 19 | [持久任务管理器](./19_chapter_persistent_tasks_zh.md) | `TaskManager`、`task_create` / `get` / `list` / `update`、`.tact/tasks/` 依赖 |
 | 20 | [Agent 循环中的幻觉](./20_chapter_hallucination_zh.md) | LLM 编造文件、摘要和工具结果；压缩摘要编造案例；截断占位符引发的内容编造；缓解策略 |
 | 21 | [配置](./21_chapter_config_zh.md) | TOML/CLI 合并、`ResolvedConfig`、`init()` → `tact_llm::init_provider` |
 | 22 | [LLM Providers](./22_chapter_llm_zh.md) | `tact_llm` 适配器、流式、thinking、`user_id`、余额查询 |
-| 23 | [终端 UI](./23_chapter_tui_zh.md) | `tui` crate、`AgentUpdate` / `UserCommand` 通道、`tact-ui` 接线 |
+| 23 | [终端 UI](./23_chapter_tui_zh.md) | `tui` crate、`RuntimeEvent` / `UserCommand` 通道、`tact-ui` 接线 |
 | 24 | [测试策略](./24_chapter_testing_zh.md) | Mock LLM、tact-ui driver、TUI TestBackend、CI |
 | 25 | [Agent–TUI 协议](./25_chapter_protocol_zh.md) | `tact_protocol` 消息类型、计划步骤生命周期、任务级状态迁移 |
 | 26 | [工程问题与优化日志](./26_chapter_issue_zh.md) | 已交付优化与 bugfix的倒序日志（现象 → 决策 → 指针） |

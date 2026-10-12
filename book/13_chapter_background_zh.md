@@ -22,9 +22,9 @@
 
 `wait_background` 是**等待**原语：任务一到终态就返回，模型不必再猜时长。不给 `task_id` 时等待本会话的所有任务；`timeout_ms` 默认 5 分钟（与 `sleep` 同一上限）。与 `sleep`（future 完全不看取消标志）不同，等待会在下一次轮询（≤ 150 ms）观察到取消，因此在途等待是可打断的。
 
-TUI 用户无需让模型调用工具即可查看后台任务：**`/background`** slash 命令列出所有任务，**`/background <id>`** 显示单个任务（pretty JSON）。该命令向命令 driver 发送 `UserCommand::QueryBackground(Option<String>)`，driver 调用同一个 `SharedBackgroundManager::check`（与工具一样按会话收窄），并把结果以 `AgentUpdate::PopupMarkdown` 交付；TUI 用共用的只读弹窗展示（`Esc` 关闭、`j`/`k` 滚动），因此列表永远不会把对话挤出主面板——见 [Ch 23](./23_chapter_tui_zh.md) §6.2。
+TUI 用户无需让模型调用工具即可查看后台任务：**`/background`** slash 命令列出所有任务，**`/background <id>`** 显示单个任务（pretty JSON）。该命令向命令 driver 发送 `UserCommand::QueryBackground(Option<String>)`，driver 调用同一个 `SharedBackgroundManager::check`（与工具一样按会话收窄），并把结果以 `RuntimeEvent::PopupMarkdown` 交付；TUI 用共用的只读弹窗展示（`Esc` 关闭、`j`/`k` 滚动），因此列表永远不会把对话挤出主面板——见 [Ch 23](./23_chapter_tui_zh.md) §6.2。
 
-**实时输出（类 bash）。** 任务运行期间，其 stdout/stderr 会实时流入 `background_run` 工具卡片（约 50ms 一批节流，实时预览保留最近 ~4 KB），与同步 `bash` 卡片完全一致。即使调用已返回，卡片仍保持运行态，进程退出时以 ✓/✗、耗时与最终输出收尾（见 §3 与 §6）。任务 id 就挂在卡片的 meta 行上、紧跟在阶段词之后（`⠋ Running · 018f3a2c · 1.50s`），因此在任务仍在运行时无需打开卡片即可读到它、并用于 `/background <id>` 或 `check_background`；`background_run` 通过 `AgentUpdate::ToolMeta` 上报它——是结构化字段，而不是从工具输出里反解出来的一行文本。收尾后与其它已完成的命令一样折叠：只剩 title + meta 两行，输出移到双击弹窗里（见 [Ch 23](./23_chapter_tui_zh.md) §6.16）。
+**实时输出（类 bash）。** 任务运行期间，其 stdout/stderr 会实时流入 `background_run` 工具卡片（约 50ms 一批节流，实时预览保留最近 ~4 KB），与同步 `bash` 卡片完全一致。即使调用已返回，卡片仍保持运行态，进程退出时以 ✓/✗、耗时与最终输出收尾（见 §3 与 §6）。任务 id 就挂在卡片的 meta 行上、紧跟在阶段词之后（`⠋ Running · 018f3a2c · 1.50s`），因此在任务仍在运行时无需打开卡片即可读到它、并用于 `/background <id>` 或 `check_background`；`background_run` 通过 `RuntimeEvent::ToolMeta` 上报它——是结构化字段，而不是从工具输出里反解出来的一行文本。收尾后与其它已完成的命令一样折叠：只剩 title + meta 两行，输出移到双击弹窗里（见 [Ch 23](./23_chapter_tui_zh.md) §6.16）。
 
 ---
 
@@ -96,7 +96,7 @@ sequenceDiagram
 | 校验 | `crate::shell::validate_shell_command` — 与 `bash` 相同硬 blocklist（`sudo`、`rm -rf /`、…） |
 | 超时 | **没有。** 任务一直运行到命令退出或会话被取消——构建与测试套件可以跑任意久 |
 | 取消 | 会话的取消标志（Esc / 取消）会终止该会话所有运行中的任务：标志在进度 tick（约 50 ms）上被检查，`SIGKILL` 发给任务的**进程组**，因此 `cargo`/`npm` 等孙进程随 shell 一起死，而不是变成孤儿继续跑。status 变为 `Error`，内容为 `Cancelled by the user` |
-| 实时推送 | stdout/stderr 增量读取并以 `AgentUpdate::ToolProgress` 推送（约 50ms 一批，实时预览保留最近 ~4 KB）；不再等完成后一次性缓冲 |
+| 实时推送 | stdout/stderr 增量读取并以 `RuntimeEvent::ToolProgress` 推送（约 50ms 一批，实时预览保留最近 ~4 KB）；不再等完成后一次性缓冲 |
 | 输出上限 | stdout+stderr 的**最后** 50,000 字符持久化到记录（`MAX_OUTPUT_CHARS`，超出丢最旧）；**全量**输出按到达顺序追加到 `<workdir>/.tact/background/<id>.log`（见 `output_path`） |
 | 退出码 | 非零退出 → `Error`；退出码本身不记录 |
 | 进程清理 | `kill_on_drop(true)` — future 被 drop 时子进程被 kill |
@@ -132,7 +132,7 @@ output: "Process interrupted (agent restarted)"
 
 `background_run` 立即返回，因此对调度器（[任务与工具调度](./11_chapter_task_zh.md)）是廉价调用 —— 但作为 shell 邻近工具，其权限分类来自 [权限模型](./10_chapter_permission_zh.md)，工具名为 `background_run` 而非 `bash`。
 
-**TUI 获得实时进度 + 完成事件。** spawn 的任务在运行期间向该调用的工具卡片推送 `AgentUpdate::ToolProgress`，退出时再推送 `AgentUpdate::BackgroundTaskFinished`（keep-live 卡片契约见 [Ch 25](./25_chapter_protocol_zh.md)）。但 **模型/agent 仍无完成 push**，所以要主动问：`wait_background` 会阻塞到任务结束，并在同一次调用里返回结果；`background_run(wait_ms:)` 对刚启动的命令做同样的事。只有当这一回合确实还有别的活要干时，才该退回轮询 `check_background`（或用 `sleep` 烧时间）。
+**TUI 获得实时进度 + 完成事件。** spawn 的任务在运行期间向该调用的工具卡片推送 `RuntimeEvent::ToolProgress`，退出时再推送 `RuntimeEvent::BackgroundTaskFinished`（keep-live 卡片契约见 [Ch 25](./25_chapter_protocol_zh.md)）。但 **模型/agent 仍无完成 push**，所以要主动问：`wait_background` 会阻塞到任务结束，并在同一次调用里返回结果；`background_run(wait_ms:)` 对刚启动的命令做同样的事。只有当这一回合确实还有别的活要干时，才该退回轮询 `check_background`（或用 `sleep` 烧时间）。
 
 与同步 `bash` 输出不同，后台输出 **不** 经 `persist_large_output`（[上下文压缩](./05_chapter_compact_zh.md)）—— 记录硬 cap 50k 字符，而这仍远超应当进入 context 的体量。因此所有面向模型的读法都只报告**有界尾部**：`wait_background`、`background_run(wait_ms:)` 与 `check_background <id>` 共用同一份 `background::output_tail`，把 `output` 截到最后 4,000 字符并附上日志路径。**全量**流在磁盘上：记录带 `output_path`，agent 可用 `bash tail <path>` / `grep error <path>` 深挖。`check_background` 的列表形式（无 `task_id`）每行追加 `(log: <path>)`，无需逐个调用即可发现路径。
 

@@ -59,8 +59,8 @@ graph TD
 
 | 渠道 | 位置 | 时机 |
 |---|---|---|
-| 启动提示 | TUI：`AgentUpdate::Info`；headless：`eprintln!("[sandbox] …")` | 启动时一次 |
-| 使用点提示 | `bash` 工具 → `tracing::warn!`（TUI 下再加 `AgentUpdate::Info`） | 本会话**第一条** `bash` 调用（`OnceLock`，只发一次） |
+| 启动提示 | TUI：`RuntimeEvent::Info`；headless：`eprintln!("[sandbox] …")` | 启动时一次 |
+| 使用点提示 | `bash` 工具 → `tracing::warn!`（TUI 下再加 `RuntimeEvent::Info`） | 本会话**第一条** `bash` 调用（`OnceLock`，只发一次） |
 
 `enabled = false` 不算降级，也不会输出任何东西——"配置成不沙箱"是选择，不是失败。使用点提示存在的原因是：启动那行日志早在它适用的命令出现之前就滚出屏幕了。
 

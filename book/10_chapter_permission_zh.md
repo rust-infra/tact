@@ -219,7 +219,7 @@ graph TD
 当 `check()` 返回 `Ask` 且 agent 有 UI 通道（`runtime.ui_tx`）时，`tool_dispatch.rs` 发送：
 
 ```rust
-AgentUpdate::RequestSelect {
+RuntimeEvent::RequestSelect {
     prompt,      // 例如 "Allow bash: {\"command\":\"npm test\"}"
     respond,     // 回 agent 的 oneshot channel
 }
@@ -444,8 +444,8 @@ mode = "default"   # "default" | "plan" | "auto"
 | `crates/tact_ui/src/permission.rs` | `permission_mode_from_config()` |
 | `crates/tact_ui/src/session_bootstrap.rs` | `bootstrap_session` 里构造 `PermissionManager`（`try_new_with_settings`）；headless / 交互共用 |
 | `crates/tact_extensions/src/config/types.rs` | `[permission] mode` TOML schema |
-| `crates/tui/src/widgets/state/app/agent.rs` | 处理 `AgentUpdate::RequestSelect` |
-| `crates/tact_protocol/src/lib.rs` | `AgentUpdate::RequestSelect`、`StepResult.permission_label` |
+| `crates/tui/src/widgets/state/app/agent.rs` | 处理 `RuntimeEvent::RequestSelect` |
+| `crates/tact_protocol/src/lib.rs` | `RuntimeEvent::RequestSelect`、`StepResult.permission_label` |
 
 ---
 

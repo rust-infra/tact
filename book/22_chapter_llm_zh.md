@@ -26,7 +26,7 @@ flowchart TB
     Responses --> API3[Responses API SSE]
     Agent[Agent::stream_message] --> LlmClient[LlmClient trait]
     LlmClient --> LP
-    LlmClient --> TUI[AgentUpdate on ui_tx]
+    LlmClient --> TUI[RuntimeEvent on ui_tx]
 ```
 
 三个 adapter 家族共享同一 trait：
@@ -168,7 +168,7 @@ pub trait LlmClient: Send + Sync {
     async fn stream_message(
         &self,
         request: &CreateMessageParams,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     ) -> Result<(Vec<ContentBlock>, Option<StopReason>, Option<TokenUsageInfo>, Option<LlmRequestBody>), LlmError>;
 
     async fn create_message(
@@ -229,10 +229,10 @@ sequenceDiagram
     loop SSE deltas
         API-->>Adapter: text / thinking / metadata / usage
         opt ui_tx present
-            Adapter-->>UI: AgentUpdate::StreamChunk
-            Adapter-->>UI: AgentUpdate::ThinkingChunk
-            Adapter-->>UI: AgentUpdate::ModelInfo
-            Adapter-->>UI: AgentUpdate::TokenUsage
+            Adapter-->>UI: RuntimeEvent::StreamChunk
+            Adapter-->>UI: RuntimeEvent::ThinkingChunk
+            Adapter-->>UI: RuntimeEvent::ModelInfo
+            Adapter-->>UI: RuntimeEvent::TokenUsage
             UI-->>TUI: 实时渲染 turn
         end
         Adapter->>Adapter: 解析并聚合 deltas
@@ -276,8 +276,8 @@ sequenceDiagram
 
 1. POST JSON 到 `{base_url}/messages`，`stream: true`。
 2. 将 SSE 事件解析为 `ContentBlockDelta` variant。
-3. 将 text/thinking 转发到 `ui_tx` 为 `AgentUpdate::StreamChunk` / `ThinkingChunk::{Started,Delta,Finished}`。
-4. 发出 `AgentUpdate::ModelInfo`（模型名与生成限制）。
+3. 将 text/thinking 转发到 `ui_tx` 为 `RuntimeEvent::StreamChunk` / `ThinkingChunk::{Started,Delta,Finished}`。
+4. 发出 `RuntimeEvent::ModelInfo`（模型名与生成限制）。
 5. 聚合最终 blocks、`StopReason` 与 `TokenUsageInfo`。
 
 Anthropic adapter 不会把 session `user_id` 附加到请求 metadata。
@@ -497,7 +497,7 @@ terminal event type 推断。为兼容端点注入的占位 id 绝不被当作 p
    `create_response` 在后续调用中**原样**回放。
 3. 该 item **绝不会**映射为 `ContentBlock`：`encrypted_content` 是不透明
    provider 状态，不是 assistant 文本，绝不出现在 TUI 渲染、
-   `AgentUpdate::Info` 消息、`tracing` 输出或错误字符串中。面向用户的诊断
+   `RuntimeEvent::Info` 消息、`tracing` 输出或错误字符串中。面向用户的诊断
    只显示**有界的 compaction-id 前缀**；完整 id 仅保留在 provider 状态与
    SQLite 元数据中。
 
@@ -572,7 +572,7 @@ provider 默认（openai 6 档、deepseek/kimi k3 3 档、budget 5 档）。
 
 `stream_message` 期间，adapter 向可选 `ui_tx` 推送：
 
-| 事件 | `AgentUpdate` |
+| 事件 | `RuntimeEvent` |
 |------|---------------|
 | Text token | `StreamChunk(String)` |
 | Reasoning / thinking | `ThinkingChunk::{Started, Delta, Finished}` |

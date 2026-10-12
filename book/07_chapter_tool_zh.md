@@ -73,7 +73,7 @@ pub struct ToolContext {
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
     pub subagent_manager: SharedSubagentManager,
-    pub ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    pub ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     pub ui_responder: UiResponder,               // ask_user / 权限选择 的请求-应答注册表
     pub progress_reporter: ToolProgressReporter,
     pub cancel_flag: Arc<AtomicBool>,

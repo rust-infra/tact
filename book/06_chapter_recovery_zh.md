@@ -133,7 +133,7 @@ graph TD
 
 （两张图各自成环回到循环顶；渲染器不支持环，故用 `↩ 继续循环` 表示。）
 
-每次恢复都会在 TUI 中发出一行 `AgentUpdate::Info`，例如：
+每次恢复都会在 TUI 中发出一行 `RuntimeEvent::Info`，例如：
 
 ```text
 [Recovery] compact (1/3): context too large

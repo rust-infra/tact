@@ -16,7 +16,7 @@
 | LLM 流式 | `stream_message` | 本章 |
 | 失败恢复 | compact / backoff / continue 分支 | [第 6 章 Recovery](./06_chapter_recovery_zh.md) |
 | 工具执行 | `execute_tool_call` | [第 9–11 章 Hooks / Permission / Scheduling](./09_chapter_hook_zh.md) |
-| UI 事件 | `emit_update(AgentUpdate::…)` | 本章 |
+| UI 事件 | `emit_update(RuntimeEvent::…)` | 本章 |
 
 循环 **本身不** 发出 `TaskComplete`——`tact-ui` 在 `agent_loop` 成功返回后发送（见 [§7 TUI 集成](#7-tui-集成)）。
 
@@ -67,7 +67,7 @@ graph TD
 ### LLM 前步骤
 
 - **`micro_compact`** — 在内存中 stub 旧 tool 结果（[第 5 章](./05_chapter_compact_zh.md)）。
-- **自动 compact** — 当 `should_auto_compact` 触发（`last_token_total >= model_context_window`，或冷启动时用 `estimate_context_size` 对比同一窗口）时，运行 `compact_history` 并通过 `AgentUpdate::Info` 发出 `[auto compact]`（[第 5 章](./05_chapter_compact_zh.md)）。
+- **自动 compact** — 当 `should_auto_compact` 触发（`last_token_total >= model_context_window`，或冷启动时用 `estimate_context_size` 对比同一窗口）时，运行 `compact_history` 并通过 `RuntimeEvent::Info` 发出 `[auto compact]`（[第 5 章](./05_chapter_compact_zh.md)）。
 - **`build_system_prompt`** — 子 agent 用动态 Tera 渲染或静态字符串；每个 task 在 turn 循环前运行一次，渲染字符串在每轮复用（[第 4 章](./04_chapter_prompt_zh.md)）。
 - **请求组装** — `CreateMessageParams` 含 `all_tool_specs()`（原生 + MCP）、流式，以及 config 中的 thinking budget。
 
@@ -75,7 +75,7 @@ graph TD
 
 `stream_message` 将 chunk 转发到 TUI：
 
-| 流事件 | `AgentUpdate` |
+| 流事件 | `RuntimeEvent` |
 |--------|---------------|
 | 文本 delta | `StreamChunk` |
 | Thinking 生命周期 | `ThinkingChunk::{Started, Delta, Finished}` |
@@ -108,7 +108,7 @@ Unix 终止 child process group，并在 agent loop 返回前 flush 已读输出
 
 ---
 
-## 5. `AgentUpdate` 与通知
+## 5. `RuntimeEvent` 与通知
 
 `emit_update` 在可选 `ui_tx` 通道上发送事件，并为以下触发桌面通知：
 
@@ -143,7 +143,7 @@ pub struct AgentRuntime {
     pub recovery_state: RecoveryState,
     pub permission_manager: PermissionManager,
     pub stats: SessionStats,
-    pub ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    pub ui_tx: Option<UnboundedSender<RuntimeEvent>>,
     pub cancel_flag: Arc<AtomicBool>,
     pub session_store: Option<DynSessionStore>,
     pub session_id: Option<String>,
@@ -171,14 +171,14 @@ UserCommand::SubmitTask(task) => {
     match agent.agent_loop(Some(task_message)).await {
         Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) => {
             if let Some(last) = agent.runtime.context.last() {
-                agent.emit_update(AgentUpdate::TaskComplete(extract_text(&last.content)));
+                agent.emit_update(RuntimeEvent::TaskComplete(extract_text(&last.content)));
             }
         }
                 Ok(()) => {
                     // 已取消 — 发出 TaskCancelled，让 TUI 离开 Planning/Executing
-                    agent.emit_update(AgentUpdate::TaskCancelled);
+                    agent.emit_update(RuntimeEvent::TaskCancelled);
                 }
-        Err(e) => agent.emit_update(AgentUpdate::Error(...)),
+        Err(e) => agent.emit_update(RuntimeEvent::Error(...)),
     }
 }
 UserCommand::Cancel => {
@@ -186,7 +186,7 @@ UserCommand::Cancel => {
 }
 ```
 
-**`TaskComplete`** 仅在 `agent_loop` 返回 `Ok(())` **且** 用户未取消时发出。取消时 driver 改为发出 **`TaskCancelled`**，使 TUI 回到 `Idle` 并接受新 prompt。`TaskComplete` 的摘要文本来自 **最后一条 context 消息**（常为 tool 结果，不一定是最后 assistant turn）。错误以 `AgentUpdate::Error` 呈现。
+**`TaskComplete`** 仅在 `agent_loop` 返回 `Ok(())` **且** 用户未取消时发出。取消时 driver 改为发出 **`TaskCancelled`**，使 TUI 回到 `Idle` 并接受新 prompt。`TaskComplete` 的摘要文本来自 **最后一条 context 消息**（常为 tool 结果，不一定是最后 assistant turn）。错误以 `RuntimeEvent::Error` 呈现。
 
 ---
 
@@ -199,7 +199,7 @@ UserCommand::Cancel => {
 | `crates/tact_ui/src/interactive.rs` | 在 `SubmitTask` 上 spawn 循环，设置 `TaskComplete` |
 | `crates/tact_extensions/src/recovery.rs` | 错误分类与 continuation 消息 |
 | `crates/tact_extensions/src/compact/mod.rs` | Turn 前 compact 钩子 |
-| `tact_protocol` | `AgentUpdate`、`UserCommand` 线型类型 |
+| `tact_protocol` | `RuntimeEvent`、`UserCommand` 线型类型 |
 
 ---
 

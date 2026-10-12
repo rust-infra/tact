@@ -1,6 +1,6 @@
 # Agent–TUI 协议（Agent–TUI Protocol）
 
-本章文档化 `tact_protocol` crate：agent 运行时与终端 UI 之间交换的消息类型，以及各 `AgentUpdate` variant 如何在两侧驱动状态转换。
+本章文档化 `tact_protocol` crate：agent 运行时与终端 UI 之间交换的消息类型，以及各 `RuntimeEvent` variant 如何在两侧驱动状态转换。
 
 实现：`crates/tact_protocol/src/agent.rs`、`crates/tact_protocol/src/biz.rs`。TUI 消费者：`crates/tui/src/widgets/state/app/agent.rs`。Agent 发出者：`crates/tact_extensions/src/agent/tool_dispatch.rs`、`crates/tact_llm`（流式）。
 
@@ -12,7 +12,7 @@
 
 ```mermaid
 graph LR
-    Agent[Agent runtime] -->|AgentUpdate| TUI[TUI App]
+    Agent[Agent runtime] -->|RuntimeEvent| TUI[TUI App]
     TUI -->|UserCommand| Driver[tact-ui driver]
     TUI -->|UiResponse| Driver
     Account[account service] -->|AccountUpdate| TUI
@@ -20,11 +20,11 @@ graph LR
 
 | Channel | 类型 | 方向 | 用途 |
 |---------|------|------|------|
-| `agent_tx` / `agent_rx` | `AgentUpdate` | Agent → TUI | 进度、流式、元数据、选择请求 |
+| `agent_tx` / `agent_rx` | `RuntimeEvent` | Agent → TUI | 进度、流式、元数据、选择请求 |
 | `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → driver | 提交任务、取消、余额查询、UI 响应 |
 | `account_tx` / `account_rx` | `AccountUpdate` | Account → TUI | 余额 / 配额（与 agent 协议分离） |
 
-所有通道均用 `tokio::sync::mpsc::unbounded_channel`。`AgentUpdate` 是**纯数据**：`RequestSelect` / `RequestMultiSelect` 携带 `request_id` 而非内嵌的 `oneshot::Sender`，因此该 enum 不再携带传输句柄（后续可自由派生 `Serialize`/`Clone`）。TUI 通过反向通道发送 `UserCommand::UiResponse` 回 driver，driver 再经运行时共享的 [`UiResponder`] 注册表（`crates/tact_extensions/src/ui_responder.rs`）路由给等待中的调用方（父 agent 或 subagent）。
+所有通道均用 `tokio::sync::mpsc::unbounded_channel`。`RuntimeEvent` 是**纯数据**：`RequestSelect` / `RequestMultiSelect` 携带 `request_id` 而非内嵌的 `oneshot::Sender`，因此该 enum 不再携带传输句柄（后续可自由派生 `Serialize`/`Clone`）。TUI 通过反向通道发送 `UserCommand::UiResponse` 回 driver，driver 再经运行时共享的 [`UiResponder`] 注册表（`crates/tact_extensions/src/ui_responder.rs`）路由给等待中的调用方（父 agent 或 subagent）。
 
 交互模式下，共享的 `UiResponder` 还会暴露一个有序 pending snapshot；TUI 从该 snapshot reconcile `InputMode::Select`，并把 `RequestSelect` / `RequestMultiSelect` 当作 wake-up hint。没有 broker 的 headless/tests 仍以该事件为权威。
 
@@ -32,37 +32,38 @@ graph LR
 
 ## 2. 核心类型
 
-### `AgentUpdate`
+### `RuntimeEvent`
 
 ```rust
-pub enum AgentUpdate {
-    StepAdded(PlanStep),
-    StepStarted { idx, tool_id, tool_name, arg_summary, arg_full },
-    ToolProgress { tool_id, chunks: Vec<ToolOutputChunk> },
+pub enum RuntimeEvent {
+    StepAdded { run_id: Option<RunId>, step: PlanStep },
+    StepStarted { run_id: Option<RunId>, idx, tool_id, tool_name, arg_summary, arg_full, presentation: ToolPresentationInfo },
+    ToolProgress { run_id: Option<RunId>, tool_id, chunks: Vec<ToolOutputChunk> },
     /// 子 agent 会话的一条**结构化**记录，与上一条扁平 chunk 并行发出。
     /// 扁平文本喂父工具卡的 live 预览与复制兜底；这条喂 subagent 弹窗
     /// （用主日志的 cell 渲染）。扁平流无法反推结构，所以两条都要。
-    ToolTranscript { tool_id: String, entry: SubagentTranscriptEntry },
-    StepFinished { idx, tool_id, result: StepResult },
-    StepFailed { idx, tool_id, error },
-    TaskComplete(String),
+    ToolTranscript { run_id: Option<RunId>, tool_id: String, entry: SubagentTranscriptEntry },
+    StepFinished { run_id: Option<RunId>, idx, tool_id, result: StepResult },
+    StepFailed { run_id: Option<RunId>, idx, tool_id, arg_summary, error },
+    TaskComplete { run_id: Option<RunId>, content: String },
     /// 任务中取消 — TUI 必须离开 Planning/Executing
     TaskCancelled,
-    Error(AgentErrorKind),
-    TokenUsage(TokenUsageInfo),
-    ModelInfo(ModelCallParams),
-    Info(String),
+    Error { run_id: Option<RunId>, message: String },
+    TokenUsage { run_id: Option<RunId>, usage: TokenUsageInfo },
+    ModelInfo { run_id: Option<RunId>, params: ModelCallParams },
+    Info { run_id: Option<RunId>, content: String },
     RequestSelect { request_id, prompt, options, log_confirm }, // 单选；permission=`false`，ask_user=`true`
     RequestMultiSelect { request_id, prompt, options },          // 多选；仅 ask_user（`multi_select`）
     StreamChunk(String),
     ThinkingChunk(ThinkingChunk),
     /// 持久任务列表变更（`task_create` / `task_update`）
     TasksChanged {
+        run_id: Option<RunId>,
         tasks: Vec<TaskSnapshot>, // 不含已删除
         reason: TasksChangeReason, // Created | Updated
     },
     /// 后台任务（`background_run`）完成时终结 keep-live 卡片
-    BackgroundTaskFinished { tool_id, success, message, output },
+    BackgroundTaskFinished { run_id: Option<RunId>, tool_id, success, message, output },
 }
 
 pub enum ThinkingChunk {
@@ -118,7 +119,7 @@ pub struct PlanStep {
 
 ### `AccountUpdate`（biz 模块）
 
-余额与配额更新使用专用 channel 上的 `AccountUpdate`，避免 provider 特定账户状态泄漏进 `AgentUpdate`。见 `crates/tact_protocol/src/biz.rs` 与 `crates/tact_ui/src/account.rs`。
+余额与配额更新使用专用 channel 上的 `AccountUpdate`，避免 provider 特定账户状态泄漏进 `RuntimeEvent`。见 `crates/tact_protocol/src/biz.rs` 与 `crates/tact_ui/src/account.rs`。
 
 ---
 
@@ -150,7 +151,7 @@ graph TD
 
 > `AwaitingChoice` **仅逻辑阶段**：TUI Status 仍为 `Executing`，`InputMode = Select`。
 
-| 阶段 | `AgentUpdate` | Agent 发出者 | TUI 效果 |
+| 阶段 | `RuntimeEvent` | Agent 发出者 | TUI 效果 |
 |------|---------------|--------------|----------|
 | Planned | `StepAdded(PlanStep)` | pre-flight | 追加到 `plan.steps`；`ensure_executing_status` |
 | Running | `StepStarted { … }` | pre-flight | 推送 `ActiveToolBlock`；更新 `current_step` |
@@ -212,7 +213,7 @@ graph TD
 | 从 | 到 | 触发 | 说明 |
 |----|-----|------|------|
 | `Idle` | `Planning` | Insert 模式按 `Enter` | 清空 `app.plan.steps`；发送 `UserCommand::SubmitTask` |
-| `Planning` | `Executing` | 首个 `AgentUpdate::StepAdded` | `ensure_executing_status`；`total` 来自 plan 长度 |
+| `Planning` | `Executing` | 首个 `RuntimeEvent::StepAdded` | `ensure_executing_status`；`total` 来自 plan 长度 |
 | `Executing` | `Executing` | `StepStarted { idx, … }` | 更新 `current_step`；可有并发 `ActiveToolBlock`s |
 | `Executing` | `Done` | `TaskComplete` | 设置 `task_done_time`；冻结 cost timer |
 | `Planning` / `Executing` | `Idle` | `TaskCancelled` | 取消后的 driver；释放输入 |
@@ -222,7 +223,7 @@ graph TD
 
 `TaskComplete` 由 `crates/tact_ui/src/driver.rs` 在 `agent_loop` 返回 `Ok(())` 且 `cancel_flag` 为 false 时发送（[Ch 18 §7](./18_chapter_agent_loop_zh.md#7-tui-integration)）。取消路径改为发送 `TaskCancelled`。
 
-### 4.2 `AgentUpdate` → `Status` 映射
+### 4.2 `RuntimeEvent` → `Status` 映射
 
 与 step 生命周期正交：哪些协议消息实际翻转 `Status`。
 
@@ -238,7 +239,7 @@ graph TD
 **不翻转 `Status` 的更新**：`StreamChunk`、`ThinkingChunk`、`TokenUsage`、`ModelInfo`、`Info`、`RequestSelect`、`StepStarted`、`ToolProgress`、`StepFinished`，以及 `Executing` 之后的 `StepAdded`。
 ```
 
-| `AgentUpdate` | TUI `Status` / mode | 说明 |
+| `RuntimeEvent` | TUI `Status` / mode | 说明 |
 |---------------|---------------------|------|
 | `StepAdded`（首个） | `Planning → Executing` | `ensure_executing_status` |
 | `StepStarted` | `Executing`（更新 `current_step`） | 可有多个并发 `ActiveToolBlock`s |
@@ -400,7 +401,7 @@ TaskComplete            ← agent_loop Ok 后 driver
 
 | 类型 | 文件 | 角色 |
 |------|------|------|
-| `AgentUpdate` | `agent.rs` | Agent → TUI 事件 enum |
+| `RuntimeEvent` | `agent.rs` | Agent → TUI 事件 enum |
 | `ThinkingChunk` | `agent.rs` | Thinking 流生命周期（`Started` / `Delta` / `Finished`） |
 | `UserCommand` | `agent.rs` | TUI → agent 命令 enum |
 | `PlanStep` | `agent.rs` | 内部 plan step 条目（无专用面板）；serde 供 session 持久化 |

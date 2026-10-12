@@ -20,23 +20,23 @@ sequenceDiagram
     TUI->>Cmd: UserCommand::SubmitTask
     Cmd->>Agent: agent_loop(user message)
     Agent->>LLM: stream_message
-    LLM-->>TUI: AgentUpdate via agent_rx
+    LLM-->>TUI: RuntimeEvent via agent_rx
     Agent-->>TUI: Step*、StreamChunk、TokenUsage 等
     Agent-->>Cmd: loop returns Ok
-    Cmd->>TUI: AgentUpdate::TaskComplete
+    Cmd->>TUI: RuntimeEvent::TaskComplete
 ```
 
 五组 unbounded MPSC channel 连接 agent task、account service、plugin worker 与 TUI task：
 
 | Channel | 类型 | 方向 |
 |---------|------|------|
-| `agent_tx` / `agent_rx` | `AgentUpdate` | Agent → TUI |
+| `agent_tx` / `agent_rx` | `RuntimeEvent` | Agent → TUI |
 | `user_cmd_tx` / `user_cmd_rx` | `UserCommand` | TUI → agent driver（`tui.rs`） |
 | `account_tx` / `account_rx` | `AccountUpdate` | Account service → TUI |
 | `plugin_tx` / `plugin_request_rx` | `PluginRequest` | TUI → plugin worker |
 | `plugin_event_tx` / `plugin_rx` | `PluginEvent` | Plugin worker → TUI |
 
-`AgentUpdate`、`UserCommand` 与 `AccountUpdate` 定义在 `tact_protocol`。`PluginRequest` 与 `PluginEvent` 定义在 `tact::plugin`；`tact-ui` 启动 worker，TUI 在渲染前 drain plugin event。
+`RuntimeEvent`、`UserCommand` 与 `AccountUpdate` 定义在 `tact_protocol`。`PluginRequest` 与 `PluginEvent` 定义在 `tact::plugin`；`tact-ui` 启动 worker，TUI 在渲染前 drain plugin event。
 
 **分层（2026-08）：** 可复用渲染面位于 `crates/agent_tui_kit`（设计：`docs/superpowers/specs/2026-08-18-tui-component-library-design.md`）。kit 只依赖 `tact_protocol` + ratatui；它拥有纯渲染函数（`render::bar` / `input` / `log` / `popups` / `task_panel` / `render_md` / `cells` …）、状态模型（`LogCoordinator`、`ToolState`、`ThinkingState`、`StreamState`、`StatusBarState`、`LogScroll` …）以及进出契约（`bridge::Command`、`AgentBridge`、`BridgeExtension`）。`crates/tui` 是 Tact 应用层：拥有 `App`、handlers、每帧 `prepare_*` 阶段（skill 样式、滚动缓存）以及应用层弹窗（palette、file picker、slash commands）。
 
@@ -53,7 +53,7 @@ sequenceDiagram
 1. `tact::config::init()` — 设置 + LLM provider（[Ch 21](./21_chapter_config_zh.md)）。
 2. 打开 SQLite session store，resolve `session_id`（`--session`、`--resume-last` 或新 UUID）。`--resume-last` 与 `--list-sessions` 按当前工作目录的 `root_dir` 过滤 session，忽略其他项目行。`SessionLockGuard` 在争用前重试 `try_lock_session`。这一步连同建行、抢锁、注册、touch 一起由 `session_bootstrap::open_session` 完成，两个前端共用（它返回**已持有**的锁，何时释放由调用方决定）。
 3. 建好 channel / session store / skill registry 等，**先在独立 tokio task 上 spawn `tui::run_tui(...)`** —— 这些都不依赖 Agent，所以 TUI 先可见。
-4. **与 TUI 竞速**地跑 `build_agent_for_interactive(...)`。构建本身（`toolset()`、MCP router、五个 manager、`ToolContext`、`with_ui_channel(agent_tx)`）与 headless 共用 `crates/tact_ui/src/session_bootstrap.rs` 的 `bootstrap_session`；两个前端只在两处不同：启动提示的出口（`Notices`：stderr 或 `AgentUpdate::Info`），以及有没有 UI 通道（`UiWiring`）。构建期间用户退出（`q` / `/quit`）就**放弃构建**直接返回：这一步最慢的是逐个 MCP server 握手，远端 server 的 OAuth 发现可以耗掉数秒，无条件 await 会让 `q` 看起来像卡住。丢弃构建是安全的——每个 MCP transport 在 drop 时杀掉自己的子进程——代价是这条路不打印 session id / stats，因为根本没有 agent 可总结。
+4. **与 TUI 竞速**地跑 `build_agent_for_interactive(...)`。构建本身（`toolset()`、MCP router、五个 manager、`ToolContext`、`with_ui_channel(agent_tx)`）与 headless 共用 `crates/tact_ui/src/session_bootstrap.rs` 的 `bootstrap_session`；两个前端只在两处不同：启动提示的出口（`Notices`：stderr 或 `RuntimeEvent::Info`），以及有没有 UI 通道（`UiWiring`）。构建期间用户退出（`q` / `/quit`）就**放弃构建**直接返回：这一步最慢的是逐个 MCP server 握手，远端 server 的 OAuth 发现可以耗掉数秒，无条件 await 会让 `q` 看起来像卡住。丢弃构建是安全的——每个 MCP transport 在 drop 时杀掉自己的子进程——代价是这条路不打印 session id / stats，因为根本没有 agent 可总结。
 5. 构建成功后 spawn driver task 跑 `user_cmd_rx` 循环 — 分发 `SubmitTask`、`Cancel`、`QueryBalance`。
 6. `tui_handle` 结束后等 driver 收尾（SessionEnd hook + `shutdown_mcp`），再打印 session id 与 stats。
 
@@ -131,7 +131,7 @@ id=cmp_sanitize]` 只显示 id 的前几个字符）。压缩失败会显示 `Er
 
 ---
 
-## 4. `AgentUpdate` 处理
+## 4. `RuntimeEvent` 处理
 
 协议类型、step 生命周期与任务级转换：[Ch 25](./25_chapter_protocol_zh.md)。
 
@@ -151,7 +151,7 @@ TUI 在 `crates/tui/src/widgets/state/app/agent.rs` → `handle_agent_update` �
 | `Error` | 带 `AgentErrorKind` 的错误横幅 |
 | `Info` | 系统消息行 |
 
-余额与配额使用独立 `AccountUpdate` channel（`crates/tact_ui/src/account.rs`），非 `AgentUpdate`。
+余额与配额使用独立 `AccountUpdate` channel（`crates/tact_ui/src/account.rs`），非 `RuntimeEvent`。
 
 **重要：** `Agent::agent_loop` **不**发出 `TaskComplete`。`interactive.rs` 仅在成功、未取消的 loop 返回后发送：
 
@@ -159,11 +159,11 @@ TUI 在 `crates/tui/src/widgets/state/app/agent.rs` → `handle_agent_update` �
 match agent.agent_loop(Some(task_message)).await {
     Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) => {
         if let Some(last) = agent.runtime.context.last() {
-            agent.emit_update(AgentUpdate::TaskComplete(extract_text(&last.content)));
+            agent.emit_update(RuntimeEvent::TaskComplete(extract_text(&last.content)));
         }
     }
     Ok(()) => {}
-    Err(e) => agent.emit_update(AgentUpdate::Error(...)),
+    Err(e) => agent.emit_update(RuntimeEvent::Error(...)),
 }
 ```
 
@@ -179,7 +179,7 @@ match agent.agent_loop(Some(task_message)).await {
 2. **`App::new`** — 接线 channel、工作目录、输入历史、session id、主题。
 3. **事件流** — 后台 tokio task 上的 `crossterm::EventStream`。
 4. **Update → draw → poll** 循环（见 [§6 渲染层](#6-渲染层)）：
-   - 渲染前**完全** drain 待处理 `AgentUpdate`（避免 scroll/hit-test 竞态）。
+   - 渲染前**完全** drain 待处理 `RuntimeEvent`（避免 scroll/hit-test 竞态）。
    - 仅当 `dirty`、`Status::Done` 或仍有工具运行时重绘（实时 elapsed）。
    - 将键盘/鼠标分发给模式特定 handler。
 5. **余额 timer** — DeepSeek 或 Kimi 活跃时，随机 5–15 s 间隔发送 `UserCommand::QueryBalance`（与启动 fetch 相同门控）。
@@ -269,7 +269,7 @@ sticky 或主 Log——仍留在父
 `TasksChanged` 且有 pending/in_progress 项（见 [第 19 章](./19_chapter_persistent_tasks_zh.md)、
 [第 25 章](./25_chapter_protocol_zh.md)）。
 
-与另两个域不同，Background 域是**派生**的而非被推送的：没有任何 `AgentUpdate` 携带它的行，
+与另两个域不同，Background 域是**派生**的而非被推送的：没有任何 `RuntimeEvent` 携带它的行，
 因为 `background_run` 的存活卡片本身就持有 task id（`ToolMeta { task_id }`）、命令与启动时刻——
 于是 `state/background_panel.rs` 从 `ToolState` 派生出这些行，并由 `App::handle_agent_update`
 在滚动刷新之前对这条 sticky 做一次对齐（只管可见性/展开，用户的手动收起不会被覆盖）
@@ -335,7 +335,7 @@ PHYSICAL (log_items[])     LOGICAL (scroll unit)       VISUAL (screen lines)
 
 流式文本在 token 到达时用 `app.stream.buffer` 作为额外 logical 行。
 
-消息类型、`AgentUpdate` 映射、流式生命周期、可见性、scroll 行为、overlays 与鼠标交互见 [§6.11–§6.18](#611-log-消息模型)。
+消息类型、`RuntimeEvent` 映射、流式生命周期、可见性、scroll 行为、overlays 与鼠标交互见 [§6.11–§6.18](#611-log-消息模型)。
 
 ### 6.5 `Renderable` trait 与 cells
 
@@ -376,7 +376,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 **ctx 恢复百分比、去掉进度条（2026-09-12，同日）：** 上面的瘦身一度删掉了 ctx 的 `pct%` 而保留 `■`/`·` 进度条。同日反转：进度条**删除**，百分比前置——`ctx [▍···] 45K/1M` → **`ctx 4% 45K/1M`**（24 → 17 → 14 列）。理由：进度条只是把百分比用字符又画了一遍，而只有 `45K/1M` 时读者得自己做除法才能回答"离自动压缩还有多远"。绝对 `used/window` 保留——比率无法替代它来自的两个计数。缓存 `▣` 段也移到紧接 `ctx` **之后**、回合计数**之前**，让两个会话级比率挨着读；push 顺序现为 `model → out → think → ctx → cache → turns → timing`，窄终端存活顺序为 `ctx > cache > 回合计数 > 回合耗时`。
 
-**回合计数与耗时（2026-09-12）：** `⟳` 统计本会话已派发的用户回合——在唯一派发入口（`handlers/skills.rs::dispatch_user_task`，同时服务排队刷新与 skill 派发）自增；断点续传时由 `load_history` 统计已持久化的 user 消息播种。`⇅` 统计当前任务的 agent-loop 迭代：agent 每次循环发一次 `AgentUpdate::TurnStats { turns_taken, max_turns }`（`crates/tact_extensions/src/agent/mod.rs`），kit 的 `StatusBarComponent` 存入状态，shell 在派发时重置。`max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**——只有 `spawn_subagent` 会设置 cap，主 agent 底栏永远不会显示。耗时在 `add_task_end_separator`（`widgets/state/app/popups.rs`）累计，这是唯一真正冻结 `task_start_time` 的位置；被取消的回合计入，合成分隔线（无 start time）不计入。运行中的实时耗时**不在底栏**：2026-09-14 它一度落在第 1 行紧挨运行，2026-10-05 移到日志的 **task-stats 行**（见上），底栏与顶栏都不再显示任何实时时钟。第 2 行的 `⏱` 只回答"已结束的回合各花多久"（上一回合 + 会话平均），与实时那只钟互不相干。
+**回合计数与耗时（2026-09-12）：** `⟳` 统计本会话已派发的用户回合——在唯一派发入口（`handlers/skills.rs::dispatch_user_task`，同时服务排队刷新与 skill 派发）自增；断点续传时由 `load_history` 统计已持久化的 user 消息播种。`⇅` 统计当前任务的 agent-loop 迭代：agent 每次循环发一次 `RuntimeEvent::TurnStats { turns_taken, max_turns }`（`crates/tact_extensions/src/agent/mod.rs`），kit 的 `StatusBarComponent` 存入状态，shell 在派发时重置。`max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**——只有 `spawn_subagent` 会设置 cap，主 agent 底栏永远不会显示。耗时在 `add_task_end_separator`（`widgets/state/app/popups.rs`）累计，这是唯一真正冻结 `task_start_time` 的位置；被取消的回合计入，合成分隔线（无 start time）不计入。运行中的实时耗时**不在底栏**：2026-09-14 它一度落在第 1 行紧挨运行，2026-10-05 移到日志的 **task-stats 行**（见上），底栏与顶栏都不再显示任何实时时钟。第 2 行的 `⏱` 只回答"已结束的回合各花多久"（上一回合 + 会话平均），与实时那只钟互不相干。
 
 **输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；长行按字符边界软换行（`wrap_line`，CJK 双宽感知——`Paragraph` 保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（`caret_in_wrapped`）；CJK 感知光标宽度；无批准横幅（agent 的权限询问是 `RequestSelect` 更新，会以 `InputMode::Select` 打开选择弹窗）。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact_extensions/src/voice/`。
 
@@ -453,7 +453,7 @@ Chrome 渲染为包裹弹窗内容区域的 ratatui `Block`。确保所有 overl
 | Planning / Executing / Waiting | 150 ms | Spinner 动画 |
 | Idle | 1000 ms | 最多每秒刷新一次 `Up`（显示秒未变则不 dirty） |
 
-活跃 tool 行也强制重绘，使 duration 计数器在无新 `AgentUpdate` 时仍 tick。
+活跃 tool 行也强制重绘，使 duration 计数器在无新 `RuntimeEvent` 时仍 tick。
 
 ### 6.10 渲染中的主题与 i18n
 
@@ -491,7 +491,7 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | `SystemMarkdown` | `/skill list` / `MdInfo` 等整段 Markdown 系统提示 | `LOG_THINKING_INDENT + 1` |
 | `SystemTool` | tool placeholder 与显式标记的 tool 行 | `LOG_TOOL_INDENT` |
 | `Thinking` | 为一个 direct Thinking card 保留的 blank placeholder 行 | `LOG_THINKING_INDENT` |
-| `HookStatus(u64)` | hook 的进度行，id 由 `AgentUpdate::HookStatus` 发放、回来时按 id 原地改写 | `LOG_TOOL_BLOCK_INDENT` |
+| `HookStatus(u64)` | hook 的进度行，id 由 `RuntimeEvent::HookStatus` 发放、回来时按 id 原地改写 | `LOG_TOOL_BLOCK_INDENT` |
 | `HookContext` | hook 注入上下文的 header / 竖条正文 / "还有 N 行"尾巴（整块共用一个 kind） | `LOG_TOOL_BLOCK_INDENT` |
 
 hook 块用的是 `LOG_TOOL_BLOCK_INDENT` 而不是 `LOG_TOOL_INDENT`：后者属于被工具卡覆盖掉的空白占位行，屏幕上根本没有这一列，按它对齐会让竖条停在每条工具行左边 4 列（详见 [第 9 章 §10](./09_chapter_hook_zh.md)）。
@@ -528,7 +528,7 @@ hook 块用的是 `LOG_TOOL_BLOCK_INDENT` 而不是 `LOG_TOOL_INDENT`：后者�
 
 正常流式期间 physical 行仅 append；code fence 关闭或 tool placeholder resize 时 `splice_msgs` / `drain_msgs` 重写区间。
 
-### 6.12 AgentUpdate → log 行映射
+### 6.12 RuntimeEvent → log 行映射
 
 `handle_agent_update`（`widgets/state/app/agent.rs`）是 agent 事件写入 log 行的唯一 writer。每次 update 设 `dirty = true`。match 前两个全局门：
 
@@ -537,7 +537,7 @@ hook 块用的是 `LOG_TOOL_BLOCK_INDENT` 而不是 `LOG_TOOL_INDENT`：后者�
 
 **当前 agent 路径：** `StepAdded` 仅更新内部 `app.plan.steps`（无 log 行、无专用面板）。`StepStarted` 创建 tool placeholder 并驱动 `Planning → Executing`。当前运行勿期望 `PlanGenerated`。
 
-| `AgentUpdate` | 插入/更新的 physical 行 | 副作用 |
+| `RuntimeEvent` | 插入/更新的 physical 行 | 副作用 |
 |---------------|-------------------------|--------|
 | **`StreamChunk`** | 完成行 → `append_msg`（`LLM`）；不完整 tail 留在 `stream.buffer` | 自动 scroll；code/table/paragraph 子解析；thinking 仍开则 safety-close |
 | **`ThinkingChunk::Started`** | 为一行 `ThinkingCell` 及前后空白行保留 placeholder 行 | 打开 active thinking card |
@@ -687,7 +687,7 @@ sequenceDiagram
     participant M as log_items[] + overlays
     participant R as render_log_panel
 
-    Agent->>Rx: AgentUpdate
+    Agent->>Rx: RuntimeEvent
     Rx->>H: dequeue (before draw)
     H->>H: thinking gate / loading gate
     H->>M: append_msg / placeholders / flush buffers
@@ -699,7 +699,7 @@ sequenceDiagram
     R->>R: persist visual_start for mouse
 ```
 
-交叉引用：[Ch 25 Agent–TUI Protocol](./25_chapter_protocol_zh.md) 消息类型与状态转换；[§4 AgentUpdate 处理](#4-agentupdate-处理) TUI 特定效果；[docs/tui_rendering.md §6](../docs/tui_rendering.md) 扩展配方。
+交叉引用：[Ch 25 Agent–TUI Protocol](./25_chapter_protocol_zh.md) 消息类型与状态转换；[§4 RuntimeEvent 处理](#4-runtimeevent-处理) TUI 特定效果；[docs/tui_rendering.md §6](../docs/tui_rendering.md) 扩展配方。
 
 ---
 
@@ -782,11 +782,11 @@ TUI 本身不对流式事件直接调用 notification API。
 | `crates/tui/src/render/log_column.rs` | Viewport 裁剪 `Renderable` 合成器 |
 | `crates/tui/src/render/cells/` | Text、tool、thinking、code cells |
 | `crates/tui/src/render/popups/` | Overlays（palette、select、detail views） |
-| `crates/tui/src/widgets/state/app/agent.rs` | `AgentUpdate` → UI 状态 |
+| `crates/tui/src/widgets/state/app/agent.rs` | `RuntimeEvent` → UI 状态 |
 | `crates/tui/src/theme.rs` | 配色方案（从 kit re-export） |
 | `crates/agent_tui_kit` | 可复用 agent-TUI kit：纯渲染面板、状态模型、widgets、bridge 契约（设计 `docs/superpowers/specs/2026-08-18-tui-component-library-design.md`） |
-| `crates/agent_tui_kit/examples/mock_agent.rs` | Headless 端到端示例：`AgentUpdate` 序列 → kit 状态 → 渲染帧（`cargo run -p agent_tui_kit --example mock_agent`） |
-| `tact_protocol` | `AgentUpdate`、`UserCommand`、`AccountUpdate`、`BalanceInfo`（[Ch 25](./25_chapter_protocol_zh.md)） |
+| `crates/agent_tui_kit/examples/mock_agent.rs` | Headless 端到端示例：`RuntimeEvent` 序列 → kit 状态 → 渲染帧（`cargo run -p agent_tui_kit --example mock_agent`） |
+| `tact_protocol` | `RuntimeEvent`、`UserCommand`、`AccountUpdate`、`BalanceInfo`（[Ch 25](./25_chapter_protocol_zh.md)） |
 | `docs/tui_rendering.md` | 扩展渲染参考与扩展指南 |
 | `docs/tool_rendering.md` | Tool block 数据流与迁移说明 |
 

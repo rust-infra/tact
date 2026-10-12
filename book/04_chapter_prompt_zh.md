@@ -409,6 +409,8 @@ skills
   demo-test/
 ```
 
+> **注：** 上面这份抓取的 crate 目录布局早于 crate 迁移——当时列出的 `crates/protocol/`、`crates/tact-ui/`、`crates/tact/` 如今分别是 `crates/tact_protocol/`、`crates/tact_ui/`、`crates/tact_extensions/`。
+
 随后经 `CreateMessageParams::with_system(&system)` 附加到 LLM 请求，再接对话历史。
 
 ---

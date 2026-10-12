@@ -117,7 +117,7 @@ sequenceDiagram
 
 **阻塞语义（同步）：** `spawn_subagent` 为 `async` 并 await 完整子 agent 循环。从父级视角它是一个 tool call，内部可能运行多轮 LLM。父级 `agent_loop` 在 summary 字符串返回前暂停。
 
-**异步语义（`run_in_background: true`）：** handler 立即返回 `async_launched { id }`；嵌套循环运行在脱钩的 `tokio::spawn` 任务中。完成后该任务 (a) 将 `subagent_runs` 行转为 `Completed`/`Failed`/`Cancelled`，(b) 将 `SubagentResult` 入队父级 `pending_subagent_results`，(c) 在**父级** `ui_tx` 上发 `AgentUpdate::SubagentFinished`。父级下一轮 `agent_loop` drain 队列，经 `push_message`（持久化）注入合成 `<subagent-finished id=…>` user 消息。若父级空闲，TUI 将 `UserCommand::SubagentFinishedNotification` 转发给 driver，driver 提交一个轻量唤醒轮；若一轮仍在进行，driver 会**保留**该唤醒，并在那一轮的 `JoinHandle` 完成后立即提交，从而避免通知落在「最后一次队列 drain 与轮次退出之间」而被丢弃。唤醒以队列为准：若进行中的轮次已 drain 该结果，`spawn_wakeup_task` 会提前返回，不再提交一个无内容可注入的轮次。被取消的子代理即便在标志置位后干净退出，也按 `success = false` 上报。
+**异步语义（`run_in_background: true`）：** handler 立即返回 `async_launched { id }`；嵌套循环运行在脱钩的 `tokio::spawn` 任务中。完成后该任务 (a) 将 `subagent_runs` 行转为 `Completed`/`Failed`/`Cancelled`，(b) 将 `SubagentResult` 入队父级 `pending_subagent_results`，(c) 在**父级** `ui_tx` 上发 `RuntimeEvent::SubagentFinished`。父级下一轮 `agent_loop` drain 队列，经 `push_message`（持久化）注入合成 `<subagent-finished id=…>` user 消息。若父级空闲，TUI 将 `UserCommand::SubagentFinishedNotification` 转发给 driver，driver 提交一个轻量唤醒轮；若一轮仍在进行，driver 会**保留**该唤醒，并在那一轮的 `JoinHandle` 完成后立即提交，从而避免通知落在「最后一次队列 drain 与轮次退出之间」而被丢弃。唤醒以队列为准：若进行中的轮次已 drain 该结果，`spawn_wakeup_task` 会提前返回，不再提交一个无内容可注入的轮次。被取消的子代理即便在标志置位后干净退出，也按 `success = false` 上报。
 
 **消息播种：** handler 调用 `agent_loop(Some(user_prompt))`，经 `push_message` 写入并持久化到子 session。循环前 `spawn_subagent` 分配子 session id（或复用 `resume`），将 `ref_id` 设为父 session id（或 `''`），并调用 `with_session`。UI 使用打标 `ui_tx`（`with_ui_channel` 同步 `tool_context.ui_tx`，使 `ToolProgress` 也被打标）。
 
@@ -178,7 +178,7 @@ You are a principal reviewer. …
 
 **权限继承（Claude 风格）：** `execute_tool_call` 在 wave 运行前将 `PermissionSnapshot`（mode + 会话内 always-allowed 列表 + 已加载 settings）stamp 到 `ToolContext` 上，`spawn_subagent` 用 `PermissionManager::from_snapshot(...)` 构建子级 manager。父级 `Default` → 子 `Default`，`Plan` → 子 `Plan`（只读），`Auto` → 子 `Auto`（sticky）。子级 `consecutive_denials` 计数归零。无父 agent 的 orphan/test context 回退到旧行为：`PermissionMode::Default` + 从磁盘加载 settings。这也修复了只读逃逸：`Plan` 父级不再能 spawn 一个可写文件的 `Default` 子级。
 
-若父级有 TUI 通道，子 agent 使用**打标**通道（`tagged_ui_channel_with_progress`）：流式、步骤、思考与工具结果以 `AgentUpdate::ToolProgress`（卡头为 `ToolMeta`）转发进父工具卡，该卡在 Log 历史中渲染为 `ToolVisualKind::Subagent`。点击该卡进入**子代理视图**（`ToolPopupKind::SubagentTranscript`）：主区域整块换成子会话，顶部一行面包屑 `‹ N. Subagent · 标题`，`Esc` 或点击面包屑退回主日志；子会话的工具调用渲染成**自包含块**（`▎ N. ⚡ Bash args` / `✓ Success · 133ms · 42 lines` / code band 输出 / 溢出行），输出封顶 8 行，而块底部那行 `⋯ N more lines · ▾ expand` **本身就是展开键**（点开把这一块提到 50 行，同一行随后变 `▴ collapse`；`Enter` 是全部展开 / 收起）——与主日志的可交互卡片刻意不同，原地变长不是「弹窗套弹窗」。`RequestSelect` / `RequestMultiSelect` 仍透传（加 `[Subagent]` 前缀），权限弹窗走主 TUI；并发子 agent 权限请求排队，逐个处理。**状态级总览**另由 TUI 的 Log 下方 Subagent sticky tab 承担（`AgentUpdate::SubagentsChanged` 快照当前进程的子代理运行，按状态分组并显示摘要首行）——明细仍留在工具卡 / 视图，绝不进入 sticky 或主 Log。见 [权限模型](./10_chapter_permission_zh.md) 与 [TUI](./23_chapter_tui_zh.md)。
+若父级有 TUI 通道，子 agent 使用**打标**通道（`tagged_ui_channel_with_progress`）：流式、步骤、思考与工具结果以 `RuntimeEvent::ToolProgress`（卡头为 `ToolMeta`）转发进父工具卡，该卡在 Log 历史中渲染为 `ToolVisualKind::Subagent`。点击该卡进入**子代理视图**（`ToolPopupKind::SubagentTranscript`）：主区域整块换成子会话，顶部一行面包屑 `‹ N. Subagent · 标题`，`Esc` 或点击面包屑退回主日志；子会话的工具调用渲染成**自包含块**（`▎ N. ⚡ Bash args` / `✓ Success · 133ms · 42 lines` / code band 输出 / 溢出行），输出封顶 8 行，而块底部那行 `⋯ N more lines · ▾ expand` **本身就是展开键**（点开把这一块提到 50 行，同一行随后变 `▴ collapse`；`Enter` 是全部展开 / 收起）——与主日志的可交互卡片刻意不同，原地变长不是「弹窗套弹窗」。`RequestSelect` / `RequestMultiSelect` 仍透传（加 `[Subagent]` 前缀），权限弹窗走主 TUI；并发子 agent 权限请求排队，逐个处理。**状态级总览**另由 TUI 的 Log 下方 Subagent sticky tab 承担（`RuntimeEvent::SubagentsChanged` 快照当前进程的子代理运行，按状态分组并显示摘要首行）——明细仍留在工具卡 / 视图，绝不进入 sticky 或主 Log。见 [权限模型](./10_chapter_permission_zh.md) 与 [TUI](./23_chapter_tui_zh.md)。
 
 ---
 
@@ -247,7 +247,7 @@ let summary = subagent
 | `crates/tact_extensions/src/permission/mod.rs` | `PermissionSnapshot`、`snapshot()`/`from_snapshot()` |
 | `crates/tact_extensions/src/subagent.rs` | `SubagentManager` / `SubagentRun` / `SubagentStatus`（orphan repair） |
 | `crates/tact_extensions/src/store/subagent_store/` | `subagent_runs` SQLite 表 + trait |
-| `crates/tact_protocol/src/agent.rs` | `AgentUpdate::SubagentFinished`、`UserCommand::SubagentFinishedNotification` |
+| `crates/tact_protocol/src/agent.rs` | `RuntimeEvent::SubagentFinished`、`UserCommand::SubagentFinishedNotification` |
 | `crates/tact_ui/src/driver.rs` | `SubagentFinishedNotification` 的唤醒轮（一轮进行中时保留；结果队列已 drain 时跳过） |
 | `crates/tact_extensions/src/agent/tool_schedule.rs` | `spawn_subagent` 作为调度 barrier |
 | `ARCHITECTURE.md` | 工具表中的一行摘要 |

@@ -15,7 +15,7 @@ flowchart LR
     Render[TestBackend render]
 
     Mock --> Agent
-    Agent -->|AgentUpdate| Driver
+    Agent -->|RuntimeEvent| Driver
     Driver -->|collect updates| Bridge[app_bridge_integration]
     Bridge -->|feed| App
     App --> Render
@@ -74,7 +74,7 @@ Pre-push 运行 `./scripts/check-rust.sh`（fmt check、clippy、集成测试）
 
 - `build_test_agent` / `build_test_agent_with_mode` — mock LLM + 隔离 workspace（`unique_workspace_name` 避免并行测试冲突）
 - `run_command_loop` — 与交互模式相同代码路径，由 `UserCommand` channel 驱动
-- `run_single_task` / `run_commands` — 提交任务、自动响应权限提示、收集 `AgentUpdate` 流
+- `run_single_task` / `run_commands` — 提交任务、自动响应权限提示、收集 `RuntimeEvent` 流
 - `wire_permission_responder` — 剥离 `RequestSelect` 并发送 allow/deny 选择
 
 **测试文件：**
@@ -156,7 +156,7 @@ tui = { path = "../tui", features = ["test-support"] }
 `tui::test_support::TestApp` 包装 `App`：
 
 - `new_in_dir(work_dir)` — 匹配 driver workspace
-- `feed` / `feed_all` — 应用 `AgentUpdate` 批次
+- `feed` / `feed_all` — 应用 `RuntimeEvent` 批次
 - `render` / `render_main` — TestBackend 输出
 - `open_last_tool_popup` — 走真实 `open_diff_popup` 路径
 

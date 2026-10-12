@@ -243,7 +243,7 @@ tact-ui mcp logout linear                     # 删除 token
 | `skipped_remote` | 因传输方式不支持/不完整而被丢弃的 server |
 | `pending_auth` | 尚无可用凭据的远程 OAuth server（声明了 `auth`、token 过期且不可刷新，或服务器返回 401） |
 
-**连接失败绝不致命**——单个坏 server 不应阻止 agent 启动。但它也不再静默：`notice_lines()` 为每条事实渲染一行，在 TUI 中以 `AgentUpdate::Info` 交付，headless 模式写入 stderr。一切正常时不产生任何输出，因此提示只在确有需要处理的事情时出现。
+**连接失败绝不致命**——单个坏 server 不应阻止 agent 启动。但它也不再静默：`notice_lines()` 为每条事实渲染一行，在 TUI 中以 `RuntimeEvent::Info` 交付，headless 模式写入 stderr。一切正常时不产生任何输出，因此提示只在确有需要处理的事情时出现。
 
 **待授权不会阻塞启动。** 需要 OAuth 的远程 server 会被列为 `pending_auth` 并跳过——无论它是声明了 `auth`，还是因返回 401 而被识别；运行 `/mcp auth <server>` 完成浏览器流程，成功后 MCP router 会原地热重载。
 
@@ -596,7 +596,7 @@ Client 应重新 `tools/list` 并刷新 Agent 工具表。
 4. `MCPToolRouter::refresh_changed()` 遍历各 client，为真正发生变化的那些上报 `{ server, added, removed, newly_hidden }`。
 5. `Agent::refresh_mcp_tools()` 在每次 `agent_loop` 迭代的开头、构建请求之前运行，并重建 `cached_tool_specs`。工具列表是**按请求**发送的，所以中途到达的变化会在紧接着的那次调用就传达给模型，而不是等到下一个用户轮次。
 
-重新拉取失败时**保留原有列表**：只有 server 自己能移除它的工具，一次瞬时的传输错误不该让一个本来可用的 server 看起来空了。变化与失败都会以 `AgentUpdate::Info` 行上报——一个工具悄悄出现或消失，正是事后会被归咎于模型行为的那类事。
+重新拉取失败时**保留原有列表**：只有 server 自己能移除它的工具，一次瞬时的传输错误不该让一个本来可用的 server 看起来空了。变化与失败都会以 `RuntimeEvent::Info` 行上报——一个工具悄悄出现或消失，正是事后会被归咎于模型行为的那类事。
 
 ```rust
 // crates/tact_extensions/src/mcp/mod.rs — connect 安装 handler，而不是 ()

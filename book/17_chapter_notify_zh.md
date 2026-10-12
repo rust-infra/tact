@@ -81,11 +81,11 @@ pub fn is_enabled() -> bool {
 
 ```rust
 match &update {
-    AgentUpdate::TaskComplete(text) => {
+    RuntimeEvent::TaskComplete(text) => {
         let summary = text.chars().take(200).collect::<String>();
         let _ = crate::notifications::notify_task_complete(&summary);
     }
-    AgentUpdate::StepFailed(idx, _, msg) => {
+    RuntimeEvent::StepFailed(idx, _, msg) => {
         let _ = crate::notifications::notify_step_failed(*idx, msg);
     }
     _ => {}
@@ -111,7 +111,7 @@ sequenceDiagram
 
 ### Headless 路径
 
-Headless 运行设置 `ui_tx: None`，因此 `agent_loop` 从不向 TUI 发送 `AgentUpdate::TaskComplete`。完成 **只通知一次**：`run_headless` 在将最终文本打印到 stdout 后直接调用 `notify_task_complete`（`tui.rs`）。循环期间 `emit_update` 不会产生重复通知。
+Headless 运行设置 `ui_tx: None`，因此 `agent_loop` 从不向 TUI 发送 `RuntimeEvent::TaskComplete`。完成 **只通知一次**：`run_headless` 在将最终文本打印到 stdout 后直接调用 `notify_task_complete`（`tui.rs`）。循环期间 `emit_update` 不会产生重复通知。
 
 交互运行不同：`interactive.rs` 在成功、未取消的 `agent_loop` 返回后发出 `TaskComplete`，`emit_update` 从该更新触发 `notify_task_complete`。
 
@@ -121,7 +121,7 @@ Headless 运行设置 `ui_tx: None`，因此 `agent_loop` 从不向 TUI 发送 `
 
 ## 5. 什么 *不* 触发通知
 
-这些 `AgentUpdate` 变体 **不** 通知：
+这些 `RuntimeEvent` 变体 **不** 通知：
 
 - `StepStarted`、`StepFinished`、`StepAdded`
 - `Info`、`ModelInfo`、流式 token
