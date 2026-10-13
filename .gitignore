@@ -24,3 +24,8 @@ skills
 tmp/
 crates/tui/agent_log_*.txt
 *.jpeg
+# Local tooling artifacts, not project source: Claude Code plugin config,
+# the lockfile for locally installed community skills, and manual screenshots.
+.claude-plugin/
+skills-lock.json
+screenshot-*.png
