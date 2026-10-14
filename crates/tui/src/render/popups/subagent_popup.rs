@@ -166,4 +166,6 @@ pub(crate) fn render_subagent_view(frame: &mut Frame, area: Rect, app: &mut App)
     app.mouse.subagent_back_area = chunks[0];
     // Each capped block's overflow row is that block's own toggle.
     app.mouse.subagent_block_toggles = surface.block_toggles;
+    // The pill's hit rect (empty while the view follows its tail).
+    app.mouse.subagent_scroll_back_area = surface.scroll_back_area;
 }

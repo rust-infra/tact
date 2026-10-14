@@ -5,11 +5,13 @@ use std::time::Duration;
 use ratatui::{Terminal, backend::TestBackend, buffer::CellWidth, style::Modifier, text::Line};
 
 use super::test_harness::{buffer_text, make_app, render_app_text, render_main_area_text};
+use crate::handle_mouse_event;
 use crate::test_fixtures::StepCall;
 use crate::widgets::state::{
     App, CodeBlock, CodePopup, DiffPopup, InputMode, LogItemKind, PopupTextSelection, SurfaceId,
     ThinkingBlock, ThinkingPopup,
 };
+use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
 use tact_protocol::{
     AgentUpdate, StepStatus, SubagentStep, SubagentStepStatus, SubagentTranscriptEntry,
     ToolDetailKind, ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
@@ -2040,6 +2042,193 @@ fn seed_subagent_popup(app: &mut App) {
     }
     app.open_subagent_popup_by_id("sa-1");
     assert!(app.has_subagent_popup(), "the popup must be open");
+}
+
+/// The view has no footer, so it draws the log's back-to-bottom pill on the
+/// body's last row. Following the tail hides it; scrolling away shows it, and
+/// clicking it returns to the tail.
+#[test]
+fn subagent_view_shows_a_back_to_bottom_pill_only_when_scrolled_away() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    // Open following, as a fresh view is: no pill.
+    render_subagent_view_terminal(&mut app, 100, 40);
+    assert!(
+        app.mouse.subagent_scroll_back_area.is_empty(),
+        "a following view must not offer the pill"
+    );
+
+    // Scroll away -> the pill appears and records its hit rect.
+    if let Some(popup) = app.subagent_popup_mut() {
+        popup.follow = false;
+        popup.scroll = 0;
+    }
+    let terminal = render_subagent_view_terminal(&mut app, 100, 40);
+    let text = buffer_text(terminal.backend().buffer());
+    assert!(
+        text.contains("Back to bottom"),
+        "scrolled away, the pill must say so:\n{text}"
+    );
+    let hit = app.mouse.subagent_scroll_back_area;
+    assert!(!hit.is_empty(), "the pill must record its hit rect");
+
+    // Clicking it returns to the tail and re-arms following.
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::Down(MouseButton::Left),
+            column: hit.x + 2,
+            row: hit.y,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        },
+    );
+    let popup = app.subagent_popup().expect("view");
+    assert!(popup.follow, "the click must resume following");
+    assert_eq!(popup.scroll, u16::MAX, "and pin to the tail");
+}
+
+/// A child still streaming keeps a following view at the bottom, and lights
+/// the badge for a reader who scrolled away.
+#[test]
+fn subagent_transcript_arrival_follows_or_badges() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    let _ = render_subagent_view_terminal(&mut app, 100, 40);
+
+    // Following: new rows re-pin, no badge.
+    app.subagent_scroll_to_bottom();
+    app.handle_agent_update(AgentUpdate::ToolTranscriptStream {
+        tool_id: "sa-1".into(),
+        text: "streaming...".into(),
+    });
+    assert!(app.subagent_popup().unwrap().follow);
+    assert!(!app.subagent_popup().unwrap().unseen);
+
+    // Scrolled away: new rows badge instead of yanking the viewport.
+    if let Some(popup) = app.subagent_popup_mut() {
+        popup.follow = false;
+        popup.scroll = 0;
+    }
+    app.handle_agent_update(AgentUpdate::ToolTranscriptStream {
+        tool_id: "sa-1".into(),
+        text: "streaming... more".into(),
+    });
+    let popup = app.subagent_popup().unwrap();
+    assert!(!popup.follow, "the reader's place must be kept");
+    assert!(popup.unseen, "and they must be told there is more below");
+    assert_eq!(popup.scroll, 0);
+}
+
+/// A stream from a DIFFERENT subagent must not badge the open view: with two
+/// children alive, acting on whatever popup is open would lie about which one
+/// produced the new rows.
+#[test]
+fn another_subagents_stream_does_not_touch_the_open_view() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    let _ = render_subagent_view_terminal(&mut app, 100, 40);
+    if let Some(popup) = app.subagent_popup_mut() {
+        popup.follow = false;
+        popup.scroll = 0;
+        popup.unseen = false;
+    }
+
+    app.handle_agent_update(AgentUpdate::ToolTranscriptStream {
+        tool_id: "some-other-child".into(),
+        text: "not ours\n".into(),
+    });
+    let popup = app.subagent_popup().expect("view");
+    assert!(
+        !popup.unseen,
+        "another child's rows must not badge this view"
+    );
+    assert_eq!(popup.scroll, 0, "and must not move it");
+}
+
+/// Scrolling back down to the end re-arms following and clears the badge —
+/// the log's contract. Without it the pill stays up with nothing below it.
+#[test]
+fn scrolling_down_to_the_end_rearms_following() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    // A short viewport, so the seeded conversation overflows and scrolling is
+    // meaningful (a fitting transcript has nothing to scroll).
+    let _ = render_subagent_view_terminal(&mut app, 100, 12);
+    assert!(
+        app.subagent_popup()
+            .and_then(|p| p.layout.as_ref())
+            .is_some_and(|l| l.total_rows > 12),
+        "the fixture must overflow for this test to mean anything"
+    );
+
+    // Scroll well past the top, then walk back down to the tail.
+    app.subagent_scroll_by(-1000);
+    let popup = app.subagent_popup().expect("view");
+    assert!(!popup.follow, "scrolling up stops following");
+    assert_eq!(popup.scroll, 0, "and clamps at the top");
+
+    app.subagent_scroll_by(1000);
+    let popup = app.subagent_popup().expect("view");
+    assert!(popup.follow, "reaching the end re-arms following");
+    assert!(!popup.unseen, "and clears the badge");
+    assert_eq!(popup.scroll, u16::MAX, "pinned to the tail");
+}
+
+/// The wheel is the same decision as `j`/`k`: without clearing `follow`, the
+/// next streamed row would yank a wheeled-away reader back to the bottom.
+#[test]
+fn wheel_up_stops_following_so_a_stream_cannot_yank_the_reader() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    // Short viewport: the transcript must overflow for a wheel-up to be a
+    // decision about the tail.
+    let _ = render_subagent_view_terminal(&mut app, 100, 12);
+    assert!(app.subagent_popup().unwrap().follow, "opens following");
+
+    handle_mouse_event(
+        &mut app,
+        MouseEvent {
+            kind: MouseEventKind::ScrollUp,
+            column: 10,
+            row: 10,
+            modifiers: crossterm::event::KeyModifiers::empty(),
+        },
+    );
+    assert!(
+        !app.subagent_popup().unwrap().follow,
+        "a wheel-up must stop following"
+    );
+
+    let before = app.subagent_popup().unwrap().scroll;
+    app.handle_agent_update(AgentUpdate::ToolTranscriptStream {
+        tool_id: "sa-1".into(),
+        text: "new rows\n".into(),
+    });
+    let popup = app.subagent_popup().expect("view");
+    assert_eq!(popup.scroll, before, "the reader must not be yanked back");
+    assert!(popup.unseen, "and is told there is more below");
+}
+
+/// `Esc` closes through the one path, so the view's hit rects and its active id
+/// go with it — a stale active id let a later update badge a closed view.
+#[test]
+fn closing_the_view_clears_its_hit_rects_and_active_id() {
+    let mut app = make_app();
+    seed_subagent_popup(&mut app);
+    let _ = render_subagent_view_terminal(&mut app, 100, 40);
+    assert!(!app.mouse.subagent_back_area.is_empty());
+
+    app.close_subagent_popup();
+    assert!(!app.has_subagent_popup());
+    assert!(app.mouse.subagent_back_area.is_empty());
+    assert!(app.mouse.subagent_scroll_back_area.is_empty());
+
+    // With the view closed, a transcript update must not resurrect its state.
+    app.handle_agent_update(AgentUpdate::ToolTranscriptStream {
+        tool_id: "sa-1".into(),
+        text: "after close\n".into(),
+    });
+    assert!(app.subagent_popup().is_none(), "closed means closed");
 }
 
 fn render_subagent_view_terminal(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {

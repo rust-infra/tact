@@ -154,6 +154,10 @@ pub struct Messages {
     /// and is omitted (with its separator) when nothing arrived.
     pub scroll_back_badge: &'static str,
     pub scroll_back_action: &'static str,
+    /// Back-to-bottom pill for the subagent view. Its own key rather than
+    /// `scroll_back_action`, because the shortcut differs there (`esc` closes
+    /// that view; `G` jumps to its tail).
+    pub subagent_scroll_back_action: &'static str,
     pub input_box_placeholder: &'static str,
     pub voice_idle: &'static str,
     pub voice_stop: &'static str,
@@ -543,6 +547,7 @@ impl Messages {
             input_box_title: " ❯ Input (Shift/Alt+Enter=newline) ",
             scroll_back_badge: "New activity",
             scroll_back_action: "↓ Back to bottom · esc",
+            subagent_scroll_back_action: "↓ Back to bottom · G",
             input_box_placeholder: "Type a task and press Enter…",
             voice_idle: "⏺ Voice",
             voice_stop: "⏹ Stop",
@@ -719,7 +724,7 @@ impl Messages {
             permission_select_prompt: "Permission mode",
             permission_option_default: "Default — ask for writes",
             permission_option_plan: "Plan — read only",
-            permission_option_auto: "Auto — allow non-high",
+            permission_option_auto: "Auto — allow all (incl. high)",
             permission_set_tmpl: "✓ Permission mode set to {}",
             plugin_request_queued: "▶ Plugin request queued…",
             plugin_worker_unavailable: "⚠ Plugin worker is unavailable",
@@ -875,6 +880,7 @@ impl Messages {
             input_box_title: " ❯ 输入 (Shift/Alt+Enter 换行) ",
             scroll_back_badge: "新活动",
             scroll_back_action: "↓ 回到最新 · esc",
+            subagent_scroll_back_action: "↓ 回到最新 · G",
             input_box_placeholder: "输入任务，按 Enter 提交…",
             voice_idle: "⏺ 语音",
             voice_stop: "⏹ 停止",
@@ -1048,7 +1054,7 @@ impl Messages {
             permission_select_prompt: "权限模式",
             permission_option_default: "默认 — 写入需确认",
             permission_option_plan: "只读 — 阻止所有写操作",
-            permission_option_auto: "自动 — 自动放行非高危操作",
+            permission_option_auto: "自动 — 放行全部操作（含高危）",
             permission_set_tmpl: "✓ 权限模式已设为 {}",
             plugin_request_queued: "▶ 插件请求已加入队列…",
             plugin_worker_unavailable: "⚠ 插件工作线程不可用",

@@ -58,6 +58,22 @@ impl App {
         if matches!(update, AgentUpdate::StreamChunk(_)) {
             self.apply_stream_events(stream_events);
         }
+        // The child's conversation grew: keep the subagent view's tail pinned
+        // when its reader is following, else light its badge. Deliberately not
+        // folded into `refresh_tail_scroll`, which is the *log's* state.
+        if matches!(
+            update,
+            AgentUpdate::ToolTranscript { .. } | AgentUpdate::ToolTranscriptStream { .. }
+        ) {
+            let tool_id = match &update {
+                AgentUpdate::ToolTranscript { tool_id, .. }
+                | AgentUpdate::ToolTranscriptStream { tool_id, .. } => Some(tool_id.clone()),
+                _ => None,
+            };
+            if let Some(tool_id) = tool_id {
+                self.note_subagent_rows_appended(&tool_id);
+            }
+        }
         // 3. Apply the tool-lifecycle outbox (placeholder rows, scroll).
         self.apply_tool_events(tool_events);
         // 4. Shell tail: rich behavior the kit components do not implement
@@ -509,6 +525,9 @@ impl App {
             // ToolTranscript → ToolComponent (the subagent popup's structured
             // body); the shell itself has no side effect to apply.
             AgentUpdate::ToolProgress { .. } | AgentUpdate::ToolTranscript { .. } => {}
+            // ToolTranscriptStream → ToolComponent (the popup's in-flight
+            // assistant text); no shell-side effect either.
+            AgentUpdate::ToolTranscriptStream { .. } => {}
             AgentUpdate::TasksChanged { tasks, reason } => {
                 self.on_tasks_changed_tail(tasks, reason);
             }
@@ -1559,12 +1578,14 @@ mod lifecycle_tests {
             tool_id: "bg1".into(),
             model: None,
             token_usage: None,
+            context_window: None,
             task_id: Some("id1".into()),
         });
         app.handle_agent_update(AgentUpdate::ToolMeta {
             tool_id: "bg2".into(),
             model: None,
             token_usage: None,
+            context_window: None,
             task_id: Some("id2".into()),
         });
         assert!(

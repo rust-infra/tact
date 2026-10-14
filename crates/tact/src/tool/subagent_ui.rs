@@ -110,6 +110,14 @@ fn emit_transcript(
     progress: &ToolProgressReporter,
     entry: SubagentTranscriptEntry,
 ) {
+    // A final assistant entry supersedes the in-flight streaming snapshot; the
+    // consumer drops its buffered copy for exactly this tool id.
+    if matches!(entry, SubagentTranscriptEntry::Assistant(_)) {
+        let _ = inner.send(AgentUpdate::ToolTranscriptStream {
+            tool_id: progress.tool_id().to_string(),
+            text: String::new(),
+        });
+    }
     let _ = inner.send(AgentUpdate::ToolTranscript {
         tool_id: progress.tool_id().to_string(),
         entry: redacted_entry(progress, entry),
@@ -124,9 +132,14 @@ fn emit_transcript(
 /// more when the channel closes.
 fn flush_assistant(
     buf: &mut String,
+    committed_lines: &mut usize,
+    total_lines: &mut usize,
     inner: &UnboundedSender<AgentUpdate>,
     progress: &ToolProgressReporter,
 ) {
+    // The turn is over either way, so the next one starts a fresh stream.
+    *committed_lines = 0;
+    *total_lines = 0;
     if buf.trim().is_empty() {
         buf.clear();
         return;
@@ -144,6 +157,7 @@ fn flush_assistant(
 pub fn tagged_ui_channel_with_progress(
     inner: UnboundedSender<AgentUpdate>,
     progress: ToolProgressReporter,
+    context_window: usize,
 ) -> UnboundedSender<AgentUpdate> {
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     tokio::spawn(async move {
@@ -155,15 +169,48 @@ pub fn tagged_ui_channel_with_progress(
         // resolves them from the live card), so a failed child call remembers
         // what its `StepStarted` half said.
         let mut running_steps: HashMap<String, SubagentStep> = HashMap::new();
+        // Newline count of the last published snapshot, and the running total
+        // of the turn: a chunk that adds no line break cannot change the
+        // rendered shape, so it does not publish.
+        let mut assistant_committed_lines = 0usize;
+        let mut assistant_total_lines = 0usize;
         while let Some(update) = rx.recv().await {
             match update {
                 AgentUpdate::StreamChunk(text) => {
                     assistant_buf.push_str(&text);
-                    progress.report(vec![ToolOutputChunk::other(text)]);
+                    progress.report(vec![ToolOutputChunk::other(text.clone())]);
+                    // Running count: rescanning the whole turn per chunk is
+                    // quadratic, and a long turn arrives in hundreds of chunks.
+                    assistant_total_lines += text.bytes().filter(|b| *b == b'\n').count();
+                    // Publish the in-flight turn so the popup grows while the
+                    // text streams, like the main log. Setting the whole turn
+                    // (not a delta) keeps the payload idempotent for a
+                    // reconnect or a re-ordered consumer.
+                    //
+                    // Only a new line *boundary* can change the rendered shape,
+                    // so a chunk that merely grows the last line will not
+                    // publish: an appended word is visible in the next entry
+                    // instead, and the O(turn) re-layout per token is avoided.
+                    if assistant_total_lines > assistant_committed_lines {
+                        assistant_committed_lines = assistant_total_lines;
+                        let text = progress.redact_streaming(&assistant_buf);
+                        if !text.trim().is_empty() {
+                            let _ = inner.send(AgentUpdate::ToolTranscriptStream {
+                                tool_id: progress.tool_id().to_string(),
+                                text,
+                            });
+                        }
+                    }
                 }
                 AgentUpdate::ThinkingChunk(chunk) => match chunk {
                     tact_protocol::ThinkingChunk::Started => {
-                        flush_assistant(&mut assistant_buf, &inner, &progress);
+                        flush_assistant(
+                            &mut assistant_buf,
+                            &mut assistant_committed_lines,
+                            &mut assistant_total_lines,
+                            &inner,
+                            &progress,
+                        );
                         thinking_buf.clear();
                         thinking_started = Some(std::time::Instant::now());
                     }
@@ -171,7 +218,13 @@ pub fn tagged_ui_channel_with_progress(
                         thinking_buf.push_str(&text);
                     }
                     tact_protocol::ThinkingChunk::Finished => {
-                        flush_assistant(&mut assistant_buf, &inner, &progress);
+                        flush_assistant(
+                            &mut assistant_buf,
+                            &mut assistant_committed_lines,
+                            &mut assistant_total_lines,
+                            &inner,
+                            &progress,
+                        );
                         let summary = thinking_buf.trim().to_string();
                         thinking_buf.clear();
                         // The transcript is the only place that knows when the
@@ -201,7 +254,13 @@ pub fn tagged_ui_channel_with_progress(
                     presentation,
                     ..
                 } => {
-                    flush_assistant(&mut assistant_buf, &inner, &progress);
+                    flush_assistant(
+                        &mut assistant_buf,
+                        &mut assistant_committed_lines,
+                        &mut assistant_total_lines,
+                        &inner,
+                        &progress,
+                    );
                     let line = if arg_summary.is_empty() {
                         format!("→ {tool_name}")
                     } else {
@@ -225,7 +284,13 @@ pub fn tagged_ui_channel_with_progress(
                 AgentUpdate::StepFinished {
                     tool_id, result, ..
                 } => {
-                    flush_assistant(&mut assistant_buf, &inner, &progress);
+                    flush_assistant(
+                        &mut assistant_buf,
+                        &mut assistant_committed_lines,
+                        &mut assistant_total_lines,
+                        &inner,
+                        &progress,
+                    );
                     running_steps.remove(&tool_id);
                     let preview = result.message.clone();
                     if !preview.is_empty() {
@@ -262,7 +327,13 @@ pub fn tagged_ui_channel_with_progress(
                     error,
                     ..
                 } => {
-                    flush_assistant(&mut assistant_buf, &inner, &progress);
+                    flush_assistant(
+                        &mut assistant_buf,
+                        &mut assistant_committed_lines,
+                        &mut assistant_total_lines,
+                        &inner,
+                        &progress,
+                    );
                     progress.report(vec![structural_stderr(format!(
                         "✗ {}",
                         preserve_markdown_newlines(&error)
@@ -300,28 +371,47 @@ pub fn tagged_ui_channel_with_progress(
                     );
                 }
                 AgentUpdate::Info(msg) => {
-                    flush_assistant(&mut assistant_buf, &inner, &progress);
+                    flush_assistant(
+                        &mut assistant_buf,
+                        &mut assistant_committed_lines,
+                        &mut assistant_total_lines,
+                        &inner,
+                        &progress,
+                    );
                     progress.report(vec![structural_line(msg.clone())]);
                     emit_transcript(&inner, &progress, SubagentTranscriptEntry::Info(msg));
                 }
                 AgentUpdate::MdInfo(msg) => {
-                    flush_assistant(&mut assistant_buf, &inner, &progress);
+                    flush_assistant(
+                        &mut assistant_buf,
+                        &mut assistant_committed_lines,
+                        &mut assistant_total_lines,
+                        &inner,
+                        &progress,
+                    );
                     progress.report(vec![structural_line(msg.clone())]);
                     emit_transcript(&inner, &progress, SubagentTranscriptEntry::Info(msg));
                 }
                 AgentUpdate::Error(err) => {
-                    flush_assistant(&mut assistant_buf, &inner, &progress);
+                    flush_assistant(
+                        &mut assistant_buf,
+                        &mut assistant_committed_lines,
+                        &mut assistant_total_lines,
+                        &inner,
+                        &progress,
+                    );
                     let text = format!("error: {err:?}");
                     progress.report(vec![structural_stderr(text.clone())]);
                     emit_transcript(&inner, &progress, SubagentTranscriptEntry::Error(text));
                 }
                 AgentUpdate::TokenUsage(usage) => {
-                    // Update the parent tool card header (model + token count)
+                    // Update the parent tool card header (model + ctx meter)
                     // instead of cluttering the output stream with inline lines.
                     let _ = inner.send(AgentUpdate::ToolMeta {
                         tool_id: progress.tool_id().to_string(),
                         model: None,
                         token_usage: Some(usage),
+                        context_window: Some(context_window),
                         task_id: None,
                     });
                 }
@@ -330,6 +420,7 @@ pub fn tagged_ui_channel_with_progress(
                         tool_id: progress.tool_id().to_string(),
                         model: Some(params.model),
                         token_usage: None,
+                        context_window: None,
                         task_id: None,
                     });
                 }
@@ -360,7 +451,13 @@ pub fn tagged_ui_channel_with_progress(
                     });
                 }
                 AgentUpdate::TaskComplete(_) | AgentUpdate::TaskCancelled => {
-                    flush_assistant(&mut assistant_buf, &inner, &progress);
+                    flush_assistant(
+                        &mut assistant_buf,
+                        &mut assistant_committed_lines,
+                        &mut assistant_total_lines,
+                        &inner,
+                        &progress,
+                    );
                 }
                 // Unused/unknown variants — skip silently.
                 _ => {}
@@ -368,7 +465,13 @@ pub fn tagged_ui_channel_with_progress(
         }
         // The child's channel closed: whatever assistant text was still open is
         // a complete turn, not a partial one.
-        flush_assistant(&mut assistant_buf, &inner, &progress);
+        flush_assistant(
+            &mut assistant_buf,
+            &mut assistant_committed_lines,
+            &mut assistant_total_lines,
+            &inner,
+            &progress,
+        );
     });
     tx
 }
@@ -385,7 +488,7 @@ mod tests {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("task-1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
             .send(AgentUpdate::StreamChunk("hello world\n".into()))
@@ -402,7 +505,108 @@ mod tests {
             }
             other => panic!("expected ToolProgress, got {other:?}"),
         }
-        assert!(inner_rx.try_recv().is_err(), "nothing on inner");
+        // The same chunk also publishes the in-flight turn so the popup grows
+        // while the child streams, instead of staying empty until it settles.
+        match inner_rx.try_recv().unwrap() {
+            AgentUpdate::ToolTranscriptStream { tool_id, text } => {
+                assert_eq!(tool_id, "task-1");
+                assert_eq!(text, "hello world\n");
+            }
+            other => panic!("expected ToolTranscriptStream, got {other:?}"),
+        }
+        assert!(
+            inner_rx.try_recv().is_err(),
+            "one snapshot per line, not chunk"
+        );
+    }
+
+    /// A chunk that adds no line break cannot change the popup's rendered
+    /// shape, so it must not trigger a full re-layout — the turn's next line
+    /// boundary carries the text instead.
+    #[tokio::test]
+    async fn a_chunk_without_a_line_break_does_not_publish_a_snapshot() {
+        let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("t1", Some(progress_tx));
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
+
+        tagged
+            .send(AgentUpdate::StreamChunk("partial".into()))
+            .unwrap();
+        tokio::task::yield_now().await;
+        assert!(
+            inner_rx.try_recv().is_err(),
+            "a line that has not ended yet must not publish"
+        );
+
+        tagged
+            .send(AgentUpdate::StreamChunk(" line\n".into()))
+            .unwrap();
+        tokio::task::yield_now().await;
+        match inner_rx.try_recv().unwrap() {
+            AgentUpdate::ToolTranscriptStream { text, .. } => {
+                assert_eq!(text, "partial line\n");
+            }
+            other => panic!("expected ToolTranscriptStream, got {other:?}"),
+        }
+    }
+
+    /// The review-found leak: a private key arriving line by line must never
+    /// publish its body, because the whole-text rule cannot match until the END
+    /// marker arrives.
+    #[tokio::test]
+    async fn a_streaming_private_key_never_publishes_its_body() {
+        use crate::security::RedactionLevel;
+        let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("t1", Some(progress_tx))
+            .with_stream_redaction(RedactionLevel::Basic);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
+
+        // Built by concatenation so the marker never appears as a literal here.
+        let begin = concat!("-----BEGIN ", "RSA PRIVATE KEY-----\n");
+        let end = concat!("-----END ", "RSA PRIVATE KEY-----\n");
+        for chunk in ["key:\n", begin, "SECRETBODYLINE1\n", end] {
+            tagged
+                .send(AgentUpdate::StreamChunk(chunk.to_string()))
+                .unwrap();
+            tokio::task::yield_now().await;
+            while let Ok(update) = inner_rx.try_recv() {
+                if let AgentUpdate::ToolTranscriptStream { text, .. } = update {
+                    assert!(
+                        !text.contains("SECRETBODY"),
+                        "the key body leaked in a streaming snapshot: {text:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// A single-line secret is withheld until the turn settles, and the settled
+    /// entry carries it redacted.
+    #[tokio::test]
+    async fn a_streaming_token_is_withheld_until_the_turn_ends() {
+        use crate::security::RedactionLevel;
+        let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
+        let progress = ToolProgressReporter::new("t1", Some(progress_tx))
+            .with_stream_redaction(RedactionLevel::Basic);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
+
+        // `sk-` plus a long body - the provider-token rule.
+        let token = concat!("token sk-", "abcdefghijklmnopqrstuvwxyz0123456789", "\n");
+        tagged.send(AgentUpdate::StreamChunk(token.into())).unwrap();
+        tokio::task::yield_now().await;
+        // The published prefix ends at the newline, so the whole-text rule has
+        // already redacted the token.
+        while let Ok(update) = inner_rx.try_recv() {
+            if let AgentUpdate::ToolTranscriptStream { text, .. } = update {
+                assert!(
+                    !text.contains("abcdefghijklmnop"),
+                    "an unredacted token leaked: {text:?}"
+                );
+            }
+        }
     }
 
     #[tokio::test]
@@ -410,7 +614,7 @@ mod tests {
         let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
             .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Started))
@@ -483,7 +687,7 @@ mod tests {
         let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
             .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Started))
@@ -501,7 +705,7 @@ mod tests {
         let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
             .send(AgentUpdate::StepStarted {
@@ -551,7 +755,7 @@ mod tests {
         let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
             .send(AgentUpdate::StepFinished {
@@ -590,7 +794,7 @@ mod tests {
         let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
             .send(AgentUpdate::StepFinished {
@@ -619,7 +823,7 @@ mod tests {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
             .send(AgentUpdate::RequestSelect {
@@ -651,7 +855,7 @@ mod tests {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
             .send(AgentUpdate::TokenUsage(TokenUsageInfo {
@@ -675,11 +879,13 @@ mod tests {
                 tool_id,
                 model,
                 token_usage,
+                context_window,
                 task_id,
             } => {
                 assert_eq!(tool_id, "t1");
                 assert!(model.is_none());
                 assert!(task_id.is_none());
+                assert_eq!(context_window, Some(200_000));
                 let u = token_usage.unwrap();
                 assert_eq!(u.total, 999);
                 assert_eq!(u.prompt_cache_hit_tokens, 600);
@@ -693,7 +899,7 @@ mod tests {
         let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         // Stream chunk with no trailing newline — previously glued to the next event.
         tagged
@@ -732,7 +938,7 @@ mod tests {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
             .send(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
@@ -755,12 +961,14 @@ mod tests {
                 tool_id,
                 model,
                 token_usage,
+                context_window,
                 task_id,
             } => {
                 assert_eq!(tool_id, "t1");
                 assert!(task_id.is_none());
                 assert_eq!(model.unwrap(), "fake");
                 assert!(token_usage.is_none());
+                assert!(context_window.is_none());
             }
             other => panic!("expected ToolMeta, got {other:?}"),
         }
@@ -771,7 +979,7 @@ mod tests {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
             .send(AgentUpdate::TaskComplete("done".into()))
@@ -804,7 +1012,7 @@ mod tests {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         for chunk in ["Looking ", "it ", "up."] {
             tagged.send(AgentUpdate::StreamChunk(chunk.into())).unwrap();
@@ -847,7 +1055,7 @@ mod tests {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
             .send(AgentUpdate::StepStarted {
@@ -906,7 +1114,7 @@ mod tests {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
             .send(AgentUpdate::StepStarted {
@@ -946,7 +1154,7 @@ mod tests {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx));
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
             .send(AgentUpdate::ThinkingChunk(ThinkingChunk::Started))
@@ -985,7 +1193,7 @@ mod tests {
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = ToolProgressReporter::new("t1", Some(progress_tx))
             .with_stream_redaction(RedactionLevel::Basic);
-        let tagged = tagged_ui_channel_with_progress(inner_tx, progress);
+        let tagged = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         let secret = "sk-abcdefghijklmnopqrstuvwxyz";
         tagged

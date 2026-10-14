@@ -166,6 +166,11 @@ impl PopupSegment {
 pub struct SubagentPopupLayout {
     /// The transcript's append counter this layout was built from.
     pub revision: u64,
+    /// Length of the in-flight assistant text this layout was built with (0
+    /// when nothing was streaming). Part of the cache key: the streamed text is
+    /// appended to the body, so a snapshot that changed only in length still
+    /// needs a rebuild.
+    pub streaming_rev: u64,
     pub width: u16,
     pub theme: ThemeName,
     /// Live-ness is part of the key because it is part of the meta row.
@@ -184,12 +189,14 @@ impl SubagentPopupLayout {
     pub fn is_valid(
         &self,
         revision: u64,
+        streaming_rev: u64,
         width: u16,
         theme: ThemeName,
         is_live: bool,
         expanded_rev: u64,
     ) -> bool {
         self.revision == revision
+            && self.streaming_rev == streaming_rev
             && self.width == width
             && self.theme == theme
             && self.is_live == is_live
@@ -206,6 +213,8 @@ struct PopupSource {
     elapsed_us: Option<u64>,
     model: Option<String>,
     tokens: Option<u32>,
+    /// Context window for the header's `ctx` meter; `None`/`0` shows no meter.
+    context_window: Option<usize>,
     prompt: String,
 }
 
@@ -217,6 +226,7 @@ fn popup_source(tools: &ToolState, tool_id: &str) -> Option<PopupSource> {
             elapsed_us: None,
             model: active.output.subagent_model.clone(),
             tokens: active.output.subagent_tokens.as_ref().map(|t| t.total),
+            context_window: active.output.subagent_context_window,
             prompt: active.output.arg_full.clone(),
         });
     }
@@ -230,8 +240,19 @@ fn popup_source(tools: &ToolState, tool_id: &str) -> Option<PopupSource> {
             elapsed_us: block.output.duration_us,
             model: block.output.subagent_model.clone(),
             tokens: block.output.subagent_tokens.as_ref().map(|t| t.total),
+            context_window: block.output.subagent_context_window,
             prompt: block.output.arg_full.clone(),
         })
+}
+
+/// The streaming text's contribution to the layout cache key. One helper for
+/// both the prepare and the render check, because two copies had already
+/// drifted (the render side counted a whitespace-only value the prepare side
+/// filtered out, which invalidated a valid layout every frame).
+fn streaming_rev_of(streaming: Option<&str>) -> u64 {
+    streaming
+        .filter(|t| !t.trim().is_empty())
+        .map_or(0, |t| t.len() as u64)
 }
 
 /// Rebuild the popup's layout when missing or stale. Side-effect phase.
@@ -249,13 +270,25 @@ pub fn prepare_subagent_popup(
     let Some(transcript) = tools.transcripts.get(&popup.tool_id) else {
         return;
     };
-    if transcript.entries.is_empty() {
+    // The in-flight assistant text is part of the layout, so its own revision
+    // is part of the cache key — otherwise the first streamed snapshot would
+    // be cached and never grow. It also counts as content on its own: a child's
+    // FIRST turn has no committed entry yet, and bailing here left the popup
+    // blank for exactly the case streaming was added for.
+    let streaming = tools
+        .streaming_assistant
+        .get(&popup.tool_id)
+        .map(String::as_str)
+        .filter(|t| !t.trim().is_empty());
+    if transcript.entries.is_empty() && streaming.is_none() {
         return;
     }
+    let streaming_rev = streaming_rev_of(streaming);
     let expanded_rev = popup.expanded_rev;
     if popup.layout.as_ref().is_some_and(|l| {
         l.is_valid(
             transcript.revision,
+            streaming_rev,
             body_width,
             theme.name,
             is_live,
@@ -273,6 +306,9 @@ pub fn prepare_subagent_popup(
     }
     for entry in &transcript.entries {
         builder.push_entry(entry);
+    }
+    if let Some(text) = streaming {
+        builder.push_entry(&SubagentTranscriptEntry::Assistant(text.to_string()));
     }
 
     // The meta row comes first, but its trailing "N lines" is the body's own
@@ -299,6 +335,7 @@ pub fn prepare_subagent_popup(
     let total_rows = meta_height + body_rows;
     popup.layout = Some(SubagentPopupLayout {
         revision: transcript.revision,
+        streaming_rev,
         width: body_width,
         theme: theme.name,
         is_live,
@@ -765,11 +802,26 @@ impl<'a> BodyBuilder<'a> {
         if let Some(model) = &source.model {
             part(&mut spans, format!("🤖 {model}"));
         }
-        if let Some(total) = source.tokens {
-            part(
-                &mut spans,
-                format!("⚡ {} tok", format_tokens_compact(total as u64)),
-            );
+        match (source.tokens, source.context_window.filter(|w| *w > 0)) {
+            // Same shape as the card's `ctx` meter and the main bar.
+            (Some(total), Some(window)) if total > 0 => {
+                let pct = ((total as u128) * 100 / window as u128).min(100);
+                part(
+                    &mut spans,
+                    format!(
+                        "ctx {pct}% {}/{}",
+                        format_tokens_compact(total as u64),
+                        format_tokens_compact(window as u64)
+                    ),
+                );
+            }
+            (Some(total), _) => {
+                part(
+                    &mut spans,
+                    format!("⚡ {} tok", format_tokens_compact(total as u64)),
+                );
+            }
+            _ => {}
         }
         let elapsed = match source.started_at {
             Some(started) => Some(started.elapsed().as_micros() as u64),
@@ -1034,8 +1086,15 @@ pub fn render_subagent_body(
     let Some(layout) = popup.layout.as_ref() else {
         return surface;
     };
+    let streaming_rev = streaming_rev_of(
+        ctx.tools
+            .streaming_assistant
+            .get(&popup.tool_id)
+            .map(String::as_str),
+    );
     if !layout.is_valid(
         transcript.revision,
+        streaming_rev,
         body_area.width,
         ctx.theme.name,
         is_live,
@@ -1148,6 +1207,31 @@ pub fn render_subagent_body(
     frame.render_widget(renderer, body_area);
     surface.body_area = body_area;
     surface.hit_rows = hit_rows;
+
+    // Back-to-bottom pill on the body's last row. The view has no footer, so
+    // it borrows the log's affordance; `body_area` is the same rect the keys
+    // and wheel measure against, so the drawing and the hit test agree.
+    let (following, unseen) = ctx
+        .subagent_popup
+        .map_or((true, false), |p| (p.follow, p.unseen));
+    if !body_area.is_empty() {
+        let pill_row = Rect::new(
+            body_area.x,
+            body_area.y + body_area.height.saturating_sub(1),
+            body_area.width,
+            1,
+        );
+        surface.scroll_back_area = crate::render::scroll_pill::render_pill_parts(
+            frame,
+            pill_row,
+            &ctx.messages,
+            ctx.theme,
+            following,
+            unseen,
+            ctx.messages.subagent_scroll_back_action,
+        );
+    }
+
     surface
 }
 
@@ -1224,6 +1308,95 @@ mod tests {
         prepare_with(entries, live, width, &[])
     }
 
+    /// A child's FIRST turn has no committed entry yet, so the streaming text
+    /// alone must be enough to build a layout — otherwise the popup stays blank
+    /// for exactly the case streaming was added for.
+    #[test]
+    fn streaming_alone_builds_a_layout_before_any_committed_entry() {
+        let mut tools = ToolState::default();
+        tools
+            .transcripts
+            .insert("sa-1".into(), SubagentTranscript::default());
+        tools.active.push(ActiveToolBlock {
+            phys_idx: 0,
+            tool_id: "sa-1".into(),
+            output: subagent_card(true),
+            live_output: crate::protocol::ToolOutputBuffer::new_full(1024),
+            started_at: std::time::Instant::now(),
+            subagent_child_id: None,
+        });
+        tools
+            .streaming_assistant
+            .insert("sa-1".into(), "first line\nsecond line".into());
+
+        let theme = theme();
+        let msgs = Messages::by_language(Language::English);
+        let mut popup = SubagentPopup {
+            title: "53. Subagent".into(),
+            scroll: 0,
+            follow: true,
+            unseen: false,
+            tool_id: "sa-1".into(),
+            selection: None,
+            layout: None,
+            expanded_steps: std::collections::HashSet::new(),
+            expanded_rev: 0,
+        };
+
+        prepare_subagent_popup(&mut popup, &tools, &theme, &msgs, 60);
+        let layout = popup
+            .layout
+            .as_ref()
+            .expect("a layout from streaming alone");
+        assert!(layout.streaming_rev > 0);
+        assert!(layout.selection_text.contains("first line"));
+    }
+
+    /// The in-flight assistant text is appended to the body and is part of the
+    /// cache key: a snapshot that only grew must rebuild, or the first streamed
+    /// line would freeze on screen.
+    #[test]
+    fn a_growing_stream_snapshot_rebuilds_the_layout() {
+        let mut tools = tools_with(vec![SubagentTranscriptEntry::Info("hi".into())], true);
+        let theme = theme();
+        let msgs = Messages::by_language(Language::English);
+        let mut popup = SubagentPopup {
+            title: "53. Subagent".into(),
+            scroll: 0,
+            follow: true,
+            unseen: false,
+            tool_id: "sa-1".into(),
+            selection: None,
+            layout: None,
+            expanded_steps: std::collections::HashSet::new(),
+            expanded_rev: 0,
+        };
+
+        prepare_subagent_popup(&mut popup, &tools, &theme, &msgs, 60);
+        let base = popup.layout.as_ref().expect("layout").total_rows;
+        assert!(
+            !popup
+                .layout
+                .as_ref()
+                .unwrap()
+                .selection_text
+                .contains("streamed"),
+            "nothing streams until the forwarder says so"
+        );
+
+        tools
+            .streaming_assistant
+            .insert("sa-1".into(), "streamed line one\nstreamed line two".into());
+        prepare_subagent_popup(&mut popup, &tools, &theme, &msgs, 60);
+        let grown = popup.layout.as_ref().expect("layout");
+        assert!(grown.streaming_rev > 0, "the key must carry the snapshot");
+        assert!(grown.total_rows > base, "the body must grow with the text");
+        assert!(
+            grown.selection_text.contains("streamed line one"),
+            "the in-flight text is part of what `y` copies"
+        );
+    }
+
     /// `expanded` is the set of child step ids whose blocks show the raised
     /// cap — the state the host's click/key toggle builds.
     fn prepare_with(
@@ -1238,6 +1411,8 @@ mod tests {
         let mut popup = SubagentPopup {
             title: "53. Subagent".into(),
             scroll: 0,
+            follow: true,
+            unseen: false,
             tool_id: "sa-1".into(),
             selection: None,
             layout: None,
@@ -1336,6 +1511,8 @@ mod tests {
         let mut popup = SubagentPopup {
             title: "4. Subagent".into(),
             scroll: 0,
+            follow: true,
+            unseen: false,
             tool_id: "sa-1".into(),
             selection: None,
             layout: None,
@@ -1381,6 +1558,8 @@ mod tests {
         let mut popup = SubagentPopup {
             title: "4. Subagent".into(),
             scroll: 0,
+            follow: true,
+            unseen: false,
             tool_id: "sa-1".into(),
             selection: None,
             layout: None,
@@ -1461,6 +1640,8 @@ mod tests {
         let mut popup = SubagentPopup {
             title: "53. Subagent".into(),
             scroll: 0,
+            follow: true,
+            unseen: false,
             tool_id: "sa-1".into(),
             selection: None,
             layout: None,
@@ -1796,6 +1977,8 @@ mod tests {
         let mut popup = SubagentPopup {
             title: "53. Subagent".into(),
             scroll: 0,
+            follow: true,
+            unseen: false,
             tool_id: "sa-1".into(),
             selection: None,
             layout: None,

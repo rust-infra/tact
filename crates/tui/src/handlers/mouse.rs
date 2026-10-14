@@ -140,9 +140,8 @@ pub(crate) fn handle_mouse_scroll_up(app: &mut App, hit: MousePanelHit) {
     if app.has_overlay_popup() {
         app.overlay_popup_scroll_up();
     } else if app.show_subagent_view {
-        if let Some(popup) = app.subagent_popup_mut() {
-            popup.scroll = popup.scroll.saturating_sub(1);
-        }
+        // A wheel-up is the same decision as `k`: stop following the tail.
+        app.subagent_scroll_by(-(crate::widgets::state::app::scroll::WHEEL_CELL_STEP as isize));
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
         scroll_active_sticky(app, -1);
@@ -157,9 +156,8 @@ pub(crate) fn handle_mouse_scroll_down(app: &mut App, hit: MousePanelHit) {
     if app.has_overlay_popup() {
         app.overlay_popup_scroll_down();
     } else if app.show_subagent_view {
-        if let Some(popup) = app.subagent_popup_mut() {
-            popup.scroll = popup.scroll.saturating_add(1);
-        }
+        // Wheel-down re-arms following once it reaches the end (the helper).
+        app.subagent_scroll_by(crate::widgets::state::app::scroll::WHEEL_CELL_STEP as isize);
     } else if hit.in_task_panel && sticky_scrollable(app) {
         app.mouse.in_task_panel = true;
         scroll_active_sticky(app, 1);
@@ -271,6 +269,16 @@ fn handle_text_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
     // promise and the click is what makes it discoverable. The view's body is
     // below it and means something else (a drag selects text), which is why the
     // two rects are separate.
+    // The pill and `G` are the same action; the click is what makes it
+    // discoverable without reading the keymap. Checked before the breadcrumb
+    // (they never overlap) so a mis-sized rect cannot swallow the back click.
+    if app.has_subagent_popup()
+        && !app.mouse.subagent_scroll_back_area.is_empty()
+        && point_in_rect(mouse.column, mouse.row, app.mouse.subagent_scroll_back_area)
+    {
+        app.subagent_scroll_to_bottom();
+        return;
+    }
     if app.has_subagent_popup()
         && point_in_rect(mouse.column, mouse.row, app.mouse.subagent_back_area)
     {

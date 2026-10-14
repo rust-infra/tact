@@ -1243,6 +1243,10 @@ mod tests {
             max_tokens: 4000,
             thinking_budget: subagent_budget,
             reasoning_effort: subagent_effort,
+            // Neither fixture model is in the built-in mapping, so
+            // `resolve_subagent` would fall back to the MAIN agent's window —
+            // 500_000 in this fixture, not the 200_000 default.
+            model_context_window: 500_000,
             models: vec![subagent_model.to_string()],
         });
         tact::config::install_or_override(cfg);

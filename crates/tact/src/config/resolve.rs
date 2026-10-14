@@ -465,21 +465,19 @@ fn resolve_subagent(
     // Resolve reasoning_effort from the referenced provider entry
     let reasoning_effort = entry.reasoning_effort;
 
-    let max_tokens = subagent_cfg
-        .max_tokens
-        .or(entry.max_tokens)
-        .unwrap_or_else(|| {
-            if provider_kind == ProviderKind::Kimi
-                && (model.contains("kimi-k2")
-                    || model.contains("k2.")
-                    || model.contains("k2-")
-                    || model == "kimi-for-coding")
-            {
-                32_000
-            } else {
-                main_max_tokens
-            }
-        });
+    let explicit_max_tokens = subagent_cfg.max_tokens.or(entry.max_tokens);
+    let max_tokens = explicit_max_tokens.unwrap_or_else(|| {
+        if provider_kind == ProviderKind::Kimi
+            && (model.contains("kimi-k2")
+                || model.contains("k2.")
+                || model.contains("k2-")
+                || model == "kimi-for-coding")
+        {
+            32_000
+        } else {
+            main_max_tokens
+        }
+    });
     let thinking_budget = subagent_cfg
         .thinking_budget
         .or(entry.thinking_budget)
@@ -491,8 +489,38 @@ fn resolve_subagent(
         );
     }
 
+    // The subagent's context window follows the subagent's OWN model, not the
+    // main agent's: an override like `model = "gpt-4o"` under a 1M main model
+    // must not measure against 1M. Priority mirrors the main agent's
+    // (`--model-context-window` > `[agent]` > mapping > default), with the main
+    // agent's resolved window as the last-resort fallback so a model the
+    // mapping does not know keeps a sensible value.
+    let subagent_context_window = subagent_cfg
+        .model_context_window
+        .or_else(|| model_context_window_for_model(&model))
+        .unwrap_or(model_context_window);
+
+    // An INHERITED `max_tokens` must not fail the startup check: the user never
+    // asked for that pairing, and the main agent's budget is routinely larger
+    // than a small subagent model's window (`[agent] max_tokens = 200000` with
+    // a `gpt-4o` child). Clamp it to the window instead — a hard error is
+    // reserved for a budget the user set explicitly for this subagent.
+    let max_tokens = if subagent_context_window != 0
+        && usize::try_from(max_tokens).is_ok_and(|mt| mt >= subagent_context_window)
+    {
+        if explicit_max_tokens.is_some() {
+            anyhow::bail!(
+                "invalid subagent token limits: max_tokens ({max_tokens}) must be less than \
+                 the subagent context window ({subagent_context_window})"
+            );
+        }
+        u32::try_from(subagent_context_window.saturating_sub(1)).unwrap_or(u32::MAX)
+    } else {
+        max_tokens
+    };
+
     // The subagent reuses the provider entry's configured Responses compact
-    // threshold with its own max_tokens and the shared agent context window.
+    // threshold with its own max_tokens and its own context window.
     // A threshold validated against the main agent's max_tokens may not leave
     // room for a larger subagent max_tokens, so the same headroom rule is
     // applied here. When the threshold is omitted, it is derived from the
@@ -501,7 +529,7 @@ fn resolve_subagent(
     let responses_compact_threshold = resolve_responses_compact_threshold(
         entry.responses_compact_threshold,
         protocol,
-        model_context_window,
+        subagent_context_window,
         max_tokens,
     )
     .map_err(|error| anyhow::anyhow!("invalid subagent token limits: {error:#}"))?;
@@ -522,6 +550,7 @@ fn resolve_subagent(
         max_tokens,
         thinking_budget,
         reasoning_effort: subagent_reasoning_effort,
+        model_context_window: subagent_context_window,
         models: entry.models.clone(),
     }))
 }
@@ -773,7 +802,7 @@ pub(super) fn resolve_non_llm_settings(
 ///   Opus 4 / Haiku 4.5 are 200K. Claude Code serves the same ids with the
 ///   same 1M windows.
 /// - DeepSeek V4 family (api-docs.deepseek.com): 1M default; Kimi `k3-256k`: 256K.
-fn model_context_window_for_model(model: &str) -> Option<usize> {
+pub(crate) fn model_context_window_for_model(model: &str) -> Option<usize> {
     match model {
         // OpenAI — GPT-5.6 family and GPT-5.5 (1.05M).
         "gpt-5.6" | "gpt-5.6-luna" | "gpt-5.6-terra" | "gpt-5.6-sol" | "gpt-5.5" => Some(1_050_000),
@@ -1247,11 +1276,167 @@ max_tokens = {subagent_max_tokens}
             max_tokens: None,
             thinking_budget: None,
             reasoning_effort: None,
+            model_context_window: None,
         });
         let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         let sa = cfg.agent.subagent.unwrap();
         assert_eq!(sa.thinking_budget, 0);
         assert_eq!(sa.max_tokens, 8_000);
+    }
+
+    /// The subagent's window follows the SUBAGENT's model, not the main
+    /// agent's: measuring a `gpt-4o` child against a 1M main window would make
+    /// auto-compaction fire far too late, and the card's `ctx` meter lie.
+    #[test]
+    fn subagent_window_follows_its_own_model_not_the_main_agents() {
+        let mut toml_cfg = openai_toml_config();
+        // Main agent: explicit 1M window.
+        toml_cfg.agent.model_context_window = Some(1_000_000);
+        toml_cfg.agent.subagent = Some(SubagentTomlConfig {
+            provider: Some("openai".to_string()),
+            // gpt-4o is mapped to 128K, so the child must resolve to 128K.
+            model: Some("gpt-4o".to_string()),
+            max_tokens: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            model_context_window: None,
+        });
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(cfg.agent.model_context_window, 1_000_000);
+        assert_eq!(cfg.agent.subagent.unwrap().model_context_window, 128_000);
+    }
+
+    /// An explicit `[agent.subagent].model_context_window` outranks the mapping.
+    #[test]
+    fn subagent_explicit_window_beats_the_model_mapping() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.subagent = Some(SubagentTomlConfig {
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4o".to_string()),
+            max_tokens: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            model_context_window: Some(300_000),
+        });
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(cfg.agent.subagent.unwrap().model_context_window, 300_000);
+    }
+
+    /// The window is not just displayed: it is the auto-compaction threshold's
+    /// input, so a child on a small model must derive its threshold from THAT
+    /// window. Asserting the derived threshold is what gives the resolve change
+    /// teeth (the window value alone can be right for the wrong reason).
+    #[test]
+    fn subagent_compaction_threshold_follows_the_child_window() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "some-unknown-model"
+protocol = "responses"
+
+[agent]
+max_tokens = 8000
+model_context_window = 1000000
+
+[agent.subagent]
+provider = "openai"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        let sa = cfg.agent.subagent.unwrap();
+        // The child runs gpt-4o (128K), so its derived threshold must come from
+        // THAT window: 128000 - 8000 max_tokens - 12800 headroom.
+        assert_eq!(sa.model_context_window, 128_000);
+        assert_eq!(
+            sa.provider.responses_compact_threshold,
+            Some(107_200),
+            "the threshold must be derived from the child's window, not the main one"
+        );
+    }
+
+    /// An INHERITED `max_tokens` larger than the child's window must be clamped,
+    /// not rejected: the user never asked for that pairing, and the main agent's
+    /// budget is routinely bigger than a small model's window.
+    #[test]
+    fn subagent_inherited_max_tokens_is_clamped_to_its_window() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "some-unknown-model"
+
+[agent]
+max_tokens = 200000
+model_context_window = 1000000
+
+[agent.subagent]
+provider = "openai"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        let sa = cfg.agent.subagent.unwrap();
+        assert_eq!(sa.model_context_window, 128_000);
+        assert_eq!(sa.max_tokens, 127_999, "clamped below the window");
+    }
+
+    /// An explicit `max_tokens` that does not fit the child window is still a
+    /// hard error — that pairing the user did ask for.
+    #[test]
+    fn subagent_explicit_max_tokens_over_its_window_still_errors() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "some-unknown-model"
+
+[agent]
+max_tokens = 8000
+model_context_window = 1000000
+
+[agent.subagent]
+provider = "openai"
+model = "gpt-4o"
+max_tokens = 200000
+"#,
+        )
+        .unwrap();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(
+            err.to_string().contains("subagent context window"),
+            "got: {err}"
+        );
+    }
+
+    /// A model the mapping does not know keeps the main agent's window rather
+    /// than collapsing to the 200K default.
+    #[test]
+    fn subagent_unknown_model_falls_back_to_the_main_window() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.model_context_window = Some(750_000);
+        toml_cfg.agent.subagent = Some(SubagentTomlConfig {
+            provider: Some("openai".to_string()),
+            model: Some("some-unmapped-model".to_string()),
+            max_tokens: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            model_context_window: None,
+        });
+        let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(cfg.agent.subagent.unwrap().model_context_window, 750_000);
     }
 
     /// A section that sets overrides without `provider` used to be dropped
@@ -1335,6 +1520,7 @@ model = "kimi-k2.5"
             max_tokens: Some(16_000),
             thinking_budget: Some(8_000),
             reasoning_effort: None,
+            model_context_window: None,
         });
         let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         let sa = cfg.agent.subagent.unwrap();
@@ -1360,6 +1546,7 @@ model = "kimi-k2.5"
             max_tokens: Some(4_000),
             thinking_budget: Some(8_000),
             reasoning_effort: None,
+            model_context_window: None,
         });
         let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
         assert!(err.to_string().contains("thinking_budget"));

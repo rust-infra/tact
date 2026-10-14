@@ -14,23 +14,29 @@ pub(crate) fn handle_normal_mode(
     // Enter raises the cap on the tool blocks.
     if app.show_subagent_view {
         match key.code {
+            // Scrolling up is a decision to stop following the child's tail
+            // (the pill then offers the way back, exactly like the log's);
+            // scrolling back down to the end re-arms it.
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(popup) = app.subagent_popup_mut() {
-                    popup.scroll = popup.scroll.saturating_add(1);
-                }
+                let step = crate::widgets::state::app::scroll::key_cell_step(
+                    app.mouse.popup_text_body_area.height as usize,
+                ) as isize;
+                app.subagent_scroll_by(step);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(popup) = app.subagent_popup_mut() {
-                    popup.scroll = popup.scroll.saturating_sub(1);
-                }
+                let step = crate::widgets::state::app::scroll::key_cell_step(
+                    app.mouse.popup_text_body_area.height as usize,
+                ) as isize;
+                app.subagent_scroll_by(-step);
             }
+            // `G` returns to the tail *and* resumes following it.
             KeyCode::Char('G') => {
-                if let Some(popup) = app.subagent_popup_mut() {
-                    popup.scroll = u16::MAX;
-                }
+                app.subagent_scroll_to_bottom();
             }
             KeyCode::Char('g') => {
                 if let Some(popup) = app.subagent_popup_mut() {
+                    popup.follow = false;
+                    popup.unseen = false;
                     popup.scroll = 0;
                 }
             }

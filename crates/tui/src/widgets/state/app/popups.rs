@@ -302,7 +302,9 @@ impl App {
             .entry(tool_id.to_string())
             .or_insert_with(|| crate::widgets::state::SubagentPopup {
                 title: output.title_raw.clone(),
-                scroll: 0,
+                scroll: u16::MAX,
+                follow: true,
+                unseen: false,
                 tool_id: tool_id.to_string(),
                 selection: None,
                 layout: None,
@@ -334,6 +336,70 @@ impl App {
         self.show_subagent_view
     }
 
+    /// Pin the subagent view to the tail and re-arm following. The one place
+    /// that clears `unseen`, because arriving at the bottom is what the badge
+    /// was asking for — same contract as `scroll_log_to_bottom`.
+    pub(crate) fn subagent_scroll_to_bottom(&mut self) {
+        if let Some(popup) = self.subagent_popup_mut() {
+            popup.scroll = u16::MAX;
+            popup.follow = true;
+            popup.unseen = false;
+        }
+    }
+
+    /// Scroll the subagent view by `delta` rows (negative = up).
+    ///
+    /// Mirrors the log's policy: a deliberate move up stops following, and
+    /// scrolling back down to the end re-arms it and clears the badge. Without
+    /// the re-arm the badge sticks forever — the reader is at the tail with the
+    /// pill still offering to take them there.
+    pub(crate) fn subagent_scroll_by(&mut self, delta: isize) {
+        let body_height = self.mouse.popup_text_body_area.height as usize;
+        let Some(popup) = self.subagent_popup_mut() else {
+            return;
+        };
+        let max_scroll = popup
+            .layout
+            .as_ref()
+            .map(|l| l.total_rows.saturating_sub(body_height))
+            .unwrap_or(0);
+        // `u16::MAX` is the follow sentinel, not a row count: resolve it to the
+        // real maximum before stepping, or `G` followed by `k` would step from
+        // 65535 and look broken.
+        let current = (popup.scroll as usize).min(max_scroll);
+        let next = if delta < 0 {
+            current.saturating_sub(delta.unsigned_abs())
+        } else {
+            current.saturating_add(delta as usize)
+        }
+        .min(max_scroll);
+        if next >= max_scroll {
+            popup.scroll = u16::MAX;
+            popup.follow = true;
+            popup.unseen = false;
+        } else {
+            popup.scroll = next as u16;
+            popup.follow = false;
+        }
+    }
+
+    /// After the subagent's transcript grew: keep the tail pinned when
+    /// following, otherwise light the badge. Mirrors `note_log_rows_appended`.
+    ///
+    /// `tool_id` must be the transcript that changed: with several subagents
+    /// alive, acting on whatever popup happens to be open would badge a view
+    /// whose own child said nothing.
+    pub(crate) fn note_subagent_rows_appended(&mut self, tool_id: &str) {
+        if self.active_subagent_popup.as_deref() != Some(tool_id) {
+            return;
+        }
+        if self.subagent_popup().is_some_and(|p| p.follow) {
+            self.subagent_scroll_to_bottom();
+        } else if let Some(popup) = self.subagent_popup_mut() {
+            popup.unseen = true;
+        }
+    }
+
     /// Close the subagent view (keep the popup entry so re-opening preserves
     /// scroll / selection / which blocks are expanded).
     pub(crate) fn close_subagent_popup(&mut self) {
@@ -341,6 +407,7 @@ impl App {
         self.active_subagent_popup = None;
         self.mouse.clear_area(SurfaceId::SubagentPopup);
         self.mouse.subagent_back_area = Rect::default();
+        self.mouse.subagent_scroll_back_area = Rect::default();
         self.mouse.subagent_block_toggles.clear();
         self.mouse.popup_text_body_area = Rect::default();
         self.mouse.popup_text_hit_rows.clear();
@@ -1616,6 +1683,8 @@ mod tests {
             SubagentPopup {
                 title: "A".into(),
                 scroll: 0,
+                follow: true,
+                unseen: false,
                 tool_id: "sa-1".into(),
                 selection: None,
                 layout: None,

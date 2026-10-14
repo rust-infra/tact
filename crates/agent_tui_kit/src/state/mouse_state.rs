@@ -218,6 +218,9 @@ pub struct MouseState {
     /// the view is drawn, cleared when it closes — a zero-size rect hits
     /// nothing.
     pub subagent_back_area: Rect,
+    /// Hit area of the subagent view's back-to-bottom pill, refreshed each
+    /// frame and cleared on close. Empty while the view follows its tail.
+    pub subagent_scroll_back_area: Rect,
     /// The subagent view's block-toggle rows: `(child step id, screen rect)`.
     ///
     /// One per tool block whose output is capped (`⋯ N more lines`) or raised

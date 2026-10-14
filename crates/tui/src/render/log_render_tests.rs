@@ -549,6 +549,7 @@ fn running_background_card_shows_the_task_id() {
         tool_id: "bg1".into(),
         model: None,
         token_usage: None,
+        context_window: None,
         task_id: Some("018f3a2c".into()),
     });
 

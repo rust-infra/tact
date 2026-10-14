@@ -15,6 +15,7 @@ use ratatui::{
 };
 use unicode_width::UnicodeWidthStr;
 
+use crate::i18n::Messages;
 use crate::render::ctx::RenderCtx;
 
 /// Rounded end caps — Nerd Font Powerline "half circle thick" glyphs.
@@ -46,20 +47,42 @@ const CAP_PADDING: u16 = 1;
 ///
 /// Returns the hit rectangle (empty when the pill is not drawn).
 pub fn render_scroll_pill(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Rect {
-    if ctx.log_following || area.width < PILL_MIN_WIDTH {
+    render_pill_parts(
+        frame,
+        area,
+        &ctx.messages,
+        ctx.theme,
+        ctx.log_following,
+        ctx.log_unseen,
+        ctx.messages.scroll_back_action,
+    )
+}
+
+/// The pill's body, taking only what it draws with.
+///
+/// Split out so a kit renderer that holds a `&RenderCtx` it cannot rebuild
+/// (the subagent body, called with a `&mut App` in flight) can draw the pill
+/// without a second `App` borrow.
+pub fn render_pill_parts(
+    frame: &mut Frame,
+    area: Rect,
+    msgs: &Messages,
+    theme: &crate::theme::Theme,
+    following: bool,
+    unseen: bool,
+    action: &'static str,
+) -> Rect {
+    if following || area.width < PILL_MIN_WIDTH {
         return Rect::default();
     }
 
-    let msgs = &ctx.messages;
-    let theme = ctx.theme;
-
     // Build the text: badge (optional) + action (which already carries the key).
     let mut text = String::new();
-    if ctx.log_unseen {
+    if unseen {
         text.push_str(msgs.scroll_back_badge);
         text.push_str(" · ");
     }
-    text.push_str(msgs.scroll_back_action);
+    text.push_str(action);
 
     let text_width = UnicodeWidthStr::width(text.as_str()) as u16;
     // cap + padding on each side.
@@ -105,11 +128,11 @@ pub fn render_scroll_pill(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Rec
     let warning = Style::default().fg(theme.warning).bg(band_bg);
 
     let mut spans: Vec<Span<'static>> = Vec::new();
-    if ctx.log_unseen {
+    if unseen {
         spans.push(Span::styled(msgs.scroll_back_badge, muted));
         spans.push(Span::styled(" · ", muted));
     }
-    spans.push(Span::styled(msgs.scroll_back_action, warning));
+    spans.push(Span::styled(action, warning));
 
     let inner = Rect::new(pill_area.x + 1 + CAP_PADDING, pill_area.y, text_width, 1);
     frame.render_widget(Paragraph::new(Line::from(spans)), inner);

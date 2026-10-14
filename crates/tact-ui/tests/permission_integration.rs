@@ -94,9 +94,11 @@ async fn high_risk_bash_shell_guard_blocks_after_permission_allow() {
         mock_turn(vec![harness::text_block("Done.")], StopReason::EndTurn),
     ]);
 
+    // `sudo` has to be the program itself: the guard matches whole words, so a
+    // benign command that merely mentions it (`run sudo echo`) is not blocked.
     let (updates, _work_dir) = run_single_task_with_permission_choice(
         mock,
-        "run sudo echo",
+        "run sudo echo ok",
         PermissionMode::Default,
         Some(0),
         |_| {},

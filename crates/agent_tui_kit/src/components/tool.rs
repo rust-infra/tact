@@ -234,6 +234,7 @@ impl ToolComponent {
                 .with_live_output(&active.live_output)
                 .with_subagent_model(active.output.subagent_model.clone())
                 .with_subagent_tokens(active.output.subagent_tokens.clone())
+                .with_subagent_context_window(active.output.subagent_context_window)
                 .with_task_id(active.output.task_id.clone())
                 .build();
             (active.phys_idx, active.output.visual_rows(false), output)
@@ -295,6 +296,7 @@ impl ToolComponent {
             }
             output.subagent_model = active.output.subagent_model.take();
             output.subagent_tokens = active.output.subagent_tokens.take();
+            output.subagent_context_window = active.output.subagent_context_window;
         }
 
         self.finalize_push(tool_id, output, events);
@@ -445,6 +447,7 @@ impl ToolComponent {
             }
             output.subagent_model = active.output.subagent_model.take();
             output.subagent_tokens = active.output.subagent_tokens.take();
+            output.subagent_context_window = active.output.subagent_context_window;
         }
         self.finalize_push(tool_id, output, events);
     }
@@ -567,6 +570,14 @@ impl Component for ToolComponent {
             // why it lives on `ToolState` and not on the card's output — the log
             // renderer clones every output once per frame.
             AgentUpdate::ToolTranscript { tool_id, entry } => {
+                // The turn's final assistant text supersedes whatever was
+                // streaming, so the two never render together.
+                if matches!(
+                    entry,
+                    crate::protocol::SubagentTranscriptEntry::Assistant(_)
+                ) {
+                    self.state.streaming_assistant.remove(tool_id);
+                }
                 self.state
                     .transcripts
                     .entry(tool_id.clone())
@@ -574,10 +585,17 @@ impl Component for ToolComponent {
                     .push(entry.clone());
                 true
             }
+            AgentUpdate::ToolTranscriptStream { tool_id, text } => {
+                self.state
+                    .streaming_assistant
+                    .insert(tool_id.clone(), text.clone());
+                true
+            }
             AgentUpdate::ToolMeta {
                 tool_id,
                 model,
                 token_usage,
+                context_window,
                 task_id,
             } => {
                 let Some(pos) = self.state.active.iter().position(|a| a.tool_id == *tool_id) else {
@@ -589,6 +607,9 @@ impl Component for ToolComponent {
                 }
                 if let Some(t) = token_usage {
                     active.output.subagent_tokens = Some(t.clone());
+                }
+                if let Some(w) = context_window {
+                    active.output.subagent_context_window = Some(*w);
                 }
                 if let Some(id) = task_id {
                     active.output.task_id = Some(id.clone());
@@ -830,6 +851,7 @@ mod tests {
                 tool_id: "bg1".into(),
                 model: None,
                 token_usage: None,
+                context_window: None,
                 task_id: Some("018f3a2c".into()),
             },
             &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
@@ -1259,6 +1281,7 @@ mod tests {
                     prompt_cache_miss_tokens: 0,
                     reasoning_tokens: 0,
                 }),
+                context_window: Some(500_000),
                 task_id: None,
             },
             &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),

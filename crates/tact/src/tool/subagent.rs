@@ -405,6 +405,9 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         agent_settings.max_tokens = sa.max_tokens;
         agent_settings.thinking_budget = sa.thinking_budget;
         agent_settings.reasoning_effort = sa.reasoning_effort;
+        // The window belongs to the subagent's own model; `resolve_subagent`
+        // already decided it, so the main agent's inherited value is replaced.
+        agent_settings.model_context_window = sa.model_context_window;
         (client, agent_settings)
     } else {
         let client = get_llm_client().await?;
@@ -539,6 +542,10 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         subagent_tools.set_tool_description("bash", crate::tool::SANDBOXED_BASH_DESCRIPTION);
     }
 
+    // Read the window before `agent_overrides` is moved into the child below;
+    // the UI channel needs it to render the card's `ctx` meter.
+    let subagent_context_window = agent_overrides.model_context_window;
+
     let mut subagent = Agent::new(
         client,
         ctx.clone(),
@@ -564,6 +571,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         let tagged = crate::tool::subagent_ui::tagged_ui_channel_with_progress(
             tx,
             ctx.progress_reporter.clone(),
+            subagent_context_window,
         );
         subagent = subagent.with_ui_channel(tagged);
     }

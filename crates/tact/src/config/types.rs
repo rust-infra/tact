@@ -225,6 +225,11 @@ pub struct SubagentTomlConfig {
     /// Optional reasoning effort override for subagent requests
     /// (openai / deepseek / kimi k3 semantics).
     pub reasoning_effort: Option<OpenAiReasoningEffort>,
+    /// Optional context-window override, in tokens. Resolution is
+    /// `--model-context-window`-style explicit value > the built-in mapping for
+    /// the subagent's own model > the main agent's resolved window, so an
+    /// overridden model is not measured against the main model's window.
+    pub model_context_window: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -484,6 +489,10 @@ pub struct SubagentSettings {
     pub thinking_budget: usize,
     /// Explicit reasoning effort for subagent requests (openai / deepseek / kimi k3).
     pub reasoning_effort: Option<OpenAiReasoningEffort>,
+    /// Context window of THIS agent's model, resolved from the subagent's own
+    /// model rather than inherited from the main agent. Auto-compaction and the
+    /// tool card's `ctx` meter both read it.
+    pub model_context_window: usize,
     /// Candidate model ids for the /model-subagent picker.
     pub models: Vec<String>,
 }

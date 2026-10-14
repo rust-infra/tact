@@ -267,6 +267,7 @@ mod sticky_host_tests {
             tool_id: "bg1".into(),
             model: None,
             token_usage: None,
+            context_window: None,
             task_id: Some(task_id.into()),
         });
     }
