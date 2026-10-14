@@ -4,6 +4,25 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-14 — 日志虚拟卡片支持跨块拖选与顺序复制
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：鼠标拖选可跨越 Thinking、Tool、Markdown 卡片与普通日志行；选区内内容按日志顺序一起高亮、复制，虚拟卡片占位行不会重复复制） |
+| **Related** | `crates/agent_tui_kit/src/{state/mouse_state.rs,render/log.rs}`、`crates/tui/src/handlers/mouse.rs`、`crates/tui/src/widgets/state/app/visibility.rs` |
+
+**现象 / 动机：** 虚拟卡片的鼠标选区只保存一张卡片，拖动进入下一块时会提前结束；因此 Thinking、Tool、Markdown 这几类由专用 cell 绘制的内容无法一次连续选择。卡片虽在共享日志里占有物理占位行，但 Thinking 与 Tool 一块会跨多行，直接复制行区间会漏内容或重复处理占位行。
+
+**决策：** 选区保留拖动起点、终点和实际纳入的物理行序列。命中 Thinking / Tool 多行占位时，统一映射到卡片锚点，并在连续行序列里去重；普通日志行保留自己的物理索引。复制按序列依次取卡片的语义文本或普通行原文；渲染复用同一序列高亮选中卡片和普通行。正向与反向拖动使用同一范围构建逻辑。
+
+**改后行为：** 从一块虚拟卡片拖到另一块时，中间的虚拟卡片与普通日志内容都会按出现顺序高亮并复制；Thinking / Tool 卡片即使跨多个占位行，也只复制一次。单卡选择仍保留原有文本范围语义。
+
+**Verification：** `cargo test -p tui -p agent_tui_kit` 全绿（409 + 706）；`cargo fmt --all -- --check`、`git diff --check` 与 `cargo clippy -p tui -p agent_tui_kit --all-targets -- -D warnings` 通过。回归用例覆盖 Markdown 三块正反向拖选、区间普通行复制与高亮，以及 Thinking → Tool → Markdown 的跨类型选择、去重和高亮。
+
+**Pointers:** `CardSelection`、`selection_phys_at_logical` / `extend_card_selection`、`App::extract_card_selection`、`render_log_panel_pure`。
+
+---
+
 ## 1. 2026-10-14 — 发版 v1.1.41：清单版本 1.1.40 → 1.1.41，与本次的 subagent 改动一起进 PR
 
 | Field | Value |

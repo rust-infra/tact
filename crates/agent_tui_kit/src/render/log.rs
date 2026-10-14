@@ -317,7 +317,7 @@ pub fn render_log_panel_pure(
                         .mouse
                         .card_selection
                         .as_ref()
-                        .is_some_and(|selection| selection.phys_idx == thinking_phys)
+                        .is_some_and(|selection| selection.contains_phys(thinking_phys))
                     {
                         renderer.push(vis_start, SelectedCell { inner: cell });
                     } else {
@@ -400,7 +400,7 @@ pub fn render_log_panel_pure(
                     .mouse
                     .card_selection
                     .as_ref()
-                    .is_some_and(|selection| selection.phys_idx == phys_idx)
+                    .is_some_and(|selection| selection.contains_phys(phys_idx))
                 {
                     renderer.push(vis_start, SelectedCell { inner: card_cell });
                 } else {
@@ -453,7 +453,7 @@ pub fn render_log_panel_pure(
                 .mouse
                 .card_selection
                 .as_ref()
-                .is_some_and(|selection| selection.phys_idx == phys);
+                .is_some_and(|selection| selection.contains_phys(phys));
             if selected {
                 renderer.push(vs_cache[logical_i], SelectedCell { inner: cell });
             } else {
@@ -497,9 +497,19 @@ pub fn render_log_panel_pure(
             ctx.theme.bg,
         );
 
-        // Push at this row's visual-line offset; LogColumnRenderer does a second
-        // viewport clip and calls TextCell::render_partial for sub-line trimming.
-        renderer.push(vs_cache[logical_i], cell);
+        if let Some(phys) = phys_idx
+            && ctx
+                .mouse
+                .card_selection
+                .as_ref()
+                .is_some_and(|selection| selection.contains_phys(phys))
+        {
+            renderer.push(vs_cache[logical_i], SelectedCell { inner: cell });
+        } else {
+            // Push at this row's visual-line offset; LogColumnRenderer does a second
+            // viewport clip and calls TextCell::render_partial for sub-line trimming.
+            renderer.push(vs_cache[logical_i], cell);
+        }
         logical_i += 1;
     }
 

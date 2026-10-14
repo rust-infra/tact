@@ -348,10 +348,23 @@ impl App {
     }
 
     pub(crate) fn extract_card_selection(&self) -> Option<String> {
-        self.mouse
-            .card_selection
-            .as_ref()
-            .map(|selection| selection.selected_text().to_string())
+        let selection = self.mouse.card_selection.as_ref()?;
+        let (start, end) = selection.normalized_phys_range();
+        if start == end {
+            return Some(selection.selected_text().to_string());
+        }
+
+        let mut parts = Vec::new();
+        for phys_idx in &selection.selected_phys_indices {
+            if let Some(text) = self
+                .card_selection_text(*phys_idx)
+                .or_else(|| self.log.items.get(*phys_idx).map(|item| item.raw.clone()))
+                && !text.is_empty()
+            {
+                parts.push(text);
+            }
+        }
+        Some(parts.join("\n"))
     }
 
     pub(crate) fn extract_selected_text(&self, start: TextPosition, end: TextPosition) -> String {

@@ -357,6 +357,61 @@ fn below_log_viewport(app: &App, visual_base: usize, visual_row: usize) -> bool 
     visual_row >= visual_base + app.log_scroll.height as usize
 }
 
+fn selection_phys_at_logical(app: &App, line_idx: usize) -> Option<usize> {
+    if let Some((phys_idx, _, _)) = app.find_thinking_at_logical(line_idx) {
+        return Some(phys_idx);
+    }
+    if let Some((_, phys_idx, _, _)) = app.find_tool_at_logical(line_idx) {
+        return Some(phys_idx);
+    }
+    app.visible_message_index(line_idx)
+}
+
+fn extend_card_selection(app: &mut App, line_idx: usize) {
+    let Some(anchor_phys_idx) = app
+        .mouse
+        .card_selection
+        .as_ref()
+        .map(|selection| selection.phys_idx)
+    else {
+        return;
+    };
+    let Some(anchor_logical) = (0..app.total_log_lines())
+        .find(|logical| selection_phys_at_logical(app, *logical) == Some(anchor_phys_idx))
+    else {
+        return;
+    };
+    let Some(end_phys_idx) = selection_phys_at_logical(app, line_idx) else {
+        return;
+    };
+    let (first_line, last_line) = if anchor_logical <= line_idx {
+        (anchor_logical, line_idx)
+    } else {
+        (line_idx, anchor_logical)
+    };
+
+    let mut selected_phys_indices = Vec::new();
+    for logical in first_line..=last_line {
+        if let Some(phys_idx) = selection_phys_at_logical(app, logical)
+            && selected_phys_indices.last() != Some(&phys_idx)
+        {
+            // A virtual card spans several placeholder rows. Its semantic text
+            // is represented by its anchor and copied once; ordinary rows keep
+            // their own physical index and remain in transcript order.
+            selected_phys_indices.push(phys_idx);
+        }
+    }
+    if !selected_phys_indices.contains(&anchor_phys_idx) {
+        selected_phys_indices.push(anchor_phys_idx);
+        selected_phys_indices.sort_unstable();
+    }
+
+    if let Some(selection) = app.mouse.card_selection.as_mut() {
+        selection.end_phys_idx = end_phys_idx;
+        selection.selected_phys_indices = selected_phys_indices;
+    }
+}
+
 fn start_card_selection(app: &mut App, phys_idx: usize) {
     let Some(text) = app.card_selection_text(phys_idx) else {
         app.mouse.clear_log_selection();
@@ -577,10 +632,6 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
 
 fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     if app.mouse.dragging_log && hit.in_log {
-        if let Some(selection) = app.mouse.card_selection.as_mut() {
-            selection.end = selection.text.len();
-            return;
-        }
         let visual_base = app.log_viewport_top();
         let visual_row = visual_base
             + mouse
@@ -590,16 +641,21 @@ fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
             return;
         }
         let line_idx = app.logical_from_visual(visual_row);
+        if app.mouse.card_selection.is_some() {
+            extend_card_selection(app, line_idx);
+            return;
+        }
         let col = mouse
             .column
             .saturating_sub(app.mouse.area(SurfaceId::Log).x + 1) as usize;
         if line_idx < app.total_log_lines()
             && let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
         {
-            if app.is_markdown_row(phys)
-                || crate::widgets::state::is_task_stats_line(&app.log.items[phys].raw)
-            {
+            if app.is_markdown_row(phys) {
                 start_card_selection(app, phys);
+                return;
+            }
+            if crate::widgets::state::is_task_stats_line(&app.log.items[phys].raw) {
                 return;
             }
             if let Some(ref mut sel) = app.mouse.log_selection {
@@ -1845,10 +1901,86 @@ mod tests {
         assert!(thinking.thinking_mut().popup.is_some());
     }
 
-    /// A non-button click on a Thinking card starts a selectable card range. The
-    /// card's visible text is rendered by a dedicated cell rather than the
-    /// shared-log placeholder rows, so the selection is card-level and copies
-    /// the card's semantic source.
+    #[test]
+    fn drag_from_thinking_through_tool_to_markdown_selects_each_card_once() {
+        use crate::render::test_harness::render_main_area_terminal;
+
+        let mut app = app_with_thinking_card(crate::i18n::Language::English);
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "run echo",
+            "bash",
+            "cross-card-tool",
+            HashMap::from([("command".to_string(), "echo output".to_string())]),
+        )));
+        app.handle_agent_update(
+            StepCall::new(0, "cross-card-tool", "bash", "echo output").started(),
+        );
+        app.handle_agent_update(
+            StepCall::new(0, "cross-card-tool", "bash", "echo output")
+                .detail("tool output for selection")
+                .finished(),
+        );
+        app.append_markdown("# Target Card\n");
+
+        let terminal = render_main_area_terminal(&mut app, 100, 60);
+        let buf = terminal.backend().buffer().clone();
+        let (thinking_x, thinking_y) = glyph_origin(&buf, "four");
+        let (target_x, target_y) = glyph_origin(&buf, "Target");
+        let thinking_phys = app.thinking().blocks[0].phys_idx;
+        let tool_phys = app.tools().blocks[0].phys_idx;
+        let markdown_phys = app
+            .log
+            .items
+            .iter()
+            .position(|item| item.raw == "# Target Card\n")
+            .expect("target Markdown card");
+
+        handle_mouse_event(&mut app, mouse_down(thinking_x, thinking_y));
+        handle_mouse_event(&mut app, mouse_drag(target_x, target_y));
+
+        let selection = app.mouse.card_selection.as_ref().expect("card range");
+        assert_eq!(
+            selection.selected_phys_indices,
+            vec![thinking_phys, tool_phys, markdown_phys]
+        );
+        let copied = app.extract_card_selection().expect("selected card text");
+        assert!(
+            copied.contains("one\ntwo"),
+            "thinking card missing: {copied:?}"
+        );
+        assert!(
+            copied.contains("tool output for selection"),
+            "tool card missing: {copied:?}"
+        );
+        assert!(
+            copied.contains("# Target Card"),
+            "Markdown card missing: {copied:?}"
+        );
+
+        let selected_frame = render_main_area_terminal(&mut app, 100, 60);
+        let selected_buf = selected_frame.backend().buffer();
+        for needle in ["four", "Bash", "Target"] {
+            let (_, row) = glyph_origin(selected_buf, needle);
+            assert!(
+                (0..selected_buf.area.width).any(|x| selected_buf[(x, row)]
+                    .modifier
+                    .contains(ratatui::style::Modifier::REVERSED)),
+                "selected card {needle:?} should be highlighted"
+            );
+        }
+
+        handle_mouse_event(&mut app, mouse_down(target_x, target_y));
+        handle_mouse_event(&mut app, mouse_drag(thinking_x, thinking_y));
+        assert_eq!(
+            app.mouse
+                .card_selection
+                .as_ref()
+                .expect("reverse card range")
+                .selected_phys_indices,
+            vec![thinking_phys, tool_phys, markdown_phys]
+        );
+    }
+
     #[test]
     fn clicking_a_thinking_card_body_starts_text_selection() {
         use crate::render::test_harness::render_main_area_terminal;
@@ -2504,6 +2636,55 @@ mod tests {
 
         let selection = app.mouse.card_selection.expect("card selection started");
         assert_eq!(selection.selected_text(), "# Card\n");
+    }
+
+    #[test]
+    fn drag_across_markdown_cards_selects_the_full_range() {
+        let mut app = app_with_clickable_log();
+        app.append_markdown("# One\n");
+        app.add_system_message("ordinary log line".into());
+        app.append_markdown("# Two\n");
+        app.append_markdown("# Three\n");
+        app.log_scroll.visual_start = vec![0, 1, 2, 3, 4];
+
+        handle_mouse_event(&mut app, mouse_down(1, 1));
+        handle_mouse_event(&mut app, mouse_drag(1, 4));
+
+        let selection = app.mouse.card_selection.as_ref().expect("card range");
+        assert_eq!(selection.selected_phys_indices, vec![0, 1, 2, 3]);
+        assert_eq!(
+            app.extract_card_selection().as_deref(),
+            Some("# One\n\nordinary log line\n# Two\n\n# Three\n")
+        );
+        app.log_scroll.visual_top = 0;
+        let terminal = crate::render::test_harness::render_log_panel_terminal(&mut app, 40, 10);
+        let buf = terminal.backend().buffer();
+        let (x, y) = glyph_origin(buf, "ordinary");
+        assert!(
+            buf[(x, y)]
+                .modifier
+                .contains(ratatui::style::Modifier::REVERSED),
+            "ordinary rows inside a card drag range should be highlighted"
+        );
+    }
+
+    #[test]
+    fn drag_across_markdown_cards_supports_reverse_direction() {
+        let mut app = app_with_clickable_log();
+        app.append_markdown("# One\n");
+        app.append_markdown("# Two\n");
+        app.append_markdown("# Three\n");
+        app.log_scroll.visual_start = vec![0, 1, 2, 3];
+
+        handle_mouse_event(&mut app, mouse_down(1, 3));
+        handle_mouse_event(&mut app, mouse_drag(1, 1));
+
+        let selection = app.mouse.card_selection.as_ref().expect("card range");
+        assert_eq!(selection.selected_phys_indices, vec![0, 1, 2]);
+        assert_eq!(
+            app.extract_card_selection().as_deref(),
+            Some("# One\n\n# Two\n\n# Three\n")
+        );
     }
 
     #[test]

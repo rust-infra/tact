@@ -122,7 +122,14 @@ impl LogSelection {
 /// copy buffer beside the selection instead.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CardSelection {
+    /// Physical row anchoring the drag gesture.
     pub phys_idx: usize,
+    /// Last card reached by the drag gesture.
+    pub end_phys_idx: usize,
+    /// Physical rows selected by the drag, in transcript order. Thinking and
+    /// tool placeholder rows are represented once by their card's anchor row.
+    pub selected_phys_indices: Vec<usize>,
+    /// Semantic text of the anchor card (used for a single-card selection).
     pub text: String,
     pub start: usize,
     pub end: usize,
@@ -133,10 +140,24 @@ impl CardSelection {
         let end = text.len();
         Self {
             phys_idx,
+            end_phys_idx: phys_idx,
+            selected_phys_indices: vec![phys_idx],
             text,
             start: 0,
             end,
         }
+    }
+
+    pub fn normalized_phys_range(&self) -> (usize, usize) {
+        if self.phys_idx <= self.end_phys_idx {
+            (self.phys_idx, self.end_phys_idx)
+        } else {
+            (self.end_phys_idx, self.phys_idx)
+        }
+    }
+
+    pub fn contains_phys(&self, phys_idx: usize) -> bool {
+        self.selected_phys_indices.contains(&phys_idx)
     }
 
     pub fn selected_text(&self) -> &str {
