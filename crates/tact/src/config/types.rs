@@ -493,6 +493,12 @@ pub struct SubagentSettings {
     /// model rather than inherited from the main agent. Auto-compaction and the
     /// tool card's `ctx` meter both read it.
     pub model_context_window: usize,
+    /// The raw `[agent.subagent].model_context_window` override, if the user
+    /// set one. Kept so a runtime `/model-subagent` switch re-resolves the
+    /// window with the SAME priority as startup (`override` > the new model's
+    /// mapping > the main agent's window) instead of dropping the pin.
+    /// `Some(0)` is an explicit "unknown window", not "unset".
+    pub model_context_window_override: Option<usize>,
     /// Candidate model ids for the /model-subagent picker.
     pub models: Vec<String>,
 }

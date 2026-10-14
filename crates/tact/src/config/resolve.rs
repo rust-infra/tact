@@ -491,14 +491,13 @@ fn resolve_subagent(
 
     // The subagent's context window follows the subagent's OWN model, not the
     // main agent's: an override like `model = "gpt-4o"` under a 1M main model
-    // must not measure against 1M. Priority mirrors the main agent's
-    // (`--model-context-window` > `[agent]` > mapping > default), with the main
-    // agent's resolved window as the last-resort fallback so a model the
-    // mapping does not know keeps a sensible value.
-    let subagent_context_window = subagent_cfg
-        .model_context_window
-        .or_else(|| model_context_window_for_model(&model))
-        .unwrap_or(model_context_window);
+    // must not measure against 1M. The same priority is re-applied on a
+    // runtime `/model-subagent` switch — see `apply_subagent_model_switch`.
+    let subagent_context_window = resolve_subagent_context_window(
+        subagent_cfg.model_context_window,
+        &model,
+        model_context_window,
+    );
 
     // An INHERITED `max_tokens` must not fail the startup check: the user never
     // asked for that pairing, and the main agent's budget is routinely larger
@@ -551,6 +550,7 @@ fn resolve_subagent(
         thinking_budget,
         reasoning_effort: subagent_reasoning_effort,
         model_context_window: subagent_context_window,
+        model_context_window_override: subagent_cfg.model_context_window,
         models: entry.models.clone(),
     }))
 }
@@ -783,6 +783,45 @@ pub(super) fn resolve_non_llm_settings(
         tokio_console: args.tokio_console,
         config_path,
     })
+}
+
+/// The subagent's context window: an explicit
+/// `[agent.subagent].model_context_window` pins it, otherwise the child model's
+/// mapping decides, with the main agent's resolved window as the last resort
+/// (a model the mapping does not know keeps a sensible value rather than
+/// collapsing to the 200,000 default). Shared by the startup resolution and a
+/// runtime `/model-subagent` switch so the two priorities cannot drift.
+pub(crate) fn resolve_subagent_context_window(
+    override_window: Option<usize>,
+    model: &str,
+    main_window: usize,
+) -> usize {
+    override_window
+        .or_else(|| model_context_window_for_model(model))
+        .unwrap_or(main_window)
+}
+
+/// Apply a runtime `/model-subagent` switch to resolved settings: the model
+/// and thinking budget change, and the context window is re-resolved with the
+/// same priority as startup. A stale window would drive auto-compaction and
+/// the card's `ctx` meter for the rest of the session.
+pub(crate) fn apply_subagent_model_switch(
+    agent: &mut AgentSettings,
+    model: String,
+    thinking_budget: usize,
+) {
+    let main_window = agent.model_context_window;
+    if let Some(subagent) = agent.subagent.as_mut() {
+        let window = resolve_subagent_context_window(
+            subagent.model_context_window_override,
+            &model,
+            main_window,
+        );
+        subagent.provider.model = model;
+        subagent.thinking_budget = thinking_budget;
+        subagent.reasoning_effort = None;
+        subagent.model_context_window = window;
+    }
 }
 
 /// Returns the context window (total input + output tokens) for a known model id.
@@ -1320,6 +1359,62 @@ max_tokens = {subagent_max_tokens}
         });
         let cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
         assert_eq!(cfg.agent.subagent.unwrap().model_context_window, 300_000);
+    }
+
+    /// A runtime `/model-subagent` switch re-resolves the window with the same
+    /// priority as startup: an explicit `[agent.subagent].model_context_window`
+    /// keeps pinning it. The regression this pins: the switch used to drop the
+    /// pin and, for a model the mapping does not know, silently fall back to
+    /// the MAIN agent's window (1M here).
+    #[test]
+    fn subagent_model_switch_keeps_an_explicit_window_override() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.model_context_window = Some(1_000_000);
+        toml_cfg.agent.subagent = Some(SubagentTomlConfig {
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4o".to_string()),
+            max_tokens: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            model_context_window: Some(64_000),
+        });
+        let mut cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(
+            cfg.agent.subagent.as_ref().unwrap().model_context_window,
+            64_000
+        );
+
+        apply_subagent_model_switch(&mut cfg.agent, "some-unmapped-model".to_string(), 0);
+
+        let sa = cfg.agent.subagent.unwrap();
+        assert_eq!(sa.provider.model, "some-unmapped-model");
+        assert_eq!(sa.model_context_window, 64_000);
+    }
+
+    /// Without an explicit override the mapping follows the NEW model: the fix
+    /// must not freeze the old window, which would trade one stale number for
+    /// another.
+    #[test]
+    fn subagent_model_switch_re_resolves_the_mapping() {
+        let mut toml_cfg = openai_toml_config();
+        toml_cfg.agent.model_context_window = Some(500_000);
+        toml_cfg.agent.subagent = Some(SubagentTomlConfig {
+            provider: Some("openai".to_string()),
+            model: Some("gpt-4o".to_string()),
+            max_tokens: None,
+            thinking_budget: None,
+            reasoning_effort: None,
+            model_context_window: None,
+        });
+        let mut cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(
+            cfg.agent.subagent.as_ref().unwrap().model_context_window,
+            128_000
+        );
+
+        apply_subagent_model_switch(&mut cfg.agent, "gpt-5.6".to_string(), 0);
+
+        assert_eq!(cfg.agent.subagent.unwrap().model_context_window, 1_050_000);
     }
 
     /// The window is not just displayed: it is the auto-compaction threshold's

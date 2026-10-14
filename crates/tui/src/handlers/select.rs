@@ -1247,6 +1247,7 @@ mod tests {
             // `resolve_subagent` would fall back to the MAIN agent's window —
             // 500_000 in this fixture, not the 200_000 default.
             model_context_window: 500_000,
+            model_context_window_override: None,
             models: vec![subagent_model.to_string()],
         });
         tact::config::install_or_override(cfg);

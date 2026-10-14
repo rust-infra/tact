@@ -312,18 +312,7 @@ pub fn update_llm_model_and_thinking_budget(model: String, thinking_budget: usiz
 pub fn update_subagent_model(model: String, thinking_budget: usize) {
     let mut guard = SETTINGS.write_recover();
     if let Some(cfg) = guard.as_mut() {
-        // The window belongs to the model, so a switch has to re-resolve it:
-        // the startup resolution is the only other place the mapping is applied,
-        // and a stale window would drive auto-compaction and the card's `ctx`
-        // meter for the rest of the session.
-        let window = resolve::model_context_window_for_model(&model)
-            .unwrap_or(cfg.agent.model_context_window);
-        if let Some(sa) = cfg.agent.subagent.as_mut() {
-            sa.provider.model = model;
-            sa.thinking_budget = thinking_budget;
-            sa.reasoning_effort = None;
-            sa.model_context_window = window;
-        }
+        resolve::apply_subagent_model_switch(&mut cfg.agent, model, thinking_budget);
     }
 }
 
