@@ -1748,10 +1748,10 @@ thinking_budget = {thinking_budget}
         assert!(matches!(app.input_mode, InputMode::Normal));
     }
 
-    /// A refused switch (an explicit budget that no longer fits the window the
-    /// picked model runs under) reports the failure and does NOT open the
-    /// persist prompt: the session still runs the old model, so there is
-    /// nothing to persist — and nothing was applied.
+    /// A refused switch (an explicit `max_tokens` that cannot fit the pinned
+    /// window) reports the failure and does NOT open the persist prompt: the
+    /// session still runs the old model, so there is nothing to persist — and
+    /// nothing was applied.
     #[tokio::test(flavor = "multi_thread")]
     async fn a_refused_subagent_switch_reports_instead_of_the_persist_prompt() {
         let _lock = MODELS_TEST_LOCK.lock().await;
@@ -1772,7 +1772,7 @@ thinking_budget = {thinking_budget}
         {
             let sa = cfg.agent.subagent.as_mut().unwrap();
             // Both models stay pickable, but the pinned window cannot fit the
-            // explicit budget — the switch has to be refused.
+            // explicit max_tokens — the switch has to be refused.
             sa.models = vec!["kimi-k2.5".into(), "kimi-for-coding".into()];
             sa.max_tokens = 4_000;
             sa.max_tokens_override = Some(4_000);
