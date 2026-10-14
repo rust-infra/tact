@@ -349,6 +349,7 @@ provider 名称不存在则报错并列出可用键。完全没有任何覆盖�
 | `provider` | 设置任一覆盖项时必填；必须是 `[llm.providers.*]` 中的键 |
 | `model` | `[agent.subagent].model` → 被引用条目的 `model`；两者都没有则报错 |
 | `max_tokens` | `[agent.subagent].max_tokens` → 被引用条目的 → **主 agent 已解析的 `max_tokens`**（subagent 模型属 Kimi K2.x 时则回退 `32_000`） |
+| `model_context_window` | `[agent.subagent].model_context_window` → 内置模型映射（按 subagent 自己的 `model`）→ 主 agent 已解析的窗口 |
 | `thinking_budget` | `[agent.subagent].thinking_budget` → 被引用条目的 → 主 agent 已解析的值 |
 | `reasoning_effort` | `[agent.subagent].reasoning_effort` → 被引用条目的（openai / deepseek / kimi k3 语义） |
 
@@ -369,9 +370,9 @@ resolve 阶段的校验：
 
 - `thinking_budget` 必须严格小于 subagent 自己的 `max_tokens`。
 - 被引用的 **DeepSeek** 条目上 `protocol = "responses"` 会被拒绝——与主 agent 同属不受支持的组合。
-- 被引用条目的 `responses_compact_threshold` 会被复用，但需按 *subagent 自己的* `max_tokens` 与共享窗口重新校验（原本适配主 agent 较小预算的阈值未必适配 subagent）。条目未设置该项时，阈值由 subagent 的 `max_tokens` 推导；非 Responses 协议与零窗口解析为无阈值。
+- 被引用条目的 `responses_compact_threshold` 会被复用，但需按 *subagent 自己的* `max_tokens` 与窗口重新校验（原本适配主 agent 较小预算的阈值未必适配 subagent）。条目未设置该项时，阈值由 subagent 的 `max_tokens` 推导；非 Responses 协议与零窗口解析为无阈值。
 
-`model_context_window` **不**按 subagent 区分：worker 调用与主 agent 共享窗口。
+`model_context_window` **按 subagent 自己的模型解析**：`[agent.subagent].model_context_window` → 内置模型映射（按 subagent 的 `model`）→ 主 agent 已解析的窗口——主 agent 是 1M 模型时，用 `gpt-4o` 的子 agent 不能按 1M 去量。继承来的 `max_tokens` 不小于子窗口时**钳制**进窗口而不是报错（主 agent 的大预算配小窗口模型是常态），显式写下的 `max_tokens` 超限才硬报错。`/model-subagent` 运行时换模型会按新模型重算窗口（映射 → 主窗口兜底）。
 `/model-subagent` 选择器的候选列表来自被引用条目的 `models`，在其中选定模型或思考预算会写回
 `[agent.subagent].model` 及其预算/effort 键。运行时一侧见 [Ch 12](./12_chapter_subagent_zh.md)。
 

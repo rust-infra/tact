@@ -317,8 +317,9 @@ OpenAI Responses 的回退方案。DeepSeek 与 Kimi 的 Responses 配置目前�
 2. **Tact 阈值 + `/responses/compact`** — 阈值来自配置项
    `responses_compact_threshold`，或由 `agent.model_context_window` /
    `max_tokens` 加 10% 余量推导；subagent 的推导阈值使用 **subagent 自己的
-   `max_tokens`** 预算，而不是主 agent 的。当 Tact 决定压缩（自动触发、恢复或
-   `/compact`）时，它会发送真正的 `POST /responses/compact` 请求，携带当前
+   `max_tokens` 与自己的窗口**（[Ch 21](./21_chapter_config_zh.md)），而不是主 agent 的。
+   当 Tact 决定压缩（自动触发、恢复或 `/compact`）时，它会发送真正的
+   `POST /responses/compact` 请求，携带当前
    协议基线（`input` items）加上尚未被基线覆盖的逻辑消息，并用返回的 compact
    resource 替换基线。
 3. **用户 `/compact` 不需要模型侧 compact 工具** — Responses 对模型暴露的
