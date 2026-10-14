@@ -87,22 +87,29 @@ pub(crate) fn handle_normal_mode(
             app.input_mode = InputMode::Insert;
         }
         KeyCode::Char('y') => {
-            // Prefer character-level mouse selection over last message
-            let text = if let Some(sel) = app.mouse.log_selection {
-                let (start, end) = sel.normalized();
-                Some(app.extract_selected_text(start, end))
-            } else {
-                // Last visible message
-                let total = app.total_log_lines();
-                if total > 0 && app.stream_mut().buffer.is_empty() {
-                    app.visible_message_index(total - 1)
-                        .and_then(|idx| app.log.items.get(idx).map(|item| item.raw.clone()))
-                } else if !app.stream_mut().buffer.is_empty() {
-                    Some(app.stream_mut().buffer.clone())
+            if app.show_subagent_view {
+                return;
+            }
+            // Prefer a virtual-card selection, then character-level log selection,
+            // then fall back to the last visible row.
+            let text =
+                if let Some(text) = app.extract_card_selection().filter(|text| !text.is_empty()) {
+                    Some(text)
+                } else if let Some(sel) = app.mouse.log_selection {
+                    let (start, end) = sel.normalized();
+                    Some(app.extract_selected_text(start, end))
                 } else {
-                    None
-                }
-            };
+                    // Last visible message
+                    let total = app.total_log_lines();
+                    if total > 0 && app.stream_mut().buffer.is_empty() {
+                        app.visible_message_index(total - 1)
+                            .and_then(|idx| app.log.items.get(idx).map(|item| item.raw.clone()))
+                    } else if !app.stream_mut().buffer.is_empty() {
+                        Some(app.stream_mut().buffer.clone())
+                    } else {
+                        None
+                    }
+                };
             if let Some(t) = text {
                 app.copy_text(&t);
                 app.add_new_line();
@@ -433,6 +440,26 @@ mod tests {
 
         handle_normal_mode(&mut app, key(KeyCode::Char('k')), &tx);
         assert_eq!(app.log_scroll.offset, 1);
+    }
+
+    #[test]
+    fn y_copies_a_virtual_card_selection() {
+        let mut app = make_app();
+        app.handle_agent_update(tact_protocol::AgentUpdate::ThinkingChunk(
+            tact_protocol::ThinkingChunk::Delta("one\ntwo\n".into()),
+        ));
+        app.handle_agent_update(tact_protocol::AgentUpdate::ThinkingChunk(
+            tact_protocol::ThinkingChunk::Finished,
+        ));
+        app.mouse.card_selection = Some(crate::widgets::state::CardSelection::full(
+            app.thinking().blocks[0].phys_idx,
+            app.thinking().blocks[0].content.clone(),
+        ));
+        let (tx, _rx) = unbounded_channel();
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('y')), &tx);
+
+        assert!(app.log.items.iter().any(|item| item.raw.contains("one")));
     }
 
     #[test]

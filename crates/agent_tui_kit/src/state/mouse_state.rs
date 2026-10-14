@@ -115,7 +115,43 @@ impl LogSelection {
     }
 }
 
-/// A screen surface the mouse routes against.
+/// Text selected from a virtual log card (thinking/tool/Markdown).
+///
+/// Card contents are rendered from placeholder rows, so they cannot use the
+/// physical-row byte mapping used by ordinary log text. Keep their semantic
+/// copy buffer beside the selection instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardSelection {
+    pub phys_idx: usize,
+    pub text: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+impl CardSelection {
+    pub fn full(phys_idx: usize, text: String) -> Self {
+        let end = text.len();
+        Self {
+            phys_idx,
+            text,
+            start: 0,
+            end,
+        }
+    }
+
+    pub fn selected_text(&self) -> &str {
+        let start = self
+            .text
+            .floor_char_boundary(self.start.min(self.text.len()));
+        let end = self.text.floor_char_boundary(self.end.min(self.text.len()));
+        if start >= end {
+            ""
+        } else {
+            &self.text[start..end]
+        }
+    }
+}
+
 ///
 /// One key per hit-testable area, replacing a bag of independent `*_area`
 /// fields. Adding a surface used to cost four edits — a field, a renderer
@@ -197,6 +233,9 @@ pub struct MouseState {
     /// frame by the host renderer (mirrors `subagent_cancel_btn_areas`).
     pub sticky_tab_areas: Vec<(StickyTab, Rect)>,
     pub log_selection: Option<LogSelection>,
+    /// Selection inside a virtual card whose visible text is not backed by
+    /// one physical log row (thinking/tool/Markdown render cells).
+    pub card_selection: Option<CardSelection>,
     pub dragging_log: bool,
     /// Cancel buttons for live async-subagent tool cards: `(child_id, rect)`.
     /// Refreshed every frame by the log renderer; a click sends
@@ -249,6 +288,12 @@ pub struct MouseState {
 impl MouseState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Clear both physical-row and virtual-card selections.
+    pub fn clear_log_selection(&mut self) {
+        self.log_selection = None;
+        self.card_selection = None;
     }
 
     /// The rect recorded for `id` this frame (`Rect::default()` when the

@@ -280,8 +280,80 @@ impl App {
             }
     }
 
-    /// Extract the raw text covered by a character-level selection.
-    /// Skips collapsed/hidden physical rows so yank matches what the user sees.
+    /// Extract the semantic text represented by a virtual card anchored at a
+    /// physical placeholder row. The card itself owns the visible content;
+    /// placeholder rows intentionally stay empty in the shared log.
+    pub(crate) fn card_selection_text(&self, phys_idx: usize) -> Option<String> {
+        if let Some(active) = self
+            .thinking()
+            .active
+            .as_ref()
+            .filter(|block| block.phys_idx == phys_idx)
+        {
+            return Some(active.content.clone());
+        }
+        if let Some(block) = self
+            .thinking()
+            .blocks
+            .iter()
+            .find(|block| block.phys_idx == phys_idx)
+        {
+            return Some(block.content.clone());
+        }
+        if let Some(active) = self
+            .tools()
+            .active
+            .iter()
+            .find(|block| block.phys_idx == phys_idx)
+        {
+            return Some(tool_selection_text(&active.output));
+        }
+        if let Some(block) = self
+            .tools()
+            .blocks
+            .iter()
+            .find(|block| block.phys_idx == phys_idx)
+        {
+            return Some(tool_selection_text(&block.output));
+        }
+        self.log
+            .items
+            .get(phys_idx)
+            .filter(|item| item.markdown_cell.is_some() || item.popup_source.is_some())
+            .map(|item| {
+                item.popup_source
+                    .clone()
+                    .unwrap_or_else(|| item.raw.clone())
+            })
+    }
+
+    pub(crate) fn copy_active_selection(&mut self) -> bool {
+        let text = if let Some(text) = self
+            .extract_card_selection()
+            .filter(|text| !text.is_empty())
+        {
+            Some(text)
+        } else if let Some(sel) = self.mouse.log_selection {
+            let (start, end) = sel.normalized();
+            Some(self.extract_selected_text(start, end))
+        } else {
+            None
+        };
+        let Some(text) = text.filter(|text| !text.is_empty()) else {
+            return false;
+        };
+        self.copy_text(&text);
+        self.add_new_line();
+        true
+    }
+
+    pub(crate) fn extract_card_selection(&self) -> Option<String> {
+        self.mouse
+            .card_selection
+            .as_ref()
+            .map(|selection| selection.selected_text().to_string())
+    }
+
     pub(crate) fn extract_selected_text(&self, start: TextPosition, end: TextPosition) -> String {
         if start.phys_idx == end.phys_idx {
             if let Some(item) = self.log.items.get(start.phys_idx) {
@@ -699,6 +771,30 @@ impl App {
         // (`add_user_message`) re-pins explicitly instead.
         self.keep_log_tail_pinned();
     }
+}
+
+fn tool_selection_text(output: &agent_tui_kit::widgets::tool_widget::ToolRenderOutput) -> String {
+    let mut text = output.title_raw.clone();
+    if let Some(detail) = output
+        .detail_full
+        .as_deref()
+        .filter(|detail| !detail.is_empty())
+    {
+        text.push('\n');
+        text.push_str(detail);
+    } else {
+        for line in &output.detail_preview {
+            text.push('\n');
+            text.push_str(
+                &line
+                    .spans
+                    .iter()
+                    .map(|span| span.text.as_str())
+                    .collect::<String>(),
+            );
+        }
+    }
+    text
 }
 
 /// Slice `text` between two byte offsets, snapping both to a character

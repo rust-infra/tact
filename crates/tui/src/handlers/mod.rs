@@ -52,7 +52,11 @@ type GlobalShortcut = (char, fn(&mut App));
 /// time a shortcut is added, and the drift would be silent — the new shortcut
 /// would simply stay bindable by voice, where it can never fire.
 const GLOBAL_SHORTCUTS: &[GlobalShortcut] = &[
-    ('c', |app| app.should_quit = true),
+    ('c', |app| {
+        if !app.copy_active_selection() {
+            app.should_quit = true;
+        }
+    }),
     ('h', |app| {
         app.show_history = !app.show_history;
         app.show_help = false;
@@ -76,7 +80,10 @@ const GLOBAL_SHORTCUTS: &[GlobalShortcut] = &[
 /// Consuming is also why a user binding may not name one of these keys: nothing
 /// dispatched after this function can ever see the event again.
 pub(crate) fn handle_global_shortcut(app: &mut App, key: &KeyEvent) -> bool {
-    if !key.modifiers.contains(KeyModifiers::CONTROL) {
+    if !key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::SUPER)
+    {
         return false;
     }
     let KeyCode::Char(c) = key.code else {
@@ -763,6 +770,33 @@ mod tests {
         let outcome = execute_palette_command(&mut app, "nonexistent");
         assert!(!outcome.handled);
         assert!(!outcome.clear_input);
+    }
+
+    #[test]
+    fn ctrl_c_copies_selection_before_quitting() {
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
+        app.add_system_message("copy me".into());
+        app.mouse.log_selection = Some(crate::widgets::state::LogSelection::full_message(
+            0,
+            "copy me".len(),
+        ));
+
+        assert!(handle_global_shortcut(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+        ));
+        assert!(!app.should_quit);
+        assert!(app.copy_flash_at.is_some());
+    }
+
+    #[test]
+    fn ctrl_c_without_selection_still_quits() {
+        let (mut app, _user_cmd_rx) = TestApp::new().into_commands();
+        assert!(handle_global_shortcut(
+            &mut app,
+            &KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+        ));
+        assert!(app.should_quit);
     }
 
     #[test]

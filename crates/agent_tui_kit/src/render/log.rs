@@ -38,6 +38,32 @@ use crate::{
     },
 };
 
+struct SelectedCell<T> {
+    inner: T,
+}
+
+impl<T: Renderable> Renderable for SelectedCell<T> {
+    fn render(&self, area: Rect, buf: &mut Buffer) {
+        self.render_partial(area, buf, 0);
+    }
+
+    fn height(&self, width: u16) -> u16 {
+        self.inner.height(width)
+    }
+
+    fn render_partial(&self, area: Rect, buf: &mut Buffer, skip_lines: usize) {
+        self.inner.render_partial(area, buf, skip_lines);
+        for y in area.y..area.bottom() {
+            for x in area.x..area.right() {
+                if buf[(x, y)].symbol() != " " {
+                    let style = buf[(x, y)].style().add_modifier(Modifier::REVERSED);
+                    buf[(x, y)].set_style(style);
+                }
+            }
+        }
+    }
+}
+
 fn tool_id_for_phys(ctx: &RenderCtx, phys_idx: usize) -> Option<String> {
     ctx.tools
         .active
@@ -287,7 +313,16 @@ pub fn render_log_panel_pure(
                     {
                         open_actions.push(OpenAction::new(OpenTarget::thinking(block_id), rect));
                     }
-                    renderer.push(vis_start, cell);
+                    if ctx
+                        .mouse
+                        .card_selection
+                        .as_ref()
+                        .is_some_and(|selection| selection.phys_idx == thinking_phys)
+                    {
+                        renderer.push(vis_start, SelectedCell { inner: cell });
+                    } else {
+                        renderer.push(vis_start, cell);
+                    }
                 }
                 logical_i += thinking_rows - rows_before;
                 continue;
@@ -361,7 +396,17 @@ pub fn render_log_panel_pure(
                         open_actions.push(OpenAction::new(OpenTarget::subagent(tool_id), rect));
                     }
                 }
-                renderer.push(vis_start, card_cell); // Live async subagent: draw a cancel button on the card's
+                if ctx
+                    .mouse
+                    .card_selection
+                    .as_ref()
+                    .is_some_and(|selection| selection.phys_idx == phys_idx)
+                {
+                    renderer.push(vis_start, SelectedCell { inner: card_cell });
+                } else {
+                    renderer.push(vis_start, card_cell);
+                }
+                // Live async subagent: draw a cancel button on the card's
                 // header row (right edge) and record its rect for the host's
                 // mouse routing.
                 if let Some(active) = ctx.tools.active.iter().find(|a| a.phys_idx == phys_idx)
@@ -404,7 +449,16 @@ pub fn render_log_panel_pure(
                 .get(phys)
                 .and_then(|item| item.markdown_cell.as_ref())
         {
-            renderer.push(vs_cache[logical_i], cell);
+            let selected = ctx
+                .mouse
+                .card_selection
+                .as_ref()
+                .is_some_and(|selection| selection.phys_idx == phys);
+            if selected {
+                renderer.push(vs_cache[logical_i], SelectedCell { inner: cell });
+            } else {
+                renderer.push(vs_cache[logical_i], cell);
+            }
             logical_i += 1;
             continue;
         }

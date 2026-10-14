@@ -28,7 +28,7 @@ pub(crate) use agent_tui_kit::state::log::{LogCoordinator, LogItem, LogItemKind,
 pub(crate) use agent_tui_kit::state::log_scroll::LogScroll;
 #[allow(unused_imports)] // PopupHitRow is re-exported for tui's test code (hit-row helpers)
 pub(crate) use agent_tui_kit::state::mouse_state::{
-    LogSelection, MouseState, PopupHitRow, PopupTextHit, SurfaceId, TextPosition,
+    CardSelection, LogSelection, MouseState, PopupHitRow, PopupTextHit, SurfaceId, TextPosition,
 };
 pub(crate) use agent_tui_kit::state::select_popup::SelectPopup;
 pub(crate) use agent_tui_kit::state::selection::PopupTextSelection;

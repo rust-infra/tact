@@ -207,6 +207,7 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     // Log text selection — it is no longer what the user is looking at.
     if !hit.in_log {
         app.mouse.log_selection = None;
+        app.mouse.card_selection = None;
         app.mouse.dragging_log = false;
     }
     if hit.in_task_panel && crate::render::task_panel::sticky_host_visible(app) {
@@ -356,6 +357,17 @@ fn below_log_viewport(app: &App, visual_base: usize, visual_row: usize) -> bool 
     visual_row >= visual_base + app.log_scroll.height as usize
 }
 
+fn start_card_selection(app: &mut App, phys_idx: usize) {
+    let Some(text) = app.card_selection_text(phys_idx) else {
+        app.mouse.clear_log_selection();
+        app.mouse.dragging_log = false;
+        return;
+    };
+    app.mouse.log_selection = None;
+    app.mouse.card_selection = Some(crate::widgets::state::CardSelection::full(phys_idx, text));
+    app.mouse.dragging_log = true;
+}
+
 fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     app.focused_panel = FocusedPanel::Log;
     let visual_base = app.log_viewport_top();
@@ -364,7 +376,7 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
             .row
             .saturating_sub(app.mouse.area(SurfaceId::Log).y + 1) as usize;
     if below_log_viewport(app, visual_base, visual_row) {
-        app.mouse.log_selection = None;
+        app.mouse.clear_log_selection();
         app.mouse.dragging_log = false;
         return;
     }
@@ -391,7 +403,7 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     let Some(phys_idx) = app.visible_message_index(line_idx) else {
         // Clicked in empty space below the last message: nothing here can
         // extend a selection, so clear it instead of keeping a stale one.
-        app.mouse.log_selection = None;
+        app.mouse.clear_log_selection();
         app.mouse.dragging_log = false;
         return;
     };
@@ -416,12 +428,8 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
         return;
     }
 
-    // Whole-Markdown rows are cards: the MarkdownCell renderer draws no
-    // selection overlay, so refuse to create an invisible selection here
-    // (symmetric with rendering).
     if app.is_markdown_row(phys_idx) {
-        app.mouse.log_selection = None;
-        app.mouse.dragging_log = false;
+        start_card_selection(app, phys_idx);
         return;
     }
 
@@ -455,9 +463,8 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
         .find_thinking_at_logical(line_idx)
         .map(|(thinking_phys, _, _)| thinking_phys);
     if let Some(thinking_phys) = thinking_hit {
-        // A Thinking card draws text on rows that do not map to that text, so
-        // nothing on it can be selected. Its footer `[Open]` button is the one
-        // target, and the frame recorded where it drew those glyphs.
+        // The card's semantic content is selectable even though the shared-log
+        // rows are placeholders. The footer Open button remains a control.
         let open_block_id = app
             .mouse
             .open_action_at(mouse.column, mouse.row)
@@ -488,8 +495,7 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
             }
         } else {
             app.mouse.last_click_card = None;
-            app.mouse.log_selection = None;
-            app.mouse.dragging_log = false;
+            start_card_selection(app, thinking_phys);
         }
         return;
     } else {
@@ -563,6 +569,7 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
         handle_log_triple_click(app, line_idx, true);
     } else if let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
     {
+        app.mouse.card_selection = None;
         app.mouse.log_selection = Some(LogSelection::span(phys, byte, byte));
         app.mouse.dragging_log = true;
     }
@@ -570,6 +577,10 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
 
 fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
     if app.mouse.dragging_log && hit.in_log {
+        if let Some(selection) = app.mouse.card_selection.as_mut() {
+            selection.end = selection.text.len();
+            return;
+        }
         let visual_base = app.log_viewport_top();
         let visual_row = visual_base
             + mouse
@@ -585,13 +596,10 @@ fn handle_mouse_drag(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         if line_idx < app.total_log_lines()
             && let Some((phys, byte)) = app.byte_offset_from_log_position(line_idx, visual_row, col)
         {
-            // Markdown cards carry no selection overlay: stop the selection at
-            // the last text row instead of extending invisibly into one. Same
-            // for a task-stats row, whose centering pad the overlay does not
-            // reproduce.
             if app.is_markdown_row(phys)
                 || crate::widgets::state::is_task_stats_line(&app.log.items[phys].raw)
             {
+                start_card_selection(app, phys);
                 return;
             }
             if let Some(ref mut sel) = app.mouse.log_selection {
@@ -639,11 +647,8 @@ pub(crate) fn handle_log_triple_click(app: &mut App, line_idx: usize, expand_cod
         return;
     }
     if let Some(phys) = app.visible_message_index(line_idx) {
-        // Markdown cards never show a selection overlay; triple-click cannot
-        // select them either.
         if app.is_markdown_row(phys) {
-            app.mouse.log_selection = None;
-            app.mouse.dragging_log = false;
+            start_card_selection(app, phys);
             return;
         }
         let len = app.log.items[phys].raw.len();
@@ -687,8 +692,7 @@ pub(crate) fn handle_tool_block_click(
     }
     if app.mouse.click_count == 1 {
         app.mouse.last_click_tool = Some(tool_idx);
-        app.mouse.log_selection = None;
-        app.mouse.dragging_log = false;
+        start_card_selection(app, phys_idx);
     }
 }
 
@@ -1841,10 +1845,12 @@ mod tests {
         assert!(thinking.thinking_mut().popup.is_some());
     }
 
-    /// A non-button click on a Thinking card must not leave a selection behind
-    /// either: the card's rows do not carry the text drawn inside it.
+    /// A non-button click on a Thinking card starts a selectable card range. The
+    /// card's visible text is rendered by a dedicated cell rather than the
+    /// shared-log placeholder rows, so the selection is card-level and copies
+    /// the card's semantic source.
     #[test]
-    fn clicking_a_thinking_card_body_leaves_no_selection() {
+    fn clicking_a_thinking_card_body_starts_text_selection() {
         use crate::render::test_harness::render_main_area_terminal;
 
         let mut app = app_with_thinking_card(crate::i18n::Language::English);
@@ -1857,8 +1863,14 @@ mod tests {
         app.mouse.click_count = 3;
         handle_log_click(&mut app, mouse_down(start, row - 1));
 
-        assert!(app.mouse.log_selection.is_none());
-        assert!(!app.mouse.dragging_log);
+        assert!(
+            app.mouse.dragging_log,
+            "card body should start a drag selection"
+        );
+        assert!(
+            app.mouse.card_selection.is_some(),
+            "card selection should expose a selectable range"
+        );
     }
 
     /// The hint's click window has to be the glyphs the row **draws**, in every
@@ -2469,19 +2481,19 @@ mod tests {
     }
 
     #[test]
-    fn click_on_markdown_row_does_not_create_invisible_selection() {
+    fn click_on_markdown_row_starts_card_selection() {
         let mut app = app_with_clickable_log();
         app.append_markdown("# Title\n");
         app.log_scroll.visual_start = vec![0, 1];
 
         handle_mouse_event(&mut app, mouse_down(1, 1));
 
-        assert!(app.mouse.log_selection.is_none());
-        assert!(!app.mouse.dragging_log);
+        assert!(app.mouse.card_selection.is_some());
+        assert!(app.mouse.dragging_log);
     }
 
     #[test]
-    fn drag_into_markdown_row_does_not_extend_selection() {
+    fn drag_into_markdown_row_selects_the_card_text() {
         let mut app = app_with_clickable_log();
         app.add_system_message("select me".into());
         app.append_markdown("# Card\n");
@@ -2490,8 +2502,8 @@ mod tests {
         handle_mouse_event(&mut app, mouse_down(1, 1));
         handle_mouse_event(&mut app, mouse_drag(1, 2));
 
-        let sel = app.mouse.log_selection.expect("selection started");
-        assert_eq!(sel.end.phys_idx, 0, "selection must stop at the text row");
+        let selection = app.mouse.card_selection.expect("card selection started");
+        assert_eq!(selection.selected_text(), "# Card\n");
     }
 
     #[test]
