@@ -272,6 +272,16 @@ pub enum AgentUpdate {
         tool_id: String,
         entry: crate::subagent_transcript::SubagentTranscriptEntry,
     },
+    /// The assistant text accumulated so far in the child's current turn.
+    ///
+    /// Sent while the text still streams, so the popup grows like the main log
+    /// instead of staying empty until the turn ends. The payload is the **whole
+    /// turn's** text, not a delta: it replaces the previous in-flight assistant
+    /// body, and it is redacted whole rather than chunk by chunk — a secret
+    /// split across two `StreamChunk`s would slip past a per-chunk scan.
+    /// When the turn ends it is replaced by the final [`Self::ToolTranscript`]
+    /// `Assistant` entry, identical once nothing was redacted.
+    ToolTranscriptStream { tool_id: String, text: String },
     /// The entire task is complete
     TaskComplete(String),
     /// The in-flight task was cancelled by the user. TUI must leave
@@ -382,6 +392,11 @@ pub enum AgentUpdate {
         tool_id: String,
         model: Option<String>,
         token_usage: Option<TokenUsageInfo>,
+        /// Context window of the agent that sent this, so a subagent card can
+        /// render the same `ctx {pct}% {used}/{window}` meter as the main bar
+        /// instead of a bare token total. `None` from senders with no window to
+        /// report (e.g. `background_run`), which leaves the meter off.
+        context_window: Option<usize>,
         /// Background task started by this tool call, shown next to the card's
         /// phase so the id can be read (and polled) while the task runs.
         task_id: Option<String>,

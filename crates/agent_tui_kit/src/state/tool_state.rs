@@ -25,6 +25,12 @@ pub struct ToolState {
     /// the card (a finalized subagent's popup can be re-opened), so it is
     /// never pruned on finalize.
     pub transcripts: std::collections::HashMap<String, SubagentTranscript>,
+    /// Assistant text of the child turn currently streaming, keyed by the
+    /// parent tool id. Replaced (not appended) by each
+    /// `AgentUpdate::ToolTranscriptStream`, cleared when the turn's final
+    /// `Assistant` entry lands, and read only while building the popup layout —
+    /// so it never has to survive finalization.
+    pub streaming_assistant: std::collections::HashMap<String, String>,
 }
 
 /// One subagent's structured conversation.
@@ -144,6 +150,12 @@ pub struct DiffPopup {
 pub struct SubagentPopup {
     pub title: String,
     pub scroll: u16,
+    /// Whether the view is pinned to the transcript's tail. Set when the view
+    /// opens (a reader entering a live child wants its newest line), cleared by
+    /// any deliberate scroll up, re-armed by scrolling back to the end.
+    pub follow: bool,
+    /// Content arrived while the reader was scrolled away — the pill's badge.
+    pub unseen: bool,
     /// Tool id of the spawn_subagent invocation this popup belongs to.
     pub tool_id: String,
     /// Current text selection (mouse-drag), if any.

@@ -279,7 +279,26 @@ pub fn collapsed_action_cols(msgs: &Messages, row_text: &str) -> Option<Range<u1
     Some(start as u16..end as u16)
 }
 
-/// Trailing labels shared by every meta row: subagent model / token total, then
+/// Context-usage segment for a subagent card: `"ctx 9% 45K/500K"`, the same
+/// shape as the main bar's `format_context_meter` (`render::bar`). `None` when
+/// there is no window to measure against (unknown model, or `0` = disabled), so
+/// a card with no reported window shows the token total alone rather than a
+/// percentage over a window nobody knows.
+fn subagent_ctx_segment(tokens: Option<&TokenUsageInfo>, window: Option<usize>) -> Option<String> {
+    let window = window.filter(|w| *w > 0)?;
+    let used = tokens?.total;
+    if used == 0 {
+        return None;
+    }
+    let pct = ((used as u128) * 100 / window as u128).min(100);
+    Some(format!(
+        "ctx {pct}% {}/{}",
+        format_tokens_compact(used as u64),
+        format_tokens_compact(window as u64)
+    ))
+}
+
+/// Trailing labels shared by every meta row: subagent model / ctx meter, then
 /// the collapsed-output hint.
 ///
 /// Both the widget — which stores the finished row's exact text so the log hit
@@ -288,7 +307,8 @@ pub fn collapsed_action_cols(msgs: &Messages, row_text: &str) -> Option<Range<u1
 pub fn meta_suffixes(
     sep: &str,
     subagent_model: Option<&str>,
-    subagent_token_total: Option<u32>,
+    subagent_tokens: Option<&TokenUsageInfo>,
+    subagent_window: Option<usize>,
     collapsed_hint: Option<&str>,
 ) -> String {
     let mut text = String::new();
@@ -296,7 +316,11 @@ pub fn meta_suffixes(
         text.push_str(sep);
         text.push_str(&format!("🤖 {model}"));
     }
-    if let Some(total) = subagent_token_total {
+    if let Some(ctx) = subagent_ctx_segment(subagent_tokens, subagent_window) {
+        text.push_str(sep);
+        text.push_str(&ctx);
+    } else if let Some(total) = subagent_tokens.map(|t| t.total).filter(|t| *t > 0) {
+        // No window to measure against — keep the bare total, as before.
         text.push_str(sep);
         text.push_str(&format!("⚡ {}", format_tokens_compact(total as u64)));
     }
@@ -435,6 +459,9 @@ pub struct ToolRenderOutput {
     pub subagent_model: Option<String>,
     /// Subagent token usage for tool-card header display.
     pub subagent_tokens: Option<TokenUsageInfo>,
+    /// Context window of the subagent, so the card renders a `ctx` meter rather
+    /// than a bare token total. `None` when the sender reported no window.
+    pub subagent_context_window: Option<usize>,
     /// Background task started by this call, shown right after the phase label
     /// of a live card (`background_run` returns before its task finishes).
     pub task_id: Option<String>,
@@ -546,7 +573,8 @@ impl ToolRenderOutput {
         text.push_str(&meta_suffixes(
             msgs.tool_meta_sep,
             self.subagent_model.as_deref(),
-            self.subagent_tokens.as_ref().map(|t| t.total),
+            self.subagent_tokens.as_ref(),
+            self.subagent_context_window,
             hint.as_deref(),
         ));
         Some(text)
@@ -602,6 +630,7 @@ pub struct ToolWidget {
     live_detail: bool,
     subagent_model: Option<String>,
     subagent_tokens: Option<TokenUsageInfo>,
+    subagent_context_window: Option<usize>,
     task_id: Option<String>,
     presentation: ToolPresentationInfo,
 }
@@ -631,6 +660,7 @@ impl ToolWidget {
             live_detail: false,
             subagent_model: None,
             subagent_tokens: None,
+            subagent_context_window: None,
             task_id: None,
             presentation: ToolPresentationInfo::generic(""),
         }
@@ -649,6 +679,13 @@ impl ToolWidget {
 
     pub fn with_subagent_tokens(mut self, tokens: Option<TokenUsageInfo>) -> Self {
         self.subagent_tokens = tokens;
+        self
+    }
+
+    /// Context window for the subagent card's `ctx` meter (see
+    /// [`meta_suffixes`]). `None` leaves the meter off.
+    pub fn with_subagent_context_window(mut self, window: Option<usize>) -> Self {
+        self.subagent_context_window = window;
         self
     }
 
@@ -819,6 +856,7 @@ impl ToolWidget {
             live_detail: false,
             subagent_model: None,
             subagent_tokens: None,
+            subagent_context_window: None,
             task_id: None,
             presentation: result.presentation.clone(),
         }
@@ -1024,6 +1062,7 @@ impl ToolWidget {
             },
             subagent_model: self.subagent_model.clone(),
             subagent_tokens: self.subagent_tokens.clone(),
+            subagent_context_window: self.subagent_context_window,
             task_id: self.task_id.clone(),
             visual_kind: kind_from_presentation(&self.presentation, &self.tool_name),
         }
@@ -1203,6 +1242,51 @@ mod tests {
     /// assertions that render or measure a row need it.
     fn test_msgs() -> Messages {
         Messages::by_language(Language::English)
+    }
+
+    fn usage(total: u32) -> TokenUsageInfo {
+        TokenUsageInfo {
+            total,
+            ..Default::default()
+        }
+    }
+
+    /// With a window, the card shows the same `ctx pct% used/window` shape as
+    /// the main bar — the whole point of reporting the window at all.
+    #[test]
+    fn meta_suffixes_render_a_ctx_meter_when_a_window_is_known() {
+        let text = meta_suffixes(
+            " · ",
+            Some("gpt-4o"),
+            Some(&usage(45_000)),
+            Some(500_000),
+            None,
+        );
+        assert_eq!(text, " · 🤖 gpt-4o · ctx 9% 45K/500K");
+    }
+
+    /// No window (unknown model, or `0` = disabled) must fall back to the bare
+    /// token total, not invent a percentage over a window nobody knows.
+    #[test]
+    fn meta_suffixes_fall_back_to_token_total_without_a_window() {
+        for window in [None, Some(0)] {
+            let text = meta_suffixes(" · ", Some("m"), Some(&usage(4_200)), window, None);
+            assert_eq!(text, " · 🤖 m · ⚡ 4.2K", "window={window:?}");
+        }
+    }
+
+    /// A zero token total is not a meter: `ctx 0% 0/500K` is noise before the
+    /// first LLM call reports anything.
+    #[test]
+    fn meta_suffixes_skip_an_empty_ctx_meter() {
+        assert_eq!(
+            meta_suffixes(" · ", Some("m"), Some(&usage(0)), Some(500_000), None),
+            " · 🤖 m"
+        );
+        assert_eq!(
+            meta_suffixes(" · ", Some("m"), None, Some(500_000), None),
+            " · 🤖 m"
+        );
     }
 
     #[test]

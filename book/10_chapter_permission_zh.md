@@ -119,7 +119,7 @@ pub enum PermissionMode {
 |------|------|------|
 | `Default` | `default - ask for writes` | Read 允许；Write 询问（除非 settings/allowlist 命中）；High 询问，除非命中 settings **allow** 规则**或会话内 allowlist 已覆盖该确切工具与输入** |
 | `Plan` | `plan - read only` | Read 允许（含可证明只读的 shell 命令——`ls`、`grep`、`git status` 等）；Write 与 High **拒绝**且不提示 |
-| `Auto` | `auto - allow non-high operations` | 所有风险自动批准（含 High） |
+| `Auto` | `auto - allow all operations (including high risk)` | 所有风险自动批准（含 High） |
 
 ### `PermissionManager::check()` 中的决策顺序
 

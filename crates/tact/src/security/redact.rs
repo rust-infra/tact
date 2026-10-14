@@ -384,6 +384,22 @@ fn find_private_key_end(s: &str) -> Option<usize> {
     None
 }
 
+/// Index of an **unclosed** private-key block opening: a
+/// `-----BEGIN … PRIVATE KEY-----` whose matching `-----END` has not arrived.
+///
+/// A streaming preview must cut here. The whole-text rule needs the END marker
+/// to match, so a prefix holding only the BEGIN is left untouched by it and
+/// would publish the key body line by line — the key arrives, visibly, before
+/// the rule can ever fire.
+#[must_use]
+pub(crate) fn unclosed_private_key_start(s: &str) -> Option<usize> {
+    let begin = find_private_key_begin(s)?;
+    if find_private_key_end(&s[begin..]).is_none() {
+        return Some(begin);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

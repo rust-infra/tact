@@ -208,9 +208,6 @@ impl Renderable for MarkdownCell {
         if area.width == 0 || area.height == 0 {
             return;
         }
-        // `render_if_needed` subtracts the indent itself, so the layout width
-        // must come from the full area width — not from an already-indented
-        // rect.
         let lines = self.cached_lines(area.width);
         let start = skip_lines.min(lines.len());
         if start >= lines.len() {
@@ -220,8 +217,6 @@ impl Renderable for MarkdownCell {
         if content.width == 0 || content.height == 0 {
             return;
         }
-        // Clone only the visible slice (bounded by the viewport height), not
-        // the whole document, on every frame.
         let end = (start + content.height as usize).min(lines.len());
         Paragraph::new(lines[start..end].to_vec())
             .style(Style::default().bg(self.theme.bg))

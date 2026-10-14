@@ -225,6 +225,11 @@ pub struct SubagentTomlConfig {
     /// Optional reasoning effort override for subagent requests
     /// (openai / deepseek / kimi k3 semantics).
     pub reasoning_effort: Option<OpenAiReasoningEffort>,
+    /// Optional context-window override, in tokens. Resolution is
+    /// `--model-context-window`-style explicit value > the built-in mapping for
+    /// the subagent's own model > the main agent's resolved window, so an
+    /// overridden model is not measured against the main model's window.
+    pub model_context_window: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -480,10 +485,31 @@ pub struct SubagentSettings {
     pub provider: ProviderInfo,
     /// Max output tokens.
     pub max_tokens: u32,
+    /// The raw `[agent.subagent].max_tokens` / referenced-entry budget, if the
+    /// user set one. Kept so a runtime `/model-subagent` switch re-resolves the
+    /// budget like startup: an inherited one is recomputed (and clamped into
+    /// the new window), an explicit one that no longer fits is refused rather
+    /// than silently changed.
+    pub max_tokens_override: Option<u32>,
     /// Thinking budget (0 = off).
     pub thinking_budget: usize,
     /// Explicit reasoning effort for subagent requests (openai / deepseek / kimi k3).
     pub reasoning_effort: Option<OpenAiReasoningEffort>,
+    /// Context window of THIS agent's model, resolved from the subagent's own
+    /// model rather than inherited from the main agent. Auto-compaction and the
+    /// tool card's `ctx` meter both read it.
+    pub model_context_window: usize,
+    /// The raw `[agent.subagent].model_context_window` override, if the user
+    /// set one. Kept so a runtime `/model-subagent` switch re-resolves the
+    /// window with the SAME priority as startup (`override` > the new model's
+    /// mapping > the main agent's window) instead of dropping the pin.
+    /// `Some(0)` is an explicit "unknown window", not "unset".
+    pub model_context_window_override: Option<usize>,
+    /// The raw provider-entry `responses_compact_threshold`, if set. Kept so a
+    /// runtime `/model-subagent` switch re-derives or re-validates the
+    /// threshold against the new window + budget instead of keeping a number
+    /// measured for the old model.
+    pub responses_compact_threshold_override: Option<u32>,
     /// Candidate model ids for the /model-subagent picker.
     pub models: Vec<String>,
 }

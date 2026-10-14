@@ -52,6 +52,9 @@ pub struct PopupMouseSurface {
     /// (`⋯ N more lines`) or raised (`▴ collapse`); the host routes a click on
     /// one to that step's expansion. Empty for every other popup.
     pub block_toggles: Vec<(String, Rect)>,
+    /// Hit rect of the back-to-bottom pill the body drew (empty when the view
+    /// follows its tail, or when this popup draws no pill at all).
+    pub scroll_back_area: Rect,
 }
 /// A single footer hint: key + label, e.g. ("↑/↓", "scroll"), ("Esc", "close").
 pub struct FooterHint {

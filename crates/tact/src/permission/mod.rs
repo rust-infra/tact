@@ -42,8 +42,11 @@ impl PermissionMode {
     /// Hook payloads carry this spelling, not Tact's (`Codex`'s
     /// `hook_permission_mode` maps its approval policy onto the same set), so a
     /// plugin that branches on `payload["permission_mode"]` reads a value it
-    /// recognizes. `Auto` allows everything but high-risk operations, which is
-    /// Claude's `acceptEdits` rather than its blanket `bypassPermissions`.
+    /// recognizes. The spelling is a wire contract fixed by `book/09`, so it
+    /// stays `acceptEdits` even though Tact's `Auto` is broader than what that
+    /// Claude Code mode does: `Auto` allows every capability, High included
+    /// (see [`PermissionManager::check_with_auto`]), so a plugin must not read
+    /// `acceptEdits` as "the risky ones still prompt".
     #[must_use]
     pub fn hook_name(self) -> &'static str {
         match self {
@@ -59,7 +62,7 @@ impl fmt::Display for PermissionMode {
         let label = match self {
             PermissionMode::Default => "default - ask for writes",
             PermissionMode::Plan => "plan - read only",
-            PermissionMode::Auto => "auto - allow non-high operations",
+            PermissionMode::Auto => "auto - allow all operations (including high risk)",
         };
 
         write!(f, "{label}")
@@ -496,6 +499,10 @@ impl PermissionManager {
             if !self.always_allowed_tools.contains(&rule_string) {
                 self.always_allowed_tools.push(rule_string);
             }
+            // A grant is a grant: `allow_tool_as_prefix` clears the streak in
+            // both branches, so this one must too, or the UI keeps nudging
+            // toward plan mode after the user already said yes.
+            self.consecutive_denials = 0;
             return AllowOutcome::Recorded;
         }
 
@@ -509,6 +516,7 @@ impl PermissionManager {
                 e
             );
         }
+        self.consecutive_denials = 0;
         AllowOutcome::Recorded
     }
 
@@ -1124,6 +1132,47 @@ mod tests {
         // be for input-aware approvals).  The current call was approved by the
         // user; future calls go through normal check flow.
         assert!(!mgr.is_always_allowed("bash", &Value::Null));
+    }
+
+    /// With no settings store the generated rule goes into the in-memory list,
+    /// so it must stay a rule — a bare tool name there would widen a single
+    /// input-scoped click into an approval for every later call of the tool.
+    #[test]
+    fn in_memory_approval_without_settings_stays_input_scoped() {
+        let mut mgr = PermissionManager::try_new(PermissionMode::Default).unwrap();
+        assert!(mgr.settings.is_none(), "this test needs the no-store path");
+
+        let outcome = mgr.allow_tool_with_input(
+            "bash",
+            PermissionPromptPolicy::Command { field: "command" },
+            &serde_json::json!({"command": "ls"}),
+        );
+        assert_eq!(outcome, AllowOutcome::Recorded);
+
+        // The approved input is honoured...
+        assert_eq!(
+            mgr.check(
+                "bash",
+                CapabilityRisk::Write,
+                &serde_json::json!({"command": "ls"})
+            )
+            .behavior,
+            PermissionBehavior::Allow
+        );
+        // ...while an unrelated command with the same tool is not.
+        assert_eq!(
+            mgr.check(
+                "bash",
+                CapabilityRisk::High,
+                &serde_json::json!({"command": "rm -rf /"})
+            )
+            .behavior,
+            PermissionBehavior::Ask
+        );
+        assert!(
+            !mgr.is_always_allowed("bash", &Value::Null),
+            "a bare tool name would approve inputs the user never saw"
+        );
     }
 
     #[test]

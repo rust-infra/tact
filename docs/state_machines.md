@@ -259,7 +259,7 @@ stateDiagram-v2
     ClassifyRisk --> Allow: Read (all modes)
     ClassifyRisk --> Deny: Plan mode + Write
     ClassifyRisk --> Ask: High risk
-    ClassifyRisk --> Allow: Auto mode + non-high Write
+    ClassifyRisk --> Allow: Auto mode (all Write/High)
     ClassifyRisk --> CheckSettings: Default mode + Write
 
     CheckSettings --> Allow: settings allow (non-high risk)

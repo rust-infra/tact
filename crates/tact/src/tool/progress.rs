@@ -164,6 +164,31 @@ impl ToolProgressReporter {
         }
     }
 
+    /// Redact a **prefix** of a turn that is still streaming.
+    ///
+    /// [`Self::redact_text`] requires settled text, for two different reasons:
+    ///
+    /// - The token rules (`\bsk-…{20,}` and friends) only match a *complete*
+    ///   token, so a half-arrived key at the buffer's end would pass through.
+    ///   The preview therefore stops at the last line break and redacts that
+    ///   prefix; the withheld tail can only be the last (possibly-secret) run,
+    ///   which the turn's final entry carries redacted.
+    /// - The private-key rule spans lines and needs both its BEGIN and END
+    ///   markers. A prefix containing only the BEGIN is invisible to it, so an
+    ///   in-progress key would stream out body-line by body-line. The preview
+    ///   therefore also stops at an unclosed `-----BEGIN … PRIVATE KEY-----`.
+    #[must_use]
+    pub fn redact_streaming(&self, text: &str) -> String {
+        if self.stream.is_none() {
+            return text.to_string();
+        }
+        let mut cut = text.rfind('\n').map_or(0, |i| i + 1);
+        if let Some(begin) = crate::security::redact::unclosed_private_key_start(&text[..cut]) {
+            cut = begin;
+        }
+        self.redact_text(&text[..cut])
+    }
+
     /// The tool-invocation id this reporter is bound to.
     pub fn tool_id(&self) -> &str {
         &self.tool_id

@@ -73,6 +73,7 @@ pub struct ToolCell {
     card_border_type: BorderType,
     subagent_model: Option<String>,
     subagent_tokens: Option<TokenUsageInfo>,
+    subagent_context_window: Option<usize>,
 }
 
 impl ToolCell {
@@ -153,6 +154,7 @@ impl ToolCell {
             card_border_type,
             subagent_model: output.subagent_model,
             subagent_tokens: output.subagent_tokens,
+            subagent_context_window: output.subagent_context_window,
         }
     }
 
@@ -194,7 +196,8 @@ impl ToolCell {
         text.push_str(&meta_suffixes(
             self.tool_meta_sep,
             self.subagent_model.as_deref(),
-            self.subagent_tokens.as_ref().map(|t| t.total),
+            self.subagent_tokens.as_ref(),
+            self.subagent_context_window,
             self.collapsed_output_hint.as_deref(),
         ));
         let style = match self.phase {
@@ -633,6 +636,7 @@ mod tests {
             detail_full: None,
             subagent_model: None,
             subagent_tokens: None,
+            subagent_context_window: None,
             visual_kind: tact_protocol::ToolVisualKind::FileWrite,
         }
     }

@@ -14,23 +14,29 @@ pub(crate) fn handle_normal_mode(
     // Enter raises the cap on the tool blocks.
     if app.show_subagent_view {
         match key.code {
+            // Scrolling up is a decision to stop following the child's tail
+            // (the pill then offers the way back, exactly like the log's);
+            // scrolling back down to the end re-arms it.
             KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(popup) = app.subagent_popup_mut() {
-                    popup.scroll = popup.scroll.saturating_add(1);
-                }
+                let step = crate::widgets::state::app::scroll::key_cell_step(
+                    app.mouse.popup_text_body_area.height as usize,
+                ) as isize;
+                app.subagent_scroll_by(step);
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(popup) = app.subagent_popup_mut() {
-                    popup.scroll = popup.scroll.saturating_sub(1);
-                }
+                let step = crate::widgets::state::app::scroll::key_cell_step(
+                    app.mouse.popup_text_body_area.height as usize,
+                ) as isize;
+                app.subagent_scroll_by(-step);
             }
+            // `G` returns to the tail *and* resumes following it.
             KeyCode::Char('G') => {
-                if let Some(popup) = app.subagent_popup_mut() {
-                    popup.scroll = u16::MAX;
-                }
+                app.subagent_scroll_to_bottom();
             }
             KeyCode::Char('g') => {
                 if let Some(popup) = app.subagent_popup_mut() {
+                    popup.follow = false;
+                    popup.unseen = false;
                     popup.scroll = 0;
                 }
             }
@@ -81,22 +87,29 @@ pub(crate) fn handle_normal_mode(
             app.input_mode = InputMode::Insert;
         }
         KeyCode::Char('y') => {
-            // Prefer character-level mouse selection over last message
-            let text = if let Some(sel) = app.mouse.log_selection {
-                let (start, end) = sel.normalized();
-                Some(app.extract_selected_text(start, end))
-            } else {
-                // Last visible message
-                let total = app.total_log_lines();
-                if total > 0 && app.stream_mut().buffer.is_empty() {
-                    app.visible_message_index(total - 1)
-                        .and_then(|idx| app.log.items.get(idx).map(|item| item.raw.clone()))
-                } else if !app.stream_mut().buffer.is_empty() {
-                    Some(app.stream_mut().buffer.clone())
+            if app.show_subagent_view {
+                return;
+            }
+            // Prefer a virtual-card selection, then character-level log selection,
+            // then fall back to the last visible row.
+            let text =
+                if let Some(text) = app.extract_card_selection().filter(|text| !text.is_empty()) {
+                    Some(text)
+                } else if let Some(sel) = app.mouse.log_selection {
+                    let (start, end) = sel.normalized();
+                    Some(app.extract_selected_text(start, end))
                 } else {
-                    None
-                }
-            };
+                    // Last visible message
+                    let total = app.total_log_lines();
+                    if total > 0 && app.stream_mut().buffer.is_empty() {
+                        app.visible_message_index(total - 1)
+                            .and_then(|idx| app.log.items.get(idx).map(|item| item.raw.clone()))
+                    } else if !app.stream_mut().buffer.is_empty() {
+                        Some(app.stream_mut().buffer.clone())
+                    } else {
+                        None
+                    }
+                };
             if let Some(t) = text {
                 app.copy_text(&t);
                 app.add_new_line();
@@ -182,6 +195,33 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    /// The user-visible half of the keyboard-focus fix: after opening the view,
+    /// a real `G` keypress must reach the view's handler and jump to the tail.
+    /// Before `open_subagent_popup_by_id` took the keyboard, the session was
+    /// still in Insert, so this key typed into the input box and the view never
+    /// moved.
+    #[test]
+    fn g_jumps_the_open_subagent_view_to_its_tail() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        crate::render::test_harness::seed_subagent_view(&mut app);
+        let tool_id = "sa-1".to_string();
+        app.open_subagent_popup_by_id(&tool_id);
+        assert!(app.has_subagent_popup(), "the view must be open");
+        assert!(matches!(app.input_mode, InputMode::Normal));
+
+        // A short viewport, so the seeded conversation overflows and scrolling
+        // is meaningful; without a render the body height is still zero.
+        crate::render::test_harness::render_main_area_terminal(&mut app, 100, 12);
+        app.subagent_scroll_by(-1000);
+        assert!(!app.subagent_popup().expect("view").follow);
+        handle_normal_mode(&mut app, key(KeyCode::Char('G')), &tx);
+
+        let popup = app.subagent_popup().expect("view");
+        assert!(popup.follow, "`G` must re-arm following");
+        assert_eq!(popup.scroll, u16::MAX, "and pin to the tail");
     }
 
     #[test]
@@ -400,6 +440,26 @@ mod tests {
 
         handle_normal_mode(&mut app, key(KeyCode::Char('k')), &tx);
         assert_eq!(app.log_scroll.offset, 1);
+    }
+
+    #[test]
+    fn y_copies_a_virtual_card_selection() {
+        let mut app = make_app();
+        app.handle_agent_update(tact_protocol::AgentUpdate::ThinkingChunk(
+            tact_protocol::ThinkingChunk::Delta("one\ntwo\n".into()),
+        ));
+        app.handle_agent_update(tact_protocol::AgentUpdate::ThinkingChunk(
+            tact_protocol::ThinkingChunk::Finished,
+        ));
+        app.mouse.card_selection = Some(crate::widgets::state::CardSelection::full(
+            app.thinking().blocks[0].phys_idx,
+            app.thinking().blocks[0].content.clone(),
+        ));
+        let (tx, _rx) = unbounded_channel();
+
+        handle_normal_mode(&mut app, key(KeyCode::Char('y')), &tx);
+
+        assert!(app.log.items.iter().any(|item| item.raw.contains("one")));
     }
 
     #[test]

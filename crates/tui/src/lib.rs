@@ -462,7 +462,11 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
                         {
                             app.show_help = false;
                             app.show_history = false;
-                            app.show_subagent_view = false;
+                            // The one close path for the view, so its hit rects
+                            // and its active id clear with it: leaving
+                            // `active_subagent_popup` set let a later transcript
+                            // update badge a view that was already closed.
+                            app.close_subagent_popup();
                         } else {
                             // Dispatch to the key handler for the current input mode
                             match app.input_mode {

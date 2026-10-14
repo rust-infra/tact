@@ -115,6 +115,7 @@ mod tests {
         };
         assert!(!component.on_update(
             &AgentUpdate::ToolMeta {
+                context_window: None,
                 tool_id: "bg1".into(),
                 model: None,
                 token_usage: None,

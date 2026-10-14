@@ -302,7 +302,9 @@ impl App {
             .entry(tool_id.to_string())
             .or_insert_with(|| crate::widgets::state::SubagentPopup {
                 title: output.title_raw.clone(),
-                scroll: 0,
+                scroll: u16::MAX,
+                follow: true,
+                unseen: false,
                 tool_id: tool_id.to_string(),
                 selection: None,
                 layout: None,
@@ -313,6 +315,13 @@ impl App {
         self.show_subagent_view = true;
         self.show_history = false;
         self.show_help = false;
+        // The view is a full-main-area reading surface whose keys (`j`/`k`/`g`/
+        // `G`/`y`/`Enter`) are dispatched by the *Normal* handler, and a fresh
+        // session starts in Insert — where those letters type into the input box
+        // instead and `Esc` (the only way back to Normal) is consumed by the
+        // view itself. Taking keyboard focus on open is what makes the view's
+        // own keymap reachable at all; `close_subagent_popup` hands the box back.
+        self.input_mode = InputMode::Normal;
     }
 
     pub(crate) fn subagent_popup(&self) -> Option<&crate::widgets::state::SubagentPopup> {
@@ -334,13 +343,84 @@ impl App {
         self.show_subagent_view
     }
 
+    /// Pin the subagent view to the tail and re-arm following. The one place
+    /// that clears `unseen`, because arriving at the bottom is what the badge
+    /// was asking for — same contract as `scroll_log_to_bottom`.
+    pub(crate) fn subagent_scroll_to_bottom(&mut self) {
+        if let Some(popup) = self.subagent_popup_mut() {
+            popup.scroll = u16::MAX;
+            popup.follow = true;
+            popup.unseen = false;
+        }
+    }
+
+    /// Scroll the subagent view by `delta` rows (negative = up).
+    ///
+    /// Mirrors the log's policy: a deliberate move up stops following, and
+    /// scrolling back down to the end re-arms it and clears the badge. Without
+    /// the re-arm the badge sticks forever — the reader is at the tail with the
+    /// pill still offering to take them there.
+    pub(crate) fn subagent_scroll_by(&mut self, delta: isize) {
+        let body_height = self.mouse.popup_text_body_area.height as usize;
+        let Some(popup) = self.subagent_popup_mut() else {
+            return;
+        };
+        let max_scroll = popup
+            .layout
+            .as_ref()
+            .map(|l| l.total_rows.saturating_sub(body_height))
+            .unwrap_or(0);
+        // `u16::MAX` is the follow sentinel, not a row count: resolve it to the
+        // real maximum before stepping, or `G` followed by `k` would step from
+        // 65535 and look broken.
+        let current = (popup.scroll as usize).min(max_scroll);
+        let next = if delta < 0 {
+            current.saturating_sub(delta.unsigned_abs())
+        } else {
+            current.saturating_add(delta as usize)
+        }
+        .min(max_scroll);
+        if next >= max_scroll {
+            popup.scroll = u16::MAX;
+            popup.follow = true;
+            popup.unseen = false;
+        } else {
+            popup.scroll = next as u16;
+            popup.follow = false;
+        }
+    }
+
+    /// After the subagent's transcript grew: keep the tail pinned when
+    /// following, otherwise light the badge. Mirrors `note_log_rows_appended`.
+    ///
+    /// `tool_id` must be the transcript that changed: with several subagents
+    /// alive, acting on whatever popup happens to be open would badge a view
+    /// whose own child said nothing.
+    pub(crate) fn note_subagent_rows_appended(&mut self, tool_id: &str) {
+        if self.active_subagent_popup.as_deref() != Some(tool_id) {
+            return;
+        }
+        if self.subagent_popup().is_some_and(|p| p.follow) {
+            self.subagent_scroll_to_bottom();
+        } else if let Some(popup) = self.subagent_popup_mut() {
+            popup.unseen = true;
+        }
+    }
+
     /// Close the subagent view (keep the popup entry so re-opening preserves
     /// scroll / selection / which blocks are expanded).
+    ///
+    /// Hands keyboard focus back to the input box, undoing the Normal switch
+    /// [`Self::open_subagent_popup_by_id`] makes: the view borrowed the mode,
+    /// and leaving the user in Normal after `Esc` would silently change what
+    /// their next keystroke does.
     pub(crate) fn close_subagent_popup(&mut self) {
         self.show_subagent_view = false;
         self.active_subagent_popup = None;
+        self.input_mode = InputMode::Insert;
         self.mouse.clear_area(SurfaceId::SubagentPopup);
         self.mouse.subagent_back_area = Rect::default();
+        self.mouse.subagent_scroll_back_area = Rect::default();
         self.mouse.subagent_block_toggles.clear();
         self.mouse.popup_text_body_area = Rect::default();
         self.mouse.popup_text_hit_rows.clear();
@@ -1178,8 +1258,8 @@ mod tests {
         render::test_harness::make_app,
         widgets::{
             state::{
-                App, CodeBlock, DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection,
-                SubagentPopup, SurfaceId, ThinkingPopup,
+                App, CodeBlock, DiffPopup, InputMode, PopupHitRow, PopupTextHit,
+                PopupTextSelection, SubagentPopup, SurfaceId, ThinkingPopup,
             },
             tool_widget::{ToolPhase, ToolWidget},
         },
@@ -1527,6 +1607,34 @@ mod tests {
         );
     }
 
+    /// The view's own keymap lives in the Normal handler, and a fresh session
+    /// starts in Insert, where those letters type into the input box and `Esc`
+    /// is consumed by the view itself — so opening must take the keyboard, or
+    /// none of `j`/`k`/`g`/`G`/`y`/`Enter` is reachable.
+    #[test]
+    fn opening_the_subagent_view_takes_the_keyboard() {
+        let mut app = make_app();
+        // A fresh session is Insert, which is the state the bug needed.
+        app.input_mode = InputMode::Insert;
+        let phys = push_subagent_card(&mut app, "kb-tool");
+
+        app.open_subagent_popup_at_physical_index(phys);
+        assert!(app.show_subagent_view);
+        assert!(
+            matches!(app.input_mode, InputMode::Normal),
+            "the view must take focus, got {:?}",
+            app.input_mode
+        );
+
+        // And closing hands it back, so the next keystroke still types.
+        app.close_subagent_popup();
+        assert!(
+            matches!(app.input_mode, InputMode::Insert),
+            "closing must give the input box back, got {:?}",
+            app.input_mode
+        );
+    }
+
     #[test]
     fn physical_and_stable_subagent_open_paths_share_popup_state() {
         let mut app = make_app();
@@ -1616,6 +1724,8 @@ mod tests {
             SubagentPopup {
                 title: "A".into(),
                 scroll: 0,
+                follow: true,
+                unseen: false,
                 tool_id: "sa-1".into(),
                 selection: None,
                 layout: None,

@@ -11,7 +11,7 @@ mod cli;
 mod instruction_sources;
 mod load;
 mod persist;
-mod resolve;
+pub(crate) mod resolve;
 mod types;
 
 use std::sync::{LazyLock, RwLock};
@@ -309,15 +309,17 @@ pub fn update_llm_model_and_thinking_budget(model: String, thinking_budget: usiz
 }
 
 /// Update the in-memory subagent model and thinking budget.
-pub fn update_subagent_model(model: String, thinking_budget: usize) {
+///
+/// The context window, budget and Responses compaction threshold are
+/// re-resolved with the same rules as startup. On error (an explicit setting no
+/// longer fits the new model's window) nothing is applied and the caller can
+/// report it.
+pub fn update_subagent_model(model: String, thinking_budget: usize) -> anyhow::Result<()> {
     let mut guard = SETTINGS.write_recover();
-    if let Some(cfg) = guard.as_mut()
-        && let Some(sa) = cfg.agent.subagent.as_mut()
-    {
-        sa.provider.model = model;
-        sa.thinking_budget = thinking_budget;
-        sa.reasoning_effort = None;
+    if let Some(cfg) = guard.as_mut() {
+        resolve::apply_subagent_model_switch(&mut cfg.agent, model, thinking_budget)?;
     }
+    Ok(())
 }
 
 /// Update the in-memory subagent reasoning effort (session level).

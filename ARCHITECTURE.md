@@ -266,7 +266,7 @@ flowchart TD
 |---|---|
 | `default` | Read-only tools allowed; writes ask once; high-risk asks until an explicit allow covers that exact tool and input. |
 | `plan` | Read-only only; all writes denied (useful for review-first workflows). |
-| `auto` | Read and non-high writes auto-approved; high-risk still asks. |
+| `auto` | Every capability auto-approved, High included (matches `bypassPermissions`, not `acceptEdits`); the pre-`check` credential guard still refuses secret reads. |
 
 Special cases:
 

@@ -327,13 +327,49 @@ carries no task clock (2026-10-05 — the live one is the log's task-stats row);
 its droppables go `uptime > path`, pinned by
 `bottom_bar_drops_uptime_before_path` and `bottom_bar_fits_row_1_in_100_columns`.
 
-**Subagent tool-card display:** A subagent's model name and token total
-are shown on the tool card's meta row (e.g. `🤖 deepseek-v3 · ⚡ 4.2K`)
-via `AgentUpdate::ToolMeta`. This metadata is updated live during execution
+**Subagent tool-card display:** A subagent's model name and its `ctx` meter
+(e.g. `🤖 gpt-4o · ctx 9% 45K/500K`) are shown on the tool card's meta row via
+`AgentUpdate::ToolMeta`, which carries the subagent's `context_window` alongside
+`token_usage`. The meter uses the same `ctx {pct}% {used}/{window}` shape as the
+main bar. When the window is unknown (`None` or `0`) the card falls back to the
+bare token total (`⚡ 4.2K`), and a zero token total renders no meter at all.
+This metadata is updated live during execution
 and preserved in the completed tool block header. It does **not** appear
 as inline `ToolProgress` chunks in the output stream, and it is **not**
 forwarded to the shared parent UI channel — the bottom bar reflects the
-main agent only.
+main agent only. A subagent's window is resolved from the subagent's own model
+(explicit `[agent.subagent].model_context_window` > built-in model→window
+mapping > the main agent's window), so an overridden model is not measured
+against the main model's window.
+
+**Subagent view streaming + back-to-bottom:** the child's assistant text
+streams into the view rather than appearing only when its turn ends. The
+forwarder publishes the in-flight turn as `AgentUpdate::ToolTranscriptStream`
+(whole turn, not a delta) once per new line boundary — a chunk that only grows
+the current line cannot change the rendered shape, so it does not trigger a
+re-layout (the newline count is kept incrementally, not rescanned per chunk).
+The payload is redacted by `ToolProgressReporter::redact_streaming`, which cuts
+at the **later** of two boundaries: the last line break (the token rules need a
+complete key) and an unclosed `-----BEGIN … PRIVATE KEY-----` (the private-key
+rule spans lines and needs its END marker, so a prefix holding only the BEGIN
+would publish the key body verbatim, one line per snapshot). A streaming
+snapshot is therefore never enough on its own to be safe — the cut is what
+makes it so. The view keeps the log's follow-the-tail contract — a new row
+re-pins a following view and lights the `New activity` badge for one scrolled
+away, and scrolling back to the end re-arms it — and shows the same
+back-to-bottom pill on its body's last row (`↓ Back to bottom · G`, since `esc`
+closes that view). `ToolState::streaming_assistant` holds the in-flight text,
+and `SubagentPopupLayout::streaming_rev` (via one `streaming_rev_of` helper used
+by both the prepare and render checks) is part of its cache key.
+
+**The subagent view takes the keyboard (`normal` mode):** opening the view sets
+`InputMode::Normal`, and `close_subagent_popup` sets `InputMode::Insert` back.
+The view's keymap (`j`/`k`/`g`/`G`/`y`/`Enter`) is dispatched only by the Normal
+handler, a fresh session starts in Insert, and in Insert those letters type into
+the input box while `Esc` — the only way back to Normal — is consumed by the
+view itself. Without the switch the whole keymap is unreachable and `Esc` is a
+trap. The breadcrumb carries a `normal · esc back` badge so a reader who expects
+to type can see where their keystrokes are going.
 
 DeepSeek returns `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` in the usage section of both Anthropic-format and OpenAI-format responses. The `reasoning_tokens` field comes from `completion_tokens_details.reasoning_tokens`.
 

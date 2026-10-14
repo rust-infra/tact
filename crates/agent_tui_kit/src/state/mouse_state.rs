@@ -115,7 +115,64 @@ impl LogSelection {
     }
 }
 
-/// A screen surface the mouse routes against.
+/// Text selected from a virtual log card (thinking/tool/Markdown).
+///
+/// Card contents are rendered from placeholder rows, so they cannot use the
+/// physical-row byte mapping used by ordinary log text. Keep their semantic
+/// copy buffer beside the selection instead.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CardSelection {
+    /// Physical row anchoring the drag gesture.
+    pub phys_idx: usize,
+    /// Last card reached by the drag gesture.
+    pub end_phys_idx: usize,
+    /// Physical rows selected by the drag, in transcript order. Thinking and
+    /// tool placeholder rows are represented once by their card's anchor row.
+    pub selected_phys_indices: Vec<usize>,
+    /// Semantic text of the anchor card (used for a single-card selection).
+    pub text: String,
+    pub start: usize,
+    pub end: usize,
+}
+
+impl CardSelection {
+    pub fn full(phys_idx: usize, text: String) -> Self {
+        let end = text.len();
+        Self {
+            phys_idx,
+            end_phys_idx: phys_idx,
+            selected_phys_indices: vec![phys_idx],
+            text,
+            start: 0,
+            end,
+        }
+    }
+
+    pub fn normalized_phys_range(&self) -> (usize, usize) {
+        if self.phys_idx <= self.end_phys_idx {
+            (self.phys_idx, self.end_phys_idx)
+        } else {
+            (self.end_phys_idx, self.phys_idx)
+        }
+    }
+
+    pub fn contains_phys(&self, phys_idx: usize) -> bool {
+        self.selected_phys_indices.contains(&phys_idx)
+    }
+
+    pub fn selected_text(&self) -> &str {
+        let start = self
+            .text
+            .floor_char_boundary(self.start.min(self.text.len()));
+        let end = self.text.floor_char_boundary(self.end.min(self.text.len()));
+        if start >= end {
+            ""
+        } else {
+            &self.text[start..end]
+        }
+    }
+}
+
 ///
 /// One key per hit-testable area, replacing a bag of independent `*_area`
 /// fields. Adding a surface used to cost four edits — a field, a renderer
@@ -197,6 +254,9 @@ pub struct MouseState {
     /// frame by the host renderer (mirrors `subagent_cancel_btn_areas`).
     pub sticky_tab_areas: Vec<(StickyTab, Rect)>,
     pub log_selection: Option<LogSelection>,
+    /// Selection inside a virtual card whose visible text is not backed by
+    /// one physical log row (thinking/tool/Markdown render cells).
+    pub card_selection: Option<CardSelection>,
     pub dragging_log: bool,
     /// Cancel buttons for live async-subagent tool cards: `(child_id, rect)`.
     /// Refreshed every frame by the log renderer; a click sends
@@ -218,6 +278,9 @@ pub struct MouseState {
     /// the view is drawn, cleared when it closes — a zero-size rect hits
     /// nothing.
     pub subagent_back_area: Rect,
+    /// Hit area of the subagent view's back-to-bottom pill, refreshed each
+    /// frame and cleared on close. Empty while the view follows its tail.
+    pub subagent_scroll_back_area: Rect,
     /// The subagent view's block-toggle rows: `(child step id, screen rect)`.
     ///
     /// One per tool block whose output is capped (`⋯ N more lines`) or raised
@@ -246,6 +309,12 @@ pub struct MouseState {
 impl MouseState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Clear both physical-row and virtual-card selections.
+    pub fn clear_log_selection(&mut self) {
+        self.log_selection = None;
+        self.card_selection = None;
     }
 
     /// The rect recorded for `id` this frame (`Rect::default()` when the

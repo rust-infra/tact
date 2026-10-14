@@ -296,6 +296,12 @@ mode = "default"
 # provider entry's value).
 # openai / deepseek / kimi k3 semantics: none|minimal|low|medium|high|xhigh|max
 # reasoning_effort = "high"
+# Optional subagent context window, in tokens. Resolution: this key > the
+# built-in mapping for the subagent's own model > the main agent's resolved
+# window. Set it only for a model the mapping does not know — the subagent's
+# window follows its own model, so a mis-set value drives auto-compaction and
+# the tool card's `ctx` meter, not just the display.
+# model_context_window = 200000
 #
 # NOTE: [agent.subagent] is deny_unknown_fields — a misspelled key here is a
 # startup error, not a silent no-op.
