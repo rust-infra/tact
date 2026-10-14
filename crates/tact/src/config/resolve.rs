@@ -235,7 +235,7 @@ fn resolve_provider_kind(
 /// within the model context window. When omitted for the Responses protocol,
 /// the threshold is derived from the window, `max_tokens`, and headroom;
 /// a zero window (disabled) resolves to `None`.
-fn resolve_responses_compact_threshold(
+pub(crate) fn resolve_responses_compact_threshold(
     configured: Option<u32>,
     protocol: OpenAiProtocol,
     model_context_window: usize,
@@ -466,18 +466,8 @@ fn resolve_subagent(
     let reasoning_effort = entry.reasoning_effort;
 
     let explicit_max_tokens = subagent_cfg.max_tokens.or(entry.max_tokens);
-    let max_tokens = explicit_max_tokens.unwrap_or_else(|| {
-        if provider_kind == ProviderKind::Kimi
-            && (model.contains("kimi-k2")
-                || model.contains("k2.")
-                || model.contains("k2-")
-                || model == "kimi-for-coding")
-        {
-            32_000
-        } else {
-            main_max_tokens
-        }
-    });
+    let max_tokens = explicit_max_tokens
+        .unwrap_or_else(|| inherited_subagent_max_tokens(&provider_kind, &model, main_max_tokens));
     let thinking_budget = subagent_cfg
         .thinking_budget
         .or(entry.thinking_budget)
@@ -499,24 +489,13 @@ fn resolve_subagent(
         model_context_window,
     );
 
-    // An INHERITED `max_tokens` must not fail the startup check: the user never
-    // asked for that pairing, and the main agent's budget is routinely larger
-    // than a small subagent model's window (`[agent] max_tokens = 200000` with
-    // a `gpt-4o` child). Clamp it to the window instead — a hard error is
-    // reserved for a budget the user set explicitly for this subagent.
-    let max_tokens = if subagent_context_window != 0
-        && usize::try_from(max_tokens).is_ok_and(|mt| mt >= subagent_context_window)
-    {
-        if explicit_max_tokens.is_some() {
-            anyhow::bail!(
-                "invalid subagent token limits: max_tokens ({max_tokens}) must be less than \
-                 the subagent context window ({subagent_context_window})"
-            );
-        }
-        u32::try_from(subagent_context_window.saturating_sub(1)).unwrap_or(u32::MAX)
-    } else {
-        max_tokens
-    };
+    // Clamped into the window when inherited, refused when explicit — see
+    // `fit_subagent_max_tokens`.
+    let max_tokens = fit_subagent_max_tokens(
+        max_tokens,
+        explicit_max_tokens.is_some(),
+        subagent_context_window,
+    )?;
 
     // The subagent reuses the provider entry's configured Responses compact
     // threshold with its own max_tokens and its own context window.
@@ -547,10 +526,12 @@ fn resolve_subagent(
             responses_compact_threshold,
         },
         max_tokens,
+        max_tokens_override: explicit_max_tokens,
         thinking_budget,
         reasoning_effort: subagent_reasoning_effort,
         model_context_window: subagent_context_window,
         model_context_window_override: subagent_cfg.model_context_window,
+        responses_compact_threshold_override: entry.responses_compact_threshold,
         models: entry.models.clone(),
     }))
 }
@@ -785,6 +766,51 @@ pub(super) fn resolve_non_llm_settings(
     })
 }
 
+/// The `max_tokens` a subagent gets when it overrides none: the Kimi K2.x
+/// family has a documented 32K default, everything else inherits the main
+/// agent's resolved budget. Shared with `apply_subagent_model_switch` so a
+/// runtime switch re-inherits exactly the way startup does.
+fn inherited_subagent_max_tokens(
+    provider_kind: &ProviderKind,
+    model: &str,
+    main_max_tokens: u32,
+) -> u32 {
+    if *provider_kind == ProviderKind::Kimi
+        && (model.contains("kimi-k2")
+            || model.contains("k2.")
+            || model.contains("k2-")
+            || model == "kimi-for-coding")
+    {
+        32_000
+    } else {
+        main_max_tokens
+    }
+}
+
+/// `max_tokens` must stay under the context window. An INHERITED budget is
+/// clamped into the window (the user never asked for that pairing, and a main
+/// budget larger than a small model's window is routine); a budget the user set
+/// explicitly for this subagent is an error — silently changing a number they
+/// wrote is worse than refusing.
+fn fit_subagent_max_tokens(
+    max_tokens: u32,
+    explicit: bool,
+    model_context_window: usize,
+) -> anyhow::Result<u32> {
+    if model_context_window == 0
+        || usize::try_from(max_tokens).is_ok_and(|mt| mt < model_context_window)
+    {
+        return Ok(max_tokens);
+    }
+    if explicit {
+        anyhow::bail!(
+            "invalid subagent token limits: max_tokens ({max_tokens}) must be less than \
+             the subagent context window ({model_context_window})"
+        );
+    }
+    Ok(u32::try_from(model_context_window.saturating_sub(1)).unwrap_or(u32::MAX))
+}
+
 /// The subagent's context window: an explicit
 /// `[agent.subagent].model_context_window` pins it, otherwise the child model's
 /// mapping decides, with the main agent's resolved window as the last resort
@@ -801,27 +827,53 @@ pub(crate) fn resolve_subagent_context_window(
         .unwrap_or(main_window)
 }
 
-/// Apply a runtime `/model-subagent` switch to resolved settings: the model
-/// and thinking budget change, and the context window is re-resolved with the
-/// same priority as startup. A stale window would drive auto-compaction and
-/// the card's `ctx` meter for the rest of the session.
+/// Apply a runtime `/model-subagent` switch to resolved settings. Everything
+/// derived from the model is re-resolved with the same rules as startup: the
+/// context window (an explicit `[agent.subagent].model_context_window` keeps
+/// pinning it), the budget (re-inherited and clamped into the new window, or
+/// refused when an explicit one no longer fits), and the Responses compaction
+/// threshold (re-derived or re-validated against the new window). A stale
+/// window would drive auto-compaction and the card's `ctx` meter for the rest
+/// of the session; a stale threshold would compact against the old window.
+///
+/// On error nothing is applied: a refused switch leaves the session as it was.
 pub(crate) fn apply_subagent_model_switch(
     agent: &mut AgentSettings,
     model: String,
     thinking_budget: usize,
-) {
+) -> anyhow::Result<()> {
     let main_window = agent.model_context_window;
-    if let Some(subagent) = agent.subagent.as_mut() {
-        let window = resolve_subagent_context_window(
-            subagent.model_context_window_override,
-            &model,
-            main_window,
-        );
-        subagent.provider.model = model;
-        subagent.thinking_budget = thinking_budget;
-        subagent.reasoning_effort = None;
-        subagent.model_context_window = window;
-    }
+    let main_max_tokens = agent.max_tokens;
+    let Some(subagent) = agent.subagent.as_mut() else {
+        return Ok(());
+    };
+
+    let window = resolve_subagent_context_window(
+        subagent.model_context_window_override,
+        &model,
+        main_window,
+    );
+    let max_tokens = match subagent.max_tokens_override {
+        Some(explicit) => explicit,
+        None => inherited_subagent_max_tokens(&subagent.provider.provider, &model, main_max_tokens),
+    };
+    let max_tokens =
+        fit_subagent_max_tokens(max_tokens, subagent.max_tokens_override.is_some(), window)?;
+    let responses_compact_threshold = resolve_responses_compact_threshold(
+        subagent.responses_compact_threshold_override,
+        subagent.provider.protocol,
+        window,
+        max_tokens,
+    )
+    .map_err(|error| anyhow::anyhow!("invalid subagent token limits: {error:#}"))?;
+
+    subagent.provider.model = model;
+    subagent.thinking_budget = thinking_budget;
+    subagent.reasoning_effort = None;
+    subagent.model_context_window = window;
+    subagent.max_tokens = max_tokens;
+    subagent.provider.responses_compact_threshold = responses_compact_threshold;
+    Ok(())
 }
 
 /// Returns the context window (total input + output tokens) for a known model id.
@@ -1384,7 +1436,7 @@ max_tokens = {subagent_max_tokens}
             64_000
         );
 
-        apply_subagent_model_switch(&mut cfg.agent, "some-unmapped-model".to_string(), 0);
+        apply_subagent_model_switch(&mut cfg.agent, "some-unmapped-model".to_string(), 0).unwrap();
 
         let sa = cfg.agent.subagent.unwrap();
         assert_eq!(sa.provider.model, "some-unmapped-model");
@@ -1412,9 +1464,181 @@ max_tokens = {subagent_max_tokens}
             128_000
         );
 
-        apply_subagent_model_switch(&mut cfg.agent, "gpt-5.6".to_string(), 0);
+        apply_subagent_model_switch(&mut cfg.agent, "gpt-5.6".to_string(), 0).unwrap();
 
         assert_eq!(cfg.agent.subagent.unwrap().model_context_window, 1_050_000);
+    }
+
+    /// A runtime switch re-inherits the budget like startup: an inherited
+    /// `max_tokens` follows the new model's window — clamped into it when it
+    /// does not fit — instead of freezing at what the old window allowed.
+    #[test]
+    fn subagent_model_switch_re_inherits_and_clamps_the_budget() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "some-unknown-model"
+
+[agent]
+max_tokens = 200000
+model_context_window = 1000000
+
+[agent.subagent]
+provider = "openai"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let mut cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        // gpt-4o (128K) cannot take the inherited 200K: clamped at startup.
+        assert_eq!(cfg.agent.subagent.as_ref().unwrap().max_tokens, 127_999);
+
+        apply_subagent_model_switch(&mut cfg.agent, "gpt-5.6".to_string(), 0).unwrap();
+        // 1.05M can take the inherited 200K again.
+        let sa = cfg.agent.subagent.as_ref().unwrap();
+        assert_eq!(sa.max_tokens, 200_000);
+        assert_eq!(sa.model_context_window, 1_050_000);
+
+        apply_subagent_model_switch(&mut cfg.agent, "gpt-4o".to_string(), 0).unwrap();
+        assert_eq!(cfg.agent.subagent.unwrap().max_tokens, 127_999);
+    }
+
+    /// An EXPLICIT budget that no longer fits the picked model is refused and
+    /// nothing is applied: silently changing a number the user wrote is worse
+    /// than refusing the switch.
+    #[test]
+    fn subagent_model_switch_refuses_an_explicit_budget_over_the_new_window() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "some-unknown-model"
+
+[agent]
+max_tokens = 8000
+model_context_window = 1000000
+
+[agent.subagent]
+provider = "openai"
+model = "gpt-5.6"
+max_tokens = 200000
+"#,
+        )
+        .unwrap();
+        let mut cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(cfg.agent.subagent.as_ref().unwrap().max_tokens, 200_000);
+
+        let err = apply_subagent_model_switch(&mut cfg.agent, "gpt-4o".to_string(), 0).unwrap_err();
+
+        assert!(
+            err.to_string()
+                .contains("must be less than the subagent context window"),
+            "got: {err}"
+        );
+        // Nothing was applied: the session keeps the model it had.
+        let sa = cfg.agent.subagent.unwrap();
+        assert_eq!(sa.provider.model, "gpt-5.6");
+        assert_eq!(sa.max_tokens, 200_000);
+        assert_eq!(sa.model_context_window, 1_050_000);
+    }
+
+    /// The Responses compaction threshold is derived from the child's window,
+    /// so a switch must re-derive it: a threshold measured for the old model
+    /// would compact too late — or not at all — for the new one.
+    #[test]
+    fn subagent_model_switch_re_derives_the_responses_threshold() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "some-unknown-model"
+protocol = "responses"
+
+[agent]
+max_tokens = 8000
+model_context_window = 1000000
+
+[agent.subagent]
+provider = "openai"
+model = "gpt-4o"
+"#,
+        )
+        .unwrap();
+        let mut cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        // 128000 - 8000 max_tokens - 12800 headroom.
+        assert_eq!(
+            cfg.agent
+                .subagent
+                .as_ref()
+                .unwrap()
+                .provider
+                .responses_compact_threshold,
+            Some(107_200)
+        );
+
+        apply_subagent_model_switch(&mut cfg.agent, "gpt-5.6".to_string(), 0).unwrap();
+
+        let sa = cfg.agent.subagent.unwrap();
+        assert_eq!(sa.model_context_window, 1_050_000);
+        // 1050000 - 8000 - 105000 headroom.
+        assert_eq!(sa.provider.responses_compact_threshold, Some(937_000));
+    }
+
+    /// An explicit `responses_compact_threshold` is re-validated against the
+    /// new window, with the same refusal semantics as startup.
+    #[test]
+    fn subagent_model_switch_refuses_a_threshold_that_no_longer_fits() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "some-unknown-model"
+protocol = "responses"
+responses_compact_threshold = 200000
+
+[agent]
+max_tokens = 8000
+model_context_window = 1000000
+
+[agent.subagent]
+provider = "openai"
+model = "gpt-5.6"
+"#,
+        )
+        .unwrap();
+        let mut cfg = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(
+            cfg.agent
+                .subagent
+                .as_ref()
+                .unwrap()
+                .provider
+                .responses_compact_threshold,
+            Some(200_000)
+        );
+
+        let err = apply_subagent_model_switch(&mut cfg.agent, "gpt-4o".to_string(), 0).unwrap_err();
+
+        assert!(
+            err.to_string().contains("must leave room for max_tokens"),
+            "got: {err}"
+        );
+        let sa = cfg.agent.subagent.unwrap();
+        assert_eq!(sa.provider.model, "gpt-5.6");
+        assert_eq!(sa.provider.responses_compact_threshold, Some(200_000));
     }
 
     /// The window is not just displayed: it is the auto-compaction threshold's

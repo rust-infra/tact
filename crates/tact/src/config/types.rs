@@ -485,6 +485,12 @@ pub struct SubagentSettings {
     pub provider: ProviderInfo,
     /// Max output tokens.
     pub max_tokens: u32,
+    /// The raw `[agent.subagent].max_tokens` / referenced-entry budget, if the
+    /// user set one. Kept so a runtime `/model-subagent` switch re-resolves the
+    /// budget like startup: an inherited one is recomputed (and clamped into
+    /// the new window), an explicit one that no longer fits is refused rather
+    /// than silently changed.
+    pub max_tokens_override: Option<u32>,
     /// Thinking budget (0 = off).
     pub thinking_budget: usize,
     /// Explicit reasoning effort for subagent requests (openai / deepseek / kimi k3).
@@ -499,6 +505,11 @@ pub struct SubagentSettings {
     /// mapping > the main agent's window) instead of dropping the pin.
     /// `Some(0)` is an explicit "unknown window", not "unset".
     pub model_context_window_override: Option<usize>,
+    /// The raw provider-entry `responses_compact_threshold`, if set. Kept so a
+    /// runtime `/model-subagent` switch re-derives or re-validates the
+    /// threshold against the new window + budget instead of keeping a number
+    /// measured for the old model.
+    pub responses_compact_threshold_override: Option<u32>,
     /// Candidate model ids for the /model-subagent picker.
     pub models: Vec<String>,
 }

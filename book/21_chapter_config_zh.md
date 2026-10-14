@@ -372,7 +372,7 @@ resolve 阶段的校验：
 - 被引用的 **DeepSeek** 条目上 `protocol = "responses"` 会被拒绝——与主 agent 同属不受支持的组合。
 - 被引用条目的 `responses_compact_threshold` 会被复用，但需按 *subagent 自己的* `max_tokens` 与窗口重新校验（原本适配主 agent 较小预算的阈值未必适配 subagent）。条目未设置该项时，阈值由 subagent 的 `max_tokens` 推导；非 Responses 协议与零窗口解析为无阈值。
 
-`model_context_window` **按 subagent 自己的模型解析**：`[agent.subagent].model_context_window` → 内置模型映射（按 subagent 的 `model`）→ 主 agent 已解析的窗口——主 agent 是 1M 模型时，用 `gpt-4o` 的子 agent 不能按 1M 去量。继承来的 `max_tokens` 不小于子窗口时**钳制**进窗口而不是报错（主 agent 的大预算配小窗口模型是常态），显式写下的 `max_tokens` 超限才硬报错。`/model-subagent` 运行时换模型会按**同一优先级**重算窗口（显式覆盖 → 映射 → 主窗口兜底）——设了覆盖就一直是它。
+`model_context_window` **按 subagent 自己的模型解析**：`[agent.subagent].model_context_window` → 内置模型映射（按 subagent 的 `model`）→ 主 agent 已解析的窗口——主 agent 是 1M 模型时，用 `gpt-4o` 的子 agent 不能按 1M 去量。继承来的 `max_tokens` 不小于子窗口时**钳制**进窗口而不是报错（主 agent 的大预算配小窗口模型是常态），显式写下的 `max_tokens` 超限才硬报错。`/model-subagent` 运行时换模型会按**与启动同一套规则**重算：窗口（显式覆盖 → 映射 → 主窗口兜底，设了覆盖就一直是它）、`max_tokens`（继承值按新窗口重算并钳制；显式值放不下则**拒绝切换**）与 Responses 压缩阈值（按新窗口重推导/重校验，失败同样拒绝）——被拒绝时**什么也不应用**。
 `/model-subagent` 选择器的候选列表来自被引用条目的 `models`，在其中选定模型或思考预算会写回
 `[agent.subagent].model` 及其预算/effort 键。运行时一侧见 [Ch 12](./12_chapter_subagent_zh.md)。
 

@@ -531,7 +531,15 @@ fn apply_model_and_budget_pick(
                 .send(UserCommand::SetThinkingBudget(thinking_budget));
         }
         ModelTarget::Subagent => {
-            tact::config::update_subagent_model(model.clone(), thinking_budget);
+            if let Err(error) = tact::config::update_subagent_model(model.clone(), thinking_budget)
+            {
+                app.add_system_message(
+                    msgs.model_subagent_switch_failed_tmpl
+                        .replace("{}", &format!("{error:#}")),
+                );
+                app.input_mode = InputMode::Normal;
+                return;
+            }
             app.add_system_message(format_model_and_budget(
                 msgs.model_subagent_switched_with_budget_tmpl,
                 &model,
@@ -605,7 +613,14 @@ fn apply_model_and_effort_pick(
             let current_budget = tact::config::try_settings()
                 .and_then(|s| s.agent.subagent.as_ref().map(|sa| sa.thinking_budget))
                 .unwrap_or_default();
-            tact::config::update_subagent_model(model.clone(), current_budget);
+            if let Err(error) = tact::config::update_subagent_model(model.clone(), current_budget) {
+                app.add_system_message(
+                    msgs.model_subagent_switch_failed_tmpl
+                        .replace("{}", &format!("{error:#}")),
+                );
+                app.input_mode = InputMode::Normal;
+                return;
+            }
             tact::config::update_subagent_reasoning_effort(Some(effort));
         }
     }
@@ -1241,6 +1256,7 @@ mod tests {
                 model: subagent_model.into(),
             },
             max_tokens: 4000,
+            max_tokens_override: None,
             thinking_budget: subagent_budget,
             reasoning_effort: subagent_effort,
             // Neither fixture model is in the built-in mapping, so
@@ -1248,6 +1264,7 @@ mod tests {
             // 500_000 in this fixture, not the 200_000 default.
             model_context_window: 500_000,
             model_context_window_override: None,
+            responses_compact_threshold_override: None,
             models: vec![subagent_model.to_string()],
         });
         tact::config::install_or_override(cfg);
@@ -1729,6 +1746,67 @@ thinking_budget = {thinking_budget}
                 .contains("Subagent model kimi-for-coding and thinking budget 32K")
         }));
         assert!(matches!(app.input_mode, InputMode::Normal));
+    }
+
+    /// A refused switch (an explicit budget that no longer fits the window the
+    /// picked model runs under) reports the failure and does NOT open the
+    /// persist prompt: the session still runs the old model, so there is
+    /// nothing to persist — and nothing was applied.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn a_refused_subagent_switch_reports_instead_of_the_persist_prompt() {
+        let _lock = MODELS_TEST_LOCK.lock().await;
+        tact_llm::clear_models_cache_for_tests();
+        install_models_config_with_subagent(
+            vec!["kimi-k2.5", "kimi-for-coding"],
+            "kimi-k2.5",
+            "kimi-k2.5",
+            0,
+            None,
+        );
+        tact_llm::seed_models_cache_for_tests(
+            "https://api.moonshot.cn/v1",
+            "sk-test",
+            vec!["kimi-for-coding".into()],
+        );
+        let mut cfg = tact::config::settings();
+        {
+            let sa = cfg.agent.subagent.as_mut().unwrap();
+            // Both models stay pickable, but the pinned window cannot fit the
+            // explicit budget — the switch has to be refused.
+            sa.models = vec!["kimi-k2.5".into(), "kimi-for-coding".into()];
+            sa.max_tokens = 4_000;
+            sa.max_tokens_override = Some(4_000);
+            sa.model_context_window = 2_000;
+            sa.model_context_window_override = Some(2_000);
+        }
+        // A config path would make the "persist?" prompt fire if the failure
+        // were ignored.
+        cfg.config_path = Some(std::path::PathBuf::from("/nonexistent/config.toml"));
+        tact::config::install_or_override(cfg);
+
+        let mut app = make_app();
+        start_subagent_model_picker(&mut app);
+        handle_select_mode(&mut app, key(KeyCode::Down)); // kimi-for-coding
+        handle_select_mode(&mut app, key(KeyCode::Enter)); // open budget picker
+        handle_select_mode(&mut app, key(KeyCode::Enter)); // confirm prefocused budget
+
+        assert!(
+            !matches!(app.select_kind, SelectKind::PersistModelAndBudget { .. }),
+            "a refused switch must not open the persist prompt, got {:?}",
+            app.select_kind
+        );
+        assert!(matches!(app.input_mode, InputMode::Normal));
+        assert!(
+            app.log.items.iter().any(|item| item
+                .raw
+                .contains("must be less than the subagent context window")),
+            "expected the refusal to be reported, got {:?}",
+            app.log.items
+        );
+        // Nothing was applied.
+        let sa = tact::config::settings().agent.subagent.unwrap();
+        assert_eq!(sa.provider.model, "kimi-k2.5");
+        assert_eq!(sa.max_tokens, 4_000);
     }
 
     #[tokio::test(flavor = "multi_thread")]
