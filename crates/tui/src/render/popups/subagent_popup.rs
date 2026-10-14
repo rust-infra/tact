@@ -108,22 +108,42 @@ pub(crate) fn render_subagent_view(frame: &mut Frame, area: Rect, app: &mut App)
     } else {
         app.msgs().subagent_view_expand_hint
     };
+    // The mode badge leads, because it explains the row's premise: the view
+    // took the keyboard, so the keys advertised here (and `j`/`k`/`G`) are the
+    // live ones rather than the input box's.
+    let badge = app.msgs().subagent_view_mode_badge;
     let title_cols = UnicodeWidthStr::width(breadcrumb_text.as_str());
     let hint_cols = UnicodeWidthStr::width(hint);
+    let badge_cols = UnicodeWidthStr::width(badge);
     // Drop the hint rather than let it eat the title: the title is what says
-    // *which* subagent this is, and a clipped `Enter exp` helps nobody.
+    // *which* subagent this is, and a clipped `Enter exp` helps nobody. The
+    // badge survives one step longer — a reader who cannot tell where their
+    // keystrokes are going has a worse problem than a missing shortcut.
+    let trailing_cols = if badge_cols > 0 {
+        badge_cols + 3 + hint_cols
+    } else {
+        hint_cols
+    };
     let gap = chunks[0]
         .width
-        .saturating_sub(title_cols as u16 + hint_cols as u16);
+        .saturating_sub(title_cols as u16 + trailing_cols as u16);
     let mut spans = vec![Span::styled(
         breadcrumb_text,
         Style::default()
             .fg(app.theme.accent)
             .add_modifier(Modifier::BOLD),
     )];
-    if hint_cols > 0 && gap >= 1 {
+    if gap >= 1 && trailing_cols > 0 {
         spans.push(Span::raw(" ".repeat(gap as usize)));
-        spans.push(Span::styled(hint, Style::default().fg(app.theme.muted)));
+        if badge_cols > 0 {
+            spans.push(Span::styled(badge, Style::default().fg(app.theme.muted)));
+            if hint_cols > 0 {
+                spans.push(Span::raw("   "));
+            }
+        }
+        if hint_cols > 0 {
+            spans.push(Span::styled(hint, Style::default().fg(app.theme.muted)));
+        }
     }
     frame.render_widget(Paragraph::new(Line::from(spans)), chunks[0]);
 

@@ -190,6 +190,33 @@ mod tests {
         KeyEvent::new(code, KeyModifiers::empty())
     }
 
+    /// The user-visible half of the keyboard-focus fix: after opening the view,
+    /// a real `G` keypress must reach the view's handler and jump to the tail.
+    /// Before `open_subagent_popup_by_id` took the keyboard, the session was
+    /// still in Insert, so this key typed into the input box and the view never
+    /// moved.
+    #[test]
+    fn g_jumps_the_open_subagent_view_to_its_tail() {
+        let mut app = make_app();
+        let (tx, _rx) = unbounded_channel();
+        crate::render::test_harness::seed_subagent_view(&mut app);
+        let tool_id = "sa-1".to_string();
+        app.open_subagent_popup_by_id(&tool_id);
+        assert!(app.has_subagent_popup(), "the view must be open");
+        assert!(matches!(app.input_mode, InputMode::Normal));
+
+        // A short viewport, so the seeded conversation overflows and scrolling
+        // is meaningful; without a render the body height is still zero.
+        crate::render::test_harness::render_main_area_terminal(&mut app, 100, 12);
+        app.subagent_scroll_by(-1000);
+        assert!(!app.subagent_popup().expect("view").follow);
+        handle_normal_mode(&mut app, key(KeyCode::Char('G')), &tx);
+
+        let popup = app.subagent_popup().expect("view");
+        assert!(popup.follow, "`G` must re-arm following");
+        assert_eq!(popup.scroll, u16::MAX, "and pin to the tail");
+    }
+
     #[test]
     fn slash_enters_palette_mode() {
         let mut app = make_app();

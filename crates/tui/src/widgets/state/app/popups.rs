@@ -315,6 +315,13 @@ impl App {
         self.show_subagent_view = true;
         self.show_history = false;
         self.show_help = false;
+        // The view is a full-main-area reading surface whose keys (`j`/`k`/`g`/
+        // `G`/`y`/`Enter`) are dispatched by the *Normal* handler, and a fresh
+        // session starts in Insert — where those letters type into the input box
+        // instead and `Esc` (the only way back to Normal) is consumed by the
+        // view itself. Taking keyboard focus on open is what makes the view's
+        // own keymap reachable at all; `close_subagent_popup` hands the box back.
+        self.input_mode = InputMode::Normal;
     }
 
     pub(crate) fn subagent_popup(&self) -> Option<&crate::widgets::state::SubagentPopup> {
@@ -402,9 +409,15 @@ impl App {
 
     /// Close the subagent view (keep the popup entry so re-opening preserves
     /// scroll / selection / which blocks are expanded).
+    ///
+    /// Hands keyboard focus back to the input box, undoing the Normal switch
+    /// [`Self::open_subagent_popup_by_id`] makes: the view borrowed the mode,
+    /// and leaving the user in Normal after `Esc` would silently change what
+    /// their next keystroke does.
     pub(crate) fn close_subagent_popup(&mut self) {
         self.show_subagent_view = false;
         self.active_subagent_popup = None;
+        self.input_mode = InputMode::Insert;
         self.mouse.clear_area(SurfaceId::SubagentPopup);
         self.mouse.subagent_back_area = Rect::default();
         self.mouse.subagent_scroll_back_area = Rect::default();
@@ -1245,8 +1258,8 @@ mod tests {
         render::test_harness::make_app,
         widgets::{
             state::{
-                App, CodeBlock, DiffPopup, PopupHitRow, PopupTextHit, PopupTextSelection,
-                SubagentPopup, SurfaceId, ThinkingPopup,
+                App, CodeBlock, DiffPopup, InputMode, PopupHitRow, PopupTextHit,
+                PopupTextSelection, SubagentPopup, SurfaceId, ThinkingPopup,
             },
             tool_widget::{ToolPhase, ToolWidget},
         },
@@ -1591,6 +1604,34 @@ mod tests {
         assert_eq!(
             popup.inline_content.as_deref(),
             Some("Saved memory 'tabs'\npath: memory/tabs.md")
+        );
+    }
+
+    /// The view's own keymap lives in the Normal handler, and a fresh session
+    /// starts in Insert, where those letters type into the input box and `Esc`
+    /// is consumed by the view itself — so opening must take the keyboard, or
+    /// none of `j`/`k`/`g`/`G`/`y`/`Enter` is reachable.
+    #[test]
+    fn opening_the_subagent_view_takes_the_keyboard() {
+        let mut app = make_app();
+        // A fresh session is Insert, which is the state the bug needed.
+        app.input_mode = InputMode::Insert;
+        let phys = push_subagent_card(&mut app, "kb-tool");
+
+        app.open_subagent_popup_at_physical_index(phys);
+        assert!(app.show_subagent_view);
+        assert!(
+            matches!(app.input_mode, InputMode::Normal),
+            "the view must take focus, got {:?}",
+            app.input_mode
+        );
+
+        // And closing hands it back, so the next keystroke still types.
+        app.close_subagent_popup();
+        assert!(
+            matches!(app.input_mode, InputMode::Insert),
+            "closing must give the input box back, got {:?}",
+            app.input_mode
         );
     }
 

@@ -145,6 +145,10 @@ pub struct Messages {
     pub subagent_view_expand_hint: &'static str, // "Enter expand all" / "Enter 全部展开"
     /// The same hint once something is expanded. // "Enter collapse all" / "Enter 全部收起"
     pub subagent_view_collapse_hint: &'static str,
+    /// Shown left of the key hint while the view holds the keyboard (Normal
+    /// mode): the view takes focus on open, so a reader who expects to type
+    /// needs to see *why* the input box is not taking keystrokes.
+    pub subagent_view_mode_badge: &'static str,
     pub palette_title: &'static str,
     pub file_picker_title: &'static str,
     pub command_title: &'static str,
@@ -541,6 +545,7 @@ impl Messages {
             subagent_popup_collapse_action: "▴ collapse",
             subagent_view_expand_hint: "Enter expand all",
             subagent_view_collapse_hint: "Enter collapse all",
+            subagent_view_mode_badge: "normal · esc back",
             palette_title: " Palette /{} ",
             file_picker_title: " Attach file ",
             command_title: " ⌘ Command ",
@@ -874,6 +879,7 @@ impl Messages {
             subagent_popup_collapse_action: "▴ 收起",
             subagent_view_expand_hint: "Enter 全部展开",
             subagent_view_collapse_hint: "Enter 全部收起",
+            subagent_view_mode_badge: "normal · esc 返回",
             palette_title: " 命令面板 /{} ",
             file_picker_title: " 附加文件 ",
             command_title: " ⌘ 命令 ",

@@ -4,17 +4,18 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
-## 1. 2026-10-12 — subagent 卡片外显 ctx、视图流式刷新与 Back to bottom；顺带修掉 shell 守卫与私钥流式的两处回归
+## 1. 2026-10-12 — subagent 视图独占键盘（否则整套键位不可达）；卡片外显 ctx、流式刷新与 Back to bottom；顺带修掉 shell 守卫与私钥流式的两处回归
 
 | Field | Value |
 |-------|-------|
-| **Type** | feature / fix（用户可见：subagent 卡片 meta 行显示 `ctx {pct}% used/window` 而非只有 token 总数；subagent 视图正文流式刷新、带 `↓ Back to bottom · G` 胶囊、可跟随尾部；`[agent.subagent]` 多一个 `model_context_window` 键；`Auto` 模式标签改为"放行全部（含高危）"；shell 守卫与流式脱敏的行为修正） |
+| **Type** | feature / fix（用户可见：subagent 视图打开时独占键盘（`j/k/g/G/y/Enter` 变为可用，关闭后回到 Insert），面包屑带 `normal · esc back` 提示；subagent 卡片 meta 行显示 `ctx {pct}% used/window` 而非只有 token 总数；subagent 视图正文流式刷新、带 `↓ Back to bottom · G` 胶囊、可跟随尾部；`[agent.subagent]` 多一个 `model_context_window` 键；`Auto` 模式标签改为"放行全部（含高危）"；shell 守卫与流式脱敏的行为修正） |
 | **Related** | `crates/tact/src/shell.rs`、`crates/tact/src/security/redact.rs`、`crates/tact/src/tool/progress.rs`、`crates/tact/src/tool/subagent_ui.rs`、`crates/tact/src/config/{resolve,types,mod}.rs`、`crates/tact/src/permission/mod.rs`、`crates/protocol/src/agent.rs`、`crates/agent_tui_kit/src/{render/popups/subagent_popup.rs,render/scroll_pill.rs,state/tool_state.rs,widgets/tool_widget.rs}`、`crates/tui/src/{lib.rs,handlers/{normal,mouse}.rs,widgets/state/app/{popups,agent}.rs}`；`docs/token_usage_schema.md`、`ARCHITECTURE.md`、`docs/state_machines.md`、`config.example.toml` |
 
-**现象 / 动机：** 三件事。① subagent 卡片只显示 token 总数，看不到"离压缩还有多远"；而子 agent 的 `model_context_window` **本身就是错的**——`spawn_subagent` 克隆主 agent settings 后只覆盖 model/max_tokens/thinking_budget/reasoning_effort，**从不重算窗口**，于是子 agent 的 auto-compaction 阈值与显示都基于主 agent 的窗口。② subagent 视图（整主区、无 footer）没有 back-to-bottom，也不跟随尾部；助手正文在 `StreamChunk` 分支只累进 `assistant_buf`，**直到整轮结束才发出一整块**，所以弹窗在子 agent 流式期间一直是空的。③ 顺带：`Auto` 的标签写"allow non-high"，代码却放行一切；一处遗留的未提交 PROBE 把 always-allow 记成裸工具名。
+**现象 / 动机：** 四件事。① subagent 视图的键位**根本按不出来**：默认是 Insert 模式，而视图的 `j/k/g/G/y/Enter` 只在 Normal 处理器里分发，Insert 下这些字母只是往输入框里打字；唯一的出口 `Esc` 又被视图自己消费（`lib.rs` 先判 `Esc` → 关闭视图），于是"回到 Normal"这条路被堵死——用户报的"`G` 敲不出来"其实是整套键位不可达。② subagent 卡片只显示 token 总数，看不到"离压缩还有多远"；而子 agent 的 `model_context_window` **本身就是错的**——`spawn_subagent` 克隆主 agent settings 后只覆盖 model/max_tokens/thinking_budget/reasoning_effort，**从不重算窗口**，于是子 agent 的 auto-compaction 阈值与显示都基于主 agent 的窗口。② subagent 视图（整主区、无 footer）没有 back-to-bottom，也不跟随尾部；助手正文在 `StreamChunk` 分支只累进 `assistant_buf`，**直到整轮结束才发出一整块**，所以弹窗在子 agent 流式期间一直是空的。③ 顺带：`Auto` 的标签写"allow non-high"，代码却放行一切；一处遗留的未提交 PROBE 把 always-allow 记成裸工具名。
 
 **决策：**
 
+- **视图打开即取得键盘（Normal），关闭归还（Insert）。** `open_subagent_popup_by_id` 切 `InputMode::Normal`，`close_subagent_popup` 切回 `Insert`——视图是整主区阅读界面，抢焦点是它的前提，而同仓库的 `open_markdown_popup` 早已是同一做法。面包屑右端加 `normal · esc back` 徽标（窄屏时比 `Enter …` 提示**后**被丢弃），让"为什么打字打不进去"一眼可见。
 - **窗口跟子 agent 自己的 model。** 解析优先级 `[agent.subagent].model_context_window` > 内置映射 > 主 agent 窗口；`SubagentSettings` 新增该字段，`resolve_subagent` 用它校验 `max_tokens` 与推导 Responses 压缩阈值。**继承来的 `max_tokens` 超过子窗口时钳制而非报错**（用户没要求那个组合；主 agent 的 200k 预算配 `gpt-4o` 子 agent 是常态），显式配置超限才硬报错。`/model-subagent` 运行时切换会重算窗口。
 - **ctx 与主状态栏同形。** `ToolMeta` 新增 `context_window`；卡片 `meta_suffixes` 渲染 `ctx {pct}% used/window`，无窗口时回退 `⚡ total`，token 为 0 不出表；`subagent_popup` 头部同形。
 - **流式按换行边界发布。** 新增 `AgentUpdate::ToolTranscriptStream`，载荷是**整轮累计文本**（幂等，非增量），只在换行数增加时发布（`assistant_total_lines` 增量计数，不逐块重扫，否则长轮次是 O(n²)）。布局缓存键含 `streaming_rev`，且**无已提交条目时也建布局**（子 agent 首轮只有助手文本，原先会一直空白）。
@@ -22,9 +23,9 @@
 - **视图复用 log 的跟随契约。** `SubagentPopup::{follow,unseen}`；`j/k` 与滚轮都停止跟随、到底恢复跟随并清徽标（原先滚轮完全不碰 `follow`，下一段流式会把读者拽回底部）；`note_subagent_rows_appended` 比对 `tool_id`（否则并发子 agent 会互相点亮徽标）；`Esc` 走唯一的 `close_subagent_popup`（原先 lib.rs 直接置 `show_subagent_view=false`，残留 active id 与鼠标 rect）。
 - **shell 守卫改为分段+词级，但补回所有旧覆盖。** 程序名按 basename 比对、包装器链递归（含 `sh -c '…'`）、`nice -n 10` 这类取值标志跳过、设备重定向在词级判定（含 `>  /dev/sda` 与 `>/dev/x`）、`rm` 目标补 `~root`/`~/*`。**这些都是 review 找出的、旧子串守卫能拦而我第一版漏掉的**，逐条加了回归用例。
 
-**之后的行为：** subagent 卡片显示 `🤖 gpt-4o · ctx 9% 45K/500K`；视图随子 agent 流式增长，滚开后出现胶囊与 `New activity`，点胶囊或 `G` 回到尾部；`/bin/rm -rf /`、`nice sudo id`、`env -i sudo id`、`sh -c 'sudo id'`、`>  /dev/sda` 重新被拦；流式快照不再泄露 PEM 私钥正文。
+**之后的行为：** 打开 subagent 视图后 `j/k/g/G/y/Enter` 全部生效、`Esc` 退出并把焦点交回输入框，面包屑显示 `normal · esc back`；subagent 卡片显示 `🤖 gpt-4o · ctx 9% 45K/500K`；视图随子 agent 流式增长，滚开后出现胶囊与 `New activity`，点胶囊或 `G` 回到尾部；`/bin/rm -rf /`、`nice sudo id`、`env -i sudo id`、`sh -c 'sudo id'`、`>  /dev/sda` 重新被拦；流式快照不再泄露 PEM 私钥正文。
 
-**Verification：** `cargo test -p tact -p agent_tui_kit -p tui -p tact_protocol` 全绿（1286 / 409 / 697 / 25）；`cargo clippy --all-targets -D warnings` 与 `cargo fmt` 干净。新增测试含：`shell::tests::blocks_the_spellings_a_bare_word_match_would_miss`（23 条旧守卫能拦的写法）、`a_streaming_private_key_never_publishes_its_body`（**已实测有牙**：临时禁用 `unclosed_private_key_start` 后它复现了泄露）、`streaming_alone_builds_a_layout_before_any_committed_entry`、`subagent_compaction_threshold_follows_the_child_window`、`subagent_inherited_max_tokens_is_clamped_to_its_window`、`wheel_up_stops_following_so_a_stream_cannot_yank_the_reader`、`another_subagents_stream_does_not_touch_the_open_view`。
+**Verification：** `cargo test -p tact -p agent_tui_kit -p tui -p tact_protocol` 全绿（1286 / 409 / 697 / 25）；`cargo clippy --all-targets -D warnings` 与 `cargo fmt` 干净。新增测试含：`opening_the_subagent_view_takes_the_keyboard`（开→Normal、关→Insert）、`g_jumps_the_open_subagent_view_to_its_tail`（真实 `G` 按键到达视图，**已实测有牙**：去掉焦点切换后两条都红）、`shell::tests::blocks_the_spellings_a_bare_word_match_would_miss`（23 条旧守卫能拦的写法）、`a_streaming_private_key_never_publishes_its_body`（**已实测有牙**：临时禁用 `unclosed_private_key_start` 后它复现了泄露）、`streaming_alone_builds_a_layout_before_any_committed_entry`、`subagent_compaction_threshold_follows_the_child_window`、`subagent_inherited_max_tokens_is_clamped_to_its_window`、`wheel_up_stops_following_so_a_stream_cannot_yank_the_reader`、`another_subagents_stream_does_not_touch_the_open_view`。
 
 ## 1. 2026-10-11 — skill 目录有了上限：描述截断 + 窗口 2% 预算 + 每 skill 开关，路径改为随正文交付
 

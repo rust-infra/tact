@@ -362,6 +362,15 @@ closes that view). `ToolState::streaming_assistant` holds the in-flight text,
 and `SubagentPopupLayout::streaming_rev` (via one `streaming_rev_of` helper used
 by both the prepare and render checks) is part of its cache key.
 
+**The subagent view takes the keyboard (`normal` mode):** opening the view sets
+`InputMode::Normal`, and `close_subagent_popup` sets `InputMode::Insert` back.
+The view's keymap (`j`/`k`/`g`/`G`/`y`/`Enter`) is dispatched only by the Normal
+handler, a fresh session starts in Insert, and in Insert those letters type into
+the input box while `Esc` — the only way back to Normal — is consumed by the
+view itself. Without the switch the whole keymap is unreachable and `Esc` is a
+trap. The breadcrumb carries a `normal · esc back` badge so a reader who expects
+to type can see where their keystrokes are going.
+
 DeepSeek returns `prompt_cache_hit_tokens` and `prompt_cache_miss_tokens` in the usage section of both Anthropic-format and OpenAI-format responses. The `reasoning_tokens` field comes from `completion_tokens_details.reasoning_tokens`.
 
 Cached data is evicted after hours to days of inactivity.
