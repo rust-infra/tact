@@ -4,6 +4,30 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-14 — 发版 v1.1.41：清单版本 1.1.40 → 1.1.41，与本次的 subagent 改动一起进 PR
+
+| Field | Value |
+|-------|-------|
+| **Type** | release（用户可见：`--version` 与升级接口报 1.1.41；`v1.1.41` 触发 `release.yml`，五个平台产出 `tact-ui-v1.1.41-*` 与 `SHA256SUMS`） |
+| **Related** | `Cargo.toml`（`[workspace.package].version`）、`Cargo.lock`（四个包条目）、`README.md`（徽章 + 发版命令片段）；`.github/workflows/release.yml` |
+
+**现象 / 动机：** v1.1.40 之后合入的改动里，subagent 那笔是**用户可见的行为变化**（卡片 meta 行显示 `ctx {pct}% used/window`、视图流式刷新并带 back-to-bottom 胶囊、视图打开时独占键盘、`[agent.subagent]` 新增 `model_context_window` 键且窗口改跟子 agent 自己的模型），但清单仍停在 `1.1.40`：本地 build 的 `--version`、`crates/tact/src/upgrade.rs`（`env!("CARGO_PKG_VERSION")`）与 `USER_AGENT` 都会对着一个已经打过的 tag 报版本。
+
+**决策：** 把清单推到 **1.1.41**，与 subagent 那笔改动**放进同一个 PR**（沿用 v1.1.38 定下的规矩：tag 与它引用的提交在同一个 PR 里，`v1.1.41` 打在**合并后的 `main` 提交**上）。
+
+- **`1.1.41` 无碰撞**：`v1.1.41` 这个 tag 本地与 `origin` 都没有（`origin` 上最新是 `v1.1.40`），直接递增即可，不需要跳号。
+- `Cargo.lock` 的四个条目（`tact` / `tact-ui` / `tact_llm` / `tool_refactor_macros`，均为 `version.workspace = true`）随清单一起提升；`tact_protocol` / `agent_tui_kit` 是独立版本包（`0.1.0`），**不动**。
+- README 徽章与「发版」两行命令同步到 `v1.1.41`——那两行是照抄即用的指令，留在旧版本号上会把人引导去打一个已存在的 tag。
+- **tag 不在这笔提交上打**：`v1.1.41` 指向合并后的 `main` 提交；打在分支提交上会让 tag 引用一个不在 `main` 的提交（v1.1.38 的教训）。
+
+**改后行为：** `tact-ui --version` 报 1.1.41；`upgrade` 的 UA 与自报版本一致；推送 `v1.1.41` 触发 `release.yml`，五个 target 构建并发布 Release。
+
+**Verification：** `git diff Cargo.lock` 只有四条 `version = "1.1.x"` 行变化，无依赖增删（`cargo metadata --locked` 通过，且**没有再改写 `Cargo.lock`**——说明手改的四条正是 cargo 期望的内容）；`scripts/check-rust.sh` 全绿。
+
+**Pointers:** `Cargo.toml`、`Cargo.lock`、`README.md`、`.github/workflows/release.yml`。
+
+---
+
 ## 1. 2026-10-12 — subagent 视图独占键盘（否则整套键位不可达）；卡片外显 ctx、流式刷新与 Back to bottom；顺带修掉 shell 守卫与私钥流式的两处回归
 
 | Field | Value |
