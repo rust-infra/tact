@@ -95,48 +95,63 @@ Runner 根据 outcome、任务图、验收状态和预算决定状态转移。�
 
 Goal 数据与会话 transcript 分开：transcript 记录对话事实；Goal 表记录当前可查询的结构化状态；事件表保留审计轨迹。领域记录沿用同一个工作区的 `.tact/tact.db`。
 
+实际存储采用「**整行 JSON + 少量索引列**」：领域结构体（含标准、证据、预算用量、checkpoint）序列化进 `data` 列，查询和排序只依赖几列不变量。进化领域字段不需要迁移；契约稳定的是聚合语义与索引列。
+
 ### `goals`
 
-拟议字段：
-
 ```text
-id, workspace_id, title, objective, constraints_json,
-status, phase, created_by_session_id, active_session_id,
-active_run_id, version, created_at, updated_at,
-completed_at, completion_summary
+id TEXT PRIMARY KEY, data TEXT NOT NULL,
+status TEXT NOT NULL, version INTEGER NOT NULL, updated_at INTEGER NOT NULL
 ```
+
+索引：`idx_goals_status`、`idx_goals_updated_at`。
+
+`data` 是 `Goal` 聚合的序列化：标题、objective、约束、phase、session 关联、完成时间与摘要，以及**验收标准列表**——每条标准含描述、`required`、`verification_kind`、`status` 和带 `criteria_version` 标签的证据。标准随聚合整体提交，`version` 即标准/证据版本号：用户修改目标或标准时递增，旧版本证据自动失效。CRUD 路径经 `GoalManager`，不允许绕过它直写。
 
 Goal 属于工作区，不只属于创建它的 session。创建 session 与当前执行 session 分开记录，允许用户在后续 session 中查看和恢复。
 
-### `goal_criteria`
+### `goal_criteria`（不存在独立的表）
 
-每条验收标准单独持久化：
+标准不是独立表：它嵌在 `goals.data` 的聚合里，随版本号一起写入。这样证据失效只需比较 `criteria_version`，不存在「标准改了、证据还在旧表里」的分叉。
 
-```text
-id, goal_id, description, required, verification_kind,
-verification_spec_json, status, evidence_json, updated_at
-```
-
-`verification_kind` 至少区分自动检查和人工确认。自动检查的命令、参数和允许范围必须有明确结构，不能从模型自由文本中无审核地执行。证据引用应指向可追溯的工具结果、文件/测试结果或用户确认事件。
+「交互式 `/goal create` 未提供标准时由 driver 加入一个必需的人工标准」就是往这个聚合里写一条 `Human` 标准。
 
 ### `goal_runs`
 
 ```text
-id, goal_id, session_id, status, outcome,
-started_at, heartbeat_at, finished_at,
-turns_used, tool_calls_used, elapsed_ms, tokens_used,
-checkpoint_json, stop_reason
+id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, data TEXT NOT NULL,
+state TEXT NOT NULL CHECK (state IN ('running', 'completed', 'interrupted')),
+started_at INTEGER NOT NULL, finished_at INTEGER, stop_reason TEXT
 ```
 
-Run 记录一次 lease 周期和资源消耗。进程异常退出时可以将过期的活动 Run 标为 `interrupted`，并在创建新 Run 时保留关联关系，不覆盖旧记录。
+索引：`idx_goal_runs_state`、`idx_goal_runs_goal_id`、`idx_goal_runs_started_at`。
+
+`data` 是 `GoalRun` 记录：outcome、`turns_used` / `tool_calls_used` / `elapsed_ms` / `tokens_used`、checkpoint 和结束原因。Run 记录一次 lease 周期和资源消耗。进程异常退出时可以将过期的活动 Run 标为 `interrupted`，并在创建新 Run 时保留关联关系，不覆盖旧记录。
 
 ### `goal_events`
 
-追加式事件日志：创建、用户修改目标或标准、状态转移、Task 关联、Run 开始/结束、验收结果、steering、恢复、取消等。事件用于诊断和审计；不能只依赖内存队列或 TUI 收到过的事件来恢复状态。
+```text
+seq INTEGER PRIMARY KEY AUTOINCREMENT,
+id TEXT NOT NULL UNIQUE, goal_id TEXT NOT NULL,
+data TEXT NOT NULL, occurred_at INTEGER NOT NULL
+```
+
+索引：`idx_goal_events_goal_seq`（`goal_id, seq`）——按 Goal 取区间事件。
+
+追加式事件日志：创建、用户修改目标或标准、状态转移、Task 关联、Run 开始/结束、验收结果、steering、恢复、取消等。`seq` 保证全局顺序。事件用于诊断和审计；不能只依赖内存队列或 TUI 收到过的事件来恢复状态。
+
+### `goal_leases`
+
+```text
+singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+owner TEXT NOT NULL, epoch INTEGER NOT NULL, expires_at INTEGER NOT NULL
+```
+
+工作区内**单行** lease：`singleton = 1` 由 CHECK 约束保证只能有一个写入者。`epoch` 是递增的 fencing 代，所有状态写入必须携带当前 epoch。
 
 ### Task 关联
 
-现有 `tasks` 表增加可空 `goal_id`。既有 Task 不需迁移出虚构 Goal；没有 `goal_id` 的任务继续照常工作。任务依赖仍由现有 DAG 管理。
+现有 `tasks` 表增加可空 `goal_id`，并建 `idx_tasks_goal_id_id` 索引。既有 Task 不需迁移出虚构 Goal；没有 `goal_id` 的任务继续照常工作。任务依赖仍由现有 DAG 管理。
 
 Goal 生命周期更新、Run outcome 写入和事件追加应在可行时使用同一 SQLite 事务，避免 UI 看见已暂停但 run 仍显示活跃等不一致状态。迁移必须幂等，兼容已有数据库。
 

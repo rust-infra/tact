@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust workspace, Tokio, SQLx SQLite, serde, `tact_protocol`, Ratatui / `agent_tui_kit`.
 
-**Spec:** `book/28_chapter_goal_zh.md` (approved design direction; implementation must keep proposal language synchronized with delivered behavior).
+**Spec:** [`docs/superpowers/specs/2026-10-14-agent-goal-design.md`](../specs/2026-10-14-agent-goal-design.md) (approved design); `book/28_chapter_goal_zh.md` is the user-facing chapter and must stay synchronized with delivered behavior.
 
 ## Global Constraints
 

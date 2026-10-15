@@ -383,6 +383,7 @@ Recovery mechanisms inside `agent_loop()`:
 | Background tasks | `background.rs` | Async shell commands with polling via `background_run` / `check_background`. |
 | Memory | `memory/` | One Markdown directory per git repository (`~/.tact/projects/<repo>/memory/`), files with YAML frontmatter (`user`, `feedback`, `project`, `reference`, `modified`). Only the `MEMORY.md` index is injected; bodies via `load_memory`. |
 | Skills | `skill/` | `SKILL.md` under `<workdir>/.tact/skills/`, `~/.tact/skills/`, `~/.agents/skills/`, `.claude/skills/`, plus optional `[agent].skill_dirs`; **summaries** in the system prompt; full body via `load_skill` or TUI slash (`<skill>` wrap). |
+| Durable goals | `goal/` | `GoalManager` + `GoalRunner` supervise cross-turn objectives with SQLite-persisted state, bounded activations (turn/tool/wall-clock budgets), lease fencing, evidence-based verification, and `/goal` commands. Tasks optionally link to a Goal via nullable `goal_id`. See [Ch 28](./book/28_chapter_goal_zh.md). |
 
 ---
 
@@ -398,7 +399,7 @@ block-beta
     end
     block:main
         columns 1
-        log["Log Panel (full width, single column)<br/>Streaming messages<br/>Tool blocks / thinking / code cards<br/>+ sticky task strip when tasks are visible"]
+        log["Log Panel (full width, single column)<br/>Streaming messages<br/>Tool blocks / thinking / code cards<br/>+ sticky strip: tasks / subagents / goals when visible"]
     end
     block:input
         columns 1

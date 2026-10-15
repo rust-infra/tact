@@ -19,7 +19,7 @@
 
 **Verification：** Goal domain 33 个、Goal store 15 个、Task 关联 19 个、Agent 196 个、Runner 15 个、driver 23 个、protocol 27 个、`agent_tui_kit` 412 个，以及 TUI sticky/mouse 聚焦测试通过；完整串行验证见实现计划。
 
-**Pointers:** [Agent Goal](./28_chapter_goal_zh.md)、`GoalStatus`、`GoalRunner::run_once`、`AgentUpdate::GoalsChanged`、`GoalPanelState`。
+**Pointers:** [Agent Goal](./28_chapter_goal_zh.md)、[设计 spec](../docs/superpowers/specs/2026-10-14-agent-goal-design.md)、[实现计划](../docs/superpowers/plans/2026-10-14-agent-goal.md)、`GoalStatus`、`GoalRunner::run_once`、`AgentUpdate::GoalsChanged`、`GoalPanelState`。
 
 ## 1. 2026-10-14 — 日志虚拟卡片支持跨块拖选与顺序复制
 
