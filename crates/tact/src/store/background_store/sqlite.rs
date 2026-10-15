@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -87,7 +88,7 @@ impl SqliteBackgroundStore {
 fn row_to_record(row: &sqlx::sqlite::SqliteRow) -> Result<BackgroundTaskRecord> {
     Ok(BackgroundTaskRecord {
         id: row.try_get("id")?,
-        status: BackgroundTaskStatus::try_from(row.try_get::<String, _>("status")?.as_str())?,
+        status: BackgroundTaskStatus::from_str(row.try_get::<String, _>("status")?.as_str())?,
         command: row.try_get("command")?,
         session_id: row.try_get("session_id")?,
         started_at: from_millis(row.try_get("started_at")?),

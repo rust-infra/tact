@@ -999,7 +999,11 @@ mod tests {
         // The main checkout is authoritative; every worktree must match it.
         let expected = super::memory_root_for(&repo_root, &home);
 
-        let mut checked = 0;
+        // No live worktree to compare means there is nothing to verify: this
+        // checks the worktrees' mapping, not that the checkout has any.
+        // `.worktrees/` routinely survives as a leftover directory after the
+        // last lane is removed, so requiring a non-zero count made the suite red
+        // on a clean checkout (and on any machine with no lanes open).
         let mut stack = vec![worktrees.clone()];
         while let Some(dir) = stack.pop() {
             let Ok(entries) = std::fs::read_dir(&dir) else {
@@ -1014,18 +1018,11 @@ mod tests {
                         "worktree {} must share the main memory dir",
                         path.display()
                     );
-                    checked += 1;
                 } else if path.is_dir() {
                     stack.push(path);
                 }
             }
         }
-
-        assert!(
-            checked > 0,
-            "no worktrees found under {}",
-            worktrees.display()
-        );
     }
 
     /// The config key is threaded all the way to the decision: a resolved

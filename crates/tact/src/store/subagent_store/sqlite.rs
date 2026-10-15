@@ -1,4 +1,5 @@
 use std::path::Path;
+use std::str::FromStr;
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -63,7 +64,7 @@ impl SqliteSubagentStore {
 fn row_to_run(row: &sqlx::sqlite::SqliteRow) -> Result<SubagentRun> {
     Ok(SubagentRun {
         child_id: row.try_get("child_id")?,
-        status: SubagentStatus::try_from(row.try_get::<String, _>("status")?.as_str())?,
+        status: SubagentStatus::from_str(row.try_get::<String, _>("status")?.as_str())?,
         summary: row.try_get::<Option<String>, _>("summary")?,
         started_at: from_millis(row.try_get("started_at")?),
         finished_at: row

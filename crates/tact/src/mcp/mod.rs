@@ -14,7 +14,8 @@
 //!   the [`rmcp`] crate, fetches its tool list, and proxies calls.
 //! - [`MCPToolRouter`] aggregates all connected clients and routes
 //!   incoming tool calls by name (format: `mcp__<server>__<tool>`).
-//! - [`McpToolName::try_from`] parses this namespaced naming convention.
+//! - [`McpToolName`] parses this namespaced naming convention through its
+//!   [`FromStr`](std::str::FromStr) impl.
 //! - [`load_mcp_router`] is the entry point: scans every source, connects
 //!   servers, and returns a ready-to-use router.
 //!
@@ -48,6 +49,7 @@ use std::{
     fs,
     path::{Component, Path, PathBuf},
     process::Stdio,
+    str::FromStr,
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
@@ -2572,17 +2574,17 @@ pub fn mcp_tool_name(server: &str, tool: &str) -> String {
 }
 
 impl McpToolName {
-    /// The namespaced name, the inverse of `TryFrom<&str>`.
+    /// The namespaced name, the inverse of [`FromStr::from_str`].
     #[must_use]
     pub fn full_name(&self) -> String {
         mcp_tool_name(&self.server, &self.tool)
     }
 }
 
-impl TryFrom<&str> for McpToolName {
-    type Error = anyhow::Error;
+impl std::str::FromStr for McpToolName {
+    type Err = anyhow::Error;
 
-    fn try_from(tool_name: &str) -> Result<Self> {
+    fn from_str(tool_name: &str) -> Result<Self, Self::Err> {
         let Some(rest) = tool_name.strip_prefix("mcp__") else {
             bail!("not an MCP tool name: {tool_name}");
         };
@@ -2633,7 +2635,7 @@ impl MCPToolRouter {
         if !Self::is_mcp_tool(name) {
             return Ok(None);
         }
-        let parsed = McpToolName::try_from(name)?;
+        let parsed = McpToolName::from_str(name)?;
         Ok(Some(ResolvedMcpTool {
             full_name: name.to_string(),
             server: parsed.server.clone(),
@@ -2646,7 +2648,7 @@ impl MCPToolRouter {
         if !Self::is_mcp_tool(name) {
             return None;
         }
-        McpToolName::try_from(name).ok().map(|p| p.server)
+        McpToolName::from_str(name).ok().map(|p| p.server)
     }
 
     /// Connected server names, sorted.
@@ -2741,14 +2743,14 @@ impl MCPToolRouter {
     /// name (`mcp__<server>__<tool>`).
     #[must_use]
     pub fn output_token_limit(&self, full_name: &str) -> Option<usize> {
-        let parsed = McpToolName::try_from(full_name).ok()?;
+        let parsed = McpToolName::from_str(full_name).ok()?;
         self.clients
             .get(&parsed.server)
             .and_then(|client| client.policy().output_token_limit(&parsed.tool))
     }
 
     pub async fn call(&self, tool_name: &str, arguments: Value) -> Result<String> {
-        let parsed = McpToolName::try_from(tool_name)?;
+        let parsed = McpToolName::from_str(tool_name)?;
         let client = self
             .clients
             .get(&parsed.server)
@@ -3581,6 +3583,7 @@ mod tests {
         borrow::Cow,
         collections::{BTreeMap, HashMap},
         path::{Path, PathBuf},
+        str::FromStr,
         sync::Arc,
     };
 
@@ -3879,7 +3882,7 @@ mod tests {
 
     #[test]
     fn parses_mcp_tool_name_with_plugin_server_prefix() {
-        let parsed = McpToolName::try_from("mcp__demo__postgres__query").unwrap();
+        let parsed = McpToolName::from_str("mcp__demo__postgres__query").unwrap();
 
         assert_eq!(parsed.server, "demo__postgres");
         assert_eq!(parsed.tool, "query");
