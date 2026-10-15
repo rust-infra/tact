@@ -114,7 +114,7 @@ fn non_empty(value: String, field: &str) -> Result<String> {
 
 fn event(goal_id: &str, kind: &str, payload: impl Serialize) -> Result<GoalEvent> {
     Ok(GoalEvent {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: crate::goal::new_id(),
         goal_id: goal_id.to_string(),
         run_id: None,
         kind: kind.to_string(),

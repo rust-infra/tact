@@ -14,8 +14,27 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-/// Stable identifier for a Goal. Goal IDs are persisted as UUID strings.
+/// Stable identifier for a Goal. Goal IDs are opaque short-id strings.
 pub type GoalId = String;
+
+/// Characters in a Goal-domain identifier (see [`new_id`]).
+pub const ID_LEN: usize = 8;
+
+/// New identifier for the Goal domain: Goals, criteria, runs and events share
+/// one shape, so no surface has to explain two widths.
+///
+/// A full UUID v4 is 36 characters, and these ids are read (and typed) on every
+/// user-visible surface: `/goal show`, the creation notice, and the
+/// `<goal-context>` injected into each activation — which repeats the Goal id
+/// once plus every criterion id the model has to quote back through
+/// `goal_propose_completion`. Eight hex characters (`git log` style) keep that
+/// readable. Goals are workspace-scoped and few, so the 32-bit space is ample,
+/// and a collision fails loudly on the store's primary key rather than silently
+/// merging two Goals. Legacy rows keep their longer UUIDs: ids are opaque
+/// strings everywhere and are never parsed or length-checked.
+pub fn new_id() -> String {
+    Uuid::new_v4().simple().to_string()[..ID_LEN].to_string()
+}
 
 /// Lifecycle state of a Goal.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -115,7 +134,7 @@ impl GoalCriterion {
         verification_kind: GoalVerificationKind,
     ) -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: new_id(),
             description: description.into(),
             required,
             verification_kind,
@@ -234,7 +253,7 @@ impl Goal {
 
         let now = Utc::now();
         Ok(Self {
-            id: Uuid::new_v4().to_string(),
+            id: new_id(),
             title: input.title,
             objective: input.objective,
             constraints: input.constraints,
@@ -464,7 +483,7 @@ pub struct GoalRun {
 impl GoalRun {
     pub fn new(goal_id: GoalId) -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: new_id(),
             goal_id,
             outcome: None,
             started_at: Utc::now(),
@@ -505,7 +524,7 @@ pub struct GoalEvent {
 impl GoalEvent {
     pub fn run_finished(goal: &Goal, run: &GoalRun, outcome: GoalRunOutcome) -> Self {
         Self {
-            id: Uuid::new_v4().to_string(),
+            id: new_id(),
             goal_id: goal.id.clone(),
             run_id: Some(run.id.clone()),
             kind: "run_finished".to_string(),
@@ -964,6 +983,24 @@ mod tests {
             criteria: vec![GoalCriterion::required("release is published")],
         })
         .expect("valid goal")
+    }
+
+    /// Every id the Goal domain mints is short enough to read and type: the
+    /// user copies the Goal id between commands and the model quotes criterion
+    /// ids back through `goal_propose_completion`.
+    #[test]
+    fn ids_are_short_hex_identifiers() {
+        let goal = create_goal();
+        let run = GoalRun::new(goal.id.clone());
+        let event = GoalEvent::run_finished(&goal, &run, GoalRunOutcome::ProgressMade);
+        for id in [&goal.id, &goal.criteria[0].id, &run.id, &event.id] {
+            assert_eq!(id.len(), ID_LEN, "{id} must be {ID_LEN} characters");
+            assert!(
+                id.chars().all(|c| c.is_ascii_hexdigit()),
+                "{id} must be hex"
+            );
+        }
+        assert_ne!(new_id(), new_id(), "ids must not repeat");
     }
 
     #[test]

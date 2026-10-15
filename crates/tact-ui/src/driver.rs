@@ -10,7 +10,7 @@ use tact::{
     goal::{
         Goal, GoalCreate, GoalCriterion, GoalCriterionStatus, GoalEvent, GoalEvidenceUpdate,
         GoalPhase, GoalStatus, GoalUpdate, GoalVerification, GoalVerificationKind, GoalVerifier,
-        SharedGoalManager,
+        SharedGoalManager, new_id,
     },
     hook::HookControl,
     task::{SharedTaskManager, TaskStatus},
@@ -199,7 +199,7 @@ pub async fn run_command_loop_with_account(
                 .await;
             }
             UserCommand::ListGoals => {
-                emit_goals_changed(&goal_manager, &task_manager, goal_limits, &ui_tx).await;
+                list_goals(&goal_manager, &task_manager, goal_limits, &ui_tx).await;
             }
             UserCommand::ShowGoal { goal_id } => {
                 show_goal(&goal_manager, &task_manager, goal_limits, &goal_id, &ui_tx).await;
@@ -226,6 +226,27 @@ pub async fn run_command_loop_with_account(
                 active = Some(tokio::spawn(async move {
                     handle_user_command(&mut task_agent, UserCommand::SubmitTask(task), &work_dir)
                         .await;
+                    task_agent
+                }));
+            }
+            UserCommand::CreateGoal {
+                title,
+                objective,
+                criteria,
+            } => {
+                // Spawned, not awaited: creating a Goal now runs its first
+                // activation, which must not block the loop that has to keep
+                // serving `Cancel` (same shape as `ResumeGoal` below).
+                if let Some(handle) = active.take() {
+                    agent = Some(handle.await.expect("create goal join panicked"));
+                }
+                let mut task_agent = agent.take().expect("agent available for goal creation");
+                active = Some(tokio::spawn(async move {
+                    if let Some(goal_id) =
+                        create_goal(&mut task_agent, title, objective, criteria).await
+                    {
+                        resume_goal(&mut task_agent, &goal_id).await;
+                    }
                     task_agent
                 }));
             }
@@ -523,6 +544,96 @@ async fn emit_goals_changed(
     }
 }
 
+/// `/goal list` read-out.
+///
+/// The snapshot drives the sticky panel, and that panel hides itself when it has
+/// nothing to show — so in a workspace with no Goals the screen would not change
+/// at all and the command would look broken. Answer in the log as well; unlike
+/// `emit_goals_changed`, only this path speaks when the list is empty.
+async fn list_goals(
+    goal_manager: &SharedGoalManager,
+    task_manager: &SharedTaskManager,
+    limits: GoalLimits,
+    ui_tx: &Option<UnboundedSender<AgentUpdate>>,
+) {
+    match goal_snapshots(goal_manager, task_manager, limits).await {
+        Ok(goals) => {
+            if let Some(tx) = ui_tx {
+                if goals.is_empty() {
+                    let _ = tx.send(AgentUpdate::Info("(no goals)".to_string()));
+                }
+                let _ = tx.send(AgentUpdate::GoalsChanged { goals });
+            }
+        }
+        Err(error) => emit_goal_error(ui_tx, format!("Goal snapshot failed: {error:#}")),
+    }
+}
+
+/// Create a Goal from the command surface, announce it, and return its id.
+///
+/// The interactive surface has no separate confirm step, so creation *is* the
+/// authorization to run: a `draft` Goal that nobody activates is a dead end
+/// (the store keeps it, the Runner never picks it up). The caller starts the
+/// first activation with [`resume_goal`], which drives `Draft → Queued →
+/// Running`.
+///
+/// The snapshot goes out before the announcement: the log line names the id, and
+/// the panel row does not show it.
+async fn create_goal(
+    agent: &mut Agent,
+    title: String,
+    objective: String,
+    criteria: Vec<String>,
+) -> Option<String> {
+    let criteria = if criteria.is_empty() {
+        vec![GoalCriterion::new(
+            "User accepts the completed result",
+            true,
+            GoalVerificationKind::Human,
+        )]
+    } else {
+        criteria
+            .into_iter()
+            .map(|description| GoalCriterion::new(description, true, GoalVerificationKind::Human))
+            .collect()
+    };
+    match agent
+        .tool_context
+        .goal_manager
+        .create(GoalCreate {
+            title,
+            objective,
+            constraints: Vec::new(),
+            criteria,
+        })
+        .await
+    {
+        Ok(goal) => {
+            emit_goals_changed(
+                &agent.tool_context.goal_manager,
+                &agent.tool_context.task_manager,
+                GoalLimits::default(),
+                &agent.runtime.ui_tx,
+            )
+            .await;
+            if let Some(tx) = &agent.runtime.ui_tx {
+                let _ = tx.send(AgentUpdate::Info(format!(
+                    "Goal {} created ({}) - starting run",
+                    goal.id, goal.title
+                )));
+            }
+            Some(goal.id)
+        }
+        Err(error) => {
+            emit_goal_error(
+                &agent.runtime.ui_tx,
+                format!("Goal creation failed: {error:#}"),
+            );
+            None
+        }
+    }
+}
+
 async fn show_goal(
     goal_manager: &SharedGoalManager,
     task_manager: &SharedTaskManager,
@@ -585,7 +696,7 @@ async fn show_goal(
 
 fn goal_event(goal: &Goal, kind: &str, status: Option<GoalStatus>, payload: String) -> GoalEvent {
     GoalEvent {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: new_id(),
         goal_id: goal.id.clone(),
         run_id: None,
         kind: kind.to_string(),
@@ -874,48 +985,14 @@ async fn handle_user_command_with_account(
             objective,
             criteria,
         } => {
-            let criteria = if criteria.is_empty() {
-                vec![GoalCriterion::new(
-                    "User accepts the completed result",
-                    true,
-                    GoalVerificationKind::Human,
-                )]
-            } else {
-                criteria
-                    .into_iter()
-                    .map(|description| {
-                        GoalCriterion::new(description, true, GoalVerificationKind::Human)
-                    })
-                    .collect()
-            };
-            match agent
-                .tool_context
-                .goal_manager
-                .create(GoalCreate {
-                    title,
-                    objective,
-                    constraints: Vec::new(),
-                    criteria,
-                })
-                .await
-            {
-                Ok(_) => {
-                    emit_goals_changed(
-                        &agent.tool_context.goal_manager,
-                        &agent.tool_context.task_manager,
-                        GoalLimits::default(),
-                        &agent.runtime.ui_tx,
-                    )
-                    .await;
-                }
-                Err(error) => emit_goal_error(
-                    &agent.runtime.ui_tx,
-                    format!("Goal creation failed: {error:#}"),
-                ),
+            // Creation is also the start: `/goal create` must not leave a Goal
+            // that never runs (see `create_goal`).
+            if let Some(goal_id) = create_goal(agent, title, objective, criteria).await {
+                resume_goal(agent, &goal_id).await;
             }
         }
         UserCommand::ListGoals => {
-            emit_goals_changed(
+            list_goals(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
                 GoalLimits::default(),
@@ -1280,10 +1357,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn create_goal_persists_and_emits_full_snapshot() {
+    async fn create_goal_persists_starts_and_emits_full_snapshot() {
         install_test_config();
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        // Creation runs the Goal's first activation, so the mock has to be able
+        // to answer a turn.
+        let mock = MockClient::new(vec![(
+            vec![text_block("working")],
+            Some(StopReason::EndTurn),
+        )]);
+        let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
         let manager = agent.tool_context.goal_manager.clone();
 
         super::handle_user_command(
@@ -1305,6 +1388,9 @@ mod tests {
             goals[0].criteria[0].verification_kind,
             tact::goal::GoalVerificationKind::Human
         ));
+        // Creating is also starting: a Goal left in `draft` is one nothing ever
+        // activates, which is exactly the dead end this pins down.
+        assert_eq!(goals[0].status, tact::goal::GoalStatus::Running);
 
         let update = tokio::time::timeout(std::time::Duration::from_secs(1), agent_rx.recv())
             .await
@@ -1315,6 +1401,150 @@ mod tests {
             AgentUpdate::GoalsChanged { goals }
                 if goals.len() == 1 && goals[0].title == "Ship Goal UI"
         ));
+
+        // The announcement carries the id: the panel row does not show it, and
+        // every later command is addressed by it.
+        let goal_id = goals[0].id.clone();
+        let mut announced = false;
+        while let Ok(Some(update)) =
+            tokio::time::timeout(std::time::Duration::from_secs(1), agent_rx.recv()).await
+        {
+            if let AgentUpdate::Info(message) = update {
+                announced = message.contains(&goal_id);
+                break;
+            }
+        }
+        assert!(announced, "goal creation must announce the new goal id");
+    }
+
+    /// An empty workspace must answer *something*: the sticky panel hides itself
+    /// when it has nothing to show, so `/goal list` used to leave the screen
+    /// completely unchanged.
+    #[tokio::test]
+    async fn list_goals_announces_an_empty_workspace() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let ui_tx = agent.runtime.ui_tx.clone();
+
+        super::list_goals(
+            &agent.tool_context.goal_manager,
+            &agent.tool_context.task_manager,
+            super::GoalLimits::default(),
+            &ui_tx,
+        )
+        .await;
+
+        let first = tokio::time::timeout(std::time::Duration::from_secs(1), agent_rx.recv())
+            .await
+            .expect("empty goal list timed out")
+            .expect("goal update channel closed");
+        let empty_notice = match &first {
+            AgentUpdate::Info(message) => message.contains("no goals"),
+            _ => false,
+        };
+        assert!(
+            empty_notice,
+            "an empty list must say so in the log, got {first:?}"
+        );
+
+        let second = tokio::time::timeout(std::time::Duration::from_secs(1), agent_rx.recv())
+            .await
+            .expect("empty goal snapshot timed out")
+            .expect("goal update channel closed");
+        assert!(matches!(second, AgentUpdate::GoalsChanged { goals } if goals.is_empty()));
+    }
+
+    /// Creation now runs the Goal's first activation, which must happen off the
+    /// command loop: `/goal list` (and `Cancel`) have to stay answerable while a
+    /// model call is in flight.
+    #[tokio::test(flavor = "multi_thread")]
+    async fn create_goal_starts_a_run_without_blocking_the_command_loop() {
+        use std::time::Duration;
+
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release_rx = release.clone();
+        let mock = MockClient::with_responder(move |_request, _| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !release_rx.load(std::sync::atomic::Ordering::Relaxed)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok((
+                vec![text_block("progress")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+        let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
+
+        user_cmd_tx
+            .send(UserCommand::CreateGoal {
+                title: "Create starts".into(),
+                objective: "Start the first activation at creation time".into(),
+                criteria: Vec::new(),
+            })
+            .unwrap();
+
+        // The announcement arrives before the activation blocks, so drain to it
+        // and then ask for the list: that answer is what proves the loop is free.
+        let mut announced = false;
+        let drain_deadline = std::time::Instant::now() + Duration::from_millis(900);
+        while std::time::Instant::now() < drain_deadline {
+            match tokio::time::timeout(Duration::from_millis(200), agent_rx.recv()).await {
+                Ok(Some(AgentUpdate::Info(message))) if message.contains("starting run") => {
+                    announced = true;
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
+        assert!(announced, "creation must announce the started run");
+
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let start = std::time::Instant::now();
+        user_cmd_tx.send(UserCommand::ListGoals).unwrap();
+        let mut answered = false;
+        loop {
+            match tokio::time::timeout(Duration::from_millis(300), agent_rx.recv()).await {
+                Ok(Some(AgentUpdate::GoalsChanged { goals })) if goals.len() == 1 => {
+                    answered = true;
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
+        assert!(answered, "expected a Goal snapshot during the activation");
+        assert!(
+            start.elapsed() < Duration::from_millis(450),
+            "ListGoals must not await the creation activation"
+        );
+
+        // Persisted only after the activation claimed the lease, so this is
+        // asserted once the run is provably in flight.
+        let goals = manager.list().await.unwrap();
+        assert_eq!(goals.len(), 1);
+        assert_eq!(goals[0].status, tact::goal::GoalStatus::Running);
+        assert_eq!(
+            manager.list_running_runs().await.unwrap().len(),
+            1,
+            "the created Goal must have an active run"
+        );
+
+        release.store(true, std::sync::atomic::Ordering::Relaxed);
+        drop(user_cmd_tx);
+        tokio::time::timeout(Duration::from_secs(5), loop_handle)
+            .await
+            .expect("command loop must finish")
+            .expect("command loop join failed");
     }
 
     #[tokio::test]

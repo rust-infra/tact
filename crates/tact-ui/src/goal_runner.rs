@@ -27,7 +27,7 @@ use tact::AgentLoopStop;
 use tact::agent::Agent;
 use tact::goal::{
     Goal, GoalEvent, GoalRun, GoalRunOutcome, GoalStatus, GoalUpdate, GoalVerification,
-    GoalVerifier, SharedGoalManager,
+    GoalVerifier, SharedGoalManager, new_id,
 };
 use tact::store::goal_store::LeaseToken;
 use tact::task::TaskRecord;
@@ -761,7 +761,7 @@ impl GoalRunner {
 /// The durable `status_changed` event for one Goal transition.
 fn status_event(goal_id: &str, from: GoalStatus, next: GoalStatus, reason: &str) -> GoalEvent {
     GoalEvent {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: new_id(),
         goal_id: goal_id.to_string(),
         run_id: None,
         kind: "status_changed".to_string(),
@@ -790,7 +790,7 @@ fn finished_run_event(
         payload.push_str(&neutralise(note));
     }
     GoalEvent {
-        id: uuid::Uuid::new_v4().to_string(),
+        id: new_id(),
         goal_id: goal_id.to_string(),
         run_id: Some(run.id.clone()),
         kind: "run_finished".to_string(),

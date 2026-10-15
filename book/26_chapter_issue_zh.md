@@ -4,6 +4,40 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-15 — Goal 域标识符从完整 UUID 换成 8 位短 ID（Goal / 标准 / Run / Event）
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：`/goal show`、创建提示和 `/goal <id>` 命令里的 ID 从 36 字符缩到 8 字符；模型侧 `<goal-context>` 与 `goal_propose_completion` 的 `criterion_id` 同步变短，省 token） |
+| **Related** | `crates/tact/src/goal/mod.rs`、`crates/tact/src/tool/goal.rs`、`crates/tact-ui/src/{driver.rs,goal_runner.rs}`、`book/28_chapter_goal_zh.md` |
+
+**现象 / 动机：** Goal、标准、Run、Event 的 ID 都是完整 UUID v4（36 字符）。它们不是内部编号：`/goal show` 的弹窗和创建提示要把 Goal ID 印给用户照抄，每条命令又要用户把它敲回去；每次 activation 注入的 `<goal-context>` 里还要重复 Goal ID，并为每条验收标准带上一个标准 ID，而模型必须通过 `goal_propose_completion.criterion_id` 把它们原样引用回来。一条 5 标准的 Goal 光 ID 就上百字符，展示上挤占面板宽度，上下文里全是噪声。
+
+**决策：** 新增唯一的铸造点 `goal::new_id()`，返回 UUID v4 的前 8 位十六进制（`git log` 风格缩写），Goal / 标准 / Run / Event 四类共用同一形状，避免同一层出现两种宽度。不改生成格式以外的东西：ID 依然是 `TEXT` 不透明字符串，所有查找、CAS、`tasks.goal_id`、事件表都不动，历史行保留原 UUID。
+
+**改后行为：** 新建 Goal 的 ID 形如 `0443a985`；`/goal show`、创建提示行、`<goal-context>` 与 `goal_read` 返回的 JSON 都随之为同一短 ID。旧数据不受影响——ID 从不被解析或按长度校验，用完整 UUID 依旧能查到那条老 Goal。32 位空间对"按工作区划分、数量很少"的 Goal 足够；万一撞号，会在 store 的主键上直接报错，而不是把两个 Goal 静默合并。
+
+**Verification：** `cargo test -p tact --lib goal`（64）、`cargo test -p tact-ui`（98 + 集成套件）全绿；`cargo test -p tact --lib` 1392 passed / 1 failed，唯一失败是 `memory::tests::the_real_worktrees_in_this_repository_share_the_main_directory`——它断言本机 `.worktrees/` 下有真实 worktree，属环境依赖，与本改动无关（`.worktrees` 当前为空）。新增 `goal::tests::ids_are_short_hex_identifiers` 钉住四类 ID 的长度与十六进制形状。`cargo fmt --all -- --check` 通过。
+
+**Pointers:** [Agent Goal](./28_chapter_goal_zh.md) §4、`goal::new_id`、`GoalId`、`GoalClaimInput.criterion_id`。
+
+## 1. 2026-10-15 — `/goal create` 创建后立即开跑；`/goal list` 空结果不再静默
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：`/goal create` 成功后立刻启动第一次 activation 并在 Log 回报新 Goal ID；`/goal list` 在空工作区给出提示行，不再毫无输出） |
+| **Related** | `crates/tact-ui/src/driver.rs`、`crates/agent_tui_kit/src/i18n.rs`、`book/28_chapter_goal_zh.md` |
+
+**现象 / 动机：** `/goal create <text>` 以前只写库：Goal 停在 `draft`，既不入队也不启动 Runner，`goal_runs` / `goal_events` 一直是空的。用户以为 Goal 在推进，实际它永远不会动，只能自己发现还要再敲一次 `/goal resume <id>`。同一次使用里 `/goal list` 也像"没反应"：它只发 `AgentUpdate::GoalsChanged`，而 Goals sticky panel 的可见性等于快照非空，所以空工作区下屏幕逐像素不变；命令面板里没有任何输出可看。
+
+**决策：** 创建即授权。把建库逻辑抽成 `create_goal`（建库 → 发快照 → Log 回报 ID），成功后直接复用 `resume_goal`，让 Runner 负责 `Draft → Queued → Running`；命令循环里 `CreateGoal` 与 `ResumeGoal` 同形，在可取消的后台任务中执行，循环继续服务 `Cancel` 和读命令。`/goal list` 改走独立的 `list_goals`：快照照旧驱动面板，空结果额外补一行 `(no goals)`；只有 list 路径播报，create/pause 等复用 `emit_goals_changed` 的路径仍静默，避免"最后一个 Goal 刚被删除"被误报成空列表。
+
+**改后行为：** `/goal create <objective>` 之后 Goal 立即进入 `running` 并产生 `goal_runs` 记录，Log 出现 `Goal <id> created (<title>) - starting run`（面板行不显示 ID，而 `show` / `steer` / `accept` 都按 ID 寻址）。空工作区执行 `/goal list` 打印 `(no goals)`。暂停/等待后的继续仍用 `/goal resume`。用法文案同步为 `/goal create <目标>（创建后立即开始执行）`。
+
+**Verification：** `cargo test -p tact-ui`（98 + 各集成套件）与 `cargo test -p agent_tui_kit -p tui`（415 + 718）全绿；其中 goal 相关 25 个用例含新增的 `create_goal_persists_starts_and_emits_full_snapshot`（创建后状态为 `Running`）、`list_goals_announces_an_empty_workspace`、`create_goal_starts_a_run_without_blocking_the_command_loop`（多线程 + 阻塞 mock：activation 阻塞期间 `/goal list` 仍在 450ms 内应答）。`cargo fmt --all -- --check`、`git diff --check` 通过；`cargo clippy -p tact-ui -p agent_tui_kit --all-targets` 的 `recursion_depth_exceeding_limit` 告警数与改动前基线一致（12 = 12），该告警来自既有的 `Box::pin(handle_user_command_with_account)` 递归与 `crates/tact/src/tool/subagent.rs`，与本改动无关。
+
+**Pointers:** [Agent Goal](./28_chapter_goal_zh.md) §2/§12、`driver::create_goal`、`driver::list_goals`、`GoalRunner::run_once`、`GoalPanelState::apply_snapshot`。
+
 ## 1. 2026-10-15 — 持久化 Agent Goal、bounded Runner 与 Goals sticky panel
 
 | Field | Value |

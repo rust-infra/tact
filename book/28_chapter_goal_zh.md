@@ -27,7 +27,7 @@ Goal、Task、Turn 和 PlanStep 是不同层级，不能互相替代：
 ## 2. 用户可见行为
 
 1. 用户通过 `UserCommand::CreateGoal` 或 `/goal create <objective>` 创建 Goal；交互式命令没有显式标准时会加入一个必需的人工作用标准。
-2. Goal 被排入执行队列后，Runner 创建一次有预算的 Run，并让 Agent 检查现状、规划和维护关联 Task DAG。
+2. 创建成功后 driver **立即**把 Goal 交给 Runner 启动第一次 activation（`Draft → Queued → Running`），不需要额外的启动命令：Runner 创建一次有预算的 Run，并让 Agent 检查现状、规划和维护关联 Task DAG。该 activation 在命令循环之外的可取消任务里运行，因此运行期间 `Cancel` 与 `/goal list` 仍然可响应。
 3. 如果仍有可执行工作、没有用户阻塞且预算充足，Runner 可以启动下一执行周期；单次 `agent_loop` 正常结束只表示本次交互结束，不代表 Goal 完成。
 4. 需要用户决定时，Goal 等待用户；需要权限时，继续使用现有权限流程，不推导或扩大授权。
 5. Agent 认为目标已满足时，提交**完成提议**及证据，由 Runner 进入验证阶段。模型的完成文字、所有 Task 已完成或某个 turn 正常结束，均不是成功判据。
@@ -37,8 +37,8 @@ Goal、Task、Turn 和 PlanStep 是不同层级，不能互相替代：
 当前命令表面：
 
 ```text
-/goal list            列出当前工作区的 Goal
-/goal create <text>   创建 Goal，文本同时作为标题和 objective
+/goal list            列出当前工作区的 Goal；为空时在 Log 里提示（此时面板不可见）
+/goal create <text>   创建 Goal（文本同时作为标题和 objective）并立即启动第一次 Run，Log 里回报新 Goal ID
 /goal show <id>       查看目标、标准、任务和验收摘要
 /goal steer <id> <text> 补充方向或约束并写入事件
 /goal pause <id>      暂停执行
@@ -96,6 +96,8 @@ Runner 根据 outcome、任务图、验收状态和预算决定状态转移。�
 Goal 数据与会话 transcript 分开：transcript 记录对话事实；Goal 表记录当前可查询的结构化状态；事件表保留审计轨迹。领域记录沿用同一个工作区的 `.tact/tact.db`。
 
 实际存储采用「**整行 JSON + 少量索引列**」：领域结构体（含标准、证据、预算用量、checkpoint）序列化进 `data` 列，查询和排序只依赖几列不变量。进化领域字段不需要迁移；契约稳定的是聚合语义与索引列。
+
+标识符由 `goal::new_id()` 统一铸造：Goal、标准、Run、Event 共用 **8 位十六进制**短 ID（`git log` 风格）。这些 ID 同时出现在用户要读要敲的地方（`/goal show`、创建提示、`/goal <id>` 命令）和模型要回填的地方（`goal_propose_completion` 的 `criterion_id`、每次 activation 注入的 `<goal-context>`），完整 UUID v4 的 36 字符在这两处都是纯浪费。Goal 按工作区划分且数量很少，32 位空间足够；ID 在所有代码路径上都是不透明字符串，从不解析、不校验长度，因此历史库里更长的 UUID 行继续可用。
 
 ### `goals`
 
@@ -277,6 +279,7 @@ Headless 与交互式模式共用同一个 GoalRunner 和状态机。Headless �
 ## 12. 当前限制
 
 - `/goal create` 的文本命令只提供默认人工作用标准；复杂的自动标准仍需通过 API/领域层创建。
+- `/goal resume <id>` 既用于恢复 `paused` / `waiting_user` / `waiting_permission` 的 Goal，也用于推进 `draft` / `queued`；终态（`succeeded` / `failed` / `cancelled`）不能直接继续。
 - 当前协议提供完整 Goal 集合快照，没有单独的 `GoalRunChanged` 增量事件；运行预算在活动 run 中展示，完成 run 的详细审计保存在事件表。
 - Goal sticky panel 提供状态、预算、Task 进度、验收摘要、等待原因和标准列表；具体标准操作仍通过 `/goal accept` 等命令完成。
 
