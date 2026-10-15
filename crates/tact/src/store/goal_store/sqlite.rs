@@ -81,7 +81,7 @@ impl SqliteGoalStore {
         lease: Option<&LeaseToken>,
     ) -> Result<Goal> {
         if let Some(token) = lease {
-            validate_lease(&mut **tx, token).await?;
+            validate_lease(tx, token).await?;
         }
         let row = sqlx::query("SELECT data, version FROM goals WHERE id = ?")
             .bind(goal_id)
@@ -122,7 +122,7 @@ impl SqliteGoalStore {
             if event.goal_id != goal_id {
                 return Err(anyhow::anyhow!("event goal id does not match updated goal"));
             }
-            insert_event(&mut **tx, &event).await?;
+            insert_event(tx, &event).await?;
         }
         Ok(goal)
     }
@@ -169,7 +169,7 @@ impl SqliteGoalStore {
                         epoch: current_epoch,
                     })
                 } else {
-                    interrupt_running(&mut **tx, now, "lease expired").await?;
+                    interrupt_running(tx, now, "lease expired").await?;
                     let epoch = current_epoch.saturating_add(1);
                     sqlx::query("UPDATE goal_leases SET owner = ?, epoch = ?, expires_at = ? WHERE singleton = 1 AND epoch = ? AND expires_at <= ?")
                         .bind(owner).bind(epoch).bind(expires).bind(current_epoch).bind(now)
@@ -244,7 +244,7 @@ impl GoalStore for SqliteGoalStore {
             .fetch_optional(&mut *tx)
             .await?
             .ok_or_else(|| not_found("goal", &event.goal_id))?;
-        insert_event(&mut *tx, &event).await?;
+        insert_event(&mut tx, &event).await?;
         tx.commit().await?;
         Ok(event)
     }
@@ -268,7 +268,7 @@ impl GoalStore for SqliteGoalStore {
 
     async fn heartbeat_lease(&self, token: &LeaseToken, ttl: Duration) -> Result<LeaseToken> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        validate_lease(&mut *tx, token).await?;
+        validate_lease(&mut tx, token).await?;
         let expires = now_millis().saturating_add(ttl.as_millis().min(i64::MAX as u128) as i64);
         let changed = sqlx::query(
             "UPDATE goal_leases SET expires_at = ? WHERE singleton = 1 AND owner = ? AND epoch = ?",
@@ -288,7 +288,7 @@ impl GoalStore for SqliteGoalStore {
 
     async fn release_lease(&self, token: &LeaseToken) -> Result<()> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        validate_lease(&mut *tx, token).await?;
+        validate_lease(&mut tx, token).await?;
         sqlx::query(
             "UPDATE goal_leases SET expires_at = ? WHERE singleton = 1 AND owner = ? AND epoch = ?",
         )
@@ -330,7 +330,7 @@ impl GoalStore for SqliteGoalStore {
 
     async fn finish_run(&self, token: &LeaseToken, run: GoalRun) -> Result<GoalRun> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        validate_lease(&mut *tx, token).await?;
+        validate_lease(&mut tx, token).await?;
         if run.finished_at.is_none() || run.outcome.is_none() {
             return Err(anyhow::Error::new(GoalStoreError::RunNotFinished {
                 run_id: run.id.clone(),
@@ -393,7 +393,7 @@ impl GoalStore for SqliteGoalStore {
             .map(|r| r.try_get::<i64, _>("expires_at").unwrap_or(0) <= now_millis())
             .unwrap_or(false);
         let recovered = if expired {
-            interrupt_running(&mut *tx, now_millis(), "lease expired").await?
+            interrupt_running(&mut tx, now_millis(), "lease expired").await?
         } else {
             Vec::new()
         };

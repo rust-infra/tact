@@ -205,10 +205,10 @@ impl TaskStore for SqliteTaskStore {
             .await?
             .with_context(|| format!("Task {task_id} not found"))?;
         let existing: Option<String> = row.try_get("goal_id")?;
-        if let Some(existing) = existing {
-            if existing != goal_id {
-                anyhow::bail!("Task {task_id} already belongs to goal {existing}");
-            }
+        if let Some(existing) = existing
+            && existing != goal_id
+        {
+            anyhow::bail!("Task {task_id} already belongs to goal {existing}");
         }
         sqlx::query("UPDATE tasks SET goal_id = ? WHERE id = ?")
             .bind(&goal_id)
