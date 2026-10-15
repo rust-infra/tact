@@ -6,6 +6,7 @@ use std::{
 use super::{Tool, ToolCallResult, ToolContext, ToolRouter};
 use crate::{
     background::{BackgroundManager, SharedBackgroundManager},
+    goal::{GoalManager, SharedGoalManager},
     memory::MemoryManager,
     skill::{SharedSkillRegistry, SkillRegistry},
     subagent::{SharedSubagentManager, SubagentManager},
@@ -79,6 +80,8 @@ pub fn test_context(name: &str) -> ToolContext {
         ))),
         work_dir: root_dir.clone(),
         task_manager: SharedTaskManager::new(block_on(TaskManager::new(&db_path)).unwrap()),
+        goal_manager: SharedGoalManager::new(block_on(GoalManager::new(&db_path)).unwrap()),
+        active_goal_id: None,
         background_manager: SharedBackgroundManager::new(
             block_on(BackgroundManager::new(&db_path)).unwrap(),
         ),

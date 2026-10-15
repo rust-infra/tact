@@ -24,6 +24,21 @@ pub trait TaskStore: Send + Sync {
         session_id: String,
     ) -> Result<TaskRecord>;
 
+    /// Creates a task associated with a validated Goal.
+    async fn create_for_goal(
+        &self,
+        subject: String,
+        description: Option<String>,
+        session_id: String,
+        goal_id: String,
+    ) -> Result<TaskRecord>;
+
+    /// Associates a task with a validated Goal.
+    async fn associate_goal(&self, task_id: u64, goal_id: String) -> Result<TaskRecord>;
+
+    /// Lists non-deleted tasks for a Goal, including dependency edges.
+    async fn list_for_goal(&self, goal_id: &str) -> Result<Vec<TaskRecord>>;
+
     /// Reads a task by id, including its dependency edges.
     async fn get(&self, task_id: u64) -> Result<TaskRecord>;
 

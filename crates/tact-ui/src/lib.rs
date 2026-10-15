@@ -1,6 +1,7 @@
 //! Library surface for `tact-ui` (binary + integration tests).
 
 pub mod driver;
+pub mod goal_runner;
 pub mod headless_session;
 pub mod hooks_cli;
 pub mod mcp_cli;

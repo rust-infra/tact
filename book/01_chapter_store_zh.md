@@ -150,6 +150,10 @@ root.collection::<T>(relative_dir)?              // CollectionStore<T> — 按�
 | `worktrees` | worktree 泳道：`name`（UNIQUE）、`path`、`branch`、`task_id`、`status`、`session_id`、`created_at` |
 | `worktree_events` | 泳道审计日志：`event`、`created_at`；`id` 为排序键 |
 | `subagent_runs` | 子 agent 运行记录（`SubagentStore`，同库）：`child_id`（PK，即子会话 id）、`status`（CHECK：`running`/`completed`/`failed`/`cancelled`）、`summary`、`started_at`/`finished_at`（毫秒） |
+| `goals` / `goal_criteria` | Goal 聚合、生命周期、标准版本、证据与完成时间 |
+| `goal_runs` / `goal_events` / `goal_leases` | bounded Run、追加式审计事件、工作区 singleton lease 与 fencing epoch |
+
+Goal store 与 Task store 共用 `.tact/tact.db`。`tasks.goal_id` 是 nullable 迁移字段，旧 Task 保持可读；Goal 生命周期更新、事件追加和 run/lease 写入通过 `GoalManager` 的 SQLite store 完成，重启恢复不依赖内存队列。
 
 ### Agent 集成
 

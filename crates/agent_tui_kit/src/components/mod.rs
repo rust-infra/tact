@@ -9,6 +9,7 @@
 //! as the app layer migrates.
 
 pub mod background_panel;
+pub mod goal_panel;
 pub mod plan;
 pub mod registry;
 pub mod status_bar;
@@ -19,6 +20,7 @@ pub mod thinking;
 pub mod tool;
 
 pub use background_panel::BackgroundPanelComponent;
+pub use goal_panel::GoalPanelComponent;
 pub use plan::PlanComponent;
 pub use registry::ComponentRegistry;
 pub use status_bar::StatusBarComponent;

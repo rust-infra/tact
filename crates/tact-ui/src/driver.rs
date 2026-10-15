@@ -1,17 +1,67 @@
 //! Interactive-mode command driver: bridges `UserCommand` from the TUI to `Agent`.
 
-use std::{path::Path, sync::atomic::Ordering};
+use std::{collections::HashMap, path::Path, sync::atomic::Ordering};
 
+use anyhow::Result;
+use chrono::Utc;
 use tact::background::SharedBackgroundManager;
-use tact::{Agent, extract_text, hook::HookControl, utils::RwLockExt};
+use tact::{
+    Agent, extract_text,
+    goal::{
+        Goal, GoalCreate, GoalCriterion, GoalCriterionStatus, GoalEvent, GoalEvidenceUpdate,
+        GoalPhase, GoalStatus, GoalUpdate, GoalVerification, GoalVerificationKind, GoalVerifier,
+        SharedGoalManager,
+    },
+    hook::HookControl,
+    task::{SharedTaskManager, TaskStatus},
+    utils::RwLockExt,
+};
 use tact_llm::{Message, Role};
-use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, UserCommand};
+use tact_protocol::{
+    AccountUpdate, AgentErrorKind, AgentUpdate, GoalAcceptanceSnapshot, GoalCriterionSnapshot,
+    GoalCriterionStatusSnapshot, GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot,
+    GoalStatusSnapshot, UserCommand,
+};
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
 };
 
-use crate::{account, user_message::build_user_message};
+use crate::{
+    account,
+    goal_runner::{GoalLimits, GoalRunner},
+    user_message::build_user_message,
+};
+
+/// Reconcile durable Goal/run state after a restart, once, before the command
+/// loop serves anything.
+///
+/// Recovery is best-effort and never fatal: whatever it could not repair is
+/// reported as an informational update so the user can see it, and the loop
+/// keeps running.
+async fn recover_interrupted_goals(agent: &Agent) {
+    let runner = GoalRunner::new(
+        agent.tool_context.goal_manager.clone(),
+        GoalLimits::default(),
+    );
+    let runner = match agent.runtime.session_id.as_deref() {
+        Some(session_id) => runner.with_owner(format!("tact-ui:{session_id}")),
+        None => runner,
+    };
+    match runner.recover_interrupted().await {
+        Ok(recovered) => {
+            for run in recovered {
+                agent.emit_update(AgentUpdate::Info(format!(
+                    "[goal] recovered interrupted run {}; goal {} paused",
+                    run.id, run.goal_id
+                )));
+            }
+        }
+        Err(error) => agent.emit_update(AgentUpdate::Info(format!(
+            "[goal] recovery failed; goal state may be stale: {error:#}"
+        ))),
+    }
+}
 
 /// Process `UserCommand`s until the channel closes, then shut down MCP.
 ///
@@ -55,6 +105,15 @@ pub async fn run_command_loop_with_account(
     // Agent back, so a listing opens the moment it is asked for.
     let background_manager = agent.tool_context.background_manager.clone();
     let background_session_id = agent.runtime.session_id.clone();
+    let goal_manager = agent.tool_context.goal_manager.clone();
+    let task_manager = agent.tool_context.task_manager.clone();
+    let goal_limits = GoalLimits::default();
+
+    // Reconcile durable Goal state once, before serving commands: a crashed
+    // runner leaves an active run with an expired lease and a Goal still marked
+    // `Running`. Non-fatal by design - a recovery failure is reported, never
+    // allowed to take the command loop down with it.
+    recover_interrupted_goals(&agent).await;
 
     let mut agent = Some(agent);
     let mut active: Option<JoinHandle<Agent>> = None;
@@ -139,6 +198,12 @@ pub async fn run_command_loop_with_account(
                 )
                 .await;
             }
+            UserCommand::ListGoals => {
+                emit_goals_changed(&goal_manager, &task_manager, goal_limits, &ui_tx).await;
+            }
+            UserCommand::ShowGoal { goal_id } => {
+                show_goal(&goal_manager, &task_manager, goal_limits, &goal_id, &ui_tx).await;
+            }
             UserCommand::SubagentFinishedNotification { .. } => {
                 // If a turn is active, retain the wake-up until that turn's
                 // JoinHandle completes. Otherwise the notification could be
@@ -161,6 +226,26 @@ pub async fn run_command_loop_with_account(
                 active = Some(tokio::spawn(async move {
                     handle_user_command(&mut task_agent, UserCommand::SubmitTask(task), &work_dir)
                         .await;
+                    task_agent
+                }));
+            }
+            UserCommand::ResumeGoal { goal_id } => {
+                if let Some(handle) = active.take() {
+                    agent = Some(handle.await.expect("resume goal join panicked"));
+                }
+                let mut task_agent = agent.take().expect("agent available for goal resume");
+                active = Some(tokio::spawn(async move {
+                    resume_goal(&mut task_agent, &goal_id).await;
+                    task_agent
+                }));
+            }
+            UserCommand::AcceptGoal { goal_id, text } => {
+                if let Some(handle) = active.take() {
+                    agent = Some(handle.await.expect("accept goal join panicked"));
+                }
+                let mut task_agent = agent.take().expect("agent available for goal acceptance");
+                active = Some(tokio::spawn(async move {
+                    accept_goal(&mut task_agent, &goal_id, &text).await;
                     task_agent
                 }));
             }
@@ -306,6 +391,461 @@ async fn render_mcp_prompt(
         .map_err(|error| format!("MCP prompt {server}/{name} failed: {error:#}"))
 }
 
+fn goal_status_snapshot(status: GoalStatus) -> GoalStatusSnapshot {
+    match status {
+        GoalStatus::Draft => GoalStatusSnapshot::Draft,
+        GoalStatus::Queued => GoalStatusSnapshot::Queued,
+        GoalStatus::Running => GoalStatusSnapshot::Running,
+        GoalStatus::WaitingUser => GoalStatusSnapshot::WaitingUser,
+        GoalStatus::WaitingPermission => GoalStatusSnapshot::WaitingPermission,
+        GoalStatus::Paused => GoalStatusSnapshot::Paused,
+        GoalStatus::Verifying => GoalStatusSnapshot::Verifying,
+        GoalStatus::Succeeded => GoalStatusSnapshot::Succeeded,
+        GoalStatus::Failed => GoalStatusSnapshot::Failed,
+        GoalStatus::Cancelled => GoalStatusSnapshot::Cancelled,
+    }
+}
+
+fn goal_phase_snapshot(phase: GoalPhase) -> GoalPhaseSnapshot {
+    match phase {
+        GoalPhase::Planning => GoalPhaseSnapshot::Planning,
+        GoalPhase::Execution => GoalPhaseSnapshot::Execution,
+        GoalPhase::Verification => GoalPhaseSnapshot::Verification,
+    }
+}
+
+fn criterion_status_snapshot(status: GoalCriterionStatus) -> GoalCriterionStatusSnapshot {
+    match status {
+        GoalCriterionStatus::Pending => GoalCriterionStatusSnapshot::Pending,
+        GoalCriterionStatus::Passed => GoalCriterionStatusSnapshot::Passed,
+        GoalCriterionStatus::Rejected => GoalCriterionStatusSnapshot::Rejected,
+    }
+}
+
+async fn goal_snapshots(
+    goal_manager: &SharedGoalManager,
+    task_manager: &SharedTaskManager,
+    limits: GoalLimits,
+) -> Result<Vec<GoalSnapshot>> {
+    let running_by_goal: HashMap<_, _> = goal_manager
+        .list_running_runs()
+        .await?
+        .into_iter()
+        .map(|run| (run.goal_id.clone(), run))
+        .collect();
+    let mut snapshots = Vec::new();
+    for goal in goal_manager.list().await? {
+        let tasks = task_manager.list_for_goal(&goal.id).await?;
+        let events = goal_manager.list_events(&goal.id).await?;
+        let wait_reason = events
+            .iter()
+            .rev()
+            .find(|event| {
+                event.status == Some(goal.status)
+                    && matches!(
+                        goal.status,
+                        GoalStatus::WaitingUser
+                            | GoalStatus::WaitingPermission
+                            | GoalStatus::Paused
+                    )
+            })
+            .and_then(|event| event.payload.clone());
+        let criteria: Vec<_> = goal
+            .criteria
+            .iter()
+            .map(|criterion| GoalCriterionSnapshot {
+                id: criterion.id.clone(),
+                description: criterion.description.clone(),
+                required: criterion.required,
+                human: criterion.verification_kind == GoalVerificationKind::Human,
+                status: criterion_status_snapshot(criterion.status),
+                evidence_count: criterion.evidence.len(),
+            })
+            .collect();
+        let required = goal.criteria.iter().filter(|criterion| criterion.required);
+        let acceptance = GoalAcceptanceSnapshot {
+            required: required.clone().count(),
+            passed: required
+                .clone()
+                .filter(|criterion| criterion.status == GoalCriterionStatus::Passed)
+                .count(),
+            pending: required
+                .clone()
+                .filter(|criterion| criterion.status == GoalCriterionStatus::Pending)
+                .count(),
+            rejected: required
+                .filter(|criterion| criterion.status == GoalCriterionStatus::Rejected)
+                .count(),
+        };
+        let run_budget = running_by_goal
+            .get(&goal.id)
+            .map(|run| GoalRunBudgetSnapshot {
+                turns_used: run.turns_used.min(u32::MAX as u64) as u32,
+                turn_limit: limits.max_turns,
+                tool_calls_used: run.tool_calls_used.min(u32::MAX as u64) as u32,
+                tool_call_limit: limits.max_tool_calls.min(u32::MAX as u64) as u32,
+                elapsed_ms: run.elapsed_ms,
+                wall_clock_limit_ms: limits.max_elapsed.as_millis().min(u64::MAX as u128) as u64,
+            });
+        snapshots.push(GoalSnapshot {
+            id: goal.id.clone(),
+            title: goal.title,
+            objective: goal.objective,
+            status: goal_status_snapshot(goal.status),
+            phase: goal_phase_snapshot(goal.phase),
+            criteria,
+            task_total: tasks.len(),
+            task_completed: tasks
+                .iter()
+                .filter(|task| task.status == TaskStatus::Completed)
+                .count(),
+            wait_reason,
+            acceptance,
+            run_budget,
+        });
+    }
+    Ok(snapshots)
+}
+
+async fn emit_goals_changed(
+    goal_manager: &SharedGoalManager,
+    task_manager: &SharedTaskManager,
+    limits: GoalLimits,
+    ui_tx: &Option<UnboundedSender<AgentUpdate>>,
+) {
+    match goal_snapshots(goal_manager, task_manager, limits).await {
+        Ok(goals) => {
+            if let Some(tx) = ui_tx {
+                let _ = tx.send(AgentUpdate::GoalsChanged { goals });
+            }
+        }
+        Err(error) => emit_goal_error(ui_tx, format!("Goal snapshot failed: {error:#}")),
+    }
+}
+
+async fn show_goal(
+    goal_manager: &SharedGoalManager,
+    task_manager: &SharedTaskManager,
+    limits: GoalLimits,
+    goal_id: &str,
+    ui_tx: &Option<UnboundedSender<AgentUpdate>>,
+) {
+    match goal_snapshots(goal_manager, task_manager, limits).await {
+        Ok(goals) => {
+            let selected = goals.iter().find(|goal| goal.id == goal_id).cloned();
+            if let Some(tx) = ui_tx {
+                let _ = tx.send(AgentUpdate::GoalsChanged {
+                    goals: goals.clone(),
+                });
+                match selected {
+                    Some(goal) => {
+                        let criteria = if goal.criteria.is_empty() {
+                            "- (none)".to_string()
+                        } else {
+                            goal.criteria
+                                .iter()
+                                .map(|criterion| {
+                                    format!(
+                                        "- {:?}: {}{}",
+                                        criterion.status,
+                                        criterion.description,
+                                        if criterion.required {
+                                            " (required)"
+                                        } else {
+                                            ""
+                                        }
+                                    )
+                                })
+                                .collect::<Vec<_>>()
+                                .join("\n")
+                        };
+                        let _ = tx.send(AgentUpdate::PopupMarkdown {
+                            title: format!("Goal: {}", goal.title),
+                            source: format!(
+                                "**ID:** `{}`\n\n**Status:** `{:?}` / `{:?}`\n\n{}\n\n**Tasks:** {}/{}\n\n**Acceptance:** {}/{} passed\n\n{}",
+                                goal.id,
+                                goal.status,
+                                goal.phase,
+                                goal.objective,
+                                goal.task_completed,
+                                goal.task_total,
+                                goal.acceptance.passed,
+                                goal.acceptance.required,
+                                criteria
+                            ),
+                        });
+                    }
+                    None => emit_goal_error(ui_tx, format!("Goal {goal_id} not found")),
+                }
+            }
+        }
+        Err(error) => emit_goal_error(ui_tx, format!("Goal show failed: {error:#}")),
+    }
+}
+
+fn goal_event(goal: &Goal, kind: &str, status: Option<GoalStatus>, payload: String) -> GoalEvent {
+    GoalEvent {
+        id: uuid::Uuid::new_v4().to_string(),
+        goal_id: goal.id.clone(),
+        run_id: None,
+        kind: kind.to_string(),
+        status,
+        outcome: None,
+        payload: Some(payload),
+        occurred_at: Utc::now(),
+    }
+}
+
+fn emit_goal_error(ui_tx: &Option<UnboundedSender<AgentUpdate>>, message: String) {
+    if let Some(tx) = ui_tx {
+        let _ = tx.send(AgentUpdate::Error(AgentErrorKind::Other(message)));
+    }
+}
+
+async fn update_goal_status(
+    agent: &Agent,
+    goal_id: &str,
+    status: GoalStatus,
+    reason: &str,
+) -> bool {
+    let manager = &agent.tool_context.goal_manager;
+    let result = async {
+        let goal = manager.get(goal_id).await?;
+        manager
+            .update(
+                goal_id,
+                goal.version,
+                GoalUpdate {
+                    status: Some(status),
+                    ..GoalUpdate::default()
+                },
+                Some(goal_event(
+                    &goal,
+                    "status_changed",
+                    Some(status),
+                    reason.into(),
+                )),
+                None,
+            )
+            .await
+    }
+    .await;
+    match result {
+        Ok(_) => {
+            emit_goals_changed(
+                manager,
+                &agent.tool_context.task_manager,
+                GoalLimits::default(),
+                &agent.runtime.ui_tx,
+            )
+            .await;
+            true
+        }
+        Err(error) => {
+            emit_goal_error(
+                &agent.runtime.ui_tx,
+                format!("Goal {goal_id} status update failed: {error:#}"),
+            );
+            false
+        }
+    }
+}
+
+async fn resume_goal(agent: &mut Agent, goal_id: &str) {
+    let goal = match agent.tool_context.goal_manager.get(goal_id).await {
+        Ok(goal) => goal,
+        Err(error) => {
+            emit_goal_error(
+                &agent.runtime.ui_tx,
+                format!("Goal {goal_id} not found: {error:#}"),
+            );
+            return;
+        }
+    };
+    if matches!(
+        goal.status,
+        GoalStatus::Paused | GoalStatus::WaitingUser | GoalStatus::WaitingPermission
+    ) && !update_goal_status(agent, goal_id, GoalStatus::Running, "resumed by user").await
+    {
+        return;
+    }
+    let runner = GoalRunner::new(
+        agent.tool_context.goal_manager.clone(),
+        GoalLimits::default(),
+    );
+    if let Err(error) = runner.run_once(agent, goal_id).await {
+        emit_goal_error(
+            &agent.runtime.ui_tx,
+            format!("Goal {goal_id} activation failed: {error:#}"),
+        );
+    }
+    emit_goals_changed(
+        &agent.tool_context.goal_manager,
+        &agent.tool_context.task_manager,
+        GoalLimits::default(),
+        &agent.runtime.ui_tx,
+    )
+    .await;
+}
+
+async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
+    let text = text.trim();
+    if text.is_empty() {
+        emit_goal_error(
+            &agent.runtime.ui_tx,
+            format!("Goal {goal_id} acceptance text must not be empty"),
+        );
+        return;
+    }
+    let manager = agent.tool_context.goal_manager.clone();
+    let goal = match manager.get(goal_id).await {
+        Ok(goal) => goal,
+        Err(error) => {
+            emit_goal_error(
+                &agent.runtime.ui_tx,
+                format!("Goal {goal_id} not found: {error:#}"),
+            );
+            return;
+        }
+    };
+    if goal.status != GoalStatus::WaitingUser {
+        emit_goal_error(
+            &agent.runtime.ui_tx,
+            format!(
+                "Goal {goal_id} is {:?}; acceptance requires waiting_user",
+                goal.status
+            ),
+        );
+        return;
+    }
+    let evidence: Vec<_> = goal
+        .criteria
+        .iter()
+        .filter(|criterion| {
+            criterion.required
+                && criterion.verification_kind == GoalVerificationKind::Human
+                && !criterion.has_valid_evidence(goal.criteria_version)
+        })
+        .map(|criterion| GoalEvidenceUpdate {
+            criterion_id: criterion.id.clone(),
+            value: text.to_string(),
+        })
+        .collect();
+    if evidence.is_empty() {
+        emit_goal_error(
+            &agent.runtime.ui_tx,
+            format!("Goal {goal_id} has no pending required human criterion"),
+        );
+        return;
+    }
+    let resumed = match manager
+        .update(
+            goal_id,
+            goal.version,
+            GoalUpdate {
+                evidence,
+                status: Some(GoalStatus::Running),
+                ..GoalUpdate::default()
+            },
+            Some(goal_event(
+                &goal,
+                "user_accepted",
+                Some(GoalStatus::Running),
+                text.to_string(),
+            )),
+            None,
+        )
+        .await
+    {
+        Ok(goal) => goal,
+        Err(error) => {
+            emit_goal_error(
+                &agent.runtime.ui_tx,
+                format!("Goal {goal_id} acceptance failed: {error:#}"),
+            );
+            return;
+        }
+    };
+
+    match GoalVerifier::verify(&resumed) {
+        GoalVerification::Verified => {
+            let verifying = match manager
+                .update(
+                    goal_id,
+                    resumed.version,
+                    GoalUpdate {
+                        status: Some(GoalStatus::Verifying),
+                        ..GoalUpdate::default()
+                    },
+                    Some(goal_event(
+                        &resumed,
+                        "status_changed",
+                        Some(GoalStatus::Verifying),
+                        "human acceptance verified".into(),
+                    )),
+                    None,
+                )
+                .await
+            {
+                Ok(goal) => goal,
+                Err(error) => {
+                    emit_goal_error(
+                        &agent.runtime.ui_tx,
+                        format!("Goal {goal_id} verification failed: {error:#}"),
+                    );
+                    return;
+                }
+            };
+            if let Err(error) = manager
+                .update(
+                    goal_id,
+                    verifying.version,
+                    GoalUpdate {
+                        status: Some(GoalStatus::Succeeded),
+                        ..GoalUpdate::default()
+                    },
+                    Some(goal_event(
+                        &verifying,
+                        "status_changed",
+                        Some(GoalStatus::Succeeded),
+                        "accepted by user".into(),
+                    )),
+                    None,
+                )
+                .await
+            {
+                emit_goal_error(
+                    &agent.runtime.ui_tx,
+                    format!("Goal {goal_id} completion failed: {error:#}"),
+                );
+                return;
+            }
+        }
+        GoalVerification::Rejected { .. } => {
+            let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
+            if let Err(error) = runner.run_once(agent, goal_id).await {
+                emit_goal_error(
+                    &agent.runtime.ui_tx,
+                    format!("Goal {goal_id} continuation failed: {error:#}"),
+                );
+            }
+        }
+        GoalVerification::NeedsUser { .. } => {
+            emit_goal_error(
+                &agent.runtime.ui_tx,
+                format!("Goal {goal_id} still needs additional human acceptance"),
+            );
+        }
+    }
+    emit_goals_changed(
+        &manager,
+        &agent.tool_context.task_manager,
+        GoalLimits::default(),
+        &agent.runtime.ui_tx,
+    )
+    .await;
+}
+
 pub async fn handle_user_command(agent: &mut Agent, cmd: UserCommand, image_work_dir: &Path) {
     handle_user_command_with_account(agent, cmd, image_work_dir, None).await;
 }
@@ -317,6 +857,104 @@ async fn handle_user_command_with_account(
     account_tx: Option<&UnboundedSender<AccountUpdate>>,
 ) {
     match cmd {
+        UserCommand::CreateGoal {
+            title,
+            objective,
+            criteria,
+        } => {
+            let criteria = if criteria.is_empty() {
+                vec![GoalCriterion::new(
+                    "User accepts the completed result",
+                    true,
+                    GoalVerificationKind::Human,
+                )]
+            } else {
+                criteria
+                    .into_iter()
+                    .map(|description| {
+                        GoalCriterion::new(description, true, GoalVerificationKind::Human)
+                    })
+                    .collect()
+            };
+            match agent
+                .tool_context
+                .goal_manager
+                .create(GoalCreate {
+                    title,
+                    objective,
+                    constraints: Vec::new(),
+                    criteria,
+                })
+                .await
+            {
+                Ok(_) => {
+                    emit_goals_changed(
+                        &agent.tool_context.goal_manager,
+                        &agent.tool_context.task_manager,
+                        GoalLimits::default(),
+                        &agent.runtime.ui_tx,
+                    )
+                    .await;
+                }
+                Err(error) => emit_goal_error(
+                    &agent.runtime.ui_tx,
+                    format!("Goal creation failed: {error:#}"),
+                ),
+            }
+        }
+        UserCommand::ListGoals => {
+            emit_goals_changed(
+                &agent.tool_context.goal_manager,
+                &agent.tool_context.task_manager,
+                GoalLimits::default(),
+                &agent.runtime.ui_tx,
+            )
+            .await;
+        }
+        UserCommand::ShowGoal { goal_id } => {
+            show_goal(
+                &agent.tool_context.goal_manager,
+                &agent.tool_context.task_manager,
+                GoalLimits::default(),
+                &goal_id,
+                &agent.runtime.ui_tx,
+            )
+            .await;
+        }
+        UserCommand::SteerGoal { goal_id, text } => {
+            let result = async {
+                let goal = agent.tool_context.goal_manager.get(&goal_id).await?;
+                agent
+                    .tool_context
+                    .goal_manager
+                    .append_event(goal_event(&goal, "steering", None, text))
+                    .await
+            }
+            .await;
+            match result {
+                Ok(_) => {
+                    emit_goals_changed(
+                        &agent.tool_context.goal_manager,
+                        &agent.tool_context.task_manager,
+                        GoalLimits::default(),
+                        &agent.runtime.ui_tx,
+                    )
+                    .await;
+                }
+                Err(error) => emit_goal_error(
+                    &agent.runtime.ui_tx,
+                    format!("Goal {goal_id} steering failed: {error:#}"),
+                ),
+            }
+        }
+        UserCommand::PauseGoal { goal_id } => {
+            update_goal_status(agent, &goal_id, GoalStatus::Paused, "paused by user").await;
+        }
+        UserCommand::ResumeGoal { goal_id } => resume_goal(agent, &goal_id).await,
+        UserCommand::CancelGoal { goal_id } => {
+            update_goal_status(agent, &goal_id, GoalStatus::Cancelled, "cancelled by user").await;
+        }
+        UserCommand::AcceptGoal { goal_id, text } => accept_goal(agent, &goal_id, &text).await,
         UserCommand::SubmitTask(task) => {
             agent.tool_use_counter = 0;
             agent.runtime.cancel_flag.store(false, Ordering::Relaxed);
@@ -627,6 +1265,320 @@ mod tests {
         ContentBlock::Text {
             text: content.to_string(),
         }
+    }
+
+    #[tokio::test]
+    async fn create_goal_persists_and_emits_full_snapshot() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::CreateGoal {
+                title: "Ship Goal UI".into(),
+                objective: "Expose supervised goal execution".into(),
+                criteria: vec!["User accepts the result".into()],
+            },
+            &work_dir,
+        )
+        .await;
+
+        let goals = manager.list().await.unwrap();
+        assert_eq!(goals.len(), 1);
+        assert_eq!(goals[0].title, "Ship Goal UI");
+        assert_eq!(goals[0].criteria.len(), 1);
+        assert!(matches!(
+            goals[0].criteria[0].verification_kind,
+            tact::goal::GoalVerificationKind::Human
+        ));
+
+        let update = tokio::time::timeout(std::time::Duration::from_secs(1), agent_rx.recv())
+            .await
+            .expect("goal create update timed out")
+            .expect("goal create update channel closed");
+        assert!(matches!(
+            update,
+            AgentUpdate::GoalsChanged { goals }
+                if goals.len() == 1 && goals[0].title == "Ship Goal UI"
+        ));
+    }
+
+    #[tokio::test]
+    async fn steer_pause_and_cancel_goal_are_durable_before_snapshot() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let created = manager
+            .create(tact::goal::GoalCreate {
+                title: "Durable lifecycle".into(),
+                objective: "Persist control commands".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::required("done")],
+            })
+            .await
+            .unwrap();
+        manager
+            .update(
+                &created.id,
+                created.version,
+                tact::goal::GoalUpdate {
+                    status: Some(tact::goal::GoalStatus::Queued),
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SteerGoal {
+                goal_id: created.id.clone(),
+                text: "Prefer a focused diff".into(),
+            },
+            &work_dir,
+        )
+        .await;
+        assert!(
+            manager
+                .list_events(&created.id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "steering"
+                    && event.payload.as_deref() == Some("Prefer a focused diff"))
+        );
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::PauseGoal {
+                goal_id: created.id.clone(),
+            },
+            &work_dir,
+        )
+        .await;
+        assert_eq!(
+            manager.get(&created.id).await.unwrap().status,
+            tact::goal::GoalStatus::Paused
+        );
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::CancelGoal {
+                goal_id: created.id.clone(),
+            },
+            &work_dir,
+        )
+        .await;
+        assert_eq!(
+            manager.get(&created.id).await.unwrap().status,
+            tact::goal::GoalStatus::Cancelled
+        );
+        let mut saw_cancelled = false;
+        while let Ok(update) = agent_rx.try_recv() {
+            if matches!(
+                update,
+                AgentUpdate::GoalsChanged { goals }
+                    if goals.iter().any(|goal| goal.id == created.id
+                        && goal.status == tact_protocol::GoalStatusSnapshot::Cancelled)
+            ) {
+                saw_cancelled = true;
+            }
+        }
+        assert!(saw_cancelled);
+    }
+
+    #[tokio::test]
+    async fn accept_goal_records_human_evidence_and_succeeds_only_after_verification() {
+        install_test_config();
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let mut goal = manager
+            .create(tact::goal::GoalCreate {
+                title: "Human acceptance".into(),
+                objective: "Require explicit review".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::new(
+                    "User accepts the result",
+                    true,
+                    tact::goal::GoalVerificationKind::Human,
+                )],
+            })
+            .await
+            .unwrap();
+        for status in [
+            tact::goal::GoalStatus::Queued,
+            tact::goal::GoalStatus::Running,
+            tact::goal::GoalStatus::WaitingUser,
+        ] {
+            goal = manager
+                .update(
+                    &goal.id,
+                    goal.version,
+                    tact::goal::GoalUpdate {
+                        status: Some(status),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::AcceptGoal {
+                goal_id: goal.id.clone(),
+                text: "Accepted after manual review".into(),
+            },
+            &work_dir,
+        )
+        .await;
+
+        let accepted = manager.get(&goal.id).await.unwrap();
+        assert_eq!(accepted.status, tact::goal::GoalStatus::Succeeded);
+        assert!(accepted.criteria[0].has_valid_evidence(accepted.criteria_version));
+        assert!(
+            manager
+                .list_events(&goal.id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "user_accepted")
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_goal_command_emits_an_error() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::PauseGoal {
+                goal_id: "missing-goal".into(),
+            },
+            &work_dir,
+        )
+        .await;
+
+        let update = tokio::time::timeout(std::time::Duration::from_secs(1), agent_rx.recv())
+            .await
+            .expect("goal error timed out")
+            .expect("goal error channel closed");
+        assert!(matches!(
+            update,
+            AgentUpdate::Error(error) if error.to_string().contains("missing-goal")
+        ));
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
+    async fn goal_list_responds_while_resume_runs_and_pause_serializes_after_it() {
+        use std::time::Duration;
+
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let release_rx = release.clone();
+        let mock = MockClient::with_responder(move |_request, _| {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !release_rx.load(std::sync::atomic::Ordering::Relaxed)
+                && std::time::Instant::now() < deadline
+            {
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Ok((
+                vec![text_block("progress")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+        let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let mut goal = manager
+            .create(tact::goal::GoalCreate {
+                title: "Concurrent control".into(),
+                objective: "Keep reads responsive".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::required("done")],
+            })
+            .await
+            .unwrap();
+        for status in [
+            tact::goal::GoalStatus::Queued,
+            tact::goal::GoalStatus::Paused,
+        ] {
+            goal = manager
+                .update(
+                    &goal.id,
+                    goal.version,
+                    tact::goal::GoalUpdate {
+                        status: Some(status),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        let goal_id = goal.id.clone();
+        let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
+        let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
+
+        user_cmd_tx
+            .send(UserCommand::ResumeGoal {
+                goal_id: goal_id.clone(),
+            })
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let start = std::time::Instant::now();
+        user_cmd_tx.send(UserCommand::ListGoals).unwrap();
+
+        let mut saw_running_snapshot = false;
+        loop {
+            match tokio::time::timeout(Duration::from_millis(300), agent_rx.recv()).await {
+                Ok(Some(AgentUpdate::GoalsChanged { goals }))
+                    if goals.iter().any(|goal| goal.id == goal_id) =>
+                {
+                    saw_running_snapshot = true;
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
+        assert!(
+            saw_running_snapshot,
+            "expected Goal snapshot during active run"
+        );
+        assert!(
+            start.elapsed() < Duration::from_millis(450),
+            "ListGoals must not await the in-flight Goal run"
+        );
+
+        user_cmd_tx
+            .send(UserCommand::PauseGoal {
+                goal_id: goal_id.clone(),
+            })
+            .unwrap();
+        release.store(true, std::sync::atomic::Ordering::Relaxed);
+        drop(user_cmd_tx);
+        tokio::time::timeout(Duration::from_secs(5), loop_handle)
+            .await
+            .expect("command loop must finish")
+            .expect("command loop join failed");
+        assert_eq!(
+            manager.get(&goal_id).await.unwrap().status,
+            tact::goal::GoalStatus::Paused
+        );
     }
 
     #[tokio::test]

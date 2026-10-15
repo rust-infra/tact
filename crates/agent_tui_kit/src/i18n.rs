@@ -341,6 +341,8 @@ pub struct Messages {
     pub cmd_tasks_dag: &'static str,
     pub cmd_stats: &'static str,
     pub cmd_background: &'static str,
+    /// `/goal` — durable supervised Goal lifecycle.
+    pub cmd_goal: &'static str,
 
     // ---- /model-subagent ----
     pub model_subagent_select_prompt_tmpl: &'static str,
@@ -459,9 +461,11 @@ pub struct Messages {
     pub pending_submit_hint: &'static str,
     pub cancel_noop_msg: &'static str,
     pub subagent_cancel_usage_msg: &'static str,
+    pub goal_usage_msg: &'static str,
 
     // ---- 持久任务进度 ----
     pub tasks_sticky_title: &'static str,
+    pub goals_sticky_title: &'static str,
     pub subagents_sticky_title: &'static str,
     pub background_sticky_title: &'static str,
     /// Count of background tasks still on the strip after finishing
@@ -726,6 +730,7 @@ impl Messages {
             cmd_tasks_dag: "Show task dependency DAG",
             cmd_stats: "Show session statistics",
             cmd_background: "Check background task status",
+            cmd_goal: "Create, inspect, and control durable Goals",
             permission_select_prompt: "Permission mode",
             permission_option_default: "Default — ask for writes",
             permission_option_plan: "Plan — read only",
@@ -816,8 +821,10 @@ impl Messages {
             pending_submit_hint: "Message will be submitted after the current task finishes",
             cancel_noop_msg: "Nothing to cancel",
             subagent_cancel_usage_msg: "Usage: /subagent_cancel <child-id>",
+            goal_usage_msg: "Usage: /goal create <objective> | list | show <goal-id> | steer <goal-id> <text> | pause <goal-id> | resume <goal-id> | cancel <goal-id> | accept <goal-id> <text>",
 
             tasks_sticky_title: "Tasks",
+            goals_sticky_title: "Goals",
             tasks_log_created_tmpl: "Tasks · {}/{} created",
             tasks_log_updated_tmpl: "Tasks · {}/{} updated",
             subagents_sticky_title: "Subagent",
@@ -1057,6 +1064,7 @@ impl Messages {
             cmd_tasks_dag: "显示任务依赖 DAG",
             cmd_stats: "显示会话统计",
             cmd_background: "查看后台任务状态",
+            cmd_goal: "创建、查看和控制持久 Goal",
             permission_select_prompt: "权限模式",
             permission_option_default: "默认 — 写入需确认",
             permission_option_plan: "只读 — 阻止所有写操作",
@@ -1147,8 +1155,10 @@ impl Messages {
             pending_submit_hint: "消息将在当前任务结束后自动提交",
             cancel_noop_msg: "当前没有可取消的任务",
             subagent_cancel_usage_msg: "用法：/subagent_cancel <child-id>",
+            goal_usage_msg: "用法：/goal create <目标> | list | show <goal-id> | steer <goal-id> <文本> | pause <goal-id> | resume <goal-id> | cancel <goal-id> | accept <goal-id> <文本>",
 
             tasks_sticky_title: "任务",
+            goals_sticky_title: "目标",
             tasks_log_created_tmpl: "任务 · {}/{} 已创建",
             tasks_log_updated_tmpl: "任务 · {}/{} 已更新",
             subagents_sticky_title: "子代理",

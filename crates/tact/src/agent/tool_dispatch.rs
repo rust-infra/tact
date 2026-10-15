@@ -16,7 +16,8 @@ use crate::{
     mcp::MCPToolRouter,
     permission::{CapabilityRisk, PermissionBehavior, PermissionManager, format_permission_prompt},
     tool::{
-        ArgumentSummaryPolicy, DetailPolicy, OutputPolicy, TaskOperation, ToolDomain, ToolRouter,
+        ArgumentSummaryPolicy, DetailPolicy, GoalYieldReason, OutputPolicy, TaskOperation,
+        ToolDomain, ToolEffect, ToolRouter,
     },
     utils::RwLockExt,
 };
@@ -335,10 +336,28 @@ fn step_result_detail(
 
 // ── Native / MCP runners ─────────────────────────────────────────────────
 
+#[derive(Debug, Default)]
+pub(crate) struct ToolExecutionOutcome {
+    /// Focus string for a manual compaction requested by a `compact` tool in
+    /// this dispatch, if any.
+    pub manual_compact: Option<String>,
+    /// Goal yield requested by a tool in this dispatch, if any.
+    pub goal_yield: Option<GoalYieldReason>,
+    /// Number of tool calls that actually ran and produced a real
+    /// [`ExecResult`].
+    ///
+    /// Deliberately NOT counted: preflight-denied calls, hook-blocked calls
+    /// that never executed, and wave-skipped calls that carry a
+    /// `Not executed: ...` message (for example the calls skipped after a Goal
+    /// yield).
+    pub executed_tool_calls: u64,
+}
+
 struct ExecResult {
     content: String,
     status: StepStatus,
     image: Option<tact_llm::ImageSource>,
+    effects: Vec<ToolEffect>,
 }
 
 async fn run_native_tool(
@@ -361,11 +380,13 @@ async fn run_native_tool(
                             content,
                             status: StepStatus::Success,
                             image: result.image,
+                            effects: result.effects,
                         },
                         Err(error) => ExecResult {
                             content: format!("Error persisting large output: {error}"),
                             status: StepStatus::Failed,
                             image: None,
+                            effects: Vec::new(),
                         },
                     }
                 }
@@ -373,6 +394,7 @@ async fn run_native_tool(
                     content: result.content,
                     status: StepStatus::Success,
                     image: result.image,
+                    effects: result.effects,
                 },
             }
         }
@@ -380,6 +402,7 @@ async fn run_native_tool(
             content: format!("Error invoking tool {}: {}", name, e),
             status: StepStatus::Failed,
             image: None,
+            effects: Vec::new(),
         },
     }
 }
@@ -408,11 +431,13 @@ async fn run_mcp_tool(
                     content,
                     status: StepStatus::Success,
                     image: None,
+                    effects: Vec::new(),
                 },
                 Err(error) => ExecResult {
                     content: format!("Error persisting large MCP output: {error}"),
                     status: StepStatus::Failed,
                     image: None,
+                    effects: Vec::new(),
                 },
             }
         }
@@ -420,6 +445,7 @@ async fn run_mcp_tool(
             content: format!("Error invoking MCP tool {}: {}", name, e),
             status: StepStatus::Failed,
             image: None,
+            effects: Vec::new(),
         },
     }
 }
@@ -453,6 +479,7 @@ async fn run_mcp_prompt_tool(
                     content: "Error invoking get_mcp_prompt: `server` is required".to_string(),
                     status: StepStatus::Failed,
                     image: None,
+                    effects: Vec::new(),
                 };
             };
             let Some(name) = input.get("name").and_then(|value| value.as_str()) else {
@@ -460,6 +487,7 @@ async fn run_mcp_prompt_tool(
                     content: "Error invoking get_mcp_prompt: `name` is required".to_string(),
                     status: StepStatus::Failed,
                     image: None,
+                    effects: Vec::new(),
                 };
             };
             match prompt_arguments(input) {
@@ -474,11 +502,13 @@ async fn run_mcp_prompt_tool(
             content,
             status: StepStatus::Success,
             image: None,
+            effects: Vec::new(),
         },
         Err(error) => ExecResult {
             content: format!("Error invoking {}: {error}", tool.name()),
             status: StepStatus::Failed,
             image: None,
+            effects: Vec::new(),
         },
     }
 }
@@ -529,6 +559,7 @@ async fn run_mcp_resource_tool(
                     content: "Error invoking read_mcp_resource: `server` is required".to_string(),
                     status: StepStatus::Failed,
                     image: None,
+                    effects: Vec::new(),
                 };
             };
             match input.get("uri").and_then(|value| value.as_str()) {
@@ -543,11 +574,13 @@ async fn run_mcp_resource_tool(
             content,
             status: StepStatus::Success,
             image: None,
+            effects: Vec::new(),
         },
         Err(error) => ExecResult {
             content: format!("Error invoking {}: {error}", tool.name()),
             status: StepStatus::Failed,
             image: None,
+            effects: Vec::new(),
         },
     }
 }
@@ -664,17 +697,18 @@ struct Preflight {
 impl Agent {
     /// Executes every `ToolUse` block in `content`.
     ///
-    /// Returns the assembled `ToolResult` blocks (in call order) plus a pending
-    /// manual-compaction focus when a `compact` call succeeded.
+    /// Returns the assembled `ToolResult` blocks (in call order) plus typed
+    /// dispatch outcomes such as manual compaction and Goal yield.
     ///
     /// Three phases: [`Agent::preflight_tool_calls`] resolves and authorizes
     /// each call sequentially, [`Agent::run_tool_waves`] executes the runnable
     /// ones in conflict-free waves, and [`build_tool_results`] reassembles the
     /// outputs back into call order.
-    pub async fn execute_tool_call(
+    pub(crate) async fn execute_tool_call(
         &mut self,
         content: &[ContentBlock],
-    ) -> Result<(Vec<ContentBlock>, Option<String>)> {
+    ) -> Result<(Vec<ContentBlock>, ToolExecutionOutcome)> {
+        self.runtime.goal_yield_reason = None;
         let preflight = self.preflight_tool_calls(content).await?;
         if preflight.cancelled {
             // Nothing ran. A call approved before the flag flipped still needs
@@ -683,13 +717,13 @@ impl Agent {
             // answered as cancelled, which is what the wave-boundary cancel
             // already writes for a call it approved but never started.
             let outputs = (0..preflight.prepared.len()).map(|_| None).collect();
-            return Ok((build_tool_results(preflight.prepared, outputs), None));
+            return Ok((
+                build_tool_results(preflight.prepared, outputs),
+                ToolExecutionOutcome::default(),
+            ));
         }
-        let (outputs, manual_compact) = self.run_tool_waves(&preflight.prepared).await?;
-        Ok((
-            build_tool_results(preflight.prepared, outputs),
-            manual_compact,
-        ))
+        let (outputs, outcome) = self.run_tool_waves(&preflight.prepared).await?;
+        Ok((build_tool_results(preflight.prepared, outputs), outcome))
     }
 
     /// Phase 1 — sequential pre-flight.
@@ -1166,7 +1200,7 @@ impl Agent {
     async fn run_tool_waves(
         &mut self,
         prepared: &[PreparedTool],
-    ) -> Result<(Vec<Option<ExecResult>>, Option<String>)> {
+    ) -> Result<(Vec<Option<ExecResult>>, ToolExecutionOutcome)> {
         let run_indices: Vec<usize> = prepared
             .iter()
             .enumerate()
@@ -1189,12 +1223,12 @@ impl Agent {
         }
 
         let mut outputs: Vec<Option<ExecResult>> = (0..prepared.len()).map(|_| None).collect();
-        let mut manual_compact = None;
+        let mut outcome = ToolExecutionOutcome::default();
 
         for wave in super::tool_schedule::waves_grouped(&resources) {
             if self.cancel_requested() {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
-                return Ok((outputs, manual_compact));
+                return Ok((outputs, outcome));
             }
             let mut futures = FuturesUnordered::new();
             for &pos in &wave {
@@ -1313,6 +1347,7 @@ impl Agent {
                 };
                 let exec_content = exec.content.clone();
                 let exec_image = exec.image.clone();
+                let exec_effects = exec.effects;
                 let exec_status = exec.status;
                 let mut tool_result = ToolResult {
                     tool_use_id: prep_id.clone(),
@@ -1391,6 +1426,7 @@ impl Agent {
                 let detail =
                     step_result_detail(detail_policy, &prep_input, &exec_output, &final_status);
                 let succeeded = matches!(final_status, StepStatus::Success);
+                let effects = if succeeded { exec_effects } else { Vec::new() };
 
                 let presentation = match &prep.resolved {
                     ResolvedTool::Native { metadata } => {
@@ -1423,7 +1459,7 @@ impl Agent {
                 if matches!(&prep.resolved, ResolvedTool::Native { metadata } if metadata.name == "compact")
                     && succeeded
                 {
-                    manual_compact = prep_input
+                    outcome.manual_compact = prep_input
                         .get("focus")
                         .and_then(|v| v.as_str())
                         .map(|s| {
@@ -1437,10 +1473,21 @@ impl Agent {
                 }
 
                 self.record_tool_stats(&prep_name, succeeded, duration_us);
+                if let Some(reason) = effects.iter().find_map(|effect| match effect {
+                    ToolEffect::GoalYield { reason } => Some(*reason),
+                    _ => None,
+                }) {
+                    outcome.goal_yield = Some(reason);
+                }
+                // This call reached the executor and produced a real result:
+                // it counts toward `executed_tool_calls`. The wave-skipped
+                // ("Not executed: ...") entries written below never reach here.
+                outcome.executed_tool_calls += 1;
                 outputs[pi] = Some(ExecResult {
                     content: exec_output,
                     status: final_status,
                     image: exec_image,
+                    effects,
                 });
             }
             drop(futures);
@@ -1454,9 +1501,26 @@ impl Agent {
             for path in pending_recent_files {
                 self.remember_recent_file(&path);
             }
+
+            if outcome.goal_yield == Some(GoalYieldReason::NeedsUser) {
+                // Goal request tools are Barriers, so a yielding wave cannot
+                // contain another call. Later waves are deliberately not run.
+                let wave_end = wave.iter().copied().max().unwrap_or(usize::MAX);
+                for &pi in run_indices.iter().skip(wave_end.saturating_add(1)) {
+                    if outputs[pi].is_none() {
+                        outputs[pi] = Some(ExecResult {
+                            content: "Not executed: Goal requested user input".to_string(),
+                            status: StepStatus::Failed,
+                            image: None,
+                            effects: Vec::new(),
+                        });
+                    }
+                }
+                break;
+            }
         }
 
-        Ok((outputs, manual_compact))
+        Ok((outputs, outcome))
     }
 
     /// Stub out every `ToolUse` in `content` that `prepared` has not answered
@@ -1553,7 +1617,140 @@ mod tests {
         router
     }
 
-    // ── Sensitive-target guard ──────────────────────────────────────────
+    #[test]
+    fn goal_yield_stops_later_tool_waves() {
+        let (blocks, outcome, marker) = block_on(async {
+            crate::config::test_support::install_default();
+            let mut context = crate::tool::test_support::test_context("dispatch_goal_yield");
+            let goal = context
+                .goal_manager
+                .create(crate::goal::GoalCreate {
+                    title: "dispatch goal yield".into(),
+                    objective: "pause for user input".into(),
+                    constraints: Vec::new(),
+                    criteria: vec![crate::goal::GoalCriterion::required_with_id(
+                        "criterion-1",
+                        "input received",
+                    )],
+                })
+                .await
+                .unwrap();
+            context.active_goal_id = Some(goal.id);
+            let marker = context.work_dir.join("goal-yield-marker");
+            let mut agent = Agent::new(
+                tact_llm::LlmProvider::Mock(tact_llm::MockClient::new(vec![])),
+                context,
+                crate::tool::toolset(),
+                crate::mcp::MCPToolRouter::new(),
+                crate::permission::PermissionManager::try_new(
+                    crate::permission::PermissionMode::Auto,
+                )
+                .unwrap(),
+                crate::agent::AgentSystemPrompt::Static("You are a test agent.".to_string()),
+            );
+            let content = vec![
+                ContentBlock::ToolUse {
+                    id: "goal-request".to_string(),
+                    name: "goal_request_input".to_string(),
+                    input: serde_json::json!({"question": "which path?"}),
+                },
+                ContentBlock::ToolUse {
+                    id: "later-bash".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({
+                        "command": format!("printf marker > {}", marker.display())
+                    }),
+                },
+            ];
+            let (blocks, outcome) = agent.execute_tool_call(&content).await.unwrap();
+            (blocks, outcome, marker)
+        });
+
+        assert_eq!(outcome.manual_compact, None);
+        assert_eq!(outcome.goal_yield, Some(GoalYieldReason::NeedsUser));
+        assert_eq!(
+            tool_result_text(&blocks),
+            "User input requested; yield to Runner.\nNot executed: Goal requested user input"
+        );
+        assert!(!marker.exists(), "later bash call must not run");
+    }
+
+    #[test]
+    fn dispatch_clears_stale_goal_yield_reason() {
+        let mut agent = agent_with(
+            "dispatch_clears_goal_yield_reason",
+            crate::permission::PermissionMode::Auto,
+        );
+        agent.runtime.goal_yield_reason = Some(GoalYieldReason::NeedsUser);
+
+        let (blocks, outcome) = block_on(agent.execute_tool_call(&tool_use(
+            "bash",
+            serde_json::json!({ "command": "printf ok" }),
+        )))
+        .unwrap();
+
+        assert_eq!(tool_result_text(&blocks), "ok");
+        assert_eq!(outcome.goal_yield, None);
+        assert_eq!(agent.runtime.goal_yield_reason, None);
+    }
+
+    /// A `PostToolUse` block turns an otherwise successful call into a failed
+    /// one, and a failed call must not carry the Goal yield its execution
+    /// produced — the yield is what makes the Runner stop, so a hook that
+    /// rejects the result has to be able to cancel it.
+    #[test]
+    fn post_tool_use_failure_drops_goal_yield() {
+        let (blocks, outcome) = block_on(async {
+            crate::config::test_support::install_default();
+            let mut context =
+                crate::tool::test_support::test_context("dispatch_goal_yield_post_tool_blocked");
+            let goal = context
+                .goal_manager
+                .create(crate::goal::GoalCreate {
+                    title: "post tool blocked".into(),
+                    objective: "pause for user input".into(),
+                    constraints: Vec::new(),
+                    criteria: vec![crate::goal::GoalCriterion::required_with_id(
+                        "criterion-1",
+                        "input received",
+                    )],
+                })
+                .await
+                .unwrap();
+            context.active_goal_id = Some(goal.id);
+            let mut agent = Agent::new(
+                tact_llm::LlmProvider::Mock(tact_llm::MockClient::new(vec![])),
+                context,
+                crate::tool::toolset(),
+                crate::mcp::MCPToolRouter::new(),
+                crate::permission::PermissionManager::try_new(
+                    crate::permission::PermissionMode::Auto,
+                )
+                .unwrap(),
+                crate::agent::AgentSystemPrompt::Static("You are a test agent.".to_string()),
+            )
+            .with_post_tool_hook(|_state, _tool_use, _result, _status| {
+                Box::pin(async { Ok(HookControl::Block("nope".to_string())) })
+            });
+
+            agent
+                .execute_tool_call(&tool_use(
+                    "goal_request_input",
+                    serde_json::json!({"question": "which path?"}),
+                ))
+                .await
+                .unwrap()
+        });
+
+        assert_eq!(
+            tool_result_text(&blocks),
+            "Tool blocked by PostToolUse hook: nope"
+        );
+        assert_eq!(
+            outcome.goal_yield, None,
+            "a PostToolUse-failed call must drop the Goal yield"
+        );
+    }
 
     /// An agent with the given permission mode and **no** UI channel, which
     /// makes an `Ask` resolve through the non-interactive path (`ask_user`

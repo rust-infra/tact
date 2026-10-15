@@ -540,7 +540,8 @@ impl App {
             | AgentUpdate::TurnStats { .. }
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::StreamChunk(_)
-            | AgentUpdate::SubagentsChanged { .. } => {}
+            | AgentUpdate::SubagentsChanged { .. }
+            | AgentUpdate::GoalsChanged { .. } => {}
         }
     }
 

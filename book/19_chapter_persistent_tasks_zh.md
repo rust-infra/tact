@@ -66,8 +66,10 @@ CREATE TABLE tasks (
     created_at   INTEGER NOT NULL,
     started_at   INTEGER,
     completed_at INTEGER
+    goal_id      TEXT
 );
 CREATE INDEX idx_tasks_session_id ON tasks(session_id);
+CREATE INDEX idx_tasks_goal_id_id ON tasks(goal_id, id);
 
 CREATE TABLE task_dependencies (
     blocker_id INTEGER NOT NULL,
@@ -107,6 +109,8 @@ CREATE INDEX idx_task_deps_blocked ON task_dependencies(blocked_id);
 | `task_update` | `task_id`、可选 `status`、`owner`、`addBlockedBy`、`addBlocks` | 格式化 JSON |
 
 `task_update` 的状态字符串：`pending`、`in_progress`、`completed`、`deleted`（通过 `strum` 的 snake_case）。
+
+Task 可以通过 `goal_id` 关联一个持久 Goal；`SharedTaskManager::list_for_goal` 只返回该 Goal 下未软删除的记录，并保留依赖边。旧数据库通过幂等 `ALTER TABLE` 迁移补充 nullable 列，因此没有 Goal 的旧 Task 行行为不变。
 
 列表示例行：
 

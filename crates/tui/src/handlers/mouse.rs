@@ -1002,6 +1002,42 @@ mod tests {
     }
 
     #[test]
+    fn click_goal_tab_switches_domain_and_scrolls_goal_panel() {
+        use agent_tui_kit::state::StickyTab;
+        use tact_protocol::GoalSnapshot;
+
+        let mut app = make_app();
+        app.task_panel_mut().visible = true;
+        app.task_panel_mut().expanded = false;
+        app.goal_panel_mut().apply_snapshot(vec![GoalSnapshot {
+            id: "goal-1".into(),
+            title: "ship".into(),
+            ..Default::default()
+        }]);
+        app.goal_panel_mut().expanded = false;
+        app.mouse.active_sticky_tab = StickyTab::Tasks;
+        app.mouse
+            .set_area(SurfaceId::TaskPanel, Rect::new(0, 10, 60, 1));
+        app.mouse.sticky_tab_areas = vec![
+            (StickyTab::Goals, Rect::new(0, 10, 7, 1)),
+            (StickyTab::Tasks, Rect::new(10, 10, 7, 1)),
+        ];
+
+        handle_mouse_event(&mut app, mouse_down(2, 10));
+        assert_eq!(app.mouse.active_sticky_tab, StickyTab::Goals);
+        assert!(app.goal_panel().expanded);
+
+        app.goal_panel_mut().scroll = 0;
+        app.task_panel_mut().scroll = 0;
+        handle_mouse_event(
+            &mut app,
+            mouse_event(crossterm::event::MouseEventKind::ScrollDown, 20, 10),
+        );
+        assert_eq!(app.goal_panel().scroll, 1);
+        assert_eq!(app.task_panel().scroll, 0);
+    }
+
+    #[test]
     fn click_subagent_tab_switches_domain_and_scrolls_active_panel() {
         use agent_tui_kit::state::StickyTab;
         use tact_protocol::{SubagentRunSnapshot, SubagentStatusSnapshot};

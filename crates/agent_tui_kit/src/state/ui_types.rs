@@ -174,13 +174,14 @@ pub enum Status {
 
 /// Which domain the sticky strip under the Log is showing.
 ///
-/// The sticky host has three domains: persistent tasks, the current-process
-/// subagent overview, and the current-process background tasks. A domain is
+/// The sticky host has four domains: durable Goals, persistent tasks, the
+/// current-process subagent overview, and current-process background tasks. A domain is
 /// only drawn when it is visible; `active` selects which expanded body / scroll
 /// the host renders when more than one is visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StickyTab {
     #[default]
+    Goals,
     Tasks,
     Subagent,
     /// Running `background_run` tasks, derived from the live tool cards (no
@@ -190,5 +191,5 @@ pub enum StickyTab {
 
 impl StickyTab {
     /// All sticky domains in their stable display order.
-    pub const ALL: [Self; 3] = [Self::Tasks, Self::Subagent, Self::Background];
+    pub const ALL: [Self; 4] = [Self::Goals, Self::Tasks, Self::Subagent, Self::Background];
 }

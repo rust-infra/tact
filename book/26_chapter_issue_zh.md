@@ -4,6 +4,23 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-15 — 持久化 Agent Goal、bounded Runner 与 Goals sticky panel
+
+| Field | Value |
+|-------|-------|
+| **Type** | feature（用户可见：Goal 可跨多个 activation 持久化、暂停/恢复/取消、人工验收、预算与恢复；TUI 提供 `/goal` 命令和 Goals sticky panel） |
+| **Related** | `crates/tact/src/goal/`、`crates/tact/src/store/goal_store/`、`crates/tact-ui/src/{goal_runner.rs,driver.rs}`、`crates/protocol/src/agent.rs`、`crates/agent_tui_kit/src/{state/goal_panel.rs,components/goal_panel.rs}`、`crates/tui/src/render/task_panel.rs` |
+
+**现象 / 动机：** 普通 Agent turn 的结束不能表达跨 turn 的长期目标；进程重启、预算耗尽、用户等待和验收证据都需要落到 SQLite，而不是只留在内存或 TUI 事件中。
+
+**决策：** 新增独立 Goal 聚合、标准/证据版本、Run/Event/lease store 和 `GoalManager`。`GoalRunner` 以 singleton lease + fencing epoch 包裹有界 Agent activation，所有终态先持久化再通知 UI；普通 Task 保持可独立存在，旧数据库通过 nullable `tasks.goal_id` 迁移兼容。
+
+**改后行为：** `/goal create|list|show|steer|pause|resume|cancel|accept` 映射为 typed `UserCommand`；list/show 在运行中立即读取完整快照，Goal runner 的等待、预算耗尽、取消和恢复状态可继续操作。Goals sticky panel 显示 status/phase、Task 进度、预算、等待原因和验收摘要；Goal 成功必须通过当前 criteria version 的证据验证。
+
+**Verification：** Goal domain 33 个、Goal store 15 个、Task 关联 19 个、Agent 196 个、Runner 15 个、driver 23 个、protocol 27 个、`agent_tui_kit` 412 个，以及 TUI sticky/mouse 聚焦测试通过；完整串行验证见实现计划。
+
+**Pointers:** [Agent Goal](./28_chapter_goal_zh.md)、`GoalStatus`、`GoalRunner::run_once`、`AgentUpdate::GoalsChanged`、`GoalPanelState`。
+
 ## 1. 2026-10-14 — 日志虚拟卡片支持跨块拖选与顺序复制
 
 | Field | Value |

@@ -200,6 +200,7 @@ impl App {
             task_dag_popup: self.task_dag_popup.as_ref(),
             task_history: &self.task_history,
             select: &self.select,
+            goal_panel: self.goal_panel().state(),
             task_panel: self.task_panel().state(),
             subagent_panel: self.subagent_panel().state(),
             background_panel: self.background_panel().state(),

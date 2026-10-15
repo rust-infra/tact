@@ -73,11 +73,21 @@ agent 构建与交互模式共用 `session_bootstrap::bootstrap_session`（见�
 pub enum UserCommand {
     SubmitTask(String),
     Cancel,
+    CreateGoal { title: String, objective: String, criteria: Vec<String> },
+    ListGoals,
+    ShowGoal { goal_id: String },
+    SteerGoal { goal_id: String, text: String },
+    PauseGoal { goal_id: String },
+    ResumeGoal { goal_id: String },
+    CancelGoal { goal_id: String },
+    AcceptGoal { goal_id: String, text: String },
     Compact,
     QueryBalance,
     QueryBackground(Option<String>),
 }
 ```
+
+Goal 控制使用同一通道：`CreateGoal`、`ListGoals`、`ShowGoal`、`SteerGoal`、`PauseGoal`、`ResumeGoal`、`CancelGoal`、`AcceptGoal`。Goal list/show 从共享 manager 读取完整快照，即使 Agent 正在运行也不等待当前 activation；写操作则在 driver 中与活动 Runner 串行化。
 
 | 命令 | 来源 | `tui.rs` 中 handler |
 |------|------|---------------------|
@@ -148,6 +158,7 @@ TUI 在 `crates/tui/src/widgets/state/app/agent.rs` → `handle_agent_update` �
 | `TurnStats` | 状态栏回合计数（当前任务的 LLM 回合；cap 携带但不渲染） |
 | `ModelInfo` | 模型名 / 限制显示 |
 | `TaskComplete` | 标记任务完成，启用后续输入 |
+| `GoalsChanged` | 用完整 Goal 快照刷新 Goals sticky panel；展示状态、phase、Task 进度、等待原因、预算和验收摘要 |
 | `Error` | 带 `AgentErrorKind` 的错误横幅 |
 | `Info` | 系统消息行 |
 

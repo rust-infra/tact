@@ -182,6 +182,111 @@ pub struct TaskSnapshot {
     pub completed_at: Option<i64>,
 }
 
+/// UI-facing Goal lifecycle status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalStatusSnapshot {
+    #[default]
+    Draft,
+    Queued,
+    Running,
+    WaitingUser,
+    WaitingPermission,
+    Paused,
+    Verifying,
+    Succeeded,
+    Failed,
+    Cancelled,
+}
+
+impl GoalStatusSnapshot {
+    pub fn marker(self) -> &'static str {
+        match self {
+            Self::Draft => "◇",
+            Self::Queued => "◷",
+            Self::Running => "▶",
+            Self::WaitingUser | Self::WaitingPermission => "?",
+            Self::Paused => "Ⅱ",
+            Self::Verifying => "◎",
+            Self::Succeeded => "✓",
+            Self::Failed => "✗",
+            Self::Cancelled => "⏹",
+        }
+    }
+
+    pub fn is_terminal(self) -> bool {
+        matches!(self, Self::Succeeded | Self::Failed | Self::Cancelled)
+    }
+}
+
+/// UI-facing Goal execution phase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalPhaseSnapshot {
+    #[default]
+    Planning,
+    Execution,
+    Verification,
+}
+
+/// UI-facing acceptance-criterion status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalCriterionStatusSnapshot {
+    #[default]
+    Pending,
+    Passed,
+    Rejected,
+}
+
+/// One acceptance criterion projected for protocol consumers.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GoalCriterionSnapshot {
+    pub id: String,
+    pub description: String,
+    pub required: bool,
+    pub human: bool,
+    pub status: GoalCriterionStatusSnapshot,
+    pub evidence_count: usize,
+}
+
+/// Aggregate acceptance counts shown in compact Goal surfaces.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GoalAcceptanceSnapshot {
+    pub required: usize,
+    pub passed: usize,
+    pub pending: usize,
+    pub rejected: usize,
+}
+
+/// Budget usage for the current or most recently reported Goal activation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GoalRunBudgetSnapshot {
+    pub turns_used: u32,
+    pub turn_limit: u32,
+    pub tool_calls_used: u32,
+    pub tool_call_limit: u32,
+    pub elapsed_ms: u64,
+    pub wall_clock_limit_ms: u64,
+}
+
+/// Full durable Goal projection. `GoalsChanged` always replaces the previous
+/// collection so reconnect/recovery never depends on missed deltas.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
+pub struct GoalSnapshot {
+    pub id: String,
+    pub title: String,
+    pub objective: String,
+    pub status: GoalStatusSnapshot,
+    pub phase: GoalPhaseSnapshot,
+    pub criteria: Vec<GoalCriterionSnapshot>,
+    pub task_total: usize,
+    pub task_completed: usize,
+    pub wait_reason: Option<String>,
+    pub acceptance: GoalAcceptanceSnapshot,
+    pub run_budget: Option<GoalRunBudgetSnapshot>,
+}
+
 /// UI-facing subagent run status for the sticky 总览 (mirrors
 /// [`TaskStatusSnapshot`] but keeps terminal states visible: a finished child
 /// still has a summary worth showing).
@@ -383,6 +488,9 @@ pub enum AgentUpdate {
         tasks: Vec<TaskSnapshot>,
         reason: TasksChangeReason,
     },
+    /// Full Goal snapshot after creation, lifecycle mutation, recovery, or an
+    /// explicit list/show request.
+    GoalsChanged { goals: Vec<GoalSnapshot> },
     /// Update tool-card metadata (model name, token usage, task id) without
     /// cluttering the output stream. Emitted by subagents (model / tokens, to
     /// keep the parent tool card header up to date) and by `background_run`
@@ -505,6 +613,27 @@ pub enum UserCommand {
     /// command). `None` lists all tasks one line per task; `Some(id)` shows a
     /// single task as pretty JSON.
     QueryBackground(Option<String>),
+    /// Create a durable Goal. Empty `criteria` lets the driver install its
+    /// default human-acceptance criterion for interactive use.
+    CreateGoal {
+        title: String,
+        objective: String,
+        criteria: Vec<String>,
+    },
+    /// List every durable Goal as a full replacement snapshot.
+    ListGoals,
+    /// Show one Goal while still refreshing the full replacement snapshot.
+    ShowGoal { goal_id: String },
+    /// Persist user steering text in the Goal event stream.
+    SteerGoal { goal_id: String, text: String },
+    /// Pause a non-terminal Goal after any active activation releases it.
+    PauseGoal { goal_id: String },
+    /// Resume a paused/waiting Goal and start one bounded activation.
+    ResumeGoal { goal_id: String },
+    /// Cancel a non-terminal Goal after any active activation releases it.
+    CancelGoal { goal_id: String },
+    /// Record explicit human acceptance and resume one bounded activation.
+    AcceptGoal { goal_id: String, text: String },
     /// Set the active permission mode.
     /// The TUI sends this after the user picks through the `/permission` popup.
     /// Only affects the in-memory session; config is never written.
@@ -619,8 +748,10 @@ impl PlanStep {
 #[cfg(test)]
 mod tests {
     use super::{
-        AgentUpdate, TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ToolDetailKind,
-        ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
+        AgentUpdate, GoalAcceptanceSnapshot, GoalCriterionSnapshot, GoalCriterionStatusSnapshot,
+        GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot, GoalStatusSnapshot, TaskSnapshot,
+        TaskStatusSnapshot, TasksChangeReason, ToolDetailKind, ToolPopupKind, ToolPresentationInfo,
+        ToolVisualKind, UserCommand,
     };
 
     #[test]
@@ -666,6 +797,97 @@ mod tests {
         assert_eq!(TaskStatusSnapshot::Pending.marker(), "[ ]");
         assert_eq!(TaskStatusSnapshot::InProgress.marker(), "[>]");
         assert_eq!(TaskStatusSnapshot::Completed.marker(), "[x]");
+    }
+
+    #[test]
+    fn goals_changed_carries_a_full_serializable_snapshot() {
+        let goal = GoalSnapshot {
+            id: "goal-1".into(),
+            title: "Ship Goal UI".into(),
+            objective: "Expose supervised goal execution".into(),
+            status: GoalStatusSnapshot::WaitingUser,
+            phase: GoalPhaseSnapshot::Verification,
+            criteria: vec![GoalCriterionSnapshot {
+                id: "criterion-1".into(),
+                description: "User accepts the result".into(),
+                required: true,
+                human: true,
+                status: GoalCriterionStatusSnapshot::Pending,
+                evidence_count: 0,
+            }],
+            task_total: 3,
+            task_completed: 2,
+            wait_reason: Some("needs acceptance".into()),
+            acceptance: GoalAcceptanceSnapshot {
+                required: 1,
+                passed: 0,
+                pending: 1,
+                rejected: 0,
+            },
+            run_budget: Some(GoalRunBudgetSnapshot {
+                turns_used: 2,
+                turn_limit: 8,
+                tool_calls_used: 5,
+                tool_call_limit: 32,
+                elapsed_ms: 100,
+                wall_clock_limit_ms: 60_000,
+            }),
+        };
+        let encoded = serde_json::to_string(&goal).unwrap();
+        let decoded: GoalSnapshot = serde_json::from_str(&encoded).unwrap();
+        assert_eq!(decoded, goal);
+
+        let update = AgentUpdate::GoalsChanged {
+            goals: vec![goal.clone()],
+        };
+        match update {
+            AgentUpdate::GoalsChanged { goals } => assert_eq!(goals, vec![goal]),
+            other => panic!("unexpected {other:?}"),
+        }
+    }
+
+    #[test]
+    fn goal_commands_keep_ids_and_user_text_typed() {
+        let commands = [
+            UserCommand::CreateGoal {
+                title: "Ship it".into(),
+                objective: "Finish the feature".into(),
+                criteria: vec!["Tests pass".into()],
+            },
+            UserCommand::ListGoals,
+            UserCommand::ShowGoal {
+                goal_id: "goal-1".into(),
+            },
+            UserCommand::SteerGoal {
+                goal_id: "goal-1".into(),
+                text: "Prefer the smaller design".into(),
+            },
+            UserCommand::PauseGoal {
+                goal_id: "goal-1".into(),
+            },
+            UserCommand::ResumeGoal {
+                goal_id: "goal-1".into(),
+            },
+            UserCommand::CancelGoal {
+                goal_id: "goal-1".into(),
+            },
+            UserCommand::AcceptGoal {
+                goal_id: "goal-1".into(),
+                text: "Accepted after manual review".into(),
+            },
+        ];
+
+        assert!(matches!(commands[1], UserCommand::ListGoals));
+        assert!(matches!(
+            &commands[3],
+            UserCommand::SteerGoal { goal_id, text }
+                if goal_id == "goal-1" && text == "Prefer the smaller design"
+        ));
+        assert!(matches!(
+            &commands[7],
+            UserCommand::AcceptGoal { goal_id, text }
+                if goal_id == "goal-1" && text == "Accepted after manual review"
+        ));
     }
 
     #[test]

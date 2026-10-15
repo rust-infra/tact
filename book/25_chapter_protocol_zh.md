@@ -61,6 +61,7 @@ pub enum AgentUpdate {
         tasks: Vec<TaskSnapshot>, // 不含已删除
         reason: TasksChangeReason, // Created | Updated
     },
+    GoalsChanged { goals: Vec<GoalSnapshot> }, // 完整替换快照
     /// 后台任务（`background_run`）完成时终结 keep-live 卡片
     BackgroundTaskFinished { tool_id, success, message, output },
 }
@@ -86,6 +87,14 @@ pub enum ThinkingChunk {
 pub enum UserCommand {
     SubmitTask(String),
     Cancel,
+    CreateGoal { title: String, objective: String, criteria: Vec<String> },
+    ListGoals,
+    ShowGoal { goal_id: String },
+    SteerGoal { goal_id: String, text: String },
+    PauseGoal { goal_id: String },
+    ResumeGoal { goal_id: String },
+    CancelGoal { goal_id: String },
+    AcceptGoal { goal_id: String, text: String },
     QueryBalance,
     UiResponse(UiResponse), // 回答 RequestSelect / RequestMultiSelect
 }

@@ -78,6 +78,8 @@ pub(crate) enum SlashCommand {
     TasksDag,
     #[strum(serialize = "background")]
     Background,
+    #[strum(serialize = "goal")]
+    Goal,
 }
 
 impl SlashCommand {
@@ -110,6 +112,7 @@ impl SlashCommand {
         Self::Stats,
         Self::TasksDag,
         Self::Background,
+        Self::Goal,
     ];
 
     /// The name the user types, without the leading `/`.
@@ -132,6 +135,7 @@ impl SlashCommand {
             Self::Mcp => MCP_SUBCOMMANDS,
             Self::Plugin => PLUGIN_SUBCOMMANDS,
             Self::Hooks => HOOKS_SUBCOMMANDS,
+            Self::Goal => GOAL_SUBCOMMANDS,
             _ => &[],
         }
     }
@@ -152,7 +156,12 @@ impl SlashCommand {
     pub(crate) fn needs_args(self) -> bool {
         matches!(
             self,
-            Self::Skill | Self::Plugin | Self::Mcp | Self::Hooks | Self::SubagentCancel
+            Self::Skill
+                | Self::Plugin
+                | Self::Mcp
+                | Self::Hooks
+                | Self::Goal
+                | Self::SubagentCancel
         )
     }
 
@@ -193,6 +202,7 @@ impl SlashCommand {
             Self::Stats => msgs.cmd_stats,
             Self::TasksDag => msgs.cmd_tasks_dag,
             Self::Background => msgs.cmd_background,
+            Self::Goal => msgs.cmd_goal,
         }
     }
 }
@@ -276,6 +286,17 @@ const HOOKS_SUBCOMMANDS: &[Subcommand] = &[
     sub("list", "", &[], false),
     sub("trust", "", HOOK_TRUST_SUBCOMMANDS, false),
     sub("forget", "", HOOK_FORGET_SUBCOMMANDS, false),
+];
+
+const GOAL_SUBCOMMANDS: &[Subcommand] = &[
+    sub("create", "<objective>", &[], true),
+    sub("list", "", &[], false),
+    sub("show", "<goal-id>", &[], true),
+    sub("steer", "<goal-id> <text>", &[], true),
+    sub("pause", "<goal-id>", &[], true),
+    sub("resume", "<goal-id>", &[], true),
+    sub("cancel", "<goal-id>", &[], true),
+    sub("accept", "<goal-id> <text>", &[], true),
 ];
 
 #[cfg(test)]
@@ -373,7 +394,7 @@ mod tests {
             .collect();
         assert_eq!(
             with_args,
-            vec!["subagent_cancel", "skill", "plugin", "mcp", "hooks"]
+            vec!["subagent_cancel", "skill", "plugin", "mcp", "hooks", "goal"]
         );
     }
 

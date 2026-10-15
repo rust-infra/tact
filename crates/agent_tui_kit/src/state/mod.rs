@@ -6,6 +6,7 @@
 pub mod account;
 pub mod background_panel;
 pub mod filtered_list;
+pub mod goal_panel;
 pub mod log;
 pub mod log_scroll;
 pub mod mouse_state;
@@ -26,6 +27,7 @@ pub mod ui_types;
 pub use account::AccountState;
 pub use background_panel::BackgroundPanelState;
 pub use filtered_list::{FilteredList, clamp_step, contains_ignore_case};
+pub use goal_panel::GoalPanelState;
 pub use log::{LogCoordinator, LogItem, LogItemKind, SystemMsgStyle, log_indent_at};
 pub use log_scroll::LogScroll;
 pub use mouse_state::{LogSelection, MouseState, PopupHitRow, PopupTextHit, TextPosition};

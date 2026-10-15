@@ -12,10 +12,12 @@ pub mod subagent_transcript;
 pub mod tool_output;
 
 pub use agent::{
-    AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus,
-    SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot,
-    TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolDetailKind, ToolPopupKind,
-    ToolPresentationInfo, ToolVisualKind, UiResponse, UserCommand,
+    AgentErrorKind, AgentUpdate, GoalAcceptanceSnapshot, GoalCriterionSnapshot,
+    GoalCriterionStatusSnapshot, GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot,
+    GoalStatusSnapshot, ModelCallParams, PlanStep, StepResult, StepStatus, SubagentRunSnapshot,
+    SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ThinkingChunk,
+    TokenUsageInfo, ToolDetailKind, ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
+    UiResponse, UserCommand,
 };
 pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,

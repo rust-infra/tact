@@ -508,6 +508,7 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             let _ = app.user_cmd_tx.send(UserCommand::QueryBackground(task_id));
             CommandExecOutcome::handled()
         }
+        C::Goal => run_goal_command(app),
         C::Lang => {
             // Toggling is the whole choice with two languages, so `Ctrl+L` and
             // `/lang` move the same way; `/lang` differs by asking whether the
@@ -517,6 +518,64 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             CommandExecOutcome::handled()
         }
     }
+}
+
+fn run_goal_command(app: &mut App) -> CommandExecOutcome {
+    let rest = app.input.trim().strip_prefix("/goal").unwrap_or("").trim();
+    let mut tokens = rest.splitn(2, char::is_whitespace);
+    let verb = tokens.next().unwrap_or_default();
+    let args = tokens.next().unwrap_or_default().trim();
+    let command = match verb {
+        "list" if args.is_empty() => Some(UserCommand::ListGoals),
+        "create" if !args.is_empty() => Some(UserCommand::CreateGoal {
+            title: args.chars().take(80).collect(),
+            objective: args.to_string(),
+            criteria: Vec::new(),
+        }),
+        "show" | "pause" | "resume" | "cancel" if !args.is_empty() => {
+            let mut values = args.split_whitespace();
+            let goal_id = values.next().unwrap_or_default().to_string();
+            if values.next().is_some() {
+                None
+            } else {
+                Some(match verb {
+                    "show" => UserCommand::ShowGoal { goal_id },
+                    "pause" => UserCommand::PauseGoal { goal_id },
+                    "resume" => UserCommand::ResumeGoal { goal_id },
+                    "cancel" => UserCommand::CancelGoal { goal_id },
+                    _ => unreachable!("matched Goal verb"),
+                })
+            }
+        }
+        "steer" | "accept" => {
+            let mut values = args.splitn(2, char::is_whitespace);
+            let goal_id = values.next().unwrap_or_default().trim();
+            let text = values.next().unwrap_or_default().trim();
+            if goal_id.is_empty() || text.is_empty() {
+                None
+            } else if verb == "steer" {
+                Some(UserCommand::SteerGoal {
+                    goal_id: goal_id.to_string(),
+                    text: text.to_string(),
+                })
+            } else {
+                Some(UserCommand::AcceptGoal {
+                    goal_id: goal_id.to_string(),
+                    text: text.to_string(),
+                })
+            }
+        }
+        _ => None,
+    };
+    if let Some(command) = command {
+        let _ = app.user_cmd_tx.send(command);
+    } else {
+        app.flash_msg = Some((
+            app.msgs().goal_usage_msg.to_string(),
+            std::time::Instant::now(),
+        ));
+    }
+    CommandExecOutcome::handled()
 }
 
 /// `/skill list` output is plain markdown (heading + pipe table) appended as
@@ -1085,7 +1144,12 @@ mod tests {
                 format!("{prefix} {}", sub.name)
             };
             if sub.children.is_empty() {
-                let value = if sub.takes_value { " sample" } else { "" };
+                let value = if sub.takes_value {
+                    let count = sub.hint.split_whitespace().count().max(1);
+                    " sample".repeat(count)
+                } else {
+                    String::new()
+                };
                 out.push(format!("/{command} {path}{value}"));
             } else {
                 assert!(
@@ -1480,6 +1544,78 @@ mod tests {
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected QueryBackground"),
             UserCommand::QueryBackground(Some(id)) if id == "018f3a2c"
+        ));
+    }
+
+    #[test]
+    fn goal_commands_forward_typed_ids_and_text() {
+        let cases = [
+            ("/goal list", UserCommand::ListGoals),
+            (
+                "/goal show goal-1",
+                UserCommand::ShowGoal {
+                    goal_id: "goal-1".into(),
+                },
+            ),
+            (
+                "/goal steer goal-1 prefer the smaller design",
+                UserCommand::SteerGoal {
+                    goal_id: "goal-1".into(),
+                    text: "prefer the smaller design".into(),
+                },
+            ),
+            (
+                "/goal pause goal-1",
+                UserCommand::PauseGoal {
+                    goal_id: "goal-1".into(),
+                },
+            ),
+            (
+                "/goal resume goal-1",
+                UserCommand::ResumeGoal {
+                    goal_id: "goal-1".into(),
+                },
+            ),
+            (
+                "/goal cancel goal-1",
+                UserCommand::CancelGoal {
+                    goal_id: "goal-1".into(),
+                },
+            ),
+            (
+                "/goal accept goal-1 accepted after review",
+                UserCommand::AcceptGoal {
+                    goal_id: "goal-1".into(),
+                    text: "accepted after review".into(),
+                },
+            ),
+        ];
+
+        for (input, expected) in cases {
+            let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+            app.input = input.into();
+            let outcome = execute_palette_command(&mut app, "goal");
+            assert!(outcome.handled, "{input}");
+            assert!(outcome.clear_input, "{input}");
+            let actual = user_cmd_rx.try_recv().expect("expected Goal command");
+            assert_eq!(format!("{actual:?}"), format!("{expected:?}"), "{input}");
+        }
+    }
+
+    #[test]
+    fn goal_create_preserves_the_full_objective() {
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.input = "/goal create Ship Goal UI with durable lifecycle".into();
+
+        let outcome = execute_palette_command(&mut app, "goal");
+
+        assert!(outcome.handled);
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected CreateGoal"),
+            UserCommand::CreateGoal { title, objective, criteria }
+                if title == "Ship Goal UI with durable lifecycle"
+                    && objective == "Ship Goal UI with durable lifecycle"
+                    && criteria.is_empty()
         ));
     }
 

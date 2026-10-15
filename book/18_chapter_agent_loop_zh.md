@@ -120,6 +120,8 @@ Unix 终止 child process group，并在 agent loop 返回前 flush 已读输出
 可在 `StepStarted` 与终态 `StepFinished` / `StepFailed` 之间发出信息性的
 `ToolProgress`；它本身不表示完成。
 
+Goal 不改变 `agent_loop` 的单次执行语义。`crates/tact-ui/src/goal_runner.rs` 在外层取得 lease、创建 bounded Run、注入有限 Goal context，并把 `GoalYield`、预算耗尽、取消、临时错误和完成提议映射为持久状态。普通 `SubmitTask` 仍走原有路径；Goal run 的完成提议必须经过 `GoalVerifier` 和证据检查，不能由模型文本直接标记成功。
+
 ---
 
 ## 6. 关键结构体

@@ -40,6 +40,7 @@
 | 25 | [Agent–TUI 协议](./25_chapter_protocol_zh.md) | `tact_protocol` 消息类型、计划步骤生命周期、任务级状态迁移 |
 | 26 | [工程问题与优化日志](./26_chapter_issue_zh.md) | 已交付优化与 bugfix的倒序日志（现象 → 决策 → 指针） |
 | 27 | [Bash 沙箱](./27_chapter_sandbox_zh.md) | `bash` 的可选 OS 级沙箱：布尔开关、按平台选后端、bubblewrap 策略、降级与非覆盖范围 |
+| 28 | [Agent Goal](./28_chapter_goal_zh.md) | 跨 turn 的持久目标、Goal Runner、验收证据、预算/恢复、权限边界与 TUI；已实现 |
 
 ---
 

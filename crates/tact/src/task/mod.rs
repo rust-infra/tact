@@ -4,8 +4,8 @@
 //! Completed/Deleted), blocking relationships, and optional owners.
 //!
 //! - [`TaskManager`] is the core state machine backed by a file store.
-//! - [`SharedTaskManager`] wraps it in `Arc<Mutex<…>>` for concurrent
-//!   access from tools.
+//! - [`SharedTaskManager`] wraps it in `Arc<TaskManager>` for concurrent
+//!   access from tools; the SQLite pool serializes writes.
 //! - [`TaskRecord`] is the wire format; it supports `blockedBy` / `blocks`
 //!   for dependency tracking.
 //! - [`render_task_json`] and [`render_task_list`] produce LLM-friendly
@@ -82,6 +82,8 @@ pub struct TaskRecord {
     pub started_at: Option<i64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completed_at: Option<i64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub goal_id: Option<String>,
 }
 
 impl TaskRecord {
@@ -104,6 +106,7 @@ impl TaskRecord {
             ),
             started_at: None,
             completed_at: None,
+            goal_id: None,
         }
     }
 }
@@ -140,7 +143,33 @@ impl TaskManager {
         self.store.create(subject, description, session_id).await
     }
 
-    /// Gets the task with the given ID.
+    /// Creates a new task associated with a Goal in this manager's database.
+    ///
+    /// The SQLite store validates the Goal in the same database and transaction
+    /// before inserting the task.
+    pub async fn create_for_goal(
+        &self,
+        subject: String,
+        description: Option<String>,
+        session_id: String,
+        goal_id: String,
+    ) -> Result<TaskRecord> {
+        self.store
+            .create_for_goal(subject, description, session_id, goal_id)
+            .await
+    }
+
+    /// Associates a task with a Goal in this manager's database.
+    pub async fn associate_goal(&self, task_id: u64, goal_id: String) -> Result<TaskRecord> {
+        self.store.associate_goal(task_id, goal_id).await
+    }
+
+    /// Lists non-deleted tasks associated with a Goal, including dependency edges.
+    pub async fn list_for_goal(&self, goal_id: &str) -> Result<Vec<TaskRecord>> {
+        self.store.list_for_goal(goal_id).await
+    }
+
+    /// Reads a task by ID, including its dependency edges.
     pub async fn get(&self, task_id: u64) -> Result<TaskRecord> {
         self.store.get(task_id).await
     }
@@ -188,7 +217,30 @@ impl SharedTaskManager {
         self.inner.create(subject, description, session_id).await
     }
 
-    /// Gets a task from the manager.
+    /// Creates a new task associated with a Goal in the shared manager's database.
+    pub async fn create_for_goal(
+        &self,
+        subject: String,
+        description: Option<String>,
+        session_id: String,
+        goal_id: String,
+    ) -> Result<TaskRecord> {
+        self.inner
+            .create_for_goal(subject, description, session_id, goal_id)
+            .await
+    }
+
+    /// Associates a task with a Goal in the shared manager's database.
+    pub async fn associate_goal(&self, task_id: u64, goal_id: String) -> Result<TaskRecord> {
+        self.inner.associate_goal(task_id, goal_id).await
+    }
+
+    /// Lists non-deleted tasks associated with a Goal, including dependency edges.
+    pub async fn list_for_goal(&self, goal_id: &str) -> Result<Vec<TaskRecord>> {
+        self.inner.list_for_goal(goal_id).await
+    }
+
+    /// Reads a task by ID, including its dependency edges.
     pub async fn get(&self, task_id: u64) -> Result<TaskRecord> {
         self.inner.get(task_id).await
     }
@@ -209,7 +261,7 @@ impl SharedTaskManager {
     }
 }
 
-/// Renders a task as JSON.
+/// Renders a task as pretty-printed JSON.
 pub fn render_task_json(task: &TaskRecord) -> Result<String> {
     serde_json::to_string_pretty(task).context("failed to serialize task")
 }
@@ -463,6 +515,7 @@ mod tests {
             created_at: None,
             started_at: None,
             completed_at: None,
+            goal_id: None,
         };
         let rendered = render_task_list(vec![task]);
         assert!(rendered.contains("[>] #1: Ship"));
@@ -482,6 +535,9 @@ mod tests {
         assert!(json.contains("\"subject\": \"Test\""));
         assert!(json.contains("\"description\": \"desc\""));
         assert!(json.contains("\"status\": \"pending\""));
+        assert!(!json.contains("\"goal_id\""));
+        let decoded: TaskRecord = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.goal_id, None);
     }
 
     #[tokio::test]
@@ -498,5 +554,143 @@ mod tests {
             snaps[1].status,
             tact_protocol::TaskStatusSnapshot::InProgress
         );
+    }
+}
+
+#[cfg(test)]
+mod task3_association_tests {
+    use super::*;
+    use crate::goal::{GoalCreate, GoalCriterion, GoalManager};
+
+    fn db(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!("tact-task-association-{name}"));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        dir.join("tact.db")
+    }
+
+    async fn goal_manager(path: &std::path::Path) -> GoalManager {
+        GoalManager::new(path).await.unwrap()
+    }
+
+    async fn create_goal(manager: &GoalManager, title: &str) -> crate::goal::Goal {
+        manager
+            .create(GoalCreate {
+                title: title.into(),
+                objective: format!("objective for {title}"),
+                constraints: vec![],
+                criteria: vec![GoalCriterion::required("done")],
+            })
+            .await
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn goal_association_requires_existing_goal_and_preserves_task_state() {
+        let path = db("unknown-goal");
+        let manager = TaskManager::new(&path).await.unwrap();
+        let task = manager
+            .create("task".into(), None, String::new())
+            .await
+            .unwrap();
+        assert!(
+            manager
+                .create_for_goal("bad".into(), None, String::new(), "missing".into())
+                .await
+                .is_err()
+        );
+        assert_eq!(manager.list().await.unwrap().len(), 1);
+        assert!(
+            manager
+                .associate_goal(task.id, "missing".into())
+                .await
+                .is_err()
+        );
+        assert_eq!(manager.get(task.id).await.unwrap().goal_id, None);
+    }
+
+    #[tokio::test]
+    async fn goal_association_and_filtering_are_validated_and_deterministic() {
+        let path = db("association");
+        let manager = TaskManager::new(&path).await.unwrap();
+        let goals = goal_manager(&path).await;
+        let goal = create_goal(&goals, "goal-a").await;
+        let other = create_goal(&goals, "goal-b").await;
+        let first = manager
+            .create_for_goal("first".into(), None, String::new(), goal.id.clone())
+            .await
+            .unwrap();
+        let second = manager
+            .create("second".into(), None, String::new())
+            .await
+            .unwrap();
+        manager
+            .associate_goal(second.id, goal.id.clone())
+            .await
+            .unwrap();
+        let deleted = manager
+            .create_for_goal("deleted".into(), None, String::new(), goal.id.clone())
+            .await
+            .unwrap();
+        manager.delete(deleted.id).await.unwrap();
+        assert_eq!(first.goal_id.as_deref(), Some(goal.id.as_str()));
+        assert_eq!(
+            manager
+                .list_for_goal(&goal.id)
+                .await
+                .unwrap()
+                .iter()
+                .map(|t| t.id)
+                .collect::<Vec<_>>(),
+            vec![first.id, second.id]
+        );
+        assert!(
+            manager
+                .associate_goal(first.id, other.id.clone())
+                .await
+                .is_err()
+        );
+        assert_eq!(
+            manager.get(first.id).await.unwrap().goal_id.as_deref(),
+            Some(goal.id.as_str())
+        );
+    }
+
+    #[tokio::test]
+    async fn list_for_goal_includes_dependency_edges_and_same_goal_association_is_idempotent() {
+        let path = db("edges");
+        let manager = TaskManager::new(&path).await.unwrap();
+        let goals = goal_manager(&path).await;
+        let goal = create_goal(&goals, "goal").await;
+        let blocker = manager
+            .create_for_goal("blocker".into(), None, String::new(), goal.id.clone())
+            .await
+            .unwrap();
+        let blocked = manager
+            .create_for_goal("blocked".into(), None, String::new(), goal.id.clone())
+            .await
+            .unwrap();
+        manager
+            .update(
+                blocker.id,
+                TaskUpdate {
+                    add_blocks: vec![blocked.id],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            manager
+                .associate_goal(blocker.id, goal.id.clone())
+                .await
+                .unwrap()
+                .goal_id
+                .as_deref(),
+            Some(goal.id.as_str())
+        );
+        let listed = manager.list_for_goal(&goal.id).await.unwrap();
+        assert_eq!(listed[0].blocks, vec![blocked.id]);
+        assert_eq!(listed[1].blocked_by, vec![blocker.id]);
     }
 }

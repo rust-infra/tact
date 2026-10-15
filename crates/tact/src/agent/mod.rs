@@ -1,7 +1,10 @@
 //! Agent runtime: conversation loop, tool dispatch, and session state.
 
+mod outcome;
 mod tool_dispatch;
 pub(crate) mod tool_schedule;
+
+pub use outcome::{AgentLoopOutcome, AgentLoopStop};
 
 use std::{
     collections::VecDeque,
@@ -48,7 +51,7 @@ use crate::{
     stats::SessionStats,
     store::DynSessionStore,
     subagent::SubagentResult,
-    tool::{ToolContext, ToolRouter},
+    tool::{GoalYieldReason, ToolContext, ToolRouter},
     utils::{LockExt, RwLockExt, truncate::truncate_middle_with_token_budget},
 };
 
@@ -360,6 +363,9 @@ pub struct AgentRuntime {
     /// Responses protocol baseline). Loaded in [`Agent::ensure_session`],
     /// committed after every LLM response, and passed into every LLM call.
     pub provider_state: Option<ProviderConversationState>,
+    /// Goal-yield reason returned by the most recent tool dispatch, if this
+    /// activation must return control to the Runner for user input.
+    pub goal_yield_reason: Option<GoalYieldReason>,
     /// Results from background subagents that finished while the parent was
     /// mid-turn. Drained before the next LLM call and re-injected as a
     /// synthetic `<subagent-finished>` user message. `Arc<Mutex<VecDeque>>`
@@ -509,6 +515,7 @@ impl Agent {
                 cached_agents_md: None,
                 last_token_total: 0,
                 provider_state: None,
+                goal_yield_reason: None,
                 pending_subagent_results: Arc::new(Mutex::new(VecDeque::new())),
                 pending_session_context: Vec::new(),
                 session_start_hooks_pending: true,
@@ -1158,10 +1165,55 @@ impl Agent {
     ///    dispatches tool-use blocks (native or MCP) → applies permissions →
     ///    writes results back.  Continues until the LLM returns a stop reason
     ///    other than `ToolUse` or an unrecoverable error occurs.
+    ///
+    /// This is the plain entry point. It delegates to
+    /// [`Agent::agent_loop_detailed`] and discards the typed outcome, keeping
+    /// the historical `Result<()>` signature and its externally visible effects
+    /// (same [`AgentUpdate`]s, same messages persisted, same `Ok(())`).
     #[tracing::instrument(skip(self), name = "agent_loop")]
     pub async fn agent_loop(&mut self, user_turn_message: Option<Message>) -> Result<()> {
+        self.agent_loop_detailed(user_turn_message)
+            .await
+            .map(|_| ())
+    }
+
+    /// One bounded activation of the agent conversation loop.
+    ///
+    /// Runs the same loop as [`Agent::agent_loop`], but returns an
+    /// [`AgentLoopOutcome`] describing *why* the activation returned and how
+    /// much budget it consumed — model calls (`turns`) and tool calls actually
+    /// executed (`tool_calls`). The driver-owned Goal Runner uses this to decide
+    /// whether to run another bounded activation.
+    ///
+    /// 1. Builds the system prompt and primes the context.
+    /// 2. Loops: sends context to LLM → processes streaming response →
+    ///    dispatches tool-use blocks (native or MCP) → applies permissions →
+    ///    writes results back.  Continues until the LLM returns a stop reason
+    ///    other than `ToolUse` or an unrecoverable error occurs.
+    #[tracing::instrument(skip(self), name = "agent_loop_detailed")]
+    pub async fn agent_loop_detailed(
+        &mut self,
+        user_turn_message: Option<Message>,
+    ) -> Result<AgentLoopOutcome> {
+        // `turns` is a delta over *this* activation, measured against the
+        // process-lifetime counter carried on `Agent::turns_taken`.
+        let turns_before = self.turns_taken;
+        // Accumulates the executed-tool-call count from every dispatch this
+        // activation performs.
+        let mut tool_calls: u64 = 0;
+        // `turns_before` is captured by value; `turns_taken` and `tool_calls`
+        // are passed in at each exit so this closure never borrows the `self`
+        // that the loop mutably re-borrows.
+        let finish =
+            move |stop: AgentLoopStop, turns_taken: u32, tool_calls: u64| AgentLoopOutcome {
+                stop,
+                turns: turns_taken - turns_before,
+                tool_calls,
+            };
+
         self.runtime.recovery_state = RecoveryState::default();
         self.runtime.interrupt_hooks_fired = false;
+        self.runtime.goal_yield_reason = None;
 
         // Restore history if the startup path left context empty.
         self.ensure_session().await?;
@@ -1177,7 +1229,11 @@ impl Agent {
                 self.emit_update(AgentUpdate::Info(format!(
                     "[SessionStart hook stopped the turn] {reason}"
                 )));
-                return Ok(());
+                return Ok(finish(
+                    AgentLoopStop::BlockedByHook,
+                    self.turns_taken,
+                    tool_calls,
+                ));
             }
         }
 
@@ -1210,7 +1266,11 @@ impl Agent {
                     self.emit_update(AgentUpdate::Info(format!(
                         "[User prompt blocked by hook] {reason}"
                     )));
-                    return Ok(());
+                    return Ok(finish(
+                        AgentLoopStop::BlockedByHook,
+                        self.turns_taken,
+                        tool_calls,
+                    ));
                 }
             }
             self.push_message(message).await?;
@@ -1232,12 +1292,20 @@ impl Agent {
                 && self.turns_taken > max
             {
                 self.emit_update(AgentUpdate::Info(format!("max_turns ({max}) reached")));
-                return Ok(());
+                return Ok(finish(
+                    AgentLoopStop::MaxTurns,
+                    self.turns_taken,
+                    tool_calls,
+                ));
             }
             if self.cancel_requested() {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 self.dispatch_interrupt_hooks().await?;
-                return Ok(());
+                return Ok(finish(
+                    AgentLoopStop::Cancelled,
+                    self.turns_taken,
+                    tool_calls,
+                ));
             }
             // Micro-compaction truncates old tool results in the logical
             // context. For Responses the provider state anchors the logical
@@ -1467,10 +1535,20 @@ impl Agent {
                 // Execute any tool calls that arrived before the token limit
                 // was hit, so the context remains valid for the API.
                 if has_pending_tools {
-                    let (tool_result, manual_compact) = self.execute_tool_call(&content).await?;
+                    let (tool_result, outcome) = self.execute_tool_call(&content).await?;
                     self.push_message(Message::new_blocks(Role::User, tool_result.clone()))
                         .await?;
-                    if let Some(focus) = manual_compact {
+                    tool_calls += outcome.executed_tool_calls;
+                    self.runtime.goal_yield_reason = outcome.goal_yield;
+                    if self.runtime.goal_yield_reason == Some(GoalYieldReason::NeedsUser) {
+                        self.emit_update(AgentUpdate::Info("[goal] waiting for user input".into()));
+                        return Ok(finish(
+                            AgentLoopStop::GoalYield(GoalYieldReason::NeedsUser),
+                            self.turns_taken,
+                            tool_calls,
+                        ));
+                    }
+                    if let Some(focus) = outcome.manual_compact {
                         self.emit_update(AgentUpdate::Info("[manual compact]".into()));
                         self.compact_history_with_trigger(
                             CompactTrigger::Manual,
@@ -1521,7 +1599,11 @@ impl Agent {
                     )));
                     self.abandon_pending_tools(&content, tool_dispatch::TOOL_UNKNOWN_STOP_MSG)
                         .await?;
-                    return Ok(());
+                    return Ok(finish(
+                        AgentLoopStop::Completed,
+                        self.turns_taken,
+                        tool_calls,
+                    ));
                 }
                 // The recovery branch above returns early while continuation
                 // attempts remain, so reaching here with `MaxTokens` means the
@@ -1530,7 +1612,11 @@ impl Agent {
                 Some(StopReason::MaxTokens) => {
                     self.abandon_pending_tools(&content, tool_dispatch::TOOL_TRUNCATED_MSG)
                         .await?;
-                    return Ok(());
+                    return Ok(finish(
+                        AgentLoopStop::MaxTokens,
+                        self.turns_taken,
+                        tool_calls,
+                    ));
                 }
                 // PauseTurn: Tact does not use Anthropic server tools; finish like EndTurn.
                 Some(StopReason::EndTurn | StopReason::StopSequence | StopReason::PauseTurn)
@@ -1540,7 +1626,11 @@ impl Agent {
                     // them answered.
                     self.abandon_pending_tools(&content, tool_dispatch::TOOL_TURN_ENDED_MSG)
                         .await?;
-                    return Ok(());
+                    return Ok(finish(
+                        AgentLoopStop::Completed,
+                        self.turns_taken,
+                        tool_calls,
+                    ));
                 }
             }
 
@@ -1548,14 +1638,28 @@ impl Agent {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 self.abandon_pending_tools(&content, tool_dispatch::TOOL_CANCELLED_MSG)
                     .await?;
-                return Ok(());
+                return Ok(finish(
+                    AgentLoopStop::Cancelled,
+                    self.turns_taken,
+                    tool_calls,
+                ));
             }
-            let (tool_result, manual_compact) = self.execute_tool_call(&content).await?;
+            let (tool_result, outcome) = self.execute_tool_call(&content).await?;
 
             self.push_message(Message::new_blocks(Role::User, tool_result.clone()))
                 .await?;
+            tool_calls += outcome.executed_tool_calls;
+            self.runtime.goal_yield_reason = outcome.goal_yield;
+            if self.runtime.goal_yield_reason == Some(GoalYieldReason::NeedsUser) {
+                self.emit_update(AgentUpdate::Info("[goal] waiting for user input".into()));
+                return Ok(finish(
+                    AgentLoopStop::GoalYield(GoalYieldReason::NeedsUser),
+                    self.turns_taken,
+                    tool_calls,
+                ));
+            }
 
-            if let Some(focus) = manual_compact {
+            if let Some(focus) = outcome.manual_compact {
                 self.emit_update(AgentUpdate::Info("[manual compact]".into()));
                 self.compact_history_with_trigger(CompactTrigger::Manual, Some(focus.as_str()))
                     .await?;
@@ -5246,6 +5350,158 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn agent_loop_goal_request_input_yields_without_second_model_call() {
+        ensure_config();
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let mut context = test_context("agent_loop_goal_request_input_yield");
+        let goal = context
+            .goal_manager
+            .create(crate::goal::GoalCreate {
+                title: "Need user input".to_string(),
+                objective: "Pause for a user answer".to_string(),
+                constraints: Vec::new(),
+                criteria: vec![crate::goal::GoalCriterion::required_with_id(
+                    "criterion-1",
+                    "answer received",
+                )],
+            })
+            .await
+            .unwrap();
+        context.active_goal_id = Some(goal.id.clone());
+
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let request_count_for_responder = request_count.clone();
+        let mock = MockClient::with_responder(move |_request, idx| {
+            request_count_for_responder.fetch_add(1, Ordering::SeqCst);
+            if idx == 0 {
+                Ok((
+                    vec![ContentBlock::ToolUse {
+                        id: "goal-input-1".to_string(),
+                        name: "goal_request_input".to_string(),
+                        input: serde_json::json!({"question": "Which option should I use?"}),
+                    }],
+                    Some(StopReason::ToolUse),
+                    None,
+                ))
+            } else {
+                panic!("unexpected second request at responder index {idx}");
+            }
+        });
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "continue the goal")))
+            .await
+            .expect("agent_loop should yield cleanly for user input");
+
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            agent.runtime.goal_yield_reason,
+            Some(GoalYieldReason::NeedsUser)
+        );
+
+        let events = agent
+            .tool_context
+            .goal_manager
+            .list_events(&goal.id)
+            .await
+            .unwrap();
+        assert!(
+            events.iter().any(|event| event.kind == "needs_user"),
+            "needs_user event should be persisted: {events:?}"
+        );
+        assert_eq!(
+            tool_result_for(&agent.runtime.context, "goal-input-1").as_deref(),
+            Some("User input requested; yield to Runner.")
+        );
+    }
+
+    /// A `goal_request_input` that arrives alongside `stop_reason=max_tokens`
+    /// is still executed before the continuation prompt: the yield wins, the
+    /// tool result is persisted, and no second model request is made.
+    #[tokio::test]
+    async fn agent_loop_max_tokens_goal_request_input_yields_without_continuation() {
+        ensure_config();
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let mut context = test_context("agent_loop_max_tokens_goal_request_input_yield");
+        let goal = context
+            .goal_manager
+            .create(crate::goal::GoalCreate {
+                title: "Need user input".to_string(),
+                objective: "Pause for a user answer".to_string(),
+                constraints: Vec::new(),
+                criteria: vec![crate::goal::GoalCriterion::required_with_id(
+                    "criterion-1",
+                    "answer received",
+                )],
+            })
+            .await
+            .unwrap();
+        context.active_goal_id = Some(goal.id.clone());
+
+        let request_count = Arc::new(AtomicUsize::new(0));
+        let request_count_for_responder = request_count.clone();
+        let mock = MockClient::with_responder(move |_request, idx| {
+            request_count_for_responder.fetch_add(1, Ordering::SeqCst);
+            if idx == 0 {
+                Ok((
+                    vec![ContentBlock::ToolUse {
+                        id: "goal-max-1".to_string(),
+                        name: "goal_request_input".to_string(),
+                        input: serde_json::json!({"question": "Which option should I use?"}),
+                    }],
+                    Some(StopReason::MaxTokens),
+                    None,
+                ))
+            } else {
+                panic!("unexpected second request at responder index {idx}");
+            }
+        });
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "continue the goal")))
+            .await
+            .expect("agent_loop should yield cleanly for user input");
+
+        assert_eq!(request_count.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            agent.runtime.goal_yield_reason,
+            Some(GoalYieldReason::NeedsUser)
+        );
+        assert_eq!(
+            tool_result_for(&agent.runtime.context, "goal-max-1").as_deref(),
+            Some("User input requested; yield to Runner.")
+        );
+    }
+
+    #[tokio::test]
     async fn agent_loop_respects_max_turns_cap() {
         ensure_config();
         let context = test_context("agent_loop_max_turns");
@@ -5393,6 +5649,334 @@ mod tests {
         );
         // Only the user message is present — the cap stopped before any reply.
         assert_eq!(agent.runtime.context.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn agent_loop_detailed_reports_completed_without_tool_calls() {
+        ensure_config();
+        let context = test_context("agent_loop_detailed_completed");
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("Hello, I am a coding agent.")],
+            Some(StopReason::EndTurn),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "Say hello")))
+            .await
+            .expect("agent_loop_detailed completes");
+
+        assert_eq!(outcome.stop, AgentLoopStop::Completed);
+        assert_eq!(outcome.turns, 1);
+        assert_eq!(outcome.tool_calls, 0);
+
+        // The plain entry point still returns `()` for the same kind of script.
+        let context = test_context("agent_loop_detailed_completed_unit");
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("Hello again.")],
+            Some(StopReason::EndTurn),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+        let unit: () = agent
+            .agent_loop(Some(Message::new_text(Role::User, "Say hello")))
+            .await
+            .expect("agent_loop completes");
+        assert_eq!(unit, ());
+    }
+
+    /// `turns` is what *this* activation consumed, not the agent's running
+    /// total: the Goal runner budgets one activation at a time and would
+    /// double-count if the field were cumulative.
+    #[tokio::test]
+    async fn agent_loop_detailed_reports_turns_as_activation_delta() {
+        ensure_config();
+        let context = test_context("agent_loop_detailed_turns_delta");
+        let mock = MockClient::new(vec![
+            (
+                vec![make_text_block("first activation")],
+                Some(StopReason::EndTurn),
+            ),
+            (
+                vec![make_text_block("second activation")],
+                Some(StopReason::EndTurn),
+            ),
+        ]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        let first = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "one")))
+            .await
+            .expect("first activation completes");
+        assert_eq!(first.turns, 1);
+
+        let second = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "two")))
+            .await
+            .expect("second activation completes");
+        assert_eq!(agent.turns_taken, 2, "the agent keeps a running total");
+        assert_eq!(
+            second.turns, 1,
+            "the outcome must report the activation delta, not the running total"
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_detailed_reports_goal_yield_and_skips_unexecuted_calls() {
+        ensure_config();
+        let mut context = test_context("agent_loop_detailed_goal_yield");
+        let goal = context
+            .goal_manager
+            .create(crate::goal::GoalCreate {
+                title: "Need user input".to_string(),
+                objective: "Pause for a user answer".to_string(),
+                constraints: Vec::new(),
+                criteria: vec![crate::goal::GoalCriterion::required_with_id(
+                    "criterion-1",
+                    "answer received",
+                )],
+            })
+            .await
+            .unwrap();
+        context.active_goal_id = Some(goal.id.clone());
+
+        let mock = MockClient::new(vec![(
+            vec![
+                ContentBlock::ToolUse {
+                    id: "goal-input-detailed".to_string(),
+                    name: "goal_request_input".to_string(),
+                    input: serde_json::json!({"question": "Which option should I use?"}),
+                },
+                ContentBlock::ToolUse {
+                    id: "bash-skipped".to_string(),
+                    name: "bash".to_string(),
+                    input: serde_json::json!({"command": "printf hello"}),
+                },
+            ],
+            Some(StopReason::ToolUse),
+        )]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "continue the goal")))
+            .await
+            .expect("agent_loop_detailed yields cleanly for user input");
+
+        assert_eq!(
+            outcome.stop,
+            AgentLoopStop::GoalYield(GoalYieldReason::NeedsUser)
+        );
+        assert_eq!(outcome.turns, 1);
+        assert_eq!(
+            outcome.tool_calls, 1,
+            "only the goal tool ran; the skipped bash call must not count"
+        );
+        assert_eq!(
+            agent.runtime.goal_yield_reason,
+            Some(GoalYieldReason::NeedsUser)
+        );
+    }
+
+    #[tokio::test]
+    async fn agent_loop_detailed_counts_each_executed_tool_call() {
+        ensure_config();
+        let context = test_context("agent_loop_detailed_counts_tools");
+        let mock = MockClient::new(vec![
+            (
+                vec![
+                    ContentBlock::ToolUse {
+                        id: "b1".to_string(),
+                        name: "bash".to_string(),
+                        input: serde_json::json!({"command": "printf one"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "b2".to_string(),
+                        name: "bash".to_string(),
+                        input: serde_json::json!({"command": "printf two"}),
+                    },
+                ],
+                Some(StopReason::ToolUse),
+            ),
+            (vec![make_text_block("done")], Some(StopReason::EndTurn)),
+        ]);
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "run both")))
+            .await
+            .expect("agent_loop_detailed completes");
+
+        assert_eq!(outcome.tool_calls, 2);
+        assert_eq!(outcome.stop, AgentLoopStop::Completed);
+    }
+
+    #[tokio::test]
+    async fn agent_loop_detailed_reports_max_turns() {
+        ensure_config();
+        let context = test_context("agent_loop_detailed_max_turns");
+        let mock = MockClient::new(vec![(
+            vec![ContentBlock::ToolUse {
+                id: "b1".to_string(),
+                name: "bash".to_string(),
+                input: serde_json::json!({"command": "printf hi"}),
+            }],
+            Some(StopReason::ToolUse),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_max_turns(Some(1));
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .expect("agent_loop_detailed stops at the cap");
+
+        assert_eq!(outcome.stop, AgentLoopStop::MaxTurns);
+        assert_eq!(outcome.turns, 2, "one executed turn plus the capped turn");
+    }
+
+    #[tokio::test]
+    async fn agent_loop_detailed_reports_cancelled() {
+        ensure_config();
+        let context = test_context("agent_loop_detailed_cancelled");
+        let mock = MockClient::new(vec![]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+        agent
+            .runtime
+            .cancel_flag
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .expect("a cancelled loop returns Ok");
+
+        assert_eq!(outcome.stop, AgentLoopStop::Cancelled);
+    }
+
+    #[tokio::test]
+    async fn agent_loop_detailed_reports_max_tokens_after_continuations_exhausted() {
+        ensure_config();
+        let context = test_context("agent_loop_detailed_max_tokens");
+        let mock = MockClient::with_responder(|_request, _idx| {
+            Ok((
+                vec![make_text_block("partial output")],
+                Some(StopReason::MaxTokens),
+                None,
+            ))
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .expect("an exhausted continuation finishes the turn");
+
+        assert_eq!(outcome.stop, AgentLoopStop::MaxTokens);
+        assert_eq!(outcome.tool_calls, 0);
+    }
+
+    #[tokio::test]
+    async fn agent_loop_detailed_reports_blocked_by_hook() {
+        ensure_config();
+        let context = test_context("agent_loop_detailed_blocked_by_hook");
+        let mock = MockClient::new(vec![]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_session_start(|_agent, _context| {
+            Box::pin(async { Ok(HookControl::Block("no context yet".to_string())) })
+        });
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .expect("a blocked turn returns Ok");
+
+        assert_eq!(outcome.stop, AgentLoopStop::BlockedByHook);
+        assert_eq!(outcome.turns, 0);
     }
 
     #[tokio::test]

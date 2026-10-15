@@ -38,8 +38,9 @@ use serde_json::Value;
 use tact_protocol::AgentUpdate;
 
 use crate::{
-    ToolSpec, background::SharedBackgroundManager, memory::MemoryManager, task::SharedTaskManager,
-    team::SharedTeammateManager, ui_responder::UiResponder, worktree::SharedWorktreeManager,
+    ToolSpec, background::SharedBackgroundManager, goal::SharedGoalManager, memory::MemoryManager,
+    task::SharedTaskManager, team::SharedTeammateManager, ui_responder::UiResponder,
+    worktree::SharedWorktreeManager,
 };
 
 mod ask_user;
@@ -47,6 +48,7 @@ mod background_run;
 mod bash;
 mod compact;
 mod edit_file;
+pub mod goal;
 mod load_skill;
 mod memory;
 mod metadata;
@@ -118,6 +120,8 @@ pub struct ToolContext {
     pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,
+    pub goal_manager: SharedGoalManager,
+    pub active_goal_id: Option<String>,
     pub background_manager: SharedBackgroundManager,
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
@@ -346,9 +350,10 @@ pub(crate) fn copy_tool_spec(spec: &ToolSpec) -> ToolSpec {
 }
 
 pub use metadata::{
-    ArgumentSummaryPolicy, DetailPolicy, IntoToolCallResult, LiveOutputPolicy, OutputPolicy,
-    PermissionPolicy, PermissionPromptPolicy, PopupPolicy, ResourcePolicy, TaskOperation,
-    ToolCallResult, ToolDomain, ToolEffect, ToolMetadata, ToolPresentation, patch_target_paths,
+    ArgumentSummaryPolicy, DetailPolicy, GoalYieldReason, IntoToolCallResult, LiveOutputPolicy,
+    OutputPolicy, PermissionPolicy, PermissionPromptPolicy, PopupPolicy, ResourcePolicy,
+    TaskOperation, ToolCallResult, ToolDomain, ToolEffect, ToolMetadata, ToolPresentation,
+    patch_target_paths,
 };
 pub use path::{safe_path, safe_path_allow_missing};
 pub use progress::ToolProgressReporter;

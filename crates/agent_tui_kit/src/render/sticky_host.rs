@@ -1,5 +1,5 @@
-//! Three-domain sticky host under the Log (pure render):
-//! Tasks | Subagent | Background.
+//! Four-domain sticky host under the Log (pure render):
+//! Goals | Tasks | Subagent | Background.
 //!
 //! Each domain (`TaskPanelState` / `SubagentPanelState` /
 //! `BackgroundPanelState`) independently decides visibility and expand state.
@@ -37,6 +37,7 @@ use crate::{
             BackgroundTaskRow, format_background_lines,
             format_sticky_title_line as format_bg_title, running_background_tasks,
         },
+        goal_panel::{format_goal_lines, format_sticky_title_line as format_goals_title},
         subagent_panel::{
             format_sticky_title_line as format_subagent_title, format_subagent_lines,
         },
@@ -59,11 +60,15 @@ fn background_rows(ctx: &RenderCtx) -> Vec<BackgroundTaskRow> {
 }
 
 pub fn sticky_host_visible(ctx: &RenderCtx) -> bool {
-    ctx.task_panel.visible || ctx.subagent_panel.visible || ctx.background_panel.visible
+    ctx.goal_panel.visible
+        || ctx.task_panel.visible
+        || ctx.subagent_panel.visible
+        || ctx.background_panel.visible
 }
 
 pub fn domain_visible(ctx: &RenderCtx, tab: StickyTab) -> bool {
     match tab {
+        StickyTab::Goals => ctx.goal_panel.visible,
         StickyTab::Tasks => ctx.task_panel.visible,
         StickyTab::Subagent => ctx.subagent_panel.visible,
         StickyTab::Background => ctx.background_panel.visible,
@@ -72,6 +77,7 @@ pub fn domain_visible(ctx: &RenderCtx, tab: StickyTab) -> bool {
 
 fn domain_expanded(ctx: &RenderCtx, tab: StickyTab) -> bool {
     match tab {
+        StickyTab::Goals => ctx.goal_panel.expanded,
         StickyTab::Tasks => ctx.task_panel.expanded,
         StickyTab::Subagent => ctx.subagent_panel.expanded,
         StickyTab::Background => ctx.background_panel.expanded,
@@ -84,6 +90,8 @@ pub fn active_visible_tab(ctx: &RenderCtx) -> StickyTab {
     let active = ctx.mouse.active_sticky_tab;
     if domain_visible(ctx, active) {
         active
+    } else if ctx.goal_panel.visible {
+        StickyTab::Goals
     } else if ctx.task_panel.visible {
         StickyTab::Tasks
     } else if ctx.subagent_panel.visible {
@@ -109,6 +117,11 @@ pub fn sticky_host_content_height(ctx: &RenderCtx) -> usize {
 
 fn body_lines(ctx: &RenderCtx, tab: StickyTab) -> Vec<String> {
     match tab {
+        StickyTab::Goals => format_goal_lines(
+            &ctx.goal_panel.snapshot,
+            ctx.goal_panel.scroll,
+            ctx.goal_panel.max_visible,
+        ),
         StickyTab::Tasks => format_grouped_lines(
             &ctx.task_panel.snapshot,
             ctx.task_panel.scroll,
@@ -135,6 +148,10 @@ fn body_lines(ctx: &RenderCtx, tab: StickyTab) -> Vec<String> {
 /// `[Tasks] 1/3 · focus`, not `[Tasks] Tasks 1/3 · focus`.
 fn title_rest(ctx: &RenderCtx, tab: StickyTab) -> String {
     let (full, label): (String, &str) = match tab {
+        StickyTab::Goals => (
+            format_goals_title(&ctx.messages, &ctx.goal_panel.snapshot),
+            ctx.messages.goals_sticky_title,
+        ),
         StickyTab::Tasks => (
             format_tasks_title(&ctx.messages, &ctx.task_panel.snapshot),
             ctx.messages.tasks_sticky_title,
@@ -204,7 +221,7 @@ pub fn render_sticky_host(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Sti
     let title_y = inner.y;
 
     let mut first = true;
-    for tab in [StickyTab::Tasks, StickyTab::Subagent, StickyTab::Background] {
+    for tab in StickyTab::ALL {
         if !domain_visible(ctx, tab) {
             continue;
         }
@@ -215,6 +232,7 @@ pub fn render_sticky_host(frame: &mut Frame, area: Rect, ctx: &RenderCtx) -> Sti
         first = false;
 
         let label_text = match tab {
+            StickyTab::Goals => "[Goals]",
             StickyTab::Tasks => "[Tasks]",
             StickyTab::Subagent => "[Subagent]",
             StickyTab::Background => "[Background]",
