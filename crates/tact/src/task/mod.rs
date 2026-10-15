@@ -3,9 +3,9 @@
 //! Tasks are persistent work items with status (Pending → InProgress →
 //! Completed/Deleted), blocking relationships, and optional owners.
 //!
-//! - [`TaskManager`] is the core state machine backed by a file store.
-//! - [`SharedTaskManager`] wraps it in `Arc<TaskManager>` for concurrent
-//!   access from tools; the SQLite pool serializes writes.
+//! - [`TaskManager`] is the core state machine backed by a SQLite store.
+//! - [`SharedTaskManager`] shares a manager through `Arc` for concurrent
+//!   access from tools; the SQLite connection pool serializes writes.
 //! - [`TaskRecord`] is the wire format; it supports `blockedBy` / `blocks`
 //!   for dependency tracking.
 //! - [`render_task_json`] and [`render_task_list`] produce LLM-friendly

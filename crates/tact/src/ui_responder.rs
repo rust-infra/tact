@@ -70,6 +70,9 @@ pub struct PendingUiRequest {
     pub options: Vec<String>,
     pub kind: PendingUiRequestKind,
     pub log_confirm: bool,
+    /// The request came from a `spawn_subagent` child, not the main agent. The
+    /// popup titles itself accordingly; the prompt itself stays clean.
+    pub from_subagent: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,8 +130,15 @@ impl UiResponder {
         prompt: String,
         options: Vec<String>,
         log_confirm: bool,
+        from_subagent: bool,
     ) -> (u64, oneshot::Receiver<UiResponse>) {
-        self.register(PendingUiRequestKind::Select, prompt, options, log_confirm)
+        self.register(
+            PendingUiRequestKind::Select,
+            prompt,
+            options,
+            log_confirm,
+            from_subagent,
+        )
     }
 
     /// Register a multi-select request and return its id plus the waiter.
@@ -136,8 +146,15 @@ impl UiResponder {
         &self,
         prompt: String,
         options: Vec<String>,
+        from_subagent: bool,
     ) -> (u64, oneshot::Receiver<UiResponse>) {
-        self.register(PendingUiRequestKind::MultiSelect, prompt, options, false)
+        self.register(
+            PendingUiRequestKind::MultiSelect,
+            prompt,
+            options,
+            false,
+            from_subagent,
+        )
     }
 
     /// Snapshot of pending requests, ordered by request id (oldest first).
@@ -191,8 +208,10 @@ impl UiResponder {
         prompt: String,
         options: Vec<String>,
         log_confirm: bool,
+        from_subagent: bool,
     ) -> Result<Option<usize>, UiRequestError> {
-        let (request_id, rx) = self.register_select(prompt.clone(), options.clone(), log_confirm);
+        let (request_id, rx) =
+            self.register_select(prompt.clone(), options.clone(), log_confirm, from_subagent);
         let _guard = PendingRequestGuard {
             responder: self.clone(),
             request_id,
@@ -203,6 +222,7 @@ impl UiResponder {
                 prompt,
                 options,
                 log_confirm,
+                from_subagent,
             })
             .is_err()
         {
@@ -228,8 +248,9 @@ impl UiResponder {
         ui_tx: &UnboundedSender<AgentUpdate>,
         prompt: String,
         options: Vec<String>,
+        from_subagent: bool,
     ) -> Result<Option<Vec<usize>>, UiRequestError> {
-        let (request_id, rx) = self.register_multi(prompt.clone(), options.clone());
+        let (request_id, rx) = self.register_multi(prompt.clone(), options.clone(), from_subagent);
         let _guard = PendingRequestGuard {
             responder: self.clone(),
             request_id,
@@ -239,6 +260,7 @@ impl UiResponder {
                 request_id,
                 prompt,
                 options,
+                from_subagent,
             })
             .is_err()
         {
@@ -271,6 +293,7 @@ impl UiResponder {
         prompt: String,
         options: Vec<String>,
         log_confirm: bool,
+        from_subagent: bool,
     ) -> (u64, oneshot::Receiver<UiResponse>) {
         let request_id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
@@ -280,6 +303,7 @@ impl UiResponder {
             options,
             kind,
             log_confirm,
+            from_subagent,
         };
         self.inner
             .pending
@@ -304,7 +328,12 @@ mod tests {
             let responder = responder.clone();
             async move {
                 responder
-                    .request_multi(&tx, "Pick toppings".into(), vec!["a".into(), "b".into()])
+                    .request_multi(
+                        &tx,
+                        "Pick toppings".into(),
+                        vec!["a".into(), "b".into()],
+                        false,
+                    )
                     .await
             }
         });
@@ -314,12 +343,14 @@ mod tests {
             request_id,
             prompt,
             options,
+            from_subagent,
         } = rx.recv().await.unwrap()
         else {
             panic!("expected RequestMultiSelect");
         };
         assert_eq!(prompt, "Pick toppings");
         assert_eq!(options, vec!["a", "b"]);
+        assert!(!from_subagent, "a main-agent ask_user is not a child's");
 
         responder.handle_response(UiResponse::MultiSelect {
             request_id,
@@ -337,7 +368,7 @@ mod tests {
             let responder = responder.clone();
             async move {
                 responder
-                    .request_select(&tx, "Allow?".into(), vec!["Yes".into()], false)
+                    .request_select(&tx, "Allow?".into(), vec!["Yes".into()], false, false)
                     .await
             }
         });
@@ -361,7 +392,7 @@ mod tests {
             let responder = responder.clone();
             async move {
                 responder
-                    .request_select(&tx, "stale".into(), vec!["x".into()], false)
+                    .request_select(&tx, "stale".into(), vec!["x".into()], false, false)
                     .await
             }
         });
@@ -380,7 +411,7 @@ mod tests {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            responder.request_select(&tx, "q".into(), vec!["a".into()], false),
+            responder.request_select(&tx, "q".into(), vec!["a".into()], false, false),
         )
         .await;
 
@@ -396,7 +427,7 @@ mod tests {
             let responder = responder.clone();
             async move {
                 responder
-                    .request_select(&tx, "Allow?".into(), vec!["Yes".into()], false)
+                    .request_select(&tx, "Allow?".into(), vec!["Yes".into()], false, false)
                     .await
             }
         });
@@ -422,7 +453,7 @@ mod tests {
             let a = a.clone();
             let tx = tx.clone();
             async move {
-                a.request_select(&tx, "one".into(), vec!["x".into()], false)
+                a.request_select(&tx, "one".into(), vec!["x".into()], false, false)
                     .await
             }
         });
@@ -430,7 +461,7 @@ mod tests {
             let b = b.clone();
             let tx = tx.clone();
             async move {
-                b.request_select(&tx, "two".into(), vec!["y".into()], false)
+                b.request_select(&tx, "two".into(), vec!["y".into()], false, false)
                     .await
             }
         });
@@ -473,8 +504,8 @@ mod tests {
     fn snapshot_orders_pending_requests_and_clears_on_respond() {
         let responder = UiResponder::new();
         let (id1, _rx1) =
-            responder.register_select("first".into(), vec!["a".into(), "b".into()], false);
-        let (id2, _rx2) = responder.register_multi("second".into(), vec!["x".into()]);
+            responder.register_select("first".into(), vec!["a".into(), "b".into()], false, false);
+        let (id2, _rx2) = responder.register_multi("second".into(), vec!["x".into()], false);
 
         let snapshot = responder.snapshot();
         assert_eq!(
@@ -502,7 +533,8 @@ mod tests {
     #[tokio::test]
     async fn withdraw_removes_snapshot_and_unblocks_waiter() {
         let responder = UiResponder::new();
-        let (request_id, rx) = responder.register_select("gone".into(), vec!["x".into()], false);
+        let (request_id, rx) =
+            responder.register_select("gone".into(), vec!["x".into()], false, false);
         assert_eq!(responder.snapshot().len(), 1);
 
         assert!(responder.withdraw(request_id));
@@ -519,7 +551,7 @@ mod tests {
             let responder = responder.clone();
             async move {
                 responder
-                    .request_select(&tx, "Allow?".into(), vec!["Yes".into()], false)
+                    .request_select(&tx, "Allow?".into(), vec!["Yes".into()], false, false)
                     .await
             }
         });
@@ -535,6 +567,47 @@ mod tests {
         });
         assert_eq!(handle.await.unwrap().unwrap(), Some(0));
     }
+    /// The popup titles itself from the *snapshot*, so a subagent's origin has
+    /// to be recorded there too — the wire hint is not the only reader.
+    #[tokio::test]
+    async fn a_subagent_request_carries_its_origin_into_the_snapshot() {
+        let responder = UiResponder::new();
+        let (tx, mut rx) = unbounded_channel::<AgentUpdate>();
+        let handle = tokio::spawn({
+            let responder = responder.clone();
+            async move {
+                responder
+                    .request_select(
+                        &tx,
+                        "Allow write_file on a.rs?".into(),
+                        vec!["Allow once".into()],
+                        false,
+                        true,
+                    )
+                    .await
+            }
+        });
+
+        let AgentUpdate::RequestSelect {
+            request_id,
+            from_subagent,
+            ..
+        } = rx.recv().await.unwrap()
+        else {
+            panic!("expected RequestSelect");
+        };
+        assert!(from_subagent, "the hint has to say who is asking");
+        assert!(
+            responder.snapshot()[0].from_subagent,
+            "the snapshot is what the popup is reconciled from"
+        );
+        responder.respond(UiResponse::Select {
+            request_id,
+            choice: Some(0),
+        });
+        assert_eq!(handle.await.unwrap().unwrap(), Some(0));
+    }
+
     #[tokio::test]
     async fn aborting_request_task_withdraws_pending_entry() {
         let responder = UiResponder::new();
@@ -543,7 +616,7 @@ mod tests {
             let responder = responder.clone();
             async move {
                 responder
-                    .request_select(&tx, "gone".into(), vec!["x".into()], false)
+                    .request_select(&tx, "gone".into(), vec!["x".into()], false, false)
                     .await
             }
         });

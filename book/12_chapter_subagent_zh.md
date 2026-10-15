@@ -20,7 +20,7 @@
 | Hook | 父级已注册 hook | 空 hook 列表 |
 | Session SQLite | 有（`session_bootstrap::bootstrap_session` 接线） | **有** — 新建子 session；`sessions.ref_id` = 父 id（父无 session 时为 `''`） |
 | Permission manager | 父级模式 | **继承** — 从父级实时快照克隆（mode + always-allowed 列表 + settings），经 `PermissionManager::from_snapshot` |
-| TUI 通道 | 父级 `ui_tx` | **打标** — 流式/步骤以 `ToolProgress`（卡头为 `ToolMeta`）转发进父工具卡，**并行**发一条 `ToolTranscript`（结构化：Assistant / Thinking / Step / Info / Error）供**子代理视图**渲染（主区域整块换成子会话：面包屑 + `Esc` / 点面包屑退层；工具块自包含、输出封顶 8 行，**点块底部的 `⋯ N more lines · ▾ expand` 展开这一块**到 50 行，`Enter` 全部展开 / 收起）；`RequestSelect*` 透传（加 `[Subagent]` 前缀）。两条通道都过脱敏 |
+| TUI 通道 | 父级 `ui_tx` | **打标** — 流式/步骤以 `ToolProgress`（卡头为 `ToolMeta`）转发进父工具卡，**并行**发一条 `ToolTranscript`（结构化：Assistant / Thinking / Step / Info / Error）供**子代理视图**渲染（主区域整块换成子会话：面包屑 + `Esc` / 点面包屑退层；工具块自包含、输出封顶 8 行，**点块底部的 `⋯ N more lines · ▾ expand` 展开这一块**到 50 行，`Enter` 全部展开 / 收起）；`RequestSelect*` 透传（`from_subagent` 打标，弹窗标题显示 `Select from subagent`）。两条通道都过脱敏 |
 | Cancel 标志 | 主 runtime 共享 | **独立** — 用户对父级 Cancel 不会停止进行中的子 agent |
 | 返回父级 | N/A | 同步：最后一条 assistant 文本；异步（`run_in_background`）：`async_launched { id }` + 回注的 `<subagent-finished>` |
 
@@ -178,7 +178,7 @@ You are a principal reviewer. …
 
 **权限继承（Claude 风格）：** `execute_tool_call` 在 wave 运行前将 `PermissionSnapshot`（mode + 会话内 always-allowed 列表 + 已加载 settings）stamp 到 `ToolContext` 上，`spawn_subagent` 用 `PermissionManager::from_snapshot(...)` 构建子级 manager。父级 `Default` → 子 `Default`，`Plan` → 子 `Plan`（只读），`Auto` → 子 `Auto`（sticky）。子级 `consecutive_denials` 计数归零。无父 agent 的 orphan/test context 回退到旧行为：`PermissionMode::Default` + 从磁盘加载 settings。这也修复了只读逃逸：`Plan` 父级不再能 spawn 一个可写文件的 `Default` 子级。
 
-若父级有 TUI 通道，子 agent 使用**打标**通道（`tagged_ui_channel_with_progress`）：流式、步骤、思考与工具结果以 `AgentUpdate::ToolProgress`（卡头为 `ToolMeta`）转发进父工具卡，该卡在 Log 历史中渲染为 `ToolVisualKind::Subagent`。点击该卡进入**子代理视图**（`ToolPopupKind::SubagentTranscript`）：主区域整块换成子会话，顶部一行面包屑 `‹ N. Subagent · 标题`，`Esc` 或点击面包屑退回主日志；子会话的工具调用渲染成**自包含块**（`▎ N. ⚡ Bash args` / `✓ Success · 133ms · 42 lines` / code band 输出 / 溢出行），输出封顶 8 行，而块底部那行 `⋯ N more lines · ▾ expand` **本身就是展开键**（点开把这一块提到 50 行，同一行随后变 `▴ collapse`；`Enter` 是全部展开 / 收起）——与主日志的可交互卡片刻意不同，原地变长不是「弹窗套弹窗」。`RequestSelect` / `RequestMultiSelect` 仍透传（加 `[Subagent]` 前缀），权限弹窗走主 TUI；并发子 agent 权限请求排队，逐个处理。**状态级总览**另由 TUI 的 Log 下方 Subagent sticky tab 承担（`AgentUpdate::SubagentsChanged` 快照当前进程的子代理运行，按状态分组并显示摘要首行）——明细仍留在工具卡 / 视图，绝不进入 sticky 或主 Log。见 [权限模型](./10_chapter_permission_zh.md) 与 [TUI](./23_chapter_tui_zh.md)。
+若父级有 TUI 通道，子 agent 使用**打标**通道（`tagged_ui_channel_with_progress`）：流式、步骤、思考与工具结果以 `AgentUpdate::ToolProgress`（卡头为 `ToolMeta`）转发进父工具卡，该卡在 Log 历史中渲染为 `ToolVisualKind::Subagent`。点击该卡进入**子代理视图**（`ToolPopupKind::SubagentTranscript`）：主区域整块换成子会话，顶部一行面包屑 `‹ N. Subagent · 标题`，`Esc` 或点击面包屑退回主日志；子会话的工具调用渲染成**自包含块**（`▎ N. ⚡ Bash args` / `✓ Success · 133ms · 42 lines` / code band 输出 / 溢出行），输出封顶 8 行，而块底部那行 `⋯ N more lines · ▾ expand` **本身就是展开键**（点开把这一块提到 50 行，同一行随后变 `▴ collapse`；`Enter` 是全部展开 / 收起）——与主日志的可交互卡片刻意不同，原地变长不是「弹窗套弹窗」。`RequestSelect` / `RequestMultiSelect` 仍透传（`from_subagent` 打标：弹窗标题写 `Select from subagent`，提示正文不动，子 agent 自己往 prompt 里写 `[Subagent]` 也伪造不了这个标签），权限弹窗走主 TUI；并发子 agent 权限请求排队，逐个处理。**状态级总览**另由 TUI 的 Log 下方 Subagent sticky tab 承担（`AgentUpdate::SubagentsChanged` 快照当前进程的子代理运行，按状态分组并显示摘要首行）——明细仍留在工具卡 / 视图，绝不进入 sticky 或主 Log。见 [权限模型](./10_chapter_permission_zh.md) 与 [TUI](./23_chapter_tui_zh.md)。
 
 ---
 

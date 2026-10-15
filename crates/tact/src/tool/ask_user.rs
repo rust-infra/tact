@@ -76,9 +76,12 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
     if let Some(tx) = &ctx.ui_tx {
         if !options.is_empty() {
             let responder = ctx.ui_responder.clone();
+            // A subagent's question is the child's, not the parent's; the popup
+            // names the origin so the user knows who is asking.
+            let from_subagent = ctx.is_subagent;
             if multi {
                 return match responder
-                    .request_multi(tx, question.clone(), options.clone())
+                    .request_multi(tx, question.clone(), options.clone(), from_subagent)
                     .await
                 {
                     Ok(Some(idxs)) => Ok(format_multi_selection(&options, &idxs)),
@@ -90,7 +93,7 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
             }
 
             return match responder
-                .request_select(tx, question.clone(), options.clone(), false)
+                .request_select(tx, question.clone(), options.clone(), false, from_subagent)
                 .await
             {
                 Ok(Some(idx)) => {
@@ -192,6 +195,48 @@ mod tests {
         assert!(output.contains("2. B"));
     }
 
+    /// A child's `ask_user` must be marked as the child's, exactly like its
+    /// permission prompts: the popup would otherwise look like the main agent
+    /// asking, and the user would answer the wrong conversation.
+    #[tokio::test]
+    async fn a_subagent_question_is_marked_as_one() {
+        let mut context = test_context("a_subagent_question_is_marked_as_one");
+        let (tx, mut rx) = unbounded_channel();
+        context.ui_tx = Some(tx);
+        context.is_subagent = true;
+        let responder = context.ui_responder.clone();
+
+        let tool = tokio::spawn(async move {
+            run_tool(
+                &context,
+                AskUserTool,
+                "ask_user",
+                serde_json::json!({
+                    "question": "Pick a color",
+                    "options": ["red", "blue"]
+                }),
+            )
+            .await
+        });
+
+        match rx.recv().await.expect("RequestSelect") {
+            AgentUpdate::RequestSelect {
+                request_id,
+                from_subagent,
+                ..
+            } => {
+                assert!(from_subagent, "the popup needs to name its origin");
+                responder.handle_response(UiResponse::Select {
+                    request_id,
+                    choice: Some(0),
+                });
+            }
+            other => panic!("expected RequestSelect, got {other:?}"),
+        }
+
+        assert_eq!(tool.await.unwrap().unwrap(), "User selected: red");
+    }
+
     #[tokio::test]
     async fn ask_user_popup_returns_selected_option() {
         let mut context = test_context("ask_user_popup_returns_selected_option");
@@ -219,6 +264,7 @@ mod tests {
                 options,
                 request_id,
                 log_confirm,
+                from_subagent,
             } => {
                 assert_eq!(prompt, "Pick a color");
                 assert_eq!(options, vec!["red", "blue"]);
@@ -226,6 +272,7 @@ mod tests {
                     !log_confirm,
                     "selection renders on tool meta, not a system line"
                 );
+                assert!(!from_subagent, "the main agent is asking");
                 responder.handle_response(UiResponse::Select {
                     request_id,
                     choice: Some(1),
@@ -264,6 +311,7 @@ mod tests {
                 prompt,
                 options,
                 request_id,
+                ..
             } => {
                 assert_eq!(prompt, "Pick toppings");
                 assert_eq!(options.len(), 3);

@@ -155,6 +155,13 @@ pub struct ToolContext {
     /// (Claude-style inheritance) instead of always starting in `Default`.
     /// `None` for orphan/test contexts that have no parent agent.
     pub permission_snapshot: Option<crate::permission::PermissionSnapshot>,
+    /// True for a context stamped by `spawn_subagent` for its child.
+    ///
+    /// The child inherits the parent's `ToolContext` wholesale, so this is the
+    /// one bit that says "the asker is a subagent" — it travels with every UI
+    /// prompt the child raises (permission popups, `ask_user`) and lets the
+    /// popup name its origin instead of looking like the main agent's own ask.
+    pub is_subagent: bool,
     /// Handle to the parent's `pending_subagent_results` queue, stamped at
     /// dispatch time so a detached async subagent task can push its summary
     /// back for re-injection. `None` when there is no parent agent runtime

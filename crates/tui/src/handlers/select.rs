@@ -382,11 +382,21 @@ fn dequeue_next_agent_select(app: &mut App) {
     };
     app.select_kind = SelectKind::Agent;
     if req.multi {
-        app.select
-            .set_multi(req.prompt, req.options, req.request_id, req.log_confirm);
+        app.select.set_multi(
+            req.prompt,
+            req.options,
+            req.request_id,
+            req.log_confirm,
+            req.from_subagent,
+        );
     } else {
-        app.select
-            .set(req.prompt, req.options, req.request_id, req.log_confirm);
+        app.select.set(
+            req.prompt,
+            req.options,
+            req.request_id,
+            req.log_confirm,
+            req.from_subagent,
+        );
     }
     app.input_mode = InputMode::Select;
 }
@@ -1162,6 +1172,7 @@ mod tests {
             vec!["Allow once".into(), "Deny".into()],
             1,
             true,
+            false,
         );
         rx
     }
@@ -1447,6 +1458,7 @@ thinking_budget = {thinking_budget}
             "Allow write?".into(),
             vec!["Allow once".into(), "Deny".into()],
             false,
+            false,
         );
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, Some(request_id));
@@ -1478,6 +1490,7 @@ thinking_budget = {thinking_budget}
         let (request_id, mut waiter) = responder.register_select(
             "Allow write?".into(),
             vec!["Allow once".into(), "Deny".into()],
+            false,
             false,
         );
         app.reconcile_pending_ui();
@@ -1527,6 +1540,7 @@ thinking_budget = {thinking_budget}
             options: vec!["Yes".into(), "No".into()],
             request_id: 2,
             log_confirm: false,
+            from_subagent: false,
         });
         assert_eq!(app.select.request_id, Some(1), "first select stays open");
         assert_eq!(app.pending_agent_selects.len(), 1, "second select queued");

@@ -262,10 +262,11 @@ impl Widget for SelectPopupWidget<'_> {
             .iter()
             .position(|&i| i == self.state.selected)
             .unwrap_or(0);
-        let title = if self.state.multi {
-            " Multi-select "
-        } else {
-            " Select "
+        let title = match (self.state.multi, self.state.from_subagent) {
+            (false, false) => " Select ",
+            (true, false) => " Multi-select ",
+            (false, true) => " Select from subagent ",
+            (true, true) => " Multi-select from subagent ",
         };
 
         let mut header = prompt_lines;
@@ -374,7 +375,7 @@ mod tests {
     fn an_agent_prompt_has_no_filter_line() {
         let theme = Theme::from(ThemeName::Dark);
         let mut state = SelectPopup::default();
-        state.set("Allow?".into(), vec!["yes".into()], 7, true);
+        state.set("Allow?".into(), vec!["yes".into()], 7, true, false);
         let area = Rect::new(0, 0, 60, 20);
         let mut buf = Buffer::empty(area);
         SelectPopupWidget::new(&state, &theme, "No options", "▶ ")
@@ -384,6 +385,50 @@ mod tests {
         let text = rows_text(&buf).join("\n");
         assert!(!text.contains('\u{1f50d}'));
         assert!(!text.contains("type to filter"));
+    }
+
+    /// The popup's own top border row (where the title is drawn).
+    fn title_row(buf: &Buffer, state: &SelectPopup, area: Rect, fg: Color) -> String {
+        let popup = select_popup_layout(state, area, fg, 0).popup_area;
+        rows_text(buf)[popup.y as usize].clone()
+    }
+
+    /// A child's permission prompt must not look like the main agent's own ask:
+    /// the border title says where it came from.
+    #[test]
+    fn a_subagent_prompt_names_its_origin_in_the_title() {
+        let theme = Theme::from(ThemeName::Dark);
+        let mut state = SelectPopup::default();
+        state.set(
+            "Allow write_file on a.rs?".into(),
+            vec!["Allow once".into()],
+            7,
+            false,
+            true,
+        );
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        SelectPopupWidget::new(&state, &theme, "No options", "▶ ").render(area, &mut buf);
+
+        let border = title_row(&buf, &state, area, theme.fg);
+        assert!(
+            border.contains("Select from subagent"),
+            "top border: {border:?}"
+        );
+    }
+
+    #[test]
+    fn a_main_agent_prompt_keeps_the_plain_title() {
+        let theme = Theme::from(ThemeName::Dark);
+        let mut state = SelectPopup::default();
+        state.set("Allow?".into(), vec!["yes".into()], 7, false, false);
+        let area = Rect::new(0, 0, 60, 20);
+        let mut buf = Buffer::empty(area);
+        SelectPopupWidget::new(&state, &theme, "No options", "▶ ").render(area, &mut buf);
+
+        let border = title_row(&buf, &state, area, theme.fg);
+        assert!(border.contains(" Select "), "top border: {border:?}");
+        assert!(!border.contains("from subagent"), "top border: {border:?}");
     }
 
     #[test]

@@ -470,6 +470,11 @@ pub enum AgentUpdate {
         /// When true, TUI appends a "Selected: …" system line after confirm.
         /// Permission prompts keep this `false` (choice already shown on the tool meta row).
         log_confirm: bool,
+        /// True when the request came from a `spawn_subagent` child rather than
+        /// the main agent. The popup says whose permission is being asked
+        /// ("Select from subagent"); the prompt body stays clean, so the marker
+        /// is a title and not a line the model's own text could imitate.
+        from_subagent: bool,
     },
     /// Request user to choose **zero or more** options (Space toggles, Enter confirms).
     /// Used by `ask_user` when `multi_select` is true. Does not affect [`RequestSelect`].
@@ -477,6 +482,8 @@ pub enum AgentUpdate {
         request_id: u64,
         prompt: String,
         options: Vec<String>,
+        /// See [`Self::RequestSelect`]'s `from_subagent`.
+        from_subagent: bool,
     },
     /// Streaming output text fragment (appended to Log in real time)
     StreamChunk(String),

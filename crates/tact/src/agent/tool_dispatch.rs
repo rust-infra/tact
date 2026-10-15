@@ -1038,13 +1038,23 @@ impl Agent {
                                         }
                                         let options = permission_options(prefix_rule.is_some());
                                         let responder = self.tool_context.ui_responder.clone();
+                                        // A child's context is stamped by
+                                        // `spawn_subagent`, so the popup can say
+                                        // whose permission this is.
+                                        let from_subagent = self.tool_context.is_subagent;
                                         // No artificial timeout: the popup is guaranteed
                                         // to stay rendered (see
                                         // `restore_pending_select_mode`), so the wait
                                         // ends on a real user answer or when the UI
                                         // closes (both route through the responder).
                                         let selection = responder
-                                            .request_select(tx, prompt, options, false)
+                                            .request_select(
+                                                tx,
+                                                prompt,
+                                                options,
+                                                false,
+                                                from_subagent,
+                                            )
                                             .await
                                             .ok()
                                             .flatten();

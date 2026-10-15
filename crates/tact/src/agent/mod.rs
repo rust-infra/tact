@@ -442,6 +442,14 @@ pub struct Agent {
     pub max_turns: Option<u32>,
     /// Number of LLM turns completed in the current agent loop.
     pub turns_taken: u32,
+    /// Set when the loop stopped because it hit [`Self::max_turns`].
+    ///
+    /// Recorded where it happens instead of being re-derived as
+    /// `turns_taken > max_turns` by whoever reads the run afterwards: the cap
+    /// check then lives in exactly one place, and the summary that has to
+    /// explain *why* a child stopped cannot disagree with the loop about
+    /// whether it did.
+    pub max_turns_reached: bool,
     /// Snapshot of agent settings at construction; avoids parallel tests racing on global config.
     agent_settings: AgentSettings,
     /// Compaction-routing provider kind, when set explicitly via
@@ -531,6 +539,7 @@ impl Agent {
             tool_use_counter: 0,
             max_turns: None,
             turns_taken: 0,
+            max_turns_reached: false,
             agent_settings: crate::config::settings().agent.clone(),
             provider_kind,
             cached_tool_specs: Vec::new(),
@@ -1291,6 +1300,7 @@ impl Agent {
             if let Some(max) = self.max_turns
                 && self.turns_taken > max
             {
+                self.max_turns_reached = true;
                 self.emit_update(AgentUpdate::Info(format!("max_turns ({max}) reached")));
                 return Ok(finish(
                     AgentLoopStop::MaxTurns,
@@ -5527,6 +5537,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(agent.turns_taken, 1);
+        assert!(
+            !agent.max_turns_reached,
+            "a child that answered inside its cap did not hit it: the summary must \
+             not claim it was truncated"
+        );
     }
 
     #[tokio::test]
@@ -5646,6 +5661,11 @@ mod tests {
         assert_eq!(
             agent.turns_taken, 1,
             "turns_taken increments before the cap check"
+        );
+        assert!(
+            agent.max_turns_reached,
+            "the summary that explains why a child stopped reads this flag, so the \
+             loop that stopped it has to set it"
         );
         // Only the user message is present — the cap stopped before any reply.
         assert_eq!(agent.runtime.context.len(), 1);

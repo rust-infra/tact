@@ -181,21 +181,72 @@ pub const SPAWN_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
 };
 
 /// Extract the subagent's final summary from its last assistant message.
-fn extract_summary(subagent: &Agent, max_turns_reached: bool) -> String {
-    let summary = subagent
+///
+/// A run stopped by its own turn cap is the one ending the parent cannot read
+/// off the text: the loop returns `Ok(())`, so the run looks successful, and the
+/// cut lands on a tool-call turn more often than not — whose assistant message
+/// carries no text at all, which is why the parent used to receive a bare
+/// `(no summary)` with no way to tell a finished child from a truncated one.
+/// Raising the cap is something only the parent can do, and only on the next
+/// spawn, so the summary says what happened and what to do about it.
+fn extract_summary(subagent: &Agent) -> String {
+    let body = last_assistant_text(subagent).unwrap_or_else(|| "(no summary)".to_string());
+    match subagent.max_turns {
+        Some(max) if subagent.max_turns_reached => {
+            truncated_summary(&body, max, subagent.runtime.session_id.as_deref())
+        }
+        _ => body,
+    }
+}
+
+/// The last text the child wrote, walking back past turns that carried only tool
+/// calls — their assistant message has no text, and a cut lands on one of those
+/// more often than not.
+fn last_assistant_text(subagent: &Agent) -> Option<String> {
+    subagent
         .runtime
         .context
         .iter()
         .rev()
-        .find(|message| matches!(message.role, Role::Assistant))
+        .filter(|message| matches!(message.role, Role::Assistant))
         .map(|message| extract_text(&message.content))
-        .filter(|text| !text.is_empty())
-        .unwrap_or_else(|| "(no summary)".to_string());
-    if max_turns_reached {
-        format!("{summary} (max_turns reached)")
-    } else {
-        summary
-    }
+        .find(|text| !text.is_empty())
+}
+
+/// The summary a child leaves behind when its turn cap cut it off: what it
+/// managed to say, why it stopped, and the concrete next step.
+///
+/// Pure, because the wording *is* the feature here and it is worth pinning
+/// without building an agent. The first line keeps the `(max_turns reached)`
+/// marker it always had: the sticky strip renders only that line, and the marker
+/// is what the user reads there.
+fn truncated_summary(body: &str, max: u32, child_id: Option<&str>) -> String {
+    // Doubling is the smallest change that gives the child room to finish; the
+    // parent can drop the cap instead, which is why both are offered.
+    let suggested = max.saturating_mul(2);
+    // The follow-up call has to be *complete*: `prompt` is required even when
+    // `resume` is set, and a lane is not inherited — `spawn_subagent` only
+    // re-enters the worktree when the new call asks for it, so a resume that
+    // omits it drops the child into the shared tree while its earlier edits sit
+    // in the lane. `resume` itself is the cheap path: `agent_loop` restores the
+    // child's history, so it continues instead of starting over.
+    let next = match child_id {
+        Some(id) => format!(
+            "spawn_subagent again with resume=\"{id}\", a prompt for what is left to do, and \
+             max_turns = {suggested} or more (omit max_turns for no cap). Repeat worktree: true \
+             if the first run had one — a lane is not inherited."
+        ),
+        None => format!(
+            "spawn_subagent again with max_turns = {suggested} or more \
+             (omit max_turns for no cap)."
+        ),
+    };
+    format!(
+        "{body} (max_turns reached)\n\n\
+         ⚠ stopped by its turn cap, not by finishing: max_turns = {max}. The text above is only \
+         what it reported before the cut; its edits are already on disk.\n\
+         Next: {next}"
+    )
 }
 
 /// A subagent is only reported successful when its agent loop returned `Ok`
@@ -546,9 +597,15 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // the UI channel needs it to render the card's `ctx` meter.
     let subagent_context_window = agent_overrides.model_context_window;
 
+    // The child inherits the parent's `ToolContext`; the one bit that has to
+    // differ is whose prompts these are. Without it a child's permission popup
+    // is indistinguishable from the parent's own ask.
+    let mut child_ctx = ctx.clone();
+    child_ctx.is_subagent = true;
+
     let mut subagent = Agent::new(
         client,
-        ctx.clone(),
+        child_ctx,
         subagent_tools,
         MCPToolRouter::new(),
         pm,
@@ -567,13 +624,17 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
 
     // Tag UI traffic so the TUI routes stream/steps into the parent tool-card
     // via ToolProgress. RequestSelect* still passes through for permission popups.
+    // Keep the forwarder's handle: the end of the run has to be announced
+    // *after* the child's stream is fully forwarded (see the drop below).
+    let mut forwarder = None;
     if let Some(tx) = ctx.ui_tx.clone() {
-        let tagged = crate::tool::subagent_ui::tagged_ui_channel_with_progress(
+        let (tagged, handle) = crate::tool::subagent_ui::tagged_ui_channel_with_progress(
             tx,
             ctx.progress_reporter.clone(),
             subagent_context_window,
         );
         subagent = subagent.with_ui_channel(tagged);
+        forwarder = Some(handle);
     }
 
     // Resume reuses a finished child session: hold its process lock for the
@@ -626,11 +687,24 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
                 .agent_loop(Some(Message::new_text(Role::User, prompt)))
                 .await;
             let success = result.is_ok();
-            let max_turns_reached = subagent.max_turns.is_some_and(|m| subagent.turns_taken > m);
-            let summary = with_worktree_note(
-                extract_summary(&subagent, max_turns_reached),
-                worktree_for_task.as_ref(),
-            );
+            let summary =
+                with_worktree_note(extract_summary(&subagent), worktree_for_task.as_ref());
+            // The child is done: drop it (which closes its tagged channel and
+            // so ends the forwarder) and wait for the forwarder to finish
+            // before anything announces the end. Its last act is to flush the
+            // turn's trailing assistant text, and every event below — the
+            // sticky snapshot, `SubagentFinished` — finalizes the card: an
+            // announcement that overtook the flush would finalize it while its
+            // own tail was still in flight, and a finalized card drops late
+            // progress and metadata (the ctx meter lost the child's last usage).
+            // Awaiting here is what puts the child's whole stream ahead of the
+            // announcement in the parent's queue, where order is all the TUI
+            // needs. The forwarder only ever `send`s on an unbounded channel, so
+            // this cannot block.
+            drop(subagent);
+            if let Some(forwarder) = forwarder {
+                let _ = forwarder.await;
+            }
             if let Some(lock) = lock {
                 let _ = lock.release().await;
             }
@@ -698,8 +772,15 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             .await;
         let success = result.is_ok();
         let cancelled = cancel_flag.load(Ordering::Relaxed);
-        let max_turns_reached = subagent.max_turns.is_some_and(|m| subagent.turns_taken > m);
-        let summary = extract_summary(&subagent, max_turns_reached);
+        let summary = extract_summary(&subagent);
+        // Drain the child's forwarder before returning: the dispatcher emits
+        // this call's `StepFinished` — which finalizes the card — the moment we
+        // return, and a finalized card drops late progress and metadata. See the
+        // async arm above for the long version.
+        drop(subagent);
+        if let Some(forwarder) = forwarder {
+            let _ = forwarder.await;
+        }
         ctx.subagent_manager.unregister_cancel_handle(&child_id);
         // Persist the terminal state so a cancelled / failed sync child is
         // visible to `check_subagent` (it previously left no `subagent_runs`
@@ -852,6 +933,57 @@ mod tests {
             specs.iter().any(|s| s.name == "wait_subagent"),
             "wait_subagent must be in the main toolset"
         );
+    }
+
+    /// A child cut off by its turn cap has to tell the parent *why* it stopped
+    /// and what to change: raising the cap is something only the parent can do,
+    /// and only on the next spawn. A bare `(no summary)` left it with nothing to
+    /// act on — it could not even tell a finished child from a truncated one.
+    #[test]
+    fn a_truncated_summary_names_the_cap_and_the_next_step() {
+        let summary = truncated_summary("(no summary)", 5, Some("child-1"));
+
+        assert!(
+            summary.starts_with("(no summary) (max_turns reached)"),
+            "the sticky strip renders only the first line, so the marker stays there: {summary:?}"
+        );
+        assert!(
+            summary.contains("max_turns = 5"),
+            "the cap it hit is the fact the parent needs: {summary:?}"
+        );
+        assert!(
+            summary.contains("resume=\"child-1\""),
+            "continuing the same child is the cheap path, so name the handle: {summary:?}"
+        );
+        assert!(
+            summary.contains("a prompt for what is left"),
+            "`prompt` is required even on a resume — an advice that omits it is an \
+             invalid tool call: {summary:?}"
+        );
+        assert!(
+            summary.contains("worktree: true"),
+            "a lane is not inherited on resume, so the advice has to say to repeat the \
+             flag: {summary:?}"
+        );
+        assert!(
+            summary.contains("max_turns = 10"),
+            "the recommendation has to be a number the parent can pass: {summary:?}"
+        );
+        assert!(
+            summary.contains("omit max_turns"),
+            "dropping the cap is the alternative, and has to be offered: {summary:?}"
+        );
+    }
+
+    /// Without a session id there is nothing to resume, and the sentence must
+    /// still read as one.
+    #[test]
+    fn a_truncated_summary_without_a_child_id_offers_no_resume() {
+        let summary = truncated_summary("partial work", 3, None);
+
+        assert!(summary.starts_with("partial work (max_turns reached)"));
+        assert!(!summary.contains("resume="), "{summary:?}");
+        assert!(summary.contains("max_turns = 6"), "{summary:?}");
     }
 
     #[test]

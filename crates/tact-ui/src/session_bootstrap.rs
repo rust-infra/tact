@@ -265,6 +265,7 @@ pub async fn bootstrap_session(
         session_id: None,
         session_store: None,
         permission_snapshot: None,
+        is_subagent: false,
         subagent_results: None,
     };
 

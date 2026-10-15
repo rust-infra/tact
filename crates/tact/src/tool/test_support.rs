@@ -105,6 +105,7 @@ pub fn test_context(name: &str) -> ToolContext {
         session_id: None,
         session_store: None,
         permission_snapshot: None,
+        is_subagent: false,
         subagent_results: None,
     }
 }

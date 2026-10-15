@@ -700,6 +700,7 @@ fn request_select_update_renders_select_popup() {
         prompt: "Allow edit_file on lib.rs?".into(),
         options: vec!["Allow once".into(), "Deny".into()],
         log_confirm: false,
+        from_subagent: false,
     });
 
     assert!(matches!(app.input_mode, InputMode::Select));

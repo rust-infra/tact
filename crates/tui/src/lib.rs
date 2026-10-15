@@ -124,6 +124,29 @@ pub(crate) fn should_repaint(app: &App) -> bool {
         || app.voice.is_active()
 }
 
+/// Whether a frame has anything to animate.
+///
+/// Deliberately not `status` alone. A card can **outlive the turn that created
+/// it**: `run_in_background` returns `async_launched { … }`, the parent's turn
+/// ends, and the child (or a background bash task) keeps running in a card that
+/// is still `active` — still drawing a spinner. Keying the tick on the status
+/// froze every spinner on screen for the whole background run: the frame was
+/// redrawn (`should_repaint`'s last-but-one term above) with the same glyph,
+/// which reads as a hung card (2026-10-15).
+pub(crate) fn animation_active(app: &App) -> bool {
+    !matches!(app.status, Status::Idle | Status::Done) || !app.tools().active.is_empty()
+}
+
+/// Advance the animation tick by one frame.
+///
+/// Monotonic — the wrap belongs to each animation, not to the counter (see
+/// `App::spinner_frame`).
+pub(crate) fn advance_animation(app: &mut App) {
+    if animation_active(app) {
+        app.spinner_frame = app.spinner_frame.wrapping_add(1);
+    }
+}
+
 /// Handle event-loop poll timeout without spinning the CPU.
 ///
 /// - Active statuses: dirty for spinner (caller already uses ~150ms poll).
@@ -344,12 +367,9 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         // Done state transitions to Idle after 2s timeout; must keep rendering to check
         // the clock.
         if should_repaint(&app) {
-            // Advance the animation tick when in an active state. Monotonic —
-            // the wrap belongs to each animation, not to the counter (see
-            // `App::spinner_frame`).
-            if !matches!(app.status, Status::Idle | Status::Done) {
-                app.spinner_frame = app.spinner_frame.wrapping_add(1);
-            }
+            // Advance the animation tick for this frame (see `animation_active`
+            // — a live card animates even when the parent's turn is over).
+            advance_animation(&mut app);
             terminal.draw(|f| {
                 let size = f.area();
                 // Input box height auto-expands with content (1–3 display lines
@@ -413,7 +433,9 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         // Adaptive idle polling interval: adjust the event wait timeout based on state.
         // - Done state: 200ms, frequently check the 2s → Idle transition
         // - Dirty flag set: 10ms, quickly trigger a rerender
-        // - Active (Planning/Executing): 150ms to animate spinner
+        // - Animating: 150ms to turn the spinner — an active turn, or a card
+        //   that outlived it (a background child / bash task keeps the frame
+        //   animating while the parent is Idle)
         // - Fully idle: 1000ms, reduce CPU wake frequency
         let idle_ms = if matches!(app.status, Status::Done)
             || app.flash_msg.is_some()
@@ -422,7 +444,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
             200u64
         } else if app.dirty {
             10u64
-        } else if !matches!(app.status, Status::Idle) || app.voice.is_active() {
+        } else if animation_active(&app) || app.voice.is_active() {
             150u64
         } else {
             1000u64
@@ -547,9 +569,84 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
 
 #[cfg(test)]
 mod poll_timeout_tests {
-    use super::{on_poll_timeout, should_repaint};
+    use super::{advance_animation, animation_active, on_poll_timeout, should_repaint};
     use crate::render::test_harness::make_app;
+    use crate::test_fixtures::StepCall;
     use crate::widgets::state::Status;
+    use std::collections::HashMap;
+    use tact_protocol::{AgentUpdate, PlanStep};
+
+    /// Put one live tool card on screen, the way a `run_in_background` child
+    /// leaves one: the parent's turn is over, the card is not.
+    fn app_with_a_live_card(status: Status) -> crate::widgets::state::App {
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+            "spawn_subagent",
+            "spawn_subagent",
+            "sa-1",
+            HashMap::from([("prompt".to_string(), "do the thing".to_string())]),
+        )));
+        app.handle_agent_update(
+            StepCall::new(0, "sa-1", "spawn_subagent", "do the thing").started(),
+        );
+        // The parent's own turn ended (`async_launched` returned) — only the
+        // card is left running.
+        app.status = status;
+        app
+    }
+
+    /// The spinner belongs to the *card*, not to the turn: a background child
+    /// keeps drawing one while the parent is Idle, and a frozen glyph reads as
+    /// a hung card.
+    #[test]
+    fn a_live_card_animates_while_the_parent_is_idle() {
+        let mut idle = make_app();
+        idle.status = Status::Idle;
+        assert!(!animation_active(&idle), "nothing on screen is animating");
+        let before = idle.spinner_frame;
+        advance_animation(&mut idle);
+        assert_eq!(
+            idle.spinner_frame, before,
+            "a fully idle frame must not burn animation ticks"
+        );
+
+        let mut app = app_with_a_live_card(Status::Idle);
+        assert!(
+            animation_active(&app),
+            "a card that outlived the turn is still animating"
+        );
+        let before = app.spinner_frame;
+        advance_animation(&mut app);
+        assert_eq!(
+            app.spinner_frame,
+            before + 1,
+            "the background child's spinner has to keep turning"
+        );
+    }
+
+    #[test]
+    fn an_active_turn_advances_the_tick() {
+        let mut app = make_app();
+        app.status = Status::Planning;
+        assert!(animation_active(&app));
+        let before = app.spinner_frame;
+        advance_animation(&mut app);
+        assert_eq!(app.spinner_frame, before + 1);
+    }
+
+    /// A finished card is not animated: the state it was frozen in is final.
+    #[test]
+    fn a_finalized_card_does_not_animate_an_idle_frame() {
+        let mut app = app_with_a_live_card(Status::Idle);
+        app.handle_agent_update(
+            StepCall::new(0, "sa-1", "spawn_subagent", "do the thing").finished(),
+        );
+        assert!(
+            app.tools().active.is_empty(),
+            "the card moved out of `active` on finalize"
+        );
+        assert!(!animation_active(&app));
+    }
 
     #[test]
     fn poll_timeout_marks_idle_dirty_when_uptime_second_changes() {

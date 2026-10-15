@@ -464,6 +464,47 @@ fn select_popup_shows_navigation_footer_hint() {
     );
 }
 
+/// A permission popup raised by a `spawn_subagent` child must not read as the
+/// main agent's own ask: the border title names the origin.
+#[test]
+fn select_popup_titles_a_subagent_prompt_as_such() {
+    let mut app = make_app();
+    app.input_mode = InputMode::Select;
+    app.select.set(
+        "Allow write_file on task-5a-report.md?".into(),
+        vec!["Allow once".into(), "Deny".into()],
+        9,
+        false,
+        true,
+    );
+
+    let text = render_app_text(&mut app, 100, 30);
+    assert!(
+        text.contains("Select from subagent"),
+        "the popup must name its origin, got:\n{text}"
+    );
+}
+
+#[test]
+fn select_popup_keeps_the_plain_title_for_the_main_agent() {
+    let mut app = make_app();
+    app.input_mode = InputMode::Select;
+    app.select.set(
+        "Allow write_file on a.rs?".into(),
+        vec!["Allow once".into(), "Deny".into()],
+        9,
+        false,
+        false,
+    );
+
+    let text = render_app_text(&mut app, 100, 30);
+    assert!(text.contains("Select"), "got:\n{text}");
+    assert!(
+        !text.contains("from subagent"),
+        "the main agent's prompt must not claim a subagent, got:\n{text}"
+    );
+}
+
 #[test]
 fn select_popup_multi_shows_toggle_footer_hint() {
     let mut app = make_app();
@@ -472,6 +513,7 @@ fn select_popup_multi_shows_toggle_footer_hint() {
         "Pick options".into(),
         (0..3).map(|i| format!("opt-{i}")).collect(),
         1,
+        false,
         false,
     );
 
@@ -1125,8 +1167,13 @@ fn full_frame_done_status_renders_in_status_bar() {
 fn full_frame_select_mode_shows_in_status_bar() {
     let mut app = make_app();
     app.input_mode = InputMode::Select;
-    app.select
-        .set("Pick one".into(), vec!["A".into(), "B".into()], 0, false);
+    app.select.set(
+        "Pick one".into(),
+        vec!["A".into(), "B".into()],
+        0,
+        false,
+        false,
+    );
 
     let text = render_app_text(&mut app, 100, 24);
 

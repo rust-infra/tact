@@ -26,6 +26,10 @@ pub struct SelectPopup {
     /// When false, confirming does not append a separate log line (e.g. permission
     /// choices are already shown on the tool meta row).
     pub log_confirm: bool,
+    /// The request came from a `spawn_subagent` child. Display only: the popup
+    /// titles itself "Select from subagent" so the user can tell whose
+    /// permission they are answering. Local picks are never a child's.
+    pub from_subagent: bool,
 }
 
 impl std::ops::Deref for SelectPopup {
@@ -51,6 +55,7 @@ impl Default for SelectPopup {
             multi: false,
             checked: Vec::new(),
             log_confirm: true,
+            from_subagent: false,
         }
     }
 }
@@ -70,6 +75,7 @@ impl SelectPopup {
         self.multi = false;
         self.checked.clear();
         self.log_confirm = log_confirm;
+        self.from_subagent = false;
     }
 
     /// Single-select popup (permission / default ask_user).
@@ -79,6 +85,7 @@ impl SelectPopup {
         options: Vec<String>,
         request_id: u64,
         log_confirm: bool,
+        from_subagent: bool,
     ) {
         self.prompt = prompt;
         self.list.reset(options, 0);
@@ -86,6 +93,7 @@ impl SelectPopup {
         self.multi = false;
         self.checked.clear();
         self.log_confirm = log_confirm;
+        self.from_subagent = from_subagent;
     }
 
     /// Multi-select popup (`ask_user` with `multi_select: true`).
@@ -95,6 +103,7 @@ impl SelectPopup {
         options: Vec<String>,
         request_id: u64,
         log_confirm: bool,
+        from_subagent: bool,
     ) {
         let n = options.len();
         self.prompt = prompt;
@@ -103,6 +112,7 @@ impl SelectPopup {
         self.multi = true;
         self.checked = vec![false; n];
         self.log_confirm = log_confirm;
+        self.from_subagent = from_subagent;
     }
 
     /// Whether the user may type to narrow this list.
@@ -198,6 +208,7 @@ mod tests {
             options.iter().map(|o| o.to_string()).collect(),
             7,
             true,
+            false,
         );
         popup
     }
@@ -206,6 +217,18 @@ mod tests {
     fn only_local_picks_are_filterable() {
         assert!(local(&["a"], 0).filterable());
         assert!(!agent(&["a"]).filterable());
+    }
+
+    /// A local pick must not inherit the previous prompt's origin — the popup
+    /// is reused for `/model` right after a child's permission prompt.
+    #[test]
+    fn a_local_pick_clears_the_subagent_origin() {
+        let mut popup = SelectPopup::default();
+        popup.set("Allow?".into(), vec!["Yes".into()], 7, false, true);
+        assert!(popup.from_subagent);
+
+        popup.set_local("Select model".into(), vec!["a".into()], 0, true);
+        assert!(!popup.from_subagent);
     }
 
     #[test]
