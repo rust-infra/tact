@@ -526,11 +526,21 @@ impl GoalRunner {
         agent.tool_context.active_goal_id = Some(goal.id.clone());
 
         // Step 5: one bounded activation.
+        //
+        // The loop's own turn cap is the only enforcement that can stop a
+        // runaway activation *while it runs* — `permit_activation` below only
+        // classifies what came back, so without this a single activation could
+        // consume unbounded turns and tool calls. The caller's cap is restored
+        // afterwards so a Goal activation never leaks its budget into the
+        // surrounding session.
+        let previous_max_turns = agent.max_turns;
+        agent.max_turns = Some(self.limits.max_turns);
         let started = Instant::now();
         let activation = agent
             .agent_loop_detailed(Some(Message::new_text(Role::User, injected)))
             .await;
         let elapsed = started.elapsed();
+        agent.max_turns = previous_max_turns;
 
         let activation = match activation {
             Ok(activation) => activation,
@@ -543,20 +553,22 @@ impl GoalRunner {
                     one_line(&error.to_string())
                 ));
                 run.finish(GoalRunOutcome::TransientError);
-                let finished = match self.finish_run(token, run).await {
-                    Ok(finished) => finished,
-                    Err(bookkeeping) => {
-                        return Err(error.context(format!(
-                            "a failed goal run could not be finished: {bookkeeping:#}"
-                        )));
-                    }
-                };
+                // One transaction: the run can never be left `running` behind a
+                // failed activation, and its outcome is recorded with it.
+                let event = finished_run_event(
+                    &goal.id,
+                    goal.status,
+                    &run,
+                    GoalRunOutcome::TransientError,
+                    None,
+                );
                 if let Err(bookkeeping) = self
-                    .record_run(&goal, &finished, GoalRunOutcome::TransientError, None)
+                    .goal_manager
+                    .finish_run_and_transition(token, run, Vec::new(), event)
                     .await
                 {
                     return Err(error.context(format!(
-                        "a failed goal run could not be recorded: {bookkeeping:#}"
+                        "a failed goal run could not be finished: {bookkeeping:#}"
                     )));
                 }
                 return Err(error);
@@ -584,20 +596,30 @@ impl GoalRunner {
             };
 
         run.finish(run_outcome);
-        // Step 8: persist before notifying. The run row, the Goal status and the
-        // run's own event all land before any UI update about this Goal.
-        let finished = self.finish_run(token, run).await?;
+        // Step 8: persist before notifying. The run row, every Goal transition
+        // and the run's own history entry land in *one* transaction, so a crash
+        // or a stale CAS can never leave a completed run on a still-`Running`
+        // Goal, nor drop the run's outcome from history.
+        let reason = format!("run ended as {run_outcome:?}");
+        let mut from = goal.status;
+        let mut writes = Vec::with_capacity(transitions.len());
         for next in transitions {
-            goal = self
-                .persist_status(
-                    &goal,
-                    Some(token),
-                    next,
-                    &format!("run ended as {run_outcome:?}"),
-                )
-                .await?;
+            writes.push((
+                GoalUpdate {
+                    status: Some(next),
+                    ..GoalUpdate::default()
+                },
+                status_event(&goal.id, from, next, &reason),
+            ));
+            from = next;
         }
-        self.record_run(&goal, &finished, run_outcome, None).await?;
+        let event = finished_run_event(&goal.id, from, &run, run_outcome, None);
+        let (_, updated) = self
+            .goal_manager
+            .finish_run_and_transition(token, run, writes, event)
+            .await
+            .with_context(|| format!("failed to finish and record the goal run for {}", goal.id))?;
+        goal = updated;
 
         agent.emit_update(AgentUpdate::Info(format!(
             "[goal] {} run finished: {run_outcome:?}",
@@ -700,16 +722,7 @@ impl GoalRunner {
         next: GoalStatus,
         reason: &str,
     ) -> Result<Goal> {
-        let event = GoalEvent {
-            id: uuid::Uuid::new_v4().to_string(),
-            goal_id: goal.id.clone(),
-            run_id: None,
-            kind: "status_changed".to_string(),
-            status: Some(next),
-            outcome: None,
-            payload: Some(format!("{:?}: {reason}", goal.status)),
-            occurred_at: Utc::now(),
-        };
+        let event = status_event(&goal.id, goal.status, next, reason);
         self.goal_manager
             .update(
                 &goal.id,
@@ -725,14 +738,6 @@ impl GoalRunner {
             .with_context(|| format!("goal {} could not move to {next:?}", goal.id))
     }
 
-    async fn finish_run(&self, token: &LeaseToken, run: GoalRun) -> Result<GoalRun> {
-        let goal_id = run.goal_id.clone();
-        self.goal_manager
-            .finish_run(token, run)
-            .await
-            .with_context(|| format!("failed to finish the goal run for {goal_id}"))
-    }
-
     /// Records a finished run in the Goal's append-only history.
     ///
     /// The store exposes no run-read API, so this event is what makes a finished
@@ -745,25 +750,54 @@ impl GoalRunner {
         outcome: GoalRunOutcome,
         note: Option<&str>,
     ) -> Result<GoalEvent> {
-        let mut payload = run_summary(run, outcome);
-        if let Some(note) = note {
-            payload.push_str(" note=");
-            payload.push_str(&neutralise(note));
-        }
-        let event = GoalEvent {
-            id: uuid::Uuid::new_v4().to_string(),
-            goal_id: goal.id.clone(),
-            run_id: Some(run.id.clone()),
-            kind: "run_finished".to_string(),
-            status: Some(goal.status),
-            outcome: Some(outcome),
-            payload: Some(payload),
-            occurred_at: Utc::now(),
-        };
+        let event = finished_run_event(&goal.id, goal.status, run, outcome, note);
         self.goal_manager
             .append_event(event)
             .await
             .with_context(|| format!("failed to record a finished run for {}", goal.id))
+    }
+}
+
+/// The durable `status_changed` event for one Goal transition.
+fn status_event(goal_id: &str, from: GoalStatus, next: GoalStatus, reason: &str) -> GoalEvent {
+    GoalEvent {
+        id: uuid::Uuid::new_v4().to_string(),
+        goal_id: goal_id.to_string(),
+        run_id: None,
+        kind: "status_changed".to_string(),
+        status: Some(next),
+        outcome: None,
+        payload: Some(format!("{from:?}: {reason}")),
+        occurred_at: Utc::now(),
+    }
+}
+
+/// The durable `run_finished` event for one finished run.
+///
+/// The store exposes no run-read API, so this event is what makes a finished run
+/// (its outcome, usage, stop reason and checkpoint) observable after the fact -
+/// including after a restart.
+fn finished_run_event(
+    goal_id: &str,
+    status: GoalStatus,
+    run: &GoalRun,
+    outcome: GoalRunOutcome,
+    note: Option<&str>,
+) -> GoalEvent {
+    let mut payload = run_summary(run, outcome);
+    if let Some(note) = note {
+        payload.push_str(" note=");
+        payload.push_str(&neutralise(note));
+    }
+    GoalEvent {
+        id: uuid::Uuid::new_v4().to_string(),
+        goal_id: goal_id.to_string(),
+        run_id: Some(run.id.clone()),
+        kind: "run_finished".to_string(),
+        status: Some(status),
+        outcome: Some(outcome),
+        payload: Some(payload),
+        occurred_at: Utc::now(),
     }
 }
 
@@ -813,7 +847,8 @@ fn one_line(text: &str) -> String {
 #[cfg(test)]
 mod tests {
     use std::path::Path;
-    use std::sync::atomic::Ordering;
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::time::Duration;
 
     use tact::goal::{
@@ -1017,6 +1052,8 @@ mod tests {
     #[tokio::test]
     async fn run_once_budget_exhaustion_pauses_with_checkpoint() {
         install_test_config();
+        // A zero turn budget is refused before any model call, so the mock's
+        // scripted turn is never consumed.
         let mock = MockClient::new(vec![(
             vec![text_block("kept working")],
             Some(StopReason::EndTurn),
@@ -1051,11 +1088,74 @@ mod tests {
         assert_eq!(finished.outcome, Some(GoalRunOutcome::BudgetExhausted));
         let summary = summary_of(finished);
         assert!(summary.contains("turns_used=1"), "{summary}");
-        assert!(summary.contains("stop_reason=completed"), "{summary}");
+        assert!(summary.contains("stop_reason=max_turns"), "{summary}");
         assert!(
             summary.contains("checkpoint=") && !summary.ends_with("checkpoint=-"),
             "the exhausted run carries a checkpoint: {summary}"
         );
+        assert!(
+            manager
+                .claim_lease("a-later-runner", Duration::from_secs(5))
+                .await
+                .is_ok(),
+            "the activation lease is released"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_once_bounds_a_single_activation_by_the_turn_budget() {
+        install_test_config();
+        // A model that would keep calling a tool forever: only the turn budget
+        // can stop this activation *while it runs*. Counting the model calls
+        // proves the cap was installed before the activation, not applied to
+        // whatever happened to come back.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let mock = MockClient::with_responder(move |_request, idx| {
+            seen.fetch_max(idx + 1, Ordering::Relaxed);
+            Ok((
+                vec![tool_use(
+                    &format!("goal-read-{idx}"),
+                    "goal_read",
+                    serde_json::json!({}),
+                )],
+                Some(StopReason::ToolUse),
+                None,
+            ))
+        });
+        let (mut agent, _work_dir) = build_test_agent(mock, None);
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "run once turn budget",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        let runner = GoalRunner::new(
+            manager.clone(),
+            GoalLimits {
+                max_turns: 3,
+                ..GoalLimits::default()
+            },
+        );
+        let outcome = runner.run_once(&mut agent, &goal.id).await.unwrap();
+
+        assert!(
+            calls.load(Ordering::Relaxed) <= 3,
+            "one activation may not exceed its turn budget, saw {} model calls",
+            calls.load(Ordering::Relaxed)
+        );
+        assert_eq!(outcome, GoalRunOutcome::BudgetExhausted);
+        assert_eq!(
+            manager.get(&goal.id).await.unwrap().status,
+            GoalStatus::Paused
+        );
+        let events = manager.list_events(&goal.id).await.unwrap();
+        let finished = run_finished_event(&events, "run_finished").expect("run recorded");
+        let summary = summary_of(finished);
+        assert!(summary.contains("stop_reason=max_turns"), "{summary}");
         assert!(
             manager
                 .claim_lease("a-later-runner", Duration::from_secs(5))

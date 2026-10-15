@@ -109,6 +109,19 @@ pub trait GoalStore: Send + Sync {
         run: GoalRun,
     ) -> Result<(LeaseToken, GoalRun)>;
     async fn finish_run(&self, token: &LeaseToken, run: GoalRun) -> Result<GoalRun>;
+    /// Finishes `run` and, in the same transaction, applies the Goal's status
+    /// transitions and records the run-finished event.
+    ///
+    /// Splitting these writes across transactions lets a crash or a stale CAS
+    /// land between them, leaving a completed run on a still-`Running` Goal or
+    /// dropping the run's own history entry. One commit removes both windows.
+    async fn finish_run_and_transition(
+        &self,
+        token: &LeaseToken,
+        run: GoalRun,
+        transitions: Vec<(GoalUpdate, GoalEvent)>,
+        run_event: GoalEvent,
+    ) -> Result<(GoalRun, Goal)>;
     async fn list_running_runs(&self) -> Result<Vec<GoalRun>>;
     async fn recover_expired_active_runs(&self) -> Result<Vec<GoalRun>>;
 }

@@ -611,6 +611,22 @@ impl GoalManager {
     ) -> anyhow::Result<GoalRun> {
         self.store.finish_run(token, run).await
     }
+    /// Finishes an active Goal run and, in one transaction, applies its status
+    /// transitions and records the run-finished event.
+    ///
+    /// This is the runner's normal exit: the run row, the Goal status and the
+    /// run's history entry can never diverge, however the process dies.
+    pub async fn finish_run_and_transition(
+        &self,
+        token: &crate::store::goal_store::LeaseToken,
+        run: GoalRun,
+        transitions: Vec<(GoalUpdate, GoalEvent)>,
+        run_event: GoalEvent,
+    ) -> anyhow::Result<(GoalRun, Goal)> {
+        self.store
+            .finish_run_and_transition(token, run, transitions, run_event)
+            .await
+    }
     /// Lists runs that are currently marked active.
     pub async fn list_running_runs(&self) -> anyhow::Result<Vec<GoalRun>> {
         self.store.list_running_runs().await
@@ -709,6 +725,19 @@ impl SharedGoalManager {
         run: GoalRun,
     ) -> anyhow::Result<GoalRun> {
         self.inner.finish_run(token, run).await
+    }
+    /// Finishes an active Goal run and, in one transaction, applies its status
+    /// transitions and records the run-finished event.
+    pub async fn finish_run_and_transition(
+        &self,
+        token: &crate::store::goal_store::LeaseToken,
+        run: GoalRun,
+        transitions: Vec<(GoalUpdate, GoalEvent)>,
+        run_event: GoalEvent,
+    ) -> anyhow::Result<(GoalRun, Goal)> {
+        self.inner
+            .finish_run_and_transition(token, run, transitions, run_event)
+            .await
     }
     /// Lists runs that are currently marked active.
     pub async fn list_running_runs(&self) -> anyhow::Result<Vec<GoalRun>> {

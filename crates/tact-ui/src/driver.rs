@@ -651,6 +651,16 @@ async fn update_goal_status(
     }
 }
 
+/// A Goal activation is a fresh, user-committed unit of work, so it starts with
+/// a clean cancel flag — the same reason `SubmitTask` clears it.
+///
+/// Without this, a cancel the user pressed for something else (a normal turn)
+/// would hit the activation's first loop check, map to `AgentLoopStop::Cancelled`,
+/// and drive the Goal into the terminal `cancelled` state having done zero work.
+fn clear_cancel_for_goal_activation(agent: &Agent) {
+    agent.runtime.cancel_flag.store(false, Ordering::Relaxed);
+}
+
 async fn resume_goal(agent: &mut Agent, goal_id: &str) {
     let goal = match agent.tool_context.goal_manager.get(goal_id).await {
         Ok(goal) => goal,
@@ -669,6 +679,7 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
     {
         return;
     }
+    clear_cancel_for_goal_activation(agent);
     let runner = GoalRunner::new(
         agent.tool_context.goal_manager.clone(),
         GoalLimits::default(),
@@ -822,6 +833,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
             }
         }
         GoalVerification::Rejected { .. } => {
+            clear_cancel_for_goal_activation(agent);
             let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
             if let Err(error) = runner.run_once(agent, goal_id).await {
                 emit_goal_error(
@@ -1614,6 +1626,171 @@ mod tests {
             }
         }
         assert!(saw_complete, "SubmitTask should clear cancel and complete");
+    }
+
+    async fn paused_goal_with_one_required_criterion(agent: &mut tact::Agent) -> String {
+        let manager = agent.tool_context.goal_manager.clone();
+        let created = manager
+            .create(tact::goal::GoalCreate {
+                title: "Resume after a stale cancel".into(),
+                objective: "A pressed Esc must not kill the goal".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::required("done")],
+            })
+            .await
+            .unwrap();
+        manager
+            .update(
+                &created.id,
+                created.version,
+                tact::goal::GoalUpdate {
+                    status: Some(tact::goal::GoalStatus::Queued),
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let queued = manager.get(&created.id).await.unwrap();
+        manager
+            .update(
+                &created.id,
+                queued.version,
+                tact::goal::GoalUpdate {
+                    status: Some(tact::goal::GoalStatus::Paused),
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        created.id
+    }
+
+    #[tokio::test]
+    async fn resume_goal_clears_a_stale_cancel_flag_before_activating() {
+        install_test_config();
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        // Resume always activates, so the mock needs a scripted turn: an empty
+        // script panics on the first model call (`idx % 0`).
+        let mock = MockClient::new(vec![(vec![text_block("done")], Some(StopReason::EndTurn))]);
+        let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal_id = paused_goal_with_one_required_criterion(&mut agent).await;
+
+        agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::ResumeGoal {
+                goal_id: goal_id.clone(),
+            },
+            &work_dir,
+        )
+        .await;
+
+        assert!(
+            !agent.runtime.cancel_flag.load(Ordering::Relaxed),
+            "resuming a Goal must clear a stale cancel flag"
+        );
+        assert_ne!(
+            manager.get(&goal_id).await.unwrap().status,
+            tact::goal::GoalStatus::Cancelled,
+            "a stale cancel flag must not destroy the Goal on resume"
+        );
+    }
+
+    #[tokio::test]
+    async fn accept_goal_clears_a_stale_cancel_flag_before_continuing() {
+        install_test_config();
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        // Acceptance continues with a fresh activation, so the mock needs a
+        // scripted turn: an empty script panics on the first model call.
+        let mock = MockClient::new(vec![(vec![text_block("done")], Some(StopReason::EndTurn))]);
+        let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        // A pending required human criterion (fillable by /goal accept) plus an
+        // unmet required automatic criterion: acceptance alone cannot verify,
+        // so the driver continues with a fresh activation.
+        let created = manager
+            .create(tact::goal::GoalCreate {
+                title: "Acceptance continues".into(),
+                objective: "Human text must not leave the goal cancelled".into(),
+                constraints: Vec::new(),
+                criteria: vec![
+                    tact::goal::GoalCriterion::new(
+                        "reviewed by a person",
+                        true,
+                        tact::goal::GoalVerificationKind::Human,
+                    ),
+                    tact::goal::GoalCriterion::required("cargo test passes"),
+                ],
+            })
+            .await
+            .unwrap();
+        manager
+            .update(
+                &created.id,
+                created.version,
+                tact::goal::GoalUpdate {
+                    status: Some(tact::goal::GoalStatus::Queued),
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let queued = manager.get(&created.id).await.unwrap();
+        manager
+            .update(
+                &created.id,
+                queued.version,
+                tact::goal::GoalUpdate {
+                    status: Some(tact::goal::GoalStatus::Running),
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let running = manager.get(&created.id).await.unwrap();
+        manager
+            .update(
+                &created.id,
+                running.version,
+                tact::goal::GoalUpdate {
+                    status: Some(tact::goal::GoalStatus::WaitingUser),
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::AcceptGoal {
+                goal_id: created.id.clone(),
+                text: "looks good".into(),
+            },
+            &work_dir,
+        )
+        .await;
+
+        assert!(
+            !agent.runtime.cancel_flag.load(Ordering::Relaxed),
+            "acceptance continuation must clear a stale cancel flag"
+        );
+        assert_ne!(
+            manager.get(&created.id).await.unwrap().status,
+            tact::goal::GoalStatus::Cancelled,
+            "a stale cancel flag must not destroy the Goal on acceptance"
+        );
     }
 
     #[tokio::test]

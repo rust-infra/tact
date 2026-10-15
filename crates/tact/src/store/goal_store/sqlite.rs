@@ -182,6 +182,71 @@ impl SqliteGoalStore {
             }
         }
     }
+
+    /// Marks a stored `running` run as completed inside an open transaction.
+    ///
+    /// The caller validates the lease once at the top of its own transaction, so
+    /// this helper never re-reads the lease row.
+    async fn finish_run_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        run: &GoalRun,
+    ) -> Result<GoalRun> {
+        if run.finished_at.is_none() || run.outcome.is_none() {
+            return Err(anyhow::Error::new(GoalStoreError::RunNotFinished {
+                run_id: run.id.clone(),
+            }));
+        }
+        let stored = sqlx::query(
+            "SELECT id, goal_id, data FROM goal_runs WHERE id = ? AND state = 'running'",
+        )
+        .bind(&run.id)
+        .fetch_optional(&mut **tx)
+        .await?
+        .ok_or_else(|| not_found("running goal run", &run.id))?;
+        let stored_id: String = stored.try_get("id")?;
+        let stored_goal_id: String = stored.try_get("goal_id")?;
+        let stored_run: GoalRun = serde_json::from_str(stored.try_get("data")?)?;
+        if stored_id != run.id
+            || stored_run.id != run.id
+            || stored_goal_id != run.goal_id
+            || stored_run.goal_id != run.goal_id
+            || stored_run.started_at != run.started_at
+        {
+            return Err(anyhow::Error::new(GoalStoreError::RunIdentityMismatch {
+                run_id: run.id.clone(),
+                stored_id,
+                supplied_id: run.id.clone(),
+                stored_goal_id,
+                supplied_goal_id: run.goal_id.clone(),
+                stored_started_at: stored_run.started_at,
+                supplied_started_at: run.started_at,
+            }));
+        }
+        let data = serde_json::to_string(run)?;
+        let changed = sqlx::query("UPDATE goal_runs SET data = ?, state = 'completed', finished_at = ?, stop_reason = ? WHERE id = ? AND goal_id = ? AND state = 'running'")
+            .bind(data).bind(run.finished_at.map(|v| v.timestamp_millis())).bind(&run.stop_reason).bind(&run.id).bind(&run.goal_id)
+            .execute(&mut **tx).await?.rows_affected();
+        if changed != 1 {
+            return Err(not_found("running goal run", &run.id));
+        }
+        Ok(run.clone())
+    }
+
+    /// Loads the current Goal aggregate (with its version) inside an open
+    /// transaction, so a chained transition CASes against the right version.
+    async fn load_goal_in_tx(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        goal_id: &str,
+    ) -> Result<Goal> {
+        let row = sqlx::query("SELECT data FROM goals WHERE id = ?")
+            .bind(goal_id)
+            .fetch_optional(&mut **tx)
+            .await?
+            .ok_or_else(|| not_found("goal", goal_id))?;
+        decode_goal(row.try_get("data")?)
+    }
 }
 
 #[async_trait]
@@ -331,46 +396,45 @@ impl GoalStore for SqliteGoalStore {
     async fn finish_run(&self, token: &LeaseToken, run: GoalRun) -> Result<GoalRun> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
         validate_lease(&mut tx, token).await?;
-        if run.finished_at.is_none() || run.outcome.is_none() {
-            return Err(anyhow::Error::new(GoalStoreError::RunNotFinished {
-                run_id: run.id.clone(),
-            }));
-        }
-        let stored = sqlx::query(
-            "SELECT id, goal_id, data FROM goal_runs WHERE id = ? AND state = 'running'",
-        )
-        .bind(&run.id)
-        .fetch_optional(&mut *tx)
-        .await?
-        .ok_or_else(|| not_found("running goal run", &run.id))?;
-        let stored_id: String = stored.try_get("id")?;
-        let stored_goal_id: String = stored.try_get("goal_id")?;
-        let stored_run: GoalRun = serde_json::from_str(stored.try_get("data")?)?;
-        if stored_id != run.id
-            || stored_run.id != run.id
-            || stored_goal_id != run.goal_id
-            || stored_run.goal_id != run.goal_id
-            || stored_run.started_at != run.started_at
-        {
-            return Err(anyhow::Error::new(GoalStoreError::RunIdentityMismatch {
-                run_id: run.id.clone(),
-                stored_id,
-                supplied_id: run.id.clone(),
-                stored_goal_id,
-                supplied_goal_id: run.goal_id.clone(),
-                stored_started_at: stored_run.started_at,
-                supplied_started_at: run.started_at,
-            }));
-        }
-        let data = serde_json::to_string(&run)?;
-        let changed = sqlx::query("UPDATE goal_runs SET data = ?, state = 'completed', finished_at = ?, stop_reason = ? WHERE id = ? AND goal_id = ? AND state = 'running'")
-            .bind(data).bind(run.finished_at.map(|v| v.timestamp_millis())).bind(&run.stop_reason).bind(&run.id).bind(&run.goal_id)
-            .execute(&mut *tx).await?.rows_affected();
-        if changed != 1 {
-            return Err(not_found("running goal run", &run.id));
-        }
+        let finished = self.finish_run_in_tx(&mut tx, &run).await?;
         tx.commit().await?;
-        Ok(run)
+        Ok(finished)
+    }
+
+    async fn finish_run_and_transition(
+        &self,
+        token: &LeaseToken,
+        run: GoalRun,
+        transitions: Vec<(GoalUpdate, GoalEvent)>,
+        run_event: GoalEvent,
+    ) -> Result<(GoalRun, Goal)> {
+        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        validate_lease(&mut tx, token).await?;
+        let finished = self.finish_run_in_tx(&mut tx, &run).await?;
+        // Each transition CASes against the version the previous one produced,
+        // so a multi-step transition (`Verifying → Succeeded`) stays consistent
+        // inside this one transaction.
+        let mut goal = self.load_goal_in_tx(&mut tx, &run.goal_id).await?;
+        for (update, event) in transitions {
+            goal = self
+                .update_in_tx(
+                    &mut tx,
+                    &run.goal_id,
+                    goal.version,
+                    update,
+                    Some(event),
+                    None,
+                )
+                .await?;
+        }
+        if run_event.goal_id != goal.id {
+            return Err(anyhow::anyhow!(
+                "run-finished event goal id does not match the finished goal"
+            ));
+        }
+        insert_event(&mut tx, &run_event).await?;
+        tx.commit().await?;
+        Ok((finished, goal))
     }
 
     async fn list_running_runs(&self) -> Result<Vec<GoalRun>> {
@@ -577,6 +641,121 @@ mod tests {
         assert!(err.downcast_ref::<GoalStoreError>().is_some());
         assert_eq!(store.get(&created.id).await.unwrap().title, "after");
         assert_eq!(store.list_events(&created.id).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn finish_run_and_transition_commits_run_goal_and_events_together() {
+        let store = SqliteGoalStore::new(&temp_db("finish_atomic_ok"))
+            .await
+            .unwrap();
+        let created = store.create(goal("atomic")).await.unwrap();
+        let (token, run) = store
+            .start_run(
+                "owner",
+                Duration::from_secs(60),
+                GoalRun::new(created.id.clone()),
+            )
+            .await
+            .unwrap();
+        let mut finished = run.clone();
+        finished.finish(GoalRunOutcome::ProgressMade);
+
+        let transition_event = GoalEvent {
+            id: "transition-event".into(),
+            goal_id: created.id.clone(),
+            run_id: None,
+            kind: "status_changed".into(),
+            status: Some(GoalStatus::Queued),
+            outcome: None,
+            payload: Some("Draft: runner activation".into()),
+            occurred_at: Utc::now(),
+        };
+        let run_event = GoalEvent {
+            id: "run-event".into(),
+            goal_id: created.id.clone(),
+            run_id: Some(finished.id.clone()),
+            kind: "run_finished".into(),
+            status: Some(GoalStatus::Queued),
+            outcome: Some(GoalRunOutcome::ProgressMade),
+            payload: Some("outcome=ProgressMade".into()),
+            occurred_at: Utc::now(),
+        };
+
+        let (stored_run, updated) = store
+            .finish_run_and_transition(
+                &token,
+                finished.clone(),
+                vec![(
+                    GoalUpdate {
+                        status: Some(GoalStatus::Queued),
+                        ..Default::default()
+                    },
+                    transition_event.clone(),
+                )],
+                run_event.clone(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(stored_run.outcome, Some(GoalRunOutcome::ProgressMade));
+        assert_eq!(updated.status, GoalStatus::Queued);
+        assert!(store.list_running_runs().await.unwrap().is_empty());
+        assert_eq!(
+            store.list_events(&created.id).await.unwrap(),
+            vec![transition_event, run_event],
+            "the transition and the run's history entry are durable together"
+        );
+    }
+
+    #[tokio::test]
+    async fn finish_run_and_transition_rolls_back_the_run_when_the_event_is_rejected() {
+        let store = SqliteGoalStore::new(&temp_db("finish_atomic_rollback"))
+            .await
+            .unwrap();
+        let created = store.create(goal("atomic")).await.unwrap();
+        let (token, run) = store
+            .start_run(
+                "owner",
+                Duration::from_secs(60),
+                GoalRun::new(created.id.clone()),
+            )
+            .await
+            .unwrap();
+        let mut finished = run.clone();
+        finished.finish(GoalRunOutcome::ProgressMade);
+
+        // A run event for a different Goal can never be recorded, and it must
+        // take the run's own state change down with it: one transaction.
+        let bad_event = GoalEvent {
+            id: "bad-run-event".into(),
+            goal_id: "some-other-goal".into(),
+            run_id: Some(finished.id.clone()),
+            kind: "run_finished".into(),
+            status: Some(GoalStatus::Queued),
+            outcome: Some(GoalRunOutcome::ProgressMade),
+            payload: None,
+            occurred_at: Utc::now(),
+        };
+        let error = store
+            .finish_run_and_transition(&token, finished, Vec::new(), bad_event)
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("does not match"), "{error:#}");
+
+        assert_eq!(
+            store.list_running_runs().await.unwrap().len(),
+            1,
+            "the run-finish rolled back with the rejected event"
+        );
+        assert!(
+            store.list_events(&created.id).await.unwrap().is_empty(),
+            "no history was written"
+        );
+        assert_eq!(
+            store.get(&created.id).await.unwrap(),
+            created,
+            "the Goal itself is untouched"
+        );
     }
 
     #[tokio::test]
