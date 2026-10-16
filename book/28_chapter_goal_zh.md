@@ -107,6 +107,8 @@ Goal 数据与会话 transcript 分开：transcript 记录对话事实；Goal �
 
 标识符由 `goal::new_id()` 统一铸造：Goal、标准、Run、Event 共用 **8 位十六进制**短 ID（`git log` 风格）。这些 ID 同时出现在用户要读要敲的地方（`/goal show`、创建提示、`/goal <id>` 命令）和模型要回填的地方（`goal_propose_completion` 的 `criterion_id`、每次 activation 注入的 `<goal-context>`），完整 UUID v4 的 36 字符在这两处都是纯浪费。Goal 按工作区划分且数量很少，32 位空间足够；ID 在所有代码路径上都是不透明字符串，从不解析、不校验长度，因此历史库里更长的 UUID 行继续可用。
 
+事件读取全部**有界**（2026-10-16）：每周期的进度判定用 `count_events` 计数比较，不 materialize 事件；注入上下文只取最近若干条（`list_recent_events`）；checkpoint、暂停原因、完成提议各是一条定向查询（`latest_event_of_kind` / `latest_event_with_status` / `has_event_of_kind_since`，均带 `ORDER BY seq DESC LIMIT 1`， newest-first 命中即止）。一次 activation 不再重读并 JSON-parse Goal 的全部历史——多周期循环下那曾是每周期两次全量读取。事件表本身仍不裁剪，`list_events` 保留给审计与展示。
+
 ### `goals`
 
 ```text
@@ -220,6 +222,8 @@ Agent 可报告 checkpoint、提出 Task 变更、请求用户输入、请求权
 
 Run 的累计预算同样是 `GoalLimits` 的 24 turns / 60 次工具调用 / 600 秒墙钟时间，跨 activation 累加到同一条 Run 记录上；达到上限时保存 checkpoint、用量和 stop reason，Goal 进入 `paused`。因为累计预算是按 turn 计的，周期数天然有界（每个周期至少消耗一次模型调用）。注意 `Agent::max_turns` 约束的是**进程累计**的 `turns_taken`，所以 Runner 传给循环的是「当前累计值 + 本次预算」，而不是裸的预算数字。
 
+**activation 自己的判定优先于预算**（2026-10-16）：取消（`cancelled`）、被 hook 拦截（`fatal_error`/`failed`）、需要用户（`needs_user`）、验收通过（`succeeded`）这类终局判定即使与预算耗尽同时发生，也按判定记录——用户在最后一次流式响应期间按下的 Esc 不会被改记成预算暂停。预算只在「本来还会继续」（`progress_made`，或验收被拒）时把 Run 标成 `budget_exhausted`/`paused`。
+
 无进展检测只依赖可观察变化（工具调用、Goal 事件），不依赖模型自述：只有文字的周期记为 `no_progress` 并结束本次 Run，Goal 保持 `running` 等待下一次 activation——它不会因此被暂停，也不会被误记成 `progress_made`。单次失败或偶发网络错误同样不判定 Goal 失败：activation 报错记为 `transient_error` 并结束 Run，Goal 状态不变。
 
 ### Lease 与写入隔离
@@ -298,6 +302,7 @@ Headless 与交互式模式共用同一个 GoalRunner 和状态机。Headless �
 - 一次 `/goal resume` 会跑到该 Run 的累计预算用完（或达到验收/等待用户等终态）为止；`running` 但空闲的 Goal 表示"上一次 Run 用完了预算或没有可观察进展"，继续推进仍是显式操作。
 - `needs_permission`（run outcome）与 `waiting_permission`（状态）一样是保留项，没有生产者，原因见上。
 - 当前协议提供完整 Goal 集合快照，没有单独的 `GoalRunChanged` 增量事件；运行预算在活动 run 中展示，完成 run 的详细审计保存在事件表。
+- `/goal pause` / `/goal cancel` 这类**不带 lease** 的状态写入在 Run 活跃期间会被拒绝（`ActiveRunExists`）：从 `start_run` 到收尾事务，Goal 的状态归 Run 所有，第二个进程中途暂停会留下「已暂停但 Run 仍活跃」的矛盾观测。同一会话内命令循环本就串行在 Run 之后，因此只有跨进程写入会撞到这道门（2026-10-16）。
 - Goal sticky panel 提供状态、预算、Task 进度、验收摘要、等待原因和标准列表；具体标准操作仍通过 `/goal accept` 等命令完成。
 
 ---

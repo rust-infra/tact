@@ -4,6 +4,30 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-16 — Goal 执行链收尾：判定优先于预算、周期内报错不再留下幽灵 Run、事件读取全部有界
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：用户在最后一次流式响应期间按 Esc 现在能取消；取消与预算同时耗尽时记 `cancelled` 而不是 `paused`；Run 活跃期间第二个进程的 pause 被拒绝） |
+| **Related** | `crates/tact/src/{agent/mod.rs,goal/mod.rs,store/{goal_store,task_store}/sqlite.rs}`、`crates/tact-ui/src/{goal_runner.rs,driver.rs}`、`book/28_chapter_goal_zh.md` §4/§5/§12 |
+
+**现象 / 动机：** 2026-10-15 的两份评审（`docs/reviews/2026-10-15-*`）修掉了三个 HIGH，但留下几处残余：预算判定先于 stop 映射（取消与超预算同时发生时，用户的取消被改记成 `budget_exhausted`/`paused`）；agent 循环的终局 arm 不复查 cancel flag（最后一次流式响应期间的 Esc 不可见，可能把一次 durable success 记到刚被取消的 Goal 上）；周期内的 store 读失败直接 `?` 上抛，Run 行留在 `running`（幽灵行会让预算快照虚报活跃，下次启动还会记一笔虚假的「lease 过期」中断）；不带 lease 的状态写入（pause/cancel/accept）跳过活跃 Run 检查，第二个进程能中途暂停；`list_events` 无界，多周期下每周期两次全量读取+JSON parse。
+
+**决策：**
+
+1. **activation 的判定优先于预算**：先 `map_stop`，预算只在「本来还会继续」时生效——`progress_made` 或验收被拒（`completion_proposed` 且无转移）。取消、hook 拦截、需要用户、验收通过即使同时超预算也按判定记录。
+2. **终局 arm 复查 cancel flag**：`match &stop_reason` 之前加一次 `cancel_requested()` 检查（循环顶部的检查跑在模型调用之前，流式期间的按下只有这里能看到），命中即按取消收场。
+3. **周期内任何失败都收尾 Run**：周期循环抽成 `run_activation_cycles`，所有错误路径（周期重载、事件计数、上下文查询、stop 映射）原样上抛，由调用方在一个事务里把 Run 记为 `transient_error`——activation 报错路径本来就是这个形状，现在所有路径统一。
+4. **不带 lease 的状态写入加活跃 Run 门**：`update_in_tx` 在无 lease 且带 status 变更时先查 `goal_runs`，活跃即拒（`ActiveRunExists`）。Run 自己的收尾事务不受影响——它先把 Run 标 completed 再应用转移。
+5. **`Verifying` 补齐 `Paused` / `WaitingPermission`**：与其它非终态一致；AcceptGoal 路径的 `Verifying → Succeeded` 两段写入之间不再一暂停就报错。
+6. **事件读取全部有界**：进度判定用 `count_events` 计数；上下文注入取尾部队列 + 两条定向查询（`latest_event_of_kind` / `latest_event_with_status`）；完成提议判定是一条精确查询（`has_event_of_kind_since`，带时间戳边界）。`list_for_goal` 的依赖边改为一次装配，消除每任务两条 `edges()` 查询的 N+1（跨 goal 的边照旧只出现在锚点一侧）。
+
+**改后行为：** 用户在最后一次流式响应期间按 Esc → 该次 activation 记 `cancelled`，Goal 终态为 `cancelled`，不会把完成提议记成成功；取消且预算同时耗尽 → `cancelled`；周期内 store 读失败 → Run 记 `transient_error` 并正常收尾，不留 `running` 行；第二个进程在 Run 活跃期间 pause → 报错且 Goal 状态不变。
+
+**Verification：** `cargo test -p tact --lib`（1382 全绿，新增 4 条：有界事件读取的三条查询语义、`has_event_of_kind_since` 的边界、无 lease 状态写入在活跃 Run 期间被拒、跨 goal 边保留）；`cargo test -p tact-ui --lib`（105，新增 3 条：取消/致命判定在预算耗尽时不被改记、周期读失败收尾 Run——用一层包装同一数据库、第三次 `count_events` 起失败的测试替身触发）；tui / agent_tui_kit 无行为变化。`cargo fmt`、`cargo clippy --all-targets` 无告警。
+
+**Pointers:** `GoalRunner::run_activation_cycles` / `run_with_lease` 的 Err 收尾臂、`map_stop` 之前的 budget 判定、`SqliteGoalStore::{count_events,list_recent_events,latest_event_of_kind,latest_event_with_status,has_event_of_kind_since}`、`update_in_tx` 的 `ActiveRunExists` 门、`is_legal_transition` 的 `Verifying` arm、`SqliteTaskStore::list_for_goal`、`agent_loop_detailed` 的 stop-reason 前 cancel 检查、[Ch 28](./28_chapter_goal_zh.md) §4/§5/§12。
+
 ## 1. 2026-10-16 — Goal 归档：已结束的目标不再长期占着 sticky 面板
 
 | Field | Value |

@@ -82,6 +82,24 @@ impl SqliteGoalStore {
     ) -> Result<Goal> {
         if let Some(token) = lease {
             validate_lease(tx, token).await?;
+        } else if update.status.is_some() {
+            // A status write without the run's fencing lease must not land
+            // while a run is active: from `start_run` to
+            // `finish_run_and_transition` the run owns the Goal's status, and a
+            // lease-less writer (a second process pausing mid-activation) would
+            // commit a paused Goal behind a still-`running` run row — the
+            // "paused but run active" observation the invariants forbid. The
+            // run's own finish transaction passes here because it marks the run
+            // completed before applying transitions (2026-10-16).
+            let active = sqlx::query(
+                "SELECT 1 FROM goal_runs WHERE goal_id = ? AND state = 'running' LIMIT 1",
+            )
+            .bind(goal_id)
+            .fetch_optional(&mut **tx)
+            .await?;
+            if active.is_some() {
+                return Err(anyhow::Error::new(GoalStoreError::ActiveRunExists));
+            }
         }
         let row = sqlx::query("SELECT data, version FROM goals WHERE id = ?")
             .bind(goal_id)
@@ -322,6 +340,84 @@ impl GoalStore for SqliteGoalStore {
         rows.into_iter()
             .map(|r| Ok(serde_json::from_str(r.try_get("data")?)?))
             .collect()
+    }
+
+    async fn count_events(&self, goal_id: &str) -> Result<u64> {
+        let row = sqlx::query("SELECT COUNT(*) AS n FROM goal_events WHERE goal_id = ?")
+            .bind(goal_id)
+            .fetch_one(&*self.pool)
+            .await?;
+        Ok(row.try_get::<i64, _>("n")? as u64)
+    }
+
+    async fn list_recent_events(&self, goal_id: &str, limit: usize) -> Result<Vec<GoalEvent>> {
+        let rows =
+            sqlx::query("SELECT data FROM goal_events WHERE goal_id = ? ORDER BY seq DESC LIMIT ?")
+                .bind(goal_id)
+                .bind(limit as i64)
+                .fetch_all(&*self.pool)
+                .await?;
+        let mut events = rows
+            .into_iter()
+            .map(|r| Ok(serde_json::from_str(r.try_get("data")?)?))
+            .collect::<Result<Vec<_>>>()?;
+        events.reverse();
+        Ok(events)
+    }
+
+    async fn latest_event_of_kind(&self, goal_id: &str, kind: &str) -> Result<Option<GoalEvent>> {
+        // The `kind` / `status` facts live in the event JSON; `ORDER BY seq
+        // DESC LIMIT 1` scans the goal's rows newest-first and stops at the
+        // first match, so the cost is the distance to that event, not the
+        // goal's whole history.
+        let row = sqlx::query(
+            "SELECT data FROM goal_events \
+             WHERE goal_id = ? AND json_extract(data, '$.kind') = ? \
+             ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(goal_id)
+        .bind(kind)
+        .fetch_optional(&*self.pool)
+        .await?;
+        row.map(|r| Ok(serde_json::from_str(r.try_get("data")?)?))
+            .transpose()
+    }
+
+    async fn latest_event_with_status(
+        &self,
+        goal_id: &str,
+        status: GoalStatus,
+    ) -> Result<Option<GoalEvent>> {
+        let row = sqlx::query(
+            "SELECT data FROM goal_events \
+             WHERE goal_id = ? AND json_extract(data, '$.status') = ? \
+             ORDER BY seq DESC LIMIT 1",
+        )
+        .bind(goal_id)
+        .bind(status_string(status))
+        .fetch_optional(&*self.pool)
+        .await?;
+        row.map(|r| Ok(serde_json::from_str(r.try_get("data")?)?))
+            .transpose()
+    }
+
+    async fn has_event_of_kind_since(
+        &self,
+        goal_id: &str,
+        kind: &str,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> Result<bool> {
+        let row = sqlx::query(
+            "SELECT 1 FROM goal_events \
+             WHERE goal_id = ? AND json_extract(data, '$.kind') = ? AND occurred_at >= ? \
+             LIMIT 1",
+        )
+        .bind(goal_id)
+        .bind(kind)
+        .bind(since.timestamp_millis())
+        .fetch_optional(&*self.pool)
+        .await?;
+        Ok(row.is_some())
     }
 
     async fn claim_lease(&self, owner: &str, ttl: Duration) -> Result<LeaseToken> {
@@ -628,6 +724,249 @@ mod tests {
         assert_eq!(reloaded, archived);
         assert_eq!(reloaded.status, GoalStatus::Cancelled);
         assert!(store.list().await.unwrap()[0].is_archived());
+    }
+
+    /// The bounded reads the runner's cycles use: a count, a tail, and the two
+    /// targeted lookups — none of them materialize a Goal's whole history, and
+    /// every activation used to re-read and JSON-parse all of it (2026-10-16).
+    #[tokio::test]
+    async fn count_recent_and_latest_event_reads_are_bounded() {
+        let store = SqliteGoalStore::new(&temp_db("bounded_events"))
+            .await
+            .unwrap();
+        let created = store.create(goal("bounded")).await.unwrap();
+
+        let checkpoint = GoalEvent {
+            id: "event-checkpoint".into(),
+            goal_id: created.id.clone(),
+            run_id: None,
+            kind: "checkpoint".into(),
+            status: None,
+            outcome: None,
+            payload: Some("first checkpoint".into()),
+            occurred_at: Utc::now(),
+        };
+        let paused = GoalEvent {
+            id: "event-paused".into(),
+            goal_id: created.id.clone(),
+            run_id: None,
+            kind: "status_changed".into(),
+            status: Some(GoalStatus::Paused),
+            outcome: None,
+            payload: Some("budget exhausted".into()),
+            occurred_at: Utc::now() + ChronoDuration::seconds(1),
+        };
+        let finished = GoalEvent {
+            id: "event-finished".into(),
+            goal_id: created.id.clone(),
+            run_id: Some("run-1".into()),
+            kind: "run_finished".into(),
+            status: Some(GoalStatus::Paused),
+            outcome: Some(GoalRunOutcome::BudgetExhausted),
+            payload: Some("outcome=BudgetExhausted".into()),
+            occurred_at: Utc::now() + ChronoDuration::seconds(2),
+        };
+        for event in [&checkpoint, &paused, &finished] {
+            store.append_event(event.clone()).await.unwrap();
+        }
+
+        assert_eq!(store.count_events(&created.id).await.unwrap(), 3);
+
+        // The tail is bounded and chronological, not the newest rows reversed.
+        let recent = store.list_recent_events(&created.id, 2).await.unwrap();
+        assert_eq!(
+            recent
+                .iter()
+                .map(|event| event.id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["event-paused", "event-finished"],
+            "the tail keeps occurrence order"
+        );
+
+        // The lookups find the newest match, not the first.
+        assert_eq!(
+            store
+                .latest_event_of_kind(&created.id, "checkpoint")
+                .await
+                .unwrap()
+                .map(|event| event.id),
+            Some("event-checkpoint".to_string())
+        );
+        assert_eq!(
+            store
+                .latest_event_of_kind(&created.id, "run_finished")
+                .await
+                .unwrap()
+                .map(|event| event.id),
+            Some("event-finished".to_string())
+        );
+        assert!(
+            store
+                .latest_event_of_kind(&created.id, "needs_user")
+                .await
+                .unwrap()
+                .is_none(),
+            "an absent kind answers None, not an error"
+        );
+        assert_eq!(
+            store
+                .latest_event_with_status(&created.id, GoalStatus::Paused)
+                .await
+                .unwrap()
+                .map(|event| event.id),
+            Some("event-finished".to_string()),
+            "the newest Paused-status event, whichever kind it is"
+        );
+    }
+
+    /// The completion-proposal predicate is asked exactly: an event at the
+    /// boundary counts, an older one does not. A bounded read could miss a
+    /// proposal from early in a long run, and a missed proposal is a Goal that
+    /// can never succeed (2026-10-16).
+    #[tokio::test]
+    async fn has_event_of_kind_since_is_an_exact_predicate() {
+        let store = SqliteGoalStore::new(&temp_db("proposal_since"))
+            .await
+            .unwrap();
+        let created = store.create(goal("proposals")).await.unwrap();
+        let boundary = Utc::now();
+        let older = GoalEvent {
+            id: "event-old".into(),
+            goal_id: created.id.clone(),
+            run_id: None,
+            kind: "completion_proposed".into(),
+            status: None,
+            outcome: None,
+            payload: Some("old proposal".into()),
+            occurred_at: boundary - ChronoDuration::seconds(1),
+        };
+        let at_boundary = GoalEvent {
+            id: "event-boundary".into(),
+            goal_id: created.id.clone(),
+            run_id: None,
+            kind: "completion_proposed".into(),
+            status: None,
+            outcome: None,
+            payload: Some("boundary proposal".into()),
+            occurred_at: boundary,
+        };
+        store.append_event(older).await.unwrap();
+        store.append_event(at_boundary).await.unwrap();
+
+        assert!(
+            store
+                .has_event_of_kind_since(&created.id, "completion_proposed", boundary)
+                .await
+                .unwrap(),
+            "an event at the boundary is inside the window"
+        );
+        assert!(
+            !store
+                .has_event_of_kind_since(
+                    &created.id,
+                    "completion_proposed",
+                    boundary + ChronoDuration::seconds(1),
+                )
+                .await
+                .unwrap(),
+            "a window after every event finds none"
+        );
+        assert!(
+            !store
+                .has_event_of_kind_since(&created.id, "checkpoint", boundary)
+                .await
+                .unwrap(),
+            "another kind is not a proposal"
+        );
+    }
+
+    /// A lease-less status write is refused while a run is active: from
+    /// `start_run` the run owns the Goal's status, and a second writer pausing
+    /// mid-activation would commit a paused Goal behind a still-`running` run
+    /// row — the "paused but run active" observation the invariants forbid
+    /// (2026-10-16).
+    #[tokio::test]
+    async fn a_lease_less_status_write_is_refused_while_a_run_is_active() {
+        let store = SqliteGoalStore::new(&temp_db("fence")).await.unwrap();
+        let created = store.create(goal("fenced")).await.unwrap();
+        let queued = store
+            .update(
+                &created.id,
+                created.version,
+                GoalUpdate {
+                    status: Some(GoalStatus::Queued),
+                    ..GoalUpdate::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let running = store
+            .update(
+                &created.id,
+                queued.version,
+                GoalUpdate {
+                    status: Some(GoalStatus::Running),
+                    ..GoalUpdate::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let (_token, _run) = store
+            .start_run(
+                "owner",
+                Duration::from_secs(60),
+                GoalRun::new(created.id.clone()),
+            )
+            .await
+            .unwrap();
+
+        // The hole: a second writer pauses the Goal while the run is active,
+        // holding no lease to fence it.
+        let error = store
+            .update(
+                &created.id,
+                running.version,
+                GoalUpdate {
+                    status: Some(GoalStatus::Paused),
+                    ..GoalUpdate::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(
+                error.downcast_ref::<GoalStoreError>(),
+                Some(GoalStoreError::ActiveRunExists)
+            ),
+            "the write is refused: {error:#}"
+        );
+        assert_eq!(
+            store.get(&created.id).await.unwrap().status,
+            GoalStatus::Running,
+            "the Goal is untouched by the refused write"
+        );
+
+        // The same write with the run's own lease is legal — that is the
+        // fenced path the runner uses.
+        store
+            .update(
+                &created.id,
+                running.version,
+                GoalUpdate {
+                    status: Some(GoalStatus::Paused),
+                    ..GoalUpdate::default()
+                },
+                None,
+                Some(&_token),
+            )
+            .await
+            .unwrap();
     }
 
     #[tokio::test]

@@ -124,19 +124,37 @@ impl GoalLimits {
     }
 }
 
+/// The event facts [`build_goal_context`] is built from.
+///
+/// Every field is a *bounded* read: the listing is a short tail and the two
+/// lookups are targeted queries, so no activation re-reads (and JSON-parses) a
+/// Goal's whole history — with cycles that was two full reads per cycle
+/// (2026-10-16).
+pub struct GoalContextEvents {
+    /// The most recent events, chronological — what the `recent-events`
+    /// section lists.
+    pub recent: Vec<GoalEvent>,
+    /// The latest checkpoint, or the latest finished run when the Goal has
+    /// never checkpointed: where the work last left off.
+    pub latest_progress: Option<GoalEvent>,
+    /// The event that last moved the Goal to `Paused`, when there is one.
+    pub pause_reason: Option<GoalEvent>,
+}
+
 /// Renders the authoritative Goal context injected at the start of an
 /// activation: objective, hard constraints, required-criteria summary, linked
 /// Task status, the most recent checkpoint, and the pause reason when present.
 ///
-/// Bounded by [`MAX_GOAL_CONTEXT_CHARS`]; the full event history is never
-/// injected, only a short tail of it. Every piece of text sits inside a labelled
-/// section, and tag characters inside model- or tool-authored text are
-/// neutralised, so untrusted content cannot close a section and impersonate the
-/// objective, the constraints, or the acceptance criteria.
+/// Bounded by [`MAX_GOAL_CONTEXT_CHARS`]; the event facts are read through
+/// [`GoalContextEvents`] — a short tail plus targeted lookups — never the whole
+/// history. Every piece of text sits inside a labelled section, and tag
+/// characters inside model- or tool-authored text are neutralised, so
+/// untrusted content cannot close a section and impersonate the objective, the
+/// constraints, or the acceptance criteria.
 pub fn build_goal_context(
     goal: &Goal,
     linked_tasks: &[TaskRecord],
-    recent_events: &[GoalEvent],
+    events: &GoalContextEvents,
 ) -> String {
     let mut context = String::with_capacity(MAX_GOAL_CONTEXT_CHARS);
 
@@ -211,28 +229,23 @@ pub fn build_goal_context(
     };
     push_section(&mut context, "linked-tasks", &tasks);
 
-    // The most recent checkpoint is runner- or tool-authored progress, so it is
-    // carried verbatim (bounded), not reworded.
-    let checkpoint = recent_events
-        .iter()
-        .rev()
-        .find(|event| event.kind == "checkpoint")
-        .or_else(|| {
-            recent_events
-                .iter()
-                .rev()
-                .find(|event| event.kind == "run_finished")
-        })
+    // Where the work last left off: the caller resolved the latest checkpoint
+    // (or the latest finished run when the Goal never checkpointed) with a
+    // targeted query. Checkpoint text is runner- or tool-authored progress, so
+    // it is carried verbatim (bounded), not reworded.
+    let checkpoint = events
+        .latest_progress
+        .as_ref()
         .and_then(|event| event.payload.as_deref())
         .map(|payload| bounded_untrusted(payload, CHECKPOINT_CAP))
         .unwrap_or_else(|| "(none)".to_string());
     push_section(&mut context, "latest-checkpoint", &checkpoint);
 
-    // A pause reason is only present when something paused this Goal.
-    if let Some(reason) = recent_events
-        .iter()
-        .rev()
-        .find(|event| event.status == Some(GoalStatus::Paused))
+    // A pause reason is only present when something paused this Goal (the
+    // caller resolved the latest Paused event with a targeted query).
+    if let Some(reason) = events
+        .pause_reason
+        .as_ref()
         .and_then(|event| event.payload.as_deref())
     {
         push_section(
@@ -242,11 +255,12 @@ pub fn build_goal_context(
         );
     }
 
-    let events = if recent_events.is_empty() {
+    let listing = if events.recent.is_empty() {
         "(none)".to_string()
     } else {
         join_lines(
-            recent_events
+            events
+                .recent
                 .iter()
                 .rev()
                 .take(RECENT_EVENTS)
@@ -272,7 +286,7 @@ pub fn build_goal_context(
             EVENTS_CAP,
         )
     };
-    push_section(&mut context, "recent-events", &events);
+    push_section(&mut context, "recent-events", &listing);
 
     context.push_str("</goal-context>");
     // Backstop: the per-section caps above keep the document under the cap, so
@@ -521,113 +535,50 @@ impl GoalRunner {
 
         // Step 5: bounded activations, until the run's budget is spent, the Goal
         // stops leaving observable progress behind, or one activation decides
-        // the run's outcome (needs user, verified, cancelled, ...).
-        //
-        // The loop's own turn cap is the only enforcement that can stop a
-        // runaway activation *while it runs* — `permit_activation` below only
-        // classifies what came back, so without this a single activation could
-        // consume unbounded turns and tool calls. The caller's cap is restored
-        // afterwards so a Goal activation never leaks its budget into the
-        // surrounding session.
-        //
-        // `Agent::max_turns` caps the *cumulative* `turns_taken` counter, which
-        // lives on the agent for its whole process (`agent_loop_detailed` only
-        // reports a delta against it), so this activation's budget has to be
-        // expressed on that same scale. Handing the loop the raw per-activation
-        // number instead made a warm session — one that had already taken that
-        // many turns — stop on the first iteration and pause the Goal having
-        // done nothing at all (2026-10-15).
-        let previous_max_turns = agent.max_turns;
+        // the run's outcome (needs user, verified, cancelled, ...). See
+        // [`Self::run_activation_cycles`]; whatever it returns — a mapped
+        // outcome or an error — the run is finished below, in one transaction.
         let started = Instant::now();
-        let (run_outcome, transitions) = loop {
-            // Reload per cycle: Goal tools mutate the aggregate as they work
-            // (evidence, criteria), and the injected context is supposed to be
-            // authoritative rather than a snapshot from the start of the run.
-            goal = self.goal_manager.get(&goal.id).await?;
-            let linked_tasks = agent
-                .tool_context
-                .task_manager
-                .list_for_goal(&goal.id)
-                .await
-                .unwrap_or_default();
-            let history = self.goal_manager.list_events(&goal.id).await?;
-            let events_before = history.len();
-            let injected = build_goal_context(&goal, &linked_tasks, &history);
-
-            agent.max_turns = Some(agent.turns_taken.saturating_add(self.limits.max_turns));
-            let activation = agent
-                .agent_loop_detailed(Some(Message::new_text(Role::User, injected)))
-                .await;
-            agent.max_turns = previous_max_turns;
-
-            let activation = match activation {
-                Ok(activation) => activation,
-                Err(error) => {
-                    // Never leave a run `running` behind an activation error.
-                    run.elapsed_ms = millis(started.elapsed());
-                    run.stop_reason = Some("activation_error".to_string());
+        let cycles = self
+            .run_activation_cycles(agent, &mut goal, &mut run, started)
+            .await;
+        let (run_outcome, transitions) = match cycles {
+            Ok(pair) => pair,
+            Err(error) => {
+                // Every failure inside the cycles finishes the run: a phantom
+                // `running` row would fake an active run for the budget
+                // snapshot and be booked as a spurious "lease expired"
+                // interruption on the next startup. One transaction, the same
+                // shape as the activation-error path (2026-10-16).
+                run.elapsed_ms = millis(started.elapsed());
+                if run.stop_reason.is_none() {
+                    run.stop_reason = Some("run_error".to_string());
+                }
+                if run.checkpoint.is_none() {
                     run.checkpoint = Some(format!(
-                        "activation failed before it reported a stop reason: {}",
-                        one_line(&error.to_string())
+                        "run failed before it reported a stop reason: {}",
+                        one_line(&format!("{error:#}"))
                     ));
-                    run.finish(GoalRunOutcome::TransientError);
-                    // One transaction: the run can never be left `running` behind a
-                    // failed activation, and its outcome is recorded with it.
-                    let event = finished_run_event(
-                        &goal.id,
-                        goal.status,
-                        &run,
-                        GoalRunOutcome::TransientError,
-                        None,
-                    );
-                    if let Err(bookkeeping) = self
-                        .goal_manager
-                        .finish_run_and_transition(token, run, Vec::new(), event)
-                        .await
-                    {
-                        return Err(error.context(format!(
-                            "a failed goal run could not be finished: {bookkeeping:#}"
-                        )));
-                    }
-                    return Err(error);
                 }
-            };
-
-            // Step 6: budget accounting, accumulated over the whole run.
-            // `max_elapsed` is checked around and between activations, never as a
-            // mid-turn interrupt (see the module docs).
-            run.turns_used += u64::from(activation.turns);
-            run.tool_calls_used += activation.tool_calls;
-            run.elapsed_ms = millis(started.elapsed());
-            run.stop_reason = Some(stop_reason(activation.stop).to_string());
-            run.checkpoint = Some(checkpoint(&run, activation.stop));
-
-            // Step 7: map the budget and the stop variant to a run outcome and
-            // the Goal status changes it implies.
-            if !self.limits.permit_activation(
-                run.turns_used.min(u64::from(u32::MAX)) as u32,
-                run.tool_calls_used,
-                Duration::from_millis(run.elapsed_ms),
-            ) {
-                break (GoalRunOutcome::BudgetExhausted, vec![GoalStatus::Paused]);
-            }
-            let mapped = self.map_stop(&goal, &run, activation.stop).await?;
-            if mapped.0 == GoalRunOutcome::ProgressMade {
-                // Another cycle only when this activation left something for it to
-                // build on: an executed tool call, or a Goal event (a checkpoint, a
-                // task link, evidence) appended while it ran.
-                let events_after = self.goal_manager.list_events(&goal.id).await?.len();
-                if activation.tool_calls > 0 || events_after > events_before {
-                    continue;
+                run.finish(GoalRunOutcome::TransientError);
+                let event = finished_run_event(
+                    &goal.id,
+                    goal.status,
+                    &run,
+                    GoalRunOutcome::TransientError,
+                    None,
+                );
+                if let Err(bookkeeping) = self
+                    .goal_manager
+                    .finish_run_and_transition(token, run, Vec::new(), event)
+                    .await
+                {
+                    return Err(error.context(format!(
+                        "a failed goal run could not be finished: {bookkeeping:#}"
+                    )));
                 }
-                // A cycle that produced only text is the model talking, not
-                // working: label the run honestly instead of claiming progress,
-                // and end it here rather than buying another model call that would
-                // re-read the same context. The Goal stays `Running` for the next
-                // activation.
-                break (GoalRunOutcome::NoProgress, mapped.1);
+                return Err(error);
             }
-            break mapped;
         };
 
         run.finish(run_outcome);
@@ -661,6 +612,145 @@ impl GoalRunner {
             goal.id
         )));
         Ok(run_outcome)
+    }
+
+    /// Steps 5-7: bounded activations until the run's budget is spent, the Goal
+    /// stops leaving observable progress behind, or one activation decides the
+    /// run's outcome.
+    ///
+    /// The loop's own turn cap is the only enforcement that can stop a runaway
+    /// activation *while it runs* — `permit_activation` only classifies what
+    /// came back, so without this a single activation could consume unbounded
+    /// turns and tool calls. The caller's cap is restored afterwards so a Goal
+    /// activation never leaks its budget into the surrounding session.
+    ///
+    /// `Agent::max_turns` caps the *cumulative* `turns_taken` counter, which
+    /// lives on the agent for its whole process (`agent_loop_detailed` only
+    /// reports a delta against it), so this activation's budget has to be
+    /// expressed on that same scale. Handing the loop the raw per-activation
+    /// number instead made a warm session — one that had already taken that
+    /// many turns — stop on the first iteration and pause the Goal having done
+    /// nothing at all (2026-10-15).
+    ///
+    /// Every failure path returns `Err` *without* finishing the run: the caller
+    /// does that in one transaction, so no error — a failed store read
+    /// mid-cycle included — can leave a phantom `running` row behind
+    /// (2026-10-16).
+    async fn run_activation_cycles(
+        &self,
+        agent: &mut Agent,
+        goal: &mut Goal,
+        run: &mut GoalRun,
+        started: Instant,
+    ) -> Result<(GoalRunOutcome, Vec<GoalStatus>)> {
+        let previous_max_turns = agent.max_turns;
+        loop {
+            // Reload per cycle: Goal tools mutate the aggregate as they work
+            // (evidence, criteria), and the injected context is supposed to be
+            // authoritative rather than a snapshot from the start of the run.
+            let reloaded = self.goal_manager.get(&goal.id).await?;
+            *goal = reloaded;
+            let linked_tasks = agent
+                .tool_context
+                .task_manager
+                .list_for_goal(&goal.id)
+                .await
+                .unwrap_or_default();
+            // Bounded reads only: the count is the progress gate's probe, and
+            // the context takes a short tail plus two targeted lookups — never
+            // the Goal's whole history (2026-10-16).
+            let events_before = self.goal_manager.count_events(&goal.id).await?;
+            let events = GoalContextEvents {
+                recent: self
+                    .goal_manager
+                    .list_recent_events(&goal.id, RECENT_EVENTS)
+                    .await?,
+                latest_progress: self
+                    .goal_manager
+                    .latest_event_of_kind(&goal.id, "checkpoint")
+                    .await?
+                    .or(self
+                        .goal_manager
+                        .latest_event_of_kind(&goal.id, "run_finished")
+                        .await?),
+                pause_reason: self
+                    .goal_manager
+                    .latest_event_with_status(&goal.id, GoalStatus::Paused)
+                    .await?,
+            };
+            let injected = build_goal_context(goal, &linked_tasks, &events);
+
+            agent.max_turns = Some(agent.turns_taken.saturating_add(self.limits.max_turns));
+            let activation = agent
+                .agent_loop_detailed(Some(Message::new_text(Role::User, injected)))
+                .await;
+            agent.max_turns = previous_max_turns;
+
+            let activation = match activation {
+                Ok(activation) => activation,
+                Err(error) => {
+                    // Annotate the run for the caller's finish: the specific
+                    // checkpoint text is what makes a failed activation legible
+                    // after the fact.
+                    run.elapsed_ms = millis(started.elapsed());
+                    run.stop_reason = Some("activation_error".to_string());
+                    run.checkpoint = Some(format!(
+                        "activation failed before it reported a stop reason: {}",
+                        one_line(&error.to_string())
+                    ));
+                    return Err(error);
+                }
+            };
+
+            // Step 6: budget accounting, accumulated over the whole run.
+            // `max_elapsed` is checked around and between activations, never as a
+            // mid-turn interrupt (see the module docs).
+            run.turns_used += u64::from(activation.turns);
+            run.tool_calls_used += activation.tool_calls;
+            run.elapsed_ms = millis(started.elapsed());
+            run.stop_reason = Some(stop_reason(activation.stop).to_string());
+            run.checkpoint = Some(checkpoint(run, activation.stop));
+
+            // Step 7: map the stop variant first — the activation's own verdict
+            // wins over the budget. A run that was cancelled, blocked, or needs
+            // the user keeps that outcome even when the budget is also spent;
+            // the budget only decides whether a would-continue run gets another
+            // cycle (2026-10-16).
+            let mapped = self.map_stop(goal, run, activation.stop).await?;
+            let budget_left = self.limits.permit_activation(
+                run.turns_used.min(u64::from(u32::MAX)) as u32,
+                run.tool_calls_used,
+                Duration::from_millis(run.elapsed_ms),
+            );
+            // A spent budget ends the run exactly when the activation would
+            // otherwise leave the Goal runnable (progress made, or a completion
+            // the verifier rejected): `BudgetExhausted`/`Paused` is then the
+            // honest label for why the run stopped.
+            let keeps_running = mapped.1.is_empty()
+                && matches!(
+                    mapped.0,
+                    GoalRunOutcome::ProgressMade | GoalRunOutcome::CompletionProposed
+                );
+            if keeps_running && !budget_left {
+                break Ok((GoalRunOutcome::BudgetExhausted, vec![GoalStatus::Paused]));
+            }
+            if mapped.0 == GoalRunOutcome::ProgressMade {
+                // Another cycle only when this activation left something for it to
+                // build on: an executed tool call, or a Goal event (a checkpoint, a
+                // task link, evidence) appended while it ran.
+                let events_after = self.goal_manager.count_events(&goal.id).await?;
+                if activation.tool_calls > 0 || events_after > events_before {
+                    continue;
+                }
+                // A cycle that produced only text is the model talking, not
+                // working: label the run honestly instead of claiming progress,
+                // and end it here rather than buying another model call that would
+                // re-read the same context. The Goal stays `Running` for the next
+                // activation.
+                break Ok((GoalRunOutcome::NoProgress, mapped.1));
+            }
+            break Ok(mapped);
+        }
     }
 
     /// Moves a `Draft` or `Queued` Goal to `Running` through the legal
@@ -714,14 +804,13 @@ impl GoalRunner {
         goal: &Goal,
         run: &GoalRun,
     ) -> Result<(GoalRunOutcome, Vec<GoalStatus>)> {
+        // Asked exactly, as one indexed probe: a bounded read could miss a
+        // proposal from early in a long run, and a missed proposal is a Goal
+        // that can never succeed (2026-10-16).
         let proposed = self
             .goal_manager
-            .list_events(&goal.id)
-            .await?
-            .iter()
-            .any(|event| {
-                event.kind == "completion_proposed" && event.occurred_at >= run.started_at
-            });
+            .has_event_of_kind_since(&goal.id, "completion_proposed", run.started_at)
+            .await?;
         if !proposed {
             return Ok((GoalRunOutcome::ProgressMade, Vec::new()));
         }
@@ -1383,6 +1472,309 @@ mod tests {
         );
     }
 
+    /// The activation's own verdict wins over a spent budget: a run cancelled
+    /// *and* over budget records `Cancelled`, not `BudgetExhausted`/`Paused`.
+    /// The budget check used to preempt stop mapping, so a user's cancel was
+    /// relabelled as a budget pause (2026-10-16).
+    #[tokio::test]
+    async fn run_once_keeps_a_cancelled_verdict_when_the_budget_is_also_spent() {
+        install_test_config();
+        // A one-turn run budget: the single model call spends it exactly, and
+        // the cancel flag is set while that response is still streaming — the
+        // same mid-response press the loop's final arm must honour.
+        let flag_slot: Arc<std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let slot = flag_slot.clone();
+        let mock = MockClient::with_responder(move |_request, _idx| {
+            if let Some(flag) = slot.lock().unwrap().as_ref() {
+                flag.store(true, Ordering::SeqCst);
+            }
+            Ok((vec![text_block("done")], Some(StopReason::EndTurn), None))
+        });
+        let (mut agent, _work_dir) = build_test_agent(mock, None);
+        *flag_slot.lock().unwrap() = Some(agent.tool_context.cancel_flag.clone());
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "cancelled and over budget",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        let runner = GoalRunner::new(
+            manager.clone(),
+            GoalLimits {
+                max_turns: 1,
+                ..GoalLimits::default()
+            },
+        );
+        let outcome = runner.run_once(&mut agent, &goal.id).await.unwrap();
+
+        assert_eq!(
+            outcome,
+            GoalRunOutcome::Cancelled,
+            "the cancel verdict stands even though the budget is spent"
+        );
+        assert_eq!(
+            manager.get(&goal.id).await.unwrap().status,
+            GoalStatus::Cancelled,
+            "the Goal ends cancelled, not paused-by-budget"
+        );
+        assert!(manager.list_running_runs().await.unwrap().is_empty());
+    }
+
+    /// Same rule for a hard failure: a hook-blocked activation whose budget is
+    /// already spent records `FatalError`/`Failed`, not a budget pause.
+    #[tokio::test]
+    async fn run_once_keeps_a_fatal_verdict_when_the_budget_is_also_spent() {
+        install_test_config();
+        let mock = MockClient::new(vec![]);
+        let (agent, _work_dir) = build_test_agent(mock, None);
+        let mut agent =
+            agent.with_user_prompt_submit(|_agent: &tact::Agent, _prompt: &mut String| {
+                Box::pin(async { Ok(HookControl::Block("goal runs are disabled".to_string())) })
+            });
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "blocked and over budget",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        // A zero turn budget: nothing is spent, and the hook blocks before the
+        // first model call — the two conditions the old ordering conflated.
+        let runner = GoalRunner::new(
+            manager.clone(),
+            GoalLimits {
+                max_turns: 0,
+                ..GoalLimits::default()
+            },
+        );
+        let outcome = runner.run_once(&mut agent, &goal.id).await.unwrap();
+
+        assert_eq!(outcome, GoalRunOutcome::FatalError);
+        assert_eq!(
+            manager.get(&goal.id).await.unwrap().status,
+            GoalStatus::Failed,
+            "the fatal verdict stands even though the budget is spent"
+        );
+    }
+
+    /// A store read that fails between cycles finishes the run like any other
+    /// failure: no phantom `running` row, and the outcome recorded. Only the
+    /// activation-error path used to finish the run; the per-cycle reload,
+    /// event and mapping reads propagated with `?` and left the row active
+    /// (2026-10-16).
+    #[tokio::test]
+    async fn run_once_finishes_the_run_when_a_cycle_read_fails() {
+        install_test_config();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let mock = MockClient::with_responder(move |_request, idx| {
+            seen.fetch_max(idx + 1, Ordering::Relaxed);
+            Ok(if idx % 2 == 0 {
+                (
+                    vec![tool_use(
+                        &format!("goal-read-{idx}"),
+                        "goal_read",
+                        serde_json::json!({}),
+                    )],
+                    Some(StopReason::ToolUse),
+                    None,
+                )
+            } else {
+                (
+                    vec![text_block("cycle finished")],
+                    Some(StopReason::EndTurn),
+                    None,
+                )
+            })
+        });
+        let (mut agent, work_dir) = build_test_agent(mock, None);
+        let real = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &real,
+            "cycle read failure",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&real, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        // The runner owns its store handle: wrap the same database so the
+        // second cycle's first read fails. (Cycle one spends its two reads —
+        // the progress gate's before/after counts — before the cycle reloads.)
+        let db_path = work_dir.join(".tact").join("tact.db");
+        let flaky = SharedGoalManager::new(tact::goal::GoalManager::from_store(Box::new(
+            FlakyCountStore {
+                inner: SqliteGoalStore::new(&db_path).await.unwrap(),
+                counts: AtomicUsize::new(0),
+            },
+        )));
+        let runner = GoalRunner::new(flaky.clone(), GoalLimits::default());
+        let error = runner
+            .run_once(&mut agent, &goal.id)
+            .await
+            .expect_err("a failed cycle read must surface");
+
+        assert!(
+            error.to_string().contains("synthetic store failure"),
+            "the read error is the surfaced error: {error:#}"
+        );
+        assert!(
+            flaky.list_running_runs().await.unwrap().is_empty(),
+            "a failed cycle read must not leave a running run"
+        );
+        let events = flaky.list_events(&goal.id).await.unwrap();
+        let finished = run_finished_event(&events, "run_finished").expect("run recorded");
+        assert_eq!(
+            finished.outcome,
+            Some(GoalRunOutcome::TransientError),
+            "the failed run is recorded, not lost"
+        );
+        assert_eq!(
+            flaky.get(&goal.id).await.unwrap().status,
+            GoalStatus::Running,
+            "no transitions are applied for a run that never mapped"
+        );
+        assert!(
+            flaky
+                .claim_lease("a-later-runner", Duration::from_secs(5))
+                .await
+                .is_ok(),
+            "the activation lease is released"
+        );
+    }
+
+    /// A store that delegates everything but fails `count_events` from its
+    /// third call on — the per-cycle read that used to leak a phantom run.
+    struct FlakyCountStore {
+        inner: SqliteGoalStore,
+        counts: AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl GoalStore for FlakyCountStore {
+        async fn create(&self, goal: Goal) -> anyhow::Result<Goal> {
+            self.inner.create(goal).await
+        }
+        async fn get(&self, goal_id: &str) -> anyhow::Result<Goal> {
+            self.inner.get(goal_id).await
+        }
+        async fn list(&self) -> anyhow::Result<Vec<Goal>> {
+            self.inner.list().await
+        }
+        async fn update(
+            &self,
+            goal_id: &str,
+            expected_version: u64,
+            update: GoalUpdate,
+            event: Option<GoalEvent>,
+            lease: Option<&tact::store::goal_store::LeaseToken>,
+        ) -> anyhow::Result<Goal> {
+            self.inner
+                .update(goal_id, expected_version, update, event, lease)
+                .await
+        }
+        async fn append_event(&self, event: GoalEvent) -> anyhow::Result<GoalEvent> {
+            self.inner.append_event(event).await
+        }
+        async fn list_events(&self, goal_id: &str) -> anyhow::Result<Vec<GoalEvent>> {
+            self.inner.list_events(goal_id).await
+        }
+        async fn count_events(&self, goal_id: &str) -> anyhow::Result<u64> {
+            if self.counts.fetch_add(1, Ordering::SeqCst) >= 2 {
+                anyhow::bail!("synthetic store failure");
+            }
+            self.inner.count_events(goal_id).await
+        }
+        async fn list_recent_events(
+            &self,
+            goal_id: &str,
+            limit: usize,
+        ) -> anyhow::Result<Vec<GoalEvent>> {
+            self.inner.list_recent_events(goal_id, limit).await
+        }
+        async fn latest_event_of_kind(
+            &self,
+            goal_id: &str,
+            kind: &str,
+        ) -> anyhow::Result<Option<GoalEvent>> {
+            self.inner.latest_event_of_kind(goal_id, kind).await
+        }
+        async fn latest_event_with_status(
+            &self,
+            goal_id: &str,
+            status: GoalStatus,
+        ) -> anyhow::Result<Option<GoalEvent>> {
+            self.inner.latest_event_with_status(goal_id, status).await
+        }
+        async fn has_event_of_kind_since(
+            &self,
+            goal_id: &str,
+            kind: &str,
+            since: chrono::DateTime<chrono::Utc>,
+        ) -> anyhow::Result<bool> {
+            self.inner
+                .has_event_of_kind_since(goal_id, kind, since)
+                .await
+        }
+        async fn claim_lease(
+            &self,
+            owner: &str,
+            ttl: Duration,
+        ) -> anyhow::Result<tact::store::goal_store::LeaseToken> {
+            self.inner.claim_lease(owner, ttl).await
+        }
+        async fn heartbeat_lease(
+            &self,
+            token: &tact::store::goal_store::LeaseToken,
+            ttl: Duration,
+        ) -> anyhow::Result<tact::store::goal_store::LeaseToken> {
+            self.inner.heartbeat_lease(token, ttl).await
+        }
+        async fn release_lease(
+            &self,
+            token: &tact::store::goal_store::LeaseToken,
+        ) -> anyhow::Result<()> {
+            self.inner.release_lease(token).await
+        }
+        async fn start_run(
+            &self,
+            owner: &str,
+            ttl: Duration,
+            run: GoalRun,
+        ) -> anyhow::Result<(tact::store::goal_store::LeaseToken, GoalRun)> {
+            self.inner.start_run(owner, ttl, run).await
+        }
+        async fn finish_run(
+            &self,
+            token: &tact::store::goal_store::LeaseToken,
+            run: GoalRun,
+        ) -> anyhow::Result<GoalRun> {
+            self.inner.finish_run(token, run).await
+        }
+        async fn finish_run_and_transition(
+            &self,
+            token: &tact::store::goal_store::LeaseToken,
+            run: GoalRun,
+            transitions: Vec<(GoalUpdate, GoalEvent)>,
+            run_event: GoalEvent,
+        ) -> anyhow::Result<(GoalRun, Goal)> {
+            self.inner
+                .finish_run_and_transition(token, run, transitions, run_event)
+                .await
+        }
+        async fn list_running_runs(&self) -> anyhow::Result<Vec<GoalRun>> {
+            self.inner.list_running_runs().await
+        }
+        async fn recover_expired_active_runs(&self) -> anyhow::Result<Vec<GoalRun>> {
+            self.inner.recover_expired_active_runs().await
+        }
+    }
+
     #[tokio::test]
     async fn run_once_restores_previous_goal_binding() {
         install_test_config();
@@ -1733,7 +2125,23 @@ mod tests {
             occurred_at: chrono::Utc::now(),
         });
 
-        let context = build_goal_context(&goal, std::slice::from_ref(&task), &events);
+        // The caller resolves the two lookups with targeted queries; the test
+        // resolves them from the same fixture the way those queries would.
+        let latest_progress = events.last().cloned();
+        let pause_reason = events
+            .iter()
+            .rev()
+            .find(|event| event.status == Some(GoalStatus::Paused))
+            .cloned();
+        let context = build_goal_context(
+            &goal,
+            std::slice::from_ref(&task),
+            &GoalContextEvents {
+                recent: events,
+                latest_progress,
+                pause_reason,
+            },
+        );
 
         for label in [
             "<goal-context>",

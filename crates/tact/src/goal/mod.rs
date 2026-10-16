@@ -517,7 +517,15 @@ fn is_legal_transition(from: GoalStatus, to: GoalStatus) -> bool {
         ),
         WaitingUser | WaitingPermission => matches!(to, Running | Paused | Cancelled),
         Paused => matches!(to, Running | Queued | Cancelled),
-        Verifying => matches!(to, Succeeded | Running | WaitingUser | Failed | Cancelled),
+        // `Verifying` allows `Paused` / `WaitingPermission` like every other
+        // non-terminal state: the AcceptGoal path writes `Verifying` and
+        // `Succeeded` as two separate updates, and a pause in that window used
+        // to error out while the Goal advanced to `Succeeded` anyway
+        // (2026-10-16).
+        Verifying => matches!(
+            to,
+            Succeeded | Running | WaitingUser | WaitingPermission | Paused | Failed | Cancelled
+        ),
         Succeeded | Failed | Cancelled => false,
     }
 }
@@ -669,6 +677,43 @@ impl GoalManager {
     pub async fn list_events(&self, id: &str) -> anyhow::Result<Vec<GoalEvent>> {
         self.store.list_events(id).await
     }
+    /// Counts a Goal's events — the progress gate's cheap probe.
+    pub async fn count_events(&self, id: &str) -> anyhow::Result<u64> {
+        self.store.count_events(id).await
+    }
+    /// Lists the most recent `limit` events, oldest first.
+    pub async fn list_recent_events(
+        &self,
+        id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<GoalEvent>> {
+        self.store.list_recent_events(id, limit).await
+    }
+    /// The most recent event of one kind, if any.
+    pub async fn latest_event_of_kind(
+        &self,
+        id: &str,
+        kind: &str,
+    ) -> anyhow::Result<Option<GoalEvent>> {
+        self.store.latest_event_of_kind(id, kind).await
+    }
+    /// The most recent event carrying one status, if any.
+    pub async fn latest_event_with_status(
+        &self,
+        id: &str,
+        status: GoalStatus,
+    ) -> anyhow::Result<Option<GoalEvent>> {
+        self.store.latest_event_with_status(id, status).await
+    }
+    /// Whether an event of one kind exists at or after `since`.
+    pub async fn has_event_of_kind_since(
+        &self,
+        id: &str,
+        kind: &str,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<bool> {
+        self.store.has_event_of_kind_since(id, kind, since).await
+    }
     /// Claims the singleton execution lease for a bounded TTL.
     pub async fn claim_lease(
         &self,
@@ -779,6 +824,43 @@ impl SharedGoalManager {
     /// Lists append-only events for a Goal in occurrence order.
     pub async fn list_events(&self, id: &str) -> anyhow::Result<Vec<GoalEvent>> {
         self.inner.list_events(id).await
+    }
+    /// Counts a Goal's events — the progress gate's cheap probe.
+    pub async fn count_events(&self, id: &str) -> anyhow::Result<u64> {
+        self.inner.count_events(id).await
+    }
+    /// Lists the most recent `limit` events, oldest first.
+    pub async fn list_recent_events(
+        &self,
+        id: &str,
+        limit: usize,
+    ) -> anyhow::Result<Vec<GoalEvent>> {
+        self.inner.list_recent_events(id, limit).await
+    }
+    /// The most recent event of one kind, if any.
+    pub async fn latest_event_of_kind(
+        &self,
+        id: &str,
+        kind: &str,
+    ) -> anyhow::Result<Option<GoalEvent>> {
+        self.inner.latest_event_of_kind(id, kind).await
+    }
+    /// The most recent event carrying one status, if any.
+    pub async fn latest_event_with_status(
+        &self,
+        id: &str,
+        status: GoalStatus,
+    ) -> anyhow::Result<Option<GoalEvent>> {
+        self.inner.latest_event_with_status(id, status).await
+    }
+    /// Whether an event of one kind exists at or after `since`.
+    pub async fn has_event_of_kind_since(
+        &self,
+        id: &str,
+        kind: &str,
+        since: chrono::DateTime<chrono::Utc>,
+    ) -> anyhow::Result<bool> {
+        self.inner.has_event_of_kind_since(id, kind, since).await
     }
     /// Appends a Goal event without changing the aggregate.
     pub async fn append_event(&self, event: GoalEvent) -> anyhow::Result<GoalEvent> {

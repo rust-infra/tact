@@ -223,9 +223,38 @@ impl TaskStore for SqliteTaskStore {
         let rows = sqlx::query("SELECT id, subject, description, session_id, status, owner, created_at, started_at, completed_at, goal_id FROM tasks WHERE goal_id = ? AND status != 'deleted' ORDER BY id")
             .bind(goal_id).fetch_all(&*self.pool).await?;
         let mut tasks = rows.iter().map(row_to_task).collect::<Result<Vec<_>>>()?;
+
+        // Assemble dependency edges in one pass, like `list()`: the N+1 of two
+        // `edges()` queries per task ran on every Goal activation cycle
+        // (2026-10-16). Edges touching *any* task of the goal are selected —
+        // the anchor is filtered into the result set below — so cross-goal
+        // edges keep appearing on the anchor's side exactly as before.
+        let edge_rows = sqlx::query(
+            "SELECT blocker_id, blocked_id FROM task_dependencies \
+             WHERE blocker_id IN (SELECT id FROM tasks WHERE goal_id = ?) \
+                OR blocked_id IN (SELECT id FROM tasks WHERE goal_id = ?)",
+        )
+        .bind(goal_id)
+        .bind(goal_id)
+        .fetch_all(&*self.pool)
+        .await?;
+        let mut pos: std::collections::HashMap<u64, usize> = std::collections::HashMap::new();
+        for (i, task) in tasks.iter().enumerate() {
+            pos.insert(task.id, i);
+        }
+        for row in edge_rows {
+            let blocker = row.try_get::<i64, _>("blocker_id")? as u64;
+            let blocked = row.try_get::<i64, _>("blocked_id")? as u64;
+            if let Some(&i) = pos.get(&blocker) {
+                tasks[i].blocks.push(blocked);
+            }
+            if let Some(&j) = pos.get(&blocked) {
+                tasks[j].blocked_by.push(blocker);
+            }
+        }
         for task in &mut tasks {
-            task.blocked_by = self.edges(task.id, EdgeDir::BlockedBy).await?;
-            task.blocks = self.edges(task.id, EdgeDir::Blocks).await?;
+            task.blocks.sort_unstable();
+            task.blocked_by.sort_unstable();
         }
         Ok(tasks)
     }
@@ -622,6 +651,57 @@ mod tests {
         let listed = store.list_for_goal(&goal.id).await.unwrap();
         assert_eq!(listed[0].blocks, vec![blocked.id]);
         assert_eq!(listed[1].blocked_by, vec![blocker.id]);
+    }
+
+    /// The one-pass edge assembly keeps cross-goal edges on the anchor's side
+    /// exactly as the per-task `edges()` queries did: a blocker outside the
+    /// goal still shows up in the blocked task's `blocked_by`, and only the
+    /// goal's own tasks are listed (2026-10-16).
+    #[tokio::test]
+    async fn list_for_goal_keeps_cross_goal_edges_on_the_anchor() {
+        let db = temp_db("goal_cross_edges");
+        let goals = crate::store::goal_store::SqliteGoalStore::new(&db)
+            .await
+            .unwrap();
+        let goal = crate::goal::Goal::new(crate::goal::GoalCreate {
+            title: "goal".into(),
+            objective: "objective".into(),
+            constraints: vec![],
+            criteria: vec![crate::goal::GoalCriterion::required("done")],
+        })
+        .unwrap();
+        goals.create(goal.clone()).await.unwrap();
+        let store = SqliteTaskStore::new(&db).await.unwrap();
+        let in_goal = store
+            .create_for_goal("in goal".into(), None, String::new(), goal.id.clone())
+            .await
+            .unwrap();
+        let outside = store
+            .create("outside".into(), None, String::new())
+            .await
+            .unwrap();
+        store
+            .update(
+                outside.id,
+                TaskUpdate {
+                    add_blocks: vec![in_goal.id],
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+
+        let listed = store.list_for_goal(&goal.id).await.unwrap();
+        assert_eq!(listed.len(), 1, "only the goal's own task is listed");
+        assert_eq!(
+            listed[0].blocked_by,
+            vec![outside.id],
+            "a cross-goal blocker still appears in the anchor's blocked_by"
+        );
+        assert!(
+            listed[0].blocks.is_empty(),
+            "the outside task is not listed here"
+        );
     }
     #[tokio::test]
     async fn duplicate_dependency_edges_are_ignored() {

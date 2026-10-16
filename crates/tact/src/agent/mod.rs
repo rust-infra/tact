@@ -1581,6 +1581,21 @@ impl Agent {
             }
             self.runtime.recovery_state.continuation_attempts = 0;
 
+            // A cancel that arrived while this response was streaming still
+            // wins: every arm below would otherwise book the response — and a
+            // Goal completion proposal with it — against a Goal the user just
+            // cancelled. The loop-top check ran before the model call, so a
+            // press mid-stream is only visible here (2026-10-16).
+            if self.cancel_requested() {
+                self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
+                self.abandon_pending_tools(&content, tool_dispatch::TOOL_CANCELLED_MSG)
+                    .await?;
+                return Ok(finish(
+                    AgentLoopStop::Cancelled,
+                    self.turns_taken,
+                    tool_calls,
+                ));
+            }
             // Stop-reason handling follows Anthropic guidance:
             // https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons
             // - end_turn / stop_sequence → finish
@@ -5936,6 +5951,56 @@ mod tests {
             .expect("a cancelled loop returns Ok");
 
         assert_eq!(outcome.stop, AgentLoopStop::Cancelled);
+    }
+
+    /// The loop-top cancel check runs *before* the model call, so a press that
+    /// arrives while the final response is still streaming is only visible to
+    /// the stop-reason arms — which must not book the response (and a Goal
+    /// completion proposal with it) against a Goal the user just cancelled
+    /// (2026-10-16).
+    #[tokio::test]
+    async fn agent_loop_detailed_reports_cancelled_when_the_flag_arrives_mid_response() {
+        ensure_config();
+        let context = test_context("agent_loop_detailed_cancel_mid_response");
+        // The flag only becomes reachable once the agent exists, so the mock
+        // reads it out of a slot the test fills afterwards.
+        let flag_slot: std::sync::Arc<
+            std::sync::Mutex<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>>,
+        > = std::sync::Arc::new(std::sync::Mutex::new(None));
+        let slot = flag_slot.clone();
+        let mock = MockClient::with_responder(move |_request, _idx| {
+            if let Some(flag) = slot.lock().unwrap().as_ref() {
+                flag.store(true, std::sync::atomic::Ordering::SeqCst);
+            }
+            Ok((
+                vec![make_text_block("done")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+        *flag_slot.lock().unwrap() = Some(agent.tool_context.cancel_flag.clone());
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .expect("a cancelled loop returns Ok");
+
+        assert_eq!(
+            outcome.stop,
+            AgentLoopStop::Cancelled,
+            "a cancel that lands mid-stream must beat the EndTurn classification"
+        );
     }
 
     #[tokio::test]

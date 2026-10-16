@@ -493,20 +493,21 @@ async fn goal_snapshots_with(
             continue;
         }
         let tasks = task_manager.list_for_goal(&goal.id).await?;
-        let events = goal_manager.list_events(&goal.id).await?;
-        let wait_reason = events
-            .iter()
-            .rev()
-            .find(|event| {
-                event.status == Some(goal.status)
-                    && matches!(
-                        goal.status,
-                        GoalStatus::WaitingUser
-                            | GoalStatus::WaitingPermission
-                            | GoalStatus::Paused
-                    )
-            })
-            .and_then(|event| event.payload.clone());
+        // The wait reason is only ever asked of a Goal that is *in* a waiting
+        // or paused state, and the answer is one targeted query — so a Goal
+        // that is running costs no event read at all, and a waiting one costs
+        // one row instead of its whole history (2026-10-16).
+        let wait_reason = if matches!(
+            goal.status,
+            GoalStatus::WaitingUser | GoalStatus::WaitingPermission | GoalStatus::Paused
+        ) {
+            goal_manager
+                .latest_event_with_status(&goal.id, goal.status)
+                .await?
+                .and_then(|event| event.payload)
+        } else {
+            None
+        };
         let criteria: Vec<_> = goal
             .criteria
             .iter()
