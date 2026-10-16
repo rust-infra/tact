@@ -45,6 +45,14 @@ pub enum GoalStatus {
     Queued,
     Running,
     WaitingUser,
+    /// Waiting on the permission system for a decision.
+    ///
+    /// Reserved: nothing writes it today. The permission gate decides on its own
+    /// when no UI is attached (`ask_user` denies high-risk capabilities and
+    /// allows the rest), and an interactive prompt is answered inside the
+    /// activation, so a blocked activation never parks the Goal here. It stays in
+    /// the state machine for a future permission-aware stop reason
+    /// (see `book/28_chapter_goal_zh.md` §12).
     WaitingPermission,
     Paused,
     Verifying,
@@ -73,15 +81,31 @@ pub enum GoalPhase {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GoalRunOutcome {
+    /// The run advanced the Goal and left something observable behind (an
+    /// executed tool call or a new Goal event). Followed by another cycle while
+    /// the run's budget lasts.
     #[default]
     ProgressMade,
+    /// A Goal tool asked the Runner to hand control back to the user.
     NeedsUser,
+    /// Reserved: nothing produces it today. The permission gate decides on its
+    /// own when no UI is attached, so an activation is never parked on a
+    /// permission question (see `GoalStatus::WaitingPermission`).
     NeedsPermission,
+    /// The model proposed completion; verification decides what happens next.
     CompletionProposed,
+    /// The run's cumulative budget (turns / tool calls / wall clock) is spent.
     BudgetExhausted,
+    /// The run ended without leaving anything observable behind: the activation
+    /// only produced text, so another cycle would re-read the same context. The
+    /// Goal stays `Running` for the next activation.
     NoProgress,
+    /// A user cancel request stopped the run.
     Cancelled,
+    /// An activation error that may pass on a retry; the Goal keeps its status.
     TransientError,
+    /// A hard failure that cannot be retried, such as a hook blocking the
+    /// activation before its first model call.
     FatalError,
 }
 

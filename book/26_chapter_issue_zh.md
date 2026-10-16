@@ -4,6 +4,30 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-15 — Goal Runner 链路修复：预算改按累计刻度、单 Run 多周期、hook 阻断终态、文档与状态机对齐
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：Goal 终于会真的开始干活——此前任何"热身"会话里的 activation 都会在第一次迭代就被判预算耗尽并暂停；一次 `/goal resume` 现在会连续推进多个周期直到 Run 预算用完；hook 阻断的 Goal 明确终态为 `failed`，不再停留在 `running`） |
+| **Related** | `crates/tact-ui/src/goal_runner.rs`、`crates/tact/src/goal/mod.rs`、`book/28_chapter_goal_zh.md` |
+
+**现象 / 动机：** 手工驱动的 Goal 全部"一开跑就结束"。DB 里两条 Goal（`0443a985-…`、`03a4caef`）的 Run 记录逐字段同形：`turns_used=1`、`tool_calls_used=0`、`tokens_used=0`、`elapsed_ms=1`/`13`、`stop_reason=max_turns`、`outcome=budget_exhausted`，事件为 `Running: run ended as BudgetExhausted` 后转 `paused`。1–13ms 且 0 token 说明**连一次模型调用都没发生**：`agent_loop_detailed` 的 turn cap 是在模型调用之前判断的，而它比较的是 `Agent::turns_taken`——一个**进程生命周期累计**计数器（`agent_loop_detailed` 只回报 delta），却在 `922635fa` 的"H2：给单次 activation 加上限"里被赋成了裸的 per-activation 预算（24）。于是任何已经跑过 24 turn 的会话，activation 第一轮就 `25 > 24` → `MaxTurns`。Subagent 不受影响，因为它拿到的是新 Agent（计数从 0 起）；所有 runner 测试也都从 `turns_taken == 0` 开始，所以整套测试是绿的。
+
+同一次 review 还发现三处链路缺口：Run 只有一次 activation（Ch28 §5 流程图里"有进展 → 回到 load"那条边在代码里不存在）；`BlockedByHook → (FatalError, 空转换)` 让硬失败把 Goal 留在 `running`；`NoProgress` 无生产者、`waiting_permission`/`needs_permission` 无生产者却写在文档里。
+
+**决策：**
+
+1. **预算按累计刻度表达**：Runner 传给循环的是 `agent.turns_taken + limits.max_turns`，而不是裸预算——因为 `max_turns` 约束的就是那个累计计数器。补一条预热回归测试（`turns_taken = 500` 后仍必须拿到完整 activation）。
+2. **一次 Run = 一个 lease 周期 + 多个 activation**：`run_with_lease` 内循环，只有上一个 activation 留下**可观察进展**（执行过工具调用，或追加过 Goal 事件）且 Run 的累计预算仍有剩余时才续跑；预算按 `turns_used`/`tool_calls_used`/`elapsed_ms` 跨周期累加到**同一条** Run，一次收尾事务。周期数天然有界（每周期至少一次模型调用），因此没有引入新上限。
+3. **无进展如实记录**：只有文字的周期产出 `no_progress` 并结束 Run，Goal 保持 `running`，不再假报 `progress_made`；`NoProgress` 由此获得生产者。`BlockedByHook` 改为终态 `failed`（`Running → Failed` 本就是合法转换）。
+4. **保留项如实标注**：`waiting_permission` / `needs_permission` 保留在状态机与 outcome 里，但代码注释与 §12 都写明**当前没有生产者**——非交互模式下权限门自行裁决（高风险拒绝、其余放行），交互式弹窗在 activation 内被回答，activation 不会被权限问题挂住。
+
+**改后行为：** `/goal create` / `/goal resume` 会真正调用模型并连续推进多个周期（每个 activation 24 turn 上限，Run 累计 24 turns / 60 次工具调用 / 600 秒），用完预算转 `paused` 并留下 checkpoint 与用量；只汇报不干活的周期以 `no_progress` 结束、Goal 保持 `running`；被 hook 拦住的 activation 让 Goal 终态 `failed`。
+
+**Verification：** `cargo test -p tact-ui --lib`（100）全绿，其中新增 `run_once_gives_a_warm_session_a_full_activation`（预热会话仍拿到模型调用、`stop_reason=completed`）与 `run_once_cycles_while_the_goal_makes_observable_progress`（4 次模型调用 = 2 个周期、仅 1 条 `run_finished` 事件、`turns_used=4` 累计）；`run_once_blocked_by_hook_…` 断言改为终态 `Failed`。`./scripts/check-rust.sh` 全绿。
+
+**Pointers:** [Agent Goal](./28_chapter_goal_zh.md) §3/§5/§7/§12、`GoalRunner::run_with_lease`、`GoalLimits::permit_activation`、`AgentLoopStop::MaxTurns`、`Agent::turns_taken`、[链路 review](../docs/reviews/2026-10-15-goal-runner-chain-review.md)。
+
 ## 1. 2026-10-15 — Goal 域标识符从完整 UUID 换成 8 位短 ID（Goal / 标准 / Run / Event）
 
 | Field | Value |

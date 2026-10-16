@@ -71,7 +71,7 @@ draft → queued → running → verifying → succeeded
 | `queued` | 用户已确认，等待 Runner 获得执行 lease |
 | `running` | Runner 持有 lease，Agent 正在推进工作 |
 | `waiting_user` | 需要用户补充信息、决定方向或完成人工验收 |
-| `waiting_permission` | 当前操作需要现有权限系统处理；无 UI 的环境必须暂停等待，不能等待不存在的 responder |
+| `waiting_permission` | 保留状态，当前没有生产者（见 §12）：非交互模式下权限门自行裁决，交互式弹窗在 activation 内被回答 |
 | `paused` | 用户暂停、预算耗尽、无进展保护或可恢复错误导致暂停 |
 | `verifying` | Agent 已提交完成提议，必需验收项正在核验 |
 | `succeeded` | 所有必需验收条件均有有效证据并通过 |
@@ -88,6 +88,8 @@ budget_exhausted | no_progress | cancelled | transient_error | fatal_error
 ```
 
 Runner 根据 outcome、任务图、验收状态和预算决定状态转移。暂停、等待和 run 结束都要先落库，再通知 UI。
+
+当前真正会被写出的 outcome：`progress_made`（有可观察进展，继续下一周期）、`no_progress`（只说了话、没做可观察的事，本次 Run 结束、Goal 保持 `running`）、`budget_exhausted`、`completion_proposed`、`needs_user`、`cancelled`、`transient_error`、`fatal_error`。`needs_permission` 与状态 `waiting_permission` 一样属于保留项（见 §12）。
 
 ---
 
@@ -171,18 +173,21 @@ flowchart TD
     run --> agent[Agent 执行一个受控周期]
     agent --> outcome{Run outcome}
     outcome -->|有进展且仍可执行| load
-    outcome -->|需要用户 / 权限| wait[持久化 waiting 状态并释放 lease]
+    outcome -->|需要用户| wait[持久化 waiting_user 并释放 lease]
     outcome -->|完成提议| verify[Runner 执行验收]
     verify -->|通过| success[succeeded]
     verify -->|失败且可继续| load
     verify -->|需人工确认| wait
-    outcome -->|预算耗尽 / 无进展 / 可恢复错误| pause[持久化 paused 并释放 lease]
+    outcome -->|无进展| keep[Run 结束，Goal 保持 running]
+    outcome -->|预算耗尽| pause[持久化 paused 并释放 lease]
     outcome -->|取消 / 不可恢复失败| terminal[cancelled / failed]
 ```
 
 Agent loop 仍负责单次模型交互、工具 dispatch、hooks、权限、会话消息与 compaction。Goal 模式额外返回显式的 yield outcome；普通对话维持原有任务语义。
 
-每个新周期开始时，Runner 注入精简且权威的 Goal 上下文：目标、硬约束、验收标准摘要、关联 Task 状态、最近 checkpoint 和暂停原因。完整事件历史按需查询，不应每轮无界地注入 prompt。上下文应以明确标签与边界传递，不能让来自历史/tool output 的内容覆盖用户约束。
+**一次 Run 是"一个 lease 周期 + 一到多个受限 activation"**：`GoalRunner::run_with_lease` 在同一个 Run 内循环执行 activation，只有上一个 activation 留下可观察进展（执行过工具调用或追加过 Goal 事件）且 Run 的累计预算仍有剩余时才进入下一个周期；否则以 `progress_made` / `no_progress` 结束该 Run。所有周期共享同一条 Run 记录、同一次 lease 和同一次收尾事务——不会每个周期各写一条 Run。
+
+每个新周期开始时，Runner 都重新注入精简且权威的 Goal 上下文：目标、硬约束、验收标准摘要、关联 Task 状态、最近 checkpoint 和暂停原因（Goal 工具在周期内追加的 checkpoint/事件，下一个周期就能看到）。完整事件历史按需查询，不应每轮无界地注入 prompt。上下文应以明确标签与边界传递，不能让来自历史/tool output 的内容覆盖用户约束。
 
 Agent 可报告 checkpoint、提出 Task 变更、请求用户输入、请求权限或提交完成提议；Goal 状态的最终写入权归 Runner/GoalManager。Subagent 可继承只读 Goal 摘要；只有明确委派的任务可以在父 Goal 范围内推进，子 Agent 不得直接结束或重开 Goal。
 
@@ -205,9 +210,11 @@ Agent 可报告 checkpoint、提出 Task 变更、请求用户输入、请求权
 
 ### 预算与进展保护
 
-每次 Runner activation 有 turn、墙钟时间和工具调用上限。当前默认值为 24 turns、60 次工具调用和 600 秒墙钟时间；达到上限后保存 checkpoint、用量和 stop reason，进入 `paused`。这些限制由 `GoalLimits` 集中定义。
+**一次 Run 由一到多个受限 activation 组成。** 每个 activation 的 turn 上限是 24（`GoalLimits::max_turns`），由 `agent_loop` 自己的 turn cap 在运行中强制；一个 activation 结束后，只有它在**可观察进展**（执行过工具调用，或追加过 Goal 事件——checkpoint、Task 关联、证据）且 Run 的累计预算仍有剩余时，Runner 才接着跑下一个 activation。纯文本回合（模型只说话、没有落地动作）结束本次 Run。
 
-无进展检测应依赖可观察变化，例如 Task 状态、验收证据、有效 checkpoint 或工作树差异，而不只依赖模型自述。连续若干周期无可观察进展时暂停并向用户报告；单次失败或偶发网络错误不应立即判定 Goal 失败。
+Run 的累计预算同样是 `GoalLimits` 的 24 turns / 60 次工具调用 / 600 秒墙钟时间，跨 activation 累加到同一条 Run 记录上；达到上限时保存 checkpoint、用量和 stop reason，Goal 进入 `paused`。因为累计预算是按 turn 计的，周期数天然有界（每个周期至少消耗一次模型调用）。注意 `Agent::max_turns` 约束的是**进程累计**的 `turns_taken`，所以 Runner 传给循环的是「当前累计值 + 本次预算」，而不是裸的预算数字。
+
+无进展检测只依赖可观察变化（工具调用、Goal 事件），不依赖模型自述：只有文字的周期记为 `no_progress` 并结束本次 Run，Goal 保持 `running` 等待下一次 activation——它不会因此被暂停，也不会被误记成 `progress_made`。单次失败或偶发网络错误同样不判定 Goal 失败：activation 报错记为 `transient_error` 并结束 Run，Goal 状态不变。
 
 ### Lease 与写入隔离
 
@@ -280,6 +287,10 @@ Headless 与交互式模式共用同一个 GoalRunner 和状态机。Headless �
 
 - `/goal create` 的文本命令只提供默认人工作用标准；复杂的自动标准仍需通过 API/领域层创建。
 - `/goal resume <id>` 既用于恢复 `paused` / `waiting_user` / `waiting_permission` 的 Goal，也用于推进 `draft` / `queued`；终态（`succeeded` / `failed` / `cancelled`）不能直接继续。
+- `waiting_permission` 目前**没有生产者**：非交互模式下权限门自行裁决（高风险拒绝、其余放行），交互式弹窗在 activation 内被回答，因此被权限挡住的 activation 不会把 Goal 停在该状态。该状态保留在状态机里，供将来"权限感知的停止原因"使用。
+- 一个 Run 以 `progress_made` 结束时 Goal 仍是 `running`（没有活动 Run）。此时没有自动的下一周期——下一个 activation 由 `/goal resume` 或下一次进程启动后的恢复逻辑（`running` 且无活动 Run → `paused`）接管。
+- 一次 `/goal resume` 会跑到该 Run 的累计预算用完（或达到验收/等待用户等终态）为止；`running` 但空闲的 Goal 表示"上一次 Run 用完了预算或没有可观察进展"，继续推进仍是显式操作。
+- `needs_permission`（run outcome）与 `waiting_permission`（状态）一样是保留项，没有生产者，原因见上。
 - 当前协议提供完整 Goal 集合快照，没有单独的 `GoalRunChanged` 增量事件；运行预算在活动 run 中展示，完成 run 的详细审计保存在事件表。
 - Goal sticky panel 提供状态、预算、Task 进度、验收摘要、等待原因和标准列表；具体标准操作仍通过 `/goal accept` 等命令完成。
 

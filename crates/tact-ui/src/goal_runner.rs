@@ -512,20 +512,16 @@ impl GoalRunner {
             .await
             .with_context(|| format!("failed to start a goal run for {}", goal.id))?;
 
-        // Step 4: bind the Goal for this activation and inject the authoritative,
-        // bounded context. Binding is what makes the Goal tools reachable - and
-        // therefore what makes the `NeedsUser` path possible at all.
-        let linked_tasks = agent
-            .tool_context
-            .task_manager
-            .list_for_goal(&goal.id)
-            .await
-            .unwrap_or_default();
-        let history = self.goal_manager.list_events(&goal.id).await?;
-        let injected = build_goal_context(&goal, &linked_tasks, &history);
+        // Step 4: bind the Goal for this run. Binding is what makes the Goal
+        // tools reachable - and therefore what makes the `NeedsUser` path
+        // possible at all. The injected context is rebuilt per cycle (step 5):
+        // the Goal tools append checkpoints and events as they work, so a later
+        // cycle must see them.
         agent.tool_context.active_goal_id = Some(goal.id.clone());
 
-        // Step 5: one bounded activation.
+        // Step 5: bounded activations, until the run's budget is spent, the Goal
+        // stops leaving observable progress behind, or one activation decides
+        // the run's outcome (needs user, verified, cancelled, ...).
         //
         // The loop's own turn cap is the only enforcement that can stop a
         // runaway activation *while it runs* — `permit_activation` below only
@@ -533,67 +529,106 @@ impl GoalRunner {
         // consume unbounded turns and tool calls. The caller's cap is restored
         // afterwards so a Goal activation never leaks its budget into the
         // surrounding session.
+        //
+        // `Agent::max_turns` caps the *cumulative* `turns_taken` counter, which
+        // lives on the agent for its whole process (`agent_loop_detailed` only
+        // reports a delta against it), so this activation's budget has to be
+        // expressed on that same scale. Handing the loop the raw per-activation
+        // number instead made a warm session — one that had already taken that
+        // many turns — stop on the first iteration and pause the Goal having
+        // done nothing at all (2026-10-15).
         let previous_max_turns = agent.max_turns;
-        agent.max_turns = Some(self.limits.max_turns);
         let started = Instant::now();
-        let activation = agent
-            .agent_loop_detailed(Some(Message::new_text(Role::User, injected)))
-            .await;
-        let elapsed = started.elapsed();
-        agent.max_turns = previous_max_turns;
+        let (run_outcome, transitions) = loop {
+            // Reload per cycle: Goal tools mutate the aggregate as they work
+            // (evidence, criteria), and the injected context is supposed to be
+            // authoritative rather than a snapshot from the start of the run.
+            goal = self.goal_manager.get(&goal.id).await?;
+            let linked_tasks = agent
+                .tool_context
+                .task_manager
+                .list_for_goal(&goal.id)
+                .await
+                .unwrap_or_default();
+            let history = self.goal_manager.list_events(&goal.id).await?;
+            let events_before = history.len();
+            let injected = build_goal_context(&goal, &linked_tasks, &history);
 
-        let activation = match activation {
-            Ok(activation) => activation,
-            Err(error) => {
-                // Never leave a run `running` behind an activation error.
-                run.elapsed_ms = millis(elapsed);
-                run.stop_reason = Some("activation_error".to_string());
-                run.checkpoint = Some(format!(
-                    "activation failed before it reported a stop reason: {}",
-                    one_line(&error.to_string())
-                ));
-                run.finish(GoalRunOutcome::TransientError);
-                // One transaction: the run can never be left `running` behind a
-                // failed activation, and its outcome is recorded with it.
-                let event = finished_run_event(
-                    &goal.id,
-                    goal.status,
-                    &run,
-                    GoalRunOutcome::TransientError,
-                    None,
-                );
-                if let Err(bookkeeping) = self
-                    .goal_manager
-                    .finish_run_and_transition(token, run, Vec::new(), event)
-                    .await
-                {
-                    return Err(error.context(format!(
-                        "a failed goal run could not be finished: {bookkeeping:#}"
-                    )));
+            agent.max_turns = Some(agent.turns_taken.saturating_add(self.limits.max_turns));
+            let activation = agent
+                .agent_loop_detailed(Some(Message::new_text(Role::User, injected)))
+                .await;
+            agent.max_turns = previous_max_turns;
+
+            let activation = match activation {
+                Ok(activation) => activation,
+                Err(error) => {
+                    // Never leave a run `running` behind an activation error.
+                    run.elapsed_ms = millis(started.elapsed());
+                    run.stop_reason = Some("activation_error".to_string());
+                    run.checkpoint = Some(format!(
+                        "activation failed before it reported a stop reason: {}",
+                        one_line(&error.to_string())
+                    ));
+                    run.finish(GoalRunOutcome::TransientError);
+                    // One transaction: the run can never be left `running` behind a
+                    // failed activation, and its outcome is recorded with it.
+                    let event = finished_run_event(
+                        &goal.id,
+                        goal.status,
+                        &run,
+                        GoalRunOutcome::TransientError,
+                        None,
+                    );
+                    if let Err(bookkeeping) = self
+                        .goal_manager
+                        .finish_run_and_transition(token, run, Vec::new(), event)
+                        .await
+                    {
+                        return Err(error.context(format!(
+                            "a failed goal run could not be finished: {bookkeeping:#}"
+                        )));
+                    }
+                    return Err(error);
                 }
-                return Err(error);
-            }
-        };
-
-        // Step 6: budget accounting. `max_elapsed` is checked around the
-        // activation, never as a mid-turn interrupt (see the module docs).
-        run.turns_used = u64::from(activation.turns);
-        run.tool_calls_used = activation.tool_calls;
-        run.elapsed_ms = millis(elapsed);
-        run.stop_reason = Some(stop_reason(activation.stop).to_string());
-        run.checkpoint = Some(checkpoint(&run, activation.stop));
-
-        // Step 7: map the budget and the stop variant to a run outcome and the
-        // Goal status changes it implies.
-        let (run_outcome, transitions) =
-            if !self
-                .limits
-                .permit_activation(activation.turns, activation.tool_calls, elapsed)
-            {
-                (GoalRunOutcome::BudgetExhausted, vec![GoalStatus::Paused])
-            } else {
-                self.map_stop(&goal, &run, activation.stop).await?
             };
+
+            // Step 6: budget accounting, accumulated over the whole run.
+            // `max_elapsed` is checked around and between activations, never as a
+            // mid-turn interrupt (see the module docs).
+            run.turns_used += u64::from(activation.turns);
+            run.tool_calls_used += activation.tool_calls;
+            run.elapsed_ms = millis(started.elapsed());
+            run.stop_reason = Some(stop_reason(activation.stop).to_string());
+            run.checkpoint = Some(checkpoint(&run, activation.stop));
+
+            // Step 7: map the budget and the stop variant to a run outcome and
+            // the Goal status changes it implies.
+            if !self.limits.permit_activation(
+                run.turns_used.min(u64::from(u32::MAX)) as u32,
+                run.tool_calls_used,
+                Duration::from_millis(run.elapsed_ms),
+            ) {
+                break (GoalRunOutcome::BudgetExhausted, vec![GoalStatus::Paused]);
+            }
+            let mapped = self.map_stop(&goal, &run, activation.stop).await?;
+            if mapped.0 == GoalRunOutcome::ProgressMade {
+                // Another cycle only when this activation left something for it to
+                // build on: an executed tool call, or a Goal event (a checkpoint, a
+                // task link, evidence) appended while it ran.
+                let events_after = self.goal_manager.list_events(&goal.id).await?.len();
+                if activation.tool_calls > 0 || events_after > events_before {
+                    continue;
+                }
+                // A cycle that produced only text is the model talking, not
+                // working: label the run honestly instead of claiming progress,
+                // and end it here rather than buying another model call that would
+                // re-read the same context. The Goal stays `Running` for the next
+                // activation.
+                break (GoalRunOutcome::NoProgress, mapped.1);
+            }
+            break mapped;
+        };
 
         run.finish(run_outcome);
         // Step 8: persist before notifying. The run row, every Goal transition
@@ -663,8 +698,11 @@ impl GoalRunner {
             }
             AgentLoopStop::Cancelled => (GoalRunOutcome::Cancelled, vec![GoalStatus::Cancelled]),
             // Blocked before the first model call: a hard failure, and the Goal
-            // must not silently succeed or look paused-by-budget.
-            AgentLoopStop::BlockedByHook => (GoalRunOutcome::FatalError, Vec::new()),
+            // must not silently succeed or look paused-by-budget. It is also
+            // terminal — nothing was attempted and a retry would be blocked the
+            // same way — so the Goal ends as `Failed` instead of being left
+            // `Running` with a finished run behind it (2026-10-15).
+            AgentLoopStop::BlockedByHook => (GoalRunOutcome::FatalError, vec![GoalStatus::Failed]),
             AgentLoopStop::Completed => self.map_completion(goal, run).await?,
         })
     }
@@ -967,11 +1005,11 @@ mod tests {
             .await
             .expect("run_once completes");
 
-        assert_eq!(outcome, GoalRunOutcome::ProgressMade);
+        assert_eq!(outcome, GoalRunOutcome::NoProgress);
         assert_eq!(
             manager.get(&goal.id).await.unwrap().status,
             GoalStatus::Running,
-            "a progress activation leaves the Goal running"
+            "an activation that only reported leaves the Goal running"
         );
         assert!(
             manager.list_running_runs().await.unwrap().is_empty(),
@@ -980,7 +1018,7 @@ mod tests {
         let events = manager.list_events(&goal.id).await.unwrap();
         let finished = run_finished_event(&events, "run_finished")
             .expect("the finished run is recorded as a durable Goal event");
-        assert_eq!(finished.outcome, Some(GoalRunOutcome::ProgressMade));
+        assert_eq!(finished.outcome, Some(GoalRunOutcome::NoProgress));
         assert!(finished.run_id.is_some(), "the event names its run");
         let summary = summary_of(finished);
         assert!(summary.contains("turns_used=1"), "{summary}");
@@ -1162,6 +1200,144 @@ mod tests {
                 .await
                 .is_ok(),
             "the activation lease is released"
+        );
+    }
+
+    /// The activation's turn budget is expressed on the agent's *cumulative*
+    /// `turns_taken` scale, so a warm session - one that already took far more
+    /// turns than one activation's budget - still gets a whole activation.
+    ///
+    /// Before 2026-10-15 the raw per-activation number went straight to the loop,
+    /// so any session past it stopped on the very first iteration: the Goal "ran"
+    /// for 13ms, spent no tokens, recorded `stop_reason=max_turns` and paused
+    /// itself. Every runner test started from `turns_taken == 0`, which is why
+    /// the suite stayed green.
+    #[tokio::test]
+    async fn run_once_gives_a_warm_session_a_full_activation() {
+        install_test_config();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        let mock = MockClient::with_responder(move |_request, idx| {
+            seen.fetch_max(idx + 1, Ordering::Relaxed);
+            Ok((
+                vec![text_block("done for now")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+        let (mut agent, _work_dir) = build_test_agent(mock, None);
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "warm session",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        // A session that has already run far past one activation's budget.
+        agent.turns_taken = 500;
+
+        let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
+        let outcome = runner.run_once(&mut agent, &goal.id).await.unwrap();
+
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            1,
+            "a warm session must still get its model call"
+        );
+        // The activation ran and only reported, so the run is labelled
+        // `no_progress` - not the budget-pause it used to fake.
+        assert_eq!(outcome, GoalRunOutcome::NoProgress);
+        assert_eq!(
+            manager.get(&goal.id).await.unwrap().status,
+            GoalStatus::Running,
+            "the Goal must not budget-pause itself on the first iteration"
+        );
+        let events = manager.list_events(&goal.id).await.unwrap();
+        let finished = run_finished_event(&events, "run_finished").expect("run recorded");
+        let summary = summary_of(finished);
+        assert!(summary.contains("stop_reason=completed"), "{summary}");
+    }
+
+    /// One run is made of several bounded activations while the Goal keeps
+    /// leaving observable progress behind: the run's budget is cumulative, so a
+    /// second cycle starts without another `/goal resume`, and both cycles stay
+    /// in one Run with a single finished-run event.
+    #[tokio::test]
+    async fn run_once_cycles_while_the_goal_makes_observable_progress() {
+        install_test_config();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let seen = calls.clone();
+        // Every even call executes a tool and every odd one ends the turn: each
+        // cycle does observable work and then reports, which is exactly the shape
+        // that earns another cycle. The script is unbounded on purpose - running
+        // past the budget is the failure this test exists to catch.
+        let mock = MockClient::with_responder(move |_request, idx| {
+            seen.fetch_max(idx + 1, Ordering::Relaxed);
+            Ok(if idx % 2 == 0 {
+                (
+                    vec![tool_use(
+                        &format!("goal-read-{idx}"),
+                        "goal_read",
+                        serde_json::json!({}),
+                    )],
+                    Some(StopReason::ToolUse),
+                    None,
+                )
+            } else {
+                (
+                    vec![text_block("cycle finished")],
+                    Some(StopReason::EndTurn),
+                    None,
+                )
+            })
+        });
+        let (mut agent, _work_dir) = build_test_agent(mock, None);
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "cycles",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        // Two calls per cycle, so a four-turn run covers exactly two cycles and
+        // the second one is what proves the loop re-entered on its own.
+        let runner = GoalRunner::new(
+            manager.clone(),
+            GoalLimits {
+                max_turns: 4,
+                ..GoalLimits::default()
+            },
+        );
+        let outcome = runner.run_once(&mut agent, &goal.id).await.unwrap();
+
+        assert_eq!(
+            calls.load(Ordering::Relaxed),
+            4,
+            "the second cycle must run without another command"
+        );
+        assert_eq!(outcome, GoalRunOutcome::BudgetExhausted);
+        assert_eq!(
+            manager.get(&goal.id).await.unwrap().status,
+            GoalStatus::Paused
+        );
+        let events = manager.list_events(&goal.id).await.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .filter(|event| event.kind == "run_finished")
+                .count(),
+            1,
+            "cycles share one run: they must not each record a finished run"
+        );
+        let finished = run_finished_event(&events, "run_finished").expect("run recorded");
+        let summary = summary_of(finished);
+        assert!(
+            summary.contains("turns_used=4"),
+            "the run's usage is cumulative over its cycles: {summary}"
         );
     }
 
@@ -1425,8 +1601,9 @@ mod tests {
         assert_eq!(outcome, GoalRunOutcome::FatalError);
         assert_eq!(
             manager.get(&goal.id).await.unwrap().status,
-            GoalStatus::Running,
-            "a hook-blocked activation must not silently succeed or pause"
+            GoalStatus::Failed,
+            "a hook-blocked activation is terminal: it must not silently succeed, \
+             pause, or be left Running with a finished run behind it"
         );
         assert!(
             manager.list_running_runs().await.unwrap().is_empty(),
