@@ -1551,7 +1551,7 @@ impl Agent {
                     tool_calls += outcome.executed_tool_calls;
                     self.runtime.goal_yield_reason = outcome.goal_yield;
                     if self.runtime.goal_yield_reason == Some(GoalYieldReason::NeedsUser) {
-                        self.emit_update(AgentUpdate::Info("[goal] waiting for user input".into()));
+                        self.emit_update(AgentUpdate::Info("🎯 waiting for user input".into()));
                         return Ok(finish(
                             AgentLoopStop::GoalYield(GoalYieldReason::NeedsUser),
                             self.turns_taken,
@@ -1661,7 +1661,7 @@ impl Agent {
             tool_calls += outcome.executed_tool_calls;
             self.runtime.goal_yield_reason = outcome.goal_yield;
             if self.runtime.goal_yield_reason == Some(GoalYieldReason::NeedsUser) {
-                self.emit_update(AgentUpdate::Info("[goal] waiting for user input".into()));
+                self.emit_update(AgentUpdate::Info("🎯 waiting for user input".into()));
                 return Ok(finish(
                     AgentLoopStop::GoalYield(GoalYieldReason::NeedsUser),
                     self.turns_taken,

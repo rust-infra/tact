@@ -1,4 +1,5 @@
 use agent_tui_kit::state::clamp_step;
+use tact_protocol::{GoalCriterionStatusSnapshot, GoalStatusSnapshot};
 
 use super::slash::{SlashCommand, Subcommand};
 
@@ -63,8 +64,10 @@ impl super::App {
     ///   the token under the cursor — plus, for `/skill`, every installed
     ///   skill, which is where skills are offered now that they are not
     ///   first-level entries;
-    /// - the walk landed on a verb that takes a value (`/skill disable `) → the
-    ///   skills that verb can act on, so it is picked rather than typed;
+    /// - the walk landed on a verb that takes a value (`/skill disable `,
+    ///   `/goal accept `) → the values that verb can act on — skills, or the
+    ///   Goal ids from the live panel — so the value is picked rather than
+    ///   typed;
     /// - anything else (`/code-reviewer fix`, `/mcp auth figma`) → nothing: the
     ///   rest is arguments, and there is nothing left to complete.
     pub(crate) fn slash_candidates(&self) -> Vec<Candidate> {
@@ -142,8 +145,9 @@ impl super::App {
     ///
     /// `/skill` is the one command whose children are not all static: every
     /// installed skill is one too, which is how skills reach the popup without
-    /// being first-level entries. And its two verbs are the one place where a
-    /// *value* is completable — see [`Self::skill_verb_candidates`].
+    /// being first-level entries. Two commands complete a *value* as well —
+    /// `/skill disable|enable <name>` and the `/goal <verb> <goal-id>` verbs —
+    /// see [`Self::value_candidates`].
     fn subcommand_candidates(
         &self,
         command: SlashCommand,
@@ -157,8 +161,8 @@ impl super::App {
         let mut path = command.name().to_string();
         let mut at_root = true;
         // The subcommand the walk landed on, when it expects a value. Only
-        // `/skill disable|enable` qualify, and they are how a *value* gets
-        // completed instead of typed blind.
+        // `/skill disable|enable` and the id-taking `/goal` verbs qualify, and
+        // they are how a *value* gets completed instead of typed blind.
         let mut value_sub: Option<&Subcommand> = None;
         for token in completed {
             // A skill is a child of `/skill` and a leaf: `/skill demo fix auth`
@@ -205,9 +209,104 @@ impl super::App {
         if at_root && command == SlashCommand::Skill {
             candidates.extend(self.skill_candidates(partial));
         } else if let Some(sub) = value_sub {
-            candidates.extend(self.skill_verb_candidates(&path, sub.name, partial));
+            candidates.extend(self.value_candidates(command, &path, sub.name, partial));
         }
         candidates
+    }
+
+    /// The values a verb can act on, when its argument is picked rather than
+    /// typed.
+    ///
+    /// Two commands complete a value and each filters its own list; anything
+    /// else answers nothing, which is the same "there is nothing left to
+    /// complete" answer `/mcp auth figma` gets.
+    fn value_candidates(
+        &self,
+        command: SlashCommand,
+        path: &str,
+        verb: &str,
+        partial: &str,
+    ) -> Vec<Candidate> {
+        match command {
+            SlashCommand::Skill => self.skill_verb_candidates(path, verb, partial),
+            SlashCommand::Goal => self.goal_verb_candidates(path, verb, partial),
+            _ => Vec::new(),
+        }
+    }
+
+    /// The Goals a `/goal <verb>` can act on, as `<path> <goal-id>` rows.
+    ///
+    /// The id is the one thing about a Goal that is *not* on screen — the
+    /// panel row shows the title and hides the id, and the log line that
+    /// announced it may be pages up — so every id-taking verb gets the live
+    /// panel snapshot as its candidate list, and a row is picked instead of
+    /// copied.
+    ///
+    /// Only the rows the verb can actually act on are offered, and the filter
+    /// is the store's transition table (`goal::is_legal_transition`) rather
+    /// than a guess:
+    ///
+    /// - `show` is a read, so every Goal qualifies, terminal ones included;
+    /// - `pause` is only legal from `queued` / `running` / `waiting_user` /
+    ///   `waiting_permission` — `draft`, `verifying` and an already-`paused`
+    ///   Goal would only get `InvalidTransition`;
+    /// - `cancel` and `steer` take any non-terminal Goal (a terminal one never
+    ///   runs again, so there would be nothing left to steer);
+    /// - `resume` is the driver's own three waiting states;
+    /// - `accept` needs `waiting_user` *and* a pending required human criterion
+    ///   — otherwise the driver can only answer "no pending required human
+    ///   criterion".
+    fn goal_verb_candidates(&self, path: &str, verb: &str, partial: &str) -> Vec<Candidate> {
+        use GoalStatusSnapshot::*;
+
+        let actionable: fn(&tact_protocol::GoalSnapshot) -> bool = match verb {
+            "show" => |_| true,
+            "pause" => |goal| {
+                matches!(
+                    goal.status,
+                    Queued | Running | WaitingUser | WaitingPermission
+                )
+            },
+            "cancel" | "steer" => |goal| !goal.status.is_terminal(),
+            "resume" => |goal| matches!(goal.status, Paused | WaitingUser | WaitingPermission),
+            // The filing pair: only a finished Goal can be filed away, and only
+            // a filed one can come back — a row that would only answer "already
+            // archived" is not a candidate (the same rule `disable` / `enable`
+            // follow for skills).
+            "archive" => |goal| goal.status.is_terminal() && !goal.archived,
+            "unarchive" => |goal| goal.archived,
+            "accept" => |goal| {
+                goal.status == WaitingUser
+                    && goal.criteria.iter().any(|criterion| {
+                        criterion.required
+                            && criterion.human
+                            && criterion.status != GoalCriterionStatusSnapshot::Passed
+                    })
+            },
+            _ => return Vec::new(),
+        };
+        // `steer` and `accept` take the instruction after the id, so the row is
+        // not runnable until that text is typed; the rest take the id alone.
+        let incomplete = matches!(verb, "steer" | "accept");
+
+        self.goal_panel()
+            .snapshot
+            .iter()
+            .filter(|goal| actionable(goal))
+            .filter(|goal| {
+                partial.is_empty()
+                    || fuzzy_score(&goal.id, partial) > 0
+                    || fuzzy_score(&goal.title, partial) > 0
+            })
+            .map(|goal| Candidate {
+                path: format!("{path} {}", goal.id),
+                // The panel's own marker + title, so a row picked here reads
+                // like the row it came from.
+                detail: format!("{} {}", goal.status.marker(), goal.title),
+                is_skill: false,
+                incomplete,
+            })
+            .collect()
     }
 
     /// The skills a `/skill disable|enable <name>` verb can act on, as
@@ -547,6 +646,232 @@ mod tests {
         app.skills_data = seeded_skills();
 
         assert!(paths(&app).is_empty());
+    }
+
+    /// A Goal id is the one thing about a Goal that is nowhere on screen (the
+    /// panel row shows the title), so every id-taking verb offers the ids from
+    /// the live panel snapshot.
+    #[test]
+    fn a_goal_verb_offers_the_ids_from_the_panel() {
+        let mut app = app_typing("/goal show ");
+        app.goal_panel_mut().apply_snapshot(seeded_goals());
+
+        let candidates = app.slash_candidates();
+        assert_eq!(
+            candidates
+                .iter()
+                .map(|candidate| candidate.path.as_str())
+                .collect::<Vec<_>>(),
+            [
+                "goal show 216ae6be",
+                "goal show 03a4caef",
+                "goal show aaaa1111",
+                "goal show bbbb2222",
+            ],
+            "`show` is a read: every Goal in the panel is a candidate"
+        );
+        assert_eq!(
+            candidates[0].detail, "▶ review code",
+            "the row carries the panel's own marker and title"
+        );
+        assert!(
+            !candidates[0].incomplete,
+            "`/goal show <id>` is complete: Enter runs it"
+        );
+    }
+
+    /// `steer` and `accept` take an instruction after the id, so their rows
+    /// complete rather than run — the same rule `/mcp auth <server>` follows.
+    #[test]
+    fn the_verbs_that_take_text_after_the_id_only_complete() {
+        let mut app = app_typing("/goal accept ");
+        app.goal_panel_mut().apply_snapshot(seeded_goals());
+
+        let candidates = app.slash_candidates();
+        assert_eq!(candidates.len(), 1, "only the waiting Goal: {candidates:?}");
+        assert!(
+            candidates[0].incomplete,
+            "the instruction still has to be typed"
+        );
+    }
+
+    /// The token under the cursor filters the list — by id *or* title, because
+    /// the panel is where the user reads the title, and the id is what the
+    /// command takes.
+    #[test]
+    fn a_goal_row_is_matched_by_id_and_by_title() {
+        let mut app = app_typing("/goal show 216a");
+        app.goal_panel_mut().apply_snapshot(seeded_goals());
+        assert_eq!(paths(&app), ["goal show 216ae6be"]);
+
+        let mut app = app_typing("/goal show review");
+        app.goal_panel_mut().apply_snapshot(seeded_goals());
+        assert_eq!(paths(&app), ["goal show 216ae6be"]);
+    }
+
+    /// Only the statuses the store's transition table accepts are offered: a
+    /// row whose only outcome is an error message is not a candidate.
+    #[test]
+    fn each_goal_verb_offers_only_the_goals_it_can_move() {
+        let seeded = |input: &str| {
+            let mut app = app_typing(input);
+            app.goal_panel_mut().apply_snapshot(seeded_goals());
+            app
+        };
+
+        // The fixture: `216ae6be` is `running`, `03a4caef` is `waiting_user`,
+        // `aaaa1111` is `paused`, `bbbb2222` is `succeeded`.
+        assert_eq!(
+            paths(&seeded("/goal pause ")),
+            ["goal pause 216ae6be", "goal pause 03a4caef"],
+            "an already-paused Goal cannot be paused again"
+        );
+        assert_eq!(
+            paths(&seeded("/goal resume ")),
+            ["goal resume 03a4caef", "goal resume aaaa1111"],
+            "resume only leaves the three paused/waiting states"
+        );
+        assert_eq!(
+            paths(&seeded("/goal cancel ")),
+            [
+                "goal cancel 216ae6be",
+                "goal cancel 03a4caef",
+                "goal cancel aaaa1111",
+            ],
+            "cancel takes any non-terminal Goal"
+        );
+        assert_eq!(
+            paths(&seeded("/goal show ")).len(),
+            4,
+            "show is a read: terminal and paused Goals included"
+        );
+    }
+
+    /// `accept` is the one verb with a second gate: a `waiting_user` Goal whose
+    /// required human criterion already carries evidence has nothing left to
+    /// accept (`accept_goal` would only answer "no pending required human
+    /// criterion").
+    #[test]
+    fn accept_skips_a_waiting_goal_that_has_nothing_pending() {
+        use tact_protocol::GoalCriterionStatusSnapshot;
+
+        let mut goals = seeded_goals();
+        goals[1]
+            .criteria
+            .iter_mut()
+            .for_each(|criterion| criterion.status = GoalCriterionStatusSnapshot::Passed);
+
+        let mut app = app_typing("/goal accept ");
+        app.goal_panel_mut().apply_snapshot(goals);
+
+        assert!(paths(&app).is_empty());
+    }
+
+    /// The filing pair is offered the other way round from every other verb:
+    /// `archive` lists the finished Goals that are still on the panel, and
+    /// `unarchive` lists the ones that already left it. A row on the wrong side
+    /// would only ever answer "already archived" / "not archived".
+    #[test]
+    fn the_filing_verbs_offer_the_finished_goals_and_only_those() {
+        use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
+
+        let mut goals = seeded_goals();
+        goals.push(GoalSnapshot {
+            id: "cccc3333".into(),
+            title: "filed away".into(),
+            status: GoalStatusSnapshot::Succeeded,
+            archived: true,
+            ..Default::default()
+        });
+
+        let seeded = |input: &str| {
+            let mut app = app_typing(input);
+            app.goal_panel_mut().apply_snapshot(goals.clone());
+            app
+        };
+
+        // The fixture's only finished Goal is `bbbb2222` (`succeeded`); the
+        // archived one is already filed, and the live ones are not candidates.
+        assert_eq!(paths(&seeded("/goal archive ")), ["goal archive bbbb2222"]);
+        assert_eq!(
+            paths(&seeded("/goal unarchive ")),
+            ["goal unarchive cccc3333"]
+        );
+        assert_eq!(
+            paths(&seeded("/goal archive bbb")),
+            ["goal archive bbbb2222"],
+            "the token under the cursor still filters"
+        );
+        assert_eq!(
+            paths(&seeded("/goal archive cccc")),
+            Vec::<String>::new(),
+            "an already-filed Goal is not an archive candidate"
+        );
+        // `show` is the read that reaches both.
+        assert_eq!(paths(&seeded("/goal show ")).len(), 5);
+    }
+
+    /// Once the id is complete there is nothing left under the verb, so the
+    /// popup closes instead of re-offering the same Goal.
+    #[test]
+    fn a_completed_goal_id_offers_nothing() {
+        let mut app = app_typing("/goal show 216ae6be ");
+        app.goal_panel_mut().apply_snapshot(seeded_goals());
+
+        assert!(paths(&app).is_empty());
+    }
+
+    /// The subcommands are still what `/goal ` offers: the id list belongs to
+    /// the verbs, not to the command.
+    #[test]
+    fn the_goal_command_still_offers_its_subcommands() {
+        let mut app = app_typing("/goal ");
+        app.goal_panel_mut().apply_snapshot(seeded_goals());
+
+        assert_eq!(
+            paths(&app),
+            [
+                "goal create",
+                "goal list",
+                "goal show",
+                "goal steer",
+                "goal pause",
+                "goal resume",
+                "goal cancel",
+                "goal accept",
+                "goal archive",
+                "goal unarchive",
+            ]
+        );
+    }
+
+    /// Four Goals, one per interesting status bucket: a running one and a
+    /// waiting one that the control verbs can act on, plus a paused one and a
+    /// finished one that most of them cannot.
+    fn seeded_goals() -> Vec<tact_protocol::GoalSnapshot> {
+        use tact_protocol::{GoalCriterionSnapshot, GoalSnapshot, GoalStatusSnapshot};
+
+        let criterion = || GoalCriterionSnapshot {
+            id: "c1".into(),
+            description: "User accepts the result".into(),
+            required: true,
+            human: true,
+            ..Default::default()
+        };
+        let goal = |id: &str, title: &str, status: GoalStatusSnapshot| GoalSnapshot {
+            id: id.into(),
+            title: title.into(),
+            status,
+            criteria: vec![criterion()],
+            ..Default::default()
+        };
+
+        vec![
+            goal("216ae6be", "review code", GoalStatusSnapshot::Running),
+            goal("03a4caef", "ship notes", GoalStatusSnapshot::WaitingUser),
+            goal("aaaa1111", "paused work", GoalStatusSnapshot::Paused),
+            goal("bbbb2222", "old work", GoalStatusSnapshot::Succeeded),
+        ]
     }
 
     #[test]

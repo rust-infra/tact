@@ -526,13 +526,24 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
     let verb = tokens.next().unwrap_or_default();
     let args = tokens.next().unwrap_or_default().trim();
     let command = match verb {
-        "list" if args.is_empty() => Some(UserCommand::ListGoals),
+        // `--all` is the one argument `list` takes: archived Goals are off the
+        // default list, and adding them back is what makes archiving safe
+        // rather than a one-way door.
+        "list" => match args {
+            "" => Some(UserCommand::ListGoals {
+                include_archived: false,
+            }),
+            "--all" => Some(UserCommand::ListGoals {
+                include_archived: true,
+            }),
+            _ => None,
+        },
         "create" if !args.is_empty() => Some(UserCommand::CreateGoal {
             title: args.chars().take(80).collect(),
             objective: args.to_string(),
             criteria: Vec::new(),
         }),
-        "show" | "pause" | "resume" | "cancel" if !args.is_empty() => {
+        "show" | "pause" | "resume" | "cancel" | "archive" | "unarchive" if !args.is_empty() => {
             let mut values = args.split_whitespace();
             let goal_id = values.next().unwrap_or_default().to_string();
             if values.next().is_some() {
@@ -543,6 +554,14 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
                     "pause" => UserCommand::PauseGoal { goal_id },
                     "resume" => UserCommand::ResumeGoal { goal_id },
                     "cancel" => UserCommand::CancelGoal { goal_id },
+                    "archive" => UserCommand::SetGoalArchived {
+                        goal_id,
+                        archived: true,
+                    },
+                    "unarchive" => UserCommand::SetGoalArchived {
+                        goal_id,
+                        archived: false,
+                    },
                     _ => unreachable!("matched Goal verb"),
                 })
             }
@@ -1550,7 +1569,32 @@ mod tests {
     #[test]
     fn goal_commands_forward_typed_ids_and_text() {
         let cases = [
-            ("/goal list", UserCommand::ListGoals),
+            (
+                "/goal list",
+                UserCommand::ListGoals {
+                    include_archived: false,
+                },
+            ),
+            (
+                "/goal list --all",
+                UserCommand::ListGoals {
+                    include_archived: true,
+                },
+            ),
+            (
+                "/goal archive goal-1",
+                UserCommand::SetGoalArchived {
+                    goal_id: "goal-1".into(),
+                    archived: true,
+                },
+            ),
+            (
+                "/goal unarchive goal-1",
+                UserCommand::SetGoalArchived {
+                    goal_id: "goal-1".into(),
+                    archived: false,
+                },
+            ),
             (
                 "/goal show goal-1",
                 UserCommand::ShowGoal {

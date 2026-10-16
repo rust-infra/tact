@@ -240,7 +240,9 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 
 **`/skill disable` 的语义**（与 `[agent].skill_disable` 同一个开关，见 [§1](#1-skills-的用途) 与 [配置](./21_chapter_config_zh.md)）：管的是**自动发现**，不是能力。被摘掉的 skill 照样能用 `/skill <name>` 跑、`load_skill` 照样解析它——所以消息写的是「已从目录中隐藏」而不是「已禁用」。写入的是**整份列表**而不是增量，因为写盘会替换整个键，一份不完整的列表会把没写进去的 skill 全部静默恢复。没有配置文件时改动只留在本次会话，消息会这么说（与 `/theme` 同一套契约）。名字解析不到时只报名字、不落进用法提示——弹出菜单已经教过语法，而这条是命令中途报的错。
 
-**两个动词的值也是补全出来的**，不用盲敲名字。`slash_candidates()` 走子命令树时记下「落在一个收值的子命令上」，然后由 `skill_verb_candidates()` 把该动词**能作用**的那一半 skill 作为 `<path> <name>` 候选项交出去——`disable` 给目录里还在的，`enable` 给已经被摘掉的。已经处于目标状态的行不列：它们的唯一结局是一句「已经…」。`/skill disable ` 后面那个空格**不会关掉弹窗**（`slash_candidates()` 非空），所以列表是打完空格就跳出来的；继续打字按名字模糊匹配，Enter 直接执行而不是只补全路径（`incomplete: false`）。这也是整个补全体系里唯一一处「值是可补全的」——`/mcp auth <server>` 那类仍然是打完就关。未知动词返回空集而不是猜一半：两个分支就是声明的那对，将来加第三个动词必须自己在这里决定过滤哪一半。
+**两个动词的值也是补全出来的**，不用盲敲名字。`slash_candidates()` 走子命令树时记下「落在一个收值的子命令上」，然后由 `skill_verb_candidates()` 把该动词**能作用**的那一半 skill 作为 `<path> <name>` 候选项交出去——`disable` 给目录里还在的，`enable` 给已经被摘掉的。已经处于目标状态的行不列：它们的唯一结局是一句「已经…」。`/skill disable ` 后面那个空格**不会关掉弹窗**（`slash_candidates()` 非空），所以列表是打完空格就跳出来的；继续打字按名字模糊匹配，Enter 直接执行而不是只补全路径（`incomplete: false`）。**值可补全的地方有两个命令**（另一个是 `/goal` 的收值动词，见下）；其余 `/mcp auth <server>` 那类仍然是打完就关。未知动词返回空集而不是猜一半：`value_candidates()` 按命令分派，将来加第三个命令必须自己决定过滤哪一批值。
+
+**`/goal` 的六个收值动词同样把 Goal ID 交出来**（2026-10-16）。`value_candidates()` 按命令分派：`/skill` 交 skill 名，`/goal` 交 `GoalPanelState.snapshot`（`goal_verb_candidates()`）里的 ID。ID 是唯一不在屏幕上的东西——面板行只有标题，公告行可能已经翻上去几屏——所以 `/goal show|steer|pause|resume|cancel|accept ` 打完空格都弹出候选：路径列是 **ID**（Tab/Enter 补的就是它），右列是面板同一行的 `marker + 标题`，因此既能按 ID 也能按标题模糊匹配。候选只列**这个动词真能作用**的行，判据是 store 的转换表 `goal::is_legal_transition` 而不是猜：`show` 全列（读操作，终态也算）、`pause` 不能从 `draft` / `verifying` / 已 `paused` 出发、`cancel` 与 `steer` 收所有非终态（终态 Goal 不会再跑，没有可 steer 的东西）、`resume` 只收 `paused` / `waiting_user` / `waiting_permission`、`accept` 还要求存在未通过的必需人工标准（否则 driver 只会回一句「没有待验收的必需人工标准」）。`steer` / `accept` 后面还有文本，所以它们的行只补全不执行（`incomplete: true`），其余按 Enter 直接跑；ID 打完后弹窗自动关闭（该动词下已无可补全项）。
 
 **发给 agent 的载荷**
 
@@ -290,7 +292,7 @@ pub skill_registry: Arc<Mutex<SkillRegistry>>, // SharedSkillRegistry
 | `crates/tui/src/handlers/insert.rs` | 斜杠弹出 Enter / Tab 自动补全 |
 | `crates/tui/src/handlers/palette.rs` | 面板 `/skill` → Insert 预填 |
 | `crates/tui/src/widgets/state/slash.rs` | `SlashCommand` 枚举与 `SKILL_SUBCOMMANDS` |
-| `crates/tui/src/widgets/state/slash_command.rs` | `/skill` 子命令 + 每个 skill 的候选列表 |
+| `crates/tui/src/widgets/state/slash_command.rs` | `/skill` 子命令 + 每个 skill 的候选列表；`/goal` 的收值动词给出 Goal ID 候选 |
 | `crates/tui/src/widgets/state/app/background.rs` | off-loop `SkillsSnapshot` 重扫（`SkillsReloadSource`） |
 | `crates/agent_tui_kit/src/render/slash_style.rs` | `style_user_skill_line` / `split_skill_slash` / `SKILL_COMMAND`（纯函数） |
 | `crates/tui/src/render/slash_style.rs` | 注入本机内置命令表，re-export kit 函数 |

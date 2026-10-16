@@ -209,6 +209,12 @@ impl App {
             Some(self.mouse.area(SurfaceId::MermaidPopup))
         } else if self.task_dag_popup.is_some() {
             Some(self.mouse.area(SurfaceId::TaskDagPopup))
+        } else if self.system_prompt_popup.is_some() {
+            // The read-out popup is opaque on screen and takes no selection, so
+            // a press inside it must be swallowed rather than routed to the Log
+            // underneath: that is what a click on `/goal show` used to do, and
+            // the log text it selected was never what the reader pointed at.
+            Some(self.mouse.area(SurfaceId::SystemPromptPopup))
         } else {
             None
         };
@@ -237,7 +243,27 @@ impl App {
                 .map(|p| p.mermaid_source.clone())
                 .unwrap_or_default();
             self.copy_text(&src);
+        } else if self.system_prompt_popup.is_some() {
+            self.copy_system_prompt_popup();
         }
+    }
+
+    /// Copy the read-out popup's `y` payload: the drag selection when there is
+    /// one, else the whole Markdown source it was built from.
+    ///
+    /// The selection lives in the *rendered* text (see
+    /// [`SystemPromptPopup::selection_text`]), so `copy_content` is what turns
+    /// it back into a string; without a selection the source is the honest
+    /// answer, since it is what the popup was asked to show.
+    pub(crate) fn copy_system_prompt_popup(&mut self) {
+        let Some(text) = self
+            .system_prompt_popup
+            .as_ref()
+            .map(|popup| popup.copy_content(&popup.source))
+        else {
+            return;
+        };
+        self.copy_text(&text);
     }
 
     pub(crate) fn open_task_dag_popup(&mut self) {
@@ -546,11 +572,7 @@ impl App {
     /// already consumed the input line: leaving a select/insert mode active
     /// would put keystrokes into the popup's shadow.
     pub(crate) fn open_markdown_popup(&mut self, title: String, source: String) {
-        self.system_prompt_popup = Some(SystemPromptPopup {
-            title,
-            source,
-            scroll: 0,
-        });
+        self.system_prompt_popup = Some(SystemPromptPopup::new(title, source));
         self.input_mode = InputMode::Normal;
     }
 

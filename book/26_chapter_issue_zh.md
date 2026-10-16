@@ -4,6 +4,115 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-16 — Goal 归档：已结束的目标不再长期占着 sticky 面板
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（用户可见：`/goal archive <id>` 把已结束的 Goal 移出面板与默认列表，`/goal unarchive` 放回来，`/goal list --all` 一次看全，`/goal show` 仍能打开归档的 Goal） |
+| **Related** | `crates/tact/src/{goal/mod.rs,store/goal_store/sqlite.rs}`、`crates/protocol/src/agent.rs`、`crates/tact-ui/src/driver.rs`、`crates/tui/src/{handlers/mod.rs,widgets/state/slash.rs,widgets/state/slash_command.rs}`、`crates/agent_tui_kit/src/{state/goal_panel.rs,i18n.rs}`、`book/{01,28}_chapter_*_zh.md` |
+
+**现象 / 动机：** Goal 一旦结束就永远留在 sticky 面板里：`Succeeded` / `Failed` / `Cancelled` 的行和正在跑的行一样占一行，列表迟早被历史填满，真正在做的事被挤下去。删除不行——Run、事件、验收标准是记录；要的是「从面板上收走」。
+
+**决策：**
+
+1. **归档是 `Goal` 上的时间戳，不是新状态**：新增 `archived_at: Option<DateTime<Utc>>`（serde default，旧行解码为「未归档」）与 `GoalUpdate.archived: Option<bool>`。选时间戳而不是 `GoalStatus::Archived`，因为**状态是结局**：归档过的 `failed` Goal 依然该报 `failed`，而新增状态要动状态机、`is_legal_transition`、phase 映射、`GoalStatusSnapshot` 与既有行；时间戳方案连带只落在 `Goal::update` 上，`goals` 表连列都不用加（`archived_at` 随聚合 JSON 走，`status` 列继续报真实结局）。
+2. **只有终态 Goal 能归档**：`Running` / `Draft` 之类会被域层拒绝（`GoalError::UnfinishedGoal`），driver 先用 `goal.status.is_terminal()` 给出人话错误（"only a finished Goal can be archived"）——把还在跑的活从面板上藏起来、活却照跑，是最坏的一种「安静」。重复归档 / 取消归档只是状态回报，不是错误（与 `/skill disable` 同一契约）。
+3. **归档是终态 Goal 唯一被允许的写**：`Goal::update` 原先一律拒绝 `status.is_terminal()`，现在改为「除非这次更新是 `is_archive_only()`」——即除了 `archived` 之外别无可变字段。标题、目标、标准、证据、状态照旧冻结。
+4. **收走的是默认列表，不是可达性**：`goal_snapshots_with(..., include_archived)` 是快照的唯一开关，面板刷新（`emit_goals_changed`）与 `/goal list` 走默认（不含归档）；`/goal list --all` 打开它并把行标成 ` · archived`；`/goal show <id>` 用**全量**快照查找（否则归档的 Goal 会变成 "not found"，归档就成了断头路），但仍只把未归档的那部分回写给面板。
+5. **补全按动词分边**：`goal_verb_candidates` 里 `archive` 只列「终态且未归档」，`unarchive` 只列「已归档」——落在错误一侧的行唯一结局是一句「已经…」。
+
+**改后行为：** `/goal archive 216ae6be` → Log 出现 `🎯 Goal 216ae6be archived (review code)`，面板少一行；`/goal list` 不再列出它；`/goal list --all` 把它列回并标 ` · archived`；`/goal show 216ae6be` 照常打开并标 `**Archived:** yes`；`/goal unarchive 216ae6be` 放回默认列表。归档/取消归档都在 Goal 事件流里留 `archived` / `unarchived` 事件。
+
+**Verification：** `cargo test -p tact --lib`（1397 全绿，新增 domain 三条：归档是终态唯一可写的更新、未结束 Goal 被拒、缺字段的旧 JSON 解码为未归档；store 一条 `archived_at_round_trips_and_keeps_the_status`）、`cargo test -p tact-ui --lib`（102，新增 `archiving_hides_a_finished_goal_until_list_all_asks_for_it` 与 `archiving_an_unfinished_goal_is_refused_with_a_reason`）、`cargo test -p tui`（736，新增 `the_filing_verbs_offer_the_finished_goals_and_only_those`、`/goal list --all` 与两个动词的解析用例）、`cargo test -p agent_tui_kit`（418，新增 `archived_goals_are_tagged_in_the_row`）、`cargo test -p tact_protocol`（27）。`cargo fmt`、`cargo clippy --all-targets` 无告警。沙箱内 `tact --lib` 的 31 个失败全部是 wiremock / 本地监听类（`Failed to bind an OS port`），沙箱外重跑 1397 全绿。
+
+**Pointers:** `Goal::archived_at` / `Goal::is_archived` / `GoalUpdate::{archived, is_archive_only}` / `GoalError::UnfinishedGoal`、`driver::set_goal_archived`、`goal_snapshots_with`、`UserCommand::{ListGoals { include_archived }, SetGoalArchived}`、`GOAL_SUBCOMMANDS`、`App::goal_verb_candidates`、[Ch 28 §2](./28_chapter_goal_zh.md)、[Ch 01](./01_chapter_store_zh.md)。
+
+## 1. 2026-10-16 — 只读弹窗（`/goal show`、`/stats`…）支持拖拽选择与 `y` 复制
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（用户可见：read-out popup 的正文可以用鼠标拖拽选中、`y` 复制；此前它既不能选也不能复制，`y` 完全没有绑定） |
+| **Related** | `crates/agent_tui_kit/src/{state/ui_types.rs,render/popups/{mod.rs,system_prompt_popup.rs}}`、`crates/tui/src/{render/popups/system_prompt_popup.rs,handlers/{mouse.rs,select.rs},widgets/state/app/popups.rs}`、`book/23_chapter_tui_zh.md` §6.8/§6.17 |
+
+**现象 / 动机：** 只读弹窗是 Goal / 统计 / 后台任务 / MCP 与 hooks 列表的唯一出口（`open_markdown_popup`），但它既不参与文本选择（`popup_text_body_area` 那个槽只服务 thinking / tool-diff / subagent），`y` 也没有绑定（`copy_overlay_popup` 的链里没有它）——想引用一段 `/goal show` 的内容只能自己敲。
+
+**决策：** 把 read-out popup 接进同一套选择机制，而不是再长一套：
+
+1. **自己排布正文**：正文不再交给 `ScrollableTextPopup`，改用 `selectable_text::layout_all_display_rows`——它一次给出折行、每行的字节范围和 hit row，因此选区、滚动范围与滚动条来自同一份布局（旧路径下 `Paragraph::wrap` 折行但滚动按未折行计数）。`SelectableTextPopup` 的 chrome / 滚动条 / footer 仍用共享 helper，视觉不变。
+2. **选择缓冲区是渲染后的文本**：markdown 标记在渲染时已被消费，所以选区索引的是读者看到的文字（与 thinking popup 用 `cached_markdown` 同一契约）。这份文本只在渲染期才知道边界，于是和 thinking popup 一样由 `PopupMouseSurface.system_prompt_selection_text` 写回 popup 状态（`selection_text`），复制时 `SystemPromptPopup::copy_content()` 用它切片；**没有选区时 `y` 复制原始 source**（Markdown 全文）。
+3. **复用共享的 hit-row 槽**：thinking / tool-diff / subagent / read-out 四个面共用 `popup_text_body_area` + `popup_text_hit_rows`，前提仍成立——覆层打开时 `handle_overlay_key` 吞掉所有按键，所以不可能同时开两个。footer 从 `SCROLL_CLOSE` 改成 `COPY_SCROLL_CLOSE`（多了 `y copy`），否则这个新能力没人知道。
+
+**改后行为：** `/goal show` 里按住左键拖过几行 → 这几行反色、`y` 只复制这几行（终端里走 OSC52 / 系统剪贴板）；不选直接 `y` → 复制该 popup 的 Markdown 全文。单击仍然什么都不选（只起手）。
+
+**Verification：** `cargo test -p tui`（735，新增 `drag_inside_a_readout_popup_selects_its_rendered_text`：拖拽后断言选区范围、缓冲区不含 markdown 标记、锚点单元格带 `REVERSED`、`y` 复制的是选区而非 source；`readout_popup_renders_its_markdown_body_and_copy_hint`：正文与 `y copy` 提示真的画出来——这个弹窗此前没有渲染层测试）、`cargo test -p agent_tui_kit`（417，新增 `copy_content_prefers_the_selection_over_the_source`）；`cargo fmt`、`cargo clippy -p tui -p agent_tui_kit --all-targets` 无告警。
+
+**Pointers:** `SystemPromptPopup::{new, copy_content, selection_text}`、`PopupMouseSurface::system_prompt_selection_text`、`selectable_text::layout_all_display_rows`、`handle_text_popup_mouse_{down,drag}`、`copy_overlay_popup` / `copy_system_prompt_popup`、[Ch 23](./23_chapter_tui_zh.md) §6.8/§6.17。
+
+## 1. 2026-10-16 — 单击不再产生选区：只读弹窗吞掉框内点击，卡片改由双击选中
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：单击永远不会留下选区——只读弹窗内的点击不再落到它盖住的 Log 上；thinking / markdown 卡片由**双击**选中，单击只起手拖拽） |
+| **Related** | `crates/agent_tui_kit/src/{state/mouse_state.rs,render/popups/system_prompt_popup.rs}`、`crates/tui/src/{handlers/mouse.rs,widgets/state/app/popups.rs,render/popups/system_prompt_popup.rs}`、`book/23_chapter_tui_zh.md` §6.8/§6.17 |
+
+**现象 / 动机：** 两个"单击就选中"的入口，都会让读者在没打算选的地方得到一块高亮。
+
+1. 只读弹窗（`/goal show`、`/stats`、`/background`、`/view-system-prompt`、`/hooks list`… 都走 `system_prompt_popup`）是唯一**不报自己 rect** 的覆层：`close_overlay_on_outside_click()` 拿不到它的位置就返回 `false`，于是框内的按下事件继续往下走，落到弹窗盖住的那条 Log 行上——单击等于"在看不见的地方选区"，选中读者从未指过的日志文本（若命中 thinking / markdown 卡片，则整段反色）。同一条路径也让"框外点击关闭"对它失效：点外面既不关，还会顺带选一段。
+2. Log 里 thinking / markdown 卡片正文**单击即选中整卡**（`start_card_selection` 在 `click_count == 1` 也执行）。这是 `CardSelection` 从"单卡选区"时代留下的行为，而同一份鼠标表对 tool/code 卡片写的是"单击不产生文本选择"。
+
+**决策：**
+
+1. **只读弹窗把自己的 rect 交给宿主**：渲染器返回 `PopupMouseSurface.popup_area`，宿主记到新的 `SurfaceId::SystemPromptPopup`，并把它接进 `close_overlay_on_outside_click` 的判定链——框内按下被吞掉（它本来也不做文本选择），框外按下关闭它，与 code / mermaid / task-dag 弹窗一致。它刻意**不**进 `popup_text_body_area` 那个文本选择槽（那个槽只属于 thinking / tool / subagent）。
+2. **卡片的按下只起手**：新增 `CardSelection::anchor()`（空 `selected_phys_indices`、`start == end`）——画面上零高亮、复制为空；拖拽第一次移动时由 `extend_card_selection` 兑现选区（同一张卡则整卡，跨卡则按序拼接），双击仍走 `start_card_selection` 选中整卡。规则因此统一为"**单击起手、双击选中、拖拽成选区**"，与 `[󰜼 打开]` 按钮和 hook 块（`popup_source` 行）的"单击不选区"一致。
+
+**改后行为：** 点 `Goal: review code` 这类只读弹窗框内：什么都不会被选中，弹窗保持打开；点框外：弹窗关闭（此前是"选中底下日志 + 弹窗不关"）。Log 里单击任意卡片正文：无高亮；双击卡片正文才选中整卡（`y` 复制其语义文本）；按住拖拽照旧跨卡片选择。
+
+**Verification：** `cargo test -p tui`（733，新增 `click_on_markdown_row_arms_without_selecting_it`、`double_click_on_markdown_row_selects_the_card`、`click_inside_a_readout_popup_selects_nothing_behind_it`，并把原 `click_on_markdown_row_starts_card_selection` 改成断言"起手但未选中"）、`cargo test -p agent_tui_kit`（416）；`cargo fmt`、`cargo clippy -p tui -p agent_tui_kit --all-targets` 无告警。
+
+**Pointers:** `SurfaceId::SystemPromptPopup`、`close_overlay_on_outside_click`、`CardSelection::{full, anchor}`、`arm_card_selection` / `start_card_selection` / `extend_card_selection`、[Ch 23](./23_chapter_tui_zh.md) §6.8/§6.17。
+
+## 1. 2026-10-16 — `/goal <动词>` 的 Goal ID 从补全菜单里挑，不用回滚去抄
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（用户可见：`/goal show|steer|pause|resume|cancel|accept ` 打完空格即弹出候选 ID，Tab/Enter 补全；候选只列该动词**真能作用**的那几个 Goal） |
+| **Related** | `crates/tui/src/widgets/state/slash_command.rs`、`crates/tui/src/handlers/insert.rs`、`book/02_chapter_skill_zh.md` §7、`book/23_chapter_tui_zh.md`、`book/28_chapter_goal_zh.md` §2 |
+
+**现象 / 动机：** Goal ID 是唯一**不在屏幕上**的 Goal 属性——Goals sticky panel 的行是 `▶ 标题 · 状态/阶段 · 任务/验收`，ID 只在创建那一刻的 Log 公告里写过一次，翻上去就再也看不到。于是 `/goal show <id>`、`/goal accept <id> <文本>` 只能靠手抄或回滚日志。补全体系里唯一能补**值**的只有 `/skill disable|enable <name>`（Ch 26 2026-10-11 那条把它写成「整个补全树里唯一一处」），而 `/goal` 打完动词的那个空格直接关掉弹窗。
+
+**决策：**
+
+1. **值的补全改成按命令分派**：`value_candidates()` 取代原来只认 skill 的那条分支，`/skill` 给 skill 名、`/goal` 给 `goal_verb_candidates()`。候选来自 TUI 已有的 `GoalPanelState.snapshot`（由 `AgentUpdate::GoalsChanged` 维护，都是实时快照，不新开数据通道）；路径列是 **ID**（Tab/Enter 补的就是它），右列复用面板同一行的 `status.marker() + 标题`——所以既能按 ID 也能按标题模糊匹配。面板能看到的正是标题，命令要的正是 ID，两边都匹配才不必先查一次。
+2. **过滤用 store 的转换表（`goal::is_legal_transition`），不是猜**：`show` 全列（读操作，终态也算）；`pause` 不能从 `draft` / `verifying` / 已 `paused` 出发；`cancel` 与 `steer` 收所有非终态（终态 Goal 不会再跑）；`resume` 只收 `paused` / `waiting_user` / `waiting_permission`；`accept` 还要求存在未通过的必需人工标准。理由与 `/skill disable` 同一个：只列「唯一结局是一句错误消息」的行，等于把错误当候选发出去。
+3. **`incomplete` 跟着语法走**：`steer` / `accept` 的 ID 后面还有文本，所以这两行 Enter 只补全；其余四个动词的 ID 是完整命令，Enter 直接执行。
+
+**改后行为：** `/goal accept 216` → 弹出一行 `216ae6be  ? ship notes`，Tab 补成 `/goal accept 216ae6be `，接着写验收文本；`/goal show 216` + Enter 直接打开该 Goal 的 show 弹窗。ID 打完后（该动词下已无可补全项）弹窗自动关闭；`/mcp auth figma` 那类仍然是打完就关。
+
+**Verification：** `cargo test -p tui`（731；新增 11 个：7 个候选层——收值动词列出面板 ID、ID 与标题都能匹配、每个动词只列它能动的状态、`accept` 跳过没有待验收标准的行、ID 补全后弹窗关闭、`/goal ` 仍只列子命令——加 3 个 handler 级 Tab/Enter 断言（含「`steer` 只补全不执行、不发 `UserCommand`」）与 1 个 buffer 级弹窗断言（行内真的画出 `/goal show 216ae6be` 与 `▶ review code`））。`cargo fmt`、`cargo clippy -p tui --all-targets` 无告警。
+
+**Pointers:** `App::value_candidates` / `App::goal_verb_candidates` / `Candidate.incomplete`、`GoalPanelState::snapshot`、`goal::is_legal_transition`、[Ch 02](./02_chapter_skill_zh.md) §7、[Ch 28](./28_chapter_goal_zh.md) §2、[Ch 23](./23_chapter_tui_zh.md)。
+
+## 1. 2026-10-16 — Goal 提示行获得专属谱色、加粗与 🎯 前缀
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：Log 里的 Goal 提示行一眼可辨——此前它与普通系统行同为 `theme.fg` 灰，只有读到 "Goal" 这个词才知道它属于 Goal） |
+| **Related** | `crates/agent_tui_kit/src/{theme.rs,state/log.rs}`、`crates/tui/src/{render/log_style.rs,widgets/state/app/messages.rs}`、`crates/tact-ui/src/{driver.rs,goal_runner.rs}`、`crates/tact/src/agent/mod.rs` |
+
+**现象 / 动机：** `/goal create` 之后 Log 出现 `Goal 216ae6be created (review code) - starting run`，但它是一行裸灰文本：`from_marker` 认不出 `Goal ` / `[goal]` 这类文本前缀，于是落到 `SystemMsgStyle::Default` → `theme.fg`，与 `Tasks · 1/2 created` 之类的系统行逐像素同色。Goal 是跨轮次的持久对象，它的提示行需要能被扫读定位，而不是被逐字阅读。
+
+**决策：**
+
+1. **给 Goal 一个主题槽位**：新增 `Theme::goal_fg()`。内置 12 套主题的 accent / warning / error / success / heading 都不占紫色，所以紫色在每套主题里只会表示 Goal；浅底主题另取一个压暗的紫，避免白底上发灰。
+2. **颜色之外再加字重**：`SystemMsgStyle::style()` 返回完整 `Style`，只有 `Goal` 追加 `BOLD`——单靠色相在满屏散文里不够醒目，而 Goal 行的目的就是被一眼看到。`color()` 保持原义（"属于哪个槽位"），渲染层改用它给出的完整样式。
+3. **沿用既有 marker→样式惯例**：Goal 提示行统一以 `🎯 ` 开头（与命令面板里 `/goal` 的图标同一字形），`from_marker` 据此选中 Goal 槽位；原先的 `[goal]` 文本标记删除——字形已经承担了同一件事，保留两套标记只会让复制出来的文本更长。恢复失败那一行本就是降级告警，改挂 `⚠`（黄色）。
+
+**改后行为：** Log 中 `🎯 Goal <id> created (<title>) - starting run`、`🎯 <id> run finished: <outcome>`、`🎯 waiting for user input`、`🎯 recovered interrupted run …` 都是紫色加粗；`⚠ Goal recovery failed …` 是黄色告警。复制/选中拿到的是同一串文本（marker 留在 `raw` 里）。
+
+**Verification：** `cargo test -p agent_tui_kit`（416）、`cargo test -p tui`（720）、`cargo test -p tact-ui`（100 单测 + 各集成套件，其中 goal 相关 27 个用例）全绿；新增四层断言——`SystemMsgStyle::from_marker("🎯 …")`、`style()`（含"只有 Goal 带修饰符"的反向断言与暗/亮底色不同值）、`App::add_system_message`（`LogItemKind::SystemPlain(Goal)` + 颜色 + 加粗 + `raw` 保留 marker）、`restyle_log_line_with_skills`（三套主题）。`tact-ui` 的 `mcp_auth_url_progress` / `recovery_compaction` 在沙箱内因 `wiremock` 不允许绑定本地端口而失败（`Os { code: 1, kind: PermissionDenied }`），沙箱外重跑 15 个用例全绿，与本次改动无关。
+
+**Pointers:** `Theme::goal_fg`、`SystemMsgStyle::{Goal, style}`、`App::add_system_message`、`restyle_log_line_with_skills`、[Agent Goal](./28_chapter_goal_zh.md)。
+
 ## 1. 2026-10-15 — Goal Runner 链路修复：预算改按累计刻度、单 Run 多周期、hook 阻断终态、文档与状态机对齐
 
 | Field | Value |
@@ -56,7 +165,7 @@
 
 **决策：** 创建即授权。把建库逻辑抽成 `create_goal`（建库 → 发快照 → Log 回报 ID），成功后直接复用 `resume_goal`，让 Runner 负责 `Draft → Queued → Running`；命令循环里 `CreateGoal` 与 `ResumeGoal` 同形，在可取消的后台任务中执行，循环继续服务 `Cancel` 和读命令。`/goal list` 改走独立的 `list_goals`：快照照旧驱动面板，空结果额外补一行 `(no goals)`；只有 list 路径播报，create/pause 等复用 `emit_goals_changed` 的路径仍静默，避免"最后一个 Goal 刚被删除"被误报成空列表。
 
-**改后行为：** `/goal create <objective>` 之后 Goal 立即进入 `running` 并产生 `goal_runs` 记录，Log 出现 `Goal <id> created (<title>) - starting run`（面板行不显示 ID，而 `show` / `steer` / `accept` 都按 ID 寻址）。空工作区执行 `/goal list` 打印 `(no goals)`。暂停/等待后的继续仍用 `/goal resume`。用法文案同步为 `/goal create <目标>（创建后立即开始执行）`。
+**改后行为：** `/goal create <objective>` 之后 Goal 立即进入 `running` 并产生 `goal_runs` 记录，Log 出现 `🎯 Goal <id> created (<title>) - starting run`（面板行不显示 ID，而 `show` / `steer` / `accept` 都按 ID 寻址）。空工作区执行 `/goal list` 打印 `(no goals)`。暂停/等待后的继续仍用 `/goal resume`。用法文案同步为 `/goal create <目标>（创建后立即开始执行）`。
 
 **Verification：** `cargo test -p tact-ui`（98 + 各集成套件）与 `cargo test -p agent_tui_kit -p tui`（415 + 718）全绿；其中 goal 相关 25 个用例含新增的 `create_goal_persists_starts_and_emits_full_snapshot`（创建后状态为 `Running`）、`list_goals_announces_an_empty_workspace`、`create_goal_starts_a_run_without_blocking_the_command_loop`（多线程 + 阻塞 mock：activation 阻塞期间 `/goal list` 仍在 450ms 内应答）。`cargo fmt --all -- --check`、`git diff --check` 通过；`cargo clippy -p tact-ui -p agent_tui_kit --all-targets` 的 `recursion_depth_exceeding_limit` 告警数与改动前基线一致（12 = 12），该告警来自既有的 `Box::pin(handle_user_command_with_account)` 递归与 `crates/tact/src/tool/subagent.rs`，与本改动无关。
 

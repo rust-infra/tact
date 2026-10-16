@@ -657,7 +657,7 @@ impl GoalRunner {
         goal = updated;
 
         agent.emit_update(AgentUpdate::Info(format!(
-            "[goal] {} run finished: {run_outcome:?}",
+            "🎯 {} run finished: {run_outcome:?}",
             goal.id
         )));
         Ok(run_outcome)
@@ -1039,7 +1039,7 @@ mod tests {
         assert!(
             updates
                 .iter()
-                .any(|update| matches!(update, AgentUpdate::Info(text) if text.contains("[goal]"))),
+                .any(|update| matches!(update, AgentUpdate::Info(text) if text.starts_with("🎯"))),
             "the activation is announced after it is persisted: {updates:?}"
         );
     }

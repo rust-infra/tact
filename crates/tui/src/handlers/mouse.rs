@@ -82,7 +82,8 @@ fn scroll_list_popup(app: &mut App, popup: SurfaceId, delta: i32) -> bool {
         | SurfaceId::ThinkingPopup
         | SurfaceId::SubagentPopup
         | SurfaceId::DiffPopup
-        | SurfaceId::TaskDagPopup => false,
+        | SurfaceId::TaskDagPopup
+        | SurfaceId::SystemPromptPopup => false,
     }
 }
 
@@ -108,7 +109,8 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
         MouseEventKind::Down(MouseButton::Left)
             if app.tools_mut().popup.is_some()
                 || app.thinking_mut().popup.is_some()
-                || app.has_subagent_popup() =>
+                || app.has_subagent_popup()
+                || app.system_prompt_popup.is_some() =>
         {
             handle_text_popup_mouse_down(app, mouse);
         }
@@ -119,7 +121,8 @@ pub(crate) fn handle_mouse_event(app: &mut App, mouse: MouseEvent) {
         MouseEventKind::Drag(MouseButton::Left)
             if app.tools_mut().popup.is_some()
                 || app.thinking_mut().popup.is_some()
-                || app.has_subagent_popup() =>
+                || app.has_subagent_popup()
+                || app.system_prompt_popup.is_some() =>
         {
             handle_text_popup_mouse_drag(app, mouse);
         }
@@ -305,6 +308,8 @@ fn handle_text_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
         app.mouse.area(SurfaceId::ThinkingPopup)
     } else if app.has_subagent_popup() {
         app.mouse.area(SurfaceId::SubagentPopup)
+    } else if app.system_prompt_popup.is_some() {
+        app.mouse.area(SurfaceId::SystemPromptPopup)
     } else {
         app.mouse.area(SurfaceId::DiffPopup)
     };
@@ -324,6 +329,9 @@ fn handle_text_popup_mouse_down(app: &mut App, mouse: MouseEvent) {
         popup.selection = Some(PopupTextSelection::new(origin.start, origin.start));
         app.mouse.popup_text_drag_origin = Some(origin);
     } else if let Some(popup) = app.subagent_popup_mut() {
+        popup.selection = Some(PopupTextSelection::new(origin.start, origin.start));
+        app.mouse.popup_text_drag_origin = Some(origin);
+    } else if let Some(popup) = app.system_prompt_popup.as_mut() {
         popup.selection = Some(PopupTextSelection::new(origin.start, origin.start));
         app.mouse.popup_text_drag_origin = Some(origin);
     }
@@ -408,8 +416,31 @@ fn extend_card_selection(app: &mut App, line_idx: usize) {
 
     if let Some(selection) = app.mouse.card_selection.as_mut() {
         selection.end_phys_idx = end_phys_idx;
+        // A drag that stays inside the anchor card selects that card; one that
+        // crosses cards is joined from the per-row texts, where `start`/`end`
+        // are not read.
+        selection.start = 0;
+        selection.end = selection.text.len();
         selection.selected_phys_indices = selected_phys_indices;
     }
+}
+
+/// Arm a drag on a card without selecting it.
+///
+/// The press that may become a drag must not *be* a selection: a click that
+/// never moves leaves nothing behind, and the first real drag materialises the
+/// range (`extend_card_selection`). Selecting a whole card is a double click
+/// ([`start_card_selection`]), the same "click 1 arms, click 2 acts" rule the
+/// `[Open]` buttons and the hook blocks follow.
+fn arm_card_selection(app: &mut App, phys_idx: usize) {
+    let Some(text) = app.card_selection_text(phys_idx) else {
+        app.mouse.clear_log_selection();
+        app.mouse.dragging_log = false;
+        return;
+    };
+    app.mouse.log_selection = None;
+    app.mouse.card_selection = Some(crate::widgets::state::CardSelection::anchor(phys_idx, text));
+    app.mouse.dragging_log = true;
 }
 
 fn start_card_selection(app: &mut App, phys_idx: usize) {
@@ -484,7 +515,13 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
     }
 
     if app.is_markdown_row(phys_idx) {
-        start_card_selection(app, phys_idx);
+        // One click arms the drag, a double click selects the card: a press that
+        // never moves must not leave a whole paragraph highlighted behind it.
+        if app.mouse.click_count >= 2 {
+            start_card_selection(app, phys_idx);
+        } else {
+            arm_card_selection(app, phys_idx);
+        }
         return;
     }
 
@@ -550,7 +587,11 @@ fn handle_log_click(app: &mut App, mouse: MouseEvent) {
             }
         } else {
             app.mouse.last_click_card = None;
-            start_card_selection(app, thinking_phys);
+            if app.mouse.click_count >= 2 {
+                start_card_selection(app, thinking_phys);
+            } else {
+                arm_card_selection(app, thinking_phys);
+            }
         }
         return;
     } else {
@@ -682,6 +723,8 @@ fn handle_text_popup_mouse_drag(app: &mut App, mouse: MouseEvent) {
     } else if let Some(popup) = app.tools_mut().popup.as_mut() {
         popup.selection = Some(selection);
     } else if let Some(popup) = app.subagent_popup_mut() {
+        popup.selection = Some(selection);
+    } else if let Some(popup) = app.system_prompt_popup.as_mut() {
         popup.selection = Some(selection);
     }
 }
@@ -2648,16 +2691,144 @@ mod tests {
         assert!(!app.mouse.dragging_log);
     }
 
+    /// A press on a card only *arms* the drag: nothing is highlighted until the
+    /// pointer actually moves, so a click that was meant for something else
+    /// cannot leave a whole paragraph inverted behind it.
     #[test]
-    fn click_on_markdown_row_starts_card_selection() {
+    fn click_on_markdown_row_arms_without_selecting_it() {
         let mut app = app_with_clickable_log();
         app.append_markdown("# Title\n");
         app.log_scroll.visual_start = vec![0, 1];
 
         handle_mouse_event(&mut app, mouse_down(1, 1));
 
-        assert!(app.mouse.card_selection.is_some());
-        assert!(app.mouse.dragging_log);
+        let selection = app.mouse.card_selection.as_ref().expect("drag anchor");
+        assert!(app.mouse.dragging_log, "the drag is still armed");
+        assert!(
+            !selection.contains_phys(0),
+            "one click must not highlight the card"
+        );
+        assert!(
+            app.extract_card_selection()
+                .is_none_or(|text| text.is_empty()),
+            "one click must not put the card's text on the clipboard target"
+        );
+
+        // The drag that follows still selects it.
+        handle_mouse_event(&mut app, mouse_drag(1, 1));
+        assert_eq!(app.extract_card_selection().as_deref(), Some("# Title\n"));
+    }
+
+    /// The card is selected by the second click, which is what makes the
+    /// gesture deliberate.
+    #[test]
+    fn double_click_on_markdown_row_selects_the_card() {
+        let mut app = app_with_clickable_log();
+        app.append_markdown("# Title\n");
+        app.log_scroll.visual_start = vec![0, 1];
+
+        handle_mouse_event(&mut app, mouse_down(1, 1));
+        handle_mouse_event(&mut app, mouse_down(1, 1));
+
+        assert_eq!(app.extract_card_selection().as_deref(), Some("# Title\n"));
+    }
+
+    /// The read-out popup takes a text selection like the thinking / tool
+    /// popups: drag inside it to select, `y` to copy what is selected.
+    #[test]
+    fn drag_inside_a_readout_popup_selects_its_rendered_text() {
+        use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+        use ratatui::style::Modifier;
+
+        let mut app = make_app();
+        app.open_markdown_popup(
+            "Goal: review code".into(),
+            "**ID:** `216ae6be`\n\nStatus: `running`\n".into(),
+        );
+        // One frame: the layout that produced the hit rows is the one the mouse
+        // coordinates below are read off.
+        let _ = crate::render::test_harness::render_main_area_terminal(&mut app, 100, 20);
+        let first = app
+            .mouse
+            .popup_text_hit_rows
+            .first()
+            .cloned()
+            .expect("the read-out popup publishes hit rows");
+
+        let x = first.text_x + 4;
+        handle_mouse_event(&mut app, mouse_down(x, first.screen_y));
+        handle_mouse_event(&mut app, mouse_drag(x, first.screen_y + 1));
+
+        let popup = app.system_prompt_popup.as_ref().expect("popup still open");
+        let range = popup
+            .selection
+            .and_then(|selection| selection.normalized_non_empty(&popup.selection_text))
+            .expect("a drag must leave a non-empty range");
+        let selected = popup.selection_text[range].to_string();
+        assert!(
+            selected.contains("216ae6be"),
+            "the selection covers the rendered text: {selected:?}"
+        );
+        assert!(
+            !selected.contains('`'),
+            "the copy buffer is the rendered text, not the Markdown source: {selected:?}"
+        );
+
+        // Drawn as a selection, not just stored: the anchor cell is inverted.
+        let terminal = crate::render::test_harness::render_main_area_terminal(&mut app, 100, 20);
+        let buf = terminal.backend().buffer().clone();
+        assert!(
+            buf[(x, first.screen_y)]
+                .style()
+                .add_modifier
+                .contains(Modifier::REVERSED),
+            "the selected glyphs are painted"
+        );
+
+        // `y` copies the selection — not the Markdown source the popup was
+        // built from, which would be the answer with nothing selected.
+        assert!(crate::handlers::handle_overlay_key(
+            &mut app,
+            KeyEvent::new(KeyCode::Char('y'), KeyModifiers::NONE)
+        ));
+        let copied = app
+            .log
+            .items
+            .iter()
+            .map(|item| item.raw.clone())
+            .find(|raw| raw.contains("216ae6be") && !raw.contains("ID:"))
+            .expect("a copy notice quoting the selection");
+        assert!(
+            !copied.contains("**ID:**"),
+            "the source is not what `y` copies while something is selected: {copied:?}"
+        );
+    }
+
+    /// A press inside a read-out popup (`/goal show`, `/stats`, `/background`,
+    /// `/view-system-prompt`) must not reach the Log underneath it. It used to:
+    /// such a click silently selected log text the reader never pointed at,
+    /// because only the *text-selection* popups published a rect.
+    #[test]
+    fn click_inside_a_readout_popup_selects_nothing_behind_it() {
+        let mut app = make_app();
+        app.add_system_message("behind the popup".into());
+        app.open_markdown_popup("Goal: review code".into(), "**ID:** `216ae6be`".into());
+
+        // One frame: the popup's rect is recorded during the render pass and is
+        // what the overlay ladder reads.
+        let _ = crate::render::test_harness::render_app_text(&mut app, 80, 24);
+        let area = app.mouse.area(SurfaceId::SystemPromptPopup);
+        assert!(!area.is_empty(), "the read-out popup must publish its rect");
+
+        handle_mouse_event(&mut app, mouse_down(area.x + 2, area.y + 2));
+
+        assert!(app.mouse.log_selection.is_none(), "no log selection");
+        assert!(app.mouse.card_selection.is_none(), "no card selection");
+        assert!(!app.mouse.dragging_log);
+        assert!(
+            app.system_prompt_popup.is_some(),
+            "a press inside the popup keeps it open"
+        );
     }
 
     #[test]

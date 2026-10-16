@@ -821,7 +821,7 @@ impl Messages {
             pending_submit_hint: "Message will be submitted after the current task finishes",
             cancel_noop_msg: "Nothing to cancel",
             subagent_cancel_usage_msg: "Usage: /subagent_cancel <child-id>",
-            goal_usage_msg: "Usage: /goal create <objective> (creates and starts a run) | list | show <goal-id> | steer <goal-id> <text> | pause <goal-id> | resume <goal-id> | cancel <goal-id> | accept <goal-id> <text>",
+            goal_usage_msg: "Usage: /goal create <objective> (creates and starts a run) | list [--all] | show <goal-id> | steer <goal-id> <text> | pause <goal-id> | resume <goal-id> | cancel <goal-id> | accept <goal-id> <text> | archive <goal-id> (file a finished Goal away) | unarchive <goal-id>",
 
             tasks_sticky_title: "Tasks",
             goals_sticky_title: "Goals",
@@ -1155,7 +1155,7 @@ impl Messages {
             pending_submit_hint: "消息将在当前任务结束后自动提交",
             cancel_noop_msg: "当前没有可取消的任务",
             subagent_cancel_usage_msg: "用法：/subagent_cancel <child-id>",
-            goal_usage_msg: "用法：/goal create <目标>（创建后立即开始执行） | list | show <goal-id> | steer <goal-id> <文本> | pause <goal-id> | resume <goal-id> | cancel <goal-id> | accept <goal-id> <文本>",
+            goal_usage_msg: "用法：/goal create <目标>（创建后立即开始执行） | list [--all] | show <goal-id> | steer <goal-id> <文本> | pause <goal-id> | resume <goal-id> | cancel <goal-id> | accept <goal-id> <文本> | archive <goal-id>（把已结束的 Goal 归档） | unarchive <goal-id>",
 
             tasks_sticky_title: "任务",
             goals_sticky_title: "目标",

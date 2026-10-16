@@ -37,7 +37,7 @@ Goal、Task、Turn 和 PlanStep 是不同层级，不能互相替代：
 当前命令表面：
 
 ```text
-/goal list            列出当前工作区的 Goal；为空时在 Log 里提示（此时面板不可见）
+/goal list [--all]    列出当前工作区的 Goal（默认不含已归档）；为空时在 Log 里提示（此时面板不可见）
 /goal create <text>   创建 Goal（文本同时作为标题和 objective）并立即启动第一次 Run，Log 里回报新 Goal ID
 /goal show <id>       查看目标、标准、任务和验收摘要
 /goal steer <id> <text> 补充方向或约束并写入事件
@@ -45,7 +45,13 @@ Goal、Task、Turn 和 PlanStep 是不同层级，不能互相替代：
 /goal resume <id>     恢复执行
 /goal cancel <id>     取消 Goal
 /goal accept <id>     接受人工验收项 / 完成提议
+/goal archive <id>    把已结束的 Goal 归档（移出面板与默认列表，记录不删）
+/goal unarchive <id>  取消归档，重新出现在面板里
 ```
+
+**归档（2026-10-16）：** 已结束的 Goal 会一直躺在 sticky 面板与 `/goal list` 里，列表迟早被历史占满。`archive` 把它们移出**默认**列表：面板与 `/goal list` 只画未归档的 Goal，记录、Run、事件、标准全部保留。它是 `Goal` 聚合上的一个时间戳（`archived_at`）而不是新的 `GoalStatus` —— **状态是结局，不能被改写**（一个 `failed` 的 Goal 归档后仍报 `failed`），而新增状态会牵动状态机、转换表与既有行。只有终态 Goal 能归档（`Running` 之类会被拒绝并说明原因：把还在跑的活从面板上藏起来、活却继续跑），重复归档只是状态回报而不是错误；`unarchive` 走同一条 `GoalUpdate` 路径把戳清掉。归档也是**唯一**被允许写终态 Goal 的操作：`Goal::update` 对终态 Goal 只接受 `is_archive_only()` 的更新，标题/目标/标准/证据/状态照旧冻结。可达性：`/goal show <id>` 仍能打开归档的 Goal（正文里标 `**Archived:** yes`），`/goal list --all` 把它们放回面板并标 ` · archived`。
+
+收 `<id>` 的八个动词在 TUI 里可以直接从补全菜单里挑 ID：打完 `/goal show ` 这样的前缀空格后，弹窗列出当前工作区里**该动词能作用**的 Goal，路径列是 ID、右列是面板同一行的状态标记与标题（可按 ID 或标题模糊匹配）。面板行不显示 ID、公告行会翻上去，补全菜单是不必回滚去找 ID 的地方。
 
 这些命令映射为带 Goal ID 和用户文本的 typed `UserCommand`；list/show 在 Agent activation 进行时也直接从 `SharedGoalManager` 读取。
 

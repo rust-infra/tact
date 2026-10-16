@@ -285,6 +285,11 @@ pub struct GoalSnapshot {
     pub wait_reason: Option<String>,
     pub acceptance: GoalAcceptanceSnapshot,
     pub run_budget: Option<GoalRunBudgetSnapshot>,
+    /// Filed out of the default list / sticky panel (see
+    /// [`UserCommand::SetGoalArchived`]). The status is unchanged, so a surface
+    /// that does show an archived Goal still reports how it finished.
+    #[serde(default)]
+    pub archived: bool,
 }
 
 /// UI-facing subagent run status for the sticky 总览 (mirrors
@@ -628,7 +633,12 @@ pub enum UserCommand {
         criteria: Vec<String>,
     },
     /// List every durable Goal as a full replacement snapshot.
-    ListGoals,
+    ///
+    /// `include_archived` is the difference between "my working set" (the
+    /// sticky panel) and "everything this workspace ever recorded": an archived
+    /// Goal is finished and filed, so it leaves the default list rather than
+    /// deleting its record.
+    ListGoals { include_archived: bool },
     /// Show one Goal while still refreshing the full replacement snapshot.
     ShowGoal { goal_id: String },
     /// Persist user steering text in the Goal event stream.
@@ -641,6 +651,9 @@ pub enum UserCommand {
     CancelGoal { goal_id: String },
     /// Record explicit human acceptance and resume one bounded activation.
     AcceptGoal { goal_id: String, text: String },
+    /// File a finished Goal out of the panel (`archived: true`), or bring it
+    /// back (`false`). Not a lifecycle change: the Goal keeps its status.
+    SetGoalArchived { goal_id: String, archived: bool },
     /// Set the active permission mode.
     /// The TUI sends this after the user picks through the `/permission` popup.
     /// Only affects the in-memory session; config is never written.
@@ -839,6 +852,7 @@ mod tests {
                 elapsed_ms: 100,
                 wall_clock_limit_ms: 60_000,
             }),
+            archived: false,
         };
         let encoded = serde_json::to_string(&goal).unwrap();
         let decoded: GoalSnapshot = serde_json::from_str(&encoded).unwrap();
@@ -861,7 +875,9 @@ mod tests {
                 objective: "Finish the feature".into(),
                 criteria: vec!["Tests pass".into()],
             },
-            UserCommand::ListGoals,
+            UserCommand::ListGoals {
+                include_archived: false,
+            },
             UserCommand::ShowGoal {
                 goal_id: "goal-1".into(),
             },
@@ -884,7 +900,12 @@ mod tests {
             },
         ];
 
-        assert!(matches!(commands[1], UserCommand::ListGoals));
+        assert!(matches!(
+            commands[1],
+            UserCommand::ListGoals {
+                include_archived: false
+            }
+        ));
         assert!(matches!(
             &commands[3],
             UserCommand::SteerGoal { goal_id, text }

@@ -103,7 +103,7 @@ fn row_text(goal: &GoalSnapshot) -> String {
         })
         .unwrap_or_default();
     format!(
-        "{} {} · {}/{} · tasks {}/{} · accept {}/{}{}",
+        "{} {} · {}/{} · tasks {}/{} · accept {}/{}{}{}",
         goal.status.marker(),
         goal.title,
         status_label(goal.status),
@@ -112,7 +112,10 @@ fn row_text(goal: &GoalSnapshot) -> String {
         goal.task_total,
         goal.acceptance.passed,
         goal.acceptance.required,
-        budget
+        budget,
+        // Only `/goal list --all` shows archived Goals, and this is what tells
+        // them apart there; the default list never draws the tag.
+        if goal.archived { " · archived" } else { "" }
     )
 }
 
@@ -195,6 +198,31 @@ mod tests {
         assert!(lines.contains("turns 2/4"));
         assert!(lines.contains("review"));
         assert!(lines.contains("succeeded/verification"));
+    }
+
+    /// Only `/goal list --all` draws an archived Goal, and the tag is what
+    /// tells it apart from a live one there.
+    #[test]
+    fn archived_goals_are_tagged_in_the_row() {
+        let live = {
+            let mut goal = GoalSnapshot {
+                title: "live".into(),
+                status: GoalStatusSnapshot::Succeeded,
+                ..Default::default()
+            };
+            goal.archived = false;
+            goal
+        };
+        let mut filed = live.clone();
+        filed.title = "filed".into();
+        filed.archived = true;
+
+        let lines = format_goal_lines(&[live, filed], 0, 20).join("\n");
+        assert_eq!(lines.matches(" · archived").count(), 1, "{lines}");
+        assert!(
+            lines.contains("filed · succeeded") && lines.contains(" · archived"),
+            "the outcome stays readable next to the tag: {lines}"
+        );
     }
 
     #[test]

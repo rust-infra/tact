@@ -309,10 +309,7 @@ impl App {
         for line in content.split('\n') {
             let style = SystemMsgStyle::from_marker(line).unwrap_or(SystemMsgStyle::Default);
             self.append_msg(
-                Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(style.color(&theme)),
-                )),
+                Line::from(Span::styled(line.to_string(), style.style(&theme))),
                 line.to_string(),
                 LogItemKind::SystemPlain(style),
             );
@@ -1105,6 +1102,25 @@ mod tests {
             app.log.items.last().unwrap().line.spans[0].style.fg,
             Some(app.theme.accent)
         );
+    }
+
+    /// A Goal notice must be identifiable without reading it: the `/goal`
+    /// panel row, the sticky strip and the log all describe the same durable
+    /// Goal, so the log line gets the Goal slot *and* the weight.
+    #[test]
+    fn goal_notices_get_the_goal_slot_and_bold() {
+        use ratatui::style::Modifier;
+
+        let mut app = make_app();
+        app.add_system_message("🎯 Goal 216ae6be created (review code) - starting run".into());
+
+        let row = app.log.items.last().unwrap();
+        assert_eq!(row.kind, LogItemKind::SystemPlain(SystemMsgStyle::Goal));
+        let style = row.line.spans[0].style;
+        assert_eq!(style.fg, Some(app.theme.goal_fg()));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        // The marker is what copy/selection carry, so it must stay in `raw`.
+        assert!(row.raw.starts_with("🎯 Goal 216ae6be"));
     }
 
     #[test]

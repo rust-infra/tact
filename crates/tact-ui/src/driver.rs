@@ -52,13 +52,13 @@ async fn recover_interrupted_goals(agent: &Agent) {
         Ok(recovered) => {
             for run in recovered {
                 agent.emit_update(AgentUpdate::Info(format!(
-                    "[goal] recovered interrupted run {}; goal {} paused",
+                    "🎯 recovered interrupted run {}; goal {} paused",
                     run.id, run.goal_id
                 )));
             }
         }
         Err(error) => agent.emit_update(AgentUpdate::Info(format!(
-            "[goal] recovery failed; goal state may be stale: {error:#}"
+            "⚠ Goal recovery failed; goal state may be stale: {error:#}"
         ))),
     }
 }
@@ -198,8 +198,26 @@ pub async fn run_command_loop_with_account(
                 )
                 .await;
             }
-            UserCommand::ListGoals => {
-                list_goals(&goal_manager, &task_manager, goal_limits, &ui_tx).await;
+            UserCommand::ListGoals { include_archived } => {
+                list_goals(
+                    &goal_manager,
+                    &task_manager,
+                    goal_limits,
+                    &ui_tx,
+                    include_archived,
+                )
+                .await;
+            }
+            UserCommand::SetGoalArchived { goal_id, archived } => {
+                set_goal_archived(
+                    &goal_manager,
+                    &task_manager,
+                    goal_limits,
+                    &ui_tx,
+                    &goal_id,
+                    archived,
+                )
+                .await;
             }
             UserCommand::ShowGoal { goal_id } => {
                 show_goal(&goal_manager, &task_manager, goal_limits, &goal_id, &ui_tx).await;
@@ -448,6 +466,21 @@ async fn goal_snapshots(
     task_manager: &SharedTaskManager,
     limits: GoalLimits,
 ) -> Result<Vec<GoalSnapshot>> {
+    goal_snapshots_with(goal_manager, task_manager, limits, false).await
+}
+
+/// Snapshot builder with the archived switch.
+///
+/// Archived Goals are off by default: the snapshot is what the sticky panel
+/// draws, and a finished Goal that has been filed away must stop taking rows
+/// there. `/goal list --all` asks for them, which is how an archived Goal stays
+/// discoverable without keeping it on screen.
+async fn goal_snapshots_with(
+    goal_manager: &SharedGoalManager,
+    task_manager: &SharedTaskManager,
+    limits: GoalLimits,
+    include_archived: bool,
+) -> Result<Vec<GoalSnapshot>> {
     let running_by_goal: HashMap<_, _> = goal_manager
         .list_running_runs()
         .await?
@@ -456,6 +489,9 @@ async fn goal_snapshots(
         .collect();
     let mut snapshots = Vec::new();
     for goal in goal_manager.list().await? {
+        if goal.is_archived() && !include_archived {
+            continue;
+        }
         let tasks = task_manager.list_for_goal(&goal.id).await?;
         let events = goal_manager.list_events(&goal.id).await?;
         let wait_reason = events
@@ -508,6 +544,7 @@ async fn goal_snapshots(
                 elapsed_ms: run.elapsed_ms,
                 wall_clock_limit_ms: limits.max_elapsed.as_millis().min(u64::MAX as u128) as u64,
             });
+        let archived = goal.is_archived();
         snapshots.push(GoalSnapshot {
             id: goal.id.clone(),
             title: goal.title,
@@ -523,6 +560,7 @@ async fn goal_snapshots(
             wait_reason,
             acceptance,
             run_budget,
+            archived,
         });
     }
     Ok(snapshots)
@@ -555,8 +593,9 @@ async fn list_goals(
     task_manager: &SharedTaskManager,
     limits: GoalLimits,
     ui_tx: &Option<UnboundedSender<AgentUpdate>>,
+    include_archived: bool,
 ) {
-    match goal_snapshots(goal_manager, task_manager, limits).await {
+    match goal_snapshots_with(goal_manager, task_manager, limits, include_archived).await {
         Ok(goals) => {
             if let Some(tx) = ui_tx {
                 if goals.is_empty() {
@@ -618,7 +657,7 @@ async fn create_goal(
             .await;
             if let Some(tx) = &agent.runtime.ui_tx {
                 let _ = tx.send(AgentUpdate::Info(format!(
-                    "Goal {} created ({}) - starting run",
+                    "🎯 Goal {} created ({}) - starting run",
                     goal.id, goal.title
                 )));
             }
@@ -634,6 +673,83 @@ async fn create_goal(
     }
 }
 
+/// File a finished Goal out of the panel, or bring it back.
+///
+/// Not a lifecycle change: `archived_at` is a stamp on the Goal, so a failed
+/// Goal stays `failed` while it is off the list. Only a terminal Goal can be
+/// archived — an archive that hid running work would take it off the panel
+/// while it kept going — and repeating the verb reports the state instead of
+/// erroring, the same rule `/skill disable` follows.
+async fn set_goal_archived(
+    goal_manager: &SharedGoalManager,
+    task_manager: &SharedTaskManager,
+    limits: GoalLimits,
+    ui_tx: &Option<UnboundedSender<AgentUpdate>>,
+    goal_id: &str,
+    archived: bool,
+) {
+    let goal = match goal_manager.get(goal_id).await {
+        Ok(goal) => goal,
+        Err(error) => {
+            emit_goal_error(ui_tx, format!("Goal {goal_id} not found: {error:#}"));
+            return;
+        }
+    };
+    if archived && !goal.status.is_terminal() {
+        emit_goal_error(
+            ui_tx,
+            format!(
+                "Goal {goal_id} is {:?}; only a finished Goal can be archived",
+                goal.status
+            ),
+        );
+        return;
+    }
+    if goal.is_archived() == archived {
+        if let Some(tx) = ui_tx {
+            let _ = tx.send(AgentUpdate::Info(format!(
+                "Goal {goal_id} is {}",
+                if archived {
+                    "already archived"
+                } else {
+                    "not archived"
+                }
+            )));
+        }
+        return;
+    }
+    let kind = if archived { "archived" } else { "unarchived" };
+    let event = goal_event(&goal, kind, None, format!("{kind} by user"));
+    match goal_manager
+        .update(
+            goal_id,
+            goal.version,
+            GoalUpdate {
+                archived: Some(archived),
+                ..GoalUpdate::default()
+            },
+            Some(event),
+            None,
+        )
+        .await
+    {
+        Ok(updated) => {
+            // The panel refresh goes first: the announcement names a Goal the
+            // panel may no longer show.
+            emit_goals_changed(goal_manager, task_manager, limits, ui_tx).await;
+            if let Some(tx) = ui_tx {
+                let _ = tx.send(AgentUpdate::Info(format!(
+                    "🎯 Goal {} {kind} ({})",
+                    updated.id, updated.title
+                )));
+            }
+        }
+        Err(error) => {
+            emit_goal_error(ui_tx, format!("Goal {goal_id} {kind} failed: {error:#}"));
+        }
+    }
+}
+
 async fn show_goal(
     goal_manager: &SharedGoalManager,
     task_manager: &SharedTaskManager,
@@ -641,12 +757,19 @@ async fn show_goal(
     goal_id: &str,
     ui_tx: &Option<UnboundedSender<AgentUpdate>>,
 ) {
-    match goal_snapshots(goal_manager, task_manager, limits).await {
+    // `show` is the read that has to reach *any* Goal, archived ones included
+    // (that is what keeps archiving from being a dead end), while the panel
+    // refresh it piggybacks on stays the default list.
+    match goal_snapshots_with(goal_manager, task_manager, limits, true).await {
         Ok(goals) => {
             let selected = goals.iter().find(|goal| goal.id == goal_id).cloned();
             if let Some(tx) = ui_tx {
                 let _ = tx.send(AgentUpdate::GoalsChanged {
-                    goals: goals.clone(),
+                    goals: goals
+                        .iter()
+                        .filter(|goal| !goal.archived)
+                        .cloned()
+                        .collect(),
                 });
                 match selected {
                     Some(goal) => {
@@ -673,10 +796,11 @@ async fn show_goal(
                         let _ = tx.send(AgentUpdate::PopupMarkdown {
                             title: format!("Goal: {}", goal.title),
                             source: format!(
-                                "**ID:** `{}`\n\n**Status:** `{:?}` / `{:?}`\n\n{}\n\n**Tasks:** {}/{}\n\n**Acceptance:** {}/{} passed\n\n{}",
+                                "**ID:** `{}`\n\n**Status:** `{:?}` / `{:?}`{}\n\n{}\n\n**Tasks:** {}/{}\n\n**Acceptance:** {}/{} passed\n\n{}",
                                 goal.id,
                                 goal.status,
                                 goal.phase,
+                                if goal.archived { "\n\n**Archived:** yes" } else { "" },
                                 goal.objective,
                                 goal.task_completed,
                                 goal.task_total,
@@ -991,12 +1115,13 @@ async fn handle_user_command_with_account(
                 resume_goal(agent, &goal_id).await;
             }
         }
-        UserCommand::ListGoals => {
+        UserCommand::ListGoals { include_archived } => {
             list_goals(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
                 GoalLimits::default(),
                 &agent.runtime.ui_tx,
+                include_archived,
             )
             .await;
         }
@@ -1044,6 +1169,17 @@ async fn handle_user_command_with_account(
             update_goal_status(agent, &goal_id, GoalStatus::Cancelled, "cancelled by user").await;
         }
         UserCommand::AcceptGoal { goal_id, text } => accept_goal(agent, &goal_id, &text).await,
+        UserCommand::SetGoalArchived { goal_id, archived } => {
+            set_goal_archived(
+                &agent.tool_context.goal_manager,
+                &agent.tool_context.task_manager,
+                GoalLimits::default(),
+                &agent.runtime.ui_tx,
+                &goal_id,
+                archived,
+            )
+            .await;
+        }
         UserCommand::SubmitTask(task) => {
             agent.tool_use_counter = 0;
             agent.runtime.cancel_flag.store(false, Ordering::Relaxed);
@@ -1432,6 +1568,7 @@ mod tests {
             &agent.tool_context.task_manager,
             super::GoalLimits::default(),
             &ui_tx,
+            false,
         )
         .await;
 
@@ -1510,7 +1647,11 @@ mod tests {
 
         tokio::time::sleep(Duration::from_millis(100)).await;
         let start = std::time::Instant::now();
-        user_cmd_tx.send(UserCommand::ListGoals).unwrap();
+        user_cmd_tx
+            .send(UserCommand::ListGoals {
+                include_archived: false,
+            })
+            .unwrap();
         let mut answered = false;
         loop {
             match tokio::time::timeout(Duration::from_millis(300), agent_rx.recv()).await {
@@ -1632,6 +1773,166 @@ mod tests {
             }
         }
         assert!(saw_cancelled);
+    }
+
+    /// The panel is the reason archiving exists: a finished Goal that has been
+    /// filed away must stop taking rows there, while `/goal list --all` still
+    /// finds it and `/goal show` still reports how it finished.
+    #[tokio::test]
+    async fn archiving_hides_a_finished_goal_until_list_all_asks_for_it() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let created = manager
+            .create(tact::goal::GoalCreate {
+                title: "Filed away".into(),
+                objective: "Stop taking panel space".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::required("done")],
+            })
+            .await
+            .unwrap();
+        manager
+            .update(
+                &created.id,
+                created.version,
+                tact::goal::GoalUpdate {
+                    status: Some(tact::goal::GoalStatus::Cancelled),
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let cancelled = manager.get(&created.id).await.unwrap();
+        assert_eq!(cancelled.status, tact::goal::GoalStatus::Cancelled);
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SetGoalArchived {
+                goal_id: created.id.clone(),
+                archived: true,
+            },
+            &work_dir,
+        )
+        .await;
+
+        let stored = manager.get(&created.id).await.unwrap();
+        assert!(stored.is_archived(), "the archive is persisted");
+        assert_eq!(
+            stored.status,
+            tact::goal::GoalStatus::Cancelled,
+            "archiving does not rewrite the outcome"
+        );
+        assert!(
+            manager
+                .list_events(&created.id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "archived"),
+            "the user action is in the Goal's history"
+        );
+
+        let mut saw_empty = false;
+        let mut announced = false;
+        while let Ok(update) = agent_rx.try_recv() {
+            match update {
+                AgentUpdate::GoalsChanged { goals } if goals.is_empty() => saw_empty = true,
+                AgentUpdate::Info(message) if message.contains("archived") => announced = true,
+                _ => {}
+            }
+        }
+        assert!(saw_empty, "the panel snapshot drops the archived Goal");
+        assert!(announced, "the archive is announced in the log");
+
+        // `--all` is how it stays reachable: the goal is back in the snapshot
+        // and marked as archived.
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::ListGoals {
+                include_archived: true,
+            },
+            &work_dir,
+        )
+        .await;
+        let mut listed = None;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::GoalsChanged { goals } = update {
+                listed = Some(goals);
+            }
+        }
+        let listed = listed.expect("a snapshot for --all");
+        assert_eq!(listed.len(), 1);
+        assert!(listed[0].archived);
+        assert_eq!(listed[0].id, created.id);
+
+        // ... and `show` says so, instead of pretending the Goal is live.
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::ShowGoal {
+                goal_id: created.id.clone(),
+            },
+            &work_dir,
+        )
+        .await;
+        let mut shown = None;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::PopupMarkdown { source, .. } = update {
+                shown = Some(source);
+            }
+        }
+        assert!(
+            shown
+                .as_deref()
+                .is_some_and(|source| source.contains("**Archived:** yes")),
+            "show must say the Goal is archived: {shown:?}"
+        );
+    }
+
+    /// Archiving running work would take it off the panel while it kept going.
+    #[tokio::test]
+    async fn archiving_an_unfinished_goal_is_refused_with_a_reason() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let created = manager
+            .create(tact::goal::GoalCreate {
+                title: "Still running".into(),
+                objective: "Stay on the panel".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::required("done")],
+            })
+            .await
+            .unwrap();
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SetGoalArchived {
+                goal_id: created.id.clone(),
+                archived: true,
+            },
+            &work_dir,
+        )
+        .await;
+
+        assert!(!manager.get(&created.id).await.unwrap().is_archived());
+        let mut error = None;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::Error(tact_protocol::AgentErrorKind::Other(message)) = update {
+                error = Some(message);
+            }
+        }
+        assert!(
+            error
+                .as_deref()
+                .is_some_and(|message| message.contains("only a finished Goal can be archived")),
+            "the refusal has to name the rule: {error:?}"
+        );
     }
 
     #[tokio::test]
@@ -1782,7 +2083,11 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         let start = std::time::Instant::now();
-        user_cmd_tx.send(UserCommand::ListGoals).unwrap();
+        user_cmd_tx
+            .send(UserCommand::ListGoals {
+                include_archived: false,
+            })
+            .unwrap();
 
         let mut saw_running_snapshot = false;
         loop {

@@ -236,6 +236,32 @@ pub struct GoalUpdate {
     /// atomically with the rest of the update (and with a fencing lease, when
     /// the caller supplies one).
     pub status: Option<GoalStatus>,
+    /// File a finished Goal away (`Some(true)`) or bring it back
+    /// (`Some(false)`).
+    ///
+    /// A flag rather than a `GoalStatus::Archived` on purpose: the status a
+    /// finished Goal reached **is** its record — a failed Goal must not start
+    /// reporting itself as "archived" — and nothing about the lifecycle
+    /// changes when it is filed. It is also the one write a terminal Goal
+    /// accepts; see [`Goal::update`].
+    pub archived: Option<bool>,
+}
+
+impl GoalUpdate {
+    /// True when the only thing this update does is file the Goal away.
+    ///
+    /// That is the single mutation a *terminal* Goal accepts: the outcome of a
+    /// finished Goal is frozen (title, objective, criteria, evidence, status),
+    /// while where it is listed is not.
+    fn is_archive_only(&self) -> bool {
+        self.archived.is_some()
+            && self.title.is_none()
+            && self.objective.is_none()
+            && self.constraints.is_none()
+            && self.criteria.is_none()
+            && self.evidence.is_empty()
+            && self.status.is_none()
+    }
 }
 
 /// A durable Goal aggregate. Timestamps are domain metadata; no storage is
@@ -265,6 +291,14 @@ pub struct Goal {
     pub updated_at: DateTime<Utc>,
     #[serde(default)]
     pub completed_at: Option<DateTime<Utc>>,
+    /// When the Goal was filed out of the way, if it was.
+    ///
+    /// Archiving is presentation, not lifecycle: the Goal keeps the status it
+    /// finished in, its runs and its events, and stops taking space in the
+    /// sticky panel / `/goal list`. Optional, so every row written before this
+    /// field existed decodes as "not archived".
+    #[serde(default)]
+    pub archived_at: Option<DateTime<Utc>>,
 }
 
 impl Goal {
@@ -289,7 +323,13 @@ impl Goal {
             created_at: now,
             updated_at: now,
             completed_at: None,
+            archived_at: None,
         })
+    }
+
+    /// Whether the Goal has been filed away.
+    pub fn is_archived(&self) -> bool {
+        self.archived_at.is_some()
     }
 
     /// Apply a validated update. Changing criteria always advances the
@@ -298,7 +338,11 @@ impl Goal {
     /// the fields this call just applied (so `succeed()` still has to pass
     /// [`Goal::validate_acceptance`]).
     pub fn update(&mut self, update: GoalUpdate) -> Result<(), GoalError> {
-        if self.status.is_terminal() {
+        // A terminal Goal's record is frozen: after it finished, nothing may
+        // rewrite its title, objective, criteria, evidence or status. Filing it
+        // away is the exception — it changes where the Goal is listed, not what
+        // it did.
+        if self.status.is_terminal() && !update.is_archive_only() {
             return Err(GoalError::TerminalGoalMutation {
                 status: self.status,
             });
@@ -348,6 +392,17 @@ impl Goal {
                     criterion_id: evidence.criterion_id.clone(),
                 })?;
             criterion.record_evidence(evidence.value, candidate.criteria_version);
+        }
+        if let Some(archived) = update.archived {
+            // Only a finished Goal can be filed away: an archive that hid a
+            // Goal still being worked on would take the work off the panel
+            // while it keeps running.
+            if archived && !candidate.status.is_terminal() {
+                return Err(GoalError::UnfinishedGoal {
+                    status: candidate.status,
+                });
+            }
+            candidate.archived_at = archived.then(Utc::now);
         }
         if let Some(next) = update.status {
             // The transition re-validates against the fields applied above and
@@ -798,13 +853,30 @@ pub enum GoalError {
     EmptyTitle,
     EmptyObjective,
     EmptyCriterionId,
-    EmptyCriterion { criterion_id: String },
-    EmptyEvidence { criterion_id: String },
-    CriterionNotFound { criterion_id: String },
-    InvalidTransition { from: GoalStatus, to: GoalStatus },
-    TerminalGoalMutation { status: GoalStatus },
+    EmptyCriterion {
+        criterion_id: String,
+    },
+    EmptyEvidence {
+        criterion_id: String,
+    },
+    CriterionNotFound {
+        criterion_id: String,
+    },
+    InvalidTransition {
+        from: GoalStatus,
+        to: GoalStatus,
+    },
+    TerminalGoalMutation {
+        status: GoalStatus,
+    },
+    /// An archive was refused because the Goal is still in flight.
+    UnfinishedGoal {
+        status: GoalStatus,
+    },
     NoAcceptanceCriteria,
-    AcceptanceCriteriaNotMet { criterion_id: String },
+    AcceptanceCriteriaNotMet {
+        criterion_id: String,
+    },
 }
 
 impl fmt::Display for GoalError {
@@ -830,6 +902,12 @@ impl fmt::Display for GoalError {
             }
             Self::TerminalGoalMutation { status } => {
                 write!(f, "cannot mutate terminal goal in {status:?} state")
+            }
+            Self::UnfinishedGoal { status } => {
+                write!(
+                    f,
+                    "goal is still {status:?}: only a finished goal can be archived"
+                )
             }
             Self::NoAcceptanceCriteria => {
                 write!(f, "goal must have acceptance criteria to succeed")
@@ -1130,12 +1208,103 @@ mod tests {
             )]),
             evidence: Vec::new(),
             status: None,
+            archived: None,
         })
         .unwrap();
 
         assert_eq!(goal.criteria_version, old_version + 1);
         assert!(!goal.criteria[0].has_valid_evidence(goal.criteria_version));
         assert!(goal.criteria[0].evidence.is_empty());
+    }
+
+    /// Archiving is a stamp, not a lifecycle move: the Goal keeps the outcome
+    /// it reached, and filing it away is the one write a terminal Goal accepts.
+    #[test]
+    fn archiving_is_the_only_write_a_finished_goal_accepts() {
+        let mut goal = create_goal();
+        goal.update(GoalUpdate {
+            status: Some(GoalStatus::Cancelled),
+            ..GoalUpdate::default()
+        })
+        .unwrap();
+        let version = goal.version;
+
+        goal.update(GoalUpdate {
+            archived: Some(true),
+            ..GoalUpdate::default()
+        })
+        .unwrap();
+        assert!(goal.is_archived());
+        assert_eq!(
+            goal.status,
+            GoalStatus::Cancelled,
+            "the outcome is what the Goal reports, archived or not"
+        );
+        assert!(
+            goal.version > version,
+            "archiving is persisted like any write"
+        );
+
+        // Everything else about a finished Goal is frozen.
+        assert!(matches!(
+            goal.update(GoalUpdate {
+                title: Some("renamed".into()),
+                ..GoalUpdate::default()
+            }),
+            Err(GoalError::TerminalGoalMutation { .. })
+        ));
+        assert!(
+            matches!(
+                goal.update(GoalUpdate {
+                    archived: Some(true),
+                    title: Some("renamed".into()),
+                    ..GoalUpdate::default()
+                }),
+                Err(GoalError::TerminalGoalMutation { .. })
+            ),
+            "an archive may not smuggle another field through"
+        );
+
+        goal.update(GoalUpdate {
+            archived: Some(false),
+            ..GoalUpdate::default()
+        })
+        .unwrap();
+        assert!(!goal.is_archived());
+        assert_eq!(goal.status, GoalStatus::Cancelled);
+    }
+
+    /// An archive that hid running work would take the Goal off the panel while
+    /// it kept going, so the domain refuses it.
+    #[test]
+    fn archiving_an_unfinished_goal_is_refused() {
+        let mut goal = create_goal();
+        goal.update(GoalUpdate {
+            status: Some(GoalStatus::Queued),
+            ..GoalUpdate::default()
+        })
+        .unwrap();
+
+        let error = goal
+            .update(GoalUpdate {
+                archived: Some(true),
+                ..GoalUpdate::default()
+            })
+            .unwrap_err();
+        assert!(matches!(error, GoalError::UnfinishedGoal { .. }), "{error}");
+        assert!(!goal.is_archived());
+    }
+
+    /// Rows written before `archived_at` existed decode as "not archived" —
+    /// the field is additive, so no store migration is needed.
+    #[test]
+    fn a_goal_without_the_archived_field_decodes_as_unarchived() {
+        let goal = create_goal();
+        let mut json: serde_json::Value = serde_json::to_value(&goal).unwrap();
+        json.as_object_mut().unwrap().remove("archived_at");
+
+        let decoded: Goal = serde_json::from_value(json).unwrap();
+        assert!(!decoded.is_archived());
     }
 
     #[test]
@@ -1151,6 +1320,7 @@ mod tests {
                 criteria: Some(vec![GoalCriterion::required("  ")]),
                 evidence: Vec::new(),
                 status: None,
+                archived: None,
             })
             .unwrap_err();
 

@@ -153,7 +153,7 @@ root.collection::<T>(relative_dir)?              // CollectionStore<T> — 按�
 | `goals` | Goal 聚合整行 JSON（`data`）+ 索引列 `status`、`version`（标准/证据随聚合一起序列化，无独立的 `goal_criteria` 表）、`updated_at` |
 | `goal_runs` / `goal_events` / `goal_leases` | bounded Run（整行 JSON `data` + 索引列 `state`、时间戳、`stop_reason`）、追加式审计事件（自增 `seq` 排序）、工作区 singleton lease 与 fencing epoch |
 
-Goal store 与 Task store 共用 `.tact/tact.db`。`tasks.goal_id` 是 nullable 迁移字段，旧 Task 保持可读；Goal 生命周期更新、事件追加和 run/lease 写入通过 `GoalManager` 的 SQLite store 完成，重启恢复不依赖内存队列。Goal 域的标识符由 `goal::new_id` 统一铸造为 8 位十六进制短 ID，历史行保留更长的 UUID：ID 在存储层是不透明字符串，从不解析、不校验长度（见 [Agent Goal](./28_chapter_goal_zh.md) §4）。
+`archived_at` 不在列里：归档是 Goal JSON 里的一个时间戳（`Option`，旧行缺字段即「未归档」），所以归档/取消归档不需要新列、不需要迁移，`status` 列继续报 Goal 真正结束时的状态。Goal store 与 Task store 共用 `.tact/tact.db`。`tasks.goal_id` 是 nullable 迁移字段，旧 Task 保持可读；Goal 生命周期更新、事件追加和 run/lease 写入通过 `GoalManager` 的 SQLite store 完成，重启恢复不依赖内存队列。Goal 域的标识符由 `goal::new_id` 统一铸造为 8 位十六进制短 ID，历史行保留更长的 UUID：ID 在存储层是不透明字符串，从不解析、不校验长度（见 [Agent Goal](./28_chapter_goal_zh.md) §4）。
 
 ### Agent 集成
 

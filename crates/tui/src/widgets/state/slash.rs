@@ -290,13 +290,17 @@ const HOOKS_SUBCOMMANDS: &[Subcommand] = &[
 
 const GOAL_SUBCOMMANDS: &[Subcommand] = &[
     sub("create", "<objective>", &[], true),
-    sub("list", "", &[], false),
+    // `[--all]` rather than a declared child: declaring one would make Enter on
+    // `/goal list` complete instead of run, and listing is the common case.
+    sub("list", "[--all]", &[], false),
     sub("show", "<goal-id>", &[], true),
     sub("steer", "<goal-id> <text>", &[], true),
     sub("pause", "<goal-id>", &[], true),
     sub("resume", "<goal-id>", &[], true),
     sub("cancel", "<goal-id>", &[], true),
     sub("accept", "<goal-id> <text>", &[], true),
+    sub("archive", "<goal-id>", &[], true),
+    sub("unarchive", "<goal-id>", &[], true),
 ];
 
 #[cfg(test)]

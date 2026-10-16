@@ -4,7 +4,10 @@
 //! (gap checks, index fixups, i18n-driven messages) stay in the consuming app
 //! and delegate to these primitives.
 
-use ratatui::{style::Color, text::Line};
+use ratatui::{
+    style::{Color, Modifier, Style},
+    text::Line,
+};
 
 use crate::{
     render::cells::markdown::{Gutter, MarkdownCell},
@@ -20,6 +23,13 @@ pub enum SystemMsgStyle {
     Error,
     Warning,
     Accent,
+    /// A durable Goal's own notices (created / run finished / waiting for the
+    /// user).
+    ///
+    /// A Goal outlives the turn that mentioned it, so its notices must be
+    /// findable by scanning the log, not by re-reading every system line: this
+    /// slot paints them in [`Theme::goal_fg`] and bold.
+    Goal,
 }
 
 impl SystemMsgStyle {
@@ -41,6 +51,9 @@ impl SystemMsgStyle {
             ("🤖", SystemMsgStyle::Accent),
             ("📋", SystemMsgStyle::Accent),
             ("🎨", SystemMsgStyle::Accent),
+            // Goal notices (the `/` palette spells `/goal` with the same
+            // glyph, so the log line and the command that produced it match).
+            ("🎯", SystemMsgStyle::Goal),
         ];
         let trimmed = s.trim_start();
         PREFIXES
@@ -56,6 +69,20 @@ impl SystemMsgStyle {
             Self::Error => theme.error,
             Self::Warning => theme.warning,
             Self::Accent => theme.accent,
+            Self::Goal => theme.goal_fg(),
+        }
+    }
+
+    /// How a system line in this slot is painted, modifiers included.
+    ///
+    /// [`Self::color`] answers "which theme slot"; this answers "how the row
+    /// looks". Only `Goal` adds a modifier: its hue is already unique, and the
+    /// weight is what makes the row stand out in a screen of prose.
+    pub fn style(self, theme: &Theme) -> Style {
+        let base = Style::default().fg(self.color(theme));
+        match self {
+            Self::Goal => base.add_modifier(Modifier::BOLD),
+            _ => base,
         }
     }
 }
@@ -424,6 +451,11 @@ mod tests {
             SystemMsgStyle::from_marker("🎨 Theme: Dark"),
             Some(SystemMsgStyle::Accent)
         );
+        assert_eq!(
+            SystemMsgStyle::from_marker("🎯 Goal 216ae6be created (review) - starting run"),
+            Some(SystemMsgStyle::Goal),
+            "a Goal notice must not read as an unmarked system line"
+        );
     }
 
     #[test]
@@ -465,5 +497,36 @@ mod tests {
         assert_eq!(SystemMsgStyle::Error.color(&theme), theme.error);
         assert_eq!(SystemMsgStyle::Warning.color(&theme), theme.warning);
         assert_eq!(SystemMsgStyle::Accent.color(&theme), theme.accent);
+        assert_eq!(SystemMsgStyle::Goal.color(&theme), theme.goal_fg());
+    }
+
+    #[test]
+    fn only_goal_system_lines_are_bold() {
+        let dark = Theme::from(ThemeName::Dark);
+        let light = Theme::from(ThemeName::Light);
+
+        assert!(
+            SystemMsgStyle::Goal
+                .style(&dark)
+                .add_modifier
+                .contains(Modifier::BOLD)
+        );
+        // The slot must stay legible on a light background too: the violet is
+        // darkened there instead of reusing the dark-background hue.
+        assert_ne!(dark.goal_fg(), light.goal_fg());
+        assert_eq!(SystemMsgStyle::Goal.style(&light).fg, Some(light.goal_fg()));
+
+        for style in [
+            SystemMsgStyle::Default,
+            SystemMsgStyle::Success,
+            SystemMsgStyle::Error,
+            SystemMsgStyle::Warning,
+            SystemMsgStyle::Accent,
+        ] {
+            assert!(
+                !style.style(&dark).add_modifier.contains(Modifier::BOLD),
+                "{style:?} must not gain a modifier"
+            );
+        }
     }
 }

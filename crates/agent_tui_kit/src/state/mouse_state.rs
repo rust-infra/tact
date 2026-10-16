@@ -148,6 +148,24 @@ impl CardSelection {
         }
     }
 
+    /// Anchor a drag without selecting anything yet.
+    ///
+    /// A click that never moves must leave no selection behind — the gesture
+    /// that selects is the *double* click or a real drag, not the press that
+    /// starts either one. The range stays empty until `extend_card_selection`
+    /// materialises it, which also keeps the press invisible: an empty
+    /// `selected_phys_indices` paints nothing.
+    pub fn anchor(phys_idx: usize, text: String) -> Self {
+        Self {
+            phys_idx,
+            end_phys_idx: phys_idx,
+            selected_phys_indices: Vec::new(),
+            text,
+            start: 0,
+            end: 0,
+        }
+    }
+
     pub fn normalized_phys_range(&self) -> (usize, usize) {
         if self.phys_idx <= self.end_phys_idx {
             (self.phys_idx, self.end_phys_idx)
@@ -193,6 +211,13 @@ pub enum SurfaceId {
     SubagentPopup,
     DiffPopup,
     TaskDagPopup,
+    /// A read-out popup's own rect (`/stats`, `/background`, `/view-system-prompt`,
+    /// `/goal show` …).
+    ///
+    /// Not a text-selection surface: it is here so a press inside it is not
+    /// routed to the Log *underneath* it, which used to select log text the
+    /// reader never pointed at.
+    SystemPromptPopup,
     SlashPopup,
     SelectPopup,
     PalettePopup,
@@ -201,7 +226,7 @@ pub enum SurfaceId {
 
 impl SurfaceId {
     /// Number of surfaces; also the length of [`MouseState::areas`].
-    pub const COUNT: usize = 12;
+    pub const COUNT: usize = 13;
 
     /// Every surface, in hit-test priority order: the most modal overlay first,
     /// so a popup drawn over the log wins the point test.
@@ -219,6 +244,7 @@ impl SurfaceId {
         SurfaceId::CodePopup,
         SurfaceId::MermaidPopup,
         SurfaceId::TaskDagPopup,
+        SurfaceId::SystemPromptPopup,
         SurfaceId::TaskPanel,
         SurfaceId::Log,
     ];

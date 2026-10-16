@@ -424,10 +424,13 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 | Tool/file detail | 双击 tool card（已折叠的命令 / 读取 / 编辑卡片：meta 行末尾的 `[󰜼 打开]` 按钮） | `popups/diff_popup.rs` |
 | Code detail | 双击 code card | `popups/code_popup.rs` |
 | Mermaid 图 / 源码 | 双击已渲染的 Mermaid 图；默认显示渲染图，`Tab` 切换到源码 | `popups/mermaid_popup.rs` |
+| Read-out（`/stats`、`/background`、`/view-system-prompt`、`/goal show`、`/hooks list`…） | 对应命令；框内左键拖拽选择渲染文本、`y` 复制；框外点击关闭 | `popups/system_prompt_popup.rs` |
 
 Popups 通常占终端约 80%×80%，记录 `app.mouse.*_popup_area` 供点击外部关闭，显示 `[y] Copy` / `[Esc] Close` / `[j/k] Scroll` 提示——工具详情弹窗在这些提示前面打印原始 tool id（`read_image | y copy | Esc close | j/k scroll`），因为它的标题是路径或命令而不是工具名。`diff_popup` 经 `cached_content` 懒加载全文 — 热路径 `render()` 内无文件 I/O。
 
-Tool/file 与 Thinking detail popup 支持鼠标左键文本选择。Mouse hit 将每个渲染出的扩展字素簇映射至 byte offset，因此组合字符与 emoji 序列保持不可分割，行号、diff gutter、边框、标题、底栏、元数据及其他仅用于显示的前缀不会进入选择。Popup 滚动时选择保留；拖拽到 body 上方或下方会 clamp 到首个或末个可见 source boundary，且不会自动滚动。`y` 在 tool popup 中复制选中的原始文本，在 Thinking popup 中复制选中的可见文本；没有非空选择时复制 popup 的完整原始内容。Code detail popup 保持原有鼠标行为。
+Read-out popup 同样上报自己的 rect（`SurfaceId::SystemPromptPopup`）：框内的按下归它自己（起手选择 / 滚动），框外的按下关闭它——与 code/mermaid/task-dag 弹窗一致。在此之前它不报 rect，框内点击会落到弹窗盖住的那条 Log 行上，单击就等于在看不见的地方选区。
+
+Tool/file、Thinking detail 与 **read-out** popup 支持鼠标左键文本选择（read-out 的正文在这里自己排布：`selectable_text::layout_all_display_rows` 同时给出折行、字节范围和 hit row，所以选区、滚动范围与滚动条不会各算一份）。它的选择缓冲区是**渲染后**的文本（markdown 标记已被消费），没有选区时 `y` 复制原始 source——与 thinking popup 同一套契约。Mouse hit 将每个渲染出的扩展字素簇映射至 byte offset，因此组合字符与 emoji 序列保持不可分割，行号、diff gutter、边框、标题、底栏、元数据及其他仅用于显示的前缀不会进入选择。Popup 滚动时选择保留；拖拽到 body 上方或下方会 clamp 到首个或末个可见 source boundary，且不会自动滚动。`y` 在 tool popup 中复制选中的原始文本，在 Thinking popup 中复制选中的可见文本；没有非空选择时复制 popup 的完整原始内容。Code detail popup 保持原有鼠标行为。
 
 ### 6.9 统一弹出层 Chrome
 
@@ -670,9 +673,11 @@ Log 在 bordered 面板内用**双层**绘制模型：
 | 单击 + 拖拽 | 行范围选择（`log_selection: (start, end)`） |
 | 双击（纯文本） | `find_word_bounds` 词选 |
 | 三击 | 整 logical 行；code block 内 → 整块范围 |
-| 单击 thinking/tool/code card | 记住 card 索引；无文本选择 |
+| 单击 thinking / markdown card 正文 | 只**起手**（`CardSelection::anchor`）：立即拖拽才成选区，单击本身不选中、不高亮 |
+| 双击 thinking / markdown card 正文 | 选中整张卡片（`CardSelection`），`y` 按语义文本复制 |
+| 单击 tool/code card | 记住 card 索引；无文本选择 |
 | 双击 card | 打开对应 detail popup；命令 / 读取 / 编辑类卡片已折叠时没有 card，命中目标是 meta 行末尾的 `[󰜼 打开]` 按钮——参数行与该行其余文字都不响应 |
-| 在 tool/Thinking detail popup 内左键拖拽 | 选择原始 tool 文本或可见 Thinking 文本；排除仅用于显示的前缀 |
+| 在 tool/Thinking detail/read-out popup 内左键拖拽 | 选择原始 tool 文本、可见 Thinking 文本或 read-out 的渲染文本；排除仅用于显示的前缀（read-out 的 `y` 无选区时复制其 Markdown source） |
 
 复制（normal 模式 `y`）在 tool 或 Thinking popup active 时优先非空 popup 选择；popup 选择为空时复制完整原始 popup 内容。无 selectable popup 时，优先 log 词选，然后拼接选中 logical 行的 `LogItem::raw`。
 
@@ -728,7 +733,7 @@ sequenceDiagram
 
 内置命令的唯一来源是 `widgets/state/slash.rs` 的 `SlashCommand` 枚举：`ALL` 决定弹出列表的顺序，`name()` / `from_name()` 是用户输入的名字，`desc(msgs)` 是中英描述，`needs_args()` 决定回车是补全还是执行，`subcommands()` 是**子命令树**（每个节点带 `hint`——弹窗右列显示的后续语法 `<server>`、`--all | --source <label>`，刻意不做翻译，因为那是语法不是文案；以及 `takes_value` / `children`，决定回车是补全还是执行）。这些都是**穷尽匹配**——新增一个命令时，漏写名字、漏写描述、漏写处理分支都会编译失败。派发在 `handlers/mod.rs` 的 `run_command`（同样无 `_` 分支）：先按枚举解析，不中再交给 skill，因此内置名始终赢过同名 skill。
 
-`/balance` 是唯一按会话条件隐藏的命令（没有账户通道时不出现在列表里）；`/skill`、`/plugin`、`/mcp`、`/hooks`、`/subagent_cancel` 是五个需要参数的命令。**子命令补全**：`handlers/insert.rs` 与 `widgets/state/slash_command.rs` 共用 `App::slash_candidates()`，输入到子命令位置时弹窗列出下一层节点（`/skill `、`/plugin mar`、`/hooks trust --`、以及嵌套的 `/plugin marketplace `），Tab 逐层补全（`/plugin ma` ⭢ Tab `/plugin marketplace ` ⭢ Tab `/plugin marketplace list `），回车只补全**未完成**的候选——`takes_value` 或还有子节点的那种——完整的叶子直接执行。空格不再一律关闭弹窗：只有当后续无可补全项时才关（`/mcp auth ` 进入取值状态即关，`/skill ` 保持打开），这就是"复合命令"能逐层补全的原因。`slash_candidates` 命中取值、skill 参数或未知 token 时返回空列表（不打"无匹配"提示框）。**不覆盖**：子命令解析（`/skill list`、`/mcp auth <server>`、`/plugin marketplace list`、`/hooks trust --all`）仍在各自的 handler 模块里按字符串切——但声明与 handler 由 `every_declared_subcommand_has_a_handler` 对齐：它遍历 `subcommands()` 给每个叶子派发样例输入，任何"能被补全却只会打印用法"的子命令都会让它失败。Palette 命令 `save` 将 log 写入 `std::env::temp_dir()/agent_log_{timestamp}.txt` 并在系统消息显示完整路径。
+`/balance` 是唯一按会话条件隐藏的命令（没有账户通道时不出现在列表里）；`/skill`、`/plugin`、`/mcp`、`/hooks`、`/subagent_cancel` 是五个需要参数的命令。**子命令补全**：`handlers/insert.rs` 与 `widgets/state/slash_command.rs` 共用 `App::slash_candidates()`，输入到子命令位置时弹窗列出下一层节点（`/skill `、`/plugin mar`、`/hooks trust --`、以及嵌套的 `/plugin marketplace `），Tab 逐层补全（`/plugin ma` ⭢ Tab `/plugin marketplace ` ⭢ Tab `/plugin marketplace list `），回车只补全**未完成**的候选——`takes_value` 或还有子节点的那种——完整的叶子直接执行。空格不再一律关闭弹窗：只有当后续无可补全项时才关（`/mcp auth ` 进入取值状态即关，`/skill ` 保持打开），这就是"复合命令"能逐层补全的原因。`slash_candidates` 命中取值、skill 参数或未知 token 时返回空列表（不打"无匹配"提示框）——但两个命令的**值本身可以补全**：`/skill disable|enable <name>` 给出该动词能作用的那一半 skill，`/goal show|steer|pause|resume|cancel|accept <goal-id>` 给出面板快照里该动词能作用的 Goal ID（见 [Ch 02](./02_chapter_skill_zh.md) §7）。**不覆盖**：子命令解析（`/skill list`、`/mcp auth <server>`、`/plugin marketplace list`、`/hooks trust --all`）仍在各自的 handler 模块里按字符串切——但声明与 handler 由 `every_declared_subcommand_has_a_handler` 对齐：它遍历 `subcommands()` 给每个叶子派发样例输入，任何"能被补全却只会打印用法"的子命令都会让它失败。Palette 命令 `save` 将 log 写入 `std::env::temp_dir()/agent_log_{timestamp}.txt` 并在系统消息显示完整路径。
 
 ### Slash skills
 

@@ -99,13 +99,14 @@ impl TryFrom<UserCommand> for Command {
             // Durable Goal lifecycle is a Tact host capability backed by its
             // SQLite stores and bounded runner, not a generic kit command.
             UserCommand::CreateGoal { .. }
-            | UserCommand::ListGoals
+            | UserCommand::ListGoals { .. }
             | UserCommand::ShowGoal { .. }
             | UserCommand::SteerGoal { .. }
             | UserCommand::PauseGoal { .. }
             | UserCommand::ResumeGoal { .. }
             | UserCommand::CancelGoal { .. }
-            | UserCommand::AcceptGoal { .. } => Err(()),
+            | UserCommand::AcceptGoal { .. }
+            | UserCommand::SetGoalArchived { .. } => Err(()),
             // Responses to agent-originated selects flow on the reverse command
             // channel; they are not host commands and never map to `Command`.
             UserCommand::UiResponse(_) => Err(()),

@@ -217,11 +217,10 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         "Assembled current system prompt",
                         "## Unavailable\n\nNo persisted LLM request with a system prompt is available for this session.".to_string(),
                     ));
-                    app.system_prompt_popup = Some(crate::widgets::state::SystemPromptPopup {
-                        title: title.to_string(),
-                        source: content,
-                        scroll: 0,
-                    });
+                    app.system_prompt_popup = Some(crate::widgets::state::SystemPromptPopup::new(
+                        title.to_string(),
+                        content,
+                    ));
                     app.input_mode = InputMode::Normal;
                 }
                 SelectKind::PermissionModePick => {

@@ -217,6 +217,57 @@ fn full_frame_slash_popup_completes_subcommands_with_their_syntax() {
     }
 }
 
+/// The read-out popup's body is laid out by the *selection* path (one
+/// `selectable_text` row per display row), so pin the shape it must keep: the
+/// rendered Markdown is all there, and the footer now advertises the copy key
+/// that works on it.
+#[test]
+fn readout_popup_renders_its_markdown_body_and_copy_hint() {
+    let mut app = make_app();
+    app.open_markdown_popup(
+        "Goal: review code".into(),
+        "**ID:** `216ae6be`\n\n**Status:** `Paused` / `Execution`\n\nreview code\n".into(),
+    );
+
+    let text = render_main_area_text(&mut app, 100, 30);
+
+    for expected in [
+        "Goal: review code",
+        "ID: 216ae6be",
+        "Status: Paused / Execution",
+        "review code",
+        "y copy",
+    ] {
+        assert!(text.contains(expected), "missing {expected} in:\n{text}");
+    }
+}
+
+/// A Goal id row is picked, not typed: the popup shows the id the command
+/// takes *and* the panel's own title, so the row is self-explanatory.
+#[test]
+fn full_frame_slash_popup_offers_goal_ids_with_their_titles() {
+    use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
+
+    let mut app = make_app();
+    app.goal_panel_mut().apply_snapshot(vec![GoalSnapshot {
+        id: "216ae6be".into(),
+        title: "review code".into(),
+        status: GoalStatusSnapshot::Running,
+        ..Default::default()
+    }]);
+    app.input_mode = InputMode::Insert;
+    app.input = "/goal show ".into();
+    app.input_cursor = app.input.len();
+    app.slash_command.active = true;
+    app.slash_command.start_pos = 0;
+
+    let text = render_app_text(&mut app, 100, 30);
+
+    for expected in ["/goal show 216ae6be", "▶ review code"] {
+        assert!(text.contains(expected), "missing {expected} in:\n{text}");
+    }
+}
+
 /// Index of the `skill-<n>` candidate in the `/skill ` popup.
 ///
 /// Derived from the live candidate list rather than hardcoded: the built-in

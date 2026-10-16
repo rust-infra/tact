@@ -587,6 +587,49 @@ mod tests {
         assert_eq!(listed[0].criteria[0].evidence[0].value, "evidence");
     }
 
+    /// `archived_at` travels in the Goal JSON, so filing a Goal away needs no
+    /// column and no migration — and the `status` projection keeps reporting
+    /// the outcome the Goal actually reached.
+    #[tokio::test]
+    async fn archived_at_round_trips_and_keeps_the_status() {
+        let store = SqliteGoalStore::new(&temp_db("archived")).await.unwrap();
+        let created = store.create(goal("filed")).await.unwrap();
+        store
+            .update(
+                &created.id,
+                created.version,
+                GoalUpdate {
+                    status: Some(GoalStatus::Cancelled),
+                    ..GoalUpdate::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let cancelled = store.get(&created.id).await.unwrap();
+        let archived = store
+            .update(
+                &created.id,
+                cancelled.version,
+                GoalUpdate {
+                    archived: Some(true),
+                    ..GoalUpdate::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        assert!(archived.is_archived());
+
+        let reloaded = store.get(&created.id).await.unwrap();
+        assert_eq!(reloaded, archived);
+        assert_eq!(reloaded.status, GoalStatus::Cancelled);
+        assert!(store.list().await.unwrap()[0].is_archived());
+    }
+
     #[tokio::test]
     async fn cas_and_event_are_atomic_and_stale_update_is_unchanged() {
         let store = SqliteGoalStore::new(&temp_db("cas")).await.unwrap();
