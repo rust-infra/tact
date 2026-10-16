@@ -232,6 +232,7 @@ impl ToolComponent {
                 .with_phase(ToolPhase::Running)
                 .with_duration_us(0)
                 .with_live_output(&active.live_output)
+                .with_subagent_id(active.output.subagent_id.clone())
                 .with_subagent_model(active.output.subagent_model.clone())
                 .with_subagent_tokens(active.output.subagent_tokens.clone())
                 .with_subagent_context_window(active.output.subagent_context_window)
@@ -294,6 +295,7 @@ impl ToolComponent {
                 output.detail_total_lines = full_text.lines().count();
                 output.detail_full = Some(full_text);
             }
+            output.subagent_id = active.output.subagent_id.take();
             output.subagent_model = active.output.subagent_model.take();
             output.subagent_tokens = active.output.subagent_tokens.take();
             output.subagent_context_window = active.output.subagent_context_window;
@@ -342,6 +344,9 @@ impl ToolComponent {
             .with_phase(ToolPhase::Failed)
             .with_duration_us(elapsed_us)
             .with_detail(error.to_string())
+            // A failed child keeps its id: that is the handle `check_subagent`
+            // and `resume` take, and the run's record is persisted either way.
+            .with_subagent_id(active.output.subagent_id.clone())
             .build();
         self.finalize_push(tool_id, output, events);
     }
@@ -445,6 +450,16 @@ impl ToolComponent {
                 output.detail_total_lines = full_text.lines().count();
                 output.detail_full = Some(full_text);
             }
+            // The finish event names the child outright; the stored id (from
+            // the spawn-time `ToolMeta`) is the fallback for a card that never
+            // received it.
+            output.subagent_id = Some(
+                active
+                    .output
+                    .subagent_id
+                    .take()
+                    .unwrap_or_else(|| child_id.to_string()),
+            );
             output.subagent_model = active.output.subagent_model.take();
             output.subagent_tokens = active.output.subagent_tokens.take();
             output.subagent_context_window = active.output.subagent_context_window;
@@ -597,6 +612,7 @@ impl Component for ToolComponent {
                 token_usage,
                 context_window,
                 task_id,
+                subagent_id,
             } => {
                 let Some(pos) = self.state.active.iter().position(|a| a.tool_id == *tool_id) else {
                     return false;
@@ -613,6 +629,9 @@ impl Component for ToolComponent {
                 }
                 if let Some(id) = task_id {
                     active.output.task_id = Some(id.clone());
+                }
+                if let Some(id) = subagent_id {
+                    active.output.subagent_id = Some(id.clone());
                 }
                 true
             }
@@ -853,6 +872,7 @@ mod tests {
                 token_usage: None,
                 context_window: None,
                 task_id: Some("018f3a2c".into()),
+                subagent_id: None,
             },
             &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
         );
@@ -1283,6 +1303,7 @@ mod tests {
                 }),
                 context_window: Some(500_000),
                 task_id: None,
+                subagent_id: None,
             },
             &mut ctx(&mut log, &mut pending, &mut events, &mut tool_events),
         );

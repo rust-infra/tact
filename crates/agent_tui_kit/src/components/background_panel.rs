@@ -120,6 +120,7 @@ mod tests {
                 model: None,
                 token_usage: None,
                 task_id: Some("018f3a2c".into()),
+                subagent_id: None,
             },
             &mut ctx,
         ));

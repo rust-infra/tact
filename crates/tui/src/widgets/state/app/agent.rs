@@ -1639,6 +1639,7 @@ mod lifecycle_tests {
             token_usage: None,
             context_window: None,
             task_id: Some("id1".into()),
+            subagent_id: None,
         });
         app.handle_agent_update(AgentUpdate::ToolMeta {
             tool_id: "bg2".into(),
@@ -1646,6 +1647,7 @@ mod lifecycle_tests {
             token_usage: None,
             context_window: None,
             task_id: Some("id2".into()),
+            subagent_id: None,
         });
         assert!(
             app.tools_mut()
@@ -2721,6 +2723,7 @@ mod lifecycle_tests {
                     token_usage: None,
                     context_window: None,
                     task_id: None,
+                    subagent_id: None,
                 },
             }
         };

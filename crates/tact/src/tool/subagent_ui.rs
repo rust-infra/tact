@@ -420,6 +420,7 @@ pub fn tagged_ui_channel_with_progress(
                         token_usage: Some(usage),
                         context_window: Some(context_window),
                         task_id: None,
+                        subagent_id: None,
                     });
                 }
                 AgentUpdate::ModelInfo(params) => {
@@ -429,6 +430,7 @@ pub fn tagged_ui_channel_with_progress(
                         token_usage: None,
                         context_window: None,
                         task_id: None,
+                        subagent_id: None,
                     });
                 }
                 AgentUpdate::RequestSelect {
@@ -952,10 +954,14 @@ mod tests {
                 token_usage,
                 context_window,
                 task_id,
+                subagent_id,
             } => {
                 assert_eq!(tool_id, "t1");
                 assert!(model.is_none());
                 assert!(task_id.is_none());
+                // The child's own forwards carry model / usage only; the id is
+                // sent once by `spawn_subagent` itself.
+                assert!(subagent_id.is_none());
                 assert_eq!(context_window, Some(200_000));
                 let u = token_usage.unwrap();
                 assert_eq!(u.total, 999);
@@ -1034,9 +1040,11 @@ mod tests {
                 token_usage,
                 context_window,
                 task_id,
+                subagent_id,
             } => {
                 assert_eq!(tool_id, "t1");
                 assert!(task_id.is_none());
+                assert!(subagent_id.is_none());
                 assert_eq!(model.unwrap(), "fake");
                 assert!(token_usage.is_none());
                 assert!(context_window.is_none());

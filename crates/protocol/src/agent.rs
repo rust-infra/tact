@@ -520,6 +520,12 @@ pub enum AgentUpdate {
         /// Background task started by this tool call, shown next to the card's
         /// phase so the id can be read (and polled) while the task runs.
         task_id: Option<String>,
+        /// Child session id of the subagent this tool call spawned. Sent by
+        /// `spawn_subagent` itself (the id is minted by the tool, before the
+        /// child exists), so every subagent card — synchronous or background —
+        /// carries the same handle the child's metadata arrives under. The card
+        /// shows its short form, matching the sticky Subagent overview.
+        subagent_id: Option<String>,
     },
     /// Finalize a tool card that stayed live after its invocation returned
     /// (see [`ToolPresentationInfo::keep_live`]). Emitted by background tasks

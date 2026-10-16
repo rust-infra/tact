@@ -656,6 +656,20 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     ctx.subagent_manager.note_started(&child_id);
     crate::subagent::emit_subagents_changed(&ctx.ui_tx, &ctx.subagent_manager).await;
 
+    // The id is minted here, not by the child: put it on the parent card's meta
+    // row now (sync and background alike) so the card identifies the run from
+    // its first frame and keeps the handle after the child's updates stop.
+    if let Some(tx) = &ctx.ui_tx {
+        let _ = tx.send(AgentUpdate::ToolMeta {
+            tool_id: ctx.progress_reporter.tool_id().to_string(),
+            model: None,
+            token_usage: None,
+            context_window: None,
+            task_id: None,
+            subagent_id: Some(child_id.clone()),
+        });
+    }
+
     // True background dispatch needs a UI channel: without a driver there is
     // no one to submit a wake-up turn, and headless exits by cancelling the
     // child. Degrade to synchronous so the summary still reaches the parent.

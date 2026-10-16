@@ -125,6 +125,7 @@ pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Resu
             token_usage: None,
             context_window: None,
             task_id: Some(id.clone()),
+            subagent_id: None,
         });
     }
 

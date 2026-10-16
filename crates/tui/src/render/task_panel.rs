@@ -358,6 +358,7 @@ mod sticky_host_tests {
             token_usage: None,
             context_window: None,
             task_id: Some(task_id.into()),
+            subagent_id: None,
         });
     }
 

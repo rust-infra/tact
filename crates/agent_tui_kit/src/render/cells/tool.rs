@@ -21,7 +21,7 @@ use tact_protocol::{TokenUsageInfo, ToolOutputLine, ToolOutputStream};
 use crate::{
     i18n::Messages,
     render::renderable::Renderable,
-    widgets::button::{Button, ButtonChrome, ButtonTheme},
+    widgets::button::{Button, ButtonChrome, ButtonTheme, ButtonVariant},
     widgets::tool_widget::{
         TOOL_HEADER_ROWS, TOOL_META_ROW, ToolPhase, ToolRenderOutput, build_meta_text,
         collapsed_action_text, collapsed_output_hint, meta_error, meta_suffixes,
@@ -71,9 +71,17 @@ pub struct ToolCell {
     warning: Color,
     error: Color,
     card_border_type: BorderType,
+    /// Child session id of the spawned subagent, shown (short) on the meta row.
+    subagent_id: Option<String>,
     subagent_model: Option<String>,
     subagent_tokens: Option<TokenUsageInfo>,
     subagent_context_window: Option<usize>,
+    /// The cancel button's own label, taken from the frame's messages so a
+    /// `/lang` switch repaints a live card in the new language.
+    subagent_cancel_label: &'static str,
+    /// Whether this card is a live async subagent, i.e. draws the meta-row
+    /// `[Cancel]` button at all.
+    subagent_cancel: bool,
 }
 
 impl ToolCell {
@@ -152,10 +160,22 @@ impl ToolCell {
             warning,
             error,
             card_border_type,
+            subagent_id: output.subagent_id,
             subagent_model: output.subagent_model,
             subagent_tokens: output.subagent_tokens,
             subagent_context_window: output.subagent_context_window,
+            subagent_cancel_label: msgs.subagent_cancel_btn,
+            subagent_cancel: false,
         }
+    }
+
+    /// Mark this card as the live async subagent it belongs to, so it draws the
+    /// meta-row `[Cancel]` button. The host routes the click back to the child
+    /// id through [`Self::subagent_cancel_button_rect`].
+    #[must_use]
+    pub fn with_subagent_cancel(mut self, cancel: bool) -> Self {
+        self.subagent_cancel = cancel;
+        self
     }
 
     /// Title row, styled with this frame's theme colors.
@@ -195,6 +215,7 @@ impl ToolCell {
         // with the widget, which needs the finished row's exact text.
         text.push_str(&meta_suffixes(
             self.tool_meta_sep,
+            self.subagent_id.as_deref(),
             self.subagent_model.as_deref(),
             self.subagent_tokens.as_ref(),
             self.subagent_context_window,
@@ -218,7 +239,18 @@ impl ToolCell {
         let Some((prefix, label)) = button else {
             return Line::from(Span::styled(text, style));
         };
-        let button_theme = ButtonTheme {
+        let mut spans = vec![Span::styled(prefix.to_string(), style)];
+        spans.extend(
+            Button::new(label, self.button_theme())
+                .chrome(ButtonChrome::Brackets)
+                .line()
+                .spans,
+        );
+        Line::from(spans)
+    }
+
+    fn button_theme(&self) -> ButtonTheme {
+        ButtonTheme {
             fg: self.fg,
             bg: self.bg,
             accent: self.accent,
@@ -226,15 +258,79 @@ impl ToolCell {
             warning: self.warning,
             error: self.error,
             success: self.success,
+        }
+    }
+
+    /// The live subagent card's cancel affordance, drawn by the shared button
+    /// widget — same chrome and variant the host used to overlay onto the row.
+    fn cancel_button(&self) -> Button<'_> {
+        Button::new(self.subagent_cancel_label, self.button_theme())
+            .variant(ButtonVariant::Danger)
+            .chrome(ButtonChrome::Brackets)
+            .modifier(Modifier::BOLD)
+    }
+
+    /// The cancel button's rect on a full-width meta row, when this card
+    /// carries one: right-aligned with one blank column of margin at the row's
+    /// end (the column the log scrollbar can overwrite) and one between the
+    /// text and the button.
+    fn cancel_button_area(&self, row_area: Rect) -> Option<Rect> {
+        if !self.subagent_cancel {
+            return None;
+        }
+        let width = self.cancel_button().preferred_size().0;
+        (row_area.width > width + 1).then(|| {
+            Rect::new(
+                row_area.right() - width - 1,
+                row_area.y,
+                width,
+                row_area.height.min(1),
+            )
+        })
+    }
+
+    /// Screen rect of a live subagent's meta-row `[Cancel]` button, measured
+    /// from the same geometry [`Renderable::render_partial`] draws with, so the
+    /// host's hit area is exactly the glyphs on screen. `None` when the card is
+    /// not cancellable or the meta row is clipped by the viewport.
+    pub fn subagent_cancel_button_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
+        if self.card_only || !self.subagent_cancel || skip_lines > TOOL_META_ROW {
+            return None;
+        }
+        let area =
+            crate::render::util::indent_rect(area, crate::render::util::LOG_TOOL_BLOCK_INDENT);
+        let vis_off = TOOL_META_ROW - skip_lines;
+        if vis_off >= area.height as usize {
+            return None;
+        }
+        let row_area = Rect::new(area.x, area.y + vis_off as u16, area.width, 1);
+        self.cancel_button_area(row_area)
+    }
+
+    /// Draw the meta row (row 1 of the header) into `row_area`.
+    ///
+    /// The cell owns this row whole — text, blanks, and the cancel button's
+    /// columns — so the row's background is painted across it first and the
+    /// text is clipped to the columns left of the button. (`Paragraph` writes
+    /// over every column it is given; handing it the full row would let a long
+    /// meta line overwrite the button's glyphs, the exact failure the old
+    /// render-loop overlay had.)
+    fn render_meta_row(&self, row_area: Rect, buf: &mut Buffer) {
+        buf.set_style(row_area, Style::default().bg(self.bg));
+        let Some(button_area) = self.cancel_button_area(row_area) else {
+            Paragraph::new(vec![self.meta_line()]).render(row_area, buf);
+            return;
         };
-        let mut spans = vec![Span::styled(prefix.to_string(), style)];
-        spans.extend(
-            Button::new(label, button_theme)
-                .chrome(ButtonChrome::Brackets)
-                .line()
-                .spans,
+        let text_area = Rect::new(
+            row_area.x,
+            row_area.y,
+            button_area.x.saturating_sub(row_area.x).saturating_sub(1),
+            1,
         );
-        Line::from(spans)
+        if text_area.width > 0 {
+            Paragraph::new(vec![self.meta_line()]).render(text_area, buf);
+        }
+        self.cancel_button().render(button_area, buf);
     }
 
     fn card_inner_rows(&self) -> usize {
@@ -450,9 +546,7 @@ impl Renderable for ToolCell {
                         .style(Style::default().fg(self.fg).bg(self.bg))
                         .render(row_area, buf);
                 } else {
-                    Paragraph::new(vec![self.meta_line()])
-                        .style(Style::default().bg(self.bg))
-                        .render(row_area, buf);
+                    self.render_meta_row(row_area, buf);
                 }
             }
         }
@@ -597,7 +691,9 @@ mod tests {
     use tact_protocol::ToolOutputSpan;
 
     use super::*;
-    use crate::widgets::tool_widget::{TOOL_HEADER_ROWS, ToolLayout, ToolPhase, tool_visual_rows};
+    use crate::widgets::tool_widget::{
+        TOOL_HEADER_ROWS, TOOL_META_ROW, ToolLayout, ToolPhase, tool_visual_rows,
+    };
 
     /// Build a `ToolRenderOutput` for a hypothetical "Step 1: write_file".
     ///
@@ -634,6 +730,7 @@ mod tests {
             detail_preview: preview,
             detail_total_lines: total,
             detail_full: None,
+            subagent_id: None,
             subagent_model: None,
             subagent_tokens: None,
             subagent_context_window: None,
@@ -941,6 +1038,137 @@ mod tests {
     fn open_card_meta_row_has_no_collapsed_hint() {
         let text = meta_text(&tool_cell(make_output(true, 3, 3)));
         assert!(!text.contains("[󰜼 Open]"), "meta row: {text}");
+    }
+
+    /// A subagent card names the run it spawned: the short id (the same handle
+    /// the sticky Subagent overview lists), ahead of the model.
+    #[test]
+    fn subagent_meta_row_shows_the_short_child_id() {
+        let mut output = make_output(false, 0, 0);
+        output.subagent_id = Some("4d2a5f1c-9e8b-4c1a-bdf0-112233445566".into());
+        output.subagent_model = Some("gpt-4o".into());
+        let text = meta_text(&tool_cell(output));
+
+        assert!(text.contains("#4d2a5f1c"), "meta row: {text}");
+        assert!(
+            !text.contains("4d2a5f1c-"),
+            "the handle is the short form, not the uuid: {text}"
+        );
+        assert!(text.contains("🤖 gpt-4o"), "the model follows it: {text}");
+    }
+
+    /// Card and sticky must name a run the same way, and the widget-measured
+    /// row (what the log hit test sees) is the row the cell draws.
+    #[test]
+    fn subagent_meta_row_matches_the_widgets_measured_row() {
+        let msgs = crate::i18n::Messages::by_language(crate::i18n::Language::English);
+        let widget = crate::widgets::tool_widget::ToolWidget::new()
+            .with_tool("spawn_subagent")
+            .with_arg_summary("audit the repo")
+            .with_phase(ToolPhase::Success)
+            .with_detail("child summary")
+            .with_subagent_id(Some("4d2a5f1c-9e8b-4c1a-bdf0-112233445566".into()));
+        let measured = widget
+            .build()
+            .meta_text(&msgs)
+            .expect("a finished block has a meta row");
+        let drawn = meta_text(&tool_cell(widget.build()));
+
+        assert_eq!(drawn, measured);
+        assert!(measured.contains("#4d2a5f1c"), "{measured}");
+    }
+
+    /// The live async subagent card draws its `[Cancel]` button on the meta
+    /// row — the row it belongs to. A meta line long enough to reach the
+    /// row's end is clipped before the button instead of overwriting it (the
+    /// failure the old render-loop overlay had on the title row).
+    #[test]
+    fn live_subagent_cancel_button_is_drawn_on_the_meta_row() {
+        let mut output = make_output(false, 0, 0);
+        output.phase = ToolPhase::Running;
+        output.subagent_id = Some("child-123".into());
+        output.subagent_model = Some("gpt-4o".into());
+        let cell = tool_cell_mode(output, false, None).with_subagent_cancel(true);
+        let area = Rect::new(0, 0, 60, 2);
+        let mut buf = Buffer::empty(area);
+        cell.render(area, &mut buf);
+
+        let cells: Vec<String> = (0..area.width)
+            .map(|x| buf[(x, TOOL_META_ROW as u16)].symbol().to_string())
+            .collect();
+        let needle: Vec<String> = "[Cancel]".chars().map(|c| c.to_string()).collect();
+        let col = cells
+            .windows(needle.len())
+            .position(|w| w == needle.as_slice())
+            .expect("the live card must draw [Cancel] on its meta row");
+        let rect = cell
+            .subagent_cancel_button_rect(area, 0)
+            .expect("the drawn button has a hit rect");
+        assert_eq!(
+            (rect.x as usize, rect.y),
+            (col, TOOL_META_ROW as u16),
+            "the hit rect must be exactly the drawn glyphs"
+        );
+
+        // The row stays readable left of the button: its phase and its handle,
+        // with one blank column between the text and the button and one at the
+        // row's own end (the column a scrollbar can repaint).
+        assert_eq!(buf[(col as u16 - 1, TOOL_META_ROW as u16)].symbol(), " ");
+        assert_eq!(buf[(rect.right(), TOOL_META_ROW as u16)].symbol(), " ");
+        let row_text: String = cells.join("");
+        assert!(row_text.contains("#child-12"), "meta row: {row_text:?}");
+        assert!(row_text.contains("Running"), "meta row: {row_text:?}");
+
+        // Scrolled so the meta row leaves the slice: no glyphs, no hit rect.
+        assert!(
+            cell.subagent_cancel_button_rect(Rect::new(0, 0, 60, 1), TOOL_META_ROW + 1)
+                .is_none()
+        );
+    }
+
+    /// A meta line that would run under the button is cut at its left edge —
+    /// the button patch is never overwritten by the text band next to it.
+    #[test]
+    fn long_meta_row_is_clipped_before_the_cancel_button() {
+        let mut output = make_output(false, 0, 0);
+        output.phase = ToolPhase::Running;
+        output.subagent_id = Some("child-123".into());
+        output.permission_label = Some("Always allow this tool for the whole workspace".into());
+        let cell = tool_cell_mode(output, false, None).with_subagent_cancel(true);
+        let area = Rect::new(0, 0, 60, 2);
+        let mut buf = Buffer::empty(area);
+        cell.render(area, &mut buf);
+
+        let row_text: String = (0..area.width)
+            .map(|x| buf[(x, TOOL_META_ROW as u16)].symbol().to_string())
+            .collect();
+        assert!(row_text.contains("Running"), "meta row: {row_text:?}");
+        assert!(
+            row_text.contains("[Cancel]"),
+            "the button must survive the clip: {row_text:?}"
+        );
+        assert!(
+            !row_text.contains("workspace"),
+            "the overlong label must be cut, not flow under the button: {row_text:?}"
+        );
+    }
+
+    /// The button is the row's affordance for a *live* card only: a card that
+    /// is not marked cancellable draws none.
+    #[test]
+    fn no_cancel_button_without_a_cancellable_card() {
+        let mut output = make_output(false, 0, 0);
+        output.phase = ToolPhase::Running;
+        let cell = tool_cell_mode(output, false, None);
+        let area = Rect::new(0, 0, 60, 2);
+        let mut buf = Buffer::empty(area);
+        cell.render(area, &mut buf);
+
+        let row: String = (0..area.width)
+            .map(|x| buf[(x, TOOL_META_ROW as u16)].symbol().to_string())
+            .collect();
+        assert!(!row.contains("[Cancel]"), "meta row: {row:?}");
+        assert!(cell.subagent_cancel_button_rect(area, 0).is_none());
     }
 
     #[test]

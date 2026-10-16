@@ -551,6 +551,7 @@ fn running_background_card_shows_the_task_id() {
         token_usage: None,
         context_window: None,
         task_id: Some("018f3a2c".into()),
+        subagent_id: None,
     });
 
     let text = render_log_panel_text(&mut app, 100, 20);
@@ -866,6 +867,16 @@ fn subagent_cancel_button_rect_matches_the_drawn_glyphs() {
             .presentation(presentation.clone())
             .started(),
     );
+    // What `spawn_subagent` sends the moment the child id exists: the handle
+    // the card's meta row and the sticky Subagent overview share.
+    app.handle_agent_update(AgentUpdate::ToolMeta {
+        tool_id: "sub-live".into(),
+        model: None,
+        token_usage: None,
+        context_window: None,
+        task_id: None,
+        subagent_id: Some("child-123".into()),
+    });
     // What the async branch sends back while the child keeps running.
     app.handle_agent_update(
         StepCall::new(0, "sub-live", "spawn_subagent", "audit the repo")
@@ -890,6 +901,76 @@ fn subagent_cancel_button_rect_matches_the_drawn_glyphs() {
         "hit area must be exactly the glyphs, not a column wider"
     );
     assert!(Button::hit_test(*rect, col, row));
+
+    // The button is part of the *meta row*: the row that names the run, with
+    // the short child id — not the title row it used to overlay (a long title
+    // overwrote it there).
+    let row_text = |y: u16| -> String {
+        (0..buffer.area.width)
+            .map(|x| buffer[(x, y)].symbol().to_string())
+            .collect()
+    };
+    let meta = row_text(row);
+    assert!(meta.contains("Running"), "meta row: {meta:?}");
+    assert!(
+        meta.contains("#child-12"),
+        "the short child id must be on the meta row: {meta:?}"
+    );
+    let title_row = row - 1;
+    let title = row_text(title_row);
+    assert!(title.contains("Subagent"), "title row above: {title:?}");
+    assert!(
+        !title.contains("[Cancel]"),
+        "the button belongs to the meta row: {title:?}"
+    );
+}
+
+/// Regression: the cancel button used to be overlaid onto the card's *title*
+/// row before the cell was drawn, so a title long enough to reach the right
+/// edge simply painted over its glyphs — and the recorded hit rect pointed at
+/// nothing. The button now belongs to the meta row; a long title must leave
+/// both the glyphs and the rect intact.
+#[test]
+fn a_long_subagent_title_cannot_overwrite_the_cancel_button() {
+    let mut app = make_app();
+    let prompt = "audit every crate in the workspace end to end";
+    app.handle_agent_update(AgentUpdate::StepAdded(PlanStep::new(
+        "audit the repo",
+        "spawn_subagent",
+        "sub-live-long",
+        HashMap::from([("prompt".to_string(), prompt.to_string())]),
+    )));
+    let mut presentation = ToolPresentationInfo::generic("spawn_subagent");
+    presentation.keep_live = true;
+    app.handle_agent_update(
+        StepCall::new(0, "sub-live-long", "spawn_subagent", prompt)
+            .presentation(presentation.clone())
+            .started(),
+    );
+    app.handle_agent_update(
+        StepCall::new(0, "sub-live-long", "spawn_subagent", prompt)
+            .message("async_launched { child-999 }")
+            .presentation(presentation)
+            .finished(),
+    );
+
+    // The prompt is the title: at this width it runs to the row's end, which is
+    // exactly where the button used to be drawn.
+    let terminal = render_log_panel_terminal(&mut app, 50, 20);
+    let buffer = terminal.backend().buffer();
+    let (col, row) =
+        buffer_cell_of(buffer, "[Cancel]").expect("a long title must not overwrite the button");
+    let areas = &app.mouse.subagent_cancel_btn_areas;
+    assert_eq!(areas.len(), 1);
+    assert_eq!(
+        (areas[0].1.x, areas[0].1.y),
+        (col, row),
+        "the hit rect must still be the drawn glyphs"
+    );
+    let title: String = (0..buffer.area.width)
+        .map(|x| buffer[(x, row - 1)].symbol().to_string())
+        .collect();
+    assert!(title.contains("audit"), "title row above: {title:?}");
 }
 
 /// The live stats row is a *row of the panel*, not a log item: while a task is

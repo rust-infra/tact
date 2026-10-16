@@ -4,6 +4,27 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-16 — 子代理卡片：短 id 上 meta 行；`[Cancel]` 按钮从标题行移到 meta 行
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：长标题不再盖掉运行中子代理卡片的 `[Cancel]` 按钮；每张子代理卡片——同步与后台——的 meta 行都显示 `#<短id>`） |
+| **Related** | `crates/protocol/src/agent.rs`（`ToolMeta.subagent_id`）、`crates/tact/src/tool/{subagent.rs,subagent_ui.rs,background_run.rs}`、`crates/agent_tui_kit/src/{state/subagent_panel.rs,components/tool.rs,widgets/tool_widget.rs,render/cells/tool.rs,render/log.rs}`、`crates/tui/src/render/log_render_tests.rs`、`book/12_chapter_subagent_zh.md` §6 |
+
+**现象 / 动机：** `[Cancel]` 按钮由渲染循环在格子绘出**之前**以 overlay 方式画在卡片标题行右端；同一缓冲区的 `Paragraph` 会逐字覆盖已画的格子，于是 `Subagent · <长 prompt>` 长到右端时按钮字形被整段写掉，而 host 记录的命中矩形还指着那些已不存在的列——按钮是否可见取决于标题长度。另外卡片上没有任何子会话标识：sticky 总览与 `/subagent_cancel` 用的是子会话 id，卡片却对不上号。
+
+**决策：**
+
+1. **id 由 `spawn_subagent` 自己广播一次**：`AgentUpdate::ToolMeta` 增加 `subagent_id: Option<String>`；spawn 路径在 `note_started` / `emit_subagents_changed` 之后立刻发一个只带 id（其余字段 `None`）的 ToolMeta，同步与后台都发——id 铸在工具里（子会话此时还没有产出），这是唯一能在第一帧就落卡的发送方。`subagent_ui` forwarder 发模型 / token 更新时该字段为 `None`；handler 只在 `Some` 时覆盖，不清掉已有值。
+2. **短 id 与 sticky 同一把柄**：meta 行按 `state::subagent_panel::short_id`（`SUBAGENT_SHORT_ID_CHARS = 8`，现为 `pub`）在模型 / ctx 之前渲染 `#<前 8 字符>`；`ToolRenderOutput.subagent_id` 由 `on_tool_progress`（live 重建）、`on_step_finished`（同步完成携带）、`on_step_failed`、`on_subagent_finished`（后台完成；事件里的 `child_id` 只作 fallback）四条路径全程携带。
+3. **按钮归卡片自己画**：`ToolCell` 新增 `subagent_cancel`（由 host 按 `active.subagent_child_id` 置位）与 meta 行自绘：先给整行铺背景，再把 meta 文案 `Paragraph` 裁到按钮左侧 1 列处，最后由共享 `Button`（`Danger` + `Brackets` + BOLD）右对齐、行尾留 1 列（防 scrollbar 覆盖）；`ToolCell::subagent_cancel_button_rect(area, skip_lines)` 用与绘制完全相同的切片几何量出命中矩形。渲染循环里原来的 overlay 段整体删除——按钮字形与命中矩形不可能再分离。
+
+**改后行为：** 运行中的后台子代理卡片 meta 行形如 `⠋ Running · 3.2s · #4d2a5f1c · [Cancel]`（模型 / ctx 在按钮左侧，超长文案被裁掉而不是压住按钮）；同步卡片完成后同样带 `#<短id>`；标题再长也不影响按钮，meta 行移出视口的切片里不再记录命中矩形。点击语义不变（`UserCommand::CancelSubagent`，仅存活的后台卡片有按钮）。
+
+**Verification：** `cargo test -p agent_tui_kit --lib`（424 全绿；新增 meta 行短 id、widget 测得行 = cell 绘制行、按钮在 meta 行且长 meta 被裁、无标记不画按钮 4 条）、`cargo test -p tui --lib`（737 全绿；`subagent_cancel_button_rect_matches_the_drawn_glyphs` 强化为断言按钮在 meta 行且行内有 `#child-12`，新增 `a_long_subagent_title_cannot_overwrite_the_cancel_button`）、`cargo test -p tact --lib subagent`（110）、`cargo test -p tact-ui`（13 集成）。`cargo fmt`、`cargo clippy --all-targets` 无告警。
+
+**Pointers:** `AgentUpdate::ToolMeta::subagent_id`、`spawn_subagent` 的 spawn 时 ToolMeta、`ToolRenderOutput::subagent_id`、`ToolWidget::with_subagent_id`、`meta_suffixes`、`ToolCell::{with_subagent_cancel, subagent_cancel_button_rect, render_meta_row}`、`subagent_panel::short_id`、[Ch 12](./12_chapter_subagent_zh.md) §6。
+
 ## 1. 2026-10-16 — Goal 执行链收尾：判定优先于预算、周期内报错不再留下幽灵 Run、事件读取全部有界
 
 | Field | Value |
