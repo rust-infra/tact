@@ -896,6 +896,9 @@ async fn steer_goal(agent: &Agent, requested: Option<&str>, text: &str) {
                 // An explicit id that the TUI could not resolve (empty or
                 // stale snapshot) is still honored.
                 Ok(Some(goal)) if !rest.is_empty() => Ok((goal, rest.to_string())),
+                // A known id with nothing after it is a missing instruction,
+                // not an instruction that happens to be the id itself.
+                Ok(Some(_)) => Err("goal steering text must not be empty".to_string()),
                 _ => match implicit_steer_target(&goals) {
                     Ok(Some(goal)) => Ok((goal, text.to_string())),
                     Ok(None) => {
@@ -1980,6 +1983,40 @@ mod tests {
                 .any(|event| event.kind == "steering"
                     && event.payload.as_deref() == Some("Prefer fewer files")),
             "a leading id in the raw text must be resolved by the store"
+        );
+
+        // An id with no instruction must not be replayed as the instruction.
+        let steered_before = manager
+            .list_events(&created.id)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event.kind == "steering")
+            .count();
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SteerGoal {
+                goal_id: None,
+                text: created.id.clone(),
+            },
+            &work_dir,
+        )
+        .await;
+        let steered_after = manager
+            .list_events(&created.id)
+            .await
+            .unwrap()
+            .iter()
+            .filter(|event| event.kind == "steering")
+            .count();
+        assert_eq!(
+            steered_after, steered_before,
+            "an id without an instruction must not append a steering event"
+        );
+        assert!(
+            std::iter::from_fn(|| agent_rx.try_recv().ok())
+                .any(|update| matches!(update, AgentUpdate::Error(_))),
+            "the refused steer must be reported"
         );
 
         super::handle_user_command(
