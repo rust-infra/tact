@@ -69,6 +69,23 @@ items are LOW or outside this repository (the external harness that injects
 - Claims and evidence address a criterion by id; duplicates made that ambiguous.
 - **Fix:** `DuplicateCriterionId` on create and on criteria updates.
 
+### M5. Acceptance raced the runner and failed after being advertised
+- `/goal accept` required `status == waiting_user`. A message sent in that
+  window can wake the runner; the activation ends `no_progress`, and the Goal is
+  left `running` with no active run. The UI had just offered acceptance, but the
+  command now answered “is Running; acceptance requires waiting_user”.
+- **Fix:** `accept_goal` also accepts `paused` Goals (user pause or recovery)
+  and a `running` Goal when no activation is in flight (the store's active-run
+  list is the authority); an in-flight run still refuses, naming it. The TUI
+  `accept` completion offers `waiting_user`, `paused`, and
+  `running + run_budget == None` Goals for the same reason. Evidence and the
+  verifier are unchanged, so the human decision still cannot bypass a criterion.
+- Tests: `accept_goal_accepts_a_stranded_running_goal_with_no_active_run`,
+  `accept_goal_accepts_a_recovered_paused_goal`,
+  `accept_goal_refuses_while_an_activation_is_in_flight`,
+  `accept_offers_a_running_goal_with_no_active_run`,
+  `accept_offers_a_paused_goal`.
+
 ## LOW / deliberately left
 
 - **L1. Startup snapshot auto-expands the Goal panel** whenever a Goal exists

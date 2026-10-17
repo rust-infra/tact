@@ -276,7 +276,12 @@ impl super::App {
             "archive" => |goal| goal.status.is_terminal() && !goal.archived,
             "unarchive" => |goal| goal.archived,
             "accept" => |goal| {
-                goal.status == WaitingUser
+                // `waiting_user` is the normal state. A `paused` Goal (user
+                // pause or crash recovery) and a `running` Goal with no active
+                // run are both accepted by the driver, so offer them rather
+                // than hiding the only actionable row.
+                (matches!(goal.status, WaitingUser | Paused)
+                    || (goal.status == Running && goal.run_budget.is_none()))
                     && goal.criteria.iter().any(|criterion| {
                         criterion.required
                             && criterion.human
@@ -688,11 +693,74 @@ mod tests {
         app.goal_panel_mut().apply_snapshot(seeded_goals());
 
         let candidates = app.slash_candidates();
-        assert_eq!(candidates.len(), 1, "only the waiting Goal: {candidates:?}");
+        assert_eq!(
+            candidates.len(),
+            2,
+            "the waiting and the paused Goal (both are accepted by the driver): {candidates:?}"
+        );
         assert!(
-            candidates[0].incomplete,
+            candidates.iter().all(|candidate| candidate.incomplete),
             "the instruction still has to be typed"
         );
+    }
+
+    /// A message sent while the Goal was `waiting_user` can wake the runner
+    /// and leave it `running` with no active run. The driver accepts that
+    /// stranded state, so `/goal accept` must offer it instead of hiding the
+    /// only actionable row.
+    #[test]
+    fn accept_offers_a_running_goal_with_no_active_run() {
+        use tact_protocol::{GoalCriterionSnapshot, GoalSnapshot, GoalStatusSnapshot};
+
+        let mut app = app_typing("/goal accept ");
+        app.goal_panel_mut().apply_snapshot(vec![GoalSnapshot {
+            id: "9b630c0e".into(),
+            title: "review code".into(),
+            status: GoalStatusSnapshot::Running,
+            criteria: vec![GoalCriterionSnapshot {
+                id: "c1".into(),
+                description: "User accepts the result".into(),
+                required: true,
+                human: true,
+                ..Default::default()
+            }],
+            run_budget: None,
+            ..Default::default()
+        }]);
+
+        let candidates = app.slash_candidates();
+        assert_eq!(candidates.len(), 1, "{candidates:?}");
+        assert_eq!(candidates[0].path, "goal accept 9b630c0e");
+        assert!(candidates[0].incomplete);
+    }
+
+    /// A Goal parked in `paused` by user pause or crash recovery is still a
+    /// human decision away from done: the driver accepts it, so completion
+    /// must offer it.
+    #[test]
+    fn accept_offers_a_paused_goal() {
+        use tact_protocol::{GoalCriterionSnapshot, GoalSnapshot, GoalStatusSnapshot};
+
+        let mut app = app_typing("/goal accept ");
+        app.goal_panel_mut().apply_snapshot(vec![GoalSnapshot {
+            id: "9b630c0e".into(),
+            title: "review code".into(),
+            status: GoalStatusSnapshot::Paused,
+            criteria: vec![GoalCriterionSnapshot {
+                id: "c1".into(),
+                description: "User accepts the result".into(),
+                required: true,
+                human: true,
+                ..Default::default()
+            }],
+            run_budget: None,
+            ..Default::default()
+        }]);
+
+        let candidates = app.slash_candidates();
+        assert_eq!(candidates.len(), 1, "{candidates:?}");
+        assert_eq!(candidates[0].path, "goal accept 9b630c0e");
+        assert!(candidates[0].incomplete);
     }
 
     /// The token under the cursor filters the list — by id *or* title, because
@@ -747,19 +815,26 @@ mod tests {
         );
     }
 
-    /// `accept` is the one verb with a second gate: a `waiting_user` Goal whose
-    /// required human criterion already carries evidence has nothing left to
-    /// accept (`accept_goal` would only answer "no pending required human
-    /// criterion").
+    /// `accept` is the one verb with a second gate: a Goal whose required
+    /// human criterion already carries evidence has nothing left to accept
+    /// (`accept_goal` would only answer "no pending required human
+    /// criterion"). `waiting_user` and `paused` both pass the status gate here,
+    /// so both are marked as satisfied.
     #[test]
-    fn accept_skips_a_waiting_goal_that_has_nothing_pending() {
-        use tact_protocol::GoalCriterionStatusSnapshot;
+    fn accept_skips_a_goal_that_has_nothing_pending() {
+        use tact_protocol::{GoalCriterionStatusSnapshot, GoalStatusSnapshot};
 
         let mut goals = seeded_goals();
-        goals[1]
-            .criteria
-            .iter_mut()
-            .for_each(|criterion| criterion.status = GoalCriterionStatusSnapshot::Passed);
+        for goal in goals.iter_mut().filter(|goal| {
+            matches!(
+                goal.status,
+                GoalStatusSnapshot::WaitingUser | GoalStatusSnapshot::Paused
+            )
+        }) {
+            goal.criteria
+                .iter_mut()
+                .for_each(|criterion| criterion.status = GoalCriterionStatusSnapshot::Passed);
+        }
 
         let mut app = app_typing("/goal accept ");
         app.goal_panel_mut().apply_snapshot(goals);
@@ -866,8 +941,13 @@ mod tests {
             ..Default::default()
         };
 
+        // The running Goal has an active run (budget snapshot present), so
+        // `accept` must not offer it; a stranded running Goal is covered by its
+        // own test below.
+        let mut running = goal("216ae6be", "review code", GoalStatusSnapshot::Running);
+        running.run_budget = Some(Default::default());
         vec![
-            goal("216ae6be", "review code", GoalStatusSnapshot::Running),
+            running,
             goal("03a4caef", "ship notes", GoalStatusSnapshot::WaitingUser),
             goal("aaaa1111", "paused work", GoalStatusSnapshot::Paused),
             goal("bbbb2222", "old work", GoalStatusSnapshot::Succeeded),

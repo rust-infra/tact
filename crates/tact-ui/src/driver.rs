@@ -1099,11 +1099,36 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
             return;
         }
     };
-    if goal.status != GoalStatus::WaitingUser {
+    // Acceptance is a human decision, not a race with the runner. A message
+    // sent while the Goal was `waiting_user` can wake the runner and leave it
+    // `running` after a no-op activation, which used to make the hinted
+    // `/goal accept` fail. Accept the stranded `running` state too, but only
+    // when no activation is actually in flight.
+    let active_run = match manager.list_running_runs().await {
+        Ok(runs) => runs.iter().any(|run| run.goal_id == goal.id),
+        Err(error) => {
+            emit_goal_error(
+                &agent.runtime.ui_tx,
+                format!("Goal {goal_id} acceptance failed: {error:#}"),
+            );
+            return;
+        }
+    };
+    // `paused` is equally acceptable: recovery (`Running` with no active run)
+    // parks a Goal there, and a paused Goal is still a human decision away from
+    // done. Only an actual activation in flight blocks acceptance.
+    let acceptable = matches!(goal.status, GoalStatus::WaitingUser | GoalStatus::Paused)
+        || (goal.status == GoalStatus::Running && !active_run);
+    if !acceptable {
+        let suffix = if active_run {
+            " (an activation is in flight)"
+        } else {
+            ""
+        };
         emit_goal_error(
             &agent.runtime.ui_tx,
             format!(
-                "Goal {goal_id} is {:?}; acceptance requires waiting_user",
+                "Goal {goal_id} is {:?}{suffix}; acceptance requires waiting_user, paused, or an idle running Goal",
                 goal.status
             ),
         );
@@ -1135,7 +1160,11 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
             goal.version,
             GoalUpdate {
                 evidence,
-                status: Some(GoalStatus::Running),
+                // `waiting_user` / `paused` re-enter `running`; a stranded
+                // `running` Goal stays there (Running -> Running is not a
+                // transition).
+                status: matches!(goal.status, GoalStatus::WaitingUser | GoalStatus::Paused)
+                    .then_some(GoalStatus::Running),
                 ..GoalUpdate::default()
             },
             Some(goal_event(
@@ -2277,6 +2306,185 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|event| event.kind == "user_accepted")
+        );
+    }
+
+    /// A message sent while the Goal was `waiting_user` can wake the runner
+    /// and strand the Goal in `running` with no active run. Acceptance is a
+    /// human decision, so the explicit command must still work there.
+    #[tokio::test]
+    async fn accept_goal_accepts_a_stranded_running_goal_with_no_active_run() {
+        install_test_config();
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let mut goal = manager
+            .create(tact::goal::GoalCreate {
+                title: "Stranded acceptance".into(),
+                objective: "Accept after a no-op wake".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::new(
+                    "User accepts the result",
+                    true,
+                    tact::goal::GoalVerificationKind::Human,
+                )],
+            })
+            .await
+            .unwrap();
+        for status in [
+            tact::goal::GoalStatus::Queued,
+            tact::goal::GoalStatus::Running,
+        ] {
+            goal = manager
+                .update(
+                    &goal.id,
+                    goal.version,
+                    tact::goal::GoalUpdate {
+                        status: Some(status),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::AcceptGoal {
+                goal_id: goal.id.clone(),
+                text: "Accepted after the commit".into(),
+            },
+            &work_dir,
+        )
+        .await;
+
+        let accepted = manager.get(&goal.id).await.unwrap();
+        assert_eq!(accepted.status, tact::goal::GoalStatus::Succeeded);
+        assert!(accepted.criteria[0].has_valid_evidence(accepted.criteria_version));
+    }
+
+    /// Crash recovery parks a Goal in `paused`; accepting it is still a human
+    /// decision, and the evidence path re-enters `running` before verifying.
+    #[tokio::test]
+    async fn accept_goal_accepts_a_recovered_paused_goal() {
+        install_test_config();
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let mut goal = manager
+            .create(tact::goal::GoalCreate {
+                title: "Recovered pause".into(),
+                objective: "Accept after recovery".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::new(
+                    "User accepts the result",
+                    true,
+                    tact::goal::GoalVerificationKind::Human,
+                )],
+            })
+            .await
+            .unwrap();
+        for status in [
+            tact::goal::GoalStatus::Queued,
+            tact::goal::GoalStatus::Running,
+            tact::goal::GoalStatus::Paused,
+        ] {
+            goal = manager
+                .update(
+                    &goal.id,
+                    goal.version,
+                    tact::goal::GoalUpdate {
+                        status: Some(status),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::AcceptGoal {
+                goal_id: goal.id.clone(),
+                text: "Accepted after recovery".into(),
+            },
+            &work_dir,
+        )
+        .await;
+
+        let accepted = manager.get(&goal.id).await.unwrap();
+        assert_eq!(accepted.status, tact::goal::GoalStatus::Succeeded);
+        assert!(accepted.criteria[0].has_valid_evidence(accepted.criteria_version));
+    }
+
+    /// An activation in flight owns the Goal's status; acceptance must wait.
+    #[tokio::test]
+    async fn accept_goal_refuses_while_an_activation_is_in_flight() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let mut goal = manager
+            .create(tact::goal::GoalCreate {
+                title: "Busy acceptance".into(),
+                objective: "Do not race the runner".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::new(
+                    "User accepts the result",
+                    true,
+                    tact::goal::GoalVerificationKind::Human,
+                )],
+            })
+            .await
+            .unwrap();
+        for status in [
+            tact::goal::GoalStatus::Queued,
+            tact::goal::GoalStatus::Running,
+        ] {
+            goal = manager
+                .update(
+                    &goal.id,
+                    goal.version,
+                    tact::goal::GoalUpdate {
+                        status: Some(status),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        manager
+            .start_run(
+                "test-runner",
+                std::time::Duration::from_secs(60),
+                tact::goal::GoalRun::new(goal.id.clone()),
+            )
+            .await
+            .unwrap();
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::AcceptGoal {
+                goal_id: goal.id.clone(),
+                text: "Too early".into(),
+            },
+            &work_dir,
+        )
+        .await;
+
+        let stored = manager.get(&goal.id).await.unwrap();
+        assert_eq!(stored.status, tact::goal::GoalStatus::Running);
+        assert!(!stored.criteria[0].has_valid_evidence(stored.criteria_version));
+        assert!(
+            std::iter::from_fn(|| agent_rx.try_recv().ok())
+                .any(|update| matches!(update, AgentUpdate::Error(_))),
+            "the refusal must be reported"
         );
     }
 

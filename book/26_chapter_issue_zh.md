@@ -22,7 +22,8 @@
 5. **启动快照与 store 侧 steer 解析**：命令循环启动时先发一次 `GoalsChanged`，面板与 `/goal <verb>` 补全不再一直为空；`UserCommand::SteerGoal.goal_id` 改为 `Option`，TUI 只转发能确认的 id，driver 以 store 为准解析：显式 id/唯一前缀 → 唯一 `running` Goal → 唯一非终态 Goal。显式 id 前缀有歧义、或只有 id 没有指令时报错；自由文本的首词只有在唯一匹配某个 id 时才按 id 处理，否则整段作为指令。空/滞后快照也不会再把指令首词当成假 id。
 6. **累计 turn 预算精确到模型调用**：每个 cycle 的 cap 是 `max_turns - run.turns_used`（剩余量），并且 agent loop 在自增 `turns_taken` **之前**检查上限——触发停止的那次探测不再被记成一次已消耗的模型调用。此前一个多 cycle 的 Run 最多可花到约 2× 预算，且 `max_turns=0` 会虚报 `turns_used=1`。
 7. **补齐评审遗留的域不变量**：`Succeeded` 要求至少一个 required criterion（全 optional 不再能被 `validate_acceptance` 空泛放行）；`Rejected` criterion 拒绝新 evidence（只能通过重定义标准恢复）；同一 Goal 内 criterion id 必须唯一（创建和更新都校验）。
-8. **lease 心跳 + fencing 收尾**：Run 执行 cycles 期间后台按 `TTL/3` 调用 `heartbeat_lease`，退出时 abort 并 await；`release_lease`、`finish_run`、`finish_run_and_transition` 改用 owner+epoch 的 fencing 校验（不再要求 `expires_at > now`）——只是跑得久而过期、但未被接管的 lease 仍属于本 Runner，只有 epoch 变化（被接管）才拒绝。
+8. **`/goal accept` 不再和 Runner 抢状态**：Goal 在 `waiting_user` 时收到用户消息可能被唤醒，跑完一次 `no_progress` 后停在 **`running` 且没有活动 Run**；旧的 `accept_goal` 只认 `waiting_user`，于是 UI 刚提示可验收、真正提交却报 “is Running; acceptance requires waiting_user”。现在人工验收接受三种状态：`waiting_user`、`paused`（用户暂停或恢复过程把 stranded `running` 落到 paused）、以及没有活动 Run 的 `running`；有活动 Run 时仍拒绝并提示在途。TUI 的 `accept` 补全同样把这些在无活动 Run 时列为候选。验收仍走 `GoalVerifier`，不会绕过任何标准。
+9. **lease 心跳 + fencing 收尾**：Run 执行 cycles 期间后台按 `TTL/3` 调用 `heartbeat_lease`，退出时 abort 并 await；`release_lease`、`finish_run`、`finish_run_and_transition` 改用 owner+epoch 的 fencing 校验（不再要求 `expires_at > now`）——只是跑得久而过期、但未被接管的 lease 仍属于本 Runner，只有 epoch 变化（被接管）才拒绝。
 
 **改后行为：** `/goal create` 默认最多推进 500 次模型调用（可配置），预算耗尽时仍是可恢复的 `paused`。最后一轮模型会看到「这是本轮最后一次调用，请先写 checkpoint」的提示，因此暂停后 `/goal resume` 能从明确的位置继续。长 Run 的 lease 由心跳维持，收尾事务不会因为 TTL 过期而丢弃结果。Goal Run 期间排队的消息会在 activation 结束时自动提交（不再等下一次普通任务）；`/goal steer <文本>` 可直接作用于当前运行中的 Goal。
 
