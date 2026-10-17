@@ -200,7 +200,6 @@ mod sticky_host_tests {
                     turns_used: 4,
                     turn_limit: 24,
                     tool_calls_used: 9,
-                    tool_call_limit: 60,
                     elapsed_ms: 1_500,
                     wall_clock_limit_ms: 600_000,
                 }),
@@ -223,7 +222,7 @@ mod sticky_host_tests {
         assert!(text.contains("tasks 2/3"), "task progress missing:\n{text}");
         assert!(text.contains("accept 1/2"), "acceptance missing:\n{text}");
         assert!(text.contains("turns 4/24"), "turn budget missing:\n{text}");
-        assert!(text.contains("tools 9/60"), "tool budget missing:\n{text}");
+        assert!(text.contains("tools 9"), "tool usage missing:\n{text}");
         assert!(
             text.contains("needs explicit acceptance"),
             "wait reason missing:\n{text}"

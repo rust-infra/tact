@@ -398,6 +398,17 @@ impl App {
                 self.freeze_last_prompt_cost();
                 self.task_done_time = None;
             }
+            AgentUpdate::TaskIdle => {
+                // An out-of-band turn (a Goal activation) ended without going
+                // through `SubmitTask`, so no TaskComplete/TaskCancelled will
+                // arrive. Leave the busy state — otherwise the queue hint stays
+                // on screen forever and Enter keeps deferring the message.
+                self.flush_stream_pending();
+                self.add_task_end_separator();
+                self.status = Status::Idle;
+                self.freeze_last_prompt_cost();
+                self.task_done_time = None;
+            }
             // Error handling
             AgentUpdate::Error(AgentErrorKind::Other(msg)) => {
                 // Fatal error: flush leftover streaming lines
@@ -606,7 +617,8 @@ impl App {
             | AgentUpdate::HookStatus { .. }
             | AgentUpdate::Error(_)
             | AgentUpdate::TaskComplete(_)
-            | AgentUpdate::TaskCancelled => true,
+            | AgentUpdate::TaskCancelled
+            | AgentUpdate::TaskIdle => true,
 
             // The region keeps running through everything else:
             // - the reasoning deltas themselves;

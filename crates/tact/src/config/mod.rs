@@ -22,10 +22,11 @@ pub use cli::{
 };
 pub use instruction_sources::{InstructionSource, InstructionSources};
 pub use types::{
-    AgentSettings, AgentTomlConfig, LlmSettings, LlmTomlConfig, McpSettings, McpTomlConfig,
-    ModelProfileToml, PermissionTomlConfig, ResolvedConfig, SubagentSettings, SubagentTomlConfig,
-    TactTomlConfig, ToolSettings, ToolsTomlConfig, UiSettings, UiTomlConfig, VisionImageSettings,
-    VisionImageTomlConfig, VoiceProvider, VoiceSettings, VoiceTomlConfig,
+    AgentSettings, AgentTomlConfig, GoalSettings, GoalTomlConfig, LlmSettings, LlmTomlConfig,
+    McpSettings, McpTomlConfig, ModelProfileToml, PermissionTomlConfig, ResolvedConfig,
+    SubagentSettings, SubagentTomlConfig, TactTomlConfig, ToolSettings, ToolsTomlConfig,
+    UiSettings, UiTomlConfig, VisionImageSettings, VisionImageTomlConfig, VoiceProvider,
+    VoiceSettings, VoiceTomlConfig,
 };
 
 use crate::utils::RwLockExt;
@@ -565,6 +566,7 @@ pub(crate) mod test_support {
             },
             voice: super::types::VoiceSettings::disabled_defaults(),
             mcp: super::types::McpSettings::default(),
+            goal: super::types::GoalSettings::default(),
             permission_mode: None,
             tokio_console: false,
             config_path: None,

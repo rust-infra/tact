@@ -33,6 +33,14 @@ use crate::{
     user_message::build_user_message,
 };
 
+/// Resolved `[goal]` budgets, falling back to the built-in defaults when
+/// settings are not installed (unit tests and the non-LLM subcommand paths).
+fn goal_limits() -> GoalLimits {
+    tact::config::try_settings()
+        .map(|settings| GoalLimits::from_settings(&settings.goal))
+        .unwrap_or_default()
+}
+
 /// Reconcile durable Goal/run state after a restart, once, before the command
 /// loop serves anything.
 ///
@@ -40,10 +48,7 @@ use crate::{
 /// reported as an informational update so the user can see it, and the loop
 /// keeps running.
 async fn recover_interrupted_goals(agent: &Agent) {
-    let runner = GoalRunner::new(
-        agent.tool_context.goal_manager.clone(),
-        GoalLimits::default(),
-    );
+    let runner = GoalRunner::new(agent.tool_context.goal_manager.clone(), goal_limits());
     let runner = match agent.runtime.session_id.as_deref() {
         Some(session_id) => runner.with_owner(format!("tact-ui:{session_id}")),
         None => runner,
@@ -107,7 +112,7 @@ pub async fn run_command_loop_with_account(
     let background_session_id = agent.runtime.session_id.clone();
     let goal_manager = agent.tool_context.goal_manager.clone();
     let task_manager = agent.tool_context.task_manager.clone();
-    let goal_limits = GoalLimits::default();
+    let limits = goal_limits();
 
     // Reconcile durable Goal state once, before serving commands: a crashed
     // runner leaves an active run with an expired lease and a Goal still marked
@@ -202,7 +207,7 @@ pub async fn run_command_loop_with_account(
                 list_goals(
                     &goal_manager,
                     &task_manager,
-                    goal_limits,
+                    limits,
                     &ui_tx,
                     include_archived,
                 )
@@ -212,7 +217,7 @@ pub async fn run_command_loop_with_account(
                 set_goal_archived(
                     &goal_manager,
                     &task_manager,
-                    goal_limits,
+                    limits,
                     &ui_tx,
                     &goal_id,
                     archived,
@@ -220,7 +225,7 @@ pub async fn run_command_loop_with_account(
                 .await;
             }
             UserCommand::ShowGoal { goal_id } => {
-                show_goal(&goal_manager, &task_manager, goal_limits, &goal_id, &ui_tx).await;
+                show_goal(&goal_manager, &task_manager, limits, &goal_id, &ui_tx).await;
             }
             UserCommand::SubagentFinishedNotification { .. } => {
                 // If a turn is active, retain the wake-up until that turn's
@@ -265,6 +270,9 @@ pub async fn run_command_loop_with_account(
                     {
                         resume_goal(&mut task_agent, &goal_id).await;
                     }
+                    // A Goal activation does not go through `SubmitTask`, so no
+                    // TaskComplete/TaskCancelled clears the TUI's busy state.
+                    task_agent.emit_update(AgentUpdate::TaskIdle);
                     task_agent
                 }));
             }
@@ -275,6 +283,7 @@ pub async fn run_command_loop_with_account(
                 let mut task_agent = agent.take().expect("agent available for goal resume");
                 active = Some(tokio::spawn(async move {
                     resume_goal(&mut task_agent, &goal_id).await;
+                    task_agent.emit_update(AgentUpdate::TaskIdle);
                     task_agent
                 }));
             }
@@ -285,6 +294,7 @@ pub async fn run_command_loop_with_account(
                 let mut task_agent = agent.take().expect("agent available for goal acceptance");
                 active = Some(tokio::spawn(async move {
                     accept_goal(&mut task_agent, &goal_id, &text).await;
+                    task_agent.emit_update(AgentUpdate::TaskIdle);
                     task_agent
                 }));
             }
@@ -541,7 +551,6 @@ async fn goal_snapshots_with(
                 turns_used: run.turns_used.min(u32::MAX as u64) as u32,
                 turn_limit: limits.max_turns,
                 tool_calls_used: run.tool_calls_used.min(u32::MAX as u64) as u32,
-                tool_call_limit: limits.max_tool_calls.min(u32::MAX as u64) as u32,
                 elapsed_ms: run.elapsed_ms,
                 wall_clock_limit_ms: limits.max_elapsed.as_millis().min(u64::MAX as u128) as u64,
             });
@@ -652,7 +661,7 @@ async fn create_goal(
             emit_goals_changed(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
-                GoalLimits::default(),
+                goal_limits(),
                 &agent.runtime.ui_tx,
             )
             .await;
@@ -871,7 +880,7 @@ async fn update_goal_status(
             emit_goals_changed(
                 manager,
                 &agent.tool_context.task_manager,
-                GoalLimits::default(),
+                goal_limits(),
                 &agent.runtime.ui_tx,
             )
             .await;
@@ -916,10 +925,7 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
         return;
     }
     clear_cancel_for_goal_activation(agent);
-    let runner = GoalRunner::new(
-        agent.tool_context.goal_manager.clone(),
-        GoalLimits::default(),
-    );
+    let runner = GoalRunner::new(agent.tool_context.goal_manager.clone(), goal_limits());
     if let Err(error) = runner.run_once(agent, goal_id).await {
         emit_goal_error(
             &agent.runtime.ui_tx,
@@ -929,7 +935,7 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
     emit_goals_changed(
         &agent.tool_context.goal_manager,
         &agent.tool_context.task_manager,
-        GoalLimits::default(),
+        goal_limits(),
         &agent.runtime.ui_tx,
     )
     .await;
@@ -1070,7 +1076,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
         }
         GoalVerification::Rejected { .. } => {
             clear_cancel_for_goal_activation(agent);
-            let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
+            let runner = GoalRunner::new(manager.clone(), goal_limits());
             if let Err(error) = runner.run_once(agent, goal_id).await {
                 emit_goal_error(
                     &agent.runtime.ui_tx,
@@ -1088,7 +1094,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
     emit_goals_changed(
         &manager,
         &agent.tool_context.task_manager,
-        GoalLimits::default(),
+        goal_limits(),
         &agent.runtime.ui_tx,
     )
     .await;
@@ -1120,7 +1126,7 @@ async fn handle_user_command_with_account(
             list_goals(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
-                GoalLimits::default(),
+                goal_limits(),
                 &agent.runtime.ui_tx,
                 include_archived,
             )
@@ -1130,7 +1136,7 @@ async fn handle_user_command_with_account(
             show_goal(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
-                GoalLimits::default(),
+                goal_limits(),
                 &goal_id,
                 &agent.runtime.ui_tx,
             )
@@ -1151,7 +1157,7 @@ async fn handle_user_command_with_account(
                     emit_goals_changed(
                         &agent.tool_context.goal_manager,
                         &agent.tool_context.task_manager,
-                        GoalLimits::default(),
+                        goal_limits(),
                         &agent.runtime.ui_tx,
                     )
                     .await;
@@ -1174,7 +1180,7 @@ async fn handle_user_command_with_account(
             set_goal_archived(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
-                GoalLimits::default(),
+                goal_limits(),
                 &agent.runtime.ui_tx,
                 &goal_id,
                 archived,
@@ -1682,6 +1688,24 @@ mod tests {
         );
 
         release.store(true, std::sync::atomic::Ordering::Relaxed);
+
+        // The activation now finishes. It does not go through `SubmitTask`, so
+        // it must explicitly announce that it left the TUI's busy state —
+        // otherwise a message typed during the run stays queued forever.
+        let mut idle = false;
+        let idle_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        while std::time::Instant::now() < idle_deadline {
+            match tokio::time::timeout(Duration::from_millis(200), agent_rx.recv()).await {
+                Ok(Some(AgentUpdate::TaskIdle)) => {
+                    idle = true;
+                    break;
+                }
+                Ok(Some(_)) => continue,
+                Ok(None) | Err(_) => break,
+            }
+        }
+        assert!(idle, "a goal activation must emit TaskIdle when it ends");
+
         drop(user_cmd_tx);
         tokio::time::timeout(Duration::from_secs(5), loop_handle)
             .await

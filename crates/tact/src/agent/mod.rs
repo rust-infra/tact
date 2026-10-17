@@ -7,6 +7,7 @@ pub(crate) mod tool_schedule;
 pub use outcome::{AgentLoopOutcome, AgentLoopStop};
 
 use std::{
+    borrow::Cow,
     collections::VecDeque,
     path::Path,
     sync::{Arc, Mutex, RwLock},
@@ -322,6 +323,25 @@ fn hook_output_path(session_id: &str) -> std::path::PathBuf {
         .join("hook_outputs")
         .join(session_id)
         .join(format!("{}-{stamp}.txt", std::process::id()))
+}
+
+/// Prompt text appended (to the system prompt, for this request only) on the
+/// last permitted model call of a Goal run.
+///
+/// The hard turn cap is checked *before* the previous call, so this is the
+/// model's last chance to persist what it learned. The reminder is advisory —
+/// the cap still decides the stop — but without it the activation routinely
+/// ended mid-thought with nothing written for the next run.
+fn goal_final_turn_reminder(turn: u32) -> String {
+    format!(
+        "<goal-budget-reminder>\n\
+         This is the final model call of this Goal run (turn {turn}).\n\
+         Before you finish, call goal_checkpoint with a concise summary of what \
+         you completed, what is still open, and the next concrete step, so the \
+         next run can continue without re-discovering it. Do not start work you \
+         cannot describe in that checkpoint.\n\
+         </goal-budget-reminder>"
+    )
 }
 
 /// Shared state for a running agent session.
@@ -1317,6 +1337,12 @@ impl Agent {
                     tool_calls,
                 ));
             }
+            // The last permitted model call of a Goal run is the only one that
+            // can still persist a checkpoint. Subagents also run with a turn
+            // cap, but they have no active Goal bound, so the reminder is
+            // scoped to Goal activations.
+            let goal_final_turn = self.tool_context.active_goal_id.is_some()
+                && self.max_turns == Some(self.turns_taken);
             // Micro-compaction truncates old tool results in the logical
             // context. For Responses the provider state anchors the logical
             // prefix by hash, so mutating covered messages would invalidate
@@ -1378,12 +1404,25 @@ impl Agent {
             // summary when compact_history ran above.
             let conversation_messages = self.runtime.context.clone();
             let model_name = self.agent_settings.model.clone();
+            // On the final Goal turn the reminder rides in the system prompt of
+            // this request only. Keeping it out of the conversation means it
+            // cannot outlive the activation or appear as a user message in the
+            // transcript; appending at the end also preserves the cached prefix
+            // of the system prompt.
+            let request_system: Cow<'_, str> = if goal_final_turn {
+                Cow::Owned(format!(
+                    "{system_prompt}\n\n{}",
+                    goal_final_turn_reminder(self.turns_taken)
+                ))
+            } else {
+                Cow::Borrowed(system_prompt.as_str())
+            };
             let request = CreateMessageParams::new(RequiredMessageParams {
                 model: model_name.clone(),
                 messages: conversation_messages,
                 max_tokens: self.max_tokens(),
             })
-            .with_system(&system_prompt)
+            .with_system(request_system)
             .with_tools(self.all_tool_specs())
             .with_stream(true)
             .with_thinking(self.thinking_config())
@@ -5451,6 +5490,97 @@ mod tests {
         assert_eq!(
             tool_result_for(&agent.runtime.context, "goal-input-1").as_deref(),
             Some("User input requested; yield to Runner.")
+        );
+    }
+
+    /// The hard cap is checked before the model call, so the model's final
+    /// permitted turn is the only one that can still persist a checkpoint.
+    /// The reminder must appear there (and only there), scoped to a Goal
+    /// activation — a subagent also runs under `max_turns` but has no Goal.
+    #[tokio::test]
+    async fn agent_loop_reminds_a_goal_activation_to_checkpoint_on_its_last_turn() {
+        ensure_config();
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let mut context = test_context("agent_loop_goal_final_turn_reminder");
+        let goal = context
+            .goal_manager
+            .create(crate::goal::GoalCreate {
+                title: "Reminder".to_string(),
+                objective: "Checkpoint before the cap".to_string(),
+                constraints: Vec::new(),
+                criteria: vec![crate::goal::GoalCriterion::required_with_id(
+                    "criterion-1",
+                    "checkpoint written",
+                )],
+            })
+            .await
+            .unwrap();
+        context.active_goal_id = Some(goal.id.clone());
+
+        let systems = Arc::new(std::sync::Mutex::new(Vec::<Option<String>>::new()));
+        let systems_for_responder = systems.clone();
+        let index = Arc::new(AtomicUsize::new(0));
+        let index_for_responder = index.clone();
+        let mock = MockClient::with_responder(move |request, _idx| {
+            systems_for_responder
+                .lock()
+                .unwrap()
+                .push(request.system.clone());
+            let call = index_for_responder.fetch_add(1, Ordering::SeqCst);
+            if call == 0 {
+                Ok((
+                    vec![ContentBlock::ToolUse {
+                        id: "checkpoint-1".to_string(),
+                        name: "goal_checkpoint".to_string(),
+                        input: serde_json::json!({"summary": "half done"}),
+                    }],
+                    Some(StopReason::ToolUse),
+                    None,
+                ))
+            } else {
+                Ok((
+                    vec![make_text_block("done")],
+                    Some(StopReason::EndTurn),
+                    None,
+                ))
+            }
+        });
+
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("You are a test agent.".to_string()),
+        )
+        .with_max_turns(Some(2));
+
+        agent
+            .agent_loop(Some(Message::new_text(Role::User, "work the goal")))
+            .await
+            .expect("agent_loop should finish");
+
+        let systems = systems.lock().unwrap();
+        assert_eq!(systems.len(), 2, "expected exactly two model calls");
+        let first = systems[0].as_deref().unwrap_or_default();
+        assert!(
+            !first.contains("goal-budget-reminder"),
+            "the reminder must not appear before the final turn"
+        );
+        let last = systems[1].as_deref().unwrap_or_default();
+        assert!(
+            last.contains("goal-budget-reminder"),
+            "the final Goal turn must carry the reminder:\n{last}"
+        );
+        assert!(
+            last.contains("goal_checkpoint"),
+            "the reminder must name the checkpoint tool:\n{last}"
         );
     }
 

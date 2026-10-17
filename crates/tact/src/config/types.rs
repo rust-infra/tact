@@ -29,6 +29,48 @@ pub struct TactTomlConfig {
 
     /// MCP client settings (OAuth registration identity).
     pub mcp: McpTomlConfig,
+
+    /// Goal runner budgets.
+    pub goal: GoalTomlConfig,
+}
+
+/// `[goal]` — the per-Run budgets a Goal activation executes under.
+///
+/// All three keys are optional; an omitted key keeps the built-in default.
+/// `0` is rejected rather than silently disabling every activation.
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct GoalTomlConfig {
+    /// Model calls (loop turns) one Goal run may consume, accumulated across
+    /// activations (default: 500).
+    pub max_turns: Option<u32>,
+
+    /// Wall-clock ceiling for one Goal run, in seconds (default: 600).
+    ///
+    /// The execution lease TTL is derived from this value plus a small slack.
+    pub max_elapsed_secs: Option<u64>,
+}
+
+/// Resolved Goal runner budgets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GoalSettings {
+    /// Model calls (loop turns) one Goal run may consume, accumulated across
+    /// activations.
+    pub max_turns: u32,
+    /// Wall-clock ceiling for one Goal run, in seconds.
+    pub max_elapsed_secs: u64,
+}
+
+impl Default for GoalSettings {
+    /// The single source of the built-in Goal budget numbers; `GoalLimits`
+    /// derives from this so the config default and the runtime default cannot
+    /// drift apart.
+    fn default() -> Self {
+        Self {
+            max_turns: 500,
+            max_elapsed_secs: 600,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -606,6 +648,7 @@ pub struct ResolvedConfig {
     pub tools: ToolSettings,
     pub voice: VoiceSettings,
     pub mcp: McpSettings,
+    pub goal: GoalSettings,
     pub permission_mode: Option<String>,
     pub tokio_console: bool,
     /// Path of the TOML file loaded at startup (for optional `/model` persist).

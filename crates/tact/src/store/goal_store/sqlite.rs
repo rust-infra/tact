@@ -449,7 +449,9 @@ impl GoalStore for SqliteGoalStore {
 
     async fn release_lease(&self, token: &LeaseToken) -> Result<()> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        validate_lease(&mut tx, token).await?;
+        // Fencing only: a lapsed-but-not-taken-over lease is still this
+        // runner's to release (see `validate_lease_fence`).
+        validate_lease_fence(&mut tx, token).await?;
         sqlx::query(
             "UPDATE goal_leases SET expires_at = ? WHERE singleton = 1 AND owner = ? AND epoch = ?",
         )
@@ -491,7 +493,7 @@ impl GoalStore for SqliteGoalStore {
 
     async fn finish_run(&self, token: &LeaseToken, run: GoalRun) -> Result<GoalRun> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        validate_lease(&mut tx, token).await?;
+        validate_lease_fence(&mut tx, token).await?;
         let finished = self.finish_run_in_tx(&mut tx, &run).await?;
         tx.commit().await?;
         Ok(finished)
@@ -505,7 +507,7 @@ impl GoalStore for SqliteGoalStore {
         run_event: GoalEvent,
     ) -> Result<(GoalRun, Goal)> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        validate_lease(&mut tx, token).await?;
+        validate_lease_fence(&mut tx, token).await?;
         let finished = self.finish_run_in_tx(&mut tx, &run).await?;
         // Each transition CASes against the version the previous one produced,
         // so a multi-step transition (`Verifying → Succeeded`) stays consistent
@@ -606,6 +608,28 @@ async fn validate_lease(conn: &mut SqliteConnection, token: &LeaseToken) -> Resu
         })
         .unwrap_or(false);
     if valid { Ok(()) } else { Err(stale(token)) }
+}
+
+/// Fencing-only check: owner and epoch, deliberately ignoring `expires_at`.
+///
+/// Finishing a run and releasing the lease are the two writes that make an
+/// activation's result durable. A lease that merely lapsed without being taken
+/// over is still ours — the epoch is the fence that detects a takeover — so
+/// requiring a live expiry here would throw away a completed run precisely
+/// when it took longer than the TTL. `expiry` stays required for writes that
+/// must not land behind another owner's back (claim, heartbeat, status update).
+async fn validate_lease_fence(conn: &mut SqliteConnection, token: &LeaseToken) -> Result<()> {
+    let row = sqlx::query("SELECT owner, epoch FROM goal_leases WHERE singleton = 1")
+        .fetch_optional(&mut *conn)
+        .await?;
+    let owns = row
+        .map(|row| {
+            let owner: String = row.try_get("owner").unwrap_or_default();
+            let epoch: i64 = row.try_get("epoch").unwrap_or_default();
+            owner == token.owner && epoch == token.epoch
+        })
+        .unwrap_or(false);
+    if owns { Ok(()) } else { Err(stale(token)) }
 }
 
 async fn insert_event(conn: &mut SqliteConnection, event: &GoalEvent) -> Result<()> {
@@ -1193,6 +1217,38 @@ mod tests {
             Some(GoalStoreError::StaleLease { .. })
         ));
         assert_eq!(store.get(&goal.id).await.unwrap().title, "release");
+    }
+
+    /// A lapsed lease that nobody took over is still this runner's to release
+    /// and to finish against; a takeover is what the fence must reject.
+    #[tokio::test]
+    async fn expired_lease_can_still_be_released_unless_taken_over() {
+        let store = SqliteGoalStore::new(&temp_db("expired_release"))
+            .await
+            .unwrap();
+        let goal = store.create(goal("expired")).await.unwrap();
+        let expired = store
+            .claim_lease("owner-a", Duration::from_secs(0))
+            .await
+            .unwrap();
+        // Expired, but still owner-a's epoch: release must succeed.
+        store.release_lease(&expired).await.unwrap();
+
+        let expired = store
+            .claim_lease("owner-a", Duration::from_secs(0))
+            .await
+            .unwrap();
+        let taken = store
+            .claim_lease("owner-b", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(taken.epoch, expired.epoch + 1);
+        let error = store.release_lease(&expired).await.unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<GoalStoreError>(),
+            Some(GoalStoreError::StaleLease { .. })
+        ));
+        assert_eq!(store.get(&goal.id).await.unwrap().status, GoalStatus::Draft);
     }
 
     #[tokio::test]

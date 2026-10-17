@@ -94,11 +94,8 @@ fn row_text(goal: &GoalSnapshot) -> String {
         .as_ref()
         .map(|budget| {
             format!(
-                " · turns {}/{} · tools {}/{}",
-                budget.turns_used,
-                budget.turn_limit,
-                budget.tool_calls_used,
-                budget.tool_call_limit
+                " · turns {}/{} · tools {}",
+                budget.turns_used, budget.turn_limit, budget.tool_calls_used
             )
         })
         .unwrap_or_default();
@@ -183,7 +180,6 @@ mod tests {
                 turns_used: 2,
                 turn_limit: 4,
                 tool_calls_used: 3,
-                tool_call_limit: 8,
                 ..Default::default()
             }),
             wait_reason: Some("review".into()),

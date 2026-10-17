@@ -307,6 +307,25 @@ mode = "default"
 # startup error, not a silent no-op.
 
 # ---------------------------------------------------------------------------
+# Goal runner budgets
+# ---------------------------------------------------------------------------
+[goal]
+# Per-run budgets for durable Goals. A run is one lease period made of one or
+# more bounded activations; the counters accumulate across those activations.
+# `0` is rejected at startup (it would make every activation a no-op).
+#
+# Model calls (loop turns) one Goal run may consume (default: 500).
+# The final call carries a system-prompt reminder to write a checkpoint.
+# Tool calls are not capped: each one already happens inside a model call, so
+# max_turns bounds the work; usage is still recorded in the run summary.
+# max_turns = 500
+#
+# Wall-clock ceiling for one Goal run, in seconds (default: 600).
+# The execution lease TTL is derived from this value plus 60s of slack; the
+# runner heartbeats the lease while it works, so a long run is not fenced out.
+# max_elapsed_secs = 600
+
+# ---------------------------------------------------------------------------
 # TUI
 # ---------------------------------------------------------------------------
 [ui]

@@ -40,7 +40,7 @@ Goal、Task、Turn 和 PlanStep 是不同层级，不能互相替代：
 /goal list [--all]    列出当前工作区的 Goal（默认不含已归档）；为空时在 Log 里提示（此时面板不可见）
 /goal create <text>   创建 Goal（文本同时作为标题和 objective）并立即启动第一次 Run，Log 里回报新 Goal ID
 /goal show <id>       查看目标、标准、任务和验收摘要
-/goal steer <id> <text> 补充方向或约束并写入事件
+/goal steer [<id>] <text> 补充方向或约束并写入事件（省略 id 时作用于当前运行中的 Goal；无运行中 Goal 时取唯一的非终态 Goal，多个候选则要求显式 id）
 /goal pause <id>      暂停执行
 /goal resume <id>     恢复执行
 /goal cancel <id>     取消 Goal
@@ -218,9 +218,13 @@ Agent 可报告 checkpoint、提出 Task 变更、请求用户输入、请求权
 
 ### 预算与进展保护
 
-**一次 Run 由一到多个受限 activation 组成。** 每个 activation 的 turn 上限是 24（`GoalLimits::max_turns`），由 `agent_loop` 自己的 turn cap 在运行中强制；一个 activation 结束后，只有它在**可观察进展**（执行过工具调用，或追加过 Goal 事件——checkpoint、Task 关联、证据）且 Run 的累计预算仍有剩余时，Runner 才接着跑下一个 activation。纯文本回合（模型只说话、没有落地动作）结束本次 Run。
+**一次 Run 由一到多个受限 activation 组成。** 每个 activation 的 turn 上限默认是 500（`GoalLimits::max_turns`，可用 `[goal].max_turns` 覆盖），由 `agent_loop` 自己的 turn cap 在运行中强制；一个 activation 结束后，只有它在**可观察进展**（执行过工具调用，或追加过 Goal 事件——checkpoint、Task 关联、证据）且 Run 的累计预算仍有剩余时，Runner 才接着跑下一个 activation。纯文本回合（模型只说话、没有落地动作）结束本次 Run。
 
-Run 的累计预算同样是 `GoalLimits` 的 24 turns / 60 次工具调用 / 600 秒墙钟时间，跨 activation 累加到同一条 Run 记录上；达到上限时保存 checkpoint、用量和 stop reason，Goal 进入 `paused`。因为累计预算是按 turn 计的，周期数天然有界（每个周期至少消耗一次模型调用）。注意 `Agent::max_turns` 约束的是**进程累计**的 `turns_taken`，所以 Runner 传给循环的是「当前累计值 + 本次预算」，而不是裸的预算数字。
+Run 的累计预算同样是 `GoalLimits` 的 500 turns / 600 秒墙钟时间（`[goal].max_turns` / `max_elapsed_secs`），跨 activation 累加到同一条 Run 记录上；达到上限时保存 checkpoint、用量和 stop reason，Goal 进入 `paused`。工具调用数只作为用量记录（`GoalRun::tool_calls_used`），不设单独上限：每次工具调用本来就发生在一次模型调用之内，turn 上限已经约束了总扇出，单独计数只会让有用的 Run 提前结束。因为累计预算是按 turn 计的，周期数天然有界（每个周期至少消耗一次模型调用）。注意 `Agent::max_turns` 约束的是**进程累计**的 `turns_taken`，所以 Runner 传给循环的是「当前累计值 + 本次预算」，而不是裸的预算数字。
+
+**最后一轮会提醒模型写 checkpoint**（2026-10-17）：turn cap 在模型调用**之前**检查，所以最后一轮是模型唯一还能落盘的机会。该轮请求的 system prompt 末尾会追加 `<goal-budget-reminder>`，要求模型调用 `goal_checkpoint` 记录「已完成 / 仍待办 / 下一步」，避免 Run 在思考中途被截断、下一次 activation 从零重新发现。提醒只存在于该次请求的 system prompt 中，不进入会话历史；预算仍是硬约束，提醒只是软引导。
+
+**Lease 在 Run 执行期间持续心跳**（2026-10-17）：`max_elapsed` 只在 activation 之间检查，单个 activation 可能远长于 lease TTL。Runner 在 cycles 运行期间按 `TTL/3` 刷新 lease，退出时 abort 并 await 心跳任务；收尾与释放只校验 owner+epoch（fencing），不再要求 lease 仍未过期——否则一个只是因为跑得久而过期、但未被接管的 lease 会丢掉整个 Run 的结果。
 
 **activation 自己的判定优先于预算**（2026-10-16）：取消（`cancelled`）、被 hook 拦截（`fatal_error`/`failed`）、需要用户（`needs_user`）、验收通过（`succeeded`）这类终局判定即使与预算耗尽同时发生，也按判定记录——用户在最后一次流式响应期间按下的 Esc 不会被改记成预算暂停。预算只在「本来还会继续」（`progress_made`，或验收被拒）时把 Run 标成 `budget_exhausted`/`paused`。
 

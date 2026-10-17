@@ -29,7 +29,7 @@ use tact::goal::{
     Goal, GoalEvent, GoalRun, GoalRunOutcome, GoalStatus, GoalUpdate, GoalVerification,
     GoalVerifier, SharedGoalManager, new_id,
 };
-use tact::store::goal_store::LeaseToken;
+use tact::store::goal_store::{GoalStoreError, LeaseToken};
 use tact::task::TaskRecord;
 use tact_llm::{Message, Role};
 use tact_protocol::AgentUpdate;
@@ -60,67 +60,49 @@ const EVENTS_CAP: usize = 400;
 /// How many of the most recent events are summarised.
 const RECENT_EVENTS: usize = 6;
 
-/// Per-activation budgets for one bounded Goal run.
+/// Budgets for one bounded Goal run, accumulated across its activations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GoalLimits {
-    /// Model calls (loop turns) one activation may consume.
+    /// Model calls (loop turns) one Goal run may consume.
     pub max_turns: u32,
-    /// Tool calls one activation may execute.
-    pub max_tool_calls: u64,
-    /// Wall-clock ceiling for one activation.
+    /// Wall-clock ceiling for one Goal run.
     pub max_elapsed: Duration,
 }
 
-/// Default model-call budget for one activation.
+/// Default model-call budget for one Goal run.
 ///
-/// An activation is a bounded slice of work, not a session: 24 model calls is
-/// enough to read the context, work through a wave or two of tools and report,
-/// while a runaway loop is cut off long before a token budget would notice.
-const DEFAULT_MAX_TURNS: u32 = 24;
-
-/// Default executed-tool-call budget for one activation.
-///
-/// Roughly two and a half tool calls per model call, which fits the
-/// read/act/observe rhythm of a normal activation without allowing a single
-/// activation to sweep an entire repository.
-const DEFAULT_MAX_TOOL_CALLS: u64 = 60;
-
-/// Default wall-clock ceiling for one activation.
-///
-/// Ten minutes keeps an interactive session responsive: the lease TTL is
-/// derived from this value (plus slack), so a larger default would also hold
-/// the workspace execution lease for longer after a crash.
-const DEFAULT_MAX_ELAPSED: Duration = Duration::from_secs(600);
-
-/// This is the *single* source of the default numbers; no other module may
-/// restate them.
+/// A run is a bounded slice of work, not a session. The built-in default lives
+/// in [`tact::config::GoalSettings`] (500) so `[goal].max_turns` and the
+/// runtime fallback cannot drift; a larger cap still ends through the
+/// wall-clock budget or the agent loop's own stop reasons.
 impl Default for GoalLimits {
     fn default() -> Self {
-        Self {
-            max_turns: DEFAULT_MAX_TURNS,
-            max_tool_calls: DEFAULT_MAX_TOOL_CALLS,
-            max_elapsed: DEFAULT_MAX_ELAPSED,
-        }
+        Self::from_settings(&tact::config::GoalSettings::default())
     }
 }
 
 impl GoalLimits {
-    /// Whether an activation that consumed `used_turns` model calls,
-    /// `used_tool_calls` executed tool calls and `elapsed` wall-clock time is
-    /// still inside its budget.
+    /// Builds the runner budget from resolved `[goal]` settings.
+    pub fn from_settings(settings: &tact::config::GoalSettings) -> Self {
+        Self {
+            max_turns: settings.max_turns,
+            max_elapsed: Duration::from_secs(settings.max_elapsed_secs),
+        }
+    }
+
+    /// Whether a run that consumed `used_turns` model calls and `elapsed`
+    /// wall-clock time is still inside its budget.
+    ///
+    /// Tool calls are deliberately not capped: every tool call is already
+    /// inside a model call, so `max_turns` bounds the fan-out, and a separate
+    /// count only ended useful runs early. Usage is still recorded (`GoalRun::
+    /// tool_calls_used`) for the run summary and the panel.
     ///
     /// The whole budget rule lives here so it has exactly one definition and one
     /// test; a zero limit rejects every activation (including one that did no
     /// work).
-    pub fn permit_activation(
-        &self,
-        used_turns: u32,
-        used_tool_calls: u64,
-        elapsed: Duration,
-    ) -> bool {
-        used_turns < self.max_turns
-            && used_tool_calls < self.max_tool_calls
-            && elapsed < self.max_elapsed
+    pub fn permit_activation(&self, used_turns: u32, elapsed: Duration) -> bool {
+        used_turns < self.max_turns && elapsed < self.max_elapsed
     }
 }
 
@@ -510,6 +492,41 @@ impl GoalRunner {
         self.limits.max_elapsed.saturating_add(LEASE_TTL_SLACK)
     }
 
+    /// Keeps the execution lease alive for as long as the run is executing.
+    ///
+    /// A run can outlive `lease_ttl`: `max_elapsed` is only checked between
+    /// activations, and one activation may spend hundreds of model calls. A
+    /// lapsed lease used to fence `finish_run_and_transition` out and drop the
+    /// run's outcome, so the lease is refreshed while the cycles run and the
+    /// task is aborted+awaited on every exit path. A takeover (stale token)
+    /// stops it; any other store error retries on the next tick.
+    fn spawn_lease_heartbeat(&self, token: &LeaseToken) -> tokio::task::JoinHandle<()> {
+        let manager = self.goal_manager.clone();
+        let token = token.clone();
+        let ttl = self.lease_ttl();
+        tokio::spawn(async move {
+            let period = (ttl / 3).max(Duration::from_secs(1));
+            let mut ticker = tokio::time::interval(period);
+            ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            ticker.tick().await; // the first tick is immediate
+            loop {
+                ticker.tick().await;
+                match manager.heartbeat_lease(&token, ttl).await {
+                    Ok(_) => {}
+                    Err(error) => {
+                        if matches!(
+                            error.downcast_ref::<GoalStoreError>(),
+                            Some(GoalStoreError::StaleLease { .. })
+                        ) {
+                            return;
+                        }
+                        // Transient store error: try again on the next tick.
+                    }
+                }
+            }
+        })
+    }
+
     async fn run_with_lease(
         &self,
         agent: &mut Agent,
@@ -539,9 +556,14 @@ impl GoalRunner {
         // [`Self::run_activation_cycles`]; whatever it returns — a mapped
         // outcome or an error — the run is finished below, in one transaction.
         let started = Instant::now();
+        let heartbeat = self.spawn_lease_heartbeat(token);
         let cycles = self
             .run_activation_cycles(agent, &mut goal, &mut run, started)
             .await;
+        // Abort *and* await: no heartbeat may touch the lease after the single
+        // release site below.
+        heartbeat.abort();
+        let _ = heartbeat.await;
         let (run_outcome, transitions) = match cycles {
             Ok(pair) => pair,
             Err(error) => {
@@ -719,7 +741,6 @@ impl GoalRunner {
             let mapped = self.map_stop(goal, run, activation.stop).await?;
             let budget_left = self.limits.permit_activation(
                 run.turns_used.min(u64::from(u32::MAX)) as u32,
-                run.tool_calls_used,
                 Duration::from_millis(run.elapsed_ms),
             );
             // A spent budget ends the run exactly when the activation would
@@ -1068,6 +1089,17 @@ mod tests {
 
     fn summary_of(event: &GoalEvent) -> String {
         event.payload.clone().unwrap_or_default()
+    }
+
+    #[test]
+    fn default_limits_follow_the_configured_goal_defaults() {
+        let limits = GoalLimits::default();
+        assert_eq!(limits.max_turns, 500);
+        assert_eq!(limits.max_elapsed, Duration::from_secs(600));
+        assert_eq!(
+            limits,
+            GoalLimits::from_settings(&tact::config::GoalSettings::default())
+        );
     }
 
     #[tokio::test]

@@ -566,17 +566,13 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
                 })
             }
         }
-        "steer" | "accept" => {
+        "steer" => steer_request(app, args),
+        "accept" => {
             let mut values = args.splitn(2, char::is_whitespace);
             let goal_id = values.next().unwrap_or_default().trim();
             let text = values.next().unwrap_or_default().trim();
             if goal_id.is_empty() || text.is_empty() {
                 None
-            } else if verb == "steer" {
-                Some(UserCommand::SteerGoal {
-                    goal_id: goal_id.to_string(),
-                    text: text.to_string(),
-                })
             } else {
                 Some(UserCommand::AcceptGoal {
                     goal_id: goal_id.to_string(),
@@ -595,6 +591,81 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
         ));
     }
     CommandExecOutcome::handled()
+}
+
+/// Parses `/goal steer [<goal-id>] <text>`.
+///
+/// Execution is singleton (one lease, one active run), so the id is optional in
+/// the common case:
+///
+/// - an explicit id wins whenever the first token exactly matches a Goal id or
+///   is a unique prefix of one;
+/// - otherwise the whole argument is the instruction and targets the single
+///   `running` Goal;
+/// - when the panel snapshot has not caught up yet (a fresh `/goal create` can
+///   still be `draft` while its first activation is in flight), the single
+///   non-terminal Goal is the target.
+///
+/// Anything ambiguous (several candidates, an id with no instruction) falls
+/// back to the usage flash rather than steering the wrong Goal.
+fn steer_request(app: &App, args: &str) -> Option<UserCommand> {
+    use tact_protocol::GoalStatusSnapshot;
+
+    let args = args.trim();
+    if args.is_empty() {
+        return None;
+    }
+    let mut tokens = args.splitn(2, char::is_whitespace);
+    let first = tokens.next().unwrap_or_default();
+    let rest = tokens.next().unwrap_or_default().trim();
+    let goals = &app.goal_panel().state().snapshot;
+
+    // Fresh session, no snapshot yet: keep the explicit `<id> <text>` form.
+    if goals.is_empty() {
+        return (!rest.is_empty()).then(|| UserCommand::SteerGoal {
+            goal_id: first.to_string(),
+            text: rest.to_string(),
+        });
+    }
+
+    let mut matches = goals
+        .iter()
+        .filter(|goal| goal.id == first || goal.id.starts_with(first));
+    if let Some(goal) = matches.next() {
+        // A known id needs an instruction; an ambiguous prefix needs more
+        // characters. Neither is a reason to guess.
+        if matches.next().is_some() || rest.is_empty() {
+            return None;
+        }
+        return Some(UserCommand::SteerGoal {
+            goal_id: goal.id.clone(),
+            text: rest.to_string(),
+        });
+    }
+
+    // No id in the first token: the whole argument is the instruction.
+    let running: Vec<_> = goals
+        .iter()
+        .filter(|goal| goal.status == GoalStatusSnapshot::Running)
+        .collect();
+    let target = match running.as_slice() {
+        [only] => Some(*only),
+        [] => {
+            let open: Vec<_> = goals
+                .iter()
+                .filter(|goal| !goal.status.is_terminal())
+                .collect();
+            match open.as_slice() {
+                [only] => Some(*only),
+                _ => None,
+            }
+        }
+        _ => None,
+    };
+    target.map(|goal| UserCommand::SteerGoal {
+        goal_id: goal.id.clone(),
+        text: args.to_string(),
+    })
 }
 
 /// `/skill list` output is plain markdown (heading + pipe table) appended as
@@ -992,6 +1063,36 @@ mod tests {
             user_cmd_rx.try_recv().expect("expected Cancel"),
             UserCommand::Cancel
         ));
+    }
+
+    #[test]
+    fn task_idle_clears_the_busy_state_and_flushes_queued_messages() {
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.status = Status::Executing {
+            current_step: 1,
+            total: 2,
+        };
+        app.queue_pending_message("next".into(), "next".into());
+        assert_eq!(app.pending_messages.len(), 1);
+
+        app.handle_agent_update(tact_protocol::AgentUpdate::TaskIdle);
+
+        assert!(
+            matches!(app.status, Status::Idle),
+            "an out-of-band turn must leave the busy state"
+        );
+        super::flush_pending_when_idle(&mut app);
+        assert!(
+            app.pending_messages.is_empty(),
+            "the queue must flush once the Goal activation is idle"
+        );
+        match user_cmd_rx
+            .try_recv()
+            .expect("queued message should submit")
+        {
+            UserCommand::SubmitTask(task) => assert_eq!(task, "next"),
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]
@@ -1661,6 +1762,123 @@ mod tests {
                     && objective == "Ship Goal UI with durable lifecycle"
                     && criteria.is_empty()
         ));
+    }
+
+    #[test]
+    fn goal_steer_without_an_id_targets_the_single_running_goal() {
+        use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
+
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.goal_panel_mut().state_mut().snapshot = vec![
+            GoalSnapshot {
+                id: "goal-1".into(),
+                title: "paused work".into(),
+                status: GoalStatusSnapshot::Paused,
+                ..Default::default()
+            },
+            GoalSnapshot {
+                id: "goal-2".into(),
+                title: "review".into(),
+                status: GoalStatusSnapshot::Running,
+                ..Default::default()
+            },
+        ];
+        app.input = "/goal steer focus on the parser first".into();
+
+        let outcome = execute_palette_command(&mut app, "goal");
+
+        assert!(outcome.handled);
+        assert!(outcome.clear_input);
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected SteerGoal"),
+            UserCommand::SteerGoal { goal_id, text }
+                if goal_id == "goal-2"
+                    && text == "focus on the parser first"
+        ));
+    }
+
+    #[test]
+    fn goal_steer_without_an_id_uses_the_only_open_goal_when_none_is_running() {
+        use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
+
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        // The panel can still show `draft` while a freshly created Goal's
+        // first activation is already in flight.
+        app.goal_panel_mut().state_mut().snapshot = vec![GoalSnapshot {
+            id: "goal-3".into(),
+            title: "new goal".into(),
+            status: GoalStatusSnapshot::Draft,
+            ..Default::default()
+        }];
+        app.input = "/goal steer keep the diff small".into();
+
+        execute_palette_command(&mut app, "goal");
+
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected SteerGoal"),
+            UserCommand::SteerGoal { goal_id, text }
+                if goal_id == "goal-3" && text == "keep the diff small"
+        ));
+    }
+
+    #[test]
+    fn goal_steer_with_an_explicit_id_wins_over_the_running_goal() {
+        use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
+
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.goal_panel_mut().state_mut().snapshot = vec![
+            GoalSnapshot {
+                id: "goal-1".into(),
+                title: "paused work".into(),
+                status: GoalStatusSnapshot::Paused,
+                ..Default::default()
+            },
+            GoalSnapshot {
+                id: "goal-2".into(),
+                title: "review".into(),
+                status: GoalStatusSnapshot::Running,
+                ..Default::default()
+            },
+        ];
+        app.input = "/goal steer goal-1 prefer the smaller design".into();
+
+        execute_palette_command(&mut app, "goal");
+
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected SteerGoal"),
+            UserCommand::SteerGoal { goal_id, text }
+                if goal_id == "goal-1" && text == "prefer the smaller design"
+        ));
+    }
+
+    #[test]
+    fn goal_steer_without_an_id_is_refused_when_the_target_is_ambiguous() {
+        use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
+
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.goal_panel_mut().state_mut().snapshot = vec![
+            GoalSnapshot {
+                id: "goal-1".into(),
+                title: "first".into(),
+                status: GoalStatusSnapshot::Draft,
+                ..Default::default()
+            },
+            GoalSnapshot {
+                id: "goal-2".into(),
+                title: "second".into(),
+                status: GoalStatusSnapshot::Paused,
+                ..Default::default()
+            },
+        ];
+        app.input = "/goal steer hurry up".into();
+
+        execute_palette_command(&mut app, "goal");
+
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "an ambiguous target must not steer a guessed Goal"
+        );
+        assert!(app.flash_msg.is_some(), "expected the usage flash");
     }
 
     #[test]

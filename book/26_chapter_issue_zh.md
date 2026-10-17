@@ -4,6 +4,29 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-17 — Goal 预算可配置（默认 500 轮）、最后一轮 checkpoint 提醒、lease 心跳
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat / fix（用户可见：`[goal]` 可配置；默认 turn 预算 24 → 500；最后一轮 system prompt 提醒模型写 checkpoint；长 Run 不再因 lease 过期丢失收尾；Goal activation 结束后排队消息不再卡住） |
+| **Related** | `crates/tact/src/config/{types.rs,resolve.rs}`、`crates/tact-ui/src/{goal_runner.rs,driver.rs}`、`crates/tact/src/agent/mod.rs`、`crates/tact/src/store/goal_store/sqlite.rs`、`crates/protocol/src/agent.rs`、`crates/tui/src/widgets/state/app/agent.rs`、`config.example.toml`、`book/23_chapter_tui_zh.md` §6.6、`book/28_chapter_goal_zh.md` §7 |
+
+**现象 / 动机：** 默认 24 轮的 per-run 预算在真实的 review / 重构任务里经常在模型仍在工作时硬截断：`max_turns (27) reached` → `budget_exhausted` → Goal 暂停，而下一次 activation 没有拿到「做到哪了、下一步是什么」的落盘信息。预算本身也没有配置入口——所有调用点都硬用 `GoalLimits::default()`。把默认值直接提到 500 又暴露出一个潜伏问题：`max_elapsed` 只在 activation 之间检查，单个 activation 可能远超 lease TTL（600s + 60s slack），lease 过期后 `finish_run_and_transition` 因 `StaleLease` 拒绝收尾，Run 的结果（outcome / 用量 / checkpoint）全部丢失。另一个用户可见症状：Goal Run 期间按 Enter 排队的消息，在 Run 结束后仍提示「当前任务结束后提交」，因为 activation 从不产生 `TaskComplete`，TUI 的 `Executing` 状态永远不会复位。
+
+**决策：**
+
+1. **配置**：新增 `[goal] max_turns | max_elapsed_secs`（`GoalTomlConfig`），解析为 `GoalSettings`（默认 500 / 600）。工具调用数取消独立上限：每次工具调用本来就发生在一次模型调用之内，turn 上限已经约束总扇出；`tool_calls_used` 仍作为用量记录。`0` 在启动时报错而不是静默禁用所有 activation；`GoalLimits::default()` 从 `GoalSettings::default()` 派生（默认值只有一个来源），`driver` 通过 `tact::config::try_settings()` 解析每次 Run 的预算。
+2. **最后一轮提醒**：`agent_loop_detailed` 在「`turns_taken == max_turns` 且绑定了 active Goal」的那次请求里，把 `<goal-budget-reminder>` 追加到**该请求的 system prompt 末尾**，要求调用 `goal_checkpoint` 记录已完成 / 仍待办 / 下一步。它不进入会话历史（不会在后续任务里冒充用户消息），也不替代硬上限；子代理虽然也有 `max_turns`，但没有 active Goal，因此不会收到该提醒。
+3. **Goal activation 结束必须复位 TUI 忙状态**：`CreateGoal` / `ResumeGoal` / `AcceptGoal` 走 `GoalRunner::run_once`，不经过 `SubmitTask`，因此不会产生 `TaskComplete` / `TaskCancelled`。新增 `AgentUpdate::TaskIdle`，由 driver 在这三条路径收尾时发出；TUI 收到后离开 `Planning`/`Executing`，`flush_pending_when_idle` 才会把运行期间排队的消息提交出去。没有它，`Executing` 会一直挂到下一次普通任务，输入框上方的等待提示和队列都不会消失。
+4. **`/goal steer` 的 id 可省略**：执行是单例，省略 id 时作用于唯一 `running` Goal；`/goal create` 的首次 activation 期间面板快照可能仍是 `draft`，此时回退到唯一的非终态 Goal。多个候选（或 id 前缀有歧义）时仍要求显式 id 并打印用法，绝不猜目标。
+5. **lease 心跳 + fencing 收尾**：Run 执行 cycles 期间后台按 `TTL/3` 调用 `heartbeat_lease`，退出时 abort 并 await；`release_lease`、`finish_run`、`finish_run_and_transition` 改用 owner+epoch 的 fencing 校验（不再要求 `expires_at > now`）——只是跑得久而过期、但未被接管的 lease 仍属于本 Runner，只有 epoch 变化（被接管）才拒绝。
+
+**改后行为：** `/goal create` 默认最多推进 500 次模型调用（可配置），预算耗尽时仍是可恢复的 `paused`。最后一轮模型会看到「这是本轮最后一次调用，请先写 checkpoint」的提示，因此暂停后 `/goal resume` 能从明确的位置继续。长 Run 的 lease 由心跳维持，收尾事务不会因为 TTL 过期而丢弃结果。Goal Run 期间排队的消息会在 activation 结束时自动提交（不再等下一次普通任务）；`/goal steer <文本>` 可直接作用于当前运行中的 Goal。
+
+**Verification：** `cargo test -p tact --lib goal_budget`（2）、`cargo test -p tact --lib expired_lease_can`（1）、`cargo test -p tact --lib agent_loop_reminds_a_goal`（1）、`cargo test -p tact-ui --lib goal_runner::tests`（22 全绿）。
+
+**Pointers:** `GoalTomlConfig` / `GoalSettings`、`GoalLimits::from_settings`、`permit_activation`（仅 turns + elapsed）、`driver::goal_limits`、`AgentUpdate::TaskIdle`、`flush_pending_when_idle`、`goal_final_turn_reminder`、`GoalRunner::spawn_lease_heartbeat`、`validate_lease_fence`、`[config.example.toml](../config.example.toml)` 的 `[goal]`、[Ch 28](./28_chapter_goal_zh.md) §7。
+
 ## 1. 2026-10-16 — 子代理卡片：短 id 上 meta 行；`[Cancel]` 按钮从标题行移到 meta 行
 
 | Field | Value |

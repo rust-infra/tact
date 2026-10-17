@@ -265,7 +265,6 @@ pub struct GoalRunBudgetSnapshot {
     pub turns_used: u32,
     pub turn_limit: u32,
     pub tool_calls_used: u32,
-    pub tool_call_limit: u32,
     pub elapsed_ms: u64,
     pub wall_clock_limit_ms: u64,
 }
@@ -399,6 +398,11 @@ pub enum AgentUpdate {
     /// Emitted by the command driver after `agent_loop` returns with
     /// `cancel_flag` set — not by `agent_loop` itself.
     TaskCancelled,
+    /// An out-of-band turn (a Goal activation) finished without a completion
+    /// payload. TUI must leave `Planning` / `Executing` so queued messages are
+    /// flushed instead of waiting on a busy state that no `TaskComplete` will
+    /// ever clear. Emitted by the command driver after `GoalRunner::run_once`.
+    TaskIdle,
     /// Agent error, with classification for the TUI to decide display style
     Error(AgentErrorKind),
     /// Token usage stats
@@ -854,7 +858,6 @@ mod tests {
                 turns_used: 2,
                 turn_limit: 8,
                 tool_calls_used: 5,
-                tool_call_limit: 32,
                 elapsed_ms: 100,
                 wall_clock_limit_ms: 60_000,
             }),

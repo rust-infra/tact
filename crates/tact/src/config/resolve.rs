@@ -6,10 +6,31 @@ use super::{
     cli::CliArgs,
     instruction_sources::InstructionSources,
     types::{
-        AgentSettings, LlmSettings, McpSettings, ResolvedConfig, SubagentSettings, TactTomlConfig,
-        ToolSettings, UiSettings, VisionImageSettings, VoiceProvider, VoiceSettings,
+        AgentSettings, GoalSettings, LlmSettings, McpSettings, ResolvedConfig, SubagentSettings,
+        TactTomlConfig, ToolSettings, UiSettings, VisionImageSettings, VoiceProvider,
+        VoiceSettings,
     },
 };
+
+/// Resolves `[goal]`, rejecting explicit zero budgets: a zero would make every
+/// activation an immediate no-op, which is a config mistake rather than an
+/// intent (the tests set zero on `GoalLimits` directly when they need it).
+fn resolve_goal(toml_cfg: &TactTomlConfig) -> anyhow::Result<GoalSettings> {
+    let defaults = GoalSettings::default();
+    if toml_cfg.goal.max_turns == Some(0) {
+        anyhow::bail!("[goal].max_turns must be greater than 0");
+    }
+    if toml_cfg.goal.max_elapsed_secs == Some(0) {
+        anyhow::bail!("[goal].max_elapsed_secs must be greater than 0");
+    }
+    Ok(GoalSettings {
+        max_turns: toml_cfg.goal.max_turns.unwrap_or(defaults.max_turns),
+        max_elapsed_secs: toml_cfg
+            .goal
+            .max_elapsed_secs
+            .unwrap_or(defaults.max_elapsed_secs),
+    })
+}
 
 fn resolve_vision_image(toml_cfg: &TactTomlConfig) -> VisionImageSettings {
     let compress = toml_cfg
@@ -764,6 +785,7 @@ pub(super) fn resolve_non_llm_settings(
             VoiceSettings::disabled_defaults()
         }),
         mcp: non_llm.mcp,
+        goal: resolve_goal(toml_cfg)?,
         permission_mode: non_llm.permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -1121,6 +1143,7 @@ pub(super) fn resolve_config(
         },
         voice,
         mcp: non_llm.mcp,
+        goal: resolve_goal(toml_cfg)?,
         permission_mode: non_llm.permission_mode,
         tokio_console: args.tokio_console,
         config_path,
@@ -2032,6 +2055,52 @@ thinking_budget = 32000
         });
         let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
         assert!(err.to_string().contains("thinking_budget"));
+    }
+
+    #[test]
+    fn goal_budgets_default_to_500_turns_and_resolve_from_toml() {
+        let resolved = resolve_config(&empty_cli_args(), &openai_toml_config(), None).unwrap();
+        assert_eq!(resolved.goal, GoalSettings::default());
+        assert_eq!(resolved.goal.max_turns, 500);
+
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[goal]
+max_turns = 1200
+max_elapsed_secs = 1800
+"#,
+        )
+        .unwrap();
+        let resolved = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap();
+        assert_eq!(resolved.goal.max_turns, 1200);
+        assert_eq!(resolved.goal.max_elapsed_secs, 1800);
+    }
+
+    #[test]
+    fn goal_budget_zero_is_rejected() {
+        let toml_cfg: TactTomlConfig = toml::from_str(
+            r#"
+[llm]
+provider = "openai"
+
+[llm.providers.openai]
+api_key = "sk-test"
+model = "gpt-4o"
+
+[goal]
+max_turns = 0
+"#,
+        )
+        .unwrap();
+        let err = resolve_config(&empty_cli_args(), &toml_cfg, None).unwrap_err();
+        assert!(err.to_string().contains("[goal].max_turns"), "{err}");
     }
 
     #[test]
