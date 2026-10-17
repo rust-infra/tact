@@ -1310,15 +1310,12 @@ impl Agent {
         // so the prefix KV-cache holds across turns and tasks.
         let system_prompt = self.build_system_prompt()?;
         loop {
-            // Turn cap: bounds a runaway subagent. Count a turn per loop
-            // iteration (one LLM call) and stop once the cap is exceeded.
-            self.turns_taken += 1;
-            self.emit_update(AgentUpdate::TurnStats {
-                turns_taken: self.turns_taken,
-                max_turns: self.max_turns,
-            });
+            // Turn cap: bounds a runaway subagent. A turn is one loop
+            // iteration that actually calls the model, so the cap is checked
+            // *before* the counter advances and the probe that stops the loop
+            // is not reported as a spent turn.
             if let Some(max) = self.max_turns
-                && self.turns_taken > max
+                && self.turns_taken >= max
             {
                 self.max_turns_reached = true;
                 self.emit_update(AgentUpdate::Info(format!("max_turns ({max}) reached")));
@@ -1328,6 +1325,11 @@ impl Agent {
                     tool_calls,
                 ));
             }
+            self.turns_taken += 1;
+            self.emit_update(AgentUpdate::TurnStats {
+                turns_taken: self.turns_taken,
+                max_turns: self.max_turns,
+            });
             if self.cancel_requested() {
                 self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
                 self.dispatch_interrupt_hooks().await?;
@@ -5776,7 +5778,7 @@ mod tests {
         assert_eq!(
             stats,
             vec![(1, Some(1))],
-            "the cap is reported and the counted turn is the one that trips it"
+            "the cap is reported and the counted turn is a real model call"
         );
     }
 
@@ -5804,8 +5806,8 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            agent.turns_taken, 1,
-            "turns_taken increments before the cap check"
+            agent.turns_taken, 0,
+            "the cap is checked before the counter advances: no model call happened"
         );
         assert!(
             agent.max_turns_reached,
@@ -6051,7 +6053,10 @@ mod tests {
             .expect("agent_loop_detailed stops at the cap");
 
         assert_eq!(outcome.stop, AgentLoopStop::MaxTurns);
-        assert_eq!(outcome.turns, 2, "one executed turn plus the capped turn");
+        assert_eq!(
+            outcome.turns, 1,
+            "the probe that stops an exhausted loop is not a spent turn"
+        );
     }
 
     #[tokio::test]

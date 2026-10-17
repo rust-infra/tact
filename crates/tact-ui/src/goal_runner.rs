@@ -492,6 +492,18 @@ impl GoalRunner {
         self.limits.max_elapsed.saturating_add(LEASE_TTL_SLACK)
     }
 
+    /// Model calls still available to this run.
+    ///
+    /// The run budget is cumulative across its cycles, so a later cycle gets
+    /// only what earlier cycles left behind. Handing every cycle the full
+    /// `max_turns` would let a multi-cycle run spend up to twice the configured
+    /// budget before the post-cycle check stops it.
+    fn remaining_turns(&self, run: &GoalRun) -> u32 {
+        self.limits
+            .max_turns
+            .saturating_sub(u32::try_from(run.turns_used).unwrap_or(u32::MAX))
+    }
+
     /// Keeps the execution lease alive for as long as the run is executing.
     ///
     /// A run can outlive `lease_ttl`: `max_elapsed` is only checked between
@@ -702,7 +714,7 @@ impl GoalRunner {
             };
             let injected = build_goal_context(goal, &linked_tasks, &events);
 
-            agent.max_turns = Some(agent.turns_taken.saturating_add(self.limits.max_turns));
+            agent.max_turns = Some(agent.turns_taken.saturating_add(self.remaining_turns(run)));
             let activation = agent
                 .agent_loop_detailed(Some(Message::new_text(Role::User, injected)))
                 .await;
@@ -1246,7 +1258,7 @@ mod tests {
         let finished = run_finished_event(&events, "run_finished").expect("run recorded");
         assert_eq!(finished.outcome, Some(GoalRunOutcome::BudgetExhausted));
         let summary = summary_of(finished);
-        assert!(summary.contains("turns_used=1"), "{summary}");
+        assert!(summary.contains("turns_used=0"), "{summary}");
         assert!(summary.contains("stop_reason=max_turns"), "{summary}");
         assert!(
             summary.contains("checkpoint=") && !summary.ends_with("checkpoint=-"),
@@ -1460,6 +1472,64 @@ mod tests {
             summary.contains("turns_used=4"),
             "the run's usage is cumulative over its cycles: {summary}"
         );
+    }
+
+    /// The run budget is cumulative: a later cycle must not receive a fresh
+    /// full `max_turns`, which would let a five-turn run spend six calls.
+    #[tokio::test]
+    async fn run_once_never_overspends_the_cumulative_turn_budget() {
+        install_test_config();
+        let calls = Arc::new(AtomicUsize::new(0));
+        let calls_for_mock = calls.clone();
+        let mock = MockClient::with_responder(move |_request, idx| {
+            calls_for_mock.fetch_add(1, Ordering::SeqCst);
+            if idx % 2 == 0 {
+                Ok((
+                    vec![tool_use(
+                        &format!("goal-read-{idx}"),
+                        "goal_read",
+                        serde_json::json!({}),
+                    )],
+                    Some(StopReason::ToolUse),
+                    None,
+                ))
+            } else {
+                Ok((
+                    vec![text_block("cycle finished")],
+                    Some(StopReason::EndTurn),
+                    None,
+                ))
+            }
+        });
+        let (mut agent, _work_dir) = build_test_agent(mock, None);
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "budget",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        let runner = GoalRunner::new(
+            manager.clone(),
+            GoalLimits {
+                max_turns: 5,
+                ..GoalLimits::default()
+            },
+        );
+        let outcome = runner.run_once(&mut agent, &goal.id).await.unwrap();
+
+        assert_eq!(outcome, GoalRunOutcome::BudgetExhausted);
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            5,
+            "cycles must share one cumulative turn budget"
+        );
+        let events = manager.list_events(&goal.id).await.unwrap();
+        let summary =
+            summary_of(run_finished_event(&events, "run_finished").expect("run recorded"));
+        assert!(summary.contains("turns_used=5"), "{summary}");
     }
 
     #[tokio::test]

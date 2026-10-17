@@ -308,6 +308,7 @@ impl Goal {
         for criterion in &input.criteria {
             criterion.validate()?;
         }
+        validate_unique_criterion_ids(&input.criteria)?;
 
         let now = Utc::now();
         Ok(Self {
@@ -367,6 +368,7 @@ impl Goal {
             for criterion in &criteria {
                 criterion.validate()?;
             }
+            validate_unique_criterion_ids(&criteria)?;
             candidate.criteria_version = candidate.criteria_version.saturating_add(1);
             candidate.criteria = criteria
                 .into_iter()
@@ -391,6 +393,14 @@ impl Goal {
                 .ok_or_else(|| GoalError::CriterionNotFound {
                     criterion_id: evidence.criterion_id.clone(),
                 })?;
+            // A rejection is a user decision, not a gap to be filled by the
+            // next writer: only redefining the criteria (which bumps the
+            // version and clears evidence) may bring the criterion back.
+            if criterion.status == GoalCriterionStatus::Rejected {
+                return Err(GoalError::CriterionRejected {
+                    criterion_id: evidence.criterion_id,
+                });
+            }
             criterion.record_evidence(evidence.value, candidate.criteria_version);
         }
         if let Some(archived) = update.archived {
@@ -469,6 +479,12 @@ impl Goal {
         if self.criteria.is_empty() {
             return Err(GoalError::NoAcceptanceCriteria);
         }
+        // An all-optional list verifies vacuously; nothing could ever fail it.
+        // Success needs at least one criterion the Goal is actually accountable
+        // for (the verifier already treats this case as `NeedsUser`).
+        if !self.criteria.iter().any(|criterion| criterion.required) {
+            return Err(GoalError::NoRequiredAcceptanceCriteria);
+        }
         self.criteria
             .iter()
             .filter(|criterion| criterion.required)
@@ -504,6 +520,22 @@ fn validate_text(text: &str, error: GoalError) -> Result<(), GoalError> {
     } else {
         Ok(())
     }
+}
+
+/// Criterion ids are what completion claims and evidence address, so a
+/// duplicate would make the same id resolve to two different criteria.
+fn validate_unique_criterion_ids(criteria: &[GoalCriterion]) -> Result<(), GoalError> {
+    for (index, criterion) in criteria.iter().enumerate() {
+        if criteria[..index]
+            .iter()
+            .any(|existing| existing.id == criterion.id)
+        {
+            return Err(GoalError::DuplicateCriterionId {
+                criterion_id: criterion.id.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn is_legal_transition(from: GoalStatus, to: GoalStatus) -> bool {
@@ -944,6 +976,16 @@ pub enum GoalError {
     CriterionNotFound {
         criterion_id: String,
     },
+    /// Criterion ids must be unique inside one Goal: claims and evidence
+    /// address a criterion by id.
+    DuplicateCriterionId {
+        criterion_id: String,
+    },
+    /// A rejected criterion is a user decision; new evidence may not silently
+    /// flip it back to passed.
+    CriterionRejected {
+        criterion_id: String,
+    },
     InvalidTransition {
         from: GoalStatus,
         to: GoalStatus,
@@ -956,6 +998,7 @@ pub enum GoalError {
         status: GoalStatus,
     },
     NoAcceptanceCriteria,
+    NoRequiredAcceptanceCriteria,
     AcceptanceCriteriaNotMet {
         criterion_id: String,
     },
@@ -979,6 +1022,15 @@ impl fmt::Display for GoalError {
             Self::CriterionNotFound { criterion_id } => {
                 write!(f, "goal criterion {criterion_id} was not found")
             }
+            Self::DuplicateCriterionId { criterion_id } => {
+                write!(f, "goal criterion id {criterion_id} is used more than once")
+            }
+            Self::CriterionRejected { criterion_id } => {
+                write!(
+                    f,
+                    "goal criterion {criterion_id} was rejected; redefine the criteria to retry"
+                )
+            }
             Self::InvalidTransition { from, to } => {
                 write!(f, "invalid goal transition from {from:?} to {to:?}")
             }
@@ -993,6 +1045,12 @@ impl fmt::Display for GoalError {
             }
             Self::NoAcceptanceCriteria => {
                 write!(f, "goal must have acceptance criteria to succeed")
+            }
+            Self::NoRequiredAcceptanceCriteria => {
+                write!(
+                    f,
+                    "goal must have at least one required acceptance criterion"
+                )
             }
             Self::AcceptanceCriteriaNotMet { criterion_id } => {
                 write!(
@@ -1497,6 +1555,85 @@ mod tests {
         goal.transition_to(GoalStatus::Verifying).unwrap();
 
         assert_eq!(goal.succeed().unwrap_err(), GoalError::NoAcceptanceCriteria);
+    }
+
+    #[test]
+    fn success_rejects_an_all_optional_acceptance_list() {
+        let mut goal = Goal::new(GoalCreate {
+            title: "Ship it".to_string(),
+            objective: "Publish it".to_string(),
+            constraints: Vec::new(),
+            criteria: vec![GoalCriterion::new(
+                "optional nicety",
+                false,
+                GoalVerificationKind::Automatic,
+            )],
+        })
+        .unwrap();
+        goal.transition_to(GoalStatus::Queued).unwrap();
+        goal.transition_to(GoalStatus::Running).unwrap();
+        goal.transition_to(GoalStatus::Verifying).unwrap();
+
+        assert_eq!(
+            goal.succeed().unwrap_err(),
+            GoalError::NoRequiredAcceptanceCriteria
+        );
+    }
+
+    #[test]
+    fn rejected_criteria_do_not_accept_new_evidence() {
+        let mut goal = create_goal();
+        goal.criteria[0].status = GoalCriterionStatus::Rejected;
+        let before = goal.clone();
+
+        let error = goal
+            .update(GoalUpdate {
+                evidence: vec![GoalEvidenceUpdate {
+                    criterion_id: goal.criteria[0].id.clone(),
+                    value: "looks fine now".to_string(),
+                }],
+                ..GoalUpdate::default()
+            })
+            .unwrap_err();
+
+        assert!(matches!(error, GoalError::CriterionRejected { .. }));
+        assert_eq!(goal, before, "a rejected criterion must not be resurrected");
+    }
+
+    #[test]
+    fn duplicate_criterion_ids_are_rejected_on_create_and_update() {
+        let mut first = GoalCriterion::required("first");
+        first.id = "dup-id".to_string();
+        let mut second = GoalCriterion::required("second");
+        second.id = "dup-id".to_string();
+
+        let create_error = Goal::new(GoalCreate {
+            title: "Ship it".to_string(),
+            objective: "Publish it".to_string(),
+            constraints: Vec::new(),
+            criteria: vec![first, second],
+        })
+        .unwrap_err();
+        assert!(matches!(
+            create_error,
+            GoalError::DuplicateCriterionId { .. }
+        ));
+
+        let mut goal = create_goal();
+        let mut first = GoalCriterion::required("first");
+        first.id = "same".to_string();
+        let mut second = GoalCriterion::required("second");
+        second.id = "same".to_string();
+        let update_error = goal
+            .update(GoalUpdate {
+                criteria: Some(vec![first, second]),
+                ..GoalUpdate::default()
+            })
+            .unwrap_err();
+        assert!(matches!(
+            update_error,
+            GoalError::DuplicateCriterionId { .. }
+        ));
     }
 
     #[test]

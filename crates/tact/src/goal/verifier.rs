@@ -218,14 +218,12 @@ mod tests {
             }
         );
 
-        // Executably pin the documented divergence: `validate_acceptance()` is
-        // vacuously `Ok` for the optional-only Goal, yet the verifier still
-        // refuses to call it Verified. Rule 4 (never verify a Goal that has no
-        // required criteria) outranks the one-way invariant
-        // `Verified ⇒ validate_acceptance().is_ok()`.
-        assert!(
-            optional_only.validate_acceptance().is_ok(),
-            "an optional-only Goal is vacuously acceptable to validate_acceptance()"
+        // Rule 4 (never verify a Goal that has no required criteria) is now
+        // mirrored by `validate_acceptance()` itself, so the one-way invariant
+        // `Verified ⇒ validate_acceptance().is_ok()` holds by construction.
+        assert_eq!(
+            optional_only.validate_acceptance().unwrap_err(),
+            crate::goal::GoalError::NoRequiredAcceptanceCriteria
         );
         assert!(
             empty.validate_acceptance().is_err(),

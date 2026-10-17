@@ -120,6 +120,11 @@ pub async fn run_command_loop_with_account(
     // allowed to take the command loop down with it.
     recover_interrupted_goals(&agent).await;
 
+    // Publish the durable Goal inventory once, before serving commands: the
+    // panel (and the `/goal <verb>` completion that reads it) must not stay
+    // empty until some later Goal command happens to emit a snapshot.
+    emit_goals_changed(&goal_manager, &task_manager, limits, &ui_tx).await;
+
     let mut agent = Some(agent);
     let mut active: Option<JoinHandle<Agent>> = None;
     // A `SubagentFinishedNotification` that arrives while a turn is in flight
@@ -847,6 +852,136 @@ fn emit_goal_error(ui_tx: &Option<UnboundedSender<AgentUpdate>>, message: String
     }
 }
 
+/// Resolves and records `/goal steer [<id>] <text>`.
+///
+/// The TUI forwards an id only when it recognized one in its own snapshot; the
+/// store is authoritative here, so an empty or lagging snapshot can neither
+/// mis-target a Goal nor turn the instruction into a fake id. Without an
+/// explicit id, a leading id/prefix in the text is accepted (the panel may not
+/// have caught up), then the single running Goal, then the single non-terminal
+/// Goal. An ambiguous target is an error, never a guess.
+async fn steer_goal(agent: &Agent, requested: Option<&str>, text: &str) {
+    let text = text.trim();
+    if text.is_empty() {
+        emit_goal_error(
+            &agent.runtime.ui_tx,
+            "Goal steering text must not be empty".to_string(),
+        );
+        return;
+    }
+    let goals = match agent.tool_context.goal_manager.list().await {
+        Ok(goals) => goals,
+        Err(error) => {
+            emit_goal_error(
+                &agent.runtime.ui_tx,
+                format!("Goal steering failed: {error:#}"),
+            );
+            return;
+        }
+    };
+
+    let resolved = match requested {
+        Some(prefix) => match unique_goal_matching(&goals, prefix) {
+            Ok(Some(goal)) => Ok((goal, text.to_string())),
+            Ok(None) => Err(format!("Goal {prefix} not found")),
+            Err(count) => Err(format!(
+                "Goal id prefix {prefix} matches {count} goals; type more characters"
+            )),
+        },
+        None => {
+            let mut parts = text.splitn(2, char::is_whitespace);
+            let first = parts.next().unwrap_or_default();
+            let rest = parts.next().unwrap_or_default().trim();
+            match unique_goal_matching(&goals, first) {
+                // An explicit id that the TUI could not resolve (empty or
+                // stale snapshot) is still honored.
+                Ok(Some(goal)) if !rest.is_empty() => Ok((goal, rest.to_string())),
+                _ => match implicit_steer_target(&goals) {
+                    Ok(Some(goal)) => Ok((goal, text.to_string())),
+                    Ok(None) => {
+                        Err("no running Goal to steer; use /goal steer <goal-id> <text>"
+                            .to_string())
+                    }
+                    Err(count) => Err(format!(
+                        "{count} goals are open and none is uniquely running; use /goal steer <goal-id> <text>"
+                    )),
+                },
+            }
+        }
+    };
+    let (goal, instruction) = match resolved {
+        Ok(pair) => pair,
+        Err(message) => {
+            emit_goal_error(&agent.runtime.ui_tx, message);
+            return;
+        }
+    };
+
+    match agent
+        .tool_context
+        .goal_manager
+        .append_event(goal_event(goal, "steering", None, instruction))
+        .await
+    {
+        Ok(_) => {
+            emit_goals_changed(
+                &agent.tool_context.goal_manager,
+                &agent.tool_context.task_manager,
+                goal_limits(),
+                &agent.runtime.ui_tx,
+            )
+            .await;
+        }
+        Err(error) => emit_goal_error(
+            &agent.runtime.ui_tx,
+            format!("Goal {} steering failed: {error:#}", goal.id),
+        ),
+    }
+}
+
+/// Exact id or unique prefix; `Err(n)` means the prefix is ambiguous.
+fn unique_goal_matching<'a>(goals: &'a [Goal], prefix: &str) -> Result<Option<&'a Goal>, usize> {
+    let mut matches = goals
+        .iter()
+        .filter(|goal| goal.id == prefix || goal.id.starts_with(prefix));
+    match (matches.next(), matches.next()) {
+        (None, _) => Ok(None),
+        (Some(goal), None) => Ok(Some(goal)),
+        (Some(_), Some(_)) => {
+            let count = goals
+                .iter()
+                .filter(|goal| goal.id == prefix || goal.id.starts_with(prefix))
+                .count();
+            Err(count)
+        }
+    }
+}
+
+/// The single running Goal, or the single non-terminal Goal when none is
+/// running (a fresh activation can still be reported as `draft`/`queued`).
+/// `Err(n)` means several candidates exist.
+fn implicit_steer_target(goals: &[Goal]) -> Result<Option<&Goal>, usize> {
+    let running: Vec<&Goal> = goals
+        .iter()
+        .filter(|goal| goal.status == GoalStatus::Running)
+        .collect();
+    match running.len() {
+        1 => Ok(Some(running[0])),
+        0 => {
+            let open: Vec<&Goal> = goals
+                .iter()
+                .filter(|goal| !goal.status.is_terminal())
+                .collect();
+            match open.len() {
+                0 => Ok(None),
+                1 => Ok(Some(open[0])),
+                count => Err(count),
+            }
+        }
+        count => Err(count),
+    }
+}
+
 async fn update_goal_status(
     agent: &Agent,
     goal_id: &str,
@@ -1143,30 +1278,7 @@ async fn handle_user_command_with_account(
             .await;
         }
         UserCommand::SteerGoal { goal_id, text } => {
-            let result = async {
-                let goal = agent.tool_context.goal_manager.get(&goal_id).await?;
-                agent
-                    .tool_context
-                    .goal_manager
-                    .append_event(goal_event(&goal, "steering", None, text))
-                    .await
-            }
-            .await;
-            match result {
-                Ok(_) => {
-                    emit_goals_changed(
-                        &agent.tool_context.goal_manager,
-                        &agent.tool_context.task_manager,
-                        goal_limits(),
-                        &agent.runtime.ui_tx,
-                    )
-                    .await;
-                }
-                Err(error) => emit_goal_error(
-                    &agent.runtime.ui_tx,
-                    format!("Goal {goal_id} steering failed: {error:#}"),
-                ),
-            }
+            steer_goal(agent, goal_id.as_deref(), &text).await;
         }
         UserCommand::PauseGoal { goal_id } => {
             update_goal_status(agent, &goal_id, GoalStatus::Paused, "paused by user").await;
@@ -1499,6 +1611,70 @@ mod tests {
         }
     }
 
+    fn goal_in_status(id: &str, status: tact::goal::GoalStatus) -> tact::goal::Goal {
+        let mut goal = tact::goal::Goal::new(tact::goal::GoalCreate {
+            title: format!("goal {id}"),
+            objective: format!("objective {id}"),
+            constraints: Vec::new(),
+            criteria: vec![tact::goal::GoalCriterion::required("done")],
+        })
+        .unwrap();
+        goal.id = id.to_string();
+        goal.status = status;
+        goal
+    }
+
+    /// `/goal steer` resolution is store-authoritative: exact/unique-prefix id
+    /// first, then the single running Goal, then the single non-terminal Goal.
+    /// Ambiguity must be an error, never a guess.
+    #[test]
+    fn steer_target_resolution_is_unambiguous() {
+        use tact::goal::GoalStatus;
+
+        let goals = vec![
+            goal_in_status("aaaa1111", GoalStatus::Paused),
+            goal_in_status("aaaa2222", GoalStatus::Draft),
+            goal_in_status("bbbb3333", GoalStatus::Running),
+        ];
+
+        assert_eq!(
+            super::unique_goal_matching(&goals, "bbbb")
+                .unwrap()
+                .map(|goal| goal.id.as_str()),
+            Some("bbbb3333")
+        );
+        assert!(
+            super::unique_goal_matching(&goals, "cccc")
+                .unwrap()
+                .is_none()
+        );
+        assert_eq!(super::unique_goal_matching(&goals, "aaaa"), Err(2));
+
+        assert_eq!(
+            super::implicit_steer_target(&goals)
+                .unwrap()
+                .map(|goal| goal.id.as_str()),
+            Some("bbbb3333"),
+            "the running Goal wins"
+        );
+
+        // No running Goal: one open Goal is still unambiguous, two are not.
+        let open = vec![
+            goal_in_status("aaaa1111", GoalStatus::Paused),
+            goal_in_status("aaaa2222", GoalStatus::Draft),
+        ];
+        assert_eq!(super::implicit_steer_target(&open), Err(2));
+        let single = vec![goal_in_status("aaaa1111", GoalStatus::Draft)];
+        assert_eq!(
+            super::implicit_steer_target(&single)
+                .unwrap()
+                .map(|goal| goal.id.as_str()),
+            Some("aaaa1111")
+        );
+        let none: Vec<tact::goal::Goal> = Vec::new();
+        assert!(super::implicit_steer_target(&none).unwrap().is_none());
+    }
+
     #[tokio::test]
     async fn create_goal_persists_starts_and_emits_full_snapshot() {
         install_test_config();
@@ -1745,7 +1921,7 @@ mod tests {
         super::handle_user_command(
             &mut agent,
             UserCommand::SteerGoal {
-                goal_id: created.id.clone(),
+                goal_id: Some(created.id.clone()),
                 text: "Prefer a focused diff".into(),
             },
             &work_dir,
@@ -1759,6 +1935,51 @@ mod tests {
                 .iter()
                 .any(|event| event.kind == "steering"
                     && event.payload.as_deref() == Some("Prefer a focused diff"))
+        );
+
+        // No id: the store resolves the single open Goal (the panel snapshot
+        // may not have caught up).
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SteerGoal {
+                goal_id: None,
+                text: "Keep the diff focused".into(),
+            },
+            &work_dir,
+        )
+        .await;
+        assert!(
+            manager
+                .list_events(&created.id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "steering"
+                    && event.payload.as_deref() == Some("Keep the diff focused")),
+            "an id-less steer must land on the only open Goal"
+        );
+
+        // An id the TUI could not resolve (empty/stale snapshot) is still
+        // honored when it leads the raw text.
+        let text = format!("{} Prefer fewer files", created.id);
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SteerGoal {
+                goal_id: None,
+                text,
+            },
+            &work_dir,
+        )
+        .await;
+        assert!(
+            manager
+                .list_events(&created.id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "steering"
+                    && event.payload.as_deref() == Some("Prefer fewer files")),
+            "a leading id in the raw text must be resolved by the store"
         );
 
         super::handle_user_command(

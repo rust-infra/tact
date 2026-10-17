@@ -115,8 +115,12 @@ without explicit re-verification.
 
 ### Budget and no-progress protection
 
-Each activation carries: max turns (default 24), max tool calls (default 60), max
-elapsed (default 600s). These are centralized in `GoalLimits` and test-injectable.
+Each run carries: max turns (default 500, `[goal].max_turns`) and max
+elapsed (default 600s, `[goal].max_elapsed_secs`). Tool calls are recorded for
+the run summary (`GoalRun::tool_calls_used`) but deliberately not capped: every
+tool call already happens inside a model call, so the turn budget bounds the
+fan-out. These are centralized in `GoalSettings`/`GoalLimits` and
+test-injectable.
 Reaching any limit saves a checkpoint and transitions to `paused`.
 
 No-progress detection relies on observable changes (Task status transitions,

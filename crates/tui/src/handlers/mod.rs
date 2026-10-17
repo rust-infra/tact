@@ -595,22 +595,12 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
 
 /// Parses `/goal steer [<goal-id>] <text>`.
 ///
-/// Execution is singleton (one lease, one active run), so the id is optional in
-/// the common case:
-///
-/// - an explicit id wins whenever the first token exactly matches a Goal id or
-///   is a unique prefix of one;
-/// - otherwise the whole argument is the instruction and targets the single
-///   `running` Goal;
-/// - when the panel snapshot has not caught up yet (a fresh `/goal create` can
-///   still be `draft` while its first activation is in flight), the single
-///   non-terminal Goal is the target.
-///
-/// Anything ambiguous (several candidates, an id with no instruction) falls
-/// back to the usage flash rather than steering the wrong Goal.
+/// Only a confidently matched id from the live panel snapshot is forwarded as
+/// `Some`; everything else goes to the driver as `None`, which resolves the
+/// target against the store. That keeps a stale or empty snapshot from turning
+/// the instruction into a fake id (and makes the store authoritative for the
+/// running Goal).
 fn steer_request(app: &App, args: &str) -> Option<UserCommand> {
-    use tact_protocol::GoalStatusSnapshot;
-
     let args = args.trim();
     if args.is_empty() {
         return None;
@@ -620,52 +610,19 @@ fn steer_request(app: &App, args: &str) -> Option<UserCommand> {
     let rest = tokens.next().unwrap_or_default().trim();
     let goals = &app.goal_panel().state().snapshot;
 
-    // Fresh session, no snapshot yet: keep the explicit `<id> <text>` form.
-    if goals.is_empty() {
-        return (!rest.is_empty()).then(|| UserCommand::SteerGoal {
-            goal_id: first.to_string(),
-            text: rest.to_string(),
-        });
-    }
-
     let mut matches = goals
         .iter()
         .filter(|goal| goal.id == first || goal.id.starts_with(first));
-    if let Some(goal) = matches.next() {
-        // A known id needs an instruction; an ambiguous prefix needs more
-        // characters. Neither is a reason to guess.
-        if matches.next().is_some() || rest.is_empty() {
-            return None;
-        }
-        return Some(UserCommand::SteerGoal {
-            goal_id: goal.id.clone(),
-            text: rest.to_string(),
-        });
-    }
-
-    // No id in the first token: the whole argument is the instruction.
-    let running: Vec<_> = goals
-        .iter()
-        .filter(|goal| goal.status == GoalStatusSnapshot::Running)
-        .collect();
-    let target = match running.as_slice() {
-        [only] => Some(*only),
-        [] => {
-            let open: Vec<_> = goals
-                .iter()
-                .filter(|goal| !goal.status.is_terminal())
-                .collect();
-            match open.as_slice() {
-                [only] => Some(*only),
-                _ => None,
-            }
-        }
+    let goal_id = match (matches.next(), matches.next()) {
+        (Some(goal), None) if !rest.is_empty() => Some(goal.id.clone()),
         _ => None,
     };
-    target.map(|goal| UserCommand::SteerGoal {
-        goal_id: goal.id.clone(),
-        text: args.to_string(),
-    })
+    let text = if goal_id.is_some() {
+        rest.to_string()
+    } else {
+        args.to_string()
+    };
+    Some(UserCommand::SteerGoal { goal_id, text })
 }
 
 /// `/skill list` output is plain markdown (heading + pipe table) appended as
@@ -1703,10 +1660,13 @@ mod tests {
                 },
             ),
             (
+                // The TUI only resolves an id it can see in the panel
+                // snapshot; with no snapshot yet the raw text goes to the
+                // driver, which resolves the leading id against the store.
                 "/goal steer goal-1 prefer the smaller design",
                 UserCommand::SteerGoal {
-                    goal_id: "goal-1".into(),
-                    text: "prefer the smaller design".into(),
+                    goal_id: None,
+                    text: "goal-1 prefer the smaller design".into(),
                 },
             ),
             (
@@ -1765,7 +1725,7 @@ mod tests {
     }
 
     #[test]
-    fn goal_steer_without_an_id_targets_the_single_running_goal() {
+    fn goal_steer_without_an_id_forwards_text_for_store_resolution() {
         use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
 
         let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
@@ -1792,13 +1752,12 @@ mod tests {
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected SteerGoal"),
             UserCommand::SteerGoal { goal_id, text }
-                if goal_id == "goal-2"
-                    && text == "focus on the parser first"
+                if goal_id.is_none() && text == "focus on the parser first"
         ));
     }
 
     #[test]
-    fn goal_steer_without_an_id_uses_the_only_open_goal_when_none_is_running() {
+    fn goal_steer_without_an_id_forwards_text_when_only_one_goal_is_open() {
         use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
 
         let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
@@ -1817,7 +1776,7 @@ mod tests {
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected SteerGoal"),
             UserCommand::SteerGoal { goal_id, text }
-                if goal_id == "goal-3" && text == "keep the diff small"
+                if goal_id.is_none() && text == "keep the diff small"
         ));
     }
 
@@ -1847,12 +1806,13 @@ mod tests {
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected SteerGoal"),
             UserCommand::SteerGoal { goal_id, text }
-                if goal_id == "goal-1" && text == "prefer the smaller design"
+                if goal_id.as_deref() == Some("goal-1")
+                    && text == "prefer the smaller design"
         ));
     }
 
     #[test]
-    fn goal_steer_without_an_id_is_refused_when_the_target_is_ambiguous() {
+    fn goal_steer_without_an_id_forwards_the_raw_text_for_driver_resolution() {
         use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
 
         let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
@@ -1875,10 +1835,13 @@ mod tests {
         execute_palette_command(&mut app, "goal");
 
         assert!(
-            user_cmd_rx.try_recv().is_err(),
-            "an ambiguous target must not steer a guessed Goal"
+            matches!(
+                user_cmd_rx.try_recv().expect("expected SteerGoal"),
+                UserCommand::SteerGoal { goal_id, text }
+                    if goal_id.is_none() && text == "hurry up"
+            ),
+            "the TUI must forward the raw instruction, not guess a target"
         );
-        assert!(app.flash_msg.is_some(), "expected the usage flash");
     }
 
     #[test]

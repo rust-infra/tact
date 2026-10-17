@@ -652,7 +652,14 @@ pub enum UserCommand {
     /// Show one Goal while still refreshing the full replacement snapshot.
     ShowGoal { goal_id: String },
     /// Persist user steering text in the Goal event stream.
-    SteerGoal { goal_id: String, text: String },
+    ///
+    /// `goal_id` is `None` when the user omitted it; the driver resolves the
+    /// target against the store (the single running Goal, or a leading
+    /// id/prefix in `text`).
+    SteerGoal {
+        goal_id: Option<String>,
+        text: String,
+    },
     /// Pause a non-terminal Goal after any active activation releases it.
     PauseGoal { goal_id: String },
     /// Resume a paused/waiting Goal and start one bounded activation.
@@ -891,7 +898,7 @@ mod tests {
                 goal_id: "goal-1".into(),
             },
             UserCommand::SteerGoal {
-                goal_id: "goal-1".into(),
+                goal_id: Some("goal-1".into()),
                 text: "Prefer the smaller design".into(),
             },
             UserCommand::PauseGoal {
@@ -918,7 +925,7 @@ mod tests {
         assert!(matches!(
             &commands[3],
             UserCommand::SteerGoal { goal_id, text }
-                if goal_id == "goal-1" && text == "Prefer the smaller design"
+                if goal_id.as_deref() == Some("goal-1") && text == "Prefer the smaller design"
         ));
         assert!(matches!(
             &commands[7],
