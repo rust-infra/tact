@@ -27,11 +27,11 @@ Goal、Task、Turn 和 PlanStep 是不同层级，不能互相替代：
 ## 2. 用户可见行为
 
 1. 用户通过 `UserCommand::CreateGoal` 或 `/goal create <objective>` 创建 Goal；交互式命令没有显式标准时会加入一个必需的人工作用标准。
-2. 创建成功后 driver **立即**把 Goal 交给 Runner 启动第一次 activation（`Draft → Queued → Running`），不需要额外的启动命令：Runner 创建一次有预算的 Run，并让 Agent 检查现状、规划和维护关联 Task DAG。该 activation 在命令循环之外的可取消任务里运行，因此运行期间 `Cancel` 与 `/goal list` 仍然可响应。
+2. 创建成功后 driver **立即**把 Goal 交给 Runner 启动第一次 activation（`Draft → Queued → Running`），不需要额外的启动命令：Runner 创建一次有预算的 Run，并让 Agent 检查现状、规划和维护关联 Task DAG。该 activation 在命令循环之外的可取消任务里运行，因此运行期间 `Cancel`、`/goal list`、`/goal pause`、`/goal steer` 与 `/goal cancel` 仍然可响应：暂停/取消先写入请求事件并触发 `cancel_flag`，Runner 在下一个安全点停下；steer 在下一次 activation 注入。
 3. 如果仍有可执行工作、没有用户阻塞且预算充足，Runner 可以启动下一执行周期；单次 `agent_loop` 正常结束只表示本次交互结束，不代表 Goal 完成。
 4. 需要用户决定时，Goal 等待用户；需要权限时，继续使用现有权限流程，不推导或扩大授权。
-5. Agent 认为目标已满足时，提交**完成提议**及证据，由 Runner 进入验证阶段。模型的完成文字、所有 Task 已完成或某个 turn 正常结束，均不是成功判据。
-6. 自动验收通过后可标记成功；需要人工确认的标准由用户确认。验收失败则回到执行，预算耗尽或无法继续则暂停并说明原因。
+5. Agent 认为目标已满足时，提交**完成提议**及不可信的 criterion claims，由 Runner 验证。claims 不会写入 evidence；模型的完成文字、所有 Task 已完成或某个 turn 正常结束，均不是成功判据。
+6. 当前只有人工验收：用户显式接受后，所有必需标准获得当前版本的 evidence 并成功。自动验证尚未实现，Automatic 标准在创建/更新时被拒绝；验收失败则回到执行，预算耗尽或无法继续则暂停并说明原因。
 7. 用户可查看、补充方向、暂停、恢复、取消或确认结果。对已结束 Goal 的重新执行必须是明确的用户操作，并留下事件记录。
 
 当前命令表面：
@@ -40,20 +40,22 @@ Goal、Task、Turn 和 PlanStep 是不同层级，不能互相替代：
 /goal list [--all]    列出当前工作区的 Goal（默认不含已归档）；为空时在 Log 里提示（此时面板不可见）
 /goal create <text>   创建 Goal（文本同时作为标题和 objective）并立即启动第一次 Run，Log 里回报新 Goal ID
 /goal show <id>       查看目标、标准、任务和验收摘要
-/goal steer [<id>] <text> 补充方向或约束并写入事件（省略 id 时作用于当前运行中的 Goal；无运行中 Goal 时取唯一的非终态 Goal，多个候选则要求显式 id）
-/goal pause <id>      暂停执行
+/goal steer [<id>] <text> 立即补充方向或约束并写入事件（省略 id 时作用于当前运行中的 Goal；无运行中 Goal 时取唯一的非终态 Goal，多个候选则要求显式 id）；下一次 activation 的 context 会看到它，不阻塞当前 Run
+/goal pause <id>      暂停执行；Run 活跃时写 pause_requested 并中断当前模型/工具波次，Runner 落到 paused
 /goal resume <id>     恢复执行
-/goal cancel <id>     取消 Goal
+/goal cancel <id>     取消 Goal；Run 活跃时写 cancel_requested 并触发 cancel_flag，终态为 cancelled
 /goal accept <id>     接受人工验收项 / 完成提议
 /goal archive <id>    把已结束的 Goal 归档（移出面板与默认列表，记录不删）
 /goal unarchive <id>  取消归档，重新出现在面板里
 ```
 
+**暂停 vs 取消（2026-10-17）：** 运行中按 Esc / TUI 的 Cancel 按钮只中断当前 Run，Goal 回到 `paused`，之后可以 `/goal resume`；只有 `/goal cancel <id>` 会写入终态 `cancelled`。这样一次误触不会毁掉长任务，取消仍是显式的用户决定。
+
 **归档（2026-10-16）：** 已结束的 Goal 会一直躺在 sticky 面板与 `/goal list` 里，列表迟早被历史占满。`archive` 把它们移出**默认**列表：面板与 `/goal list` 只画未归档的 Goal，记录、Run、事件、标准全部保留。它是 `Goal` 聚合上的一个时间戳（`archived_at`）而不是新的 `GoalStatus` —— **状态是结局，不能被改写**（一个 `failed` 的 Goal 归档后仍报 `failed`），而新增状态会牵动状态机、转换表与既有行。只有终态 Goal 能归档（`Running` 之类会被拒绝并说明原因：把还在跑的活从面板上藏起来、活却继续跑），重复归档只是状态回报而不是错误；`unarchive` 走同一条 `GoalUpdate` 路径把戳清掉。归档也是**唯一**被允许写终态 Goal 的操作：`Goal::update` 对终态 Goal 只接受 `is_archive_only()` 的更新，标题/目标/标准/证据/状态照旧冻结。可达性：`/goal show <id>` 仍能打开归档的 Goal（正文里标 `**Archived:** yes`），`/goal list --all` 把它们放回面板并标 ` · archived`。
 
 收 `<id>` 的八个动词在 TUI 里可以直接从补全菜单里挑 ID：打完 `/goal show ` 这样的前缀空格后，弹窗列出当前工作区里**该动词能作用**的 Goal，路径列是 ID、右列是面板同一行的状态标记与标题（可按 ID 或标题模糊匹配）。面板行不显示 ID、公告行会翻上去，补全菜单是不必回滚去找 ID 的地方。
 
-这些命令映射为带 Goal ID 和用户文本的 typed `UserCommand`；list/show 在 Agent activation 进行时也直接从 `SharedGoalManager` 读取。
+这些命令映射为带 Goal ID 和用户文本的 typed `UserCommand`；list/show/steer/pause/cancel 在 Agent activation 进行时也直接从 `SharedGoalManager` 读取，不等待 Run 的 `JoinHandle`。
 
 ---
 
@@ -78,7 +80,7 @@ draft → queued → running → verifying → succeeded
 | `running` | Runner 持有 lease，Agent 正在推进工作 |
 | `waiting_user` | 需要用户补充信息、决定方向或完成人工验收 |
 | `waiting_permission` | 保留状态，当前没有生产者（见 §12）：非交互模式下权限门自行裁决，交互式弹窗在 activation 内被回答 |
-| `paused` | 用户暂停、预算耗尽、无进展保护或可恢复错误导致暂停 |
+| `paused` | 用户暂停/中断、预算耗尽，或恢复逻辑把 stranded `running` 落到 paused |
 | `verifying` | Agent 已提交完成提议，必需验收项正在核验 |
 | `succeeded` | 所有必需验收条件均有有效证据并通过 |
 | `failed` | 已确认无法继续且 Goal 以失败结束；暂时性错误不应直接记为失败 |
@@ -90,12 +92,12 @@ draft → queued → running → verifying → succeeded
 
 ```text
 progress_made | needs_user | needs_permission | completion_proposed
-budget_exhausted | no_progress | cancelled | transient_error | fatal_error
+budget_exhausted | paused | no_progress | cancelled | transient_error | fatal_error
 ```
 
 Runner 根据 outcome、任务图、验收状态和预算决定状态转移。暂停、等待和 run 结束都要先落库，再通知 UI。
 
-当前真正会被写出的 outcome：`progress_made`（有可观察进展，继续下一周期）、`no_progress`（只说了话、没做可观察的事，本次 Run 结束、Goal 保持 `running`）、`budget_exhausted`、`completion_proposed`、`needs_user`、`cancelled`、`transient_error`、`fatal_error`。`needs_permission` 与状态 `waiting_permission` 一样属于保留项（见 §12）。
+当前真正会被写出的 outcome：`progress_made`（有可观察进展，继续下一周期）、`no_progress`（只说了话、没做可观察的事，本次 Run 结束、Goal 保持 `running`）、`budget_exhausted`、`paused`（用户暂停或 Esc 中断）、`completion_proposed`、`needs_user`、`cancelled`（显式 `/goal cancel`）、`transient_error`、`fatal_error`。`needs_permission` 与状态 `waiting_permission` 一样属于保留项（见 §12）。
 
 ---
 
@@ -197,18 +199,18 @@ Agent loop 仍负责单次模型交互、工具 dispatch、hooks、权限、会�
 
 每个新周期开始时，Runner 都重新注入精简且权威的 Goal 上下文：目标、硬约束、验收标准摘要、关联 Task 状态、最近 checkpoint 和暂停原因（Goal 工具在周期内追加的 checkpoint/事件，下一个周期就能看到）。完整事件历史按需查询，不应每轮无界地注入 prompt。上下文应以明确标签与边界传递，不能让来自历史/tool output 的内容覆盖用户约束。
 
-Agent 可报告 checkpoint、提出 Task 变更、请求用户输入、请求权限或提交完成提议；Goal 状态的最终写入权归 Runner/GoalManager。Subagent 可继承只读 Goal 摘要；只有明确委派的任务可以在父 Goal 范围内推进，子 Agent 不得直接结束或重开 Goal。
+Agent 可报告 checkpoint、提出 Task 变更、请求用户输入、请求权限或提交完成提议；Goal 状态的最终写入权归 Runner/GoalManager。Subagent 不继承父 Goal 绑定，也没有 Goal 工具；它只通过委派 prompt 获得必要的上下文，不能结束或重开父 Goal。
 
 ---
 
 ## 6. 验收：成功必须有证据
 
-- Goal 启动前应有可检查的必需验收标准；交互式 `/goal create` 未提供时由 driver 加入默认人工作用标准，API 调用者可直接提供标准。
-- 自动验收由 Runner 调用已有安全工具/权限体系执行；Goal 不提供绕过 permission manager 的“可信命令”通道。
+- Goal 启动前应有可检查的必需验收标准；交互式 `/goal create` 未提供时由 driver 加入默认人工作用标准。`GoalManager::create` 与 criteria 更新都要求至少一个 required 标准；空/全 optional 的 Goal 会被拒绝，避免创建无解死路。
+- 自动验证尚未实现：`GoalCriterion::required` 默认是 Human，`GoalManager::create` 和 criteria 更新拒绝 Automatic；遗留的 Automatic 标准可由用户 `/goal accept` 显式关闭。Goal 不提供绕过 permission manager 的“可信命令”通道。
 - 人工验收由用户显式确认，并记录确认者、时间及针对的标准版本。
-- Agent 提交完成提议后进入 `verifying`。Runner 检查所有 `required = true` 的标准是否通过，且证据与当前 Goal/标准版本匹配。
-- 全部必需自动检查通过且没有待确认标准，才可自动转为 `succeeded`。
-- 有人工标准时转为 `waiting_user`；用户接受后成功，拒绝后将反馈带回 `running`。
+- Agent 提交完成提议后，Runner 先验证：`Verified` 才进入 `verifying` 并立即成功；`NeedsUser` 转 `waiting_user`；未满足的标准保持 `running` 或按预算暂停。
+- 全部必需标准都有当前版本 evidence 时才可转为 `succeeded`；自动验证尚未实现，当前由人工验收写入 evidence。
+- 必需人工标准未满足时转为 `waiting_user`；用户 `/goal accept` 写入 evidence 后成功。标准被标记 Rejected 时只能通过重定义 criteria 恢复（当前没有 TUI 编辑命令）。
 - 验收失败时回到 `running` 修复；预算耗尽则转 `paused` 并列出失败项。不得把“任务清单清空”当作验收通过。
 - 用户修改目标或验收条件时提升版本号；旧版本的证据不能默认为新版本通过，必须按影响重新验证。
 
@@ -226,20 +228,24 @@ Run 的累计预算同样是 `GoalLimits` 的 500 turns / 600 秒墙钟时间（
 
 **Lease 在 Run 执行期间持续心跳**（2026-10-17）：`max_elapsed` 只在 activation 之间检查，单个 activation 可能远长于 lease TTL。Runner 在 cycles 运行期间按 `TTL/3` 刷新 lease，退出时 abort 并 await 心跳任务；收尾与释放只校验 owner+epoch（fencing），不再要求 lease 仍未过期——否则一个只是因为跑得久而过期、但未被接管的 lease 会丢掉整个 Run 的结果。
 
-**activation 自己的判定优先于预算**（2026-10-16）：取消（`cancelled`）、被 hook 拦截（`fatal_error`/`failed`）、需要用户（`needs_user`）、验收通过（`succeeded`）这类终局判定即使与预算耗尽同时发生，也按判定记录——用户在最后一次流式响应期间按下的 Esc 不会被改记成预算暂停。预算只在「本来还会继续」（`progress_made`，或验收被拒）时把 Run 标成 `budget_exhausted`/`paused`。
+**activation 自己的判定优先于预算**（2026-10-16）：取消（`cancelled`）、被 hook 拦截（`fatal_error`/`failed`）、需要用户（`needs_user`）、验收通过（`succeeded`）这类终局判定即使与预算耗尽同时发生，也按判定记录。运行期间按 Esc / `c` 产生的是**暂停**（`paused`），不是终态取消；只有带 `cancel_requested` 事件的 `/goal cancel` 会把 Run 标成 `cancelled`（2026-10-17）。预算只在「本来还会继续」（`progress_made`，或验收被拒）时把 Run 标成 `budget_exhausted`/`paused`。
+
+活动 Run 的 `turns_used` / `tool_calls_used` / `elapsed_ms` 在每个 activation 结束后写回 `goal_runs` 并刷新面板；单个 activation 运行期间面板显示上一次落库值，不会逐 turn 实时更新（2026-10-17）。
 
 无进展检测只依赖可观察变化（工具调用、Goal 事件），不依赖模型自述：只有文字的周期记为 `no_progress` 并结束本次 Run，Goal 保持 `running` 等待下一次 activation——它不会因此被暂停，也不会被误记成 `progress_made`。单次失败或偶发网络错误同样不判定 Goal 失败：activation 报错记为 `transient_error` 并结束 Run，Goal 状态不变。人工验收不要求 Goal 恰好停在 `waiting_user`：`waiting_user`、`paused`（用户暂停或恢复把 stranded `running` 落到 paused）、以及没有活动 Run 的 `running` 都可以被 `/goal accept` 推进；只有活动 Run 在途时拒绝。这样用户消息把 Goal 唤醒后，刚提示的验收不会立刻失效，验收仍由 `GoalVerifier` 决定。
 
 ### Lease 与写入隔离
 
-同一执行目录默认只允许一个写入型 Goal Runner。lease 应包含 owner、过期时间/心跳和递增 fencing epoch；所有状态写入校验当前 epoch，避免旧进程失去 lease 后继续提交覆盖新执行者的结果。独立 worktree 可按独立执行目录并发；是否允许多个 Goal 对同一目录并行写，首版默认禁止。
+同一执行目录默认只允许一个写入型 Goal Runner。lease 包含**实例唯一** owner（session label + pid + 随机后缀）、过期时间/心跳和递增 fencing epoch。一个仍有效的 lease 永远不会被再次发放，即使 owner 字符串相同；只有持有 token 的实例可以 heartbeat/finish/release（2026-10-17）。Runner 在 `start_run_with_lease` 中使用已 claim 的 token，不会在 claim 与 start 之间静默轮换 epoch；`start_run` 还会在同一事务内确认 Goal 仍是 `Running`，关闭 load-then-start 的暂停/取消竞态。
+
+所有状态写入校验当前 epoch，避免旧进程失去 lease 后继续提交覆盖新执行者的结果。独立 worktree 可按独立执行目录并发；是否允许多个 Goal 对同一目录并行写，首版默认禁止。
 
 ### 崩溃恢复与取消
 
 - 启动或恢复时先检查活动 Run 与 lease；lease 过期后将旧 Run 标记为 `interrupted`，然后创建新的恢复 Run。
 - 恢复以 SQLite Goal/Run/Event 状态和 session transcript 为依据，不依赖进程内 future、channel 或 pending queue。
 - 只有完成幂等性检查后才重试可能已执行但结果未落库的操作；外部副作用不得因为恢复而盲目重放。
-- 取消先持久化取消请求，再触发当前 Agent 的 `cancel_flag`；等待活动工具按现有取消语义退出，记录 Run 终态并释放 lease。
+- 暂停/取消先持久化 `pause_requested` / `cancel_requested` 事件，再触发当前 Agent 的 `cancel_flag`；Runner 在 activation 结束或下一个 cycle 前读取事件，记录 Run outcome 并释放 lease。暂停落到 `paused`（可 resume），取消落到终态 `cancelled`。
 - 进程退出或 TUI 断开不能把 Goal 静默标成成功；无 UI 时遇到用户决策/权限需求应暂停并可由后续 session 恢复。
 - 挂起的权限请求不能在进程重启后被视为已批准；恢复时须重新经过当前权限流程。
 
@@ -262,7 +268,7 @@ Goal 授权的是“持续尝试达成这个目标”，不是对将来所有副
 
 TUI 使用 `AgentUpdate::GoalsChanged` 携带完整 `GoalSnapshot` 集合，并通过 `UserCommand` 的 `CreateGoal`、`ListGoals`、`ShowGoal`、`SteerGoal`、`PauseGoal`、`ResumeGoal`、`CancelGoal` 和 `AcceptGoal` 控制生命周期。快照包含状态、phase、标准摘要、Task 进度、等待原因、预算和验收计数；重新连接或恢复时仍以 SQLite 为权威来源。
 
-Goal 面板可以接入现有 Tasks / Subagent / Background sticky host，概览显示：目标标题、Goal 状态与 phase、当前 Run、关联 Task 进度、阻塞原因、预算用量和验收摘要。展开视图提供标准逐项状态、证据、最近事件和暂停/恢复/取消/确认操作。
+Goal 面板可以接入现有 Tasks / Subagent / Background sticky host，概览显示：目标标题、Goal 状态与 phase、当前 Run、关联 Task 进度、阻塞原因、预算用量和验收摘要。展开视图提供标准逐项状态与 wait reason；暂停/恢复/取消/确认操作仍通过 `/goal` 命令完成。
 
 Headless 与交互式模式共用同一个 GoalRunner 和状态机。Headless 遇到必须由用户决定的事项时保存 `waiting_user` 并退出当前 Run，不能等待 UI responder；后续通过命令或 API 补充输入后恢复。
 
@@ -279,7 +285,7 @@ Headless 与交互式模式共用同一个 GoalRunner 和状态机。Headless �
 | `crates/tact/src/task/`、`store/task_store/` | Task 可选 `goal_id`、Goal 范围查询及旧记录兼容 |
 | `crates/tact/src/tool/` | 注入 `SharedGoalManager`；Goal 感知工具与受限 Task 作用域 |
 | `crates/tact-ui/src/session_bootstrap.rs` | 为 Agent 构建并注入共享 Goal manager |
-| `crates/tact-ui/src/goal_runner.rs`、`driver.rs` | bounded activation、预算、lease、恢复、命令串行化 |
+| `crates/tact-ui/src/goal_runner.rs`、`driver.rs` | bounded activation、预算、lease、恢复、运行中 pause/steer/cancel 的请求事件 |
 | `crates/protocol/src/agent.rs` | Goal 快照、`GoalsChanged` 和用户命令协议 |
 | `crates/tui/`、`crates/agent_tui_kit/` | Goals sticky panel、状态投影、鼠标切换与背景测试 |
 | `book/`、`docs/superpowers/` | 本设计章节与实现前 spec/plan；代码交付时同步实际行为 |
@@ -299,14 +305,15 @@ Headless 与交互式模式共用同一个 GoalRunner 和状态机。Headless �
 
 ## 12. 当前限制
 
-- `/goal create` 的文本命令只提供默认人工作用标准；复杂的自动标准仍需通过 API/领域层创建。
+- `/goal create` 的文本命令只提供默认人工作用标准。自动验证尚未实现：`GoalManager::create` 与 criteria 更新拒绝 Automatic 标准，`GoalCriterion::required` 默认是 Human；遗留的 Automatic 标准可由用户 `/goal accept` 显式关闭。
 - `/goal resume <id>` 既用于恢复 `paused` / `waiting_user` / `waiting_permission` 的 Goal，也用于推进 `draft` / `queued`；终态（`succeeded` / `failed` / `cancelled`）不能直接继续。
 - `waiting_permission` 目前**没有生产者**：非交互模式下权限门自行裁决（高风险拒绝、其余放行），交互式弹窗在 activation 内被回答，因此被权限挡住的 activation 不会把 Goal 停在该状态。该状态保留在状态机里，供将来"权限感知的停止原因"使用。
-- 一个 Run 以 `progress_made` 结束时 Goal 仍是 `running`（没有活动 Run）。此时没有自动的下一周期——下一个 activation 由 `/goal resume` 或下一次进程启动后的恢复逻辑（`running` 且无活动 Run → `paused`）接管。
+- 一个 Run 以 `progress_made` 结束时 Goal 仍是 `running`（没有活动 Run）。此时没有自动的下一周期——下一个 activation 由 `/goal resume` 或下一次进程启动后的恢复逻辑（`running` 且无活动 Run → `paused`）接管；TUI 的 resume 补全也会列出这种 idle Running Goal。
 - 一次 `/goal resume` 会跑到该 Run 的累计预算用完（或达到验收/等待用户等终态）为止；`running` 但空闲的 Goal 表示"上一次 Run 用完了预算或没有可观察进展"，继续推进仍是显式操作。
 - `needs_permission`（run outcome）与 `waiting_permission`（状态）一样是保留项，没有生产者，原因见上。
-- 当前协议提供完整 Goal 集合快照，没有单独的 `GoalRunChanged` 增量事件；运行预算在活动 run 中展示，完成 run 的详细审计保存在事件表。
-- `/goal pause` / `/goal cancel` 这类**不带 lease** 的状态写入在 Run 活跃期间会被拒绝（`ActiveRunExists`）：从 `start_run` 到收尾事务，Goal 的状态归 Run 所有，第二个进程中途暂停会留下「已暂停但 Run 仍活跃」的矛盾观测。同一会话内命令循环本就串行在 Run 之后，因此只有跨进程写入会撞到这道门（2026-10-16）。
+- 当前协议提供完整 Goal 集合快照，没有单独的 `GoalRunChanged` 增量事件；活动 Run 的预算按 activation 落库并随快照刷新，单个 activation 内不是逐 turn 实时。完成 run 的详细审计保存在事件表。
+- 运行中的 `/goal pause` / `/goal steer` / `/goal cancel` 不再串行等待 Run 结束：命令循环直接写 shared store / cancel flag。跨进程暂停在模型调用进行中无法立即打断，Runner 会在该 activation 返回或下一个 cycle 前观察到请求；同进程的 `cancel_flag` 可以更早中断当前波次。
+- Goal 激活期间由 `task_create` 创建的 Task 自动关联到当前 Goal（`goal_id`）；Goal context 的 `linked-tasks` 与面板 task 计数因此能看到它们。
 - Goal sticky panel 提供状态、预算、Task 进度、验收摘要、等待原因和标准列表；具体标准操作仍通过 `/goal accept` 等命令完成。
 
 ---

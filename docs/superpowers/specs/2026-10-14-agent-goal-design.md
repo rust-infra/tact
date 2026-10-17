@@ -85,8 +85,11 @@ The existing `tasks` table gains a nullable `goal_id` column via idempotent
 
 ### Lease fencing and crash recovery
 
-- One active writer per workspace execution directory. The lease carries an owner,
-  expiry/heartbeat, and a monotonically increasing **fencing epoch**.
+- One active writer per workspace execution directory. The lease carries an
+  instance-unique owner (session label + pid + random suffix), expiry/heartbeat,
+  and a monotonically increasing **fencing epoch**. A live lease is never
+  re-issued, even to the same label; only its token holder may heartbeat, finish,
+  or release it.
 - All state writes check the current epoch; a stale process whose lease expired
   cannot overwrite newer state.
 - On restart, the runner finds expired leases, marks interrupted Runs as
@@ -113,6 +116,12 @@ Evidence is tagged with the criteria version it was recorded against. When the
 user modifies goals or criteria, the version bumps; stale evidence is invalid
 without explicit re-verification.
 
+Automatic verification is reserved in this implementation: no runner-side
+checker exists yet. `GoalCriterion::required` defaults to Human, and production
+create/update paths reject Automatic criteria rather than creating a Goal that
+can never pass. Legacy Automatic criteria are closed by an explicit human
+acceptance.
+
 ### Budget and no-progress protection
 
 Each run carries: max turns (default 500, `[goal].max_turns`) and max
@@ -134,11 +143,12 @@ Goal-aware tools are injected via `ToolContext`, not global state:
 - `goal_read` — read active Goal, criteria, Task progress.
 - `goal_checkpoint` — append progress to the event stream.
 - `goal_request_input` — ask the user a question (persisted as `waiting_user`).
-- `goal_propose_completion` — submit a completion proposal with criterion evidence.
+- `goal_propose_completion` — submit a completion proposal with **untrusted**
+  criterion claims. Claims do not write evidence; human acceptance does.
 
 No agent-callable method can directly set `succeeded`, mutate user-confirmed
-acceptance, or operate on arbitrary Goals. Subagents inherit a read-only Goal
-summary and cannot end or reopen the parent Goal.
+acceptance, or operate on arbitrary Goals. Subagents do not inherit the parent's
+Goal binding and have no Goal tools; they cannot end or reopen the parent Goal.
 
 ### Protocol and TUI
 
@@ -148,8 +158,11 @@ counts, run budget, and wait reason.
 
 Typed `UserCommand` variants: `CreateGoal`, `ListGoals`, `ShowGoal`, `SteerGoal`,
 `PauseGoal`, `ResumeGoal`, `CancelGoal`, `AcceptGoal`. List/show queries read
-directly from `SharedGoalManager` even during an active run; mutations are
-serialized against the active runner in the driver.
+directly from `SharedGoalManager` even during an active run. Steer/pause/cancel
+also act on the shared store and cancel flag without awaiting the run's
+`JoinHandle`: pause/cancel persist a request event that the runner honours at the
+next safe point, and steer is injected on the next activation. Resume/accept
+still need the Agent and stay serialized.
 
 The Goals sticky panel in the TUI shows: title, status/phase, run budget, Task
 progress, wait reason, acceptance summary, and per-criterion status. Actions

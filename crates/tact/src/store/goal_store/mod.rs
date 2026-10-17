@@ -35,6 +35,15 @@ pub enum GoalStoreError {
         epoch: i64,
     },
     ActiveRunExists,
+    /// A run can only be started for a Goal that is actually `Running`.
+    ///
+    /// Without this check the runner's load-then-start sequence had a race:
+    /// a pause or cancel committed between the two could be overwritten by a
+    /// run that started anyway.
+    InvalidGoalStatus {
+        goal_id: String,
+        status: GoalStatus,
+    },
     RunNotFinished {
         run_id: String,
     },
@@ -66,6 +75,9 @@ impl std::fmt::Display for GoalStoreError {
             Self::LeaseHeld { owner, epoch } => write!(f, "lease held by {owner} at epoch {epoch}"),
             Self::StaleLease { owner, epoch } => write!(f, "stale lease {owner} at epoch {epoch}"),
             Self::ActiveRunExists => write!(f, "an active goal run already exists"),
+            Self::InvalidGoalStatus { goal_id, status } => {
+                write!(f, "goal {goal_id} is {status:?}; a run requires Running")
+            }
             Self::RunNotFinished { run_id } => write!(f, "goal run {run_id} is not finished"),
             Self::RunIdentityMismatch {
                 run_id,
@@ -132,13 +144,47 @@ pub trait GoalStore: Send + Sync {
     async fn claim_lease(&self, owner: &str, ttl: Duration) -> Result<LeaseToken>;
     async fn heartbeat_lease(&self, token: &LeaseToken, ttl: Duration) -> Result<LeaseToken>;
     async fn release_lease(&self, token: &LeaseToken) -> Result<()>;
+    /// Claims a fresh lease and starts a run (test/bootstrap convenience).
+    ///
+    /// A runner that already holds a token must use
+    /// [`GoalStore::start_run_with_lease`]; a live lease is never re-issued.
     async fn start_run(
         &self,
         owner: &str,
         ttl: Duration,
         run: GoalRun,
     ) -> Result<(LeaseToken, GoalRun)>;
+    /// Starts a run holding an already-claimed lease.
+    ///
+    /// Unlike [`GoalStore::start_run`], this never re-claims the lease: the
+    /// caller's token is the authority, so a lease rotation cannot strand the
+    /// run on a stale epoch. The Goal must still be `Running` (checked in the
+    /// same transaction as the insert).
+    async fn start_run_with_lease(
+        &self,
+        token: &LeaseToken,
+        ttl: Duration,
+        run: GoalRun,
+    ) -> Result<GoalRun>;
+    /// Publishes the run's in-flight usage while the row is still `running`.
+    ///
+    /// The panel reads [`GoalStore::list_running_runs`], which used to see the
+    /// all-zero row written at `start_run` until the run finished.
+    async fn update_run_progress(&self, token: &LeaseToken, run: &GoalRun) -> Result<()>;
     async fn finish_run(&self, token: &LeaseToken, run: GoalRun) -> Result<GoalRun>;
+    /// Applies several validated Goal updates in one transaction, each CASing
+    /// against the version produced by the previous one.
+    ///
+    /// Acceptance needs evidence + `Running → Verifying → Succeeded` to be
+    /// one durable commit: three separate updates could leave a Goal stranded
+    /// in `Verifying` if the process died between the last two.
+    async fn update_chain(
+        &self,
+        goal_id: &str,
+        expected_version: u64,
+        updates: Vec<(GoalUpdate, GoalEvent)>,
+        lease: Option<&LeaseToken>,
+    ) -> Result<Goal>;
     /// Finishes `run` and, in the same transaction, applies the Goal's status
     /// transitions and records the run-finished event.
     ///

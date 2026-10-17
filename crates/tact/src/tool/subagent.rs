@@ -602,6 +602,11 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // is indistinguishable from the parent's own ask.
     let mut child_ctx = ctx.clone();
     child_ctx.is_subagent = true;
+    // A subagent has no Goal tools (its toolset is bash/read/write/edit), so
+    // inheriting the parent's binding only made the final-turn reminder ask it
+    // to call `goal_checkpoint`, a tool it cannot use. Goal context is
+    // read-only at best; do not let a child believe it owns the parent's Goal.
+    child_ctx.active_goal_id = None;
 
     let mut subagent = Agent::new(
         client,

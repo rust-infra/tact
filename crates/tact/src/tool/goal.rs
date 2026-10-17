@@ -114,7 +114,7 @@ fn non_empty(value: String, field: &str) -> Result<String> {
 
 fn event(goal_id: &str, kind: &str, payload: impl Serialize) -> Result<GoalEvent> {
     Ok(GoalEvent {
-        id: crate::goal::new_id(),
+        id: crate::goal::new_event_id(),
         goal_id: goal_id.to_string(),
         run_id: None,
         kind: kind.to_string(),
@@ -123,6 +123,19 @@ fn event(goal_id: &str, kind: &str, payload: impl Serialize) -> Result<GoalEvent
         payload: Some(serde_json::to_string(&payload)?),
         occurred_at: chrono::Utc::now(),
     })
+}
+
+fn event_text(goal_id: &str, kind: &str, text: String) -> GoalEvent {
+    GoalEvent {
+        id: crate::goal::new_event_id(),
+        goal_id: goal_id.to_string(),
+        run_id: None,
+        kind: kind.to_string(),
+        status: None,
+        outcome: None,
+        payload: Some(text),
+        occurred_at: chrono::Utc::now(),
+    }
 }
 
 #[tool]
@@ -153,11 +166,7 @@ pub async fn goal_request_input(
     let goal_id = active_goal_id(&ctx)?;
     let question = non_empty(input.question, "question")?;
     ctx.goal_manager
-        .append_event(event(
-            goal_id,
-            "needs_user",
-            serde_json::json!({"question": question}),
-        )?)
+        .append_event(event_text(goal_id, "needs_user", question))
         .await?;
     Ok(ToolCallResult {
         content: "User input requested; yield to Runner.".to_string(),

@@ -1,6 +1,13 @@
 //! Interactive-mode command driver: bridges `UserCommand` from the TUI to `Agent`.
 
-use std::{collections::HashMap, path::Path, sync::atomic::Ordering};
+use std::{
+    collections::HashMap,
+    path::Path,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+};
 
 use anyhow::Result;
 use chrono::Utc;
@@ -10,9 +17,10 @@ use tact::{
     goal::{
         Goal, GoalCreate, GoalCriterion, GoalCriterionStatus, GoalEvent, GoalEvidenceUpdate,
         GoalPhase, GoalStatus, GoalUpdate, GoalVerification, GoalVerificationKind, GoalVerifier,
-        SharedGoalManager, new_id,
+        SharedGoalManager, new_event_id,
     },
     hook::HookControl,
+    store::goal_store::GoalStoreError,
     task::{SharedTaskManager, TaskStatus},
     utils::RwLockExt,
 };
@@ -127,6 +135,12 @@ pub async fn run_command_loop_with_account(
 
     let mut agent = Some(agent);
     let mut active: Option<JoinHandle<Agent>> = None;
+    // Whether the local in-flight task is a Goal activation, and which Goal.
+    // `None` while a normal task runs; the id is unknown during CreateGoal
+    // (the Goal is minted inside that task). Only a matching local run may be
+    // interrupted with the shared cancel flag.
+    let mut active_goal_run = false;
+    let mut active_goal_id: Option<String> = None;
     // A `SubagentFinishedNotification` that arrives while a turn is in flight
     // cannot be dropped: the result may already have been drained from the
     // queue at the start of the turn, and once the turn exits there is nothing
@@ -140,9 +154,13 @@ pub async fn run_command_loop_with_account(
                 result = active.as_mut().expect("active task") => {
                     agent = Some(result.expect("active task join panicked"));
                     active = None;
+                    active_goal_run = false;
+                    active_goal_id = None;
                     if pending_subagent_wakeup {
                         pending_subagent_wakeup = false;
                         spawn_wakeup_task(&mut agent, &mut active, &image_work_dir);
+                        active_goal_run = false;
+                        active_goal_id = None;
                     }
                     continue;
                 }
@@ -232,12 +250,57 @@ pub async fn run_command_loop_with_account(
             UserCommand::ShowGoal { goal_id } => {
                 show_goal(&goal_manager, &task_manager, limits, &goal_id, &ui_tx).await;
             }
+            // These three are safe to serve while the Agent is owned by an
+            // in-flight Goal run: they only touch the shared managers (and the
+            // cancel flag), so they must not await the run handle.
+            UserCommand::SteerGoal { goal_id, text } => {
+                steer_goal(
+                    &goal_manager,
+                    &task_manager,
+                    &ui_tx,
+                    goal_id.as_deref(),
+                    &text,
+                )
+                .await;
+            }
+            UserCommand::PauseGoal { goal_id } => {
+                let interrupt_local = active_goal_run
+                    && (active_goal_id.is_none()
+                        || active_goal_id.as_deref() == Some(goal_id.as_str()));
+                request_goal_pause(
+                    &goal_manager,
+                    &task_manager,
+                    limits,
+                    &ui_tx,
+                    &cancel_flag,
+                    &goal_id,
+                    interrupt_local,
+                )
+                .await;
+            }
+            UserCommand::CancelGoal { goal_id } => {
+                let interrupt_local = active_goal_run
+                    && (active_goal_id.is_none()
+                        || active_goal_id.as_deref() == Some(goal_id.as_str()));
+                request_goal_cancel(
+                    &goal_manager,
+                    &task_manager,
+                    limits,
+                    &ui_tx,
+                    &cancel_flag,
+                    &goal_id,
+                    interrupt_local,
+                )
+                .await;
+            }
             UserCommand::SubagentFinishedNotification { .. } => {
                 // If a turn is active, retain the wake-up until that turn's
                 // JoinHandle completes. Otherwise the notification could be
                 // lost in the gap between the final queue drain and turn exit.
                 if active.is_none() {
                     spawn_wakeup_task(&mut agent, &mut active, &image_work_dir);
+                    active_goal_run = false;
+                    active_goal_id = None;
                 } else {
                     pending_subagent_wakeup = true;
                 }
@@ -246,6 +309,8 @@ pub async fn run_command_loop_with_account(
                 if let Some(handle) = active.take() {
                     agent = Some(handle.await.expect("submit task join panicked"));
                 }
+                active_goal_run = false;
+                active_goal_id = None;
                 // The new user turn drains pending subagent results itself;
                 // do not add a redundant wake-up after it finishes.
                 pending_subagent_wakeup = false;
@@ -269,6 +334,8 @@ pub async fn run_command_loop_with_account(
                     agent = Some(handle.await.expect("create goal join panicked"));
                 }
                 let mut task_agent = agent.take().expect("agent available for goal creation");
+                active_goal_run = true;
+                active_goal_id = None;
                 active = Some(tokio::spawn(async move {
                     if let Some(goal_id) =
                         create_goal(&mut task_agent, title, objective, criteria).await
@@ -286,6 +353,8 @@ pub async fn run_command_loop_with_account(
                     agent = Some(handle.await.expect("resume goal join panicked"));
                 }
                 let mut task_agent = agent.take().expect("agent available for goal resume");
+                active_goal_run = true;
+                active_goal_id = Some(goal_id.clone());
                 active = Some(tokio::spawn(async move {
                     resume_goal(&mut task_agent, &goal_id).await;
                     task_agent.emit_update(AgentUpdate::TaskIdle);
@@ -297,6 +366,8 @@ pub async fn run_command_loop_with_account(
                     agent = Some(handle.await.expect("accept goal join panicked"));
                 }
                 let mut task_agent = agent.take().expect("agent available for goal acceptance");
+                active_goal_run = true;
+                active_goal_id = Some(goal_id.clone());
                 active = Some(tokio::spawn(async move {
                     accept_goal(&mut task_agent, &goal_id, &text).await;
                     task_agent.emit_update(AgentUpdate::TaskIdle);
@@ -307,6 +378,8 @@ pub async fn run_command_loop_with_account(
                 if let Some(handle) = active.take() {
                     agent = Some(handle.await.expect("command join panicked"));
                 }
+                active_goal_run = false;
+                active_goal_id = None;
                 if let Some(mut a) = agent.take() {
                     handle_user_command_with_account(
                         &mut a,
@@ -516,10 +589,34 @@ async fn goal_snapshots_with(
             goal.status,
             GoalStatus::WaitingUser | GoalStatus::WaitingPermission | GoalStatus::Paused
         ) {
-            goal_manager
+            let status_reason = goal_manager
                 .latest_event_with_status(&goal.id, goal.status)
                 .await?
-                .and_then(|event| event.payload)
+                .and_then(|event| event.payload);
+            if goal.status == GoalStatus::WaitingUser {
+                // A `goal_request_input` question is more useful than the
+                // generic "run ended as NeedsUser" status payload. Only use
+                // it when it was asked after the latest Running transition;
+                // an old question from a previous wait must not masquerade as
+                // the reason the Goal is waiting for acceptance now.
+                let question = goal_manager
+                    .latest_event_of_kind(&goal.id, "needs_user")
+                    .await?;
+                let last_running = goal_manager
+                    .latest_event_with_status(&goal.id, GoalStatus::Running)
+                    .await?;
+                match (question, last_running) {
+                    (Some(question), Some(running))
+                        if question.occurred_at >= running.occurred_at =>
+                    {
+                        question.payload.or(status_reason)
+                    }
+                    (Some(question), None) => question.payload.or(status_reason),
+                    _ => status_reason,
+                }
+            } else {
+                status_reason
+            }
         } else {
             None
         };
@@ -581,7 +678,7 @@ async fn goal_snapshots_with(
     Ok(snapshots)
 }
 
-async fn emit_goals_changed(
+pub(crate) async fn emit_goals_changed(
     goal_manager: &SharedGoalManager,
     task_manager: &SharedTaskManager,
     limits: GoalLimits,
@@ -835,7 +932,7 @@ async fn show_goal(
 
 fn goal_event(goal: &Goal, kind: &str, status: Option<GoalStatus>, payload: String) -> GoalEvent {
     GoalEvent {
-        id: new_id(),
+        id: new_event_id(),
         goal_id: goal.id.clone(),
         run_id: None,
         kind: kind.to_string(),
@@ -860,29 +957,33 @@ fn emit_goal_error(ui_tx: &Option<UnboundedSender<AgentUpdate>>, message: String
 /// explicit id, a leading id/prefix in the text is accepted (the panel may not
 /// have caught up), then the single running Goal, then the single non-terminal
 /// Goal. An ambiguous target is an error, never a guess.
-async fn steer_goal(agent: &Agent, requested: Option<&str>, text: &str) {
+async fn steer_goal(
+    goal_manager: &SharedGoalManager,
+    task_manager: &SharedTaskManager,
+    ui_tx: &Option<UnboundedSender<AgentUpdate>>,
+    requested: Option<&str>,
+    text: &str,
+) {
     let text = text.trim();
     if text.is_empty() {
-        emit_goal_error(
-            &agent.runtime.ui_tx,
-            "Goal steering text must not be empty".to_string(),
-        );
+        emit_goal_error(ui_tx, "Goal steering text must not be empty".to_string());
         return;
     }
-    let goals = match agent.tool_context.goal_manager.list().await {
+    let goals = match goal_manager.list().await {
         Ok(goals) => goals,
         Err(error) => {
-            emit_goal_error(
-                &agent.runtime.ui_tx,
-                format!("Goal steering failed: {error:#}"),
-            );
+            emit_goal_error(ui_tx, format!("Goal steering failed: {error:#}"));
             return;
         }
     };
 
     let resolved = match requested {
         Some(prefix) => match unique_goal_matching(&goals, prefix) {
-            Ok(Some(goal)) => Ok((goal, text.to_string())),
+            Ok(Some(goal)) if !goal.status.is_terminal() => Ok((goal, text.to_string())),
+            Ok(Some(goal)) => Err(format!(
+                "Goal {} is terminal ({:?}); there is nothing left to steer",
+                goal.id, goal.status
+            )),
             Ok(None) => Err(format!("Goal {prefix} not found")),
             Err(count) => Err(format!(
                 "Goal id prefix {prefix} matches {count} goals; type more characters"
@@ -895,11 +996,18 @@ async fn steer_goal(agent: &Agent, requested: Option<&str>, text: &str) {
             match unique_goal_matching(&goals, first) {
                 // An explicit id that the TUI could not resolve (empty or
                 // stale snapshot) is still honored.
-                Ok(Some(goal)) if !rest.is_empty() => Ok((goal, rest.to_string())),
+                Ok(Some(goal)) if !rest.is_empty() && !goal.status.is_terminal() => {
+                    Ok((goal, rest.to_string()))
+                }
                 // A known id with nothing after it is a missing instruction,
                 // not an instruction that happens to be the id itself.
                 Ok(Some(_)) => Err("goal steering text must not be empty".to_string()),
-                _ => match implicit_steer_target(&goals) {
+                // An ambiguous first token is an id/prefix the user tried to
+                // address, not ordinary instruction text.
+                Err(count) => Err(format!(
+                    "Goal id prefix {first} matches {count} goals; type more characters"
+                )),
+                Ok(None) => match implicit_steer_target(&goals) {
                     Ok(Some(goal)) => Ok((goal, text.to_string())),
                     Ok(None) => {
                         Err("no running Goal to steer; use /goal steer <goal-id> <text>"
@@ -915,28 +1023,20 @@ async fn steer_goal(agent: &Agent, requested: Option<&str>, text: &str) {
     let (goal, instruction) = match resolved {
         Ok(pair) => pair,
         Err(message) => {
-            emit_goal_error(&agent.runtime.ui_tx, message);
+            emit_goal_error(ui_tx, message);
             return;
         }
     };
 
-    match agent
-        .tool_context
-        .goal_manager
+    match goal_manager
         .append_event(goal_event(goal, "steering", None, instruction))
         .await
     {
         Ok(_) => {
-            emit_goals_changed(
-                &agent.tool_context.goal_manager,
-                &agent.tool_context.task_manager,
-                goal_limits(),
-                &agent.runtime.ui_tx,
-            )
-            .await;
+            emit_goals_changed(goal_manager, task_manager, goal_limits(), ui_tx).await;
         }
         Err(error) => emit_goal_error(
-            &agent.runtime.ui_tx,
+            ui_tx,
             format!("Goal {} steering failed: {error:#}", goal.id),
         ),
     }
@@ -1034,6 +1134,267 @@ async fn update_goal_status(
     }
 }
 
+fn is_active_run_error(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        matches!(
+            cause.downcast_ref::<GoalStoreError>(),
+            Some(GoalStoreError::ActiveRunExists)
+        )
+    })
+}
+
+/// `/goal pause` — a run-local stop request, not a status write racing the run.
+///
+/// The request is a durable event first, so it works even while another
+/// process owns the Agent. If this session owns the run, setting the shared
+/// cancel flag makes the current model/tool wave stop early; the runner maps
+/// that bare cancel to `paused` (not terminal `cancelled`).
+async fn request_goal_pause(
+    goal_manager: &SharedGoalManager,
+    task_manager: &SharedTaskManager,
+    limits: GoalLimits,
+    ui_tx: &Option<UnboundedSender<AgentUpdate>>,
+    cancel_flag: &Arc<AtomicBool>,
+    goal_id: &str,
+    interrupt_local: bool,
+) {
+    let goal = match goal_manager.get(goal_id).await {
+        Ok(goal) => goal,
+        Err(error) => {
+            emit_goal_error(ui_tx, format!("Goal {goal_id} not found: {error:#}"));
+            return;
+        }
+    };
+    if goal.status.is_terminal() {
+        emit_goal_error(
+            ui_tx,
+            format!(
+                "Goal {goal_id} is already {:?}; nothing to pause",
+                goal.status
+            ),
+        );
+        return;
+    }
+    if goal.status == GoalStatus::Paused {
+        if let Some(tx) = ui_tx {
+            let _ = tx.send(AgentUpdate::Info(format!(
+                "Goal {goal_id} is already paused"
+            )));
+        }
+        return;
+    }
+
+    let runs = match goal_manager.list_running_runs().await {
+        Ok(runs) => runs,
+        Err(error) => {
+            emit_goal_error(ui_tx, format!("Goal {goal_id} pause failed: {error:#}"));
+            return;
+        }
+    };
+    let target_active = runs.iter().any(|run| run.goal_id == goal.id);
+
+    if target_active {
+        if let Err(error) = goal_manager
+            .append_event(goal_event(
+                &goal,
+                "pause_requested",
+                None,
+                "paused by user".into(),
+            ))
+            .await
+        {
+            emit_goal_error(
+                ui_tx,
+                format!("Goal {goal_id} pause request failed: {error:#}"),
+            );
+            return;
+        }
+        if interrupt_local {
+            cancel_flag.store(true, Ordering::Relaxed);
+        }
+        if let Some(tx) = ui_tx {
+            let _ = tx.send(AgentUpdate::Info(format!(
+                "🎯 Goal {goal_id} pause requested; stopping the current run at the next safe point"
+            )));
+        }
+    } else {
+        match goal_manager
+            .update(
+                &goal.id,
+                goal.version,
+                GoalUpdate {
+                    status: Some(GoalStatus::Paused),
+                    ..GoalUpdate::default()
+                },
+                Some(goal_event(
+                    &goal,
+                    "status_changed",
+                    Some(GoalStatus::Paused),
+                    "paused by user".into(),
+                )),
+                None,
+            )
+            .await
+        {
+            Ok(_) => {
+                if let Some(tx) = ui_tx {
+                    let _ = tx.send(AgentUpdate::Info(format!("🎯 Goal {goal_id} paused")));
+                }
+            }
+            // A run started between the probe and the write: the request event
+            // must be timestamped after that run started, so append a fresh one.
+            Err(error) if is_active_run_error(&error) => {
+                if let Err(append) = goal_manager
+                    .append_event(goal_event(
+                        &goal,
+                        "pause_requested",
+                        None,
+                        "paused by user".into(),
+                    ))
+                    .await
+                {
+                    emit_goal_error(
+                        ui_tx,
+                        format!("Goal {goal_id} pause request failed: {append:#}"),
+                    );
+                    return;
+                }
+                if interrupt_local {
+                    cancel_flag.store(true, Ordering::Relaxed);
+                }
+                if let Some(tx) = ui_tx {
+                    let _ = tx.send(AgentUpdate::Info(format!(
+                        "🎯 Goal {goal_id} pause requested; stopping the current run at the next safe point"
+                    )));
+                }
+            }
+            Err(error) => emit_goal_error(ui_tx, format!("Goal {goal_id} pause failed: {error:#}")),
+        }
+    }
+    emit_goals_changed(goal_manager, task_manager, limits, ui_tx).await;
+}
+
+/// `/goal cancel` — an explicit terminal decision.
+///
+/// The durable `cancel_requested` event is what distinguishes this from a
+/// bare Esc interrupt: the runner maps the former to `cancelled` and the
+/// latter to `paused`.
+async fn request_goal_cancel(
+    goal_manager: &SharedGoalManager,
+    task_manager: &SharedTaskManager,
+    limits: GoalLimits,
+    ui_tx: &Option<UnboundedSender<AgentUpdate>>,
+    cancel_flag: &Arc<AtomicBool>,
+    goal_id: &str,
+    interrupt_local: bool,
+) {
+    let goal = match goal_manager.get(goal_id).await {
+        Ok(goal) => goal,
+        Err(error) => {
+            emit_goal_error(ui_tx, format!("Goal {goal_id} not found: {error:#}"));
+            return;
+        }
+    };
+    if goal.status.is_terminal() {
+        if let Some(tx) = ui_tx {
+            let _ = tx.send(AgentUpdate::Info(format!(
+                "Goal {goal_id} is already {:?}",
+                goal.status
+            )));
+        }
+        return;
+    }
+
+    let runs = match goal_manager.list_running_runs().await {
+        Ok(runs) => runs,
+        Err(error) => {
+            emit_goal_error(ui_tx, format!("Goal {goal_id} cancel failed: {error:#}"));
+            return;
+        }
+    };
+    let target_active = runs.iter().any(|run| run.goal_id == goal.id);
+
+    if target_active {
+        if let Err(error) = goal_manager
+            .append_event(goal_event(
+                &goal,
+                "cancel_requested",
+                None,
+                "cancelled by user".into(),
+            ))
+            .await
+        {
+            emit_goal_error(
+                ui_tx,
+                format!("Goal {goal_id} cancel request failed: {error:#}"),
+            );
+            return;
+        }
+        if interrupt_local {
+            cancel_flag.store(true, Ordering::Relaxed);
+        }
+        if let Some(tx) = ui_tx {
+            let _ = tx.send(AgentUpdate::Info(format!(
+                "🎯 Goal {goal_id} cancel requested; stopping the current run"
+            )));
+        }
+    } else {
+        match goal_manager
+            .update(
+                &goal.id,
+                goal.version,
+                GoalUpdate {
+                    status: Some(GoalStatus::Cancelled),
+                    ..GoalUpdate::default()
+                },
+                Some(goal_event(
+                    &goal,
+                    "status_changed",
+                    Some(GoalStatus::Cancelled),
+                    "cancelled by user".into(),
+                )),
+                None,
+            )
+            .await
+        {
+            Ok(_) => {
+                if let Some(tx) = ui_tx {
+                    let _ = tx.send(AgentUpdate::Info(format!("🎯 Goal {goal_id} cancelled")));
+                }
+            }
+            Err(error) if is_active_run_error(&error) => {
+                if let Err(append) = goal_manager
+                    .append_event(goal_event(
+                        &goal,
+                        "cancel_requested",
+                        None,
+                        "cancelled by user".into(),
+                    ))
+                    .await
+                {
+                    emit_goal_error(
+                        ui_tx,
+                        format!("Goal {goal_id} cancel request failed: {append:#}"),
+                    );
+                    return;
+                }
+                if interrupt_local {
+                    cancel_flag.store(true, Ordering::Relaxed);
+                }
+                if let Some(tx) = ui_tx {
+                    let _ = tx.send(AgentUpdate::Info(format!(
+                        "🎯 Goal {goal_id} cancel requested; stopping the current run"
+                    )));
+                }
+            }
+            Err(error) => {
+                emit_goal_error(ui_tx, format!("Goal {goal_id} cancel failed: {error:#}"))
+            }
+        }
+    }
+    emit_goals_changed(goal_manager, task_manager, limits, ui_tx).await;
+}
+
 /// A Goal activation is a fresh, user-committed unit of work, so it starts with
 /// a clean cancel flag — the same reason `SubmitTask` clears it.
 ///
@@ -1055,6 +1416,7 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
             return;
         }
     };
+    let original_status = goal.status;
     if matches!(
         goal.status,
         GoalStatus::Paused | GoalStatus::WaitingUser | GoalStatus::WaitingPermission
@@ -1069,6 +1431,43 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
             &agent.runtime.ui_tx,
             format!("Goal {goal_id} activation failed: {error:#}"),
         );
+        // The resume transition above may have committed a `Running` status
+        // that no activation ever took over (lease held, start refused). Put
+        // it back to `paused` when nothing is running, so the panel does not
+        // advertise work that is not happening and the next `/goal resume` is
+        // the same explicit action.
+        if matches!(
+            original_status,
+            GoalStatus::Paused | GoalStatus::WaitingUser | GoalStatus::WaitingPermission
+        ) {
+            let manager = &agent.tool_context.goal_manager;
+            if let Ok(current) = manager.get(goal_id).await
+                && current.status == GoalStatus::Running
+                && manager
+                    .list_running_runs()
+                    .await
+                    .map(|runs| !runs.iter().any(|run| run.goal_id == current.id))
+                    .unwrap_or(false)
+            {
+                let _ = manager
+                    .update(
+                        goal_id,
+                        current.version,
+                        GoalUpdate {
+                            status: Some(GoalStatus::Paused),
+                            ..GoalUpdate::default()
+                        },
+                        Some(goal_event(
+                            &current,
+                            "status_changed",
+                            Some(GoalStatus::Paused),
+                            "activation could not start; restored paused".into(),
+                        )),
+                        None,
+                    )
+                    .await;
+            }
+        }
     }
     emit_goals_changed(
         &agent.tool_context.goal_manager,
@@ -1138,9 +1537,11 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
         .criteria
         .iter()
         .filter(|criterion| {
-            criterion.required
-                && criterion.verification_kind == GoalVerificationKind::Human
-                && !criterion.has_valid_evidence(goal.criteria_version)
+            // Automatic criteria are reserved (creation is refused by
+            // `GoalManager::create`), but legacy rows can still exist. An
+            // explicit human acceptance is the only supported way to close
+            // them, so it covers every pending required criterion.
+            criterion.required && !criterion.has_valid_evidence(goal.criteria_version)
         })
         .map(|criterion| GoalEvidenceUpdate {
             criterion_id: criterion.id.clone(),
@@ -1150,96 +1551,87 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
     if evidence.is_empty() {
         emit_goal_error(
             &agent.runtime.ui_tx,
-            format!("Goal {goal_id} has no pending required human criterion"),
+            format!(
+                "Goal {goal_id} has no pending required criterion (already accepted, or none defined)"
+            ),
         );
         return;
     }
-    let resumed = match manager
-        .update(
-            goal_id,
-            goal.version,
+    let first = GoalUpdate {
+        evidence,
+        // `waiting_user` / `paused` re-enter `running`; a stranded `running`
+        // Goal stays there (Running -> Running is not a transition).
+        status: matches!(goal.status, GoalStatus::WaitingUser | GoalStatus::Paused)
+            .then_some(GoalStatus::Running),
+        ..GoalUpdate::default()
+    };
+    // Verify a candidate before the transaction so the update chain can be
+    // computed up front: evidence + Running + Verifying + Succeeded must be
+    // one durable commit, otherwise a failure between the last two leaves the
+    // Goal stranded in `verifying`.
+    let mut candidate = goal.clone();
+    if let Err(error) = candidate.update(first.clone()) {
+        emit_goal_error(
+            &agent.runtime.ui_tx,
+            format!("Goal {goal_id} acceptance failed: {error:#}"),
+        );
+        return;
+    }
+    let verification = GoalVerifier::verify(&candidate);
+    let mut updates = vec![(
+        first,
+        goal_event(
+            &goal,
+            "user_accepted",
+            Some(GoalStatus::Running),
+            text.to_string(),
+        ),
+    )];
+    if verification == GoalVerification::Verified {
+        updates.push((
             GoalUpdate {
-                evidence,
-                // `waiting_user` / `paused` re-enter `running`; a stranded
-                // `running` Goal stays there (Running -> Running is not a
-                // transition).
-                status: matches!(goal.status, GoalStatus::WaitingUser | GoalStatus::Paused)
-                    .then_some(GoalStatus::Running),
+                status: Some(GoalStatus::Verifying),
                 ..GoalUpdate::default()
             },
-            Some(goal_event(
-                &goal,
-                "user_accepted",
-                Some(GoalStatus::Running),
-                text.to_string(),
-            )),
-            None,
-        )
+            goal_event(
+                &candidate,
+                "status_changed",
+                Some(GoalStatus::Verifying),
+                "human acceptance verified".into(),
+            ),
+        ));
+        updates.push((
+            GoalUpdate {
+                status: Some(GoalStatus::Succeeded),
+                ..GoalUpdate::default()
+            },
+            goal_event(
+                &candidate,
+                "status_changed",
+                Some(GoalStatus::Succeeded),
+                "accepted by user".into(),
+            ),
+        ));
+    }
+    if let Err(error) = manager
+        .update_chain(goal_id, goal.version, updates, None)
         .await
     {
-        Ok(goal) => goal,
-        Err(error) => {
-            emit_goal_error(
-                &agent.runtime.ui_tx,
-                format!("Goal {goal_id} acceptance failed: {error:#}"),
-            );
-            return;
-        }
-    };
+        emit_goal_error(
+            &agent.runtime.ui_tx,
+            format!("Goal {goal_id} acceptance failed: {error:#}"),
+        );
+        return;
+    }
 
-    match GoalVerifier::verify(&resumed) {
+    match verification {
         GoalVerification::Verified => {
-            let verifying = match manager
-                .update(
-                    goal_id,
-                    resumed.version,
-                    GoalUpdate {
-                        status: Some(GoalStatus::Verifying),
-                        ..GoalUpdate::default()
-                    },
-                    Some(goal_event(
-                        &resumed,
-                        "status_changed",
-                        Some(GoalStatus::Verifying),
-                        "human acceptance verified".into(),
-                    )),
-                    None,
-                )
-                .await
-            {
-                Ok(goal) => goal,
-                Err(error) => {
-                    emit_goal_error(
-                        &agent.runtime.ui_tx,
-                        format!("Goal {goal_id} verification failed: {error:#}"),
-                    );
-                    return;
-                }
-            };
-            if let Err(error) = manager
-                .update(
-                    goal_id,
-                    verifying.version,
-                    GoalUpdate {
-                        status: Some(GoalStatus::Succeeded),
-                        ..GoalUpdate::default()
-                    },
-                    Some(goal_event(
-                        &verifying,
-                        "status_changed",
-                        Some(GoalStatus::Succeeded),
-                        "accepted by user".into(),
-                    )),
-                    None,
-                )
-                .await
-            {
-                emit_goal_error(
-                    &agent.runtime.ui_tx,
-                    format!("Goal {goal_id} completion failed: {error:#}"),
-                );
-                return;
-            }
+            // The acceptance is durable now; say so in the log. Without this
+            // line the last visible message is still the "run /goal accept"
+            // instruction, which reads as if acceptance were still pending.
+            agent.emit_update(AgentUpdate::Info(format!(
+                "🎯 Goal {goal_id} accepted — succeeded"
+            )));
         }
         GoalVerification::Rejected { .. } => {
             clear_cancel_for_goal_activation(agent);
@@ -1310,14 +1702,39 @@ async fn handle_user_command_with_account(
             .await;
         }
         UserCommand::SteerGoal { goal_id, text } => {
-            steer_goal(agent, goal_id.as_deref(), &text).await;
+            steer_goal(
+                &agent.tool_context.goal_manager,
+                &agent.tool_context.task_manager,
+                &agent.runtime.ui_tx,
+                goal_id.as_deref(),
+                &text,
+            )
+            .await;
         }
         UserCommand::PauseGoal { goal_id } => {
-            update_goal_status(agent, &goal_id, GoalStatus::Paused, "paused by user").await;
+            request_goal_pause(
+                &agent.tool_context.goal_manager,
+                &agent.tool_context.task_manager,
+                goal_limits(),
+                &agent.runtime.ui_tx,
+                &agent.runtime.cancel_flag,
+                &goal_id,
+                false,
+            )
+            .await;
         }
         UserCommand::ResumeGoal { goal_id } => resume_goal(agent, &goal_id).await,
         UserCommand::CancelGoal { goal_id } => {
-            update_goal_status(agent, &goal_id, GoalStatus::Cancelled, "cancelled by user").await;
+            request_goal_cancel(
+                &agent.tool_context.goal_manager,
+                &agent.tool_context.task_manager,
+                goal_limits(),
+                &agent.runtime.ui_tx,
+                &agent.runtime.cancel_flag,
+                &goal_id,
+                false,
+            )
+            .await;
         }
         UserCommand::AcceptGoal { goal_id, text } => accept_goal(agent, &goal_id, &text).await,
         UserCommand::SetGoalArchived { goal_id, archived } => {
@@ -1705,6 +2122,61 @@ mod tests {
         );
         let none: Vec<tact::goal::Goal> = Vec::new();
         assert!(super::implicit_steer_target(&none).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn steer_refuses_a_terminal_goal() {
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = manager
+            .create(tact::goal::GoalCreate {
+                title: "finished".into(),
+                objective: "nothing left to steer".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::required("done")],
+            })
+            .await
+            .unwrap();
+        manager
+            .update(
+                &goal.id,
+                goal.version,
+                tact::goal::GoalUpdate {
+                    status: Some(tact::goal::GoalStatus::Cancelled),
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SteerGoal {
+                goal_id: Some(goal.id.clone()),
+                text: "this must not land".into(),
+            },
+            &work_dir,
+        )
+        .await;
+
+        assert!(
+            !manager
+                .list_events(&goal.id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "steering"),
+            "a terminal Goal cannot be steered"
+        );
+        assert!(
+            std::iter::from_fn(|| agent_rx.try_recv().ok())
+                .any(|update| matches!(update, AgentUpdate::Error(_))),
+            "the refusal is reported"
+        );
     }
 
     #[tokio::test]
@@ -2250,7 +2722,7 @@ mod tests {
     #[tokio::test]
     async fn accept_goal_records_human_evidence_and_succeeds_only_after_verification() {
         install_test_config();
-        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
         let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
         let manager = agent.tool_context.goal_manager.clone();
         let mut goal = manager
@@ -2306,6 +2778,13 @@ mod tests {
                 .unwrap()
                 .iter()
                 .any(|event| event.kind == "user_accepted")
+        );
+        assert!(
+            std::iter::from_fn(|| agent_rx.try_recv().ok()).any(|update| matches!(
+                update,
+                AgentUpdate::Info(message) if message.contains("accepted — succeeded")
+            )),
+            "a successful acceptance must be announced in the log"
         );
     }
 
@@ -2489,6 +2968,82 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn wait_reason_prefers_the_goal_question() {
+        install_test_config();
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let task_manager = agent.tool_context.task_manager.clone();
+        let mut goal = manager
+            .create(tact::goal::GoalCreate {
+                title: "ask a question".into(),
+                objective: "surface the question in the panel".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::required("done")],
+            })
+            .await
+            .unwrap();
+        for status in [
+            tact::goal::GoalStatus::Queued,
+            tact::goal::GoalStatus::Running,
+        ] {
+            goal = manager
+                .update(
+                    &goal.id,
+                    goal.version,
+                    tact::goal::GoalUpdate {
+                        status: Some(status),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        manager
+            .append_event(super::goal_event(
+                &goal,
+                "needs_user",
+                None,
+                "Which path should I take?".into(),
+            ))
+            .await
+            .unwrap();
+        manager
+            .update(
+                &goal.id,
+                goal.version,
+                tact::goal::GoalUpdate {
+                    status: Some(tact::goal::GoalStatus::WaitingUser),
+                    ..Default::default()
+                },
+                Some(super::goal_event(
+                    &goal,
+                    "status_changed",
+                    Some(tact::goal::GoalStatus::WaitingUser),
+                    "run ended as NeedsUser".into(),
+                )),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let goals = super::goal_snapshots(&manager, &task_manager, super::goal_limits())
+            .await
+            .unwrap();
+        let snapshot = goals
+            .iter()
+            .find(|snapshot| snapshot.id == goal.id)
+            .unwrap();
+        assert_eq!(
+            snapshot.wait_reason.as_deref(),
+            Some("Which path should I take?"),
+            "the panel must show the question, not the generic NeedsUser line"
+        );
+    }
+
+    #[tokio::test]
     async fn unknown_goal_command_emits_an_error() {
         install_test_config();
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -2514,7 +3069,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn goal_list_responds_while_resume_runs_and_pause_serializes_after_it() {
+    async fn goal_list_and_pause_respond_while_resume_runs() {
         use std::time::Duration;
 
         install_test_config();
@@ -2607,6 +3162,26 @@ mod tests {
                 goal_id: goal_id.clone(),
             })
             .unwrap();
+        // The pause request must be processed *while* the run is active. The
+        // mock is still blocked here, so observing the durable request proves
+        // the command loop did not await the run handle.
+        let pause_deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            if manager
+                .list_events(&goal_id)
+                .await
+                .unwrap()
+                .iter()
+                .any(|event| event.kind == "pause_requested")
+            {
+                break;
+            }
+            assert!(
+                std::time::Instant::now() < pause_deadline,
+                "pause request was not processed during the active run"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         release.store(true, std::sync::atomic::Ordering::Relaxed);
         drop(user_cmd_tx);
         tokio::time::timeout(Duration::from_secs(5), loop_handle)
@@ -2728,30 +3303,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn accept_goal_clears_a_stale_cancel_flag_before_continuing() {
+    async fn resume_rolls_back_to_paused_when_the_lease_is_held() {
         install_test_config();
         let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
-        // Acceptance continues with a fresh activation, so the mock needs a
-        // scripted turn: an empty script panics on the first model call.
-        let mock = MockClient::new(vec![(vec![text_block("done")], Some(StopReason::EndTurn))]);
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal_id = paused_goal_with_one_required_criterion(&mut agent).await;
+        let held = manager
+            .claim_lease("other-live-runner", std::time::Duration::from_secs(60))
+            .await
+            .unwrap();
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::ResumeGoal {
+                goal_id: goal_id.clone(),
+            },
+            &work_dir,
+        )
+        .await;
+
+        assert_eq!(
+            manager.get(&goal_id).await.unwrap().status,
+            tact::goal::GoalStatus::Paused,
+            "a resume that cannot claim a lease must not strand the Goal in Running"
+        );
+        manager.release_lease(&held).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn accept_goal_ignores_a_stale_cancel_flag_and_succeeds() {
+        install_test_config();
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mock = MockClient::new(vec![]);
         let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
         let manager = agent.tool_context.goal_manager.clone();
-        // A pending required human criterion (fillable by /goal accept) plus an
-        // unmet required automatic criterion: acceptance alone cannot verify,
-        // so the driver continues with a fresh activation.
+        // A pending required human criterion. The acceptance is a human
+        // decision; a stale cancel flag from an unrelated turn must not turn it
+        // into a cancelled Goal.
         let created = manager
             .create(tact::goal::GoalCreate {
                 title: "Acceptance continues".into(),
                 objective: "Human text must not leave the goal cancelled".into(),
                 constraints: Vec::new(),
-                criteria: vec![
-                    tact::goal::GoalCriterion::new(
-                        "reviewed by a person",
-                        true,
-                        tact::goal::GoalVerificationKind::Human,
-                    ),
-                    tact::goal::GoalCriterion::required("cargo test passes"),
-                ],
+                criteria: vec![tact::goal::GoalCriterion::new(
+                    "reviewed by a person",
+                    true,
+                    tact::goal::GoalVerificationKind::Human,
+                )],
             })
             .await
             .unwrap();
@@ -2808,14 +3407,10 @@ mod tests {
         )
         .await;
 
-        assert!(
-            !agent.runtime.cancel_flag.load(Ordering::Relaxed),
-            "acceptance continuation must clear a stale cancel flag"
-        );
-        assert_ne!(
+        assert_eq!(
             manager.get(&created.id).await.unwrap().status,
-            tact::goal::GoalStatus::Cancelled,
-            "a stale cancel flag must not destroy the Goal on acceptance"
+            tact::goal::GoalStatus::Succeeded,
+            "a stale cancel flag must not stop a human acceptance"
         );
     }
 

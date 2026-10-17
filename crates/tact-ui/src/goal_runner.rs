@@ -22,12 +22,12 @@ use std::collections::HashSet;
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result, bail};
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use tact::AgentLoopStop;
 use tact::agent::Agent;
 use tact::goal::{
     Goal, GoalEvent, GoalRun, GoalRunOutcome, GoalStatus, GoalUpdate, GoalVerification,
-    GoalVerifier, SharedGoalManager, new_id,
+    GoalVerifier, SharedGoalManager, new_event_id,
 };
 use tact::store::goal_store::{GoalStoreError, LeaseToken};
 use tact::task::TaskRecord;
@@ -330,6 +330,22 @@ const LEASE_TTL_SLACK: Duration = Duration::from_secs(60);
 /// recognise.
 pub const DEFAULT_OWNER: &str = "tact-goal-runner";
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RequestedStop {
+    Pause,
+    Cancel,
+}
+
+/// A lease owner is an *instance* identity, never just a role name.
+///
+/// Two TUI sessions in one workspace used to share the literal
+/// `tact-goal-runner`, and the store treated a same-owner live claim as a
+/// silent renewal. Appending pid + a random suffix means a second runner can
+/// never present the first runner's claim as its own.
+fn unique_owner(label: &str) -> String {
+    format!("{label}:{}:{}", std::process::id(), new_event_id())
+}
+
 /// Driver-owned bounded Goal runner: lease, run record, budget, outcome mapping,
 /// verification and recovery around one bounded agent activation.
 pub struct GoalRunner {
@@ -343,14 +359,16 @@ impl GoalRunner {
         Self {
             goal_manager,
             limits,
-            owner: DEFAULT_OWNER.to_string(),
+            owner: unique_owner(DEFAULT_OWNER),
         }
     }
 
-    /// Overrides the lease owner label (default is derived from the manager's
-    /// session).
+    /// Overrides the human-readable lease owner label.
+    ///
+    /// The label is still made instance-unique (pid + random suffix), so two
+    /// runners created with the same label cannot impersonate each other.
     pub fn with_owner(mut self, owner: impl Into<String>) -> Self {
-        self.owner = owner.into();
+        self.owner = unique_owner(&owner.into());
         self
     }
 
@@ -438,9 +456,15 @@ impl GoalRunner {
         let released = self.goal_manager.release_lease(&token).await;
         match (result, released) {
             (Ok(outcome), Ok(())) => Ok(outcome),
-            (Ok(_), Err(error)) => Err(error.context(format!(
-                "the goal execution lease for {goal_id} could not be released"
-            ))),
+            (Ok(outcome), Err(error)) => {
+                // The run (and its transitions) is already durable. Losing the
+                // release only delays the next claim; it must not turn a
+                // completed activation into a user-visible failure.
+                agent.emit_update(AgentUpdate::Info(format!(
+                    "⚠ Goal {goal_id} lease release failed: {error:#}"
+                )));
+                Ok(outcome)
+            }
             (Err(error), _) => Err(error),
         }
     }
@@ -504,6 +528,53 @@ impl GoalRunner {
             .saturating_sub(u32::try_from(run.turns_used).unwrap_or(u32::MAX))
     }
 
+    /// A user control request persisted after this run started.
+    ///
+    /// Cancel outranks pause when both are present (a user may have pressed
+    /// both while the model was streaming).
+    async fn requested_stop(
+        &self,
+        goal_id: &str,
+        since: DateTime<Utc>,
+    ) -> Result<Option<RequestedStop>> {
+        if self
+            .goal_manager
+            .has_event_of_kind_since(goal_id, "cancel_requested", since)
+            .await?
+        {
+            return Ok(Some(RequestedStop::Cancel));
+        }
+        if self
+            .goal_manager
+            .has_event_of_kind_since(goal_id, "pause_requested", since)
+            .await?
+        {
+            return Ok(Some(RequestedStop::Pause));
+        }
+        Ok(None)
+    }
+
+    /// Persist the run's current usage and republish the Goal snapshot.
+    ///
+    /// Both halves are best-effort: a transient store error must not fail the
+    /// activation, and the heartbeat/finish still owns the durable outcome.
+    async fn publish_run_progress(&self, agent: &Agent, token: &LeaseToken, run: &GoalRun) {
+        if let Err(error) = self.goal_manager.update_run_progress(token, run).await {
+            agent.emit_update(AgentUpdate::Info(format!(
+                "⚠ Goal run progress could not be persisted: {error:#}"
+            )));
+        }
+        if agent.runtime.ui_tx.is_some() {
+            let _ = crate::driver::emit_goals_changed(
+                &self.goal_manager,
+                &agent.tool_context.task_manager,
+                self.limits,
+                &agent.runtime.ui_tx,
+            )
+            .await;
+        }
+    }
+
     /// Keeps the execution lease alive for as long as the run is executing.
     ///
     /// A run can outlive `lease_ttl`: `max_elapsed` is only checked between
@@ -549,11 +620,39 @@ impl GoalRunner {
 
         // Step 3: persist the run before any model call, so a crash from here on
         // leaves a durable, recoverable record instead of an invisible attempt.
-        let (_, mut run) = self
+        let mut run = match self
             .goal_manager
-            .start_run(&self.owner, self.lease_ttl(), GoalRun::new(goal.id.clone()))
+            .start_run_with_lease(token, self.lease_ttl(), GoalRun::new(goal.id.clone()))
             .await
-            .with_context(|| format!("failed to start a goal run for {}", goal.id))?;
+        {
+            Ok(run) => run,
+            Err(error) => {
+                // `move_to_running` may already have committed `Running`. If no
+                // activation exists for this Goal, park it back in `paused`
+                // instead of leaving a stranded `Running` with no run row.
+                if self
+                    .goal_manager
+                    .list_running_runs()
+                    .await
+                    .map(|runs| !runs.iter().any(|run| run.goal_id == goal.id))
+                    .unwrap_or(false)
+                {
+                    let _ = self
+                        .persist_status(
+                            &goal,
+                            Some(token),
+                            GoalStatus::Paused,
+                            "run could not start; restored paused",
+                        )
+                        .await;
+                }
+                return Err(error)
+                    .with_context(|| format!("failed to start a goal run for {}", goal.id));
+            }
+        };
+        // Publish the zeroed run immediately: the panel should see a budget
+        // row as soon as the activation starts, not only after it finishes.
+        self.publish_run_progress(agent, token, &run).await;
 
         // Step 4: bind the Goal for this run. Binding is what makes the Goal
         // tools reachable - and therefore what makes the `NeedsUser` path
@@ -570,7 +669,7 @@ impl GoalRunner {
         let started = Instant::now();
         let heartbeat = self.spawn_lease_heartbeat(token);
         let cycles = self
-            .run_activation_cycles(agent, &mut goal, &mut run, started)
+            .run_activation_cycles(agent, &mut goal, &mut run, started, token)
             .await;
         // Abort *and* await: no heartbeat may touch the lease after the single
         // release site below.
@@ -676,6 +775,7 @@ impl GoalRunner {
         goal: &mut Goal,
         run: &mut GoalRun,
         started: Instant,
+        token: &LeaseToken,
     ) -> Result<(GoalRunOutcome, Vec<GoalStatus>)> {
         let previous_max_turns = agent.max_turns;
         loop {
@@ -684,6 +784,31 @@ impl GoalRunner {
             // authoritative rather than a snapshot from the start of the run.
             let reloaded = self.goal_manager.get(&goal.id).await?;
             *goal = reloaded;
+            // A request that landed between cycles is honoured before another
+            // model call. This is also what makes `/goal pause` and
+            // `/goal cancel` work while the driver still owns an in-flight
+            // activation: they persist an event and set the cancel flag.
+            match self.requested_stop(&goal.id, run.started_at).await? {
+                Some(RequestedStop::Cancel) => {
+                    run.elapsed_ms = millis(started.elapsed());
+                    run.stop_reason = Some("cancel_requested".into());
+                    run.checkpoint = Some(format!(
+                        "activation for goal {} stopped before the next cycle: cancel requested",
+                        goal.id
+                    ));
+                    break Ok((GoalRunOutcome::Cancelled, vec![GoalStatus::Cancelled]));
+                }
+                Some(RequestedStop::Pause) => {
+                    run.elapsed_ms = millis(started.elapsed());
+                    run.stop_reason = Some("pause_requested".into());
+                    run.checkpoint = Some(format!(
+                        "activation for goal {} stopped before the next cycle: pause requested",
+                        goal.id
+                    ));
+                    break Ok((GoalRunOutcome::Paused, vec![GoalStatus::Paused]));
+                }
+                None => {}
+            }
             let linked_tasks = agent
                 .tool_context
                 .task_manager
@@ -744,6 +869,24 @@ impl GoalRunner {
             run.elapsed_ms = millis(started.elapsed());
             run.stop_reason = Some(stop_reason(activation.stop).to_string());
             run.checkpoint = Some(checkpoint(run, activation.stop));
+            // Persist the in-flight usage and refresh the panel while the run
+            // is still `running`. The row is otherwise frozen at its start
+            // values until the finish transaction.
+            self.publish_run_progress(agent, token, run).await;
+
+            // A request that arrived during the activation (or a plain
+            // Esc/`c` stop) outranks the activation's own verdict: the user
+            // asked to stop, so a completed proposal must not turn into a
+            // success behind that request.
+            if let Some(stop) = self.requested_stop(&goal.id, run.started_at).await? {
+                let (outcome, transitions) = match stop {
+                    RequestedStop::Cancel => {
+                        (GoalRunOutcome::Cancelled, vec![GoalStatus::Cancelled])
+                    }
+                    RequestedStop::Pause => (GoalRunOutcome::Paused, vec![GoalStatus::Paused]),
+                };
+                break Ok((outcome, transitions));
+            }
 
             // Step 7: map the stop variant first — the activation's own verdict
             // wins over the budget. A run that was cancelled, blocked, or needs
@@ -819,7 +962,11 @@ impl GoalRunner {
             AgentLoopStop::MaxTurns | AgentLoopStop::MaxTokens => {
                 (GoalRunOutcome::BudgetExhausted, vec![GoalStatus::Paused])
             }
-            AgentLoopStop::Cancelled => (GoalRunOutcome::Cancelled, vec![GoalStatus::Cancelled]),
+            // A bare cancel flag is the user interrupting *this run* (Esc or
+            // the TUI's Cancel button). It pauses the Goal so it can be
+            // resumed; a terminal cancellation needs an explicit
+            // `cancel_requested` event, which `requested_stop` checks first.
+            AgentLoopStop::Cancelled => (GoalRunOutcome::Paused, vec![GoalStatus::Paused]),
             // Blocked before the first model call: a hard failure, and the Goal
             // must not silently succeed or look paused-by-budget. It is also
             // terminal — nothing was attempted and a retry would be blocked the
@@ -921,7 +1068,7 @@ impl GoalRunner {
 /// The durable `status_changed` event for one Goal transition.
 fn status_event(goal_id: &str, from: GoalStatus, next: GoalStatus, reason: &str) -> GoalEvent {
     GoalEvent {
-        id: new_id(),
+        id: new_event_id(),
         goal_id: goal_id.to_string(),
         run_id: None,
         kind: "status_changed".to_string(),
@@ -950,7 +1097,7 @@ fn finished_run_event(
         payload.push_str(&neutralise(note));
     }
     GoalEvent {
-        id: new_id(),
+        id: new_event_id(),
         goal_id: goal_id.to_string(),
         run_id: Some(run.id.clone()),
         kind: "run_finished".to_string(),
@@ -1574,12 +1721,13 @@ mod tests {
         );
     }
 
-    /// The activation's own verdict wins over a spent budget: a run cancelled
-    /// *and* over budget records `Cancelled`, not `BudgetExhausted`/`Paused`.
-    /// The budget check used to preempt stop mapping, so a user's cancel was
-    /// relabelled as a budget pause (2026-10-16).
+    /// The activation's own verdict wins over a spent budget: an interrupted
+    /// run that is also over budget records `Paused`, not `BudgetExhausted`.
+    /// The budget check used to preempt stop mapping, so a user's interrupt was
+    /// relabelled as a budget pause (2026-10-16); the interrupt label is now
+    /// `Paused` while a persisted cancel request still wins as `Cancelled`.
     #[tokio::test]
-    async fn run_once_keeps_a_cancelled_verdict_when_the_budget_is_also_spent() {
+    async fn run_once_keeps_a_pause_verdict_when_the_budget_is_also_spent() {
         install_test_config();
         // A one-turn run budget: the single model call spends it exactly, and
         // the cancel flag is set while that response is still streaming — the
@@ -1615,13 +1763,13 @@ mod tests {
 
         assert_eq!(
             outcome,
-            GoalRunOutcome::Cancelled,
-            "the cancel verdict stands even though the budget is spent"
+            GoalRunOutcome::Paused,
+            "the interrupt verdict stands even though the budget is spent"
         );
         assert_eq!(
             manager.get(&goal.id).await.unwrap().status,
-            GoalStatus::Cancelled,
-            "the Goal ends cancelled, not paused-by-budget"
+            GoalStatus::Paused,
+            "the Goal ends paused by the interrupt, not paused-by-budget"
         );
         assert!(manager.list_running_runs().await.unwrap().is_empty());
     }
@@ -1851,6 +1999,32 @@ mod tests {
         ) -> anyhow::Result<(tact::store::goal_store::LeaseToken, GoalRun)> {
             self.inner.start_run(owner, ttl, run).await
         }
+        async fn start_run_with_lease(
+            &self,
+            token: &tact::store::goal_store::LeaseToken,
+            ttl: Duration,
+            run: GoalRun,
+        ) -> anyhow::Result<GoalRun> {
+            self.inner.start_run_with_lease(token, ttl, run).await
+        }
+        async fn update_run_progress(
+            &self,
+            token: &tact::store::goal_store::LeaseToken,
+            run: &GoalRun,
+        ) -> anyhow::Result<()> {
+            self.inner.update_run_progress(token, run).await
+        }
+        async fn update_chain(
+            &self,
+            goal_id: &str,
+            expected_version: u64,
+            updates: Vec<(GoalUpdate, GoalEvent)>,
+            lease: Option<&tact::store::goal_store::LeaseToken>,
+        ) -> anyhow::Result<Goal> {
+            self.inner
+                .update_chain(goal_id, expected_version, updates, lease)
+                .await
+        }
         async fn finish_run(
             &self,
             token: &tact::store::goal_store::LeaseToken,
@@ -2027,18 +2201,16 @@ mod tests {
                 "a refused activation writes no event for {}",
                 goal.id
             );
-            assert!(
-                manager
-                    .claim_lease("probe", Duration::from_secs(5))
-                    .await
-                    .is_ok(),
-                "a refused activation takes no lease"
-            );
+            let probe = manager
+                .claim_lease("probe", Duration::from_secs(5))
+                .await
+                .expect("a refused activation takes no lease");
+            manager.release_lease(&probe).await.unwrap();
         }
     }
 
     #[tokio::test]
-    async fn run_once_cancelled_activation_ends_the_goal() {
+    async fn run_once_esc_pauses_the_goal() {
         install_test_config();
         let mock = MockClient::new(vec![]);
         let (mut agent, _work_dir) = build_test_agent(mock, None);
@@ -2055,11 +2227,11 @@ mod tests {
         let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
         let outcome = runner.run_once(&mut agent, &goal.id).await.unwrap();
 
-        assert_eq!(outcome, GoalRunOutcome::Cancelled);
+        assert_eq!(outcome, GoalRunOutcome::Paused);
         assert_eq!(
             manager.get(&goal.id).await.unwrap().status,
-            GoalStatus::Cancelled,
-            "a cancelled activation is terminal, never silently successful"
+            GoalStatus::Paused,
+            "Esc interrupts the run; it does not destroy the Goal"
         );
         assert!(manager.list_running_runs().await.unwrap().is_empty());
         assert!(
@@ -2069,6 +2241,131 @@ mod tests {
                 .is_ok(),
             "the activation lease is released"
         );
+    }
+
+    #[tokio::test]
+    async fn requested_stop_is_scoped_to_the_run_and_cancel_wins() {
+        install_test_config();
+        let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), None);
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "stop requests",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
+        let since = Utc::now();
+        assert_eq!(runner.requested_stop(&goal.id, since).await.unwrap(), None);
+
+        let request = |kind: &str, offset_ms: i64| GoalEvent {
+            id: tact::goal::new_event_id(),
+            goal_id: goal.id.clone(),
+            run_id: None,
+            kind: kind.to_string(),
+            status: None,
+            outcome: None,
+            payload: None,
+            occurred_at: Utc::now() + chrono::Duration::milliseconds(offset_ms),
+        };
+        manager
+            .append_event(request("pause_requested", 10))
+            .await
+            .unwrap();
+        assert_eq!(
+            runner.requested_stop(&goal.id, since).await.unwrap(),
+            Some(RequestedStop::Pause)
+        );
+        manager
+            .append_event(request("cancel_requested", 20))
+            .await
+            .unwrap();
+        assert_eq!(
+            runner.requested_stop(&goal.id, since).await.unwrap(),
+            Some(RequestedStop::Cancel),
+            "cancel outranks a concurrent pause"
+        );
+
+        let later = Utc::now() + chrono::Duration::seconds(5);
+        assert_eq!(
+            runner.requested_stop(&goal.id, later).await.unwrap(),
+            None,
+            "requests from before the run are ignored"
+        );
+    }
+
+    #[tokio::test]
+    async fn run_once_honours_a_persisted_cancel_request() {
+        install_test_config();
+        let (mut agent, _work_dir) = build_test_agent(MockClient::new(vec![]), None);
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "cancel requested",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+        // Timestamp it after the run's `started_at` so the runner sees it as a
+        // request for this run (a real request is appended while it runs).
+        manager
+            .append_event(GoalEvent {
+                id: tact::goal::new_event_id(),
+                goal_id: goal.id.clone(),
+                run_id: None,
+                kind: "cancel_requested".into(),
+                status: None,
+                outcome: None,
+                payload: None,
+                occurred_at: Utc::now() + chrono::Duration::seconds(1),
+            })
+            .await
+            .unwrap();
+
+        let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
+        let outcome = runner.run_once(&mut agent, &goal.id).await.unwrap();
+        assert_eq!(outcome, GoalRunOutcome::Cancelled);
+        assert_eq!(
+            manager.get(&goal.id).await.unwrap().status,
+            GoalStatus::Cancelled
+        );
+        assert!(manager.list_running_runs().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn run_once_honours_a_persisted_pause_request() {
+        install_test_config();
+        let (mut agent, _work_dir) = build_test_agent(MockClient::new(vec![]), None);
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "pause requested",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+        manager
+            .append_event(GoalEvent {
+                id: tact::goal::new_event_id(),
+                goal_id: goal.id.clone(),
+                run_id: None,
+                kind: "pause_requested".into(),
+                status: None,
+                outcome: None,
+                payload: None,
+                occurred_at: Utc::now() + chrono::Duration::seconds(1),
+            })
+            .await
+            .unwrap();
+
+        let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
+        let outcome = runner.run_once(&mut agent, &goal.id).await.unwrap();
+        assert_eq!(outcome, GoalRunOutcome::Paused);
+        assert_eq!(
+            manager.get(&goal.id).await.unwrap().status,
+            GoalStatus::Paused
+        );
+        assert!(manager.list_running_runs().await.unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -2320,8 +2617,8 @@ mod tests {
 
         let ttl = Duration::from_millis(20);
         let token = manager.claim_lease("crashed-runner", ttl).await.unwrap();
-        let (_, run) = manager
-            .start_run("crashed-runner", ttl, GoalRun::new(goal.id.clone()))
+        let run = manager
+            .start_run_with_lease(&token, ttl, GoalRun::new(goal.id.clone()))
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(60)).await;
@@ -2456,7 +2753,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn run_once_unmet_automatic_criteria_keep_the_goal_running() {
+    async fn run_once_unmet_required_criteria_wait_for_the_user() {
         install_test_config();
         let mock = MockClient::new(vec![
             (
@@ -2476,40 +2773,10 @@ mod tests {
         let manager = agent.tool_context.goal_manager.clone();
         let goal = create_goal(
             &manager,
-            "unmet automatic criteria",
+            "unmet required criteria",
             vec![required_criterion("c1", "the release is published")],
         )
         .await;
-        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
-
-        let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
-        let outcome = runner.run_once(&mut agent, &goal.id).await.unwrap();
-
-        assert_eq!(outcome, GoalRunOutcome::CompletionProposed);
-        assert_eq!(
-            manager.get(&goal.id).await.unwrap().status,
-            GoalStatus::Running,
-            "unmet automatic checks keep the Goal running"
-        );
-    }
-
-    #[tokio::test]
-    async fn run_once_proposal_without_required_criteria_waits_for_the_user() {
-        install_test_config();
-        let mock = MockClient::new(vec![
-            (
-                vec![tool_use(
-                    "propose-1",
-                    "goal_propose_completion",
-                    serde_json::json!({"summary": "nothing to check", "claims": []}),
-                )],
-                Some(StopReason::ToolUse),
-            ),
-            (vec![text_block("proposed")], Some(StopReason::EndTurn)),
-        ]);
-        let (mut agent, _work_dir) = build_test_agent(mock, None);
-        let manager = agent.tool_context.goal_manager.clone();
-        let goal = create_goal(&manager, "no required criteria", Vec::new()).await;
         let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
 
         let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
@@ -2519,7 +2786,24 @@ mod tests {
         assert_eq!(
             manager.get(&goal.id).await.unwrap().status,
             GoalStatus::WaitingUser,
-            "a Goal with nothing to verify must ask a human for criteria"
+            "a human criterion without evidence waits for acceptance"
         );
+    }
+
+    #[tokio::test]
+    async fn manager_refuses_a_goal_without_required_criteria() {
+        install_test_config();
+        let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), None);
+        let manager = agent.tool_context.goal_manager.clone();
+        let error = manager
+            .create(GoalCreate {
+                title: "no required criteria".into(),
+                objective: "must not become a dead end".into(),
+                constraints: Vec::new(),
+                criteria: Vec::new(),
+            })
+            .await
+            .expect_err("a criterialess Goal must be refused at creation");
+        assert!(error.to_string().contains("at least one required"));
     }
 }

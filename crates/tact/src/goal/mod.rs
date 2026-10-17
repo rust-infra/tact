@@ -20,8 +20,8 @@ pub type GoalId = String;
 /// Characters in a Goal-domain identifier (see [`new_id`]).
 pub const ID_LEN: usize = 8;
 
-/// New identifier for the Goal domain: Goals, criteria, runs and events share
-/// one shape, so no surface has to explain two widths.
+/// New user-facing identifier: Goals and criteria share one width, so no surface
+/// has to explain two shapes. Runs and events use [`new_event_id`].
 ///
 /// A full UUID v4 is 36 characters, and these ids are read (and typed) on every
 /// user-visible surface: `/goal show`, the creation notice, and the
@@ -34,6 +34,17 @@ pub const ID_LEN: usize = 8;
 /// strings everywhere and are never parsed or length-checked.
 pub fn new_id() -> String {
     Uuid::new_v4().simple().to_string()[..ID_LEN].to_string()
+}
+
+/// Identifier for high-volume rows (runs and events).
+///
+/// Eight hex characters are fine for the handful of Goals a workspace holds,
+/// but append-only events can reach tens of thousands: a 32-bit birthday space
+/// collides often enough that `goal_events.id UNIQUE` would start failing real
+/// checkpoints. Keep the user-facing Goal/criterion width, widen the audit rows.
+pub const EVENT_ID_LEN: usize = 16;
+pub fn new_event_id() -> String {
+    Uuid::new_v4().simple().to_string()[..EVENT_ID_LEN].to_string()
 }
 
 /// Lifecycle state of a Goal.
@@ -96,11 +107,14 @@ pub enum GoalRunOutcome {
     CompletionProposed,
     /// The run's cumulative budget (turns / tool calls / wall clock) is spent.
     BudgetExhausted,
+    /// A pause request stopped the run. The Goal returns to `paused` and can be
+    /// resumed explicitly; unlike `Cancelled`, this is not terminal.
+    Paused,
     /// The run ended without leaving anything observable behind: the activation
     /// only produced text, so another cycle would re-read the same context. The
     /// Goal stays `Running` for the next activation.
     NoProgress,
-    /// A user cancel request stopped the run.
+    /// An explicit user cancel request (`/goal cancel`) stopped the run.
     Cancelled,
     /// An activation error that may pass on a retry; the Goal keeps its status.
     TransientError,
@@ -167,8 +181,13 @@ impl GoalCriterion {
         }
     }
 
+    /// The default required criterion is human-verified.
+    ///
+    /// Automatic verification is reserved until the runner has a real check
+    /// for it; `GoalManager::create` rejects an Automatic criterion rather
+    /// than creating a Goal that can never pass.
     pub fn required(description: impl Into<String>) -> Self {
-        Self::new(description, true, GoalVerificationKind::Automatic)
+        Self::new(description, true, GoalVerificationKind::Human)
     }
 
     pub fn required_with_id(id: impl Into<String>, description: impl Into<String>) -> Self {
@@ -369,6 +388,7 @@ impl Goal {
                 criterion.validate()?;
             }
             validate_unique_criterion_ids(&criteria)?;
+            validate_supported_criteria(&criteria)?;
             candidate.criteria_version = candidate.criteria_version.saturating_add(1);
             candidate.criteria = criteria
                 .into_iter()
@@ -472,9 +492,11 @@ impl Goal {
         self.transition_to(GoalStatus::Succeeded)
     }
 
-    /// Validate the evidence recorded by the runner for the current criteria
-    /// version. Automatic checks are performed by the runner; this method only
-    /// trusts their recorded, versioned result.
+    /// Validate the evidence recorded for the current criteria version.
+    ///
+    /// Automatic verification is reserved in the current implementation; the
+    /// production path records human acceptance evidence. This method only
+    /// trusts recorded, versioned evidence either way.
     pub fn validate_acceptance(&self) -> Result<(), GoalError> {
         if self.criteria.is_empty() {
             return Err(GoalError::NoAcceptanceCriteria);
@@ -534,6 +556,26 @@ fn validate_unique_criterion_ids(criteria: &[GoalCriterion]) -> Result<(), GoalE
                 criterion_id: criterion.id.clone(),
             });
         }
+    }
+    Ok(())
+}
+
+/// The manager-level gate for criteria the current runner can actually verify.
+///
+/// `Goal::new` stays permissive so the verifier's pure tests can construct a
+/// Goal with an Automatic criterion; every production create/update path goes
+/// through this check and fails closed.
+fn validate_supported_criteria(criteria: &[GoalCriterion]) -> Result<(), GoalError> {
+    if !criteria.iter().any(|criterion| criterion.required) {
+        return Err(GoalError::NoRequiredAcceptanceCriteria);
+    }
+    if let Some(criterion) = criteria
+        .iter()
+        .find(|criterion| criterion.verification_kind == GoalVerificationKind::Automatic)
+    {
+        return Err(GoalError::AutomaticVerificationUnsupported {
+            criterion_id: criterion.id.clone(),
+        });
     }
     Ok(())
 }
@@ -602,7 +644,7 @@ pub struct GoalRun {
 impl GoalRun {
     pub fn new(goal_id: GoalId) -> Self {
         Self {
-            id: new_id(),
+            id: new_event_id(),
             goal_id,
             outcome: None,
             started_at: Utc::now(),
@@ -643,7 +685,7 @@ pub struct GoalEvent {
 impl GoalEvent {
     pub fn run_finished(goal: &Goal, run: &GoalRun, outcome: GoalRunOutcome) -> Self {
         Self {
-            id: new_id(),
+            id: new_event_id(),
             goal_id: goal.id.clone(),
             run_id: Some(run.id.clone()),
             kind: "run_finished".to_string(),
@@ -676,9 +718,9 @@ impl GoalManager {
     }
     /// Creates and persists a validated Goal.
     pub async fn create(&self, input: GoalCreate) -> anyhow::Result<Goal> {
-        self.store
-            .create(Goal::new(input).map_err(anyhow::Error::new)?)
-            .await
+        let goal = Goal::new(input).map_err(anyhow::Error::new)?;
+        validate_supported_criteria(&goal.criteria).map_err(anyhow::Error::new)?;
+        self.store.create(goal).await
     }
     /// Loads a Goal by stable ID.
     pub async fn get(&self, id: &str) -> anyhow::Result<Goal> {
@@ -777,6 +819,35 @@ impl GoalManager {
         run: GoalRun,
     ) -> anyhow::Result<(crate::store::goal_store::LeaseToken, GoalRun)> {
         self.store.start_run(owner, ttl, run).await
+    }
+    /// Starts a run holding an already-claimed lease.
+    pub async fn start_run_with_lease(
+        &self,
+        token: &crate::store::goal_store::LeaseToken,
+        ttl: std::time::Duration,
+        run: GoalRun,
+    ) -> anyhow::Result<GoalRun> {
+        self.store.start_run_with_lease(token, ttl, run).await
+    }
+    /// Publishes in-flight run usage while the row is still `running`.
+    pub async fn update_run_progress(
+        &self,
+        token: &crate::store::goal_store::LeaseToken,
+        run: &GoalRun,
+    ) -> anyhow::Result<()> {
+        self.store.update_run_progress(token, run).await
+    }
+    /// Applies a sequence of Goal updates in one transaction.
+    pub async fn update_chain(
+        &self,
+        goal_id: &str,
+        expected_version: u64,
+        updates: Vec<(GoalUpdate, GoalEvent)>,
+        lease: Option<&crate::store::goal_store::LeaseToken>,
+    ) -> anyhow::Result<Goal> {
+        self.store
+            .update_chain(goal_id, expected_version, updates, lease)
+            .await
     }
     /// Finishes an active Goal run under the execution lease.
     pub async fn finish_run(
@@ -930,6 +1001,35 @@ impl SharedGoalManager {
     ) -> anyhow::Result<(crate::store::goal_store::LeaseToken, GoalRun)> {
         self.inner.start_run(owner, ttl, run).await
     }
+    /// Starts a run holding an already-claimed lease.
+    pub async fn start_run_with_lease(
+        &self,
+        token: &crate::store::goal_store::LeaseToken,
+        ttl: std::time::Duration,
+        run: GoalRun,
+    ) -> anyhow::Result<GoalRun> {
+        self.inner.start_run_with_lease(token, ttl, run).await
+    }
+    /// Publishes in-flight run usage while the row is still `running`.
+    pub async fn update_run_progress(
+        &self,
+        token: &crate::store::goal_store::LeaseToken,
+        run: &GoalRun,
+    ) -> anyhow::Result<()> {
+        self.inner.update_run_progress(token, run).await
+    }
+    /// Applies a sequence of Goal updates in one transaction.
+    pub async fn update_chain(
+        &self,
+        goal_id: &str,
+        expected_version: u64,
+        updates: Vec<(GoalUpdate, GoalEvent)>,
+        lease: Option<&crate::store::goal_store::LeaseToken>,
+    ) -> anyhow::Result<Goal> {
+        self.inner
+            .update_chain(goal_id, expected_version, updates, lease)
+            .await
+    }
     /// Finishes an active Goal run under the execution lease.
     pub async fn finish_run(
         &self,
@@ -999,6 +1099,11 @@ pub enum GoalError {
     },
     NoAcceptanceCriteria,
     NoRequiredAcceptanceCriteria,
+    /// Automatic verification is reserved: no runner-side checker exists yet,
+    /// so accepting such a criterion would make the Goal uncompletable.
+    AutomaticVerificationUnsupported {
+        criterion_id: String,
+    },
     AcceptanceCriteriaNotMet {
         criterion_id: String,
     },
@@ -1050,6 +1155,12 @@ impl fmt::Display for GoalError {
                 write!(
                     f,
                     "goal must have at least one required acceptance criterion"
+                )
+            }
+            Self::AutomaticVerificationUnsupported { criterion_id } => {
+                write!(
+                    f,
+                    "goal criterion {criterion_id} requests automatic verification, which is not implemented yet"
                 )
             }
             Self::AcceptanceCriteriaNotMet { criterion_id } => {
@@ -1143,13 +1254,27 @@ mod task3_manager_tests {
             .claim_lease("manager-test", Duration::from_secs(60))
             .await
             .unwrap();
-        let goal = manager.get(&created.id).await.unwrap();
+        let mut goal = manager.get(&created.id).await.unwrap();
+        for status in [GoalStatus::Queued, GoalStatus::Running] {
+            goal = manager
+                .update(
+                    &goal.id,
+                    goal.version,
+                    GoalUpdate {
+                        status: Some(status),
+                        ..GoalUpdate::default()
+                    },
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
         let run = GoalRun::new(goal.id.clone());
-        let (same_token, running) = manager
-            .start_run("manager-test", Duration::from_secs(60), run)
+        let running = manager
+            .start_run_with_lease(&token, Duration::from_secs(60), run)
             .await
             .unwrap();
-        assert_eq!(same_token, token);
         assert_eq!(
             manager.list_running_runs().await.unwrap(),
             vec![running.clone()]
@@ -1170,7 +1295,22 @@ mod task3_manager_tests {
                 .await
                 .unwrap(),
         );
-        let goal = shared.create(input("shared")).await.unwrap();
+        let mut goal = shared.create(input("shared")).await.unwrap();
+        for status in [GoalStatus::Queued, GoalStatus::Running] {
+            goal = shared
+                .update(
+                    &goal.id,
+                    goal.version,
+                    GoalUpdate {
+                        status: Some(status),
+                        ..GoalUpdate::default()
+                    },
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
         let token = shared
             .claim_lease("shared-test", Duration::from_secs(60))
             .await
@@ -1181,22 +1321,22 @@ mod task3_manager_tests {
             .unwrap();
         assert_eq!(heartbeated, token);
 
-        let (run_token, mut run) = shared
-            .start_run(
-                "shared-test",
+        let mut run = shared
+            .start_run_with_lease(
+                &token,
                 Duration::from_secs(60),
                 GoalRun::new(goal.id.clone()),
             )
             .await
             .unwrap();
-        assert_eq!(run_token, token);
         assert_eq!(shared.list_running_runs().await.unwrap(), vec![run.clone()]);
         assert!(shared.list_events(&goal.id).await.unwrap().is_empty());
         run.finish(GoalRunOutcome::ProgressMade);
         assert_eq!(shared.finish_run(&token, run.clone()).await.unwrap(), run);
         assert!(shared.list_running_runs().await.unwrap().is_empty());
+        shared.release_lease(&token).await.unwrap();
 
-        let (_, active_run) = shared
+        let (_active_token, active_run) = shared
             .start_run(
                 "shared-test",
                 Duration::from_millis(25),
@@ -1210,6 +1350,53 @@ mod task3_manager_tests {
         assert_eq!(recovered[0].id, active_run.id);
         assert_eq!(recovered[0].stop_reason.as_deref(), Some("lease expired"));
         assert!(shared.list_running_runs().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn manager_refuses_criterialess_and_automatic_goals() {
+        let manager = GoalManager::new(&temp_db("criteria-gate")).await.unwrap();
+        let base = |criteria: Vec<GoalCriterion>| GoalCreate {
+            title: "criteria gate".into(),
+            objective: "exercise the create gate".into(),
+            constraints: Vec::new(),
+            criteria,
+        };
+
+        let error = manager
+            .create(base(Vec::new()))
+            .await
+            .expect_err("a criterialess goal must not be created");
+        assert!(error.to_string().contains("at least one required"));
+
+        let error = manager
+            .create(base(vec![GoalCriterion::new(
+                "optional",
+                false,
+                GoalVerificationKind::Human,
+            )]))
+            .await
+            .expect_err("an optional-only goal must not be created");
+        assert!(error.to_string().contains("at least one required"));
+
+        let error = manager
+            .create(base(vec![GoalCriterion::new(
+                "automatic",
+                true,
+                GoalVerificationKind::Automatic,
+            )]))
+            .await
+            .expect_err("automatic verification is not implemented");
+        assert!(error.to_string().contains("automatic verification"));
+
+        let created = manager
+            .create(base(vec![GoalCriterion::required("human check")]))
+            .await
+            .unwrap();
+        assert_eq!(created.criteria.len(), 1);
+        assert_eq!(
+            created.criteria[0].verification_kind,
+            GoalVerificationKind::Human
+        );
     }
 }
 
@@ -1235,8 +1422,19 @@ mod tests {
         let goal = create_goal();
         let run = GoalRun::new(goal.id.clone());
         let event = GoalEvent::run_finished(&goal, &run, GoalRunOutcome::ProgressMade);
-        for id in [&goal.id, &goal.criteria[0].id, &run.id, &event.id] {
+        for id in [&goal.id, &goal.criteria[0].id] {
             assert_eq!(id.len(), ID_LEN, "{id} must be {ID_LEN} characters");
+            assert!(
+                id.chars().all(|c| c.is_ascii_hexdigit()),
+                "{id} must be hex"
+            );
+        }
+        for id in [&run.id, &event.id] {
+            assert_eq!(
+                id.len(),
+                EVENT_ID_LEN,
+                "{id} must be {EVENT_ID_LEN} characters"
+            );
             assert!(
                 id.chars().all(|c| c.is_ascii_hexdigit()),
                 "{id} must be hex"
@@ -1355,6 +1553,39 @@ mod tests {
         assert_eq!(goal.criteria_version, old_version + 1);
         assert!(!goal.criteria[0].has_valid_evidence(goal.criteria_version));
         assert!(goal.criteria[0].evidence.is_empty());
+    }
+
+    #[test]
+    fn criteria_updates_require_a_supported_required_criterion() {
+        let mut goal = create_goal();
+        let version = goal.criteria_version;
+        let error = goal
+            .update(GoalUpdate {
+                criteria: Some(vec![GoalCriterion::new(
+                    "optional",
+                    false,
+                    GoalVerificationKind::Human,
+                )]),
+                ..GoalUpdate::default()
+            })
+            .unwrap_err();
+        assert!(matches!(error, GoalError::NoRequiredAcceptanceCriteria));
+
+        let error = goal
+            .update(GoalUpdate {
+                criteria: Some(vec![GoalCriterion::new(
+                    "automatic",
+                    true,
+                    GoalVerificationKind::Automatic,
+                )]),
+                ..GoalUpdate::default()
+            })
+            .unwrap_err();
+        assert!(matches!(
+            error,
+            GoalError::AutomaticVerificationUnsupported { .. }
+        ));
+        assert_eq!(goal.criteria_version, version, "failed updates do not bump");
     }
 
     /// Archiving is a stamp, not a lifecycle move: the Goal keeps the outcome

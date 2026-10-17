@@ -477,7 +477,6 @@ async fn command_loop_recovers_an_interrupted_goal_run() {
 
     // The crashed process: an active run whose lease expires unreleased.
     let ttl = Duration::from_millis(20);
-    let _expired = manager.claim_lease("crashed-runner", ttl).await.unwrap();
     let (_token, run) = manager
         .start_run(
             "crashed-runner",

@@ -10,6 +10,13 @@ bugs, one MEDIUM edge case, and three domain invariants that the earlier
 items are LOW or outside this repository (the external harness that injects
 `<goal-context>` without binding `active_goal_id`).
 
+> **Follow-up (2026-10-17, second round):** the lease/control conclusions below
+> were superseded by the Ch 26 entry “Goal 执行控制与 lease 第二轮修复”. Pause,
+> steer and cancel now act on the shared store while a run is active (without
+> awaiting its `JoinHandle`), a live lease is never re-issued even to the same
+> owner label, and acceptance is one SQLite transaction. This document remains
+> the record of the first review round.
+
 ---
 
 ## HIGH
@@ -80,6 +87,8 @@ items are LOW or outside this repository (the external harness that injects
   `accept` completion offers `waiting_user`, `paused`, and
   `running + run_budget == None` Goals for the same reason. Evidence and the
   verifier are unchanged, so the human decision still cannot bypass a criterion.
+- Successful acceptance now emits `🎯 Goal <id> accepted — succeeded`, so the
+  last visible log line is not the stale “run /goal accept” instruction.
 - Tests: `accept_goal_accepts_a_stranded_running_goal_with_no_active_run`,
   `accept_goal_accepts_a_recovered_paused_goal`,
   `accept_goal_refuses_while_an_activation_is_in_flight`,

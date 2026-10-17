@@ -247,8 +247,8 @@ impl super::App {
     /// than a guess:
     ///
     /// - `show` is a read, so every Goal qualifies, terminal ones included;
-    /// - `pause` is only legal from `queued` / `running` / `waiting_user` /
-    ///   `waiting_permission` — `draft`, `verifying` and an already-`paused`
+    /// - `pause` is legal from `queued` / `running` / `waiting_user` /
+    ///   `waiting_permission` / `verifying` — `draft` and an already-`paused`
     ///   Goal would only get `InvalidTransition`;
     /// - `cancel` and `steer` take any non-terminal Goal (a terminal one never
     ///   runs again, so there would be nothing left to steer);
@@ -264,11 +264,20 @@ impl super::App {
             "pause" => |goal| {
                 matches!(
                     goal.status,
-                    Queued | Running | WaitingUser | WaitingPermission
+                    Queued | Running | WaitingUser | WaitingPermission | Verifying
                 )
             },
             "cancel" | "steer" => |goal| !goal.status.is_terminal(),
-            "resume" => |goal| matches!(goal.status, Paused | WaitingUser | WaitingPermission),
+            // The driver also advances `draft` / `queued` and resumes a
+            // stranded `running` Goal with no active run; hiding those rows
+            // made the documented "continue an idle Running Goal" action
+            // undiscoverable.
+            "resume" => |goal| {
+                matches!(
+                    goal.status,
+                    Draft | Queued | Paused | WaitingUser | WaitingPermission
+                ) || (goal.status == Running && goal.run_budget.is_none())
+            },
             // The filing pair: only a finished Goal can be filed away, and only
             // a filed one can come back — a row that would only answer "already
             // archived" is not a candidate (the same rule `disable` / `enable`
@@ -279,12 +288,13 @@ impl super::App {
                 // `waiting_user` is the normal state. A `paused` Goal (user
                 // pause or crash recovery) and a `running` Goal with no active
                 // run are both accepted by the driver, so offer them rather
-                // than hiding the only actionable row.
+                // than hiding the only actionable row. Automatic criteria are
+                // reserved for creation, but legacy rows are closed by the
+                // same explicit human acceptance.
                 (matches!(goal.status, WaitingUser | Paused)
                     || (goal.status == Running && goal.run_budget.is_none()))
                     && goal.criteria.iter().any(|criterion| {
                         criterion.required
-                            && criterion.human
                             && criterion.status != GoalCriterionStatusSnapshot::Passed
                     })
             },
@@ -813,6 +823,78 @@ mod tests {
             4,
             "show is a read: terminal and paused Goals included"
         );
+    }
+
+    #[test]
+    fn resume_offers_a_stranded_running_goal_and_draft_or_queued_work() {
+        use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
+
+        let snapshot =
+            |id: &str,
+             status: GoalStatusSnapshot,
+             run_budget: Option<tact_protocol::GoalRunBudgetSnapshot>| GoalSnapshot {
+                id: id.into(),
+                title: id.into(),
+                status,
+                run_budget,
+                ..Default::default()
+            };
+        let mut app = app_typing("/goal resume ");
+        app.goal_panel_mut().apply_snapshot(vec![
+            snapshot("idle-running", GoalStatusSnapshot::Running, None),
+            snapshot("draft", GoalStatusSnapshot::Draft, None),
+            snapshot("queued", GoalStatusSnapshot::Queued, None),
+            snapshot(
+                "active-running",
+                GoalStatusSnapshot::Running,
+                Some(Default::default()),
+            ),
+        ]);
+
+        assert_eq!(
+            paths(&app),
+            [
+                "goal resume idle-running",
+                "goal resume draft",
+                "goal resume queued",
+            ],
+            "the documented continuation states must be offerable"
+        );
+    }
+
+    #[test]
+    fn pause_offers_a_verifying_goal() {
+        use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
+
+        let mut app = app_typing("/goal pause ");
+        app.goal_panel_mut().apply_snapshot(vec![GoalSnapshot {
+            id: "verifying".into(),
+            title: "verifying".into(),
+            status: GoalStatusSnapshot::Verifying,
+            ..Default::default()
+        }]);
+        assert_eq!(paths(&app), ["goal pause verifying"]);
+    }
+
+    #[test]
+    fn accept_offers_a_legacy_automatic_criterion() {
+        use tact_protocol::{GoalCriterionSnapshot, GoalSnapshot, GoalStatusSnapshot};
+
+        let mut app = app_typing("/goal accept ");
+        app.goal_panel_mut().apply_snapshot(vec![GoalSnapshot {
+            id: "legacy-auto".into(),
+            title: "legacy".into(),
+            status: GoalStatusSnapshot::WaitingUser,
+            criteria: vec![GoalCriterionSnapshot {
+                id: "c1".into(),
+                description: "legacy automatic check".into(),
+                required: true,
+                human: false,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]);
+        assert_eq!(paths(&app), ["goal accept legacy-auto"]);
     }
 
     /// `accept` is the one verb with a second gate: a Goal whose required

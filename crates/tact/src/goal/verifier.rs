@@ -15,11 +15,8 @@ pub enum GoalVerification {
     /// version, and no criterion still awaits a human decision.
     ///
     /// Invariant: `Verified` is exactly the condition under which
-    /// [`Goal::validate_acceptance`] returns `Ok`, for every Goal that has at
-    /// least one required criterion. The single, intentional divergence is a
-    /// Goal with no required criteria (empty, or wholly optional): `verify`
-    /// returns `Rejected` while `validate_acceptance` vacuously returns `Ok`,
-    /// because such a Goal has nothing to verify and must never auto-succeed.
+    /// [`Goal::validate_acceptance`] returns `Ok`. Both refuse a Goal with no
+    /// required criteria, so a Goal with nothing to verify never auto-succeeds.
     Verified,
     /// No required criterion is provably unmet, but at least one required
     /// human criterion still awaits the user's decision.
@@ -44,8 +41,7 @@ pub enum GoalVerification {
 /// 4. Otherwise → `Verified`.
 ///
 /// Invariant: `Verified` is exactly the condition under which
-/// [`Goal::validate_acceptance`] returns `Ok`, except for a Goal with no
-/// required criteria (see [`GoalVerification::Verified`]).
+/// [`Goal::validate_acceptance`] returns `Ok`.
 pub struct GoalVerifier;
 
 impl GoalVerifier {
@@ -145,14 +141,14 @@ mod tests {
 
         // Advance the criteria definition/version through the real update path.
         goal.update(GoalUpdate {
-            criteria: Some(vec![automatic("auto-1", true)]),
+            criteria: Some(vec![human("auto-1", true)]),
             ..GoalUpdate::default()
         })
         .unwrap();
         assert_eq!(goal.criteria_version, version + 1);
         assert_eq!(
             GoalVerifier::verify(&goal),
-            GoalVerification::Rejected {
+            GoalVerification::NeedsUser {
                 criteria: vec!["auto-1".to_string()],
             }
         );
