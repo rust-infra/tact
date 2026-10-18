@@ -4,6 +4,35 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-18 — checkpoint 协议常驻每次 activation；注入上下文不再是「用户消息」
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：Run 结束时如实报告「没写 checkpoint」并给出 idle 提示；历史里不再出现 `<goal-context>` 伪用户行，重载后 turn 计数正确） |
+| **Related** | `crates/tact-ui/src/goal_runner.rs`、`crates/tact/src/goal/mod.rs`、`crates/tact/src/compact/mod.rs`、`crates/tact_llm/src/content.rs`、`crates/tui/src/widgets/state/app/messages.rs`、`book/28_chapter_goal_zh.md` §5/§7/§9、`book/23_chapter_tui_zh.md` §6.6/§6.11 |
+
+**现象 / 动机：** 一次真实 Run（`ef770062`，36/500 轮、63 次工具调用）以 `no_progress` 结束，用户看到的是「既然完成了，也没看到 checkpoint 啊，而且状态也不同步？」。查库后三个缺陷成立：
+
+1. **checkpoint 提醒只在「最后一轮」存在，而多数 Run 走不到那里**：`goal_final_turn` 要求 `max_turns == turns_taken` 恰好成立，Run 在 36/500 轮就结束了，提醒从未触发；整个库历史上 `checkpoint` 事件数为 **0**。§7 承诺的「最后一轮提醒」只覆盖 turn cap 一条路径。
+2. **注入的 `<goal-context>` 被当作普通用户消息**：`Message::new_text(Role::User, injected)` 没有 kind 标记，`push_message` 落库后，`compact::is_real_user_message` 把它算作「真实用户回合」，每次 compaction 重建都会把它继续带下去；TUI `load_history` 也按用户回合渲染并 `turn_user += 1`。重载后既多出一条伪用户行，又污染 turn 计数。
+3. **「状态不同步」是措辞问题，不是状态机问题**：Goal 保持 `running`（无活动 Run）是设计（§7/§12），面板也标了 `running (idle)`；矛盾来自日志那行 `🎯 … run finished: NoProgress` 与面板的 `running` 之间没有任何桥接，且没有说这次 Run 一个 checkpoint 都没留下。
+
+**决策：**
+
+1. **checkpoint 协议常驻**：`build_goal_context` 新增 `<checkpoint-protocol>` 段（每次 activation 都带），要求模型在本次 activation 结束前调 `goal_checkpoint` 记录「已完成 / 仍待办 / 下一步」，达成目标时调 `goal_propose_completion`。agent loop 里的 `<goal-budget-reminder>` 保留为最后一轮的最后机会——它仍是 turn cap 唯一能在运行中拦截的地方。
+2. **诚实报告**：Run 结束时用既有的 `has_event_of_kind_since` 查一次「本 Run 期间是否写过 checkpoint」；没写、且 Goal 还不是终态时，日志行追加 `(no checkpoint written)`，`run_finished` 事件同时写入 `note=no checkpoint written`（同一常量，两处不会漂移）。不伪造 checkpoint、不为它加一次模型调用。
+3. **idle 说清楚**：结束行在 `goal.status == Running` 且没有活动 Run 时追加 `— Goal idle; /goal resume to continue`，把 §9 的 idle 语义直接放到用户读到的那一行。
+4. **`<goal-context>` 有自己的身份**：新增 `MessageKind::GoalContext` + `goal::is_goal_context_text`（标签常量 `GOAL_CONTEXT_OPEN_TAG`/`GOAL_CONTEXT_CLOSE_TAG`），与 hook context 同一套「kind + 文本标记」双信号模式（kind 不落盘，重载后只剩标记）。`is_real_user_message` 与 TUI `load_history` 都按它过滤；TUI **不渲染**该单元格——面板才是权威视图，每次 activation 一行会把会话挤出屏幕。
+5. **帧始终闭合**：`MAX_GOAL_CONTEXT_CHARS` 的兜底截断改为「先截断再补闭合标签」，被截断的文档仍是完整闭合的帧，读标记的消费者不会拿到半截上下文。
+
+**取舍：** 把 goal context 排除出 `is_real_user_message` 意味着「activation 进行中发生 compaction」会丢掉当前这份上下文，直到下一个周期重新注入（压缩摘要本身不描述 Goal）。这与 hook context 的处理一致（「让它随被框住的历史一起老化」），而 Goal 上下文本来每个周期都会重建，代价可控。**纠正前一轮的错误结论**：早前把重载后看到的 `<goal-context>` 判为「上下文只构建一次、从不刷新」是错的——它每个周期都会重建，看到的重复是历史回放。
+
+**改后行为：** Run 结束时用户能看到本次是否留下 checkpoint、以及 Goal 是否 idle；重载会话不再出现 `<goal-context>` 伪用户行、turn 计数正确、compaction 不会再把旧 Goal 快照当成用户消息带下去；每次 activation 的上下文里都有明确的 checkpoint 指引。
+
+**验证：** `cargo test -p tact --lib`（1407 全绿，新增 `goal_context_marker_recognizes_only_the_injected_frame`、`goal_context_is_not_a_real_user_message`）、`-p tact-ui --lib`（126，新增 `run_once_injects_the_goal_context_as_a_goal_context_cell`、`run_once_reports_a_run_that_wrote_no_checkpoint`、`run_once_stays_quiet_when_the_run_checkpointed`）、`-p tui --lib`（750，新增 `load_history_skips_goal_context_cells`）、`-p tact_llm --lib`（280）、`-p agent_tui_kit --lib`（428）；`cargo clippy --workspace --all-targets -- -D warnings` 干净。**踩坑记录**：`MockClient::new` 的脚本是**循环取用**的（`idx % len`），用两条脚本表达「一次工具调用 + 一次文本」会无限重复第一条——需要按 idx 分支的 `MockClient::with_responder`。
+
+**Pointers:** `build_goal_context`（`<checkpoint-protocol>`）、`GoalRunner::run_with_lease`（结束行）、`GoalRunner::run_activation_cycles`（`with_kind`）、`tact::goal::{GOAL_CONTEXT_OPEN_TAG, is_goal_context_text}`、`MessageKind::GoalContext`、`compact::is_real_user_message`、`tui::widgets::state::app::messages::is_goal_context_cell`；评审记录 `docs/reviews/2026-10-18-goal-context-and-checkpoint-review.md`。
+
 ## 1. 2026-10-17 — 活着的持有者不再被当成死的：lease 按 errno 判定存活
 
 | Field | Value |

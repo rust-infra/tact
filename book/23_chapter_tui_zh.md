@@ -387,7 +387,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 **ctx 恢复百分比、去掉进度条（2026-09-12，同日）：** 上面的瘦身一度删掉了 ctx 的 `pct%` 而保留 `■`/`·` 进度条。同日反转：进度条**删除**，百分比前置——`ctx [▍···] 45K/1M` → **`ctx 4% 45K/1M`**（24 → 17 → 14 列）。理由：进度条只是把百分比用字符又画了一遍，而只有 `45K/1M` 时读者得自己做除法才能回答"离自动压缩还有多远"。绝对 `used/window` 保留——比率无法替代它来自的两个计数。缓存 `▣` 段也移到紧接 `ctx` **之后**、回合计数**之前**，让两个会话级比率挨着读；push 顺序现为 `model → out → think → ctx → cache → turns → timing`，窄终端存活顺序为 `ctx > cache > 回合计数 > 回合耗时`。
 
-**回合计数与耗时（2026-09-12）：** `⟳` 统计本会话已派发的用户回合——在唯一派发入口（`handlers/skills.rs::dispatch_user_task`，同时服务排队刷新与 skill 派发）自增；断点续传时由 `load_history` 统计已持久化的 user 消息播种。`⇅` 统计当前任务的 agent-loop 迭代：agent 每次循环发一次 `AgentUpdate::TurnStats { turns_taken, max_turns }`（`crates/tact/src/agent/mod.rs`），kit 的 `StatusBarComponent` 存入状态，shell 在派发时重置。`max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**——只有 `spawn_subagent` 会设置 cap，主 agent 底栏永远不会显示。耗时在 `add_task_end_separator`（`widgets/state/app/popups.rs`）累计，这是唯一真正冻结 `task_start_time` 的位置；被取消的回合计入，合成分隔线（无 start time）不计入。运行中的实时耗时**不在底栏**：2026-09-14 它一度落在第 1 行紧挨运行，2026-10-05 移到日志的 **task-stats 行**（见上），底栏与顶栏都不再显示任何实时时钟。第 2 行的 `⏱` 只回答"已结束的回合各花多久"（上一回合 + 会话平均），与实时那只钟互不相干。
+**回合计数与耗时（2026-09-12）：** `⟳` 统计本会话已派发的用户回合——在唯一派发入口（`handlers/skills.rs::dispatch_user_task`，同时服务排队刷新与 skill 派发）自增；断点续传时由 `load_history` 统计已持久化的 user 消息播种，但注入的上下文单元格不算用户回合：hook 的 `<hook-context>` 不计入，Goal Runner 每个 activation 注入的 `<goal-context>` 同样跳过（2026-10-18）。`⇅` 统计当前任务的 agent-loop 迭代：agent 每次循环发一次 `AgentUpdate::TurnStats { turns_taken, max_turns }`（`crates/tact/src/agent/mod.rs`），kit 的 `StatusBarComponent` 存入状态，shell 在派发时重置。`max_turns` 接入 `StatusBarState.turn_llm_cap` 但**刻意不渲染**——只有 `spawn_subagent` 会设置 cap，主 agent 底栏永远不会显示。耗时在 `add_task_end_separator`（`widgets/state/app/popups.rs`）累计，这是唯一真正冻结 `task_start_time` 的位置；被取消的回合计入，合成分隔线（无 start time）不计入。运行中的实时耗时**不在底栏**：2026-09-14 它一度落在第 1 行紧挨运行，2026-10-05 移到日志的 **task-stats 行**（见上），底栏与顶栏都不再显示任何实时时钟。第 2 行的 `⏱` 只回答"已结束的回合各花多久"（上一回合 + 会话平均），与实时那只钟互不相干。
 
 **输入**（`render_input_box`）：`Insert` 模式圆角 border；最多 3 行内容；长行按字符边界软换行（`wrap_line`，CJK 双宽感知——`Paragraph` 保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（`caret_in_wrapped`）；CJK 感知光标宽度；无批准横幅（agent 的权限询问是 `RequestSelect` 更新，会以 `InputMode::Select` 打开选择弹窗）。Palette 模式用 `render_command_line`。当 `[voice].enabled = true` 时，标题栏**居中**按钮（与左侧 Input 标题拆成两个 `Block` title，中间顶边保持可见）可录制麦克风（macOS 需授权），将 WAV 发往配置的转写服务，并把文本插入光标处（`Esc` 可取消）。可选 `[voice].voice_keybind` 用键盘切换同一控件；仅精确匹配时消费按键。见 [第 21 章](./21_chapter_config_zh.md) 与 `crates/tact/src/voice/`。
 
@@ -508,6 +508,8 @@ Log 不是单一字符串列表。每个 physical 行都是 `app.log_items[]` �
 | `Thinking` | 为一个 direct Thinking card 保留的 blank placeholder 行 | `LOG_THINKING_INDENT` |
 | `HookStatus(u64)` | hook 的进度行，id 由 `AgentUpdate::HookStatus` 发放、回来时按 id 原地改写 | `LOG_TOOL_BLOCK_INDENT` |
 | `HookContext` | hook 注入上下文的 header / 竖条正文 / "还有 N 行"尾巴（整块共用一个 kind） | `LOG_TOOL_BLOCK_INDENT` |
+
+Goal Runner 的 `<goal-context>` **不在**这张表里：`load_history` 在分配 kind 之前就把它丢弃——它不渲染，也不计入 `⟳`（2026-10-18）。理由与 hook context 不同：它是每次 activation 都会重建的派生数据（目标、标准、Tasks、最近 checkpoint），Goals 面板本来就把这些信息显示得更完整，一次 activation 一行只会把会话挤出屏幕（见 [第 28 章 §9](./28_chapter_goal_zh.md)）。
 
 hook 块用的是 `LOG_TOOL_BLOCK_INDENT` 而不是 `LOG_TOOL_INDENT`：后者属于被工具卡覆盖掉的空白占位行，屏幕上根本没有这一列，按它对齐会让竖条停在每条工具行左边 4 列（详见 [第 9 章 §10](./09_chapter_hook_zh.md)）。
 

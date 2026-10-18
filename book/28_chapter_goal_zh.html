@@ -1,0 +1,1103 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Agent Goal：持久化目标执行</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+</head>
+<body>
+<h1 id="agent-goal持久化目标执行">Agent Goal：持久化目标执行</h1>
+<blockquote>
+<p><strong>文档状态：已实现（2026-10-15）。</strong>
+本章描述当前源码提供的 Goal 生命周期、SQLite 持久化、bounded
+Runner、协议命令与 TUI 投影；仍未覆盖的高级能力在文末单独列出。</p>
+</blockquote>
+<p>本章讨论 Tact 如何支持跨多个
+turn、可暂停、可恢复、可监督并可验证完成的长期工作。设计建立在现有 <a
+href="./19_chapter_persistent_tasks_zh.md"><code>TaskManager</code></a>、<a
+href="./18_chapter_agent_loop_zh.md"><code>agent_loop</code></a>、SQLite
+session store、权限管理和 TUI 协议之上；它不是对某个 Agent CLI
+的复刻，而是 Tact 自身的领域设计。</p>
+<hr />
+<h2 id="1-核心定义与边界">1. 核心定义与边界</h2>
+<p>Goal、Task、Turn 和 PlanStep 是不同层级，不能互相替代：</p>
+<table>
+<thead>
+<tr>
+<th>概念</th>
+<th>职责</th>
+<th>生命周期</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Goal</strong></td>
+<td>用户希望最终达成的结果，以及（可选的）证明结果达成的验收标准</td>
+<td>可跨 session、跨多个 run 持续；直到成功、失败或取消</td>
+</tr>
+<tr>
+<td><strong>Task</strong></td>
+<td>为 Goal 服务的可执行工作项、状态和依赖关系</td>
+<td>由现有持久任务系统管理，可关联 Goal，也可独立存在</td>
+</tr>
+<tr>
+<td><strong>Run</strong></td>
+<td>Runner 一次取得执行权后，对 Goal 的一次有预算的推进过程</td>
+<td>有明确开始、结束、用量和结束原因；可被恢复或重试</td>
+</tr>
+<tr>
+<td><strong>Turn</strong></td>
+<td>Agent 与模型之间的一次交互迭代，可能包含工具调用</td>
+<td>属于 Agent loop；不是 Goal 的完成单位</td>
+</tr>
+<tr>
+<td><strong>PlanStep</strong></td>
+<td>当前执行过程的 UI 计划/步骤展示</td>
+<td>临时显示状态，不承担跨进程持久化职责</td>
+</tr>
+</tbody>
+</table>
+<p>核心规则：<strong>Goal 是持久意图；Task 是工作图；Runner 是跨 turn
+调度器；Agent 是在既有权限边界内工作的执行者；验收结果决定 Goal
+是否成功——没有验收标准时，成功就是经过标注的自证完成。</strong></p>
+<p>普通的一次性问题仍然是普通对话，不应自动创建 Goal。用户显式创建或确认
+Goal 后，Goal 才进入持久化执行生命周期。</p>
+<hr />
+<h2 id="2-用户可见行为">2. 用户可见行为</h2>
+<ol type="1">
+<li>用户通过 <code>UserCommand::CreateGoal</code> 或
+<code>/goal create &lt;objective&gt; [-- &lt;标准&gt;; &lt;标准&gt; ...]</code>
+创建 Goal。验收标准<strong>可选</strong>：不写 <code>--</code>
+段时，Goal 以「模型提交完成提议即完成」的方式运行，事件里如实标注
+self-attested 并附上模型自述的检查（见 §6）；写了 <code>--</code>
+段，每条标准都会成为必需的 Human 标准，完成前需要
+<code>/goal accept</code>。</li>
+<li>创建成功后 driver <strong>立即</strong>把 Goal 交给 Runner
+启动第一次
+activation（<code>Draft → Queued → Running</code>），不需要额外的启动命令：Runner
+创建一次有预算的 Run，并让 Agent 检查现状、规划和维护关联 Task DAG。该
+activation 在命令循环之外的可取消任务里运行，因此运行期间
+<code>Cancel</code>、<code>/goal list</code>、<code>/goal pause</code>、<code>/goal steer</code>
+与 <code>/goal cancel</code> 仍然可响应：暂停/取消先写入请求事件并触发
+<code>cancel_flag</code>，Runner 在下一个安全点停下；steer 在下一次
+activation 注入。</li>
+<li>如果仍有可执行工作、没有用户阻塞且预算充足，Runner
+可以启动下一执行周期；单次 <code>agent_loop</code>
+正常结束只表示本次交互结束，不代表 Goal 完成。</li>
+<li>需要用户决定时，Goal
+等待用户；需要权限时，继续使用现有权限流程，不推导或扩大授权。</li>
+<li>Agent 认为目标已满足时，提交<strong>完成提议</strong>及不可信的
+criterion claims，由 Runner 验证。claims 不会写入
+evidence；模型的完成文字、所有 Task 已完成或某个 turn
+正常结束，均不是成功判据。</li>
+<li>声明了必需标准的 Goal，只有该标准的当前版本 evidence
+齐备才能成功：人工标准由 <code>/goal accept</code> 写入
+evidence。未声明必需标准的 Goal
+在模型提交完成提议时直接成功，完成记录标注为
+self-attested。自动验证尚未实现，Automatic
+标准在创建/更新时被拒绝；验收失败则回到执行，预算耗尽或无法继续则暂停并说明原因。</li>
+<li>用户可查看、补充方向、暂停、恢复、取消或确认结果。对已结束 Goal
+的重新执行必须是明确的用户操作，并留下事件记录。</li>
+</ol>
+<p>当前命令表面：</p>
+<pre class="text"><code>/goal list [--all]    列出当前工作区的 Goal（默认不含已归档）；为空时在 Log 里提示（此时面板不可见）
+/goal create &lt;text&gt; [-- &lt;标准&gt;; &lt;标准&gt; ...]
+                      创建 Goal（`--` 之前是标题与 objective，之后按 `;` 切成人工验收标准）并立即启动第一次 Run；不写标准则完成后以 self-attested 收尾
+/goal show &lt;id&gt;       查看目标、标准、任务和验收摘要
+/goal steer [&lt;id&gt;] &lt;text&gt; 立即补充方向或约束并写入事件（省略 id 时作用于当前运行中的 Goal；无运行中 Goal 时取唯一的非终态 Goal，多个候选则要求显式 id）；下一次 activation 的 context 会看到它，不阻塞当前 Run
+/goal pause &lt;id&gt;      暂停执行；Run 活跃时写 pause_requested 并中断当前模型/工具波次，Runner 落到 paused
+/goal resume &lt;id&gt;     恢复执行
+/goal cancel &lt;id&gt;     取消 Goal；Run 活跃时写 cancel_requested 并触发 cancel_flag，终态为 cancelled
+/goal accept &lt;id&gt;     接受人工验收项 / 完成提议
+/goal archive &lt;id&gt;    把已结束的 Goal 归档（移出面板与默认列表，记录不删）
+/goal unarchive &lt;id&gt;  取消归档，重新出现在面板里</code></pre>
+<p><strong>暂停 vs 取消（2026-10-17）：</strong> 运行中按 Esc / TUI 的
+Cancel 按钮只中断当前 Run，Goal 回到 <code>paused</code>，之后可以
+<code>/goal resume</code>；只有 <code>/goal cancel &lt;id&gt;</code>
+会写入终态
+<code>cancelled</code>。这样一次误触不会毁掉长任务，取消仍是显式的用户决定。</p>
+<p><strong>回复即回答（2026-10-18）：</strong> 当 Goal 通过
+<code>goal_request_input</code> 提了问题、状态停在
+<code>waiting_user</code>
+时，用户下一条普通消息<strong>就是回答</strong>：driver 把它记成
+<code>user_answer</code> 事件并自动续跑该 Goal，不需要再敲
+<code>/goal resume</code>（日志会说明这条消息去了
+Goal）。判定要求唯一：只有「<code>needs_user</code> 事件晚于最后一次
+<code>Running</code> 转移」且工作区里只有一个这样的 Goal
+才走这条路——停在 <code>waiting_user</code> 等人工验收的 Goal 不算（那要
+<code>/goal accept</code>），带 <code>@文件</code> /
+图片引用的消息也走普通回合，避免丢附件。</p>
+<p><strong>归档（2026-10-16）：</strong> 已结束的 Goal 会一直躺在 sticky
+面板与 <code>/goal list</code>
+里，列表迟早被历史占满。<code>archive</code>
+把它们移出<strong>默认</strong>列表：面板与 <code>/goal list</code>
+只画未归档的 Goal，记录、Run、事件、标准全部保留。它是 <code>Goal</code>
+聚合上的一个时间戳（<code>archived_at</code>）而不是新的
+<code>GoalStatus</code> —— <strong>状态是结局，不能被改写</strong>（一个
+<code>failed</code> 的 Goal 归档后仍报
+<code>failed</code>），而新增状态会牵动状态机、转换表与既有行。只有终态
+Goal 能归档（<code>Running</code>
+之类会被拒绝并说明原因：把还在跑的活从面板上藏起来、活却继续跑），重复归档只是状态回报而不是错误；<code>unarchive</code>
+走同一条 <code>GoalUpdate</code>
+路径把戳清掉。归档也是<strong>唯一</strong>被允许写终态 Goal
+的操作：<code>Goal::update</code> 对终态 Goal 只接受
+<code>is_archive_only()</code>
+的更新，标题/目标/标准/证据/状态照旧冻结。可达性：<code>/goal show &lt;id&gt;</code>
+仍能打开归档的 Goal（正文里标
+<code>**Archived:** yes</code>），<code>/goal list --all</code>
+把它们放回面板并标 <code> · archived</code>。</p>
+<p>收 <code>&lt;id&gt;</code> 的八个动词在 TUI 里可以直接从补全菜单里挑
+ID：打完 <code>/goal show </code>
+这样的前缀空格后，弹窗列出当前工作区里<strong>该动词能作用</strong>的
+Goal，路径列是 ID、右列是面板同一行的状态标记与标题（可按 ID
+或标题模糊匹配）。面板行不显示
+ID、公告行会翻上去，补全菜单是不必回滚去找 ID 的地方。</p>
+<p>这些命令映射为带 Goal ID 和用户文本的 typed
+<code>UserCommand</code>；list/show/steer/pause/cancel 在 Agent
+activation 进行时也直接从 <code>SharedGoalManager</code> 读取，不等待
+Run 的 <code>JoinHandle</code>。</p>
+<h3 id="操作流程命令--状态--恢复">操作流程（命令 → 状态 → 恢复）</h3>
+<pre class="mermaid">stateDiagram-v2
+    direction LR
+    [*] --&gt; draft : create
+    draft --&gt; queued : 立即续跑
+    queued --&gt; running : claim 到 lease
+
+    running --&gt; waiting_user : 需要用户
+    running --&gt; paused : 预算耗尽 / Esc
+    running --&gt; verifying : 完成提议
+    verifying --&gt; succeeded : 标准齐备
+    verifying --&gt; running : 未过
+
+    state "running (idle)" as idle
+    running --&gt; idle : 本轮无进展
+    idle --&gt; running : resume
+    waiting_user --&gt; running : resume
+    paused --&gt; running : resume
+    waiting_user --&gt; succeeded : accept
+
+    running --&gt; failed : hook 拦截
+    running --&gt; cancelled : cancel
+
+    note right of cancelled
+        任意非终态都能 cancel；
+        恢复（启动时或每 15s 对账）：
+        lease 过期或持有进程消失
+        → Run interrupted，Goal 落 paused
+    end note
+
+    classDef active fill:#e8f0fe,stroke:#4a72b8,color:#16305c
+    classDef held fill:#fff4e0,stroke:#c08a2e,color:#5c3d05
+    classDef idleState fill:#f2f2f6,stroke:#8a8a99,color:#33333d
+    classDef ok fill:#e6f6ec,stroke:#2f8f52,color:#154d2b
+    classDef stopped fill:#fbeaea,stroke:#b3524f,color:#5c2020
+    class draft,queued,running,verifying active
+    class waiting_user,paused held
+    class idle idleState
+    class succeeded ok
+    class failed,cancelled stopped</pre>
+<p><code>create</code> = <code>/goal create</code>，<code>resume</code>
+= <code>/goal resume</code>，<code>accept</code> =
+<code>/goal accept</code>，<code>cancel</code> =
+<code>/goal cancel</code>。</p>
+<blockquote>
+<p><strong>写法说明</strong>：这张图是给标准 Mermaid 渲染器（GitHub / VS
+Code / Obsidian）看的——<code>stateDiagram-v2</code>
+的状态机、<code>classDef</code> 配色与 <code>note</code>
+注记都属于这一层。Tact 自带的 TUI 渲染器<strong>有意不画带标签的
+stateDiagram</strong>：上游解析会把转移标签 <code>: …</code>
+并进节点名（<code>Idle --&gt; Planning: startup</code> 会画出名为
+<code>Planning: startup</code>
+的节点），画出来的不是这个状态机，所以渲染路径直接回退成源代码块（2026-10-17）。终端里读请看下面编号的
+5 条流程。</p>
+</blockquote>
+<ol type="1">
+<li><strong>创建即首跑</strong>：<code>/goal create</code> 落库为
+<code>draft</code>，driver 紧接着调用与 <code>/goal resume</code>
+相同的入口，把 Goal 推进到 <code>queued → running</code> 并启动第一次
+activation。首跑在任何显式 resume 之前发生，但状态转换本身是带 lease
+的持久化写入。</li>
+<li><strong>运行中的控制不排队等 Run
+结束</strong>：<code>/goal pause</code>、<code>/goal cancel</code>、<code>/goal steer</code>
+与 Esc 都直接作用于 <code>SharedGoalManager</code> /
+<code>cancel_flag</code>——前两者先写 <code>pause_requested</code> /
+<code>cancel_requested</code> 事件再中断当前 activation，steer
+只追加事件、在下一个 activation 的 context 里可见。</li>
+<li><strong>一次 Run 结束后状态由 stop
+映射决定</strong>，不由模型自述决定：需要用户 →
+<code>waiting_user</code>；预算耗尽或 Esc → <code>paused</code>；无进展
+→ 保持 <code>running</code>（无活动 Run，等下一次显式 resume）；验收通过
+→ <code>verifying → succeeded</code>；hook 拦截 →
+<code>failed</code>；显式取消 → <code>cancelled</code>。</li>
+<li><strong>收尾只有一条路</strong>：结果写进
+<code>goal_runs</code>、状态迁移写进 <code>goals</code>、事件追加进
+<code>goal_events</code>，三者是一个事务（<code>finish_run_and_transition</code>）；lease
+在 <code>activate</code> 的单一释放点归还，崩溃则留给恢复。</li>
+<li><strong>恢复有两条触发时机、同一判据</strong>：启动时跑全量对账（中断死
+lease 的 Run，并把所有「<code>running</code> 但没有活动 Run」的 Goal
+落到 <code>paused</code>）；命令循环每 15
+秒派生一次收窄版对账（只落它刚刚中断的那几个 Goal）。判据都是「lease
+过期 <strong>或</strong> 持有进程消失」，见 §7。定时对账刻意不落 idle
+<code>running</code>：那是本轮 <code>no_progress</code>
+的合法落点，不能由后台把用户的任务按暂停；它也在独立任务里跑，数据库写锁被别的进程占住时命令循环仍能响应
+Esc 与 <code>/goal pause</code>。</li>
+</ol>
+<hr />
+<h2 id="3-生命周期与执行阶段">3. 生命周期与执行阶段</h2>
+<p>当前 Goal 状态：</p>
+<pre class="text"><code>draft → queued → running → verifying → succeeded
+                    │          │
+                    ├─ waiting_user
+                    ├─ waiting_permission
+                    ├─ paused
+                    ├─ failed
+                    └─ cancelled</code></pre>
+<table>
+<thead>
+<tr>
+<th>状态</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>draft</code></td>
+<td>目标和验收标准仍在确认，尚未授权 Runner 开始推进</td>
+</tr>
+<tr>
+<td><code>queued</code></td>
+<td>用户已确认，等待 Runner 获得执行 lease</td>
+</tr>
+<tr>
+<td><code>running</code></td>
+<td>Runner 持有 lease，Agent 正在推进工作</td>
+</tr>
+<tr>
+<td><code>waiting_user</code></td>
+<td>需要用户补充信息、决定方向或完成人工验收；提问类等待可直接用下一条消息回答并续跑（见
+§2）</td>
+</tr>
+<tr>
+<td><code>waiting_permission</code></td>
+<td>保留状态，当前没有生产者（见
+§12）：非交互模式下权限门自行裁决，交互式弹窗在 activation 内被回答</td>
+</tr>
+<tr>
+<td><code>paused</code></td>
+<td>用户暂停/中断、预算耗尽，或恢复逻辑把 stranded
+<code>running</code>（lease 过期，或持有该 lease 的进程已消失）落到
+paused</td>
+</tr>
+<tr>
+<td><code>verifying</code></td>
+<td>Agent 已提交完成提议，必需验收项正在核验</td>
+</tr>
+<tr>
+<td><code>succeeded</code></td>
+<td>所有必需验收条件均有有效证据并通过；没有必需标准时表示 self-attested
+完成（事件里写明）</td>
+</tr>
+<tr>
+<td><code>failed</code></td>
+<td>已确认无法继续且 Goal 以失败结束；暂时性错误不应直接记为失败</td>
+</tr>
+<tr>
+<td><code>cancelled</code></td>
+<td>用户明确取消，或确认终止 Goal</td>
+</tr>
+</tbody>
+</table>
+<p><code>phase</code> 是独立字段，用于显示当前
+<code>planning</code>、<code>execution</code> 或
+<code>verification</code> 阶段；不要将 phase
+与生命周期状态塞进同一个枚举。</p>
+<p>每次 Run 结束都带明确 outcome，而不是让 driver 从
+<code>Result&lt;()&gt;</code> 或最后一段模型文字猜测：</p>
+<pre class="text"><code>progress_made | needs_user | needs_permission | completion_proposed
+budget_exhausted | paused | no_progress | cancelled | transient_error | fatal_error</code></pre>
+<p>Runner 根据 outcome、任务图、验收状态和预算决定状态转移。暂停、等待和
+run 结束都要先落库，再通知 UI。</p>
+<p>当前真正会被写出的
+outcome：<code>progress_made</code>（有可观察进展，继续下一周期）、<code>no_progress</code>（只说了话、没做可观察的事，本次
+Run 结束、Goal 保持
+<code>running</code>）、<code>budget_exhausted</code>、<code>paused</code>（用户暂停或
+Esc
+中断）、<code>completion_proposed</code>、<code>needs_user</code>、<code>cancelled</code>（显式
+<code>/goal cancel</code>）、<code>transient_error</code>、<code>fatal_error</code>。<code>needs_permission</code>
+与状态 <code>waiting_permission</code> 一样属于保留项（见 §12）。</p>
+<hr />
+<h2 id="4-持久化模型">4. 持久化模型</h2>
+<p>Goal 数据与会话 transcript 分开：transcript 记录对话事实；Goal
+表记录当前可查询的结构化状态；事件表保留审计轨迹。领域记录沿用同一个工作区的
+<code>.tact/tact.db</code>。</p>
+<p>实际存储采用「<strong>整行 JSON +
+少量索引列</strong>」：领域结构体（含标准、证据、预算用量、checkpoint）序列化进
+<code>data</code>
+列，查询和排序只依赖几列不变量。进化领域字段不需要迁移；契约稳定的是聚合语义与索引列。</p>
+<p>标识符由 <code>goal::new_id()</code> 统一铸造：Goal、标准、Run、Event
+共用 <strong>8 位十六进制</strong>短 ID（<code>git log</code>
+风格）。这些 ID
+同时出现在用户要读要敲的地方（<code>/goal show</code>、创建提示、<code>/goal &lt;id&gt;</code>
+命令）和模型要回填的地方（<code>goal_propose_completion</code> 的
+<code>criterion_id</code>、每次 activation 注入的
+<code>&lt;goal-context&gt;</code>），完整 UUID v4 的 36
+字符在这两处都是纯浪费。Goal 按工作区划分且数量很少，32 位空间足够；ID
+在所有代码路径上都是不透明字符串，从不解析、不校验长度，因此历史库里更长的
+UUID 行继续可用。</p>
+<p>事件读取全部<strong>有界</strong>（2026-10-16）：每周期的进度判定用
+<code>count_events</code> 计数比较，不 materialize
+事件；注入上下文只取最近若干条（<code>list_recent_events</code>）；checkpoint、暂停原因、完成提议各是一条定向查询（<code>latest_event_of_kind</code>
+/ <code>latest_event_with_status</code> /
+<code>has_event_of_kind_since</code>，均带
+<code>ORDER BY seq DESC LIMIT 1</code>， newest-first 命中即止）。一次
+activation 不再重读并 JSON-parse Goal
+的全部历史——多周期循环下那曾是每周期两次全量读取。事件表本身仍不裁剪，<code>list_events</code>
+保留给审计与展示。</p>
+<h3 id="goals"><code>goals</code></h3>
+<pre class="text"><code>id TEXT PRIMARY KEY, data TEXT NOT NULL,
+status TEXT NOT NULL, version INTEGER NOT NULL, updated_at INTEGER NOT NULL</code></pre>
+<p>索引：<code>idx_goals_status</code>、<code>idx_goals_updated_at</code>。</p>
+<p><code>data</code> 是 <code>Goal</code>
+聚合的序列化：标题、objective、约束、phase、session
+关联、完成时间与摘要，以及<strong>验收标准列表</strong>——每条标准含描述、<code>required</code>、<code>verification_kind</code>、<code>status</code>
+和带 <code>criteria_version</code>
+标签的证据。标准随聚合整体提交，<code>version</code>
+即标准/证据版本号：用户修改目标或标准时递增，旧版本证据自动失效。CRUD
+路径经 <code>GoalManager</code>，不允许绕过它直写。</p>
+<p>Goal 属于工作区，不只属于创建它的 session。创建 session 与当前执行
+session 分开记录，允许用户在后续 session 中查看和恢复。</p>
+<h3
+id="goal_criteria不存在独立的表"><code>goal_criteria</code>（不存在独立的表）</h3>
+<p>标准不是独立表：它嵌在 <code>goals.data</code>
+的聚合里，随版本号一起写入。这样证据失效只需比较
+<code>criteria_version</code>，不存在「标准改了、证据还在旧表里」的分叉。</p>
+<p>交互式
+<code>/goal create &lt;objective&gt; -- &lt;标准&gt;; &lt;标准&gt;</code>（2026-10-18）就是往这个聚合里写
+<code>Human</code> 标准：<code>--</code> 之后按 <code>;</code>
+切分，每条非空片段成为一条必需的 Human 标准，成功前必须有它们的当前版本
+evidence。不写 <code>--</code>
+段则标准列表为空，表示「模型提交完成提议即完成，完成记录标注
+self-attested」；API 调用方仍可直接构造
+<code>CreateGoal.criteria</code>。</p>
+<h3 id="goal_runs"><code>goal_runs</code></h3>
+<pre class="text"><code>id TEXT PRIMARY KEY, goal_id TEXT NOT NULL, data TEXT NOT NULL,
+state TEXT NOT NULL CHECK (state IN (&#39;running&#39;, &#39;completed&#39;, &#39;interrupted&#39;)),
+started_at INTEGER NOT NULL, finished_at INTEGER, stop_reason TEXT</code></pre>
+<p>索引：<code>idx_goal_runs_state</code>、<code>idx_goal_runs_goal_id</code>、<code>idx_goal_runs_started_at</code>。</p>
+<p><code>data</code> 是 <code>GoalRun</code>
+记录：outcome、<code>turns_used</code> / <code>tool_calls_used</code> /
+<code>elapsed_ms</code> / <code>tokens_used</code>、checkpoint
+和结束原因。Run 记录一次 lease
+周期和资源消耗。进程异常退出时可以将过期的活动 Run 标为
+<code>interrupted</code>，并在创建新 Run
+时保留关联关系，不覆盖旧记录。</p>
+<h3 id="goal_events"><code>goal_events</code></h3>
+<pre class="text"><code>seq INTEGER PRIMARY KEY AUTOINCREMENT,
+id TEXT NOT NULL UNIQUE, goal_id TEXT NOT NULL,
+data TEXT NOT NULL, occurred_at INTEGER NOT NULL</code></pre>
+<p>索引：<code>idx_goal_events_goal_seq</code>（<code>goal_id, seq</code>）——按
+Goal 取区间事件。</p>
+<p>追加式事件日志：创建、用户修改目标或标准、状态转移、Task 关联、Run
+开始/结束、验收结果、steering、恢复、取消等。<code>seq</code>
+保证全局顺序。事件用于诊断和审计；不能只依赖内存队列或 TUI
+收到过的事件来恢复状态。</p>
+<h3 id="goal_leases"><code>goal_leases</code></h3>
+<pre class="text"><code>singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+owner TEXT NOT NULL, epoch INTEGER NOT NULL, expires_at INTEGER NOT NULL</code></pre>
+<p>工作区内<strong>单行</strong> lease：<code>singleton = 1</code> 由
+CHECK 约束保证只能有一个写入者。<code>epoch</code> 是递增的 fencing
+代，所有状态写入必须携带当前 epoch。</p>
+<h3 id="task-关联">Task 关联</h3>
+<p>现有 <code>tasks</code> 表增加可空 <code>goal_id</code>，并建
+<code>idx_tasks_goal_id_id</code> 索引。既有 Task 不需迁移出虚构
+Goal；没有 <code>goal_id</code> 的任务继续照常工作。任务依赖仍由现有 DAG
+管理。</p>
+<p>Goal 生命周期更新、Run outcome 写入和事件追加应在可行时使用同一
+SQLite 事务，避免 UI 看见已暂停但 run
+仍显示活跃等不一致状态。迁移必须幂等，兼容已有数据库。</p>
+<hr />
+<h2 id="5-runner-与-agent-主循环">5. Runner 与 Agent 主循环</h2>
+<p><code>GoalRunner</code> 属于 session/command driver 的编排层，不属于
+<code>Agent::agent_loop</code> 内的无限循环：</p>
+<pre class="mermaid">flowchart TD
+    entry(["用户 /goal create 或 /goal resume"]) --&gt; claim["Runner claim workspace lease"]
+    claim --&gt; load
+
+    subgraph run["一个 Run：一条 goal_runs 记录 · 一份累计预算 · 一次 lease"]
+        direction TB
+        load["加载 Goal 上下文&lt;br/&gt;目标 / 标准 / Tasks / 最近 checkpoint"]
+        act["Agent 执行一个受控周期"]
+        outcome{"Run outcome"}
+        load --&gt; act --&gt; outcome
+    end
+
+    outcome --&gt;|"有进展且预算还有"| load
+    outcome --&gt;|"完成提议"| verify["Runner 执行验收"]
+    verify --&gt;|"通过"| success(["succeeded"])
+    verify --&gt;|"未过，仍可继续"| load
+    verify --&gt;|"需人工确认"| wait(["waiting_user"])
+    outcome --&gt;|"需要用户"| wait
+    outcome --&gt;|"预算耗尽"| pause(["paused"])
+    outcome --&gt;|"本轮无可观察进展"| idle(["running（无活动 Run）"])
+    outcome --&gt;|"取消 / 不可恢复失败"| terminal(["cancelled / failed"])
+
+    classDef step fill:#e8f0fe,stroke:#4a72b8,color:#16305c
+    classDef decide fill:#fff4e0,stroke:#c08a2e,color:#5c3d05
+    classDef ok fill:#e6f6ec,stroke:#2f8f52,color:#154d2b
+    classDef halted fill:#fff4e0,stroke:#c08a2e,color:#5c3d05
+    classDef stop fill:#fbeaea,stroke:#b3524f,color:#5c2020
+    class entry,claim,load,act,verify step
+    class outcome decide
+    class success ok
+    class wait,pause,idle halted
+    class terminal stop</pre>
+<blockquote>
+<p><strong>写法说明</strong>：同上，<code>subgraph</code> 与
+<code>classDef</code> 属于标准 Mermaid 渲染器；TUI 只吃扁平的
+<code>graph</code>/<code>flowchart</code> +
+<code>--&gt;</code>，终端里这张图会回退成源码块——循环语义见紧随其后的段落。</p>
+</blockquote>
+<p>Agent loop 仍负责单次模型交互、工具 dispatch、hooks、权限、会话消息与
+compaction。Goal 模式额外返回显式的 yield
+outcome；普通对话维持原有任务语义。</p>
+<p><strong>一次 Run 是"一个 lease 周期 + 一到多个受限
+activation"</strong>：<code>GoalRunner::run_with_lease</code> 在同一个
+Run 内循环执行 activation，只有上一个 activation
+留下可观察进展（执行过工具调用或追加过 Goal 事件）且 Run
+的累计预算仍有剩余时才进入下一个周期；否则以 <code>progress_made</code>
+/ <code>no_progress</code> 结束该 Run。所有周期共享同一条 Run
+记录、同一次 lease 和同一次收尾事务——不会每个周期各写一条 Run。</p>
+<p>每个新周期开始时，Runner 都重新注入精简且权威的 Goal
+上下文：目标、硬约束、验收标准摘要、关联 Task 状态、最近 checkpoint
+和暂停原因（Goal 工具在周期内追加的
+checkpoint/事件，下一个周期就能看到）。完整事件历史按需查询，不应每轮无界地注入
+prompt。上下文应以明确标签与边界传递，不能让来自历史/tool output
+的内容覆盖用户约束。</p>
+<p><strong>注入上下文有自己的身份，不是用户消息</strong>（2026-10-18）：这份上下文是
+Runner 的派生产物，每次 activation 都会重建。它以
+<code>MessageKind::GoalContext</code> +
+<code>&lt;goal-context&gt;</code>
+标记（<code>tact::goal::is_goal_context_text</code>）双重标识（kind
+不落盘，重载后只剩标记），因此 compaction
+重建不把它当作「真实用户回合」继续带下去，TUI
+历史加载既不渲染它、也不把它计入 turn 计数——面板才是它的权威视图。每次
+activation 的上下文都带 <code>&lt;checkpoint-protocol&gt;</code>
+段，要求模型在本次 activation 结束前落一个 checkpoint（见 §7）。</p>
+<p>Agent 可报告 checkpoint、提出 Task
+变更、请求用户输入、请求权限或提交完成提议；Goal 状态的最终写入权归
+Runner/GoalManager。Subagent 不继承父 Goal 绑定，也没有 Goal
+工具；它只通过委派 prompt 获得必要的上下文，不能结束或重开父 Goal。</p>
+<hr />
+<h2 id="6-验收有标准才门禁没标准就自证">6.
+验收：有标准才门禁，没标准就自证</h2>
+<ul>
+<li><strong>验收标准是可选的。</strong> 交互式 <code>/goal create</code>
+默认不声明标准，于是 Goal 走「模型提交完成提议 →
+<code>verifying → succeeded</code>」这一条路，<code>waiting_user</code>
+不再出现在默认路径上（2026-10-18）。</li>
+<li><strong>有必需标准才门禁。</strong> <code>GoalManager::create</code>
+与 criteria 更新允许空/全 optional 列表，但只要有 required
+标准，成功就必须等齐它们的当前版本
+evidence；<code>Goal::validate_acceptance</code> 只检查 required
+的那些。</li>
+<li><strong>「自证完成」必须留痕。</strong> 没有必需标准的 Goal
+成功时，<code>status_changed</code> 事件写
+<code>completion self-attested: the Goal has no required acceptance criteria</code>，<code>run_finished</code>
+事件写 <code>note=verification: none (self-attested)</code>，日志行也带
+<code>(self-attested: no acceptance criteria)</code>。这不是「验证通过」，历史里不能读成验证过。</li>
+<li><strong>模型自述的检查一并入库</strong>（2026-10-18）：<code>goal_propose_completion</code>
+接受可选的 <code>checks</code>（例如「cargo test --workspace: 1405
+passed」），事件里存为 <code>self_reported_checks</code>，并在
+self-attested 的完成记录后追加
+<code>; model-reported checks: …</code>（每条截断、最多 4
+条）。它是模型自己的说法，<strong>不是</strong>验收证据，也不会让 Goal
+变成 verified——但比只留一句「done」可审计得多。</li>
+<li>自动验证尚未实现：<code>GoalCriterion::required</code> 默认是
+Human，<code>GoalManager::create</code> 和 criteria 更新拒绝
+Automatic；遗留的 Automatic 标准可由用户 <code>/goal accept</code>
+显式关闭。Goal 不提供绕过 permission manager 的“可信命令”通道。</li>
+<li>人工验收由用户显式确认，并记录确认者、时间及针对的标准版本；<code>/goal accept</code>
+仍是唯一写入 evidence 的生产路径。</li>
+<li>Agent 提交完成提议后，Runner
+先验证：<code>Verified</code>（含没有必需标准的空验证）才进入
+<code>verifying</code> 并立即成功；<code>NeedsUser</code> 转
+<code>waiting_user</code>；未满足的自动标准保持 <code>running</code>
+或按预算暂停。</li>
+<li>必需人工标准未满足时转为 <code>waiting_user</code>；用户
+<code>/goal accept</code> 写入 evidence 后成功。标准被标记 Rejected
+时只能通过重定义 criteria 恢复（当前没有 TUI 编辑命令）。</li>
+<li>验收失败时回到 <code>running</code> 修复；预算耗尽则转
+<code>paused</code>
+并列出失败项。不得把“任务清单清空”当作验收通过。</li>
+<li>用户修改目标或验收条件时提升版本号；旧版本的证据不能默认为新版本通过，必须按影响重新验证。</li>
+</ul>
+<blockquote>
+<p><strong>为什么取消默认标准</strong>（2026-10-18）：driver 曾给每个
+<code>/goal create</code> 补一条必需的 Human 标准「User accepts the
+completed result」。生产代码里唯一能写 evidence 的路径是
+<code>/goal accept</code>，于是<strong>每个</strong> Goal 都必然停在
+<code>waiting_user</code>，用户按一下接受只是把「模型说做完了」盖章成「用户验收过」——既拦不住错误，又多了一次必然等待。现在默认没有门禁，要门禁就显式声明标准。</p>
+</blockquote>
+<hr />
+<h2 id="7-预算并发与恢复">7. 预算、并发与恢复</h2>
+<h3 id="预算与进展保护">预算与进展保护</h3>
+<p><strong>一次 Run 由一到多个受限 activation 组成。</strong> 整个 Run
+的 turn 上限默认是 500（<code>GoalLimits::max_turns</code>，可用
+<code>[goal].max_turns</code> 覆盖；每个 cycle 只拿到剩余额度），由
+<code>agent_loop</code> 自己的 turn cap 在运行中强制；一个 activation
+结束后，只有它在<strong>可观察进展</strong>（执行过工具调用，或追加过
+Goal 事件——checkpoint、Task 关联、证据）且 Run
+的累计预算仍有剩余时，Runner 才接着跑下一个
+activation。纯文本回合（模型只说话、没有落地动作）结束本次 Run。</p>
+<p>Run 的累计预算同样是 <code>GoalLimits</code> 的 500 turns / 600
+秒墙钟时间（<code>[goal].max_turns</code> /
+<code>max_elapsed_secs</code>），跨 activation 累加到同一条 Run
+记录上；达到上限时保存 checkpoint、用量和 stop reason，Goal 进入
+<code>paused</code>。每个 cycle 传给 agent loop
+的是<strong>剩余</strong> turn
+数（<code>max_turns - turns_used</code>），且上限在
+<code>turns_taken</code>
+自增之前检查，所以停止时那次“探测”不会被记成一次模型调用——多 cycle 的
+Run 不会花到约 2×
+预算。工具调用数只作为用量记录（<code>GoalRun::tool_calls_used</code>），不设单独上限：每次工具调用本来就发生在一次模型调用之内，turn
+上限已经约束了总扇出，单独计数只会让有用的 Run
+提前结束。因为累计预算是按 turn
+计的，周期数天然有界（每个周期至少消耗一次模型调用）。注意
+<code>Agent::max_turns</code> 约束的是<strong>进程累计</strong>的
+<code>turns_taken</code>，所以 Runner 传给循环的是「当前累计值 +
+剩余预算」，而不是裸的预算数字。</p>
+<p><strong>最后一轮会提醒模型写 checkpoint</strong>（2026-10-17）：turn
+cap
+在模型调用<strong>之前</strong>检查，所以最后一轮是模型唯一还能落盘的机会。该轮请求的
+system prompt 末尾会追加
+<code>&lt;goal-budget-reminder&gt;</code>，要求模型调用
+<code>goal_checkpoint</code> 记录「已完成 / 仍待办 / 下一步」，避免 Run
+在思考中途被截断、下一次 activation 从零重新发现。提醒只存在于该次请求的
+system prompt 中，不进入会话历史；预算仍是硬约束，提醒只是软引导。</p>
+<p><strong>checkpoint 协议常驻每次
+activation</strong>（2026-10-18）：<code>&lt;goal-budget-reminder&gt;</code>
+只在 turn cap 那条路径上可能出现，而多数 Run
+并不在那里结束（<code>no_progress</code>、yield、cancel
+都走不到最后一轮）。因此每次注入的 <code>&lt;goal-context&gt;</code>
+都带 <code>&lt;checkpoint-protocol&gt;</code> 段，要求模型在本次
+activation 结束前调 <code>goal_checkpoint</code> 写清「已完成 / 仍待办 /
+下一步」，达成目标时调
+<code>goal_propose_completion</code>；<code>&lt;goal-budget-reminder&gt;</code>
+保留为 turn cap 上的最后机会。此外 Run 结束时 Runner 会用
+<code>has_event_of_kind_since</code> 查一次本 Run 是否真的写过
+checkpoint：没写就在 <code>🎯 … run finished: …</code> 那行追加
+<code>(no checkpoint written)</code>，不让「没有
+checkpoint」只能靠翻事件表才发现（2026-10-18）。</p>
+<p><strong>Run 结束行同时说明 Goal 是否
+idle</strong>（2026-10-18）：<code>no_progress</code> 等结果会让 Goal
+保持 <code>running</code> 而没有执行者（见 §9），面板标
+<code>running (idle)</code>，但日志那行此前只写
+<code>run finished</code>。现在这种状态下同一行追加
+<code>— Goal idle; /goal resume to continue</code>，两处表述不再互相矛盾。</p>
+<p><strong>Lease 在 Run
+执行期间持续心跳</strong>（2026-10-17）：<code>max_elapsed</code> 只在
+activation 之间检查，单个 activation 可能远长于 lease TTL。Runner 在
+cycles 运行期间按 <code>TTL/3</code> 刷新 lease，退出时 abort 并 await
+心跳任务；收尾与释放只校验 owner+epoch（fencing），不再要求 lease
+仍未过期——否则一个只是因为跑得久而过期、但未被接管的 lease 会丢掉整个
+Run 的结果。</p>
+<p><strong>activation
+自己的判定优先于预算</strong>（2026-10-16）：取消（<code>cancelled</code>）、被
+hook
+拦截（<code>fatal_error</code>/<code>failed</code>）、需要用户（<code>needs_user</code>）、验收通过（<code>succeeded</code>）这类终局判定即使与预算耗尽同时发生，也按判定记录。运行期间按
+Esc / <code>c</code>
+产生的是<strong>暂停</strong>（<code>paused</code>），不是终态取消；只有带
+<code>cancel_requested</code> 事件的 <code>/goal cancel</code> 会把 Run
+标成
+<code>cancelled</code>（2026-10-17）。预算只在「本来还会继续」（<code>progress_made</code>，或验收被拒）时把
+Run 标成 <code>budget_exhausted</code>/<code>paused</code>。</p>
+<p>活动 Run 的 <code>turns_used</code> / <code>tool_calls_used</code> /
+<code>elapsed_ms</code> 在每个 activation 结束后写回
+<code>goal_runs</code> 并刷新面板；单个 activation
+运行期间面板显示上一次落库值，不会逐 turn 实时更新（2026-10-17）。</p>
+<p>无进展检测只依赖可观察变化（工具调用、Goal
+事件），不依赖模型自述：只有文字的周期记为 <code>no_progress</code>
+并结束本次 Run，Goal 保持 <code>running</code> 等待下一次
+activation——它不会因此被暂停，也不会被误记成
+<code>progress_made</code>。单次失败或偶发网络错误同样不判定 Goal
+失败：activation 报错记为 <code>transient_error</code> 并结束 Run，Goal
+状态不变。人工验收不要求 Goal 恰好停在
+<code>waiting_user</code>：<code>waiting_user</code>、<code>paused</code>（用户暂停或恢复把
+stranded <code>running</code> 落到 paused）、以及没有活动 Run 的
+<code>running</code> 都可以被 <code>/goal accept</code> 推进；只有活动
+Run 在途时拒绝。这样用户消息把 Goal
+唤醒后，刚提示的验收不会立刻失效，验收仍由 <code>GoalVerifier</code>
+决定。</p>
+<h3 id="lease-与写入隔离">Lease 与写入隔离</h3>
+<p>同一执行目录默认只允许一个写入型 Goal Runner。lease
+包含<strong>实例唯一</strong> owner（session label + pid +
+随机后缀）、过期时间/心跳、<strong>持有进程身份</strong>（<code>holder_pid</code>
++ <code>holder_identity</code>）和递增 fencing epoch。一个仍有效的 lease
+永远不会被再次发放，即使 owner 字符串相同；只有持有 token 的实例可以
+heartbeat/finish/release（2026-10-17）。<strong>「有效」的定义包含持有者存活</strong>（2026-10-17）：TTL
+未到但 <code>holder_is_alive</code> 为假（进程已退出，或 pid 被复用而
+start-time 身份不匹配）的 lease 立刻可被接管，不必等满
+<code>max_elapsed + 60s</code>；identity 读不到、或来自其他平台的
+identity
+视为不可核验，退回纯时间过期语义，绝不抢一个可能仍活着的持有者。<strong>「存在」与「可核验」必须分开判</strong>（2026-10-17）：探测别的
+uid 的活进程只会得到 <code>EPERM</code>（<code>kill -0</code>、macOS 的
+<code>proc_pidinfo</code>、Linux 的 <code>/proc/&lt;pid&gt;/stat</code>
+都一样），而 <code>EPERM</code> 恰恰证明该 pid 存在——只有
+<code>ESRCH</code>/<code>ENOENT</code>
+才算「进程已消失」。把「探测没成功」一律当成死亡，会让普通用户的 Runner
+抢占 root 正在跑的 lease（容器/devcontainer 里 root 持有 lease
+很常见），所以 <code>is_process_alive</code> 按 errno 分支（并对
+<code>pid &gt; i32::MAX</code> 直接判死，否则
+<code>u32::MAX as pid_t</code> 变成
+<code>-1</code>，即「所有进程」），<code>holder_is_alive</code>
+对「活着但身份不可读」的持有者报告存活、退回 TTL 语义。Runner 在
+<code>start_run_with_lease</code> 中使用已 claim 的 token，不会在 claim
+与 start 之间静默轮换 epoch；<code>start_run</code> 还会在同一事务内确认
+Goal 仍是 <code>Running</code>，关闭 load-then-start
+的暂停/取消竞态。</p>
+<p>所有状态写入校验当前 epoch，避免旧进程失去 lease
+后继续提交覆盖新执行者的结果。独立 worktree
+可按独立执行目录并发；是否允许多个 Goal
+对同一目录并行写，首版默认禁止。</p>
+<h3 id="崩溃恢复与取消">崩溃恢复与取消</h3>
+<ul>
+<li>启动或恢复时先检查活动 Run 与 lease；lease
+<strong>过期或持有进程已消失</strong>（<code>recover_dead_active_runs</code>）时把旧
+Run 标记为 <code>interrupted</code>，记录 <code>lease expired</code> /
+<code>lease holder is gone</code> 作为 stop reason 与 Goal
+事件，然后由恢复逻辑把没有活动 Run 的 <code>running</code> Goal 落到
+<code>paused</code>。判据不能只看时间：崩溃后 lease 的
+<code>expires_at</code> 最多还能活满一个
+TTL，只看时间会让面板长时间显示「running
+但没有执行者」，且这段时间里用户的 <code>/goal resume</code> 会撞上
+<code>LeaseHeld</code>（2026-10-17）。</li>
+<li><strong>恢复有两个触发时机，共用同一条判据</strong>（2026-10-17）：启动时是
+<code>GoalRunner::recover_interrupted</code>（第 1 步中断 + 第 2
+步把所有 stranded <code>running</code> 落
+<code>paused</code>）；运行期间命令循环每 15 秒派生一次
+<code>GoalRunner::reconcile_dead_runs</code>，只落它刚刚中断的那几个
+Goal。定时版本<strong>刻意不落</strong> idle
+<code>running</code>：那个状态是本轮 <code>no_progress</code>
+的合法落点（见上文），后台定时器不能把用户的任务按成暂停；它跑在派生任务里，等待数据库写锁不阻塞命令循环。</li>
+<li>恢复以 SQLite Goal/Run/Event 状态和 session transcript
+为依据，不依赖进程内 future、channel 或 pending queue。</li>
+<li>只有完成幂等性检查后才重试可能已执行但结果未落库的操作；外部副作用不得因为恢复而盲目重放。</li>
+<li>暂停/取消先持久化 <code>pause_requested</code> /
+<code>cancel_requested</code> 事件，再触发当前 Agent 的
+<code>cancel_flag</code>；Runner 在 activation 结束或下一个 cycle
+前读取事件，记录 Run outcome 并释放 lease。暂停落到
+<code>paused</code>（可 resume），取消落到终态
+<code>cancelled</code>。</li>
+<li>进程退出或 TUI 断开不能把 Goal 静默标成成功；无 UI
+时遇到用户决策/权限需求应暂停并可由后续 session 恢复。</li>
+<li>挂起的权限请求不能在进程重启后被视为已批准；恢复时须重新经过当前权限流程。</li>
+</ul>
+<hr />
+<h2 id="8-权限与安全边界">8. 权限与安全边界</h2>
+<p>Goal
+授权的是“持续尝试达成这个目标”，不是对将来所有副作用的预先批准：</p>
+<ul>
+<li>文件写入、shell、MCP、网络和敏感路径访问继续由现有权限系统及安全扫描器控制。</li>
+<li>Goal 验收命令也走相同的工具和权限路径；验收配置不能执行任意 shell
+绕过审批。</li>
+<li>用户
+steering、目标变更、标准变更和人工验收必须作为用户来源事件记录；不能让模型工具伪造用户确认。</li>
+<li>Goal 工具只允许访问当前执行上下文中的 Goal；Task 关联也默认限定在该
+Goal，避免跨 Goal 修改。</li>
+<li>工具结果和恢复 checkpoint
+可能包含不可信内容，重新注入时保留来源标签和信任边界。</li>
+<li>Runner 负责取消、预算、lease 和调度；它不更改现有 permission
+mode，也不静默降低审批要求。</li>
+</ul>
+<hr />
+<h2 id="9-tui--headless-协议">9. TUI / Headless 协议</h2>
+<p>TUI 使用 <code>AgentUpdate::GoalsChanged</code> 携带完整
+<code>GoalSnapshot</code> 集合，并通过 <code>UserCommand</code> 的
+<code>CreateGoal</code>、<code>ListGoals</code>、<code>ShowGoal</code>、<code>SteerGoal</code>、<code>PauseGoal</code>、<code>ResumeGoal</code>、<code>CancelGoal</code>
+和 <code>AcceptGoal</code>
+控制生命周期。快照包含状态、phase、标准摘要、Task
+进度、等待原因、预算和验收计数；重新连接或恢复时仍以 SQLite
+为权威来源。</p>
+<p>Goal 面板可以接入现有 Tasks / Subagent / Background sticky
+host，概览显示：目标标题、Goal 状态与 phase、当前 Run、关联 Task
+进度、阻塞原因、预算用量和验收摘要。展开视图提供标准逐项状态与 wait
+reason；暂停/恢复/取消/确认操作仍通过 <code>/goal</code> 命令完成。</p>
+<p><strong>「running
+但没有在跑」要显式说出来</strong>（2026-10-17）：<code>GoalSnapshot::run_budget</code>
+恰好在有 activation 在飞时为 <code>Some</code>（来源是
+<code>goal_runs</code> 的活动行），为 <code>None</code> 就表示这个 Goal
+当前没有执行者。面板在这种情况下把状态标成
+<code>running (idle)</code>——本轮以 <code>no_progress</code> 结束时 Goal
+会保持 <code>running</code> 等下一次显式 resume，一行只写 «running»
+会替一个并不存在的执行者背书。日志侧同一件事由 Run
+的结束行承担（2026-10-18）：<code>running</code> 且无活动 Run 时追加
+<code>— Goal idle; /goal resume to continue</code>，读者不必把面板和日志对着看。需要停下这类
+Goal 时 <code>/goal pause</code> 是有效出口：没有活动 Run 时它直接写入
+<code>paused</code>，不需要先 resume。</p>
+<p>注入的 <code>&lt;goal-context&gt;</code> 属于 Runner 的派生产物，TUI
+历史加载<strong>不渲染</strong>它、也不把它计入 turn
+计数（2026-10-18）：每次 activation
+一行会把会话挤出屏幕，而面板本来就把其中的信息（状态、标准、Task、预算、最近
+checkpoint）显示得更完整。它同样不会被 compaction
+当成真实用户回合保留（见 §5）。</p>
+<p>Headless 与交互式模式共用同一个 GoalRunner 和状态机。Headless
+遇到必须由用户决定的事项时保存 <code>waiting_user</code> 并退出当前
+Run，不能等待 UI responder；后续通过命令或 API 补充输入后恢复。</p>
+<hr />
+<h2 id="10-实时代码边界">10. 实时代码边界</h2>
+<p>当前代码地图：</p>
+<table>
+<thead>
+<tr>
+<th>路径</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/goal/</code></td>
+<td><code>Goal</code>、标准、证据、状态机、<code>GoalManager</code>、<code>GoalVerifier</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/goal_store/</code></td>
+<td><code>GoalStore</code> trait、SQLite schema、事务、lease
+与事件持久化</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/task/</code>、<code>store/task_store/</code></td>
+<td>Task 可选 <code>goal_id</code>、Goal 范围查询及旧记录兼容</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/</code></td>
+<td>注入 <code>SharedGoalManager</code>；Goal 感知工具与受限 Task
+作用域</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/session_bootstrap.rs</code></td>
+<td>为 Agent 构建并注入共享 Goal manager</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/goal_runner.rs</code>、<code>driver.rs</code></td>
+<td>bounded activation、预算、lease、启动恢复与 15s 周期对账、运行中
+pause/steer/cancel 的请求事件</td>
+</tr>
+<tr>
+<td><code>crates/protocol/src/agent.rs</code></td>
+<td>Goal 快照、<code>GoalsChanged</code> 和用户命令协议</td>
+</tr>
+<tr>
+<td><code>crates/tui/</code>、<code>crates/agent_tui_kit/</code></td>
+<td>Goals sticky panel、状态投影、鼠标切换与背景测试</td>
+</tr>
+<tr>
+<td><code>book/</code>、<code>docs/superpowers/</code></td>
+<td>本设计章节与实现前 spec/plan；代码交付时同步实际行为</td>
+</tr>
+</tbody>
+</table>
+<p>实现为迁移、状态机合法转移、lease/fencing、Run 预算、验收证据、无 UI
+等待、取消及崩溃恢复提供了聚焦测试。跨 channel 等待的异步测试使用
+timeout；Cargo 验证必须串行运行。</p>
+<hr />
+<h2 id="11-与现有领域的关系">11. 与现有领域的关系</h2>
+<ul>
+<li><a href="./01_chapter_store_zh.md">第 1 章
+Store</a>：Goal、Task、Run、事件和 session transcript 共用工作区
+SQLite，但各有明确领域边界。</li>
+<li><a href="./10_chapter_permission_zh.md">第 10 章权限</a>：Goal
+不改变风险分级、审批模式或敏感路径守卫。</li>
+<li><a href="./18_chapter_agent_loop_zh.md">第 18 章 Agent
+主循环</a>：<code>agent_loop</code> 仍是单次执行内核；Goal
+跨周期调度由外层 Runner 负责。</li>
+<li><a href="./19_chapter_persistent_tasks_zh.md">第 19
+章持久任务</a>：Goal 关联既有 Task DAG，不替代独立任务。</li>
+<li><a href="./23_chapter_tui_zh.md">第 23 章 TUI</a> 与 <a
+href="./25_chapter_protocol_zh.md">第 25 章协议</a>：Goal UI
+是协议驱动的投影；持久 store 才是恢复依据。</li>
+<li><a href="./26_chapter_issue_zh.md">第 26 章工程问题日志</a>：Goal
+的交付记录见 2026-10-15 与 2026-10-18 条目。</li>
+</ul>
+<h2 id="12-当前限制">12. 当前限制</h2>
+<ul>
+<li><code>/goal create</code> 不写 <code>--</code>
+段时<strong>不声明验收标准</strong>，这类 Goal 以 self-attested
+方式完成（事件里写明，并附模型自述的 checks）；要门禁用
+<code>/goal create &lt;objective&gt; -- &lt;标准&gt;; &lt;标准&gt;</code>
+声明 Human
+标准。自动验证仍未实现（暂时不做，见下条）：<code>GoalManager::create</code>
+与 criteria 更新拒绝 Automatic 标准；遗留的 Automatic 标准可由用户
+<code>/goal accept</code> 显式关闭。</li>
+<li><strong>执行型验证（B2）暂时不做</strong>（2026-10-18）：完成判定保持「模型自述
++ 可审计记录」，与 Codex 的 goal 模式一致；不引入
+<code>goal_check</code> 之类的命令执行证据。需要硬门禁时用 Human
+标准兜住。</li>
+<li><code>/goal resume &lt;id&gt;</code> 既用于恢复 <code>paused</code>
+/ <code>waiting_user</code> / <code>waiting_permission</code> 的
+Goal，也用于推进 <code>draft</code> /
+<code>queued</code>；终态（<code>succeeded</code> / <code>failed</code>
+/ <code>cancelled</code>）不能直接继续。</li>
+<li><code>waiting_permission</code>
+目前<strong>没有生产者</strong>：非交互模式下权限门自行裁决（高风险拒绝、其余放行），交互式弹窗在
+activation 内被回答，因此被权限挡住的 activation 不会把 Goal
+停在该状态。该状态保留在状态机里，供将来"权限感知的停止原因"使用。</li>
+<li>一个 Run 以 <code>progress_made</code> 结束时 Goal 仍是
+<code>running</code>（没有活动 Run）。此时没有自动的下一周期——下一个
+activation 由 <code>/goal resume</code>
+或下一次进程启动后的恢复逻辑（<code>running</code> 且无活动 Run →
+<code>paused</code>）接管；TUI 的 resume 补全也会列出这种 idle Running
+Goal。面板标 <code>running (idle)</code>，Run 的结束行同样追加
+<code>— Goal idle; /goal resume to continue</code>（2026-10-18）。</li>
+<li>一次 <code>/goal resume</code> 会跑到该 Run
+的累计预算用完（或达到验收/等待用户等终态）为止；<code>running</code>
+但空闲的 Goal 表示"上一次 Run
+用完了预算或没有可观察进展"，继续推进仍是显式操作。</li>
+<li><code>needs_permission</code>（run outcome）与
+<code>waiting_permission</code>（状态）一样是保留项，没有生产者，原因见上。</li>
+<li>当前协议提供完整 Goal 集合快照，没有单独的
+<code>GoalRunChanged</code> 增量事件；活动 Run 的预算按 activation
+落库并随快照刷新，单个 activation 内不是逐 turn 实时。完成 run
+的详细审计保存在事件表。</li>
+<li>运行中的 <code>/goal pause</code> / <code>/goal steer</code> /
+<code>/goal cancel</code> 不再串行等待 Run 结束：命令循环直接写 shared
+store / cancel flag。跨进程暂停在模型调用进行中无法立即打断，Runner
+会在该 activation 返回或下一个 cycle 前观察到请求；同进程的
+<code>cancel_flag</code> 可以更早中断当前波次。</li>
+<li>Goal 激活期间由 <code>task_create</code> 创建的 Task 自动关联到当前
+Goal（<code>goal_id</code>）；Goal context 的 <code>linked-tasks</code>
+与面板 task 计数因此能看到它们。</li>
+<li>Goal sticky panel 提供状态、预算、Task
+进度、验收摘要、等待原因和标准列表；具体标准操作仍通过
+<code>/goal accept</code> 等命令完成。</li>
+</ul>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./index_zh.md">书籍目录</a></li>
+<li><a href="./01_chapter_store_zh.md">存储与持久化</a></li>
+<li><a href="./10_chapter_permission_zh.md">权限模型</a></li>
+<li><a href="./18_chapter_agent_loop_zh.md">Agent 主循环</a></li>
+<li><a
+href="./19_chapter_persistent_tasks_zh.md">持久化任务管理器</a></li>
+<li><a href="./23_chapter_tui_zh.md">TUI 与 Agent–TUI 协议</a>、<a
+href="./25_chapter_protocol_zh.md">第 25 章</a></li>
+</ul>
+</body>
+</html>

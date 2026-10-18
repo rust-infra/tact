@@ -275,6 +275,8 @@ Agent loop 仍负责单次模型交互、工具 dispatch、hooks、权限、会�
 
 每个新周期开始时，Runner 都重新注入精简且权威的 Goal 上下文：目标、硬约束、验收标准摘要、关联 Task 状态、最近 checkpoint 和暂停原因（Goal 工具在周期内追加的 checkpoint/事件，下一个周期就能看到）。完整事件历史按需查询，不应每轮无界地注入 prompt。上下文应以明确标签与边界传递，不能让来自历史/tool output 的内容覆盖用户约束。
 
+**注入上下文有自己的身份，不是用户消息**（2026-10-18）：这份上下文是 Runner 的派生产物，每次 activation 都会重建。它以 `MessageKind::GoalContext` + `<goal-context>` 标记（`tact::goal::is_goal_context_text`）双重标识（kind 不落盘，重载后只剩标记），因此 compaction 重建不把它当作「真实用户回合」继续带下去，TUI 历史加载既不渲染它、也不把它计入 turn 计数——面板才是它的权威视图。每次 activation 的上下文都带 `<checkpoint-protocol>` 段，要求模型在本次 activation 结束前落一个 checkpoint（见 §7）。
+
 Agent 可报告 checkpoint、提出 Task 变更、请求用户输入、请求权限或提交完成提议；Goal 状态的最终写入权归 Runner/GoalManager。Subagent 不继承父 Goal 绑定，也没有 Goal 工具；它只通过委派 prompt 获得必要的上下文，不能结束或重开父 Goal。
 
 ---
@@ -305,6 +307,10 @@ Agent 可报告 checkpoint、提出 Task 变更、请求用户输入、请求权
 Run 的累计预算同样是 `GoalLimits` 的 500 turns / 600 秒墙钟时间（`[goal].max_turns` / `max_elapsed_secs`），跨 activation 累加到同一条 Run 记录上；达到上限时保存 checkpoint、用量和 stop reason，Goal 进入 `paused`。每个 cycle 传给 agent loop 的是**剩余** turn 数（`max_turns - turns_used`），且上限在 `turns_taken` 自增之前检查，所以停止时那次“探测”不会被记成一次模型调用——多 cycle 的 Run 不会花到约 2× 预算。工具调用数只作为用量记录（`GoalRun::tool_calls_used`），不设单独上限：每次工具调用本来就发生在一次模型调用之内，turn 上限已经约束了总扇出，单独计数只会让有用的 Run 提前结束。因为累计预算是按 turn 计的，周期数天然有界（每个周期至少消耗一次模型调用）。注意 `Agent::max_turns` 约束的是**进程累计**的 `turns_taken`，所以 Runner 传给循环的是「当前累计值 + 剩余预算」，而不是裸的预算数字。
 
 **最后一轮会提醒模型写 checkpoint**（2026-10-17）：turn cap 在模型调用**之前**检查，所以最后一轮是模型唯一还能落盘的机会。该轮请求的 system prompt 末尾会追加 `<goal-budget-reminder>`，要求模型调用 `goal_checkpoint` 记录「已完成 / 仍待办 / 下一步」，避免 Run 在思考中途被截断、下一次 activation 从零重新发现。提醒只存在于该次请求的 system prompt 中，不进入会话历史；预算仍是硬约束，提醒只是软引导。
+
+**checkpoint 协议常驻每次 activation**（2026-10-18）：`<goal-budget-reminder>` 只在 turn cap 那条路径上可能出现，而多数 Run 并不在那里结束（`no_progress`、yield、cancel 都走不到最后一轮）。因此每次注入的 `<goal-context>` 都带 `<checkpoint-protocol>` 段，要求模型在本次 activation 结束前调 `goal_checkpoint` 写清「已完成 / 仍待办 / 下一步」，达成目标时调 `goal_propose_completion`；`<goal-budget-reminder>` 保留为 turn cap 上的最后机会。此外 Run 结束时 Runner 会用 `has_event_of_kind_since` 查一次本 Run 是否真的写过 checkpoint：没写就在 `🎯 … run finished: …` 那行追加 `(no checkpoint written)`，不让「没有 checkpoint」只能靠翻事件表才发现（2026-10-18）。
+
+**Run 结束行同时说明 Goal 是否 idle**（2026-10-18）：`no_progress` 等结果会让 Goal 保持 `running` 而没有执行者（见 §9），面板标 `running (idle)`，但日志那行此前只写 `run finished`。现在这种状态下同一行追加 `— Goal idle; /goal resume to continue`，两处表述不再互相矛盾。
 
 **Lease 在 Run 执行期间持续心跳**（2026-10-17）：`max_elapsed` 只在 activation 之间检查，单个 activation 可能远长于 lease TTL。Runner 在 cycles 运行期间按 `TTL/3` 刷新 lease，退出时 abort 并 await 心跳任务；收尾与释放只校验 owner+epoch（fencing），不再要求 lease 仍未过期——否则一个只是因为跑得久而过期、但未被接管的 lease 会丢掉整个 Run 的结果。
 
@@ -351,7 +357,9 @@ TUI 使用 `AgentUpdate::GoalsChanged` 携带完整 `GoalSnapshot` 集合，并�
 
 Goal 面板可以接入现有 Tasks / Subagent / Background sticky host，概览显示：目标标题、Goal 状态与 phase、当前 Run、关联 Task 进度、阻塞原因、预算用量和验收摘要。展开视图提供标准逐项状态与 wait reason；暂停/恢复/取消/确认操作仍通过 `/goal` 命令完成。
 
-**「running 但没有在跑」要显式说出来**（2026-10-17）：`GoalSnapshot::run_budget` 恰好在有 activation 在飞时为 `Some`（来源是 `goal_runs` 的活动行），为 `None` 就表示这个 Goal 当前没有执行者。面板在这种情况下把状态标成 `running (idle)`——本轮以 `no_progress` 结束时 Goal 会保持 `running` 等下一次显式 resume，一行只写 «running» 会替一个并不存在的执行者背书。需要停下这类 Goal 时 `/goal pause` 是有效出口：没有活动 Run 时它直接写入 `paused`，不需要先 resume。
+**「running 但没有在跑」要显式说出来**（2026-10-17）：`GoalSnapshot::run_budget` 恰好在有 activation 在飞时为 `Some`（来源是 `goal_runs` 的活动行），为 `None` 就表示这个 Goal 当前没有执行者。面板在这种情况下把状态标成 `running (idle)`——本轮以 `no_progress` 结束时 Goal 会保持 `running` 等下一次显式 resume，一行只写 «running» 会替一个并不存在的执行者背书。日志侧同一件事由 Run 的结束行承担（2026-10-18）：`running` 且无活动 Run 时追加 `— Goal idle; /goal resume to continue`，读者不必把面板和日志对着看。需要停下这类 Goal 时 `/goal pause` 是有效出口：没有活动 Run 时它直接写入 `paused`，不需要先 resume。
+
+注入的 `<goal-context>` 属于 Runner 的派生产物，TUI 历史加载**不渲染**它、也不把它计入 turn 计数（2026-10-18）：每次 activation 一行会把会话挤出屏幕，而面板本来就把其中的信息（状态、标准、Task、预算、最近 checkpoint）显示得更完整。它同样不会被 compaction 当成真实用户回合保留（见 §5）。
 
 Headless 与交互式模式共用同一个 GoalRunner 和状态机。Headless 遇到必须由用户决定的事项时保存 `waiting_user` 并退出当前 Run，不能等待 UI responder；后续通过命令或 API 补充输入后恢复。
 
@@ -384,7 +392,7 @@ Headless 与交互式模式共用同一个 GoalRunner 和状态机。Headless �
 - [第 18 章 Agent 主循环](./18_chapter_agent_loop_zh.md)：`agent_loop` 仍是单次执行内核；Goal 跨周期调度由外层 Runner 负责。
 - [第 19 章持久任务](./19_chapter_persistent_tasks_zh.md)：Goal 关联既有 Task DAG，不替代独立任务。
 - [第 23 章 TUI](./23_chapter_tui_zh.md) 与 [第 25 章协议](./25_chapter_protocol_zh.md)：Goal UI 是协议驱动的投影；持久 store 才是恢复依据。
-- [第 26 章工程问题日志](./26_chapter_issue_zh.md)：Goal 的交付记录见 2026-10-15 条目。
+- [第 26 章工程问题日志](./26_chapter_issue_zh.md)：Goal 的交付记录见 2026-10-15 与 2026-10-18 条目。
 
 ## 12. 当前限制
 
@@ -392,7 +400,7 @@ Headless 与交互式模式共用同一个 GoalRunner 和状态机。Headless �
 - **执行型验证（B2）暂时不做**（2026-10-18）：完成判定保持「模型自述 + 可审计记录」，与 Codex 的 goal 模式一致；不引入 `goal_check` 之类的命令执行证据。需要硬门禁时用 Human 标准兜住。
 - `/goal resume <id>` 既用于恢复 `paused` / `waiting_user` / `waiting_permission` 的 Goal，也用于推进 `draft` / `queued`；终态（`succeeded` / `failed` / `cancelled`）不能直接继续。
 - `waiting_permission` 目前**没有生产者**：非交互模式下权限门自行裁决（高风险拒绝、其余放行），交互式弹窗在 activation 内被回答，因此被权限挡住的 activation 不会把 Goal 停在该状态。该状态保留在状态机里，供将来"权限感知的停止原因"使用。
-- 一个 Run 以 `progress_made` 结束时 Goal 仍是 `running`（没有活动 Run）。此时没有自动的下一周期——下一个 activation 由 `/goal resume` 或下一次进程启动后的恢复逻辑（`running` 且无活动 Run → `paused`）接管；TUI 的 resume 补全也会列出这种 idle Running Goal。
+- 一个 Run 以 `progress_made` 结束时 Goal 仍是 `running`（没有活动 Run）。此时没有自动的下一周期——下一个 activation 由 `/goal resume` 或下一次进程启动后的恢复逻辑（`running` 且无活动 Run → `paused`）接管；TUI 的 resume 补全也会列出这种 idle Running Goal。面板标 `running (idle)`，Run 的结束行同样追加 `— Goal idle; /goal resume to continue`（2026-10-18）。
 - 一次 `/goal resume` 会跑到该 Run 的累计预算用完（或达到验收/等待用户等终态）为止；`running` 但空闲的 Goal 表示"上一次 Run 用完了预算或没有可观察进展"，继续推进仍是显式操作。
 - `needs_permission`（run outcome）与 `waiting_permission`（状态）一样是保留项，没有生产者，原因见上。
 - 当前协议提供完整 Goal 集合快照，没有单独的 `GoalRunChanged` 增量事件；活动 Run 的预算按 activation 落库并随快照刷新，单个 activation 内不是逐 turn 实时。完成 run 的详细审计保存在事件表。
