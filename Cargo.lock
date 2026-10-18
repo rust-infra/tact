@@ -4760,7 +4760,7 @@ dependencies = [
 
 [[package]]
 name = "tact"
-version = "1.1.41"
+version = "1.1.42"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -4811,7 +4811,7 @@ dependencies = [
 
 [[package]]
 name = "tact-ui"
-version = "1.1.41"
+version = "1.1.42"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4835,7 +4835,7 @@ dependencies = [
 
 [[package]]
 name = "tact_llm"
-version = "1.1.41"
+version = "1.1.42"
 dependencies = [
  "anyhow",
  "async-openai",
@@ -5286,7 +5286,7 @@ dependencies = [
 
 [[package]]
 name = "tool_refactor_macros"
-version = "1.1.41"
+version = "1.1.42"
 dependencies = [
  "proc-macro2",
  "quote",

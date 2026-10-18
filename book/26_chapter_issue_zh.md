@@ -4,6 +4,32 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-18 — 发版 v1.1.42：清单版本 1.1.41 → 1.1.42，与 agent-goal 一起进 PR
+
+| Field | Value |
+|-------|-------|
+| **Type** | release（用户可见：`--version` 与升级接口报 1.1.42；`v1.1.42` 触发 `release.yml`，五个平台产出 `tact-ui-v1.1.42-*` 与 `SHA256SUMS`） |
+| **Related** | `Cargo.toml`（`[workspace.package].version`）、`Cargo.lock`（四个包条目）、`README.md`（徽章 + 发版命令片段）；`.github/workflows/release.yml` |
+
+**现象 / 动机：** `wt/agent-goal`（持久化 Agent Goal 整条链路，20 笔提交）是**用户可见的功能**——新 `/goal` 命令族、Goals sticky panel、goal 持久化与 Runner。清单停在 `1.1.41`：本地 build 的 `--version`、`crates/tact/src/upgrade.rs`（`env!("CARGO_PKG_VERSION")`）与 `USER_AGENT` 都会对着一个已经存在的版本号自报。
+
+**`v1.1.41` 的坑（本次唯一需要判断的地方）：** PR #92 已经**带着 1.1.41 的 bump 合进了 `main`**（`main` 的 `Cargo.toml` 与 `README.md` 都写着 1.1.41），但 `v1.1.41` 这个 **tag 从未打过**——本地与 `origin` 上最新都还是 `v1.1.40`，`gh release list` 的 Latest 也是 v1.1.40。也就是说 #92 的「发版」只做了一半：版本号涨了，tag/Release 没跟上。
+
+- 直接补打 `v1.1.41` 不可行：`main` 上 1.1.41 那一版内容（#92 的 subagent 改动）与本次 PR 的内容不是同一棵树，一个版本号会同时指向两种构建产物；从 `main` 编出来的用户已经在跑 1.1.41。
+- 因此**继续前进到 1.1.42**，维持「一个版本号 = 一棵树、tag 跟在合并提交后面」这条不变式。#92 那次漏打的 tag 就此跳过，不补（补打只会制造重号）。
+- **`1.1.42` 无碰撞**：`v1.1.42` 本地与 `origin` 都没有，直接递增，不需要跳号。
+- `Cargo.lock` 的四个条目（`tact` / `tact-ui` / `tact_llm` / `tool_refactor_macros`，均为 `version.workspace = true`）随清单一起提升；`tact_protocol` / `agent_tui_kit` 是独立版本包（`0.1.0`），**不动**。
+- README 徽章与「发版」两行命令同步到 `v1.1.42`。
+- **tag 不在这笔提交上打**：`v1.1.42` 指向**合并后**的 `main` 提交；仓库用 squash 合并，打在分支提交上会让 tag 引用一个不在 `main` 的提交（v1.1.38 的教训）。
+
+**改后行为：** `tact-ui --version` 报 1.1.42；`upgrade` 的 UA 与自报版本一致；推送 `v1.1.42` 触发 `release.yml`，五个 target 构建并发布 Release。
+
+**Verification：** `cargo metadata --locked` 通过且**没有改写 `Cargo.lock`**（说明手改的四条正是 cargo 期望的内容，`git diff Cargo.lock` 只有四条 `version = "1.1.x"` 行，无依赖增删）；`git grep '1\.1\.41'` 在本章之外已无残留；`scripts/check-rust.sh` 全绿。
+
+**Pointers:** `Cargo.toml`、`Cargo.lock`、`README.md`、`.github/workflows/release.yml`。
+
+---
+
 ## 1. 2026-10-18 — DeepSeek thinking 模式必须回传 `reasoning_content`：省略不再可行
 
 | Field | Value |
