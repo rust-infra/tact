@@ -96,6 +96,7 @@ impl std::fmt::Display for GoalStoreError {
 }
 impl std::error::Error for GoalStoreError {}
 
+#[allow(clippy::double_must_use)] // async_trait generates #[must_use] on Pin<Box<dyn Future>> which is already #[must_use]
 #[async_trait]
 pub trait GoalStore: Send + Sync {
     async fn create(&self, goal: Goal) -> Result<Goal>;
