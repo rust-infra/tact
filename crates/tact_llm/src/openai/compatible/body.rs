@@ -8,7 +8,10 @@ use serde_json::Value;
 use crate::{
     CreateMessageParams, LlmError, ProviderProfile,
     convert::build_openai_request,
-    inject::{inject_reasoning_content, inject_user_id, thinking_budget_enabled},
+    inject::{
+        inject_reasoning_content, inject_reasoning_content_backfill, inject_user_id,
+        thinking_budget_enabled,
+    },
 };
 
 /// Context passed to [`OpenAiBodyHook::inject`].
@@ -34,8 +37,8 @@ impl OpenAiBodyHook for StandardOpenAiBodyHook {
 }
 
 /// DeepSeek hook (official OpenAI format):
-/// `thinking` + `reasoning_effort` (`high` / `max`) + `user_id`.
-/// Does not replay `reasoning_content` (see `deepseek` design notes).
+/// `thinking` + `reasoning_effort` (`high` / `max`) + `user_id` + historical
+/// `reasoning_content` on assistant turns.
 #[derive(Debug, Default, Clone)]
 pub struct DeepSeekBodyHook {
     user_id: Option<String>,
@@ -51,6 +54,7 @@ impl OpenAiBodyHook for DeepSeekBodyHook {
     fn inject(&self, body: &mut Value, ctx: &BodyHookCtx<'_>) {
         inject_deepseek_thinking(body, ctx.request);
         inject_user_id(body, self.user_id.as_deref());
+        inject_reasoning_content_backfill(body, ctx.reasoning_per_message);
     }
 }
 
@@ -312,7 +316,7 @@ mod tests {
     }
 
     #[test]
-    fn deepseek_hook_does_not_echo_reasoning_content() {
+    fn deepseek_hook_echoes_reasoning_content_on_tool_turns() {
         let request = sample_request_with_thinking();
         let provider = provider(
             ProviderKind::DeepSeek,
@@ -322,16 +326,64 @@ mod tests {
         let mut body = serde_json::json!({
             "messages": [
                 {"role": "user", "content": "hi"},
-                {"role": "assistant", "content": "", "tool_calls": []},
+                {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "content": "ok", "tool_call_id": "1"},
+                // The trailing turn is the one the API validates, so it keeps
+                // its real thinking.
+                {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "2", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                ]},
+                {"role": "tool", "content": "ok", "tool_call_id": "2"},
+                {"role": "assistant", "content": "done"}
+            ]
+        });
+        let reasoning = vec![
+            None,
+            Some("plan first tool".to_string()),
+            None,
+            Some("plan second tool".to_string()),
+            None,
+            None,
+        ];
+        DeepSeekBodyHook::default().inject(&mut body, &ctx(&request, &provider, &reasoning));
+        assert_eq!(
+            body["messages"][1]["reasoning_content"], "",
+            "history carries the field empty instead of re-sending its thinking"
+        );
+        assert_eq!(
+            body["messages"][3]["reasoning_content"], "plan second tool",
+            "the trailing tool-call turn replays its thinking"
+        );
+        assert!(
+            body["messages"][5].get("reasoning_content").is_none(),
+            "plain assistant turns stay untouched"
+        );
+    }
+
+    #[test]
+    fn deepseek_hook_backfills_the_trailing_turn_without_thinking() {
+        let request = sample_request_with_thinking();
+        let provider = provider(
+            ProviderKind::DeepSeek,
+            "deepseek-v4-pro",
+            "https://api.deepseek.com",
+        );
+        // Thinking dropped by compaction (or produced by another model): the
+        // field must still be present, so it is backfilled empty.
+        let mut body = serde_json::json!({
+            "messages": [
+                {"role": "user", "content": "hi"},
+                {"role": "assistant", "content": "", "tool_calls": [
+                    {"id": "1", "type": "function", "function": {"name": "read", "arguments": "{}"}}
+                ]},
                 {"role": "tool", "content": "ok", "tool_call_id": "1"}
             ]
         });
-        let reasoning = vec![None, Some("plan tool".to_string()), None];
-        DeepSeekBodyHook::default().inject(&mut body, &ctx(&request, &provider, &reasoning));
-        assert!(
-            body["messages"][1].get("reasoning_content").is_none(),
-            "DeepSeek must omit historical reasoning_content for prefix cache"
-        );
+        DeepSeekBodyHook::default()
+            .inject(&mut body, &ctx(&request, &provider, &[None, None, None]));
+        assert_eq!(body["messages"][1]["reasoning_content"], "");
     }
 
     #[test]

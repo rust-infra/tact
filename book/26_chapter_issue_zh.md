@@ -4,6 +4,46 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-18 — DeepSeek thinking 模式必须回传 `reasoning_content`：省略不再可行
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：DeepSeek V4 / V4.1 会话里工具调用后不再随机出现 `api error (400): The reasoning_content in the thinking mode must be passed back to the API`） |
+| **Related** | `crates/tact_llm/src/inject.rs`（`inject_reasoning_content_backfill`）、`crates/tact_llm/src/openai/compatible/body.rs`（`DeepSeekBodyHook`）、`book/22_chapter_llm_zh.md` §5.3 |
+
+**现象 / 动机：** 一个 407 条消息、173 次工具调用的真实会话里，同一份请求体有时 200、有时 400：
+
+```
+api error (400): {"error":{"param":null,"type":"invalid_request_error","code":"invalid_request_error",
+"message":"Upstream request failed: [invalid_request_error] The `reasoning_content` in the thinking mode
+must be passed back to the API. (request_id: c208798f-…)"}}
+```
+
+Tact 的 DeepSeek hook 一直**故意不回传** `reasoning_content`（理由是「live API 接受，省略能保 KV cache 前缀稳定」，见 2026-10-03 的实测条目）。本次实测推翻了这个前提。
+
+**实测（`opencode.ai/zen/go/v1`，`deepseek-v4.1-flash`，同一份 body 重复 8 次）：**
+
+- 末尾是「assistant(tool_calls) → tool」且**不带** `reasoning_content`：`400 200 200 400 200 200 200 200`（`thinking: enabled` 且带 `reasoning_effort` 时同样 `200 200 400 200 400 200 200 400`）——**与 `reasoning_effort` 无关，只与 thinking 模式有关**，且失败率取决于被路由到哪个上游（网关后面既有严格执行的 DeepSeek 官方上游，也有宽松的第三方）。
+- 同样的请求带 `reasoning_content: ""`：8/8 全 200。带真实 thinking 文本：200。**校验的是字段存在性，不是内容**。
+- 只校验**紧邻 tool 消息的那条 assistant 工具轮**：工具轮落在历史中间、末尾是普通 user 消息时通过（6 次全 200，其中 4 次的响应 id 是 `0217…`，即严格执行的 DeepSeek 官方上游——不是「恰好路由到宽松上游」）。
+- 上游 200 时 `prompt_tokens` 会多算回传的 thinking（`""` 不增加）。
+
+**决策：** `DeepSeekBodyHook::inject` 增加 `inject_reasoning_content_backfill`：
+
+1. **末尾那条**带 `tool_calls` 的 assistant 轮 → 回传存量 thinking（有则原文，无则 `""`）。这是 API 校验的那一轮，也是模型接着往下写的那一轮。
+2. **更早的**带 `tool_calls` 的 assistant 轮 → 只写 `reasoning_content: ""`。字段在场（任何严格执行的上游都满足），token 成本为零。
+3. 普通文本 assistant 轮不动。
+
+不做「全量回传 thinking」：该会话 179 条 assistant 消息里有 132 条带 thinking、合计 215k 字符（≈100k token），而当时的 prompt 只有 209k token——全量回传等于把输入翻掉一半，而校验根本不看历史。Kimi 继续用原来的 `inject_reasoning_content`（回传所有有存量 thinking 的轮），两者语义分开、名字分开。
+
+**取舍：** 只在末尾一轮回传真实 thinking，输入成本约等于「每轮多一条 thinking」（数千 token）；历史一律空串，不增长。代价是历史 thinking 不参与上下文——这与改动前完全一致（改动前一条都不回传），所以没有回退。若将来某个上游真的要求历史轮也带原文，改 `inject_reasoning_content_backfill` 一处即可。
+
+**改后行为：** 任何走 DeepSeek 方言的请求，assistant 工具轮一律带 `reasoning_content`（末尾轮为存量原文或 `""`，历史轮为 `""`），400 这一族不再出现；非工具轮与非 thinking 模型的线上形状不变。
+
+**验证：** `cargo test -p tact_llm --lib`（281 全绿：`deepseek_hook_echoes_reasoning_content_on_tool_turns` 覆盖「历史轮空串 / 末尾轮原文 / 普通文本轮不动」，`deepseek_hook_backfills_the_trailing_turn_without_thinking` 覆盖 thinking 被 compaction 丢掉的情形，替换原 `deepseek_hook_does_not_echo_reasoning_content`）；`cargo clippy -p tact_llm --all-targets -- -D warnings` 与 `cargo fmt -- --check` 干净。
+
+**Pointers:** `inject::inject_reasoning_content_backfill`、`DeepSeekBodyHook::inject`；`crates/tact_llm/src/test_deepseek_reasoning.rs`（live 契约测试，`--ignored` 手动跑）；复现用的最小 body：`thinking: {type: enabled}` + `assistant(tool_calls)` 无 `reasoning_content`。
+
 ## 1. 2026-10-18 — checkpoint 协议常驻每次 activation；注入上下文不再是「用户消息」
 
 | Field | Value |

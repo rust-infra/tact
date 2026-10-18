@@ -310,7 +310,10 @@ adapter：`ProviderProfile::dialect_for(model)` 按请求选择
 
 **`read_image` 工具（Harness 风格）：** agent 工具集新增 `read_image`（模型可对 `file_path` 调用的工具）。它先门控当前模型声明 image 输入（`tact_llm::supports_vision`），读取 PNG/JPEG/WebP/GIF，重编码为有界 JPEG，返回一个携带文本信封（`<path>…</path>`、媒体类型、尺寸、字节数）与相邻 `ContentBlock::Image` 的 `ToolCallResult`。由于 Chat Completions 的 `role:tool` content 仅限字符串，`messages_to_openai` 将工具结果图片折叠到紧随其后的 `role:user` 消息（`[{type:"text", text:"Attached image(s) from tool result:"}, {type:"image_url",…}]`），镜像 DeepSeek Harness `serializeMessagesWithImages`。这样文本工具结果仍走 `role:tool`，vision 模型从 user 消息消费图片，无需改写 `ContentBlock::ToolResult`。
 
-**Kimi reasoning replay：** `messages_to_openai` 返回与发出的 OpenAI 消息**一一对应**的 `reasoning` 向量（非 Anthropic 源消息）。用户 turn 拆成多条 tool-result 消息时，每条得 `None`；assistant thinking 仅附在匹配的 assistant 行。`inject_reasoning_content` 用该并行向量服务 Kimi/Moonshot。
+**Reasoning replay（Kimi / DeepSeek）：** `messages_to_openai` 返回与发出的 OpenAI 消息**一一对应**的 `reasoning` 向量（非 Anthropic 源消息）。用户 turn 拆成多条 tool-result 消息时，每条得 `None`；assistant thinking 仅附在匹配的 assistant 行。两个消费者语义不同：
+
+- `inject_reasoning_content`（Kimi / Moonshot）：回传**所有**有存量 thinking 的 assistant 轮。
+- `inject_reasoning_content_backfill`（DeepSeek）：只给**带 `tool_calls`** 的 assistant 轮写该字段——末尾那条写存量 thinking（无则 `""`），更早的写 `""`。DeepSeek V4 的 thinking 模式（默认开启）要求工具轮必须带该字段，否则部分上游返回 400 `The reasoning_content in the thinking mode must be passed back to the API`；校验只针对紧邻待处理 tool 结果的那一轮，且只看字段存在性（空串即可），所以历史不重发 thinking、不增加 token。详见 [问题日志](./26_chapter_issue_zh.md)。
 
 **不完整 tool calls：** 流式与非流式解析器跳过 `id` 或 `name` 为空的 tool-call 槽，避免截断 SSE 插入 phantom `ToolUse` block。
 
