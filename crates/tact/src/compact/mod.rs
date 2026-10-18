@@ -18,7 +18,7 @@ use anyhow::Context as _;
 use tact_llm::{ContentBlock, Message, MessageContent, MessageKind, Role};
 use tokio::io::AsyncWriteExt;
 
-use crate::{consts::TactPath, hook::is_hook_context_text};
+use crate::{consts::TactPath, goal::is_goal_context_text, hook::is_hook_context_text};
 
 /// How many recent tool results to preserve during micro-compaction;
 /// all earlier tool results with > 120 chars are replaced with a stub.
@@ -288,15 +288,20 @@ fn is_real_user_message(message: &Message) -> bool {
     if !matches!(message.role, Role::User) {
         return false;
     }
-    // Neither a compaction handoff nor hook-injected context is a user turn:
-    // keeping either as a "recent real user message" would make every
-    // compaction rebuild carry it forward.
-    if message.is_summary() || message.is_hook_context() {
+    // Neither a compaction handoff nor injected context (a plugin hook's, or
+    // the Goal runner's per-activation `<goal-context>`) is a user turn:
+    // keeping any of them as a "recent real user message" would make every
+    // compaction rebuild carry it forward. The Goal context is re-injected
+    // fresh at the start of the next activation anyway, so dropping it here
+    // lets it age out with the history it framed.
+    if message.is_summary() || message.is_hook_context() || message.is_goal_context() {
         return false;
     }
     match &message.content {
         MessageContent::Text { content } => {
-            !is_summary_message(content) && !is_hook_context_text(content)
+            !is_summary_message(content)
+                && !is_hook_context_text(content)
+                && !is_goal_context_text(content)
         }
         MessageContent::Blocks { content } => content
             .iter()
@@ -912,6 +917,35 @@ mod tests {
         assert!(is_real_user_message(&Message::new_text(
             Role::User,
             "fix the bug"
+        )));
+    }
+
+    /// The Goal runner's per-activation context is not a user turn either. It
+    /// is re-injected fresh at the start of every activation, so carrying it
+    /// forward as a "recent real user message" would both fake a user turn on
+    /// reload and pin a stale Goal snapshot into every later compaction.
+    #[test]
+    fn goal_context_is_not_a_real_user_message() {
+        let cell = |kind: MessageKind| {
+            Message::new_text(
+                Role::User,
+                format!(
+                    "{}\ngoal: abc123\n{}",
+                    crate::goal::GOAL_CONTEXT_OPEN_TAG,
+                    crate::goal::GOAL_CONTEXT_CLOSE_TAG
+                ),
+            )
+            .with_kind(kind)
+        };
+
+        // As injected, and as a reload from disk delivers it — the kind is not
+        // serialized, so the markers alone have to carry the exclusion.
+        assert!(!is_real_user_message(&cell(MessageKind::GoalContext)));
+        assert!(!is_real_user_message(&cell(MessageKind::Normal)));
+
+        assert!(is_real_user_message(&Message::new_text(
+            Role::User,
+            "why is there a <goal-context> in my history?"
         )));
     }
 

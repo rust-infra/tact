@@ -26,12 +26,12 @@ use chrono::{DateTime, Utc};
 use tact::AgentLoopStop;
 use tact::agent::Agent;
 use tact::goal::{
-    Goal, GoalEvent, GoalRun, GoalRunOutcome, GoalStatus, GoalUpdate, GoalVerification,
-    GoalVerifier, SharedGoalManager, new_event_id,
+    GOAL_CONTEXT_CLOSE_TAG, GOAL_CONTEXT_OPEN_TAG, Goal, GoalEvent, GoalRun, GoalRunOutcome,
+    GoalStatus, GoalUpdate, GoalVerification, GoalVerifier, SharedGoalManager, new_event_id,
 };
 use tact::store::goal_store::{GoalStoreError, LeaseToken};
 use tact::task::TaskRecord;
-use tact_llm::{Message, Role};
+use tact_llm::{Message, MessageKind, Role};
 use tact_protocol::AgentUpdate;
 
 /// Cap on the injected Goal context, in characters.
@@ -40,6 +40,25 @@ pub const MAX_GOAL_CONTEXT_CHARS: usize = 4000;
 /// Marker appended to a section that was cut short. Truncation is always
 /// explicit: a silently shortened objective would look complete to the model.
 pub const TRUNCATION_MARKER: &str = "…(truncated)";
+
+/// The standing instruction carried by every injected context.
+///
+/// Checkpoints are what makes the next activation cheap: without one, the
+/// model re-discovers its own state from the transcript. The agent loop's
+/// `<goal-budget-reminder>` only fires on the final permitted turn of a
+/// *turn-capped* run, so a run that ends on `no_progress`, a yield, or a
+/// cancel writes nothing at all (2026-10-18). This section is the part that
+/// does not depend on how the run ends.
+const CHECKPOINT_PROTOCOL: &str = "Before this activation ends, call `goal_checkpoint` with what \
+     you completed, what is still open, and the next concrete step; call \
+     `goal_propose_completion` when the objective is met.";
+
+/// The note recorded (and shown) when a run ends without a checkpoint.
+///
+/// One string for both surfaces: the `run_finished` event's `note=` and the
+/// `🎯 … run finished` line must not drift apart, and the reader of either has
+/// to learn the same thing — the next activation starts from nothing.
+const NO_CHECKPOINT_NOTE: &str = "no checkpoint written";
 
 // Per-section budgets (characters). They add up to comfortably less than
 // [`MAX_GOAL_CONTEXT_CHARS`] so every labelled section survives even when the
@@ -140,11 +159,19 @@ pub fn build_goal_context(
 ) -> String {
     let mut context = String::with_capacity(MAX_GOAL_CONTEXT_CHARS);
 
-    context.push_str("<goal-context>\n");
+    context.push_str(GOAL_CONTEXT_OPEN_TAG);
+    context.push('\n');
     context.push_str(&format!(
         "goal: {}\nstatus: {:?}\nphase: {:?}\ncriteria_version: {}\n",
         goal.id, goal.status, goal.phase, goal.criteria_version
     ));
+
+    // The standing instruction rides in every activation, not only the last
+    // one. The `<goal-budget-reminder>` in the agent loop can only fire on a
+    // turn-cap stop, which a run that ends on `no_progress` (or a yield) never
+    // reaches — and the durable record then holds no checkpoint at all
+    // (2026-10-18).
+    push_section(&mut context, "checkpoint-protocol", CHECKPOINT_PROTOCOL);
 
     push_section(
         &mut context,
@@ -270,10 +297,16 @@ pub fn build_goal_context(
     };
     push_section(&mut context, "recent-events", &listing);
 
-    context.push_str("</goal-context>");
     // Backstop: the per-section caps above keep the document under the cap, so
-    // this only fires if a future section forgets to bound itself.
-    bounded(&context, MAX_GOAL_CONTEXT_CHARS)
+    // this only fires if a future section forgets to bound itself. The closing
+    // tag is appended *after* the bound so a truncated document is still a
+    // closed frame — a reader that matches the opening tag must never be handed
+    // half a context.
+    let body = bounded(
+        &context,
+        MAX_GOAL_CONTEXT_CHARS.saturating_sub(GOAL_CONTEXT_CLOSE_TAG.chars().count()),
+    );
+    format!("{body}{GOAL_CONTEXT_CLOSE_TAG}")
 }
 
 /// Writes one labelled section. The labels are the trust boundary: model- and
@@ -783,6 +816,34 @@ impl GoalRunner {
             String::new()
         };
         let self_attested_note = format!("verification: none (self-attested){report_suffix}");
+        // Whether this run left a checkpoint behind is part of what the run
+        // did, so it is decided before the finish transaction and recorded
+        // with it: a run that wrote none leaves the next activation to
+        // re-discover everything, and both the log line and the durable
+        // `run_finished` event have to say so instead of leaving the user to
+        // infer it from an empty history (2026-10-18).
+        //
+        // A failed probe reports "checkpointed": this note asserts a negative
+        // ("none was written"), and an unverified negative is worse than the
+        // silence it replaces.
+        let checkpointed = self
+            .goal_manager
+            .has_event_of_kind_since(&goal.id, "checkpoint", run.started_at)
+            .await
+            .unwrap_or(true);
+        let mut notes = Vec::with_capacity(2);
+        if self_attested {
+            notes.push(self_attested_note.as_str());
+        }
+        // Only when the Goal can still be run again: a terminal Goal never
+        // starts another activation, so "nothing was checkpointed" would read
+        // as a defect where nothing is owed.
+        let final_status = transitions.last().copied().unwrap_or(goal.status);
+        let reports_no_checkpoint = !checkpointed && !final_status.is_terminal();
+        if reports_no_checkpoint {
+            notes.push(NO_CHECKPOINT_NOTE);
+        }
+        let note = (!notes.is_empty()).then(|| notes.join("; "));
         let mut from = goal.status;
         let mut writes = Vec::with_capacity(transitions.len());
         for next in transitions {
@@ -802,13 +863,7 @@ impl GoalRunner {
             ));
             from = next;
         }
-        let event = finished_run_event(
-            &goal.id,
-            from,
-            &run,
-            run_outcome,
-            self_attested.then_some(self_attested_note.as_str()),
-        );
+        let event = finished_run_event(&goal.id, from, &run, run_outcome, note.as_deref());
         let (_, updated) = self
             .goal_manager
             .finish_run_and_transition(token, run, writes, event)
@@ -816,11 +871,33 @@ impl GoalRunner {
             .with_context(|| format!("failed to finish and record the goal run for {}", goal.id))?;
         goal = updated;
 
+        // A `running` Goal with no active run has no executor: saying only
+        // "run finished" next to a panel row that reads `running` is the
+        // contradiction the idle marker exists to resolve (Ch 28 §9), so the
+        // line that ends the run also names the way to continue it.
+        let idle = goal.status == GoalStatus::Running
+            && self
+                .goal_manager
+                .list_running_runs()
+                .await
+                .map(|runs| !runs.iter().any(|active| active.goal_id == goal.id))
+                .unwrap_or(false);
+
         agent.emit_update(AgentUpdate::Info(format!(
-            "🎯 {} run finished: {run_outcome:?}{}",
+            "🎯 {} run finished: {run_outcome:?}{}{}{}",
             goal.id,
             if self_attested {
                 " (self-attested: no acceptance criteria)"
+            } else {
+                ""
+            },
+            if reports_no_checkpoint {
+                " (no checkpoint written)"
+            } else {
+                ""
+            },
+            if idle {
+                " — Goal idle; /goal resume to continue"
             } else {
                 ""
             }
@@ -922,7 +999,9 @@ impl GoalRunner {
 
             agent.max_turns = Some(agent.turns_taken.saturating_add(self.remaining_turns(run)));
             let activation = agent
-                .agent_loop_detailed(Some(Message::new_text(Role::User, injected)))
+                .agent_loop_detailed(Some(
+                    Message::new_text(Role::User, injected).with_kind(MessageKind::GoalContext),
+                ))
                 .await;
             agent.max_turns = previous_max_turns;
 
@@ -1427,6 +1506,171 @@ mod tests {
                 .any(|update| matches!(update, AgentUpdate::Info(text) if text.starts_with("🎯"))),
             "the activation is announced after it is persisted: {updates:?}"
         );
+    }
+
+    /// The context the runner injects is marked as its own kind: it is not a
+    /// user turn, and the marker has to survive as the *only* signal a reloaded
+    /// session has (compaction rebuild and TUI history both filter on it).
+    #[tokio::test]
+    async fn run_once_injects_the_goal_context_as_a_goal_context_cell() {
+        install_test_config();
+        let mock = MockClient::new(vec![(vec![text_block("done")], Some(StopReason::EndTurn))]);
+        let (mut agent, _work_dir) = build_test_agent(mock, None);
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "context cell",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
+        runner.run_once(&mut agent, &goal.id).await.unwrap();
+
+        let injected = agent
+            .runtime
+            .context
+            .iter()
+            .find(|message| message.is_goal_context())
+            .expect("the activation context is in the conversation");
+        let text = match &injected.content {
+            tact_llm::MessageContent::Text { content } => content.clone(),
+            other => panic!("the injected context is plain text, got {other:?}"),
+        };
+        assert!(
+            tact::goal::is_goal_context_text(&text),
+            "the marker text is what a reload has to work from: {text}"
+        );
+        assert!(
+            !tact::compact::collect_user_messages(&agent.runtime.context)
+                .iter()
+                .any(|message| message.is_goal_context()),
+            "the injected context must not survive a compaction rebuild as a user turn"
+        );
+    }
+
+    /// A run that wrote no checkpoint says so where the run is announced.
+    ///
+    /// The alternative is what the user saw: a `run finished` line, an empty
+    /// `latest-checkpoint` in the next context, and nothing connecting them
+    /// (2026-10-18).
+    #[tokio::test]
+    async fn run_once_reports_a_run_that_wrote_no_checkpoint() {
+        install_test_config();
+        let (ui_tx, mut ui_rx) = unbounded_channel();
+        let mock = MockClient::new(vec![(
+            vec![text_block("only talk")],
+            Some(StopReason::EndTurn),
+        )]);
+        let (mut agent, _work_dir) = build_test_agent(mock, Some(ui_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "no checkpoint",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
+        runner.run_once(&mut agent, &goal.id).await.unwrap();
+
+        let notice = finish_notice(&mut ui_rx);
+        assert!(
+            notice.contains("(no checkpoint written)"),
+            "the run is honest about leaving nothing behind: {notice}"
+        );
+        assert!(
+            notice.contains("Goal idle"),
+            "the Goal stays running with no executor, so the line says so: {notice}"
+        );
+        let events = manager.list_events(&goal.id).await.unwrap();
+        let finished = run_finished_event(&events, "run_finished").expect("run recorded");
+        assert!(
+            finished
+                .payload
+                .as_deref()
+                .is_some_and(|payload| payload.contains("note=no checkpoint written")),
+            "the durable record carries the same fact as the log line: {finished:?}"
+        );
+    }
+
+    /// The same run *with* a checkpoint stays quiet about it, and a Goal that
+    /// moved to a non-idle status is not advertised as idle.
+    #[tokio::test]
+    async fn run_once_stays_quiet_when_the_run_checkpointed() {
+        install_test_config();
+        let (ui_tx, mut ui_rx) = unbounded_channel();
+        // A checkpoint is an appended Goal event, so this cycle is observable
+        // progress; the second call reports and ends the run. The responder
+        // (not a canned list) is what keeps the mock from cycling back into
+        // another tool call.
+        let mock = MockClient::with_responder(|_request, idx| {
+            Ok(if idx == 0 {
+                (
+                    vec![tool_use(
+                        "checkpoint-1",
+                        "goal_checkpoint",
+                        serde_json::json!({"summary": "half done"}),
+                    )],
+                    Some(StopReason::ToolUse),
+                    None,
+                )
+            } else {
+                (
+                    vec![text_block("checkpointed")],
+                    Some(StopReason::EndTurn),
+                    None,
+                )
+            })
+        });
+        let (mut agent, _work_dir) = build_test_agent(mock, Some(ui_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "checkpointed",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
+        let outcome = runner.run_once(&mut agent, &goal.id).await.unwrap();
+        assert_eq!(
+            outcome,
+            GoalRunOutcome::NoProgress,
+            "the checkpoint is progress; the text-only cycle that follows ends the run"
+        );
+
+        let events = manager.list_events(&goal.id).await.unwrap();
+        assert!(
+            events.iter().any(|event| event.kind == "checkpoint"),
+            "the checkpoint the model wrote is durable: {events:?}"
+        );
+        let notice = finish_notice(&mut ui_rx);
+        assert!(
+            !notice.contains("no checkpoint written"),
+            "a checkpointed run does not need the warning: {notice}"
+        );
+        assert!(
+            notice.contains("Goal idle"),
+            "the run still ended with no executor behind the Goal: {notice}"
+        );
+    }
+
+    /// The `🎯 … run finished: …` line, which is how the run reaches the reader.
+    fn finish_notice(ui_rx: &mut tokio::sync::mpsc::UnboundedReceiver<AgentUpdate>) -> String {
+        let mut notice = None;
+        while let Ok(update) = ui_rx.try_recv() {
+            if let AgentUpdate::Info(text) = update
+                && text.starts_with("🎯")
+                && text.contains("run finished")
+            {
+                notice = Some(text);
+            }
+        }
+        notice.expect("the finished run is announced")
     }
 
     #[tokio::test]
@@ -2650,6 +2894,7 @@ mod tests {
         for label in [
             "<goal-context>",
             "</goal-context>",
+            "<checkpoint-protocol>",
             "<objective>",
             "</objective>",
             "<constraints>",
@@ -2665,6 +2910,11 @@ mod tests {
                 "missing section {label}: {context}"
             );
         }
+        assert!(
+            context.contains("goal_checkpoint"),
+            "the standing checkpoint instruction is carried by every activation, \
+             not only a turn-capped one: {context}"
+        );
         assert!(
             context.contains("the release is published"),
             "required criteria are summarised: {context}"
@@ -3023,6 +3273,13 @@ mod tests {
                 .as_deref()
                 .is_some_and(|payload| payload.contains("self-attested"))),
             "the status transition says so too: {events:?}"
+        );
+        assert!(
+            !finished
+                .payload
+                .as_deref()
+                .is_some_and(|payload| payload.contains(NO_CHECKPOINT_NOTE)),
+            "a finished Goal owes no further checkpoint: {finished:?}"
         );
     }
 }
