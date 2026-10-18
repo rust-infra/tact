@@ -42,6 +42,17 @@ pub struct GoalClaimInput {
 pub struct GoalProposeCompletionInput {
     #[schemars(description = "Non-empty completion summary.")]
     pub summary: String,
+    /// What the model says it ran to check its own work — e.g.
+    /// "cargo test --workspace: 1405 passed". These are recorded as the
+    /// model's self-report, never as acceptance evidence.
+    #[serde(default)]
+    #[schemars(
+        description = "Self-reported verification steps, one per entry (for example: \
+                       \"cargo test --workspace: all green\"). Recorded verbatim as an \
+                       untrusted self-report; they are not acceptance evidence.",
+        default
+    )]
+    pub checks: Vec<String>,
     pub claims: Vec<GoalClaimInput>,
 }
 
@@ -93,7 +104,8 @@ pub const GOAL_REQUEST_INPUT_METADATA: ToolMetadata = goal_metadata(
 );
 pub const GOAL_PROPOSE_COMPLETION_METADATA: ToolMetadata = goal_metadata(
     "goal_propose_completion",
-    "Propose Goal completion with untrusted criterion claims.",
+    "Propose Goal completion with untrusted criterion claims and, when you can, \
+     self-reported checks of what you ran.",
     PermissionPolicy::Write,
     ResourcePolicy::SharedState { scope: "goal" },
 );
@@ -184,6 +196,11 @@ pub async fn goal_propose_completion(
 ) -> Result<String> {
     let goal_id = active_goal_id(&ctx)?;
     let summary = non_empty(input.summary, "summary")?;
+    let checks: Vec<String> = input
+        .checks
+        .into_iter()
+        .map(|check| non_empty(check, "checks"))
+        .collect::<Result<_>>()?;
     let claims: Vec<_> = input
         .claims
         .into_iter()
@@ -201,7 +218,13 @@ pub async fn goal_propose_completion(
         .append_event(event(
             goal_id,
             "completion_proposed",
-            serde_json::json!({"summary": summary, "claims": claims}),
+            serde_json::json!({
+                "summary": summary,
+                // The model's own account of how it checked its work. Kept
+                // next to — never in place of — acceptance evidence.
+                "self_reported_checks": checks,
+                "claims": claims,
+            }),
         )?)
         .await?;
     Ok("Completion proposal recorded; yield to Runner for verification.".to_string())
@@ -570,7 +593,18 @@ mod goal_tool_tests {
         let router = ToolRouter::new()
             .route(crate::tool::goal::GoalProposeCompletionTool)
             .unwrap();
-        router.call(&context, "goal_propose_completion", serde_json::json!({"summary": "trust me", "claims": [{"criterion_id": "criterion-1", "claim": "passed"}]})).await.unwrap();
+        router
+            .call(
+                &context,
+                "goal_propose_completion",
+                serde_json::json!({
+                    "summary": "trust me",
+                    "checks": ["cargo test --workspace: all green"],
+                    "claims": [{"criterion_id": "criterion-1", "claim": "passed"}]
+                }),
+            )
+            .await
+            .unwrap();
         let after = context.goal_manager.get(&goal_id).await.unwrap();
         assert_eq!(after.status, before.status);
         assert_eq!(after.criteria, before.criteria);
@@ -586,6 +620,10 @@ mod goal_tool_tests {
             serde_json::from_str(event.payload.as_deref().unwrap()).unwrap();
         assert_eq!(payload["claims"][0]["claim"], "passed");
         assert_eq!(payload["claims"][0]["untrusted"], true);
+        assert_eq!(
+            payload["self_reported_checks"][0], "cargo test --workspace: all green",
+            "the model's own account is recorded next to — never as — evidence"
+        );
     }
 
     #[test]

@@ -403,6 +403,7 @@ scroll 后 cell 仅部分可见时 `LogColumnRenderer` 调用 `render_partial` �
 
 - 完整的 ```mermaid fenced block 在主日志区渲染为**终端图**，不再生成 code card。
 - 支持的图类型跟随固定的 `ratatui-markdown` Mermaid 渲染器（flowchart/graph、pie、gantt、stateDiagram、classDiagram、quadrantChart、block）。`sequenceDiagram` 使用 Tact 自有渲染器（`mermaid_sequence.rs`），以正确处理别名、`+/-` 激活简写以及 CJK/宽字符标签对齐；不支持的图类型回退为代码。
+- **两条已知边界**（2026-10-17）：带 `: 标签` 的 `stateDiagram` **有意不渲染**——上游解析会把标签并进节点名，画出来不是那个状态机，因此直接回退成源码（见 [第 26 章](./26_chapter_issue_zh.md)）；flowchart 的分层布局要求**无环**，带自环或回边的图会把环上的节点堆进同一行、标签互相覆盖，`docs/state_machines.md` 因此改用纯文本状态图。
 - 流式渲染会缓冲整个 block 直到闭合 fence；渲染成功时 diagram 行直接拼接进日志，**不创建 code card**。fence 正文保留在 `MermaidBlock` 中，供双击打开弹窗。
 - **双击**任意 diagram 行 → Mermaid 弹窗。自 2026-09-11 起，弹窗默认显示**已渲染的图**，并以弹窗宽度（约占 frame 的 80%）而非更窄的日志面板重新排版，因此密集的 flowchart 也能看清；**`Tab`** 在渲染图与原始 fence 正文之间切换。两种视图下 **`y`** 均复制 Mermaid 源码。主区选区 / Normal **`y`** 仍复制可见 ASCII 图。
 - 无法渲染的图（例如 pinned 渲染器不解析的 Mermaid `style` / `classDef` / `linkStyle`）会在弹窗中显示源码，并明确标注「does not render」，而不是静默显示空白。

@@ -199,7 +199,14 @@ pub trait GoalStore: Send + Sync {
         run_event: GoalEvent,
     ) -> Result<(GoalRun, Goal)>;
     async fn list_running_runs(&self) -> Result<Vec<GoalRun>>;
-    async fn recover_expired_active_runs(&self) -> Result<Vec<GoalRun>>;
+    /// Interrupts active runs whose execution lease can no longer belong to a
+    /// live process — expired, or written by a process that is gone.
+    ///
+    /// Both halves matter after a restart: a crashed runner leaves `expires_at`
+    /// in the future for up to the whole TTL (`max_elapsed + 60s`), and
+    /// interrupting only on expiry would show a Goal as `running` while nothing
+    /// runs it.
+    async fn recover_dead_active_runs(&self) -> Result<Vec<GoalRun>>;
 }
 
 mod sqlite;

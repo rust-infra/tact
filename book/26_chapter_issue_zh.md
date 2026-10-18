@@ -4,6 +4,138 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-17 — 活着的持有者不再被当成死的：lease 按 errno 判定存活
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：别的 uid 的活 Runner 不再被抢占 lease / 中断 Run；多进程首次打开同一个旧库不再因迁移竞态报错） |
+| **Related** | `crates/tact/src/store/process_identity.rs`、`crates/tact/src/store/goal_store/sqlite.rs`、`crates/tact/src/store/session_store/sqlite.rs`、`book/28_chapter_goal_zh.md` §7 |
+
+**现象 / 动机：** 2026-10-17 的 lease 持有者存活判定把「探测没成功」一律当成「进程已死」。但探测**别的 uid** 的活进程只会得到 `EPERM`——`kill -0 1` 报 `Operation not permitted`（exit 1，与「无此进程」无法区分），macOS `proc_pidinfo` 返回 `ret=0/EPERM`，Linux `/proc/<pid>/stat` 报 `EACCES`。`EPERM` 恰恰证明该 pid **存在**。于是一个 root 持有 lease（容器 / devcontainer 里 root 拥有工作区很常见）时，普通用户的 `tact-ui` 会把它的 lease 判死：`recover_dead_active_runs` 或 15 秒定时对账中断它的活动 Run、把它的 Goal 落 `paused`（stop reason `lease holder is gone`），并把 epoch+1 的 lease 发给新进程——**两个 Runner 同时推进同一个 Goal**，正是 lease 要防的事。第二个坑来自改判本身：`u32::MAX as libc::pid_t` 会变成 `-1`，而 `kill(-1, 0)` 的含义是「我所有能发信号的进程」，返回成功。
+
+**决策：**
+1. **按 errno 区分「不存在」与「不可读」**：`is_process_alive` 改用 `libc::kill(pid, 0)`（原来 fork 一个 `kill -0` 子进程，错误码在 `status()` 里已被抹平），只有 `ESRCH` 判死，`EPERM` 判活；超出 `i32::MAX` 的 pid 直接判死（防 `-1`）；Windows 同理由 `GetLastError()` 区分 `ERROR_INVALID_PARAMETER` 与 `ERROR_ACCESS_DENIED`。`libc` 本来就是 `tact` 的依赖，未新增 crate。
+2. **`holder_is_alive` 把「活着但身份不可读」当成不可核验**：进程存在时，身份读得到就比对（`Some` 不匹配 = PID 复用 = 死），读不到就返回存活、退回 TTL 语义。这正是该模块文档本来承诺的「不可核验 ⇒ 存活」，此前只在空 identity / 外部平台前缀上成立。
+3. **session lock 保持自己的策略**：它**不**共用 `holder_is_alive`。Goal lease 把无法识别的 identity 视为「可能是别的主机上的持有者，继续等」，而 session lock 的 `lock_epoch` 是本地含义，无法识别的 epoch 就是陈旧锁、必须可被接管（否则崩溃过的会话永远打不开）。两者只共用存活原语；session lock 同步补上「活着但不可读 ⇒ 拒绝接管」这一条。
+4. **迁移竞态吸收**：`migrate_goal_leases_holder` 的「PRAGMA 查列 + 无条件 ALTER」是 TOCTOU，两个进程同时打开旧库（一个 headless + 一个 TUI）时后者拿到 `duplicate column name` 并让 `SqliteGoalStore::new` 整个失败。改为 `add_lease_column`：把「列已存在」类的失败视为成功（列确实已存在），其他失败照常上抛。
+
+**改后行为：** 死掉/不存在的持有者仍被立即回收（TTL 不用等满）；活着的持有者——包括别的 uid、读不到身份的——一律不抢，最坏退回原来的 TTL 语义（11 分钟）。跨 uid 的 PID 复用无法核验，因此该场景由「立刻误判为死」变成「等 TTL」，方向是安全的：误判「死」会破坏互斥，误判「活」只推迟接管。旧库并发首次打开不再报错。
+
+**验证：** `cargo test -p tact --lib`（1405 全绿，新增 `a_process_we_may_not_describe_is_alive`——用 pid 1 覆盖 EPERM 分支，无需第二个 uid；新增 `a_lost_migration_race_does_not_fail_store_construction`——直接驱动迁移竞态的败方，并确认非竞态失败仍上抛）、`store::process_identity`（5）、`store::goal_store::`（31）、`cargo test -p tact-ui --lib`（120）、`-p tact-ui --test driver_integration`（10）、`-p agent_tui_kit --lib`（427）、`-p tui --lib`（747）、`-p tact_protocol --lib`（27）；`cargo clippy --all-targets -D warnings` 与 `cargo fmt --all --check` 干净。**踩坑记录**：把 session lock 改成直接委托 `holder_is_alive` 会让 `test_session_lock_steals_stale_epoch` 失败——那是既定行为（陈旧 epoch 必须可接管），说明两把锁的 identity 语义本就不同，不能只按「同一个谓词」合并。
+
+**Pointers:** `store::process_identity::{is_process_alive, holder_is_alive, process_identity}`、`SqliteGoalStore::{migrate_goal_leases_holder, add_lease_column, lease_has_column}`、`session_store::sqlite::is_active_lock_holder`；评审记录 `docs/reviews/2026-10-17-lease-holder-liveness-review.md`。
+
+## 1. 2026-10-18 — 模型自述检查入库；CLI 可用 `--` 声明 Human 标准
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat（用户可见：`/goal create <objective> -- <标准>; <标准>` 可直接声明验收门禁；完成记录附模型自述的检查） |
+| **Related** | `crates/tact/src/tool/goal.rs`、`crates/tact-ui/src/goal_runner.rs`、`crates/tui/src/handlers/mod.rs`、`book/28_chapter_goal_zh.md` §2/§6/§12 |
+
+**动机：** 上一轮把验收标准改成可选后，默认 Goal 走 self-attested 完成（对齐 Codex），但留下两个缺口：完成记录只有一句「模型说做完了」，没有任何模型自述的检查；同时 CLI 没有任何入口声明 Human 标准，想要硬门禁只能走 API。
+
+**决策（B2 暂不做，保持与 Codex 一致的自证完成）：**
+
+1. **模型自述检查**：`goal_propose_completion` 增加可选 `checks: []`（例如「cargo test --workspace: 1405 passed」）。事件存为 `self_reported_checks`；self-attested 完成时，`status_changed` 与 `run_finished` 追加 `; model-reported checks: …`（每条 ≤120 字符、最多 4 条、经 `neutralise`）。它是模型的说法，**不是** evidence，不会把 Goal 变成 verified。
+2. **CLI 标准入口**：`/goal create <objective> -- <标准>; <标准>`。`--` 之前是标题/objective，之后按 `;` 切成非空片段，每条成为必需的 Human 标准；不写 `--` 段仍是「无标准、自证完成」。用 `--` 而不是其它分隔符，避免破坏带连字符的普通 objective。
+3. **不做执行型验证**：不引入 `goal_check` 之类真正执行命令并写 evidence 的工具；需要硬门禁时用 Human 标准 + `/goal accept`。
+
+**改后行为：** 无标准 Goal 完成后，事件里能看到模型自述跑过什么；声明标准后 Goal 会正常停在 `waiting_user` 等 `/goal accept`，这是显式门禁而非默认路径。
+
+**验证：** `cargo test -p tui --lib goal_create`（3，含 `--` 解析与「不带 `--` 时连字符保留在 objective」）；`cargo test -p tact --lib goal_tool`（11，含 `self_reported_checks` 落库）；`cargo test -p tact-ui --lib run_once_completes_a_criterialess`（完成记录含 model-reported checks）。
+
+**Pointers:** `GoalProposeCompletionInput::checks`、`GoalRunner::self_reported_checks`、`handlers::create_goal_command`。
+
+## 1. 2026-10-18 — 回复 `waiting_user` 的提问即续跑 Goal
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：Goal 提问后，用户下一条普通消息自动成为回答并续跑，不必再敲 `/goal resume`） |
+| **Related** | `crates/tact-ui/src/driver.rs`（`goal_awaiting_answer`、`SubmitTask` 分支）、`book/28_chapter_goal_zh.md` §2 |
+
+**现象 / 动机：** `goal_request_input` 让 Run 以 `NeedsUser` 结束、Goal 落 `waiting_user`，但生产代码里 `WaitingUser → Running` 只发生在 `/goal resume`。用户在聊天里回一句「用 postgres」，那只是一个普通回合：回答进了会话，Goal 却永远停在 `waiting_user`——唯一自然的交互方式反而是无效的。
+
+**决策：** 把「回答」接回 Goal，但只在不歧义时：
+
+1. 候选 Goal 必须 `waiting_user`，且它的 `needs_user` 事件**晚于**最后一次 `Running` 转移（即它真的在等回答）。
+2. 工作区里必须**恰好一个**这样的 Goal；两个就退回普通回合，避免猜错目标。
+3. 消息不含 `@文件` / `![图片]` 引用（这类引用会被展开成附件内容，记进 Goal 事件就丢了），这类消息仍走普通回合。
+4. 命中时：写 `user_answer` 事件 → 日志说明「消息已作为回答，正在续跑」→ 直接走 `/goal resume` 的同一入口。
+
+停在 `waiting_user` 等人工验收（Human 标准）的 Goal **不**吃普通消息——那需要 `/goal accept` 写 evidence，两者的意图不同。
+
+**改后行为：** 模型问一句、用户答一句，Goal 自己继续跑；不需要额外命令。歧义或带附件的消息行为不变。
+
+**验证：** `cargo test -p tact-ui --lib driver::tests::`（41，新增 3 条：提问后回复会记 `user_answer` 并续跑；等验收的 Goal 不会吞掉消息；两个待答 Goal 时视为歧义）；`cargo test -p tact-ui --lib`（123 全绿）。
+
+**Pointers:** `driver::{goal_awaiting_answer, handle_user_command}` 的 `SubmitTask` 分支。
+
+## 1. 2026-10-18 — 验收标准改为可选：默认 Goal 不再必然停在 `waiting_user`
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix / 行为变更（用户可见：`/goal create` 的 Goal 完成后直接 `succeeded`，不再要求 `/goal accept`；有必需标准的 Goal 行为不变） |
+| **Related** | `crates/tact/src/goal/{mod.rs,verifier.rs}`、`crates/tact-ui/src/{driver.rs,goal_runner.rs}`、`book/28_chapter_goal_zh.md` §2/§6/§12 |
+
+**现象 / 动机：** 交互式 `/goal create` 不传标准，driver 就补一条必需的 Human 标准「User accepts the completed result」；而生产代码里唯一能写 evidence 的路径是 `/goal accept`。两条叠起来意味着**每个** Goal 都必然走 `running → waiting_user → accept → succeeded`：用户点接受时并没有验证过任何东西，只是把「模型说做完了」盖章成「用户验收过」，多出一个状态、一次必然等待，还制造了「模型自述 == 用户验收」的假证据。更糟的是这条标准用户既没写、界面上也看不到。
+
+**决策：** 验收标准改为**可选**，不再伪造默认标准。
+
+1. `GoalManager::create` / criteria 更新不再要求至少一条 required 标准；Automatic 仍然拒绝（生产环境没有它的 evidence 生产者，会变成不可完成的 Goal）。
+2. `Goal::validate_acceptance` 只检查 required 标准；没有 required 标准时vacuous 通过。新增 `Goal::has_required_criteria()` 供调用方判断。
+3. `GoalVerifier::verify`：无 required 标准 → `Verified`（不再返回「需要人工定义标准」的 `NeedsUser`/`Rejected{空}`）。
+4. **自证完成必须留痕**：`GoalRunner` 在完成时写 `status_changed` = `completion self-attested: the Goal has no required acceptance criteria`、`run_finished` = `note=verification: none (self-attested)`，日志行带 `(self-attested: no acceptance criteria)`。
+5. `/goal create` 不再注入默认标准，创建提示里说明该 Goal 将以 self-attested 完成；对没有待验收项的 Goal 执行 `/goal accept` 会给出明确提示而不是静默失败。
+
+**改后行为：** 默认路径是 `running → verifying → succeeded`，零等待；`waiting_user` 只剩「模型真的请求输入」和「必需 Human 标准待验收」两种进入方式。声明了标准的 Goal 仍需 `accept` 与 evidence，行为完全不变。
+
+**验证：** `cargo test -p tact --lib goal::`（43，含改写后的 `goal_without_required_criteria_verifies_vacuously`、`success_allows_a_goal_without_acceptance_criteria`、`manager_allows_criterialess_goals_and_refuses_automatic_ones`）；`cargo test -p tact --lib`（1405 全绿）；`cargo test -p tact-ui --lib`（120，新增 `run_once_completes_a_criterialess_goal_as_self_attested`）；`cargo test -p tact-ui --test driver_integration`（10）。
+
+**Pointers:** `Goal::has_required_criteria` / `validate_acceptance`、`validate_supported_criteria`、`GoalVerifier::verify`、`GoalRunner::run_with_lease` 的完成事件、`driver::create_goal` / `accept_goal`。
+
+## 1. 2026-10-17 — 带标签的 stateDiagram 不再画错：TUI 回退成源码
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：TUI 里带 `: 标签` 的 `stateDiagram-v2` 不再画出错误节点名，改为按不支持语法回退显示源码） |
+| **Related** | `crates/agent_tui_kit/src/render/render_md.rs`；`book/28_chapter_goal_zh.md` §2；`docs/state_machines.md` |
+
+**现象 / 动机：** 上游 `ratatui-markdown` 的 state 解析器把每条转移的 `to_raw`（`-->` 之后的整段文本）同时当作**节点 id** 与**节点标签**，于是 `Idle --> Planning: startup` 画出一个叫 `Planning: startup` 的节点，`classDef` 被忽略、标签全部丢失——图不是这个状态机，而是它的走样版本。第 28 章新加的操作流程状态机（以及 `docs/state_machines.md` 里的五张图）都会命中。
+
+**决策：** 在 `render_mermaid_block` 里加守卫：第一行是 `stateDiagram` 且任一转移带 `: label` 时直接返回 `None`，走既有的「不支持语法 → 显示源码（弹窗另加一行提示）」路径。**不**采用「剥掉标签再画」——那会静默丢掉转移的触发条件，比回退更误导。无标签的 stateDiagram 照常渲染。
+
+**改后行为：** 带标签的状态机在日志/弹窗里显示为源码块（可读、可复制、不失真）；无标签的仍画图。flowchart / sequenceDiagram 的既有路径不变。
+
+**验证：** `cargo test -p agent_tui_kit --lib state_diagram`（2 条：带标签回退、无标签仍渲染）；`cargo test -p agent_tui_kit --lib`（427 全绿）、`cargo test -p tui --lib`（747 全绿）。
+
+**连带修正：** `docs/state_machines.md` 里 6 张带标签的 `stateDiagram-v2`（§1/§2/§3/§4/§5/§8）改成**纯文本转移图**（```text fence，`From ──trigger──▶ To` 一行一条边）。原因写在文档开头：这些状态机是有环的，而 TUI 的 flowchart 分层要求无环（自环/回边会把环上节点压进同一行并让标签互相覆盖），换成 flowchart 只是把「画错」换成「另一种画错」；纯文本在 TUI、GitHub、编辑器里完全一致。
+
+**Pointers:** `crates/agent_tui_kit/src/render/render_md.rs` 的 `render_mermaid_block` / `has_labelled_state_transitions`；`docs/state_machines.md` 开头与六处 §State transitions；[Ch 23](./23_chapter_tui_zh.md) 的 Mermaid 支持列表。
+
+## 1. 2026-10-17 — Goal lease 按「持有进程是否还在」接管：重启后不再停在「running 但没人跑」
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：崩溃/强杀后重启 tact-ui，stranded Goal 立刻落 `paused`，不再等满 lease TTL；TTL 窗口内的 `/goal resume` 不再报「lease is held」） |
+| **Related** | `crates/tact/src/store/process_identity.rs`（原 `store/session_store/process_identity.rs`）、`crates/tact/src/store/goal_store/{mod.rs,sqlite.rs}`、`crates/tact/src/goal/mod.rs`、`crates/tact-ui/src/goal_runner.rs`、`book/28_chapter_goal_zh.md` §7、`book/01_chapter_store_zh.md`、`docs/superpowers/specs/2026-10-14-agent-goal-design.md` |
+
+**现象 / 动机：** Goal 跑到一半把 tact-ui 杀掉（或崩溃），重启后面板仍显示 `running`，但没有任何执行者。原因有两层：`recover_interrupted` 只在 lease **过期**时才中断活动 Run，而 lease 的 TTL 是 `max_elapsed + 60s`（默认 11 分钟）且 Run 存活期间按 `TTL/3` 心跳续期——进程刚死时 lease 依然「有效」；第二步「Goal 是 Running 但没有活动 Run 就落 Paused」又因为 Run 行还是 `running` 被跳过。于是状态卡在 `running`，且不会自愈：`recover_*` 只在启动时调用一次，这段时间里 `/goal resume` 会撞上 `LeaseHeld`，报错里的 owner 还是用户自己（owner 串里带 pid + 随机后缀）。
+
+**决策：**
+
+1. **lease 记录持有进程身份**：`goal_leases` 增加 `holder_pid` / `holder_identity`（`process_identity(pid)` 的 start-time 身份），claim 与接管两条写入路径都落这两个字段；老库用幂等 `PRAGMA table_info` + `ALTER TABLE` 迁移，老行保留 `0` / `''`。
+2. **「有效」= TTL 未到 且 持有者仍是那个进程**：新增共享模块 `store/process_identity.rs`（从 `session_store/` 上移），导出 `is_process_alive`、`holder_is_alive(pid, identity)`。pid 存活但 start-time 身份不匹配（PID 复用）判为已死；identity 为空或来自其他平台判为**不可核验**，退回纯时间过期语义，绝不抢可能仍活着的持有者。
+3. **接管与恢复共用同一判据**：`lease_tx` 的接管分支、`recover_expired_active_runs` → 改名 `recover_dead_active_runs` 都按 `expired || holder gone` 判定；stop reason 区分 `lease expired` / `lease holder is gone`，`recover_interrupted` 把这句原因写进 Run 事件（`note=interrupted: …`）而不是固定的「lease expired」。
+4. **保守放行**：活着的持有者（包括同进程再次 claim）行为完全不变，仍是 `LeaseHeld`；只有可证已死的持有者才会被接管。
+5. **恢复改由两个时机触发**：启动时仍是全量 `GoalRunner::recover_interrupted`；命令循环新增 15 秒一次的 `reconcile_dead_runs`，覆盖「本进程活着、别人的 holder 死了」的窗口。定时版只落它刚中断的 Goal，不落 idle `running`（那是本轮 `no_progress` 的合法落点，后台不得按暂停）。
+6. **面板不再替幽灵执行者背书**：`GoalSnapshot::run_budget` 为 `None` 且状态是 `running` 时，面板行显示 `running (idle)`；`/goal pause` 对这类没活动 Run 的 Goal 直接生效，就是它的出口。
+
+**改后行为：** 崩溃后重启，启动恢复在同一趟里把活动 Run 标成 `interrupted`、把 stranded Goal 落成 `paused`（可 `/goal resume`），不再出现「running 但没人跑」的窗口；TTL 内 `/goal resume` 对死持有者的 lease 直接接管成功；进程不重启也能在 15 秒内回收另一个持有者已消失的 Run。面板把「有 activation 在飞」与「idle running」区分开显示。跨主机共享同一 DB 的部署仍是时间语义（identity 前缀对不上），最坏退化为原来的 11 分钟。
+
+**验证：** `cargo test -p tact --lib store::goal_store::`（30，新增 6 条：死持有者可接管、活持有者不可抢、legacy 行退回过期、恢复中断死持有者的 Run、恢复不动活持有者的 Run、schema 迁移幂等）、`cargo test -p tact --lib store::process_identity`（4）、`cargo test -p tact --lib`（1403 全绿）、`cargo test -p tact-ui --lib`（120，新增 `reconcile_dead_runs_parks_only_the_goals_whose_run_was_interrupted` 与两条 `reconcile_goal_runs` 收发用例）、`cargo test -p tact-ui --test driver_integration`（10，含 `command_loop_recovers_an_interrupted_goal_run`）、`cargo test -p agent_tui_kit --lib`（425，新增 `running_goals_without_an_active_run_are_marked_idle`）、`cargo test -p tui --lib`（747）。`cargo fmt --all`、`cargo clippy --all-targets` 无告警。定时分支本身由 `reconcile_goal_runs` 的直接调用覆盖，没有做真实 15s 时钟的集成测试——tact-ui 现有测试栈没有暂停时钟，硬等会让用例变慢且脆。
+
+**Pointers:** `SqliteGoalStore::{migrate_goal_leases_holder,lease_tx,recover_dead_active_runs}`、`store::process_identity::{process_identity,is_process_alive,holder_is_alive,current_process}`、`GoalRunner::recover_interrupted`、`book/28_chapter_goal_zh.md` §7「Lease 与写入隔离 / 崩溃恢复与取消」。
+
 ## 1. 2026-10-17 — Goal 执行控制与 lease 第二轮修复
 
 | Field | Value |

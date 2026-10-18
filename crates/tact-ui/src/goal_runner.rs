@@ -386,33 +386,44 @@ impl GoalRunner {
         result
     }
 
-    /// Reconciles durable Goal/run state after a restart or a crash.
+    /// Pass one of recovery: interrupts active runs whose lease expired or
+    /// whose holder process is gone, and records why in the Goal's history.
     ///
-    /// 1. Interrupts active runs whose lease expired.
-    /// 2. Any Goal left `Running` with no active run is moved to `Paused`
-    ///    (durable, resumable, never silently successful).
-    pub async fn recover_interrupted(&self) -> Result<Vec<GoalRun>> {
+    /// The store clears the run rows; this is the half that makes the change
+    /// explainable. It never touches a Goal, so it is safe to run on a timer.
+    pub async fn recover_dead_runs(&self) -> Result<Vec<GoalRun>> {
         let interrupted = self
             .goal_manager
-            .recover_expired_active_runs()
+            .recover_dead_active_runs()
             .await
-            .context("failed to interrupt goal runs with an expired lease")?;
+            .context("failed to interrupt goal runs whose lease died with its holder")?;
 
         for run in &interrupted {
             // The store interrupts the run row without touching the Goal's
             // history, so record it: a restart must be able to explain why the
             // Goal's state changed.
             if let Ok(goal) = self.goal_manager.get(&run.goal_id).await {
+                let reason = run
+                    .stop_reason
+                    .clone()
+                    .unwrap_or_else(|| "lease reclaimed".to_string());
+                let note = format!("interrupted: {reason}");
                 let _ = self
-                    .record_run(
-                        &goal,
-                        run,
-                        GoalRunOutcome::TransientError,
-                        Some("interrupted after the execution lease expired"),
-                    )
+                    .record_run(&goal, run, GoalRunOutcome::TransientError, Some(&note))
                     .await;
             }
         }
+        Ok(interrupted)
+    }
+
+    /// Reconciles durable Goal/run state after a restart or a crash.
+    ///
+    /// 1. [`Self::recover_dead_runs`]: interrupt runs whose lease died with its
+    ///    holder.
+    /// 2. Any Goal left `Running` with no active run is moved to `Paused`
+    ///    (durable, resumable, never silently successful).
+    pub async fn recover_interrupted(&self) -> Result<Vec<GoalRun>> {
+        let interrupted = self.recover_dead_runs().await?;
 
         // Reconcile a crash that landed between `finish_run` and the Goal status
         // write: nothing is active, yet the Goal still claims to be Running.
@@ -444,6 +455,43 @@ impl GoalRunner {
             .await?;
         }
 
+        Ok(interrupted)
+    }
+
+    /// Periodic counterpart of [`Self::recover_interrupted`].
+    ///
+    /// Reclaims runs whose holder died while this process was up, and parks
+    /// **only the Goals whose run it just interrupted**. It deliberately does
+    /// not reuse pass two: a Goal that ended its own run as `no_progress` stays
+    /// `running` by design (Ch 28 §7), and a timer must not turn that into
+    /// `paused` behind the user's back.
+    pub async fn reconcile_dead_runs(&self) -> Result<Vec<GoalRun>> {
+        let interrupted = self.recover_dead_runs().await?;
+        for run in &interrupted {
+            let Ok(goal) = self.goal_manager.get(&run.goal_id).await else {
+                continue;
+            };
+            if goal.status != GoalStatus::Running {
+                continue;
+            }
+            let still_active = self
+                .goal_manager
+                .list_running_runs()
+                .await
+                .context("failed to list active goal runs")?
+                .iter()
+                .any(|active| active.goal_id == goal.id);
+            if still_active {
+                continue;
+            }
+            self.persist_status(
+                &goal,
+                None,
+                GoalStatus::Paused,
+                "run interrupted: lease holder is gone",
+            )
+            .await?;
+        }
         Ok(interrupted)
     }
 
@@ -720,19 +768,47 @@ impl GoalRunner {
         // or a stale CAS can never leave a completed run on a still-`Running`
         // Goal, nor drop the run's outcome from history.
         let reason = format!("run ended as {run_outcome:?}");
+        // A Goal with nothing required has no evidence to point at. Say so in
+        // the durable record instead of letting `succeeded` read as verified.
+        let self_attested =
+            run_outcome == GoalRunOutcome::CompletionProposed && !goal.has_required_criteria();
+        // Carry the model's own account of what it checked. It is a
+        // self-report, never evidence — but an empty record is worse.
+        let report_suffix = if self_attested {
+            self.self_reported_checks(&goal.id, run.started_at)
+                .await
+                .map(|report| format!("; model-reported checks: {report}"))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+        let self_attested_note = format!("verification: none (self-attested){report_suffix}");
         let mut from = goal.status;
         let mut writes = Vec::with_capacity(transitions.len());
         for next in transitions {
+            let event_reason = if self_attested && next == GoalStatus::Succeeded {
+                format!(
+                    "completion self-attested: the Goal has no required acceptance criteria{report_suffix}"
+                )
+            } else {
+                reason.clone()
+            };
             writes.push((
                 GoalUpdate {
                     status: Some(next),
                     ..GoalUpdate::default()
                 },
-                status_event(&goal.id, from, next, &reason),
+                status_event(&goal.id, from, next, &event_reason),
             ));
             from = next;
         }
-        let event = finished_run_event(&goal.id, from, &run, run_outcome, None);
+        let event = finished_run_event(
+            &goal.id,
+            from,
+            &run,
+            run_outcome,
+            self_attested.then_some(self_attested_note.as_str()),
+        );
         let (_, updated) = self
             .goal_manager
             .finish_run_and_transition(token, run, writes, event)
@@ -741,8 +817,13 @@ impl GoalRunner {
         goal = updated;
 
         agent.emit_update(AgentUpdate::Info(format!(
-            "🎯 {} run finished: {run_outcome:?}",
-            goal.id
+            "🎯 {} run finished: {run_outcome:?}{}",
+            goal.id,
+            if self_attested {
+                " (self-attested: no acceptance criteria)"
+            } else {
+                ""
+            }
         )));
         Ok(run_outcome)
     }
@@ -999,7 +1080,9 @@ impl GoalRunner {
         let fresh = self.goal_manager.get(&goal.id).await?;
         Ok(match GoalVerifier::verify(&fresh) {
             // Only a verifier decision reaches `succeed()`, and only through
-            // `Running → Verifying → Succeeded`.
+            // `Running → Verifying → Succeeded`. A Goal with no required
+            // criteria verifies vacuously; the finish path labels that
+            // completion self-attested rather than verified.
             GoalVerification::Verified => (
                 GoalRunOutcome::CompletionProposed,
                 vec![GoalStatus::Verifying, GoalStatus::Succeeded],
@@ -1008,16 +1091,38 @@ impl GoalRunner {
                 (GoalRunOutcome::NeedsUser, vec![GoalStatus::WaitingUser])
             }
             // Unmet automatic checks: the Goal keeps running so the next
-            // activation can repair them.
-            GoalVerification::Rejected { criteria } if !criteria.is_empty() => {
-                (GoalRunOutcome::CompletionProposed, Vec::new())
-            }
-            // The Goal has no required acceptance criteria at all: a human has
-            // to define them, which is the opposite of "unmet checks".
-            GoalVerification::Rejected { criteria: _ } => {
-                (GoalRunOutcome::NeedsUser, vec![GoalStatus::WaitingUser])
-            }
+            // activation can repair them. The verifier never returns an empty
+            // list here — no required criteria verifies vacuously.
+            GoalVerification::Rejected { .. } => (GoalRunOutcome::CompletionProposed, Vec::new()),
         })
+    }
+
+    /// The model's own account of what it checked, taken from this run's
+    /// completion proposal.
+    ///
+    /// Bounded and neutralised: it is untrusted text carried into the event
+    /// log for auditability, never treated as acceptance evidence.
+    async fn self_reported_checks(&self, goal_id: &str, since: DateTime<Utc>) -> Option<String> {
+        let event = self
+            .goal_manager
+            .latest_event_of_kind(goal_id, "completion_proposed")
+            .await
+            .ok()
+            .flatten()?;
+        if event.occurred_at < since {
+            return None;
+        }
+        let value: serde_json::Value = serde_json::from_str(event.payload.as_deref()?).ok()?;
+        let joined = value
+            .get("self_reported_checks")?
+            .as_array()?
+            .iter()
+            .filter_map(|check| check.as_str())
+            .take(4)
+            .map(|check| bounded_untrusted(&one_line(check), 120))
+            .collect::<Vec<_>>()
+            .join("; ");
+        (!joined.is_empty()).then_some(joined)
     }
 
     /// The one Goal-status write site: one legal transition, persisted with the
@@ -2046,8 +2151,8 @@ mod tests {
         async fn list_running_runs(&self) -> anyhow::Result<Vec<GoalRun>> {
             self.inner.list_running_runs().await
         }
-        async fn recover_expired_active_runs(&self) -> anyhow::Result<Vec<GoalRun>> {
-            self.inner.recover_expired_active_runs().await
+        async fn recover_dead_active_runs(&self) -> anyhow::Result<Vec<GoalRun>> {
+            self.inner.recover_dead_active_runs().await
         }
     }
 
@@ -2646,6 +2751,17 @@ mod tests {
             "an interrupted Goal is durably paused, never successful"
         );
         let events = manager.list_events(&goal.id).await.unwrap();
+        let recorded = events
+            .iter()
+            .find(|event| event.run_id.as_deref() == Some(run.id.as_str()))
+            .expect("the Goal's history records the interrupted run");
+        assert!(
+            recorded
+                .payload
+                .as_deref()
+                .is_some_and(|payload| payload.contains("note=interrupted: lease expired")),
+            "the run's own stop reason explains the interruption: {recorded:?}"
+        );
         assert!(
             events
                 .iter()
@@ -2694,6 +2810,68 @@ mod tests {
             manager.get(&goal.id).await.unwrap().status,
             GoalStatus::Paused,
             "a Running Goal with no active run is reconciled to Paused"
+        );
+    }
+
+    /// The timer's reconciliation is narrower than startup recovery: it parks
+    /// the Goals whose run it just interrupted, and leaves an idle `running`
+    /// Goal alone. That idle state is the documented `no_progress` outcome
+    /// (Ch 28 §7) — a background timer must not pause it behind the user.
+    #[tokio::test]
+    async fn reconcile_dead_runs_parks_only_the_goals_whose_run_was_interrupted() {
+        install_test_config();
+        let mock = MockClient::new(vec![]);
+        let (agent, _work_dir) = build_test_agent(mock, None);
+        let manager = agent.tool_context.goal_manager.clone();
+
+        let crashed = create_goal(
+            &manager,
+            "crashed run",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let crashed = drive_status(
+            &manager,
+            crashed,
+            &[GoalStatus::Queued, GoalStatus::Running],
+        )
+        .await;
+        let idle = create_goal(
+            &manager,
+            "idle run",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let idle = drive_status(&manager, idle, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        // A run whose lease lapsed without being released: its holder is gone.
+        let ttl = Duration::from_millis(20);
+        let (_token, run) = manager
+            .start_run("crashed-runner", ttl, GoalRun::new(crashed.id.clone()))
+            .await
+            .unwrap();
+        tokio::time::sleep(Duration::from_millis(60)).await;
+
+        let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
+        let recovered = runner.reconcile_dead_runs().await.unwrap();
+
+        assert_eq!(
+            recovered
+                .iter()
+                .map(|run| run.id.clone())
+                .collect::<Vec<_>>(),
+            vec![run.id.clone()],
+            "the dead run is the only one reclaimed"
+        );
+        assert_eq!(
+            manager.get(&crashed.id).await.unwrap().status,
+            GoalStatus::Paused,
+            "the Goal whose run was interrupted is parked in paused"
+        );
+        assert_eq!(
+            manager.get(&idle.id).await.unwrap().status,
+            GoalStatus::Running,
+            "an idle running Goal is left for the user, not paused by a timer"
         );
     }
 
@@ -2790,20 +2968,61 @@ mod tests {
         );
     }
 
+    /// A Goal with no acceptance criteria is the `/goal create` default: it
+    /// finishes on the model's completion proposal, and the durable record
+    /// says the completion was self-attested rather than verified.
     #[tokio::test]
-    async fn manager_refuses_a_goal_without_required_criteria() {
+    async fn run_once_completes_a_criterialess_goal_as_self_attested() {
         install_test_config();
-        let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), None);
+        let mock = MockClient::new(vec![
+            (
+                vec![tool_use(
+                    "propose-1",
+                    "goal_propose_completion",
+                    serde_json::json!({
+                        "summary": "migration done",
+                        "checks": ["cargo test --workspace: 1405 passed"],
+                        "claims": []
+                    }),
+                )],
+                Some(StopReason::ToolUse),
+            ),
+            (vec![text_block("proposed")], Some(StopReason::EndTurn)),
+        ]);
+        let (mut agent, _work_dir) = build_test_agent(mock, None);
         let manager = agent.tool_context.goal_manager.clone();
-        let error = manager
-            .create(GoalCreate {
-                title: "no required criteria".into(),
-                objective: "must not become a dead end".into(),
-                constraints: Vec::new(),
-                criteria: Vec::new(),
-            })
-            .await
-            .expect_err("a criterialess Goal must be refused at creation");
-        assert!(error.to_string().contains("at least one required"));
+        let goal = create_goal(&manager, "no criteria", vec![]).await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
+        let outcome = runner.run_once(&mut agent, &goal.id).await.unwrap();
+
+        assert_eq!(outcome, GoalRunOutcome::CompletionProposed);
+        assert_eq!(
+            manager.get(&goal.id).await.unwrap().status,
+            GoalStatus::Succeeded,
+            "nothing to verify, so the proposal completes the Goal"
+        );
+        let events = manager.list_events(&goal.id).await.unwrap();
+        let finished = run_finished_event(&events, "run_finished").expect("run recorded");
+        assert!(
+            finished
+                .payload
+                .as_deref()
+                .is_some_and(|payload| payload.contains("note=verification: none (self-attested)")),
+            "the record says the completion was not verified: {finished:?}"
+        );
+        assert!(
+            finished.payload.as_deref().is_some_and(|payload| payload
+                .contains("model-reported checks: cargo test --workspace: 1405 passed")),
+            "the model's own account of what it ran is carried into the record: {finished:?}"
+        );
+        assert!(
+            events.iter().any(|event| event
+                .payload
+                .as_deref()
+                .is_some_and(|payload| payload.contains("self-attested"))),
+            "the status transition says so too: {events:?}"
+        );
     }
 }

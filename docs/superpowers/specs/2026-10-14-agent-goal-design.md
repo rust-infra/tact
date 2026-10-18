@@ -87,14 +87,22 @@ The existing `tasks` table gains a nullable `goal_id` column via idempotent
 
 - One active writer per workspace execution directory. The lease carries an
   instance-unique owner (session label + pid + random suffix), expiry/heartbeat,
+  the **holder process identity** (`holder_pid` + start-time `holder_identity`),
   and a monotonically increasing **fencing epoch**. A live lease is never
   re-issued, even to the same label; only its token holder may heartbeat, finish,
-  or release it.
+  or release it. "Live" means the TTL has not passed **and** the holder process
+  is still that process (2026-10-17): an unexpired lease whose holder is gone is
+  reclaimable at once, while an unverifiable holder (legacy row, foreign
+  platform identity, or a live process on another uid whose start-time identity
+  the kernel will not disclose — `EPERM`, never `ESRCH`) keeps the time-based
+  path. Existence and describability are separate questions: only `ESRCH` is
+  evidence that a holder is gone.
 - All state writes check the current epoch; a stale process whose lease expired
   cannot overwrite newer state.
-- On restart, the runner finds expired leases, marks interrupted Runs as
-  `interrupted`, and creates a new recovery Run — never reusing or overwriting
-  old Run records.
+- On restart, the runner finds leases that expired **or whose holder process is
+  gone**, marks interrupted Runs as `interrupted`, records why, and lets the
+  reconciliation pass pause a `running` Goal with no active Run — never reusing
+  or overwriting old Run records.
 - Recovery reads from SQLite (Goal/Run/Event state) and session transcript, never
   from in-memory futures, channels, or pending queues.
 - Pending permission requests are **not** auto-approved on restart; they re-enter

@@ -6,10 +6,8 @@ use sqlx::{Row, SqlitePool};
 use tact_llm::{Message, MessageContent, MessageKind, ProviderConversationState, Role};
 use tact_protocol::TokenUsageInfo;
 
-use super::{
-    MAX_INPUT_HISTORY, MAX_TOKEN_USAGE_BODIES, MessageCountByPeriod, SessionSummary,
-    process_identity::process_identity,
-};
+use super::{MAX_INPUT_HISTORY, MAX_TOKEN_USAGE_BODIES, MessageCountByPeriod, SessionSummary};
+use crate::store::process_identity::{is_process_alive, process_identity};
 use crate::store::sqlite::{PoolRef, open_pool};
 
 pub struct SqliteSessionStore {
@@ -1079,6 +1077,17 @@ impl SqliteSessionStore {
     }
 }
 
+/// Whether the session lock's recorded holder is still running it.
+///
+/// Deliberately *not* [`holder_is_alive`]: the Goal lease treats an
+/// unrecognised identity as "possibly a holder on another platform, keep
+/// waiting", but a session lock written with an identity that no longer matches
+/// anything is stale and must stay reclaimable — otherwise a crashed session
+/// could never be reopened. What both share is the liveness primitive.
+///
+/// The one rule carried over is the liveness/identity split: a holder that is
+/// alive but whose identity we are not allowed to read (another uid's process)
+/// is *not* evidence of a stale lock, so it refuses rather than steals.
 fn is_active_lock_holder(holder: u32, holder_epoch: &str) -> bool {
     if holder == 0 || holder_epoch.is_empty() {
         return false;
@@ -1086,54 +1095,9 @@ fn is_active_lock_holder(holder: u32, holder_epoch: &str) -> bool {
     if !is_process_alive(holder) {
         return false;
     }
-    process_identity(holder).as_deref() == Some(holder_epoch)
-}
-
-fn is_process_alive(pid: u32) -> bool {
-    if pid == 0 {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        std::process::Command::new("kill")
-            .arg("-0")
-            .arg(pid.to_string())
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status()
-            .map(|s| s.success())
-            .unwrap_or(false)
-    }
-    #[cfg(windows)]
-    {
-        use std::{ffi::c_void, ptr};
-
-        const PROCESS_QUERY_LIMITED_INFORMATION: u32 = 0x1000;
-
-        // SAFETY: These are standard Windows kernel32 FFI declarations with
-        // well-defined behavior. OpenProcess returns null on failure (which we
-        // check); CloseHandle is always safe to call with any value including null.
-        unsafe extern "system" {
-            safe fn OpenProcess(access: u32, inherit: i32, pid: u32) -> *mut c_void;
-            safe fn CloseHandle(handle: *mut c_void) -> i32;
-        }
-
-        // SAFETY: The PID argument comes from a valid u32; OpenProcess returns
-        // null on failure (process doesn't exist or access denied), which we
-        // check before returning false. CloseHandle releases the handle.
-        unsafe {
-            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
-            if handle.is_null() || handle == ptr::null_mut() {
-                return false;
-            }
-            CloseHandle(handle);
-            true
-        }
-    }
-    #[cfg(not(any(unix, windows)))]
-    {
-        let _ = pid;
-        true
+    match process_identity(holder) {
+        Some(actual) => actual == holder_epoch,
+        None => true,
     }
 }
 

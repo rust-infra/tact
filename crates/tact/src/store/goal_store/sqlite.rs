@@ -6,6 +6,7 @@ use sqlx::{Row, SqliteConnection};
 
 use crate::{
     goal::{Goal, GoalEvent, GoalRun, GoalStatus, GoalUpdate},
+    store::process_identity::{current_process, holder_is_alive},
     store::sqlite::{PoolRef, from_millis, now_millis, open_pool},
 };
 
@@ -47,7 +48,9 @@ impl SqliteGoalStore {
                 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
                 owner TEXT NOT NULL,
                 epoch INTEGER NOT NULL,
-                expires_at INTEGER NOT NULL
+                expires_at INTEGER NOT NULL,
+                holder_pid INTEGER NOT NULL DEFAULT 0,
+                holder_identity TEXT NOT NULL DEFAULT ''
             )"#,
         ] {
             sqlx::query(statement)
@@ -68,7 +71,71 @@ impl SqliteGoalStore {
                 .await
                 .context("failed to initialize goal store indexes")?;
         }
+        Self::migrate_goal_leases_holder(&pool)
+            .await
+            .context("failed to migrate goal_leases holder columns")?;
         Ok(Self { pool })
+    }
+
+    /// Add `holder_pid` / `holder_identity` to databases created before the
+    /// lease recorded *which process* holds it.
+    ///
+    /// Rows that predate the columns keep the `0` / `''` defaults, which
+    /// [`holder_is_alive`] reads as "unverifiable" — those leases still fall
+    /// back to time-based expiry instead of being stolen.
+    async fn migrate_goal_leases_holder(pool: &sqlx::SqlitePool) -> Result<()> {
+        Self::add_lease_column(
+            pool,
+            "holder_pid",
+            "ALTER TABLE goal_leases ADD COLUMN holder_pid INTEGER NOT NULL DEFAULT 0",
+        )
+        .await?;
+        Self::add_lease_column(
+            pool,
+            "holder_identity",
+            "ALTER TABLE goal_leases ADD COLUMN holder_identity TEXT NOT NULL DEFAULT ''",
+        )
+        .await?;
+        Ok(())
+    }
+
+    /// Adds `column` to `goal_leases` unless it is already present.
+    ///
+    /// The presence check and the `ALTER` cannot be made atomic: two processes
+    /// opening the same pre-column database at once (a headless run and a TUI
+    /// started together) both see the column as absent and both alter, and
+    /// SQLite fails the loser with `duplicate column name`. That race is benign
+    /// — the column the caller wanted now exists — so it is absorbed here rather
+    /// than allowed to fail store construction. Any other failure propagates.
+    async fn add_lease_column(pool: &sqlx::SqlitePool, column: &str, ddl: &str) -> Result<()> {
+        if Self::lease_has_column(pool, column).await? {
+            return Ok(());
+        }
+        match sqlx::query(ddl).execute(pool).await {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                let lost_race = error
+                    .as_database_error()
+                    .is_some_and(|db| db.message().contains("duplicate column name"));
+                if lost_race && Self::lease_has_column(pool, column).await? {
+                    Ok(())
+                } else {
+                    Err(error.into())
+                }
+            }
+        }
+    }
+
+    async fn lease_has_column(pool: &sqlx::SqlitePool, column: &str) -> Result<bool> {
+        let cols = sqlx::query("PRAGMA table_info(goal_leases)")
+            .fetch_all(pool)
+            .await
+            .context("failed to read goal_leases table info")?;
+        Ok(cols.iter().any(|row| {
+            row.try_get::<String, _>("name")
+                .map(|name| name == column)
+                .unwrap_or(false)
+        }))
     }
 
     async fn update_in_tx(
@@ -150,18 +217,24 @@ impl SqliteGoalStore {
         tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
         owner: &str,
         ttl: Duration,
+        holder: (u32, &str),
     ) -> Result<LeaseToken> {
+        let (holder_pid, holder_identity) = holder;
         let now = now_millis();
         let expires = now.saturating_add(ttl.as_millis().min(i64::MAX as u128) as i64);
-        let row =
-            sqlx::query("SELECT owner, epoch, expires_at FROM goal_leases WHERE singleton = 1")
-                .fetch_optional(&mut **tx)
-                .await?;
+        let row = sqlx::query(
+            "SELECT owner, epoch, expires_at, holder_pid, holder_identity \
+             FROM goal_leases WHERE singleton = 1",
+        )
+        .fetch_optional(&mut **tx)
+        .await?;
         match row {
             None => {
-                sqlx::query("INSERT INTO goal_leases (singleton, owner, epoch, expires_at) VALUES (1, ?, 1, ?)")
+                sqlx::query("INSERT INTO goal_leases (singleton, owner, epoch, expires_at, holder_pid, holder_identity) VALUES (1, ?, 1, ?, ?, ?)")
                     .bind(owner)
                     .bind(expires)
+                    .bind(i64::from(holder_pid))
+                    .bind(holder_identity)
                     .execute(&mut **tx)
                     .await?;
                 Ok(LeaseToken {
@@ -173,7 +246,15 @@ impl SqliteGoalStore {
                 let current_owner: String = row.try_get("owner")?;
                 let current_epoch: i64 = row.try_get("epoch")?;
                 let current_expires: i64 = row.try_get("expires_at")?;
-                if current_expires > now {
+                let current_pid: i64 = row.try_get("holder_pid").unwrap_or(0);
+                let current_identity: String = row.try_get("holder_identity").unwrap_or_default();
+                // A lease is reclaimable when its TTL ran out *or* when the
+                // process that wrote it is gone: a crash leaves `expires_at`
+                // live for up to the whole TTL, and waiting that out would
+                // strand the Goal as `running` with nothing running it.
+                let expired = current_expires <= now;
+                let holder_gone = !holder_is_alive(current_pid.max(0) as u32, &current_identity);
+                if !expired && !holder_gone {
                     // A live lease always belongs to someone else, even when
                     // the label matches: two TUI sessions used to share
                     // `DEFAULT_OWNER`, so a second claim silently renewed the
@@ -186,10 +267,22 @@ impl SqliteGoalStore {
                         epoch: current_epoch,
                     }))
                 } else {
-                    interrupt_running(tx, now, "lease expired").await?;
+                    let reason = if expired {
+                        "lease expired"
+                    } else {
+                        "lease holder is gone"
+                    };
+                    interrupt_running(tx, now, reason).await?;
                     let epoch = current_epoch.saturating_add(1);
-                    sqlx::query("UPDATE goal_leases SET owner = ?, epoch = ?, expires_at = ? WHERE singleton = 1 AND epoch = ? AND expires_at <= ?")
-                        .bind(owner).bind(epoch).bind(expires).bind(current_epoch).bind(now)
+                    sqlx::query("UPDATE goal_leases SET owner = ?, epoch = ?, expires_at = ?, holder_pid = ?, holder_identity = ? WHERE singleton = 1 AND epoch = ? AND (expires_at <= ? OR holder_pid = ?)")
+                        .bind(owner)
+                        .bind(epoch)
+                        .bind(expires)
+                        .bind(i64::from(holder_pid))
+                        .bind(holder_identity)
+                        .bind(current_epoch)
+                        .bind(now)
+                        .bind(current_pid)
                         .execute(&mut **tx).await?;
                     Ok(LeaseToken {
                         owner: owner.to_string(),
@@ -421,7 +514,10 @@ impl GoalStore for SqliteGoalStore {
 
     async fn claim_lease(&self, owner: &str, ttl: Duration) -> Result<LeaseToken> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let token = self.lease_tx(&mut tx, owner, ttl).await?;
+        let (holder_pid, holder_identity) = current_process();
+        let token = self
+            .lease_tx(&mut tx, owner, ttl, (holder_pid, &holder_identity))
+            .await?;
         tx.commit().await?;
         Ok(token)
     }
@@ -475,7 +571,10 @@ impl GoalStore for SqliteGoalStore {
             }));
         }
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let token = self.lease_tx(&mut tx, owner, ttl).await?;
+        let (holder_pid, holder_identity) = current_process();
+        let token = self
+            .lease_tx(&mut tx, owner, ttl, (holder_pid, &holder_identity))
+            .await?;
         let active_run = sqlx::query("SELECT 1 FROM goal_runs WHERE state = 'running' LIMIT 1")
             .fetch_optional(&mut *tx)
             .await?;
@@ -656,18 +755,30 @@ impl GoalStore for SqliteGoalStore {
             .collect()
     }
 
-    async fn recover_expired_active_runs(&self) -> Result<Vec<GoalRun>> {
+    async fn recover_dead_active_runs(&self) -> Result<Vec<GoalRun>> {
         let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
-        let lease = sqlx::query("SELECT expires_at FROM goal_leases WHERE singleton = 1")
-            .fetch_optional(&mut *tx)
-            .await?;
-        let expired = lease
-            .map(|r| r.try_get::<i64, _>("expires_at").unwrap_or(0) <= now_millis())
-            .unwrap_or(false);
-        let recovered = if expired {
-            interrupt_running(&mut tx, now_millis(), "lease expired").await?
-        } else {
-            Vec::new()
+        let lease = sqlx::query(
+            "SELECT expires_at, holder_pid, holder_identity FROM goal_leases WHERE singleton = 1",
+        )
+        .fetch_optional(&mut *tx)
+        .await?;
+        // Time is not the only way a claim dies: a process that crashed keeps
+        // its `expires_at` live for up to the whole TTL, so the holder's own
+        // survival is checked too. Unverifiable holders (legacy rows, another
+        // platform's identity) stay on the expiry path.
+        let reclaim = lease.and_then(|row| {
+            let expires: i64 = row.try_get("expires_at").unwrap_or(0);
+            if expires <= now_millis() {
+                return Some("lease expired");
+            }
+            let pid: i64 = row.try_get("holder_pid").unwrap_or(0);
+            let identity: String = row.try_get("holder_identity").unwrap_or_default();
+            let holder_gone = !holder_is_alive(pid.max(0) as u32, &identity);
+            holder_gone.then_some("lease holder is gone")
+        });
+        let recovered = match reclaim {
+            Some(reason) => interrupt_running(&mut tx, now_millis(), reason).await?,
+            None => Vec::new(),
         };
         tx.commit().await?;
         Ok(recovered)
@@ -1821,6 +1932,237 @@ mod tests {
                 .unwrap()
                 .epoch,
             1
+        );
+    }
+
+    /// The stored lease as it looks after its holder crashed: a pid no process
+    /// can own (Linux caps at 4 194 304, macOS at 99 998) carrying a real
+    /// local start-time identity, so the row is verifiable *and* dead.
+    async fn mark_holder_dead(store: &SqliteGoalStore) {
+        let local_identity = crate::store::process_identity::process_identity(std::process::id())
+            .expect("the test process reports a start time");
+        sqlx::query(
+            "UPDATE goal_leases SET holder_pid = ?, holder_identity = ? WHERE singleton = 1",
+        )
+        .bind(i64::from(u32::MAX))
+        .bind(local_identity)
+        .execute(&*store.pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn a_dead_holders_lease_is_reclaimable_before_it_expires() {
+        let store = SqliteGoalStore::new(&temp_db("dead_holder_claim"))
+            .await
+            .unwrap();
+        let first = store
+            .claim_lease("crashed-owner", Duration::from_secs(600))
+            .await
+            .unwrap();
+        mark_holder_dead(&store).await;
+
+        let second = store
+            .claim_lease("live-owner", Duration::from_secs(600))
+            .await
+            .unwrap();
+        assert_eq!(second.epoch, first.epoch + 1);
+        assert_eq!(second.owner, "live-owner");
+    }
+
+    #[tokio::test]
+    async fn a_live_holders_unexpired_lease_is_never_reclaimed() {
+        let store = SqliteGoalStore::new(&temp_db("live_holder_claim"))
+            .await
+            .unwrap();
+        let first = store
+            .claim_lease("live-owner", Duration::from_secs(600))
+            .await
+            .unwrap();
+
+        let error = store
+            .claim_lease("other-owner", Duration::from_secs(600))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<GoalStoreError>(),
+            Some(GoalStoreError::LeaseHeld { .. })
+        ));
+        assert_eq!(first.epoch, 1);
+    }
+
+    #[tokio::test]
+    async fn a_lease_without_a_verifiable_holder_keeps_the_expiry_path() {
+        let store = SqliteGoalStore::new(&temp_db("legacy_lease"))
+            .await
+            .unwrap();
+        let token = store
+            .claim_lease("legacy-owner", Duration::from_secs(600))
+            .await
+            .unwrap();
+        // Databases written before the holder columns existed carry the 0/''.
+        sqlx::query(
+            "UPDATE goal_leases SET holder_pid = 0, holder_identity = '' WHERE singleton = 1",
+        )
+        .execute(&*store.pool)
+        .await
+        .unwrap();
+
+        let error = store
+            .claim_lease("new-owner", Duration::from_secs(60))
+            .await
+            .unwrap_err();
+        assert!(matches!(
+            error.downcast_ref::<GoalStoreError>(),
+            Some(GoalStoreError::LeaseHeld { .. })
+        ));
+        assert_eq!(token.epoch, 1);
+    }
+
+    #[tokio::test]
+    async fn recovery_interrupts_a_dead_holders_run_without_waiting_for_the_ttl() {
+        let store = SqliteGoalStore::new(&temp_db("dead_holder_recover"))
+            .await
+            .unwrap();
+        let goal = store.create(goal("crashed run")).await.unwrap();
+        let (_token, run) = store
+            .start_run(
+                "crashed-owner",
+                Duration::from_secs(600),
+                GoalRun::new(goal.id.clone()),
+            )
+            .await
+            .unwrap();
+        mark_holder_dead(&store).await;
+
+        let recovered = store.recover_dead_active_runs().await.unwrap();
+        assert_eq!(recovered.len(), 1);
+        assert_eq!(recovered[0].id, run.id);
+        assert_eq!(
+            recovered[0].stop_reason.as_deref(),
+            Some("lease holder is gone")
+        );
+        assert!(store.list_running_runs().await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn recovery_leaves_a_live_holders_run_alone() {
+        let store = SqliteGoalStore::new(&temp_db("live_holder_recover"))
+            .await
+            .unwrap();
+        let goal = store.create(goal("live run")).await.unwrap();
+        let (_token, run) = store
+            .start_run(
+                "live-owner",
+                Duration::from_secs(600),
+                GoalRun::new(goal.id.clone()),
+            )
+            .await
+            .unwrap();
+
+        assert!(store.recover_dead_active_runs().await.unwrap().is_empty());
+        assert_eq!(store.list_running_runs().await.unwrap(), vec![run]);
+    }
+
+    #[tokio::test]
+    async fn goal_leases_schema_migrates_and_reopens_idempotently() {
+        let db = temp_db("lease_migration");
+        // A database created before the lease recorded its holder process.
+        {
+            let pool = open_pool(&db).await.unwrap();
+            sqlx::query(
+                r#"CREATE TABLE goal_leases (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    owner TEXT NOT NULL,
+                    epoch INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL
+                )"#,
+            )
+            .execute(&*pool)
+            .await
+            .unwrap();
+            sqlx::query("INSERT INTO goal_leases (singleton, owner, epoch, expires_at) VALUES (1, 'legacy', 7, 0)")
+                .execute(&*pool)
+                .await
+                .unwrap();
+        }
+
+        let store = SqliteGoalStore::new(&db).await.unwrap();
+        let columns: Vec<String> = sqlx::query("PRAGMA table_info(goal_leases)")
+            .fetch_all(&*store.pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.try_get("name").unwrap())
+            .collect();
+        assert!(columns.iter().any(|c| c == "holder_pid"));
+        assert!(columns.iter().any(|c| c == "holder_identity"));
+        // The legacy row survives and keeps its epoch; it is only reclaimable
+        // through expiry, never through a holder check it cannot satisfy.
+        let token = store
+            .claim_lease("new-owner", Duration::from_secs(60))
+            .await
+            .unwrap();
+        assert_eq!(token.epoch, 8);
+
+        let reopened = SqliteGoalStore::new(&db).await.unwrap();
+        assert_eq!(
+            sqlx::query("PRAGMA table_info(goal_leases)")
+                .fetch_all(&*reopened.pool)
+                .await
+                .unwrap()
+                .len(),
+            columns.len()
+        );
+    }
+
+    /// Two processes opening the same pre-column database at once (a headless
+    /// run and a TUI started together) both see the holder columns as absent and
+    /// both `ALTER`. SQLite fails the loser with `duplicate column name`; that
+    /// must be absorbed, because the column the caller wanted does exist. The
+    /// test drives the losing half directly, since the race is otherwise decided
+    /// by timing.
+    #[tokio::test]
+    async fn a_lost_migration_race_does_not_fail_store_construction() {
+        let db = temp_db("lease_migration_race");
+        {
+            let pool = open_pool(&db).await.unwrap();
+            sqlx::query(
+                r#"CREATE TABLE goal_leases (
+                    singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                    owner TEXT NOT NULL,
+                    epoch INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL
+                )"#,
+            )
+            .execute(&*pool)
+            .await
+            .unwrap();
+        }
+        let store = SqliteGoalStore::new(&db).await.unwrap();
+
+        // The winner already added the column; the loser's DDL now collides.
+        SqliteGoalStore::add_lease_column(
+            &store.pool,
+            "holder_pid",
+            "ALTER TABLE goal_leases ADD COLUMN holder_pid INTEGER NOT NULL DEFAULT 0",
+        )
+        .await
+        .expect("losing the migration race is not an error");
+        // ... and the loser also tolerates a plain re-open afterwards.
+        SqliteGoalStore::new(&db).await.unwrap();
+
+        // A genuine failure must still surface rather than being swallowed: this
+        // DDL is broken for a reason other than the column already existing.
+        let broken = SqliteGoalStore::add_lease_column(
+            &store.pool,
+            "no_such_column_exists_here",
+            "ALTER TABLE goal_leases ADD COLUMN NOT A VALID STATEMENT",
+        )
+        .await;
+        assert!(
+            broken.is_err(),
+            "a non-duplicate ALTER failure still errors"
         );
     }
 }

@@ -492,21 +492,22 @@ impl Goal {
         self.transition_to(GoalStatus::Succeeded)
     }
 
+    /// Whether any criterion must be satisfied before this Goal may succeed.
+    ///
+    /// Criteria are optional. A Goal created without them (the default for
+    /// `/goal create`) has nothing to gate success on: it finishes on the
+    /// model's completion proposal, and the runner records that as
+    /// self-attested rather than pretending it was verified.
+    pub fn has_required_criteria(&self) -> bool {
+        self.criteria.iter().any(|criterion| criterion.required)
+    }
+
     /// Validate the evidence recorded for the current criteria version.
     ///
-    /// Automatic verification is reserved in the current implementation; the
-    /// production path records human acceptance evidence. This method only
-    /// trusts recorded, versioned evidence either way.
+    /// Only *required* criteria gate success, and only recorded, versioned
+    /// evidence satisfies them. A Goal without required criteria passes
+    /// vacuously — there is nothing for evidence to prove.
     pub fn validate_acceptance(&self) -> Result<(), GoalError> {
-        if self.criteria.is_empty() {
-            return Err(GoalError::NoAcceptanceCriteria);
-        }
-        // An all-optional list verifies vacuously; nothing could ever fail it.
-        // Success needs at least one criterion the Goal is actually accountable
-        // for (the verifier already treats this case as `NeedsUser`).
-        if !self.criteria.iter().any(|criterion| criterion.required) {
-            return Err(GoalError::NoRequiredAcceptanceCriteria);
-        }
         self.criteria
             .iter()
             .filter(|criterion| criterion.required)
@@ -565,10 +566,12 @@ fn validate_unique_criterion_ids(criteria: &[GoalCriterion]) -> Result<(), GoalE
 /// `Goal::new` stays permissive so the verifier's pure tests can construct a
 /// Goal with an Automatic criterion; every production create/update path goes
 /// through this check and fails closed.
+///
+/// Criteria themselves are optional: a Goal without required criteria is a
+/// legitimate request whose completion is self-attested. Automatic criteria
+/// are still refused because nothing in production produces their evidence,
+/// which would make a required criterion unsatisfiable.
 fn validate_supported_criteria(criteria: &[GoalCriterion]) -> Result<(), GoalError> {
-    if !criteria.iter().any(|criterion| criterion.required) {
-        return Err(GoalError::NoRequiredAcceptanceCriteria);
-    }
     if let Some(criterion) = criteria
         .iter()
         .find(|criterion| criterion.verification_kind == GoalVerificationKind::Automatic)
@@ -877,9 +880,10 @@ impl GoalManager {
     pub async fn list_running_runs(&self) -> anyhow::Result<Vec<GoalRun>> {
         self.store.list_running_runs().await
     }
-    /// Interrupts active runs when their singleton lease has expired.
-    pub async fn recover_expired_active_runs(&self) -> anyhow::Result<Vec<GoalRun>> {
-        self.store.recover_expired_active_runs().await
+    /// Interrupts active runs whose singleton lease is expired or whose holder
+    /// process is gone.
+    pub async fn recover_dead_active_runs(&self) -> anyhow::Result<Vec<GoalRun>> {
+        self.store.recover_dead_active_runs().await
     }
 }
 
@@ -1055,9 +1059,10 @@ impl SharedGoalManager {
     pub async fn list_running_runs(&self) -> anyhow::Result<Vec<GoalRun>> {
         self.inner.list_running_runs().await
     }
-    /// Interrupts active runs when their singleton lease has expired.
-    pub async fn recover_expired_active_runs(&self) -> anyhow::Result<Vec<GoalRun>> {
-        self.inner.recover_expired_active_runs().await
+    /// Interrupts active runs whose singleton lease is expired or whose holder
+    /// process is gone.
+    pub async fn recover_dead_active_runs(&self) -> anyhow::Result<Vec<GoalRun>> {
+        self.inner.recover_dead_active_runs().await
     }
 }
 
@@ -1097,8 +1102,6 @@ pub enum GoalError {
     UnfinishedGoal {
         status: GoalStatus,
     },
-    NoAcceptanceCriteria,
-    NoRequiredAcceptanceCriteria,
     /// Automatic verification is reserved: no runner-side checker exists yet,
     /// so accepting such a criterion would make the Goal uncompletable.
     AutomaticVerificationUnsupported {
@@ -1146,15 +1149,6 @@ impl fmt::Display for GoalError {
                 write!(
                     f,
                     "goal is still {status:?}: only a finished goal can be archived"
-                )
-            }
-            Self::NoAcceptanceCriteria => {
-                write!(f, "goal must have acceptance criteria to succeed")
-            }
-            Self::NoRequiredAcceptanceCriteria => {
-                write!(
-                    f,
-                    "goal must have at least one required acceptance criterion"
                 )
             }
             Self::AutomaticVerificationUnsupported { criterion_id } => {
@@ -1345,7 +1339,7 @@ mod task3_manager_tests {
             .await
             .unwrap();
         tokio::time::sleep(Duration::from_millis(40)).await;
-        let recovered = shared.recover_expired_active_runs().await.unwrap();
+        let recovered = shared.recover_dead_active_runs().await.unwrap();
         assert_eq!(recovered.len(), 1);
         assert_eq!(recovered[0].id, active_run.id);
         assert_eq!(recovered[0].stop_reason.as_deref(), Some("lease expired"));
@@ -1353,7 +1347,7 @@ mod task3_manager_tests {
     }
 
     #[tokio::test]
-    async fn manager_refuses_criterialess_and_automatic_goals() {
+    async fn manager_allows_criterialess_goals_and_refuses_automatic_ones() {
         let manager = GoalManager::new(&temp_db("criteria-gate")).await.unwrap();
         let base = |criteria: Vec<GoalCriterion>| GoalCreate {
             title: "criteria gate".into(),
@@ -1362,21 +1356,22 @@ mod task3_manager_tests {
             criteria,
         };
 
-        let error = manager
+        // Criteria are optional: a Goal without them completes on the model's
+        // proposal, recorded as self-attested.
+        let criterialess = manager
             .create(base(Vec::new()))
             .await
-            .expect_err("a criterialess goal must not be created");
-        assert!(error.to_string().contains("at least one required"));
-
-        let error = manager
+            .expect("a criterialess goal is a legitimate request");
+        assert!(!criterialess.has_required_criteria());
+        let optional_only = manager
             .create(base(vec![GoalCriterion::new(
                 "optional",
                 false,
                 GoalVerificationKind::Human,
             )]))
             .await
-            .expect_err("an optional-only goal must not be created");
-        assert!(error.to_string().contains("at least one required"));
+            .expect("an optional-only goal is a legitimate request");
+        assert!(!optional_only.has_required_criteria());
 
         let error = manager
             .create(base(vec![GoalCriterion::new(
@@ -1556,20 +1551,20 @@ mod tests {
     }
 
     #[test]
-    fn criteria_updates_require_a_supported_required_criterion() {
+    fn criteria_updates_only_reject_unsupported_kinds() {
         let mut goal = create_goal();
+        // An optional-only replacement is fine: nothing about it can dead-end.
+        goal.update(GoalUpdate {
+            criteria: Some(vec![GoalCriterion::new(
+                "optional",
+                false,
+                GoalVerificationKind::Human,
+            )]),
+            ..GoalUpdate::default()
+        })
+        .unwrap();
+        assert!(!goal.has_required_criteria());
         let version = goal.criteria_version;
-        let error = goal
-            .update(GoalUpdate {
-                criteria: Some(vec![GoalCriterion::new(
-                    "optional",
-                    false,
-                    GoalVerificationKind::Human,
-                )]),
-                ..GoalUpdate::default()
-            })
-            .unwrap_err();
-        assert!(matches!(error, GoalError::NoRequiredAcceptanceCriteria));
 
         let error = goal
             .update(GoalUpdate {
@@ -1772,8 +1767,10 @@ mod tests {
         assert_eq!(goal.status, GoalStatus::Succeeded);
     }
 
+    /// Criteria are optional: with nothing required, `succeed()` is allowed and
+    /// the runner labels the completion self-attested.
     #[test]
-    fn success_rejects_empty_acceptance_criteria() {
+    fn success_allows_a_goal_without_acceptance_criteria() {
         let mut goal = Goal::new(GoalCreate {
             title: "Ship it".to_string(),
             objective: "Publish it".to_string(),
@@ -1785,11 +1782,13 @@ mod tests {
         goal.transition_to(GoalStatus::Running).unwrap();
         goal.transition_to(GoalStatus::Verifying).unwrap();
 
-        assert_eq!(goal.succeed().unwrap_err(), GoalError::NoAcceptanceCriteria);
+        assert!(!goal.has_required_criteria());
+        goal.succeed().unwrap();
+        assert_eq!(goal.status, GoalStatus::Succeeded);
     }
 
     #[test]
-    fn success_rejects_an_all_optional_acceptance_list() {
+    fn success_allows_an_all_optional_acceptance_list() {
         let mut goal = Goal::new(GoalCreate {
             title: "Ship it".to_string(),
             objective: "Publish it".to_string(),
@@ -1805,10 +1804,9 @@ mod tests {
         goal.transition_to(GoalStatus::Running).unwrap();
         goal.transition_to(GoalStatus::Verifying).unwrap();
 
-        assert_eq!(
-            goal.succeed().unwrap_err(),
-            GoalError::NoRequiredAcceptanceCriteria
-        );
+        assert!(!goal.has_required_criteria());
+        goal.succeed().unwrap();
+        assert_eq!(goal.status, GoalStatus::Succeeded);
     }
 
     #[test]

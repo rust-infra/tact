@@ -259,7 +259,12 @@ pub struct GoalAcceptanceSnapshot {
     pub rejected: usize,
 }
 
-/// Budget usage for the current or most recently reported Goal activation.
+/// Budget usage for the Goal's current activation.
+///
+/// `GoalSnapshot::run_budget` is `Some` exactly while an activation is in
+/// flight (the store's active-run rows are the source), and `None` when the
+/// Goal has no run: a `running` Goal without a budget is idle, waiting for the
+/// next explicit resume, and surfaces draw it as such.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Default)]
 pub struct GoalRunBudgetSnapshot {
     pub turns_used: u32,

@@ -2,6 +2,8 @@
 
 This document describes the state machines used across the `tact` codebase. Most are plain Rust enums with explicit transitions driven by `AgentUpdate` messages, user input, or tool results.
 
+The state diagrams are plain text on purpose. These machines are **cyclic**, and neither renderer in this repo can draw a labelled cyclic machine correctly: Tact's TUI state-diagram parser folds a transition's `: label` into the node name, and its flowchart layout needs an acyclic graph (a back edge pins every node of the cycle into one row). Plain-text edge lists render identically in the TUI, on GitHub, and in an editor — see [book/26](../book/26_chapter_issue_zh.md) for the renderer details.
+
 ---
 
 ## 0. Agent–TUI Protocol
@@ -35,25 +37,18 @@ A pending select switches `InputMode` to `Select` while `Status` stays `Executin
 
 ### State transitions
 
-```mermaid
-stateDiagram-v2
-    [*] --> Idle: startup
-
-    Idle --> Planning: user submits task (Enter in Insert mode)
-    Planning --> Executing: AgentUpdate::StepAdded (first tool step)
-
-    Executing --> Executing: AgentUpdate::StepStarted (current_step updated)
-    Executing --> Done: AgentUpdate::TaskComplete
-    Executing --> Idle: AgentUpdate::StepFailed / Error(Other)
-
-    Done --> Idle: after 2s timeout
-    Idle --> [*]: user quits
-
-    note right of Executing
-        UserCommand::Cancel: Info only,
-        no TaskComplete, Status unchanged
-    end note
+```text
+start      ──startup──▶ Idle
+Idle       ──user submits task · Enter in Insert mode──▶ Planning
+Planning   ──AgentUpdate::StepAdded · first tool step──▶ Executing
+Executing  ──AgentUpdate::StepStarted · current_step updated──▶ Executing
+Executing  ──AgentUpdate::TaskComplete──▶ Done
+Executing  ──AgentUpdate::StepFailed / Error(Other)──▶ Idle
+Done       ──after 2s timeout──▶ Idle
+Idle       ──user quits──▶ end
 ```
+
+`UserCommand::Cancel` is not a transition: it is info only (no `TaskComplete`), and `Status` is unchanged.
 
 ### Transition triggers
 
@@ -87,24 +82,20 @@ pub(crate) enum InputMode {
 
 ### State transitions
 
-```mermaid
-stateDiagram-v2
-    [*] --> Normal: startup
-
-    Normal --> Insert: i / Enter
-    Insert --> Normal: Esc
-    Insert --> Normal: Enter (submits task)
-
-    Normal --> Palette: /
-    Palette --> Normal: Enter / Esc
-
-    Insert --> FilePicker: @
-    FilePicker --> Insert: Enter / Esc
-
-    Normal --> Select: pending != empty (RequestSelect hint)
-    Select --> Normal: Enter / Esc
-    note right of Select: Status stays Executing; broker snapshot is authoritative
+```text
+start      ──startup──▶ Normal
+Normal     ──i / Enter──▶ Insert
+Insert     ──Esc──▶ Normal
+Insert     ──Enter · submits task──▶ Normal
+Normal     ──/──▶ Palette
+Palette    ──Enter / Esc──▶ Normal
+Insert     ──@──▶ FilePicker
+FilePicker ──Enter / Esc──▶ Insert
+Normal     ──pending != empty · RequestSelect hint──▶ Select
+Select     ──Enter / Esc──▶ Normal
 ```
+
+`Select` is an `InputMode`, not a `Status`: entering it leaves `Status` at `Executing`, and in interactive mode the broker snapshot is authoritative over the `RequestSelect` hint.
 
 ### Mode-specific behavior
 
@@ -135,16 +126,15 @@ pub enum TaskStatus {
 
 ### State transitions
 
-```mermaid
-stateDiagram-v2
-    [*] --> Pending: task_create
-    Pending --> InProgress: task_update(status = "in_progress")
-    InProgress --> Completed: task_update(status = "completed")
-    Pending --> Completed: task_update(status = "completed")
-    InProgress --> Deleted: task_update(status = "deleted")
-    Pending --> Deleted: task_update(status = "deleted")
-    Completed --> [*]
-    Deleted --> [*]
+```text
+start      ──task_create──▶ Pending
+Pending    ──task_update status=in_progress──▶ InProgress
+Pending    ──task_update status=completed──▶ Completed
+Pending    ──task_update status=deleted──▶ Deleted
+InProgress ──task_update status=completed──▶ Completed
+InProgress ──task_update status=deleted──▶ Deleted
+Completed  ──▶ end
+Deleted    ──▶ end
 ```
 
 ### Dependency rules
@@ -172,13 +162,12 @@ pub enum BackgroundTaskStatus {
 
 ### State transitions
 
-```mermaid
-stateDiagram-v2
-    [*] --> Running: background_run(command)
-    Running --> Completed: command exits with success
-    Running --> Error: command exits with failure or spawn fails
-    Completed --> [*]
-    Error --> [*]
+```text
+start     ──background_run(command)──▶ Running
+Running   ──command exits with success──▶ Completed
+Running   ──command exits with failure / spawn fails──▶ Error
+Completed ──▶ end
+Error     ──▶ end
 ```
 
 Each transition is persisted to the `background_tasks` table in `<workdir>/.tact/tact.db` so the task can be inspected later with `check_background` — or waited on with `wait_background` — even if the agent restarts.
@@ -253,21 +242,18 @@ See [`ARCHITECTURE.md`](../ARCHITECTURE.md#3-permission-system) for the full dia
 
 ### Mode-specific state machine
 
-```mermaid
-stateDiagram-v2
-    [*] --> ClassifyRisk: tool call
-    ClassifyRisk --> Allow: Read (all modes)
-    ClassifyRisk --> Deny: Plan mode + Write
-    ClassifyRisk --> Ask: High risk
-    ClassifyRisk --> Allow: Auto mode (all Write/High)
-    ClassifyRisk --> CheckSettings: Default mode + Write
-
-    CheckSettings --> Allow: settings allow (non-high risk)
-    CheckSettings --> Deny: settings deny
-    CheckSettings --> Ask: settings ask
-
-    Ask --> Allow: user chooses allow once / always allow
-    Ask --> Deny: user chooses deny
+```text
+start          ──tool call──▶ ClassifyRisk
+ClassifyRisk   ──Read · all modes──▶ Allow
+ClassifyRisk   ──Plan mode + Write──▶ Deny
+ClassifyRisk   ──High risk──▶ Ask
+ClassifyRisk   ──Auto mode · all Write/High──▶ Allow
+ClassifyRisk   ──Default mode + Write──▶ CheckSettings
+CheckSettings  ──settings allow · non-high risk──▶ Allow
+CheckSettings  ──settings deny──▶ Deny
+CheckSettings  ──settings ask──▶ Ask
+Ask            ──user chooses allow once / always allow──▶ Allow
+Ask            ──user chooses deny──▶ Deny
 ```
 
 The settings check applies after mode classification for Default-mode prompted capabilities. A matching settings deny always blocks execution. A matching ask displays the prompt. A matching allow skips the prompt at **every** risk, high risk included. High risk is otherwise asked the first time and allowed afterwards only when an in-session allow covers that exact tool and input — a grant relaxes the prompt, never the mode. Existing Plan and Auto mode semantics are unchanged.
@@ -353,14 +339,13 @@ File: `crates/agent_tui_kit/src/state/select_popup.rs`
 
 The select popup has an implicit state machine. In interactive mode it is derived from `UiResponder::snapshot()`; the broker's `respond()` removes the pending entry. In legacy/headless mode it is driven by the `RequestSelect` event and the `respond` oneshot channel.
 
-```mermaid
-stateDiagram-v2
-    [*] --> Inactive: new()
-    Inactive --> Active: pending snapshot contains request
-    Active --> Confirmed: confirm() sends Some(idx)
-    Active --> Cancelled: cancel() sends None
-    Confirmed --> Inactive: broker respond / channel consumed
-    Cancelled --> Inactive: broker respond / channel consumed
+```text
+start     ──new()──▶ Inactive
+Inactive  ──pending snapshot contains request──▶ Active
+Active    ──confirm() sends Some(idx)──▶ Confirmed
+Active    ──cancel() sends None──▶ Cancelled
+Confirmed ──broker respond / channel consumed──▶ Inactive
+Cancelled ──broker respond / channel consumed──▶ Inactive
 ```
 
 A pending request activates the popup (broker snapshot in interactive mode, `RequestSelect` in legacy mode); `Enter` confirms and `Esc` cancels, both returning the UI to `InputMode::Normal`.

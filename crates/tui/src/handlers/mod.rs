@@ -520,6 +520,32 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
     }
 }
 
+/// `/goal create <objective> [-- <criterion>; <criterion> ...]`.
+///
+/// Criteria are the user's own acceptance gate: without them the Goal finishes
+/// on the model's completion proposal (self-attested, like Codex). The `--`
+/// separator keeps ordinary prose — including hyphenated words — in the
+/// objective; everything after it is split on `;`.
+fn create_goal_command(args: &str) -> UserCommand {
+    let (objective, criteria) = match args.split_once(" -- ") {
+        Some((objective, criteria)) => (
+            objective.trim(),
+            criteria
+                .split(';')
+                .map(str::trim)
+                .filter(|criterion| !criterion.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        ),
+        None => (args.trim(), Vec::new()),
+    };
+    UserCommand::CreateGoal {
+        title: objective.chars().take(80).collect(),
+        objective: objective.to_string(),
+        criteria,
+    }
+}
+
 fn run_goal_command(app: &mut App) -> CommandExecOutcome {
     let rest = app.input.trim().strip_prefix("/goal").unwrap_or("").trim();
     let mut tokens = rest.splitn(2, char::is_whitespace);
@@ -538,11 +564,7 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
             }),
             _ => None,
         },
-        "create" if !args.is_empty() => Some(UserCommand::CreateGoal {
-            title: args.chars().take(80).collect(),
-            objective: args.to_string(),
-            criteria: Vec::new(),
-        }),
+        "create" if !args.is_empty() => Some(create_goal_command(args)),
         "show" | "pause" | "resume" | "cancel" | "archive" | "unarchive" if !args.is_empty() => {
             let mut values = args.split_whitespace();
             let goal_id = values.next().unwrap_or_default().to_string();
@@ -1721,6 +1743,47 @@ mod tests {
                 if title == "Ship Goal UI with durable lifecycle"
                     && objective == "Ship Goal UI with durable lifecycle"
                     && criteria.is_empty()
+        ));
+    }
+
+    /// `--` starts the user's own acceptance gate; `;` separates criteria.
+    /// Both the objective and the criteria must survive intact.
+    #[test]
+    fn goal_create_accepts_user_criteria_after_a_separator() {
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.input =
+            "/goal create Ship the release -- the full test suite passes; the changelog is written"
+                .into();
+
+        let outcome = execute_palette_command(&mut app, "goal");
+
+        assert!(outcome.handled);
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected CreateGoal"),
+            UserCommand::CreateGoal { title, objective, criteria }
+                if title == "Ship the release"
+                    && objective == "Ship the release"
+                    && criteria
+                        == vec![
+                            "the full test suite passes".to_string(),
+                            "the changelog is written".to_string(),
+                        ]
+        ));
+    }
+
+    /// Without `--`, a dash in the objective is just a dash.
+    #[test]
+    fn goal_create_without_a_separator_keeps_dashes_in_the_objective() {
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.input = "/goal create Upgrade to rust-2024 edition".into();
+
+        let outcome = execute_palette_command(&mut app, "goal");
+
+        assert!(outcome.handled);
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected CreateGoal"),
+            UserCommand::CreateGoal { objective, criteria, .. }
+                if objective == "Upgrade to rust-2024 edition" && criteria.is_empty()
         ));
     }
 

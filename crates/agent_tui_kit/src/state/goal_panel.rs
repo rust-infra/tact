@@ -99,16 +99,33 @@ fn row_text(goal: &GoalSnapshot) -> String {
             )
         })
         .unwrap_or_default();
+    // A `running` Goal with no run budget has no activation in flight: the
+    // run budget is published exactly while one is (see
+    // `GoalRunBudgetSnapshot`). That state is legitimate — a run that produced
+    // no observable progress ends and leaves the Goal resumable (Ch 28 §7) —
+    // but a row that just says "running" claims work that is not happening.
+    let idle = goal.status == GoalStatusSnapshot::Running && goal.run_budget.is_none();
+    // No required criteria means completion is self-attested, so there is no
+    // acceptance gate to report: `accept 0/0` would suggest a gate that does
+    // not exist (Ch 28 §6).
+    let acceptance = if goal.acceptance.required == 0 {
+        String::new()
+    } else {
+        format!(
+            " · accept {}/{}",
+            goal.acceptance.passed, goal.acceptance.required
+        )
+    };
     format!(
-        "{} {} · {}/{} · tasks {}/{} · accept {}/{}{}{}",
+        "{} {} · {}{}/{} · tasks {}/{}{}{}{}",
         goal.status.marker(),
         goal.title,
         status_label(goal.status),
+        if idle { " (idle)" } else { "" },
         phase_label(goal.phase),
         goal.task_completed,
         goal.task_total,
-        goal.acceptance.passed,
-        goal.acceptance.required,
+        acceptance,
         budget,
         // Only `/goal list --all` shows archived Goals, and this is what tells
         // them apart there; the default list never draws the tag.
@@ -218,6 +235,70 @@ mod tests {
         assert!(
             lines.contains("filed · succeeded") && lines.contains(" · archived"),
             "the outcome stays readable next to the tag: {lines}"
+        );
+    }
+
+    /// A Goal with no required criteria has no acceptance gate; the row omits
+    /// it rather than printing a meaningless `accept 0/0`.
+    #[test]
+    fn goals_without_acceptance_criteria_omit_the_accept_segment() {
+        let gated = GoalSnapshot {
+            title: "gated".into(),
+            status: GoalStatusSnapshot::Running,
+            phase: GoalPhaseSnapshot::Execution,
+            acceptance: GoalAcceptanceSnapshot {
+                required: 1,
+                passed: 0,
+                pending: 1,
+                rejected: 0,
+            },
+            ..Default::default()
+        };
+        let mut ungated = gated.clone();
+        ungated.title = "ungated".into();
+        ungated.acceptance = GoalAcceptanceSnapshot::default();
+
+        let lines = format_goal_lines(&[gated, ungated], 0, 20).join("\n");
+        assert!(
+            lines.contains("accept 0/1"),
+            "the gate is reported: {lines}"
+        );
+        assert_eq!(lines.matches("accept ").count(), 1, "{lines}");
+        assert!(
+            !lines.contains("accept 0/0"),
+            "no gate means no gate line: {lines}"
+        );
+    }
+
+    /// A `running` Goal is only "doing work" while an activation holds the
+    /// lease; with no run budget it is idle between activations, and the row
+    /// must not claim otherwise.
+    #[test]
+    fn running_goals_without_an_active_run_are_marked_idle() {
+        let active = GoalSnapshot {
+            title: "active".into(),
+            status: GoalStatusSnapshot::Running,
+            phase: GoalPhaseSnapshot::Execution,
+            run_budget: Some(GoalRunBudgetSnapshot {
+                turns_used: 1,
+                turn_limit: 500,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut idle = active.clone();
+        idle.title = "idle".into();
+        idle.run_budget = None;
+
+        let lines = format_goal_lines(&[active, idle], 0, 20).join("\n");
+        assert_eq!(lines.matches("running (idle)").count(), 1, "{lines}");
+        assert!(
+            lines.contains("active · running/execution"),
+            "an activation in flight stays plain running: {lines}"
+        );
+        assert!(
+            lines.contains("idle · running (idle)/execution"),
+            "the idle row says so: {lines}"
         );
     }
 

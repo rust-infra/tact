@@ -129,7 +129,7 @@ root.collection::<T>(relative_dir)?              // CollectionStore<T> — 按�
 3. `SessionLockGuard::acquire`（`crates/tact-ui/src/session_lock.rs`）—— 争用时重试 `try_lock_session`（最多 5 次，退避 `50ms × attempt`），写入 `locked_by` + `lock_epoch`；`0`/空表示未锁定。
 4. `lock_registry.register(...)` 与 `touch_session(id, root_dir)` —— 注册后退出信号能释放它；touch 过的会话下次才会被 `--resume-last` 找到。
 
-`lock_epoch` 是 `process_identity(pid)`（`store/session_store/process_identity.rs`）：Linux 读 `/proc/<pid>/stat` 的 starttime，macOS 用 `proc_pidinfo`，其他平台退回 `ps -o lstart`。它的作用是把「同一个 PID 被复用」与「同一个进程」区分开——只记 pid 会让一个新进程误判自己仍持有锁。
+`lock_epoch` 是 `process_identity(pid)`（`store/process_identity.rs`，2026-10-17 从 `store/session_store/` 上移为共享模块）：Linux 读 `/proc/<pid>/stat` 的 starttime，macOS 用 `proc_pidinfo`，其他平台退回 `ps -o lstart`。它的作用是把「同一个 PID 被复用」与「同一个进程」区分开——只记 pid 会让一个新进程误判自己仍持有锁。同一模块还导出 `is_process_alive(pid)` 与 `holder_is_alive(pid, identity)`，供 Goal 执行 lease 判断「持有者是否还在」（见 [Ch 28](./28_chapter_goal_zh.md) §7）。
 
 `main` 通过 `SessionLockRegistry::spawn_exit_listener()` 安装 SIGINT/SIGTERM 监听，异常终止时释放锁并以 `130`/`143` 退出进程。子 agent 的 `resume` 路径（`tool/subagent.rs` 复用一个已结束的子会话时）用的是 `tact::store::SessionLock`（`store/session_store/session_lock.rs`）：同样是 RAII，但**没有 `Drop` 实现**——异常退出时不假装清理，必须显式 `release()`。
 
@@ -221,7 +221,7 @@ sequenceDiagram
 | `crates/tact/src/store/sqlite.rs` | 共享 `SqlitePool`（每个 db 一份、引用计数）、连接参数决策（WAL + `busy_timeout`，WAL 失败回退）与各域共用的毫秒时间戳转换（`now_millis` / `from_millis`——后者决定"读不出来的时间戳"回退为 `Utc::now()`，因为该列只是显示字段） |
 | `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait、`DynSessionStore`、`open_sqlite_session_store`、`MAX_INPUT_HISTORY` / `MAX_TOKEN_USAGE_BODIES` |
 | `crates/tact/src/store/session_store/sqlite.rs` | 全新 schema（`CREATE TABLE IF NOT EXISTS`，含 `responses_states`）、`SqliteSessionStore` 实现 |
-| `crates/tact/src/store/session_store/process_identity.rs` | `process_identity(pid)` —— `lock_epoch` 的来源，用于识别 PID 复用 |
+| `crates/tact/src/store/process_identity.rs` | `process_identity(pid)`（`lock_epoch` / `holder_identity` 的来源，识别 PID 复用）、`is_process_alive`、`holder_is_alive` —— session lock 与 Goal lease 共用 |
 | `crates/tact/src/store/session_store/session_lock.rs` | `SessionLock` —— 子 agent 用的轻量 RAII 锁（无 `Drop`，需显式 `release`） |
 | `crates/tact/src/store/test_support.rs` | 仅测试：`temp_db(prefix, name)`，各域 store 测试共用的临时库 fixture（先清空目录，避免上一轮崩溃留下的行造成偶发失败） |
 | `crates/tact/src/store/subagent_store/mod.rs` | `SubagentStore` trait（async：upsert / get / list / list_running——最后一项供启动时把 orphan `running` 行改判 `failed`） |

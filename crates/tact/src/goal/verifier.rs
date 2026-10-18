@@ -12,17 +12,18 @@ use crate::goal::{Goal, GoalCriterion, GoalVerificationKind};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GoalVerification {
     /// Every required criterion holds valid evidence at the current criteria
-    /// version, and no criterion still awaits a human decision.
+    /// version, and no criterion still awaits a human decision — or the Goal
+    /// declares no required criteria at all, in which case there is nothing to
+    /// gate success on and completion is self-attested.
     ///
     /// Invariant: `Verified` is exactly the condition under which
-    /// [`Goal::validate_acceptance`] returns `Ok`. Both refuse a Goal with no
-    /// required criteria, so a Goal with nothing to verify never auto-succeeds.
+    /// [`Goal::validate_acceptance`] returns `Ok`.
     Verified,
     /// No required criterion is provably unmet, but at least one required
     /// human criterion still awaits the user's decision.
     NeedsUser { criteria: Vec<String> },
-    /// At least one required criterion is provably unmet (automatic criterion
-    /// without valid evidence), or the Goal has no usable acceptance criteria.
+    /// At least one required criterion is provably unmet: an automatic
+    /// criterion without valid evidence.
     Rejected { criteria: Vec<String> },
 }
 
@@ -31,9 +32,9 @@ pub enum GoalVerification {
 /// The decision is a pure function of `goal.criteria` and
 /// `goal.criteria_version`, evaluated through [`GoalCriterion::has_valid_evidence`]:
 ///
-/// 1. If `goal.criteria` is empty, or no criterion is `required`, the Goal has
-///    nothing to verify and must never auto-succeed → `Rejected { criteria:
-///    vec![] }`.
+/// 1. If no criterion is `required`, the Goal has nothing to verify →
+///    `Verified` (completion is the model's proposal; the runner records it as
+///    self-attested, never as verified evidence).
 /// 2. Otherwise, if any required automatic criterion lacks valid evidence →
 ///    `Rejected` naming those criterion ids, in `goal.criteria` order.
 /// 3. Otherwise, if any required human criterion lacks valid evidence →
@@ -53,10 +54,11 @@ impl GoalVerifier {
             .iter()
             .filter(|criterion| criterion.required)
             .collect();
-        if goal.criteria.is_empty() || required.is_empty() {
-            return GoalVerification::Rejected {
-                criteria: Vec::new(),
-            };
+        if required.is_empty() {
+            // Nothing to verify. Automatic criteria cannot appear here in
+            // production (creation refuses them), so "no required criteria"
+            // really does mean "no gate".
+            return GoalVerification::Verified;
         }
 
         let unmet_automatic: Vec<String> = required
@@ -194,42 +196,22 @@ mod tests {
         );
     }
 
+    /// A Goal with nothing required has nothing to gate: it verifies
+    /// vacuously, and the runner records the completion as self-attested
+    /// instead of claiming evidence.
     #[test]
-    fn goal_without_required_criteria_is_never_verified() {
-        // `Goal::new` admits BOTH an optional-only criteria list and an empty
-        // criteria list; neither must ever auto-succeed.
+    fn goal_without_required_criteria_verifies_vacuously() {
         let optional_only = goal_with(vec![human("optional-1", false)]);
-        assert_eq!(
-            GoalVerifier::verify(&optional_only),
-            GoalVerification::Rejected {
-                criteria: Vec::new(),
-            }
-        );
-
         let empty = goal_with(Vec::new());
-        assert_eq!(
-            GoalVerifier::verify(&empty),
-            GoalVerification::Rejected {
-                criteria: Vec::new(),
-            }
-        );
 
-        // Rule 4 (never verify a Goal that has no required criteria) is now
-        // mirrored by `validate_acceptance()` itself, so the one-way invariant
-        // `Verified ⇒ validate_acceptance().is_ok()` holds by construction.
-        assert_eq!(
-            optional_only.validate_acceptance().unwrap_err(),
-            crate::goal::GoalError::NoRequiredAcceptanceCriteria
-        );
-        assert!(
-            empty.validate_acceptance().is_err(),
-            "a criteria-less Goal is refused by validate_acceptance()"
-        );
-        assert_ne!(
-            GoalVerifier::verify(&optional_only),
-            GoalVerification::Verified
-        );
-        assert_ne!(GoalVerifier::verify(&empty), GoalVerification::Verified);
+        for goal in [&optional_only, &empty] {
+            assert_eq!(GoalVerifier::verify(goal), GoalVerification::Verified);
+            assert!(
+                goal.validate_acceptance().is_ok(),
+                "nothing required means nothing to fail"
+            );
+            assert!(!goal.has_required_criteria());
+        }
     }
 
     #[test]

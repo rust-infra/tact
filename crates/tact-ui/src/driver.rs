@@ -7,6 +7,7 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::Duration,
 };
 
 use anyhow::Result;
@@ -49,6 +50,32 @@ fn goal_limits() -> GoalLimits {
         .unwrap_or_default()
 }
 
+/// How often the command loop re-checks whether a Goal run lost its holder.
+///
+/// Startup recovery runs once; this timer covers the rest of the process's
+/// life: another session's runner can crash while this loop is up, and a lease
+/// whose holder is gone is reclaimable immediately rather than at its TTL. The
+/// check costs one transaction that returns nothing when there is no lease, and
+/// it stays silent unless it actually changed something.
+const GOAL_RECONCILE_INTERVAL: Duration = Duration::from_secs(15);
+
+/// A runner labelled with this session.
+///
+/// Lease contention must name an owner a human can recognise; `GoalRunner`
+/// appends pid + a random suffix so two sessions can never impersonate one
+/// another.
+fn session_goal_runner(
+    goal_manager: &SharedGoalManager,
+    limits: GoalLimits,
+    session_id: Option<&str>,
+) -> GoalRunner {
+    let runner = GoalRunner::new(goal_manager.clone(), limits);
+    match session_id {
+        Some(session_id) => runner.with_owner(format!("tact-ui:{session_id}")),
+        None => runner,
+    }
+}
+
 /// Reconcile durable Goal/run state after a restart, once, before the command
 /// loop serves anything.
 ///
@@ -56,11 +83,11 @@ fn goal_limits() -> GoalLimits {
 /// reported as an informational update so the user can see it, and the loop
 /// keeps running.
 async fn recover_interrupted_goals(agent: &Agent) {
-    let runner = GoalRunner::new(agent.tool_context.goal_manager.clone(), goal_limits());
-    let runner = match agent.runtime.session_id.as_deref() {
-        Some(session_id) => runner.with_owner(format!("tact-ui:{session_id}")),
-        None => runner,
-    };
+    let runner = session_goal_runner(
+        &agent.tool_context.goal_manager,
+        goal_limits(),
+        agent.runtime.session_id.as_deref(),
+    );
     match runner.recover_interrupted().await {
         Ok(recovered) => {
             for run in recovered {
@@ -74,6 +101,80 @@ async fn recover_interrupted_goals(agent: &Agent) {
             "⚠ Goal recovery failed; goal state may be stale: {error:#}"
         ))),
     }
+}
+
+/// The timer's half of Goal recovery.
+///
+/// Unlike startup recovery it parks **only** the Goals whose run it just
+/// interrupted: a Goal that ended its own run as `no_progress` stays `running`
+/// by design (Ch 28 §7), and a background timer must never pause that behind
+/// the user's back. Failures are reported once per outage, not once per tick.
+///
+/// Callers on the command loop must go through [`spawn_goal_reconcile`]: a
+/// store call can wait on the database's write lock, and the loop has to keep
+/// answering `Esc` / `/goal pause` while it does.
+async fn reconcile_goal_runs(
+    goal_manager: &SharedGoalManager,
+    task_manager: &SharedTaskManager,
+    limits: GoalLimits,
+    ui_tx: &Option<UnboundedSender<AgentUpdate>>,
+    session_id: Option<&str>,
+    failure_reported: &AtomicBool,
+) {
+    let runner = session_goal_runner(goal_manager, limits, session_id);
+    match runner.reconcile_dead_runs().await {
+        Ok(recovered) => {
+            failure_reported.store(false, Ordering::Relaxed);
+            if recovered.is_empty() {
+                return;
+            }
+            if let Some(tx) = ui_tx {
+                for run in recovered {
+                    let _ = tx.send(AgentUpdate::Info(format!(
+                        "🎯 recovered interrupted run {}; goal {} paused",
+                        run.id, run.goal_id
+                    )));
+                }
+            }
+            emit_goals_changed(goal_manager, task_manager, limits, ui_tx).await;
+        }
+        // `swap` both dedupes and re-arms: the first failure of an outage is
+        // reported, the rest stay silent until a pass succeeds again.
+        Err(error) => {
+            if !failure_reported.swap(true, Ordering::Relaxed)
+                && let Some(tx) = ui_tx
+            {
+                let _ = tx.send(AgentUpdate::Info(format!(
+                    "⚠ Goal reconciliation failed; goal state may be stale: {error:#}"
+                )));
+            }
+        }
+    }
+}
+
+/// Runs one reconciliation pass off the command loop.
+fn spawn_goal_reconcile(
+    goal_manager: &SharedGoalManager,
+    task_manager: &SharedTaskManager,
+    limits: GoalLimits,
+    ui_tx: &Option<UnboundedSender<AgentUpdate>>,
+    session_id: Option<String>,
+    failure_reported: Arc<AtomicBool>,
+) {
+    let goal_manager = goal_manager.clone();
+    let task_manager = task_manager.clone();
+    let ui_tx = ui_tx.clone();
+    tokio::spawn(async move {
+        reconcile_goal_runs(
+            &goal_manager,
+            &task_manager,
+            limits,
+            &ui_tx,
+            session_id.as_deref(),
+            &failure_reported,
+        )
+        .await;
+    });
 }
 
 /// Process `UserCommand`s until the channel closes, then shut down MCP.
@@ -128,6 +229,15 @@ pub async fn run_command_loop_with_account(
     // allowed to take the command loop down with it.
     recover_interrupted_goals(&agent).await;
 
+    // ... and again on a timer: the owner of a lease can die while *this*
+    // process is up (another session crashes, or the run's own process is
+    // killed), and nothing else would notice before the next restart.
+    let mut goal_reconcile = tokio::time::interval(GOAL_RECONCILE_INTERVAL);
+    goal_reconcile.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    // `interval` fires immediately; the startup pass above already ran, so the
+    // first tick is consumed here.
+    goal_reconcile.tick().await;
+
     // Publish the durable Goal inventory once, before serving commands: the
     // panel (and the `/goal <verb>` completion that reads it) must not stay
     // empty until some later Goal command happens to emit a snapshot.
@@ -147,6 +257,9 @@ pub async fn run_command_loop_with_account(
     // left to wake the parent. Retain the wake-up until the in-flight task
     // completes, then submit it.
     let mut pending_subagent_wakeup = false;
+    // One "reconciliation failed" notice per outage: a broken store must not
+    // print a line every tick. Shared with the spawned pass.
+    let reconcile_failure_reported = Arc::new(AtomicBool::new(false));
 
     loop {
         let cmd = if active.is_some() {
@@ -164,10 +277,34 @@ pub async fn run_command_loop_with_account(
                     }
                     continue;
                 }
+                _ = goal_reconcile.tick() => {
+                    spawn_goal_reconcile(
+                        &goal_manager,
+                        &task_manager,
+                        limits,
+                        &ui_tx,
+                        background_session_id.clone(),
+                        reconcile_failure_reported.clone(),
+                    );
+                    continue;
+                }
                 cmd = user_cmd_rx.recv() => cmd,
             }
         } else {
-            user_cmd_rx.recv().await
+            tokio::select! {
+                _ = goal_reconcile.tick() => {
+                    spawn_goal_reconcile(
+                        &goal_manager,
+                        &task_manager,
+                        limits,
+                        &ui_tx,
+                        background_session_id.clone(),
+                        reconcile_failure_reported.clone(),
+                    );
+                    continue;
+                }
+                cmd = user_cmd_rx.recv() => cmd,
+            }
         };
         let Some(cmd) = cmd else { break };
 
@@ -306,21 +443,48 @@ pub async fn run_command_loop_with_account(
                 }
             }
             UserCommand::SubmitTask(task) => {
+                // A Goal that asked a question is waiting for exactly this
+                // text. Only the *user* path routes here: agent-originated
+                // submits (subagent wake-ups) go straight to
+                // `handle_user_command` and must never be read as an answer.
+                let answer_for = if task.contains('@') || task.contains("![") {
+                    // `@file` / image references are expanded into the turn;
+                    // recording them as a Goal event would drop the payload.
+                    None
+                } else {
+                    goal_awaiting_answer(&goal_manager).await
+                };
                 if let Some(handle) = active.take() {
                     agent = Some(handle.await.expect("submit task join panicked"));
                 }
-                active_goal_run = false;
-                active_goal_id = None;
                 // The new user turn drains pending subagent results itself;
                 // do not add a redundant wake-up after it finishes.
                 pending_subagent_wakeup = false;
                 let work_dir = image_work_dir.clone();
                 let mut task_agent = agent.take().expect("agent available for submit");
-                active = Some(tokio::spawn(async move {
-                    handle_user_command(&mut task_agent, UserCommand::SubmitTask(task), &work_dir)
+                if let Some(goal_id) = answer_for {
+                    // The reply is the answer: record it and continue that
+                    // Goal through the same entry `/goal resume` uses.
+                    active_goal_run = true;
+                    active_goal_id = Some(goal_id.clone());
+                    active = Some(tokio::spawn(async move {
+                        answer_goal(&mut task_agent, &goal_id, &task).await;
+                        task_agent.emit_update(AgentUpdate::TaskIdle);
+                        task_agent
+                    }));
+                } else {
+                    active_goal_run = false;
+                    active_goal_id = None;
+                    active = Some(tokio::spawn(async move {
+                        handle_user_command(
+                            &mut task_agent,
+                            UserCommand::SubmitTask(task),
+                            &work_dir,
+                        )
                         .await;
-                    task_agent
-                }));
+                        task_agent
+                    }));
+                }
             }
             UserCommand::CreateGoal {
                 title,
@@ -736,18 +900,16 @@ async fn create_goal(
     objective: String,
     criteria: Vec<String>,
 ) -> Option<String> {
-    let criteria = if criteria.is_empty() {
-        vec![GoalCriterion::new(
-            "User accepts the completed result",
-            true,
-            GoalVerificationKind::Human,
-        )]
-    } else {
-        criteria
-            .into_iter()
-            .map(|description| GoalCriterion::new(description, true, GoalVerificationKind::Human))
-            .collect()
-    };
+    // Criteria are optional on purpose. Injecting a required human criterion
+    // here used to make every Goal end in `waiting_user` + `/goal accept`,
+    // which turned the user's acceptance into a rubber stamp for work they had
+    // not verified. A Goal with no criteria finishes on the model's proposal
+    // and the runner records that as self-attested; declare criteria (API
+    // callers can) when the result really needs a gate.
+    let criteria = criteria
+        .into_iter()
+        .map(|description| GoalCriterion::new(description, true, GoalVerificationKind::Human))
+        .collect::<Vec<_>>();
     match agent
         .tool_context
         .goal_manager
@@ -760,6 +922,11 @@ async fn create_goal(
         .await
     {
         Ok(goal) => {
+            let criteria_note = if goal.has_required_criteria() {
+                ""
+            } else {
+                " - no acceptance criteria: completion will be self-attested"
+            };
             emit_goals_changed(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
@@ -769,8 +936,8 @@ async fn create_goal(
             .await;
             if let Some(tx) = &agent.runtime.ui_tx {
                 let _ = tx.send(AgentUpdate::Info(format!(
-                    "🎯 Goal {} created ({}) - starting run",
-                    goal.id, goal.title
+                    "🎯 Goal {} created ({}) - starting run{criteria_note}",
+                    goal.id, goal.title,
                 )));
             }
             Some(goal.id)
@@ -1405,6 +1572,61 @@ fn clear_cancel_for_goal_activation(agent: &Agent) {
     agent.runtime.cancel_flag.store(false, Ordering::Relaxed);
 }
 
+/// The one Goal whose pending question this message answers, if there is one.
+///
+/// A `waiting_user` Goal splits into two cases that need opposite responses: a
+/// Goal that *asked a question* (`needs_user` after its last `Running`
+/// transition) is waiting for a reply, while a Goal parked on human acceptance
+/// needs `/goal accept`. Only the first is a candidate for a chat message, and
+/// only when the choice is unambiguous — with two waiting Goals a message would
+/// have to guess.
+async fn goal_awaiting_answer(manager: &SharedGoalManager) -> Option<String> {
+    let goals = manager.list().await.ok()?;
+    let mut waiting = Vec::new();
+    for goal in goals
+        .iter()
+        .filter(|goal| goal.status == GoalStatus::WaitingUser)
+    {
+        let question = manager
+            .latest_event_of_kind(&goal.id, "needs_user")
+            .await
+            .ok()
+            .flatten();
+        let Some(question) = question else {
+            continue;
+        };
+        let asked_since_running = match manager
+            .latest_event_with_status(&goal.id, GoalStatus::Running)
+            .await
+            .ok()
+            .flatten()
+        {
+            Some(running) => question.occurred_at >= running.occurred_at,
+            None => true,
+        };
+        if asked_since_running {
+            waiting.push(goal.id.clone());
+        }
+    }
+    (waiting.len() == 1).then(|| waiting.remove(0))
+}
+
+/// Records `text` as the waiting Goal's answer and resumes it.
+async fn answer_goal(agent: &mut Agent, goal_id: &str, text: &str) {
+    let manager = agent.tool_context.goal_manager.clone();
+    if let Ok(goal) = manager.get(goal_id).await {
+        let _ = manager
+            .append_event(goal_event(&goal, "user_answer", None, text.to_string()))
+            .await;
+    }
+    if let Some(tx) = &agent.runtime.ui_tx {
+        let _ = tx.send(AgentUpdate::Info(format!(
+            "🎯 Goal {goal_id} was waiting for input — recorded your reply as the answer and resuming"
+        )));
+    }
+    resume_goal(agent, goal_id).await;
+}
+
 async fn resume_goal(agent: &mut Agent, goal_id: &str) {
     let goal = match agent.tool_context.goal_manager.get(goal_id).await {
         Ok(goal) => goal,
@@ -1549,11 +1771,14 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
         })
         .collect();
     if evidence.is_empty() {
+        let hint = if goal.has_required_criteria() {
+            "already accepted, or none pending"
+        } else {
+            "a Goal without acceptance criteria completes on its own"
+        };
         emit_goal_error(
             &agent.runtime.ui_tx,
-            format!(
-                "Goal {goal_id} has no pending required criterion (already accepted, or none defined)"
-            ),
+            format!("Goal {goal_id} has no pending required criterion ({hint})"),
         );
         return;
     }
@@ -2047,7 +2272,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::Ordering;
+    use std::sync::atomic::{AtomicBool, Ordering};
 
     use tact_llm::{ContentBlock, MockClient, StopReason};
     use tact_protocol::{AgentUpdate, UserCommand};
@@ -2071,6 +2296,150 @@ mod tests {
         goal.id = id.to_string();
         goal.status = status;
         goal
+    }
+
+    /// The timer's reconciliation helper stays silent when nothing was
+    /// reclaimed: no Info line, no redundant snapshot republish.
+    #[tokio::test]
+    async fn reconcile_goal_runs_is_silent_when_nothing_was_reclaimed() {
+        install_test_config();
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mock = MockClient::new(vec![]);
+        let (agent, _work_dir) = build_test_agent(mock, Some(ui_tx.clone()));
+        let manager = agent.tool_context.goal_manager.clone();
+        let task_manager = agent.tool_context.task_manager.clone();
+        let goal = manager
+            .create(tact::goal::GoalCreate {
+                title: "idle goal".into(),
+                objective: "stay quiet".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::required("done")],
+            })
+            .await
+            .unwrap();
+        manager
+            .update(
+                &goal.id,
+                goal.version,
+                tact::goal::GoalUpdate {
+                    status: Some(tact::goal::GoalStatus::Queued),
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        let reported = AtomicBool::new(false);
+        super::reconcile_goal_runs(
+            &manager,
+            &task_manager,
+            super::goal_limits(),
+            &Some(ui_tx),
+            Some("test-session"),
+            &reported,
+        )
+        .await;
+
+        assert!(!reported.load(Ordering::Relaxed));
+        assert!(
+            ui_rx.try_recv().is_err(),
+            "an unchanged workspace must not produce an update"
+        );
+    }
+
+    /// The timer path is the recovery the startup pass cannot cover: a lease
+    /// that dies while this loop is up is reclaimed (and announced) without a
+    /// restart.
+    #[tokio::test]
+    async fn reconcile_goal_runs_reports_a_reclaimed_run() {
+        install_test_config();
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mock = MockClient::new(vec![]);
+        let (agent, _work_dir) = build_test_agent(mock, Some(ui_tx.clone()));
+        let manager = agent.tool_context.goal_manager.clone();
+        let task_manager = agent.tool_context.task_manager.clone();
+        let goal = manager
+            .create(tact::goal::GoalCreate {
+                title: "crashed goal".into(),
+                objective: "be reclaimed".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::required("done")],
+            })
+            .await
+            .unwrap();
+        let goal = manager
+            .update(
+                &goal.id,
+                goal.version,
+                tact::goal::GoalUpdate {
+                    status: Some(tact::goal::GoalStatus::Queued),
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let goal = manager
+            .update(
+                &goal.id,
+                goal.version,
+                tact::goal::GoalUpdate {
+                    status: Some(tact::goal::GoalStatus::Running),
+                    ..Default::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // A holder that died without releasing: its lease lapses unreleased.
+        let ttl = std::time::Duration::from_millis(20);
+        let (_token, run) = manager
+            .start_run(
+                "crashed-runner",
+                ttl,
+                tact::goal::GoalRun::new(goal.id.clone()),
+            )
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(60)).await;
+
+        let reported = AtomicBool::new(false);
+        super::reconcile_goal_runs(
+            &manager,
+            &task_manager,
+            super::goal_limits(),
+            &Some(ui_tx),
+            Some("test-session"),
+            &reported,
+        )
+        .await;
+
+        let mut infos = Vec::new();
+        let mut republished = false;
+        while let Ok(update) = ui_rx.try_recv() {
+            match update {
+                AgentUpdate::Info(message) => infos.push(message),
+                AgentUpdate::GoalsChanged { .. } => republished = true,
+                _ => {}
+            }
+        }
+        assert!(
+            infos
+                .iter()
+                .any(|message| message.contains("recovered interrupted run")
+                    && message.contains(&run.id)),
+            "the reclaimed run is announced: {infos:?}"
+        );
+        assert!(republished, "the panel is republished after a reclaim");
+        assert_eq!(
+            manager.get(&goal.id).await.unwrap().status,
+            tact::goal::GoalStatus::Paused
+        );
     }
 
     /// `/goal steer` resolution is store-authoritative: exact/unique-prefix id
@@ -2785,6 +3154,205 @@ mod tests {
                 AgentUpdate::Info(message) if message.contains("accepted — succeeded")
             )),
             "a successful acceptance must be announced in the log"
+        );
+    }
+
+    /// A Goal that asked a question is answered by the very next chat message:
+    /// the text becomes the answer and the Goal resumes without `/goal resume`.
+    #[tokio::test]
+    async fn a_reply_answers_a_waiting_goal_and_resumes_it() {
+        install_test_config();
+        let mock = MockClient::new(vec![(
+            vec![text_block("noted; continuing")],
+            Some(StopReason::EndTurn),
+        )]);
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, _work_dir) = build_test_agent(mock, Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let mut goal = manager
+            .create(tact::goal::GoalCreate {
+                title: "asker".into(),
+                objective: "ask, then continue".into(),
+                constraints: Vec::new(),
+                criteria: Vec::new(),
+            })
+            .await
+            .unwrap();
+        for status in [
+            tact::goal::GoalStatus::Queued,
+            tact::goal::GoalStatus::Running,
+            tact::goal::GoalStatus::WaitingUser,
+        ] {
+            goal = manager
+                .update(
+                    &goal.id,
+                    goal.version,
+                    tact::goal::GoalUpdate {
+                        status: Some(status),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+        manager
+            .append_event(super::goal_event(
+                &goal,
+                "needs_user",
+                None,
+                "which database should I target?".into(),
+            ))
+            .await
+            .unwrap();
+
+        let answer_for = super::goal_awaiting_answer(&manager)
+            .await
+            .expect("the goal asked a question, so the reply answers it");
+        assert_eq!(answer_for, goal.id);
+        super::answer_goal(&mut agent, &answer_for, "use postgres").await;
+
+        let events = manager.list_events(&goal.id).await.unwrap();
+        assert!(
+            events.iter().any(|event| event.kind == "user_answer"
+                && event.payload.as_deref() == Some("use postgres")),
+            "the reply is recorded as the goal's answer: {events:?}"
+        );
+        assert_ne!(
+            manager.get(&goal.id).await.unwrap().status,
+            tact::goal::GoalStatus::WaitingUser,
+            "the reply resumed the Goal instead of leaving it stranded"
+        );
+        assert!(
+            std::iter::from_fn(|| agent_rx.try_recv().ok()).any(|update| matches!(
+                update,
+                AgentUpdate::Info(message) if message.contains("was waiting for input")
+            )),
+            "the log explains why the message went to the Goal"
+        );
+    }
+
+    /// A Goal waiting on human acceptance is not waiting for a chat reply:
+    /// Two Goals waiting on questions are ambiguous, so the driver must not
+    /// guess which one a message answers.
+    #[tokio::test]
+    async fn two_waiting_goals_make_a_reply_ambiguous() {
+        install_test_config();
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+
+        for title in ["first", "second"] {
+            let mut goal = manager
+                .create(tact::goal::GoalCreate {
+                    title: title.into(),
+                    objective: format!("{title} asks"),
+                    constraints: Vec::new(),
+                    criteria: Vec::new(),
+                })
+                .await
+                .unwrap();
+            for status in [
+                tact::goal::GoalStatus::Queued,
+                tact::goal::GoalStatus::Running,
+                tact::goal::GoalStatus::WaitingUser,
+            ] {
+                goal = manager
+                    .update(
+                        &goal.id,
+                        goal.version,
+                        tact::goal::GoalUpdate {
+                            status: Some(status),
+                            ..Default::default()
+                        },
+                        None,
+                        None,
+                    )
+                    .await
+                    .unwrap();
+            }
+            manager
+                .append_event(super::goal_event(
+                    &goal,
+                    "needs_user",
+                    None,
+                    "which one?".into(),
+                ))
+                .await
+                .unwrap();
+        }
+
+        assert!(
+            super::goal_awaiting_answer(&manager).await.is_none(),
+            "the driver must not guess which Goal a message answers"
+        );
+    }
+
+    /// A Goal waiting on human acceptance is not waiting for a chat reply:
+    /// only `/goal accept` writes that evidence, so a message must not be
+    /// swallowed as an "answer".
+    #[tokio::test]
+    async fn a_reply_is_not_swallowed_by_a_goal_waiting_for_acceptance() {
+        install_test_config();
+        let mock = MockClient::new(vec![(vec![text_block("sure")], Some(StopReason::EndTurn))]);
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+        let manager = agent.tool_context.goal_manager.clone();
+        let mut goal = manager
+            .create(tact::goal::GoalCreate {
+                title: "gated".into(),
+                objective: "wait for acceptance".into(),
+                constraints: Vec::new(),
+                criteria: vec![tact::goal::GoalCriterion::new(
+                    "User accepts the result",
+                    true,
+                    tact::goal::GoalVerificationKind::Human,
+                )],
+            })
+            .await
+            .unwrap();
+        for status in [
+            tact::goal::GoalStatus::Queued,
+            tact::goal::GoalStatus::Running,
+            tact::goal::GoalStatus::WaitingUser,
+        ] {
+            goal = manager
+                .update(
+                    &goal.id,
+                    goal.version,
+                    tact::goal::GoalUpdate {
+                        status: Some(status),
+                        ..Default::default()
+                    },
+                    None,
+                    None,
+                )
+                .await
+                .unwrap();
+        }
+
+        assert!(
+            super::goal_awaiting_answer(&manager).await.is_none(),
+            "an acceptance wait is not a question"
+        );
+        // What the command loop does for a non-answer message: a normal turn.
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SubmitTask("hello".into()),
+            &work_dir,
+        )
+        .await;
+
+        let events = manager.list_events(&goal.id).await.unwrap();
+        assert!(
+            !events.iter().any(|event| event.kind == "user_answer"),
+            "an acceptance wait is not a question: {events:?}"
+        );
+        assert_eq!(
+            manager.get(&goal.id).await.unwrap().status,
+            tact::goal::GoalStatus::WaitingUser,
+            "the Goal keeps waiting for /goal accept"
         );
     }
 
