@@ -151,7 +151,9 @@ root.collection::<T>(relative_dir)?              // CollectionStore<T> — 按�
 | `worktree_events` | 泳道审计日志：`event`、`created_at`；`id` 为排序键 |
 | `subagent_runs` | 子 agent 运行记录（`SubagentStore`，同库）：`child_id`（PK，即子会话 id）、`status`（CHECK：`running`/`completed`/`failed`/`cancelled`）、`summary`、`started_at`/`finished_at`（毫秒） |
 | `goals` | Goal 聚合整行 JSON（`data`）+ 索引列 `status`、`version`（标准/证据随聚合一起序列化，无独立的 `goal_criteria` 表）、`updated_at` |
-| `goal_runs` / `goal_events` / `goal_leases` | bounded Run（整行 JSON `data` + 索引列 `state`、时间戳、`stop_reason`）、追加式审计事件（自增 `seq` 排序）、工作区 singleton lease 与 fencing epoch |
+| `goal_runs` / `goal_events` / `goal_leases` | bounded Run（整行 JSON `data` + 索引列 `state`、时间戳、`stop_reason`；`data` 里带 `event_seq_anchor`）、追加式审计事件（自增 `seq` 排序，另有 `kind` / `status` / `source` 三个投影列与对应索引）、工作区 singleton lease 与 fencing epoch（含 `holder_pid` / `holder_identity`） |
+
+`goal_events` 的 `kind` / `status` / `source` 是 `data` 的**投影列**，与 `data` 在同一条 INSERT 里写入：查询需要索引，而 `json_extract(data, '$.kind')` 用不上索引。旧库在打开时按 `kind = ''` 幂等回填一次（`source` 回填为 `runner`，绝不读成用户决定）。
 
 `archived_at` 不在列里：归档是 Goal JSON 里的一个时间戳（`Option`，旧行缺字段即「未归档」），所以归档/取消归档不需要新列、不需要迁移，`status` 列继续报 Goal 真正结束时的状态。Goal store 与 Task store 共用 `.tact/tact.db`。`tasks.goal_id` 是 nullable 迁移字段，旧 Task 保持可读；Goal 生命周期更新、事件追加和 run/lease 写入通过 `GoalManager` 的 SQLite store 完成，重启恢复不依赖内存队列。Goal 域的标识符由 `goal::new_id` 统一铸造为 8 位十六进制短 ID，历史行保留更长的 UUID：ID 在存储层是不透明字符串，从不解析、不校验长度（见 [Agent Goal](./28_chapter_goal_zh.md) §4）。
 

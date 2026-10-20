@@ -604,24 +604,50 @@ started_at INTEGER NOT NULL, finished_at INTEGER, stop_reason TEXT</code></pre>
 <p>索引：<code>idx_goal_runs_state</code>、<code>idx_goal_runs_goal_id</code>、<code>idx_goal_runs_started_at</code>。</p>
 <p><code>data</code> 是 <code>GoalRun</code>
 记录：outcome、<code>turns_used</code> / <code>tool_calls_used</code> /
-<code>elapsed_ms</code> / <code>tokens_used</code>、checkpoint
-和结束原因。Run 记录一次 lease
+<code>elapsed_ms</code> /
+<code>tokens_used</code>、checkpoint、结束原因，以及
+<code>event_seq_anchor</code>——这个 Run 开始时最大的
+<code>goal_events.seq</code>。Runner 问「这个 Run
+期间有没有写过某类事件」（checkpoint、完成提议、暂停/取消请求）时用的是
+<code>seq &gt; event_seq_anchor</code>，而不是毫秒级的时间戳比较：同一毫秒内先后写入的两个事件无法靠
+<code>occurred_at</code> 排序，<code>&gt;=</code> 曾把上一个 Run
+的完成提议算成本 Run 的，从而让 Goal
+凭过期的判定进入验收（2026-10-20）。锚点由 store 在插入 run
+行的<strong>同一个事务</strong>里取，并发追加的事件要么在锚点之前、要么在之后，没有中间窗口；<code>event_seq_anchor = 0</code>
+表示旧记录，读者退回时间戳语义。Run 记录一次 lease
 周期和资源消耗。进程异常退出时可以将过期的活动 Run 标为
 <code>interrupted</code>，并在创建新 Run
 时保留关联关系，不覆盖旧记录。</p>
 <h3 id="goal_events"><code>goal_events</code></h3>
 <pre class="text"><code>seq INTEGER PRIMARY KEY AUTOINCREMENT,
 id TEXT NOT NULL UNIQUE, goal_id TEXT NOT NULL,
-data TEXT NOT NULL, occurred_at INTEGER NOT NULL</code></pre>
-<p>索引：<code>idx_goal_events_goal_seq</code>（<code>goal_id, seq</code>）——按
-Goal 取区间事件。</p>
+data TEXT NOT NULL, occurred_at INTEGER NOT NULL,
+kind TEXT NOT NULL DEFAULT &#39;&#39;, status TEXT NOT NULL DEFAULT &#39;&#39;,
+source TEXT NOT NULL DEFAULT &#39;runner&#39;</code></pre>
+<p>索引：<code>idx_goal_events_goal_seq</code>（<code>goal_id, seq</code>）、<code>idx_goal_events_goal_kind</code>（<code>goal_id, kind, seq</code>）、<code>idx_goal_events_goal_status</code>（<code>goal_id, status, seq</code>）。</p>
+<p><code>kind</code> / <code>status</code> / <code>source</code> 是
+<code>data</code> 的<strong>投影列</strong>，与 <code>data</code>
+在同一条 INSERT 里写入，因此不会与 JSON
+分叉。它们存在的唯一理由是索引：Runner 每次 activation
+都要问几次「最近一次某类事件 / 某个 run 之后有没有某类事件」，而
+<code>json_extract(data, '$.kind')</code>
+无法走索引——原先每次查询都要扫到第一个匹配为止，成本随事件历史增长（2026-10-20）。旧库在打开时按
+<code>kind = ''</code> 回填一次，回填是幂等的。</p>
+<p><code>source</code>
+记录事件的<strong>作者</strong>：<code>model</code>（Goal
+工具：checkpoint / request_input /
+propose_completion）、<code>user</code>（<code>/goal steer</code>、<code>/goal pause|cancel</code>、<code>/goal accept</code>、回复
+Goal
+的提问、<code>/goal archive</code>）、<code>runner</code>（状态转移、Run
+结束、恢复）。见 §3 的「来源」与 §8。</p>
 <p>追加式事件日志：创建、用户修改目标或标准、状态转移、Task 关联、Run
 开始/结束、验收结果、steering、恢复、取消等。<code>seq</code>
 保证全局顺序。事件用于诊断和审计；不能只依赖内存队列或 TUI
 收到过的事件来恢复状态。</p>
 <h3 id="goal_leases"><code>goal_leases</code></h3>
 <pre class="text"><code>singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-owner TEXT NOT NULL, epoch INTEGER NOT NULL, expires_at INTEGER NOT NULL</code></pre>
+owner TEXT NOT NULL, epoch INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+holder_pid INTEGER NOT NULL DEFAULT 0, holder_identity TEXT NOT NULL DEFAULT &#39;&#39;</code></pre>
 <p>工作区内<strong>单行</strong> lease：<code>singleton = 1</code> 由
 CHECK 约束保证只能有一个写入者。<code>epoch</code> 是递增的 fencing
 代，所有状态写入必须携带当前 epoch。</p>
@@ -819,6 +845,15 @@ cycles 运行期间按 <code>TTL/3</code> 刷新 lease，退出时 abort 并 awa
 心跳任务；收尾与释放只校验 owner+epoch（fencing），不再要求 lease
 仍未过期——否则一个只是因为跑得久而过期、但未被接管的 lease 会丢掉整个
 Run 的结果。</p>
+<p><strong>心跳的两种终止都要说话</strong>（2026-10-20）：心跳此前只有「被接管」一种退出，且静默
+<code>return</code>；其余任何错误都吞掉、无限重试。这两种结局都意味着这个
+Run 已经救不回来——lease
+被接管，或不再续期而自然过期——所以现在两条路径都上报：接管时说明「本 Run
+已无法收尾，会被标成 interrupted」；连续失败达到 3
+次（<code>HEARTBEAT_MAX_CONSECUTIVE_FAILURES</code>，约等于原
+TTL）时停止并说明「lease
+将过期、结果可能丢失」。成功一次即清零计数。定时驱动方式不变，仍是
+<code>ttl/3</code> 一跳，不构成忙循环。</p>
 <p><strong>activation
 自己的判定优先于预算</strong>（2026-10-16）：取消（<code>cancelled</code>）、被
 hook
@@ -827,8 +862,30 @@ Esc / <code>c</code>
 产生的是<strong>暂停</strong>（<code>paused</code>），不是终态取消；只有带
 <code>cancel_requested</code> 事件的 <code>/goal cancel</code> 会把 Run
 标成
-<code>cancelled</code>（2026-10-17）。预算只在「本来还会继续」（<code>progress_made</code>，或验收被拒）时把
-Run 标成 <code>budget_exhausted</code>/<code>paused</code>。</p>
+<code>cancelled</code>（2026-10-17）。预算只在「本来还会继续」的工作（<code>progress_made</code>）上把
+Run 标成
+<code>budget_exhausted</code>/<code>paused</code>；<strong>完成提议不算「还想要更多」</strong>（2026-10-20）：它是模型的判定加上验收门的回答，产出它的那次
+activation 往往正好花掉最后一个 turn，若按预算降级成
+<code>budget_exhausted</code>，用户会去看
+<code>[goal].max_turns</code>，而真正待办的是一条未满足的标准。</p>
+<p><strong>最后一轮的完成提议仍然算数</strong>（2026-10-20）：agent loop
+的 turn 上限在<strong>模型调用之前</strong>检查，所以一次把预算用光的
+activation，其提交完成提议的 tool call
+原本永远不执行——下一轮顶到上限直接返回 <code>MaxTurns</code>，Runner
+记成 <code>budget_exhausted</code>。现在
+<code>agent_loop_detailed</code> 在该次 activation 执行完工具后、且
+<code>max_turns == turns_taken</code> 时，若本轮调用了
+<code>goal_propose_completion</code>，就以 <code>Completed</code>
+结束，让 Runner 走验收（<code>needs_user</code> /
+<code>completion_proposed</code>）而不是预算判定。</p>
+<p><strong>activation 被丢弃时 lease
+也必须释放</strong>（2026-10-20）：命令循环把 <code>Agent</code>
+交给派生任务，任务被取消、panic 或进程收尾时不会经过
+<code>activate</code> 的正常释放路径。<code>LeaseReleaseGuard</code> 在
+<code>Drop</code> 里派生一次 best-effort 的
+<code>release_lease</code>（owner+epoch 双重 fencing，重复释放是
+no-op），否则 lease 会一直占着 <code>max_elapsed + 60s</code>，期间任何
+session 的 <code>/goal resume</code> 都撞 <code>LeaseHeld</code>。</p>
 <p>活动 Run 的 <code>turns_used</code> / <code>tool_calls_used</code> /
 <code>elapsed_ms</code> 在每个 activation 结束后写回
 <code>goal_runs</code> 并刷新面板；单个 activation
@@ -897,6 +954,15 @@ TTL，只看时间会让面板长时间显示「running
 Goal。定时版本<strong>刻意不落</strong> idle
 <code>running</code>：那个状态是本轮 <code>no_progress</code>
 的合法落点（见上文），后台定时器不能把用户的任务按成暂停；它跑在派生任务里，等待数据库写锁不阻塞命令循环。</li>
+</ul>
+<p><strong>恢复通知的可见性</strong>（2026-10-20）：lease
+是<strong>工作区级</strong>的，定时对账捡到的 run 可能属于另一个
+session，而 <code>ui_tx</code> 只通向本
+session。因此定时路径说一句「本轮对账收回了 N 个中断的 Run」，逐 Goal
+的真相交给各 session
+共享的面板快照（<code>GoalsChanged</code>）；启动路径由本 session 的
+<code>Agent</code> 直接播报。</p>
+<ul>
 <li>恢复以 SQLite Goal/Run/Event 状态和 session transcript
 为依据，不依赖进程内 future、channel 或 pending queue。</li>
 <li>只有完成幂等性检查后才重试可能已执行但结果未落库的操作；外部副作用不得因为恢复而盲目重放。</li>
@@ -919,7 +985,13 @@ Goal。定时版本<strong>刻意不落</strong> idle
 <li>Goal 验收命令也走相同的工具和权限路径；验收配置不能执行任意 shell
 绕过审批。</li>
 <li>用户
-steering、目标变更、标准变更和人工验收必须作为用户来源事件记录；不能让模型工具伪造用户确认。</li>
+steering、目标变更、标准变更和人工验收必须作为用户来源事件记录；不能让模型工具伪造用户确认。<strong>这条不再只靠约定</strong>（2026-10-20）：每个事件带
+<code>source</code>（<code>model</code> / <code>user</code> /
+<code>runner</code>），store 在唯一的写入路径上拒绝模型作者写
+<code>user_accepted</code> /
+<code>user_answer</code>（<code>GoalEventSource::may_author</code>）。新增一个能写用户事件的工具会直接写失败，而不是悄悄开一个后门。旧行没有
+<code>source</code> 时按 <code>runner</code>
+读——默认值刻意选成不可能被误读为用户决定的那个。</li>
 <li>Goal 工具只允许访问当前执行上下文中的 Goal；Task 关联也默认限定在该
 Goal，避免跨 Goal 修改。</li>
 <li>工具结果和恢复 checkpoint

@@ -122,6 +122,8 @@ Unix 终止 child process group，并在 agent loop 返回前 flush 已读输出
 
 Goal 不改变 `agent_loop` 的单次执行语义。`crates/tact-ui/src/goal_runner.rs` 在外层取得 lease、创建 bounded Run、注入有限 Goal context，并把 `GoalYield`、预算耗尽、取消、临时错误和完成提议映射为持久状态。普通 `SubmitTask` 仍走原有路径；Goal run 的完成提议必须经过 `GoalVerifier` 和证据检查，不能由模型文本直接标记成功。
 
+**例外只有一处，且只关乎判定顺序**（2026-10-20）：turn 上限在模型调用**之前**检查，所以一次花掉最后一个 turn、并在其中调用 `goal_propose_completion` 的 activation，原本会在下一轮被 `MaxTurns` 截断——工具还没执行，提议根本没落库。现在这类 activation 在工具执行完后以 `Completed` 收尾，让 Runner 去验收它真正拿到的判定。上限本身没有放松：这只是把「已经做出的判定」排在「下一轮还许不许调用模型」之前（见 [Ch 28](./28_chapter_goal_zh.md) §7）。
+
 ---
 
 ## 6. 关键结构体
