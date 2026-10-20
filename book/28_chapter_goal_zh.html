@@ -322,7 +322,7 @@ self-attested。自动验证尚未实现，Automatic
 /goal create &lt;text&gt; [-- &lt;标准&gt;; &lt;标准&gt; ...]
                       创建 Goal（`--` 之前是标题与 objective，之后按 `;` 切成人工验收标准）并立即启动第一次 Run；不写标准则完成后以 self-attested 收尾
 /goal show &lt;id&gt;       查看目标、标准、任务和验收摘要
-/goal steer [&lt;id&gt;] &lt;text&gt; 立即补充方向或约束并写入事件（省略 id 时作用于当前运行中的 Goal；无运行中 Goal 时取唯一的非终态 Goal，多个候选则要求显式 id）；下一次 activation 的 context 会看到它，不阻塞当前 Run
+/goal steer [&lt;id&gt;] &lt;text&gt; 立即补充方向或说明并写入事件（省略 id 时作用于当前运行中的 Goal；无运行中 Goal 时取唯一的非终态 Goal，多个候选则要求显式 id）；下一次 activation 的 context 会看到它，不阻塞当前 Run
 /goal pause &lt;id&gt;      暂停执行；Run 活跃时写 pause_requested 并中断当前模型/工具波次，Runner 落到 paused
 /goal resume &lt;id&gt;     恢复执行
 /goal cancel &lt;id&gt;     取消 Goal；Run 活跃时写 cancel_requested 并触发 cancel_flag，终态为 cancelled
@@ -576,7 +576,7 @@ activation 不再重读并 JSON-parse Goal
 status TEXT NOT NULL, version INTEGER NOT NULL, updated_at INTEGER NOT NULL</code></pre>
 <p>索引：<code>idx_goals_status</code>、<code>idx_goals_updated_at</code>。</p>
 <p><code>data</code> 是 <code>Goal</code>
-聚合的序列化：标题、objective、约束、phase、session
+聚合的序列化：标题、objective、phase、session
 关联、完成时间与摘要，以及<strong>验收标准列表</strong>——每条标准含描述、<code>required</code>、<code>verification_kind</code>、<code>status</code>
 和带 <code>criteria_version</code>
 标签的证据。标准随聚合整体提交，<code>version</code>
@@ -686,11 +686,11 @@ Run 内循环执行 activation，只有上一个 activation
 / <code>no_progress</code> 结束该 Run。所有周期共享同一条 Run
 记录、同一次 lease 和同一次收尾事务——不会每个周期各写一条 Run。</p>
 <p>每个新周期开始时，Runner 都重新注入精简且权威的 Goal
-上下文：目标、硬约束、验收标准摘要、关联 Task 状态、最近 checkpoint
+上下文：目标、验收标准摘要、关联 Task 状态、最近 checkpoint
 和暂停原因（Goal 工具在周期内追加的
 checkpoint/事件，下一个周期就能看到）。完整事件历史按需查询，不应每轮无界地注入
 prompt。上下文应以明确标签与边界传递，不能让来自历史/tool output
-的内容覆盖用户约束。</p>
+的内容覆盖用户目标或验收标准。</p>
 <p><strong>注入上下文有自己的身份，不是用户消息</strong>（2026-10-18）：这份上下文是
 Runner 的派生产物，每次 activation 都会重建。它以
 <code>MessageKind::GoalContext</code> +

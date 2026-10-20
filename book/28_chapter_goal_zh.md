@@ -41,7 +41,7 @@ Goal、Task、Turn 和 PlanStep 是不同层级，不能互相替代：
 /goal create <text> [-- <标准>; <标准> ...]
                       创建 Goal（`--` 之前是标题与 objective，之后按 `;` 切成人工验收标准）并立即启动第一次 Run；不写标准则完成后以 self-attested 收尾
 /goal show <id>       查看目标、标准、任务和验收摘要
-/goal steer [<id>] <text> 立即补充方向或约束并写入事件（省略 id 时作用于当前运行中的 Goal；无运行中 Goal 时取唯一的非终态 Goal，多个候选则要求显式 id）；下一次 activation 的 context 会看到它，不阻塞当前 Run
+/goal steer [<id>] <text> 立即补充方向或说明并写入事件（省略 id 时作用于当前运行中的 Goal；无运行中 Goal 时取唯一的非终态 Goal，多个候选则要求显式 id）；下一次 activation 的 context 会看到它，不阻塞当前 Run
 /goal pause <id>      暂停执行；Run 活跃时写 pause_requested 并中断当前模型/工具波次，Runner 落到 paused
 /goal resume <id>     恢复执行
 /goal cancel <id>     取消 Goal；Run 活跃时写 cancel_requested 并触发 cancel_flag，终态为 cancelled
@@ -177,7 +177,7 @@ status TEXT NOT NULL, version INTEGER NOT NULL, updated_at INTEGER NOT NULL
 
 索引：`idx_goals_status`、`idx_goals_updated_at`。
 
-`data` 是 `Goal` 聚合的序列化：标题、objective、约束、phase、session 关联、完成时间与摘要，以及**验收标准列表**——每条标准含描述、`required`、`verification_kind`、`status` 和带 `criteria_version` 标签的证据。标准随聚合整体提交，`version` 即标准/证据版本号：用户修改目标或标准时递增，旧版本证据自动失效。CRUD 路径经 `GoalManager`，不允许绕过它直写。
+`data` 是 `Goal` 聚合的序列化：标题、objective、phase、session 关联、完成时间与摘要，以及**验收标准列表**——每条标准含描述、`required`、`verification_kind`、`status` 和带 `criteria_version` 标签的证据。标准随聚合整体提交，`version` 即标准/证据版本号：用户修改目标或标准时递增，旧版本证据自动失效。CRUD 路径经 `GoalManager`，不允许绕过它直写。
 
 Goal 属于工作区，不只属于创建它的 session。创建 session 与当前执行 session 分开记录，允许用户在后续 session 中查看和恢复。
 
@@ -197,17 +197,23 @@ started_at INTEGER NOT NULL, finished_at INTEGER, stop_reason TEXT
 
 索引：`idx_goal_runs_state`、`idx_goal_runs_goal_id`、`idx_goal_runs_started_at`。
 
-`data` 是 `GoalRun` 记录：outcome、`turns_used` / `tool_calls_used` / `elapsed_ms` / `tokens_used`、checkpoint 和结束原因。Run 记录一次 lease 周期和资源消耗。进程异常退出时可以将过期的活动 Run 标为 `interrupted`，并在创建新 Run 时保留关联关系，不覆盖旧记录。
+`data` 是 `GoalRun` 记录：outcome、`turns_used` / `tool_calls_used` / `elapsed_ms` / `tokens_used`、checkpoint、结束原因，以及 `event_seq_anchor`——这个 Run 开始时最大的 `goal_events.seq`。Runner 问「这个 Run 期间有没有写过某类事件」（checkpoint、完成提议、暂停/取消请求）时用的是 `seq > event_seq_anchor`，而不是毫秒级的时间戳比较：同一毫秒内先后写入的两个事件无法靠 `occurred_at` 排序，`>=` 曾把上一个 Run 的完成提议算成本 Run 的，从而让 Goal 凭过期的判定进入验收（2026-10-20）。锚点由 store 在插入 run 行的**同一个事务**里取，并发追加的事件要么在锚点之前、要么在之后，没有中间窗口；`event_seq_anchor = 0` 表示旧记录，读者退回时间戳语义。Run 记录一次 lease 周期和资源消耗。进程异常退出时可以将过期的活动 Run 标为 `interrupted`，并在创建新 Run 时保留关联关系，不覆盖旧记录。
 
 ### `goal_events`
 
 ```text
 seq INTEGER PRIMARY KEY AUTOINCREMENT,
 id TEXT NOT NULL UNIQUE, goal_id TEXT NOT NULL,
-data TEXT NOT NULL, occurred_at INTEGER NOT NULL
+data TEXT NOT NULL, occurred_at INTEGER NOT NULL,
+kind TEXT NOT NULL DEFAULT '', status TEXT NOT NULL DEFAULT '',
+source TEXT NOT NULL DEFAULT 'runner'
 ```
 
-索引：`idx_goal_events_goal_seq`（`goal_id, seq`）——按 Goal 取区间事件。
+索引：`idx_goal_events_goal_seq`（`goal_id, seq`）、`idx_goal_events_goal_kind`（`goal_id, kind, seq`）、`idx_goal_events_goal_status`（`goal_id, status, seq`）。
+
+`kind` / `status` / `source` 是 `data` 的**投影列**，与 `data` 在同一条 INSERT 里写入，因此不会与 JSON 分叉。它们存在的唯一理由是索引：Runner 每次 activation 都要问几次「最近一次某类事件 / 某个 run 之后有没有某类事件」，而 `json_extract(data, '$.kind')` 无法走索引——原先每次查询都要扫到第一个匹配为止，成本随事件历史增长（2026-10-20）。旧库在打开时按 `kind = ''` 回填一次，回填是幂等的。
+
+`source` 记录事件的**作者**：`model`（Goal 工具：checkpoint / request_input / propose_completion）、`user`（`/goal steer`、`/goal pause|cancel`、`/goal accept`、回复 Goal 的提问、`/goal archive`）、`runner`（状态转移、Run 结束、恢复）。见 §3 的「来源」与 §8。
 
 追加式事件日志：创建、用户修改目标或标准、状态转移、Task 关联、Run 开始/结束、验收结果、steering、恢复、取消等。`seq` 保证全局顺序。事件用于诊断和审计；不能只依赖内存队列或 TUI 收到过的事件来恢复状态。
 
@@ -215,7 +221,8 @@ data TEXT NOT NULL, occurred_at INTEGER NOT NULL
 
 ```text
 singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
-owner TEXT NOT NULL, epoch INTEGER NOT NULL, expires_at INTEGER NOT NULL
+owner TEXT NOT NULL, epoch INTEGER NOT NULL, expires_at INTEGER NOT NULL,
+holder_pid INTEGER NOT NULL DEFAULT 0, holder_identity TEXT NOT NULL DEFAULT ''
 ```
 
 工作区内**单行** lease：`singleton = 1` 由 CHECK 约束保证只能有一个写入者。`epoch` 是递增的 fencing 代，所有状态写入必须携带当前 epoch。
@@ -273,7 +280,7 @@ Agent loop 仍负责单次模型交互、工具 dispatch、hooks、权限、会�
 
 **一次 Run 是"一个 lease 周期 + 一到多个受限 activation"**：`GoalRunner::run_with_lease` 在同一个 Run 内循环执行 activation，只有上一个 activation 留下可观察进展（执行过工具调用或追加过 Goal 事件）且 Run 的累计预算仍有剩余时才进入下一个周期；否则以 `progress_made` / `no_progress` 结束该 Run。所有周期共享同一条 Run 记录、同一次 lease 和同一次收尾事务——不会每个周期各写一条 Run。
 
-每个新周期开始时，Runner 都重新注入精简且权威的 Goal 上下文：目标、硬约束、验收标准摘要、关联 Task 状态、最近 checkpoint 和暂停原因（Goal 工具在周期内追加的 checkpoint/事件，下一个周期就能看到）。完整事件历史按需查询，不应每轮无界地注入 prompt。上下文应以明确标签与边界传递，不能让来自历史/tool output 的内容覆盖用户约束。
+每个新周期开始时，Runner 都重新注入精简且权威的 Goal 上下文：目标、验收标准摘要、关联 Task 状态、最近 checkpoint 和暂停原因（Goal 工具在周期内追加的 checkpoint/事件，下一个周期就能看到）。完整事件历史按需查询，不应每轮无界地注入 prompt。上下文应以明确标签与边界传递，不能让来自历史/tool output 的内容覆盖用户目标或验收标准。
 
 **注入上下文有自己的身份，不是用户消息**（2026-10-18）：这份上下文是 Runner 的派生产物，每次 activation 都会重建。它以 `MessageKind::GoalContext` + `<goal-context>` 标记（`tact::goal::is_goal_context_text`）双重标识（kind 不落盘，重载后只剩标记），因此 compaction 重建不把它当作「真实用户回合」继续带下去，TUI 历史加载既不渲染它、也不把它计入 turn 计数——面板才是它的权威视图。每次 activation 的上下文都带 `<checkpoint-protocol>` 段，要求模型在本次 activation 结束前落一个 checkpoint（见 §7）。
 
@@ -314,7 +321,13 @@ Run 的累计预算同样是 `GoalLimits` 的 500 turns / 600 秒墙钟时间（
 
 **Lease 在 Run 执行期间持续心跳**（2026-10-17）：`max_elapsed` 只在 activation 之间检查，单个 activation 可能远长于 lease TTL。Runner 在 cycles 运行期间按 `TTL/3` 刷新 lease，退出时 abort 并 await 心跳任务；收尾与释放只校验 owner+epoch（fencing），不再要求 lease 仍未过期——否则一个只是因为跑得久而过期、但未被接管的 lease 会丢掉整个 Run 的结果。
 
-**activation 自己的判定优先于预算**（2026-10-16）：取消（`cancelled`）、被 hook 拦截（`fatal_error`/`failed`）、需要用户（`needs_user`）、验收通过（`succeeded`）这类终局判定即使与预算耗尽同时发生，也按判定记录。运行期间按 Esc / `c` 产生的是**暂停**（`paused`），不是终态取消；只有带 `cancel_requested` 事件的 `/goal cancel` 会把 Run 标成 `cancelled`（2026-10-17）。预算只在「本来还会继续」（`progress_made`，或验收被拒）时把 Run 标成 `budget_exhausted`/`paused`。
+**心跳的两种终止都要说话**（2026-10-20）：心跳此前只有「被接管」一种退出，且静默 `return`；其余任何错误都吞掉、无限重试。这两种结局都意味着这个 Run 已经救不回来——lease 被接管，或不再续期而自然过期——所以现在两条路径都上报：接管时说明「本 Run 已无法收尾，会被标成 interrupted」；连续失败达到 3 次（`HEARTBEAT_MAX_CONSECUTIVE_FAILURES`，约等于原 TTL）时停止并说明「lease 将过期、结果可能丢失」。成功一次即清零计数。定时驱动方式不变，仍是 `ttl/3` 一跳，不构成忙循环。
+
+**activation 自己的判定优先于预算**（2026-10-16）：取消（`cancelled`）、被 hook 拦截（`fatal_error`/`failed`）、需要用户（`needs_user`）、验收通过（`succeeded`）这类终局判定即使与预算耗尽同时发生，也按判定记录。运行期间按 Esc / `c` 产生的是**暂停**（`paused`），不是终态取消；只有带 `cancel_requested` 事件的 `/goal cancel` 会把 Run 标成 `cancelled`（2026-10-17）。预算只在「本来还会继续」的工作（`progress_made`）上把 Run 标成 `budget_exhausted`/`paused`；**完成提议不算「还想要更多」**（2026-10-20）：它是模型的判定加上验收门的回答，产出它的那次 activation 往往正好花掉最后一个 turn，若按预算降级成 `budget_exhausted`，用户会去看 `[goal].max_turns`，而真正待办的是一条未满足的标准。
+
+**最后一轮的完成提议仍然算数**（2026-10-20）：agent loop 的 turn 上限在**模型调用之前**检查，所以一次把预算用光的 activation，其提交完成提议的 tool call 原本永远不执行——下一轮顶到上限直接返回 `MaxTurns`，Runner 记成 `budget_exhausted`。现在 `agent_loop_detailed` 在该次 activation 执行完工具后、且 `max_turns == turns_taken` 时，若本轮调用了 `goal_propose_completion`，就以 `Completed` 结束，让 Runner 走验收（`needs_user` / `completion_proposed`）而不是预算判定。
+
+**activation 被丢弃时 lease 也必须释放**（2026-10-20）：命令循环把 `Agent` 交给派生任务，任务被取消、panic 或进程收尾时不会经过 `activate` 的正常释放路径。`LeaseReleaseGuard` 在 `Drop` 里派生一次 best-effort 的 `release_lease`（owner+epoch 双重 fencing，重复释放是 no-op），否则 lease 会一直占着 `max_elapsed + 60s`，期间任何 session 的 `/goal resume` 都撞 `LeaseHeld`。
 
 活动 Run 的 `turns_used` / `tool_calls_used` / `elapsed_ms` 在每个 activation 结束后写回 `goal_runs` 并刷新面板；单个 activation 运行期间面板显示上一次落库值，不会逐 turn 实时更新（2026-10-17）。
 
@@ -330,6 +343,8 @@ Run 的累计预算同样是 `GoalLimits` 的 500 turns / 600 秒墙钟时间（
 
 - 启动或恢复时先检查活动 Run 与 lease；lease **过期或持有进程已消失**（`recover_dead_active_runs`）时把旧 Run 标记为 `interrupted`，记录 `lease expired` / `lease holder is gone` 作为 stop reason 与 Goal 事件，然后由恢复逻辑把没有活动 Run 的 `running` Goal 落到 `paused`。判据不能只看时间：崩溃后 lease 的 `expires_at` 最多还能活满一个 TTL，只看时间会让面板长时间显示「running 但没有执行者」，且这段时间里用户的 `/goal resume` 会撞上 `LeaseHeld`（2026-10-17）。
 - **恢复有两个触发时机，共用同一条判据**（2026-10-17）：启动时是 `GoalRunner::recover_interrupted`（第 1 步中断 + 第 2 步把所有 stranded `running` 落 `paused`）；运行期间命令循环每 15 秒派生一次 `GoalRunner::reconcile_dead_runs`，只落它刚刚中断的那几个 Goal。定时版本**刻意不落** idle `running`：那个状态是本轮 `no_progress` 的合法落点（见上文），后台定时器不能把用户的任务按成暂停；它跑在派生任务里，等待数据库写锁不阻塞命令循环。
+
+**恢复通知的可见性**（2026-10-20）：lease 是**工作区级**的，定时对账捡到的 run 可能属于另一个 session，而 `ui_tx` 只通向本 session。因此定时路径说一句「本轮对账收回了 N 个中断的 Run」，逐 Goal 的真相交给各 session 共享的面板快照（`GoalsChanged`）；启动路径由本 session 的 `Agent` 直接播报。
 - 恢复以 SQLite Goal/Run/Event 状态和 session transcript 为依据，不依赖进程内 future、channel 或 pending queue。
 - 只有完成幂等性检查后才重试可能已执行但结果未落库的操作；外部副作用不得因为恢复而盲目重放。
 - 暂停/取消先持久化 `pause_requested` / `cancel_requested` 事件，再触发当前 Agent 的 `cancel_flag`；Runner 在 activation 结束或下一个 cycle 前读取事件，记录 Run outcome 并释放 lease。暂停落到 `paused`（可 resume），取消落到终态 `cancelled`。
@@ -344,7 +359,7 @@ Goal 授权的是“持续尝试达成这个目标”，不是对将来所有副
 
 - 文件写入、shell、MCP、网络和敏感路径访问继续由现有权限系统及安全扫描器控制。
 - Goal 验收命令也走相同的工具和权限路径；验收配置不能执行任意 shell 绕过审批。
-- 用户 steering、目标变更、标准变更和人工验收必须作为用户来源事件记录；不能让模型工具伪造用户确认。
+- 用户 steering、目标变更、标准变更和人工验收必须作为用户来源事件记录；不能让模型工具伪造用户确认。**这条不再只靠约定**（2026-10-20）：每个事件带 `source`（`model` / `user` / `runner`），store 在唯一的写入路径上拒绝模型作者写 `user_accepted` / `user_answer`（`GoalEventSource::may_author`）。新增一个能写用户事件的工具会直接写失败，而不是悄悄开一个后门。旧行没有 `source` 时按 `runner` 读——默认值刻意选成不可能被误读为用户决定的那个。
 - Goal 工具只允许访问当前执行上下文中的 Goal；Task 关联也默认限定在该 Goal，避免跨 Goal 修改。
 - 工具结果和恢复 checkpoint 可能包含不可信内容，重新注入时保留来源标签和信任边界。
 - Runner 负责取消、预算、lease 和调度；它不更改现有 permission mode，也不静默降低审批要求。

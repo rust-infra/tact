@@ -4,6 +4,48 @@
 
 相关流程：`AGENTS.md`（何时追加条目）、`docs/superpowers/specs/`（设计）、`docs/superpowers/plans/`（实现计划）。
 
+## 1. 2026-10-20 — lease 心跳不再无限静默重试
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：Run 期间可能出现新的告警行） |
+| **Symptom** | `spawn_lease_heartbeat` 只在 `StaleLease` 时 `return`（且不发声），其他任何错误都进 `Err(_)` 分支被丢弃、下一跳继续。store 持续失败（数据库被删/权限变化/磁盘满/长期写锁竞争）时，心跳永远不放弃：lease 不再续期而自然过期，另一进程接管并把 run 标成 `interrupted`，本 Run 的 `finish_run_and_transition` 再被 epoch fence 掉——结果丢失，全程零提示。 |
+| **Cause** | 循环没有失败计数，也没有上报通道；`Err` 分支注释写着 "Transient store error: try again on the next tick"，把「可能瞬时」当成了「一定瞬时」。 |
+| **Decision** | 加连续失败计数（成功清零）+ 上限 `HEARTBEAT_MAX_CONSECUTIVE_FAILURES = 3`（约等于原 TTL，即「再不续期本来也会过期」）；达到上限即停止并上报。`StaleLease`（被接管）同样上报，说明本 Run 已无法收尾。上报走 `GoalRunner::ui_tx`（与恢复路径同一通道）。周期与上限拆出 `spawn_lease_heartbeat_every` 便于测试注入。 |
+| **Changed behaviour** | 心跳被接管 → 日志出现「lease was taken over … can no longer finish — it will be marked interrupted」；连续失败 3 次 → 「heartbeat stopped after N consecutive failures … this run's result may be lost」。正常路径行为不变；仍是 `ttl/3` 定时驱动，不会忙循环。 |
+| **Pointers** | `crates/tact-ui/src/goal_runner.rs`（`spawn_lease_heartbeat` / `spawn_lease_heartbeat_every` / `HEARTBEAT_MAX_CONSECUTIVE_FAILURES`）、`book/28_chapter_goal_zh.md` §7；测试 `a_dead_heartbeat_stops_after_its_tolerance_and_reports_it`、`a_taken_over_lease_is_reported_by_the_heartbeat`（前者已做变异验证） |
+
+## 1. 2026-10-20 — Goal 事件记录来源，模型不能再写用户决定
+
+| Field | Value |
+|-------|-------|
+| **Type** | feat + fix（内部审计与安全边界；事件 JSON 与表结构变化） |
+| **Symptom** | 事件日志把两种权威混在一起：模型（经 Goal 工具）和用户（命令 / 验收）写的事件在结构上无法区分。`book/28` §3/§8 要求「不能让模型工具伪造用户确认」，而当时唯一的保障是**「碰巧没有工具写 `user_accepted`」**——任何未来新增一个能写事件、参数又足够自由的工具都可能悄悄开一个后门。 |
+| **Decision** | `GoalEvent` 增加 `source: GoalEventSource`（`model` / `user` / `runner`，`#[serde(default)]` 默认 `runner`），并在 `goal_events` 上作为投影列 + 索引写入。规则放一处：`GoalEventSource::may_author(kind)` 规定 `user_accepted` / `user_answer` 不得由模型作者撰写，由 store 的唯一写入路径 `insert_event` 强制拒绝。所有构造点按语义标注：Goal 工具 → `model`；steer/pause/cancel/accept/answer/archive → `user`；状态转移、Run 结束、恢复 → `runner`。 |
+| **Changed behaviour** | 事件 JSON 多 `source` 字段（旧行缺省读作 `runner`）；模型 tool 若试图写用户决定类事件会直接失败且不落库；审计/诊断可以按作者过滤。 |
+| **Pointers** | `crates/tact/src/goal/mod.rs`（`GoalEventSource`、`may_author`）、`crates/tact/src/store/goal_store/sqlite.rs`（列、迁移、强制点）、`crates/tact/src/tool/goal.rs`（模型作者）、`crates/tact-ui/src/driver.rs`（用户作者）、`book/28_chapter_goal_zh.md` §3/§4/§8；测试 `a_model_authored_user_decision_is_refused`、`events_without_a_source_read_as_runner`、`goal_tool_events_are_model_authored`（已做变异验证） |
+
+## 1. 2026-10-20 — Goal 事件查询走索引并用 seq 定界；跨 session 的恢复通知改走面板
+
+| Field | Value |
+|-------|-------|
+| **Type** | perf + fix（内部行为；事件查询成本与跨 session 通知可见性） |
+| **Symptom** | (1) 每次 activation 的 `latest_event_of_kind` / `has_event_of_kind_since` 都是 `json_extract(data,'$.kind')` + `ORDER BY seq DESC LIMIT 1`——索引服务不了表达式，SQLite 会一路扫到命中为止，Goal 事件越积越多查询越慢。(2) 「这个 Run 期间有没有写完成提议」用毫秒时间戳比较，同一毫秒内前后写入的事件无法排序，`>=` 会把上一个 Run 的提议算进本 Run。(3) 15 秒定时对账会捡到**其他 session** 的 run，却把逐 run 的消息发进本 session 的 `ui_tx`——本 session 的用户看到别人的 run，真正等待的 session 什么也看不到（本会话上一轮刚把「静默失败」改成播报，播报对象又错了）。 |
+| **Decision** | (1) `goal_events` 增加 `kind` / `status` 投影列 + `(goal_id, kind, seq)` / `(goal_id, status, seq)` 索引，与 `data` 同一条 INSERT 写入；旧库按 `kind = ''` 一次性幂等回填。(2) `GoalRun` 增加 `event_seq_anchor`，store 在插入 run 行的事务里记录当前最大 seq，Runner 用 `seq > anchor` 问「本 Run 期间」；`0` 表示旧记录，退回时间戳语义。(3) 定时路径只输出「收回了 N 个中断 Run」，逐 Goal 状态由共享的面板快照表达；启动路径仍由本 session 播报。 |
+| **Changed behaviour** | 事件查询变为索引 seek（`EXPLAIN QUERY PLAN` 由测试固定）；跨毫秒边界的完成提议不会再串到下一个 Run；定时对账不再在日志里点名别的 session 的 Run，但面板（以及 `GoalsChanged`）对所有 session 都会更新。 |
+| **Pointers** | `crates/tact/src/store/goal_store/sqlite.rs`（迁移、投影列、`has_event_of_kind_after`、`max_event_seq`）、`crates/tact/src/goal/mod.rs`（`GoalRun::event_seq_anchor`）、`crates/tact-ui/src/goal_runner.rs`（`happened_during_run`）、`crates/tact-ui/src/driver.rs`（对账通知）；`book/28_chapter_goal_zh.md` §4/§7；测试 `event_lookup_columns_are_backfilled_once_for_legacy_rows`、`event_lookups_use_an_index_instead_of_scanning_the_history`、`a_run_anchors_its_event_window_on_seq`、`reconcile_goal_runs_reports_a_reclaimed_run` |
+
+## 1. 2026-10-20 — 最后一个 turn 的完成提议不再被记成预算耗尽；被丢弃的 activation 释放 lease
+
+| Field | Value |
+|-------|-------|
+| **Type** | fix（用户可见：Run 结束行与 Goal 状态） |
+| **Symptom** | (1) 一个 activation 恰好花掉最后一点 turn、并提交了完成提议时，Run 被记成 `budget_exhausted` 且 Goal 被 `paused`——用户以为是 `[goal].max_turns` 太小，实际是一条验收标准没满足。(2) TUI 退出或任务被取消/panic 时，Goal 的 workspace lease 会一直占着 `max_elapsed + 60s`，期间任何 session 的 `/goal resume` 都返回 `LeaseHeld`。 |
+| **Cause** | (1) turn 上限在**模型调用之前**检查，于是提交提议的那个 tool call 在下一轮被跳过，直接 `MaxTurns`；Runner 再把「验收被拒」也纳入预算降级，掩盖了真正的判定。(2) `activate` 的 `release_lease` 只在正常返回路径上，future 被 drop 时不执行。 |
+| **Decision** | (1) `agent_loop_detailed` 在该 activation 执行完工具后、且 `max_turns == turns_taken`、本轮调用了 `goal_propose_completion` 时以 `Completed` 结束；Runner 侧不再把 `completion_proposed` 当作「本来还会继续」。上限本身仍是硬约束，只是不再覆盖已产出的判定。(2) 新增 `LeaseReleaseGuard`，`Drop` 里派生 best-effort `release_lease`（owner+epoch fencing，重复释放为 no-op）。 |
+| **Changed behaviour** | 最后一轮提交提议：Run 以 `CompletionProposed`（必需 Human 标准未满足 → `NeedsUser`）结束，Goal 进 `waiting_user` 而不是 `paused`。activation 被丢弃：lease 立即释放，下一次 `/goal resume`/claim 不再撞 `LeaseHeld`；`goal_runs` 里的 `running` 行仍由启动恢复或 15s 对账标成 `interrupted`（幂等）。 |
+| **Pointers** | `crates/tact/src/agent/mod.rs`（`completion_proposed_this_turn`）、`crates/tact-ui/src/goal_runner.rs`（`LeaseReleaseGuard`）、`book/28_chapter_goal_zh.md` §7；测试 `a_rejected_completion_is_not_downgraded_to_budget_exhaustion`、`dropping_an_activation_releases_its_lease`（均已做变异验证：撤销修复即失败） |
+
 ## 1. 2026-10-18 — 发版 v1.1.42：清单版本 1.1.41 → 1.1.42，与 agent-goal 一起进 PR
 
 | Field | Value |
