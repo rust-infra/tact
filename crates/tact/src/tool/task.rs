@@ -198,7 +198,6 @@ mod tests {
             .create(crate::goal::GoalCreate {
                 title: "linked goal".into(),
                 objective: "keep the task graph on the Goal".into(),
-                constraints: Vec::new(),
                 criteria: vec![crate::goal::GoalCriterion::required("done")],
             })
             .await

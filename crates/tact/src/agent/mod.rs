@@ -1730,7 +1730,42 @@ impl Agent {
                 self.compact_history_with_trigger(CompactTrigger::Manual, Some(focus.as_str()))
                     .await?;
             }
+
+            // The cap is checked at the top of the loop, *before* a model call,
+            // so an activation that spends its last turn proposing completion
+            // used to be stopped on the next iteration as `MaxTurns` — a budget
+            // verdict for a turn that had already delivered its verdict. The
+            // proposal is durable by now (`goal_propose_completion` appends it),
+            // so the run ends here as a completed activation and the Runner sees
+            // the outcome it can verify, instead of `BudgetExhausted` next to a
+            // Goal the verifier rejected (2026-10-20).
+            if self.max_turns == Some(self.turns_taken)
+                && self.tool_context.active_goal_id.is_some()
+                && self.runtime.goal_yield_reason.is_none()
+                && self.completion_proposed_this_turn(&content)
+                && !self.cancel_requested()
+            {
+                return Ok(finish(
+                    AgentLoopStop::Completed,
+                    self.turns_taken,
+                    tool_calls,
+                ));
+            }
         }
+    }
+
+    /// Whether this turn's dispatched tool calls proposed Goal completion.
+    ///
+    /// Read from the assistant turn rather than from the store: the call has
+    /// just been executed, and asking the store would turn a scheduling
+    /// decision into another round trip.
+    fn completion_proposed_this_turn(&self, content: &[ContentBlock]) -> bool {
+        content.iter().any(|block| {
+            matches!(
+                block,
+                ContentBlock::ToolUse { name, .. } if name == "goal_propose_completion"
+            )
+        })
     }
 
     async fn stream_message(
@@ -5429,7 +5464,6 @@ mod tests {
             .create(crate::goal::GoalCreate {
                 title: "Need user input".to_string(),
                 objective: "Pause for a user answer".to_string(),
-                constraints: Vec::new(),
                 criteria: vec![crate::goal::GoalCriterion::required_with_id(
                     "criterion-1",
                     "answer received",
@@ -5486,7 +5520,9 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            events.iter().any(|event| event.kind == "needs_user"),
+            events
+                .iter()
+                .any(|event| event.kind == crate::goal::GoalEventKind::NeedsUser),
             "needs_user event should be persisted: {events:?}"
         );
         assert_eq!(
@@ -5513,7 +5549,6 @@ mod tests {
             .create(crate::goal::GoalCreate {
                 title: "Reminder".to_string(),
                 objective: "Checkpoint before the cap".to_string(),
-                constraints: Vec::new(),
                 criteria: vec![crate::goal::GoalCriterion::required_with_id(
                     "criterion-1",
                     "checkpoint written",
@@ -5603,7 +5638,6 @@ mod tests {
             .create(crate::goal::GoalCreate {
                 title: "Need user input".to_string(),
                 objective: "Pause for a user answer".to_string(),
-                constraints: Vec::new(),
                 criteria: vec![crate::goal::GoalCriterion::required_with_id(
                     "criterion-1",
                     "answer received",
@@ -5926,7 +5960,6 @@ mod tests {
             .create(crate::goal::GoalCreate {
                 title: "Need user input".to_string(),
                 objective: "Pause for a user answer".to_string(),
-                constraints: Vec::new(),
                 criteria: vec![crate::goal::GoalCriterion::required_with_id(
                     "criterion-1",
                     "answer received",

@@ -7,7 +7,7 @@ use std::time::Duration;
 use anyhow::Result;
 use async_trait::async_trait;
 
-use crate::goal::{Goal, GoalEvent, GoalRun, GoalStatus, GoalUpdate};
+use crate::goal::{Goal, GoalEvent, GoalEventKind, GoalRun, GoalStatus, GoalUpdate};
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LeaseToken {
@@ -124,7 +124,11 @@ pub trait GoalStore: Send + Sync {
     /// per-cycle context injection used to materialize all of it.
     async fn list_recent_events(&self, goal_id: &str, limit: usize) -> Result<Vec<GoalEvent>>;
     /// The most recent event of one kind, if any.
-    async fn latest_event_of_kind(&self, goal_id: &str, kind: &str) -> Result<Option<GoalEvent>>;
+    async fn latest_event_of_kind(
+        &self,
+        goal_id: &str,
+        kind: GoalEventKind,
+    ) -> Result<Option<GoalEvent>>;
     /// The most recent event carrying one status, if any.
     async fn latest_event_with_status(
         &self,
@@ -139,9 +143,25 @@ pub trait GoalStore: Send + Sync {
     async fn has_event_of_kind_since(
         &self,
         goal_id: &str,
-        kind: &str,
+        kind: GoalEventKind,
         since: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool>;
+    /// Whether an event of one kind was appended after `seq`.
+    ///
+    /// The exact form of [`Self::has_event_of_kind_since`]: `seq` is the
+    /// table's monotonic insert order, so nothing appended in the same
+    /// millisecond as the anchor can be misattributed to the wrong run.
+    async fn has_event_of_kind_after(
+        &self,
+        goal_id: &str,
+        kind: GoalEventKind,
+        seq: u64,
+    ) -> Result<bool>;
+    /// The largest `seq` currently stored (0 when the table is empty).
+    ///
+    /// Taken when a run starts and kept on the run record, so later "since this
+    /// run" questions are a seq comparison rather than a clock comparison.
+    async fn max_event_seq(&self) -> Result<u64>;
     async fn claim_lease(&self, owner: &str, ttl: Duration) -> Result<LeaseToken>;
     async fn heartbeat_lease(&self, token: &LeaseToken, ttl: Duration) -> Result<LeaseToken>;
     async fn release_lease(&self, token: &LeaseToken) -> Result<()>;

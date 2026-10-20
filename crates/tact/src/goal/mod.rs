@@ -254,7 +254,6 @@ impl GoalCriterion {
 pub struct GoalCreate {
     pub title: String,
     pub objective: String,
-    pub constraints: Vec<String>,
     pub criteria: Vec<GoalCriterion>,
 }
 
@@ -270,7 +269,6 @@ pub struct GoalEvidenceUpdate {
 pub struct GoalUpdate {
     pub title: Option<String>,
     pub objective: Option<String>,
-    pub constraints: Option<Vec<String>>,
     pub criteria: Option<Vec<GoalCriterion>>,
     pub evidence: Vec<GoalEvidenceUpdate>,
     /// Optional lifecycle transition, applied through the same legal-transition
@@ -299,7 +297,6 @@ impl GoalUpdate {
         self.archived.is_some()
             && self.title.is_none()
             && self.objective.is_none()
-            && self.constraints.is_none()
             && self.criteria.is_none()
             && self.evidence.is_empty()
             && self.status.is_none()
@@ -317,8 +314,6 @@ pub struct Goal {
     pub id: GoalId,
     pub title: String,
     pub objective: String,
-    #[serde(default)]
-    pub constraints: Vec<String>,
     #[serde(default)]
     pub status: GoalStatus,
     #[serde(default)]
@@ -357,7 +352,6 @@ impl Goal {
             id: new_id(),
             title: input.title,
             objective: input.objective,
-            constraints: input.constraints,
             status: GoalStatus::Draft,
             phase: GoalPhase::Planning,
             criteria: input.criteria,
@@ -402,9 +396,6 @@ impl Goal {
         if let Some(objective) = update.objective {
             validate_text(&objective, GoalError::EmptyObjective)?;
             candidate.objective = objective;
-        }
-        if let Some(constraints) = update.constraints {
-            candidate.constraints = constraints;
         }
         if let Some(criteria) = update.criteria {
             for criterion in &criteria {
@@ -665,6 +656,21 @@ pub struct GoalRun {
     pub checkpoint: Option<String>,
     #[serde(default)]
     pub stop_reason: Option<String>,
+    /// The last `goal_events.seq` that existed when this run started.
+    ///
+    /// "Did anything happen *during this run*" is asked several times per
+    /// activation (a checkpoint, a completion proposal, a pause/cancel
+    /// request), and the answer used to be a timestamp comparison on
+    /// `occurred_at` in milliseconds. Events written in the same millisecond as
+    /// the run's start could not be ordered against it, and `>=` then counted a
+    /// previous run's proposal as this one's. A seq is monotonic and unique, so
+    /// `seq > event_seq_anchor` is the exact predicate (2026-10-20).
+    ///
+    /// `0` means "unknown" (a run record written before this field existed, or
+    /// by a caller that did not fill it): readers fall back to the timestamp
+    /// window, which is what they used before.
+    #[serde(default)]
+    pub event_seq_anchor: u64,
 }
 
 impl GoalRun {
@@ -681,12 +687,115 @@ impl GoalRun {
             tokens_used: 0,
             checkpoint: None,
             stop_reason: None,
+            event_seq_anchor: 0,
         }
     }
 
     pub fn finish(&mut self, outcome: GoalRunOutcome) {
         self.outcome = Some(outcome);
         self.finished_at = Some(Utc::now());
+    }
+}
+
+/// The closed taxonomy of Goal event kinds.
+///
+/// Serialized as the bare snake_case token so the persisted JSON and the
+/// store's `json_extract(data, '$.kind')` queries keep matching unchanged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalEventKind {
+    Checkpoint,
+    NeedsUser,
+    CompletionProposed,
+    Steering,
+    StatusChanged,
+    PauseRequested,
+    CancelRequested,
+    RunFinished,
+    Archived,
+    Unarchived,
+    UserAnswer,
+    UserAccepted,
+}
+
+impl GoalEventKind {
+    /// The persisted token, for `json_extract` query bindings.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Checkpoint => "checkpoint",
+            Self::NeedsUser => "needs_user",
+            Self::CompletionProposed => "completion_proposed",
+            Self::Steering => "steering",
+            Self::StatusChanged => "status_changed",
+            Self::PauseRequested => "pause_requested",
+            Self::CancelRequested => "cancel_requested",
+            Self::RunFinished => "run_finished",
+            Self::Archived => "archived",
+            Self::Unarchived => "unarchived",
+            Self::UserAnswer => "user_answer",
+            Self::UserAccepted => "user_accepted",
+        }
+    }
+}
+
+impl std::fmt::Display for GoalEventKind {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Who appended a Goal event.
+///
+/// The event log mixes two authorities that used to be indistinguishable by
+/// inspection: the model (through the Goal tools) and the user (through the
+/// command surface / acceptance). `book/28` requires that a model tool can
+/// never forge a user decision, and today that holds only because no tool
+/// writes `user_accepted` — a property that has to survive every future tool
+/// addition. Recording the author makes it checkable instead of remembered
+/// (2026-10-20).
+///
+/// `Runner` is the default for rows written before this field existed: they
+/// were overwhelmingly Runner/status writes, and the default has to be a value
+/// that cannot be mistaken for a user decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum GoalEventSource {
+    /// The model, through a Goal tool (`goal_checkpoint`, …).
+    Model,
+    /// The user, through a command (`/goal steer`, `/goal accept`, a reply).
+    User,
+    /// The Runner / store / driver itself: transitions, run finishes,
+    /// archive flags, recovery.
+    #[default]
+    Runner,
+}
+
+impl GoalEventSource {
+    /// The persisted token.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::User => "user",
+            Self::Runner => "runner",
+        }
+    }
+
+    /// Whether this event records something only the user is entitled to say.
+    ///
+    /// The kinds a model must never author. Kept next to the enum so the rule
+    /// has one home; the store rejects a violating event rather than trusting
+    /// every future caller to remember it.
+    pub fn may_author(&self, kind: GoalEventKind) -> bool {
+        match kind {
+            GoalEventKind::UserAnswer | GoalEventKind::UserAccepted => !matches!(self, Self::Model),
+            _ => true,
+        }
+    }
+}
+
+impl std::fmt::Display for GoalEventSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
     }
 }
 
@@ -698,7 +807,11 @@ pub struct GoalEvent {
     pub goal_id: GoalId,
     #[serde(default)]
     pub run_id: Option<String>,
-    pub kind: String,
+    pub kind: GoalEventKind,
+    /// Who appended this event. Defaults to [`GoalEventSource::Runner`] so a
+    /// row written before the field existed cannot read as a user decision.
+    #[serde(default)]
+    pub source: GoalEventSource,
     #[serde(default)]
     pub status: Option<GoalStatus>,
     #[serde(default)]
@@ -714,7 +827,8 @@ impl GoalEvent {
             id: new_event_id(),
             goal_id: goal.id.clone(),
             run_id: Some(run.id.clone()),
-            kind: "run_finished".to_string(),
+            kind: GoalEventKind::RunFinished,
+            source: GoalEventSource::Runner,
             status: Some(goal.status),
             outcome: Some(outcome),
             payload: None,
@@ -793,7 +907,7 @@ impl GoalManager {
     pub async fn latest_event_of_kind(
         &self,
         id: &str,
-        kind: &str,
+        kind: GoalEventKind,
     ) -> anyhow::Result<Option<GoalEvent>> {
         self.store.latest_event_of_kind(id, kind).await
     }
@@ -809,10 +923,19 @@ impl GoalManager {
     pub async fn has_event_of_kind_since(
         &self,
         id: &str,
-        kind: &str,
+        kind: GoalEventKind,
         since: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<bool> {
         self.store.has_event_of_kind_since(id, kind, since).await
+    }
+    /// Whether an event of one kind was appended after `seq` (exact window).
+    pub async fn has_event_of_kind_after(
+        &self,
+        id: &str,
+        kind: GoalEventKind,
+        seq: u64,
+    ) -> anyhow::Result<bool> {
+        self.store.has_event_of_kind_after(id, kind, seq).await
     }
     /// Claims the singleton execution lease for a bounded TTL.
     pub async fn claim_lease(
@@ -971,7 +1094,7 @@ impl SharedGoalManager {
     pub async fn latest_event_of_kind(
         &self,
         id: &str,
-        kind: &str,
+        kind: GoalEventKind,
     ) -> anyhow::Result<Option<GoalEvent>> {
         self.inner.latest_event_of_kind(id, kind).await
     }
@@ -987,10 +1110,19 @@ impl SharedGoalManager {
     pub async fn has_event_of_kind_since(
         &self,
         id: &str,
-        kind: &str,
+        kind: GoalEventKind,
         since: chrono::DateTime<chrono::Utc>,
     ) -> anyhow::Result<bool> {
         self.inner.has_event_of_kind_since(id, kind, since).await
+    }
+    /// Whether an event of one kind was appended after `seq` (exact window).
+    pub async fn has_event_of_kind_after(
+        &self,
+        id: &str,
+        kind: GoalEventKind,
+        seq: u64,
+    ) -> anyhow::Result<bool> {
+        self.inner.has_event_of_kind_after(id, kind, seq).await
     }
     /// Appends a Goal event without changing the aggregate.
     pub async fn append_event(&self, event: GoalEvent) -> anyhow::Result<GoalEvent> {
@@ -1211,7 +1343,6 @@ mod task3_manager_tests {
         GoalCreate {
             title: title.into(),
             objective: format!("objective for {title}"),
-            constraints: vec![],
             criteria: vec![GoalCriterion::required("done")],
         }
     }
@@ -1227,7 +1358,8 @@ mod task3_manager_tests {
             id: "manager-event".into(),
             goal_id: created.id.clone(),
             run_id: None,
-            kind: "created".into(),
+            kind: GoalEventKind::StatusChanged,
+            source: GoalEventSource::Runner,
             status: None,
             outcome: None,
             payload: None,
@@ -1375,7 +1507,6 @@ mod task3_manager_tests {
         let base = |criteria: Vec<GoalCriterion>| GoalCreate {
             title: "criteria gate".into(),
             objective: "exercise the create gate".into(),
-            constraints: Vec::new(),
             criteria,
         };
 
@@ -1445,7 +1576,6 @@ mod tests {
         Goal::new(GoalCreate {
             title: "Ship the release".to_string(),
             objective: "Publish the approved release to production".to_string(),
-            constraints: vec!["Do not change the public API".to_string()],
             criteria: vec![GoalCriterion::required("release is published")],
         })
         .expect("valid goal")
@@ -1549,7 +1679,6 @@ mod tests {
         let title_error = Goal::new(GoalCreate {
             title: "  ".to_string(),
             objective: "An objective".to_string(),
-            constraints: Vec::new(),
             criteria: vec![GoalCriterion::required("done")],
         })
         .unwrap_err();
@@ -1558,7 +1687,6 @@ mod tests {
         let objective_error = Goal::new(GoalCreate {
             title: "A title".to_string(),
             objective: "\n\t".to_string(),
-            constraints: Vec::new(),
             criteria: vec![GoalCriterion::required("done")],
         })
         .unwrap_err();
@@ -1576,7 +1704,6 @@ mod tests {
         goal.update(GoalUpdate {
             title: None,
             objective: None,
-            constraints: None,
             criteria: Some(vec![GoalCriterion::required_with_id(
                 criterion_id,
                 "release is published and smoke-tested",
@@ -1724,7 +1851,6 @@ mod tests {
             .update(GoalUpdate {
                 title: Some("A new title".to_string()),
                 objective: Some("A new objective".to_string()),
-                constraints: Some(vec!["new constraint".to_string()]),
                 criteria: Some(vec![GoalCriterion::required("  ")]),
                 evidence: Vec::new(),
                 status: None,
@@ -1778,7 +1904,6 @@ mod tests {
         let mut goal = Goal::new(GoalCreate {
             title: "Ship it".to_string(),
             objective: "Publish it".to_string(),
-            constraints: Vec::new(),
             criteria: vec![
                 GoalCriterion::required("first check"),
                 GoalCriterion::required("second check"),
@@ -1816,7 +1941,6 @@ mod tests {
         let mut goal = Goal::new(GoalCreate {
             title: "Ship it".to_string(),
             objective: "Publish it".to_string(),
-            constraints: Vec::new(),
             criteria: Vec::new(),
         })
         .unwrap();
@@ -1834,7 +1958,6 @@ mod tests {
         let mut goal = Goal::new(GoalCreate {
             title: "Ship it".to_string(),
             objective: "Publish it".to_string(),
-            constraints: Vec::new(),
             criteria: vec![GoalCriterion::new(
                 "optional nicety",
                 false,
@@ -1881,7 +2004,6 @@ mod tests {
         let create_error = Goal::new(GoalCreate {
             title: "Ship it".to_string(),
             objective: "Publish it".to_string(),
-            constraints: Vec::new(),
             criteria: vec![first, second],
         })
         .unwrap_err();
@@ -1927,7 +2049,6 @@ mod tests {
         assert_eq!(decoded.criteria_version, 1);
         assert_eq!(decoded.version, 1);
         assert!(decoded.criteria.is_empty());
-        assert!(decoded.constraints.is_empty());
         assert_eq!(decoded.completed_at, None);
 
         let criterion: GoalCriterion = serde_json::from_value(serde_json::json!({
@@ -1971,7 +2092,6 @@ mod tests {
         let mut goal = Goal::new(GoalCreate {
             title: "Review release".into(),
             objective: "Wait for explicit acceptance".into(),
-            constraints: Vec::new(),
             criteria: vec![GoalCriterion::new(
                 "User accepts the result",
                 true,

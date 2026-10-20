@@ -1637,7 +1637,6 @@ mod tests {
                 .create(crate::goal::GoalCreate {
                     title: "dispatch goal yield".into(),
                     objective: "pause for user input".into(),
-                    constraints: Vec::new(),
                     criteria: vec![crate::goal::GoalCriterion::required_with_id(
                         "criterion-1",
                         "input received",
@@ -1719,7 +1718,6 @@ mod tests {
                 .create(crate::goal::GoalCreate {
                     title: "post tool blocked".into(),
                     objective: "pause for user input".into(),
-                    constraints: Vec::new(),
                     criteria: vec![crate::goal::GoalCriterion::required_with_id(
                         "criterion-1",
                         "input received",

@@ -103,7 +103,6 @@ mod tests {
         Goal::new(GoalCreate {
             title: "Verifier test goal".to_string(),
             objective: "Exercise the acceptance decision".to_string(),
-            constraints: Vec::new(),
             criteria,
         })
         .expect("valid goal")

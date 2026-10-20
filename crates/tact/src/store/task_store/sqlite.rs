@@ -583,14 +583,12 @@ mod tests {
         let first = crate::goal::Goal::new(crate::goal::GoalCreate {
             title: "first".into(),
             objective: "first objective".into(),
-            constraints: vec![],
             criteria: vec![crate::goal::GoalCriterion::required("done")],
         })
         .unwrap();
         let second = crate::goal::Goal::new(crate::goal::GoalCreate {
             title: "second".into(),
             objective: "second objective".into(),
-            constraints: vec![],
             criteria: vec![crate::goal::GoalCriterion::required("done")],
         })
         .unwrap();
@@ -623,7 +621,6 @@ mod tests {
         let goal = crate::goal::Goal::new(crate::goal::GoalCreate {
             title: "goal".into(),
             objective: "objective".into(),
-            constraints: vec![],
             criteria: vec![crate::goal::GoalCriterion::required("done")],
         })
         .unwrap();
@@ -666,7 +663,6 @@ mod tests {
         let goal = crate::goal::Goal::new(crate::goal::GoalCreate {
             title: "goal".into(),
             objective: "objective".into(),
-            constraints: vec![],
             criteria: vec![crate::goal::GoalCriterion::required("done")],
         })
         .unwrap();

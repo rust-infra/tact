@@ -16,9 +16,9 @@ use tact::background::SharedBackgroundManager;
 use tact::{
     Agent, extract_text,
     goal::{
-        Goal, GoalCreate, GoalCriterion, GoalCriterionStatus, GoalEvent, GoalEvidenceUpdate,
-        GoalPhase, GoalStatus, GoalUpdate, GoalVerification, GoalVerificationKind, GoalVerifier,
-        SharedGoalManager, new_event_id,
+        Goal, GoalCreate, GoalCriterion, GoalCriterionStatus, GoalEvent, GoalEventKind,
+        GoalEventSource, GoalEvidenceUpdate, GoalPhase, GoalStatus, GoalUpdate, GoalVerification,
+        GoalVerificationKind, GoalVerifier, SharedGoalManager, new_event_id,
     },
     hook::HookControl,
     store::goal_store::GoalStoreError,
@@ -68,8 +68,9 @@ fn session_goal_runner(
     goal_manager: &SharedGoalManager,
     limits: GoalLimits,
     session_id: Option<&str>,
+    ui_tx: &Option<UnboundedSender<AgentUpdate>>,
 ) -> GoalRunner {
-    let runner = GoalRunner::new(goal_manager.clone(), limits);
+    let runner = GoalRunner::new(goal_manager.clone(), limits).with_ui(ui_tx.clone());
     match session_id {
         Some(session_id) => runner.with_owner(format!("tact-ui:{session_id}")),
         None => runner,
@@ -87,12 +88,13 @@ async fn recover_interrupted_goals(agent: &Agent) {
         &agent.tool_context.goal_manager,
         goal_limits(),
         agent.runtime.session_id.as_deref(),
+        &agent.runtime.ui_tx,
     );
     match runner.recover_interrupted().await {
         Ok(recovered) => {
             for run in recovered {
                 agent.emit_update(AgentUpdate::Info(format!(
-                    "🎯 recovered interrupted run {}; goal {} paused",
+                    "🎯 recovered interrupted run {}; goal {} paused (this session ran the recovery)",
                     run.id, run.goal_id
                 )));
             }
@@ -121,20 +123,24 @@ async fn reconcile_goal_runs(
     session_id: Option<&str>,
     failure_reported: &AtomicBool,
 ) {
-    let runner = session_goal_runner(goal_manager, limits, session_id);
+    let runner = session_goal_runner(goal_manager, limits, session_id, ui_tx);
     match runner.reconcile_dead_runs().await {
         Ok(recovered) => {
             failure_reported.store(false, Ordering::Relaxed);
             if recovered.is_empty() {
                 return;
             }
+            // The reclaimed run may belong to *another* session — the lease is
+            // workspace-wide, and this timer only knows its own `ui_tx`. Naming
+            // every run here would hand this user work they never started while
+            // staying invisible to the session that is actually waiting, so the
+            // log gets one line that says what happened, and the snapshot —
+            // which every session shares — carries the per-Goal truth.
             if let Some(tx) = ui_tx {
-                for run in recovered {
-                    let _ = tx.send(AgentUpdate::Info(format!(
-                        "🎯 recovered interrupted run {}; goal {} paused",
-                        run.id, run.goal_id
-                    )));
-                }
+                let _ = tx.send(AgentUpdate::Info(format!(
+                    "🎯 Goal reconciliation reclaimed {} interrupted run(s); the Goal panel shows which",
+                    recovered.len()
+                )));
             }
             emit_goals_changed(goal_manager, task_manager, limits, ui_tx).await;
         }
@@ -764,7 +770,7 @@ async fn goal_snapshots_with(
                 // an old question from a previous wait must not masquerade as
                 // the reason the Goal is waiting for acceptance now.
                 let question = goal_manager
-                    .latest_event_of_kind(&goal.id, "needs_user")
+                    .latest_event_of_kind(&goal.id, GoalEventKind::NeedsUser)
                     .await?;
                 let last_running = goal_manager
                     .latest_event_with_status(&goal.id, GoalStatus::Running)
@@ -916,7 +922,6 @@ async fn create_goal(
         .create(GoalCreate {
             title,
             objective,
-            constraints: Vec::new(),
             criteria,
         })
         .await
@@ -997,8 +1002,19 @@ async fn set_goal_archived(
         }
         return;
     }
-    let kind = if archived { "archived" } else { "unarchived" };
-    let event = goal_event(&goal, kind, None, format!("{kind} by user"));
+    let kind = if archived {
+        GoalEventKind::Archived
+    } else {
+        GoalEventKind::Unarchived
+    };
+    let event = goal_event(
+        &goal,
+        kind,
+        None,
+        format!("{kind} by user"),
+        // `/goal archive` is a user command; the event says who filed it.
+        GoalEventSource::User,
+    );
     match goal_manager
         .update(
             goal_id,
@@ -1097,12 +1113,19 @@ async fn show_goal(
     }
 }
 
-fn goal_event(goal: &Goal, kind: &str, status: Option<GoalStatus>, payload: String) -> GoalEvent {
+fn goal_event(
+    goal: &Goal,
+    kind: GoalEventKind,
+    status: Option<GoalStatus>,
+    payload: String,
+    source: GoalEventSource,
+) -> GoalEvent {
     GoalEvent {
         id: new_event_id(),
         goal_id: goal.id.clone(),
         run_id: None,
-        kind: kind.to_string(),
+        kind,
+        source,
         status,
         outcome: None,
         payload: Some(payload),
@@ -1196,7 +1219,13 @@ async fn steer_goal(
     };
 
     match goal_manager
-        .append_event(goal_event(goal, "steering", None, instruction))
+        .append_event(goal_event(
+            goal,
+            GoalEventKind::Steering,
+            None,
+            instruction,
+            GoalEventSource::User,
+        ))
         .await
     {
         Ok(_) => {
@@ -1271,9 +1300,10 @@ async fn update_goal_status(
                 },
                 Some(goal_event(
                     &goal,
-                    "status_changed",
+                    GoalEventKind::StatusChanged,
                     Some(status),
                     reason.into(),
+                    tact::goal::GoalEventSource::Runner,
                 )),
                 None,
             )
@@ -1364,9 +1394,10 @@ async fn request_goal_pause(
         if let Err(error) = goal_manager
             .append_event(goal_event(
                 &goal,
-                "pause_requested",
+                GoalEventKind::PauseRequested,
                 None,
                 "paused by user".into(),
+                GoalEventSource::User,
             ))
             .await
         {
@@ -1395,9 +1426,10 @@ async fn request_goal_pause(
                 },
                 Some(goal_event(
                     &goal,
-                    "status_changed",
+                    GoalEventKind::StatusChanged,
                     Some(GoalStatus::Paused),
                     "paused by user".into(),
+                    GoalEventSource::User,
                 )),
                 None,
             )
@@ -1414,9 +1446,10 @@ async fn request_goal_pause(
                 if let Err(append) = goal_manager
                     .append_event(goal_event(
                         &goal,
-                        "pause_requested",
+                        GoalEventKind::PauseRequested,
                         None,
                         "paused by user".into(),
+                        GoalEventSource::User,
                     ))
                     .await
                 {
@@ -1485,9 +1518,10 @@ async fn request_goal_cancel(
         if let Err(error) = goal_manager
             .append_event(goal_event(
                 &goal,
-                "cancel_requested",
+                GoalEventKind::CancelRequested,
                 None,
                 "cancelled by user".into(),
+                GoalEventSource::User,
             ))
             .await
         {
@@ -1516,9 +1550,10 @@ async fn request_goal_cancel(
                 },
                 Some(goal_event(
                     &goal,
-                    "status_changed",
+                    GoalEventKind::StatusChanged,
                     Some(GoalStatus::Cancelled),
                     "cancelled by user".into(),
+                    GoalEventSource::User,
                 )),
                 None,
             )
@@ -1533,9 +1568,10 @@ async fn request_goal_cancel(
                 if let Err(append) = goal_manager
                     .append_event(goal_event(
                         &goal,
-                        "cancel_requested",
+                        GoalEventKind::CancelRequested,
                         None,
                         "cancelled by user".into(),
+                        GoalEventSource::User,
                     ))
                     .await
                 {
@@ -1588,7 +1624,7 @@ async fn goal_awaiting_answer(manager: &SharedGoalManager) -> Option<String> {
         .filter(|goal| goal.status == GoalStatus::WaitingUser)
     {
         let question = manager
-            .latest_event_of_kind(&goal.id, "needs_user")
+            .latest_event_of_kind(&goal.id, GoalEventKind::NeedsUser)
             .await
             .ok()
             .flatten();
@@ -1616,7 +1652,13 @@ async fn answer_goal(agent: &mut Agent, goal_id: &str, text: &str) {
     let manager = agent.tool_context.goal_manager.clone();
     if let Ok(goal) = manager.get(goal_id).await {
         let _ = manager
-            .append_event(goal_event(&goal, "user_answer", None, text.to_string()))
+            .append_event(goal_event(
+                &goal,
+                GoalEventKind::UserAnswer,
+                None,
+                text.to_string(),
+                GoalEventSource::User,
+            ))
             .await;
     }
     if let Some(tx) = &agent.runtime.ui_tx {
@@ -1681,9 +1723,10 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
                         },
                         Some(goal_event(
                             &current,
-                            "status_changed",
+                            GoalEventKind::StatusChanged,
                             Some(GoalStatus::Paused),
                             "activation could not start; restored paused".into(),
+                            tact::goal::GoalEventSource::Runner,
                         )),
                         None,
                     )
@@ -1807,9 +1850,10 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
         first,
         goal_event(
             &goal,
-            "user_accepted",
+            GoalEventKind::UserAccepted,
             Some(GoalStatus::Running),
             text.to_string(),
+            GoalEventSource::User,
         ),
     )];
     if verification == GoalVerification::Verified {
@@ -1820,9 +1864,10 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
             },
             goal_event(
                 &candidate,
-                "status_changed",
+                GoalEventKind::StatusChanged,
                 Some(GoalStatus::Verifying),
                 "human acceptance verified".into(),
+                tact::goal::GoalEventSource::Runner,
             ),
         ));
         updates.push((
@@ -1832,9 +1877,10 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
             },
             goal_event(
                 &candidate,
-                "status_changed",
+                GoalEventKind::StatusChanged,
                 Some(GoalStatus::Succeeded),
                 "accepted by user".into(),
+                tact::goal::GoalEventSource::Runner,
             ),
         ));
     }
@@ -2274,6 +2320,7 @@ where
 mod tests {
     use std::sync::atomic::{AtomicBool, Ordering};
 
+    use tact::goal::GoalEventKind;
     use tact_llm::{ContentBlock, MockClient, StopReason};
     use tact_protocol::{AgentUpdate, UserCommand};
 
@@ -2289,7 +2336,6 @@ mod tests {
         let mut goal = tact::goal::Goal::new(tact::goal::GoalCreate {
             title: format!("goal {id}"),
             objective: format!("objective {id}"),
-            constraints: Vec::new(),
             criteria: vec![tact::goal::GoalCriterion::required("done")],
         })
         .unwrap();
@@ -2312,7 +2358,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "idle goal".into(),
                 objective: "stay quiet".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::required("done")],
             })
             .await
@@ -2364,7 +2409,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "crashed goal".into(),
                 objective: "be reclaimed".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::required("done")],
             })
             .await
@@ -2428,12 +2472,19 @@ mod tests {
                 _ => {}
             }
         }
+        // The timer is workspace-wide: the run it reclaimed may belong to
+        // another session, and `ui_tx` only reaches this one. So the line
+        // summarises the pass instead of naming a run this user may never see,
+        // and the shared snapshot carries the per-Goal truth.
         assert!(
             infos
                 .iter()
-                .any(|message| message.contains("recovered interrupted run")
-                    && message.contains(&run.id)),
-            "the reclaimed run is announced: {infos:?}"
+                .any(|message| message.contains("reclaimed 1 interrupted run")),
+            "the reclaimed pass is announced: {infos:?}"
+        );
+        assert!(
+            !infos.iter().any(|message| message.contains(&run.id)),
+            "the timer does not name a run another session may own: {infos:?}"
         );
         assert!(republished, "the panel is republished after a reclaim");
         assert_eq!(
@@ -2503,7 +2554,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "finished".into(),
                 objective: "nothing left to steer".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::required("done")],
             })
             .await
@@ -2538,7 +2588,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .any(|event| event.kind == "steering"),
+                .any(|event| event.kind == GoalEventKind::Steering),
             "a terminal Goal cannot be steered"
         );
         assert!(
@@ -2772,7 +2822,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "Durable lifecycle".into(),
                 objective: "Persist control commands".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::required("done")],
             })
             .await
@@ -2806,7 +2855,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .any(|event| event.kind == "steering"
+                .any(|event| event.kind == GoalEventKind::Steering
                     && event.payload.as_deref() == Some("Prefer a focused diff"))
         );
 
@@ -2827,7 +2876,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .any(|event| event.kind == "steering"
+                .any(|event| event.kind == GoalEventKind::Steering
                     && event.payload.as_deref() == Some("Keep the diff focused")),
             "an id-less steer must land on the only open Goal"
         );
@@ -2850,7 +2899,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .any(|event| event.kind == "steering"
+                .any(|event| event.kind == GoalEventKind::Steering
                     && event.payload.as_deref() == Some("Prefer fewer files")),
             "a leading id in the raw text must be resolved by the store"
         );
@@ -2861,7 +2910,7 @@ mod tests {
             .await
             .unwrap()
             .iter()
-            .filter(|event| event.kind == "steering")
+            .filter(|event| event.kind == GoalEventKind::Steering)
             .count();
         super::handle_user_command(
             &mut agent,
@@ -2877,7 +2926,7 @@ mod tests {
             .await
             .unwrap()
             .iter()
-            .filter(|event| event.kind == "steering")
+            .filter(|event| event.kind == GoalEventKind::Steering)
             .count();
         assert_eq!(
             steered_after, steered_before,
@@ -2941,7 +2990,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "Filed away".into(),
                 objective: "Stop taking panel space".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::required("done")],
             })
             .await
@@ -2986,7 +3034,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .any(|event| event.kind == "archived"),
+                .any(|event| event.kind == GoalEventKind::Archived),
             "the user action is in the Goal's history"
         );
 
@@ -3057,7 +3105,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "Still running".into(),
                 objective: "Stay on the panel".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::required("done")],
             })
             .await
@@ -3098,7 +3145,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "Human acceptance".into(),
                 objective: "Require explicit review".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::new(
                     "User accepts the result",
                     true,
@@ -3146,7 +3192,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .any(|event| event.kind == "user_accepted")
+                .any(|event| event.kind == GoalEventKind::UserAccepted)
         );
         assert!(
             std::iter::from_fn(|| agent_rx.try_recv().ok()).any(|update| matches!(
@@ -3173,7 +3219,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "asker".into(),
                 objective: "ask, then continue".into(),
-                constraints: Vec::new(),
                 criteria: Vec::new(),
             })
             .await
@@ -3200,9 +3245,10 @@ mod tests {
         manager
             .append_event(super::goal_event(
                 &goal,
-                "needs_user",
+                GoalEventKind::NeedsUser,
                 None,
                 "which database should I target?".into(),
+                tact::goal::GoalEventSource::Model,
             ))
             .await
             .unwrap();
@@ -3215,8 +3261,10 @@ mod tests {
 
         let events = manager.list_events(&goal.id).await.unwrap();
         assert!(
-            events.iter().any(|event| event.kind == "user_answer"
-                && event.payload.as_deref() == Some("use postgres")),
+            events
+                .iter()
+                .any(|event| event.kind == GoalEventKind::UserAnswer
+                    && event.payload.as_deref() == Some("use postgres")),
             "the reply is recorded as the goal's answer: {events:?}"
         );
         assert_ne!(
@@ -3248,7 +3296,6 @@ mod tests {
                 .create(tact::goal::GoalCreate {
                     title: title.into(),
                     objective: format!("{title} asks"),
-                    constraints: Vec::new(),
                     criteria: Vec::new(),
                 })
                 .await
@@ -3275,9 +3322,10 @@ mod tests {
             manager
                 .append_event(super::goal_event(
                     &goal,
-                    "needs_user",
+                    GoalEventKind::NeedsUser,
                     None,
                     "which one?".into(),
+                    tact::goal::GoalEventSource::Model,
                 ))
                 .await
                 .unwrap();
@@ -3303,7 +3351,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "gated".into(),
                 objective: "wait for acceptance".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::new(
                     "User accepts the result",
                     true,
@@ -3346,7 +3393,9 @@ mod tests {
 
         let events = manager.list_events(&goal.id).await.unwrap();
         assert!(
-            !events.iter().any(|event| event.kind == "user_answer"),
+            !events
+                .iter()
+                .any(|event| event.kind == GoalEventKind::UserAnswer),
             "an acceptance wait is not a question: {events:?}"
         );
         assert_eq!(
@@ -3369,7 +3418,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "Stranded acceptance".into(),
                 objective: "Accept after a no-op wake".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::new(
                     "User accepts the result",
                     true,
@@ -3424,7 +3472,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "Recovered pause".into(),
                 objective: "Accept after recovery".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::new(
                     "User accepts the result",
                     true,
@@ -3479,7 +3526,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "Busy acceptance".into(),
                 objective: "Do not race the runner".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::new(
                     "User accepts the result",
                     true,
@@ -3546,7 +3592,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "ask a question".into(),
                 objective: "surface the question in the panel".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::required("done")],
             })
             .await
@@ -3572,9 +3617,10 @@ mod tests {
         manager
             .append_event(super::goal_event(
                 &goal,
-                "needs_user",
+                GoalEventKind::NeedsUser,
                 None,
                 "Which path should I take?".into(),
+                tact::goal::GoalEventSource::Model,
             ))
             .await
             .unwrap();
@@ -3588,9 +3634,10 @@ mod tests {
                 },
                 Some(super::goal_event(
                     &goal,
-                    "status_changed",
+                    GoalEventKind::StatusChanged,
                     Some(tact::goal::GoalStatus::WaitingUser),
                     "run ended as NeedsUser".into(),
+                    tact::goal::GoalEventSource::Runner,
                 )),
                 None,
             )
@@ -3663,7 +3710,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "Concurrent control".into(),
                 objective: "Keep reads responsive".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::required("done")],
             })
             .await
@@ -3740,7 +3786,7 @@ mod tests {
                 .await
                 .unwrap()
                 .iter()
-                .any(|event| event.kind == "pause_requested")
+                .any(|event| event.kind == GoalEventKind::PauseRequested)
             {
                 break;
             }
@@ -3803,7 +3849,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "Resume after a stale cancel".into(),
                 objective: "A pressed Esc must not kill the goal".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::required("done")],
             })
             .await
@@ -3913,7 +3958,6 @@ mod tests {
             .create(tact::goal::GoalCreate {
                 title: "Acceptance continues".into(),
                 objective: "Human text must not leave the goal cancelled".into(),
-                constraints: Vec::new(),
                 criteria: vec![tact::goal::GoalCriterion::new(
                     "reviewed by a person",
                     true,

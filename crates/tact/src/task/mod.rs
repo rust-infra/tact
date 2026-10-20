@@ -578,7 +578,6 @@ mod task3_association_tests {
             .create(GoalCreate {
                 title: title.into(),
                 objective: format!("objective for {title}"),
-                constraints: vec![],
                 criteria: vec![GoalCriterion::required("done")],
             })
             .await

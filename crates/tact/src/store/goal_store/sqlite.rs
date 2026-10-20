@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use sqlx::{Row, SqliteConnection};
 
 use crate::{
-    goal::{Goal, GoalEvent, GoalRun, GoalStatus, GoalUpdate},
+    goal::{Goal, GoalEvent, GoalEventKind, GoalRun, GoalStatus, GoalUpdate},
     store::process_identity::{current_process, holder_is_alive},
     store::sqlite::{PoolRef, from_millis, now_millis, open_pool},
 };
@@ -33,7 +33,10 @@ impl SqliteGoalStore {
                 id TEXT NOT NULL UNIQUE,
                 goal_id TEXT NOT NULL,
                 data TEXT NOT NULL,
-                occurred_at INTEGER NOT NULL
+                occurred_at INTEGER NOT NULL,
+                kind TEXT NOT NULL DEFAULT '',
+                status TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'runner'
             )"#,
             r#"CREATE TABLE IF NOT EXISTS goal_runs (
                 id TEXT PRIMARY KEY,
@@ -71,10 +74,87 @@ impl SqliteGoalStore {
                 .await
                 .context("failed to initialize goal store indexes")?;
         }
+        Self::migrate_goal_events_columns(&pool)
+            .await
+            .context("failed to migrate goal_events lookup columns")?;
         Self::migrate_goal_leases_holder(&pool)
             .await
             .context("failed to migrate goal_leases holder columns")?;
         Ok(Self { pool })
+    }
+
+    /// Adds the indexed `kind` / `status` lookup columns to `goal_events`.
+    ///
+    /// Those two facts used to be read out of the event JSON with
+    /// `json_extract(data, '$.kind')`, which no index can serve: every
+    /// `latest_event_of_kind` / `has_event_of_kind_since` was a scan of the
+    /// Goal's rows until the first match. A long run appends an event per
+    /// checkpoint and per transition, and the runner asks several of these per
+    /// activation, so the cost grew with the history it was trying to avoid
+    /// reading (`2026-10-20`).
+    ///
+    /// The columns are projections of `data`, written in the same statement
+    /// that inserts it, so they cannot drift from the JSON. Rows that predate
+    /// them are backfilled once here; `kind = ''` is the "not yet backfilled"
+    /// marker, so a second open is a no-op.
+    async fn migrate_goal_events_columns(pool: &sqlx::SqlitePool) -> Result<()> {
+        for (column, ddl) in [
+            (
+                "kind",
+                "ALTER TABLE goal_events ADD COLUMN kind TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "status",
+                "ALTER TABLE goal_events ADD COLUMN status TEXT NOT NULL DEFAULT ''",
+            ),
+            (
+                "source",
+                "ALTER TABLE goal_events ADD COLUMN source TEXT NOT NULL DEFAULT 'runner'",
+            ),
+        ] {
+            Self::add_goal_event_column(pool, column, ddl).await?;
+        }
+        sqlx::query(
+            "UPDATE goal_events SET \
+                 kind = json_extract(data, '$.kind'), \
+                 status = COALESCE(json_extract(data, '$.status'), ''), \
+                 source = COALESCE(json_extract(data, '$.source'), 'runner') \
+             WHERE kind = ''",
+        )
+        .execute(pool)
+        .await
+        .context("failed to backfill goal_events lookup columns")?;
+        for statement in [
+            "CREATE INDEX IF NOT EXISTS idx_goal_events_goal_kind ON goal_events(goal_id, kind, seq)",
+            "CREATE INDEX IF NOT EXISTS idx_goal_events_goal_status ON goal_events(goal_id, status, seq)",
+        ] {
+            sqlx::query(statement)
+                .execute(pool)
+                .await
+                .context("failed to create goal_events lookup indexes")?;
+        }
+        Ok(())
+    }
+
+    /// The `ALTER` half of [`Self::migrate_goal_events_columns`], sharing the
+    /// duplicate-column race handling with the lease migration.
+    async fn add_goal_event_column(pool: &sqlx::SqlitePool, column: &str, ddl: &str) -> Result<()> {
+        if Self::table_has_column(pool, "goal_events", column).await? {
+            return Ok(());
+        }
+        match sqlx::query(ddl).execute(pool).await {
+            Ok(_) => Ok(()),
+            Err(error) => {
+                let lost_race = error
+                    .as_database_error()
+                    .is_some_and(|db| db.message().contains("duplicate column name"));
+                if lost_race && Self::table_has_column(pool, "goal_events", column).await? {
+                    Ok(())
+                } else {
+                    Err(error.into())
+                }
+            }
+        }
     }
 
     /// Add `holder_pid` / `holder_identity` to databases created before the
@@ -127,10 +207,16 @@ impl SqliteGoalStore {
     }
 
     async fn lease_has_column(pool: &sqlx::SqlitePool, column: &str) -> Result<bool> {
-        let cols = sqlx::query("PRAGMA table_info(goal_leases)")
+        Self::table_has_column(pool, "goal_leases", column).await
+    }
+
+    /// Whether `table` already has `column`, for the idempotent migrations.
+    async fn table_has_column(pool: &sqlx::SqlitePool, table: &str, column: &str) -> Result<bool> {
+        // Table names here are compile-time literals, never user input.
+        let cols = sqlx::query(&format!("PRAGMA table_info({table})"))
             .fetch_all(pool)
             .await
-            .context("failed to read goal_leases table info")?;
+            .with_context(|| format!("failed to read {table} table info"))?;
         Ok(cols.iter().any(|row| {
             row.try_get::<String, _>("name")
                 .map(|name| name == column)
@@ -343,6 +429,30 @@ impl SqliteGoalStore {
         Ok(run.clone())
     }
 
+    /// Stamps `run.event_seq_anchor` with the newest event seq, inside the
+    /// caller's write transaction.
+    ///
+    /// Done here rather than by the runner because the transaction that inserts
+    /// the run row is the only place where "every event so far" has a
+    /// well-defined boundary: another process appending concurrently either
+    /// lands before the anchor (not part of this run) or after it (is). Reading
+    /// the max outside a write transaction would leave that window open.
+    async fn stamp_event_seq_anchor(
+        &self,
+        tx: &mut sqlx::Transaction<'_, sqlx::Sqlite>,
+        run: &mut GoalRun,
+    ) -> Result<()> {
+        if run.event_seq_anchor != 0 {
+            return Ok(());
+        }
+        let row = sqlx::query("SELECT COALESCE(MAX(seq), 0) AS anchor FROM goal_events")
+            .fetch_one(&mut **tx)
+            .await?;
+        let anchor: i64 = row.try_get("anchor")?;
+        run.event_seq_anchor = anchor.max(0) as u64;
+        Ok(())
+    }
+
     /// Loads the current Goal aggregate (with its version) inside an open
     /// transaction, so a chained transition CASes against the right version.
     async fn load_goal_in_tx(
@@ -457,18 +567,23 @@ impl GoalStore for SqliteGoalStore {
         Ok(events)
     }
 
-    async fn latest_event_of_kind(&self, goal_id: &str, kind: &str) -> Result<Option<GoalEvent>> {
-        // The `kind` / `status` facts live in the event JSON; `ORDER BY seq
-        // DESC LIMIT 1` scans the goal's rows newest-first and stops at the
-        // first match, so the cost is the distance to that event, not the
-        // goal's whole history.
+    async fn latest_event_of_kind(
+        &self,
+        goal_id: &str,
+        kind: GoalEventKind,
+    ) -> Result<Option<GoalEvent>> {
+        // `(goal_id, kind, seq)` is an index, so the newest match is a single
+        // index seek. It used to be `json_extract(data, '$.kind')`, which no
+        // index can serve: the scan walked the Goal's rows until the first
+        // match, i.e. its cost grew with the history this lookup exists to
+        // avoid reading (2026-10-20).
         let row = sqlx::query(
             "SELECT data FROM goal_events \
-             WHERE goal_id = ? AND json_extract(data, '$.kind') = ? \
+             WHERE goal_id = ? AND kind = ? \
              ORDER BY seq DESC LIMIT 1",
         )
         .bind(goal_id)
-        .bind(kind)
+        .bind(kind.as_str())
         .fetch_optional(&*self.pool)
         .await?;
         row.map(|r| Ok(serde_json::from_str(r.try_get("data")?)?))
@@ -482,7 +597,7 @@ impl GoalStore for SqliteGoalStore {
     ) -> Result<Option<GoalEvent>> {
         let row = sqlx::query(
             "SELECT data FROM goal_events \
-             WHERE goal_id = ? AND json_extract(data, '$.status') = ? \
+             WHERE goal_id = ? AND status = ? \
              ORDER BY seq DESC LIMIT 1",
         )
         .bind(goal_id)
@@ -496,20 +611,50 @@ impl GoalStore for SqliteGoalStore {
     async fn has_event_of_kind_since(
         &self,
         goal_id: &str,
-        kind: &str,
+        kind: GoalEventKind,
         since: chrono::DateTime<chrono::Utc>,
     ) -> Result<bool> {
         let row = sqlx::query(
             "SELECT 1 FROM goal_events \
-             WHERE goal_id = ? AND json_extract(data, '$.kind') = ? AND occurred_at >= ? \
+             WHERE goal_id = ? AND kind = ? AND occurred_at >= ? \
              LIMIT 1",
         )
         .bind(goal_id)
-        .bind(kind)
+        .bind(kind.as_str())
         .bind(since.timestamp_millis())
         .fetch_optional(&*self.pool)
         .await?;
         Ok(row.is_some())
+    }
+
+    async fn has_event_of_kind_after(
+        &self,
+        goal_id: &str,
+        kind: GoalEventKind,
+        seq: u64,
+    ) -> Result<bool> {
+        // Same index as the timestamp form (`goal_id, kind, seq`); the seq
+        // bound is exact, where `occurred_at` could not separate two events
+        // written in the same millisecond.
+        let row = sqlx::query(
+            "SELECT 1 FROM goal_events \
+             WHERE goal_id = ? AND kind = ? AND seq > ? \
+             ORDER BY seq LIMIT 1",
+        )
+        .bind(goal_id)
+        .bind(kind.as_str())
+        .bind(seq as i64)
+        .fetch_optional(&*self.pool)
+        .await?;
+        Ok(row.is_some())
+    }
+
+    async fn max_event_seq(&self) -> Result<u64> {
+        let row = sqlx::query("SELECT COALESCE(MAX(seq), 0) AS anchor FROM goal_events")
+            .fetch_one(&*self.pool)
+            .await?;
+        let anchor: i64 = row.try_get("anchor")?;
+        Ok(anchor.max(0) as u64)
     }
 
     async fn claim_lease(&self, owner: &str, ttl: Duration) -> Result<LeaseToken> {
@@ -581,6 +726,8 @@ impl GoalStore for SqliteGoalStore {
         if active_run.is_some() {
             return Err(anyhow::Error::new(GoalStoreError::ActiveRunExists));
         }
+        let mut run = run;
+        self.stamp_event_seq_anchor(&mut tx, &mut run).await?;
         let data = serde_json::to_string(&run)?;
         sqlx::query("INSERT INTO goal_runs (id, goal_id, data, state, started_at, finished_at, stop_reason) VALUES (?, ?, ?, 'running', ?, NULL, NULL)")
             .bind(&run.id).bind(&run.goal_id).bind(data).bind(run.started_at.timestamp_millis())
@@ -621,6 +768,8 @@ impl GoalStore for SqliteGoalStore {
                 status: goal.status,
             }));
         }
+        let mut run = run;
+        self.stamp_event_seq_anchor(&mut tx, &mut run).await?;
         let data = serde_json::to_string(&run)?;
         sqlx::query("INSERT INTO goal_runs (id, goal_id, data, state, started_at, finished_at, stop_reason) VALUES (?, ?, ?, 'running', ?, NULL, NULL)")
             .bind(&run.id).bind(&run.goal_id).bind(data).bind(run.started_at.timestamp_millis())
@@ -854,14 +1003,33 @@ async fn validate_lease_fence(conn: &mut SqliteConnection, token: &LeaseToken) -
 }
 
 async fn insert_event(conn: &mut SqliteConnection, event: &GoalEvent) -> Result<()> {
-    sqlx::query("INSERT INTO goal_events (id, goal_id, data, occurred_at) VALUES (?, ?, ?, ?)")
-        .bind(&event.id)
-        .bind(&event.goal_id)
-        .bind(serde_json::to_string(event)?)
-        .bind(event.occurred_at.timestamp_millis())
-        .execute(&mut *conn)
-        .await
-        .context("failed to append goal event")?;
+    // `kind` / `status` are projections of `data`, written with it so the
+    // indexed lookups and the payload can never disagree.
+    // The one place that enforces the authorship rule: a model-authored event
+    // may not be a user decision. Checked here rather than at each call site so
+    // a new tool cannot reintroduce the hole by forgetting to think about it.
+    if !event.source.may_author(event.kind) {
+        return Err(anyhow::anyhow!(
+            "goal event {} of kind {} cannot be authored by {}",
+            event.id,
+            event.kind,
+            event.source
+        ));
+    }
+    sqlx::query(
+        "INSERT INTO goal_events (id, goal_id, data, occurred_at, kind, status, source) \
+         VALUES (?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(&event.id)
+    .bind(&event.goal_id)
+    .bind(serde_json::to_string(event)?)
+    .bind(event.occurred_at.timestamp_millis())
+    .bind(event.kind.as_str())
+    .bind(event.status.map(status_string).unwrap_or(""))
+    .bind(event.source.as_str())
+    .execute(&mut *conn)
+    .await
+    .context("failed to append goal event")?;
     Ok(())
 }
 
@@ -892,7 +1060,9 @@ async fn interrupt_running(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::goal::{GoalCreate, GoalCriterion, GoalEvent, GoalRunOutcome};
+    use crate::goal::{
+        GoalCreate, GoalCriterion, GoalEvent, GoalEventKind, GoalEventSource, GoalRunOutcome,
+    };
     use chrono::{Duration as ChronoDuration, Utc};
 
     fn temp_db(name: &str) -> std::path::PathBuf {
@@ -902,7 +1072,6 @@ mod tests {
         Goal::new(GoalCreate {
             title: title.to_string(),
             objective: format!("objective for {title}"),
-            constraints: vec!["keep atomic".into()],
             criteria: vec![GoalCriterion::required_with_id(
                 "criterion-1",
                 "nested acceptance",
@@ -985,7 +1154,8 @@ mod tests {
             id: "event-checkpoint".into(),
             goal_id: created.id.clone(),
             run_id: None,
-            kind: "checkpoint".into(),
+            kind: GoalEventKind::Checkpoint,
+            source: GoalEventSource::Runner,
             status: None,
             outcome: None,
             payload: Some("first checkpoint".into()),
@@ -995,7 +1165,8 @@ mod tests {
             id: "event-paused".into(),
             goal_id: created.id.clone(),
             run_id: None,
-            kind: "status_changed".into(),
+            kind: GoalEventKind::StatusChanged,
+            source: GoalEventSource::Runner,
             status: Some(GoalStatus::Paused),
             outcome: None,
             payload: Some("budget exhausted".into()),
@@ -1005,7 +1176,8 @@ mod tests {
             id: "event-finished".into(),
             goal_id: created.id.clone(),
             run_id: Some("run-1".into()),
-            kind: "run_finished".into(),
+            kind: GoalEventKind::RunFinished,
+            source: GoalEventSource::Runner,
             status: Some(GoalStatus::Paused),
             outcome: Some(GoalRunOutcome::BudgetExhausted),
             payload: Some("outcome=BudgetExhausted".into()),
@@ -1031,7 +1203,7 @@ mod tests {
         // The lookups find the newest match, not the first.
         assert_eq!(
             store
-                .latest_event_of_kind(&created.id, "checkpoint")
+                .latest_event_of_kind(&created.id, GoalEventKind::Checkpoint)
                 .await
                 .unwrap()
                 .map(|event| event.id),
@@ -1039,7 +1211,7 @@ mod tests {
         );
         assert_eq!(
             store
-                .latest_event_of_kind(&created.id, "run_finished")
+                .latest_event_of_kind(&created.id, GoalEventKind::RunFinished)
                 .await
                 .unwrap()
                 .map(|event| event.id),
@@ -1047,7 +1219,7 @@ mod tests {
         );
         assert!(
             store
-                .latest_event_of_kind(&created.id, "needs_user")
+                .latest_event_of_kind(&created.id, GoalEventKind::NeedsUser)
                 .await
                 .unwrap()
                 .is_none(),
@@ -1079,7 +1251,8 @@ mod tests {
             id: "event-old".into(),
             goal_id: created.id.clone(),
             run_id: None,
-            kind: "completion_proposed".into(),
+            kind: GoalEventKind::CompletionProposed,
+            source: GoalEventSource::Runner,
             status: None,
             outcome: None,
             payload: Some("old proposal".into()),
@@ -1089,7 +1262,8 @@ mod tests {
             id: "event-boundary".into(),
             goal_id: created.id.clone(),
             run_id: None,
-            kind: "completion_proposed".into(),
+            kind: GoalEventKind::CompletionProposed,
+            source: GoalEventSource::Runner,
             status: None,
             outcome: None,
             payload: Some("boundary proposal".into()),
@@ -1100,7 +1274,7 @@ mod tests {
 
         assert!(
             store
-                .has_event_of_kind_since(&created.id, "completion_proposed", boundary)
+                .has_event_of_kind_since(&created.id, GoalEventKind::CompletionProposed, boundary)
                 .await
                 .unwrap(),
             "an event at the boundary is inside the window"
@@ -1109,7 +1283,7 @@ mod tests {
             !store
                 .has_event_of_kind_since(
                     &created.id,
-                    "completion_proposed",
+                    GoalEventKind::CompletionProposed,
                     boundary + ChronoDuration::seconds(1),
                 )
                 .await
@@ -1118,11 +1292,353 @@ mod tests {
         );
         assert!(
             !store
-                .has_event_of_kind_since(&created.id, "checkpoint", boundary)
+                .has_event_of_kind_since(&created.id, GoalEventKind::Checkpoint, boundary)
                 .await
                 .unwrap(),
             "another kind is not a proposal"
         );
+    }
+
+    /// The authorship rule is enforced where every event passes: a model-authored
+    /// `user_accepted` / `user_answer` is refused and leaves nothing behind.
+    /// `book/28` §3 requires that a model tool can never forge a user decision;
+    /// until now that held only because no tool happened to write those kinds
+    /// (2026-10-20).
+    #[tokio::test]
+    async fn a_model_authored_user_decision_is_refused() {
+        let store = SqliteGoalStore::new(&temp_db("event_source_rule"))
+            .await
+            .unwrap();
+        let created = store.create(goal("authorship")).await.unwrap();
+
+        for kind in [GoalEventKind::UserAccepted, GoalEventKind::UserAnswer] {
+            let forged = GoalEvent {
+                id: format!("forged-{kind}"),
+                goal_id: created.id.clone(),
+                run_id: None,
+                kind,
+                source: GoalEventSource::Model,
+                status: None,
+                outcome: None,
+                payload: Some("the model says you accepted".into()),
+                occurred_at: Utc::now(),
+            };
+            let error = store.append_event(forged).await.unwrap_err();
+            assert!(
+                format!("{error:#}").contains("cannot be authored by model"),
+                "a model event cannot be a user decision: {error:#}"
+            );
+            assert!(
+                store
+                    .latest_event_of_kind(&created.id, kind)
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "the refused event is not stored"
+            );
+        }
+
+        // The same kinds from a user are fine, and the source round-trips.
+        let accepted = store
+            .append_event(GoalEvent {
+                id: "accepted".into(),
+                goal_id: created.id.clone(),
+                run_id: None,
+                kind: GoalEventKind::UserAccepted,
+                source: GoalEventSource::User,
+                status: None,
+                outcome: None,
+                payload: Some("accepted after review".into()),
+                occurred_at: Utc::now(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(accepted.source, GoalEventSource::User);
+        let stored = store
+            .latest_event_of_kind(&created.id, GoalEventKind::UserAccepted)
+            .await
+            .unwrap()
+            .expect("the user event is stored");
+        assert_eq!(stored.source, GoalEventSource::User);
+    }
+
+    /// A row written before `source` existed reads as `runner`, never as a user
+    /// decision; the backfill keeps the same default.
+    #[tokio::test]
+    async fn events_without_a_source_read_as_runner() {
+        let db = temp_db("event_source_legacy");
+        let pool = crate::store::sqlite::open_pool(&db).await.unwrap();
+        sqlx::query(
+            r#"CREATE TABLE goal_events (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT NOT NULL UNIQUE,
+                goal_id TEXT NOT NULL,
+                data TEXT NOT NULL,
+                occurred_at INTEGER NOT NULL
+            )"#,
+        )
+        .execute(&*pool)
+        .await
+        .unwrap();
+        // Legacy JSON: no `source` field at all.
+        let legacy_json = serde_json::json!({
+            "id": "legacy",
+            "goal_id": "goal-legacy",
+            "kind": "user_accepted",
+            "occurred_at": Utc::now().to_rfc3339(),
+        });
+        sqlx::query("INSERT INTO goal_events (id, goal_id, data, occurred_at) VALUES (?, ?, ?, ?)")
+            .bind("legacy")
+            .bind("goal-legacy")
+            .bind(legacy_json.to_string())
+            .bind(Utc::now().timestamp_millis())
+            .execute(&*pool)
+            .await
+            .unwrap();
+        drop(pool);
+
+        let store = SqliteGoalStore::new(&db).await.unwrap();
+        let stored = store
+            .latest_event_of_kind("goal-legacy", GoalEventKind::UserAccepted)
+            .await
+            .unwrap()
+            .expect("the legacy event is readable");
+        assert_eq!(
+            stored.source,
+            GoalEventSource::Runner,
+            "an unlabelled legacy event must not read as a user decision"
+        );
+    }
+
+    /// A run records the newest event seq when it starts, and the seq window
+    /// separates two events written in the *same millisecond* — the case the
+    /// timestamp form could not answer. A proposal from the previous run must
+    /// not be read as this run's, which would let a Goal succeed on a stale
+    /// verdict (2026-10-20).
+    #[tokio::test]
+    async fn a_run_anchors_its_event_window_on_seq() {
+        let store = SqliteGoalStore::new(&temp_db("seq_anchor")).await.unwrap();
+        let created = store.create(goal("anchored")).await.unwrap();
+        let queued = store
+            .update(
+                &created.id,
+                created.version,
+                GoalUpdate {
+                    status: Some(GoalStatus::Queued),
+                    ..GoalUpdate::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        store
+            .update(
+                &created.id,
+                queued.version,
+                GoalUpdate {
+                    status: Some(GoalStatus::Running),
+                    ..GoalUpdate::default()
+                },
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+
+        // A proposal from a previous run, and the run started right after it in
+        // the same millisecond.
+        let same_instant = Utc::now();
+        let stale = GoalEvent {
+            id: "stale-proposal".into(),
+            goal_id: created.id.clone(),
+            run_id: Some("previous-run".into()),
+            kind: GoalEventKind::CompletionProposed,
+            source: GoalEventSource::Runner,
+            status: None,
+            outcome: None,
+            payload: Some("stale".into()),
+            occurred_at: same_instant,
+        };
+        let stored = store.append_event(stale).await.unwrap();
+        let expected_anchor = store.max_event_seq().await.unwrap();
+        assert!(
+            expected_anchor > 0,
+            "the probe sees the proposal just written"
+        );
+
+        let (token, run) = store
+            .start_run(
+                "runner",
+                Duration::from_secs(60),
+                GoalRun::new(created.id.clone()),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            run.event_seq_anchor, expected_anchor,
+            "the run anchors on the newest seq, not the clock"
+        );
+
+        // The timestamp form cannot separate the two: anchored on the
+        // proposal's own instant (which is what a run started right after it
+        // in the same millisecond is anchored on in wall-clock terms), `>=`
+        // still counts the stale proposal. The seq window does not.
+        assert!(
+            store
+                .has_event_of_kind_since(
+                    &created.id,
+                    GoalEventKind::CompletionProposed,
+                    same_instant,
+                )
+                .await
+                .unwrap(),
+            "the timestamp form counts an event at the boundary"
+        );
+        assert!(
+            !store
+                .has_event_of_kind_after(
+                    &created.id,
+                    GoalEventKind::CompletionProposed,
+                    run.event_seq_anchor,
+                )
+                .await
+                .unwrap(),
+            "a proposal written before the anchor is not this run's"
+        );
+
+        // And a fresh proposal after the anchor is.
+        store
+            .append_event(GoalEvent {
+                id: "fresh-proposal".into(),
+                goal_id: created.id.clone(),
+                run_id: Some(run.id.clone()),
+                kind: GoalEventKind::CompletionProposed,
+                source: GoalEventSource::Runner,
+                status: None,
+                outcome: None,
+                payload: Some("fresh".into()),
+                // Deliberately identical timestamp: only the seq can order them.
+                occurred_at: stored.occurred_at,
+            })
+            .await
+            .unwrap();
+        assert!(
+            store
+                .has_event_of_kind_after(
+                    &created.id,
+                    GoalEventKind::CompletionProposed,
+                    run.event_seq_anchor,
+                )
+                .await
+                .unwrap(),
+            "a proposal written after the anchor belongs to this run"
+        );
+        store.release_lease(&token).await.unwrap();
+    }
+
+    /// The lookup columns are a projection of the payload, and a database
+    /// written before they existed is backfilled on open — the `kind = ''`
+    /// marker makes that a one-time pass, and the second open must not touch
+    /// the rows again (2026-10-20).
+    #[tokio::test]
+    async fn event_lookup_columns_are_backfilled_once_for_legacy_rows() {
+        let db = temp_db("events_backfill");
+        let pool = crate::store::sqlite::open_pool(&db).await.unwrap();
+        // A pre-column schema plus one event, exactly as an older build wrote it.
+        sqlx::query(
+            r#"CREATE TABLE goal_events (
+                seq INTEGER PRIMARY KEY AUTOINCREMENT,
+                id TEXT NOT NULL UNIQUE,
+                goal_id TEXT NOT NULL,
+                data TEXT NOT NULL,
+                occurred_at INTEGER NOT NULL
+            )"#,
+        )
+        .execute(&*pool)
+        .await
+        .unwrap();
+        let legacy = GoalEvent {
+            id: "legacy".into(),
+            goal_id: "goal-legacy".into(),
+            run_id: None,
+            kind: GoalEventKind::Checkpoint,
+            source: GoalEventSource::Runner,
+            status: None,
+            outcome: None,
+            payload: Some("old checkpoint".into()),
+            occurred_at: Utc::now(),
+        };
+        sqlx::query("INSERT INTO goal_events (id, goal_id, data, occurred_at) VALUES (?, ?, ?, ?)")
+            .bind(&legacy.id)
+            .bind(&legacy.goal_id)
+            .bind(serde_json::to_string(&legacy).unwrap())
+            .bind(legacy.occurred_at.timestamp_millis())
+            .execute(&*pool)
+            .await
+            .unwrap();
+        drop(pool);
+
+        let store = SqliteGoalStore::new(&db).await.unwrap();
+        assert_eq!(
+            store
+                .latest_event_of_kind("goal-legacy", GoalEventKind::Checkpoint)
+                .await
+                .unwrap()
+                .map(|event| event.id),
+            Some("legacy".to_string()),
+            "a legacy row is found through the backfilled column"
+        );
+
+        // Idempotent: reopening migrates nothing twice and keeps the row.
+        drop(store);
+        let reopened = SqliteGoalStore::new(&db).await.unwrap();
+        assert_eq!(
+            reopened
+                .latest_event_of_kind("goal-legacy", GoalEventKind::Checkpoint)
+                .await
+                .unwrap()
+                .map(|event| event.id),
+            Some("legacy".to_string())
+        );
+    }
+
+    /// The lookups must be served by the index, not by a scan of the Goal's
+    /// history: this pins the query plan so a future edit that reintroduces
+    /// `json_extract` in the predicate fails here instead of silently getting
+    /// slower as a run appends events.
+    #[tokio::test]
+    async fn event_lookups_use_an_index_instead_of_scanning_the_history() {
+        let store = SqliteGoalStore::new(&temp_db("lookup_plan")).await.unwrap();
+        for (sql, index) in [
+            (
+                "SELECT data FROM goal_events WHERE goal_id = ? AND kind = ? \
+                 ORDER BY seq DESC LIMIT 1",
+                "idx_goal_events_goal_kind",
+            ),
+            (
+                "SELECT data FROM goal_events WHERE goal_id = ? AND status = ? \
+                 ORDER BY seq DESC LIMIT 1",
+                "idx_goal_events_goal_status",
+            ),
+        ] {
+            let rows = sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
+                .bind("goal")
+                .bind("value")
+                .fetch_all(&*store.pool)
+                .await
+                .unwrap();
+            let plan = rows
+                .iter()
+                .map(|row| row.try_get::<String, _>("detail").unwrap())
+                .collect::<Vec<_>>()
+                .join("; ");
+            assert!(plan.contains(index), "the lookup must use {index}: {plan}");
+            assert!(
+                !plan.contains("SCAN goal_events"),
+                "the lookup must not scan the table: {plan}"
+            );
+        }
     }
 
     /// A lease-less status write is refused while a run is active: from
@@ -1222,7 +1738,8 @@ mod tests {
             id: "event-1".into(),
             goal_id: created.id.clone(),
             run_id: None,
-            kind: "updated".into(),
+            kind: GoalEventKind::StatusChanged,
+            source: GoalEventSource::Runner,
             status: None,
             outcome: None,
             payload: Some("payload".into()),
@@ -1255,7 +1772,8 @@ mod tests {
                     id: "bad".into(),
                     goal_id: created.id.clone(),
                     run_id: None,
-                    kind: "bad".into(),
+                    kind: GoalEventKind::StatusChanged,
+                    source: GoalEventSource::Runner,
                     status: None,
                     outcome: None,
                     payload: None,
@@ -1291,7 +1809,8 @@ mod tests {
             id: "transition-event".into(),
             goal_id: created.id.clone(),
             run_id: None,
-            kind: "status_changed".into(),
+            kind: GoalEventKind::StatusChanged,
+            source: GoalEventSource::Runner,
             status: Some(GoalStatus::Queued),
             outcome: None,
             payload: Some("Draft: runner activation".into()),
@@ -1301,7 +1820,8 @@ mod tests {
             id: "run-event".into(),
             goal_id: created.id.clone(),
             run_id: Some(finished.id.clone()),
-            kind: "run_finished".into(),
+            kind: GoalEventKind::RunFinished,
+            source: GoalEventSource::Runner,
             status: Some(GoalStatus::Queued),
             outcome: Some(GoalRunOutcome::ProgressMade),
             payload: Some("outcome=ProgressMade".into()),
@@ -1357,7 +1877,8 @@ mod tests {
             id: "bad-run-event".into(),
             goal_id: "some-other-goal".into(),
             run_id: Some(finished.id.clone()),
-            kind: "run_finished".into(),
+            kind: GoalEventKind::RunFinished,
+            source: GoalEventSource::Runner,
             status: Some(GoalStatus::Queued),
             outcome: Some(GoalRunOutcome::ProgressMade),
             payload: None,
@@ -1589,11 +2110,12 @@ mod tests {
             .await
             .unwrap();
         let goal = store.create(goal("atomic chain")).await.unwrap();
-        let event = |kind: &str| GoalEvent {
+        let event = |kind: GoalEventKind| GoalEvent {
             id: crate::goal::new_event_id(),
             goal_id: goal.id.clone(),
             run_id: None,
-            kind: kind.to_string(),
+            kind,
+            source: GoalEventSource::Runner,
             status: None,
             outcome: None,
             payload: None,
@@ -1609,7 +2131,7 @@ mod tests {
                             title: Some("must roll back".into()),
                             ..GoalUpdate::default()
                         },
-                        event("first"),
+                        event(GoalEventKind::Checkpoint),
                     ),
                     (
                         GoalUpdate {
@@ -1617,7 +2139,7 @@ mod tests {
                             status: Some(GoalStatus::Succeeded),
                             ..GoalUpdate::default()
                         },
-                        event("second"),
+                        event(GoalEventKind::StatusChanged),
                     ),
                 ],
                 None,
@@ -1729,7 +2251,8 @@ mod tests {
             id: "orphan-event".into(),
             goal_id: "missing-goal".into(),
             run_id: None,
-            kind: "orphan".into(),
+            kind: GoalEventKind::Checkpoint,
+            source: GoalEventSource::Runner,
             status: None,
             outcome: None,
             payload: None,
@@ -1755,7 +2278,8 @@ mod tests {
                 id: format!("event-{index}"),
                 goal_id: created.id.clone(),
                 run_id: None,
-                kind: format!("kind-{index}"),
+                kind: GoalEventKind::Checkpoint,
+                source: GoalEventSource::Runner,
                 status: None,
                 outcome: None,
                 payload: None,
@@ -1787,7 +2311,8 @@ mod tests {
             id: "mismatched-event".into(),
             goal_id: other.id,
             run_id: None,
-            kind: "invalid".into(),
+            kind: GoalEventKind::Checkpoint,
+            source: GoalEventSource::Runner,
             status: None,
             outcome: None,
             payload: None,
@@ -1823,7 +2348,8 @@ mod tests {
             id: "duplicate-event".into(),
             goal_id: created.id.clone(),
             run_id: None,
-            kind: "first".into(),
+            kind: GoalEventKind::Checkpoint,
+            source: GoalEventSource::Runner,
             status: None,
             outcome: None,
             payload: None,
@@ -1832,7 +2358,7 @@ mod tests {
         store.append_event(event.clone()).await.unwrap();
 
         let mut duplicate = event;
-        duplicate.kind = "duplicate".into();
+        duplicate.kind = GoalEventKind::StatusChanged;
         assert!(
             store
                 .update(

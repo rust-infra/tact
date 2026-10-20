@@ -124,12 +124,18 @@ fn non_empty(value: String, field: &str) -> Result<String> {
     Ok(value)
 }
 
-fn event(goal_id: &str, kind: &str, payload: impl Serialize) -> Result<GoalEvent> {
+fn event(
+    goal_id: &str,
+    kind: crate::goal::GoalEventKind,
+    payload: impl Serialize,
+) -> Result<GoalEvent> {
     Ok(GoalEvent {
         id: crate::goal::new_event_id(),
         goal_id: goal_id.to_string(),
         run_id: None,
-        kind: kind.to_string(),
+        kind,
+        // Every event this module writes comes from the model.
+        source: crate::goal::GoalEventSource::Model,
         status: None,
         outcome: None,
         payload: Some(serde_json::to_string(&payload)?),
@@ -137,12 +143,14 @@ fn event(goal_id: &str, kind: &str, payload: impl Serialize) -> Result<GoalEvent
     })
 }
 
-fn event_text(goal_id: &str, kind: &str, text: String) -> GoalEvent {
+fn event_text(goal_id: &str, kind: crate::goal::GoalEventKind, text: String) -> GoalEvent {
     GoalEvent {
         id: crate::goal::new_event_id(),
         goal_id: goal_id.to_string(),
         run_id: None,
-        kind: kind.to_string(),
+        kind,
+        // Every event this module writes comes from the model.
+        source: crate::goal::GoalEventSource::Model,
         status: None,
         outcome: None,
         payload: Some(text),
@@ -163,7 +171,7 @@ pub async fn goal_checkpoint(ctx: ToolContext, input: GoalCheckpointInput) -> Re
     ctx.goal_manager
         .append_event(event(
             goal_id,
-            "checkpoint",
+            crate::goal::GoalEventKind::Checkpoint,
             serde_json::json!({"summary": summary}),
         )?)
         .await?;
@@ -178,7 +186,11 @@ pub async fn goal_request_input(
     let goal_id = active_goal_id(&ctx)?;
     let question = non_empty(input.question, "question")?;
     ctx.goal_manager
-        .append_event(event_text(goal_id, "needs_user", question))
+        .append_event(event_text(
+            goal_id,
+            crate::goal::GoalEventKind::NeedsUser,
+            question,
+        ))
         .await?;
     Ok(ToolCallResult {
         content: "User input requested; yield to Runner.".to_string(),
@@ -217,7 +229,7 @@ pub async fn goal_propose_completion(
     ctx.goal_manager
         .append_event(event(
             goal_id,
-            "completion_proposed",
+            crate::goal::GoalEventKind::CompletionProposed,
             serde_json::json!({
                 "summary": summary,
                 // The model's own account of how it checked its work. Kept
@@ -241,7 +253,6 @@ mod goal_tool_tests {
         GoalCreate {
             title: title.into(),
             objective: format!("objective for {title}"),
-            constraints: Vec::new(),
             criteria: vec![GoalCriterion::required_with_id("criterion-1", "done")],
         }
     }
@@ -290,6 +301,45 @@ mod goal_tool_tests {
                 .unwrap()
                 .len(),
             1
+        );
+    }
+
+    /// Everything the Goal tools append is model-authored. The audit trail
+    /// distinguishes it from a user decision, which is what makes the
+    /// "a model tool cannot forge user acceptance" rule checkable rather than
+    /// remembered (2026-10-20).
+    #[tokio::test]
+    async fn goal_tool_events_are_model_authored() {
+        let (context, goal_id) = bound_context("goal_tool_source").await;
+        let router = ToolRouter::new()
+            .route(crate::tool::goal::GoalCheckpointTool)
+            .unwrap()
+            .route(crate::tool::goal::GoalRequestInputTool)
+            .unwrap();
+        router
+            .call(
+                &context,
+                "goal_checkpoint",
+                serde_json::json!({"summary": "progress"}),
+            )
+            .await
+            .unwrap();
+        router
+            .call(
+                &context,
+                "goal_request_input",
+                serde_json::json!({"question": "which one?"}),
+            )
+            .await
+            .unwrap();
+
+        let events = context.goal_manager.list_events(&goal_id).await.unwrap();
+        assert_eq!(events.len(), 2);
+        assert!(
+            events
+                .iter()
+                .all(|event| event.source == crate::goal::GoalEventSource::Model),
+            "every Goal tool event is model-authored: {events:?}"
         );
     }
 
@@ -548,11 +598,12 @@ mod goal_tool_tests {
         assert!(completion.contains("yield to Runner"));
         let events = context.goal_manager.list_events(&goal_id).await.unwrap();
         assert_eq!(
-            events
-                .iter()
-                .map(|event| event.kind.as_str())
-                .collect::<Vec<_>>(),
-            vec!["checkpoint", "needs_user", "completion_proposed"]
+            events.iter().map(|event| event.kind).collect::<Vec<_>>(),
+            vec![
+                crate::goal::GoalEventKind::Checkpoint,
+                crate::goal::GoalEventKind::NeedsUser,
+                crate::goal::GoalEventKind::CompletionProposed,
+            ]
         );
         assert!(
             events[0]

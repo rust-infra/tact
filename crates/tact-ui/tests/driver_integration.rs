@@ -440,7 +440,6 @@ async fn command_loop_recovers_an_interrupted_goal_run() {
         .create(tact::goal::GoalCreate {
             title: "interrupted goal".to_string(),
             objective: "survive a crash".to_string(),
-            constraints: Vec::new(),
             criteria: vec![tact::goal::GoalCriterion::required_with_id(
                 "c1",
                 "the crash is recovered",
