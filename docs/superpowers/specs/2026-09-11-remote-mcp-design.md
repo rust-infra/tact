@@ -1,7 +1,7 @@
 # Remote MCP (Streamable HTTP + OAuth 2.0) 设计
 
 > 日期：2026-09-11 · 状态：**已批准 / 已实现**（用户确认：本地回环自动回调 + 启动不阻塞 + `/mcp auth` 补做 + 关键点加日志）
-> 关联：`crates/tact/src/mcp/`、`crates/tact/Cargo.toml`、`crates/tact/src/agent/mod.rs`、`crates/protocol/src/agent.rs`、`crates/tact-ui/src/driver.rs`、`crates/tui/src/handlers/`、`book/08_chapter_mcp*.md`、`book/21_chapter_config*.md`、`book/26_chapter_issue*.md`
+> 关联：`crates/tact/src/mcp/`、`crates/tact/Cargo.toml`、`crates/tact/src/agent/mod.rs`、`crates/protocol/src/agent.rs`、`crates/tact-ui/src/driver.rs`、`crates/tui/src/handlers/`、`book/08_chapter_mcp_zh.html`、`book/21_chapter_config_zh.html`、`book/26_chapter_issue_zh.html`
 
 ## 1. 背景与动机
 
@@ -127,6 +127,6 @@ mcp.json ──parse──> McpProjectConfig{command|url, headers, auth}
 
 ## 8. 文档同步
 
-- `book/08_chapter_mcp_zh.md`：transport 表、限制段、新增「Remote MCP & OAuth」小节。
-- `book/21_chapter_config_zh.md`：`mcp.json` 远程/`auth` 字段。
-- `book/26_chapter_issue_zh.md`：newest-first 条目。
+- `book/08_chapter_mcp_zh.html`：transport 表、限制段、新增「Remote MCP & OAuth」小节。
+- `book/21_chapter_config_zh.html`：`mcp.json` 远程/`auth` 字段。
+- `book/26_chapter_issue_zh.html`：newest-first 条目。

@@ -96,7 +96,7 @@ place, next to the router that can also say "no such prompt".
 
 ## 5. Docs sync
 
-- `book/08_chapter_mcp_zh.md`: Step 9 gains the two commands; the §10 gap row's prompts clause is
+- `book/08_chapter_mcp_zh.html`: Step 9 gains the two commands; the §10 gap row's prompts clause is
   updated to name what is still missing (completion).
-- `book/23_chapter_tui_zh.md` §7: the `/mcp` subcommand list.
-- `book/26_chapter_issue_zh.md`: newest-first entry.
+- `book/23_chapter_tui_zh.html` §7: the `/mcp` subcommand list.
+- `book/26_chapter_issue_zh.html`: newest-first entry.

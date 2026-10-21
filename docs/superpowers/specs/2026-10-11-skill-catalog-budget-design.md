@@ -25,7 +25,7 @@ Four separate gaps, all in `crates/tact/src/skill/mod.rs`:
    when the window is unknown — shorten descriptions first, then omit skills with a warning).
 3. **A skill cannot reference its own files.** `load_skill` returns the body wrapped in `<skill>` and
    nothing else. `SkillManifest` had a `path` field removed on 2026-10-04 for having no consumer
-   ([Ch 02](../../../book/02_chapter_skill_zh.md) §3) — the consumer is exactly this: a skill that
+   ([Ch 02](../../../book/02_chapter_skill_zh.html) §3) — the consumer is exactly this: a skill that
    ships `references/formats.md` has no way to tell the model where it lives. Pi and Codex both solve
    it by putting the path in the catalog.
 4. **No per-skill switch.** A skill that must never be auto-matched can only be removed by deleting
@@ -205,10 +205,10 @@ Still no CLI flag, like `skill_dirs`.
   `an_empty_disable_list_is_written_not_removed`.
 - `crates/tact/src/config/resolve.rs`: `resolve_skill_description_cap_defaults_to_200`,
   `resolve_skill_disable_from_toml`.
-- Docs: [Ch 02](../../../book/02_chapter_skill_zh.md) §1 (the per-turn table), §5 (`describe_available`
+- Docs: [Ch 02](../../../book/02_chapter_skill_zh.html) §1 (the per-turn table), §5 (`describe_available`
   signature), §7 (the `/skill` table and the new verbs), §10 (three rows close),
-  [Ch 21](../../../book/21_chapter_config_zh.md) (the two keys),
-  [Ch 26](../../../book/26_chapter_issue_zh.md) entry.
+  [Ch 21](../../../book/21_chapter_config_zh.html) (the two keys),
+  [Ch 26](../../../book/26_chapter_issue_zh.html) entry.
 
 ## Related
 

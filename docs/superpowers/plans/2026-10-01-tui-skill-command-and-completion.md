@@ -38,5 +38,5 @@ Shipped as `89400ca3`. Retroactive record (2026-10-02).
    - `cargo test -p tui --lib render` and `-p agent_tui_kit --lib render` — the full-frame popup and
      highlight tests.
 7. **Docs sync**
-   - `book/23_chapter_tui_zh.md`: `/skill` and the completion rules.
-   - `book/26_chapter_issue_zh.md`: 2026-10-01 entries.
+   - `book/23_chapter_tui_zh.html`: `/skill` and the completion rules.
+   - `book/26_chapter_issue_zh.html`: 2026-10-01 entries.

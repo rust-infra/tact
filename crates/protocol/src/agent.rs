@@ -4,7 +4,7 @@
 //! execution status updates, user commands, step results, token usage, errors,
 //! and streaming output.
 //!
-//! State machine transitions: see [book/25_chapter_protocol_zh.md](../../book/25_chapter_protocol_zh.md).
+//! State machine transitions: see [book/25_chapter_protocol_zh.html](../../book/25_chapter_protocol_zh.html).
 
 use std::fmt;
 

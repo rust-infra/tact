@@ -164,7 +164,7 @@ HIGH items are real and user-reachable, and all three sit in the driver/runner l
 
 ## Doc drift found during the review (same class as the 2026-10-15 sync pass)
 
-- `book/28_chapter_goal_zh.md` §9 promises an expanded view with per-criterion **evidence**,
+- `book/28_chapter_goal_zh.html` §9 promises an expanded view with per-criterion **evidence**,
   **recent events**, and **pause/resume/cancel/accept actions** (§242) — the shipped panel renders
   criteria status only; `evidence_count` (`driver.rs:462`) has no renderer; `on_key` is a no-op.
 - §12 implies budgets are shown for active runs, but `elapsed_ms`/`wall_clock_limit_ms`

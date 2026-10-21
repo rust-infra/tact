@@ -41,8 +41,8 @@ Spec: [2026-10-02-mcp-prompts-design.md](../specs/2026-10-02-mcp-prompts-design.
    `tool_dispatch.rs`; the resolve test in `config/resolve.rs`; `EchoServer` grows `list_prompts` /
    `get_prompt` plus `mcp_client_gets_prompts_from_a_real_in_process_server`.
 
-8. **Docs.** `config.example.toml`, `book/08_chapter_mcp_zh.md` (Step 9, code map, §10),
-   `book/26_chapter_issue_zh.md`.
+8. **Docs.** `config.example.toml`, `book/08_chapter_mcp_zh.html` (Step 9, code map, §10),
+   `book/26_chapter_issue_zh.html`.
 
 9. **Gate.** `cargo fmt` → `cargo fmt -- --check` → `cargo clippy --all-targets -- -D warnings` →
    `cargo test -p tact-ui -p tui -p tact -p tact_llm --quiet` (i.e. `scripts/check-rust.sh`).

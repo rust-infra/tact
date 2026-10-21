@@ -13,7 +13,7 @@ common client policies actually cost against the Context Cache:
 Each policy runs a short thinking-mode tool-calling conversation and prints
 prompt / cache-hit / cache-miss / completion tokens per turn plus the hit
 sequence. Cache hit and miss prices differ by ~50x, so the hit ratio decides
-the cost ranking; see book/26_chapter_issue_zh.md (2026-10-03).
+the cost ranking; see book/26_chapter_issue_zh.html (2026-10-03).
 
 Usage:
     export DEEPSEEK_API_KEY=sk-...        # or reuse ~/.tact/config.toml

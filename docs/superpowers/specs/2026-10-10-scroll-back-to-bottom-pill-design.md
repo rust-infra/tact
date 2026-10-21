@@ -175,4 +175,4 @@ if was_pinned { self.scroll_log_to_bottom() } else { self.log_scroll.unseen = tr
 2. i18n 三条文案（英中）。
 3. `agent_tui_kit::render::scroll_pill`（新模块，纯渲染 + 返回命中矩形），在 `task_panel.rs` 的粘性条之后调用。
 4. `esc` 新的一级 + 鼠标命中路由。
-5. 文档：`book/23_chapter_tui_zh.md`（§6.6 底栏 / §6.11 Log 消息模型）、`book/26_chapter_issue_zh.md` 新条目。
+5. 文档：`book/23_chapter_tui_zh.html`（§6.6 底栏 / §6.11 Log 消息模型）、`book/26_chapter_issue_zh.html` 新条目。

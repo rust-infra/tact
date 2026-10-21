@@ -2,13 +2,13 @@
 
 This document describes the state machines used across the `tact` codebase. Most are plain Rust enums with explicit transitions driven by `AgentUpdate` messages, user input, or tool results.
 
-The state diagrams are plain text on purpose. These machines are **cyclic**, and neither renderer in this repo can draw a labelled cyclic machine correctly: Tact's TUI state-diagram parser folds a transition's `: label` into the node name, and its flowchart layout needs an acyclic graph (a back edge pins every node of the cycle into one row). Plain-text edge lists render identically in the TUI, on GitHub, and in an editor — see [book/26](../book/26_chapter_issue_zh.md) for the renderer details.
+The state diagrams are plain text on purpose. These machines are **cyclic**, and neither renderer in this repo can draw a labelled cyclic machine correctly: Tact's TUI state-diagram parser folds a transition's `: label` into the node name, and its flowchart layout needs an acyclic graph (a back edge pins every node of the cycle into one row). Plain-text edge lists render identically in the TUI, on GitHub, and in an editor — see [book/26](../book/26_chapter_issue_zh.html) for the renderer details.
 
 ---
 
 ## 0. Agent–TUI Protocol
 
-Full documentation: **[book/25_chapter_protocol_zh.md](../book/25_chapter_protocol_zh.md)**.
+Full documentation: **[book/25_chapter_protocol_zh.html](../book/25_chapter_protocol_zh.html)**.
 
 Covers `AgentUpdate` / `UserCommand` / `AccountUpdate` channels, plan step lifecycle, TUI `Status` / `InputMode` state diagrams, message categories, and typical ordering (incl. sequence diagram).
 
@@ -33,7 +33,7 @@ pub(crate) enum Status {
 }
 ```
 
-A pending select switches `InputMode` to `Select` while `Status` stays `Executing`. In interactive mode the popup is derived from the shared pending snapshot; in legacy/headless mode `AgentUpdate::RequestSelect` is the activation edge. Full diagrams: [book/25_chapter_protocol_zh.md](../book/25_chapter_protocol_zh.md) §4.
+A pending select switches `InputMode` to `Select` while `Status` stays `Executing`. In interactive mode the popup is derived from the shared pending snapshot; in legacy/headless mode `AgentUpdate::RequestSelect` is the activation edge. Full diagrams: [book/25_chapter_protocol_zh.html](../book/25_chapter_protocol_zh.html) §4.
 
 ### State transitions
 

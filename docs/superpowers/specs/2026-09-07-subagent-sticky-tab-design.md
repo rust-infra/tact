@@ -262,11 +262,11 @@ pub fn render_sticky_host(frame, area, ctx);              // 标题行(tabs) + h
 
 ## 6. 文档同步（推送前一次性）
 
-- `book/23_chapter_tui_zh.md` / `_zh.md`：sticky 小节改为「Tasks | Subagent 双域主机」；
+- `book/23_chapter_tui_zh.html`：sticky 小节改为「Tasks | Subagent 双域主机」；
   `render/layout.rs` 与 kit `task_panel.rs` 职责行补 subagent host。
-- `book/12_chapter_subagent_zh.md` / `_zh.md`：§6 补一句 sticky tab 总览指针（run 状态级，
+- `book/12_chapter_subagent_zh.html`：§6 补一句 sticky tab 总览指针（run 状态级，
   明细仍在 tool card / popup）。
-- `book/26_chapter_issue*.md`：newest-first 加一条 `feat`（含本 spec 链接、`subagent.rs`、Ch 23/12 指针），
+- `book/26_chapter_issue_zh.html`：newest-first 加一条 `feat`（含本 spec 链接、`subagent.rs`、Ch 23/12 指针），
   注明动机为「后台 fan-out 子代理缺少常驻状态总览；不推翻 98a133f 的 tool-card 明细方向」。
 - 不涉及 `config.example.toml`、`book/01_chapter_store*`（无 schema 变更）。
 

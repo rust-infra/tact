@@ -3,7 +3,7 @@
 Status: **implemented** (2026-10-15). All tasks in the implementation plan
 [`docs/superpowers/plans/2026-10-14-agent-goal.md`](../plans/2026-10-14-agent-goal.md)
 are checked off; the design chapter is
-[`book/28_chapter_goal_zh.md`](../../../book/28_chapter_goal_zh.md).
+[`book/28_chapter_goal_zh.html`](../../../book/28_chapter_goal_zh.html).
 
 ## Problem
 
@@ -210,5 +210,5 @@ and resumes.
   `UserCommand` variants.
 - TUI: `crates/agent_tui_kit/src/{state/goal_panel.rs,components/goal_panel.rs}`,
   `crates/tui/src/render/task_panel.rs`.
-- Book: `book/28_chapter_goal_zh.md` (implementation-accurate design chapter).
+- Book: `book/28_chapter_goal_zh.html` (implementation-accurate design chapter).
 - Plan: `docs/superpowers/plans/2026-10-14-agent-goal.md`.

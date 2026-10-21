@@ -21,7 +21,7 @@ pub type GoalId = String;
 pub const ID_LEN: usize = 8;
 
 /// Opening tag of the context the runner injects at the start of an
-/// activation (see `book/28_chapter_goal_zh.md` §5).
+/// activation (see `book/28_chapter_goal_zh.html` §5).
 ///
 /// The tag is a *contract* between two crates: the runner frames the context
 /// with it, and every reader that must tell injected context from a user turn
@@ -86,7 +86,7 @@ pub enum GoalStatus {
     /// allows the rest), and an interactive prompt is answered inside the
     /// activation, so a blocked activation never parks the Goal here. It stays in
     /// the state machine for a future permission-aware stop reason
-    /// (see `book/28_chapter_goal_zh.md` §12).
+    /// (see `book/28_chapter_goal_zh.html` §12).
     WaitingPermission,
     Paused,
     Verifying,

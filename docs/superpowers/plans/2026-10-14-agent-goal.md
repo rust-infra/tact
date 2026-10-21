@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust workspace, Tokio, SQLx SQLite, serde, `tact_protocol`, Ratatui / `agent_tui_kit`.
 
-**Spec:** [`docs/superpowers/specs/2026-10-14-agent-goal-design.md`](../specs/2026-10-14-agent-goal-design.md) (approved design); `book/28_chapter_goal_zh.md` is the user-facing chapter and must stay synchronized with delivered behavior.
+**Spec:** [`docs/superpowers/specs/2026-10-14-agent-goal-design.md`](../specs/2026-10-14-agent-goal-design.md) (approved design); `book/28_chapter_goal_zh.html` is the user-facing chapter and must stay synchronized with delivered behavior.
 
 ## Global Constraints
 
@@ -46,7 +46,7 @@
 - `crates/protocol/src/agent.rs`, `crates/protocol/src/lib.rs`: Goal snapshots, updates, and user commands.
 - `crates/tui/src/widgets/state/app/agent.rs`, relevant app state and command parsing/completion files, `crates/agent_tui_kit/src/components/`: Goal sticky surface and interaction.
 - `crates/tact/src/**`, `crates/tact-ui/src/**`, `crates/tui/src/**`: unit/integration/buffer tests colocated with existing patterns.
-- `book/28_chapter_goal_zh.md`, `book/index_zh.md`: reconcile proposal into implementation-accurate documentation after behavior lands.
+- `book/28_chapter_goal_zh.html`, `book/index_zh.html`: reconcile proposal into implementation-accurate documentation after behavior lands.
 
 ## Task 1: Goal Domain Types and Lifecycle Rules
 
@@ -182,9 +182,9 @@
 ## Task 8: Documentation and Full Verification
 
 **Files:**
-- Modify: `book/28_chapter_goal_zh.md`
-- Modify: `book/index_zh.md` only if final chapter summary needs correction
-- Modify: relevant `book/01_chapter_store_zh.md`, `book/18_chapter_agent_loop_zh.md`, `book/19_chapter_persistent_tasks_zh.md`, `book/23_chapter_tui_zh.md`, and `book/25_chapter_protocol_zh.md` where implementation changes their contracts
+- Modify: `book/28_chapter_goal_zh.html`
+- Modify: `book/index_zh.html` only if final chapter summary needs correction
+- Modify: relevant `book/01_chapter_store_zh.html`, `book/18_chapter_agent_loop_zh.html`, `book/19_chapter_persistent_tasks_zh.html`, `book/23_chapter_tui_zh.html`, and `book/25_chapter_protocol_zh.html` where implementation changes their contracts
 
 - [x] **Step 1: Re-read all touched docs** and update proposal markers, schema/API names, lifecycle, and actual current limitations to match shipped implementation.
 - [x] **Step 2: Check relative Markdown links** in touched book chapters and run `git diff --check`.

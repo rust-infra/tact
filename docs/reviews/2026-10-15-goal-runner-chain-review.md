@@ -3,7 +3,7 @@
 Date: 2026-10-15. Scope: does the Goal chain actually run end to end? Triggered by hand-driving
 the feature: a freshly created Goal reported a finished run within milliseconds. The review
 followed the execution path only — `driver.rs` → `goal_runner.rs` → `agent_loop_detailed` — plus
-the state machine and the documented flow (§3/§5/§7 of `book/28_chapter_goal_zh.md`). Every claim
+the state machine and the documented flow (§3/§5/§7 of `book/28_chapter_goal_zh.html`). Every claim
 below was checked against the source and against the persisted rows in `.tact/tact.db`.
 
 **Headline: the chain was broken at its first step.** A Goal activation could not make a single

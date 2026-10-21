@@ -2,7 +2,7 @@
 
 > Date: 2026-07-24  
 > Status: implemented  
-> Related: `book/19_chapter_persistent_tasks_zh.md`, `book/23_chapter_tui_zh.md`, `book/25_chapter_protocol_zh.md`  
+> Related: `book/19_chapter_persistent_tasks_zh.html`, `book/23_chapter_tui_zh.html`, `book/25_chapter_protocol_zh.html`  
 > Plan: `docs/superpowers/plans/2026-07-24-task-progress-panel.md`
 
 ## Goal
@@ -182,10 +182,10 @@ Uses existing message append APIs so scroll/history behave like other Log rows.
 
 | Doc | Update |
 |-----|--------|
-| `book/19_chapter_persistent_tasks*.md` | Note UI surfaces + `TasksChanged`; gap “no TUI” removed/narrowed |
-| `book/23_chapter_tui*.md` | Main-area outer split + sticky panel |
-| `book/25_chapter_protocol*.md` | New `AgentUpdate` arm |
-| `book/26_chapter_issue*.md` | Newest-first entry when behavior ships |
+| `book/19_chapter_persistent_tasks_zh.html` | Note UI surfaces + `TasksChanged`; gap “no TUI” removed/narrowed |
+| `book/23_chapter_tui_zh.html` | Main-area outer split + sticky panel |
+| `book/25_chapter_protocol_zh.html` | New `AgentUpdate` arm |
+| `book/26_chapter_issue_zh.html` | Newest-first entry when behavior ships |
 
 ---
 

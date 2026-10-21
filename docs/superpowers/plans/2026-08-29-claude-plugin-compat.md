@@ -49,7 +49,7 @@
   - `get_skill_registry` 在 plugin skills 之后追加 plugin commands（需要 `PluginStore` 提供已安装插件根列表——复用 `installed_skill_roots` 的结构，新增 `installed_plugin_roots` 返回所有有效缓存根）。
   - 同一插件内 skills/commands 同名：后加载 commands 覆盖。
 - `SkillFrontmatter` 增加 `argument-hint` / `allowed-tools` / `model`（parse 并存入 `SkillManifest`，v1 不强制）。
-  - **2026-10-04 回退**：三字段没有任何读取者，已从 `SkillFrontmatter` / `SkillManifest` 删除（同时删掉 `SkillManifest::path`）。见 `book/26_chapter_issue_zh.md` 2026-10-04 条目。
+  - **2026-10-04 回退**：三字段没有任何读取者，已从 `SkillFrontmatter` / `SkillManifest` 删除（同时删掉 `SkillManifest::path`）。见 `book/26_chapter_issue_zh.html` 2026-10-04 条目。
 - 测试：commands 加载为 `plugin:foo`；无 name frontmatter 用文件名；同名覆盖顺序；frontmatter 新字段解析。
 
 ### T5 plugin store 提供通用根
@@ -169,12 +169,12 @@
 
 ### T21 文档同步（双语）
 
-- `book/02_chapter_skill*.md`：commands 加载、插件功能面、frontmatter 新字段。
-- `book/08_chapter_mcp*.md`：插件 MCP 扫描、`.mcp.json`、http 限制。
-- `book/09_chapter_hook*.md`：命令型插件 hook、新事件点、Claude 协议、失败语义。
-- `book/12_chapter_subagent*.md`：声明式 agents（.tact/agents + 插件）、`spawn_subagent.agent`。
-- `book/21_chapter_config_zh.md` / `book/23_chapter_tui*.md`：plugin list 功能摘要。
-- `book/26_chapter_issue*.md`：追加 2026-08-29 条目（双语同结构）。
+- `book/02_chapter_skill_zh.html`：commands 加载、插件功能面、frontmatter 新字段。
+- `book/08_chapter_mcp_zh.html`：插件 MCP 扫描、`.mcp.json`、http 限制。
+- `book/09_chapter_hook_zh.html`：命令型插件 hook、新事件点、Claude 协议、失败语义。
+- `book/12_chapter_subagent_zh.html`：声明式 agents（.tact/agents + 插件）、`spawn_subagent.agent`。
+- `book/21_chapter_config_zh.html` / `book/23_chapter_tui_zh.html`：plugin list 功能摘要。
+- `book/26_chapter_issue_zh.html`：追加 2026-08-29 条目（双语同结构）。
 
 ## Phase 8 — 验证
 

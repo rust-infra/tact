@@ -3,7 +3,7 @@
 //! The verifier is a pure decision function: it performs no I/O, touches no
 //! store, reads no clock, and never inspects model text. It reads only `Goal`
 //! state (`criteria`, `criteria_version`) and returns a decision, per
-//! `book/28_chapter_goal_zh.md` §6.
+//! `book/28_chapter_goal_zh.html` §6.
 
 use crate::goal::{Goal, GoalCriterion, GoalVerificationKind};
 
@@ -27,7 +27,7 @@ pub enum GoalVerification {
     Rejected { criteria: Vec<String> },
 }
 
-/// Decides whether a Goal may be accepted. See `book/28_chapter_goal_zh.md` §6.
+/// Decides whether a Goal may be accepted. See `book/28_chapter_goal_zh.html` §6.
 ///
 /// The decision is a pure function of `goal.criteria` and
 /// `goal.criteria_version`, evaluated through [`GoalCriterion::has_valid_evidence`]:

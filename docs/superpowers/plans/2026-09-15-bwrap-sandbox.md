@@ -73,14 +73,14 @@ Status: implemented (2026-09-15) — see "Result and deviations" at the end
    `None`.
 
 9. **Docs** — one pass, after the code compiles and tests pass:
-   - `book/07_chapter_tool_zh.md`: sandbox insertion point + §19 path space.
-   - `book/10_chapter_permission_zh.md`: Permission = authorization,
+   - `book/07_chapter_tool_zh.html`: sandbox insertion point + §19 path space.
+   - `book/10_chapter_permission_zh.html`: Permission = authorization,
      Sandbox = execution boundary.
-   - `book/13_chapter_background_zh.md`: `background_run` stays unsandboxed.
-   - `book/15_chapter_worktree_zh.md`: `worktree_run` / lane git stay unsandboxed.
-   - `book/21_chapter_config_zh.md`: `[tools] sandbox` field.
+   - `book/13_chapter_background_zh.html`: `background_run` stays unsandboxed.
+   - `book/15_chapter_worktree_zh.html`: `worktree_run` / lane git stay unsandboxed.
+   - `book/21_chapter_config_zh.html`: `[tools] sandbox` field.
    - `config.example.toml`: the key + comment (already in item 2).
-   - `book/26_chapter_issue_zh.md`: newest-first entry (opt-in sandbox,
+   - `book/26_chapter_issue_zh.html`: newest-first entry (opt-in sandbox,
      degradation semantics).
    - `docs/agent_guidelines.md`: bash/`/workspace` path-space note.
 

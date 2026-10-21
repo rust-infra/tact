@@ -86,12 +86,12 @@ pub skill: Option<String>,
 
 ## T4 文档同步（双语）
 
-- `book/12_chapter_subagent_zh.md` / `_zh.md`：
+- `book/12_chapter_subagent_zh.html`：
   - §2 结构体代码块 + 字段表：补 `skill` 行；
   - 原 §2.1 位置新增小节「Subagent skill cards」：目录 `~/.tact/subagent/`、frontmatter、
     正文即角色、spawn 拼装示例、与主 agent skill 隔离说明（两端结构对齐）；
   - §5 静态 prompt 段：补技能卡拼接示例代码块。
-- `book/26_chapter_issue*.md`：各加一条 newest-first 条目（date 2026-09-06 · type `feat`），
+- `book/26_chapter_issue_zh.html`：各加一条 newest-first 条目（date 2026-09-06 · type `feat`），
   指针指向本 spec/plan、`subagent.rs`、Ch 12；注明动机为「8c74f4e 删除 agent-def 后补回隔离的角色注入」。
 
 ## T5 收尾核查

@@ -2,7 +2,7 @@ use std::collections::BTreeMap;
 
 use crate::protocol::PlanStep;
 
-/// Internal execution step store (no dedicated UI panel — see `book/23_chapter_tui_zh.md`).
+/// Internal execution step store (no dedicated UI panel — see `book/23_chapter_tui_zh.html`).
 #[derive(Default)]
 pub struct PlanPanel {
     pub steps: Vec<PlanStep>,

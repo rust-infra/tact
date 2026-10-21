@@ -23,7 +23,7 @@ of mine was wrong and is corrected here.
 - A run that ends `no_progress` (a text-only cycle), on a yield, or on a cancel
   never reaches that turn. Evidence: the run used 36 of 500 turns, and the
   workspace database had **zero** `checkpoint` events, ever.
-- `book/28_chapter_goal_zh.md` §7 promised “最后一轮会提醒模型写 checkpoint”,
+- `book/28_chapter_goal_zh.html` §7 promised “最后一轮会提醒模型写 checkpoint”,
   which was true but covered almost none of the endings.
 - **Fix:** every injected `<goal-context>` now carries a
   `<checkpoint-protocol>` section (one standing instruction: call
@@ -199,7 +199,7 @@ That is a presentation change; the state machine is untouched.
 - `cargo clippy --workspace --all-targets -- -D warnings` clean
 - `cargo fmt --all` applied
 
-Docs synced in the same pass: `book/26_chapter_issue_zh.md` (newest-first
-entry), `book/28_chapter_goal_zh.md` §5/§7/§9/§11/§12,
-`book/05_chapter_compact_zh.md` (the two `is_real_user_message` exclusion
+Docs synced in the same pass: `book/26_chapter_issue_zh.html` (newest-first
+entry), `book/28_chapter_goal_zh.html` §5/§7/§9/§11/§12,
+`book/05_chapter_compact_zh.html` (the two `is_real_user_message` exclusion
 lists), `docs/compaction.md` step 4.
