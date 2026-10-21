@@ -1,0 +1,888 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>错误恢复（Error Recovery）</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-%E4%B8%89%E7%A7%8D%E6%81%A2%E5%A4%8D%E7%AD%96%E7%95%A5" title="1. 三种恢复策略"><span class="toc-label">1. 三种恢复策略</span></a></li>
+<li class="toc-l2"><a href="#2-%E6%95%B0%E6%8D%AE%E6%A8%A1%E5%9E%8B" title="2. 数据模型"><span class="toc-label">2. 数据模型</span></a></li>
+<li class="toc-l2"><a href="#3-%E9%94%99%E8%AF%AF%E5%88%86%E7%B1%BB" title="3. 错误分类"><span class="toc-label">3. 错误分类</span></a></li>
+<li class="toc-l3"><a href="#prompt-%E8%BF%87%E9%95%BF" title="Prompt 过长"><span class="toc-label">Prompt 过长</span></a></li>
+<li class="toc-l3"><a href="#%E7%9E%AC%E6%80%81%E4%BC%A0%E8%BE%93" title="瞬态传输"><span class="toc-label">瞬态传输</span></a></li>
+<li class="toc-l2"><a href="#4-%E9%80%80%E9%81%BF%E5%BB%B6%E8%BF%9F" title="4. 退避延迟"><span class="toc-label">4. 退避延迟</span></a></li>
+<li class="toc-l2"><a href="#5-agent_loop-%E4%B8%AD%E7%9A%84%E6%81%A2%E5%A4%8D%E6%B5%81%E7%A8%8B" title="5. agent_loop 中的恢复流程"><span class="toc-label">5. agent_loop 中的恢复流程</span></a></li>
+<li class="toc-l2"><a href="#6-%E8%BE%93%E5%87%BA%E4%B8%8A%E9%99%90%E7%BB%AD%E5%86%99" title="6. 输出上限续写"><span class="toc-label">6. 输出上限续写</span></a></li>
+<li class="toc-l3"><a href="#%E5%BE%AE%E5%A6%99%E7%9A%84-400-%E9%A3%8E%E9%99%A9%E7%A9%BA-assistant-%E6%B6%88%E6%81%AF" title="微妙的 400 风险：空 assistant 消息"><span class="toc-label">微妙的 400 风险：空 assistant 消息</span></a></li>
+<li class="toc-l2"><a href="#7-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="7. 代码地图"><span class="toc-label">7. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#8-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="8. 当前缺口"><span class="toc-label">8. 当前缺口</span></a></li>
+<li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="错误恢复error-recovery">错误恢复（Error Recovery）</h1>
+<p>本章说明 Tact 的 agent
+循环如何在<strong>不丢失会话</strong>的前提下扛过失败：瞬态传输错误用指数退避重试，过大的
+prompt 触发上下文压缩，被截断的模型输出则在句中续写。分类逻辑在
+<code>crates/tact/src/recovery.rs</code>；决策接入
+<code>crates/tact/src/agent/mod.rs</code> 中的
+<code>agent_loop</code>。</p>
+<p>完整循环结构见 <a href="./18_chapter_agent_loop_zh.html">Agent
+主循环</a>（英文）。</p>
+<p>恢复与 <a href="./05_chapter_compact_zh.html">上下文压缩</a>
+协同工作——三种策略之一<strong>就是</strong>压缩。</p>
+<hr />
+<h2 id="1-三种恢复策略">1. 三种恢复策略</h2>
+<p>循环能恢复的每一种失败都归入三类之一，各自在
+<code>RecoveryState</code> 中有独立计数器：</p>
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>触发条件</th>
+<th>动作</th>
+<th>计数器</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Compact</strong></td>
+<td>错误分类为 <code>PromptTooLong</code>（见 §3）</td>
+<td><code>compact_history()</code> 后重试本轮</td>
+<td><code>compact_attempts</code></td>
+</tr>
+<tr>
+<td><strong>Backoff</strong></td>
+<td>错误分类为 <code>Transient</code>（见 §3）</td>
+<td>睡眠 <code>backoff_delay(attempt)</code> 后重试</td>
+<td><code>transport_attempts</code></td>
+</tr>
+<tr>
+<td><strong>Continue</strong></td>
+<td>流式成功但 <code>stop_reason = MaxTokens</code></td>
+<td>追加 <code>CONTINUATION_MESSAGE</code> 作为用户轮次</td>
+<td><code>continuation_attempts</code></td>
+</tr>
+</tbody>
+</table>
+<p>三者<strong>各有自己的上限</strong>，不共用一个数（<code>crates/tact/src/recovery.rs</code>）：</p>
+<pre class="rust"><code>pub const MAX_COMPACT_ATTEMPTS: u32 = 3;       // prompt-too-long 压缩重试
+pub const MAX_TRANSPORT_ATTEMPTS: u32 = 10;    // 瞬态网络重试
+pub const MAX_CONTINUATION_ATTEMPTS: u32 = 3;  // MaxTokens 续写</code></pre>
+<p>传输错误更宽容（长任务可能连续遇到多次间歇失败），压缩与续写各 3
+次。另有两个只属于<strong>摘要调用内部</strong>的预算，不是循环级计数器：<code>MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS</code>（5，摘要调用的瞬态重试）与
+<code>MAX_COMPACT_SUMMARY_ATTEMPTS</code>（5，截断续写，见 <a
+href="./05_chapter_compact_zh.html">上下文压缩</a> §5）。</p>
+<p>当某计数器超过上限（或错误不匹配任何类别）时，<code>agent_loop</code>
+返回错误，本轮真正失败。</p>
+<hr />
+<h2 id="2-数据模型">2. 数据模型</h2>
+<pre class="rust"><code>#[derive(Debug, Default)]
+pub struct RecoveryState {
+    pub continuation_attempts: u32,
+    pub compact_attempts: u32,
+    pub transport_attempts: u32,
+}</code></pre>
+<p><code>RecoveryState</code> 位于 <code>AgentRuntime</code> 上，与
+<code>CompactState</code> 相邻，<strong>在每次 <code>agent_loop</code>
+调用开始时重置为默认值</strong>——计数器不会在用户任务之间延续。</p>
+<p>循环<em>内部</em>的计数器重置规则：</p>
+<table>
+<thead>
+<tr>
+<th>计数器</th>
+<th>重置时机</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>transport_attempts</code></td>
+<td>任意一次成功的 <code>stream_message</code> 调用</td>
+</tr>
+<tr>
+<td><code>continuation_attempts</code></td>
+<td>任意一次<strong>未</strong>因 <code>MaxTokens</code> 停止的响应</td>
+</tr>
+<tr>
+<td><code>compact_attempts</code></td>
+<td>循环中途从不重置（仅在下次 <code>agent_loop</code> 时重置）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="3-错误分类">3. 错误分类</h2>
+<p>入口是 <code>classify_llm_error</code> /
+<code>classify_error</code>，<strong>先看类型，再退回文本</strong>：</p>
+<ol type="1">
+<li><strong>类型优先。</strong>
+<code>LlmError::HttpError { status, .. }</code>
+直接按状态码判定：<code>429</code> / <code>408</code> 与所有
+<code>5xx</code> 是
+<code>Transient</code>（<code>is_transient_http_status</code>），其余
+<code>4xx</code> 先不急着判死——过长的 prompt 通常也报
+400，所以非瞬态状态码还会再做一次文本判定，能识别成
+<code>PromptTooLong</code> 就仍可恢复。</li>
+<li><strong>文本兜底。</strong> 没有状态码的错误（<code>Request</code> /
+<code>Auth</code> 等，以及传输层以 reqwest 散文形式到达的失败）走
+<code>classify_text</code>：小写化后匹配下面的子串。</li>
+<li><code>classify_error</code> 在 <code>anyhow::Error</code> 上先
+<code>downcast_ref::&lt;LlmError&gt;()</code>——<code>Agent::stream_message</code>
+保留了类型化 cause，因此循环实际走的是类型路径；downcast
+失败才退化为纯文本。</li>
+</ol>
+<p>文本兜底之所以仍存在：没有类型就没有办法把一个 429 和一句读起来像 429
+的散文区分开（测试
+<code>boxed_errors_are_classified_through_the_typed_cause</code>
+钉住这一点）。</p>
+<h3 id="prompt-过长">Prompt 过长</h3>
+<pre class="rust"><code>pub fn is_prompt_too_long_error(error_text: &amp;str) -&gt; bool {
+    (error_text.contains(&quot;prompt&quot;) &amp;&amp; error_text.contains(&quot;long&quot;))
+        || error_text.contains(&quot;overlong_prompt&quot;)
+        || error_text.contains(&quot;too many tokens&quot;)
+        || error_text.contains(&quot;context length&quot;)
+}</code></pre>
+<h3 id="瞬态传输">瞬态传输</h3>
+<p>匹配以下任一子串：<code>timeout</code>、<code>timed out</code>、<code>rate limit</code>、<code>too many requests</code>、<code>unavailable</code>、<code>connection</code>、<code>overloaded</code>、<code>temporarily</code>、<code>econnreset</code>、<code>broken pipe</code>、<code>http request failed</code>、<code>error sending request</code>。</p>
+<p>分类顺序很重要：prompt-too-long
+<strong>优先</strong>检查，因此同时提到上下文长度与连接问题的错误会走压缩而非重试。</p>
+<hr />
+<h2 id="4-退避延迟">4. 退避延迟</h2>
+<pre class="rust"><code>pub fn backoff_delay(attempt: u32) -&gt; Duration {
+    // min(1s × 2^attempt, 30s) + random(0..1s)
+}</code></pre>
+<table>
+<thead>
+<tr>
+<th>尝试次数</th>
+<th>基础延迟</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td>1s</td>
+</tr>
+<tr>
+<td>1</td>
+<td>2s</td>
+</tr>
+<tr>
+<td>2</td>
+<td>4s</td>
+</tr>
+<tr>
+<td>…</td>
+<td>上限 30s</td>
+</tr>
+</tbody>
+</table>
+<p>抖动分量来自系统时钟的亚秒毫秒——廉价、无 RNG
+依赖，但并非密码学随机（也不需要是）。</p>
+<hr />
+<h2 id="5-agent_loop-中的恢复流程">5. agent_loop 中的恢复流程</h2>
+<p><strong>发送失败时分类错误（类型优先，文本兜底）：</strong></p>
+<pre class="mermaid">graph TD
+    a_send[stream_message] --&gt;|Ok| b_reset[transport_attempts = 0]
+    a_send --&gt;|Err| c_classify{classify_llm_error}
+    c_classify --&gt; d_compact[过长 compact_history]
+    c_classify --&gt; e_sleep[瞬态 sleep backoff_delay]
+    c_classify --&gt; f_fail[其他或次数用尽 return Err]
+    d_compact --&gt; z_retry[↩ 继续循环]
+    e_sleep --&gt; z_retry</pre>
+<p><strong>正常返回后按 <code>stop_reason</code> 收尾：</strong></p>
+<pre class="mermaid">graph TD
+    a_reset[transport_attempts = 0] --&gt; b_stop{stop_reason?}
+    b_stop --&gt; c_cont[MaxTokens 续写]
+    b_stop --&gt; d_tools[ToolUse 执行]
+    b_stop --&gt; e_refuse[refusal 中止]
+    b_stop --&gt; f_done[end_turn 收尾]
+    c_cont --&gt; z_retry[↩ 继续循环]
+    d_tools --&gt; z_retry</pre>
+<p>（两张图各自成环回到循环顶；渲染器不支持环，故用
+<code>↩︎ 继续循环</code> 表示。）</p>
+<p>每次恢复都会在 TUI 中发出一行
+<code>AgentUpdate::Info</code>，例如：</p>
+<pre class="text"><code>[Recovery] compact (1/3): context too large
+[Recovery] backoff (2/10): retrying in 4.3s — http request failed: error sending request for url
+[Recovery] continue (1/3): output truncated</code></pre>
+<p><code>backoff</code> 与 <code>compact retry</code>
+行会追加底层错误（通过 <code>error_summary</code> 折叠为单行、超过 200
+字符截断），因此重试不仅说明何时，还会说明<em>为什么</em>重试。</p>
+<p>对于输出上限恢复，第 1 次续写使用直接接续提示。如果模型再次被截断，第
+2、3
+次续写切换到收敛提示：停止扩展分析，不再重复场景，只返回包含结论、已确认问题和最小修复建议的简洁结构化结果。尝试计数和最多
+3 次的上限保持不变。</p>
+<hr />
+<h2 id="6-输出上限续写">6. 输出上限续写</h2>
+<p>当模型因 <code>MaxTokens</code>
+停止时，响应已被截断但已写入上下文。续写前，循环要处理一个微妙的正确性问题：<strong>pending
+的工具调用</strong>。OpenAI 风格 API 要求每条 assistant
+<code>tool_calls</code> 消息必须紧接工具结果，因此在 cutoff 之前到达的
+tool-use 块会先被执行，结果追加<em>在前</em>。然后循环才 push：</p>
+<pre class="rust"><code>pub const CONTINUATION_MESSAGE: &amp;str =
+    &quot;Output limit hit. Continue directly from where you stopped. \
+No recap, no repetition. Pick up mid-sentence if needed.&quot;;
+
+pub const CONVERGENCE_CONTINUATION_MESSAGE: &amp;str =
+    &quot;Your response has been truncated repeatedly. Stop expanding the analysis and \
+do not revisit the same scenarios. Return only the final actionable result in a \
+concise structured format: conclusion, verified issues, and minimal fixes. \
+Do not recap, repeat, or speculate.&quot;;
+
+pub fn continuation_message(attempt: u32) -&gt; &amp;&#39;static str {
+    if attempt &lt;= 1 {
+        CONTINUATION_MESSAGE
+    } else {
+        CONVERGENCE_CONTINUATION_MESSAGE
+    }
+}</code></pre>
+<p>续写消息会像普通用户消息一样持久化到 session
+store，恢复会话时可正确回放，包括阶段切换。</p>
+<h3 id="微妙的-400-风险空-assistant-消息">微妙的 400 风险：空 assistant
+消息</h3>
+<p>截断并非续写失败的唯一原因。内部 context 存 Anthropic 形态消息；在
+<code>crates/tact_llm/src/convert.rs</code> 转为 OpenAI
+格式时，<strong>非 Kimi provider 会丢弃 thinking
+块</strong>。若被截断轮次（或甚至普通轮次）只有 thinking 块、没有文本或
+tool call，得到的 assistant 消息会变成：</p>
+<pre class="json"><code>{ &quot;role&quot;: &quot;assistant&quot;, &quot;content&quot;: null, &quot;tool_calls&quot;: null }</code></pre>
+<p>OpenAI 兼容 API 会拒绝此形态。当截断轮次包含 orphaned
+<code>tool_calls</code> 且后面没有匹配的 tool-result
+消息时，同样会出现非法形态。</p>
+<p>当前变通在 <code>convert.rs</code> 的
+<code>sanitize_assistant_messages</code>：</p>
+<pre class="rust"><code>// Ensure the assistant message is not empty. This can happen when the
+// only content was a thinking block that gets dropped for non-Kimi
+// providers, or when the response was truncated before emitting text.
+if !has_tool_calls_now &amp;&amp; assistant.content.as_deref().unwrap_or(&quot;&quot;).is_empty() {
+    assistant.content =
+        Some(&quot;[Assistant response was empty or truncated. Continuing...]&quot;.to_string());
+}</code></pre>
+<p>它在<strong>每次</strong>外发请求时 stub 空 assistant 消息并剥离
+orphaned tool call，不仅限于恢复路径。更干净的长远修复是在
+<code>agent_loop</code> 里避免把空 assistant 轮次加入
+<code>context</code>，而不是在请求时打补丁。见
+<code>crates/tact/src/agent/mod.rs</code> 与
+<code>crates/tact_llm/src/convert.rs</code> 中的 <code>REVIEW</code>
+注释。</p>
+<hr />
+<h2 id="7-代码地图">7. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/recovery.rs</code></td>
+<td><code>RecoveryState</code>、分类器（<code>classify_llm_error</code>
+/ <code>classify_error</code> /
+<code>classify_text</code>）、<code>is_transient_http_status</code>、<code>backoff_delay</code>、<code>CONTINUATION_MESSAGE</code>、<code>MAX_COMPACT_ATTEMPTS</code>
+/ <code>MAX_TRANSPORT_ATTEMPTS</code> /
+<code>MAX_CONTINUATION_ATTEMPTS</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>agent_loop</code>
+中的恢复分支；计数器重置；<code>compact_history</code> 调用</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/compact/mod.rs</code></td>
+<td>compact 策略使用的压缩原语</td>
+</tr>
+<tr>
+<td><code>docs/state_machines.md</code></td>
+<td>含恢复转移的状态机图</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-当前缺口">8. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>文本兜底仍脆弱</td>
+<td>有类型时按状态码判定；但 <code>Request</code> / <code>Auth</code>
+一类无状态码的失败仍靠小写子串匹配，provider 改措辞就会漏检</td>
+</tr>
+<tr>
+<td>过宽的传输模式</td>
+<td><code>"connection"</code> 会匹配许多无关错误（例如 echo 进 LLM
+失败的 tool 错误）</td>
+</tr>
+<tr>
+<td><code>compact_attempts</code> 循环内从不重置</td>
+<td>长会话中任意三次 prompt-too-long 就会耗尽该 loop 的预算</td>
+</tr>
+<tr>
+<td>空 assistant 变通是事后补丁</td>
+<td><code>sanitize_assistant_messages</code> 在消息已在 context
+里之后才修补；真正修复应是在 <code>agent_loop</code> 避免持久化</td>
+</tr>
+<tr>
+<td>基于时钟的抖动</td>
+<td>亚秒时间戳在某些调度器下可预测；同时重试可能碰撞</td>
+</tr>
+<tr>
+<td>无用户可配置上限</td>
+<td><code>MAX_COMPACT_ATTEMPTS</code> /
+<code>MAX_TRANSPORT_ATTEMPTS</code> /
+<code>MAX_CONTINUATION_ATTEMPTS</code> 与延迟都是编译期常量</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./05_chapter_compact_zh.html">上下文压缩</a> —
+<code>compact_history</code> 实际做了什么</li>
+<li><a href="./01_chapter_store_zh.html">Store 与持久化</a> —
+续写消息如何持久化</li>
+<li><a href="../ARCHITECTURE.md">ARCHITECTURE.md</a> — §6
+恢复机制表</li>
+<li><a href="../docs/state_machines.md">docs/state_machines.md</a> —
+恢复状态图</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

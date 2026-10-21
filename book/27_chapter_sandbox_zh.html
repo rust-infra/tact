@@ -1,0 +1,1088 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Bash 沙箱（Bash Sandbox）</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-%E5%BC%80%E5%85%B3" title="1. 开关"><span class="toc-label">1. 开关</span></a></li>
+<li class="toc-l2"><a href="#2-fail-open%E4%BD%86%E7%BB%9D%E4%B8%8D%E9%9D%99%E9%BB%98" title="2. fail-open，但绝不静默"><span class="toc-label">2. fail-open，但绝不静默</span></a></li>
+<li class="toc-l2"><a href="#3-%E7%AD%96%E7%95%A5" title="3. 策略"><span class="toc-label">3. 策略</span></a></li>
+<li class="toc-l3"><a href="#%E7%8E%AF%E5%A2%83%E5%8F%98%E9%87%8F%E7%99%BD%E5%90%8D%E5%8D%95" title="环境变量白名单"><span class="toc-label">环境变量白名单</span></a></li>
+<li class="toc-l3"><a href="#%E5%B7%A5%E4%BD%9C%E5%8C%BA%E5%AE%88%E5%8D%AB" title="工作区守卫"><span class="toc-label">工作区守卫</span></a></li>
+<li class="toc-l2"><a href="#4-%E6%89%A7%E8%A1%8C%E8%B7%AF%E5%BE%84" title="4. 执行路径"><span class="toc-label">4. 执行路径</span></a></li>
+<li class="toc-l2"><a href="#5---new-session-%E4%B8%8D%E5%8F%98%E5%BC%8F" title="5. --new-session 不变式"><span class="toc-label">5. --new-session 不变式</span></a></li>
+<li class="toc-l2"><a href="#6-%E8%8C%83%E5%9B%B4%E4%B8%8E%E9%9D%9E%E7%9B%AE%E6%A0%87" title="6. 范围与非目标"><span class="toc-label">6. 范围与非目标</span></a></li>
+<li class="toc-l2"><a href="#7-%E6%B5%8B%E8%AF%95" title="7. 测试"><span class="toc-label">7. 测试</span></a></li>
+<li class="toc-l2"><a href="#8-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="8. 代码地图"><span class="toc-label">8. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#9-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="9. 当前缺口"><span class="toc-label">9. 当前缺口</span></a></li>
+<li class="toc-l2"><a href="#%E7%9B%B8%E5%85%B3%E6%96%87%E6%A1%A3" title="相关文档"><span class="toc-label">相关文档</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="bash-沙箱bash-sandbox">Bash 沙箱（Bash Sandbox）</h1>
+<p>本章说明 Tact 可选的 <strong>OS 级 shell
+沙箱</strong>：<code>config.toml</code> 里一个布尔开关，把
+<code>bash</code> 工具的 <code>sh -c</code>
+进程包进平台的沙箱实现（Linux 用
+<code>bubblewrap</code>），使得被批准命令引入的第三方代码——<code>cargo</code>
+构建脚本、<code>npm</code> 生命周期脚本、测试二进制、<code>make</code>
+配方——读不到宿主
+home，也写不到工作区之外。<strong>网络</strong>是刻意保持共享的：沙箱约束的是文件系统，不是连通性。</p>
+<p>实现在 <code>crates/tact/src/sandbox/</code>（<code>mod.rs</code>
+负责解析，<code>bwrap.rs</code> 是 Linux 后端）；唯一的调用点是
+<code>crates/tact/src/tool/bash.rs</code>。权限模型完全不动：沙箱回答的是<em>命令能触达什么</em>，而不是<em>它能不能运行</em>（见<a
+href="./10_chapter_permission_zh.html">权限模型</a>）。</p>
+<hr />
+<h2 id="1-开关">1. 开关</h2>
+<pre class="toml"><code>[tools]
+sandbox = true   # 默认 false</code></pre>
+<table>
+<thead>
+<tr>
+<th>属性</th>
+<th>取值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>配置键</td>
+<td><code>[tools] sandbox</code>，仅 TOML——没有对应 CLI flag</td>
+</tr>
+<tr>
+<td>类型</td>
+<td>布尔（<code>true</code> /
+<code>false</code>）；非布尔是<strong>解析错误</strong>，绝不静默回落</td>
+</tr>
+<tr>
+<td>默认</td>
+<td><code>false</code>——默认安装行为与以前完全一致</td>
+</tr>
+<tr>
+<td>后端</td>
+<td>刻意不可配置：由平台在 <code>crate::sandbox::resolve</code>
+里决定</td>
+</tr>
+</tbody>
+</table>
+<p>之所以是纯粹的开关，是因为<strong>机制</strong>不是用户的选择。在配置里写后端名，等于允许用户写出一份在读取它的机器上根本无法生效的配置；改由代码决定：</p>
+<table>
+<thead>
+<tr>
+<th>平台</th>
+<th>实现</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Linux</td>
+<td><code>BwrapSandbox</code>（<code>PATH</code> 中的
+<code>bwrap</code>）</td>
+</tr>
+<tr>
+<td>其他</td>
+<td>尚无实现——开关被接受、被解析，但<strong>不生效</strong>，并给出原因</td>
+</tr>
+</tbody>
+</table>
+<p>解析发生在<strong>启动时一次</strong>，而不是每次 <code>bash</code>
+调用，因为这个结果同时决定 <code>bash</code> 的工具描述：</p>
+<pre class="rust"><code>// crates/tact-ui/src/interactive.rs / headless.rs
+let (sandbox, sandbox_degraded) =
+    tact::sandbox::resolve(tact::config::settings().tools.sandbox, &amp;work_dir);
+if sandbox.is_some() {
+    tools.set_tool_description(&quot;bash&quot;, tact::tool::SANDBOXED_BASH_DESCRIPTION);
+}</code></pre>
+<p>两个入口点做的事完全一致；解析结果挂在 <code>ToolContext</code>
+上（<code>sandbox</code>、<code>sandbox_degraded</code>），每次工具调用克隆一份——<strong>也会被克隆进每个子
+agent</strong>，所以子 agent 的 <code>bash</code>
+与父进程处在同一个沙箱里（见<a href="./12_chapter_subagent_zh.html">子
+Agent</a>）。</p>
+<hr />
+<h2 id="2-fail-open但绝不静默">2. fail-open，但绝不静默</h2>
+<pre class="mermaid">graph TD
+    a_cfg[tools.sandbox 配置] --&gt; b_resolve[sandbox::resolve enabled, work_dir]
+    b_resolve --&gt;|false| c_off[None, None — 直接 sh -c]
+    b_resolve --&gt;|true| d_plat[resolve_platform]
+    d_plat --&gt;|Linux| e_probe[BwrapSandbox::probe]
+    d_plat --&gt;|其他系统| f_noimpl[None, Some reason — 该平台尚无实现]
+    e_probe --&gt;|ok| g_on[Some BwrapSandbox, None]
+    e_probe --&gt;|fail| h_broken[None, Some reason — bwrap 缺失 / 不可用]</pre>
+<p>任何没能产出沙箱的路径都会产出一个<strong>原因</strong>（<code>SandboxDegradation.reason</code>），并且降级会通过两个渠道告知：</p>
+<table>
+<thead>
+<tr>
+<th>渠道</th>
+<th>位置</th>
+<th>时机</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>启动提示</td>
+<td>TUI：<code>AgentUpdate::Info</code>；headless：<code>eprintln!("[sandbox] …")</code></td>
+<td>启动时一次</td>
+</tr>
+<tr>
+<td>使用点提示</td>
+<td><code>bash</code> 工具 → <code>tracing::warn!</code>（TUI 下再加
+<code>AgentUpdate::Info</code>）</td>
+<td>本会话<strong>第一条</strong> <code>bash</code>
+调用（<code>OnceLock</code>，只发一次）</td>
+</tr>
+</tbody>
+</table>
+<p><code>enabled = false</code>
+不算降级，也不会输出任何东西——"配置成不沙箱"是选择，不是失败。使用点提示存在的原因是：启动那行日志早在它适用的命令出现之前就滚出屏幕了。</p>
+<p><strong>为什么要在启动时 probe？</strong>
+策略写错会让<strong>每条</strong>命令以误导性的错误失败：缺少
+<code>/lib64</code> 会表现成
+<code>bwrap: execvp sh: No such file or directory</code>（像是没有
+shell），内核拒绝非特权 user namespace 会表现成"用户的命令退出码
+1"。所以 <code>BwrapSandbox::probe</code> 先用完整策略对
+<code>/bin/true</code>
+跑一遍，把这类失败一次性转成一条可解释的原因。</p>
+<hr />
+<h2 id="3-策略">3. 策略</h2>
+<p>flag 列表由<strong>纯函数</strong>
+<code>bwrap_args_with(work_dir, exists, env)</code>
+生成，因此下面每条规则都能在宿主没有 bubblewrap
+的情况下单测（<code>bwrap_args</code>
+只是接真实文件系统与真实环境的外壳）。</p>
+<table>
+<thead>
+<tr>
+<th>元素</th>
+<th>flag</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>生命周期</td>
+<td><code>--die-with-parent</code></td>
+<td>bwrap 随 Tact 一起退出</td>
+</tr>
+<tr>
+<td>网络</td>
+<td><code>--share-net</code></td>
+<td>共享<strong>宿主</strong>网络命名空间：宿主能到的，命令也能到——包括监听在宿主
+loopback 上的代理。<code>--share-net</code> 是 bwrap
+默认行为的显式写法</td>
+</tr>
+<tr>
+<td>域名解析</td>
+<td><code>--ro-bind /run/systemd/resolve</code></td>
+<td>只共享命名空间还不够：<code>/etc/resolv.conf</code> 通常是指向
+<code>/run/systemd/resolve</code> 的符号链接，而 <code>/run</code>
+本来不挂载，缺了这条绑定每次解析都会报 "Temporary failure in name
+resolution"。使用普通 <code>resolv.conf</code> 的宿主会静默跳过</td>
+</tr>
+<tr>
+<td>进程命名空间</td>
+<td><code>--unshare-pid</code></td>
+<td>沙箱内看到自己的 <code>/proc</code>（实测约 5 个 pid，而不是宿主约
+475 个；Tact 自身的宿主 pid 在沙箱内不存在，由
+<code>pid_namespace_hides_the_host_process_table</code>
+断言），因此也无法给同 uid 的宿主进程发信号</td>
+</tr>
+<tr>
+<td>工作区</td>
+<td><code>--bind &lt;work_dir&gt; /workspace</code></td>
+<td><strong>唯一</strong>读写挂载的宿主目录，且<strong>不</strong>以其宿主路径出现</td>
+</tr>
+<tr>
+<td>系统路径</td>
+<td><code>--ro-bind /usr /bin /lib /etc</code></td>
+<td>不存在时跳过并 <code>tracing::warn!</code></td>
+</tr>
+<tr>
+<td>动态加载器</td>
+<td><code>--ro-bind /lib64</code></td>
+<td><strong>必需</strong>：缺失即构造失败，否则每条命令都会报"找不到
+shell"</td>
+</tr>
+<tr>
+<td>工具链 home</td>
+<td><code>--ro-bind</code>
+<code>~/.rustup</code>、<code>~/.cargo</code>、<code>~/.config/git</code>、<code>~/.npm</code></td>
+<td>按<strong>宿主</strong>路径挂载，并通过 <code>RUSTUP_HOME</code> /
+<code>CARGO_HOME</code> / <code>GIT_CONFIG_GLOBAL</code> /
+<code>NPM_CONFIG_CACHE</code> 接线</td>
+</tr>
+<tr>
+<td>内核接口</td>
+<td><code>--proc /proc</code>、<code>--dev /dev</code>、<code>--tmpfs /tmp</code></td>
+<td>0.12 不会自动创建其中任何一个</td>
+</tr>
+<tr>
+<td>工作目录</td>
+<td><code>--chdir /workspace</code></td>
+<td>与下面的 <code>$HOME</code> 一致</td>
+</tr>
+<tr>
+<td>环境变量</td>
+<td>先 <code>--clearenv</code>，再 <code>--setenv</code></td>
+<td>白名单，而非继承（见下）</td>
+</tr>
+</tbody>
+</table>
+<p>工作区绑定正是 shell 与进程内工具对路径说法不一致的原因：shell
+看到的是 <code>/workspace/...</code>，而 <code>read_file</code> /
+<code>edit_file</code> / <code>grep</code>
+仍报宿主绝对路径。这个分裂通过在启动时重写 <code>bash</code>
+描述告知模型——并且<strong>只在沙箱真正生效时</strong>才重写，未沙箱的会话绝不会宣称一个并不存在的
+<code>/workspace</code>。</p>
+<h3 id="环境变量白名单">环境变量白名单</h3>
+<p><code>--clearenv</code> 不只是卫生习惯：宿主环境会泄漏
+<code>HOME</code>（一个<strong>没有</strong>被挂载的目录）以及 shell
+恰好导出的任何凭据。因此白名单是逐变量显式列出的——唯一的例外是代理变量：沙箱共享宿主网络命名空间，而在那些只能靠代理出网的宿主上，丢掉它们会把一条本来能跑的命令变成连接错误。</p>
+<table>
+<thead>
+<tr>
+<th>变量</th>
+<th>取值</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PATH</code></td>
+<td><code>/usr/local/bin:/usr/bin:/bin</code></td>
+<td>固定值；宿主 <code>PATH</code> 在这里没有意义</td>
+</tr>
+<tr>
+<td><code>HOME</code></td>
+<td><code>/workspace</code></td>
+<td><code>~</code> 落在工作区内，永远不指向宿主 home</td>
+</tr>
+<tr>
+<td><code>TERM</code></td>
+<td><code>dumb</code></td>
+<td>没有终端</td>
+</tr>
+<tr>
+<td><code>LANG</code>、<code>LC_ALL</code></td>
+<td>有则透传</td>
+<td>保持输出编码稳定</td>
+</tr>
+<tr>
+<td><code>http_proxy</code>、<code>https_proxy</code>、<code>all_proxy</code>、<code>no_proxy</code>（含大写写法）</td>
+<td>有则透传</td>
+<td>宿主的代理在沙箱内<strong>确实</strong>可达；两种拼写都带上，因为它们在"谁优先"上并不一致</td>
+</tr>
+<tr>
+<td><code>RUSTUP_HOME</code>、<code>CARGO_HOME</code>、<code>GIT_CONFIG_GLOBAL</code>、<code>NPM_CONFIG_CACHE</code></td>
+<td>被挂载 home 的宿主路径</td>
+<td>因为 <code>HOME=/workspace</code>，<code>~</code>
+再也找不到工具链——这四个是承重的</td>
+</tr>
+</tbody>
+</table>
+<h3 id="工作区守卫">工作区守卫</h3>
+<p>把错误的目录以读写绑定进去，会静默暴露远超项目本身的范围，所以
+<code>guard_workspace</code>（先做 canonicalize）会拒绝：</p>
+<table>
+<thead>
+<tr>
+<th>拒绝对象</th>
+<th>例子</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>文件系统根</td>
+<td><code>/</code></td>
+</tr>
+<tr>
+<td>宿主 home 目录本身</td>
+<td><code>/home/rg</code></td>
+</tr>
+<tr>
+<td>宿主 home 的祖先</td>
+<td><code>/home</code>、<code>/</code></td>
+</tr>
+<tr>
+<td>系统目录</td>
+<td><code>/etc</code>、<code>/usr/lib</code>、<code>/boot</code>、<code>/bin</code>、<code>/lib</code>、<code>/lib64</code></td>
+</tr>
+</tbody>
+</table>
+<p>位于 <code>$HOME</code> <strong>之内</strong>的项目（常见情形，如
+<code>~/Projects/tact</code>）被明确接受，并有测试钉住。</p>
+<hr />
+<h2 id="4-执行路径">4. 执行路径</h2>
+<p>沙箱只改变<strong>进程如何被启动</strong>，其余一律不变：</p>
+<pre class="text"><code>Hook → Permission → bash tool → Sandbox (optional) → bwrap → sh -c → command</code></pre>
+<pre class="mermaid">sequenceDiagram
+    autonumber
+    participant T as bash 工具
+    participant S as Sandbox
+    participant B as bwrap
+    participant C as sh -c &lt;命令&gt;
+
+    T-&gt;&gt;T: validate_shell_command
+    alt 沙箱已解析成功
+        T-&gt;&gt;S: command("sh", ["-c", cmd], work_dir)
+        S-&gt;&gt;B: spawn bwrap &lt;policy&gt; -- sh -c cmd
+        B-&gt;&gt;C: pid namespace + /workspace + 宿主网络
+    else 无沙箱
+        T-&gt;&gt;T: notice_unsandboxed（每会话一次）
+        T-&gt;&gt;C: 直接在 work_dir 里 spawn sh -c cmd
+    end
+    C--&gt;&gt;T: stdout / stderr（管道，流式）
+    T-&gt;&gt;C: 超时 → killpg(-pid) / 取消 → killpg(-pid)</pre>
+<p><code>spawn</code> 之后的一切都不变：管道
+stdio、<code>process_group(0)</code>、配置的或每次调用指定的超时、取消、流式输出、<code>killpg</code>
+清理。沙箱 trait 刻意做成面向命令的——它只构造一个
+<code>tokio::process::Command</code>
+并返回——所以执行生命周期里没有任何沙箱专用分支。</p>
+<p><code>work_dir</code>
+是<strong>每次调用</strong>传入的，而不是启动时捕获的，所以工作在 lane
+里的子 agent（其 context 被克隆成了另一个
+<code>work_dir</code>）会把<strong>它自己的 lane</strong> 挂载到
+<code>/workspace</code>。</p>
+<hr />
+<h2 id="5---new-session-不变式">5. <code>--new-session</code>
+不变式</h2>
+<p>绝不能给 <code>bwrap</code> 传 <code>--new-session</code>。在
+bubblewrap 0.12.0 上实测：</p>
+<table>
+<thead>
+<tr>
+<th></th>
+<th>带 <code>--new-session</code></th>
+<th>不带</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>进程组</td>
+<td>bwrap 会把命令 <code>setsid()</code>
+到<strong>自己的</strong>会话；Tact 记录下来的 pgid 属于 bwrap</td>
+<td>每个进程的 pgid 都等于 bwrap 的 pid</td>
+</tr>
+<tr>
+<td>清理</td>
+<td><code>killpg(bwrap_pid)</code> 只杀掉
+bwrap；孙进程（<code>sh -c 'sleep 300 &amp; wait'</code>）存活，持有继承来的
+stdout/stderr 写端</td>
+<td><code>killpg</code> 清掉整棵树，两条管道在毫秒内到达 EOF</td>
+</tr>
+<tr>
+<td>症状</td>
+<td>工具调用永不返回——读循环在等一个不可能到达的 EOF</td>
+<td>超时与取消都能迅速返回</td>
+</tr>
+</tbody>
+</table>
+<p>更强的保证由 <code>--unshare-pid</code> 提供：命名空间随 bwrap
+一起消亡，成员一并消失。<code>never_passes_new_session</code> 断言该
+flag
+不存在，另外两个集成测试分别断言超时和取消的沙箱命令不会留下幸存进程。</p>
+<hr />
+<h2 id="6-范围与非目标">6. 范围与非目标</h2>
+<table>
+<thead>
+<tr>
+<th>覆盖</th>
+<th>不覆盖</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bash</code> 工具自己的进程树，包括子 agent 的
+<code>bash</code></td>
+<td><code>background_run</code>——自己启动宿主 shell（见<a
+href="./13_chapter_background_zh.html">后台任务</a>）</td>
+</tr>
+<tr>
+<td>被批准命令拉起的第三方代码</td>
+<td><code>worktree_run</code> 与 lane 管理里的 <code>git</code>
+调用（见<a href="./15_chapter_worktree_zh.html">Worktree 泳道</a>）</td>
+</tr>
+<tr>
+<td>路径空间、网络、pid 可见性、环境变量</td>
+<td>MCP server、插件 hook、语音转写、<code>rtk</code> 过滤</td>
+</tr>
+<tr>
+<td></td>
+<td>进程内文件工具（<code>read_file</code>、<code>edit_file</code>、<code>grep</code>）仍拥有完整宿主访问权</td>
+</tr>
+</tbody>
+</table>
+<p>因此沙箱<strong>不是</strong> agent 的边界：想看未沙箱 shell，agent
+离它只有一个工具调用的距离。它真正约束的是实践中要紧的那个失败面——被批准命令引入的第三方代码。</p>
+<p>它按设计也是 best-effort：可选、且任何导致无法启动的宿主条件（没有
+<code>bwrap</code>、内核限制 user
+namespace、其他平台）都降级为不沙箱，而不是让工具失败。任何东西都不应依赖它来保证正确性。</p>
+<hr />
+<h2 id="7-测试">7. 测试</h2>
+<table>
+<thead>
+<tr>
+<th>层次</th>
+<th>测试</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>解析（<code>sandbox/mod.rs</code>）</td>
+<td><code>the_switch_being_off_is_not_a_degradation</code>、<code>an_enabled_switch_resolves_to_a_handle_or_a_reasoned_degradation</code>、<code>degradation_notice_fires_only_once</code>、<code>degradation_reason_names_the_cause_and_the_effect</code></td>
+</tr>
+<tr>
+<td>flag 构造（<code>sandbox/bwrap.rs</code>，无需 bwrap）</td>
+<td><code>emits_the_documented_flag_order</code>、<code>never_passes_new_session</code>、<code>missing_lib64_is_a_hard_error</code>、<code>absent_optional_system_path_is_skipped</code>、<code>clears_the_environment_and_sets_an_allowlist</code>、<code>guard_rejects_the_filesystem_root</code>、<code>guard_rejects_the_home_directory_and_its_ancestors</code>、<code>guard_rejects_system_directories</code>、<code>guard_accepts_a_project_directory_under_the_home_directory</code></td>
+</tr>
+<tr>
+<td>真实沙箱（<code>tool/bash.rs</code>，<code>#[cfg(all(test, target_os = "linux"))]</code>，bwrap
+不可用时跳过）</td>
+<td><code>workspace_is_mounted_at_workspace_and_the_host_home_is_not</code>、<code>system_files_are_readable_and_proxies_follow_the_host</code>、<code>shares_the_host_network_namespace</code>、<code>pid_namespace_hides_the_host_process_table</code>、<code>toolchain_homes_are_mounted_read_only</code>、<code>timeout_returns_promptly_and_leaves_no_survivors</code>、<code>cancellation_leaves_no_survivors</code></td>
+</tr>
+</tbody>
+</table>
+<p>集成测试里固化了两个坑：</p>
+<ul>
+<li><strong>幸存者检查读
+<code>/proc/&lt;pid&gt;/cmdline</code></strong>，而 bwrap 自己的 argv
+里就包含命令字符串——并行测试必须使用<strong>互不相同</strong>的标记（<code>sleep 311</code>
+与 <code>sleep 322</code>），否则会看到彼此的沙箱。</li>
+<li><strong><code>SIGKILL</code>
+是异步的</strong>，所以调用返回后进程可能仍短暂可见；断言采用有界的轮询，而不是立即判定。</li>
+</ul>
+<hr />
+<h2 id="8-代码地图">8. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/sandbox/mod.rs</code></td>
+<td><code>Sandbox</code>
+trait、<code>resolve(enabled, work_dir)</code>、按 OS 分派的
+<code>resolve_platform</code>、<code>SandboxDegradation</code>（原因 +
+每会话一次的提示状态）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/sandbox/bwrap.rs</code></td>
+<td>Linux 后端：<code>BwrapSandbox::probe</code>、纯函数
+<code>bwrap_args_with</code>、<code>guard_workspace</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/bash.rs</code></td>
+<td><code>match &amp;ctx.sandbox</code>
+处的进程构造、<code>notice_unsandboxed</code>、<code>SANDBOXED_BASH_DESCRIPTION</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext.sandbox</code> /
+<code>sandbox_degraded</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/config/types.rs</code></td>
+<td><code>[tools] sandbox</code>（<code>Option&lt;bool&gt;</code>）与解析后的
+<code>ToolSettings.sandbox: bool</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/interactive.rs</code>、<code>headless.rs</code></td>
+<td>启动解析、降级提示、<code>bash</code> 描述覆盖</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-当前缺口">9. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>详情</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>仅 Linux</td>
+<td>其他平台接受开关但什么都不做；没有 Seatbelt / Windows 后端</td>
+</tr>
+<tr>
+<td>只有 <code>bash</code></td>
+<td>§6 列出的其余 spawn
+路径（<code>background_run</code>、<code>worktree_run</code> 与 lane
+管理的 <code>git</code> 调用、MCP server、插件
+hook、语音转写、<code>rtk</code> 过滤）仍启动宿主进程</td>
+</tr>
+<tr>
+<td>策略不可配置</td>
+<td>没有按挂载点、按网络或按工具的策略开关；策略写死在代码里</td>
+</tr>
+<tr>
+<td>读权限仍然很宽</td>
+<td><code>/etc</code> 与工具链 home 是只读挂载，所以
+<code>~/.cargo</code>
+里的凭据仍可读（不挂上它们工具链根本跑不起来）</td>
+</tr>
+<tr>
+<td><code>$HOME=/workspace</code> 会传给子进程</td>
+<td>任何读取 <code>~/.tact/...</code>
+的沙箱内命令都会落在工作区里，也就是对上<strong>仓库自己的</strong>
+<code>.tact/</code> 目录</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./07_chapter_tool_zh.html">工具系统</a>
+§7.1——沙箱在工具管线中的位置</li>
+<li><a
+href="./10_chapter_permission_zh.html">权限模型</a>——为什么沙箱是独立于权限的另一层</li>
+<li><a href="./21_chapter_config_zh.html">配置</a>——配置面上的
+<code>tools.sandbox</code></li>
+<li><a href="./13_chapter_background_zh.html">后台任务</a>、<a
+href="./15_chapter_worktree_zh.html">Worktree 泳道</a>——未沙箱的 shell
+路径</li>
+<li><a
+href="./26_chapter_issue_zh.html">工程问题与优化日志</a>——交付本功能的
+2026-09-15 条目</li>
+<li>设计记录：<a
+href="../docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md"><code>docs/superpowers/specs/2026-09-15-bwrap-sandbox-design.md</code></a>；含偏差说明的实施计划：<a
+href="../docs/superpowers/plans/2026-09-15-bwrap-sandbox.md"><code>docs/superpowers/plans/2026-09-15-bwrap-sandbox.md</code></a></li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,1638 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>配置（Configuration）</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-%E9%85%8D%E7%BD%AE%E8%B4%9F%E8%B4%A3%E4%BB%80%E4%B9%88" title="1. 配置负责什么"><span class="toc-label">1. 配置负责什么</span></a></li>
+<li class="toc-l2"><a href="#2-%E5%90%AF%E5%8A%A8%E6%B5%81%E7%A8%8B" title="2. 启动流程"><span class="toc-label">2. 启动流程</span></a></li>
+<li class="toc-l2"><a href="#3-%E9%85%8D%E7%BD%AE%E6%9D%A5%E6%BA%90%E4%B8%8E%E4%BC%98%E5%85%88%E7%BA%A7" title="3. 配置来源与优先级"><span class="toc-label">3. 配置来源与优先级</span></a></li>
+<li class="toc-l3"><a href="#toml-%E6%90%9C%E7%B4%A2%E9%A1%BA%E5%BA%8F" title="TOML 搜索顺序"><span class="toc-label">TOML 搜索顺序</span></a></li>
+<li class="toc-l3"><a href="#%E5%90%88%E5%B9%B6%E8%A7%84%E5%88%99cli--toml-%E6%9D%A1%E7%9B%AE--toml-%E5%85%A8%E5%B1%80--%E9%BB%98%E8%AE%A4%E5%80%BC" title="合并规则：CLI &gt; TOML 条目 &gt; TOML 全局 &gt; 默认值"><span class="toc-label">合并规则：CLI &gt; TOML 条目 &gt; TOML 全局 &gt; 默认值</span></a></li>
+<li class="toc-l2"><a href="#4-toml-%E6%A8%A1%E5%BC%8F" title="4. TOML 模式"><span class="toc-label">4. TOML 模式</span></a></li>
+<li class="toc-l3"><a href="#%E6%9C%AA%E7%9F%A5%E9%94%AE%E4%BC%9A%E8%A2%AB%E6%8B%92%E7%BB%9D" title="未知键会被拒绝"><span class="toc-label">未知键会被拒绝</span></a></li>
+<li class="toc-l2"><a href="#5-resolved-%E9%BB%98%E8%AE%A4%E5%80%BC" title="5. Resolved 默认值"><span class="toc-label">5. Resolved 默认值</span></a></li>
+<li class="toc-l3"><a href="#ui--%E4%B8%BB%E9%A2%98%E8%AF%AD%E8%A8%80hook-%E8%BE%93%E5%87%BA%E7%9A%84%E6%98%BE%E7%A4%BA%E5%BC%80%E5%85%B3" title="[ui] — 主题、语言、hook 输出的显示开关"><span class="toc-label">[ui] — 主题、语言、hook 输出的显示开关</span></a></li>
+<li class="toc-l3"><a href="#agent--skill-%E6%A0%B9%E7%9B%AE%E5%BD%95%E6%8C%87%E4%BB%A4%E6%96%87%E4%BB%B6%E7%9B%AE%E5%BD%95%E9%A2%84%E7%AE%97%E5%85%A8%E6%96%87%E6%B3%A8%E5%85%A5" title="[agent] — skill 根目录、指令文件、目录预算、全文注入"><span class="toc-label">[agent] — skill 根目录、指令文件、目录预算、全文注入</span></a></li>
+<li class="toc-l3"><a href="#agentsubagent--%E7%BB%99-spawn_subagent-%E5%8D%95%E7%8B%AC%E7%9A%84-provider%E6%A8%A1%E5%9E%8B" title="[agent.subagent] — 给 spawn_subagent 单独的 provider/模型"><span class="toc-label">[agent.subagent] — 给 spawn_subagent 单独的 provider/模型</span></a></li>
+<li class="toc-l3"><a href="#voice--%E8%AF%AD%E9%9F%B3%E8%BD%AC%E6%96%87%E5%AD%97%E8%BE%93%E5%85%A5macos-%E4%BC%98%E5%85%88" title="[voice] — 语音转文字输入（macOS 优先）"><span class="toc-label">[voice] — 语音转文字输入（macOS 优先）</span></a></li>
+<li class="toc-l2"><a href="#6-cli-%E8%A1%A8%E9%9D%A2" title="6. CLI 表面"><span class="toc-label">6. CLI 表面</span></a></li>
+<li class="toc-l2"><a href="#7-%E8%BF%90%E8%A1%8C%E6%97%B6%E8%AE%BF%E9%97%AE%E8%AE%BE%E7%BD%AE" title="7. 运行时访问设置"><span class="toc-label">7. 运行时访问设置</span></a></li>
+<li class="toc-l2"><a href="#8-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="8. 代码地图"><span class="toc-label">8. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#9-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="9. 当前缺口"><span class="toc-label">9. 当前缺口</span></a></li>
+<li class="toc-l2"><a href="#%E7%9B%B8%E5%85%B3%E6%96%87%E6%A1%A3" title="相关文档"><span class="toc-label">相关文档</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="配置configuration">配置（Configuration）</h1>
+<p>本章说明 Tact 在 agent
+工作开始前如何加载、合并并安装运行时设置。配置是<strong>引导层</strong>，负责把
+LLM 凭证、agent 限制、UI 主题、工具密钥和权限模式接入进程全局的
+<code>ResolvedConfig</code>。</p>
+<p>实现：<code>crates/tact/src/config/</code>（<code>mod.rs</code>、<code>cli.rs</code>、<code>load.rs</code>、<code>resolve.rs</code>、<code>types.rs</code>）。</p>
+<hr />
+<h2 id="1-配置负责什么">1. 配置负责什么</h2>
+<table>
+<thead>
+<tr>
+<th>关注点</th>
+<th>Resolved 字段</th>
+<th>主要消费者</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LLM 凭证</td>
+<td><code>ResolvedConfig::llm</code> →
+<code>tact_llm::init_provider</code></td>
+<td><a href="./22_chapter_llm_zh.html">Ch 22
+LLM</a>、<code>Agent::stream_message</code></td>
+</tr>
+<tr>
+<td>Agent 限制</td>
+<td><code>agent.*</code></td>
+<td><a href="./05_chapter_compact_zh.html">Ch 5 压缩</a>、<a
+href="./04_chapter_prompt_zh.html">Ch 4 Prompt</a>、<a
+href="./17_chapter_notify_zh.html">Ch 17 通知</a></td>
+</tr>
+<tr>
+<td>权限模式字符串</td>
+<td><code>permission_mode: Option&lt;String&gt;</code></td>
+<td>仅 headless — 见 <a href="#9-当前缺口">§9 缺口</a></td>
+</tr>
+<tr>
+<td>UI 主题</td>
+<td><code>ui.theme</code></td>
+<td><a href="./23_chapter_tui_zh.html">Ch 23 TUI</a></td>
+</tr>
+<tr>
+<td>UI 语言</td>
+<td><code>ui.language</code></td>
+<td><a href="./23_chapter_tui_zh.html">Ch 23 TUI</a></td>
+</tr>
+<tr>
+<td>hook 输出的显示开关</td>
+<td><code>ui.hook_output</code></td>
+<td><a href="./09_chapter_hook_zh.html">Ch 9 Hook</a>、<a
+href="./23_chapter_tui_zh.html">Ch 23 TUI</a></td>
+</tr>
+<tr>
+<td>调试</td>
+<td><code>tokio_console</code></td>
+<td><code>tact-ui</code> 的 <code>main()</code></td>
+</tr>
+</tbody>
+</table>
+<p>每个二进制入口在启动时应<strong>调用一次</strong>
+<code>tact::config::init()</code>（或 <code>init_config()</code>）。</p>
+<hr />
+<h2 id="2-启动流程">2. 启动流程</h2>
+<pre class="mermaid">flowchart LR
+    CLI[CliArgs::parse] --&gt; Load[load_toml_config]
+    Load --&gt; Merge[resolve_config]
+    Merge --&gt; Install[config::install]
+    Install --&gt; LLM[tact_llm::init_provider]
+    Install --&gt; Global[SETTINGS OnceLock]</pre>
+<pre class="rust"><code>pub fn init() -&gt; anyhow::Result&lt;CliArgs&gt; {
+    init_config()
+}
+
+pub fn init_config() -&gt; anyhow::Result&lt;CliArgs&gt; {
+    let args = CliArgs::parse();
+    let toml_cfg = load::load_toml_config(args.config.as_ref())?;
+
+    if args.list_sessions {
+        install_without_llm(resolve::resolve_non_llm_settings(&amp;args, &amp;toml_cfg));
+        return Ok(args);
+    }
+
+    let resolved = resolve::resolve_config(&amp;args, &amp;toml_cfg)?;
+    install(resolved);
+    Ok(args)
+}</code></pre>
+<p><code>install()</code> 做两件事：</p>
+<ol type="1">
+<li><strong><code>tact_llm::init_provider(config.llm.provider_info())</code></strong>
+— 存储 <code>ProviderInfo</code> 供 <code>get_llm_client()</code>
+使用（<a href="./22_chapter_llm_zh.html">Ch 22</a>）。</li>
+<li><strong><code>SETTINGS.set(config)</code></strong> —
+使进程其余部分可通过 <code>config::settings()</code> 访问配置。</li>
+</ol>
+<p><code>install_without_llm()</code> 跳过 provider 初始化，用于
+<code>--list-sessions</code>、<code>tact upgrade</code>、插件 CLI
+等从不调用模型的命令。</p>
+<hr />
+<h2 id="3-配置来源与优先级">3. 配置来源与优先级</h2>
+<h3 id="toml-搜索顺序">TOML 搜索顺序</h3>
+<p>未传 <code>--config</code> 时，<code>load_toml_config</code>
+按顺序扫描，使用<strong>第一个存在的文件</strong>：</p>
+<table>
+<thead>
+<tr>
+<th>顺序</th>
+<th>路径</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td><code>./.tact/config.toml</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>./config.toml</code></td>
+</tr>
+<tr>
+<td>3</td>
+<td><code>~/.tact/config.toml</code></td>
+</tr>
+</tbody>
+</table>
+<p>若均不存在，tact-ui 首次运行会在 <code>~/.tact/config.toml</code>
+自动写入一份 <code>config.example.toml</code>
+的副本（编译期嵌入模板，与仓库内的 example 保持同步），
+并提示用户编辑填入 API
+key。只有用户全局位置会被自动创建——不会污染项目目录。
+若模板写入失败（HOME 未知或不可写），则使用空的
+<code>TactTomlConfig::default()</code>， 由常规的 "not configured"
+resolve 错误引导用户。</p>
+<p>显式 <code>--config /path/to/file.toml</code>
+会跳过上述搜索列表；显式路径不存在时报错 （不会自动创建）。</p>
+<h3 id="合并规则cli--toml-条目--toml-全局--默认值">合并规则：CLI &gt;
+TOML 条目 &gt; TOML 全局 &gt; 默认值</h3>
+<p><code>llm.provider</code>（或 <code>--provider</code>）选择活跃的
+<code>ProviderKind</code>，并查找
+<code>llm.providers.&lt;name&gt;</code>。对该条目：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>优先级</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>api_key</code> / <code>model</code></td>
+<td>CLI → 条目（必填）</td>
+</tr>
+<tr>
+<td><code>base_url</code></td>
+<td>CLI → 条目 → <code>ProviderKind::default_base_url()</code></td>
+</tr>
+<tr>
+<td><code>max_tokens</code></td>
+<td>CLI → 条目 → <code>[agent]</code> → 代码默认值</td>
+</tr>
+<tr>
+<td><code>thinking_budget</code></td>
+<td>CLI → 条目 → <code>[llm]</code> 全局 → 代码默认值</td>
+</tr>
+<tr>
+<td><code>protocol</code></td>
+<td>条目 → 默认 <code>chat_completions</code></td>
+</tr>
+<tr>
+<td><code>reasoning_effort</code></td>
+<td>entry（openai / deepseek / kimi / 自定义）→ provider
+默认（模型相关）</td>
+</tr>
+</tbody>
+</table>
+<p><code>max_tokens</code> 是唯一<strong>没有 <code>[llm]</code>
+全局</strong>的字段（2026-09-13 移除）：该级原本排在
+<code>[agent]</code> <strong>之下</strong>，因此只对"没在
+<code>[agent]</code> 里设过"的用户生效，两级同时设置时必然静默忽略其一。
+现在残留的 <code>[llm] max_tokens</code> 会触发<strong>resolve
+阶段的硬报错</strong>并指明替代键，而不是被静默丢弃—— 详见 §3 与 <a
+href="./26_chapter_issue_zh.html">Ch 26</a>。</p>
+<p>必填：<strong><code>llm.provider</code></strong>，以及活跃条目上的
+<strong><code>api_key</code></strong> 和
+<strong><code>model</code></strong>。<code>anthropic</code> 没有默认
+<code>base_url</code>，必须显式设置。缺失活跃条目会在 resolve
+时报错。</p>
+<p>不在内建列表（<code>anthropic | openai | deepseek | kimi</code>）中的任意
+provider 名称会被接受为<strong>自定义 OpenAI 兼容
+provider</strong>：复用 OpenAI 协议（默认
+<code>chat_completions</code>，可选 <code>responses</code>），没有默认
+<code>base_url</code>（必须在其条目上显式设置），并支持
+<code>reasoning_effort</code>。示例：</p>
+<pre class="toml"><code>[llm]
+provider = &quot;moonshot&quot;   # 任意名称均可
+
+[llm.providers.moonshot]
+api_key = &quot;sk-...&quot;
+base_url = &quot;https://api.moonshot.cn/v1&quot;   # 自定义 provider 必填
+model = &quot;kimi-k2.5&quot;</code></pre>
+<p><strong>OpenCode Go
+端点</strong>（<code>https://opencode.ai/zen/go/v1</code> 及
+<code>opencode.ai</code> 子域）：Tact 自动为每个请求附加
+<code>x-opencode-session</code> 头，并发送
+<code>tact/&lt;version&gt;</code> 作为 <code>User-Agent</code>
+让端点识别工具。头值即 <strong>Tact session id</strong> —— OpenCode
+以它作为区分各会话缓存的键：同一会话（含
+resume）复用同一值，不同会话得到不同值。无会话的请求（如
+<code>/v1/models</code> 选择器拉取）不发送该头（仍发送标识用的
+User-Agent）。</p>
+<hr />
+<h2 id="4-toml-模式">4. TOML 模式</h2>
+<p><code>TactTomlConfig</code> 顶层节：</p>
+<pre class="toml"><code>[llm]
+provider = &quot;kimi&quot;          # 活跃 ProviderKind：anthropic | openai | deepseek | kimi | 任意自定义名称
+thinking_budget = 32000    # 可选全局默认（`max_tokens` 不能设在这里——见 §3）
+
+# 可选：按模型的思考参数选项（模型 id → 可选档位）。
+# /model 第二步只显示该模型映射的档位；无映射的模型回落 provider 默认档位。
+# 同一张表里的 `supports_vision = true|false` 按精确模型 id 覆盖图片输入门禁
+# （不写 = 端点启发式；见 §4）。
+# [llm.model_profiles.&quot;gpt-5.6&quot;]
+# reasoning_efforts = [&quot;low&quot;, &quot;medium&quot;, &quot;high&quot;]
+# [llm.model_profiles.&quot;claude-sonnet-4-20250514&quot;]
+# thinking_budgets = [0, 8000, 32000]
+
+[llm.providers.kimi]
+api_key = &quot;sk-...&quot;
+model = &quot;kimi-k2.5&quot;
+models = [&quot;kimi-k2.5&quot;, &quot;kimi-for-coding&quot;]   # 可选；TUI /model 选择器使用
+# base_url 默认为 https://api.moonshot.cn/v1
+# max_tokens = 64000       # 可选 per-provider 覆盖
+
+[llm.providers.openai]
+api_key = &quot;sk-...&quot;
+model = &quot;gpt-4o&quot;
+protocol = &quot;responses&quot;    # chat_completions（默认）| responses
+reasoning_effort = &quot;high&quot; # none | minimal | low | medium | high | xhigh | max
+
+[llm.providers.anthropic]
+api_key = &quot;sk-ant-...&quot;
+model = &quot;claude-sonnet-4-20250514&quot;
+base_url = &quot;https://api.anthropic.com&quot;   # anthropic 必填
+
+[permission]
+mode = &quot;default&quot;           # default | plan | auto
+
+[agent]
+max_tokens = 64000         # 活跃 provider 条目未设置时的回退值
+model_context_window = 200000
+notifications_enabled = true
+snapshot_max_items = 80
+micro_compact_enabled = true
+memory_enabled = true      # 关闭后不注入 MEMORY.md 索引，也不注册 save_memory / load_memory
+# 记忆目录（可选）。缺省按仓库派生 ~/.tact/projects/&lt;slug&gt;/memory；
+# ~ / ~/x 展开为 $HOME，相对路径按 workdir 解析。
+# auto_memory_directory = &quot;~/my-memories&quot;
+max_token_usage_bodies = 1   # 每会话保留的请求正文条数（压缩行永远保留自己的）
+# 额外 skill 根目录（可选）。每个目录下应包含 */SKILL.md。
+# 相对路径按 workdir 解析；~ 展开为 $HOME。
+# 在内建根之后加载；同名冲突时靠后的条目胜出。
+# skill_dirs = [&quot;~/shared-skills&quot;, &quot;./vendor/skills&quot;]
+# 注入系统提示的项目指令文件（默认 [&quot;agents_md&quot;]）。
+# instruction_sources = [&quot;agents_md&quot;]
+# 每轮都把 skill 全文注入系统提示（默认 false）。
+# skill_body_auto_inject = false
+# 目录里每条 skill 描述的字符上限（默认 200；0 = 不限）。在词边界截断并补 …。
+# 目录行只是路由提示，全文仍由 load_skill / /skill list 提供。
+# skill_description_cap = 200
+# 按 registry 名字把 skill 摘出系统提示的目录（默认空）。仍可用 /skill &lt;name&gt; 与 load_skill 调用。
+# 通常由 /skill disable &lt;name&gt; / /skill enable &lt;name&gt; 写入。
+# skill_disable = [&quot;cut-the-curve&quot;, &quot;plugin:brainstorming&quot;]
+
+# Subagent LLM 配置（可选）。配置后 spawn_subagent 改用该 provider/模型，
+# 而不是主 agent 的。只要设置了下面任一覆盖项，`provider` 就是必填；
+# 凭证与端点取自该条目。
+# [agent.subagent]
+# provider = &quot;deepseek&quot;       # 必填；[llm.providers.*] 中的键
+# model = &quot;deepseek-chat&quot;     # 可选；否则用该条目的 model
+# max_tokens = 8000           # 可选；否则用该条目的，再用主 agent 的
+# thinking_budget = 0         # 可选；否则用该条目的，再用主 agent 的
+# reasoning_effort = &quot;high&quot;   # 可选；否则用该条目的（openai/deepseek/kimi k3）
+
+[ui]
+theme = &quot;ink&quot;
+# UI 语言。`/lang` 第二步选择「保存」时由 TUI 写入。
+# &quot;en&quot; | &quot;zh&quot;（也接受 &quot;english&quot; / &quot;cn&quot; / &quot;chinese&quot;）；无法识别时告警并回落英文。
+# language = &quot;en&quot;
+# 附加图片（`@file.png`、`![alt](path)`）；compress 仅减少 token —
+# 模型/端点仍须支持 vision（见 Ch 22 / Ch 23）。
+# vision_image.compress = true
+# vision_image.max_edge = 1280
+# vision_image.jpeg_quality = 80
+
+[voice]
+# 独立于 [llm.providers.*]；默认关闭。
+# enabled = false
+# provider = &quot;openai&quot;
+# api_key = &quot;&quot;
+# base_url = &quot;https://api.openai.com/v1&quot;
+# model = &quot;gpt-4o-mini-transcribe&quot;
+# language = &quot;zh&quot;
+# max_duration_secs = 300
+# 可选键盘切换：&quot;ctrl+&lt;char&gt;&quot;（如 &quot;ctrl+g&quot;）；未设置时仅鼠标。
+# voice_keybind = &quot;ctrl+g&quot;
+
+[tools]
+# Bash 墙钟超时秒数（默认 1800；0 表示禁用）
+bash_timeout_secs = 1800
+# `bash` 工具的 OS 级沙箱：false（默认）| true（需显式开启）
+# sandbox = true</code></pre>
+<h3 id="未知键会被拒绝">未知键会被拒绝</h3>
+<p><code>[agent]</code> 与 <code>[agent.subagent]</code> 都是
+<code>deny_unknown_fields</code>：这里不存在的键会在<strong>解析阶段</strong>
+直接失败并列出合法字段，而不是被静默丢弃（2026-09-13）。最容易踩的是那些"别处确实存在、
+写在这里看起来也合理"的键——<code>thinking_budget</code> /
+<code>reasoning_effort</code> 是<strong>运行时</strong> agent
+设置的字段， 但作为 TOML 键它们属于 <code>[llm]</code>（见 §3）或
+<code>[llm.providers.&lt;name&gt;]</code> 条目；<code>model</code> 属于
+provider 条目。 在此改动之前，把其中任何一个写在 <code>[agent]</code>
+下，都会让会话以默认思考设置运行，而输出里没有任何提示。</p>
+<p>可选 <code>models</code> 是 TUI <code>/model</code> slash
+命令的<strong>主要</strong>候选列表（仅限同一
+provider）。在会话中首次使用 <code>/model</code> 时，兼容 OpenAI 的
+provider（<code>openai</code> / <code>deepseek</code> /
+<code>kimi</code>）也会调用 <code>GET {base_url}/models</code>，并将不在
+config 列表中的 id 附加到末尾（config 的顺序和重复 id 优先）。API 结果按
+<code>(base_url, api_key)</code> 在进程内缓存。如果 config 和 API
+均未提供任何候选，<code>/model</code>
+打印提示而非打开选择器。选择模型立即生效；可选写回已加载配置文件中该
+provider 的 <code>model</code> 字段。</p>
+<p>可选 <code>protocol</code> 默认为
+<code>chat_completions</code>。<code>responses</code> 对
+<code>openai</code> 与 <code>deepseek</code> provider 有效；配置 resolve
+会拒绝 Anthropic 或 Kimi 使用该值。DeepSeek 配 <code>responses</code>
+时复用与 OpenAI 相同的 Responses 适配器，指向其配置的
+<code>base_url</code>（含自动 <code>context_management</code> 压缩与
+reasoning effort；显式 <code>/responses/compact</code>
+取决于端点支持——DeepSeek
+目前未实现，显式压缩会回落本地摘要流水线）。此字段没有 CLI
+override。</p>
+<p>可选 <code>reasoning_effort</code> 对
+<code>openai</code>、<code>deepseek</code> 与 <code>kimi</code> provider
+有效，接受
+<code>none</code>、<code>minimal</code>、<code>low</code>、<code>medium</code>、<code>high</code>、<code>xhigh</code>
+或 <code>max</code>；具体可用值取决于
+模型。显式值按请求原样发送；省略时使用 provider 默认（如 OpenAI medium、
+DeepSeek 思考开启 + effort high、Kimi K3 high）。此字段没有 CLI
+override。 Anthropic 拒绝该字段（native thinking budget，无 effort
+字段）。</p>
+<p>effort 档位<strong>不承诺</strong>的事：它只是档位名，不是 token
+配额；在「推理计在输出预算内」的 provider
+上，它也不构成思考的上限。DeepSeek 就是现成例子
+（<code>api-docs.deepseek.com/guides/thinking_mode</code>）：有效值只有
+<code>none</code>（关思考）、
+<code>low</code>、<code>high</code>、<code>max</code>（默认
+<code>high</code>；<code>minimal</code>→<code>low</code>、<code>medium</code>/<code>xhigh</code>→<code>high</code>），
+reasoning 计在 <code>max_tokens</code> 之内，而未设
+<code>max_tokens</code> 时 provider 的默认值是：关思考 8K、开思考
+64K（<code>max</code> 档 128K）。因此在这类 provider 上
+<code>[agent] max_tokens</code> 是唯一能 封顶思考的数字——一个按 2K
+开的摘要调用可能整发被推理吃掉、正文为零。Tact 因此用
+<code>[agent] max_tokens</code> 给压缩摘要的信封兜底（第 5 章 §5），在
+<code>builtin_model_profiles</code> 里按官方列出的模型
+id（<code>deepseek-flash</code>、<code>deepseek-v4-pro</code>）配上这三个档位，并且让所有
+<strong>派生预算</strong>（摘要的 reasoning 预留）按 provider
+实际会跑的档位取值：在 DeepSeek 上配
+<code>reasoning_effort = "medium"</code> 时，线上值仍是
+<code>medium</code>（按配置原样发送），而预留按 <code>high</code>
+桶算。</p>
+<p>可选 <code>[llm.model_profiles."&lt;model&gt;"]</code>
+条目列出该模型在 <code>/model</code> 第二步的
+可选档位：<code>reasoning_efforts</code> 对应 effort 语义模型（openai /
+deepseek / kimi k3、k3-256k），<code>thinking_budgets</code> 对应 budget
+语义模型（anthropic / kimi coding
+系）。两个字段均为可选数组；某模型无条目时回落 provider 默认 档位。TOML
+条目按模型/按字段覆盖内置默认（见
+<code>tact::config::builtin_model_profiles</code>）。 跨维度条目（如
+effort 语义模型写 <code>thinking_budgets</code>）会被忽略，不报错。</p>
+<p>同一张表还承载一个非档位键：<code>supports_vision</code>（bool），按<strong>精确模型
+id</strong> 覆盖<strong>图片输入门禁</strong>。不写则走
+<code>tact_llm::supports_vision</code> 的端点启发式—— 它只看 model id 与
+base_url：deepseek 系目标除非 id 里同时含 <code>vision</code>，否则
+算纯文本，其余一律算支持。需要这个覆盖是因为启发式描述不了"一个
+OpenAI-compatible 代理入口同时提供能读图与不能读图的 id"这种混合池（例如
+<code>deepseek-flash</code> 能读图、同入口的
+<code>deepseek-v4-flash</code> 不能）。<code>read_image</code> 与 UI
+图片附件检查调用的 <code>tact::config::supports_vision</code>
+先查覆盖、再回落 启发式。<code>true</code>
+表示把图片发给接口（纯文本目标会回 400），<code>false</code>
+表示本地直接拒绝。</p>
+<p>Resolved 运行时仍暴露扁平的
+<code>LlmSettings { provider: ProviderKind, protocol: OpenAiProtocol, reasoning_effort: Option&lt;OpenAiReasoningEffort&gt;, model_profiles, … }</code>
+供热路径使用。serde 结构与单元测试见 <code>types.rs</code>。</p>
+<hr />
+<h2 id="5-resolved-默认值">5. Resolved 默认值</h2>
+<p>合并后，若 CLI 与 TOML 均未设置，<code>resolve_config</code>
+应用以下默认值：</p>
+<table>
+<thead>
+<tr>
+<th>设置</th>
+<th>默认</th>
+<th>Kimi K2.x 覆盖</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>max_tokens</code></td>
+<td>8_000</td>
+<td>32_000</td>
+</tr>
+<tr>
+<td><code>thinking_budget</code></td>
+<td>32_000</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>model_context_window</code></td>
+<td>200_000</td>
+<td>—（tokens；全局；解析顺序见下文）</td>
+</tr>
+<tr>
+<td><code>notifications_enabled</code></td>
+<td><code>true</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>snapshot_max_items</code></td>
+<td>80</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>micro_compact_enabled</code></td>
+<td><code>true</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>memory_enabled</code></td>
+<td><code>true</code></td>
+<td>—（关闭后不注入 <code>MEMORY.md</code> 索引与
+<code>MEMORY_GUIDANCE</code>，也不注册 <code>save_memory</code> /
+<code>load_memory</code>）</td>
+</tr>
+<tr>
+<td><code>auto_memory_directory</code></td>
+<td>—（按仓库派生）</td>
+<td>—（覆盖记忆目录；<code>~</code>/相对路径按 <code>skill_dirs</code>
+同一套规则展开）</td>
+</tr>
+<tr>
+<td><code>max_token_usage_bodies</code></td>
+<td>1</td>
+<td>—（每会话在 <code>token_usages</code>
+保留的请求正文条数；<code>0</code> 表示一条不留，同时使
+<code>/view-system-prompt</code> 的 assembled 视图失效）</td>
+</tr>
+<tr>
+<td><code>instruction_sources</code></td>
+<td><code>["agents_md"]</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>skill_dirs</code></td>
+<td>空（无额外根）</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>skill_body_auto_inject</code></td>
+<td><code>false</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>skill_description_cap</code></td>
+<td><code>200</code></td>
+<td><code>0</code> = 不限；目录里每条描述的字符上限</td>
+</tr>
+<tr>
+<td><code>skill_disable</code></td>
+<td>空</td>
+<td>按 registry 名字把 skill 摘出目录（仍可
+<code>/skill &lt;name&gt;</code> / <code>load_skill</code>）</td>
+</tr>
+<tr>
+<td><code>tools.bash_timeout_secs</code></td>
+<td><code>1_800</code>（<code>0</code> 禁用）</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>tools.sandbox</code></td>
+<td><code>false</code></td>
+<td><code>true</code> / <code>false</code>（Linux：bubblewrap）</td>
+</tr>
+<tr>
+<td><code>ui.theme</code></td>
+<td><code>"ink"</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>ui.language</code></td>
+<td><code>"en"</code></td>
+<td>—（<code>en</code> / <code>zh</code>；无 CLI flag，见 §6）</td>
+</tr>
+<tr>
+<td><code>ui.hook_output</code></td>
+<td><code>true</code></td>
+<td>—（是否在日志里画 hook
+的进度行与注入的上下文块；<strong>只影响显示</strong>，见下）</td>
+</tr>
+<tr>
+<td><code>ui.vision_image.compress</code></td>
+<td><code>true</code></td>
+<td>—（仅 token 体积；不启用 vision）</td>
+</tr>
+<tr>
+<td><code>ui.vision_image.max_edge</code></td>
+<td><code>1280</code>（钳制 256–4096）</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>ui.vision_image.jpeg_quality</code></td>
+<td><code>80</code>（钳制 1–100）</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>voice.enabled</code></td>
+<td><code>false</code></td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>voice.provider</code></td>
+<td><code>openai</code></td>
+<td><code>openai</code> / <code>google</code> /
+<code>whisper_cpp</code></td>
+</tr>
+<tr>
+<td><code>voice.base_url</code></td>
+<td><code>https://api.openai.com/v1</code>（openai）/
+<code>https://speech.googleapis.com/v1</code>（google）/
+<code>http://127.0.0.1:8080</code>（whisper_cpp）</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>voice.model</code></td>
+<td><code>gpt-4o-mini-transcribe</code>（openai）/
+<code>latest_short</code>（google）/ 空（whisper_cpp）</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>voice.language</code></td>
+<td><code>zh</code></td>
+<td>Google 示例：<code>zh-CN</code>、<code>en-US</code></td>
+</tr>
+<tr>
+<td><code>voice.max_duration_secs</code></td>
+<td><code>300</code>（openai/whisper_cpp，有效 <code>1..=600</code>）/
+<code>60</code>（google，有效 <code>1..=60</code>）</td>
+<td>—</td>
+</tr>
+<tr>
+<td><code>voice.voice_keybind</code></td>
+<td>未设置（仅鼠标）</td>
+<td><code>ctrl+&lt;char&gt;</code>（如
+<code>ctrl+g</code>），不可与内置全局键 <code>Ctrl+C/H/T/L/?</code>
+重合</td>
+</tr>
+</tbody>
+</table>
+<h3 id="ui--主题语言hook-输出的显示开关"><code>[ui]</code> —
+主题、语言、hook 输出的显示开关</h3>
+<p><code>ui.theme</code> / <code>ui.language</code> 见 <a
+href="./23_chapter_tui_zh.html">Ch
+23</a>；两者都能在运行时改（<code>/theme</code>、<code>Ctrl+T</code>、<code>/lang</code>、<code>Ctrl+L</code>），写回同一个
+<code>[ui]</code> 表。</p>
+<p><code>ui.hook_output</code>（默认 <code>true</code>）决定 TUI
+是否在日志里画 hook
+相关内容——<strong>一条进度行</strong>（<code>LogItemKind::HookStatus</code>）和<strong>注入的上下文块</strong>（<code>LogItemKind::HookContext</code>）。它由
+<code>/hook-output</code> 翻转（与 <code>/theme</code>
+不同，布尔没有列表可选，所以走 <code>Ctrl+T</code> 那种"翻转 + 写盘 +
+一条消息说清两半"的形状），也可直接写文件。</p>
+<p><strong>只影响显示。</strong> hook 照常运行，stdout 照常作为
+<code>&lt;hook-context&gt;</code>
+消息进入对话——关掉它改的是读者看到的东西，不是模型拿到的东西；要停掉
+hook 用 <code>/hooks</code>（或
+<code>[hooks]</code>），不是这个键。门设在<strong>行进入日志的那一刻</strong>（<code>App::append_hook_context_markdown</code>
+/
+<code>App::apply_hook_status</code>），不是在渲染层：日志的物理索引是选区、卡片、滚动锚点的键，一行"画的时候跳过"仍会占掉一个索引。同一原因，进度行的<strong>完成</strong>那一半也必须先看这个开关——否则它会给开头被跳过的行补上一行孤儿。</p>
+<h3
+id="agent--skill-根目录指令文件目录预算全文注入"><code>[agent]</code> —
+skill 根目录、指令文件、目录预算、全文注入</h3>
+<p>五个 <code>[agent]</code>
+字段决定除内建根与默认值之外还有什么进入提示。</p>
+<p><code>skill_dirs</code> 追加额外 skill 根目录。每个条目必须是一个包含
+<code>*/SKILL.md</code> 的目录；相对路径按 <strong>workdir</strong>
+解析，<code>~</code> 展开为
+<code>$HOME</code>，空白条目被跳过。这些根按列出顺序追加在三个内建根（<code>~/.agents/skills</code>、<code>~/.tact/skills</code>、<code>&lt;workdir&gt;/.tact/skills</code>）之后，因此同名冲突时配置根胜过所有内建根；解析后与已有路径重复的条目会被丢弃。扫描方式与内建根完全一致，均为递归。<code>/skill reload</code>
+可重新读取，无需重启。见 <a href="./02_chapter_skill_zh.html">Ch
+2</a>。</p>
+<p><code>instruction_sources</code>
+选择注入系统提示的项目指令文件。<code>agents_md</code>
+是唯一可接受的值（默认 <code>["agents_md"]</code>）；空列表，或
+<code>claude_md</code> 等任何其他值，都会导致配置 resolve 失败。见 <a
+href="./04_chapter_prompt_zh.html">Ch 4</a>。</p>
+<p><code>skill_body_auto_inject</code>
+在「描述」与「全文」之间二选一。<code>false</code>（默认）时每轮只带
+<code>describe_available_bounded()</code> 产出的 skill
+名称与描述，全文按需经 <code>load_skill</code>
+工具取得。<code>true</code> 时每个 skill
+全文都会注入每一轮系统提示——精确，但每次调用都要付出代价，除非某个 skill
+必须无条件在上下文中，否则建议保持默认。CLI 等价开关为
+<code>--skill-body-auto-inject</code>。</p>
+<p><code>skill_description_cap</code>（默认
+<code>200</code>，<code>0</code> =
+不限）限制<strong>目录里每条描述</strong>的字符数：在词边界截断并补
+<code>…</code>。目录行是路由提示，不是文档——全文由
+<code>load_skill</code>、<code>/skill list</code> 和
+<code>/skill </code> 补全提供，都不受这个上限影响。机器上装 79 个 skill
+时，默认值把目录从 22,605 字符（≈5.6k tokens）压到 12,672
+字符（≈3.2k），37 条被截。</p>
+<p><code>skill_disable</code>（默认空）按 <strong>registry
+名字</strong>（<code>demo</code>、<code>plugin:brainstorming</code>）把
+skill 摘出系统提示的目录。按名字而不是路径，是因为插件 skill 的路径里带
+revision（<code>~/.tact/plugins/cache/&lt;marketplace&gt;/&lt;plugin&gt;/&lt;revision&gt;/skills/</code>），按路径写会在每次插件更新后失效。被摘掉的
+skill <strong>仍然可用</strong>——<code>/skill &lt;name&gt;</code>
+照跑、<code>load_skill</code> 照解析，<code>/skill list</code> 把它标成
+<code>(not in catalog)</code>；这道开关管的是自动发现，不是能力，所以写错名字不会把人锁在外面。通常不必手写：<code>/skill disable &lt;name&gt;</code>
+/ <code>/skill enable &lt;name&gt;</code> 会翻共享 registry
+并把<strong>整份列表</strong>写回这里（写的是全量而不是增量——写盘替换整个键，一份不完整的列表会把没写进去的全部静默恢复）；没有配置文件时只改本次会话。两个键都没有
+CLI flag，<code>skill_description_cap</code> 也仍然只在 TOML 里。</p>
+<p>目录本身还有一道<strong>窗口预算</strong>：<code>model_context_window</code>
+的 2%（按 4 字节/token 折成字符；窗口为 <code>0</code> 时回退 8,000
+字符）。超出就从名字排序的尾部丢弃，换成一行点名被丢 skill 的
+trailer（最多 40 个名字）。它<strong>不可配置</strong>——128k
+窗口下会丢约 6 条，1M 窗口下（预算 80,000 字符）永不触发。见 <a
+href="./02_chapter_skill_zh.html">Ch 2 §1</a>。</p>
+<h3
+id="agentsubagent--给-spawn_subagent-单独的-provider模型"><code>[agent.subagent]</code>
+— 给 <code>spawn_subagent</code> 单独的 provider/模型</h3>
+<p>可选。配置后 <code>spawn_subagent</code> 改用该 provider，而不是主
+agent 的，因此可以用便宜/快的模型驱动
+worker，主循环仍用自己的模型。该段<strong>引用</strong>既有 provider
+条目，不重复配置凭证：
+<code>base_url</code>、<code>api_key</code>、<code>protocol</code>
+均取自被引用的 <code>[llm.providers.&lt;name&gt;]</code> 条目。</p>
+<p>只要设置了任一覆盖项，<code>provider</code> 就是必填。缺
+<code>provider</code> 会在 resolve 阶段报错并给出修法； provider
+名称不存在则报错并列出可用键。完全没有任何覆盖项的段——键全被注释掉的遗留表头，
+<code>config.example.toml</code> 里即是这种形状——保持静默
+no-op，因此永远不会阻断启动。</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>解析顺序</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>provider</code></td>
+<td>设置任一覆盖项时必填；必须是 <code>[llm.providers.*]</code>
+中的键</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td><code>[agent.subagent].model</code> → 被引用条目的
+<code>model</code>；两者都没有则报错</td>
+</tr>
+<tr>
+<td><code>max_tokens</code></td>
+<td><code>[agent.subagent].max_tokens</code> → 被引用条目的 → <strong>主
+agent 已解析的 <code>max_tokens</code></strong>（subagent 模型属 Kimi
+K2.x 时则回退 <code>32_000</code>）</td>
+</tr>
+<tr>
+<td><code>model_context_window</code></td>
+<td><code>[agent.subagent].model_context_window</code> →
+内置模型映射（按 subagent 自己的 <code>model</code>）→ 主 agent
+已解析的窗口</td>
+</tr>
+<tr>
+<td><code>thinking_budget</code></td>
+<td><code>[agent.subagent].thinking_budget</code> → 被引用条目的 → 主
+agent 已解析的值</td>
+</tr>
+<tr>
+<td><code>reasoning_effort</code></td>
+<td><code>[agent.subagent].reasoning_effort</code> →
+被引用条目的（openai / deepseek / kimi k3 语义）</td>
+</tr>
+</tbody>
+</table>
+<p>最后一级刻意采用<strong>主 agent 已解析的值</strong>，而非字面默认
+8_000：因此调高 <code>[agent] max_tokens</code> （见
+§3）也会同时调高所有未覆盖该项的 subagent。有两点容易想当然出错，因为
+subagent 这条链 <strong>不是</strong>主 agent 那条：</p>
+<ul>
+<li><code>--max-tokens</code> 只能<strong>间接</strong>影响
+subagent——它先改变主 agent 的解析结果，再由最后一级继承。 没有办法只给主
+agent 设 <code>max_tokens</code>。</li>
+<li><code>[llm].max_tokens</code>（<code>[llm]</code>
+全局）<strong>已不存在</strong>——它作为一级已被移除（见
+§4），因此也不可能 再经由最后一级间接传入。仍写有该键的配置会 resolve
+失败。</li>
+</ul>
+<p><code>[llm.providers.&lt;被引用&gt;].max_tokens</code>
+<strong>会</strong>被读到——注意是 <code>provider</code> 指定的那个条目，
+不是活跃条目。因此某个 provider 条目一旦设了
+<code>max_tokens</code>，所有指向它的 subagent 都会被该值封顶 （上表第 2
+级），即使 subagent 段根本没提 <code>max_tokens</code>。</p>
+<p>resolve 阶段的校验：</p>
+<ul>
+<li><code>thinking_budget</code> 让位规则：<strong>继承来的</strong>
+<code>max_tokens</code>（主 agent 预算 / Kimi K2.x 默认
+32K）装不下预算时被<strong>长到 <code>budget + 1</code></strong>（与主
+agent 的运行期自动扩展同一规则），只有窗口装不下 <code>budget + 1</code>
+才报错；<strong>显式写下的</strong> <code>max_tokens</code>
+被预算跨越则报错——不静默改用户写的数。校验针对<strong>按窗口钳制之后</strong>的
+<code>max_tokens</code>（钳制可能把预算挤到它之上）。</li>
+<li>被引用的 <strong>DeepSeek</strong> 条目上
+<code>protocol = "responses"</code> 会被拒绝——与主 agent
+同属不受支持的组合。</li>
+<li>被引用条目的 <code>responses_compact_threshold</code>
+会被复用，但需按 <em>subagent 自己的</em> <code>max_tokens</code>
+与窗口重新校验（原本适配主 agent 较小预算的阈值未必适配
+subagent）。条目未设置该项时，阈值由 subagent 的 <code>max_tokens</code>
+推导；非 Responses 协议与零窗口解析为无阈值。</li>
+</ul>
+<p><code>model_context_window</code> <strong>按 subagent
+自己的模型解析</strong>：<code>[agent.subagent].model_context_window</code>
+→ 内置模型映射（按 subagent 的 <code>model</code>）→ 主 agent
+已解析的窗口——主 agent 是 1M 模型时，用 <code>gpt-4o</code> 的子 agent
+不能按 1M 去量。继承来的 <code>max_tokens</code>
+不小于子窗口时<strong>钳制</strong>进窗口而不是报错（主 agent
+的大预算配小窗口模型是常态），显式写下的 <code>max_tokens</code>
+超限才硬报错。<code>/model-subagent</code>
+运行时换模型会按<strong>与启动同一套规则</strong>重算：窗口（显式覆盖 →
+映射 →
+主窗口兜底，设了覆盖就一直是它）、<code>max_tokens</code>（继承值按新窗口重算并钳制，预算装不下时再长到
+<code>budget + 1</code>；显式值放不下或被预算跨过则<strong>拒绝切换</strong>）与
+Responses
+压缩阈值（按新窗口重推导/重校验，失败同样拒绝）——被拒绝时<strong>什么也不应用</strong>。
+<code>/model-subagent</code> 选择器的候选列表来自被引用条目的
+<code>models</code>，在其中选定模型或思考预算会写回
+<code>[agent.subagent].model</code> 及其预算/effort 键。运行时一侧见 <a
+href="./12_chapter_subagent_zh.html">Ch 12</a>。</p>
+<h3 id="voice--语音转文字输入macos-优先"><code>[voice]</code> —
+语音转文字输入（macOS 优先）</h3>
+<p>API 密钥与端点独立于
+<code>[llm.providers.*]</code>。<code>provider = "openai"</code>（默认）将音频发往
+<code>{base_url}/audio/transcriptions</code>，需要
+<code>api_key</code>。<code>provider = "google"</code> 将短 WAV 音频发往
+Google Cloud 的同步 <code>{base_url}/speech:recognize</code>
+端点，并使用 <code>voice.api_key</code> 作为 query API key；默认模型为
+<code>latest_short</code>，语言示例为
+<code>zh-CN</code>、<code>en-US</code>，且
+<code>max_duration_secs</code> 必须为 <code>1..=60</code>。请在 Google
+Cloud 项目中启用 Speech-to-Text API。Google API key 模式不支持 Service
+Account、OAuth、长任务识别、
+流式识别或自动分段。<code>provider = "whisper_cpp"</code> 将音频发往
+<code>{base_url}/inference</code>，无需认证与 <code>model</code>
+字段，适用于本地 <a
+href="https://github.com/ggerganov/whisper.cpp">whisper.cpp</a>
+服务器。转写结果插入输入框供审阅（不会自动提交）。
+<code>enabled = false</code>
+隐藏标题栏居中按钮。<code>enabled = true</code> 但未配置
+<code>api_key</code>（仅 openai）时仍显示按钮， 点击会提示
+<code>[voice].api_key</code>。可选
+<code>voice_keybind = "ctrl+&lt;char&gt;"</code>
+可在任意输入模式下切换录制； 仅精确匹配时消费按键（其它键仍进入
+Insert/Normal）。未设置则仅鼠标控制。配置的快捷键会显示在
+帮助面板（<code>Ctrl+?</code>）。空字符串、多字符键、非
+<code>ctrl</code> 修饰符会在配置解析阶段失败；与内置全局快捷键
+（<code>Ctrl+C/H/T/L/?</code>）重合的绑定会在<strong>启动时被拒绝</strong>并指名冲突的键——全局快捷键先派发且消费事件，
+这种绑定永远不可能触发（<a href="./23_chapter_tui_zh.html">Ch 23</a>
+§7）。凭证不会写入 日志或会话历史。</p>
+<p>Kimi K2.x 检测在 resolve 时通过
+<code>provider_info.is_kimi_k2x()</code>（<a
+href="./22_chapter_llm_zh.html">Ch 22</a>）。</p>
+<p><code>model_context_window</code> 按四级优先级解析（从高到低）：</p>
+<ol type="1">
+<li><strong>CLI <code>--model-context-window</code></strong>。</li>
+<li><strong>TOML
+<code>[agent].model_context_window</code></strong>。</li>
+<li><strong>模型→窗口映射</strong> — 以解析后的模型 id
+为键的内置查找表，数值依据官方模型文档（2026-08）：
+<ul>
+<li>OpenAI：<code>gpt-5.6</code> / <code>gpt-5.6-luna</code> /
+<code>gpt-5.6-terra</code> / <code>gpt-5.6-sol</code> /
+<code>gpt-5.5</code> → <code>1_050_000</code>；<code>gpt-5.4</code> →
+<code>1_000_000</code>；<code>gpt-5</code> / <code>gpt-5.1</code> /
+<code>gpt-5.2</code> / <code>gpt-5.3</code> / <code>gpt-5.3-codex</code>
+/ <code>gpt-5.4-mini</code> → <code>400_000</code>； <code>gpt-4o</code>
+/ <code>gpt-4o-mini</code> → <code>128_000</code>。</li>
+<li>Anthropic（API 与 Claude Code 同 ID）：<code>claude-sonnet-5</code>
+/ <code>claude-fable-5</code> / <code>claude-opus-5</code> /
+<code>claude-opus-4-8</code> / <code>claude-opus-4-7</code> /
+<code>claude-opus-4-6</code> / <code>claude-sonnet-4-6</code> →
+<code>1_000_000</code>；<code>claude-opus-4-20250514</code> /
+<code>claude-sonnet-4-20250514</code> / <code>claude-haiku-4-5</code> /
+<code>claude-haiku-4-20250514</code> → <code>200_000</code>。</li>
+<li>DeepSeek：任意 <code>deepseek-v4-*</code> 或
+<code>deepseek-v4.*</code> id（前缀匹配，因此实验 / 视觉后缀如
+<code>deepseek-v4-flash-version-exp</code>、<code>deepseek-v4-flash-vision-exp</code>，
+以及点号分隔的小版本如 <code>deepseek-v4.1-flash</code> 均被覆盖）、
+无版本号的网关别名 <code>deepseek-flash</code>，以及
+<code>deepseek-reasoner</code> →
+<code>1_000_000</code>；Kimi：<code>k3-256k</code> →
+<code>256_000</code>。
+该映射只是<strong>回退</strong>值，仅用于用户未配置的模型：显式的 CLI
+标志或 <code>[agent]</code> 配置优先。
+代价是真实的——为长上下文模型留下的过时手工窗口会低估真实窗口，从而触发
+<strong>过早自动压缩</strong>，因此应删除该键，而不是留着过期值。显式
+<code>0</code> 不构成回退：它保留下文 所述的"禁用/未知窗口"语义。</li>
+</ul></li>
+<li><strong>默认 <code>200_000</code></strong>。</li>
+</ol>
+<p>合并 CLI 与 TOML 值后，若非零 <code>model_context_window</code>
+小于或等于
+<code>max_tokens</code>，配置会立即报错：输出预留必须给输入留下空间。窗口为零时保留现有的
+“禁用/未知窗口”语义，并跳过该校验。<code>thinking_budget</code>
+不单独累加，因为各 provider 会将其映射为 thinking 配置或
+reasoning-effort 档位，而不是统一、可移植的额外输出预留。</p>
+<p>仅 CLI 覆盖：</p>
+<ul>
+<li><code>--no-notifications</code> 强制关闭通知。</li>
+<li><code>--no-micro-compact</code> 强制关闭 micro-compaction。</li>
+<li><code>--tokio-console</code> 在 <code>tact-ui</code> 中启用
+tokio-console subscriber。</li>
+</ul>
+<hr />
+<h2 id="6-cli-表面">6. CLI 表面</h2>
+<p><code>CliArgs</code>（clap）映射大部分 TOML 字段：</p>
+<table>
+<thead>
+<tr>
+<th>标志</th>
+<th>映射到</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>--provider</code></td>
+<td>选择活跃 <code>llm.providers.*</code>
+条目（<code>ProviderKind</code>）</td>
+</tr>
+<tr>
+<td><code>--model</code>、<code>--api-key</code>、<code>--base-url</code></td>
+<td>覆盖该条目字段</td>
+</tr>
+<tr>
+<td><code>--max-tokens</code></td>
+<td>CLI → 条目 → <code>[agent]</code> → <code>[llm]</code> 全局 →
+默认值</td>
+</tr>
+<tr>
+<td><code>--thinking-budget</code></td>
+<td>CLI → 条目 → <code>[llm]</code> 全局 → 默认值</td>
+</tr>
+<tr>
+<td><code>-m</code> / <code>--permission-mode</code></td>
+<td><code>[permission].mode</code></td>
+</tr>
+<tr>
+<td><code>--model-context-window</code>、<code>--snapshot-max-items</code></td>
+<td><code>[agent]</code></td>
+</tr>
+<tr>
+<td><code>--notifications</code> / <code>--no-notifications</code></td>
+<td><code>[agent].notifications_enabled</code></td>
+</tr>
+<tr>
+<td><code>--skill-body-auto-inject</code></td>
+<td><code>[agent].skill_body_auto_inject</code>（仅开启，无
+<code>--no-</code> 形式）</td>
+</tr>
+<tr>
+<td><code>--no-micro-compact</code></td>
+<td><code>[agent].micro_compact_enabled</code>（仅关闭）</td>
+</tr>
+<tr>
+<td><code>--tokio-console</code></td>
+<td>启用 tokio-console 调试 subscriber（无对应 TOML 字段）</td>
+</tr>
+<tr>
+<td><code>--theme</code></td>
+<td><code>[ui].theme</code></td>
+</tr>
+<tr>
+<td><code>--brave-search-api-key</code></td>
+<td><code>[tools]</code></td>
+</tr>
+<tr>
+<td><code>--session</code>、<code>--resume-last</code>、<code>--list-sessions</code></td>
+<td>session store（不在 TOML 中）。<code>--resume-last</code> 与
+<code>--list-sessions</code> 传
+<code>list_sessions(Some(root_dir))</code>，仅显示当前工作目录的
+session。</td>
+</tr>
+<tr>
+<td><code>--config</code></td>
+<td>显式 TOML 路径</td>
+</tr>
+</tbody>
+</table>
+<p>子命令：</p>
+<pre class="bash"><code>tact-ui headless &quot;Summarize this repo&quot;</code></pre>
+<p>插件管理在 <code>tact plugin</code> / <code>/plugin</code>
+下：<code>list</code>
+打印每个已安装插件的功能摘要（<code>skills=N commands=M hooks mcp</code>），<code>install</code>
+/ <code>uninstall</code> / <code>update</code> / <code>reload</code>
+管理 <code>~/.tact/plugins</code>
+下的修订锁定缓存。插件<strong>状态</strong>（<code>installed.json</code>、<code>marketplaces.json</code>）单独放在
+<code>~/.tact/plugins/state/</code>；插件根下的旧副本仍会被读取并在首次使用时迁移，因此共享同一
+home 的旧版二进制仍可用。Marketplace
+命令（<code>tact plugin marketplace add|list|update|remove</code>）管理
+Git/catalog 源，并会发现 <code>~/.agents/plugins/marketplace.json</code>
+与 最近的仓库 <code>.agents/plugins/marketplace.json</code> 下的 Codex
+本地 marketplace。始终注册两个内置 Git
+marketplace：<code>claude-plugins-official</code> 与 OpenAI Codex 目录
+<code>openai-curated</code>（<code>github.com/openai/plugins</code>）。不带
+<code>@marketplace</code> 的 <code>plugin install &lt;name&gt;</code>
+优先匹配已发现的 Codex marketplace，找不到才回退到
+<code>claude-plugins-official</code>。已安装插件内容贡献
+skills（<code>plugin:&lt;name&gt;</code>）、<code>commands/*.md</code>
+斜杠命令、MCP 服务器与生命周期 hook——见 Ch 2、8、9、12。MCP 服务器声明在
+<code>~/.tact/.mcp.json</code>（用户级）或
+<code>&lt;workdir&gt;/.tact/.mcp.json</code>（项目级）；Claude Code 的
+<code>&lt;workdir&gt;/.mcp.json</code>
+也会被读取，优先级最低；已安装插件仍会提供 server。不读取 cwd 级 Codex
+manifest——那个文件在 <code>CODEX_HOME</code> 里。条目带
+<code>"enabled": false</code> 时会被解析但绝不连接；Tact
+未建模的键会被上报而不是忽略。条目可以是本地（<code>command</code>，通过
+stdio 启动）或远程（<code>url</code>，Streamable HTTP），可选静态
+<code>headers</code> 或
+<code>auth: { "type": "oauth", ... }</code>；OAuth token 按 server
+存放在 <code>~/.tact/mcp/oauth/</code> 下，用
+<code>/mcp auth &lt;server&gt;</code>（交互式）或
+<code>tact-ui mcp login &lt;server&gt;</code>（CLI）授权；<code>/mcp list</code>
+在 TUI 内显示已配置 server 及其实时状态（仅空闲、绝不重连）。CLI
+覆盖完整生命周期——<code>tact-ui mcp list</code>（每个 server
+的传输方式与状态）、<code>get &lt;name&gt;</code>（单个 server
+及其工具）、<code>add</code>/<code>remove</code>（<code>--user</code>
+写入 home 文件，<code>--force</code>
+覆盖）、<code>login</code>/<code>logout</code>（已存凭据）——见 Ch
+8。</p>
+<p>两个入口点均通过 <code>crates/tact-ui/src/permission.rs</code> 中的
+<code>permission_mode_from_config()</code> 读取
+<code>permission_mode</code>。</p>
+<p><code>tools.sandbox</code> 在 v1 仅可由 TOML
+设置，<strong>默认关闭</strong>，且只是一个布尔开关：
+<code>false</code>（默认）时 <code>bash</code>
+行为与以前完全一致，<code>true</code> 请求 <a
+href="./07_chapter_tool_zh.html">工具系统 §7.1</a> 与 <a
+href="./27_chapter_sandbox_zh.html">Bash 沙箱</a>
+描述的沙箱。该开关刻意<strong>不</strong>指定后端——
+用什么机制是平台决策，写在 <code>crates/tact/src/sandbox/</code>
+里（Linux 用 bubblewrap；其他
+平台尚无实现，开关在那里是空操作）。开关只是<strong>请求</strong>：实际生效的沙箱在启动时解析
+一次，任何导致无法启动的原因（平台无实现、缺少
+<code>bwrap</code>、内核限制 user namespace）
+都会降级为不沙箱并告警——fail-open，绝不因此让工具报错。非布尔取值是解析错误，
+而不是静默回落。没有对应 CLI 参数。</p>
+<p><code>tools.bash_timeout_secs</code> 在 v1 仅可由 TOML 设置。Resolve
+保留 <code>0</code> 的“禁用” 语义，否则经 <code>ToolSettings</code>
+将该值传到每个 <code>ToolContext</code>；没有对应 CLI flag。</p>
+<p><code>ui.language</code> 刻意<strong>没有</strong> CLI
+flag（<code>--theme</code> 有）。主题可能随终端而变，一次启动
+换一个说得通；语言属于使用者本人，<code>/lang</code>
+的第二步写一次就够了。因此解析链只有 「TOML →
+默认值」两级：<code>resolve_non_llm</code> 读
+<code>[ui].language</code>，缺失即 <code>"en"</code>，未知 取值由 TUI
+在启动时告警并回落英文（<code>App::set_configured_language</code>），而不是静默
+当成英文——否则 <code>language = "jp"</code>
+会看起来像配置确实这么说的。</p>
+<hr />
+<h2 id="7-运行时访问设置">7. 运行时访问设置</h2>
+<pre class="rust"><code>use tact::config;
+
+config::init()?;                          // main 中调用一次
+let max = config::settings().agent.max_tokens;
+let theme = config::settings().ui.theme.clone();</code></pre>
+<p>若未调用 <code>init()</code>，<code>settings()</code> 会 panic —
+对错误接线的二进制有意 fail-fast。</p>
+<p>Agent 循环在构建每次 LLM 请求时从 <code>settings()</code> 读取
+<code>model_context_window</code>、<code>max_tokens</code> 和
+<code>thinking_budget</code>（<a href="./18_chapter_agent_loop_zh.html">Ch
+18</a>）。</p>
+<p><strong>破坏性重命名：</strong>
+<code>agent.context_limit_chars</code> /
+<code>--context-limit-chars</code> →
+<code>agent.model_context_window</code> /
+<code>--model-context-window</code>（tokens，默认 200_000）。旧 TOML
+键<strong>无静默别名</strong> — 请更新现有配置。</p>
+<hr />
+<h2 id="8-代码地图">8. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>config/mod.rs</code></td>
+<td><code>init</code>、<code>install</code>、<code>settings</code>、公开
+re-export</td>
+</tr>
+<tr>
+<td><code>config/cli.rs</code></td>
+<td><code>CliArgs</code>、<code>CliCommand::Headless</code></td>
+</tr>
+<tr>
+<td><code>config/load.rs</code></td>
+<td>TOML 发现与解析</td>
+</tr>
+<tr>
+<td><code>config/resolve.rs</code></td>
+<td>CLI + TOML 合并、Kimi 感知默认值</td>
+</tr>
+<tr>
+<td><code>config/types.rs</code></td>
+<td><code>TactTomlConfig</code>、<code>ResolvedConfig</code>、各节结构体</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/main.rs</code></td>
+<td>在 <code>main()</code> 中调用 <code>config::init()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/permission.rs</code></td>
+<td>两个入口点读取 resolved <code>permission_mode</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-当前缺口">9. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>详情</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>无环境变量层</strong></td>
+<td>仅 CLI 与 TOML；<code>resolve.rs</code> 中无 <code>TACT_*</code> 或
+provider 环境回退</td>
+</tr>
+<tr>
+<td><strong><code>anthropic</code> 需显式
+<code>base_url</code></strong></td>
+<td>与 OpenAI 兼容 provider 不同，<code>default_base_url()</code> 无默认
+Anthropic URL</td>
+</tr>
+<tr>
+<td><strong>明文 TOML 存密钥</strong></td>
+<td><code>api_key</code> 以文本存储；无 keychain 集成</td>
+</tr>
+<tr>
+<td><strong><code>list-sessions</code> 桩 LLM 块</strong></td>
+<td><code>resolve_non_llm_settings</code> 填充空 LLM 字段 — 调用方不得
+invoke <code>get_llm_client()</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./22_chapter_llm_zh.html">LLM Providers</a> —
+<code>install()</code> 初始化内容</li>
+<li><a href="./18_chapter_agent_loop_zh.html">Agent Main Loop</a> — agent
+设置的运行时消费者</li>
+<li><a href="./10_chapter_permission_zh.html">Permission Model</a> —
+模式字符串 vs TUI 接线</li>
+<li><a href="./23_chapter_tui_zh.html">TUI</a> — 主题与 channel 引导</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

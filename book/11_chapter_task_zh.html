@@ -1,0 +1,880 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>任务与工具调度（Tasks and Tool Scheduling）</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-%E4%BB%BB%E5%8A%A1%E5%8D%B3-agent-loop-%E7%9A%84%E4%B8%80%E8%BD%AE" title="1. 任务即 Agent Loop 的一轮"><span class="toc-label">1. 任务即 Agent Loop 的一轮</span></a></li>
+<li class="toc-l2"><a href="#2-%E4%B8%89%E9%98%B6%E6%AE%B5%E6%B5%81%E6%B0%B4%E7%BA%BF" title="2. 三阶段流水线"><span class="toc-label">2. 三阶段流水线</span></a></li>
+<li class="toc-l3"><a href="#phase-1--%E9%A2%84%E6%A3%80%E4%B8%B2%E8%A1%8C" title="Phase 1 — 预检（串行）"><span class="toc-label">Phase 1 — 预检（串行）</span></a></li>
+<li class="toc-l3"><a href="#phase-2--%E6%89%A7%E8%A1%8C%E6%8C%89-wave-%E5%B9%B6%E8%A1%8C" title="Phase 2 — 执行（按 wave 并行）"><span class="toc-label">Phase 2 — 执行（按 wave 并行）</span></a></li>
+<li class="toc-l3"><a href="#phase-3--%E7%BB%93%E6%9E%9C%E7%BB%84%E8%A3%85%E4%B8%8E%E5%90%8E%E5%A4%84%E7%90%86" title="Phase 3 — 结果组装与后处理"><span class="toc-label">Phase 3 — 结果组装与后处理</span></a></li>
+<li class="toc-l2"><a href="#3-%E5%86%B2%E7%AA%81%E6%A8%A1%E5%9E%8B%E4%B8%8E%E5%AE%89%E5%85%A8" title="3. 冲突模型与安全"><span class="toc-label">3. 冲突模型与安全</span></a></li>
+<li class="toc-l3"><a href="#%E7%A4%BA%E4%BE%8B" title="示例"><span class="toc-label">示例</span></a></li>
+<li class="toc-l3"><a href="#%E9%BB%98%E8%AE%A4-barrier" title="默认 barrier"><span class="toc-label">默认 barrier</span></a></li>
+<li class="toc-l2"><a href="#4-%E6%9D%83%E9%99%90%E4%B8%8E-hook" title="4. 权限与 Hook"><span class="toc-label">4. 权限与 Hook</span></a></li>
+<li class="toc-l2"><a href="#5-%E5%9B%9E%E4%BC%A0%E7%BB%99-llm-%E7%9A%84%E5%86%85%E5%AE%B9" title="5. 回传给 LLM 的内容"><span class="toc-label">5. 回传给 LLM 的内容</span></a></li>
+<li class="toc-l2"><a href="#6-%E5%8F%AF%E8%A7%82%E6%B5%8B%E6%80%A7tool-schedule-summary" title="6. 可观测性：Tool Schedule Summary"><span class="toc-label">6. 可观测性：Tool Schedule Summary</span></a></li>
+<li class="toc-l2"><a href="#7-%E8%87%AA%E5%AE%9A%E4%B9%89%E8%B0%83%E5%BA%A6" title="7. 自定义调度"><span class="toc-label">7. 自定义调度</span></a></li>
+<li class="toc-l2"><a href="#8-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="8. 代码地图"><span class="toc-label">8. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="任务与工具调度tasks-and-tool-scheduling">任务与工具调度（Tasks
+and Tool Scheduling）</h1>
+<p>本章说明 LLM 决定行动之后发生什么：Tact 如何将一组
+<code>ToolUse</code> 块转为已执行命令、结果，以及下一轮对话。</p>
+<p><strong>勿与</strong> <a
+href="./19_chapter_persistent_tasks_zh.html">持久任务管理器</a>（<code>task_create</code>
+/ <code>task_list</code> 工具）或 <a
+href="./12_chapter_subagent_zh.html">子 Agent</a> 的
+<code>spawn_subagent</code> spawn 工具混淆。</p>
+<hr />
+<h2 id="1-任务即-agent-loop-的一轮">1. 任务即 Agent Loop 的一轮</h2>
+<p>在 Tact 中，<strong>任务（task）</strong> 指
+<code>Agent::agent_loop</code>（<code>crates/tact/src/agent/mod.rs</code>）一次迭代中的工作：</p>
+<pre class="text"><code>┌─────────────┐    LLM call    ┌─────────────────────┐
+│ User prompt │ ─────────────► │ assistant response  │
+└─────────────┘                │ (text + ToolUses)   │
+                               └─────────────────────┘
+                                         │
+                                         ▼
+                               ┌─────────────────────┐
+│                              │ execute_tool_call() │
+│                              └─────────────────────┘
+│                                         │
+│          ┌──────────────────────────────┼──────────────────────────────┐
+│          ▼                              ▼                              ▼
+│    pre-flight                    parallel execution              post-processing
+│    (sequential)                  (waves)                          (sequential)
+│          │                              │                              │
+│          ▼                              ▼                              ▼
+│   permission + hooks            tool calls run                results + hooks
+│                                 concurrently where safe       appended to context
+└────────────────────────────────────────────────────────────────────────────┘
+                                         │
+                                         ▼
+                               next LLM call</code></pre>
+<p>循环持续直到模型停止、询问用户，或满足完成条件。</p>
+<hr />
+<h2 id="2-三阶段流水线">2. 三阶段流水线</h2>
+<p><code>Agent::execute_tool_call</code>（<code>crates/tact/src/agent/tool_dispatch.rs</code>）将每轮分为三个阶段。</p>
+<h3 id="phase-1--预检串行">Phase 1 — 预检（串行）</h3>
+<p>按模型发出顺序，每个工具各执行一次：</p>
+<ol type="1">
+<li>发出 <code>StepAdded</code> / <code>StepStarted</code> UI
+事件。</li>
+<li>运行 <code>PreToolUse</code> hook。</li>
+<li>通过 <code>PermissionManager</code> 检查权限。</li>
+<li>若权限被拒，生成 blocked 结果而不运行工具。</li>
+</ol>
+<p>此阶段必须串行，因为权限提示可能交互式，且 hook 需要
+<code>&amp;mut self</code>。</p>
+<h3 id="phase-2--执行按-wave-并行">Phase 2 — 执行（按 wave 并行）</h3>
+<p>所有通过预检的工具交给
+<code>crates/tact/src/agent/tool_schedule.rs</code> 中的调度器：</p>
+<ul>
+<li>无依赖的 read 一起运行。</li>
+<li>冲突的 read/write 或 write/write 串行化。</li>
+<li><code>bash</code>、<code>spawn_subagent</code>、MCP
+的<strong>列表</strong>类工具与未知工具为 <strong>barrier</strong> ——
+单独运行。</li>
+<li><strong>MCP 工具不是一刀切 barrier</strong>：同一 server
+的工具互相串行、不同 server 可并行（每个 server 用一个
+<code>__mcp__&lt;server&gt;</code> 写标记表示，见
+<code>mcp_server_resources</code>）；<code>read_mcp_resource</code> /
+<code>get_mcp_prompt</code> 显式给了 <code>server</code>
+时同样只锁那一个 server，不给 <code>server</code>
+的列表（<code>list_mcp_resources</code> / <code>list_mcp_prompts</code>
+/ templates）才是 barrier——列表可能触及每个 server。</li>
+<li><code>spawn_subagent</code> 带 <code>worktree: true</code>
+时是<strong>唯一一个输入相关</strong>的例外：子 agent 有自己的
+worktree，文件影响被限定在泳道内，因此映射为 <code>Independent</code>
+而不是静态的 <code>Barrier</code>，可以和其他工具同波次。</li>
+</ul>
+<p>调度器为每个工具分配 <strong>wave 编号</strong>：</p>
+<pre class="text"><code>wave[i] = max( wave[j] + 1  for every j &lt; i that conflicts with i ), else 0</code></pre>
+<p>Wave 按序执行；同一 wave 内工具并发运行。</p>
+<h3 id="phase-3--结果组装与后处理">Phase 3 — 结果组装与后处理</h3>
+<p><code>PostToolUse</code> hook、<code>StepFinished</code>、stats 与
+recent files 都发生在 <strong>Phase 2 的完成循环里</strong>：每有一个
+future
+就绪就立即处理，因此波内按<strong>完成顺序</strong>（不是模型顺序）触发；<code>StepFinished</code>
+携带 <code>step_idx</code>，UI 靠它归位。</p>
+<p>所有 wave 结束后，<code>build_tool_results</code> 按
+<code>prepared</code> 数组（模型原始顺序）把输出拼回
+<code>ToolResult</code> 块，再追加到
+<code>runtime.context</code>——provider 校验 <code>tool_use</code> /
+<code>tool_result</code> 的配对与次序，这一步的顺序就是契约。</p>
+<hr />
+<h2 id="3-冲突模型与安全">3. 冲突模型与安全</h2>
+<p><code>tool_schedule.rs</code>
+决定哪些工具可重叠，但它不维护一张工具名表：资源来自<strong>工具自己的元数据</strong>。每个工具在
+<code>ToolMetadata.resources</code>（<code>ResourcePolicy</code>，<code>crates/tact/src/tool/metadata.rs</code>）里声明形状，<code>tool_resources_from_metadata</code>
+调 <code>ResourcePolicy::resolve</code> 把它 +
+本次输入解析成具体的读/写路径集：</p>
+<table>
+<thead>
+<tr>
+<th><code>ResourcePolicy</code></th>
+<th>解析结果</th>
+<th>使用者</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ReadPath { field }</code></td>
+<td>读 <code>input.&lt;field&gt;</code> 指向的路径</td>
+<td><code>read_file</code>（<code>path</code>）、<code>read_image</code>（<code>file_path</code>）</td>
+</tr>
+<tr>
+<td><code>WritePath { field }</code></td>
+<td>写该路径</td>
+<td><code>write_file</code>、<code>edit_file</code>（<code>path</code>）</td>
+</tr>
+<tr>
+<td><code>SharedState { scope }</code></td>
+<td>与同 scope 的其他调用互斥</td>
+<td><code>task_create</code> /
+<code>task_update</code>（<code>task</code>）、team
+消息族（<code>team</code>）</td>
+</tr>
+<tr>
+<td><code>Independent</code></td>
+<td>不触及工作区文件，可与任何工具并行</td>
+<td><code>sleep</code>、<code>save_memory</code>、<code>check_background</code>、<code>wait_background</code>、<code>check_subagent</code>、<code>wait_subagent</code>、<code>cancel_subagent</code>、<code>load_skill</code>、<code>task_get</code>、<code>task_list</code>、<code>list_teammates</code>、<code>read_inbox</code>、<code>worktree_list</code>
+/ <code>worktree_status</code> / <code>worktree_events</code></td>
+</tr>
+<tr>
+<td><code>Barrier</code></td>
+<td>效果无法界定，独占一波</td>
+<td><code>bash</code>、<code>ask_user</code>、<code>compact</code>、<code>background_run</code>、<code>worktree_run</code>、<code>worktree_create</code>
+/ <code>worktree_remove</code>、<code>spawn_subagent</code>（不带
+<code>worktree</code>）、未知工具</td>
+</tr>
+<tr>
+<td><code>PatchFiles { … }</code></td>
+<td>从 patch 头解析目标路径</td>
+<td><code>apply_patch</code>（模块与元数据仍在，但<strong>当前没有任何
+toolset 注册它</strong>，见 §3 末）</td>
+</tr>
+</tbody>
+</table>
+<p>路径规范化为绝对路径并 rooted 于
+<code>work_dir</code>。两路径重叠当且仅当相等或一方为另一方祖先，因此对
+<code>src/foo.rs</code> 的 write 与作用域为 <code>src/</code> 的 search
+冲突。</p>
+<p>MCP 工具不走这套元数据：它们的资源由
+<code>mcp_server_resources(server)</code> 在调度时按 server 名合成（见
+§2）。</p>
+<p>逐工具的完整声明表、<code>overlap</code> 的路径分量语义、wave
+算法的三条保证、以及各示例的逐项推导，见 <a
+href="./07_chapter_tool_zh.html">工具系统</a> §9（工具侧视角）。</p>
+<h3 id="示例">示例</h3>
+<p>模型按序返回：</p>
+<ol type="1">
+<li><code>read A</code></li>
+<li><code>read B</code></li>
+<li><code>write A</code></li>
+<li><code>read C</code></li>
+<li><code>read A</code></li>
+</ol>
+<table>
+<thead>
+<tr>
+<th>Wave</th>
+<th>Tools</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>0</td>
+<td><code>read A</code>、<code>read B</code>、<code>read C</code></td>
+<td>一起运行</td>
+</tr>
+<tr>
+<td>1</td>
+<td><code>write A</code></td>
+<td>等待第一次 <code>read A</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td><code>read A</code></td>
+<td>等待 write</td>
+</tr>
+</tbody>
+</table>
+<p><code>read B</code> 与 <code>read C</code> 不受影响，留在 wave
+0。</p>
+<h3 id="默认-barrier">默认 barrier</h3>
+<p>未知工具视为
+barrier。新增工具不会意外引入不安全并行；要让它与别的工具并行，得在它的
+<code>ToolMetadata.resources</code> 里显式声明 <code>ReadPath</code> /
+<code>WritePath</code> / <code>SharedState</code> /
+<code>Independent</code>。</p>
+<p><code>apply_patch</code>
+是一个现状提醒：它的模块、<code>APPLY_PATCH_METADATA</code>（<code>PatchFiles</code>）都还在，但
+<code>454367d6</code> 把它从 registry 的 import 里删掉后<strong>没有任何
+toolset 再注册它</strong>——<code>edit_file</code> 恢复后 apply_patch
+就退出了工具面，留下的元数据是孤儿。上面表格里的那一行是"若重新接线会怎样"，不是它现在能跑。</p>
+<hr />
+<h2 id="4-权限与-hook">4. 权限与 Hook</h2>
+<p>工具进入调度前，预检先按工具<strong>元数据</strong>解析风险（<code>PermissionPolicy::resolve</code>，在
+<code>tool_dispatch.rs</code> 内），再把风险连同工具名与输入交给
+<code>PermissionManager</code>：</p>
+<ul>
+<li><strong>只读</strong>：一般允许。</li>
+<li><strong>Write</strong>：Default 模式询问（除非 allowlist）；Auto
+模式自动批准；Plan 模式拒绝。</li>
+<li><strong>高风险</strong>：首次询问；此后仅当有显式允许覆盖该确切工具与输入时才放行。来自
+<code>PermissionPolicy::High</code>（如
+<code>spawn_subagent</code>）、敏感路径目标（<code>ReadPath</code> /
+<code>WritePath</code> / <code>PatchPaths</code>
+命中），以及提到敏感路径或以 <code>sudo </code> / <code>su </code>
+开头的 shell 命令。</li>
+</ul>
+<p>风险不再按工具名匹配——名字是字符串，策略是数据。完整阶梯、模式与 TUI
+审批流程见 <a href="./10_chapter_permission_zh.html">权限模型</a>。</p>
+<p>Hook（<code>PreToolUse</code>、<code>PostToolUse</code>）在
+<code>crates/tact/src/hook/mod.rs</code>，可检查或修改工具输入/输出。它们在并行核心周围串行运行。完整设计见
+<a href="./09_chapter_hook_zh.html">Agent 生命周期 Hook</a>。</p>
+<hr />
+<h2 id="5-回传给-llm-的内容">5. 回传给 LLM 的内容</h2>
+<p>每个完成的工具产生带 JSON 内容的 <code>ToolResult</code>。这些作为
+<code>Role::User</code> 消息追加到
+<code>runtime.context</code>，保持模型原始 tool-call 顺序。Agent loop
+随后将更新后的 context 发给 LLM 进行下一轮。</p>
+<hr />
+<h2 id="6-可观测性tool-schedule-summary">6. 可观测性：Tool Schedule
+Summary</h2>
+<p>执行后 <code>persist_tool_schedule</code> 将
+<code>ToolScheduleSummary</code> 写入与 LLM 调用相同的
+<code>token_usages</code> 行。行匹配在
+<strong><code>persist_llm_call</code> 时</strong> 捕获的
+<code>last_message_id</code>（<code>llm_call_last_message_id</code> ——
+发给模型的最后一条消息，在 assistant 响应行追加之前）。</p>
+<pre class="json"><code>{
+  &quot;total_tools&quot;: 5,
+  &quot;wave_count&quot;: 3,
+  &quot;max_parallelism&quot;: 3,
+  &quot;waves&quot;: [
+    { &quot;tools&quot;: [&quot;read_file&quot;, &quot;read_file&quot;, &quot;read_file&quot;], &quot;barrier&quot;: false },
+    { &quot;tools&quot;: [&quot;write_file&quot;], &quot;barrier&quot;: false },
+    { &quot;tools&quot;: [&quot;read_file&quot;], &quot;barrier&quot;: false }
+  ]
+}</code></pre>
+<p>这会将调度策略与 token 成本关联，便于后续分析。</p>
+<hr />
+<h2 id="7-自定义调度">7. 自定义调度</h2>
+<p>要使新 native 工具可安全并行：</p>
+<ol type="1">
+<li>在该工具的 <code>ToolMetadata.resources</code> 里声明
+<code>ResourcePolicy</code>（<code>ReadPath</code> /
+<code>WritePath</code> / <code>SharedState { scope }</code> /
+<code>Independent</code>）——声明就在工具自己的元数据里，不在调度器里。</li>
+<li>别顺手写
+<code>Barrier</code>：它是"我无法界定这个工具碰什么"的兜底，不是默认值。</li>
+<li>避免在声明资源之外的副作用。</li>
+</ol>
+<p>若工具有全局副作用（shell 命令、子 agent、MCP 状态），保持为
+barrier。字段名与 <code>permission</code> /
+<code>permission_prompt</code> / <code>argument_summary</code>
+的一致性问题见 <a href="./07_chapter_tool_zh.html">工具系统</a> §6。</p>
+<hr />
+<h2 id="8-代码地图">8. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>Agent::agent_loop</code>、<code>stream_message</code>、会话辅助</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
+<td><code>execute_tool_call</code>、三阶段编排</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_schedule.rs</code></td>
+<td>资源模型、冲突检测、wave
+调度器、<code>ToolScheduleSummary</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/permission/mod.rs</code></td>
+<td>权限决策（<code>check</code> /
+<code>check_with_auto</code>）与模式；风险本身由
+<code>tool/metadata.rs</code> 的 <code>PermissionPolicy</code> 解析</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/hook/mod.rs</code></td>
+<td><code>PreToolUse</code> / <code>PostToolUse</code> hook</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolRouter</code>、工具注册、native 工具分发</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/session_store/</code></td>
+<td><code>record_tool_schedule</code> — 持久化 schedule summary</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./10_chapter_permission_zh.html">权限模型</a></li>
+<li><a href="./07_chapter_tool_zh.html">工具系统</a> —
+<code>ToolRouter</code> 与 native 工具分发</li>
+<li><a href="./05_chapter_compact_zh.html">上下文压缩</a> — dispatch 中的
+<code>persist_large_output</code> 与手动 <code>compact</code> 检测</li>
+<li><a href="./13_chapter_background_zh.html">后台任务</a> — 同步
+<code>bash</code> 步骤的异步对应物</li>
+<li><a href="./12_chapter_subagent_zh.html">子 Agent</a> — 嵌套
+<code>spawn_subagent</code> 工具与调度 barrier</li>
+<li><a href="../docs/parallel_tool_execution.md">Parallel Tool
+Execution</a></li>
+<li><a href="../docs/tool_rendering.md">Tool Rendering</a></li>
+<li><a href="../docs/token_usage_schema.md">Token Usage Schema</a></li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

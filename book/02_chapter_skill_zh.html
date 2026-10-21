@@ -1,0 +1,1382 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Skill 注册表</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-skills-%E7%9A%84%E7%94%A8%E9%80%94" title="1. Skills 的用途"><span class="toc-label">1. Skills 的用途</span></a></li>
+<li class="toc-l2"><a href="#2-%E6%9E%B6%E6%9E%84%E6%A6%82%E8%A7%88" title="2. 架构概览"><span class="toc-label">2. 架构概览</span></a></li>
+<li class="toc-l2"><a href="#3-%E6%95%B0%E6%8D%AE%E6%A8%A1%E5%9E%8B" title="3. 数据模型"><span class="toc-label">3. 数据模型</span></a></li>
+<li class="toc-l3"><a href="#skillmanifest" title="SkillManifest"><span class="toc-label">SkillManifest</span></a></li>
+<li class="toc-l3"><a href="#skilldocument" title="SkillDocument"><span class="toc-label">SkillDocument</span></a></li>
+<li class="toc-l3"><a href="#%E5%B1%95%E7%A4%BA%E6%A0%BC%E5%BC%8F%E5%AE%8C%E6%95%B4%E5%8A%A0%E8%BD%BD" title="展示格式（完整加载）"><span class="toc-label">展示格式（完整加载）</span></a></li>
+<li class="toc-l2"><a href="#4-skillmd-%E6%96%87%E4%BB%B6%E6%A0%BC%E5%BC%8F" title="4. SKILL.md 文件格式"><span class="toc-label">4. SKILL.md 文件格式</span></a></li>
+<li class="toc-l3"><a href="#%E5%8F%91%E7%8E%B0%E8%A7%84%E5%88%99" title="发现规则"><span class="toc-label">发现规则</span></a></li>
+<li class="toc-l2"><a href="#5-skillregistry-api" title="5. SkillRegistry API"><span class="toc-label">5. SkillRegistry API</span></a></li>
+<li class="toc-l2"><a href="#6-%E9%9B%86%E6%88%90%E7%82%B9" title="6. 集成点"><span class="toc-label">6. 集成点</span></a></li>
+<li class="toc-l3"><a href="#%E7%B3%BB%E7%BB%9F%E6%8F%90%E7%A4%BA%E8%AF%8D" title="系统提示词"><span class="toc-label">系统提示词</span></a></li>
+<li class="toc-l3"><a href="#load_skill-%E5%B7%A5%E5%85%B7" title="load_skill 工具"><span class="toc-label">load_skill 工具</span></a></li>
+<li class="toc-l3"><a href="#toolcontext" title="ToolContext"><span class="toc-label">ToolContext</span></a></li>
+<li class="toc-l2"><a href="#7-tui-%E6%96%9C%E6%9D%A0%E8%B0%83%E7%94%A8" title="7. TUI 斜杠调用"><span class="toc-label">7. TUI 斜杠调用</span></a></li>
+<li class="toc-l2"><a href="#8-%E5%AF%B9%E6%AF%94skills-vs-memory" title="8. 对比：Skills vs Memory"><span class="toc-label">8. 对比：Skills vs Memory</span></a></li>
+<li class="toc-l2"><a href="#9-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="9. 代码地图"><span class="toc-label">9. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#10-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="10. 当前缺口"><span class="toc-label">10. 当前缺口</span></a></li>
+<li class="toc-l2"><a href="#%E7%9B%B8%E5%85%B3%E6%96%87%E6%A1%A3" title="相关文档"><span class="toc-label">相关文档</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="skill-注册表">Skill 注册表</h1>
+<p>本章说明 Tact
+如何从磁盘加载<strong>自定义指令文件</strong>（skills）：扫描
+<code>SKILL.md</code>、在系统提示词中暴露摘要、通过
+<code>load_skill</code> 工具按需加载全文，以及从 TUI
+用斜杠命令调用。</p>
+<p>Skills 与 <a href="./03_chapter_memory_zh.html">持久化记忆</a>
+相关但不同——skills 是作者编写的 playbook；memories
+是对话中学到的事实。</p>
+<hr />
+<h2 id="1-skills-的用途">1. Skills 的用途</h2>
+<p>Skill 是一份 Markdown 文档，教 agent
+如何完成专项任务（编码规范、部署步骤、领域工作流）。默认情况下 Tact
+<strong>不会</strong>把完整 skill
+正文注入每一轮提示——那会撑爆上下文。而是：</p>
+<table>
+<thead>
+<tr>
+<th>阶段</th>
+<th>模型看到的内容</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>每轮（系统提示词）</td>
+<td>默认是 <code>describe_available_bounded()</code> 得到的 skill
+<strong>名称与描述</strong>——每条描述按
+<code>[agent].skill_description_cap</code>（默认 200
+字符）截断，整份目录再压进 <code>model_context_window</code> 的 2%；开启
+<code>[agent].skill_body_auto_inject</code> 后改为
+<code>describe_available_with_body()</code> 的<strong>全文</strong></td>
+</tr>
+<tr>
+<td>按需（<code>load_skill</code> 工具）</td>
+<td>包在 <code>&lt;skill&gt;</code> XML 标签中的全文（工具结果）</td>
+</tr>
+<tr>
+<td>TUI 斜杠 <code>/skill-name</code></td>
+<td>调用时在<strong>用户任务</strong>中注入同样的
+<code>&lt;skill&gt;</code> 包装（见 <a href="#7-tui-斜杠调用">§7</a> 与
+<a href="./23_chapter_tui_zh.html">TUI</a>）</td>
+</tr>
+</tbody>
+</table>
+<p>启动时只有摘要；模型调用 <code>load_skill</code>
+或用户通过斜杠调用时才加载全文。<code>[agent].skill_body_auto_inject</code>（默认
+<code>false</code>，CLI
+<code>--skill-body-auto-inject</code>）把这层摘要整体换成全文，代价是每一轮请求都携带所有
+skill 正文——除非某个 skill 必须无条件留在上下文中，否则保持默认；见 <a
+href="./21_chapter_config_zh.html">配置</a>。Responses adapter
+额外施加更严格的 skill 加载策略；见 <a
+href="./22_chapter_llm_zh.html#62-responses-api">LLM Provider
+Layer</a>。</p>
+<p><strong>目录本身也是有上限的</strong>（2026-10-11
+起）。<code># Available skills</code>
+是系统提示词里唯一随"机器上装了多少
+skill"增长的部分，此前没有任何约束：79 个 skill 实测 <strong>22,605 字符
+≈ 5.6k tokens，每轮都在</strong>，最长的一条描述 966
+字符。现在两道闸：</p>
+<ul>
+<li><strong>描述截断</strong>：<code>[agent].skill_description_cap</code>（默认
+200，<code>0</code> = 不限）在词边界截断并补 <code>…</code>。同一批 79
+个 skill：默认值把目录压到 <strong>12,672 字符 ≈ 3.2k
+tokens</strong>（37
+条被截）。全文没丢——<code>load_skill</code>、<code>/skill list</code>、<code>/skill </code>
+补全都是全文。</li>
+<li><strong>目录预算</strong>：<code>catalog_budget_chars(model_context_window)</code>
+= 窗口的 2%，按 4 字节/token 折成字符（窗口为 <code>0</code> 时回退
+8,000 字符，与 Codex
+的兜底一致）。超预算就从<strong>名字排序的尾部</strong>丢弃，换成一行
+trailer 点名被丢的 skill（最多 40 个名字 +
+<code>…</code>）——不留名字的话 <code>load_skill</code>
+对被丢的那批就无从下手。<strong>窗口 1M 时预算是 80,000
+字符，永不触发</strong>；这道闸是为 128k / 200k 窗口兜底的（128k 会丢约
+6 条）。</li>
+</ul>
+<p><code>[agent].skill_disable = ["name", "plugin:name"]</code> 按
+<strong>registry 名字</strong>把 skill
+摘出目录（不是按路径：插件路径里带
+revision，每次更新都会变）。被摘掉的仍然可用——<code>/skill &lt;name&gt;</code>
+照跑、<code>load_skill</code> 照解析；<code>/skill list</code>
+会把它标成
+<code>(not in catalog)</code>。这道开关管的是<strong>自动发现</strong>，不是能力，所以列表里写错一个名字不会把人锁在外面。</p>
+<p>目录里<strong>不带路径</strong>：<code>&lt;skill&gt;</code>
+包装在<strong>加载时</strong>才带上 <code>dir</code>（见 <a
+href="#3-数据模型">§3</a>）。Codex / Pi 必须把路径放进目录，因为它们的
+loader 就是"读那个路径的文件"；Tact 有 <code>load_skill</code>
+这个工具，可以在模型真正要动手时才交付，常驻成本为零。</p>
+<hr />
+<h2 id="2-架构概览">2. 架构概览</h2>
+<pre class="mermaid">graph TD
+    s1_agents[全局 agents] --&gt; reg
+    s2_tact[个人 tact] --&gt; reg
+    s3_project[项目] --&gt; reg
+    s4_config[配置] --&gt; reg
+    s5_plugin[插件] --&gt; reg
+    reg[SkillRegistry 共享] --&gt; c1_prompt[系统提示词 摘要]
+    reg --&gt; c2_tool[load_skill 全文]
+    reg --&gt; c3_slash[TUI 斜杠 调用]</pre>
+<blockquote>
+<p><strong>写法说明</strong>：Tact 自己的 mermaid
+渲染器（<code>ratatui-markdown</code>）只吃扁平的
+<code>graph TD/LR</code>——<code>[方框]</code> / <code>(圆角)</code> /
+<code>{菱形}</code> / <code>--&gt;</code> / <code>---</code>
+这一层。<code>subgraph</code> 不被识别，会被当成名为
+<code>subgraph</code> / <code>end</code>
+的普通节点画成一堆碎框；<code>-.-&gt;</code>
+会让整张图解析失败并回退成代码块；标签里的 <code>&amp;lt;</code>
+会原样显示（直接写 <code>&lt;workdir&gt;</code>
+即可）。所以这里不用子图：五个发现根扇入注册表，再扇出到三条消费路径；节点
+id 的 <code>s1_</code> / <code>c1_</code> 前缀只是为了让渲染器按 id
+排序时保持「加载顺序」与「消费顺序」。</p>
+</blockquote>
+<p>发现根目录（最具体者在前）：</p>
+<table>
+<thead>
+<tr>
+<th>根</th>
+<th>路径</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>项目本地</td>
+<td><code>&lt;workdir&gt;/.tact/skills/</code></td>
+<td>仓库内 tact skills</td>
+</tr>
+<tr>
+<td>User</td>
+<td><code>~/.tact/skills/</code></td>
+<td>跨项目的个人 skills</td>
+</tr>
+<tr>
+<td>Global agents</td>
+<td><code>~/.agents/skills/</code></td>
+<td>共享 agents skills</td>
+</tr>
+<tr>
+<td>配置额外目录</td>
+<td><code>[agent].skill_dirs</code></td>
+<td>TOML 额外根（相对 workdir；支持 <code>~</code>）</td>
+</tr>
+<tr>
+<td>Installed plugin</td>
+<td><code>~/.tact/plugins/cache/&lt;marketplace&gt;/&lt;plugin&gt;/&lt;revision&gt;/skills/</code></td>
+<td>已安装插件的 playbook</td>
+</tr>
+<tr>
+<td>Installed plugin commands</td>
+<td><code>~/.tact/plugins/cache/&lt;marketplace&gt;/&lt;plugin&gt;/&lt;revision&gt;/commands/*.md</code></td>
+<td>旧式 Claude 斜杠命令</td>
+</tr>
+</tbody>
+</table>
+<p>加载顺序（升序 ——
+同名冲突时靠后的根胜出）：<code>~/.agents/skills/</code> →
+<code>~/.tact/skills/</code> →
+<code>&lt;workdir&gt;/.tact/skills/</code> → <strong>配置
+<code>skill_dirs</code></strong>（按列出顺序）→ 已安装插件。Codex
+兼容根被刻意排在最前，因此它会输给 Tact
+自己的根和项目根；上表按「最具体者在前」列出同一批根。已安装插件的 skill
+始终带 <code>plugin:</code> 前缀，因此永远不能替换独立 skill。</p>
+<p>旧式 <code>commands/*.md</code> 在插件的 <code>skills/</code>
+<strong>之后</strong>加载进同一注册表（Claude Code
+两种布局加载方式相同，只是文件布局不同），因此同名命令覆盖技能。命令名取自文件
+stem：<code>commands/commit.md</code> →
+<code>/plugin:commit</code>。</p>
+<p>根目录下的条目可以是<strong>符号链接</strong>：遍历使用
+<code>follow_links(true)</code>，因此把 skill
+目录链接进位的安装方式（<code>~/.agents/skills/omarchy -&gt; /usr/share/omarchy/default/agents/skills/omarchy</code>）与复制一份完全等价。<code>walkdir</code>
+默认不跟随链接，而被链接的目录既不会被下降进入、也不满足
+<code>is_file()</code>，这些 skill
+过去会被无提示地丢弃。插件根在它那套扁平扫描允许的范围内遵守同一条规则：判断子项用
+<code>Path::is_dir()</code>（stat，跟随链接）而不是
+<code>DirEntry::file_type()</code>（lstat），因此符号链接形式的插件
+skill 目录同样能加载——深度仍然只有一层。</p>
+<hr />
+<h2 id="3-数据模型">3. 数据模型</h2>
+<h3 id="skillmanifest">SkillManifest</h3>
+<pre class="rust"><code>pub struct SkillManifest {
+    pub name: String,
+    pub description: String,
+}</code></pre>
+<p><strong>刻意收窄</strong>：只保留真正被读取的两个字段。<code>path</code>
+与 Claude Code 的 <code>argument-hint</code> /
+<code>allowed-tools</code> / <code>model</code>
+曾在这里，但全仓库没有任何消费者——<code>pub</code> 字段在库 crate
+里不触发
+<code>dead_code</code>，所以编译器不会提示。存一个永不生效的字段等于向作者承诺它生效，2026-10-04
+一并删除（见 <a href="./26_chapter_issue_zh.html">Ch
+26</a>）。要加字段，就在同一次改动里带上读它的代码。</p>
+<h3 id="skilldocument">SkillDocument</h3>
+<pre class="rust"><code>pub struct SkillDocument {
+    pub manifest: SkillManifest,
+    pub body: String,    // frontmatter 之后的 markdown
+    pub dir: PathBuf,    // 装着这个 SKILL.md 的目录
+}</code></pre>
+<p><code>dir</code> 挂在 document 上而不是 manifest
+上，是刻意的：它只在<strong>正文被加载时</strong>随
+<code>&lt;skill&gt;</code>
+包装交出去，从不进入目录。目录里的路径每轮都要付费，而模型只有在真正动手用这个
+skill 时才需要它。</p>
+<h3 id="展示格式完整加载">展示格式（完整加载）</h3>
+<p>通过 <code>Display</code> 或 <code>load_full_text</code> 渲染时：</p>
+<pre class="xml"><code>&lt;skill name=&quot;demo&quot; dir=&quot;/abs/path/to/demo&quot;&gt;
+Skill body content here.
+&lt;/skill&gt;</code></pre>
+<p><code>dir</code> 让正文里写的
+<code>references/formats.md</code>、<code>scripts/extract.sh</code>
+这类<strong>相对 skill 目录</strong>的路径可以被解析。TUI 斜杠调用在
+<code>$ARGUMENTS</code>
+处理后的渲染正文外使用<strong>同一个</strong>包装（<code>format_skill_agent_task</code>），两个产出点有一条测试钉住它们一致——否则同一个
+skill 会在工具路径上看得到
+<code>dir</code>、在斜杠路径上看不到。两个属性都做 XML 转义。</p>
+<hr />
+<h2 id="4-skillmd-文件格式">4. SKILL.md 文件格式</h2>
+<p>可选 YAML frontmatter（与 <a
+href="https://agentskills.io/specification">Agent Skills</a> 开放格式的
+<code>name</code> / <code>description</code> 对齐）：</p>
+<pre class="markdown"><code>---
+name: rust-skills
+description: Comprehensive Rust coding guidelines
+---
+
+# Rust guidelines
+…</code></pre>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>回退</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td><code>SKILL.md</code> 的父目录名</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td><code>"No description"</code></td>
+</tr>
+</tbody>
+</table>
+<p>Claude Code 的 <code>argument-hint</code> /
+<code>allowed-tools</code> / <code>model</code>
+<strong>不解析、不存储、不生效</strong>：<code>SkillFrontmatter</code>
+只声明 <code>name</code> 与 <code>description</code>，其余键由 serde
+静默忽略。它们此前也只是被存进 <code>SkillManifest</code>
+而没有读取者；留下一个"看起来支持"的字段会让作者以为工具被限制了、模型被覆盖了（2026-10-04
+删除，见 <a href="./26_chapter_issue_zh.html">Ch 26</a>）。因此带这些键的
+Claude skill 照常加载，只是这些键什么也不做。</p>
+<p><strong>无</strong> frontmatter 的文件仍可加载——整文件作为正文（trim
+后）。CRLF 行尾会规范化。</p>
+<p>开放 Agent Skills 规范<strong>未</strong>定义参数占位符。Tact 的 TUI
+与 Claude Code 一致：调用时用裸 <code>$ARGUMENTS</code> 替换；若缺失则在
+skill 正文内追加 <code>ARGUMENTS: …</code>（见 <a
+href="#7-tui-斜杠调用">§7</a>）。包装在客户端侧完成；系统提示词告诉模型如何理解斜杠调用的
+<code>&lt;skill&gt;</code> / <code>ARGUMENTS:</code>。</p>
+<h3 id="发现规则">发现规则</h3>
+<p><code>SkillRegistry::load_skills()</code>：</p>
+<ul>
+<li>遍历 <code>skill_search_dirs()</code>
+中的每个根（<code>WalkDir</code>，<strong>递归</strong>——根下任意深度的
+<code>SKILL.md</code> 都会被收进来）</li>
+<li>匹配文件名恰好为 <code>SKILL.md</code> 的文件</li>
+<li>插入以 skill 名称为 key 的
+<code>HashMap&lt;String, SkillDocument&gt;</code></li>
+</ul>
+<p>随后，<code>get_skill_registry()</code>
+会在项目根之后加载已验证的已安装插件根，并以插件 ID 为每个本地 skill
+名称添加前缀（<code>plugin:skill</code>）。<strong>插件的扫描只有一层，不递归</strong>：只读
+<code>skills/&lt;name&gt;/SKILL.md</code>，更深的
+<code>skills/group/&lt;name&gt;/SKILL.md</code>
+会被忽略且没有任何提示。这与该格式来源的 Claude Code
+插件布局一致——它与独立根之间的深度差异是刻意为之，由
+<code>plugin_skills_only_load_direct_skill_children</code>（<code>skill/mod.rs</code>）固定住。同一插件的旧式
+<code>commands/*.md</code>
+斜杠命令随后加载（<code>load_plugin_commands</code>），同样是扁平的：只取
+<code>commands/</code> 下的直接 <code>.md</code>
+文件，绝不进子目录。命令名取文件 stem（<code>commands/commit.md</code> →
+<code>plugin:commit</code>），frontmatter 与独立 skill
+走同一条解析（同样只认 <code>name</code> /
+<code>description</code>）。</p>
+<p>重名的独立
+skill：后扫描的根<strong>覆盖</strong>先前的——无警告。同一根内，后遍历到的条目也会覆盖。插件
+skill 位于独立的 <code>plugin:skill</code> 命名空间中。</p>
+<hr />
+<h2 id="5-skillregistry-api">5. SkillRegistry API</h2>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>new(skill_dirs)</code></td>
+<td>在一个或多个根上创建空注册表</td>
+</tr>
+<tr>
+<td><code>load_skills()</code></td>
+<td>扫描所有根并填充 map</td>
+</tr>
+<tr>
+<td><code>describe_available()</code></td>
+<td>排序后的 <code>"- name: description"</code>
+列表，<strong>不截断</strong>——TUI 的 <code>skills_description</code>
+快照用它</td>
+</tr>
+<tr>
+<td><code>describe_available_bounded(budget_chars, description_cap)</code></td>
+<td><strong>系统提示词的目录</strong>：描述按 cap 截断（<code>0</code> =
+不限），列表压进预算，装不下的折成一行 trailer</td>
+</tr>
+<tr>
+<td><code>describe_available_with_body()</code></td>
+<td>同上，但每项是完整 <code>&lt;skill&gt;</code>
+块（<code>skill_body_auto_inject</code>
+开启时使用）；<strong>不截断、不设预算</strong></td>
+</tr>
+<tr>
+<td><code>load_full_text(name)</code></td>
+<td>完整 <code>&lt;skill&gt;</code> 块（含
+<code>dir</code>），或列出可用名称的错误字符串</td>
+</tr>
+<tr>
+<td><code>set_disabled(names)</code> / <code>is_disabled(name)</code> /
+<code>disabled()</code></td>
+<td><code>[agent].skill_disable</code>；只在<strong>渲染时</strong>过滤，不禁用加载</td>
+</tr>
+<tr>
+<td><code>skills()</code></td>
+<td>只读 map 访问</td>
+</tr>
+<tr>
+<td><code>skill_dirs()</code></td>
+<td>只读根目录访问</td>
+</tr>
+</tbody>
+</table>
+<p>三个渲染器都由私有的 <code>catalog_entries()</code>
+供数据——按名字排序、去掉
+disabled。预算相关还有两个自由函数与两个常量：<code>catalog_budget_chars(window)</code>、<code>cap_description</code>（私有），以及
+<code>DEFAULT_SKILL_DESCRIPTION_CAP</code>（200）、<code>CATALOG_BUDGET_FALLBACK_CHARS</code>（8,000）、<code>TRAILER_NAME_CAP</code>（40）。</p>
+<p>便捷构造函数与共享句柄：</p>
+<pre class="rust"><code>pub fn get_skill_registry(workdir: impl AsRef&lt;Path&gt;) -&gt; Result&lt;SkillRegistry&gt;
+pub fn shared_skill_registry(workdir: impl AsRef&lt;Path&gt;) -&gt; Result&lt;SharedSkillRegistry&gt;
+pub fn lock_skills(reg: &amp;SharedSkillRegistry) -&gt; MutexGuard&lt;&#39;_, SkillRegistry&gt; // 从 poison 恢复</code></pre>
+<p><code>shared_skill_registry()</code> 在 <code>interactive.rs</code> /
+<code>headless.rs</code> 启动时使用；它内部调用
+<code>get_skill_registry()</code>——先扫内置根，再按需追加
+<code>[agent].skill_dirs</code>，最后加载已安装插件根——再把结果包进
+<code>Arc&lt;Mutex&lt;_&gt;&gt;</code>。交互模式把该共享句柄放到
+<code>ToolContext</code> 上——agent 工具与 TUI
+共用同一把锁，<code>/skill reload</code> 因此对两边同时生效。TUI 的
+<code>SkillEntry { name, description, body }</code>
+是注册表条目的投影。</p>
+<hr />
+<h2 id="6-集成点">6. 集成点</h2>
+<h3 id="系统提示词">系统提示词</h3>
+<pre class="rust"><code>.skills_available({
+    let reg = crate::skill::lock_skills(&amp;self.tool_context.skill_registry);
+    if self.agent_settings.skill_body_auto_inject {
+        reg.describe_available_with_body()
+    } else {
+        reg.describe_available_bounded(
+            crate::skill::catalog_budget_chars(self.model_context_window()),
+            self.agent_settings.skill_description_cap,
+        )
+    }
+})</code></pre>
+<p>在模板中渲染为 <code># Available skills</code>。模板在
+<code>skills_available</code>
+内容之外<strong>固定补两段</strong>：一段解释用户斜杠调用留下的
+<code>&lt;skill name="…"&gt;…&lt;/skill&gt;</code> /
+<code>ARGUMENTS:</code> 块（避免与 <code>load_skill</code>
+元数据混淆），另一段是<strong>加载策略</strong>——「问候、闲聊、普通问题不要调用
+<code>load_skill</code>；只有用户显式斜杠调用或明确要求时才加载；skill
+描述不得把自己的调用写成强制」，并说明加载进来的
+<code>&lt;skill&gt;</code> 块带
+<code>dir</code>、正文里的相对路径要相对它解析。策略段是模型不滥用
+<code>load_skill</code> 的依据；Responses 模板同样带这两段。见 <a
+href="./04_chapter_prompt_zh.html">系统提示词</a>——该节在动态边界之上（除非会话中途在磁盘上增删
+skills 且未 reload，否则基本稳定）。</p>
+<p><code># Available skills</code>
+<strong>只来自磁盘</strong>：注册表里从来不会有 MCP server
+提供的东西。MCP server 是在<em>工具描述</em>里宣传自己 skill
+的（<code>skill://&lt;server&gt;/&lt;skill&gt;/SKILL.md</code>），Tact
+原样转发，因此请求确实携带它们，而 system prompt
+对此一字不提。<code>/view-system-prompt</code> 弹窗的 "Assembled current
+prompt" 视图会在末尾的 <code>## MCP skills</code> 段列出这些路径。</p>
+<h3 id="load_skill-工具">load_skill 工具</h3>
+<p><code>crates/tact/src/tool/load_skill.rs</code>：</p>
+<pre class="rust"><code>#[tool(name = &quot;load_skill&quot;, description = &quot;Load the full body of a named skill…&quot;)]
+pub async fn load_skill(ctx: ToolContext, input: LoadSkillInput) -&gt; Result&lt;String&gt; {
+    Ok(crate::skill::lock_skills(&amp;ctx.skill_registry).load_full_text(&amp;input.name))
+}</code></pre>
+<p>未知 skill 返回纯文本错误（非
+<code>Err</code>），并列出可用名称——模型将其视为工具输出。</p>
+<h3 id="toolcontext">ToolContext</h3>
+<pre class="rust"><code>pub skill_registry: Arc&lt;Mutex&lt;SkillRegistry&gt;&gt;, // SharedSkillRegistry</code></pre>
+<p>在主 agent、子 agent 与交互 TUI 间共享（使 <code>/skill reload</code>
+保持一致）。若子 agent 工具集包含 <code>load_skill</code> 则可调用——当前
+<code>subagent_toolset()</code> <strong>未</strong>注册
+<code>load_skill</code>；仅主 agent 的 <code>toolset()</code> 有。</p>
+<hr />
+<h2 id="7-tui-斜杠调用">7. TUI 斜杠调用</h2>
+<p>已发现的 skills <strong>不再是一级斜杠命令</strong>：一级列表（Insert
+模式 <code>/</code> 弹出菜单、Normal
+模式命令面板）只有内置命令，否则装了几十个 skill 的机器上
+<code>/mcp</code>、<code>/compact</code> 会被淹没，每装一个 skill
+还会挪动整个一级列表。skills 收在 <code>/skill</code>
+之下——<code>/skill </code> 弹出 <code>list</code> / <code>reload</code>
+之后就是每个 skill（附 frontmatter
+描述，按名字排序），<code>/skill demo fix auth</code> 运行它并把
+<code>fix auth</code> 当参数。一级列表不再列
+skill，因此也不会再有「一级列表里混着 skill」的排序与分组问题。</p>
+<table>
+<thead>
+<tr>
+<th>Skill 类型</th>
+<th>注册表名称</th>
+<th>Slash 调用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>独立 skill</td>
+<td><code>demo</code></td>
+<td><code>/skill demo</code>（推荐）或 <code>/demo</code></td>
+</tr>
+<tr>
+<td>已安装插件</td>
+<td><code>plugin:brainstorming</code></td>
+<td><code>/skill plugin:brainstorming</code> 或
+<code>/plugin:brainstorming</code></td>
+</tr>
+</tbody>
+</table>
+<table>
+<thead>
+<tr>
+<th>输入</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>/skill demo</code> 或 <code>/skill demo args…</code> +
+Enter</td>
+<td><strong>Invoke</strong>：经 <code>handlers/skills.rs</code> 的
+<code>invoke_skill</code> 提交 <code>&lt;skill&gt;</code>
+任务（与直接形式共用同一实现，只是 log 里回显
+<code>/skill demo args…</code>）</td>
+</tr>
+<tr>
+<td><code>/skill </code>（或 <code>/skill re</code>）在弹出菜单中</td>
+<td>列出 <code>list</code> / <code>reload</code> / <code>disable</code>
+/ <code>enable</code> / 每个 skill；Tab 补全为
+<code>/skill demo </code>，Enter 直接运行高亮的那个</td>
+</tr>
+<tr>
+<td><code>/demo</code> 或
+<code>/demo args…</code>（直接形式，仍支持）</td>
+<td><strong>Invoke</strong>：仅凭输入解析，不走弹出菜单——skills
+不再出现在一级列表里，这个形式保留给已经形成的习惯</td>
+</tr>
+<tr>
+<td><code>/skill list</code></td>
+<td>列出已发现的 skills（分页 Markdown
+表格，纯本地渲染，任务进行中也可用）；被 <code>skill_disable</code>
+摘掉的行带 <code>(not in catalog)</code> 前缀</td>
+</tr>
+<tr>
+<td><code>/skill reload</code></td>
+<td>重扫 skill 根到共享 registry（TUI + agent），失效 visual cache</td>
+</tr>
+<tr>
+<td><code>/skill disable &lt;name&gt;</code></td>
+<td>把该 skill 从系统提示的目录里摘掉：翻共享 registry 的 disabled 集合
+→ <strong>立刻重建 TUI 列表</strong>（<code>/skill list</code>
+当场带标记）→ 把整份 <code>[agent].skill_disable</code>
+写回配置文件</td>
+</tr>
+<tr>
+<td><code>/skill enable &lt;name&gt;</code></td>
+<td>反向操作；重复执行只报状态，不重写文件</td>
+</tr>
+<tr>
+<td><code>/skill disable </code> / <code>/skill enable </code>
+在弹出菜单中</td>
+<td>列出该动词<strong>能作用</strong>的 skill——<code>disable</code>
+列目录里还在的，<code>enable</code>
+列已经被摘掉的（已经处于目标状态的行只会回一句「已经…」，所以不列）。继续打字按名字模糊匹配；Tab
+补全为 <code>/skill disable demo</code>，Enter 直接执行</td>
+</tr>
+<tr>
+<td>高亮</td>
+<td>输入框与用户 log 行把 <code>/skill demo</code> 整体标为
+accent+bold（<code>split_skill_slash</code> 同时识别 <code>/demo</code>
+与 <code>/skill demo</code>）</td>
+</tr>
+</tbody>
+</table>
+<blockquote>
+<p>名字冲突的规则是「内置优先」：名为 <code>skill</code> 的 skill 被内置
+<code>/skill</code> 顶掉（<code>/skill</code> 走 <code>list</code> /
+<code>reload</code>）；名为 <code>list</code> / <code>reload</code> /
+<code>disable</code> / <code>enable</code> 的 skill 在
+<code>/skill </code> 补全里被内置子命令顶掉（不出现重复行，直接形式
+<code>/list</code>
+仍可运行）；其余同名内置命令（<code>help</code>、<code>cancel</code>…）从来都是内置赢。</p>
+</blockquote>
+<p><strong><code>/skill disable</code> 的语义</strong>（与
+<code>[agent].skill_disable</code> 同一个开关，见 <a
+href="#1-skills-的用途">§1</a> 与 <a
+href="./21_chapter_config_zh.html">配置</a>）：管的是<strong>自动发现</strong>，不是能力。被摘掉的
+skill 照样能用 <code>/skill &lt;name&gt;</code>
+跑、<code>load_skill</code>
+照样解析它——所以消息写的是「已从目录中隐藏」而不是「已禁用」。写入的是<strong>整份列表</strong>而不是增量，因为写盘会替换整个键，一份不完整的列表会把没写进去的
+skill 全部静默恢复。没有配置文件时改动只留在本次会话，消息会这么说（与
+<code>/theme</code>
+同一套契约）。名字解析不到时只报名字、不落进用法提示——弹出菜单已经教过语法，而这条是命令中途报的错。</p>
+<p><strong>两个动词的值也是补全出来的</strong>，不用盲敲名字。<code>slash_candidates()</code>
+走子命令树时记下「落在一个收值的子命令上」，然后由
+<code>skill_verb_candidates()</code>
+把该动词<strong>能作用</strong>的那一半 skill 作为
+<code>&lt;path&gt; &lt;name&gt;</code>
+候选项交出去——<code>disable</code> 给目录里还在的，<code>enable</code>
+给已经被摘掉的。已经处于目标状态的行不列：它们的唯一结局是一句「已经…」。<code>/skill disable </code>
+后面那个空格<strong>不会关掉弹窗</strong>（<code>slash_candidates()</code>
+非空），所以列表是打完空格就跳出来的；继续打字按名字模糊匹配，Enter
+直接执行而不是只补全路径（<code>incomplete: false</code>）。<strong>值可补全的地方有两个命令</strong>（另一个是
+<code>/goal</code> 的收值动词，见下）；其余
+<code>/mcp auth &lt;server&gt;</code>
+那类仍然是打完就关。未知动词返回空集而不是猜一半：<code>value_candidates()</code>
+按命令分派，将来加第三个命令必须自己决定过滤哪一批值。</p>
+<p><strong><code>/goal</code> 的六个收值动词同样把 Goal ID
+交出来</strong>（2026-10-16）。<code>value_candidates()</code>
+按命令分派：<code>/skill</code> 交 skill 名，<code>/goal</code> 交
+<code>GoalPanelState.snapshot</code>（<code>goal_verb_candidates()</code>）里的
+ID。ID
+是唯一不在屏幕上的东西——面板行只有标题，公告行可能已经翻上去几屏——所以
+<code>/goal show|steer|pause|resume|cancel|accept </code>
+打完空格都弹出候选：路径列是 <strong>ID</strong>（Tab/Enter
+补的就是它），右列是面板同一行的 <code>marker + 标题</code>，因此既能按
+ID
+也能按标题模糊匹配。候选只列<strong>这个动词真能作用</strong>的行，判据是
+store 的转换表 <code>goal::is_legal_transition</code>
+而不是猜：<code>show</code> 全列（读操作，终态也算）、<code>pause</code>
+不能从 <code>draft</code> / <code>verifying</code> / 已
+<code>paused</code> 出发、<code>cancel</code> 与 <code>steer</code>
+收所有非终态（终态 Goal 不会再跑，没有可 steer
+的东西）、<code>resume</code> 只收 <code>paused</code> /
+<code>waiting_user</code> /
+<code>waiting_permission</code>、<code>accept</code>
+还要求存在未通过的必需人工标准（否则 driver
+只会回一句「没有待验收的必需人工标准」）。<code>steer</code> /
+<code>accept</code>
+后面还有文本，所以它们的行只补全不执行（<code>incomplete: true</code>），其余按
+Enter 直接跑；ID 打完后弹窗自动关闭（该动词下已无可补全项）。</p>
+<p><strong>发给 agent 的载荷</strong></p>
+<ol type="1">
+<li>日志/历史显示用户输入的斜杠行原样（如 <code>/skill demo foo</code>
+或 <code>/demo foo</code>）。</li>
+<li>Agent 任务正文为
+<code>&lt;skill name="…" dir="…"&gt;…&lt;/skill&gt;</code>（与 Claude
+Code 兼容，<code>dir</code> 是 Tact 的扩展，见 <a
+href="#3-数据模型">§3</a>）：
+<ul>
+<li>若 skill 正文含裸 <code>$ARGUMENTS</code>（非
+<code>$ARGUMENTS[N]</code>）：替换为参数字符串（可为空）。</li>
+<li>否则若参数非空：在 skill 正文内追加
+<code>\n\nARGUMENTS: {args}</code>。</li>
+<li>否则：正文原样。</li>
+</ul></li>
+<li>系统提示词 <code># Available skills</code> 节说明斜杠调用的
+<code>&lt;skill&gt;</code> /
+<code>ARGUMENTS:</code>，并附上加载策略（问候 / 闲聊 / 普通问题不得调用
+<code>load_skill</code>；skill
+描述不得把自己的调用写成强制；<code>&lt;skill&gt;</code> 块带
+<code>dir</code>，正文里的相对路径相对它解析）。</li>
+<li>共享的 <code>submit_user_task</code> 与正常 Enter 提交一样驱动
+Planning / 用户气泡 / 历史。</li>
+</ol>
+<p><code>/skill reload</code> 将 skill 根重新扫描到 TUI 与 agent
+<code>ToolContext</code> <strong>共享</strong>的
+<code>Arc&lt;Mutex&lt;SkillRegistry&gt;&gt;</code>，刷新 TUI
+<code>SkillEntry</code> 列表并 bump 视觉缓存。重扫在
+<code>spawn_blocking</code>
+里跑（扫描时持注册表锁，且同一时刻只允许一个在飞），结果经 oneshot
+回到事件循环再落地，因此不会卡住 UI。下一任务的系统提示词 skill 摘要（及
+<code>load_skill</code>）因此看到新注册表，无需重启。</p>
+<p>成功的
+<code>/plugin install &lt;plugin&gt;@&lt;marketplace&gt;</code>、<code>/plugin uninstall &lt;plugin&gt;</code>、<code>/plugin update &lt;plugin&gt;</code>
+与 <code>/plugin reload</code> 会在 worker
+完成后执行相同的共享刷新。失败操作保持 registry
+不变。插件提供的名称可包含 <code>:</code>（例如
+<code>/superpowers:brainstorming</code>），刷新后仍按普通 slash skill
+调用。</p>
+<p>高亮：<code>/skill-name</code> 使用
+accent+bold；尾随参数使用主题前景色（纯函数在
+<code>agent_tui_kit::render::slash_style</code>，<code>crates/tui/src/render/slash_style.rs</code>
+只是注入本机内置命令表的薄封装），输入框与用户日志行均如此。与内置命令冲突的名称不参与高亮（与面板一致）。</p>
+<p>与模型在回合中途调用 <code>load_skill</code> 不同。</p>
+<hr />
+<h2 id="8-对比skills-vs-memory">8. 对比：Skills vs Memory</h2>
+<table>
+<thead>
+<tr>
+<th>方面</th>
+<th>Skills</th>
+<th>Memory</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>位置</td>
+<td><code>.tact/skills/</code> + <code>~/.tact/skills/</code> +
+<code>~/.agents/skills/</code>（+ 可选 <code>skill_dirs</code>）</td>
+<td><code>~/.tact/projects/&lt;slug&gt;/memory/</code>（按仓库）</td>
+</tr>
+<tr>
+<td>格式</td>
+<td><code>SKILL.md</code> + 可选 frontmatter</td>
+<td><code>{name}.md</code> + 必需 frontmatter</td>
+</tr>
+<tr>
+<td>提示词注入</td>
+<td>默认摘要（<code>skill_description_cap</code> 截断 + 窗口 2%
+预算；<code>skill_body_auto_inject</code> 可改为全文）；正文按需 /
+斜杠</td>
+<td>每轮全文（动态节）</td>
+</tr>
+<tr>
+<td>写入路径</td>
+<td>编辑磁盘文件（无 agent 工具）</td>
+<td><code>save_memory</code> 工具</td>
+</tr>
+<tr>
+<td>典型作者</td>
+<td>开发者/团队</td>
+<td>对话中的 agent</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-代码地图">9. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/skill/mod.rs</code></td>
+<td><code>SkillRegistry</code>、frontmatter
+解析、插件扫描、<code>describe_available</code> /
+<code>describe_available_bounded</code> /
+<code>describe_available_with_body</code>、<code>catalog_budget_chars</code>
+/ <code>cap_description</code>、disabled
+集合、<code>load_full_text</code>、<code>shared_skill_registry</code> /
+<code>lock_skills</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/consts.rs</code></td>
+<td><code>tact_skills_dir()</code>、<code>skill_search_dirs()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/load_skill.rs</code></td>
+<td><code>load_skill</code> 原生工具</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>build_system_prompt</code> 中的
+<code>describe_available[_with_body]()</code>（由
+<code>skill_body_auto_inject</code> 选择）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext.skill_registry</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td><code>toolset()</code> 中的 <code>LoadSkillTool</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/interactive.rs</code>、<code>headless.rs</code></td>
+<td><code>shared_skill_registry()</code> → TUI 的
+<code>SkillEntry</code></td>
+</tr>
+<tr>
+<td><code>crates/tui/src/handlers/skills.rs</code></td>
+<td><code>/skill</code> 子命令（<code>list</code> / <code>reload</code>
+/ <code>disable</code> /
+<code>enable</code>）、斜杠调用、<code>$ARGUMENTS</code>、<code>submit_user_task</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/config/persist.rs</code></td>
+<td><code>update_agent_skill_disable_in_toml</code>（<code>toml_edit</code>
+就地改 <code>[agent].skill_disable</code>，保留注释与格式）</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/handlers/insert.rs</code></td>
+<td>斜杠弹出 Enter / Tab 自动补全</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/handlers/palette.rs</code></td>
+<td>面板 <code>/skill</code> → Insert 预填</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/widgets/state/slash.rs</code></td>
+<td><code>SlashCommand</code> 枚举与 <code>SKILL_SUBCOMMANDS</code></td>
+</tr>
+<tr>
+<td><code>crates/tui/src/widgets/state/slash_command.rs</code></td>
+<td><code>/skill</code> 子命令 + 每个 skill
+的候选列表；<code>/goal</code> 的收值动词给出 Goal ID 候选</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/widgets/state/app/background.rs</code></td>
+<td>off-loop <code>SkillsSnapshot</code>
+重扫（<code>SkillsReloadSource</code>）</td>
+</tr>
+<tr>
+<td><code>crates/agent_tui_kit/src/render/slash_style.rs</code></td>
+<td><code>style_user_skill_line</code> / <code>split_skill_slash</code>
+/ <code>SKILL_COMMAND</code>（纯函数）</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/render/slash_style.rs</code></td>
+<td>注入本机内置命令表，re-export kit 函数</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/render/input.rs</code>、<code>log.rs</code></td>
+<td>应用斜杠高亮</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10-当前缺口">10. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>无 <code>save_skill</code> 工具</td>
+<td>运行时 agent 不能写 skills</td>
+</tr>
+<tr>
+<td>重名静默覆盖</td>
+<td>扫描时 last-wins，无警告（Pi / Codex 是 first-wins + 警告）</td>
+</tr>
+<tr>
+<td>子 agent 无 <code>load_skill</code></td>
+<td>受限工具集无法在隔离 worker 中加载 skills</td>
+</tr>
+<tr>
+<td><code>load_skill</code> 无正文大小校验</td>
+<td>工具路径把全文直接塞进上下文，没有上限；斜杠调用已受
+<code>MAX_INPUT_CHARS</code>（500k 字符）保护，工具路径没有</td>
+</tr>
+<tr>
+<td>只有 deny list，没有 allow list / glob</td>
+<td><code>[agent].skill_disable</code>
+按名字摘除（<code>/skill disable &lt;name&gt;</code> 写，或直接写
+TOML）；没有白名单、没有通配，也没有 CLI flag</td>
+</tr>
+<tr>
+<td>超预算的丢弃无有用性排序</td>
+<td>从<strong>名字排序的尾部</strong>丢，不是"最不常用的先丢"——排序需要
+root 来源，<code>SkillManifest</code>
+不带。确定性且写明，胜过隐藏的启发式</td>
+</tr>
+<tr>
+<td>无按需检索</td>
+<td>没有 <code>list_skills</code>，也没有按用户消息做 top-K
+的注入。Codex 与 Pi 同样没做——目录总量的现有最优解就是"有上限 +
+有降级顺序"</td>
+</tr>
+<tr>
+<td><code>$ARGUMENTS[N]</code> 未用</td>
+<td>索引占位符原样保留（仅 Claude 兼容的裸
+<code>$ARGUMENTS</code>）</td>
+</tr>
+<tr>
+<td>Claude 专属 frontmatter 无效</td>
+<td><code>argument-hint</code> / <code>allowed-tools</code> /
+<code>model</code> 不解析、不生效（见 <a
+href="#4-skillmd-文件格式">§4</a>）——在 frontmatter
+里声明它们既不会限制工具，也不会覆盖模型</td>
+</tr>
+</tbody>
+</table>
+<p><code>/skill reload</code> 会立即变更共享注册表；下一次
+<code>build_system_prompt</code> / <code>load_skill</code> 读取更新后的
+map。</p>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./04_chapter_prompt_zh.html">系统提示词</a> —
+<code># Available skills</code> 节与缓存边界</li>
+<li><a href="./07_chapter_tool_zh.html">工具系统</a> —
+<code>load_skill</code> 与 <code>ToolContext</code></li>
+<li><a href="./03_chapter_memory_zh.html">持久化记忆</a> —
+互补的持久化模型</li>
+<li><a href="./23_chapter_tui_zh.html">TUI</a> — 斜杠弹出、面板、高亮</li>
+<li><a href="../ARCHITECTURE.md">ARCHITECTURE.md</a> — 提示词组装表中的
+skills</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

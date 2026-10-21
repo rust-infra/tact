@@ -1,0 +1,2174 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>权限模型（Permission Model）</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-%E6%9D%83%E9%99%90%E6%A8%A1%E5%9E%8B%E5%81%9A%E4%BB%80%E4%B9%88" title="1. 权限模型做什么"><span class="toc-label">1. 权限模型做什么</span></a></li>
+<li class="toc-l3"><a href="#%E6%9D%83%E9%99%90%E4%B8%8E%E6%B2%99%E7%AE%B1" title="权限与沙箱"><span class="toc-label">权限与沙箱</span></a></li>
+<li class="toc-l2"><a href="#2-%E9%A3%8E%E9%99%A9%E5%AE%9A%E7%BA%A7" title="2. 风险定级"><span class="toc-label">2. 风险定级</span></a></li>
+<li class="toc-l3"><a href="#%E6%A0%B8%E5%BF%83%E7%B1%BB%E5%9E%8B" title="核心类型"><span class="toc-label">核心类型</span></a></li>
+<li class="toc-l3"><a href="#%E5%B7%A5%E5%85%B7%E5%90%8D%E4%B8%8E-mcp-%E5%90%8D" title="工具名与 MCP 名"><span class="toc-label">工具名与 MCP 名</span></a></li>
+<li class="toc-l3"><a href="#%E9%A3%8E%E9%99%A9%E8%A7%84%E5%88%99" title="风险规则"><span class="toc-label">风险规则</span></a></li>
+<li class="toc-l2"><a href="#3-permissionbehaviorallowdenyask" title="3. PermissionBehavior：Allow、Deny、Ask"><span class="toc-label">3. PermissionBehavior：Allow、Deny、Ask</span></a></li>
+<li class="toc-l2"><a href="#4-%E6%9D%83%E9%99%90%E6%A8%A1%E5%BC%8F" title="4. 权限模式"><span class="toc-label">4. 权限模式</span></a></li>
+<li class="toc-l3"><a href="#permissionmanagercheck-%E4%B8%AD%E7%9A%84%E5%86%B3%E7%AD%96%E9%A1%BA%E5%BA%8F" title="PermissionManager::check() 中的决策顺序"><span class="toc-label">PermissionManager::check() 中的决策顺序</span></a></li>
+<li class="toc-l2"><a href="#5-allowlist-%E4%B8%8E%E8%BF%9E%E7%BB%AD%E6%8B%92%E7%BB%9D" title="5. Allowlist 与连续拒绝"><span class="toc-label">5. Allowlist 与连续拒绝</span></a></li>
+<li class="toc-l3"><a href="#%E4%BC%9A%E8%AF%9D%E5%86%85-allowlist" title="会话内 allowlist"><span class="toc-label">会话内 allowlist</span></a></li>
+<li class="toc-l3"><a href="#%E8%BF%9E%E7%BB%AD%E6%8B%92%E7%BB%9D" title="连续拒绝"><span class="toc-label">连续拒绝</span></a></li>
+<li class="toc-l2"><a href="#6-tui-requestselect-%E6%B5%81%E7%A8%8B" title="6. TUI RequestSelect 流程"><span class="toc-label">6. TUI RequestSelect 流程</span></a></li>
+<li class="toc-l3"><a href="#headless--%E6%97%A0-ui-%E9%80%9A%E9%81%93" title="Headless / 无 UI 通道"><span class="toc-label">Headless / 无 UI 通道</span></a></li>
+<li class="toc-l2"><a href="#7-shell-%E9%AB%98%E9%A3%8E%E9%99%A9%E6%A3%80%E6%B5%8B" title="7. Shell 高风险检测"><span class="toc-label">7. Shell 高风险检测</span></a></li>
+<li class="toc-l3"><a href="#%E5%8F%AA%E8%AF%BB-shell-%E5%91%BD%E4%BB%A4%E5%88%86%E7%B1%BB" title="只读 shell 命令分类"><span class="toc-label">只读 shell 命令分类</span></a></li>
+<li class="toc-l3"><a href="#%E4%B8%A4%E5%B1%82" title="两层"><span class="toc-label">两层</span></a></li>
+<li class="toc-l2"><a href="#8-%E5%B7%A5%E5%85%B7%E6%B5%81%E6%B0%B4%E7%BA%BF%E4%B8%AD%E7%9A%84%E9%9B%86%E6%88%90" title="8. 工具流水线中的集成"><span class="toc-label">8. 工具流水线中的集成</span></a></li>
+<li class="toc-l2"><a href="#9-%E9%85%8D%E7%BD%AE" title="9. 配置"><span class="toc-label">9. 配置</span></a></li>
+<li class="toc-l3"><a href="#toml" title="TOML"><span class="toc-label">TOML</span></a></li>
+<li class="toc-l3"><a href="#jsontactsettingsjson-%E9%87%8C%E7%9A%84-permissions" title="JSON（.tact/settings.json 里的 permissions）"><span class="toc-label">JSON（.tact/settings.json 里的 permissions）</span></a></li>
+<li class="toc-l3"><a href="#cli" title="CLI"><span class="toc-label">CLI</span></a></li>
+<li class="toc-l3"><a href="#%E5%BD%93%E5%89%8D%E5%90%AF%E5%8A%A8%E8%A1%8C%E4%B8%BA" title="当前启动行为"><span class="toc-label">当前启动行为</span></a></li>
+<li class="toc-l2"><a href="#10-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="10. 代码地图"><span class="toc-label">10. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#11-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="11. 当前缺口"><span class="toc-label">11. 当前缺口</span></a></li>
+<li class="toc-l2"><a href="#12-%E6%95%8F%E6%84%9F%E8%B7%AF%E5%BE%84%E4%B8%8E%E5%AF%86%E9%92%A5%E8%84%B1%E6%95%8F" title="12. 敏感路径与密钥脱敏"><span class="toc-label">12. 敏感路径与密钥脱敏</span></a></li>
+<li class="toc-l3"><a href="#121-%E8%83%8C%E6%99%AF%E4%B8%80%E6%AC%A1%E9%9D%99%E9%BB%98%E7%9A%84%E7%A7%81%E9%92%A5%E8%AF%BB%E5%8F%96" title="12.1 背景：一次静默的私钥读取"><span class="toc-label">12.1 背景：一次静默的私钥读取</span></a></li>
+<li class="toc-l3"><a href="#122-%E5%AE%88%E5%8D%AB%E4%B8%A4%E4%B8%AA%E6%A1%A3%E4%BD%8D%E4%B8%A4%E7%A7%8D%E7%BB%93%E6%9E%9C" title="12.2 守卫：两个档位，两种结果"><span class="toc-label">12.2 守卫：两个档位，两种结果</span></a></li>
+<li class="toc-l3"><a href="#123-%E8%84%B1%E6%95%8F%E5%85%9C%E5%BA%95" title="12.3 脱敏：兜底"><span class="toc-label">12.3 脱敏：兜底</span></a></li>
+<li class="toc-l3"><a href="#124-%E8%BF%99%E4%B8%8D%E6%98%AF%E4%BB%80%E4%B9%88" title="12.4 这不是什么"><span class="toc-label">12.4 这不是什么</span></a></li>
+<li class="toc-l2"><a href="#13-%E5%9B%9B%E4%B8%AA%E7%9B%AE%E6%A0%87%E6%84%9F%E7%9F%A5%E7%AD%96%E7%95%A5%E7%9A%84%E9%80%90%E4%BE%8B%E6%B5%81%E7%A8%8B" title="13. 四个目标感知策略的逐例流程"><span class="toc-label">13. 四个目标感知策略的逐例流程</span></a></li>
+<li class="toc-l3"><a href="#131-%E5%9B%BA%E5%AE%9A%E6%A3%80%E6%9F%A5%E7%82%B9" title="13.1 固定检查点"><span class="toc-label">13.1 固定检查点</span></a></li>
+<li class="toc-l3"><a href="#132-readpath--read_file--read_image" title="13.2 ReadPath —— read_file / read_image"><span class="toc-label">13.2 ReadPath —— read_file / read_image</span></a></li>
+<li class="toc-l3"><a href="#133-writepath--write_file--edit_file" title="13.3 WritePath —— write_file / edit_file"><span class="toc-label">13.3 WritePath —— write_file / edit_file</span></a></li>
+<li class="toc-l3"><a href="#134-patchpaths--apply_patch" title="13.4 PatchPaths —— apply_patch"><span class="toc-label">13.4 PatchPaths —— apply_patch</span></a></li>
+<li class="toc-l3"><a href="#135-shellcommand--bash--background_run--worktree_run" title="13.5 ShellCommand —— bash / background_run / worktree_run"><span class="toc-label">13.5 ShellCommand —— bash / background_run / worktree_run</span></a></li>
+<li class="toc-l3"><a href="#136-%E5%AF%B9%E7%85%A7%E8%A1%A8allow-%E7%9A%84%E4%B8%A4%E7%A7%8D%E5%90%AB%E4%B9%89%E7%9B%B2%E5%8C%BA" title="13.6 对照表、allow 的两种含义、盲区"><span class="toc-label">13.6 对照表、allow 的两种含义、盲区</span></a></li>
+<li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="权限模型permission-model">权限模型（Permission Model）</h1>
+<p>本章说明 Tact
+如何决定每个工具调用能不能执行：先按风险给这次调用定级，再看当前的权限模式、会话内的允许清单，必要时弹出
+TUI 交互式审批。每个 native 与 MCP 工具都要在
+<code>Agent::execute_tool_call</code> 的 Phase 1 过同一道关卡——位置在
+<code>PreToolUse</code> hook 之后、并行执行之前。Hook 顺序见 <a
+href="./09_chapter_hook_zh.html">Agent 生命周期 Hook</a>。</p>
+<hr />
+<h2 id="1-权限模型做什么">1. 权限模型做什么</h2>
+<p><code>PermissionManager</code>（<code>crates/tact/src/permission/mod.rs</code>）对每个工具调用回答一个问题：</p>
+<blockquote>
+<p>给定此工具名与输入，我们应
+<strong>允许</strong>、<strong>拒绝</strong>，还是
+<strong>询问用户</strong>？</p>
+</blockquote>
+<p>它 <strong>不</strong>
+执行工具。它只做两件事：给这次调用定级，再套用当前模式与允许清单，然后返回
+<code>PermissionDecision</code>。<code>crates/tact/src/agent/tool_dispatch.rs</code>
+中的 agent 将其转为调度工具，或合成一条被拦截的
+<code>ToolResult</code>。</p>
+<table>
+<thead>
+<tr>
+<th>层级</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PermissionPolicy::resolve()</code></td>
+<td>将 native 工具输入分类为 <code>CapabilityRisk</code></td>
+</tr>
+<tr>
+<td><code>PermissionManager::check()</code></td>
+<td>将 risk + mode + settings + allowlist 映射为
+<code>PermissionBehavior</code></td>
+</tr>
+<tr>
+<td><code>tool_dispatch.rs</code></td>
+<td>通过 TUI <code>RequestSelect</code> 或 headless
+<code>ask_user(risk)</code> 处理 <code>Ask</code></td>
+</tr>
+<tr>
+<td><code>bash</code> 工具 + <code>shell.rs</code></td>
+<td>在执行时硬拦截一部分危险 shell 命令</td>
+</tr>
+</tbody>
+</table>
+<p>Shell 命令有 <strong>两层</strong>
+防护：一层是权限提示，命中高风险模式就会弹；另一层更硬——一小批最危险的命令直接写死在
+<code>bash</code> 工具里，就算用户已经点了批准也照样拒绝。</p>
+<h3 id="权限与沙箱">权限与沙箱</h3>
+<p>权限回答的是
+<em>这条命令能不能运行</em>，它不说明命令运行后能触达什么。两者是有意分开的两层：</p>
+<pre class="text"><code>Permission = 授权       （agent 可以运行它吗？）
+Sandbox    = 执行边界   （运行中的命令能访问什么？）</code></pre>
+<p>可选的 <code>bash</code> 沙箱（<a
+href="./07_chapter_tool_zh.html">工具系统 §7.1</a>，完整章节见 <a
+href="./27_chapter_sandbox_zh.html">Bash 沙箱</a>）属于第二层，本章内容
+不因此改变：开启 <code>[tools] sandbox = true</code>
+不会新增任何提示，也不会去掉任何检查。 一条命令可以
+<code>Permission = allow</code>，同时读不到宿主
+home——沙箱约束的是文件系统， 不是网络（网络与宿主共享）。</p>
+<hr />
+<h2 id="2-风险定级">2. 风险定级</h2>
+<h3 id="核心类型">核心类型</h3>
+<pre class="rust"><code>pub enum CapabilityRisk { Read, Write, High }</code></pre>
+<p>Tact 里没有一个单独存着"意图"的对象，也没有一张按工具名硬编码的
+<code>classify_risk</code>
+表。风险是每个工具<strong>自己在元数据里声明</strong>出来的：<code>ToolMetadata.permission</code>
+是一份 <code>PermissionPolicy</code>，由它读这次调用的输入算出风险：</p>
+<pre class="rust"><code>metadata.permission.resolve(&amp;tool_use.input)   // → CapabilityRisk</code></pre>
+<p>预检对每个已解析调用取风险的来源（<code>crates/tact/src/agent/tool_dispatch.rs</code>）：</p>
+<table>
+<thead>
+<tr>
+<th>解析结果</th>
+<th>风险来源</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ResolvedTool::Native { metadata }</code></td>
+<td><code>metadata.permission.resolve(&amp;input)</code></td>
+</tr>
+<tr>
+<td><code>ResolvedTool::Mcp { server, tool }</code></td>
+<td>server 条目的 <code>tools.&lt;name&gt;.risk</code> /
+<code>default_tool_risk</code>；静默条目保持 <strong>High</strong></td>
+</tr>
+<tr>
+<td><code>ResolvedTool::McpResource</code> / <code>McpPrompt</code></td>
+<td>Tact 自己的资源 / prompt 工具，没有 server 条目能声明它们，因此由
+<code>[mcp]</code> 的 <code>resource_*_risk</code> /
+<code>prompt_*_risk</code> 决定，默认 High</td>
+</tr>
+<tr>
+<td><code>ResolvedTool::Unknown</code></td>
+<td><strong>High</strong></td>
+</tr>
+</tbody>
+</table>
+<h3 id="工具名与-mcp-名">工具名与 MCP 名</h3>
+<p>工具名只用于<strong>匹配规则与显示</strong>（<code>mcp__demo__db__query</code>
+→ server <code>demo__db</code>、tool
+<code>query</code>，以<strong>最右侧</strong>的 <code>__</code>
+分割，因此 server ID
+可含下划线）。定级不读工具名——名字只是一段普通字符串，风险是工具自己声明出来的数据。</p>
+<h3 id="风险规则">风险规则</h3>
+<p><code>PermissionPolicy</code> 七个变体，<code>resolve</code>
+是唯一的分类入口（<code>crates/tact/src/tool/metadata.rs</code>）：</p>
+<table>
+<thead>
+<tr>
+<th>风险</th>
+<th>规则</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Read</strong></td>
+<td><code>Read</code>（无路径目标的元数据类工具，如
+<code>sleep</code>、<code>load_skill</code>）；<code>ReadPath { path_field }</code>
+目标不敏感时（<code>read_file</code> /
+<code>read_image</code>）；<code>ShellCommand</code>
+且命令<strong>可证明只读</strong>（见 <a
+href="#7-shell-高风险检测">§7</a>）</td>
+</tr>
+<tr>
+<td><strong>Write</strong></td>
+<td><code>Write</code>；<code>WritePath { path_field }</code>
+目标不敏感时（<code>write_file</code> /
+<code>edit_file</code>）；<code>PatchPaths</code>
+目标不敏感时；<code>ShellCommand</code> 但命令无法证明只读</td>
+</tr>
+<tr>
+<td><strong>High</strong></td>
+<td><code>High</code>（如
+<code>spawn_subagent</code>）；<code>ReadPath</code> /
+<code>WritePath</code> / <code>PatchPaths</code>
+命中敏感目标时；<code>ShellCommand</code>
+的命令串提到敏感路径（<code>sensitive::classify_command</code>
+命中），或以 <code>sudo </code> / <code>su </code> 开头</td>
+</tr>
+</tbody>
+</table>
+<p><code>shell.rs</code>
+另有执行期硬拦截列表，即使权限已批准也会拒绝部分危险命令（见 <a
+href="#7-shell-高风险检测">§7</a>）。</p>
+<p>表中四个<strong>目标感知</strong>变体（<code>ReadPath</code> /
+<code>WritePath</code> / <code>PatchPaths</code> /
+<code>ShellCommand</code>）的逐例展开、每一步由谁决定、以及两个
+<code>allow</code> 配置的分工，见 <a
+href="#13-四个目标感知策略的逐例流程">§13</a>。</p>
+<hr />
+<h2 id="3-permissionbehaviorallowdenyask">3.
+PermissionBehavior：Allow、Deny、Ask</h2>
+<pre class="rust"><code>pub enum PermissionBehavior {
+    Allow,
+    Deny,
+    Ask,
+}
+
+pub struct PermissionDecision {
+    pub behavior: PermissionBehavior,
+    pub reason: String,
+}</code></pre>
+<table>
+<thead>
+<tr>
+<th>Behavior</th>
+<th>在 <code>tool_dispatch.rs</code> 中的含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Allow</strong></td>
+<td>工具进入 Phase 2（并行执行）</td>
+</tr>
+<tr>
+<td><strong>Deny</strong></td>
+<td><code>PreparedState::Resolved</code>，附带
+<code>"Permission denied: …"</code>；模型收到失败的 tool result</td>
+</tr>
+<tr>
+<td><strong>Ask</strong></td>
+<td>交互式提示（TUI），或 headless <code>ask_user</code> 默认（允许
+Write/Read，拒绝 High）；见 <a href="#6-tui-requestselect-流程">§6 TUI
+RequestSelect 流程</a></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="4-权限模式">4. 权限模式</h2>
+<pre class="rust"><code>pub enum PermissionMode {
+    Default,
+    Plan,
+    Auto,
+}</code></pre>
+<p>显示标签（来自 <code>PermissionMode</code> 的 <code>Display</code>
+实现）：</p>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>标签</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Default</code></td>
+<td><code>default - ask for writes</code></td>
+<td>Read 允许；Write 询问（除非 settings/allowlist 命中）；High
+询问，除非命中 settings <strong>allow</strong> 规则<strong>或会话内
+allowlist 已覆盖该确切工具与输入</strong></td>
+</tr>
+<tr>
+<td><code>Plan</code></td>
+<td><code>plan - read only</code></td>
+<td>Read 允许（含可证明只读的 shell
+命令——<code>ls</code>、<code>grep</code>、<code>git status</code>
+等）；Write 与 High <strong>拒绝</strong>且不提示</td>
+</tr>
+<tr>
+<td><code>Auto</code></td>
+<td><code>auto - allow all operations (including high risk)</code></td>
+<td>所有风险自动批准（含 High）</td>
+</tr>
+</tbody>
+</table>
+<h3
+id="permissionmanagercheck-中的决策顺序"><code>PermissionManager::check()</code>
+中的决策顺序</h3>
+<p>在这之前，<code>tool_dispatch</code>
+会先跑<strong>敏感目标守卫</strong>（§12）。命中 <code>Credential</code>
+档的调用会在那里直接被拒，根本走不到下面这套判断顺序；命中
+<code>Secret</code> 档的则被升级成 <code>High</code>，从第 2
+步开始走。</p>
+<p>检查按这个固定顺序执行（后文把这条顺序简称为"阶梯"）：</p>
+<pre class="text"><code>1. Read risk?                         → Allow（所有模式）
+2. Plan mode + non-Read?              → Deny
+3. Auto mode?                         → Allow（所有风险）
+4. Settings deny rule?                     → Deny
+5. Settings allow rule?                    → Allow（含 High）
+6. Settings ask rule（非 High）?           → Ask
+7. Server-policy auto-approve?             → Allow
+8. High risk + 会话内 always_allowed 命中? → Allow
+9. High risk（没有任何允许）?              → Ask
+10. 会话内 always_allowed 命中?            → Allow
+11. Default                                → Ask</code></pre>
+<pre class="mermaid">graph TD
+    a_risk[PermissionPolicy::resolve] --&gt; b_risk{风险等级 Read?}
+    b_risk --&gt;|Read| o1[Allow]
+    b_risk --&gt;|Write / High| c_plan{Plan mode?}
+    c_plan --&gt;|Yes| o2[Deny]
+    c_plan --&gt;|No| d_auto{Auto mode?}
+    d_auto --&gt;|Yes| o3[Allow]
+    d_auto --&gt;|No| e_settings{Settings rule?}
+    e_settings --&gt;|Deny| o4[Deny]
+    e_settings --&gt;|Allow| o5[Allow]
+    e_settings --&gt;|Ask / none| f_high{High risk?}
+    f_high --&gt;|No| o6[Ask]
+    f_high --&gt;|Yes| g_list{always_allowed_tools?}
+    g_list --&gt;|Yes| o7[Allow]
+    g_list --&gt;|No| o8[Ask]</pre>
+<p><strong>High 与 allowlist：</strong> High
+首次无论如何都会询问。一旦有允许覆盖<strong>该确切工具与输入</strong>——裸名
+<code>allow_tool</code>，或「Always allow this
+tool」写入的输入感知规则——High 就与其他风险一样被放行。计划模式与显式的
+<code>deny</code>/<code>ask</code>
+规则仍然先判定，所以"记住允许"放宽的只是"要不要问一下"，并不会放宽模式和规则。匹配的项目
+settings <strong>allow</strong> 规则在第 5 步就能到达 High，甚至早于查询
+allowlist。</p>
+<p>全新的非交互会话仍然拒绝 High：<code>always_allowed_tools</code>
+既不预置、也不从 settings
+读取，列表里只会出现在提示框上被用户点过"允许"的条目——而非交互场景根本不弹提示框，所以这个列表始终是空的。</p>
+<hr />
+<h2 id="5-allowlist-与连续拒绝">5. Allowlist 与连续拒绝</h2>
+<h3 id="会话内-allowlist">会话内 allowlist</h3>
+<p><code>PermissionManager</code> 持有
+<code>always_allowed_tools: Vec&lt;String&gt;</code>。构造时是<strong>空的</strong>。</p>
+<p>它以前预置 <code>"read_file"</code>。在 <code>read_file</code>
+始终被判为 <code>Read</code> 时这条没有作用；但一旦敏感目标能把它升级为
+<code>High</code>，它就等于放行 <code>read_file</code>
+的<strong>任意</strong>输入，<code>.env</code>
+也不例外——因为列表里的裸名匹配所有输入。没人点过"允许"的条目，不该有本事越过这道守卫，所以那行预置已经删掉了。</p>
+<p>用户在 TUI 选择 <strong>「Always allow this tool」</strong>
+时，<code>tool_dispatch</code> 调用的是
+<code>allow_tool_with_input(name, policy, input)</code>——针对那次确切调用的<strong>输入感知</strong>规则，而不是裸工具名。有
+settings 存储时它被持久化进项目的
+<code>.tact/settings.json</code>；没有则落进内存列表。两种情况都会让此后匹配该工具<strong>且</strong>输入的调用跳过询问，且<strong>任何</strong>风险都适用，包括
+<strong>High</strong>。</p>
+<p>（裸名形式 <code>allow_tool(name)</code>
+仍然存在，仍然授权任意输入，现在它也覆盖
+High。全新会话的列表是空的，所以没有真实点击就不会有任何授权。）</p>
+<p><strong>「Always allow this
+pattern」是更宽的一档，也是最需要看清楚的一档。</strong> 它按 prompt
+的种类记录两种前缀规则：</p>
+<ul>
+<li><strong>命令前缀</strong>（<code>bash(command:^cargo test)</code>）——<strong>程序
++ 子命令</strong>。匹配时先把命令按
+<code>;</code>、<code>&amp;&amp;</code>、<code>||</code>、<code>|</code>、<code>&amp;</code>、换行<strong>分段</strong>，要求<strong>每一段</strong>都以该前缀开头，否则不匹配。这条分段规则是它安全的前提：glob
+的 <code>*</code> 能跨 <code>;</code>，所以
+<code>bash(command:cargo test *)</code> 会连
+<code>cargo test; rm -rf ~</code> 一起放行，而且 <code>deny</code>
+规则也匹配整串、于是 <code>rm</code>
+那条永远轮不到。前缀规则不可能覆盖链式命令，两者都不会发生。</li>
+<li><strong>路径前缀</strong>（<code>edit_file(path:@docs)</code>）——<strong>目录</strong>。按<strong>路径分量</strong>比较，所以
+<code>@src</code> 覆盖 <code>src/lib.rs</code>、不覆盖
+<code>srcx/lib.rs</code>（字符串前缀会在这里出错）。记的是<strong>父目录</strong>（<code>docs/usage.md</code>
+→ <code>@docs</code>，<code>src/adapters/mcp/server.rs</code> →
+<code>@src/adapters/mcp</code>），即"这个目录"；单个文件由精确档覆盖。要更大范围（<code>@src</code>
+整个源码树）可以手写，但默认给的是窄的那档。</li>
+</ul>
+<p>两个标记各自独立：<code>^</code> 只用于命令、<code>@</code>
+只用于路径，解析时一眼能分清。</p>
+<p><strong>命令前缀被拒绝的情形</strong>：复合命令；含命令替换（<code>$(…)</code>、反引号）；程序是解释器或万能壳（<code>sh</code>/<code>python</code>/<code>node</code>/<code>env</code>/<code>xargs</code>/<code>find</code>/<code>sed</code>/<code>awk</code>
+…）；破坏性命令（<code>rm</code>/<code>dd</code>/<code>chmod</code>
+…）；程序名不是裸名（含 <code>/</code> 或
+<code>=</code>）；不足两个词；第二个词是选项（<code>git -c</code>、<code>npm --prefix</code>）。</p>
+<p><strong>路径前缀被拒绝的情形</strong>：工作区根下的单个文件（精确档已覆盖）；绝对路径、<code>~</code>
+开头、含
+<code>..</code>（那是敏感目标守卫的地界，规则不该绕过去）；首分量是点目录（<code>.git</code>
+里是 hook，<code>.tact</code> 里就是这些规则自己所在的 settings）。</p>
+<p><strong>这些都不生成选项</strong>——弹窗直接少一项，而不是给一个点了不生效的按钮。选项出现时，弹窗会<strong>先把要记录的规则原文显示出来</strong>。</p>
+<p><strong>两种前缀都是 token 化的</strong>（比较 token，不做
+glob），因此 token 里可以出现 <code>)</code>——规则以最后一个
+<code>)</code> 结束，<code>rfind</code>
+已经定位到它。这一点让前缀档能表达 glob 档表达不了的规则：任何含
+<code>)</code> 或 <code>:</code>
+的命令（<code>git commit -m "fix: thing"</code>、<code>python3 -c "print(1)"</code>）在精确档下都无法生成规则，在前缀档下只要前两个词干净就没问题。glob
+档的限制保持不变——含 <code>)</code>
+的模式从文件里读回来分不清哪个是规则的结束符。</p>
+<p>代价也要说清楚：<code>cargo test</code>、<code>npm run build</code>
+这类前缀等价于信任该项目的构建配置（<code>build.rs</code>、<code>postinstall</code>
+都会跑任意代码）。这是这一档存在的意义所在，也正因如此弹窗必须先展示规则、再由用户点。</p>
+<p><strong>这一档与「Always allow this
+tool」的区别在</strong>覆盖范围**，而不在规则形状**：精确档只匹配<strong>这一条</strong>被展示的调用（同一条命令、同一个路径），越过它就要再问；前缀档则覆盖<strong>这一类</strong>（<code>^cargo test</code>
+下的任意子命令、<code>@docs</code> 下的任意文件）。两者都由
+<code>PermissionRule::generate</code>
+家族生成<strong>窄规则</strong>，都不写裸工具名，所以「对一条普通命令的点击不会顺带放行
+<code>sudo</code>」在两档都成立。</p>
+<p>（曾经还有一档「Allow for this
+session」，是精确档的<strong>内存版</strong>：同一条规则、只是不落盘。它已删除——精确档与它的宽度<strong>完全一致</strong>，差别仅在于是否持久化，而这并不是用户据此决策的东西，多一个按钮只是噪音。要「这次别问我了」，点精确档即可。弹窗选项的顺序刻意<strong>追加</strong>而非插入：<code>Deny</code>
+保持索引 1、「Always allow this tool」保持索引
+2，因为位置是肌肉记忆；删掉会话档只让<strong>追加的</strong>前缀档从索引
+4 挪到 3，前三位一动不动。）</p>
+<p><strong>「Always allow」有时会记不住。</strong>
+当无法表达比整工具更窄的规则时——字段缺失、不是字符串、或值里含规则文法定界符（<code>(</code>、<code>)</code>、<code>:</code>，模式被嵌在
+<code>tool(field:pattern)</code>
+里）——<code>PermissionRule::generate</code> 返回
+<code>None</code>。旧行为是退回<strong>裸规则</strong>，而任何含冒号的
+<code>bash</code>
+命令（<code>git commit -m "fix: thing"</code>）都会走到那条路，于是点一次就授权了此后所有
+shell 命令、且跨会话。现在这次点击只批准当前调用，并由
+<code>AllowOutcome::NotNarrowable</code> 让 <code>tool_dispatch</code>
+明确告诉用户"这条记不住"——否则一个点了没反应的按钮，用户会以为它已经生效了。</p>
+<p>allowlist <strong>仅内存</strong>——不会持久化到 SQLite 或 TOML
+跨会话。只有 settings 规则那种形式能跨重启存活。</p>
+<h3 id="连续拒绝">连续拒绝</h3>
+<p>每次用户 <strong>Deny</strong> 使 <code>consecutive_denials</code>
+加一。Allow once 与 always-allow 都将其重置为零。</p>
+<p>达到 <code>max_consecutive_denials</code>（默认
+<strong>3</strong>）次拒绝后，<code>should_suggest_plan_mode()</code>
+返回 true。非交互模式下 <code>ask_user()</code> 向 stderr 打印提示：</p>
+<pre class="text"><code>[3 consecutive denials -- consider switching to plan mode]</code></pre>
+<p>目前没有自动切换模式——该消息仅为建议。</p>
+<hr />
+<h2 id="6-tui-requestselect-流程">6. TUI RequestSelect 流程</h2>
+<p>当 <code>check()</code> 返回 <code>Ask</code> 且 agent 有 UI
+通道（<code>runtime.ui_tx</code>）时，<code>tool_dispatch.rs</code>
+发送：</p>
+<pre class="rust"><code>AgentUpdate::RequestSelect {
+    prompt,      // 例如 &quot;Allow bash: {\&quot;command\&quot;:\&quot;npm test\&quot;}&quot;
+    options,     // [&quot;Allow once&quot;, &quot;Deny&quot;, &quot;Always allow this tool&quot;, &quot;Always allow this pattern&quot;]
+    respond,     // 回 agent 的 oneshot channel
+}</code></pre>
+<p>TUI（<code>crates/tui/src/widgets/state/app/agent.rs</code>）切换到
+<code>InputMode::Select</code>
+并渲染选择弹窗（<code>log_confirm = false</code>，避免选择项污染日志）。</p>
+<table>
+<thead>
+<tr>
+<th>用户选择</th>
+<th>索引</th>
+<th>Agent 动作</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Allow once</td>
+<td>0</td>
+<td>运行工具；在 <code>StepFinished</code> 上设置
+<code>permission_label = "Allow once"</code></td>
+</tr>
+<tr>
+<td>Deny</td>
+<td>1（默认）</td>
+<td><code>PreparedState::Resolved</code>；<code>StepFailed</code> 附带
+deny 消息</td>
+</tr>
+<tr>
+<td>Always allow this tool</td>
+<td>2</td>
+<td><code>allow_tool_with_input(name, policy, input)</code>；运行工具；<code>permission_label = "Always allow this tool"</code></td>
+</tr>
+<tr>
+<td>Always allow this pattern</td>
+<td>3</td>
+<td><code>allow_tool_as_prefix(name, policy, input)</code>；运行工具；<code>permission_label = "Always allow this pattern"</code>（无法构建前缀规则时该项不出现）</td>
+</tr>
+</tbody>
+</table>
+<p><code>permission_label</code> 附加到 <code>StepResult</code>，并在
+TUI 工具 meta 行显示。见 <a href="../docs/tool_rendering.md">Tool
+Rendering</a>。</p>
+<h3 id="headless--无-ui-通道">Headless / 无 UI 通道</h3>
+<p>若缺少 <code>ui_tx</code>，agent 调用
+<code>permission_manager.ask_user(tool, risk)</code>：</p>
+<table>
+<thead>
+<tr>
+<th>风险</th>
+<th>非交互默认</th>
+<th>stderr</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>High</strong></td>
+<td>Deny</td>
+<td><code>[permission] non-interactive: denying high-risk &lt;tool&gt;</code></td>
+</tr>
+<tr>
+<td><strong>Write</strong> / <strong>Read</strong></td>
+<td>Allow once</td>
+<td><code>[permission] non-interactive: allowing &lt;tool&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>无人值守且需批准 High 时使用 <code>--auto</code>（Auto
+模式）。settings 的 allow/deny 规则在到达 <code>ask_user</code>
+之前仍会生效。</p>
+<hr />
+<h2 id="7-shell-高风险检测">7. Shell 高风险检测</h2>
+<p>共享逻辑在 <code>crates/tact/src/shell.rs</code>：</p>
+<pre class="rust"><code>pub fn is_high_risk_shell_command(command: &amp;str) -&gt; bool;
+pub fn validate_shell_command(command: &amp;str) -&gt; Result&lt;()&gt;;</code></pre>
+<p><code>is_high_risk_shell_command</code>
+是<strong>执行层</strong>的一道门（唯一的调用方是
+<code>validate_shell_command</code>），不是风险分类器——把两者混起来，会误以为
+<code>sudo</code> 弹窗是因为下面这张表，其实是因为
+<code>PermissionPolicy::ShellCommand</code> 里有
+<code>sudo </code>/<code>su </code>
+前缀判定。它把命令转成小写、检查被拦的子串，命中就在 spawn
+之前拒绝，即使用户已经批准：</p>
+<table>
+<thead>
+<tr>
+<th>模式</th>
+<th>效果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sudo</code>、<code>shutdown</code>、<code>reboot</code></td>
+<td>High risk</td>
+</tr>
+<tr>
+<td><code>&gt; /dev/</code>、<code>&gt;&gt; /dev/</code></td>
+<td>High risk</td>
+</tr>
+<tr>
+<td><code>rm -rf /</code>、<code>rm -fr /</code>、<code>rm -rf /*</code>、…</td>
+<td>High risk</td>
+</tr>
+<tr>
+<td><code>rm -rf ~</code>、<code>rm -fr $home</code>、…</td>
+<td>High risk</td>
+</tr>
+</tbody>
+</table>
+<h3 id="只读-shell-命令分类">只读 shell 命令分类</h3>
+<p>自 2026-08-13 起，<code>PermissionPolicy::ShellCommand</code>
+仅在命令<strong>可证明只读</strong>时将其归为
+<strong>Read</strong>。逻辑位于
+<code>crates/tact/src/tool/readonly_shell.rs</code>，分两阶段：</p>
+<ol type="1">
+<li><strong>纯命令切分</strong> —
+命令字符串必须是由空白分隔的词（裸词或单/双引号段）组成，且不含任何
+shell
+元字符：<code>; &amp; | &gt; &lt; $ backtick \</code>、glob、花括号、圆括号、<code>!</code>。重定向、管道、命令替换与转义一律拒绝，因此分类结果不会与
+<code>sh -c</code> 实际执行的内容产生分歧。裸 <code>\n</code> /
+<code>\r</code> 对 <code>sh -c</code>
+是<strong>命令分隔符</strong>而非空白——含换行的多命令字符串（如
+<code>ls\nrm file</code>，含
+CRLF）整体拒绝；引号内的字面换行是词字符，继续放行。允许词首
+<code>~</code> 与词内单引号段（两者都是字面量）。</li>
+<li><strong>白名单匹配</strong> — 首词必须是"仅凭选项无法写入"的程序：
+<ul>
+<li>始终安全：<code>cat cd cut echo expr false grep head id ls nl paste pwd rev seq stat tail tr true uname uniq wc which whoami</code></li>
+<li><code>base64</code> — 排除 <code>-o</code> /
+<code>--output</code>；<code>find</code> — 排除
+<code>-exec -execdir -ok -okdir -delete -fls -fprint -fprint0 -fprintf</code>；<code>rg</code>
+— 排除 <code>--pre --hostname-bin --search-zip -z</code></li>
+<li><code>git</code> — 仅
+<code>status / log / diff / show / branch</code>，拒绝不安全全局选项（<code>-C -c --git-dir --paginate</code>
+等）与输出/执行选项（<code>--output --ext-diff --textconv --exec</code>）；<code>git branch</code>
+另拒绝一切可能创建、重命名或删除分支的参数</li>
+<li><code>sed</code> — 仅 <code>sed -n {N|M,N}p</code>
+打印行区间形式</li>
+</ul></li>
+</ol>
+<p>白名单与选项规则镜像 OpenAI Codex 的
+<code>is_known_safe_command</code>（<code>codex-rs/shell-command/src/command_safety/is_safe_command.rs</code>）。分类器刻意保守：漏判只多一次审批提示，误判则会在
+plan mode 下静默执行变更——因此任何含糊输入一律归为
+<strong>Write</strong>。最终效果：plan mode 下
+<code>ls</code>、<code>grep -rn x .</code>、<code>git status</code>
+无需提示即可运行；<code>cargo test</code>、管道、重定向与未知程序仍被拒绝。</p>
+<p><strong>白名单证明的是程序不能写入，不是它的输出可以公开。</strong>
+以前允许词首
+<code>~</code>，理由是「波浪号展开只是替换家目录，而白名单里的程序对展开结果依然只读」——这话本身没错，但它回答的不是我们关心的问题：<code>cat</code>
+确实只读，可 <code>cat ~/.ssh/id_ed25519</code>
+打印出来的是私钥。该命令被归为 <strong>Read</strong>，而
+<code>check_with_auto</code> 对 <code>Read</code> 的放行发生在 plan mode
+与一切 settings 规则之前，于是在所有模式下静默执行，headless 也一样。§12
+堵住它：敏感扫描在 <code>is_read_only_shell_command</code>
+<strong>之前</strong>运行，因此任何提到凭据路径的命令都是
+<code>High</code>（或被拒绝），无论其程序多么可证明只读。</p>
+<h3 id="两层">两层</h3>
+<pre class="mermaid">sequenceDiagram
+    participant Agent
+    participant Perm as PermissionManager
+    participant TUI
+    participant Bash as bash tool
+
+    Agent-&gt;&gt;Perm: check("bash", {command})
+    alt High risk (e.g. sudo)
+        Perm--&gt;&gt;Agent: Ask
+        Agent-&gt;&gt;TUI: RequestSelect
+        TUI--&gt;&gt;Agent: Allow once
+    else Write risk (e.g. npm test)
+        Perm--&gt;&gt;Agent: Ask or Allow (mode/allowlist)
+    end
+
+    Agent-&gt;&gt;Bash: call(command)
+    alt validate_shell_command fails
+        Bash--&gt;&gt;Agent: Error: Dangerous command blocked
+    else OK
+        Bash--&gt;&gt;Agent: stdout/stderr
+    end</pre>
+<ol type="1">
+<li><strong>权限层</strong> —
+<code>PermissionPolicy::ShellCommand::resolve</code>
+先跑敏感命令扫描（<code>sensitive::classify_command</code>），再查
+<code>sudo </code> / <code>su </code> 前缀，命中即 <strong>High</strong>
+→ 始终 <code>Ask</code>；可证明只读的命令归
+<strong>Read</strong>（直接放行）；其余归 <strong>Write</strong>。</li>
+<li><strong>执行层</strong> — <code>bash</code> 与
+<code>background_run</code> 在 spawn 前调用
+<code>validate_shell_command</code> →
+<code>is_high_risk_shell_command</code>。被拦截的命令即使用户已批准也会失败。</li>
+</ol>
+<p>无害的破坏性路径可在执行层通过但仍可能提示：例如
+<code>rm -rf ./build</code> 通过 <code>validate_shell_command</code>
+但分类为 <strong>Write</strong>，Default 模式会先询问。</p>
+<p>只读 bash 检测拒绝含 shell 元字符的命令——<code>ls; rm -rf /</code> 是
+<strong>Write</strong>，不是 Read。裸换行同样是命令分隔符，因此
+<code>ls\nrm file</code> 也是 <strong>Write</strong>，不是 Read。</p>
+<hr />
+<h2 id="8-工具流水线中的集成">8. 工具流水线中的集成</h2>
+<p>权限阶梯在
+<code>execute_tool_call</code>（<code>crates/tact/src/agent/tool_dispatch.rs</code>）的
+<strong>Phase 1</strong> 运行，严格在 hook
+之后；而<strong>风险分类与敏感目标守卫在 hook
+之前</strong>——<code>Credential</code> 命中在那个位置就被拒绝，碰不到
+hook、规则与模式（逐项顺序见 <a href="#131-固定检查点">§13.1</a>）：</p>
+<pre class="text"><code>For each ToolUse (sequential):
+  stats · cancel check
+  StepAdded / StepStarted
+  PermissionPolicy::resolve(input)   ← 声明风险（内置注册表）
+  sensitive guard (Scanner)          ← Credential → 拒绝；Secret → High（§12.2）
+  PreToolUse hooks                   ← 可变更 input 或 Block
+  PermissionManager::check           ← 本章
+  Ask → RequestSelect (if needed)
+  PreparedState::Run | Resolved
+
+Phase 2: parallel waves (no permission re-check)
+Phase 3: build ToolResult blocks in model order
+  └─ 结果脱敏（单一收口，早于 PostToolUse 读它 — §12.3）</code></pre>
+<pre class="mermaid">sequenceDiagram
+    autonumber
+    participant LLM
+    participant Agent
+    participant Hook as PreToolUse
+    participant Perm as PermissionManager
+    participant TUI
+    participant Tool as ToolRouter / MCP
+
+    LLM-&gt;&gt;Agent: ToolUse blocks
+    Agent-&gt;&gt;Hook: invoke_hooks!(PreToolUse)
+    alt HookControl::Block
+        Hook--&gt;&gt;Agent: blocked message
+    else Continue
+        Agent-&gt;&gt;Perm: check(name, input)
+        alt Allow
+            Perm--&gt;&gt;Agent: Allow
+            Agent-&gt;&gt;Tool: execute (Phase 2)
+        else Deny
+            Perm--&gt;&gt;Agent: Deny
+            Agent--&gt;&gt;LLM: ToolResult (permission denied)
+        else Ask
+            Perm--&gt;&gt;Agent: Ask
+            Agent-&gt;&gt;TUI: RequestSelect
+            TUI--&gt;&gt;Agent: user choice
+            opt approved
+                Agent-&gt;&gt;Tool: execute
+            end
+        end
+    end</pre>
+<p><code>PermissionManager</code> 在
+<code>AgentRuntime</code>（<code>crates/tact/src/agent/mod.rs</code>）上，不在
+<code>ToolContext</code>。<code>spawn_subagent</code> 工具创建的子 agent
+有独立 manager（始终 <code>PermissionMode::Default</code>），但继承主
+agent 的 <code>ui_tx</code>，权限弹窗仍可用。</p>
+<hr />
+<h2 id="9-配置">9. 配置</h2>
+<h3 id="toml">TOML</h3>
+<pre class="toml"><code>[permission]
+mode = &quot;default&quot;   # &quot;default&quot; | &quot;plan&quot; | &quot;auto&quot;</code></pre>
+<p>定义于
+<code>PermissionTomlConfig</code>（<code>crates/tact/src/config/types.rs</code>）。省略时默认
+<code>"default"</code>。</p>
+<h3
+id="jsontactsettingsjson-里的-permissions">JSON（<code>.tact/settings.json</code>
+里的 <code>permissions</code>）</h3>
+<p>规则与两个安全小节共用同一份宽容文档，安全配置因此只有一个归宿：</p>
+<pre class="jsonc"><code>{
+  &quot;permissions&quot;: {
+    &quot;allow&quot;: [&quot;bash(command:cargo test *)&quot;],
+    &quot;ask&quot;:   [&quot;web_fetch&quot;],
+    &quot;deny&quot;:  [&quot;read_file(path:~/.ssh/**)&quot;],
+    &quot;sensitive_paths&quot;: {
+      &quot;enabled&quot;: true,               // 默认 true；即使没有 settings 文件也生效
+      &quot;extra&quot;:  [&quot;*.vault&quot;],         // 追加进注册表，恒为 Secret 档
+      &quot;allow&quot;:  [&quot;~/.ssh/config&quot;]    // 完全豁免守卫
+    },
+    &quot;redaction&quot;: {
+      &quot;enabled&quot;: true,               // 设成 false 就是关掉脱敏，文档里写明了这个开关
+      &quot;level&quot;: &quot;basic&quot;,              // &quot;off&quot; | &quot;basic&quot; | &quot;credential&quot;
+      &quot;extra_patterns&quot;: [&quot;MYCO-[0-9a-f]{32}&quot;],
+      &quot;basic_only_paths&quot;: [&quot;**/fixtures/**&quot;]
+    }
+  }
+}</code></pre>
+<p>每个字段都可选，每个畸形值都退化为默认值。<code>level</code>
+未设置<strong>或拼错</strong>时解析为 <code>basic</code>，绝不是
+<code>off</code>：拼错不该静默关掉脱敏。含 <code>/</code> 的模式是路径
+glob（<code>**/fixtures/**</code>），以 <code>~/</code>
+开头的是家目录相对，其余匹配最后一段路径名。</p>
+<h3 id="cli">CLI</h3>
+<p><code>--permission-mode</code> / <code>-m</code> 通过
+<code>config/resolve.rs</code> →
+<code>ResolvedConfig.permission_mode</code> 覆盖 TOML。</p>
+<h3 id="当前启动行为">当前启动行为</h3>
+<table>
+<thead>
+<tr>
+<th>入口</th>
+<th>使用的模式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>tact-ui headless</code></td>
+<td><code>permission_mode_from_config()</code> — 读 TOML /
+CLI；未知值回退 <strong>Auto</strong></td>
+</tr>
+<tr>
+<td><code>tact-ui</code>（交互 TUI）</td>
+<td>与 headless 相同 — <code>permission_mode_from_config()</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="10-代码地图">10. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/permission/mod.rs</code></td>
+<td><code>CapabilityRisk</code>、<code>PermissionMode</code>、<code>PermissionManager</code>（<code>check</code>
+/ <code>check_with_auto</code> / <code>ask_user</code> /
+<code>allow_tool_with_input</code>）、<code>PermissionDecision</code>、<code>AllowOutcome</code>、<code>format_permission_prompt</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/security/sensitive.rs</code></td>
+<td>敏感路径注册表、两个档位、<code>Scanner</code>、<code>classify_command</code>、<code>refusal_text</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/security/redact.rs</code></td>
+<td><code>redact</code>、<code>level_for_call</code>、<code>StreamRedactor</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/security/mod.rs</code></td>
+<td><code>SecurityConfig</code> 解析与 global+project 合并</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/shell.rs</code></td>
+<td>共享高风险 shell 模式；执行时 <code>validate_shell_command</code>
+拦截</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
+<td>预检权限；<code>RequestSelect</code> 处理；<code>StepFinished</code>
+上的 <code>permission_label</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>AgentRuntime.permission_manager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/metadata.rs</code></td>
+<td><code>PermissionPolicy</code>（<code>Read</code> /
+<code>Write</code> / <code>High</code> / <code>ReadPath</code> /
+<code>WritePath</code> / <code>PatchPaths</code> /
+<code>ShellCommand</code>）与其 <code>resolve</code>
+分类入口、<code>PermissionPromptPolicy::PatchTarget</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/readonly_shell.rs</code></td>
+<td><code>is_read_only_shell_command</code> — <code>ShellCommand</code>
+的只读白名单</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/progress.rs</code></td>
+<td><code>ToolProgressReporter</code>——实时输出脱敏及其 flush</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/bash.rs</code></td>
+<td>spawn shell 前调用 <code>validate_shell_command</code>；并 flush
+脱敏器</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/background.rs</code></td>
+<td>后台 shell 命令同样校验</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/subagent.rs</code></td>
+<td>子 agent 用 <code>Default</code> 模式；继承 <code>ui_tx</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/permission.rs</code></td>
+<td><code>permission_mode_from_config()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/session_bootstrap.rs</code></td>
+<td><code>bootstrap_session</code> 里构造
+<code>PermissionManager</code>（<code>try_new_with_settings</code>）；headless
+/ 交互共用</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/config/types.rs</code></td>
+<td><code>[permission] mode</code> TOML schema</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/widgets/state/app/agent.rs</code></td>
+<td>处理 <code>AgentUpdate::RequestSelect</code></td>
+</tr>
+<tr>
+<td><code>crates/protocol/src/lib.rs</code></td>
+<td><code>AgentUpdate::RequestSelect</code>、<code>StepResult.permission_label</code></td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="11-当前缺口">11. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>详情</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Allowlist 未持久化</td>
+<td>「Always allow this tool」仅当前进程有效</td>
+</tr>
+<tr>
+<td>无运行时模式切换 API</td>
+<td>用户须以不同模式重启；连续拒绝后 stderr 仅建议 Plan</td>
+</tr>
+<tr>
+<td>Headless 下 High 仍需 Auto 或 settings allow</td>
+<td>非交互 <code>ask_user</code> 会放行 Write/Read 的 Ask，但对 High 仍
+deny，除非 settings allow 已先返回 Allow</td>
+</tr>
+<tr>
+<td><code>PlanStep.need_approval</code> 已弃用</td>
+<td>字段标记 <code>#[deprecated(since = "0.19.0")]</code>；用
+<code>PlanStep::new()</code> — 权限由 <code>PermissionManager</code>
+驱动</td>
+</tr>
+<tr>
+<td>权限与 hook 重叠</td>
+<td>两者均可拦截工具；hook 先运行，<code>Block</code> 时跳过权限</td>
+</tr>
+<tr>
+<td>风险与守卫在 hook 之前算定</td>
+<td>第 2 步 <code>resolve</code> 与第 3 步守卫读的是
+<code>PreToolUse</code> <strong>之前</strong>的 input，而
+<code>check_with_auto</code> 读<strong>之后</strong>的
+<code>tool_use.input</code>。于是改写 input 的 hook 能影响 settings
+规则的匹配，却改变不了本次调用的风险档位与守卫结论（§13.1）</td>
+</tr>
+<tr>
+<td>守卫是只看名字的经验规则</td>
+<td>§12 只拦得住<strong>字面出现</strong>的敏感名（含解释器
+<code>-c</code>
+里的绝对路径）；名字根本不出现的读取——环境变量的值、argv、stdin（<code>printenv</code>），或文件名本身人畜无害（<code>cat notes/passwords-2026.txt</code>）——只能靠脱敏兜底。真正的边界是
+<code>crates/tact/src/sandbox/</code>——<strong>仅 Linux
+且默认关闭</strong>（macOS 上返回
+<code>SandboxDegradation</code>，<code>[tools] sandbox = false</code>）</td>
+</tr>
+<tr>
+<td>MCP 的输入不被守卫扫描</td>
+<td>第三方工具的路径参数不做分类（其<strong>结果</strong>仍按
+<code>Basic</code> 脱敏）。MCP 工具默认
+<code>High</code>，风险可按工具声明</td>
+</tr>
+<tr>
+<td>脱敏是模式匹配</td>
+<td>可以被关掉（<code>redaction.enabled = false</code>），且测试 fixture
+里的假密钥会和真密钥一样被脱敏</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="12-敏感路径与密钥脱敏">12. 敏感路径与密钥脱敏</h2>
+<p>权限阶梯回答的是「agent
+可不可以做这件事」，至于<em>一次已经批准的读取会返回什么内容</em>，它管不着——私钥就是从这儿漏出去的：<code>cat ~/.ssh/id_ed25519</code>
+是可证明只读的命令，于是被判 <code>Read</code>，于是在还没轮到 plan mode
+判断之前就已经放行了。<code>crates/tact/src/security/</code>
+里的两套机制堵住它。</p>
+<h3 id="121-背景一次静默的私钥读取">12.1 背景：一次静默的私钥读取</h3>
+<p>起因是一次 <code>~/.ssh</code>
+事故：<code>bash "cat ~/.ssh/id_ed25519"</code>
+在<strong>所有</strong>模式下静默执行，headless
+也一样，私钥内容进了上下文与会话库。要回答的问题是"agent
+为什么能读到私钥，以及现在是什么拦住了它"。当时有三个各自独立的事实（2026-09-30）：</p>
+<ol type="1">
+<li><strong>文件工具本来够不着家目录。</strong> <code>safe_path</code>
+会 canonicalize 并拒绝任何逃出 workspace 的路径，而 <code>~</code>
+根本不展开——<code>read_file("~/.ssh/id_ed25519")</code>
+找的是工作区下名为 <code>~</code>
+的目录，绝对路径则被判逃逸。<strong>所以洞不在
+<code>read_file</code>，在 <code>bash</code>。</strong></li>
+<li><strong><code>bash</code> 够得着，而且被自动放行。</strong>
+<code>cat</code> 在只读白名单里，<code>split_plain_command</code>
+明确接受词首
+<code>~</code>，理由写在注释里：「波浪号展开无害——它只是替换家目录，而白名单里的程序对展开结果依然只读」。这句话就是
+bug：<code>cat</code>
+对<strong>文件</strong>只读没错，文件的<strong>内容</strong>才是秘密。于是该命令归
+<code>Read</code>，而 <code>check_with_auto</code> 第 1 条在 plan mode
+与一切 settings
+规则之前就放行。<code>cat ~/.netrc</code>、<code>grep -r token ~/.aws</code>
+同一条路径。</li>
+<li><strong>结果返回的路上没有脱敏。</strong> 工具返回什么，会话库与
+transcript
+就原样存什么——当时工具结果的这条路径上没有任何秘密扫描器。<code>cat ~/.claude/settings.json</code>
+会泄漏一个仍有效的 <code>ANTHROPIC_AUTH_TOKEN</code>。</li>
+</ol>
+<p>前两条事实直接决定了修复的位置，第三条决定了还需要第二套机制：</p>
+<table>
+<thead>
+<tr>
+<th>既有事实</th>
+<th>对设计的约束</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Read</code> 在 plan mode <strong>之前</strong>就放行</td>
+<td>把守卫挂在风险阶梯上，对读类工具完全无效——它必须放在更早的位置判定，或者干脆给它一个单独的结局：直接拒绝（§13.1
+的第 3 步）</td>
+</tr>
+<tr>
+<td>settings 的 <code>allow</code> 规则能压过 <code>High</code>
+的询问</td>
+<td>任何表达成「风险 = High」的东西离永久批准只有一次点击。对
+<code>.env</code> 可以接受，对 <code>id_ed25519</code> 不行 →
+分成"拒"与"问"两档，<code>Credential</code> 要解封必须去改文件</td>
+</tr>
+<tr>
+<td>文件工具够不着家目录，且 <code>safe_path</code> 本就拒绝</td>
+<td>守卫只需覆盖<strong>工作区内</strong>路径；家目录的匹配是
+<code>bash</code> 的事（§13.2 第 4 行）</td>
+</tr>
+</tbody>
+</table>
+<p>那句"波浪号无害"的注释<strong>今天仍在代码里</strong>（<code>readonly_shell.rs</code>
+的模块注释）。它不再是最后结论——守卫不是改写只读分类器，而是加在它<strong>之前</strong>：敏感扫描先跑，之后才轮到白名单。</p>
+<p>同一个改动还修掉三处同类缺陷——都是"一次看起来窄的点击，授予了很宽的权限"：</p>
+<ul>
+<li><code>always_allowed_tools</code> 曾预置 <code>read_file</code>。在
+<code>read_file</code> 恒为 <code>Read</code>
+时它毫无作用；一旦敏感目标能把它升到
+<code>High</code>，这个<strong>没人授予过</strong>的条目就成了放行
+<code>.env</code> 的通行证。预置已删除（§5）。</li>
+<li><code>apply_patch</code>
+的提示策略声明了一个输入里<strong>不存在</strong>的 <code>path</code>
+字段，于是「Always
+allow」退回裸规则：一次点击永久授权此后<strong>所有</strong>补丁。为此新增
+<code>PermissionPromptPolicy::PatchTarget</code>（§13.4）。</li>
+<li>裸规则回退还会在值里含 <code>(</code>/<code>)</code>/<code>:</code>
+时触发，而 <code>bash</code> 跑 <code>git commit -m "fix: thing"</code>
+正好含冒号——一次点击就持久化了一条<strong>不看输入</strong>的
+<code>bash</code> 规则，等于授权此后的<strong>每条</strong> shell
+命令。现在 <code>generate_key</code> 返回
+<code>None</code>，这次点击只批准当前调用（§5）。</li>
+</ul>
+<p>边界与代价在当时就写明了，也是 §12.4
+的内容：两者都不是沙箱；<code>Auto</code> 模式仍然放行
+<code>Secret</code> 档；MCP
+的输入不做扫描；脱敏可以关掉，而且会误伤含假密钥的
+fixture。这套设计也不打算做到"事后可以装作没看过"——原始字节可能仍然留在
+agent 写下的文件、hook 输出或 MCP server 自己的日志里。</p>
+<h3 id="122-守卫两个档位两种结果">12.2 守卫：两个档位，两种结果</h3>
+<p><code>sensitive::RULES</code>
+是一张有序的注册表，列出那些<strong>文件本身就是秘密</strong>的路径——也就是说，这类文件只要内容被读出来就等于泄密，跟里面具体写了什么无关。<strong>先匹配者胜</strong>，所以窄例外必须排在被它挖出洞的目录
+glob 之前（<code>~/.ssh/config</code> 排在 <code>~/.ssh/**</code>
+之上）。命中 <code>EXEMPT_NAMES</code>
+的文件名（<code>*.pub</code>、<code>*.crt</code>、<code>*.cer</code>、<code>*.der</code>，以及
+<code>*.example</code> / <code>*.sample</code> / <code>*.template</code>
+/ <code>*.dist</code> 占位文件）最先排除。</p>
+<table>
+<thead>
+<tr>
+<th>档位</th>
+<th>含义</th>
+<th>决策</th>
+<th>怎么解封</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Credential</code></td>
+<td>文件<strong>本身就是</strong>秘密：私钥、token
+存储、<code>~/.netrc</code>、<code>~/.ssh/**</code>、<code>~/.aws/**</code>、<code>~/.kube/**</code>、<code>~/.gnupg/**</code>、<code>~/.config/{gh,gcloud,heroku,op}/**</code>、<code>*.pem</code>
+/ <code>*.key</code> / <code>*.p12</code> / <code>*.keystore</code> /
+<code>*.kdbx</code>、<code>id_*</code>、<code>*_rsa</code>、<code>*.tfstate</code>、<code>credentials.json</code>、<code>secrets.{json,yml,toml}</code>、仓库内的
+<code>.npmrc</code> / <code>.pypirc</code> / <code>.pgpass</code> /
+<code>.netrc</code>，以及携带 <code>env</code> token 的 agent
+宿主配置（<code>~/.claude/settings.json</code>、<code>~/.codex/auth.json</code>、<code>~/.tact/settings.json</code>）</td>
+<td><strong>拒绝</strong>——在预检直接拒，不弹窗</td>
+<td><code>permissions.sensitive_paths.allow</code>，需要改文件</td>
+</tr>
+<tr>
+<td><code>Secret</code></td>
+<td>读取<strong>可能</strong>泄露，但用户往往确实需要：<code>.env</code>
+/ <code>.env.*</code> / <code>*.env</code> /
+<code>.envrc</code>、<code>~/.ssh/{config,known_hosts}</code>、<code>~/.bash_history</code>
+等</td>
+<td><strong>询问</strong>——升级为 <code>High</code>，走普通阶梯</td>
+<td>普通规则与「always allow」</td>
+</tr>
+</tbody>
+</table>
+<p><code>Credential</code> 刻意<strong>不让</strong> TUI 的「Always
+allow」按钮绕过：点一下就解除的拒绝，等于没有拒绝。要解封只能去编辑
+<code>.tact/settings.json</code>。</p>
+<p>关键在于位置。守卫在 <code>preflight_tool_calls</code> 中于
+<code>PreToolUse</code>
+<strong>之前</strong>、<code>PermissionManager::check</code>
+之前运行，因此 <code>Auto</code> 模式、已持久化的 <code>allow</code>
+规则、会话内 always-allow、<code>PermissionRequest</code> hook
+都碰不到凭据文件。<code>Secret</code> 档完全不需要特例——它变成
+<code>High</code>，于是 plan mode 拒绝、Default 询问、headless
+拒绝，用户规则照常组合。</p>
+<table>
+<thead>
+<tr>
+<th>工具</th>
+<th>策略</th>
+<th>扫描什么</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read_file</code>、<code>read_image</code></td>
+<td><code>ReadPath { path_field }</code></td>
+<td>路径（绝对路径或以 <code>~</code> 开头时跳过——<code>safe_path</code>
+本来就会拒绝，在必然报错前弹窗只是噪音）</td>
+</tr>
+<tr>
+<td><code>edit_file</code>、<code>write_file</code></td>
+<td><code>WritePath { path_field }</code></td>
+<td>路径</td>
+</tr>
+<tr>
+<td><code>apply_patch</code></td>
+<td><code>PatchPaths</code></td>
+<td>每个 <code>+++ b/&lt;path&gt;</code> / <code>+++ &lt;path&gt;</code>
+头，复用调度器同一套提取（<strong>注意</strong>：<code>apply_patch</code>
+当前没有任何 toolset 注册它，这一行只在它被重新接线后生效——见 <a
+href="./07_chapter_tool_zh.html">工具系统</a> §5）</td>
+</tr>
+<tr>
+<td><code>bash</code>、<code>background_run</code>、<code>worktree_run</code></td>
+<td><code>ShellCommand { command_field }</code></td>
+<td>命令字符串的词元，且<strong>先于</strong>只读分类器</td>
+</tr>
+</tbody>
+</table>
+<p><code>classify_command</code> 先去掉引号再切分（因此
+<code>~/.ss"h"/id_rsa</code> 会还原成 shell 实际传入的词元），并按 shell
+元字符切分，这也是重定向目标（<code>&gt; .env</code>）能被抓到的原因。不含
+<code>.</code> 与 <code>/</code> 的裸词只与
+<code>BARE_SECRET_NAMES</code> 比对——否则像 <code>"foo_rsa"</code>
+这样的 grep
+模式会换来一次拒绝。它<strong>不</strong>解析命令替换、变量，或
+<code>python -c</code>。</p>
+<p>拒绝文案会点明路径、类别以及怎么解封，因为它同时被人和模型读到：</p>
+<pre class="text"><code>Refused: ~/.ssh/id_ed25519 is credential material (private-key). Reading it is
+not something this agent does. If the user asked for this, they can permit the
+path in .tact/settings.json under permissions.sensitive_paths.allow.</code></pre>
+<h3 id="123-脱敏兜底">12.3 脱敏：兜底</h3>
+<p>守卫只看名字——这一点它自己也不否认。只要一次读取里<strong>字面出现</strong>了敏感路径，它就能拦住——解释器里的绝对路径也算（<code>python -c "print(open('/home/me/.ssh/id_ed25519').read())"</code>
+会被判
+<code>Credential</code>，因为引号先被删掉、路径词元完整保留）。它拦不住的是名字根本不出现的情况：秘密来自环境变量的<strong>值</strong>、argv
+或
+stdin（<code>printenv ANTHROPIC_AUTH_TOKEN</code>），或者文件名本身人畜无害（<code>cat notes/passwords-2026.txt</code>）。脱敏就是这些情况下仍然成立的那部分。</p>
+<table>
+<thead>
+<tr>
+<th>级别</th>
+<th>作用于</th>
+<th>规则</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Basic</code></td>
+<td><strong>所有</strong>工具结果</td>
+<td>高置信度、低误报的形状：私钥块、<code>sk-…</code> /
+<code>sk-ant-…</code>、<code>AKIA</code> /
+<code>ASIA</code>、<code>ghp_…</code> /
+<code>github_pat_…</code>、<code>xox[baprs]-…</code>、<code>glpat-…</code>、<code>AIza…</code>、JWT、<code>Bearer …</code>、<code>https://user:pass@</code></td>
+</tr>
+<tr>
+<td><code>Credential</code></td>
+<td>被守卫判为敏感的那次调用的结果</td>
+<td><code>Basic</code> 之外追加结构感知规则：<code>.netrc</code> 的
+<code>password …</code>、dotenv/INI/TOML 的 <code>API_KEY=…</code>、JSON
+的 <code>"token": "…"</code>、npmrc 的
+<code>_authToken=</code>、<code>authorized_keys</code></td>
+</tr>
+</tbody>
+</table>
+<p>之所以要分级：如果不管什么场合都按"键 =
+值"的规则打码，用户自己的源码和测试 fixture 也会被改写，模型就会对着一堆
+<code>[redacted:value]</code> 去分析本来写着 <code>token = "abc"</code>
+的代码。标记只带类别、绝不含值的前缀；键名保留，形状仍可读（<code>API_KEY=[redacted:value]</code>）。</p>
+<table>
+<thead>
+<tr>
+<th>脱敏</th>
+<th>不脱敏</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>工具<strong>结果</strong>（原生与 MCP）——在
+<code>run_tool_waves</code> 的单一收口处，于 <code>PostToolUse</code>
+hook 读取之前，因此 hook、TUI 步骤详情、transcript
+与会话存储看到的是同一个字符串</td>
+<td>工具<strong>调用</strong>输入 / <code>arg_full</code></td>
+<td>模型自己发出的 <code>tool_use</code>
+块必须逐字节原样回传，否则下一次请求就是非法请求。若模型已经输出过秘密，事后再抹掉这次回声也补不回来</td>
+</tr>
+<tr>
+<td><code>bash</code> / <code>background_run</code> 的实时输出</td>
+<td>hook 的 stdout</td>
+<td>hook 是用户自己写的</td>
+</tr>
+</tbody>
+</table>
+<p>实时输出单独一遍处理，因为两次泄露发生在不同时刻：实时视图是命令还在跑时用户正在看的东西。<code>StreamRedactor</code>
+只输出<strong>完整行</strong>，因此行内锚定的模式总能看全自己的输入；而私钥块一旦出现
+<code>-----BEGIN … PRIVATE KEY</code>
+就整段压掉——它是多行的，没法一行一行地扣住不放。跨两个 chunk
+的秘密永远不会被完整显示。状态放在 <code>ToolProgressReporter</code>
+里，位于 <code>report(&amp;self)</code>
+所需的互斥锁之后，<code>flush()</code> 在每条退出路径上释放尾部。</p>
+<pre class="mermaid">sequenceDiagram
+    participant A as Agent
+    participant G as sensitive::Scanner
+    participant P as PermissionManager
+    participant T as Tool
+    participant R as redact
+
+    A-&gt;&gt;G: classify(tool target)
+    alt Credential 档
+        G--&gt;&gt;A: Hit
+        A--&gt;&gt;A: 拒绝，StepFailed（先于 hook 与规则）
+    else Secret 档
+        G--&gt;&gt;A: Hit
+        A-&gt;&gt;P: check(risk = High)
+        P--&gt;&gt;A: Ask / Deny / Allow
+    else 无命中
+        A-&gt;&gt;P: check(声明的风险)
+    end
+    A-&gt;&gt;T: execute
+    T--&gt;&gt;A: ExecResult
+    A-&gt;&gt;R: redact(content, level_for_call)
+    R--&gt;&gt;A: 脱敏文本 → hook、TUI、transcript、存储</pre>
+<h3 id="124-这不是什么">12.4 这不是什么</h3>
+<p>两者都不是沙箱。它们都只是同一个进程里按名字和模式做的判断，只要刻意绕一下就能避开。真正的执行边界在
+<code>crates/tact/src/sandbox/</code>（bwrap），而它目前<strong>只支持
+Linux</strong>——macOS 上会返回
+<code>SandboxDegradation::new("no sandbox implementation for this platform yet")</code>——而且<strong>默认关闭</strong>（<code>[tools] sandbox = false</code>）。这次的设计只是把可能出问题的面缩小了一些，并没有划出一条真正的边界。</p>
+<hr />
+<h2 id="13-四个目标感知策略的逐例流程">13.
+四个目标感知策略的逐例流程</h2>
+<p>§2
+的规则表把四种「目标决定风险」的策略压成了一行说明。这一节把它们拆成可对照的例子，并标出每一步由谁决定——包括两个都叫
+<code>allow</code>、但位置和效果完全不同的配置。</p>
+<h3 id="131-固定检查点">13.1 固定检查点</h3>
+<p>每个 native
+调用都按这个顺序走（<code>crates/tact/src/agent/tool_dispatch.rs</code>
+的预检）：</p>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>检查点</th>
+<th>决定者</th>
+<th>备注</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>解析工具 → <code>ToolMetadata</code></td>
+<td><code>ToolRouter::resolve</code></td>
+<td>解析失败即 <code>ResolvedTool::Unknown</code> →
+<code>High</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>声明风险</td>
+<td><code>PermissionPolicy::resolve(input)</code></td>
+<td>只查<strong>内置</strong>注册表，不读配置</td>
+</tr>
+<tr>
+<td>3</td>
+<td>敏感目标守卫</td>
+<td><code>PermissionPolicy::sensitive(input, &amp;Scanner)</code></td>
+<td>用<strong>配置化</strong> Scanner；<code>Credential</code> →
+拒绝</td>
+</tr>
+<tr>
+<td>4</td>
+<td><code>PreToolUse</code> hook</td>
+<td>用户脚本</td>
+<td>可 <code>Block</code>，也可<strong>改写 input</strong></td>
+</tr>
+<tr>
+<td>5</td>
+<td>权限阶梯</td>
+<td><code>PermissionManager::check_with_auto</code></td>
+<td>§4 那 11 条顺序；读 mode / settings / allowlist</td>
+</tr>
+<tr>
+<td>6</td>
+<td><code>Ask</code> 的出口</td>
+<td>TUI <code>RequestSelect</code> 或 headless
+<code>ask_user</code></td>
+<td>§6</td>
+</tr>
+<tr>
+<td>7</td>
+<td>执行</td>
+<td>工具自身（Phase 2 并行 wave）</td>
+<td>不再复查权限</td>
+</tr>
+<tr>
+<td>8</td>
+<td>实时输出脱敏</td>
+<td><code>StreamRedactor</code></td>
+<td>级别在本 wave 开始前算好</td>
+</tr>
+<tr>
+<td>9</td>
+<td>结果脱敏</td>
+<td><code>redact(level_for_call(…))</code></td>
+<td>单一收口，早于 <code>PostToolUse</code></td>
+</tr>
+<tr>
+<td>10</td>
+<td><code>PostToolUse</code> / TUI / transcript / 会话存储</td>
+<td>—</td>
+<td>都读第 9 步之后的同一个字符串</td>
+</tr>
+</tbody>
+</table>
+<pre class="mermaid">graph TD
+    a[工具调用] --&gt; b[2. resolve input 内置表]
+    b --&gt; c{3. 守卫命中?}
+    c --&gt;|Credential| r1[拒绝 StepFailed 加 Resolved 跳过 4 到 6]
+    c --&gt;|Secret| d[risk 改为 High]
+    c --&gt;|无命中| d2[保持第 2 步的风险]
+    d --&gt; e[4. PreToolUse hook]
+    d2 --&gt; e
+    e --&gt; f{5. 阶梯}
+    f --&gt;|Allow| g[7. 执行]
+    f --&gt;|Deny| r2[Permission denied]
+    f --&gt;|Ask| h[6. RequestSelect 或 ask_user]
+    h --&gt; g
+    g --&gt; i[8. 实时脱敏] --&gt; j[9. 结果脱敏] --&gt; k[10. hook TUI 存储]</pre>
+<p>两条容易记错的顺序：</p>
+<ul>
+<li><strong>第 3 步在 hook 之前。</strong> 所以 <code>Credential</code>
+命中无法被 <code>PermissionRequest</code> hook、<code>Auto</code>
+模式、已持久化的 <code>permissions.allow</code> 规则或 TUI 的「Always
+allow」碰到——它们全在它之后。</li>
+<li><strong>第 2 步就已经可能升到 <code>High</code>。</strong>
+<code>resolve</code> 走的是内置注册表：<code>ReadPath</code> 的目标命中
+<code>.env</code> 时，它返回的不是 <code>Read</code> 而是
+<code>High</code>。因此第 3 步的 <code>Secret</code>
+档通常只是确认这个结论；它真正独占的作用有三点：(a)
+决定"拒"还是"问"，(b) 让 <code>extra</code>
+这类用户自加的模式也能升档，(c) 把结果的脱敏级别提到
+<code>Credential</code>。</li>
+</ul>
+<p>下面每个例子统一按
+<code>第 2 步（内置）→ 第 3 步（配置化）→ 阶梯（Default 模式）</code>
+读。阶梯那一列用规则名而不是编号，避免和检查点编号混淆。</p>
+<h3 id="132-readpath--read_file--read_image">13.2 <code>ReadPath</code>
+—— <code>read_file</code> / <code>read_image</code></h3>
+<pre class="rust"><code>// crates/tact/src/tool/{read_file,read_image}.rs，经 ToolMetadata::path_read
+permission: PermissionPolicy::ReadPath { path_field: &quot;path&quot; }      // read_file
+permission: PermissionPolicy::ReadPath { path_field: &quot;file_path&quot; } // read_image</code></pre>
+<table>
+<thead>
+<tr>
+<th>调用</th>
+<th>第 2 步</th>
+<th>第 3 步</th>
+<th>阶梯（Default）</th>
+<th>结果脱敏级别</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read_file(path: "src/main.rs")</code></td>
+<td><code>Read</code></td>
+<td>无命中</td>
+<td>Allow（Read 在阶梯最前放行，plan mode 也允许）</td>
+<td><code>Basic</code></td>
+</tr>
+<tr>
+<td><code>read_file(path: ".env")</code></td>
+<td><strong><code>High</code></strong></td>
+<td><code>Secret</code></td>
+<td>Ask；plan / headless → Deny</td>
+<td><code>Credential</code></td>
+</tr>
+<tr>
+<td><code>read_file(path: "config/secrets.json")</code></td>
+<td><strong><code>High</code></strong></td>
+<td><code>Credential</code></td>
+<td>到不了——第 3 步已结束</td>
+<td>无结果</td>
+</tr>
+<tr>
+<td><code>read_file(path: "/etc/passwd")</code></td>
+<td><code>Read</code></td>
+<td>跳过</td>
+<td>Allow，随后 <code>safe_path</code> 报错</td>
+<td>—</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>第 1 行是 <code>CapabilityRisk::Read</code>
+的全部意义：<code>check_with_auto</code> 的第一条就放行，<strong>早于
+plan mode 与一切 settings 规则</strong>。</li>
+<li>第 2 行升到 <code>Credential</code> 脱敏，所以 <code>.env</code>
+里的 <code>API_KEY=…</code> 会被打码成
+<code>API_KEY=[redacted:value]</code>；不加档的话它只是普通文本。</li>
+<li>第 3 行模型收到失败的 tool result，文案同时写给它和用户（TUI 的 meta
+行则显示 <code>Refused: credential-store</code>，来自
+<code>permission_label</code>）：</li>
+</ul>
+<pre class="text"><code>Refused: config/secrets.json is credential material (credential-store). Reading it is not
+something this agent does. If the user asked for this, they can permit the path in
+.tact/settings.json under permissions.sensitive_paths.allow.</code></pre>
+<ul>
+<li>第 4
+行是<strong>刻意的分工</strong>：守卫只对工作区相对的目标提问（<code>target_is_workspace_relative</code>），绝对路径与
+<code>~</code> 开头一律跳过，因为 <code>safe_path</code>
+本来就会拒绝（canonicalize 之后要求仍在工作区内）。为 home
+下的秘密负责的是 <code>bash</code>——它没有工作区边界可跳，见
+§13.5。</li>
+</ul>
+<h3 id="133-writepath--write_file--edit_file">13.3
+<code>WritePath</code> —— <code>write_file</code> /
+<code>edit_file</code></h3>
+<pre class="rust"><code>permission: PermissionPolicy::WritePath { path_field: &quot;path&quot; }</code></pre>
+<p>同样的三段判定，只是低档从 <code>Read</code> 变成
+<code>Write</code>：</p>
+<table>
+<thead>
+<tr>
+<th>调用</th>
+<th>第 2 步</th>
+<th>第 3 步</th>
+<th>阶梯（Default）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>edit_file(path: "src/main.rs", …)</code></td>
+<td><code>Write</code></td>
+<td>无命中</td>
+<td>Ask（「Always allow」记住
+<code>edit_file(path:src/main.rs)</code>）</td>
+</tr>
+<tr>
+<td><code>write_file(path: ".env", …)</code></td>
+<td><strong><code>High</code></strong></td>
+<td><code>Secret</code></td>
+<td>Ask；plan / headless → Deny</td>
+</tr>
+<tr>
+<td><code>write_file(path: "config/secrets.yaml", …)</code></td>
+<td><strong><code>High</code></strong></td>
+<td><code>Credential</code></td>
+<td><strong>拒绝</strong></td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>第 3 行是这套设计的真实代价：<strong>仓库里没法新建名为
+<code>secrets.yaml</code> / <code>credentials.json</code> /
+<code>*.pem</code> / <code>*.key</code>
+的文件</strong>，即使内容只是占位符。<code>Name</code> scope
+的规则在任何目录都生效，这是有意的（仓库里藏着 <code>_authToken</code>
+的 <code>.npmrc</code> 是真实泄露），代价是这类文件名在 agent
+手里等于写不进去。</li>
+<li>第 2 与第 3 行的差别就是两档的分界：<code>.env</code>
+该问（用户可能正是在配环境），<code>secrets.yaml</code> 该拒。</li>
+</ul>
+<h3 id="134-patchpaths--apply_patch">13.4 <code>PatchPaths</code> ——
+<code>apply_patch</code></h3>
+<p><code>PatchPaths</code> 没有 path
+字段——目标写在补丁头里，所以策略自己从 <code>+++ b/&lt;path&gt;</code> /
+<code>+++ &lt;path&gt;</code>
+提取（<code>extract_patch_paths</code>），并且<strong>与调度器的资源预留、「Always
+allow」生成规则共用同一份提取</strong>：三者不可能对"这个补丁碰了哪些文件"产生分歧。<code>/dev/null</code>
+被跳过（那是删除，不是要碰的文件）。</p>
+<pre class="text"><code>apply_patch(patch: &quot;--- a/src/main.rs\n+++ b/src/main.rs\n@@ …&quot;)  → Write      → Ask
+apply_patch(patch: &quot;…\n+++ b/.env\n@@ …&quot;)                         → High（内置）→ Secret → Ask
+apply_patch(patch: &quot;…\n+++ b/keys/server.pem\n@@ …&quot;)              → High（内置）→ Credential → 拒绝
+apply_patch(patch: &quot;…\n+++ secrets.json\n@@ …&quot;)                   → 同样命中（裸 `+++ ` 形式也算）</code></pre>
+<p>「Always
+allow」在这个变体上多一道限制：<code>PermissionPromptPolicy::PatchTarget</code>
+只在补丁<strong>恰好涉及一个文件</strong>时才生成输入感知规则（<code>*&lt;path&gt;*</code>），多文件时
+<code>generate_key</code> 返回
+<code>None</code>，这次点击只批准当前调用，并由
+<code>AllowOutcome::NotNarrowable</code>
+明说——用其中一个路径生成的规则会静默授权其余文件。</p>
+<blockquote>
+<p><strong>接线状态：</strong>
+<code>crates/tact/src/tool/apply_patch.rs</code>
+今天<strong>没有被编译</strong>（<code>crates/tact/src/tool/mod.rs</code>
+里没有 <code>mod apply_patch;</code>），也没有任何 toolset
+注册它。上面的判定是策略本身的行为、由测试覆盖；要在真实调用里看到它们，得先把工具接回来——见
+<a href="./07_chapter_tool_zh.html">工具系统</a> §5。</p>
+</blockquote>
+<h3 id="135-shellcommand--bash--background_run--worktree_run">13.5
+<code>ShellCommand</code> —— <code>bash</code> /
+<code>background_run</code> / <code>worktree_run</code></h3>
+<pre class="rust"><code>permission: PermissionPolicy::ShellCommand { command_field: &quot;command&quot; }</code></pre>
+<p>这个变体的 <code>resolve</code>
+内部<strong>有顺序</strong>，而顺序本身就是设计：</p>
+<pre class="text"><code>1. sensitive::classify_command(cmd)（内置注册表）命中? → High   ← 永远最先跑
+2. 以 &quot;sudo &quot; / &quot;su &quot; 开头?                          → High
+3. is_read_only_shell_command(cmd)（§7 的白名单）?     → Read
+4. 其余                                              → Write</code></pre>
+<p>第 1
+步排在只读分类器<strong>之前</strong>，就是为了落实一句话：命令本身只读，不代表它读出来的内容安全。</p>
+<table>
+<thead>
+<tr>
+<th>命令</th>
+<th>第 2 步</th>
+<th>第 3 步</th>
+<th>阶梯（Default）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>cat src/main.rs</code></td>
+<td><code>Read</code>（可证明只读）</td>
+<td>无命中</td>
+<td>Allow（plan mode 也允许）</td>
+</tr>
+<tr>
+<td><code>npm test</code></td>
+<td><code>Write</code></td>
+<td>无命中</td>
+<td>Ask</td>
+</tr>
+<tr>
+<td><code>cat .env</code></td>
+<td><code>High</code>（内置命中）</td>
+<td><code>Secret</code></td>
+<td>Ask；plan / headless → Deny</td>
+</tr>
+<tr>
+<td><code>cat ~/.ssh/id_ed25519</code></td>
+<td><code>High</code></td>
+<td><code>Credential</code></td>
+<td><strong>第 3 步拒绝</strong>，hook 与阶梯都不参与</td>
+</tr>
+<tr>
+<td><code>sudo ls</code></td>
+<td><code>High</code></td>
+<td>无命中</td>
+<td>Ask（永不自动放行）</td>
+</tr>
+<tr>
+<td><code>ls; rm -rf /</code></td>
+<td><code>Write</code>（元字符 → 不是 Read）</td>
+<td>无命中</td>
+<td>Ask；即使批准，执行层 <code>validate_shell_command</code>
+仍会拦</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>第 4
+行是这次安全设计的起点：命令可证明只读<strong>从不等于</strong>内容无害，所以敏感扫描必须先跑。</li>
+<li>第 6
+行是两层防护的第二层：权限批的是"这条命令可以跑"，<code>is_high_risk_shell_command</code>
+在执行前仍然可以说"不"。</li>
+</ul>
+<h3 id="136-对照表allow-的两种含义盲区">13.6 对照表、<code>allow</code>
+的两种含义、盲区</h3>
+<p>四个变体只是「低档是什么」和「目标从哪里读」不同：</p>
+<table>
+<thead>
+<tr>
+<th>变体</th>
+<th>工具</th>
+<th>低档</th>
+<th>目标来源</th>
+<th>命中后</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ReadPath</code></td>
+<td><code>read_file</code> / <code>read_image</code></td>
+<td><code>Read</code></td>
+<td>输入里的 path 字段</td>
+<td><code>Secret</code> → 问；<code>Credential</code> → 拒</td>
+</tr>
+<tr>
+<td><code>WritePath</code></td>
+<td><code>write_file</code> / <code>edit_file</code></td>
+<td><code>Write</code></td>
+<td>输入里的 path 字段</td>
+<td>同上</td>
+</tr>
+<tr>
+<td><code>PatchPaths</code></td>
+<td><code>apply_patch</code>（未接线）</td>
+<td><code>Write</code></td>
+<td>补丁头的 <code>+++</code> 行（可能多个）</td>
+<td>同上</td>
+</tr>
+<tr>
+<td><code>ShellCommand</code></td>
+<td><code>bash</code> / <code>background_run</code> /
+<code>worktree_run</code></td>
+<td><code>Read</code>（仅可证明只读）或 <code>Write</code></td>
+<td>命令字符串的词元</td>
+<td>同上</td>
+</tr>
+</tbody>
+</table>
+<p><strong>两个 <code>allow</code>
+名字相近、位置与效果都不同</strong>，这是最容易配错的地方。以
+<code>read_file(path: "config/secrets.json")</code> 为例：</p>
+<table>
+<thead>
+<tr>
+<th>配置</th>
+<th>第 3 步守卫</th>
+<th>第 2 步风险</th>
+<th>阶梯</th>
+<th>实际结果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>什么都不配</td>
+<td><code>Credential</code></td>
+<td><code>High</code></td>
+<td>到不了</td>
+<td><strong>拒绝</strong>（<code>permissions.allow</code> 与「Always
+allow」都到不了这里）</td>
+</tr>
+<tr>
+<td><code>sensitive_paths.allow: ["config/secrets.json"]</code></td>
+<td>放行</td>
+<td>仍是 <code>High</code></td>
+<td>Ask（High 且无任何允许）</td>
+<td>不再拒绝，但<strong>仍要问一次</strong></td>
+</tr>
+<tr>
+<td>上一条 +
+<code>permissions.allow: ["read_file(path:config/secrets.json)"]</code></td>
+<td>放行</td>
+<td><code>High</code></td>
+<td>Allow（settings allow 规则含 High）</td>
+<td>静默执行</td>
+</tr>
+</tbody>
+</table>
+<ul>
+<li>第二行是 <code>resolve</code>
+的内置扫描<strong>不读配置</strong>的直接后果：<code>sensitive_paths.allow</code>
+解除的是"拒绝"，不是"风险"。同理，把 <code>enabled</code> 设成
+<code>false</code>
+也不会让内置表上的路径变成静默放行，只会让它们从"拒"退回"问"——配置能做的只有放松，默认值永远是最严的那一档。</li>
+<li>第三行必须两条都写，因为守卫在阶梯之前：<code>permissions.allow</code>
+规则再强也穿不过第 3 步。</li>
+<li>另外，<code>sensitive_paths.allow</code> 会把这次调用的脱敏从
+<code>Credential</code> 降回
+<code>Basic</code>（<code>level_for_call</code> 的
+<code>call_is_sensitive</code> 来自同一个
+<code>sensitive()</code>），所以解封之后只剩形状规则兜底。</li>
+</ul>
+<p><strong>盲区。</strong>
+四个变体都只看得见<strong>词元里拼写出来的名字</strong>：</p>
+<ul>
+<li>运行时才拼出来的路径——命令替换
+<code>$(…)</code>、变量拼接：<code>classify_command</code>
+不做求值。（注意：把路径<strong>整段写出来</strong>的形式，包括
+<code>python -c</code>
+里的绝对路径，其实抓得到——引号被删、<code>(</code>/<code>)</code>
+是分隔符，路径词元完整保留。）</li>
+<li>不以文件名形式出现的秘密：环境变量的值、argv、stdin（<code>printenv</code>、<code>op read op://…</code>）。</li>
+<li>名字人畜无害的文件：<code>cat notes/passwords-2026.txt</code>——注册表不认识它，<code>Basic</code>
+脱敏也只认得形状像密钥的内容。</li>
+</ul>
+<p>这三条就是 §12.3 那层兜底存在的理由，也是
+§12.4「这不是沙箱」的具体含义。</p>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./11_chapter_task_zh.html">任务与工具调度</a> —
+权限所在的三阶段流水线</li>
+<li><a href="./12_chapter_subagent_zh.html">子 Agent</a> —
+<code>spawn_subagent</code> 为 High 风险、独立
+<code>PermissionManager</code>、继承 <code>ui_tx</code></li>
+<li><a href="./09_chapter_hook_zh.html">Agent 生命周期 Hook</a> —
+PreToolUse 紧接在权限检查之前；但敏感目标守卫更早，见 <a
+href="#131-固定检查点">§13.1</a></li>
+<li><a href="../ARCHITECTURE.md#3-permission-system">ARCHITECTURE.md</a>
+— 架构图与模式表</li>
+<li><a href="../docs/state_machines.md">docs/state_machines.md</a> —
+权限决策状态机</li>
+<li><a href="../docs/tool_rendering.md">docs/tool_rendering.md</a> —
+<code>permission_label</code> 在 TUI 中的展示</li>
+<li><a
+href="../docs/parallel_tool_execution.md">docs/parallel_tool_execution.md</a>
+— 预检为何保持串行</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

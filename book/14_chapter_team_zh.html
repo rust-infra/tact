@@ -1,0 +1,812 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>团队协调（Team Coordination）</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-%E5%9B%A2%E9%98%9F%E5%B1%82%E6%8F%90%E4%BE%9B%E4%BB%80%E4%B9%88" title="1. 团队层提供什么"><span class="toc-label">1. 团队层提供什么</span></a></li>
+<li class="toc-l2"><a href="#2-%E6%95%B0%E6%8D%AE%E6%A8%A1%E5%9E%8B" title="2. 数据模型"><span class="toc-label">2. 数据模型</span></a></li>
+<li class="toc-l3"><a href="#roster" title="Roster"><span class="toc-label">Roster</span></a></li>
+<li class="toc-l3"><a href="#inbox-%E6%B6%88%E6%81%AF" title="Inbox 消息"><span class="toc-label">Inbox 消息</span></a></li>
+<li class="toc-l2"><a href="#3-%E5%AD%98%E5%82%A8%E5%B8%83%E5%B1%80" title="3. 存储布局"><span class="toc-label">3. 存储布局</span></a></li>
+<li class="toc-l2"><a href="#4-%E6%B6%88%E6%81%AF%E6%B5%81" title="4. 消息流"><span class="toc-label">4. 消息流</span></a></li>
+<li class="toc-l2"><a href="#5-%E5%B9%B6%E5%8F%91%E5%8C%85%E8%A3%85" title="5. 并发包装"><span class="toc-label">5. 并发包装</span></a></li>
+<li class="toc-l2"><a href="#6-teammate%E7%A9%B6%E7%AB%9F%E6%98%AF%E8%B0%81" title="6. 「Teammate」究竟是谁？"><span class="toc-label">6. 「Teammate」究竟是谁？</span></a></li>
+<li class="toc-l2"><a href="#7-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="7. 代码地图"><span class="toc-label">7. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#8-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="8. 当前缺口"><span class="toc-label">8. 当前缺口</span></a></li>
+<li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="团队协调team-coordination">团队协调（Team Coordination）</h1>
+<p>本章说明 Tact 的 <strong>多 agent 团队原语</strong>：具名 teammate
+的持久 roster，以及支持点对点消息、广播与结构化协议请求（plan
+审批、shutdown）的 SQLite backed inbox 系统。实现位于
+<code>crates/tact/src/team.rs</code>，工具包装在
+<code>crates/tact/src/tool/team.rs</code>。</p>
+<p>重要前提：目前是
+<strong>协调数据层</strong>，非编排引擎。「Spawn」teammate 仅创建 roster
+记录 —— 不会启动第二个 agent 进程。见 <a
+href="#8-当前缺口">当前缺口</a>。</p>
+<hr />
+<h2 id="1-团队层提供什么">1. 团队层提供什么</h2>
+<table>
+<thead>
+<tr>
+<th>能力</th>
+<th>Tool</th>
+<th>底层调用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>注册 teammate</td>
+<td><code>spawn_teammate</code></td>
+<td><code>TeammateManager::spawn_teammate</code></td>
+</tr>
+<tr>
+<td>列出 roster</td>
+<td><code>list_teammates</code></td>
+<td><code>list_teammates</code></td>
+</tr>
+<tr>
+<td>点对点消息</td>
+<td><code>send_message</code></td>
+<td><code>send_message</code></td>
+</tr>
+<tr>
+<td>群发</td>
+<td><code>broadcast</code></td>
+<td><code>broadcast</code></td>
+</tr>
+<tr>
+<td>读 inbox</td>
+<td><code>read_inbox</code></td>
+<td><code>read_inbox</code></td>
+</tr>
+<tr>
+<td>Plan 审批请求</td>
+<td><code>plan_approval</code></td>
+<td><code>protocol_request(kind = "plan_approval")</code></td>
+</tr>
+<tr>
+<td>Shutdown 握手</td>
+<td><code>shutdown_request</code> / <code>shutdown_response</code></td>
+<td><code>protocol_request(kind = "shutdown_request" / "shutdown_response")</code></td>
+</tr>
+</tbody>
+</table>
+<p>八个工具均在主 agent <code>toolset()</code>
+注册；<code>subagent_toolset()</code> 中均无。</p>
+<hr />
+<h2 id="2-数据模型">2. 数据模型</h2>
+<h3 id="roster">Roster</h3>
+<pre class="rust"><code>pub struct TeammateRecord {
+    pub name: String,
+    pub role: String,
+    pub status: String,   // 目前始终 &quot;idle&quot;
+}</code></pre>
+<h3 id="inbox-消息">Inbox 消息</h3>
+<pre class="rust"><code>pub struct InboxMessage {
+    pub from: String,
+    pub to: String,
+    pub body: String,
+    pub kind: String,     // &quot;message&quot; | &quot;plan_approval&quot; | &quot;shutdown_request&quot; | &quot;shutdown_response&quot;
+    pub created_at: DateTime&lt;Utc&gt;,
+}</code></pre>
+<p><code>kind</code> 区分普通聊天与协议流量；存储路径两者相同。</p>
+<hr />
+<h2 id="3-存储布局">3. 存储布局</h2>
+<p><code>TeammateManager</code> 由 <a
+href="./01_chapter_store_zh.html">Store 与持久化</a> 中的 SQLite
+<code>TeamStore</code> 支撑：</p>
+<pre class="rust"><code>store: Box&lt;dyn TeamStore&gt;,   // tact.db → teammates + inbox_messages 表</code></pre>
+<p>Schema（<code>crates/tact/src/store/team_store/sqlite.rs</code>）：</p>
+<pre class="text"><code>teammates(name TEXT PRIMARY KEY, role TEXT NOT NULL, status TEXT NOT NULL DEFAULT &#39;idle&#39;)
+inbox_messages(id INTEGER PRIMARY KEY AUTOINCREMENT,
+               owner TEXT NOT NULL, from_name TEXT NOT NULL, to_name TEXT NOT NULL,
+               body TEXT NOT NULL, kind TEXT NOT NULL, created_at INTEGER NOT NULL)
+-- 索引：idx_inbox_messages_owner ON inbox_messages(owner)</code></pre>
+<p>消息 <strong>追加</strong>（插入顺序由自增 <code>id</code> 保持）——
+inbox 只增；无 read-cursor、ack 或 delete。遗留
+<code>team/config.json</code> + <code>team/inbox/*.json</code>
+文件不再读取、留在磁盘。</p>
+<hr />
+<h2 id="4-消息流">4. 消息流</h2>
+<pre class="mermaid">sequenceDiagram
+    participant Lead as Agent (lead)
+    participant TM as TeammateManager
+    participant DB as .tact/tact.db (teammates, inbox_messages)
+
+    Lead-&gt;&gt;TM: spawn_teammate("alice", "reviewer")
+    TM-&gt;&gt;DB: INSERT INTO teammates (alice, reviewer, idle)
+
+    Lead-&gt;&gt;TM: broadcast(from: "lead", body: "Standup in 5")
+    loop each teammate in roster
+        TM-&gt;&gt;DB: INSERT INTO inbox_messages (owner=name, …)
+    end
+
+    Lead-&gt;&gt;TM: plan_approval(from: "lead", to: "alice", body: "Approve plan v2")
+    TM-&gt;&gt;DB: INSERT INTO inbox_messages (owner=alice, kind: plan_approval)
+
+    Lead-&gt;&gt;TM: read_inbox("alice")
+    TM-&gt;&gt;DB: SELECT … WHERE owner='alice' ORDER BY id
+    TM--&gt;&gt;Lead: pretty-printed JSON array</pre>
+<p>语义说明：</p>
+<ul>
+<li><code>spawn_teammate</code>
+拒绝重名（<code>teammate {name} already exists</code>；UNIQUE
+<code>name</code> 键兜底）。</li>
+<li><code>broadcast</code> 遍历 roster 并对每个 teammate 调用
+<code>send_message</code> —— 发送者若在 roster
+上也会收到自己的广播。</li>
+<li><code>read_inbox</code> 返回 <strong>完整</strong> inbox 的
+pretty-printed JSON，或 <code>"Inbox is empty."</code>。</li>
+<li><code>protocol_request</code> 即带调用方选定 <code>kind</code> 的
+<code>send_message</code> —— 无状态机验证 <code>shutdown_response</code>
+是否跟随 <code>shutdown_request</code>。</li>
+</ul>
+<hr />
+<h2 id="5-并发包装">5. 并发包装</h2>
+<p><code>SharedTeammateManager</code> 与 task、background manager
+同模式：</p>
+<pre class="rust"><code>pub struct SharedTeammateManager {
+    inner: Arc&lt;TeammateManager&gt;,
+}</code></pre>
+<p>每个公开方法委托给 async 门面。共享句柄在
+<code>ToolContext.teammate_manager</code>，在
+<code>session_bootstrap::bootstrap_session</code> 里构造一次（headless
+与交互两个前端共用）：</p>
+<pre class="rust"><code>let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&amp;tact_path.session_db_path()).await?);</code></pre>
+<p>无需 mutex：SQLite 连接池串行化写入；连接池（含
+<code>busy_timeout</code>）同时串行化同一 workdir 的跨进程访问。</p>
+<hr />
+<h2 id="6-teammate究竟是谁">6. 「Teammate」究竟是谁？</h2>
+<p>模型按设计自由：<code>from</code> 与 <code>to</code> 是 LLM 提供的
+plain string。Nothing 验证：</p>
+<ul>
+<li>发送者是否在 roster 上，</li>
+<li>接收者是否存在（发给未知名会静默创建 inbox 行），</li>
+<li>teammate 是否 ever 读 inbox。</li>
+</ul>
+<p>预期模式是协调 agent 将 roster 作共享状态、inbox 作 durable
+mailbox，供 eventual worker 抽象消费（<a
+href="./12_chapter_subagent_zh.html">子 agent</a> 经
+<code>spawn_subagent</code> 工具运行是最接近的现有类比，但未与 inbox
+接线）。</p>
+<hr />
+<h2 id="7-代码地图">7. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/team.rs</code></td>
+<td><code>TeammateManager</code>、<code>SharedTeammateManager</code>、<code>InboxMessage</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/team_store/mod.rs</code></td>
+<td><code>TeamStore</code>
+trait（async：create_teammate/list_teammates/append_message/read_inbox）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/team_store/sqlite.rs</code></td>
+<td><code>SqliteTeamStore</code> — <code>teammates</code> +
+<code>inbox_messages</code> 表</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/team.rs</code></td>
+<td>八个 <code>#[tool]</code> 包装</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext.teammate_manager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td><code>toolset()</code> 中的 team 工具</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/session_bootstrap.rs</code></td>
+<td><code>bootstrap_session</code> 里从 <code>tact.db</code> 构造
+manager；headless / 交互共用</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-当前缺口">8. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>详情</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>无实际 agent 进程</td>
+<td><code>spawn_teammate</code> 仅记录名字；不启动 runtime、LLM 循环或
+inbox 轮询</td>
+</tr>
+<tr>
+<td>Status 从不变化</td>
+<td>每个 teammate 永远 <code>"idle"</code>；无 API 修改
+<code>status</code></td>
+</tr>
+<tr>
+<td>无发送者/接收者校验</td>
+<td>发给未知名的消息静默创建 orphan inbox 行</td>
+</tr>
+<tr>
+<td>Inbox 无界增长</td>
+<td>仅追加行，无 read-cursor、ack 或修剪</td>
+</tr>
+<tr>
+<td>协议 kind 仅为约定</td>
+<td><code>plan_approval</code> / <code>shutdown_*</code> 无强制
+request-response 配对</td>
+</tr>
+<tr>
+<td>无 teammate 移除</td>
+<td>无 <code>remove_teammate</code>；roster 只能增</td>
+</tr>
+<tr>
+<td>无跨进程锁</td>
+<td>并发 tact 进程可交错 roster 写入</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./01_chapter_store_zh.html">Store 与持久化</a> —
+<code>teammates</code> / <code>inbox_messages</code> SQLite 表</li>
+<li><a href="./07_chapter_tool_zh.html">工具系统</a> —
+<code>ToolContext</code> plumbing 与子 agent 工具集</li>
+<li><a href="./12_chapter_subagent_zh.html">子 Agent</a> —
+<code>spawn_subagent</code> 运行真实嵌套 agent；teammate 不运行</li>
+<li><a href="./15_chapter_worktree_zh.html">Worktree Lanes</a> — 真实多
+agent 团队会配对的隔离原语</li>
+<li><a href="../ARCHITECTURE.md">ARCHITECTURE.md</a> — §7 子
+agent、team、tasks、worktrees</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

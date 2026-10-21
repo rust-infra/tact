@@ -1,0 +1,2993 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>终端 UI（TUI）</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-%E8%BF%9B%E7%A8%8B%E6%9E%B6%E6%9E%84" title="1. 进程架构"><span class="toc-label">1. 进程架构</span></a></li>
+<li class="toc-l2"><a href="#2-%E5%85%A5%E5%8F%A3%E7%82%B9" title="2. 入口点"><span class="toc-label">2. 入口点</span></a></li>
+<li class="toc-l3"><a href="#%E4%BA%A4%E4%BA%92%E5%BC%8Ftact-ui" title="交互式（tact-ui）"><span class="toc-label">交互式（tact-ui）</span></a></li>
+<li class="toc-l3"><a href="#headlesstact-ui-headless-prompt" title="Headless（tact-ui headless &quot;prompt&quot;）"><span class="toc-label">Headless（tact-ui headless &quot;prompt&quot;）</span></a></li>
+<li class="toc-l2"><a href="#3-usercommand-%E5%8D%8F%E8%AE%AE" title="3. UserCommand 协议"><span class="toc-label">3. UserCommand 协议</span></a></li>
+<li class="toc-l3"><a href="#compact-%E7%8A%B6%E6%80%81%E6%B6%88%E6%81%AF" title="/compact 状态消息"><span class="toc-label">/compact 状态消息</span></a></li>
+<li class="toc-l2"><a href="#4-agentupdate-%E5%A4%84%E7%90%86" title="4. AgentUpdate 处理"><span class="toc-label">4. AgentUpdate 处理</span></a></li>
+<li class="toc-l2"><a href="#5-tui-%E4%B8%BB%E5%BE%AA%E7%8E%AF" title="5. TUI 主循环"><span class="toc-label">5. TUI 主循环</span></a></li>
+<li class="toc-l2"><a href="#6-%E6%B8%B2%E6%9F%93%E5%B1%82" title="6. 渲染层"><span class="toc-label">6. 渲染层</span></a></li>
+<li class="toc-l3"><a href="#61-%E6%A8%A1%E5%9D%97%E5%9C%B0%E5%9B%BE" title="6.1 模块地图"><span class="toc-label">6.1 模块地图</span></a></li>
+<li class="toc-l3"><a href="#62-%E5%B8%A7%E7%AE%A1%E7%BA%BF" title="6.2 帧管线"><span class="toc-label">6.2 帧管线</span></a></li>
+<li class="toc-l3"><a href="#63-%E4%B8%BB%E5%8C%BA%E5%9F%9F%E6%A8%A1%E5%BC%8Flayoutrs" title="6.3 主区域模式（layout.rs）"><span class="toc-label">6.3 主区域模式（layout.rs）</span></a></li>
+<li class="toc-l3"><a href="#64-%E4%B8%89%E7%A7%8D%E5%9D%90%E6%A0%87%E7%A9%BA%E9%97%B4" title="6.4 三种坐标空间"><span class="toc-label">6.4 三种坐标空间</span></a></li>
+<li class="toc-l3"><a href="#65-renderable-trait-%E4%B8%8E-cells" title="6.5 Renderable trait 与 cells"><span class="toc-label">6.5 Renderable trait 与 cells</span></a></li>
+<li class="toc-l3"><a href="#66-%E7%8A%B6%E6%80%81%E6%A0%8F%E4%B8%8E%E8%BE%93%E5%85%A5" title="6.6 状态栏与输入"><span class="toc-label">6.6 状态栏与输入</span></a></li>
+<li class="toc-l3"><a href="#67-markdown" title="6.7 Markdown"><span class="toc-label">6.7 Markdown</span></a></li>
+<li class="toc-l3"><a href="#68-popups" title="6.8 Popups"><span class="toc-label">6.8 Popups</span></a></li>
+<li class="toc-l3"><a href="#69-%E7%BB%9F%E4%B8%80%E5%BC%B9%E5%87%BA%E5%B1%82-chrome" title="6.9 统一弹出层 Chrome"><span class="toc-label">6.9 统一弹出层 Chrome</span></a></li>
+<li class="toc-l3"><a href="#610-%E6%B8%B2%E6%9F%93%E4%B8%AD%E7%9A%84%E4%B8%BB%E9%A2%98%E4%B8%8E-i18n" title="6.10 渲染中的主题与 i18n"><span class="toc-label">6.10 渲染中的主题与 i18n</span></a></li>
+<li class="toc-l3"><a href="#611-log-%E6%B6%88%E6%81%AF%E6%A8%A1%E5%9E%8B" title="6.11 Log 消息模型"><span class="toc-label">6.11 Log 消息模型</span></a></li>
+<li class="toc-l3"><a href="#612-agentupdate--log-%E8%A1%8C%E6%98%A0%E5%B0%84" title="6.12 AgentUpdate → log 行映射"><span class="toc-label">6.12 AgentUpdate → log 行映射</span></a></li>
+<li class="toc-l3"><a href="#613-%E6%B5%81%E5%BC%8F%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F" title="6.13 流式生命周期"><span class="toc-label">6.13 流式生命周期</span></a></li>
+<li class="toc-l3"><a href="#614-%E5%8F%AF%E8%A7%81%E6%80%A7%E8%A7%84%E5%88%99" title="6.14 可见性规则"><span class="toc-label">6.14 可见性规则</span></a></li>
+<li class="toc-l3"><a href="#615-wrapscroll-%E4%B8%8E%E8%87%AA%E5%8A%A8%E8%B7%9F%E9%9A%8F" title="6.15 Wrap、scroll 与自动跟随"><span class="toc-label">6.15 Wrap、scroll 与自动跟随</span></a></li>
+<li class="toc-l3"><a href="#616-overlays-vs-inline-cells" title="6.16 Overlays vs inline cells"><span class="toc-label">6.16 Overlays vs inline cells</span></a></li>
+<li class="toc-l3"><a href="#617-log-%E4%BA%A4%E4%BA%92" title="6.17 Log 交互"><span class="toc-label">6.17 Log 交互</span></a></li>
+<li class="toc-l3"><a href="#618-log-%E7%AE%A1%E7%BA%BF%E5%BA%8F%E5%88%97" title="6.18 Log 管线序列"><span class="toc-label">6.18 Log 管线序列</span></a></li>
+<li class="toc-l2"><a href="#7-%E8%BE%93%E5%85%A5%E6%A8%A1%E5%BC%8F%E4%B8%8E%E4%B8%BB%E9%A2%98" title="7. 输入模式与主题"><span class="toc-label">7. 输入模式与主题</span></a></li>
+<li class="toc-l3"><a href="#slash-skills" title="Slash skills"><span class="toc-label">Slash skills</span></a></li>
+<li class="toc-l2"><a href="#8-agent-%E6%9E%84%E5%BB%BA%E4%BA%A4%E4%BA%92%E5%BC%8F" title="8. Agent 构建（交互式）"><span class="toc-label">8. Agent 构建（交互式）</span></a></li>
+<li class="toc-l2"><a href="#9-%E9%80%9A%E7%9F%A5%E4%B8%8E%E9%85%8D%E7%BD%AE" title="9. 通知与配置"><span class="toc-label">9. 通知与配置</span></a></li>
+<li class="toc-l2"><a href="#10-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="10. 代码地图"><span class="toc-label">10. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#11-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="11. 当前缺口"><span class="toc-label">11. 当前缺口</span></a></li>
+<li class="toc-l2"><a href="#%E7%9B%B8%E5%85%B3%E6%96%87%E6%A1%A3" title="相关文档"><span class="toc-label">相关文档</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="终端-uitui">终端 UI（TUI）</h1>
+<p>本章描述 <code>tui</code> crate：<code>tact-ui</code> 如何通过 async
+channel 接线 agent 循环，以及<strong>渲染层</strong>如何在每个 tick 将
+<code>App</code> 状态转为 ratatui 帧。</p>
+<p>更多实现细节（扩展配方、性能分析）见 <a
+href="../docs/tui_rendering.md">docs/tui_rendering.md</a>。</p>
+<hr />
+<h2 id="1-进程架构">1. 进程架构</h2>
+<pre class="mermaid">sequenceDiagram
+    participant User
+    participant TUI as tui::run_tui
+    participant Cmd as user_cmd_rx loop
+    participant Agent as Agent::agent_loop
+    participant LLM as tact_llm
+
+    User-&gt;&gt;TUI: 键盘 / 粘贴 / slash 命令
+    TUI-&gt;&gt;Cmd: UserCommand::SubmitTask
+    Cmd-&gt;&gt;Agent: agent_loop(user message)
+    Agent-&gt;&gt;LLM: stream_message
+    LLM--&gt;&gt;TUI: AgentUpdate via agent_rx
+    Agent--&gt;&gt;TUI: Step*、StreamChunk、TokenUsage 等
+    Agent--&gt;&gt;Cmd: loop returns Ok
+    Cmd-&gt;&gt;TUI: AgentUpdate::TaskComplete</pre>
+<p>五组 unbounded MPSC channel 连接 agent task、account service、plugin
+worker 与 TUI task：</p>
+<table>
+<thead>
+<tr>
+<th>Channel</th>
+<th>类型</th>
+<th>方向</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agent_tx</code> / <code>agent_rx</code></td>
+<td><code>AgentUpdate</code></td>
+<td>Agent → TUI</td>
+</tr>
+<tr>
+<td><code>user_cmd_tx</code> / <code>user_cmd_rx</code></td>
+<td><code>UserCommand</code></td>
+<td>TUI → agent driver（<code>tui.rs</code>）</td>
+</tr>
+<tr>
+<td><code>account_tx</code> / <code>account_rx</code></td>
+<td><code>AccountUpdate</code></td>
+<td>Account service → TUI</td>
+</tr>
+<tr>
+<td><code>plugin_tx</code> / <code>plugin_request_rx</code></td>
+<td><code>PluginRequest</code></td>
+<td>TUI → plugin worker</td>
+</tr>
+<tr>
+<td><code>plugin_event_tx</code> / <code>plugin_rx</code></td>
+<td><code>PluginEvent</code></td>
+<td>Plugin worker → TUI</td>
+</tr>
+</tbody>
+</table>
+<p><code>AgentUpdate</code>、<code>UserCommand</code> 与
+<code>AccountUpdate</code> 定义在
+<code>tact_protocol</code>。<code>PluginRequest</code> 与
+<code>PluginEvent</code> 定义在
+<code>tact::plugin</code>；<code>tact-ui</code> 启动 worker，TUI
+在渲染前 drain plugin event。</p>
+<p><strong>分层（2026-08）：</strong> 可复用渲染面位于
+<code>crates/agent_tui_kit</code>（设计：<code>docs/superpowers/specs/2026-08-18-tui-component-library-design.md</code>）。kit
+只依赖 <code>tact_protocol</code> +
+ratatui；它拥有纯渲染函数（<code>render::bar</code> / <code>input</code>
+/ <code>log</code> / <code>popups</code> / <code>task_panel</code> /
+<code>render_md</code> / <code>cells</code>
+…）、状态模型（<code>LogCoordinator</code>、<code>ToolState</code>、<code>ThinkingState</code>、<code>StreamState</code>、<code>StatusBarState</code>、<code>LogScroll</code>
+…）以及进出契约（<code>bridge::Command</code>、<code>AgentBridge</code>、<code>BridgeExtension</code>）。<code>crates/tui</code>
+是 Tact 应用层：拥有 <code>App</code>、handlers、每帧
+<code>prepare_*</code> 阶段（skill
+样式、滚动缓存）以及应用层弹窗（palette、file picker、slash
+commands）。</p>
+<p><strong>组件注册表（whole-App 切换，2026-08-23）：</strong> kit
+的组件现在拥有 <code>App</code> 曾以裸字段保存的 UI
+状态。<code>App</code> 持有
+<code>ComponentRegistry</code>（<code>plan</code> /
+<code>thinking</code> / <code>stream</code> / <code>tools</code> /
+<code>status_bar</code> / <code>task_panel</code> /
+<code>subagent_panel</code>
+组件），通过类型化访问器（<code>app.plan()</code> /
+<code>app.plan_mut()</code>，…）读写状态；共享的
+<code>LogCoordinator</code> 仍由 shell
+持有。<code>handle_agent_update</code> 流程为
+<code>coordinator_prepass</code> →
+<code>dispatch_components</code>（注册表分发；stream outbox 携带解析后的
+<code>StreamEvent</code>）→ <code>apply_stream_events</code>（仅
+StreamChunk —— gap 检查会追加行）→ <code>shell_handle</code>（丰富 shell
+行为：status/log 效果、tool 卡片生命周期、select 弹窗、thinking 卡片）→
+<code>refresh_tail_scroll</code>。kit 组件认领
+<code>TokenUsage</code>/<code>TurnStats</code>/<code>ModelInfo</code>（状态栏）、<code>ToolProgress</code>/<code>ToolMeta</code>（tool）、<code>StepAdded</code>（plan）、<code>TasksChanged</code>（task
+panel）、<code>SubagentsChanged</code>（subagent panel）与
+<code>StreamChunk</code>（仅解析）。<code>ThinkingChunk</code> 与
+<code>StepFinished</code>/<code>StepFailed</code> 留在 shell（它们与 log
+锚定的生命周期纠缠）。</p>
+<hr />
+<h2 id="2-入口点">2. 入口点</h2>
+<h3 id="交互式tact-ui">交互式（<code>tact-ui</code>）</h3>
+<p><code>crates/tact-ui/src/interactive.rs</code> 中的
+<code>run_interactive</code>（由 <code>main.rs</code> 分发）：</p>
+<ol type="1">
+<li><code>tact::config::init()</code> — 设置 + LLM provider（<a
+href="./21_chapter_config_zh.html">Ch 21</a>）。</li>
+<li>打开 SQLite session store，resolve
+<code>session_id</code>（<code>--session</code>、<code>--resume-last</code>
+或新 UUID）。<code>--resume-last</code> 与 <code>--list-sessions</code>
+按当前工作目录的 <code>root_dir</code> 过滤
+session，忽略其他项目行。<code>SessionLockGuard</code> 在争用前重试
+<code>try_lock_session</code>。这一步连同建行、抢锁、注册、touch 一起由
+<code>session_bootstrap::open_session</code>
+完成，两个前端共用（它返回<strong>已持有</strong>的锁，何时释放由调用方决定）。</li>
+<li>建好 channel / session store / skill registry 等，<strong>先在独立
+tokio task 上 spawn <code>tui::run_tui(...)</code></strong> ——
+这些都不依赖 Agent，所以 TUI 先可见。</li>
+<li><strong>与 TUI 竞速</strong>地跑
+<code>build_agent_for_interactive(...)</code>。构建本身（<code>toolset()</code>、MCP
+router、五个
+manager、<code>ToolContext</code>、<code>with_ui_channel(agent_tx)</code>）与
+headless 共用 <code>crates/tact-ui/src/session_bootstrap.rs</code> 的
+<code>bootstrap_session</code>；两个前端只在两处不同：启动提示的出口（<code>Notices</code>：stderr
+或 <code>AgentUpdate::Info</code>），以及有没有 UI
+通道（<code>UiWiring</code>）。构建期间用户退出（<code>q</code> /
+<code>/quit</code>）就<strong>放弃构建</strong>直接返回：这一步最慢的是逐个
+MCP server 握手，远端 server 的 OAuth 发现可以耗掉数秒，无条件 await
+会让 <code>q</code> 看起来像卡住。丢弃构建是安全的——每个 MCP transport
+在 drop 时杀掉自己的子进程——代价是这条路不打印 session id /
+stats，因为根本没有 agent 可总结。</li>
+<li>构建成功后 spawn driver task 跑 <code>user_cmd_rx</code> 循环 — 分发
+<code>SubmitTask</code>、<code>Cancel</code>、<code>QueryBalance</code>。</li>
+<li><code>tui_handle</code> 结束后等 driver 收尾（SessionEnd hook +
+<code>shutdown_mcp</code>），再打印 session id 与 stats。</li>
+</ol>
+<p>主题来自 <code>config::settings().ui.theme</code>（默认
+<code>"ink"</code>）。</p>
+<h3
+id="headlesstact-ui-headless-prompt">Headless（<code>tact-ui headless "prompt"</code>）</h3>
+<p><code>crates/tact-ui/src/headless.rs</code> 中的
+<code>run_headless</code>。无 TUI 运行单次
+<code>agent_loop</code>，最终文本打印到 stdout，发送桌面通知。由于没有
+live card，工具进度保持仅输出最终结果。使用 config 驱动的权限模式 —
+与交互模式相同。</p>
+<p>agent 构建与交互模式共用
+<code>session_bootstrap::bootstrap_session</code>（见上）。两处差异是刻意的：启动提示走
+stderr（<code>Notices::Stderr</code>，另有交互模式不报的
+<code>[permission: …]</code> 一行——TUI
+的状态栏已经在显示权限模式），且没有 UI
+通道（<code>ui: None</code>）。<code>ensure_session</code> 留在 headless
+侧：它只有一次 <code>agent_loop</code>，必须在开跑前恢复历史；TUI 交给
+<code>agent_loop</code> 自己做。</p>
+<hr />
+<h2 id="3-usercommand-协议">3. <code>UserCommand</code> 协议</h2>
+<pre class="rust"><code>pub enum UserCommand {
+    SubmitTask(String),
+    Cancel,
+    CreateGoal { title: String, objective: String, criteria: Vec&lt;String&gt; },
+    ListGoals,
+    ShowGoal { goal_id: String },
+    SteerGoal { goal_id: String, text: String },
+    PauseGoal { goal_id: String },
+    ResumeGoal { goal_id: String },
+    CancelGoal { goal_id: String },
+    AcceptGoal { goal_id: String, text: String },
+    Compact,
+    QueryBalance,
+    QueryBackground(Option&lt;String&gt;),
+}</code></pre>
+<p>Goal
+控制使用同一通道：<code>CreateGoal</code>、<code>ListGoals</code>、<code>ShowGoal</code>、<code>SteerGoal</code>、<code>PauseGoal</code>、<code>ResumeGoal</code>、<code>CancelGoal</code>、<code>AcceptGoal</code>。Goal
+list/show 从共享 manager 读取完整快照，即使 Agent 正在运行也不等待当前
+activation；写操作则在 driver 中与活动 Runner 串行化。</p>
+<table>
+<thead>
+<tr>
+<th>命令</th>
+<th>来源</th>
+<th><code>tui.rs</code> 中 handler</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>SubmitTask</code></strong></td>
+<td>Insert 模式 Enter、slash 命令、<code>@</code> 文件选择器提交 ——
+<strong>Planning/Executing 期间 Enter 改为排队</strong>（Codex
+风格"当前任务结束后提交"，见 §6.6）</td>
+<td>重置 <code>tool_use_counter</code>、清除
+<code>cancel_flag</code>、<code>build_user_message</code>、<code>agent_loop</code>；仅
+loop 成功且未取消时发出 <code>TaskComplete</code></td>
+</tr>
+<tr>
+<td><strong><code>Cancel</code></strong></td>
+<td><code>/cancel</code>，或 Planning/Executing 时 Normal 模式
+<code>c</code></td>
+<td>设置 <code>cancel_flag</code>；循环在下次检查时退出；下次
+<code>SubmitTask</code> 清除 flag（<a
+href="./18_chapter_agent_loop_zh.html">Ch 18</a>）</td>
+</tr>
+<tr>
+<td><strong><code>Compact</code></strong></td>
+<td><code>/compact</code>（仅 idle 时）</td>
+<td><code>agent.compact_history(None)</code> → Responses provider 走原生
+<code>/responses/compact</code>，其余 provider 走本地摘要（<a
+href="./05_chapter_compact_zh.html">Ch 5</a>）</td>
+</tr>
+<tr>
+<td><strong><code>QueryBalance</code></strong></td>
+<td><code>/balance</code>（仅 DeepSeek/Kimi）</td>
+<td><code>account::query_once()</code> → <code>AccountUpdate</code>
+channel（<a href="./25_chapter_protocol_zh.html">Ch 25</a>）</td>
+</tr>
+<tr>
+<td><strong><code>QueryBackground</code></strong></td>
+<td><code>/background</code> 或 <code>/background &lt;id&gt;</code></td>
+<td><code>tool_context.background_manager.check(id)</code> →
+<code>MdInfo</code> 输出任务列表 / 单个任务 JSON（<a
+href="./13_chapter_background_zh.html">Ch 13</a>）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="compact-状态消息"><code>/compact</code> 状态消息</h3>
+<p>压缩<strong>绝不是</strong> assistant 消息或流式 markdown
+输出：它是一串系统 <code>Info</code> 行加 一条最终状态行。具体消息随
+provider 不同：</p>
+<table>
+<thead>
+<tr>
+<th>消息</th>
+<th>时机</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>[compacting]</code></td>
+<td>命令 driver 收到
+<code>UserCommand::Compact</code>，<code>compact_history</code>
+运行前</td>
+</tr>
+<tr>
+<td><code>[auto compact]</code></td>
+<td><code>agent_loop</code> 中自动压缩触发（入口路径或每次迭代）</td>
+</tr>
+<tr>
+<td><code>[manual compact]</code></td>
+<td>本地 <code>compact</code> 工具成功并置位手动压缩标记（仅非
+Responses）</td>
+</tr>
+<tr>
+<td><code>[native compact]</code></td>
+<td>Responses provider：显式 <code>POST /responses/compact</code>
+开始</td>
+</tr>
+<tr>
+<td><code>[compact retry n/N] retrying in Xs</code></td>
+<td>压缩遇到瞬时传输错误；有界退避重试</td>
+</tr>
+<tr>
+<td><code>[compact continue n/N]</code></td>
+<td>本地摘要器撞到输出上限；部分摘要带入阶梯下一次尝试（先降
+effort，再按实测 reasoning 调整预留）</td>
+</tr>
+<tr>
+<td><code>[compact fallback]</code></td>
+<td>阶梯耗尽，部分摘要被接受为 best-effort 而不是失败</td>
+</tr>
+<tr>
+<td><code>[responses compacted: items=N, id=…]</code></td>
+<td>Responses 原生压缩成功；<code>N</code> = 基线 item
+数，<code>id</code> = 截断后的 compaction id 前缀</td>
+</tr>
+<tr>
+<td><code>Compaction complete.</code></td>
+<td><code>UserCommand::Compact</code> 成功完成</td>
+</tr>
+</tbody>
+</table>
+<p>前三行同时也是事后<strong>区分触发源的唯一办法</strong>：<code>[compacting]</code>
+/ <code>Compaction complete.</code>
+表示命令路径（<code>/compact</code>，键入或用命令面板选中），<code>[auto compact]</code>
+表示 <code>agent_loop</code> 里的 80% /
+估算触发，<code>[Recovery] compact (n/N): context too large</code> 表示
+provider 拒收了这个 prompt。<code>/compact</code>
+在库里<strong>不留文本痕迹</strong>—— palette command 从不经过
+<code>dispatch_user_task</code>，而只有那条路径会调
+<code>save_history</code>，所以 <code>input_history</code>
+回答不了「谁触发的压缩」。usage 行也回答 不了：<code>/compact</code>
+与恢复压缩落库都是 <code>call_type = compact</code>。</p>
+<p><strong>加密状态绝不渲染。</strong> Responses 的 compaction /
+reasoning item 携带不透明的
+<code>encrypted_content</code>；它只会被回放给端点，绝不能出现在
+<code>Info</code> 行、错误字符串、 工具卡片或任何 TUI
+表面。两种加密载荷的边界不同：reasoning 加密数据<strong>只允许</strong>
+存在于内部、不可渲染的 <code>Thinking.signature</code> envelope
+中（绝不进入可见 thinking 文本，绝不进入 output block）；而
+<code>compaction</code> item 的 <code>encrypted_content</code>
+<strong>仅为 provider 状态</strong>（协议基线与请求体），根本不会成为
+<code>ContentBlock</code>。 诊断信息只输出 item 数与<strong>有界的
+compaction-id 前缀</strong> — 完整 id 只保留在 provider 状态与 SQLite
+元数据中（例如
+<code>[responses compacted: items=2, id=cmp_sanitize]</code> 只显示 id
+的前几个字符）。压缩失败会显示 <code>Error</code> +
+<code>Compaction failed: …</code>，并保持之前的 context
+与状态不变；流式中被宣布但从未 完成的压缩（incomplete streamed
+compaction）是硬性协议错误，绝不静默地 从可见文本“恢复”。</p>
+<p><code>build_user_message</code>（<code>crates/tact-ui/src/user_message.rs</code>）将行内
+<code>![alt](path)</code> 图片与 <code>@file</code> 引用解析为多模态
+<code>ContentBlock</code>。栅格图使用 config 中
+<code>[ui.vision_image]</code>：<code>compress</code>（默认
+<code>true</code>）缩小并重编码为 JPEG（<code>max_edge</code>
+1280、<code>jpeg_quality</code> 80）；设 <code>compress = false</code>
+发送原始文件字节。文件路径用 <code>tact::tool::safe_path</code> 解析 —
+工作区外引用在 prompt 文本中保持不变。</p>
+<p><strong>需要 vision 能力。</strong> 压缩仅缩小
+payload；不会让纯文本模型接受图片。OpenAI 兼容
+provider（<code>openai</code> / <code>deepseek</code> /
+<code>kimi</code>）上 <code>ContentBlock::Image</code> 转为 Chat
+Completions <code>image_url</code> part（<a
+href="./22_chapter_llm_zh.html">Ch 22</a>）。仅反序列化 <code>text</code>
+content part 的端点返回 HTTP
+400（<code>unknown variant image_url, expected text</code>）。Anthropic
+使用原生 Messages API image block。请用多模态模型，或不附加图片。</p>
+<hr />
+<h2 id="4-agentupdate-处理">4. <code>AgentUpdate</code> 处理</h2>
+<p>协议类型、step 生命周期与任务级转换：<a
+href="./25_chapter_protocol_zh.html">Ch 25</a>。</p>
+<p>TUI 在 <code>crates/tui/src/widgets/state/app/agent.rs</code> →
+<code>handle_agent_update</code> 消费更新。</p>
+<table>
+<thead>
+<tr>
+<th>Update</th>
+<th>UI 效果</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>StreamChunk</code></td>
+<td>追加到活跃 assistant 文本 cell</td>
+</tr>
+<tr>
+<td><code>ThinkingChunk</code></td>
+<td>Thinking card / preview</td>
+</tr>
+<tr>
+<td><code>StepAdded</code> / <code>StepStarted</code> /
+<code>StepFinished</code> / <code>StepFailed</code></td>
+<td>工具时间线（<a href="./11_chapter_task_zh.html">Ch 11</a>）</td>
+</tr>
+<tr>
+<td><code>ToolProgress</code></td>
+<td>更新匹配 active tool 的 1→3 行 live tail</td>
+</tr>
+<tr>
+<td><code>RequestSelect</code></td>
+<td>权限 popup（<a href="./10_chapter_permission_zh.html">Ch 10</a>）</td>
+</tr>
+<tr>
+<td><code>TokenUsage</code></td>
+<td>状态栏计数</td>
+</tr>
+<tr>
+<td><code>TurnStats</code></td>
+<td>状态栏回合计数（当前任务的 LLM 回合；cap 携带但不渲染）</td>
+</tr>
+<tr>
+<td><code>ModelInfo</code></td>
+<td>模型名 / 限制显示</td>
+</tr>
+<tr>
+<td><code>TaskComplete</code></td>
+<td>标记任务完成，启用后续输入</td>
+</tr>
+<tr>
+<td><code>GoalsChanged</code></td>
+<td>用完整 Goal 快照刷新 Goals sticky panel；展示状态、phase、Task
+进度、等待原因、预算和验收摘要</td>
+</tr>
+<tr>
+<td><code>Error</code></td>
+<td>带 <code>AgentErrorKind</code> 的错误横幅</td>
+</tr>
+<tr>
+<td><code>Info</code></td>
+<td>系统消息行</td>
+</tr>
+</tbody>
+</table>
+<p>余额与配额使用独立 <code>AccountUpdate</code>
+channel（<code>crates/tact-ui/src/account.rs</code>），非
+<code>AgentUpdate</code>。</p>
+<p><strong>重要：</strong> <code>Agent::agent_loop</code>
+<strong>不</strong>发出
+<code>TaskComplete</code>。<code>interactive.rs</code>
+仅在成功、未取消的 loop 返回后发送：</p>
+<pre class="rust"><code>match agent.agent_loop(Some(task_message)).await {
+    Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) =&gt; {
+        if let Some(last) = agent.runtime.context.last() {
+            agent.emit_update(AgentUpdate::TaskComplete(extract_text(&amp;last.content)));
+        }
+    }
+    Ok(()) =&gt; {}
+    Err(e) =&gt; agent.emit_update(AgentUpdate::Error(...)),
+}</code></pre>
+<p>见 <a href="./18_chapter_agent_loop_zh.html#7-tui-集成">Ch 18
+§7</a>。</p>
+<hr />
+<h2 id="5-tui-主循环">5. TUI 主循环</h2>
+<p><code>crates/tui/src/lib.rs</code> — <code>run_tui</code>：</p>
+<ol type="1">
+<li><strong>终端设置</strong> — raw mode、alternate screen、bracketed
+paste、鼠标捕获、键盘增强标志。</li>
+<li><strong><code>App::new</code></strong> — 接线
+channel、工作目录、输入历史、session id、主题。</li>
+<li><strong>事件流</strong> — 后台 tokio task 上的
+<code>crossterm::EventStream</code>。</li>
+<li><strong>Update → draw → poll</strong> 循环（见 <a
+href="#6-渲染层">§6 渲染层</a>）：
+<ul>
+<li>渲染前<strong>完全</strong> drain 待处理
+<code>AgentUpdate</code>（避免 scroll/hit-test 竞态）。</li>
+<li>仅当 <code>dirty</code>、<code>Status::Done</code>
+或仍有工具运行时重绘（实时 elapsed）。</li>
+<li>将键盘/鼠标分发给模式特定 handler。</li>
+</ul></li>
+<li><strong>余额 timer</strong> — DeepSeek 或 Kimi 活跃时，随机 5–15 s
+间隔发送 <code>UserCommand::QueryBalance</code>（与启动 fetch
+相同门控）。</li>
+<li><strong>Shutdown</strong> — 退出时恢复终端。</li>
+</ol>
+<p>定时状态清理也在 <code>draw</code> 外运行：<code>Status::Done</code>
+2 s 后 revert 到 <code>Idle</code>；<code>flash_msg</code> 3 s
+后清除。</p>
+<hr />
+<h2 id="6-渲染层">6. 渲染层</h2>
+<p>渲染栈拆分为
+<code>crates/agent_tui_kit/src/render/</code>（纯面板、状态模型、widgets）与
+<code>crates/tui/src/render/</code> 应用层（入口点：每帧构建
+<code>RenderCtx</code>、<code>prepare_*</code> 阶段、应用层弹窗）。对
+agent 逻辑<strong>只读</strong>：handler 与
+<code>handle_agent_update</code> 变更 <code>App</code>；render 函数读
+<code>RenderCtx</code>（每帧由不相交的 <code>&amp;</code>
+借用构建一次）并写 ratatui
+<code>Buffer</code>。渲染代码唯一变更路径是显式
+<code>Vec&lt;RenderCommand&gt;</code>，由 shell 在帧后 drain。</p>
+<pre class="mermaid">graph TD
+    a_rx[agent_rx drained] --&gt; b_app[App messages tools scroll popups]
+    b_app --&gt; c_bar[bar.rs 状态栏]
+    b_app --&gt; d_layout[layout.rs 主区]
+    b_app --&gt; e_input[input.rs]
+    b_app --&gt; f_popups[popups/ 浮层]
+    d_layout --&gt; g_log[log.rs + log_column.rs]
+    g_log --&gt; h_cells[cells/ Renderable units]</pre>
+<h3 id="61-模块地图">6.1 模块地图</h3>
+<table>
+<thead>
+<tr>
+<th>路径</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>render/mod.rs</code>（tui）</td>
+<td>应用层 re-export + <code>RenderCtx</code> 构造点</td>
+</tr>
+<tr>
+<td><code>render/layout.rs</code>（tui）</td>
+<td>主内容路由（history、help、log + 可选 sticky
+tasks、popups）——纯编排</td>
+</tr>
+<tr>
+<td><code>render/log.rs</code>（tui）</td>
+<td>Log <code>prepare_log_frame</code> 缓存重建（应用层 skill
+样式）；纯渲染已移入 kit</td>
+</tr>
+<tr>
+<td><code>render/log_style.rs</code>（tui）</td>
+<td>共享 log 文本样式 + skill restyle</td>
+</tr>
+<tr>
+<td><code>render/slash_style.rs</code>（tui）</td>
+<td>薄包装：把 <code>widgets/state/slash.rs</code> 的
+<code>SlashCommand</code> 内置命令集注入 kit
+<code>slash_style</code></td>
+</tr>
+<tr>
+<td><code>render/popups/</code>（tui）</td>
+<td>应用层弹窗：palette、file picker、slash commands、task
+DAG、help（voice 键位）+ 应用 mouse 命中区的 wrapper</td>
+</tr>
+<tr>
+<td><code>agent_tui_kit::render/bar.rs</code></td>
+<td>顶栏 + 底栏统计（纯 <code>&amp;RenderCtx</code>）</td>
+</tr>
+<tr>
+<td><code>agent_tui_kit::render/input.rs</code></td>
+<td>多行输入框、pending block、palette 命令行（纯）</td>
+</tr>
+<tr>
+<td><code>agent_tui_kit::render/log.rs</code></td>
+<td>Log 面板纯渲染（消费 wrap cache、scroll、overlays、scrollbar）</td>
+</tr>
+<tr>
+<td><code>agent_tui_kit::render/log_column.rs</code></td>
+<td>Viewport 裁剪的 <code>Renderable</code> 合成器</td>
+</tr>
+<tr>
+<td><code>agent_tui_kit::render/sticky_host.rs</code></td>
+<td>Log 下方三域 sticky
+host（<code>[Tasks] [Subagent] [Background]</code> tab；纯渲染并返回 tab
+命中区），以及 sticky 方框/分隔线的唯一实现（原先
+<code>render/task_panel.rs</code> 里那份副本已随模块删除）</td>
+</tr>
+<tr>
+<td><code>agent_tui_kit::render/render_md.rs</code></td>
+<td>Markdown → ratatui <code>Line</code>s（<code>pulldown-cmark</code> +
+Mermaid 路由 + 宽度感知表格）</td>
+</tr>
+<tr>
+<td><code>agent_tui_kit::render/pulldown.rs</code></td>
+<td><code>pulldown-cmark</code> 事件循环 → ratatui
+<code>Line</code>s</td>
+</tr>
+<tr>
+<td><code>agent_tui_kit::render/mermaid_sequence.rs</code></td>
+<td>本地 Mermaid <code>sequenceDiagram</code>
+渲染器（alias/activation/CJK 安全）</td>
+</tr>
+<tr>
+<td><code>agent_tui_kit::render/renderable.rs</code></td>
+<td><code>Renderable</code> trait</td>
+</tr>
+<tr>
+<td><code>agent_tui_kit::render/util.rs</code></td>
+<td><code>wrap_line</code>、tool 缩进常量</td>
+</tr>
+<tr>
+<td><code>agent_tui_kit::render/cells/</code></td>
+<td><code>text</code>、<code>thinking</code>、<code>tool</code>、<code>code</code>、<code>separator</code>、<code>markdown</code></td>
+</tr>
+<tr>
+<td><code>agent_tui_kit::render/popups/</code></td>
+<td>纯弹窗：thinking/diff/code/mermaid/system-prompt/history/select/task-dag
++ <code>scrollable_popup</code> 骨架 + chrome helpers（含
+<code>render_popup_scrollbar</code> 与 <code>COPY_SCROLL_CLOSE</code> /
+<code>SCROLL_CLOSE</code> 两组 footer
+提示）。子代理不在其中：<code>subagent_popup</code> 只导出<strong>无
+chrome 的 <code>render_subagent_body</code></strong>，由
+<code>crates/tui/src/render/popups/subagent_popup.rs</code>
+的视图外壳（面包屑 + scrollbar）调用（2026-10-11 弹窗退役）</td>
+</tr>
+<tr>
+<td><code>agent_tui_kit::widgets/</code></td>
+<td><code>ToolWidget</code>、<code>HelpWidget</code>、<code>PopupWidget</code>、<code>SelectPopupWidget</code></td>
+</tr>
+</tbody>
+</table>
+<p>支撑部分：<code>agent_tui_kit::state/</code>（<code>LogCoordinator</code>、<code>LogScroll</code>、<code>ToolState</code>、<code>ThinkingState</code>、<code>StreamState</code>、<code>StatusBarState</code>、<code>PlanPanel</code>、<code>TaskPanelState</code>、<code>SubagentPanelState</code>、<code>BackgroundPanelState</code>、<code>MouseState</code>、<code>FilteredList</code>、<code>sticky_panel</code>（两个
+sticky
+面板共用的滚动窗口与时长标签）、<code>TaskDagPopup</code>、弹窗状态
+…）、<code>agent_tui_kit::theme</code> /
+<code>i18n</code>（颜色、<code>Messages</code>
+字符串）；<code>crates/tui/src/widgets/state/</code> 持有
+<code>App</code>
+与应用层状态（<code>AccountState</code>、<code>VoiceState</code>、<code>FilePicker</code>、<code>SlashCommandState</code>、<code>InputHistory</code>、<code>SelectKind</code>）。</p>
+<p><strong>弹窗侧的统一（2026-10-04）：</strong>
+三处「同一件事写多遍」各自收成一个类型／一张表。</p>
+<ul>
+<li><strong>命中区 → 一张表。</strong> <code>MouseState</code> 不再持有
+13 个独立的 <code>*_area</code> 字段，而是
+<code>areas: [Rect; SurfaceId::COUNT]</code>，由 <code>SurfaceId</code>
+枚举索引（<code>Log</code> / <code>TaskPanel</code> / 各弹窗）；入口是
+<code>set_area</code> / <code>clear_area</code> /
+<code>hits</code>。判定"这个弹窗此刻是否活跃"不再查
+<code>input_mode</code>——渲染器在未激活时会
+<code>clear_area</code>，零尺寸矩形天然不含任何点。<code>crates/tui/src/handlers/mouse.rs</code>
+的 <code>ListPopupTarget</code> 被删除：命中阶梯遍历
+<code>SurfaceId::LIST_POPUPS</code>，滚轮分派是对 <code>SurfaceId</code>
+穷尽的 <code>match</code>。<code>PopupMouseSurface</code> 的 5
+个按弹窗命名的字段（<code>code_popup_area</code> …）收成单一
+<code>popup_area</code>——每次渲染只有一个弹窗作画，那 5
+个字段实际是个"每次只用一个成员"的联合结构。<code>popup_text_body_area</code>
+/ <code>popup_text_hit_rows</code> <strong>刻意不进表</strong>：thinking
+/ diff / subagent
+共用同一个文本选择槽（同时只会开一个），一个槽就是它的正确形状。</li>
+<li><strong>列表状态 → <code>FilteredList</code>。</strong> options +
+query + cursor 的规则（大小写不敏感子串、游标
+clamp、以及"游标索引<strong>原始</strong> options 而非可见子集"）此前在
+<code>SelectPopup</code> / <code>FilePicker</code> / palette / slash
+各有一份。现在 <code>FilteredList</code>
+持有它，<code>SelectPopup</code> 用
+<code>Deref</code>/<code>DerefMut</code>
+嵌入（<code>select.options</code> / <code>select.selected = x</code>
+形式的调用点无需改动），palette / slash / FilePicker 共用自由函数
+<code>contains_ignore_case</code> 与 <code>clamp_step</code>。FilePicker
+的 options 是每次 <code>refresh</code>
+从文件系统重建的<strong>派生缓存</strong>，所以它共享的是游标步进而非过滤器。</li>
+<li><strong>chrome → 只有 kit 在画。</strong>
+<code>ScrollableTextPopup</code> 新增
+<code>body_area(area)</code>（需要"先按弹窗宽度渲染内容、再交给骨架"的调用者用它取得几何），<code>system_prompt_popup</code>
+/ <code>mermaid_popup</code> 收进骨架；<code>TaskDagPopup</code> 状态与
+<code>render_task_dag_lines</code> 从 <code>crates/tui</code> 下沉到
+<code>agent_tui_kit::state::task_dag</code>，渲染器落在 kit，tui
+只留"宽度变化时重建缓存"的 prepare
+阶段。<code>crates/tui/src/render/popups/mod.rs</code> 现在只剩
+<code>render_with_ctx</code>（构建 <code>RenderCtx</code>）与
+<code>record_popup_area</code> /
+<code>record_text_popup</code>（应用命中区）两个 helper，不再转发
+<code>render_popup_chrome</code>。App
+层最后一个自己画边框的弹窗就此消失。</li>
+</ul>
+<h3 id="62-帧管线">6.2 帧管线</h3>
+<p>每次重绘在 dirty 检查通过时于 <code>terminal.draw(|f| { ... })</code>
+内运行：</p>
+<pre class="text"><code>┌─ row 0 ─────────────────────────────  render_status_bar
+│  main area (flex)                     render_main_area
+│    ├─ log panel (可滚动)
+│    └─ sticky host (Tasks | Subagent | Background)?（隐藏时 0 行；点击展开）
+├─ input (1–3 lines + border) ───────── render_input_box
+└─ bottom (2 rows) ──────────────────── render_bottom_bar
+     optional full-screen overlays ───── popups (palette, select, file picker, slash)</code></pre>
+<p>当任一 sticky 域有内容时，<code>render_main_area</code> 对外层主区做
+<strong>outer-split</strong>（上 Log、 下三域 sticky host），不改动 Log
+wrap/scroll 内核。三个域分别是：<strong>Tasks</strong>
+（<code>task_panel.visible</code>，由 <code>TasksChanged</code>
+驱动）、<strong>Subagent</strong>
+总览（<code>subagent_panel.visible</code>， 由
+<code>SubagentsChanged</code>
+驱动）、<strong>Background</strong>（<code>background_panel.visible</code>，即当前进程在跑的
+<code>background_run</code> 任务）。host 标题行对每个可见域渲染一个
+<code>[Tasks] …</code> / <code>[Subagent] …</code> /
+<code>[Background] …</code> 分段；活动域展开时在分隔线下方显示该域
+body。Tasks body 是持久任务清单； Subagent body
+是<strong>当前进程子代理运行的状态总览</strong>，按 Running → Completed
+→ Failed → Cancelled
+分组（<code>marker 短id 摘要首行 ⏱ 耗时</code>）；Background body
+是每个在跑任务一行
+（<code>⏳ task-id command ⏱ 耗时</code>），其后跟着<strong>留窗期内刚结束</strong>的任务行
+（<code>✓</code>/<code>✗ task-id command ⏱ 距结束秒数</code>，<code>BACKGROUND_LINGER</code>
+= 8 s）。子代理明细永不进入 sticky 或主 Log——仍留在父
+<code>spawn_subagent</code>
+工具卡与其<strong>子代理视图</strong>（点卡片进入，<code>Esc</code> /
+点面包屑退回）。点击非活动 tab 会切换并展开该域；点击活动
+tab（或条内空白） 收起；滚轮 / <code>jk</code>
+滚动活动域。某域不可见即从 host 消失：Tasks 在无 open 任务时，Subagent
+在收起 且无 Running 时，Background
+在最后一行消失时——最后一个在跑任务会由它的留窗行把条撑住，
+留窗过期后由下一次空闲 tick（≈1
+s）把条一起收走，全程没有任何任务事件参与。留窗行也让标题
+同时表达两件事：<code>[Background] 1 · 2 已完成</code> 表示 1 个在跑、2
+个刚结束。Tasks 可见性仍要求本会话出现过 <code>TasksChanged</code> 且有
+pending/in_progress 项（见 <a
+href="./19_chapter_persistent_tasks_zh.html">第 19 章</a>、 <a
+href="./25_chapter_protocol_zh.html">第 25 章</a>）。</p>
+<p>与另两个域不同，Background
+域是<strong>派生</strong>的而非被推送的：没有任何
+<code>AgentUpdate</code> 携带它的行， 因为 <code>background_run</code>
+的存活卡片本身就持有 task
+id（<code>ToolMeta { task_id }</code>）、命令与启动时刻—— 于是
+<code>state/background_panel.rs</code> 从 <code>ToolState</code>
+派生出这些行，并由 <code>App::handle_agent_update</code>
+在滚动刷新之前对这条 sticky
+做一次对齐（只管可见性/展开，用户的手动收起不会被覆盖） （见 <a
+href="./13_chapter_background_zh.html">第 13 章</a>）。</p>
+<p><code>lib.rs</code> 中垂直约束：</p>
+<ul>
+<li>顶栏：固定 1 行。</li>
+<li>主区域：<code>Constraint::Min(3)</code>。</li>
+<li>输入高度：<code>min(显示行, 3) + 2</code>（含
+border）——显示行按软换行后的行数计，不只统计显式
+<code>\n</code>（长行在框内折行）。有待提交的排队消息时，再叠加
+<code>pending_display_lines()</code>（提示行 + 每条排队消息一行，上限 4
+行）。</li>
+<li>底栏高度：始终 2 行（账户余额/配额追加到第 1 行，非第三行）。</li>
+</ul>
+<p>Popups 在基础布局<strong>之后</strong>绘制以置顶。多数先用
+<code>Clear</code>（无 drop shadow — 避免部分终端暗带）。</p>
+<p><strong>先更新后绘制不变量：</strong> <code>agent_rx</code> 在
+<code>terminal.draw</code> 前完全 drain。<code>lib.rs</code>
+注释说明更新与绘制交错会 desync <code>log_scroll.visual_start</code>
+并破坏鼠标行映射。</p>
+<h3 id="63-主区域模式layoutrs">6.3
+主区域模式（<code>layout.rs</code>）</h3>
+<p><code>render_main_area</code> 按 <code>App</code> 标志切换布局：</p>
+<table>
+<thead>
+<tr>
+<th>条件</th>
+<th>布局</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>show_history</code></td>
+<td>全屏 history 面板（<code>popups/history.rs</code>）</td>
+</tr>
+<tr>
+<td><code>show_help</code></td>
+<td>全屏 help（<code>popups/help.rs</code>）</td>
+</tr>
+<tr>
+<td>default</td>
+<td>Log 面板，始终全宽（单列；无侧边面板或 divider）</td>
+</tr>
+</tbody>
+</table>
+<p><code>app.mouse.log_area</code> 设为整个主区域，供 hit test
+使用。</p>
+<p>锚定在主区域上的 detail popups（非独立输入模式）：</p>
+<ul>
+<li><code>thinking.popup</code> → <code>thinking_popup.rs</code></li>
+<li><code>tools.popup</code> → <code>diff_popup.rs</code>（tool 输出 /
+文件预览）</li>
+<li><code>code_popup</code> → <code>code_popup.rs</code></li>
+</ul>
+<h3 id="64-三种坐标空间">6.4 三种坐标空间</h3>
+<p>Log 面板是最复杂渲染器。<code>log.rs</code> 文档化三种空间：</p>
+<pre class="text"><code>PHYSICAL (log_items[])     LOGICAL (scroll unit)       VISUAL (screen lines)
+┌───┬───┬───┬───┐         ┌───┬───┬───┐                 ┌───┬───┬───┬───┐
+│ 0 │ 1 │ 2 │ 3 │  hide  │ 0 │ 1 │ 2 │  wrap at width  │ 0 │ 1 │ 2 │ 3 │ …
+└───┴───┴───┴───┘  ──→    └───┴───┴───┘  ──→            └───┴───┴───┴───┘
+ every stored row          visible rows only            one terminal row each</code></pre>
+<table>
+<thead>
+<tr>
+<th>空间</th>
+<th>含义</th>
+<th>Scrollbar 跟踪</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Physical</strong></td>
+<td><code>app.log_items[]</code> 中的索引</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Logical</strong></td>
+<td>可见消息 + 可选流式 buffer 行</td>
+<td>—（<code>log_scroll.offset</code> 仅为派生镜像）</td>
+</tr>
+<tr>
+<td><strong>Visual</strong></td>
+<td>当前面板宽度下的换行</td>
+<td><code>log_scroll.visual_top</code>（viewport 起点）/ 总 visual
+行数</td>
+</tr>
+</tbody>
+</table>
+<p><code>render_log_panel</code> 管线阶段：</p>
+<ol type="1">
+<li><strong>Phase 0</strong> — <code>log_items.len()</code> 变化时重建
+<code>visible_indices</code> /
+<code>phys_to_logical_cache</code>；direct card 的 placeholder
+行仍可寻址，供 scroll 与 hit test 使用。</li>
+<li><strong>Phase 1</strong> — 宽度或消息数变化时 <code>wrap_line</code>
+→ <code>visual_cache</code> + <code>visual_start_cache</code>。</li>
+<li><strong>Phase 2</strong> — 将权威滚动位置
+<code>log_scroll.visual_top</code>（首条可见 visual
+行；<code>usize::MAX</code> = 钉住底部哨兵）钳制到
+<code>total - height</code>，并派生 <code>log_scroll.offset</code>
+逻辑镜像供 hit-test/弹窗使用。高于 viewport 的 cell 由
+<code>widgets/state/app/scroll.rs</code> 的
+<code>visual_step_up/down</code> 按视觉行步进（cell 内
+<code>j</code>/<code>k</code> 半屏、滚轮 3 行；否则按行边界跳转）。</li>
+<li><strong>Phase 3</strong> — 用
+<code>TextCell</code>、<code>ToolCell</code>、<code>ThinkingCell</code>
+构建 <code>LogColumnRenderer</code>；code 保持 overlay；仅绘制与
+viewport 相交的 cell。</li>
+</ol>
+<p><strong>Viewport 背景不变量：</strong> inline cell 绘制前，Log 内层
+viewport 会重置为 <code>theme.bg</code>。<code>TextCell</code>
+为每个字形显式写入背景 —— 自带背景的 span（围栏代码、H1
+标题）保留自己的背景，其余使用面板底色 —— 同时保留每个 span 的前景色和
+modifier（包括选区
+<code>REVERSED</code>）。因此滚动后出现的普通行不会继承上一帧 overlay
+或卡片遗留的背景；tool、Thinking 与 code-card
+仍按既有层级覆盖该背景。</p>
+<p><strong>Markdown 标记策略：</strong> 渲染器在解析阶段消费围栏 / 标题
+/ 引用标记，因此 raw 行镜像渲染文本（复制、代码块检测与鼠标 hit-test
+基于这些行）。围栏代码行携带主题代码背景（背景本身即分界），标题标记被剥除，引用
+gutter 渲染为 <code>▎</code>。三击的代码块检测改为匹配代码背景，而非
+<code>```</code> 标记。</p>
+<p>流式文本在 token 到达时用 <code>app.stream.buffer</code> 作为额外
+logical 行。</p>
+<p>消息类型、<code>AgentUpdate</code> 映射、流式生命周期、可见性、scroll
+行为、overlays 与鼠标交互见 <a
+href="#611-log-消息模型">§6.11–§6.18</a>。</p>
+<h3 id="65-renderable-trait-与-cells">6.5 <code>Renderable</code> trait
+与 cells</h3>
+<p>所有可绘制 log 单元实现：</p>
+<pre class="rust"><code>pub(crate) trait Renderable {
+    fn render(&amp;self, area: Rect, buf: &amp;mut Buffer);
+    fn render_partial(&amp;self, area: Rect, buf: &amp;mut Buffer, skip_lines: usize);
+    fn height(&amp;self, width: u16) -&gt; u16;
+}</code></pre>
+<p>scroll 后 cell 仅部分可见时 <code>LogColumnRenderer</code> 调用
+<code>render_partial</code> — 各 cell 将 <code>skip_lines</code>
+映射到内部行模型。</p>
+<table>
+<thead>
+<tr>
+<th>Cell</th>
+<th>文件</th>
+<th>绘制</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>TextCell</code></td>
+<td><code>cells/text.rs</code></td>
+<td>User/assistant/system 文本、选择、stream buffer</td>
+</tr>
+<tr>
+<td><code>ToolCell</code></td>
+<td><code>cells/tool.rs</code></td>
+<td>Tool 标题 + meta + 可选 detail card（单个
+<code>Renderable</code>）</td>
+</tr>
+<tr>
+<td><code>ThinkingCell</code></td>
+<td><code>cells/thinking.rs</code></td>
+<td>Direct live card：前后各有一行空白，1→3 行 tail，完成后为 1 行
+summary；标题和底栏显示总行数，底栏末尾是与折叠 tool 卡片同款的
+<code>[󰜼 打开]</code>
+按钮——该按钮是这张卡片唯一的点击目标，位置由画帧所用的同一套几何算出（<code>footer_button_rect</code>），因为卡片画出的文字并不落在承载它的那些行上</td>
+</tr>
+<tr>
+<td>Diff overlay</td>
+<td>（<code>log.rs</code> 中 legacy 路径）</td>
+<td>带 <code>+</code> 行的写文件 preview</td>
+</tr>
+<tr>
+<td><code>CodeCell</code></td>
+<td><code>cells/code.rs</code></td>
+<td>语法着色 code block card</td>
+</tr>
+<tr>
+<td>Separator</td>
+<td><code>cells/separator.rs</code></td>
+<td>block 间视觉间隙</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Tool 渲染拆分：</strong>
+<code>ToolWidget</code>（<code>widgets/</code>）借用 theme/i18n 构建
+<code>ToolRenderOutput</code>；<code>ToolCell</code> 复制 owned 数据存入
+renderer 列表。避免跨帧 lifetime 问题。<code>StepAdded</code> 仅更新内部
+<code>app.plan.steps</code>（无面板）；log block 在
+<code>StepStarted</code> 出现。并发工具用
+<code>tools.active: Vec&lt;_&gt;</code>，经
+<code>find_tool_at_logical()</code> 逐行 hit test。</p>
+<h3 id="66-状态栏与输入">6.6 状态栏与输入</h3>
+<p><strong>顶栏</strong>（<code>render_status_bar</code>）：输入模式、焦点面板标签（<code>FocusedPanel</code>
+目前只有
+<code>Log</code>，但每个状态分支都会渲染该槽位）、<code>Status</code>（Idle
+/ Planning / Executing / Done）、<code>Idle</code>
+下的主题/语言提示。覆盖：临时
+<code>flash_msg</code>。<code>Executing</code>
+时还会显示步骤标签（<code>正在执行步骤 4</code> /
+<code>Executing step 4</code>，2026-09-14
+起不再带分母）与并行工具数（<code>并行中 1</code> /
+<code>running 1</code>）；<code>[████░░] n%</code>
+进度条与实时任务耗时已于 2026-09-14
+一并删除——进度条只是把步骤数用字符重画一遍，耗时则下移到第 1
+行紧挨运行（见下），因此顶栏不再渲染任何自有数字。</p>
+<p><strong>底栏</strong>（<code>render_bottom_bar</code>，始终 2
+行）：</p>
+<ul>
+<li>第 1 行：权限模式、cwd、运行（<code>⊙ 运行 …</code> /
+<code>⊙ Up …</code>）、git
+分支（<code>⎇</code>）、可选账户（<code>¤ …</code>，DeepSeek /
+Kimi）。段落用 <code>│</code>
+连接。任务耗时<strong>不在这条底栏上</strong>：实时的那只在日志的
+<strong>task-stats 行</strong>（<code>⏱ mm:ss</code>，见下），第 2 行的
+<code>⏱</code> 是已结束回合的耗时。</li>
+<li>第 2 行：模型名、<code>输出</code>（即 <code>max_tokens</code>
+<strong>原值</strong>——请求真正发出去的那个数字：Responses 协议下是
+<code>max_output_tokens</code>，chat completions / Anthropic 下是
+<code>max_tokens</code>。即使对 effort 语义模型也<strong>不扣</strong>
+reasoning
+份额：推理与正文的切分由服务端按次请求决定，所以这里报告的是"要了什么"，而不是猜出来的值——估算
+reasoning 预留是压缩路径的职责，不是读数该做的事。见 2026-09-13
+条目）、<code>think high</code>/<code>思考 high</code>（effort）或
+<code>think 32K</code>/<code>思考 32K</code>（预算；两者互斥——effort
+存在时绝不显示残留的旧预算）、<code>ctx</code>
+用量（<code>ctx 4% 45K/1M</code>——百分比在前，绝对 used/window
+在后；进度条已于 2026-09-12
+去掉，因为它只是把百分比用字符又画了一遍）、<code>▣</code>
+缓存命中率、回合计数（<code>⟳ 12</code> = 会话用户回合，以及
+<code>⇅ 3</code> = 当前任务的 agent-loop 回合——任务的首次 LLM
+调用前隐藏），以及回合耗时（<code>⏱ 02:05</code> = 上一完成回合，加
+<code>均 01:45</code> =
+会话平均；回合完成前不显示平均）。段落用两个空格连接。窄终端优先丢弃：回合耗时
+→ 回合计数 → 缓存 → ctx——即 <code>ctx</code> 存活最久。</li>
+</ul>
+<p><strong>实时任务统计行（2026-10-05）：</strong>
+任务在跑时，<code>Task stats:⏱ mm:ss · model · N tokens (…)</code>
+这一行不再只在回合结束时出现——kit 把它画在 Log
+面板的<strong>最后一行内容行</strong>上（<code>render_log_panel_pure</code>
+→ <code>stats_line::render_live_stats_band</code>），每秒（空闲
+tick）与每次 LLM 调用（<code>TokenUsage</code>）重画；它占的那一行由
+<code>prepare_log_frame</code> 从 Log
+视口里扣掉（<code>stats_line::live_stats_reserve</code>，只有一行）。任务结束时该行消失，<code>App::add_task_stats_block</code>
+在同一个位置写下冻结版，两者共用
+<code>stats_line::task_stats_body</code> 一个
+builder，所以读数不会跳。它不是 log item，不占 physical
+索引，<code>⎘</code> 复制按钮只留在冻结行上（回合中途复制会漏掉尚未
+flush 的流式文本）。<strong>两行都居中</strong>（共用
+<code>stats_line::center_pad</code> 一条规则）——它们是回合边界上的
+HUD，不是日志行：边界由上面那条全宽实线承担，原先居中在实线里的耗时现在居中在它们下面。冻结行的
+pad 由 wrap pass 烘进它的<strong>行文本</strong>、绝不碰
+<code>raw</code>（<code>⎘</code> 的命中是 <code>raw</code>
+的字节偏移映射到渲染列），因此渲染与点击共用
+<code>stats_line::stats_row_pad</code>，pad
+随宽度变化重算。统计行不接受文本选区（与 markdown
+行、带竖条行同一条规则：选区覆盖层是重新 wrap <code>raw</code>
+画的）。详见 <a href="#611-log-消息模型">§6.11</a> 与
+<code>docs/token_usage_schema.md</code>。</p>
+<p><strong>第 2 行瘦身（2026-09-12）：</strong> 新增回合段后第 2
+行涨到约 138 列，普通终端已开始丢段。该行被压到 <strong>90
+列</strong>，且不丢失任何独立信息（同日 ctx 调整后为 86
+列）。遵循的规则是<strong>一个值只留一种渲染</strong>：(1)
+<strong>删除</strong> <code>∑ₜₒₖ {total}</code> 段——它读的是
+<code>ctx</code> 段已渲染为 <code>used</code> 的同一个
+<code>StatusBarState.token_total</code>（精确整数仍保留在任务 stats 块与
+<code>/stats</code> 中）；(2) <code>max_out_token</code> →
+<code>out</code>；(3) <code>cache%</code> → 裸 <code>▣ 30%</code>；(4)
+两个计数都去掉 <code>turns</code> 文字，只剩
+<code>⟳ 12 ⇅ 3</code>。宽度预算由
+<code>bottom_bar_fits_every_segment_in_100_columns</code> 锁定（85–86
+列，随 <code>out</code> 取值浮动一位）；第 1 行的预算由
+<code>bottom_bar_fits_row_1_in_100_columns</code> 管（2026-09-14
+那条任务耗时的预算测试随该段一起在 2026-10-05 删除）。</p>
+<p><strong>ctx 恢复百分比、去掉进度条（2026-09-12，同日）：</strong>
+上面的瘦身一度删掉了 ctx 的 <code>pct%</code> 而保留
+<code>■</code>/<code>·</code>
+进度条。同日反转：进度条<strong>删除</strong>，百分比前置——<code>ctx [▍···] 45K/1M</code>
+→ <strong><code>ctx 4% 45K/1M</code></strong>（24 → 17 → 14
+列）。理由：进度条只是把百分比用字符又画了一遍，而只有
+<code>45K/1M</code> 时读者得自己做除法才能回答"离自动压缩还有多远"。绝对
+<code>used/window</code> 保留——比率无法替代它来自的两个计数。缓存
+<code>▣</code> 段也移到紧接 <code>ctx</code>
+<strong>之后</strong>、回合计数<strong>之前</strong>，让两个会话级比率挨着读；push
+顺序现为
+<code>model → out → think → ctx → cache → turns → timing</code>，窄终端存活顺序为
+<code>ctx &gt; cache &gt; 回合计数 &gt; 回合耗时</code>。</p>
+<p><strong>回合计数与耗时（2026-09-12）：</strong> <code>⟳</code>
+统计本会话已派发的用户回合——在唯一派发入口（<code>handlers/skills.rs::dispatch_user_task</code>，同时服务排队刷新与
+skill 派发）自增；断点续传时由 <code>load_history</code> 统计已持久化的
+user 消息播种，但注入的上下文单元格不算用户回合：hook 的
+<code>&lt;hook-context&gt;</code> 不计入，Goal Runner 每个 activation
+注入的 <code>&lt;goal-context&gt;</code>
+同样跳过（2026-10-18）。<code>⇅</code> 统计当前任务的 agent-loop
+迭代：agent 每次循环发一次
+<code>AgentUpdate::TurnStats { turns_taken, max_turns }</code>（<code>crates/tact/src/agent/mod.rs</code>），kit
+的 <code>StatusBarComponent</code> 存入状态，shell
+在派发时重置。<code>max_turns</code> 接入
+<code>StatusBarState.turn_llm_cap</code>
+但<strong>刻意不渲染</strong>——只有 <code>spawn_subagent</code> 会设置
+cap，主 agent 底栏永远不会显示。耗时在
+<code>add_task_end_separator</code>（<code>widgets/state/app/popups.rs</code>）累计，这是唯一真正冻结
+<code>task_start_time</code> 的位置；被取消的回合计入，合成分隔线（无
+start
+time）不计入。运行中的实时耗时<strong>不在底栏</strong>：2026-09-14
+它一度落在第 1 行紧挨运行，2026-10-05 移到日志的 <strong>task-stats
+行</strong>（见上），底栏与顶栏都不再显示任何实时时钟。第 2 行的
+<code>⏱</code> 只回答"已结束的回合各花多久"（上一回合 +
+会话平均），与实时那只钟互不相干。</p>
+<p><strong>输入</strong>（<code>render_input_box</code>）：<code>Insert</code>
+模式圆角 border；最多 3
+行内容；长行按字符边界软换行（<code>wrap_line</code>，CJK
+双宽感知——<code>Paragraph</code>
+保持不换行、逐行绘制这些切分），光标与滚动跟随折行行（<code>caret_in_wrapped</code>）；CJK
+感知光标宽度；无批准横幅（agent 的权限询问是 <code>RequestSelect</code>
+更新，会以 <code>InputMode::Select</code> 打开选择弹窗）。Palette 模式用
+<code>render_command_line</code>。当 <code>[voice].enabled = true</code>
+时，标题栏<strong>居中</strong>按钮（与左侧 Input 标题拆成两个
+<code>Block</code> title，中间顶边保持可见）可录制麦克风（macOS
+需授权），将 WAV
+发往配置的转写服务，并把文本插入光标处（<code>Esc</code> 可取消）。可选
+<code>[voice].voice_keybind</code>
+用键盘切换同一控件；仅精确匹配时消费按键。见 <a
+href="./21_chapter_config_zh.html">第 21 章</a> 与
+<code>crates/tact/src/voice/</code>。</p>
+<p><strong>忙时排队消息</strong>（Codex
+风格"当前任务结束后提交"，2026-08-16 起）：agent 处于
+<code>Planning</code>/<code>Executing</code> 时按 Enter
+不再弹"busy"提示——文本进入 <code>App.pending_messages</code>
+队列（输入框清空，提示"消息将在当前任务结束后自动提交（按 esc
+立即中断并发送）"及每条排队消息一行 <code>↳ 消息</code>
+<strong>渲染在输入框上方</strong>）。队列在 agent 进入
+<code>Idle</code>/<code>Done</code>
+时自动提交（<code>handlers::skills::flush_pending_when_idle</code>，主循环在
+<code>agent_rx</code> 排空后调用）：每条排队消息按序各自派发为一个
+<code>SubmitTask</code>——命令驱动（<code>tact-ui/src/driver.rs</code>）本就会串行处理在途的
+<code>SubmitTask</code>，因此每条排队消息都成为下一个用户回合。<strong>Goal
+activation 结束时会发
+<code>AgentUpdate::TaskIdle</code></strong>（<code>tact-ui/src/driver.rs</code>
+在 <code>CreateGoal</code> / <code>ResumeGoal</code> /
+<code>AcceptGoal</code> 的任务收尾处发出），把 TUI 的
+<code>Planning</code>/<code>Executing</code> 复位到
+<code>Idle</code>：activation 不经过 <code>SubmitTask</code>，不会产生
+<code>TaskComplete</code>，没有这个信号时排队消息会永远等一个不会到来的空闲状态。<strong>Esc
+保持原语义不变</strong>——始终退出插入模式、队列保留（绝不中断运行中的任务）。<strong>没有"立即发送"操作</strong>：排队消息纯自动——当前任务结束后自动提交。丢弃排队消息的<strong>唯一</strong>途径是
+pending 提示行文案后紧接的可点击 <strong><code>[Cancel]</code>
+按钮</strong>（鼠标；窄终端隐藏）：只清空队列、不影响运行中的任务。<code>/cancel</code>（及
+Normal 模式 <code>c</code>）与队列无关——只取消在途任务（Idle/Done 时
+noop 提示），与功能引入前完全一致；被 <code>/cancel</code>
+结束的任务同样会触发排队消息的自动提交（与任务自然结束相同）。字符长度校验在入队时执行，超长消息不会进入队列。排队状态位于
+<code>widgets/state/app/pending.rs</code>；排队块自行绘制背景（无残影，见
+Ch 26 2026-08-16 条目）。</p>
+<h3 id="67-markdown">6.7 Markdown</h3>
+<p><code>render/pulldown.rs</code> 经 <code>pulldown-cmark</code> 0.13
+事件循环（<code>TextWriter</code> 式状态机）转换 assistant
+markdown，Mermaid 复用共享的 <code>TuiRichTextTheme</code>。Code block
+使用主题代码背景并隐藏围栏标记；所有表格都走 Tact 的宽度感知
+<code>format_table</code>（管道风格）列对齐。无序列表渲染为
+<code>•</code>，任务项渲染为 <code>☐</code>/<code>☑</code>；GFM
+任务列表同样作用于有序列表（<code>1. [X]</code> →
+<code>1. ☑</code>）。diff 弹窗经 <code>syntect</code>（Base16 Ocean
+Dark）语法高亮。不保留 Hyperlink OSC-8 序列 — ratatui 剥离转义序列。</p>
+<p><strong>流式 fence 边界规则：</strong> TUI 对 fenced
+内容有两条不同路径。普通 markdown
+渲染（<code>render_markdown_tui</code>）可以直接内联显示 fenced
+文本；而流式日志管线则可能在 fenced block
+完整闭合后，<strong>提升</strong>为专门的 code card overlay。2026-08-01
+的 bugfix 之后，如果一个<strong>空语言</strong> fence（普通
+```）紧跟在进行中的 markdown 段落或列表后面，它会继续留在普通 markdown
+流程里，而不会被提升成 code
+card。这样可避免列表尾行或说明性尾文本被错误劫持进
+<code>Click for full code</code> 卡片。带显式语言标签的流式代码块仍走
+code-card 路径，唯一的例外自 2026-08-08 起：完整的 <code>mermaid</code>
+fence 会渲染为终端图（见下）。</p>
+<p><strong>Mermaid fenced block</strong>（自 2026-08-08 起）：</p>
+<ul>
+<li>完整的 ```mermaid fenced block
+在主日志区渲染为<strong>终端图</strong>，不再生成 code card。</li>
+<li>支持的图类型跟随固定的 <code>ratatui-markdown</code> Mermaid
+渲染器（flowchart/graph、pie、gantt、stateDiagram、classDiagram、quadrantChart、block）。<code>sequenceDiagram</code>
+使用 Tact
+自有渲染器（<code>mermaid_sequence.rs</code>），以正确处理别名、<code>+/-</code>
+激活简写以及 CJK/宽字符标签对齐；不支持的图类型回退为代码。</li>
+<li><strong>两条已知边界</strong>（2026-10-17）：带 <code>: 标签</code>
+的 <code>stateDiagram</code>
+<strong>有意不渲染</strong>——上游解析会把标签并进节点名，画出来不是那个状态机，因此直接回退成源码（见
+<a href="./26_chapter_issue_zh.html">第 26 章</a>）；flowchart
+的分层布局要求<strong>无环</strong>，带自环或回边的图会把环上的节点堆进同一行、标签互相覆盖，<code>docs/state_machines.md</code>
+因此改用纯文本状态图。</li>
+<li>流式渲染会缓冲整个 block 直到闭合 fence；渲染成功时 diagram
+行直接拼接进日志，<strong>不创建 code card</strong>。fence 正文保留在
+<code>MermaidBlock</code> 中，供双击打开弹窗。</li>
+<li><strong>双击</strong>任意 diagram 行 → Mermaid 弹窗。自 2026-09-11
+起，弹窗默认显示<strong>已渲染的图</strong>，并以弹窗宽度（约占 frame 的
+80%）而非更窄的日志面板重新排版，因此密集的 flowchart
+也能看清；<strong><code>Tab</code></strong> 在渲染图与原始 fence
+正文之间切换。两种视图下 <strong><code>y</code></strong> 均复制 Mermaid
+源码。主区选区 / Normal <strong><code>y</code></strong> 仍复制可见 ASCII
+图。</li>
+<li>无法渲染的图（例如 pinned 渲染器不解析的 Mermaid <code>style</code>
+/ <code>classDef</code> /
+<code>linkStyle</code>）会在弹窗中显示源码，并明确标注「does not
+render」，而不是静默显示空白。</li>
+<li>无效或不支持的 Mermaid 在日志区回退到普通 code
+block/card，原始源码仍可读。</li>
+<li>普通显式语言 fence（```rust 等）保留原有 code-card 行为。</li>
+<li>宽度变化与视口滚动沿用现有 log 布局/缓存行为——diagram
+行一旦拼接即为普通日志行。</li>
+</ul>
+<h3 id="68-popups">6.8 Popups</h3>
+<table>
+<thead>
+<tr>
+<th>Popup</th>
+<th>触发</th>
+<th>文件</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Command palette</td>
+<td>Normal 模式 <code>/</code> / <code>InputMode::Palette</code></td>
+<td><code>popups/command_palette.rs</code></td>
+</tr>
+<tr>
+<td>Slash commands</td>
+<td>Insert 模式输入 <code>/</code>；标题含 <code>[Esc] 关闭</code>；即使
+thinking/diff overlay 打开，Esc 也先关 slash</td>
+<td><code>popups/slash_command.rs</code></td>
+</tr>
+<tr>
+<td>File picker</td>
+<td><code>@</code> 附件流程</td>
+<td><code>popups/file_picker.rs</code></td>
+</tr>
+<tr>
+<td>Select</td>
+<td><code>RequestSelect</code> 权限 / agent 选择</td>
+<td><code>popups/select.rs</code></td>
+</tr>
+<tr>
+<td>Help</td>
+<td><code>Ctrl+?</code></td>
+<td><code>popups/help.rs</code></td>
+</tr>
+<tr>
+<td>History</td>
+<td><code>Ctrl+H</code></td>
+<td><code>popups/history.rs</code></td>
+</tr>
+<tr>
+<td>Thinking detail</td>
+<td>双击 thinking card 底栏的 <code>[󰜼 打开]</code>
+按钮（卡片正文不可选）；相邻有序列表项以空行分隔</td>
+<td><code>popups/thinking_popup.rs</code></td>
+</tr>
+<tr>
+<td>Tool/file detail</td>
+<td>双击 tool card（已折叠的命令 / 读取 / 编辑卡片：meta 行末尾的
+<code>[󰜼 打开]</code> 按钮）</td>
+<td><code>popups/diff_popup.rs</code></td>
+</tr>
+<tr>
+<td>Code detail</td>
+<td>双击 code card</td>
+<td><code>popups/code_popup.rs</code></td>
+</tr>
+<tr>
+<td>Mermaid 图 / 源码</td>
+<td>双击已渲染的 Mermaid 图；默认显示渲染图，<code>Tab</code>
+切换到源码</td>
+<td><code>popups/mermaid_popup.rs</code></td>
+</tr>
+<tr>
+<td>Read-out（<code>/stats</code>、<code>/background</code>、<code>/view-system-prompt</code>、<code>/goal show</code>、<code>/hooks list</code>…）</td>
+<td>对应命令；框内左键拖拽选择渲染文本、<code>y</code>
+复制；框外点击关闭</td>
+<td><code>popups/system_prompt_popup.rs</code></td>
+</tr>
+</tbody>
+</table>
+<p>Popups 通常占终端约 80%×80%，记录 <code>app.mouse.*_popup_area</code>
+供点击外部关闭，显示 <code>[y] Copy</code> / <code>[Esc] Close</code> /
+<code>[j/k] Scroll</code> 提示——工具详情弹窗在这些提示前面打印原始 tool
+id（<code>read_image | y copy | Esc close | j/k scroll</code>），因为它的标题是路径或命令而不是工具名。<code>diff_popup</code>
+经 <code>cached_content</code> 懒加载全文 — 热路径 <code>render()</code>
+内无文件 I/O。</p>
+<p>Read-out popup 同样上报自己的
+rect（<code>SurfaceId::SystemPromptPopup</code>）：框内的按下归它自己（起手选择
+/ 滚动），框外的按下关闭它——与 code/mermaid/task-dag
+弹窗一致。在此之前它不报 rect，框内点击会落到弹窗盖住的那条 Log
+行上，单击就等于在看不见的地方选区。</p>
+<p>Tool/file、Thinking detail 与 <strong>read-out</strong> popup
+支持鼠标左键文本选择（read-out
+的正文在这里自己排布：<code>selectable_text::layout_all_display_rows</code>
+同时给出折行、字节范围和 hit
+row，所以选区、滚动范围与滚动条不会各算一份）。它的选择缓冲区是<strong>渲染后</strong>的文本（markdown
+标记已被消费），没有选区时 <code>y</code> 复制原始 source——与 thinking
+popup 同一套契约。Mouse hit 将每个渲染出的扩展字素簇映射至 byte
+offset，因此组合字符与 emoji 序列保持不可分割，行号、diff
+gutter、边框、标题、底栏、元数据及其他仅用于显示的前缀不会进入选择。Popup
+滚动时选择保留；拖拽到 body 上方或下方会 clamp 到首个或末个可见 source
+boundary，且不会自动滚动。<code>y</code> 在 tool popup
+中复制选中的原始文本，在 Thinking popup
+中复制选中的可见文本；没有非空选择时复制 popup 的完整原始内容。Code
+detail popup 保持原有鼠标行为。</p>
+<h3 id="69-统一弹出层-chrome">6.9 统一弹出层 Chrome</h3>
+<p>所有覆层弹窗（palette、select、file picker、slash
+commands、help、history、thinking/diff/code detail）使用共享的
+<code>render_popup_chrome</code> 函数，提供一致的视觉框架：</p>
+<table>
+<thead>
+<tr>
+<th>元素</th>
+<th>样式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>标题栏</strong></td>
+<td>左对齐标题用粗体 primary foreground；右对齐 <code>[x]</code>
+关闭提示用 muted 装饰风格</td>
+</tr>
+<tr>
+<td><strong>底栏</strong></td>
+<td>居中提示文本：快捷键用 accent 色，标签用 muted 色，<code>|</code>
+分隔</td>
+</tr>
+<tr>
+<td><strong>边框</strong></td>
+<td>使用 <code>theme.border</code> 颜色，通过
+<code>block_border_type()</code> 设置</td>
+</tr>
+<tr>
+<td><strong>背景</strong></td>
+<td>绘制前 <code>Clear</code>（无 drop shadow）</td>
+</tr>
+</tbody>
+</table>
+<p>Chrome 渲染为包裹弹窗内容区域的 ratatui <code>Block</code>。确保所有
+overlay 无论内容如何，外观上都属于统一家族。</p>
+<p><strong>内容行同样取色自 theme（2026-10-01 修）：</strong> chrome
+只画框和背景，行内容由各弹窗自己画——而 palette / slash commands / file
+picker / select 曾用字面量
+<code>Color::White</code>、<code>Color::Cyan</code>、<code>Color::DarkGray</code>。亮色主题下
+<code>theme.bg</code>
+是白，框内每一条未选中行就是白底白字<strong>完全不可见</strong>（选中行又是暗色主题的
+cyan，而亮色主题 accent 是蓝）。现在一律用 <code>theme.fg</code> /
+<code>theme.muted</code> / <code>theme.accent</code>，选中行固定是
+<code>bg(theme.highlight).fg(theme.fg)</code>
+这个组合，<code>popup_scene_tests</code>
+里有四个按亮色主题断言具体单元格 fg 的回归测试。file picker
+的文件类型色（<code>.rs</code> 橙、<code>.py</code>
+蓝等）仍是有意为之的字面色板，见该文件注释。</p>
+<p><strong>Dirty 渲染：</strong> 仅当
+<code>app.dirty</code>、<code>Status::Done</code> 或
+<code>!tools.active.is_empty()</code> 时运行
+<code>terminal.draw</code>。绘制后清除 <code>dirty</code>。</p>
+<p><strong>Caches</strong>（<code>LogScroll</code>）：</p>
+<table>
+<thead>
+<tr>
+<th>Cache</th>
+<th>失效时机</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>visible_indices</code></td>
+<td><code>messages.len()</code> 变化</td>
+</tr>
+<tr>
+<td><code>visual_cache</code></td>
+<td><code>messages.len()</code>、宽度或主题变化</td>
+</tr>
+<tr>
+<td><code>phys_to_logical_cache</code></td>
+<td><code>messages.len()</code> 变化</td>
+</tr>
+<tr>
+<td>Code/diff preview 行</td>
+<td>block 创建时</td>
+</tr>
+</tbody>
+</table>
+<p><strong>自适应 poll 间隔</strong>（事件循环 <code>select!</code>
+timeout）：</p>
+<table>
+<thead>
+<tr>
+<th>状态</th>
+<th>间隔</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Done</code> 或 <code>flash_msg</code></td>
+<td>200 ms</td>
+<td>定时 revert 到 <code>Idle</code></td>
+</tr>
+<tr>
+<td><code>dirty</code></td>
+<td>10 ms</td>
+<td>快速重绘</td>
+</tr>
+<tr>
+<td>Planning / Executing / Waiting</td>
+<td>150 ms</td>
+<td>Spinner 动画</td>
+</tr>
+<tr>
+<td>Idle</td>
+<td>1000 ms</td>
+<td>最多每秒刷新一次 <code>Up</code>（显示秒未变则不 dirty）</td>
+</tr>
+</tbody>
+</table>
+<p>活跃 tool 行也强制重绘，使 duration 计数器在无新
+<code>AgentUpdate</code> 时仍 tick。</p>
+<h3 id="610-渲染中的主题与-i18n">6.10 渲染中的主题与 i18n</h3>
+<p>颜色来自 <code>theme.rs</code> 的 <code>Theme</code>（12 主题；config
+默认 <code>ink</code>）。运行时 <code>/theme</code>
+打开选择器（<code>SelectKind::ThemePick</code>，开在<strong>当前主题</strong>那一行，选中的行带
+<code> *</code> 标记），<code>Ctrl+T</code>
+是「下一个」的快捷循环；选择器走
+<code>App::apply_theme</code>（静默应用，随后由持久化步骤报告），<code>Ctrl+T</code>
+走 <code>App::toggle_theme</code>（静默应用 + 直接写
+<code>[ui] theme</code> +
+一条消息说明结果）。两条路都会<strong>落盘</strong>：<code>Ctrl+T</code>
+不问，因为每按一次都弹一个「要保存吗」等于把这个快捷键废掉。主题变化时
+cache 失效防止 stale styled 行。</p>
+<p>UI 字符串集中在
+<code>crates/agent_tui_kit/src/i18n.rs</code>（<code>Language::English</code>
+/ <code>Language::Chinese</code>，每种语言一份
+<code>Messages</code>）；render 经 <code>app.msgs()</code>
+取标签。<code>Ctrl+L</code> 切换语言，与 <code>Ctrl+T</code>
+完全对称：走 <code>App::toggle_language</code>（静默应用 + 直接写
+<code>[ui] language</code> + 一条消息）。<code>/lang</code> 则与
+<code>/theme</code> 对称：先经 <code>App::apply_language</code>
+<strong>静默</strong>翻转，再打开「保存到配置？」第二步（<code>SelectKind::PersistLang</code>，默认选
+<code>No</code>），由这一步负责说话——一次动作只该播报一次。接受保存时写
+<code>[ui] language</code>，写进去的是 <code>Language::as_str()</code>
+的 locale 标签（<code>en</code> /
+<code>zh</code>）而<strong>不是</strong>界面标签（<code>中文</code>）：后者是画给人看的，解析器读不回来。启动时
+<code>App::set_configured_language</code> 读回
+<code>[ui] language</code>，未知取值告警并回落英文。</p>
+<p><strong>「有没有配置文件可写」是启动时捕获的状态，不是每次按键都去读全局设置。</strong>
+<code>App::ui_config_path</code> 由 <code>run_tui</code> 在
+<code>App::new</code> 之后经 <code>App::set_ui_config_path</code>
+写入（<code>TuiConfig::ui_config_path</code> 由
+<code>interactive.rs</code> 从已解析的
+<code>settings().config_path</code> 传入，和 <code>theme</code> /
+<code>language</code>
+同一条路）；<code>App::ui_config_available()</code> 是
+<code>/theme</code>、<code>/lang</code>、<code>/hook-output</code>、<code>Ctrl+T</code>、<code>Ctrl+L</code>
+五条路共用的唯一判据。为 <code>None</code>
+时五者都报「仅本次会话」且不碰磁盘。之所以不在按键处理里现场读
+<code>try_settings()</code>：那是进程级全局，单测里会被别的测试装上又拆掉，于是主题测试会去写别人的临时配置文件——既不确定，也真的会写盘。</p>
+<p><code>apply_language</code> 与 <code>toggle_language</code>
+的分工不是风格问题：<code>self.language</code>
+是<strong>渲染</strong>路径读的，而持有 <code>Messages</code>
+快照的组件（thinking / stream /
+tools）在构造时就冻结了语言，所以两者都必须经
+<code>apply_language</code>
+把新快照推下去，否则日志里已存在的行会在旧语言的外壳里被重绘。<code>/lang</code>
+之所以要拆出静默版，正是因为它的持久化步骤承担了播报。</p>
+<p>第三个 <code>[ui]</code> 偏好是
+<code>/hook-output</code>（<code>[ui] hook_output</code>，布尔，默认
+<code>true</code>；语义见 <a href="./21_chapter_config_zh.html">Ch 21
+§5</a>）：它走 <code>Ctrl+T</code> 那种形状——翻转 → 写盘 →
+<strong>一条</strong>消息说清「现在是开还是关」和「存了没存」——而不是
+<code>/theme</code>
+那种「先静默应用、再问要不要保存」。差别是信息结构上的：布尔没有列表可选，就没有
+picker step 可以挂那个问题。<code>App::toggle_hook_output</code> 只改
+<code>self.hook_output</code>（<strong>不</strong>回收日志里已经画出来的行，它管的是之后进日志的东西），再经
+<code>App::persist_hook_output_choice</code> 落盘并播报。</p>
+<h3 id="611-log-消息模型">6.11 Log 消息模型</h3>
+<p>Log 不是单一字符串列表。每个 physical 行都是
+<code>app.log_items[]</code> 中的一个
+<code>LogItem</code>；<code>append_msg</code>、<code>insert_msg</code>、<code>splice_msgs</code>、<code>drain_msgs</code>、<code>remove_msg</code>
+都只修改这一组 collection，因此行文本、raw 来源、kind 和可选 Markdown
+cache 不会再彼此错位。</p>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>类型</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>log_items[]</code></td>
+<td><code>Vec&lt;LogItem&gt;</code></td>
+<td>每个 physical 行的一条同步记录</td>
+</tr>
+<tr>
+<td><code>LogItem::line</code></td>
+<td><code>Line&lt;'static&gt;</code></td>
+<td>预 styled ratatui 行（Markdown、颜色、modifier）</td>
+</tr>
+<tr>
+<td><code>LogItem::raw</code></td>
+<td><code>String</code></td>
+<td>纯文本：复制、hit test 与结构查找</td>
+</tr>
+<tr>
+<td><code>LogItem::kind</code></td>
+<td><code>LogItemKind</code></td>
+<td>显式来源、渲染模式、缩进与类别 metadata</td>
+</tr>
+<tr>
+<td><code>LogItem::markdown_cell</code></td>
+<td><code>Option&lt;MarkdownCell&gt;</code></td>
+<td>整段 Markdown notice 的缓存 renderer</td>
+</tr>
+<tr>
+<td><code>LogItem::popup_source</code></td>
+<td><code>Option&lt;String&gt;</code></td>
+<td>双击要打开的只读全文；带它的行在鼠标层是<strong>控件</strong>（双击开
+popup、单击不产生选区），因此超长块不必在 log 里留第二份正文</td>
+</tr>
+<tr>
+<td><code>LogItem::gutter</code></td>
+<td><code>Option&lt;Gutter&gt;</code></td>
+<td>该行左缘要戴的竖条。是<strong>行属性</strong>而非 <code>line</code>
+里的前缀：竖条属于该行折出的<strong>每一个</strong>视觉行，而写进文本的
+<code>▎</code> 只标记第一个——窄面板一折行就在容器左轨上开一个洞</td>
+</tr>
+</tbody>
+</table>
+<p><code>LogItemKind</code> 在行进入 TUI
+时分配（<code>widgets/state/mod.rs</code>）；renderer 不再从 raw
+前缀或缩进推断归属：</p>
+<table>
+<thead>
+<tr>
+<th>Kind</th>
+<th>典型来源</th>
+<th>缩进（<code>log_indent</code>）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>User</code></td>
+<td><code>add_user_message</code> 产生的用户输入行</td>
+<td>0</td>
+</tr>
+<tr>
+<td><code>AssistantMarkdown</code></td>
+<td>流式或持久化的 assistant Markdown</td>
+<td><code>LOG_THINKING_INDENT + 1</code></td>
+</tr>
+<tr>
+<td><code>SystemPlain(style)</code></td>
+<td>显式系统 / info 纯文本行</td>
+<td><code>LOG_THINKING_INDENT + 1</code></td>
+</tr>
+<tr>
+<td><code>SystemMarkdown</code></td>
+<td><code>/skill list</code> / <code>MdInfo</code> 等整段 Markdown
+系统提示</td>
+<td><code>LOG_THINKING_INDENT + 1</code></td>
+</tr>
+<tr>
+<td><code>SystemTool</code></td>
+<td>tool placeholder 与显式标记的 tool 行</td>
+<td><code>LOG_TOOL_INDENT</code></td>
+</tr>
+<tr>
+<td><code>Thinking</code></td>
+<td>为一个 direct Thinking card 保留的 blank placeholder 行</td>
+<td><code>LOG_THINKING_INDENT</code></td>
+</tr>
+<tr>
+<td><code>HookStatus(u64)</code></td>
+<td>hook 的进度行，id 由 <code>AgentUpdate::HookStatus</code>
+发放、回来时按 id 原地改写</td>
+<td><code>LOG_TOOL_BLOCK_INDENT</code></td>
+</tr>
+<tr>
+<td><code>HookContext</code></td>
+<td>hook 注入上下文的 header / 竖条正文 / "还有 N 行"尾巴（整块共用一个
+kind）</td>
+<td><code>LOG_TOOL_BLOCK_INDENT</code></td>
+</tr>
+</tbody>
+</table>
+<p>Goal Runner 的 <code>&lt;goal-context&gt;</code>
+<strong>不在</strong>这张表里：<code>load_history</code> 在分配 kind
+之前就把它丢弃——它不渲染，也不计入 <code>⟳</code>（2026-10-18）。理由与
+hook context 不同：它是每次 activation
+都会重建的派生数据（目标、标准、Tasks、最近 checkpoint），Goals
+面板本来就把这些信息显示得更完整，一次 activation
+一行只会把会话挤出屏幕（见 <a href="./28_chapter_goal_zh.html">第 28 章
+§9</a>）。</p>
+<p>hook 块用的是 <code>LOG_TOOL_BLOCK_INDENT</code> 而不是
+<code>LOG_TOOL_INDENT</code>：后者属于被工具卡覆盖掉的空白占位行，屏幕上根本没有这一列，按它对齐会让竖条停在每条工具行左边
+4 列（详见 <a href="./09_chapter_hook_zh.html">第 9 章 §10</a>）。</p>
+<p>这两个 hook kind 还受 <code>[ui] hook_output</code>（默认
+<code>true</code>，<code>/hook-output</code>
+翻转）门控——关掉就<strong>一行都不进</strong>日志。门设在行被 append
+的那一刻（<code>App::append_hook_context_markdown</code> /
+<code>App::apply_hook_status</code>），而不是渲染层：上面这张表的
+physical
+索引是选区、卡片与滚动锚点的键，一行「画的时候跳过」仍然会占掉一个索引。参见
+<a href="./21_chapter_config_zh.html">Ch 21 §5</a>。</p>
+<p><code>SystemMsgStyle</code> 是独立的视觉
+metadata（<code>Default</code>、<code>Success</code>、<code>Error</code>、<code>Warning</code>、<code>Accent</code>）。只有调用方已经确认该行是
+system 后，显式可见前缀才会用于选择颜色。</p>
+<p><strong>行类别</strong>现在来自来源 metadata，而不是 raw
+文本猜测：</p>
+<table>
+<thead>
+<tr>
+<th>类别</th>
+<th>在 <code>log_items[]</code> 中如何出现</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>User</strong></td>
+<td><code>add_user_message</code> 产生的绿色前缀行（<code>💬 …</code> /
+续行 <code>  …</code>）</td>
+<td>前有 blank 分隔行；续行归属记录为
+<code>LogItemKind::User</code></td>
+</tr>
+<tr>
+<td><strong>Assistant text</strong></td>
+<td><code>StreamChunk</code> / <code>flush_stream_pending</code> 的
+Markdown 行</td>
+<td>单段可能占多 physical 行</td>
+</tr>
+<tr>
+<td><strong>System / info</strong></td>
+<td>显式 plain 或 Markdown 插入 API</td>
+<td>不再有基于缩进的 fallback，来源决定渲染路径</td>
+</tr>
+<tr>
+<td><strong>Thinking card</strong></td>
+<td>Placeholder 行（<code>Thinking</code>）</td>
+<td>一个
+<code>ThinkingCell</code>；前后各有一行空白与相邻内容分隔，active tail
+从 1 增至 3 行，完成后显示 1 行
+summary，标题和底栏显示总行数，底栏末尾是与折叠 tool 卡片同款的
+<code>[󰜼 打开]</code> 按钮——卡片上只有这个按钮响应点击</td>
+</tr>
+<tr>
+<td><strong>Tool blocks</strong></td>
+<td>Blank placeholder 行（<code>SystemTool</code>）</td>
+<td>实际绘制为单个 <code>ToolCell</code>；placeholder 预留 scroll
+高度</td>
+</tr>
+<tr>
+<td><strong>Code blocks</strong></td>
+<td>fence 关闭后 blank placeholder</td>
+<td><code>render_code_cards</code> overlay 绘制 card</td>
+</tr>
+<tr>
+<td><strong>Loading placeholder</strong></td>
+<td><code>app.loading_idx</code> 处一行 blank
+<code>SystemTool</code></td>
+<td><strong>Legacy：</strong> 仅 <code>PlanGenerated</code> 到达时插入 —
+agent 今日不发，spinner overlay 通常 inactive</td>
+</tr>
+<tr>
+<td><strong>Task-end separator</strong></td>
+<td>魔法 raw <code>\x07tact-task-end\x1f{secs}</code> 的 sentinel
+行</td>
+<td>渲染为全宽强调色实线（2026-10-05 起不再内嵌耗时——那一轮的墙钟时间由
+task-stats 行与底栏第 2 行给出；raw 里的秒数仍保留，只是不画）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>实时任务统计行不是 log 行。</strong>
+上表最后一行说的是冻结版；任务在跑时，同一行文本由 kit
+直接画在面板的最后一行内容行上（见 §6.6），既不进
+<code>log_items[]</code> 也不占 physical
+索引——选区、卡片与滚动锚点的键因此不受影响，Log 视口按
+<code>stats_line::live_stats_reserve</code> 让出那一行。</p>
+<p><strong>那一行两侧的吉祥物。</strong>
+实时行是<strong>居中</strong>的，因此它两侧的留白是两条空跑道；任务在跑时各有一只吉祥物在上面来回走，掉头时换成朝另一侧的同族字形（<code>md-transfer_right</code>
+/
+<code>md-transfer_left</code>）。终端不能镜像字形，所以「掉头」只能是换字形——两者
+advance 与 <code>0</code> 相同（1
+列宽），跑道数学因此精确，绝不会挤动文字。右只是左只的镜像位相（离自己那侧的边一样远、朝反方向走），两只同时往里、同时掉头。<strong>留白
+&lt; 4
+列整只不画</strong>：窄行就是没有留白可给的行使，不需要第二个降级分支；文字溢出时
+<code>pad = 0</code>，自动没有。动画由
+<code>RenderCtx::spinner_frame</code> 驱动——与工具行 spinner、loading
+占位同一拍；该计数器是<strong>单调</strong>的（宿主不再
+<code>% 10</code>），转圈类动效各自取模，吉祥物的往返需要更长计数。颜色用
+<code>theme.warning</code>：那一行的文字已经是
+<code>theme.accent</code>，同色会读成句子的一部分。frozen
+行不画——那是已经结束的回合。</p>
+<p>若干 <strong>overlay 注册表</strong> 按 physical 索引存元数据 — 不在
+<code>log_items[]</code> 重复文本：</p>
+<table>
+<thead>
+<tr>
+<th>注册表</th>
+<th>Key</th>
+<th>用于</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>thinking.active</code> / <code>thinking.blocks[]</code></td>
+<td><code>phys_idx</code></td>
+<td>Active/completed direct card + thinking popup</td>
+</tr>
+<tr>
+<td><code>tools.active[]</code> / <code>tools.blocks[]</code></td>
+<td><code>phys_idx</code></td>
+<td>运行中 / 完成 tool card</td>
+</tr>
+<tr>
+<td><code>code_blocks[]</code></td>
+<td><code>start_idx</code>、<code>end_idx</code></td>
+<td>语法着色 code card</td>
+</tr>
+<tr>
+<td><code>stream.buffer</code></td>
+<td>（尚未进入 <code>log_items[]</code>）</td>
+<td>token 流期间额外 <em>logical</em> 行</td>
+</tr>
+</tbody>
+</table>
+<p>正常流式期间 physical 行仅 append；code fence 关闭或 tool placeholder
+resize 时 <code>splice_msgs</code> / <code>drain_msgs</code>
+重写区间。</p>
+<h3 id="612-agentupdate--log-行映射">6.12 AgentUpdate → log 行映射</h3>
+<p><code>handle_agent_update</code>（<code>widgets/state/app/agent.rs</code>）是
+agent 事件写入 log 行的唯一 writer。每次 update 设
+<code>dirty = true</code>。match 前两个全局门：</p>
+<ol type="1">
+<li><strong>Thinking gate</strong> — 产出内容的 update <em>除</em>
+<code>ThinkingChunk</code> / <code>TokenUsage</code> /
+<code>ModelInfo</code> / <code>TurnStats</code> /
+<code>ToolProgress</code> 外，若 thinking 区域仍开则调用
+<code>flush_and_close_thinking()</code> 作安全网。优先显式
+<code>ThinkingChunk::Finished</code>。</li>
+<li><strong>Loading gate</strong> — 多数 update 调用
+<code>remove_loading_placeholder()</code>。信息性或类元数据
+update（<code>TokenUsage</code>、<code>ModelInfo</code>、<code>TurnStats</code>、<code>ToolProgress</code>）跳过移除。Legacy
+<code>PlanGenerated</code> handler 也跳过，但 agent 从不发出 — loading
+行路径 inactive。</li>
+</ol>
+<p><strong>当前 agent 路径：</strong> <code>StepAdded</code> 仅更新内部
+<code>app.plan.steps</code>（无 log
+行、无专用面板）。<code>StepStarted</code> 创建 tool placeholder 并驱动
+<code>Planning → Executing</code>。当前运行勿期望
+<code>PlanGenerated</code>。</p>
+<table>
+<thead>
+<tr>
+<th><code>AgentUpdate</code></th>
+<th>插入/更新的 physical 行</th>
+<th>副作用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>StreamChunk</code></strong></td>
+<td>完成行 → <code>append_msg</code>（<code>LLM</code>）；不完整 tail
+留在 <code>stream.buffer</code></td>
+<td>自动 scroll；code/table/paragraph 子解析；thinking 仍开则
+safety-close</td>
+</tr>
+<tr>
+<td><strong><code>ThinkingChunk::Started</code></strong></td>
+<td>为一行 <code>ThinkingCell</code> 及前后空白行保留 placeholder
+行</td>
+<td>打开 active thinking card</td>
+</tr>
+<tr>
+<td><strong><code>ThinkingChunk::Delta</code></strong></td>
+<td>修改 active card buffer；placeholder 范围只在 body 1→2→3
+行时增长</td>
+<td>自动 scroll；若漏 <code>Started</code> 则打开 card</td>
+</tr>
+<tr>
+<td><strong><code>ThinkingChunk::Finished</code></strong></td>
+<td>同一 placeholder 变为带 1 行 summary 的 completed
+<code>ThinkingBlock</code></td>
+<td>关闭 active card</td>
+</tr>
+<tr>
+<td><strong><code>PlanGenerated</code></strong></td>
+<td><em>（legacy handler）</em> 系统行 + loading 行</td>
+<td>Agent <strong>不发</strong>；会 flush stream、cancel tools、设
+<code>loading_idx</code></td>
+</tr>
+<tr>
+<td><strong><code>StepAdded</code></strong></td>
+<td><em>（log 无）</em></td>
+<td>仅更新内部 <code>app.plan.steps</code>（无面板）；flush stream；首
+step 转 <code>Planning → Executing</code></td>
+</tr>
+<tr>
+<td><strong><code>StepStarted</code></strong></td>
+<td><code>N</code> blank placeholder + <code>ActiveToolBlock</code></td>
+<td>Flush stream；取消 stale 同 <code>tool_id</code> block</td>
+</tr>
+<tr>
+<td><strong><code>ToolProgress</code></strong></td>
+<td>修改匹配的 <code>ActiveToolBlock.live_output</code>；首个输出仅
+resize 一次</td>
+<td>不关闭 thinking/loading；忽略未知或迟到 ID；保留 scroll 意图</td>
+</tr>
+<tr>
+<td><strong><code>StepFinished</code></strong></td>
+<td>Resize placeholder → <code>ToolBlock</code></td>
+<td>Flush stream；更新 plan step output</td>
+</tr>
+<tr>
+<td><strong><code>StepFailed</code></strong></td>
+<td>完成 tool card <em>或</em> 系统错误行</td>
+<td>Status → <code>Idle</code></td>
+</tr>
+<tr>
+<td><strong><code>RequestSelect</code></strong></td>
+<td><em>（无）</em></td>
+<td>打开 select popup</td>
+</tr>
+<tr>
+<td><strong><code>Info</code></strong></td>
+<td>系统消息行</td>
+<td>无系统前缀则 Markdown</td>
+</tr>
+<tr>
+<td><strong><code>Error</code></strong></td>
+<td>系统错误行（fatal）</td>
+<td>Fatal 时 flush stream</td>
+</tr>
+<tr>
+<td><strong><code>TaskComplete</code></strong></td>
+<td>仅 task-end separator</td>
+<td><strong>不</strong>重追加摘要文本（已流式）；scroll 到底</td>
+</tr>
+<tr>
+<td><strong><code>TokenUsage</code> / <code>TurnStats</code> /
+<code>ModelInfo</code></strong></td>
+<td><em>（无）</em></td>
+<td>仅状态栏</td>
+</tr>
+</tbody>
+</table>
+<p><strong>StreamChunk 解析</strong> 需额外细节，因单批 token
+可产出异构行：</p>
+<ul>
+<li><strong>Paragraph 模式</strong> — 非空行累积于
+<code>stream.paragraph</code> 直至 blank 或水平规则；然后
+<code>render_markdown_tui</code> 发出 styled 行。</li>
+<li><strong>Table 模式</strong> — <code>| … |</code> 行缓冲至非 table
+行；<code>format_table</code> 发出对齐行。</li>
+<li><strong>Code fence 模式</strong> — opening <code>```lang</code> 设
+<code>stream.code_block</code>；内部行带 <code> ▌</code> 流式；closing
+<code>```</code> splice placeholder 并 push <code>CodeBlock</code>
+overlay。若空语言 fence 紧跟在进行中的 markdown
+段落/列表后，则继续保留在 paragraph 流中，不提升为 code card。</li>
+<li><strong>Gap 规则</strong> — tool card 后 assistant 文本前
+<code>ensure_gap_after_tools()</code> 插 blank；tool 开始
+<code>ensure_gap_before_tools()</code>。</li>
+</ul>
+<p>Tool 开始时先 <code>flush_stream_pending()</code> — 任何 partial
+paragraph、table、code block 或 <code>stream.buffer</code> tail 在
+placeholder 前提交到 <code>log_items[]</code>。</p>
+<h3 id="613-流式生命周期">6.13 流式生命周期</h3>
+<p>三 buffer 可持有尚未成为 permanent log 行的文本：</p>
+<table>
+<thead>
+<tr>
+<th>Buffer</th>
+<th>所有者</th>
+<th>何时成为 physical 行…</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>stream.buffer</code></td>
+<td><code>StreamState</code></td>
+<td><code>\n</code> 完成一行（→ paragraph/table/code）或
+<code>flush_stream_pending()</code></td>
+</tr>
+<tr>
+<td><code>thinking.active</code></td>
+<td><code>ThinkingState</code></td>
+<td>立即作为 direct-card placeholder 行保留；delta 修改 buffer，不增加
+source 行</td>
+</tr>
+<tr>
+<td><code>stream.paragraph</code> / <code>table_buffer</code> /
+<code>code_block_buffer</code></td>
+<td><code>StreamState</code></td>
+<td>Blank 行、fence 关闭或 flush</td>
+</tr>
+</tbody>
+</table>
+<p><strong>活跃 vs 已完成 assistant 文本：</strong></p>
+<p>Token 到达时当前 assistant 回复 tail 在
+<code>stream.buffer</code>。Render Phase 1 若 buffer
+非空，<code>total_logical</code> 在可见 physical 消息外多计一行
+logical。该行直接从 buffer 以 accent 色 wrap — flush
+前<strong>不会</strong>写入 <code>log_items[]</code>。</p>
+<p><strong>Thinking block 生命周期：</strong></p>
+<pre class="text"><code>ThinkingChunk::Started →  在 phys_idx 保留 direct-card placeholder 行
+ThinkingChunk::Delta   →  追加 active content；渲染 1→2→3 行 tail
+ThinkingChunk::Finished→  在同一 phys_idx 完成为 ThinkingBlock { summary, content, markdown }
+StreamChunk / Step*    →  若漏 Finished 则 safety-close
+TokenUsage / ModelInfo / TurnStats →  不关闭 thinking</code></pre>
+<p>Active card body 从一行增长到三行，之后保持最新三行
+tail。关闭时原地变为一行 summary；完整内容保留在 state，供 detail popup
+与 copy 使用。</p>
+<p><strong>最终持久化：</strong> <code>TaskComplete</code> 调用
+<code>flush_stream_pending()</code> 再
+<code>add_task_end_separator()</code>。update 中摘要字符串仅写入
+<code>task_history</code> — UI 假定 <code>StreamChunk</code> 已显示
+assistant 最终文本。设 <code>log_scroll.offset = u16::MAX</code> 将
+viewport 钉在底部（render 中 clamp）。</p>
+<h3 id="614-可见性规则">6.14 可见性规则</h3>
+<p>Thinking、tool 与 code placeholder 行在 Phase 0 各自可见，使
+logical-to-physical 映射稳定。Phase 3 用单个 direct cell 替换 thinking
+或 tool 的 placeholder 范围；code 仍使用 overlay。Thinking 没有隐藏
+source 行，也没有 <code>is_message_visible</code> 折叠规则。</p>
+<p><code>total_log_lines()</code> 跳过不可见 physical 索引，使 logical
+编号与用户所见对齐。</p>
+<h3 id="615-wrapscroll-与自动跟随">6.15 Wrap、scroll 与自动跟随</h3>
+<p><strong>Phase 1 wrap cache</strong> 在
+<code>messages.len()</code>、面板内容宽度或主题名变化时重建。每 logical
+行经 <code>log_style::restyle_log_line</code>（主题感知）再
+<code>wrap_line</code>。<code>visual_start_cache</code> 中前缀和映射
+logical → visual 行索引。</p>
+<p><strong>Scroll 单位：</strong> 权威字段是
+<code>log_scroll.visual_top</code>（<strong>visual
+行</strong>），<code>offset</code> 只是渲染时同步的 logical 镜像，供鼠标
+hit test 等只读消费方使用。Scrollbar thumb 跟踪 <strong>visual</strong>
+位置 — 长换行段落使每 logical 步 thumb 跳更远。</p>
+<p><strong>跟尾是一个显式状态（<code>LogScroll::follow</code>）。</strong>
+2026-10-10 之前它是从 <code>visual_top == usize::MAX</code> 加 visual
+cache 反推的，而那个反推在<strong>最需要它的时候恰好失效</strong>：cache
+以 <code>items.len()</code>
+为版本号，追加一行的瞬间就过期，于是「一直贴着底」的读者被判成「用户滚走了」。现在
+<code>follow</code> 是字段：</p>
+<ul>
+<li><code>scroll_log_to_bottom()</code> 置 <code>follow = true</code>
+并清 <code>unseen</code>；<code>scroll_log_up</code> /
+<code>scroll_log_to_top</code> 置 false；<code>scroll_log_down</code>
+一旦落到底部就重新置 true。</li>
+<li><strong>追加</strong>（<code>append_msg</code> /
+<code>extend_msgs</code> / <code>append_markdown_with_kind</code> /
+<code>append_blank</code>）走
+<code>note_log_rows_appended()</code>：跟尾就继续贴底，否则<strong>保持读者位置</strong>并点亮
+<code>unseen</code>。</li>
+<li><strong>在视口上方原地变高</strong>（thinking / tool card
+增长，<code>refresh_*_log_scroll</code>）走
+<code>keep_log_tail_pinned()</code>：只重新贴底，不点亮徽章 ——
+末尾没有新东西可滚。</li>
+</ul>
+<p><strong>用户自己的动作是刻意的例外：</strong>
+<code>add_user_message</code> 与
+<code>add_system_message</code>（<code>scroll_after_message</code>）、<code>/plugin</code>
+列表都会显式 <code>scroll_log_to_bottom()</code> ——
+用户刚敲下去，回显就该出现在眼前。<strong>agent
+的连续输出不再拽动视口</strong>：删掉了「每个 <code>AgentUpdate</code>
+之后」「回合结束分隔线」「冻结统计行」「thinking/tool 增长」那几处无条件
+scroll，它们正是「往上翻会被弹走」的来源。</p>
+<p><strong>提示与 <code>esc</code>：</strong>
+不在底部时，日志区<strong>最后一行</strong>（Log
+面板的下边框行；粘性条可见时是它的下边框行）<strong>靠右</strong>浮出一枚药丸
+<code>新活动 · ↓ 回到最新 · esc</code>（徽章
+<code>theme.muted_fg()</code>、动作 <code>theme.warning</code>）。它是
+overlay（<code>agent_tui_kit::render::scroll_pill</code>）：先
+<code>Clear</code> 自己的矩形、再刷 band
+底（<code>theme.status_bar_bg</code>）、最后落字形，<strong>0
+行成本</strong>。两端是 Nerd Font 的 Powerline
+半圆字形（<code>U+E0B6</code> / <code>U+E0B4</code>），端格用
+<code>fg = band 色</code>、<code>bg = 面板底色</code> ——
+圆角靠这个颜色反转才看得见。<strong>靠右不居中</strong>：实时统计行是居中的，两条居中的行叠着读成一坨。放不下就不画。<code>esc</code>
+是「退出当前视图状态」的梯子，滚离底部插在<strong>退出 Insert
+之上</strong>：第一次按回到底部，第二次才退 Insert。</p>
+<p><strong>底钉（<code>resolve_visual_scroll</code>）：</strong>
+sentinel 最大时 viewport 钉在
+<code>total_visual − visible_height</code>，而非
+<code>visual_start_cache[offset]</code>。防止底部高 tool detail card
+在前一行是长换行段落时末行 unreachable（见 <code>log.rs</code>
+单元测试）。</p>
+<p><strong>Cache 持久化：</strong> 每次 draw 后
+<code>visual_start_cache</code> 复制到
+<code>log_scroll.visual_start</code>，供 render 外鼠标 hit test（点击行
+→ visual → logical 映射于 <code>lib.rs</code>）。</p>
+<h3 id="616-overlays-vs-inline-cells">6.16 Overlays vs inline cells</h3>
+<p>Log 在 bordered 面板内用<strong>双层</strong>绘制模型：</p>
+<pre class="text"><code>┌─ Log panel ──────────────────────────────┐
+│  Layer 1: LogColumnRenderer (inline)      │
+│    TextCell │ ToolCell │ ThinkingCell     │
+│    MessageSeparator (category gaps)         │
+│  Layer 2: frame overlays (same viewport)    │
+│    code cards │ spinner                     │
+└───────────────────────────────────────────┘</code></pre>
+<table>
+<thead>
+<tr>
+<th>构造</th>
+<th>层</th>
+<th>高度来源</th>
+<th>双击</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>TextCell</strong></td>
+<td>Inline</td>
+<td>Cache 换行数</td>
+<td>词选 / 行选</td>
+</tr>
+<tr>
+<td><strong>ToolCell</strong></td>
+<td>Inline</td>
+<td><code>ToolRenderOutput.visual_rows()</code> — 替换 placeholder
+范围</td>
+<td>打开 <code>diff_popup</code>（折叠的命令 / 读取 / 编辑卡片：命中
+meta 行末尾的 <code>[󰜼 打开]</code> 按钮）</td>
+</tr>
+<tr>
+<td><strong>ThinkingCell</strong></td>
+<td>Inline</td>
+<td>前后各一行空白；active 1→3 tail 行；completed 一行 summary</td>
+<td>打开 <code>thinking_popup</code></td>
+</tr>
+<tr>
+<td><strong>TaskEndSeparator</strong></td>
+<td>Inline</td>
+<td>1 visual 行（实线 + 居中耗时）</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>MessageSeparator</strong></td>
+<td>Inline</td>
+<td>user/system/assistant 组间 1 blank</td>
+<td>—</td>
+</tr>
+<tr>
+<td><strong>Code card</strong></td>
+<td>Overlay</td>
+<td><code>code_blocks[]</code> 中 placeholder 行 span</td>
+<td>打开 <code>code_popup</code></td>
+</tr>
+<tr>
+<td><strong>Loading spinner</strong></td>
+<td>Overlay</td>
+<td><code>loading_idx</code> 处 1 行（若设）</td>
+<td>—（通常 inactive — 见 <code>PlanGenerated</code> legacy）</td>
+</tr>
+</tbody>
+</table>
+<p><strong>TextCell</strong>（<code>cells/text.rs</code>）正常绘制 clone
+cache wrap 行。选择应用 <code>REVERSED</code>（词级或整行）。左 gutter
+<code>indent_cols</code> 来自行的 <code>LogItemKind</code>；user
+归属与类别分隔线不再检查 raw 文本。</p>
+<p><strong>ToolCell</strong> 取代 placeholder
+<code>TextCell</code>：Phase 3 检测 physical 索引在
+<code>[phys_idx .. phys_idx + placeholder_rows]</code> 内则在该 block
+visual start 推一个 cell，跳过剩余 placeholder logical 行。运行中 tool
+传 <code>started_at</code> 作 live duration，并持有有界
+<code>live_output</code> buffer。可见的 <code>bash</code> 输出会让 card
+从 1 行增长到 3 行；后续 chunk 原位更新三行 tail。stdout
+用普通文本，stderr 用 warning 色。Live card 标题为
+<code>Live output</code>；行数位于卡片底部栏（截断时显示
+<code>preview/total 行</code>），只统计流式输出行数；popup/<code>detail_full</code>
+仍会前置 <code>$ &lt;command&gt;</code>，popup 用的就是这份「命令 +
+输出」内容。命令（<code>Command</code>）、文件读取（<code>FileRead</code>：<code>read_file</code>、<code>read_image</code>）、文件写入（<code>FileWrite</code>：<code>write_file</code>）与文件编辑（<code>FileEdit</code>：<code>edit_file</code>、<code>apply_patch</code>）<strong>完成后整块卡片消失</strong>：block
+只剩 title + meta 两行，以 <code>StepResult.detail</code> 为准，meta
+行追加
+<code>· {n} 行 · [󰜼 打开]</code>（<code>tool_collapsed_output_hint</code>
++ <code>collapsed_action_text</code>，由 kit 的 <code>Button</code> 以
+<code>ButtonChrome::Brackets</code> 画出），其中 <code>n</code> 与 popup
+显示的行数是同一个数（编辑类取 <code>new_text</code> 的行数，popup
+渲染的是 git diff；读取/写入类取正文行数）——没有卡片的 block
+仍然要能说明「这里藏着输出」，而可点的只有末尾那个按钮（参数行与行数都不响应）。本来就不画卡片的
+kind（<code>Task</code> / <code>Sleep</code> /
+<code>Generic</code>，MCP/插件工具都走
+<code>Generic</code>）同样会折叠，但<strong>只在结果超过一行时</strong>：没有卡片时它们的结果原本根本读不到（<code>detail_full</code>
+一直是 <code>None</code>，既没有 popup
+也没有点击目标），而只有一行的确认信息不值得给一个入口。已完成的
+subagent 保留摘要卡片——它是 transcript 弹窗的入口。失败仍保留卡片（最多
+5 行预览）。</p>
+<p><strong>为何仅 code 用 overlay：</strong> code block 将流式 fence
+行换成 blank placeholder，并用预渲染 <code>styled</code> cache 绘制
+card。Thinking 则采用与 tool card 相同的 direct <code>Renderable</code>
+模型，因此 live tail 与 completion summary 只有一个渲染所有者。</p>
+<p>写文件 tool 的 diff preview 现 fold 进 <code>ToolCell</code> detail
+card；legacy <code>DiffBlock</code> overlay 路径大多已迁移（<a
+href="#11-当前缺口">§11 缺口</a>）。</p>
+<h3 id="617-log-交互">6.17 Log 交互</h3>
+<p><strong>鼠标选择</strong>（<code>lib.rs</code> 中 log 区点击）：</p>
+<table>
+<thead>
+<tr>
+<th>手势</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>单击 + 拖拽</td>
+<td>行范围选择（<code>log_selection: (start, end)</code>）</td>
+</tr>
+<tr>
+<td>双击（纯文本）</td>
+<td><code>find_word_bounds</code> 词选</td>
+</tr>
+<tr>
+<td>三击</td>
+<td>整 logical 行；code block 内 → 整块范围</td>
+</tr>
+<tr>
+<td>单击 thinking / markdown card 正文</td>
+<td>只<strong>起手</strong>（<code>CardSelection::anchor</code>）：立即拖拽才成选区，单击本身不选中、不高亮</td>
+</tr>
+<tr>
+<td>双击 thinking / markdown card 正文</td>
+<td>选中整张卡片（<code>CardSelection</code>），<code>y</code>
+按语义文本复制</td>
+</tr>
+<tr>
+<td>单击 tool/code card</td>
+<td>记住 card 索引；无文本选择</td>
+</tr>
+<tr>
+<td>双击 card</td>
+<td>打开对应 detail popup；命令 / 读取 / 编辑类卡片已折叠时没有
+card，命中目标是 meta 行末尾的 <code>[󰜼 打开]</code>
+按钮——参数行与该行其余文字都不响应</td>
+</tr>
+<tr>
+<td>在 tool/Thinking detail/read-out popup 内左键拖拽</td>
+<td>选择原始 tool 文本、可见 Thinking 文本或 read-out
+的渲染文本；排除仅用于显示的前缀（read-out 的 <code>y</code>
+无选区时复制其 Markdown source）</td>
+</tr>
+</tbody>
+</table>
+<p>复制（normal 模式 <code>y</code>）在 tool 或 Thinking popup active
+时优先非空 popup 选择；popup 选择为空时复制完整原始 popup 内容。无
+selectable popup 时，优先 log 词选，然后拼接选中 logical 行的
+<code>LogItem::raw</code>。</p>
+<p><strong>Hit test 链：</strong></p>
+<pre class="text"><code>mouse row in log_area
+  → visual_row = visual_start[offset] + (mouse.y − log_area.y − 1)
+  → logical_idx = binary_search visual_start
+  → phys_idx = visible_message_index(logical_idx)
+  → card/tool/code lookup on logical_idx</code></pre>
+<p><code>find_tool_at_logical</code> 先查 <code>tools.active</code> 再
+<code>tools.blocks</code>，用 <code>phys_to_logical_cache</code> O(1)
+范围测试 — 多 tool 并发时重要。</p>
+<p><strong>键盘 scroll</strong>（normal 模式，log
+焦点）：<code>j</code>/<code>k</code> ±1 logical
+行；<code>G</code>/<code>g</code> 底/顶。无 popup 时滚轮事件调整
+offset。</p>
+<p>装饰性 <strong>类别分隔符</strong>（user ↔︎ system ↔︎ assistant）在
+Phase 3 render 时依据 <code>LogItemKind</code> 插入；不会作为额外
+<code>LogItem</code> 存储。</p>
+<h3 id="618-log-管线序列">6.18 Log 管线序列</h3>
+<pre class="mermaid">sequenceDiagram
+    participant Agent as Agent::emit_update
+    participant Rx as agent_rx drain
+    participant H as handle_agent_update
+    participant M as log_items[] + overlays
+    participant R as render_log_panel
+
+    Agent-&gt;&gt;Rx: AgentUpdate
+    Rx-&gt;&gt;H: dequeue (before draw)
+    H-&gt;&gt;H: thinking gate / loading gate
+    H-&gt;&gt;M: append_msg / placeholders / flush buffers
+    Note over M: stream.buffer 可能保持 ephemeral
+    R-&gt;&gt;M: Phase 0 visible_indices
+    R-&gt;&gt;M: Phase 1 wrap → visual_cache
+    R-&gt;&gt;M: Phase 2 offset → viewport
+    R-&gt;&gt;M: Phase 3 TextCell / ToolCell + overlays
+    R-&gt;&gt;R: persist visual_start for mouse</pre>
+<p>交叉引用：<a href="./25_chapter_protocol_zh.html">Ch 25 Agent–TUI
+Protocol</a> 消息类型与状态转换；<a href="#4-agentupdate-处理">§4
+AgentUpdate 处理</a> TUI 特定效果；<a
+href="../docs/tui_rendering.md">docs/tui_rendering.md §6</a>
+扩展配方。</p>
+<hr />
+<h2 id="7-输入模式与主题">7. 输入模式与主题</h2>
+<p><code>widgets/state/mod.rs</code> 中
+<code>InputMode</code>：<code>Normal</code>、<code>Insert</code>、<code>Palette</code>、<code>Select</code>、<code>FilePicker</code>。Handler
+在 <code>crates/tui/src/handlers/</code>。Normal 模式 <code>/</code>
+打开 command palette；Insert 模式 <code>/</code> 打开 slash-command
+popup（同一份内置命令列表）。<strong>skills
+不在这份列表里</strong>：每个已安装 skill 曾经都是一级条目，装几十个就把
+<code>/mcp</code>、<code>/compact</code>
+淹没，也让一级列表随安装变化；它们现在挂在 <code>/skill</code>
+之下（<code>/skill </code> 弹出 <code>list</code> / <code>reload</code>
++ 所有 skill，<code>/skill demo …</code> 运行），直接形式
+<code>/demo</code> 仍可用但不再出现在任何列表里。</p>
+<p><strong>全局快捷键先于模式派发，并且必须消费事件</strong>：<code>Ctrl+C/H/T/L/?</code>
+由 <code>handlers::handle_global_shortcut</code> 处理，返回
+<code>true</code> 时 <code>run_tui</code> 不再把同一个
+<code>KeyEvent</code> 交给模式 handler。模式 handler 的兜底分支只匹配
+<code>KeyCode::Char(c)</code>、不看修饰键，所以"顺带执行一下"会让
+<code>Ctrl+T</code> 既切主题又打出一个
+<code>t</code>；三个会写字符的分支（Insert 输入框、Palette
+<code>cmd_line</code>、FilePicker 过滤词）因此都带 <code>!CONTROL</code>
+守卫——<code>Ctrl+&lt;char&gt;</code>
+要么是已绑定的快捷键，要么什么都不是。新增全局快捷键时，处理与消费要一起做。</p>
+<p>消费还有第二个后果：<strong>没有任何东西能派发到这些键之后</strong>，所以用户绑定（<code>voice.voice_keybind</code>）不能指到它们。<code>run_tui</code>
+在进入 raw mode
+<strong>之前</strong>就拒绝这种配置并指名冲突的键，而不是让语音"看起来坏了"。保留集由
+<code>GLOBAL_SHORTCUTS</code>
+这张表定义（<code>handle_global_shortcut</code> 与
+<code>is_global_shortcut</code>
+同读一张表），新增一个全局快捷键即自动为语音保留它，不存在第二份列表可漂移。</p>
+<p>内置命令的唯一来源是 <code>widgets/state/slash.rs</code> 的
+<code>SlashCommand</code> 枚举：<code>ALL</code>
+决定弹出列表的顺序，<code>name()</code> / <code>from_name()</code>
+是用户输入的名字，<code>desc(msgs)</code>
+是中英描述，<code>needs_args()</code>
+决定回车是补全还是执行，<code>subcommands()</code>
+是<strong>子命令树</strong>（每个节点带
+<code>hint</code>——弹窗右列显示的后续语法
+<code>&lt;server&gt;</code>、<code>--all | --source &lt;label&gt;</code>，刻意不做翻译，因为那是语法不是文案；以及
+<code>takes_value</code> /
+<code>children</code>，决定回车是补全还是执行）。这些都是<strong>穷尽匹配</strong>——新增一个命令时，漏写名字、漏写描述、漏写处理分支都会编译失败。派发在
+<code>handlers/mod.rs</code> 的 <code>run_command</code>（同样无
+<code>_</code> 分支）：先按枚举解析，不中再交给
+skill，因此内置名始终赢过同名 skill。</p>
+<p><code>/balance</code>
+是唯一按会话条件隐藏的命令（没有账户通道时不出现在列表里）；<code>/skill</code>、<code>/plugin</code>、<code>/mcp</code>、<code>/hooks</code>、<code>/subagent_cancel</code>
+是五个需要参数的命令。<strong>子命令补全</strong>：<code>handlers/insert.rs</code>
+与 <code>widgets/state/slash_command.rs</code> 共用
+<code>App::slash_candidates()</code>，输入到子命令位置时弹窗列出下一层节点（<code>/skill </code>、<code>/plugin mar</code>、<code>/hooks trust --</code>、以及嵌套的
+<code>/plugin marketplace </code>），Tab
+逐层补全（<code>/plugin ma</code> ⭢ Tab
+<code>/plugin marketplace </code> ⭢ Tab
+<code>/plugin marketplace list </code>），回车只补全<strong>未完成</strong>的候选——<code>takes_value</code>
+或还有子节点的那种——完整的叶子直接执行。空格不再一律关闭弹窗：只有当后续无可补全项时才关（<code>/mcp auth </code>
+进入取值状态即关，<code>/skill </code>
+保持打开），这就是"复合命令"能逐层补全的原因。<code>slash_candidates</code>
+命中取值、skill 参数或未知 token
+时返回空列表（不打"无匹配"提示框）——但两个命令的<strong>值本身可以补全</strong>：<code>/skill disable|enable &lt;name&gt;</code>
+给出该动词能作用的那一半
+skill，<code>/goal show|steer|pause|resume|cancel|accept &lt;goal-id&gt;</code>
+给出面板快照里该动词能作用的 Goal ID（见 <a
+href="./02_chapter_skill_zh.html">Ch 02</a>
+§7）。<strong>不覆盖</strong>：子命令解析（<code>/skill list</code>、<code>/mcp auth &lt;server&gt;</code>、<code>/plugin marketplace list</code>、<code>/hooks trust --all</code>）仍在各自的
+handler 模块里按字符串切——但声明与 handler 由
+<code>every_declared_subcommand_has_a_handler</code> 对齐：它遍历
+<code>subcommands()</code>
+给每个叶子派发样例输入，任何"能被补全却只会打印用法"的子命令都会让它失败。Palette
+命令 <code>save</code> 将 log 写入
+<code>std::env::temp_dir()/agent_log_{timestamp}.txt</code>
+并在系统消息显示完整路径。</p>
+<h3 id="slash-skills">Slash skills</h3>
+<p>每个发现的 skill 显示为 <code>/{name}</code> 及 frontmatter
+<code>description</code>。Built-in <strong>覆盖</strong>同名
+skill（Skills 组省略）。流程（<code>handlers/skills.rs</code>）：</p>
+<table>
+<thead>
+<tr>
+<th>输入</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Slash popup Enter 于 <strong>skill</strong></td>
+<td><strong>立即 Invoke</strong>（无额外 args，除非已输入）</td>
+</tr>
+<tr>
+<td>Slash popup <strong>Tab</strong> 于 skill</td>
+<td>仅自动补全到 <code>/name </code> — 可加可选 args，再 Enter 运行</td>
+</tr>
+<tr>
+<td>Slash popup Enter 于 <strong>built-in</strong></td>
+<td>立即执行（<code>/quit</code>、<code>/cancel</code>
+等）；<code>/skill</code>、<code>/plugin</code> 只补全以便写子命令</td>
+</tr>
+<tr>
+<td>Slash popup <strong>Tab/Enter</strong>
+于<strong>子命令</strong></td>
+<td>逐层补全：<code>/plugin ma</code> ⭢ Tab
+<code>/plugin marketplace </code> ⭢ Tab
+<code>/plugin marketplace list </code>；带取值的候选（<code>/mcp auth</code>）只补到
+<code>/mcp auth </code></td>
+</tr>
+<tr>
+<td><code>/skill-name</code> 或 <code>/skill-name args</code> +
+Enter</td>
+<td><strong>Invoke</strong>：log 显示 slash 行；agent 收到
+<code>&lt;skill&gt;</code> body（裸 <code>$ARGUMENTS</code> 替换，或有
+args 时 append Claude 式 <code>ARGUMENTS:</code>）</td>
+</tr>
+<tr>
+<td>Palette Enter 于 skill</td>
+<td>Insert 模式预填 <code>/name </code>（undo checkpoint 保留）</td>
+</tr>
+<tr>
+<td>Palette Enter
+于带子命令的内置命令（<code>/skill</code>、<code>/plugin</code>、<code>/mcp</code>、<code>/hooks</code>）</td>
+<td>预填 <code>/cmd </code>
+<strong>并直接打开子命令弹窗</strong>（后续无可补全项时不开，如
+<code>/subagent_cancel </code>）</td>
+</tr>
+<tr>
+<td><code>/skill list</code></td>
+<td>列出可用技能（纯本地渲染，任务进行中也可用）</td>
+</tr>
+<tr>
+<td><code>/skill reload</code></td>
+<td>重扫 root 到共享 registry（TUI + agent），失效 visual cache</td>
+</tr>
+<tr>
+<td><code>/plugin …</code></td>
+<td>排队安装、卸载、更新、列出、重载及 marketplace 操作；成功的
+install/uninstall/update/reload 刷新共享
+skills。<code>/plugin list</code> 渲染功能表（技能 / 命令 / 代理 / 钩子
+/ MCP）</td>
+</tr>
+</tbody>
+</table>
+<p>输入框与用户 log 行经 <code>render/slash_style.rs</code> 高亮
+<code>/skill-name</code>（accent+bold）与
+args（<code>theme.fg</code>）。完整发现路径与 <code>$ARGUMENTS</code>
+规则：<a href="./02_chapter_skill_zh.html">Ch 2</a>。与模型 mid-turn 调用
+<code>load_skill</code> 分离。</p>
+<p><code>theme.rs</code> 中十二个 built-in
+主题：<code>dark</code>、<code>light</code>、<code>solarized-dark/light</code>、<code>gruvbox-dark</code>、<code>nord</code>、<code>retro</code>、<code>kawaii</code>、<code>japanese</code>、<code>brutal</code>、<code>ink</code>、<code>ink-light</code>。初始主题来自
+config（<a href="./21_chapter_config_zh.html">Ch
+21</a>）；<code>/theme</code> 选择、<code>Ctrl+T</code> 循环。选完会像
+<code>/model</code> 一样问一句「将主题保存到配置文件？」（默认
+<strong>否</strong>），选「是」写
+<code>[ui] theme</code>（<code>tact::config::persist_theme</code>，<code>toml_edit</code>
+只改这一行、保留行尾注释），没有配置文件或选「否」/Esc
+时只对本次会话生效。</p>
+<hr />
+<h2 id="8-agent-构建交互式">8. Agent 构建（交互式）</h2>
+<p><code>run_interactive</code> 在 <code>Agent::new</code>
+前构建共享状态：</p>
+<table>
+<thead>
+<tr>
+<th>依赖</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>get_skill_registry</code></td>
+<td>Skills（<a href="./02_chapter_skill_zh.html">Ch 2</a>）</td>
+</tr>
+<tr>
+<td><code>StoreRoot</code> + managers</td>
+<td>Tasks、background、team、worktree</td>
+</tr>
+<tr>
+<td><code>memory_manager</code></td>
+<td>Memory（<a href="./03_chapter_memory_zh.html">Ch 3</a>）</td>
+</tr>
+<tr>
+<td><code>load_mcp_router</code></td>
+<td>MCP tools（<a href="./08_chapter_mcp_zh.html">Ch 8</a>）</td>
+</tr>
+<tr>
+<td><code>PermissionManager::try_new(PermissionMode::Default)</code></td>
+<td><strong>硬编码</strong> — 见缺口</td>
+</tr>
+<tr>
+<td><code>open_sqlite_session_store</code></td>
+<td>Session + 输入历史（<a href="./01_chapter_store_zh.html">Ch
+1</a>）</td>
+</tr>
+</tbody>
+</table>
+<p>输入历史经 <code>history_save_tx</code> →
+<code>append_input_history</code> 异步追加。</p>
+<p>DeepSeek/Kimi 启动时后台 task 查询一次余额并经 account channel 发送
+<code>AccountUpdate::Balance</code>。</p>
+<hr />
+<h2 id="9-通知与配置">9. 通知与配置</h2>
+<p>桌面通知在 <code>Agent::emit_update</code> 内对
+<code>TaskComplete</code> 与 <code>StepFailed</code> 触发，当
+<code>config::settings().agent.notifications_enabled</code> 为 true（<a
+href="./17_chapter_notify_zh.html">Ch 17</a>）。</p>
+<p>TUI 本身不对流式事件直接调用 notification API。</p>
+<hr />
+<h2 id="10-代码地图">10. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact-ui/src/main.rs</code></td>
+<td>CLI 分发（<code>init</code>、<code>--list-sessions</code>、headless
+vs interactive）</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/interactive.rs</code></td>
+<td>TUI 接线、<code>UserCommand</code>
+分发、<code>TaskComplete</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/headless.rs</code></td>
+<td>非交互单次 agent 运行</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/user_message.rs</code></td>
+<td>多模态 <code>@file</code> / markdown 图片解析</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/permission.rs</code></td>
+<td><code>permission_mode_from_config()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/sessions.rs</code></td>
+<td><code>--list-sessions</code> 输出</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/lib.rs</code></td>
+<td><code>run_tui</code> 主循环、dirty 检查、终端生命周期</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/handlers/</code></td>
+<td>各输入模式键盘/鼠标</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/render/layout.rs</code></td>
+<td>主区域布局模式、popup 锚定</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/render/log.rs</code></td>
+<td>Log wrap/scroll 管线、三种坐标空间</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/render/log_column.rs</code></td>
+<td>Viewport 裁剪 <code>Renderable</code> 合成器</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/render/cells/</code></td>
+<td>Text、tool、thinking、code cells</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/render/popups/</code></td>
+<td>Overlays（palette、select、detail views）</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/widgets/state/app/agent.rs</code></td>
+<td><code>AgentUpdate</code> → UI 状态</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/theme.rs</code></td>
+<td>配色方案（从 kit re-export）</td>
+</tr>
+<tr>
+<td><code>crates/agent_tui_kit</code></td>
+<td>可复用 agent-TUI kit：纯渲染面板、状态模型、widgets、bridge
+契约（设计
+<code>docs/superpowers/specs/2026-08-18-tui-component-library-design.md</code>）</td>
+</tr>
+<tr>
+<td><code>crates/agent_tui_kit/examples/mock_agent.rs</code></td>
+<td>Headless 端到端示例：<code>AgentUpdate</code> 序列 → kit 状态 →
+渲染帧（<code>cargo run -p agent_tui_kit --example mock_agent</code>）</td>
+</tr>
+<tr>
+<td><code>tact_protocol</code></td>
+<td><code>AgentUpdate</code>、<code>UserCommand</code>、<code>AccountUpdate</code>、<code>BalanceInfo</code>（<a
+href="./25_chapter_protocol_zh.html">Ch 25</a>）</td>
+</tr>
+<tr>
+<td><code>docs/tui_rendering.md</code></td>
+<td>扩展渲染参考与扩展指南</td>
+</tr>
+<tr>
+<td><code>docs/tool_rendering.md</code></td>
+<td>Tool block 数据流与迁移说明</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="11-当前缺口">11. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>详情</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>交互模式忽略 <code>permission_mode</code></strong></td>
+<td>TUI 始终 <code>PermissionMode::Default</code>；TOML/CLI
+<code>-m</code> 仅影响 headless（<a
+href="./10_chapter_permission_zh.html">Ch 10</a>）</td>
+</tr>
+<tr>
+<td><strong><code>TaskComplete</code> 文本启发式</strong></td>
+<td>用 context 最后一条消息，非严格最后 assistant turn</td>
+</tr>
+<tr>
+<td><strong>无 live config reload</strong></td>
+<td>UI 可循环主题；LLM/provider 变更需重启</td>
+</tr>
+<tr>
+<td><strong>单 agent 实例</strong></td>
+<td>每 session driver 一个 in-flight
+<code>agent_loop</code>；无多路复用任务</td>
+</tr>
+<tr>
+<td><strong>平台终端假设</strong></td>
+<td>crossterm/ratatui；本 crate 无 web 或 GUI 回退</td>
+</tr>
+<tr>
+<td><strong>已弃用 <code>PlanGenerated</code> / loading
+spinner</strong></td>
+<td><code>#[deprecated(since = "0.19.0")]</code>；TUI handler 保留 —
+plan 用 <code>StepAdded</code> / <code>StepStarted</code></td>
+</tr>
+<tr>
+<td><strong>Legacy diff overlay 路径</strong></td>
+<td>部分 tool card 仍用 <code>DiffBlock</code> overlay 逻辑，与迁移中
+<code>ToolCell</code> 并存</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./18_chapter_agent_loop_zh.html">Agent Main Loop</a> — TUI
+驱动内容</li>
+<li><a href="./21_chapter_config_zh.html">Configuration</a> —
+主题与启动标志</li>
+<li><a href="./22_chapter_llm_zh.html">LLM Providers</a> — 流式与余额
+API</li>
+<li><a href="./10_chapter_permission_zh.html">Permission Model</a> —
+<code>RequestSelect</code> 流程</li>
+<li><a href="../docs/tui_rendering.md">docs/tui_rendering.md</a> —
+扩展配方与性能分析</li>
+<li><a href="../docs/tool_rendering.md">docs/tool_rendering.md</a> —
+tool block 渲染管线</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

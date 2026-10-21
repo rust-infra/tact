@@ -1,0 +1,959 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Agent 主循环</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-agent_loop-%E8%B4%9F%E8%B4%A3%E4%BB%80%E4%B9%88" title="1. agent_loop 负责什么"><span class="toc-label">1. agent_loop 负责什么</span></a></li>
+<li class="toc-l2"><a href="#2-%E5%85%A5%E5%8F%A3%E4%B8%8E%E8%AE%BE%E7%BD%AE" title="2. 入口与设置"><span class="toc-label">2. 入口与设置</span></a></li>
+<li class="toc-l2"><a href="#3-%E4%B8%80%E6%AC%A1%E8%BF%AD%E4%BB%A3llm-turn" title="3. 一次迭代（LLM Turn）"><span class="toc-label">3. 一次迭代（LLM Turn）</span></a></li>
+<li class="toc-l3"><a href="#llm-%E5%89%8D%E6%AD%A5%E9%AA%A4" title="LLM 前步骤"><span class="toc-label">LLM 前步骤</span></a></li>
+<li class="toc-l3"><a href="#%E6%B5%81%E5%BC%8F" title="流式"><span class="toc-label">流式</span></a></li>
+<li class="toc-l2"><a href="#4-%E5%81%9C%E6%AD%A2%E5%8E%9F%E5%9B%A0%E4%B8%8E%E5%BE%AA%E7%8E%AF%E9%80%80%E5%87%BA" title="4. 停止原因与循环退出"><span class="toc-label">4. 停止原因与循环退出</span></a></li>
+<li class="toc-l2"><a href="#5-agentupdate-%E4%B8%8E%E9%80%9A%E7%9F%A5" title="5. AgentUpdate 与通知"><span class="toc-label">5. AgentUpdate 与通知</span></a></li>
+<li class="toc-l2"><a href="#6-%E5%85%B3%E9%94%AE%E7%BB%93%E6%9E%84%E4%BD%93" title="6. 关键结构体"><span class="toc-label">6. 关键结构体</span></a></li>
+<li class="toc-l2"><a href="#7-tui-%E9%9B%86%E6%88%90" title="7. TUI 集成"><span class="toc-label">7. TUI 集成</span></a></li>
+<li class="toc-l2"><a href="#8-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="8. 代码地图"><span class="toc-label">8. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#9-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="9. 当前缺口"><span class="toc-label">9. 当前缺口</span></a></li>
+<li class="toc-l2"><a href="#%E7%9B%B8%E5%85%B3%E6%96%87%E6%A1%A3" title="相关文档"><span class="toc-label">相关文档</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="agent-主循环">Agent 主循环</h1>
+<p>本章是第 1–11 章的 <strong>收官篇</strong>：描述
+<code>Agent::agent_loop</code>——将 session 存储、prompt 组装、压缩、LLM
+调用、恢复和工具 dispatch 绑成一轮循环的流式对话循环。</p>
+<p>实现：<code>crates/tact/src/agent/mod.rs</code>（<code>Agent</code>、<code>AgentRuntime</code>、<code>agent_loop</code>、<code>stream_message</code>、<code>build_system_prompt</code>）。工具执行细节见
+<a href="./11_chapter_task_zh.html">第 11 章 工具调度</a>。</p>
+<hr />
+<h2 id="1-agent_loop-负责什么">1. <code>agent_loop</code> 负责什么</h2>
+<table>
+<thead>
+<tr>
+<th>关注点</th>
+<th>循环中的位置</th>
+<th>专章</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Session 恢复 / 持久化</td>
+<td><code>ensure_session</code>、<code>push_message</code>、<code>persist_message</code></td>
+<td><a href="./01_chapter_store_zh.html">第 1 章 Store</a></td>
+</tr>
+<tr>
+<td>系统 prompt</td>
+<td>每个 task 一次，在 turn 循环前
+<code>build_system_prompt()</code></td>
+<td><a href="./04_chapter_prompt_zh.html">第 4 章 Prompt</a></td>
+</tr>
+<tr>
+<td>上下文大小</td>
+<td><code>micro_compact</code>、可选 <code>compact_history</code></td>
+<td><a href="./05_chapter_compact_zh.html">第 5 章 Compact</a></td>
+</tr>
+<tr>
+<td>LLM 流式</td>
+<td><code>stream_message</code></td>
+<td>本章</td>
+</tr>
+<tr>
+<td>失败恢复</td>
+<td>compact / backoff / continue 分支</td>
+<td><a href="./06_chapter_recovery_zh.html">第 6 章 Recovery</a></td>
+</tr>
+<tr>
+<td>工具执行</td>
+<td><code>execute_tool_call</code></td>
+<td><a href="./09_chapter_hook_zh.html">第 9–11 章 Hooks / Permission /
+Scheduling</a></td>
+</tr>
+<tr>
+<td>UI 事件</td>
+<td><code>emit_update(AgentUpdate::…)</code></td>
+<td>本章</td>
+</tr>
+</tbody>
+</table>
+<p>循环 <strong>本身不</strong> 发出
+<code>TaskComplete</code>——<code>tact-ui</code> 在
+<code>agent_loop</code> 成功返回后发送（见 <a href="#7-tui-集成">§7 TUI
+集成</a>）。</p>
+<hr />
+<h2 id="2-入口与设置">2. 入口与设置</h2>
+<pre class="rust"><code>pub async fn agent_loop(&amp;mut self, initial_user_message: Option&lt;Message&gt;) -&gt; Result&lt;()&gt;</code></pre>
+<p>进入时：</p>
+<ol type="1">
+<li><strong><code>RecoveryState</code> 重置</strong> — 计数器为本 task
+调用重新开始。</li>
+<li><strong><code>ensure_session()</code></strong> — 当
+<code>session_store</code> 已接线时创建或恢复 SQLite 历史（<a
+href="./01_chapter_store_zh.html">第 1 章</a>）。</li>
+<li><strong><code>SessionStart</code> hooks</strong> —
+在第一轮派发（而非启动时），且只跑一次（<a
+href="./09_chapter_hook_zh.html">第 9 章</a>）；它们收集的 context
+在本轮预压缩之后、第 5 步的消息之前注入。</li>
+<li><strong><code>client.set_user_id(session_id)</code></strong> —
+provider 特定的 cache 隔离（DeepSeek KV）。</li>
+<li><strong>初始用户消息</strong> — 提供时 push 并通过
+<code>push_message</code> 持久化。</li>
+</ol>
+<p>子 agent 调用 <code>agent_loop(None)</code>，上下文已预填；见 <a
+href="./12_chapter_subagent_zh.html">第 12 章 Subagents</a>。</p>
+<hr />
+<h2 id="3-一次迭代llm-turn">3. 一次迭代（LLM Turn）</h2>
+<pre class="mermaid">graph TD
+    a_prompt[build_system_prompt 每个 task 一次] --&gt; b_start[循环顶]
+    b_start --&gt; c_cancel{cancel_flag?}
+    c_cancel --&gt;|yes| d_exit[return Ok]
+    c_cancel --&gt;|no| e_micro[micro_compact]
+    e_micro --&gt; f_limit{context &gt; limit?}
+    f_limit --&gt;|yes| g_auto[compact_history]
+    f_limit --&gt;|no| h_stream[stream_message + tools + thinking]
+    g_auto --&gt; h_stream
+    h_stream --&gt;|Err| i_recovery[recovery 分支]
+    h_stream --&gt;|Ok| j_persist[persist assistant message]
+    j_persist --&gt; k_max{stop = MaxTokens?}
+    k_max --&gt;|yes| l_cont[continue recovery 路径]
+    k_max --&gt;|no| m_end{stop ≠ ToolUse?}
+    m_end --&gt;|yes| n_exit[return Ok]
+    m_end --&gt;|no| o_tools[execute_tool_call]
+    o_tools --&gt; p_persist[persist tool results]</pre>
+<blockquote>
+<p><code>recovery 分支</code>、<code>continue recovery 路径</code> 与
+<code>persist tool results</code>
+之后都<strong>回到循环顶</strong>；渲染器不支持环回边，故省略，环回语义以本节正文为准。</p>
+</blockquote>
+<h3 id="llm-前步骤">LLM 前步骤</h3>
+<ul>
+<li><strong><code>micro_compact</code></strong> — 在内存中 stub 旧 tool
+结果（<a href="./05_chapter_compact_zh.html">第 5 章</a>）。</li>
+<li><strong>自动 compact</strong> — 当 <code>should_auto_compact</code>
+触发（<code>last_token_total &gt;= model_context_window</code>，或冷启动时用
+<code>estimate_context_size</code> 对比同一窗口）时，运行
+<code>compact_history</code> 并通过 <code>AgentUpdate::Info</code> 发出
+<code>[auto compact]</code>（<a href="./05_chapter_compact_zh.html">第 5
+章</a>）。</li>
+<li><strong><code>build_system_prompt</code></strong> — 子 agent 用动态
+Tera 渲染或静态字符串；每个 task 在 turn
+循环前运行一次，渲染字符串在每轮复用（<a
+href="./04_chapter_prompt_zh.html">第 4 章</a>）。</li>
+<li><strong>请求组装</strong> — <code>CreateMessageParams</code> 含
+<code>all_tool_specs()</code>（原生 + MCP）、流式，以及 config 中的
+thinking budget。</li>
+</ul>
+<h3 id="流式">流式</h3>
+<p><code>stream_message</code> 将 chunk 转发到 TUI：</p>
+<table>
+<thead>
+<tr>
+<th>流事件</th>
+<th><code>AgentUpdate</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>文本 delta</td>
+<td><code>StreamChunk</code></td>
+</tr>
+<tr>
+<td>Thinking 生命周期</td>
+<td><code>ThinkingChunk::{Started, Delta, Finished}</code></td>
+</tr>
+<tr>
+<td>模型元数据</td>
+<td><code>ModelInfo</code></td>
+</tr>
+<tr>
+<td>Token 计数</td>
+<td><code>TokenUsage</code></td>
+</tr>
+</tbody>
+</table>
+<p>Stats（<code>SessionStats</code>）累积 prompt/response/thinking
+大小和 LLM 调用时长。在 <code>persist_llm_call</code> 之前，agent 快照
+<code>llm_call_last_message_id = last_message_db_id</code>（<strong>发送</strong>
+给模型的最后一条消息）。Token 用量与之后的
+<code>record_tool_schedule</code> 都 keyed 于该 id。</p>
+<hr />
+<h2 id="4-停止原因与循环退出">4. 停止原因与循环退出</h2>
+<p>成功流式后，assistant 消息追加到 <code>runtime.context</code>
+并持久化。</p>
+<table>
+<thead>
+<tr>
+<th><code>StopReason</code></th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>ToolUse</code></strong></td>
+<td>运行 <code>execute_tool_call</code>，追加 tool
+结果，<strong>再次循环</strong></td>
+</tr>
+<tr>
+<td><strong><code>EndTurn</code></strong> /
+<strong><code>StopSequence</code></strong> /
+<strong><code>PauseTurn</code></strong></td>
+<td><strong><code>return Ok(())</code></strong> — task
+结束（<code>PauseTurn</code> 是 Anthropic 服务端工具暂停；Tact
+尚未使用那些工具）</td>
+</tr>
+<tr>
+<td><strong><code>MaxTokens</code></strong></td>
+<td>恢复：可选先运行 pending tool calls，追加
+<code>CONTINUATION_MESSAGE</code>，重试（最多 3 次）— <a
+href="./06_chapter_recovery_zh.html">第 6 章</a>。用尽尝试仍以
+<code>Ok</code> 结束</td>
+</tr>
+<tr>
+<td><strong><code>Refusal</code></strong></td>
+<td>发出 Info 更新并 <strong><code>return Err</code></strong>，让 TUI
+显示明确拒答而非虚假
+<code>TaskComplete</code>。改写请求或换模型；尚无自动多模型回退（<a
+href="https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons">Anthropic
+文档</a>）</td>
+</tr>
+<tr>
+<td><strong><code>Unknown</code></strong></td>
+<td>发出带原始 provider 字符串的 Info，然后以 <code>Ok</code> 结束</td>
+</tr>
+</tbody>
+</table>
+<p><code>StopReason</code> 由 <code>tact_llm</code> 拥有（<a
+href="../crates/tact_llm/src/types.rs"><code>types.rs</code></a>），不是
+Anthropic SDK。适配器通过 <code>StopReason::from_anthropic</code> /
+<code>StopReason::from_openai</code> 将 provider
+原生字符串（<code>end_turn</code>、<code>finish_reason=length</code>、Responses
+的 <code>max_output_tokens</code> 等）映射到此
+enum；<code>model_context_window_exceeded</code> 映射到
+<code>MaxTokens</code>。</p>
+<p><strong>取消：</strong> 每次迭代顶部以及工具执行前检查
+<code>cancel_flag</code>。同一个 <code>Arc&lt;AtomicBool&gt;</code>
+也传入 <code>ToolContext</code>，因此执行中的 <code>bash</code>
+会观察到取消，在 Unix 终止 child process group，并在 agent loop 返回前
+flush 已读输出。Driver 仅在该返回之后发出
+<code>TaskCancelled</code>。新的 <code>SubmitTask</code> 在再次调用
+<code>agent_loop</code> 前清除 <code>cancel_flag</code>。</p>
+<hr />
+<h2 id="5-agentupdate-与通知">5. <code>AgentUpdate</code> 与通知</h2>
+<p><code>emit_update</code> 在可选 <code>ui_tx</code>
+通道上发送事件，并为以下触发桌面通知：</p>
+<ul>
+<li><code>TaskComplete</code> → <code>notify_task_complete</code>（<a
+href="./17_chapter_notify_zh.html">第 17 章</a>）</li>
+<li><code>StepFailed</code> → <code>notify_step_failed</code></li>
+</ul>
+<p>大多数生命周期事件（<code>StepAdded</code>、<code>StepStarted</code>、<code>StepFinished</code>、
+<code>RequestSelect</code> 等）来自 <code>tool_dispatch.rs</code> 中的
+<code>execute_tool_call</code>。执行中的工具 可在
+<code>StepStarted</code> 与终态 <code>StepFinished</code> /
+<code>StepFailed</code> 之间发出信息性的
+<code>ToolProgress</code>；它本身不表示完成。</p>
+<p>Goal 不改变 <code>agent_loop</code>
+的单次执行语义。<code>crates/tact-ui/src/goal_runner.rs</code>
+在外层取得 lease、创建 bounded Run、注入有限 Goal context，并把
+<code>GoalYield</code>、预算耗尽、取消、临时错误和完成提议映射为持久状态。普通
+<code>SubmitTask</code> 仍走原有路径；Goal run 的完成提议必须经过
+<code>GoalVerifier</code> 和证据检查，不能由模型文本直接标记成功。</p>
+<p><strong>例外只有一处，且只关乎判定顺序</strong>（2026-10-20）：turn
+上限在模型调用<strong>之前</strong>检查，所以一次花掉最后一个
+turn、并在其中调用 <code>goal_propose_completion</code> 的
+activation，原本会在下一轮被 <code>MaxTurns</code>
+截断——工具还没执行，提议根本没落库。现在这类 activation 在工具执行完后以
+<code>Completed</code> 收尾，让 Runner
+去验收它真正拿到的判定。上限本身没有放松：这只是把「已经做出的判定」排在「下一轮还许不许调用模型」之前（见
+<a href="./28_chapter_goal_zh.html">Ch 28</a> §7）。</p>
+<hr />
+<h2 id="6-关键结构体">6. 关键结构体</h2>
+<pre class="rust"><code>pub struct Agent {
+    pub runtime: AgentRuntime,
+    pub tool_context: ToolContext,
+    pub tools: ToolRouter,
+    pub mcp_router: MCPToolRouter,
+    pub hooks: Vec&lt;Hook&gt;,
+    pub system_prompt: AgentSystemPrompt,
+    pub tool_use_counter: usize,  // TUI 的 StepAdded 索引
+    cached_tool_specs: Vec&lt;ToolSpec&gt;,
+}
+
+pub struct AgentRuntime {
+    pub client: LlmProvider,
+    pub context: Vec&lt;Message&gt;,
+    pub compact_state: CompactState,
+    pub recovery_state: RecoveryState,
+    pub permission_manager: PermissionManager,
+    pub stats: SessionStats,
+    pub ui_tx: Option&lt;UnboundedSender&lt;AgentUpdate&gt;&gt;,
+    pub cancel_flag: Arc&lt;AtomicBool&gt;,
+    pub session_store: Option&lt;DynSessionStore&gt;,
+    pub session_id: Option&lt;String&gt;,
+    pub first_message_db_id: i64,
+    pub last_message_db_id: i64,
+    /// `persist_llm_call` 运行时的 `last_message_db_id`（assistant 行之前）。
+    pub llm_call_last_message_id: i64,
+    // … cached_dir_snapshot, cached_agents_md
+}</code></pre>
+<p>构造辅助：<code>Agent::new</code>、<code>with_ui_channel</code>、<code>with_session</code>。Hook
+注册：<code>pre_tool_use</code>、<code>post_tool_use</code>、<code>session_start</code>——但见下方缺口。</p>
+<hr />
+<h2 id="7-tui-集成">7. TUI 集成</h2>
+<p>在
+<code>crates/tact-ui/src/interactive.rs</code>（<code>UserCommand::SubmitTask</code>
+处理器）：</p>
+<pre class="rust"><code>UserCommand::SubmitTask(task) =&gt; {
+    agent.tool_use_counter = 0;
+    agent.runtime.cancel_flag.store(false, Ordering::Relaxed);
+
+    match agent.agent_loop(Some(task_message)).await {
+        Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) =&gt; {
+            if let Some(last) = agent.runtime.context.last() {
+                agent.emit_update(AgentUpdate::TaskComplete(extract_text(&amp;last.content)));
+            }
+        }
+                Ok(()) =&gt; {
+                    // 已取消 — 发出 TaskCancelled，让 TUI 离开 Planning/Executing
+                    agent.emit_update(AgentUpdate::TaskCancelled);
+                }
+        Err(e) =&gt; agent.emit_update(AgentUpdate::Error(...)),
+    }
+}
+UserCommand::Cancel =&gt; {
+    agent.runtime.cancel_flag.store(true, ...);
+}</code></pre>
+<p><strong><code>TaskComplete</code></strong> 仅在
+<code>agent_loop</code> 返回 <code>Ok(())</code> <strong>且</strong>
+用户未取消时发出。取消时 driver 改为发出
+<strong><code>TaskCancelled</code></strong>，使 TUI 回到
+<code>Idle</code> 并接受新 prompt。<code>TaskComplete</code>
+的摘要文本来自 <strong>最后一条 context 消息</strong>（常为 tool
+结果，不一定是最后 assistant turn）。错误以
+<code>AgentUpdate::Error</code> 呈现。</p>
+<hr />
+<h2 id="8-代码地图">8. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>agent_loop</code>、<code>stream_message</code>、<code>build_system_prompt</code>、session
+辅助</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
+<td><code>execute_tool_call</code>、三阶段流水线</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/interactive.rs</code></td>
+<td>在 <code>SubmitTask</code> 上 spawn 循环，设置
+<code>TaskComplete</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/recovery.rs</code></td>
+<td>错误分类与 continuation 消息</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/compact/mod.rs</code></td>
+<td>Turn 前 compact 钩子</td>
+</tr>
+<tr>
+<td><code>tact_protocol</code></td>
+<td><code>AgentUpdate</code>、<code>UserCommand</code> 线型类型</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-当前缺口">9. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>详情</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong><code>TaskComplete</code> 启发式</strong></td>
+<td>TUI 在未取消时用 context 中最后一条消息；非显式最后 assistant
+文本</td>
+</tr>
+<tr>
+<td><strong>Headless 路径</strong></td>
+<td>无 <code>ui_tx</code>；无 <code>TaskComplete</code> emit — stdout
+后单次直接 <code>notify_task_complete</code>（<a
+href="./17_chapter_notify_zh.html">第 17 章</a>）</td>
+</tr>
+<tr>
+<td><strong>Agent 上无专用 cancel API</strong></td>
+<td>只有 atomic flag；子 agent 有独立 flag</td>
+</tr>
+<tr>
+<td><strong><code>PlanGenerated</code> 已弃用</strong></td>
+<td><code>#[deprecated(since = "0.19.0")]</code>；TUI 处理器保留 — plan
+面板由 <code>StepAdded</code> 驱动</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./01_chapter_store_zh.html">Store 与持久化</a> — 循环开始时的
+session</li>
+<li><a href="./05_chapter_compact_zh.html">上下文压缩</a> — LLM 前
+compact</li>
+<li><a href="./06_chapter_recovery_zh.html">错误恢复</a> — 流失败处理</li>
+<li><a href="./11_chapter_task_zh.html">任务与工具调度</a> —
+循环的工具分支</li>
+<li><a href="./12_chapter_subagent_zh.html">Subagents</a> — 嵌套
+<code>agent_loop</code></li>
+<li><a href="../ARCHITECTURE.md">ARCHITECTURE.md</a> — §2 Agent Task
+Execution Flow</li>
+<li><a href="./21_chapter_config_zh.html">Configuration</a> —
+<code>max_tokens</code>、<code>model_context_window</code>、<code>thinking_budget</code></li>
+<li><a href="./22_chapter_llm_zh.html">LLM Providers</a> —
+<code>stream_message</code> 适配器</li>
+<li><a href="./23_chapter_tui_zh.html">Terminal UI</a> —
+<code>TaskComplete</code> 与通道接线</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>
