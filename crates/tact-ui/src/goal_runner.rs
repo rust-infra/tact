@@ -5,7 +5,7 @@
 //! an [`AgentLoopStop`] to a [`GoalRunOutcome`], completion verification, and
 //! restart recovery. The agent loop still owns one bounded model interaction
 //! (model call, tool dispatch, hooks, permissions, compaction); this module is
-//! the orchestrator around it, per `book/28_chapter_goal_zh.md` §5, §7 and §9.
+//! the orchestrator around it, per `book/28_chapter_goal_zh.html` §5, §7 and §9.
 //!
 //! Three invariants hold on every path through [`GoalRunner::run_once`]:
 //!
@@ -78,6 +78,19 @@ const EVENT_CAP: usize = 110;
 const EVENTS_CAP: usize = 400;
 /// How many of the most recent events are summarised.
 const RECENT_EVENTS: usize = 6;
+
+/// Hard ceiling on activations inside one run.
+///
+/// Termination used to rest on an implicit invariant: every cycle spends at
+/// least one turn, so `max_turns` bounds the cycle count. That is true today —
+/// a zero-turn activation performs no model call and therefore no tool call,
+/// which makes it `NoProgress` — but it is an invariant nobody can see from the
+/// loop, and a future change to the progress gate could quietly turn it into an
+/// infinite loop that still holds the workspace lease. This makes the bound
+/// explicit (2026-10-21). It is far above what any sane run reaches; hitting it
+/// means the budget accounting below is broken, so the run says so rather than
+/// spinning.
+const MAX_ACTIVATION_CYCLES: u32 = 10_000;
 
 /// Budgets for one bounded Goal run, accumulated across its activations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +170,21 @@ pub fn build_goal_context(
     linked_tasks: &[TaskRecord],
     events: &GoalContextEvents,
 ) -> String {
+    build_goal_context_with(goal, linked_tasks, events, None)
+}
+
+/// [`build_goal_context`], plus the reason the linked-task read failed.
+///
+/// When the task read fails the caller still injects a context — a Goal can make
+/// progress without its task list — but `(none)` would be a lie: the section
+/// says the list is unavailable and why, so the model neither assumes the Goal
+/// has no tasks nor tries to "fix" a list that is actually fine (2026-10-21).
+pub fn build_goal_context_with(
+    goal: &Goal,
+    linked_tasks: &[TaskRecord],
+    events: &GoalContextEvents,
+    tasks_unavailable: Option<&str>,
+) -> String {
     let mut context = String::with_capacity(MAX_GOAL_CONTEXT_CHARS);
 
     context.push_str(GOAL_CONTEXT_OPEN_TAG);
@@ -209,7 +237,9 @@ pub fn build_goal_context(
     };
     push_section(&mut context, "acceptance-criteria", &criteria);
 
-    let tasks = if linked_tasks.is_empty() {
+    let tasks = if let Some(reason) = tasks_unavailable {
+        format!("(unavailable: {})", bounded_untrusted(reason, TASK_CAP))
+    } else if linked_tasks.is_empty() {
         "(none)".to_string()
     } else {
         join_lines(
@@ -392,6 +422,9 @@ pub struct GoalRunner {
     /// nothing said why. Every surface that has a UI sets this; a headless
     /// caller leaves it `None` and stays silent.
     ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    /// Ceiling on activations per run. Only tests lower it; see
+    /// [`MAX_ACTIVATION_CYCLES`] for why a ceiling exists at all.
+    max_cycles: u32,
 }
 
 impl GoalRunner {
@@ -401,6 +434,7 @@ impl GoalRunner {
             limits,
             owner: unique_owner(DEFAULT_OWNER),
             ui_tx: None,
+            max_cycles: MAX_ACTIVATION_CYCLES,
         }
     }
 
@@ -423,7 +457,7 @@ impl GoalRunner {
         &self.limits
     }
 
-    /// One bounded activation. See `book/28_chapter_goal_zh.md` §5.
+    /// One bounded activation. See `book/28_chapter_goal_zh.html` §5.
     pub async fn run_once(&self, agent: &mut Agent, goal_id: &str) -> Result<GoalRunOutcome> {
         let previous_binding = agent.tool_context.active_goal_id.clone();
         let result = self.activate(agent, goal_id).await;
@@ -1045,7 +1079,20 @@ impl GoalRunner {
         token: &LeaseToken,
     ) -> Result<(GoalRunOutcome, Vec<GoalStatus>)> {
         let previous_max_turns = agent.max_turns;
+        let mut cycles: u32 = 0;
         loop {
+            cycles += 1;
+            if cycles > self.max_cycles {
+                // Only reachable if the per-cycle accounting stops consuming
+                // turns; the run still ends honestly instead of spinning.
+                run.elapsed_ms = millis(started.elapsed());
+                run.stop_reason = Some("cycle_limit".to_string());
+                run.checkpoint = Some(format!(
+                    "run for goal {} hit the activation ceiling ({}) without spending its budget",
+                    goal.id, self.max_cycles
+                ));
+                break Ok((GoalRunOutcome::TransientError, vec![GoalStatus::Paused]));
+            }
             // Reload per cycle: Goal tools mutate the aggregate as they work
             // (evidence, criteria), and the injected context is supposed to be
             // authoritative rather than a snapshot from the start of the run.
@@ -1076,12 +1123,28 @@ impl GoalRunner {
                 }
                 None => {}
             }
-            let linked_tasks = agent
+            // A failed task read is not fatal — the Goal can still make
+            // progress without its task list — but it must not be silent: the
+            // model would be handed `(none)` and told, in effect, that this
+            // Goal has no linked tasks. Say what happened both to the user and
+            // inside the context the model reads (2026-10-21).
+            let (linked_tasks, tasks_unavailable) = match agent
                 .tool_context
                 .task_manager
                 .list_for_goal(&goal.id)
                 .await
-                .unwrap_or_default();
+            {
+                Ok(tasks) => (tasks, None),
+                Err(error) => {
+                    let summary = one_line(&format!("{error:#}"));
+                    self.report_error(format!(
+                        "⚠ Goal {}: linked tasks could not be read ({summary}); \
+                             this activation runs without them",
+                        goal.id
+                    ));
+                    (Vec::new(), Some(summary))
+                }
+            };
             // Bounded reads only: the count is the progress gate's probe, and
             // the context takes a short tail plus two targeted lookups — never
             // the Goal's whole history (2026-10-16).
@@ -1104,15 +1167,19 @@ impl GoalRunner {
                     .latest_event_with_status(&goal.id, GoalStatus::Paused)
                     .await?,
             };
-            let injected = build_goal_context(goal, &linked_tasks, &events);
+            let injected =
+                build_goal_context_with(goal, &linked_tasks, &events, tasks_unavailable.as_deref());
 
-            agent.max_turns = Some(agent.turns_taken.saturating_add(self.remaining_turns(run)));
-            let activation = agent
-                .agent_loop_detailed(Some(
-                    Message::new_text(Role::User, injected).with_kind(MessageKind::GoalContext),
-                ))
+            // The cap is put back *before* the error arm below can return from
+            // the middle of this function, so a failed activation cannot leave
+            // the Goal's budget attached to an agent that outlives it. It was a
+            // plain assignment after the call, which the `Err` arm skipped; that
+            // was harmless only because the caller drops the agent on error
+            // (2026-10-21).
+            let cap = agent.turns_taken.saturating_add(self.remaining_turns(run));
+            let activation = self
+                .activate_once(agent, injected, cap, previous_max_turns)
                 .await;
-            agent.max_turns = previous_max_turns;
 
             let activation = match activation {
                 Ok(activation) => activation,
@@ -1196,6 +1263,32 @@ impl GoalRunner {
             }
             break Ok(mapped);
         }
+    }
+
+    /// Runs one bounded activation with `cap` installed, restoring
+    /// `previous_cap` on **both** outcomes.
+    ///
+    /// Split out so the restore cannot be skipped: the caller's `Err` arm
+    /// returns from the middle of `run_activation_cycles`, and a plain
+    /// assignment after the call used to be missed there. Restoring matters
+    /// even on error — `Agent::max_turns` bounds the whole agent, so a leaked
+    /// Goal budget would silently shorten or extend every later turn of a
+    /// session that outlives the failed run (2026-10-21).
+    async fn activate_once(
+        &self,
+        agent: &mut Agent,
+        injected: String,
+        cap: u32,
+        previous_cap: Option<u32>,
+    ) -> Result<tact::AgentLoopOutcome> {
+        agent.max_turns = Some(cap);
+        let activation = agent
+            .agent_loop_detailed(Some(
+                Message::new_text(Role::User, injected).with_kind(MessageKind::GoalContext),
+            ))
+            .await;
+        agent.max_turns = previous_cap;
+        activation
     }
 
     /// Moves a `Draft` or `Queued` Goal to `Running` through the legal
@@ -2322,6 +2415,191 @@ mod tests {
             "the Goal ends paused by the interrupt, not paused-by-budget"
         );
         assert!(manager.list_running_runs().await.unwrap().is_empty());
+    }
+
+    /// The cycle ceiling is a backstop for the (currently impossible) case
+    /// where a cycle stops consuming budget yet keeps reporting progress. It
+    /// ends the run honestly instead of spinning while holding the lease
+    /// (2026-10-21).
+    ///
+    /// Each activation here ends after one tool call (a text-only second turn
+    /// is not needed: `goal_propose_completion` would mutate the Goal), so the
+    /// loop asks for another cycle every time. With a ceiling of 1 it must stop
+    /// after the first.
+    #[tokio::test]
+    async fn the_activation_ceiling_ends_a_run_instead_of_spinning() {
+        install_test_config();
+        // One tool call, then a plain end of turn: the activation reports
+        // progress (a tool ran) and ends *before* the turn budget is gone, so
+        // the only thing that can stop the next cycle is the ceiling.
+        let mock = MockClient::with_responder(|_request, idx| {
+            Ok(if idx % 2 == 0 {
+                (
+                    vec![tool_use(
+                        &format!("read-{idx}"),
+                        "goal_read",
+                        serde_json::json!({}),
+                    )],
+                    Some(StopReason::ToolUse),
+                    None,
+                )
+            } else {
+                (
+                    vec![text_block("still working")],
+                    Some(StopReason::EndTurn),
+                    None,
+                )
+            })
+        });
+        let (mut agent, _work_dir) = build_test_agent(mock, None);
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "cycle ceiling",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        // A huge turn budget keeps `permit_activation` from ending the run, so
+        // only the ceiling can. The per-activation cap is bounded by the same
+        // budget, which is why this must not loop forever inside one activation:
+        // the responder returns a tool call every turn, and the agent loop stops
+        // the activation at its own cap.
+        let mut runner = GoalRunner::new(
+            manager.clone(),
+            GoalLimits {
+                max_turns: 1_000,
+                max_elapsed: Duration::from_secs(3600),
+            },
+        );
+        runner.max_cycles = 1;
+        let outcome = runner.run_once(&mut agent, &goal.id).await.unwrap();
+
+        assert_eq!(
+            outcome,
+            GoalRunOutcome::TransientError,
+            "the ceiling is reported as a transient end, not as success"
+        );
+        let events = manager.list_events(&goal.id).await.unwrap();
+        let finished = events
+            .iter()
+            .find(|event| event.kind == GoalEventKind::RunFinished)
+            .expect("the run is recorded");
+        assert!(
+            finished
+                .payload
+                .as_deref()
+                .is_some_and(|payload| payload.contains("activation ceiling")),
+            "the stop reason names the ceiling: {finished:?}"
+        );
+        assert_eq!(
+            manager.get(&goal.id).await.unwrap().status,
+            GoalStatus::Paused,
+            "the Goal is parked, not left running with no executor"
+        );
+        assert!(
+            events
+                .iter()
+                .filter(|event| event.kind == GoalEventKind::RunFinished)
+                .count()
+                == 1,
+            "exactly one run is finished: {events:?}"
+        );
+    }
+
+    /// A failed task read must not read as "this Goal has no tasks": the
+    /// context says the list is unavailable and the user is told, while the
+    /// activation still runs (a Goal can make progress without its tasks)
+    /// (2026-10-21).
+    #[tokio::test]
+    async fn an_unreadable_task_list_is_reported_not_shown_as_empty() {
+        install_test_config();
+        let mock = MockClient::new(vec![(vec![text_block("done")], Some(StopReason::EndTurn))]);
+        let (agent, _work_dir) = build_test_agent(mock, None);
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "tasks unavailable",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        let context = build_goal_context_with(
+            &goal,
+            &[],
+            &GoalContextEvents {
+                recent: Vec::new(),
+                latest_progress: None,
+                pause_reason: None,
+            },
+            Some("database is locked"),
+        );
+        let tasks = context
+            .split("<linked-tasks>")
+            .nth(1)
+            .and_then(|rest| rest.split("</linked-tasks>").next())
+            .expect("linked-tasks section");
+        assert!(
+            tasks.contains("unavailable") && tasks.contains("database is locked"),
+            "the section says why it is empty: {tasks}"
+        );
+        assert!(
+            !tasks.contains("(none)"),
+            "an unreadable list must not claim there are no tasks: {tasks}"
+        );
+
+        // And the plain builder keeps its old behaviour for a real empty list.
+        let plain = build_goal_context(
+            &goal,
+            &[],
+            &GoalContextEvents {
+                recent: Vec::new(),
+                latest_progress: None,
+                pause_reason: None,
+            },
+        );
+        assert!(plain.contains("(none)"), "{plain}");
+    }
+
+    /// The agent's cap is restored on the error path too: a failed activation
+    /// must not leave the Goal's budget attached to an agent that outlives it
+    /// (2026-10-21).
+    #[tokio::test]
+    async fn a_failed_activation_restores_the_agents_turn_cap() {
+        install_test_config();
+        // A hook that fails the turn: `agent_loop_detailed` returns `Err`.
+        let placeholder = MockClient::new(vec![]);
+        let (agent, _work_dir) = build_test_agent(placeholder, None);
+        let mut agent =
+            agent.with_user_prompt_submit(|_agent: &tact::Agent, _prompt: &mut String| {
+                Box::pin(async { anyhow::bail!("synthetic hook failure") })
+            });
+        let manager = agent.tool_context.goal_manager.clone();
+        let goal = create_goal(
+            &manager,
+            "failing activation",
+            vec![required_criterion("c1", "ship the change")],
+        )
+        .await;
+        let goal = drive_status(&manager, goal, &[GoalStatus::Queued, GoalStatus::Running]).await;
+
+        agent.max_turns = Some(7);
+        let runner = GoalRunner::new(manager.clone(), GoalLimits::default());
+        let error = runner
+            .run_once(&mut agent, &goal.id)
+            .await
+            .expect_err("the hook fails the activation");
+        assert!(
+            format!("{error:#}").contains("synthetic hook failure"),
+            "{error:#}"
+        );
+        assert_eq!(
+            agent.max_turns,
+            Some(7),
+            "the caller's cap survives a failed activation"
+        );
     }
 
     /// A store whose `heartbeat_lease` always fails: the heartbeat loop must
