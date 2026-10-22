@@ -1,11 +1,49 @@
 name: Release
 
+# Builds the platform binaries and attaches them to the GitHub release for a
+# tag.
+#
+# There are three ways in, and all of them converge on one value — the tag to
+# release — so there is exactly one code path that builds and publishes:
+#
+#   1. `workflow_call` from `Tag`. A push to main whose workspace version is new
+#      creates the tag and calls this file directly.
+#   2. `push: tags`. A human pushing a tag by hand (`git push origin v1.1.43`)
+#      still releases, which is how releases were cut before `Tag` existed.
+#   3. `workflow_dispatch` with an explicit tag. The repair channel: rebuild and
+#      republish a tag whose build failed or never ran, without re-tagging.
+#
+# The property that matters is that no step depends on GitHub turning a tag push
+# into an event. A tag pushed with `GITHUB_TOKEN` does *not* trigger another
+# workflow (GitHub suppresses it to stop recursion), so a chain built only on
+# `push: tags` breaks silently: the tag is created, no build runs, and nothing
+# fails. Path 1 calls this file directly, where there is no event to suppress.
+# Paths 2 and 3 keep the manual routes alive, and are how a release that never
+# happened gets repaired:
+#
+#   gh workflow run release.yml -f tag=v1.1.42
+#
+# Paths 1 and 2 cannot both fire for the same tag: a tag created by `Tag` goes
+# through `GITHUB_TOKEN`, whose push is suppressed, so only the call runs.
+
 on:
+  workflow_call:
+    inputs:
+      tag:
+        description: "Tag to build and publish, e.g. v1.1.42"
+        required: true
+        type: string
   push:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to build and publish, e.g. v1.1.42"
+        required: true
+        type: string
 
+# `contents: write` is what allows creating the release and uploading assets.
 permissions:
   contents: write
 
@@ -17,6 +55,8 @@ env:
 jobs:
   build:
     name: build (${{ matrix.target }})
+    # Per-entry OS: the matrix spans Linux (x86_64 + arm64), macOS (arm64 +
+    # x86_64) and Windows, so a fixed runner here would build the wrong host.
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -39,7 +79,45 @@ jobs:
             archive: zip
 
     steps:
-      - uses: actions/checkout@v4
+      # The tag is resolved once, in a step, and handed on as a step output.
+      # Two reasons not to inline the expression everywhere: a workflow-level
+      # `env:` cannot read `inputs`, and interpolating a raw input straight into
+      # a `run:` script would let a crafted tag name break out of the quotes.
+      # Passing it through the environment keeps it a plain string.
+      - name: Resolve and validate the tag
+        id: resolve
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # `INPUT_TAG` is set by `workflow_call` and `workflow_dispatch`;
+          # `REF_NAME` is the tag on a `push: tags` run. Whichever way this run
+          # came in, exactly one of them carries the tag.
+          tag="${INPUT_TAG:-$REF_NAME}"
+          if [[ -z "$tag" ]]; then
+            echo "::error::no tag was supplied; nothing to release"
+            exit 1
+          fi
+          # The asset names and the release itself are keyed on this string, so
+          # a tag that is not `v<semver>` is rejected here rather than producing
+          # oddly named files. This also rejects a branch name, which is what a
+          # dispatch that forgot `-f tag=` would otherwise publish.
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::'$tag' is not a v<semver> tag"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "Releasing $tag"
+
+      - name: Check out the tag
+        uses: actions/checkout@v4
+        with:
+          # In a `workflow_call` the default ref is the *caller's* (main), not
+          # the tag — building main and publishing it as the tag would ship
+          # untagged code. On a `push: tags` run this is already the tag, so the
+          # explicit ref is a no-op there. Either way the tag is authoritative.
+          ref: ${{ steps.resolve.outputs.tag }}
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -63,20 +141,15 @@ jobs:
 
       - name: Package release asset
         shell: bash
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           set -euo pipefail
 
-          if [[ "${{ github.ref_type }}" == "tag" ]]; then
-            version="${GITHUB_REF_NAME#v}"
-          else
-            version="$(awk '
-              /^\[workspace\.package\]/ { in_pkg=1; next }
-              /^\[/ { in_pkg=0 }
-              in_pkg && /^version = "/ {
-                gsub(/"/, "", $3); print $3; exit
-              }
-            ' Cargo.toml)"
-          fi
+          # The version comes from the tag being released, not from the tree: a
+          # rebuild of an older tag must not be labelled with today's workspace
+          # version.
+          version="${TAG#v}"
 
           target="${{ matrix.target }}"
           archive="${{ matrix.archive }}"
@@ -108,9 +181,26 @@ jobs:
     name: publish GitHub release
     needs: build
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    # No `if:` guard. Every way into this workflow now names a tag, so
+    # publishing is always the point. The old `startsWith(github.ref,
+    # 'refs/tags/v')` guard is what made a manual re-run build the binaries and
+    # then throw them away, which is why a failed release could not be repaired.
 
     steps:
+      - name: Resolve the tag
+        id: resolve
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-$REF_NAME}"
+          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
+            echo "::error::'$tag' is not a v<semver> tag"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - uses: actions/download-artifact@v4
         with:
           path: dist
@@ -124,5 +214,9 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          # Required: in a `workflow_call` `github.ref` is the caller's branch,
+          # so without this the assets would be attached to a release for
+          # `main` instead of the tag.
+          tag_name: ${{ steps.resolve.outputs.tag }}
           files: dist/*
           generate_release_notes: true

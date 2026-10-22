@@ -33,6 +33,12 @@ jobs:
   tag:
     name: Tag the workspace version
     runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.version.outputs.tag }}
+      # Only a freshly created tag should be released. A merge that does not
+      # bump the version finds the tag already there, and re-releasing it would
+      # rebuild and republish an unchanged version.
+      created: ${{ steps.existing.outputs.exists == 'false' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -153,3 +159,18 @@ jobs:
             echo "| Already existed | \`${{ steps.existing.outputs.exists }}\` |"
             echo "| Commit | \`${{ github.sha }}\` |"
           } >> "$GITHUB_STEP_SUMMARY"
+
+  # Called directly, not chained through a `push: tags` event. A tag pushed with
+  # `GITHUB_TOKEN` does not trigger another workflow (GitHub suppresses it to
+  # prevent recursion), so an event-based chain breaks silently: the tag is
+  # created, no build runs, and nothing reports a failure. `workflow_call` has
+  # no event to suppress, and the build shows up as a job of this run.
+  release:
+    name: Build and publish the release
+    needs: tag
+    if: needs.tag.outputs.created == 'true'
+    permissions:
+      contents: write
+    uses: ./.github/workflows/release.yml
+    with:
+      tag: ${{ needs.tag.outputs.tag }}
