@@ -151,8 +151,18 @@ jobs:
             git show <hash> -- <path>
             git log --oneline <old>..<new>
 
-          If a command is rejected, do not retry it with a different redirect;
-          drop the redirect and read the output on stdout. Your findings go in
+          Plan mode is strict about shell syntax beyond redirection: a pipe
+          (`... | head`), a `2>/dev/null`, or an `&&` chain makes the whole
+          command count as a write, however read-only its parts are. So issue
+          plain single commands and let the tool cap the output:
+
+            grep -rn "needle" crates/tact/src
+            rg -n "needle" crates
+            sed -n '1,60p' path/to/file
+            git show <hash>
+
+          If a command is rejected, do not retry it with a different redirect
+          or a shorter pipe; drop the extra syntax entirely. Your findings go in
           your final answer, which the harness saves for you — you never need to
           write them to a file.
 
