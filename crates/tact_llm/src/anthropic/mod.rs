@@ -259,23 +259,21 @@ impl LlmClient for AnthropicAdapter {
                                         "Failed to parse message_start: {e}"
                                     )))
                                 })?;
-                            {
-                                events.send(AgentUpdate::ModelInfo(ModelCallParams {
-                                    model: start.message.model,
-                                    max_tokens: request.max_tokens,
-                                    thinking_budget: request
-                                        .thinking
-                                        .as_ref()
-                                        .map(|t| clamp_token_count(t.budget_tokens as u64)),
-                                    reasoning_effort: request
-                                        .reasoning_effort
-                                        .map(|effort| effort.as_str().to_string()),
-                                    extra_body: request
-                                        .thinking
-                                        .as_ref()
-                                        .map(|t| serde_json::json!({"thinking": t}).to_string()),
-                                }));
-                            }
+                            events.send(AgentUpdate::ModelInfo(ModelCallParams {
+                                model: start.message.model,
+                                max_tokens: request.max_tokens,
+                                thinking_budget: request
+                                    .thinking
+                                    .as_ref()
+                                    .map(|t| clamp_token_count(t.budget_tokens as u64)),
+                                reasoning_effort: request
+                                    .reasoning_effort
+                                    .map(|effort| effort.as_str().to_string()),
+                                extra_body: request
+                                    .thinking
+                                    .as_ref()
+                                    .map(|t| serde_json::json!({"thinking": t}).to_string()),
+                            }));
                         }
                         "content_block_start" => {
                             let start: ContentBlockStartEvent = serde_json::from_value(value)

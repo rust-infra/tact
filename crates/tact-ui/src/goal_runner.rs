@@ -33,7 +33,7 @@ use tact::goal::{
 use tact::store::goal_store::{GoalStoreError, LeaseToken};
 use tact::task::TaskRecord;
 use tact_llm::{Message, MessageKind, Role};
-use tact_protocol::AgentUpdate;
+use tact_protocol::{AgentUpdate, UpdateSink};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Cap on the injected Goal context, in characters.
@@ -420,8 +420,8 @@ pub struct GoalRunner {
     /// from it), where no `Agent` is available to emit through, so a failure
     /// there had no way to reach the user: the run rows were interrupted and
     /// nothing said why. Every surface that has a UI sets this; a headless
-    /// caller leaves it `None` and stays silent.
-    events: tact_protocol::UpdateSink,
+    /// caller leaves it empty and stays silent.
+    events: UpdateSink,
     /// Ceiling on activations per run. Only tests lower it; see
     /// [`MAX_ACTIVATION_CYCLES`] for why a ceiling exists at all.
     max_cycles: u32,
@@ -433,7 +433,7 @@ impl GoalRunner {
             goal_manager,
             limits,
             owner: unique_owner(DEFAULT_OWNER),
-            events: tact_protocol::UpdateSink::default(),
+            events: UpdateSink::default(),
             max_cycles: MAX_ACTIVATION_CYCLES,
         }
     }
@@ -443,7 +443,7 @@ impl GoalRunner {
     /// A runner's notices are informational (`⚠ …`), never prompts, so an
     /// optional channel is enough: `None` means nobody is watching.
     pub fn with_ui(mut self, ui_tx: Option<UnboundedSender<AgentUpdate>>) -> Self {
-        self.events = tact_protocol::UpdateSink::from_ui(ui_tx);
+        self.events = UpdateSink::from_ui(ui_tx);
         self
     }
 
@@ -742,7 +742,7 @@ impl GoalRunner {
                 "⚠ Goal run progress could not be persisted: {error:#}"
             )));
         }
-        if !agent.runtime.events.is_none() {
+        if !agent.runtime.events.is_empty() {
             crate::driver::emit_goals_changed(
                 &self.goal_manager,
                 &agent.tool_context.task_manager,

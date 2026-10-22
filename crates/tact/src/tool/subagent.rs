@@ -685,7 +685,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // True background dispatch needs a UI channel: without a driver there is
     // no one to submit a wake-up turn, and headless exits by cancelling the
     // child. Degrade to synchronous so the summary still reaches the parent.
-    let run_async = input.run_in_background == Some(true) && ctx.events.is_some();
+    let run_async = input.run_in_background == Some(true) && ctx.events.has_ui();
     if input.run_in_background == Some(true) && !run_async {
         warn!(
             "run_in_background requested without an interactive UI channel; \

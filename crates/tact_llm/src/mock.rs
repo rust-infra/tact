@@ -223,7 +223,7 @@ impl MockClient {
     }
 
     fn emit_stream_chunks(events: &UpdateSink, blocks: &[ContentBlock]) {
-        if events.is_none() {
+        if events.is_empty() {
             return;
         }
         for block in blocks {

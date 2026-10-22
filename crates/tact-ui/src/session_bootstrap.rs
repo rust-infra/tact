@@ -36,7 +36,7 @@ use tact::{
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
 use tact_llm::get_llm_client;
-use tact_protocol::AgentUpdate;
+use tact_protocol::{AgentUpdate, UpdateSink};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
@@ -250,13 +250,13 @@ pub async fn bootstrap_session(
 
     let (events, ui_responder) = match &frontend {
         Frontend::Interactive(wiring) => (
-            tact_protocol::UpdateSink::for_ui(wiring.tx.clone()),
+            UpdateSink::for_ui(wiring.tx.clone()),
             wiring.responder.clone(),
         ),
         // An empty responder is the honest value for "nobody can answer": a
         // tool that asks fails cleanly instead of hanging on a prompt that has
         // no one behind it.
-        Frontend::Observing(_) => (tact_protocol::UpdateSink::default(), UiResponder::new()),
+        Frontend::Observing(_) => (UpdateSink::default(), UiResponder::new()),
     };
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),

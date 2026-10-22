@@ -479,10 +479,12 @@ impl UpdateSink {
     pub fn with_observer(self, tx: UnboundedSender&lt;AgentUpdate&gt;) -&gt; Self;
     pub fn observers_only(&amp;self) -&gt; Self;
     pub fn ui(&amp;self) -&gt; Option&lt;&amp;UnboundedSender&lt;AgentUpdate&gt;&gt;;
-    pub fn is_some(&amp;self) -&gt; bool;   // 有回答方
-    pub fn is_none(&amp;self) -&gt; bool;   // 一个接收方都没有
+    pub fn has_ui(&amp;self) -&gt; bool;    // 有回答方
+    pub fn is_empty(&amp;self) -&gt; bool;  // 一个接收方都没有
     pub fn send(&amp;self, update: AgentUpdate);
-}</code></pre>
+}
+
+impl From&lt;Option&lt;UnboundedSender&lt;AgentUpdate&gt;&gt;&gt; for UpdateSink { /* = from_ui */ }</code></pre>
 <table>
 <thead>
 <tr>

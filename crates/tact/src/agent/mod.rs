@@ -20,7 +20,7 @@ use tact_llm::{
     MessageKind, OpenAiReasoningEffort, ProviderConversationState, ProviderKind,
     ProviderStateUpdate, RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
 };
-use tact_protocol::{AgentUpdate, TokenUsageInfo};
+use tact_protocol::{AgentUpdate, TokenUsageInfo, UpdateSink};
 
 use crate::{
     ToolSpec,
@@ -362,7 +362,7 @@ pub struct AgentRuntime {
     pub stats: Arc<RwLock<SessionStats>>,
     /// Where this agent's updates go: the answering frontend, if any, plus
     /// any read-only observers.
-    pub events: tact_protocol::UpdateSink,
+    pub events: UpdateSink,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub session_store: Option<DynSessionStore>,
     /// Set together with [`Self::session_store`] via [`Agent::with_session`] at startup.
@@ -534,7 +534,7 @@ impl Agent {
                 permission_manager,
                 security,
                 stats: Arc::new(RwLock::new(SessionStats::default())),
-                events: tact_protocol::UpdateSink::default(),
+                events: UpdateSink::default(),
                 cancel_flag,
                 session_store: None,
                 session_id: None,
@@ -881,7 +881,7 @@ impl Agent {
     /// can answer permission prompts. A frontend that only watches must use
     /// [`Self::with_event_observer`] instead.
     pub fn with_ui_channel(mut self, tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>) -> Self {
-        self.runtime.events = tact_protocol::UpdateSink::for_ui(tx.clone());
+        self.runtime.events = UpdateSink::for_ui(tx.clone());
         // Keep tool_context in sync so ToolProgress / tool helpers use the same
         // sink (critical for tagged subagent traffic).
         self.tool_context.events = self.runtime.events.clone();
@@ -899,7 +899,7 @@ impl Agent {
         mut self,
         tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>,
     ) -> Self {
-        self.runtime.events = tact_protocol::UpdateSink::observing(tx);
+        self.runtime.events = UpdateSink::observing(tx);
         self.tool_context.events = self.runtime.events.clone();
         self
     }
@@ -908,7 +908,7 @@ impl Agent {
     ///
     /// The subagent path uses this to give a child the parent's destinations
     /// without handing it the parent's permission-prompt claim.
-    pub fn with_observed_events(mut self, events: tact_protocol::UpdateSink) -> Self {
+    pub fn with_observed_events(mut self, events: UpdateSink) -> Self {
         self.runtime.events = events.observers_only();
         self.tool_context.events = self.runtime.events.clone();
         self
@@ -922,8 +922,8 @@ impl Agent {
     pub fn detach_event_observers(&mut self) {
         let ui = self.runtime.events.ui().cloned();
         self.runtime.events = match ui {
-            Some(tx) => tact_protocol::UpdateSink::for_ui(tx),
-            None => tact_protocol::UpdateSink::default(),
+            Some(tx) => UpdateSink::for_ui(tx),
+            None => UpdateSink::default(),
         };
         self.tool_context.events = self.runtime.events.clone();
     }
@@ -3927,7 +3927,7 @@ mod tests {
         let context = test_context("local_compact_continue_multi");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx);
+        tool_context.events = UpdateSink::for_ui(tx);
 
         // Two consecutive truncations, then a completed call.
         let mock = MockClient::new(vec![
@@ -3983,7 +3983,7 @@ mod tests {
         let context = test_context("local_compact_continue_exhausted");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx);
+        tool_context.events = UpdateSink::for_ui(tx);
 
         // Every call is truncated: MAX_COMPACT_SUMMARY_ATTEMPTS (5)
         // continuations run, then the partial summary is accepted as
@@ -4467,7 +4467,7 @@ mod tests {
         let context = test_context("local_compact_server_default_reserve");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx);
+        tool_context.events = UpdateSink::for_ui(tx);
 
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CreateMessageParams>::new()));
         let seen_arc = seen.clone();
@@ -4537,7 +4537,7 @@ mod tests {
         let context = test_context("local_compact_anthropic_no_thinking");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx);
+        tool_context.events = UpdateSink::for_ui(tx);
 
         // Capture the summarizer request so we can assert no Claude-style
         // thinking budget is forwarded even though one is configured.
@@ -4615,7 +4615,7 @@ mod tests {
         let context = test_context("local_compact_too_small_window");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx);
+        tool_context.events = UpdateSink::for_ui(tx);
 
         let mock = MockClient::new(vec![(
             vec![make_text_block("unused summary")],
@@ -5186,7 +5186,7 @@ mod tests {
         let context = crate::tool::test_support::test_context("responses_two_turns");
         crate::tool::test_support::write_workspace_file(&context.work_dir, "a.txt", "aaa");
         let mut tool_context = context;
-        tool_context.events = tact_protocol::UpdateSink::default();
+        tool_context.events = UpdateSink::default();
         let mut agent = Agent::new(
             LlmProvider::OpenAiResponses(
                 tact_llm::openai::responses::OpenAiResponsesAdapter::new(
@@ -6762,7 +6762,7 @@ mod tests {
         let context = test_context("agent_loop_refusal");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
+        tool_context.events = UpdateSink::for_ui(tx.clone());
 
         let mock = MockClient::new(vec![(
             vec![make_text_block("I cannot help with that.")],
@@ -6872,8 +6872,8 @@ mod tests {
         )
         .with_ui_channel(tx);
 
-        assert!(agent.runtime.events.is_some());
-        assert!(agent.tool_context.events.is_some());
+        assert!(agent.runtime.events.has_ui());
+        assert!(agent.tool_context.events.has_ui());
     }
 
     #[test]
@@ -6903,7 +6903,7 @@ mod tests {
             "the observer sees every event"
         );
         assert!(
-            !agent.runtime.events.is_some(),
+            !agent.runtime.events.has_ui(),
             "an observer is not an answering frontend"
         );
         assert!(
@@ -6954,7 +6954,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
+        tool_context.events = UpdateSink::for_ui(tx.clone());
 
         let mock = MockClient::new(vec![
             (
@@ -7034,7 +7034,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = test_context("cancel_before_tools");
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
+        tool_context.events = UpdateSink::for_ui(tx.clone());
 
         // The responder sets the agent's cancel flag while producing the
         // tool-call turn, so the flag is guaranteed to be set when the loop
@@ -7136,7 +7136,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = test_context("cancel_mid_preflight_deny");
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
+        tool_context.events = UpdateSink::for_ui(tx.clone());
 
         // Two calls in one turn behind the usual leading text block, so the
         // cancel lands after `t1` was already resolved.
@@ -7229,7 +7229,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = test_context("cancel_mid_preflight_allow");
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
+        tool_context.events = UpdateSink::for_ui(tx.clone());
 
         let mock = MockClient::with_responder(|_request, idx| {
             if idx > 0 {
@@ -7322,7 +7322,7 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = test_context("refusal_pairs_tools");
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
+        tool_context.events = UpdateSink::for_ui(tx.clone());
 
         let mock = MockClient::new(vec![(
             vec![
@@ -7384,7 +7384,7 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = test_context("truncated_pairs_tools");
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
+        tool_context.events = UpdateSink::for_ui(tx.clone());
 
         // Every call is truncated with a fresh tool call, so the continuation
         // path runs the tool for the first `MAX_CONTINUATION_ATTEMPTS` turns and
@@ -7446,7 +7446,7 @@ mod tests {
         let context = test_context("agent_plan_deny");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
+        tool_context.events = UpdateSink::for_ui(tx.clone());
 
         let mock = MockClient::new(vec![
             (
@@ -7506,7 +7506,7 @@ mod tests {
         let context = test_context("agent_token_usage");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
+        tool_context.events = UpdateSink::for_ui(tx.clone());
 
         let usage = TokenUsageInfo {
             prompt: 50,
@@ -7568,7 +7568,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
+        tool_context.events = UpdateSink::for_ui(tx.clone());
 
         let mock = MockClient::new(vec![
             (

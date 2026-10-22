@@ -322,19 +322,15 @@ pub async fn run_command_loop_with_account(
             }
             UserCommand::Cancel => {
                 cancel_flag.store(true, Ordering::Relaxed);
-                {
-                    events.send(AgentUpdate::Info("Cancelling...".into()));
-                }
+                events.send(AgentUpdate::Info("Cancelling...".into()));
             }
             UserCommand::CancelSubagent { child_id } => {
                 if subagent_manager.request_cancel(&child_id) {
                     let _ = subagent_manager.cancel(&child_id).await;
                     tact::subagent::emit_subagents_changed(&events, &subagent_manager).await;
-                    {
-                        events.send(AgentUpdate::Info(format!(
-                            "Cancelling subagent {child_id}..."
-                        )));
-                    }
+                    events.send(AgentUpdate::Info(format!(
+                        "Cancelling subagent {child_id}..."
+                    )));
                 } else {
                     events.send(AgentUpdate::Info(format!(
                         "No running subagent {child_id} to cancel"
@@ -348,12 +344,10 @@ pub async fn run_command_loop_with_account(
                 // read-out popup, like /background: a snapshot is not
                 // conversation.
                 let stats_text = stats.read_recover().summary();
-                {
-                    events.send(AgentUpdate::PopupMarkdown {
-                        title: "Session Statistics".to_string(),
-                        source: stats_text,
-                    });
-                }
+                events.send(AgentUpdate::PopupMarkdown {
+                    title: "Session Statistics".to_string(),
+                    source: stats_text,
+                });
             }
             UserCommand::QueryBackground(task_id) => {
                 // `/background` and `/background <id>`. Answered here, from the
@@ -597,7 +591,7 @@ async fn query_background(
     task_id: Option<String>,
     events: &UpdateSink,
 ) {
-    if events.is_none() {
+    if events.is_empty() {
         return;
     }
     match manager.check(task_id.as_deref(), session_id).await {
@@ -980,16 +974,14 @@ async fn set_goal_archived(
         return;
     }
     if goal.is_archived() == archived {
-        {
-            events.send(AgentUpdate::Info(format!(
-                "Goal {goal_id} is {}",
-                if archived {
-                    "already archived"
-                } else {
-                    "not archived"
-                }
-            )));
-        }
+        events.send(AgentUpdate::Info(format!(
+            "Goal {goal_id} is {}",
+            if archived {
+                "already archived"
+            } else {
+                "not archived"
+            }
+        )));
         return;
     }
     let kind = if archived {
@@ -1022,12 +1014,10 @@ async fn set_goal_archived(
             // The panel refresh goes first: the announcement names a Goal the
             // panel may no longer show.
             emit_goals_changed(goal_manager, task_manager, limits, events).await;
-            {
-                events.send(AgentUpdate::Info(format!(
-                    "🎯 Goal {} {kind} ({})",
-                    updated.id, updated.title
-                )));
-            }
+            events.send(AgentUpdate::Info(format!(
+                "🎯 Goal {} {kind} ({})",
+                updated.id, updated.title
+            )));
         }
         Err(error) => {
             emit_goal_error(events, format!("Goal {goal_id} {kind} failed: {error:#}"));
@@ -1048,55 +1038,53 @@ async fn show_goal(
     match goal_snapshots_with(goal_manager, task_manager, limits, true).await {
         Ok(goals) => {
             let selected = goals.iter().find(|goal| goal.id == goal_id).cloned();
-            {
-                events.send(AgentUpdate::GoalsChanged {
-                    goals: goals
-                        .iter()
-                        .filter(|goal| !goal.archived)
-                        .cloned()
-                        .collect(),
-                });
-                match selected {
-                    Some(goal) => {
-                        let criteria = if goal.criteria.is_empty() {
-                            "- (none)".to_string()
-                        } else {
-                            goal.criteria
-                                .iter()
-                                .map(|criterion| {
-                                    format!(
-                                        "- {:?}: {}{}",
-                                        criterion.status,
-                                        criterion.description,
-                                        if criterion.required {
-                                            " (required)"
-                                        } else {
-                                            ""
-                                        }
-                                    )
-                                })
-                                .collect::<Vec<_>>()
-                                .join("\n")
-                        };
-                        events.send(AgentUpdate::PopupMarkdown {
-                            title: format!("Goal: {}", goal.title),
-                            source: format!(
-                                "**ID:** `{}`\n\n**Status:** `{:?}` / `{:?}`{}\n\n{}\n\n**Tasks:** {}/{}\n\n**Acceptance:** {}/{} passed\n\n{}",
-                                goal.id,
-                                goal.status,
-                                goal.phase,
-                                if goal.archived { "\n\n**Archived:** yes" } else { "" },
-                                goal.objective,
-                                goal.task_completed,
-                                goal.task_total,
-                                goal.acceptance.passed,
-                                goal.acceptance.required,
-                                criteria
-                            ),
-                        });
-                    }
-                    None => emit_goal_error(events, format!("Goal {goal_id} not found")),
+            events.send(AgentUpdate::GoalsChanged {
+                goals: goals
+                    .iter()
+                    .filter(|goal| !goal.archived)
+                    .cloned()
+                    .collect(),
+            });
+            match selected {
+                Some(goal) => {
+                    let criteria = if goal.criteria.is_empty() {
+                        "- (none)".to_string()
+                    } else {
+                        goal.criteria
+                            .iter()
+                            .map(|criterion| {
+                                format!(
+                                    "- {:?}: {}{}",
+                                    criterion.status,
+                                    criterion.description,
+                                    if criterion.required {
+                                        " (required)"
+                                    } else {
+                                        ""
+                                    }
+                                )
+                            })
+                            .collect::<Vec<_>>()
+                            .join("\n")
+                    };
+                    events.send(AgentUpdate::PopupMarkdown {
+                        title: format!("Goal: {}", goal.title),
+                        source: format!(
+                            "**ID:** `{}`\n\n**Status:** `{:?}` / `{:?}`{}\n\n{}\n\n**Tasks:** {}/{}\n\n**Acceptance:** {}/{} passed\n\n{}",
+                            goal.id,
+                            goal.status,
+                            goal.phase,
+                            if goal.archived { "\n\n**Archived:** yes" } else { "" },
+                            goal.objective,
+                            goal.task_completed,
+                            goal.task_total,
+                            goal.acceptance.passed,
+                            goal.acceptance.required,
+                            criteria
+                        ),
+                    });
                 }
+                None => emit_goal_error(events, format!("Goal {goal_id} not found")),
             }
         }
         Err(error) => emit_goal_error(events, format!("Goal show failed: {error:#}")),
@@ -1124,9 +1112,7 @@ fn goal_event(
 }
 
 fn emit_goal_error(events: &UpdateSink, message: String) {
-    {
-        events.send(AgentUpdate::Error(AgentErrorKind::Other(message)));
-    }
+    events.send(AgentUpdate::Error(AgentErrorKind::Other(message)));
 }
 
 /// Resolves and records `/goal steer [<id>] <text>`.
@@ -1363,11 +1349,9 @@ async fn request_goal_pause(
         return;
     }
     if goal.status == GoalStatus::Paused {
-        {
-            events.send(AgentUpdate::Info(format!(
-                "Goal {goal_id} is already paused"
-            )));
-        }
+        events.send(AgentUpdate::Info(format!(
+            "Goal {goal_id} is already paused"
+        )));
         return;
     }
 
@@ -1400,11 +1384,9 @@ async fn request_goal_pause(
         if interrupt_local {
             cancel_flag.store(true, Ordering::Relaxed);
         }
-        {
-            events.send(AgentUpdate::Info(format!(
-                "🎯 Goal {goal_id} pause requested; stopping the current run at the next safe point"
-            )));
-        }
+        events.send(AgentUpdate::Info(format!(
+            "🎯 Goal {goal_id} pause requested; stopping the current run at the next safe point"
+        )));
     } else {
         match goal_manager
             .update(
@@ -1450,11 +1432,9 @@ async fn request_goal_pause(
                 if interrupt_local {
                     cancel_flag.store(true, Ordering::Relaxed);
                 }
-                {
-                    events.send(AgentUpdate::Info(format!(
-                        "🎯 Goal {goal_id} pause requested; stopping the current run at the next safe point"
-                    )));
-                }
+                events.send(AgentUpdate::Info(format!(
+                    "🎯 Goal {goal_id} pause requested; stopping the current run at the next safe point"
+                )));
             }
             Err(error) => {
                 emit_goal_error(events, format!("Goal {goal_id} pause failed: {error:#}"))
@@ -1486,12 +1466,10 @@ async fn request_goal_cancel(
         }
     };
     if goal.status.is_terminal() {
-        {
-            events.send(AgentUpdate::Info(format!(
-                "Goal {goal_id} is already {:?}",
-                goal.status
-            )));
-        }
+        events.send(AgentUpdate::Info(format!(
+            "Goal {goal_id} is already {:?}",
+            goal.status
+        )));
         return;
     }
 
@@ -1524,11 +1502,9 @@ async fn request_goal_cancel(
         if interrupt_local {
             cancel_flag.store(true, Ordering::Relaxed);
         }
-        {
-            events.send(AgentUpdate::Info(format!(
-                "🎯 Goal {goal_id} cancel requested; stopping the current run"
-            )));
-        }
+        events.send(AgentUpdate::Info(format!(
+            "🎯 Goal {goal_id} cancel requested; stopping the current run"
+        )));
     } else {
         match goal_manager
             .update(
@@ -1572,11 +1548,9 @@ async fn request_goal_cancel(
                 if interrupt_local {
                     cancel_flag.store(true, Ordering::Relaxed);
                 }
-                {
-                    events.send(AgentUpdate::Info(format!(
-                        "🎯 Goal {goal_id} cancel requested; stopping the current run"
-                    )));
-                }
+                events.send(AgentUpdate::Info(format!(
+                    "🎯 Goal {goal_id} cancel requested; stopping the current run"
+                )));
             }
             Err(error) => {
                 emit_goal_error(events, format!("Goal {goal_id} cancel failed: {error:#}"))
@@ -2308,7 +2282,7 @@ mod tests {
 
     use tact::goal::GoalEventKind;
     use tact_llm::{ContentBlock, MockClient, StopReason};
-    use tact_protocol::{AgentUpdate, UserCommand};
+    use tact_protocol::{AgentUpdate, UpdateSink, UserCommand};
 
     use crate::test_support::{build_test_agent, install_test_config};
 
@@ -2367,7 +2341,7 @@ mod tests {
             &manager,
             &task_manager,
             super::goal_limits(),
-            &tact_protocol::UpdateSink::for_ui(events),
+            &UpdateSink::for_ui(events),
             Some("test-session"),
             &reported,
         )
@@ -2443,7 +2417,7 @@ mod tests {
             &manager,
             &task_manager,
             super::goal_limits(),
-            &tact_protocol::UpdateSink::for_ui(events),
+            &UpdateSink::for_ui(events),
             Some("test-session"),
             &reported,
         )

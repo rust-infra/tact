@@ -516,7 +516,7 @@ pub trait Tool: Send + Sync {
 额外设置实时输出脱敏级别（流式与最终结果分开处理）。
 <code>cancel_flag</code> 与 agent runtime
 共享，<code>bash_timeout_secs</code> 携带 resolved 墙钟时限。 当
-没有任何接收方（<code>events.is_none()</code>）或接收端已关闭时，reporter 为
+没有任何接收方（<code>events.is_empty()</code>）或接收端已关闭时，reporter 为
 no-op；<code>ui_responder</code> 为空时 <code>ask_user</code>
 干净失败而不是挂在一个没人应答的提示上。</p>
 <hr />

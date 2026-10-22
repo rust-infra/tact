@@ -537,7 +537,7 @@ mod tests {
         let router = ToolRouter::new().route(WriteFileTool).unwrap();
         let mut context = test_context("write_file_emits_progress");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        context.events = tact_protocol::UpdateSink::for_ui(tx);
+        context.events = UpdateSink::for_ui(tx);
 
         let content = "x".repeat(300 * 1024);
         let path = "large.txt";

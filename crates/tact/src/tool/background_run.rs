@@ -405,6 +405,7 @@ mod tests {
 
     use super::*;
     use crate::tool::test_support::{run_tool, test_context};
+    use tact_protocol::UpdateSink;
 
     #[tokio::test]
     async fn check_background_lists_empty_when_no_tasks() {
@@ -523,11 +524,9 @@ mod tests {
     async fn background_run_reports_the_started_id_to_the_card() {
         let mut context = test_context("background_run_reports_the_id");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
-        context.progress_reporter = crate::tool::ToolProgressReporter::new(
-            "bg-card",
-            tact_protocol::UpdateSink::for_ui(tx),
-        );
+        context.events = UpdateSink::for_ui(tx.clone());
+        context.progress_reporter =
+            crate::tool::ToolProgressReporter::new("bg-card", UpdateSink::for_ui(tx));
 
         let output = run_tool(
             &context,

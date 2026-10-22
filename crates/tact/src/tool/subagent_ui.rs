@@ -496,15 +496,14 @@ pub fn tagged_ui_channel_with_progress(
 mod tests {
     use super::*;
     use tact_protocol::{
-        StepResult, StepStatus, ThinkingChunk, TokenUsageInfo, ToolPresentationInfo,
+        StepResult, StepStatus, ThinkingChunk, TokenUsageInfo, ToolPresentationInfo, UpdateSink,
     };
 
     #[tokio::test]
     async fn streams_become_tool_progress() {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("task-1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("task-1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -544,8 +543,7 @@ mod tests {
     async fn a_chunk_without_a_line_break_does_not_publish_a_snapshot() {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -577,9 +575,8 @@ mod tests {
         use crate::security::RedactionLevel;
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx))
-                .with_stream_redaction(RedactionLevel::Basic);
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx))
+            .with_stream_redaction(RedactionLevel::Basic);
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         // Built by concatenation so the marker never appears as a literal here.
@@ -608,9 +605,8 @@ mod tests {
         use crate::security::RedactionLevel;
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx))
-                .with_stream_redaction(RedactionLevel::Basic);
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx))
+            .with_stream_redaction(RedactionLevel::Basic);
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         // `sk-` plus a long body - the provider-token rule.
@@ -633,8 +629,7 @@ mod tests {
     async fn thinking_finished_emits_summary_with_prefix() {
         let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -707,8 +702,7 @@ mod tests {
     async fn empty_thinking_skips_summary() {
         let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -726,8 +720,7 @@ mod tests {
     async fn step_started_and_failed_map_to_progress() {
         let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -777,8 +770,7 @@ mod tests {
     async fn step_finished_emits_preview() {
         let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -817,8 +809,7 @@ mod tests {
     async fn empty_step_finished_message_is_skipped() {
         let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -853,10 +844,7 @@ mod tests {
         // The reporter writes to the parent's own channel, exactly as the
         // production reporter does (`ToolContext::for_invocation` builds it from
         // the parent's `ui_tx`), so one queue holds the whole order.
-        let progress = ToolProgressReporter::new(
-            "task-1",
-            tact_protocol::UpdateSink::for_ui(inner_tx.clone()),
-        );
+        let progress = ToolProgressReporter::new("task-1", UpdateSink::for_ui(inner_tx.clone()));
         let (tagged, forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         // A turn that ends on a line boundary: the live preview is published,
@@ -902,8 +890,7 @@ mod tests {
     async fn select_is_marked_as_subagent_origin() {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -940,8 +927,7 @@ mod tests {
     async fn token_usage_sends_tool_meta_to_parent() {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -989,8 +975,7 @@ mod tests {
     async fn structural_events_are_newline_delimited() {
         let (inner_tx, _inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         // Stream chunk with no trailing newline — previously glued to the next event.
@@ -1029,8 +1014,7 @@ mod tests {
     async fn model_info_sends_tool_meta_to_parent() {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -1073,8 +1057,7 @@ mod tests {
     async fn task_complete_and_cancelled_are_dropped() {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, mut progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -1107,8 +1090,7 @@ mod tests {
     async fn consecutive_stream_chunks_become_one_assistant_entry() {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         for chunk in ["Looking ", "it ", "up."] {
@@ -1151,8 +1133,7 @@ mod tests {
     async fn a_step_reports_both_halves_under_one_tool_id() {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -1211,8 +1192,7 @@ mod tests {
         // entry still has to be a complete card.
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -1252,8 +1232,7 @@ mod tests {
     async fn thinking_entry_carries_the_measured_duration() {
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx));
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx));
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         tagged
@@ -1291,9 +1270,8 @@ mod tests {
 
         let (inner_tx, mut inner_rx) = tokio::sync::mpsc::unbounded_channel();
         let (progress_tx, _progress_rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress =
-            ToolProgressReporter::new("t1", tact_protocol::UpdateSink::for_ui(progress_tx))
-                .with_stream_redaction(RedactionLevel::Basic);
+        let progress = ToolProgressReporter::new("t1", UpdateSink::for_ui(progress_tx))
+            .with_stream_redaction(RedactionLevel::Basic);
         let (tagged, _forwarder) = tagged_ui_channel_with_progress(inner_tx, progress, 200_000);
 
         let secret = "sk-abcdefghijklmnopqrstuvwxyz";

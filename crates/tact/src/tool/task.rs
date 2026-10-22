@@ -166,7 +166,7 @@ pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<Str
 mod tests {
     use super::*;
     use crate::tool::{ToolRouter, test_support::test_context};
-    use tact_protocol::{AgentUpdate, TasksChangeReason};
+    use tact_protocol::{AgentUpdate, TasksChangeReason, UpdateSink};
 
     #[tokio::test]
     async fn task_create_strips_empty_description() {
@@ -281,7 +281,7 @@ mod tests {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let router = ToolRouter::new().route(TaskCreateTool).unwrap();
         let mut context = test_context("task_create_emits");
-        context.events = tact_protocol::UpdateSink::for_ui(tx);
+        context.events = UpdateSink::for_ui(tx);
 
         router
             .call(
@@ -312,7 +312,7 @@ mod tests {
             .route(TaskUpdateTool)
             .unwrap();
         let mut context = test_context("task_update_emits");
-        context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
+        context.events = UpdateSink::for_ui(tx.clone());
 
         let created = router
             .call(
@@ -330,7 +330,7 @@ mod tests {
             .as_u64()
             .unwrap();
 
-        context.events = tact_protocol::UpdateSink::for_ui(tx);
+        context.events = UpdateSink::for_ui(tx);
         router
             .call(
                 &context,
@@ -362,7 +362,7 @@ mod tests {
             .route(TaskListTool)
             .unwrap();
         let mut context = test_context("task_list_no_emit");
-        context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
+        context.events = UpdateSink::for_ui(tx.clone());
         let _ = router
             .call(
                 &context,
@@ -373,7 +373,7 @@ mod tests {
             .unwrap();
         while rx.try_recv().is_ok() {}
 
-        context.events = tact_protocol::UpdateSink::for_ui(tx);
+        context.events = UpdateSink::for_ui(tx);
         router
             .call(&context, "task_list", serde_json::json!({}))
             .await

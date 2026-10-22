@@ -18,6 +18,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use strum::EnumProperty;
 use strum_macros::{Display, EnumProperty as EnumPropertyDerive, EnumString};
+use tact_protocol::UpdateSink;
 
 use crate::store::task_store::{SqliteTaskStore, TaskStore};
 
@@ -326,11 +327,11 @@ pub fn to_ui_snapshots(tasks: Vec<TaskRecord>) -> Vec<tact_protocol::TaskSnapsho
 /// Notify the frontend that the persistent task list changed (no-op without an
 /// attached sink).
 pub fn emit_tasks_changed(
-    events: &tact_protocol::UpdateSink,
+    events: &UpdateSink,
     tasks: Vec<TaskRecord>,
     reason: tact_protocol::TasksChangeReason,
 ) {
-    if events.is_none() {
+    if events.is_empty() {
         return;
     }
     events.send(tact_protocol::AgentUpdate::TasksChanged {

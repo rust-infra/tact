@@ -7,9 +7,9 @@
 //! *observes*: it gets a copy of every update and answers nothing.
 //!
 //! Splitting the two into separate fields is what makes the distinction
-//! enforceable rather than conventional: [`Self::emit`] fans out to both, while
-//! [`Self::ui`] is the only handle a prompt may use, and it is `None` for an
-//! observer-only sink.
+//! enforceable rather than conventional: [`UpdateSink::send`] fans out to both,
+//! while [`UpdateSink::ui`] is the only handle a prompt may use, and it is
+//! `None` for an observer-only sink.
 
 use tokio::sync::mpsc::UnboundedSender;
 
@@ -20,7 +20,7 @@ use crate::AgentUpdate;
 ///
 /// Cloneable and cheap — the senders are handles, and the observer list is
 /// shared. `Default` is the honest value for "nobody is listening": every
-/// [`Self::emit`] is a no-op, and [`Self::is_some`] is `false`.
+/// [`Self::send`] is a no-op, and [`Self::has_ui`] is `false`.
 #[derive(Clone, Debug, Default)]
 pub struct UpdateSink {
     /// The frontend that can answer prompts. `None` means no one can.
@@ -70,6 +70,7 @@ impl UpdateSink {
     /// Used when handing a child the parent's destinations: a subagent's
     /// events should reach the same log, but a child must not acquire the
     /// parent's claim that prompts get answered.
+    #[must_use]
     pub fn observers_only(&self) -> Self {
         Self {
             ui: None,
@@ -87,12 +88,12 @@ impl UpdateSink {
     }
 
     /// Whether a frontend that can answer prompts is attached.
-    pub fn is_some(&self) -> bool {
+    pub fn has_ui(&self) -> bool {
         self.ui.is_some()
     }
 
     /// Whether nothing is attached at all.
-    pub fn is_none(&self) -> bool {
+    pub fn is_empty(&self) -> bool {
         self.ui.is_none() && self.observers.is_empty()
     }
 
@@ -108,6 +109,12 @@ impl UpdateSink {
         if let Some(tx) = &self.ui {
             let _ = tx.send(update);
         }
+    }
+}
+
+impl From<Option<UnboundedSender<AgentUpdate>>> for UpdateSink {
+    fn from(tx: Option<UnboundedSender<AgentUpdate>>) -> Self {
+        Self::from_ui(tx)
     }
 }
 
@@ -136,15 +143,28 @@ mod tests {
         let sink = UpdateSink::observing(obs_tx);
 
         assert!(sink.ui().is_none(), "no frontend can answer");
-        assert!(!sink.is_some());
-        assert!(!sink.is_none(), "an observer is still attached");
+        assert!(!sink.has_ui(), "an observer is not an answering frontend");
+        assert!(!sink.is_empty(), "an observer is still attached");
     }
 
     #[test]
     fn an_empty_sink_drops_updates_without_panicking() {
         let sink = UpdateSink::default();
-        assert!(sink.is_none());
+        assert!(sink.is_empty());
         sink.send(AgentUpdate::Info("nobody home".into()));
+    }
+
+    #[test]
+    fn an_optional_ui_channel_becomes_a_sink() {
+        let (ui_tx, mut ui_rx) = tokio::sync::mpsc::unbounded_channel();
+        let sink = UpdateSink::from(Some(ui_tx));
+        assert!(sink.has_ui());
+
+        sink.send(AgentUpdate::Info("wired".into()));
+        assert!(ui_rx.try_recv().is_ok());
+
+        let empty = UpdateSink::from(None);
+        assert!(empty.is_empty());
     }
 
     #[test]
