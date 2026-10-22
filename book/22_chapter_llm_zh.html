@@ -422,7 +422,7 @@ Loop</a>）。</p>
     Responses --&gt; API3[Responses API SSE]
     Agent[Agent::stream_message] --&gt; LlmClient[LlmClient trait]
     LlmClient --&gt; LP
-    LlmClient --&gt; TUI[AgentUpdate on ui_tx]</pre>
+    LlmClient --&gt; TUI[AgentUpdate on UpdateSink]</pre>
 <p>三个 adapter 家族共享同一 trait：</p>
 <table>
 <thead>
@@ -626,7 +626,7 @@ pub trait LlmClient: Send + Sync {
     async fn stream_message(
         &amp;self,
         request: &amp;CreateMessageParams,
-        ui_tx: Option&lt;UnboundedSender&lt;AgentUpdate&gt;&gt;,
+        events: &amp;UpdateSink,   // 只发进度；提问走 events.ui()
     ) -&gt; Result&lt;(Vec&lt;ContentBlock&gt;, Option&lt;StopReason&gt;, Option&lt;TokenUsageInfo&gt;, Option&lt;LlmRequestBody&gt;), LlmError&gt;;
 
     async fn create_message(
@@ -708,17 +708,17 @@ href="./18_chapter_agent_loop_zh.html#4-停止原因与循环退出">Ch 18
     participant Client as LlmClient::stream_message
     participant Adapter as Provider Adapter
     participant API as Provider API (SSE)
-    participant UI as ui_tx (optional)
+    participant UI as UpdateSink (observers optional)
     participant TUI as TUI
     participant Store as Session Store
 
     AgentLoop-&gt;&gt;Agent: stream_message(params)
-    Agent-&gt;&gt;Client: request + ui_tx
+    Agent-&gt;&gt;Client: request + &amp;UpdateSink
     Client-&gt;&gt;Adapter: convert/build provider request
     Adapter-&gt;&gt;API: HTTP POST stream=true
     loop SSE deltas
         API--&gt;&gt;Adapter: text / thinking / metadata / usage
-        opt ui_tx present
+        opt sink attached
             Adapter--&gt;&gt;UI: AgentUpdate::StreamChunk
             Adapter--&gt;&gt;UI: AgentUpdate::ThinkingChunk
             Adapter--&gt;&gt;UI: AgentUpdate::ModelInfo
@@ -764,7 +764,7 @@ Anthropic SDK enum。</p>
 <li>POST JSON 到
 <code>{base_url}/messages</code>，<code>stream: true</code>。</li>
 <li>将 SSE 事件解析为 <code>ContentBlockDelta</code> variant。</li>
-<li>将 text/thinking 转发到 <code>ui_tx</code> 为
+<li>将 text/thinking 转发到 <code>UpdateSink</code> 为
 <code>AgentUpdate::StreamChunk</code> /
 <code>ThinkingChunk::{Started,Delta,Finished}</code>。</li>
 <li>发出 <code>AgentUpdate::ModelInfo</code>（模型名与生成限制）。</li>
@@ -1341,8 +1341,8 @@ coding 系）保持 budget 选择器。可选档位来自
 provider 默认（openai 6 档、deepseek/kimi k3 3 档、budget 5 档）。</p>
 <hr />
 <h2 id="7-流式--tui-事件">7. 流式 → TUI 事件</h2>
-<p><code>stream_message</code> 期间，adapter 向可选 <code>ui_tx</code>
-推送：</p>
+<p><code>stream_message</code> 期间，adapter 向 <code>UpdateSink</code>
+推送（无接收方时是 no-op）：</p>
 <table>
 <thead>
 <tr>

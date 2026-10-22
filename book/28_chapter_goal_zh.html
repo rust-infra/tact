@@ -1150,7 +1150,7 @@ Goal 没任务、也不会去「修」一份其实完好的清单。</p>
 <code>activate_once</code>，两条路径都覆盖，为将来加重试留出余地。</p>
 <p><strong>恢复通知的可见性</strong>（2026-10-20）：lease
 是<strong>工作区级</strong>的，定时对账捡到的 run 可能属于另一个
-session，而 <code>ui_tx</code> 只通向本
+session，而 <code>UpdateSink</code> 只通向本
 session。因此定时路径说一句「本轮对账收回了 N 个中断的 Run」，逐 Goal
 的真相交给各 session
 共享的面板快照（<code>GoalsChanged</code>）；启动路径由本 session 的

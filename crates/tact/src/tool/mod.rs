@@ -35,7 +35,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use schemars::JsonSchema;
 use serde_json::Value;
-use tact_protocol::AgentUpdate;
+use tact_protocol::UpdateSink;
 
 use crate::{
     ToolSpec, background::SharedBackgroundManager, goal::SharedGoalManager, memory::MemoryManager,
@@ -126,7 +126,13 @@ pub struct ToolContext {
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
     pub subagent_manager: crate::subagent::SharedSubagentManager,
-    pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    /// Where this invocation's updates go.
+    ///
+    /// Tool output is progress, not a question, so it goes to every attached
+    /// destination. The one exception is a prompt (`ask_user`, permission
+    /// select), which must use [`UpdateSink::ui`] — a headless observer must
+    /// not be mistaken for someone who can answer.
+    pub events: UpdateSink,
     /// Shared request/reply registry for `ask_user` and permission selects.
     /// Cloned into subagents so request ids stay globally unique.
     pub ui_responder: UiResponder,
@@ -188,7 +194,7 @@ impl ToolContext {
     ) -> Self {
         let mut context = self.clone();
         context.progress_reporter =
-            ToolProgressReporter::new(tool_id, self.ui_tx.clone()).with_stream_redaction(level);
+            ToolProgressReporter::new(tool_id, self.events.clone()).with_stream_redaction(level);
         context
     }
 }
@@ -371,6 +377,7 @@ mod tests {
         test_support::{install_skill, test_context, write_workspace_file},
         *,
     };
+    use tact_protocol::AgentUpdate;
 
     #[derive(serde::Deserialize, JsonSchema)]
     struct EchoInput {
@@ -530,7 +537,7 @@ mod tests {
         let router = ToolRouter::new().route(WriteFileTool).unwrap();
         let mut context = test_context("write_file_emits_progress");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        context.ui_tx = Some(tx);
+        context.events = tact_protocol::UpdateSink::for_ui(tx);
 
         let content = "x".repeat(300 * 1024);
         let path = "large.txt";

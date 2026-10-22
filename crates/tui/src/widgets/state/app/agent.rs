@@ -735,7 +735,7 @@ impl App {
 
     /// Plan-step write for a keep-live subagent card closed by the detached
     /// child, plus a wake-up relay to the driver so an idle parent resumes to
-    /// consume the re-injected result (the parent `ui_tx` has no driver path).
+    /// consume the re-injected result (the parent's sink has no driver path).
     fn on_subagent_finished_tail(
         &mut self,
         tool_id: &str,

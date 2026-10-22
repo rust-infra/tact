@@ -610,8 +610,7 @@ flush 已读输出。Driver 仅在该返回之后发出
 <code>agent_loop</code> 前清除 <code>cancel_flag</code>。</p>
 <hr />
 <h2 id="5-agentupdate-与通知">5. <code>AgentUpdate</code> 与通知</h2>
-<p><code>emit_update</code> 在可选 <code>ui_tx</code>
-通道上发送事件，并为以下触发桌面通知：</p>
+<p><code>emit_update</code> 把事件交给 <code>UpdateSink</code>：回答方通道（TUI）拿到原件，只读 observer（headless 日志）各拿一份克隆；同时为以下触发桌面通知：</p>
 <ul>
 <li><code>TaskComplete</code> → <code>notify_task_complete</code>（<a
 href="./17_chapter_notify_zh.html">第 17 章</a>）</li>
@@ -657,7 +656,7 @@ pub struct AgentRuntime {
     pub recovery_state: RecoveryState,
     pub permission_manager: PermissionManager,
     pub stats: SessionStats,
-    pub ui_tx: Option&lt;UnboundedSender&lt;AgentUpdate&gt;&gt;,
+    pub events: UpdateSink,                      // 回答方通道 + 只读 observers
     pub cancel_flag: Arc&lt;AtomicBool&gt;,
     pub session_store: Option&lt;DynSessionStore&gt;,
     pub session_id: Option&lt;String&gt;,
@@ -757,7 +756,7 @@ UserCommand::Cancel =&gt; {
 </tr>
 <tr>
 <td><strong>Headless 路径</strong></td>
-<td>无 <code>ui_tx</code>；无 <code>TaskComplete</code> emit — stdout
+<td>无回答方通道（仅 observer）；无 <code>TaskComplete</code> emit — stdout
 后单次直接 <code>notify_task_complete</code>（<a
 href="./17_chapter_notify_zh.html">第 17 章</a>）</td>
 </tr>

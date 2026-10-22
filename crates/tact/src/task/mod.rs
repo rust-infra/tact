@@ -323,16 +323,17 @@ pub fn to_ui_snapshots(tasks: Vec<TaskRecord>) -> Vec<tact_protocol::TaskSnapsho
         .collect()
 }
 
-/// Notify the TUI that the persistent task list changed (no-op without `ui_tx`).
+/// Notify the frontend that the persistent task list changed (no-op without an
+/// attached sink).
 pub fn emit_tasks_changed(
-    ui_tx: &Option<tokio::sync::mpsc::UnboundedSender<tact_protocol::AgentUpdate>>,
+    events: &tact_protocol::UpdateSink,
     tasks: Vec<TaskRecord>,
     reason: tact_protocol::TasksChangeReason,
 ) {
-    let Some(tx) = ui_tx else {
+    if events.is_none() {
         return;
-    };
-    let _ = tx.send(tact_protocol::AgentUpdate::TasksChanged {
+    }
+    events.send(tact_protocol::AgentUpdate::TasksChanged {
         tasks: to_ui_snapshots(tasks),
         reason,
     });

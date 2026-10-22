@@ -1,8 +1,7 @@
 //! Shared OpenAI-compatible `LlmClient` wiring: assemble body → transport.
 
 use serde_json::Value;
-use tact_protocol::AgentUpdate;
-use tokio::sync::mpsc::UnboundedSender;
+use tact_protocol::UpdateSink;
 
 use super::OpenAiAdapter;
 use crate::{CreateMessageParams, LlmError, LlmResponse, ProviderConversationState};
@@ -11,12 +10,12 @@ pub(crate) async fn stream_assembled(
     adapter: &OpenAiAdapter,
     request: &CreateMessageParams,
     provider_state: Option<&ProviderConversationState>,
-    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    events: &UpdateSink,
     assemble: impl FnOnce(&CreateMessageParams, bool) -> Result<Value, LlmError>,
 ) -> Result<LlmResponse, LlmError> {
     let body = assemble(request, true)?;
     adapter
-        .stream_completion(&body, provider_state, ui_tx)
+        .stream_completion(&body, provider_state, events)
         .await
 }
 

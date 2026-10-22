@@ -38,18 +38,21 @@ pub async fn run_headless(
 ///
 /// A dedicated task rather than a callback because the events are produced
 /// inside `agent_loop`, which the caller must also await: draining inline would
-/// deadlock the unbounded channel's consumer against its producer's turn.
+/// stall the consumer while the producer's turn is still running.
 ///
 /// Each line is flushed as it is written. That is the whole point — a run that
 /// hangs must still show what it last did, and a CI job that is killed must not
 /// lose the log along with the process.
+///
+/// The channel is unbounded because a sender must never block on a log reader:
+/// the pump only writes to stderr, which the kernel back-pressures rather than
+/// dropping. A reader that stops draining entirely (a suspended terminal) makes
+/// the queue grow; the alternative — a bounded channel — would silently drop
+/// the lines that explain a hang, which is the one thing this log is for.
 async fn pump_events_to_stderr(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentUpdate>) {
     use std::io::Write;
 
     while let Some(update) = rx.recv().await {
-        if headless_log::is_noise(&update) {
-            continue;
-        }
         let Some(line) = headless_log::format_event(&update) else {
             continue;
         };
@@ -74,11 +77,11 @@ async fn run_headless_locked(
     // see `session_bootstrap`. Headless has no UI channel and no frame to
     // protect, so its startup notices go to stderr.
     //
-    // The observer channel is what makes the run legible: without it every
-    // event the agent emits is dropped, and a long or wedged run is
-    // indistinguishable from a working one until it exits. It is *not* a UI
-    // channel — headless still cannot answer permission prompts, so a caller
-    // that needs its tools allowed must choose a mode that does not ask
+    // The observer is what makes the run legible: without it every event the
+    // agent emits is dropped, and a long or wedged run is indistinguishable
+    // from a working one until it exits. It carries no answering channel —
+    // headless still cannot answer permission prompts, so a caller that needs
+    // its tools allowed must choose a mode that does not ask
     // (`--permission-mode auto`; the scheduled review does this on the
     // throwaway CI runner itself).
     let (observer_tx, observer_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -103,13 +106,15 @@ async fn run_headless_locked(
 
     // Close the observer so the pump drains and returns instead of waiting for
     // a sender the agent will never drop on its own.
-    agent.runtime.observer_tx = None;
+    agent.detach_event_observers();
     let _ = pump.await;
 
-    // A failed turn is still worth reporting against the stats below, so the
-    // error is surfaced rather than swallowed — but the log lines it produced
-    // are already on stderr by now.
-    loop_result?;
+    // Report a failed turn as a log line, then still print what the run did.
+    // The stats below are how a caller tells "it never started" from "it spent
+    // twenty minutes and then failed", so they must not be skipped by the `?`.
+    if let Err(error) = &loop_result {
+        eprintln!("[error] {error:#}");
+    }
 
     eprintln!("[session id: {session_id}]");
     eprintln!(
@@ -121,6 +126,8 @@ async fn run_headless_locked(
             .expect("session stats lock poisoned")
             .summary()
     );
+
+    loop_result?;
 
     match agent.runtime.context.last() {
         Some(final_content) => {

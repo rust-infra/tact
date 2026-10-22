@@ -471,7 +471,7 @@ agent</strong>：全新对话循环、受限工具集、<code>ToolContext</code>
 </tr>
 <tr>
 <td>TUI 通道</td>
-<td>父级 <code>ui_tx</code></td>
+<td>父级 <code>UpdateSink</code></td>
 <td><strong>打标</strong> — 流式/步骤以
 <code>ToolProgress</code>（卡头为
 <code>ToolMeta</code>）转发进父工具卡，<strong>并行</strong>发一条
@@ -642,7 +642,7 @@ handler 立即返回
 <code>Completed</code>/<code>Failed</code>/<code>Cancelled</code>，(b)
 将 <code>SubagentResult</code> 入队父级
 <code>pending_subagent_results</code>，(c) 在<strong>父级</strong>
-<code>ui_tx</code> 上发
+<code>events</code> 上发
 <code>AgentUpdate::SubagentFinished</code>。父级下一轮
 <code>agent_loop</code> drain 队列，经
 <code>push_message</code>（持久化）注入合成
@@ -660,8 +660,8 @@ driver，driver 提交一个轻量唤醒轮；若一轮仍在进行，driver
 写入并持久化到子 session。循环前 <code>spawn_subagent</code> 分配子
 session id（或复用 <code>resume</code>），将 <code>ref_id</code> 设为父
 session id（或 <code>''</code>），并调用 <code>with_session</code>。UI
-使用打标 <code>ui_tx</code>（<code>with_ui_channel</code> 同步
-<code>tool_context.ui_tx</code>，使 <code>ToolProgress</code>
+使用打标通道（<code>with_ui_channel</code> 同步
+<code>tool_context.events</code>，使 <code>ToolProgress</code>
 也被打标）。</p>
 <hr />
 <h2 id="4-受限工具集">4. 受限工具集</h2>
@@ -826,7 +826,7 @@ session id 为主键 —— 是 <code>background_tasks</code> 的子 agent
 再逐个 wait，而不必跨多轮轮询 <code>check_subagent</code>。内存
 <code>pending_subagent_results</code>
 队列是实时快路径；持久化行是崩溃恢复的 source of truth。spawn 时
-<code>spawn_subagent</code> 还会在父级 <code>ui_tx</code> 上广播一条只带
+<code>spawn_subagent</code> 还会在父级 <code>events</code> 上广播一条只带
 <code>subagent_id</code> 的 <code>AgentUpdate::ToolMeta</code>（同步 /
 后台都发），让父卡片 meta 行从第一帧起就是
 <code>#&lt;短id&gt;</code>（§6）。重启后 finished

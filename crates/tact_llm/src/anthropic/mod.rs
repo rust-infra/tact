@@ -9,8 +9,7 @@ use std::{error::Error, time::Duration};
 use futures_util::StreamExt;
 use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::Deserialize;
-use tact_protocol::{AgentUpdate, ModelCallParams, ThinkingChunk, TokenUsageInfo};
-use tokio::sync::mpsc::UnboundedSender;
+use tact_protocol::{AgentUpdate, ModelCallParams, ThinkingChunk, TokenUsageInfo, UpdateSink};
 
 use super::{
     ContentBlock, ContentBlockDelta, CreateMessageParams, LlmClient, LlmError, LlmResponse,
@@ -205,7 +204,7 @@ impl LlmClient for AnthropicAdapter {
         &self,
         request: &CreateMessageParams,
         _provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        events: &UpdateSink,
     ) -> Result<LlmResponse, LlmError> {
         let mut response_blocks: Vec<ContentBlock> = Vec::new();
         let mut tool_input_buffers: Vec<String> = Vec::new();
@@ -260,8 +259,8 @@ impl LlmClient for AnthropicAdapter {
                                         "Failed to parse message_start: {e}"
                                     )))
                                 })?;
-                            if let Some(ref tx) = ui_tx {
-                                let _ = tx.send(AgentUpdate::ModelInfo(ModelCallParams {
+                            {
+                                events.send(AgentUpdate::ModelInfo(ModelCallParams {
                                     model: start.message.model,
                                     max_tokens: request.max_tokens,
                                     thinking_budget: request
@@ -298,18 +297,14 @@ impl LlmClient for AnthropicAdapter {
                             match &start.content_block {
                                 ContentBlock::Text { text } => {
                                     tool_input_buffers[index].clear();
-                                    if !text.is_empty()
-                                        && let Some(ref tx) = ui_tx
-                                    {
-                                        let _ = tx.send(AgentUpdate::StreamChunk(text.clone()));
+                                    if !text.is_empty() {
+                                        events.send(AgentUpdate::StreamChunk(text.clone()));
                                     }
                                 }
                                 ContentBlock::Thinking { thinking, .. } => {
                                     tool_input_buffers[index].clear();
-                                    if let Some(ref tx) = ui_tx {
-                                        for chunk in thinking_start_events(thinking) {
-                                            let _ = tx.send(AgentUpdate::ThinkingChunk(chunk));
-                                        }
+                                    for chunk in thinking_start_events(thinking) {
+                                        events.send(AgentUpdate::ThinkingChunk(chunk));
                                     }
                                 }
                                 ContentBlock::ToolUse { .. } => {
@@ -333,9 +328,7 @@ impl LlmClient for AnthropicAdapter {
                                         response_blocks.get_mut(index)
                                     {
                                         existing.push_str(&text);
-                                        if let Some(ref tx) = ui_tx {
-                                            let _ = tx.send(AgentUpdate::StreamChunk(text));
-                                        }
+                                        events.send(AgentUpdate::StreamChunk(text));
                                     }
                                 }
                                 ContentBlockDelta::ThinkingDelta { thinking } => {
@@ -345,11 +338,9 @@ impl LlmClient for AnthropicAdapter {
                                     {
                                         existing.push_str(&thinking);
                                     }
-                                    if let Some(ref tx) = ui_tx {
-                                        let _ = tx.send(AgentUpdate::ThinkingChunk(
-                                            ThinkingChunk::Delta(thinking),
-                                        ));
-                                    }
+                                    events.send(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+                                        thinking,
+                                    )));
                                 }
                                 ContentBlockDelta::InputJsonDelta { partial_json } => {
                                     if index < tool_input_buffers.len() {
@@ -374,11 +365,8 @@ impl LlmClient for AnthropicAdapter {
                                         "Failed to parse content_block_stop: {e}"
                                     )))
                                 })?;
-                            if is_thinking_content_block(response_blocks.get(stop.index))
-                                && let Some(ref tx) = ui_tx
-                            {
-                                let _ =
-                                    tx.send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+                            if is_thinking_content_block(response_blocks.get(stop.index)) {
+                                events.send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
                             }
                             if let Some(ContentBlock::ToolUse {
                                 input: existing, ..
@@ -417,9 +405,7 @@ impl LlmClient for AnthropicAdapter {
                                     ),
                                     reasoning_tokens: usage_reasoning_tokens(usage_json),
                                 };
-                                if let Some(ref tx) = ui_tx {
-                                    let _ = tx.send(AgentUpdate::TokenUsage(info.clone()));
-                                }
+                                events.send(AgentUpdate::TokenUsage(info.clone()));
                                 token_usage = Some(info);
                             }
                         }

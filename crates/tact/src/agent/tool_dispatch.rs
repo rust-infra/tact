@@ -1028,7 +1028,7 @@ impl Agent {
                                         &tool_use.input,
                                     );
 
-                                    let choice = if let Some(tx) = &self.runtime.ui_tx {
+                                    let choice = if let Some(tx) = self.runtime.events.ui() {
                                         if let Some(rule) = &prefix_rule {
                                             prompt.push_str(&format!(
                                                 "\n\n\"Always allow this pattern\" would \

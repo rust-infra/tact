@@ -360,7 +360,9 @@ pub struct AgentRuntime {
     /// rules, so nothing can reach a credential file.
     pub security: crate::security::sensitive::Scanner,
     pub stats: Arc<RwLock<SessionStats>>,
-    pub ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    /// Where this agent's updates go: the answering frontend, if any, plus
+    /// any read-only observers.
+    pub events: tact_protocol::UpdateSink,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub session_store: Option<DynSessionStore>,
     /// Set together with [`Self::session_store`] via [`Agent::with_session`] at startup.
@@ -434,15 +436,6 @@ pub struct AgentRuntime {
     /// the ids have to be unique across those parallel runs or one hook's
     /// "finished" would rewrite another's line.
     pub hook_status_seq: std::sync::atomic::AtomicU64,
-    /// A read-only mirror of every [`AgentUpdate`], for frontends that have no
-    /// interactive UI but still must show progress.
-    ///
-    /// Deliberately separate from [`Self::ui_tx`]: that channel is the *ask*
-    /// path (permission prompts, `ask_user`), and a frontend attaching a
-    /// receiver there is claiming it can answer. Headless cannot, so it
-    /// observes here instead — which is why this changes no permission
-    /// semantics, only visibility. See [`Agent::with_event_observer`].
-    pub observer_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
 }
 
 /// How the agent builds its system prompt.
@@ -541,7 +534,7 @@ impl Agent {
                 permission_manager,
                 security,
                 stats: Arc::new(RwLock::new(SessionStats::default())),
-                ui_tx: None,
+                events: tact_protocol::UpdateSink::default(),
                 cancel_flag,
                 session_store: None,
                 session_id: None,
@@ -559,7 +552,6 @@ impl Agent {
                 session_start_source: SessionStartSource::Startup,
                 pending_hook_context: Arc::new(Mutex::new(VecDeque::new())),
                 hook_status_seq: std::sync::atomic::AtomicU64::new(1),
-                observer_tx: None,
             },
             tool_context,
             tools,
@@ -884,12 +876,56 @@ impl Agent {
 
     /// Attaches a TUI update channel so the agent can stream events
     /// (token usage, thinking blocks, tool results) to the terminal.
+    ///
+    /// This is the *answering* channel: a frontend holding it is claiming it
+    /// can answer permission prompts. A frontend that only watches must use
+    /// [`Self::with_event_observer`] instead.
     pub fn with_ui_channel(mut self, tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>) -> Self {
-        self.runtime.ui_tx = Some(tx.clone());
+        self.runtime.events = tact_protocol::UpdateSink::for_ui(tx.clone());
         // Keep tool_context in sync so ToolProgress / tool helpers use the same
-        // channel (critical for tagged subagent ui_tx).
-        self.tool_context.ui_tx = Some(tx);
+        // sink (critical for tagged subagent traffic).
+        self.tool_context.events = self.runtime.events.clone();
         self
+    }
+
+    /// Attach a read-only observer for every [`AgentUpdate`] this agent emits.
+    ///
+    /// Distinct from [`Self::with_ui_channel`], which also makes the frontend
+    /// the answerer of permission prompts. A headless run has no one to ask, so
+    /// it must not claim that channel; it only needs to *see* progress. The
+    /// permission path is therefore untouched: the sink carries no `ui`
+    /// channel, so every check takes the non-interactive branch.
+    pub fn with_event_observer(
+        mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>,
+    ) -> Self {
+        self.runtime.events = tact_protocol::UpdateSink::observing(tx);
+        self.tool_context.events = self.runtime.events.clone();
+        self
+    }
+
+    /// Attach the observers of `events`, dropping its answering channel.
+    ///
+    /// The subagent path uses this to give a child the parent's destinations
+    /// without handing it the parent's permission-prompt claim.
+    pub fn with_observed_events(mut self, events: tact_protocol::UpdateSink) -> Self {
+        self.runtime.events = events.observers_only();
+        self.tool_context.events = self.runtime.events.clone();
+        self
+    }
+
+    /// Stop sending events to any observer, keeping the answering frontend.
+    ///
+    /// A headless run calls this once its turn is over so the log pump can
+    /// drain and return: the pump waits on the channel closing, and the agent
+    /// itself would otherwise keep the sender alive until it is dropped.
+    pub fn detach_event_observers(&mut self) {
+        let ui = self.runtime.events.ui().cloned();
+        self.runtime.events = match ui {
+            Some(tx) => tact_protocol::UpdateSink::for_ui(tx),
+            None => tact_protocol::UpdateSink::default(),
+        };
+        self.tool_context.events = self.runtime.events.clone();
     }
 
     /// Attach a session store with a fully initialized session id.
@@ -923,30 +959,8 @@ impl Agent {
             _ => {}
         }
 
-        // The observer gets its own copy so it can never consume the update the
-        // interactive UI needs; when both are attached, `ui_tx` keeps the
-        // original.
-        if let Some(observer) = &self.runtime.observer_tx {
-            let _ = observer.send(update.clone());
-        }
-        if let Some(tx) = &self.runtime.ui_tx {
-            let _ = tx.send(update);
-        }
-    }
-
-    /// Attach a read-only observer for every [`AgentUpdate`] this agent emits.
-    ///
-    /// Distinct from [`Self::with_ui_channel`], which also makes the frontend
-    /// the answerer of permission prompts. A headless run has no one to ask, so
-    /// it must not claim that channel; it only needs to *see* progress. The
-    /// permission path is therefore untouched — [`Self::emit_update`] clones
-    /// into this channel and hands the original to `ui_tx` as before.
-    pub fn with_event_observer(
-        mut self,
-        tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>,
-    ) -> Self {
-        self.runtime.observer_tx = Some(tx);
-        self
+        // The sink fans out: observers get a copy, the ui channel the original.
+        self.runtime.events.send(update);
     }
 
     /// Load persisted history into an empty context.
@@ -1812,11 +1826,14 @@ impl Agent {
         ),
         anyhow::Error,
     > {
-        let ui_tx = self.runtime.ui_tx.clone();
+        // Provider deltas are progress, not a question: they go to every
+        // attached destination, which is what lets a headless run show that a
+        // slow model call is still alive.
+        let events = self.runtime.events.clone();
         let response = self
             .runtime
             .client
-            .stream_message(request, self.runtime.provider_state.as_ref(), ui_tx)
+            .stream_message(request, self.runtime.provider_state.as_ref(), &events)
             .await
             // Keep the typed `LlmError` as the root cause: the recovery loop
             // classifies retries on `LlmError::HttpError.status`, and
@@ -3910,7 +3927,7 @@ mod tests {
         let context = test_context("local_compact_continue_multi");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.ui_tx = Some(tx);
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx);
 
         // Two consecutive truncations, then a completed call.
         let mock = MockClient::new(vec![
@@ -3966,7 +3983,7 @@ mod tests {
         let context = test_context("local_compact_continue_exhausted");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.ui_tx = Some(tx);
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx);
 
         // Every call is truncated: MAX_COMPACT_SUMMARY_ATTEMPTS (5)
         // continuations run, then the partial summary is accepted as
@@ -4450,7 +4467,7 @@ mod tests {
         let context = test_context("local_compact_server_default_reserve");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.ui_tx = Some(tx);
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx);
 
         let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<CreateMessageParams>::new()));
         let seen_arc = seen.clone();
@@ -4520,7 +4537,7 @@ mod tests {
         let context = test_context("local_compact_anthropic_no_thinking");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.ui_tx = Some(tx);
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx);
 
         // Capture the summarizer request so we can assert no Claude-style
         // thinking budget is forwarded even though one is configured.
@@ -4598,7 +4615,7 @@ mod tests {
         let context = test_context("local_compact_too_small_window");
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.ui_tx = Some(tx);
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx);
 
         let mock = MockClient::new(vec![(
             vec![make_text_block("unused summary")],
@@ -5169,7 +5186,7 @@ mod tests {
         let context = crate::tool::test_support::test_context("responses_two_turns");
         crate::tool::test_support::write_workspace_file(&context.work_dir, "a.txt", "aaa");
         let mut tool_context = context;
-        tool_context.ui_tx = None;
+        tool_context.events = tact_protocol::UpdateSink::default();
         let mut agent = Agent::new(
             LlmProvider::OpenAiResponses(
                 tact_llm::openai::responses::OpenAiResponsesAdapter::new(
@@ -6745,7 +6762,7 @@ mod tests {
         let context = test_context("agent_loop_refusal");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.ui_tx = Some(tx.clone());
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
 
         let mock = MockClient::new(vec![(
             vec![make_text_block("I cannot help with that.")],
@@ -6836,7 +6853,7 @@ mod tests {
     }
 
     #[test]
-    fn with_ui_channel_syncs_tool_context_ui_tx() {
+    fn with_ui_channel_syncs_tool_context_events() {
         ensure_config();
         use crate::tool::test_support::test_context;
 
@@ -6855,8 +6872,72 @@ mod tests {
         )
         .with_ui_channel(tx);
 
-        assert!(agent.runtime.ui_tx.is_some());
-        assert!(agent.tool_context.ui_tx.is_some());
+        assert!(agent.runtime.events.is_some());
+        assert!(agent.tool_context.events.is_some());
+    }
+
+    #[test]
+    fn an_observer_receives_events_and_cannot_answer_prompts() {
+        ensure_config();
+        use crate::tool::test_support::test_context;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let context = test_context("observer_events");
+        let agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_event_observer(tx);
+
+        agent.emit_update(AgentUpdate::Info("progress".into()));
+
+        assert!(
+            matches!(rx.try_recv(), Ok(AgentUpdate::Info(text)) if text == "progress"),
+            "the observer sees every event"
+        );
+        assert!(
+            !agent.runtime.events.is_some(),
+            "an observer is not an answering frontend"
+        );
+        assert!(
+            agent.tool_context.events.ui().is_none(),
+            "tool prompts must not treat an observer as an answerer"
+        );
+    }
+
+    #[test]
+    fn detaching_observers_closes_their_channel() {
+        ensure_config();
+        use crate::tool::test_support::test_context;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let context = test_context("detach_observers");
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_event_observer(tx);
+
+        agent.detach_event_observers();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "the channel is closed, so a pump awaiting it can return"
+        );
     }
 
     #[tokio::test]
@@ -6873,7 +6954,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.ui_tx = Some(tx.clone());
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
 
         let mock = MockClient::new(vec![
             (
@@ -6953,7 +7034,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = test_context("cancel_before_tools");
-        tool_context.ui_tx = Some(tx.clone());
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
 
         // The responder sets the agent's cancel flag while producing the
         // tool-call turn, so the flag is guaranteed to be set when the loop
@@ -7055,7 +7136,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = test_context("cancel_mid_preflight_deny");
-        tool_context.ui_tx = Some(tx.clone());
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
 
         // Two calls in one turn behind the usual leading text block, so the
         // cancel lands after `t1` was already resolved.
@@ -7148,7 +7229,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = test_context("cancel_mid_preflight_allow");
-        tool_context.ui_tx = Some(tx.clone());
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
 
         let mock = MockClient::with_responder(|_request, idx| {
             if idx > 0 {
@@ -7241,7 +7322,7 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = test_context("refusal_pairs_tools");
-        tool_context.ui_tx = Some(tx.clone());
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
 
         let mock = MockClient::new(vec![(
             vec![
@@ -7303,7 +7384,7 @@ mod tests {
 
         let (tx, _rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = test_context("truncated_pairs_tools");
-        tool_context.ui_tx = Some(tx.clone());
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
 
         // Every call is truncated with a fresh tool call, so the continuation
         // path runs the tool for the first `MAX_CONTINUATION_ATTEMPTS` turns and
@@ -7365,7 +7446,7 @@ mod tests {
         let context = test_context("agent_plan_deny");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.ui_tx = Some(tx.clone());
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
 
         let mock = MockClient::new(vec![
             (
@@ -7425,7 +7506,7 @@ mod tests {
         let context = test_context("agent_token_usage");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.ui_tx = Some(tx.clone());
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
 
         let usage = TokenUsageInfo {
             prompt: 50,
@@ -7487,7 +7568,7 @@ mod tests {
 
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let mut tool_context = context;
-        tool_context.ui_tx = Some(tx.clone());
+        tool_context.events = tact_protocol::UpdateSink::for_ui(tx.clone());
 
         let mock = MockClient::new(vec![
             (

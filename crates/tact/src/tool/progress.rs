@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use tact_protocol::{AgentUpdate, ToolOutputChunk, ToolOutputStream};
+use tact_protocol::{AgentUpdate, ToolOutputChunk, ToolOutputStream, UpdateSink};
 
 use crate::security::{RedactionLevel, redact::StreamRedactor};
 
@@ -19,7 +19,7 @@ use crate::security::{RedactionLevel, redact::StreamRedactor};
 #[derive(Clone, Debug, Default)]
 pub struct ToolProgressReporter {
     tool_id: String,
-    ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
+    events: UpdateSink,
     stream: Option<Arc<Mutex<StreamState>>>,
 }
 
@@ -42,13 +42,10 @@ impl StreamState {
 }
 
 impl ToolProgressReporter {
-    pub fn new(
-        tool_id: impl Into<String>,
-        ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
-    ) -> Self {
+    pub fn new(tool_id: impl Into<String>, events: UpdateSink) -> Self {
         Self {
             tool_id: tool_id.into(),
-            ui_tx,
+            events,
             stream: None,
         }
     }
@@ -79,12 +76,10 @@ impl ToolProgressReporter {
             // empty batch would just churn the renderer.
             return;
         }
-        if let Some(tx) = &self.ui_tx {
-            let _ = tx.send(AgentUpdate::ToolProgress {
-                tool_id: self.tool_id.clone(),
-                chunks,
-            });
-        }
+        self.events.send(AgentUpdate::ToolProgress {
+            tool_id: self.tool_id.clone(),
+            chunks,
+        });
     }
 
     /// Emit whatever the redactor is still holding back.
@@ -105,12 +100,10 @@ impl ToolProgressReporter {
         let Some(text) = tail.filter(|t| !t.is_empty()) else {
             return;
         };
-        if let Some(tx) = &self.ui_tx {
-            let _ = tx.send(AgentUpdate::ToolProgress {
-                tool_id: self.tool_id.clone(),
-                chunks: vec![ToolOutputChunk { stream, text }],
-            });
-        }
+        self.events.send(AgentUpdate::ToolProgress {
+            tool_id: self.tool_id.clone(),
+            chunks: vec![ToolOutputChunk { stream, text }],
+        });
     }
 
     fn redact(&self, chunks: Vec<ToolOutputChunk>) -> Vec<ToolOutputChunk> {
@@ -144,9 +137,7 @@ impl ToolProgressReporter {
     /// tail — so the redaction state and the channel stay in one place instead
     /// of being reimplemented per tool.
     pub fn send(&self, update: AgentUpdate) {
-        if let Some(tx) = &self.ui_tx {
-            let _ = tx.send(update);
-        }
+        self.events.send(update);
     }
 
     /// Redact a complete, final piece of text at the level this reporter
@@ -197,7 +188,7 @@ impl ToolProgressReporter {
 
 #[cfg(test)]
 mod tests {
-    use tact_protocol::AgentUpdate;
+    use tact_protocol::{AgentUpdate, UpdateSink};
 
     use super::*;
 
@@ -213,7 +204,7 @@ mod tests {
     #[test]
     fn reporter_binds_progress_to_one_tool_id() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let reporter = ToolProgressReporter::new("bash-7", Some(tx));
+        let reporter = ToolProgressReporter::new("bash-7", UpdateSink::for_ui(tx));
 
         reporter.report(vec![ToolOutputChunk::stdout("hello\n")]);
 
@@ -226,7 +217,7 @@ mod tests {
     #[test]
     fn reporter_ignores_empty_batches_and_closed_receivers() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let reporter = ToolProgressReporter::new("bash-7", Some(tx));
+        let reporter = ToolProgressReporter::new("bash-7", UpdateSink::for_ui(tx));
         reporter.report(Vec::new());
         assert!(rx.try_recv().is_err());
 
@@ -237,7 +228,7 @@ mod tests {
     #[test]
     fn without_redaction_output_is_forwarded_unchanged() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let reporter = ToolProgressReporter::new("bash-7", Some(tx));
+        let reporter = ToolProgressReporter::new("bash-7", UpdateSink::for_ui(tx));
         reporter.report(vec![ToolOutputChunk::stdout(
             "sk-7325c3231cef402d8481c32a49c4898a",
         )]);
@@ -252,7 +243,7 @@ mod tests {
     #[test]
     fn a_split_secret_never_reaches_the_live_view() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let reporter = ToolProgressReporter::new("bash-7", Some(tx))
+        let reporter = ToolProgressReporter::new("bash-7", UpdateSink::for_ui(tx))
             .with_stream_redaction(RedactionLevel::Basic);
 
         reporter.report(vec![ToolOutputChunk::stdout("prefix\nsk-7325c32")]);
@@ -272,7 +263,7 @@ mod tests {
     #[test]
     fn flush_releases_the_held_tail() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let reporter = ToolProgressReporter::new("bash-7", Some(tx))
+        let reporter = ToolProgressReporter::new("bash-7", UpdateSink::for_ui(tx))
             .with_stream_redaction(RedactionLevel::Basic);
 
         reporter.report(vec![ToolOutputChunk::stderr("no trailing newline")]);
@@ -294,7 +285,7 @@ mod tests {
     #[test]
     fn flush_is_a_no_op_without_a_redactor() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let reporter = ToolProgressReporter::new("bash-7", Some(tx));
+        let reporter = ToolProgressReporter::new("bash-7", UpdateSink::for_ui(tx));
         reporter.flush();
         assert!(rx.try_recv().is_err());
     }
@@ -302,7 +293,7 @@ mod tests {
     #[test]
     fn off_level_does_not_install_a_redactor() {
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let reporter = ToolProgressReporter::new("bash-7", Some(tx))
+        let reporter = ToolProgressReporter::new("bash-7", UpdateSink::for_ui(tx))
             .with_stream_redaction(RedactionLevel::Off);
         reporter.report(vec![ToolOutputChunk::stdout("short")]);
         assert_eq!(progress_texts(&rx.try_recv().unwrap()), vec!["short"]);

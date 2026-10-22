@@ -338,9 +338,10 @@ pub struct SubagentRunSnapshot {
 /// Status update messages sent from the Agent to the TUI.
 ///
 /// `Clone` because an event can have more than one destination: the interactive
-/// frontend consumes the only copy on its `ui_tx`, while a frontend that merely
-/// *observes* (headless) gets its own copy on the observer channel. Cloning is
-/// what keeps the observer from stealing the update the real UI needs.
+/// frontend consumes the original on the sink's ui channel, while a frontend
+/// that merely *observes* (headless) gets its own copy. Cloning is what keeps
+/// the observer from stealing the update the real UI needs. See
+/// [`UpdateSink`](crate::UpdateSink).
 #[derive(Debug, Clone)]
 pub enum AgentUpdate {
     /// Dynamically append a step to the existing plan (does not reset selection state)
@@ -558,7 +559,7 @@ pub enum AgentUpdate {
     /// the same "finalize a keep-live card" path but must also carry over the
     /// full transcript into the popup.
     ///
-    /// Emitted on the **parent** `ui_tx` (never the child's tagged forwarder,
+    /// Emitted on the **parent**'s sink (never the child's tagged forwarder,
     /// which drops unknown variants).
     SubagentFinished {
         tool_id: String,

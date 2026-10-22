@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod biz;
+pub mod events;
 pub mod subagent_transcript;
 pub mod tool_output;
 
@@ -22,6 +23,7 @@ pub use agent::{
 pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,
 };
+pub use events::UpdateSink;
 pub use subagent_transcript::{SubagentStep, SubagentStepStatus, SubagentTranscriptEntry};
 pub use tool_output::{
     ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,

@@ -146,7 +146,7 @@ pub fn build_test_agent_with_provider(
     let work_dir = context.work_dir.clone();
 
     let mut tool_context = context;
-    tool_context.ui_tx = ui_tx.clone();
+    tool_context.events = tact_protocol::UpdateSink::from_ui(ui_tx.clone());
 
     let mut agent = Agent::new(
         client,
@@ -198,7 +198,7 @@ pub fn build_test_agent_with_mcp(
     let work_dir = context.work_dir.clone();
 
     let mut tool_context = context;
-    tool_context.ui_tx = ui_tx.clone();
+    tool_context.events = tact_protocol::UpdateSink::from_ui(ui_tx.clone());
 
     let mut agent = Agent::new(
         LlmProvider::Mock(mock),
@@ -241,7 +241,7 @@ pub async fn build_test_agent_with_session(
         .expect("ensure session row");
 
     let mut tool_context = context;
-    tool_context.ui_tx = ui_tx.clone();
+    tool_context.events = tact_protocol::UpdateSink::from_ui(ui_tx.clone());
 
     let mut agent = Agent::new(
         LlmProvider::Mock(mock),

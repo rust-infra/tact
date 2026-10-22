@@ -66,9 +66,9 @@ impl LlmClient for ChatCompletionsAdapter {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<tokio::sync::mpsc::UnboundedSender<tact_protocol::AgentUpdate>>,
+        events: &tact_protocol::UpdateSink,
     ) -> Result<LlmResponse, LlmError> {
-        stream_assembled(&self.adapter, request, provider_state, ui_tx, |r, s| {
+        stream_assembled(&self.adapter, request, provider_state, events, |r, s| {
             self.assemble_body(r, s)
         })
         .await

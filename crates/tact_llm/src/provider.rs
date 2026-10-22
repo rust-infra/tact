@@ -964,7 +964,7 @@ mod tests {
                     max_tokens: 100,
                 }),
                 None,
-                Some(tx),
+                &tact_protocol::UpdateSink::for_ui(tx),
             )
             .await
             .expect("stream");

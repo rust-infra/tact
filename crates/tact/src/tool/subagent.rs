@@ -631,8 +631,13 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // via ToolProgress. RequestSelect* still passes through for permission popups.
     // Keep the forwarder's handle: the end of the run has to be announced
     // *after* the child's stream is fully forwarded (see the drop below).
+    //
+    // The child gets a *tagged* channel of its own rather than the parent's
+    // sink: its traffic has to be rewritten into `ToolProgress` addressed to
+    // the parent card, and it must not inherit the parent's claim to answer
+    // prompts (a child's permission ask is routed by the forwarder instead).
     let mut forwarder = None;
-    if let Some(tx) = ctx.ui_tx.clone() {
+    if let Some(tx) = ctx.events.ui().cloned() {
         let (tagged, handle) = crate::tool::subagent_ui::tagged_ui_channel_with_progress(
             tx,
             ctx.progress_reporter.clone(),
@@ -640,6 +645,10 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         );
         subagent = subagent.with_ui_channel(tagged);
         forwarder = Some(handle);
+    } else {
+        // No answering frontend (headless): the child still reports to the
+        // same observers, so a run with a subagent stays legible.
+        subagent = subagent.with_observed_events(ctx.events.clone());
     }
 
     // Resume reuses a finished child session: hold its process lock for the
@@ -657,28 +666,26 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // follow-up run.
     ctx.subagent_manager.start(child_id.clone()).await?;
     // The sticky overview only shows children started by this process;
-    // register now and broadcast the snapshot (no-op without ui_tx).
+    // register now and broadcast the snapshot (no-op without a sink).
     ctx.subagent_manager.note_started(&child_id);
-    crate::subagent::emit_subagents_changed(&ctx.ui_tx, &ctx.subagent_manager).await;
+    crate::subagent::emit_subagents_changed(&ctx.events, &ctx.subagent_manager).await;
 
     // The id is minted here, not by the child: put it on the parent card's meta
     // row now (sync and background alike) so the card identifies the run from
     // its first frame and keeps the handle after the child's updates stop.
-    if let Some(tx) = &ctx.ui_tx {
-        let _ = tx.send(AgentUpdate::ToolMeta {
-            tool_id: ctx.progress_reporter.tool_id().to_string(),
-            model: None,
-            token_usage: None,
-            context_window: None,
-            task_id: None,
-            subagent_id: Some(child_id.clone()),
-        });
-    }
+    ctx.events.send(AgentUpdate::ToolMeta {
+        tool_id: ctx.progress_reporter.tool_id().to_string(),
+        model: None,
+        token_usage: None,
+        context_window: None,
+        task_id: None,
+        subagent_id: Some(child_id.clone()),
+    });
 
     // True background dispatch needs a UI channel: without a driver there is
     // no one to submit a wake-up turn, and headless exits by cancelling the
     // child. Degrade to synchronous so the summary still reaches the parent.
-    let run_async = input.run_in_background == Some(true) && ctx.ui_tx.is_some();
+    let run_async = input.run_in_background == Some(true) && ctx.events.is_some();
     if input.run_in_background == Some(true) && !run_async {
         warn!(
             "run_in_background requested without an interactive UI channel; \
@@ -694,7 +701,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             .clone()
             .ok_or_else(|| anyhow::anyhow!("run_in_background requires a parent agent runtime"))?;
         let manager = ctx.subagent_manager.clone();
-        let ui_tx = ctx.ui_tx.clone();
+        let events = ctx.events.clone();
         let tool_id = ctx.progress_reporter.tool_id().to_string();
         let prompt = input.prompt;
         let prompt_for_stop = prompt.clone();
@@ -755,7 +762,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             };
             // Broadcast the sticky snapshot after the row is durable, before
             // the parent tool card is finalized.
-            crate::subagent::emit_subagents_changed(&ui_tx, &manager).await;
+            crate::subagent::emit_subagents_changed(&events, &manager).await;
             // Keep the handle registered until the terminal state is durable;
             // shutdown can otherwise miss this child in the small window
             // between unregistering and persisting completion.
@@ -771,16 +778,14 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
                     success: succeeded,
                 });
             }
-            // Emit on the PARENT ui_tx (not the child's tagged forwarder,
+            // Emit on the parent's sink (not the child's tagged forwarder,
             // which drops unknown variants).
-            if let Some(tx) = &ui_tx {
-                let _ = tx.send(AgentUpdate::SubagentFinished {
-                    tool_id: tool_id.clone(),
-                    child_id: child_id.clone(),
-                    success: succeeded,
-                    summary: summary.clone(),
-                });
-            }
+            events.send(AgentUpdate::SubagentFinished {
+                tool_id: tool_id.clone(),
+                child_id: child_id.clone(),
+                success: succeeded,
+                summary: summary.clone(),
+            });
         });
         Ok(launched)
     } else {
@@ -811,7 +816,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
                 .finish(&child_id, success, summary.clone())
                 .await
         };
-        crate::subagent::emit_subagents_changed(&ctx.ui_tx, &ctx.subagent_manager).await;
+        crate::subagent::emit_subagents_changed(&ctx.events, &ctx.subagent_manager).await;
         if let Some(lock) = lock {
             lock.release().await?;
         }
@@ -911,7 +916,7 @@ pub async fn cancel_subagent(ctx: ToolContext, input: CancelSubagentInput) -> Re
         // Best-effort: mark the run record Cancelled now; the child's finish
         // path keeps it Cancelled when the flag is set.
         let _ = ctx.subagent_manager.cancel(&input.child_id).await;
-        crate::subagent::emit_subagents_changed(&ctx.ui_tx, &ctx.subagent_manager).await;
+        crate::subagent::emit_subagents_changed(&ctx.events, &ctx.subagent_manager).await;
         Ok(format!("cancel requested for subagent {}", input.child_id))
     } else {
         bail!(

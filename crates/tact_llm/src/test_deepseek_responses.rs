@@ -22,6 +22,7 @@ use crate::{
     ProviderConversationState, ProviderInfo, ProviderKind, ProviderStateUpdate,
     RequiredMessageParams, Role, Thinking, ThinkingType,
 };
+use tact_protocol::UpdateSink;
 
 /// Reads `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` and
 /// returns `(api_key, base_url, model)`, or `None` to skip the test.
@@ -131,7 +132,7 @@ async fn deepseek_responses_stream_smoke() {
         .expect("build DeepSeek Responses client");
 
     let response = client
-        .stream_message(&simple_request(model), None, None)
+        .stream_message(&simple_request(model), None, &UpdateSink::default())
         .await
         .expect("DeepSeek /responses streaming request succeeded");
 

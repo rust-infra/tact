@@ -487,12 +487,9 @@ pub struct BackgroundProgressSink {
 }
 
 impl BackgroundProgressSink {
-    pub fn new(
-        tool_id: impl Into<String>,
-        ui_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
-    ) -> Self {
+    pub fn new(tool_id: impl Into<String>, events: tact_protocol::UpdateSink) -> Self {
         Self {
-            reporter: crate::tool::ToolProgressReporter::new(tool_id, ui_tx),
+            reporter: crate::tool::ToolProgressReporter::new(tool_id, events),
         }
     }
 
@@ -1374,8 +1371,11 @@ mod tests {
         let (manager, tmp) = temp_manager("run_redacts_secret");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
         let progress = BackgroundProgressSink::from_reporter(
-            crate::tool::ToolProgressReporter::new("bg-redact", Some(tx))
-                .with_stream_redaction(crate::security::RedactionLevel::Basic),
+            crate::tool::ToolProgressReporter::new(
+                "bg-redact",
+                tact_protocol::UpdateSink::for_ui(tx),
+            )
+            .with_stream_redaction(crate::security::RedactionLevel::Basic),
         );
 
         manager
@@ -1419,7 +1419,8 @@ mod tests {
     async fn run_streams_progress_and_emits_finished_event() {
         let (manager, tmp) = temp_manager("run_streams_progress");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress = BackgroundProgressSink::new("bg-test", Some(tx));
+        let progress =
+            BackgroundProgressSink::new("bg-test", tact_protocol::UpdateSink::for_ui(tx));
 
         let started = manager
             .run(
@@ -1480,7 +1481,8 @@ mod tests {
     async fn run_failed_command_emits_error_finished_event() {
         let (manager, tmp) = temp_manager("run_failed_command");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        let progress = BackgroundProgressSink::new("bg-fail", Some(tx));
+        let progress =
+            BackgroundProgressSink::new("bg-fail", tact_protocol::UpdateSink::for_ui(tx));
 
         manager
             .run(

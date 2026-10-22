@@ -376,6 +376,7 @@
 <div class="toc-group">
 <ol class="toc-list">
 <li class="toc-l2"><a href="#1-channels" title="1. Channels"><span class="toc-label">1. Channels</span></a></li>
+<li class="toc-l3"><a href="#updatesink-%E5%88%86%E5%8F%91%E5%8F%A3" title="1.1 UpdateSink：一个分发口，两种前端"><span class="toc-label">1.1 UpdateSink：一个分发口，两种前端</span></a></li>
 <li class="toc-l2"><a href="#2-%E6%A0%B8%E5%BF%83%E7%B1%BB%E5%9E%8B" title="2. 核心类型"><span class="toc-label">2. 核心类型</span></a></li>
 <li class="toc-l3"><a href="#agentupdate" title="AgentUpdate"><span class="toc-label">AgentUpdate</span></a></li>
 <li class="toc-l3"><a href="#usercommand" title="UserCommand"><span class="toc-label">UserCommand</span></a></li>
@@ -463,6 +464,58 @@ snapshot；TUI 从该 snapshot reconcile
 <code>InputMode::Select</code>，并把 <code>RequestSelect</code> /
 <code>RequestMultiSelect</code> 当作 wake-up hint。没有 broker 的
 headless/tests 仍以该事件为权威。</p>
+<h3 id="updatesink-分发口">1.1 <code>UpdateSink</code>：一个分发口，两种前端</h3>
+<p>agent 内部不再持有可空的 <code>ui_tx</code>，而是
+<code>tact_protocol::UpdateSink</code>：</p>
+<pre class="rust"><code>pub struct UpdateSink {
+    ui: Option&lt;UnboundedSender&lt;AgentUpdate&gt;&gt;,          // 能回答提问的前端
+    observers: Vec&lt;UnboundedSender&lt;AgentUpdate&gt;&gt;,     // 只读镜像
+}
+
+impl UpdateSink {
+    pub fn for_ui(tx: UnboundedSender&lt;AgentUpdate&gt;) -&gt; Self;
+    pub fn observing(tx: UnboundedSender&lt;AgentUpdate&gt;) -&gt; Self;
+    pub fn from_ui(tx: Option&lt;UnboundedSender&lt;AgentUpdate&gt;&gt;) -&gt; Self;
+    pub fn with_observer(self, tx: UnboundedSender&lt;AgentUpdate&gt;) -&gt; Self;
+    pub fn observers_only(&amp;self) -&gt; Self;
+    pub fn ui(&amp;self) -&gt; Option&lt;&amp;UnboundedSender&lt;AgentUpdate&gt;&gt;;
+    pub fn is_some(&amp;self) -&gt; bool;   // 有回答方
+    pub fn is_none(&amp;self) -&gt; bool;   // 一个接收方都没有
+    pub fn send(&amp;self, update: AgentUpdate);
+}</code></pre>
+<table>
+<thead>
+<tr>
+<th>前端</th>
+<th>构造</th>
+<th><code>ui()</code></th>
+<th>能回答权限 / <code>ask_user</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TUI</td>
+<td><code>for_ui(tx)</code></td>
+<td><code>Some(&amp;tx)</code></td>
+<td>是</td>
+</tr>
+<tr>
+<td>headless</td>
+<td><code>observing(tx)</code></td>
+<td><code>None</code></td>
+<td>否（检查走非交互路径）</td>
+</tr>
+</tbody>
+</table>
+<p>区分是<strong>可执行的</strong>而不是约定：<code>send</code> 给每个
+observer 一份克隆、把原件交给 <code>ui</code>；提问只能走
+<code>ui()</code>，所以 observer-only 的前端拿不到「我会应答」的身份。
+<code>Agent::with_ui_channel</code> 建前者、<code>with_event_observer</code>
+建后者，二者都同步到 <code>ToolContext.events</code>，因此工具进度、任务 /
+子 agent 快照、LLM adapter 的流式增量都走同一个出口。
+<code>LlmClient::stream_message</code> 接收 <code>&amp;UpdateSink</code>；
+<code>spawn_subagent</code> 在没有回答方通道时用
+<code>with_observed_events</code> 把父级 observer 交给子 agent。</p>
 <hr />
 <h2 id="2-核心类型">2. 核心类型</h2>
 <h3 id="agentupdate"><code>AgentUpdate</code></h3>

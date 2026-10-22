@@ -248,12 +248,15 @@ pub async fn bootstrap_session(
         tools.set_tool_description("bash", tact::tool::SANDBOXED_BASH_DESCRIPTION);
     }
 
-    let (ui_tx, ui_responder) = match &frontend {
-        Frontend::Interactive(wiring) => (Some(wiring.tx.clone()), wiring.responder.clone()),
+    let (events, ui_responder) = match &frontend {
+        Frontend::Interactive(wiring) => (
+            tact_protocol::UpdateSink::for_ui(wiring.tx.clone()),
+            wiring.responder.clone(),
+        ),
         // An empty responder is the honest value for "nobody can answer": a
         // tool that asks fails cleanly instead of hanging on a prompt that has
         // no one behind it.
-        Frontend::Observing(_) => (None, UiResponder::new()),
+        Frontend::Observing(_) => (tact_protocol::UpdateSink::default(), UiResponder::new()),
     };
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),
@@ -268,7 +271,7 @@ pub async fn bootstrap_session(
         teammate_manager,
         worktree_manager,
         subagent_manager,
-        ui_tx,
+        events,
         ui_responder,
         progress_reporter: tact::tool::ToolProgressReporter::default(),
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
