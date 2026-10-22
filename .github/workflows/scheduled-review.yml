@@ -28,10 +28,6 @@ permissions:
   contents: read
   issues: write
 
-# The provider is reached over the network; a hung endpoint must not hold a
-# runner for the default six hours.
-timeout-minutes: 30
-
 concurrency:
   group: scheduled-review
   cancel-in-progress: false
@@ -43,6 +39,11 @@ jobs:
   review:
     name: Review the recent commits on main
     runs-on: ubuntu-latest
+    # The provider is reached over the network; a hung endpoint must not hold a
+    # runner for the default six hours. `timeout-minutes` is a *job* key — at
+    # the workflow top level it makes the whole file invalid, and GitHub reports
+    # that as a run with zero jobs rather than a schema error.
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
         with:
