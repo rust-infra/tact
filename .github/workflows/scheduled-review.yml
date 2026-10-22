@@ -39,6 +39,11 @@ jobs:
   review:
     name: Review the recent commits on main
     runs-on: ubuntu-latest
+    # PROVIDER/MODEL/API_KEY/BASE_URL live in this environment, not at repo
+    # level. Without the declaration `secrets.PROVIDER` is not an error — it
+    # resolves to the empty string, and the run dies later at the "is not set"
+    # guard with no hint that the secret was merely out of scope.
+    environment: tact-ui
     # The provider is reached over the network; a hung endpoint must not hold a
     # runner for the default six hours. `timeout-minutes` is a *job* key — at
     # the workflow top level it makes the whole file invalid, and GitHub reports
@@ -84,7 +89,9 @@ jobs:
           set -euo pipefail
           for name in PROVIDER MODEL API_KEY BASE_URL; do
             if [ -z "${!name:-}" ]; then
-              echo "::error::secret $name is not set"
+              # The usual cause is scope, not a typo: these are environment
+              # secrets, so a job without `environment:` sees them as empty.
+              echo "::error::secret $name is empty — check it exists in the 'tact-ui' environment and that this job declares it"
               exit 1
             fi
           done
