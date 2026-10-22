@@ -28,10 +28,13 @@ fn local_prefix() -> &'static str {
 /// Opaque per-process identity used to detect PID reuse.
 ///
 /// `None` means *unknown*, not *absent*: it covers both "no such process" and
-/// "the process exists but the kernel will not describe it to us" (another
-/// uid's process answers `EPERM` on macOS and `EACCES` on Linux). Callers must
-/// pair it with [`is_process_alive`], which is the only thing here that can tell
-/// the two apart, and must never read `None` as "the holder is dead".
+/// "the process exists but the kernel will not describe it to us". On macOS the
+/// second case is any other uid's process (`proc_pidinfo` answers `EPERM`). On
+/// Linux `/proc/<pid>/stat` is world-readable, so an ordinary user *can* read a
+/// root process's start time; there the unreadable case needs `/proc` mounted
+/// with `hidepid`, which answers `EACCES`. Callers must pair `None` with
+/// [`is_process_alive`], which is the only thing here that can tell the two
+/// apart, and must never read `None` as "the holder is dead".
 pub fn process_identity(pid: u32) -> Option<String> {
     if pid == 0 {
         return None;
@@ -93,8 +96,21 @@ pub fn holder_is_alive(pid: u32, identity: &str) -> bool {
     // The process exists. A readable identity that disagrees means pid reuse;
     // an unreadable one means we are not allowed to compare at all, which is
     // not evidence that the holder is gone.
-    match process_identity(pid) {
-        Some(actual) => actual == identity,
+    alive_holder_matches(process_identity(pid).as_deref(), identity)
+}
+
+/// Verdict for a pid already known to be alive: compare the identity when the
+/// kernel gave us one, otherwise report alive.
+///
+/// Split out of [`holder_is_alive`] because the `None` arm is not reachable on
+/// every platform: reading a root process's start time is denied on macOS but
+/// permitted on Linux (`/proc/<pid>/stat` is world-readable), so a test that
+/// relies on "another uid's process is unreadable" only holds on macOS. The
+/// arm is the whole point of the conservative verdict, so it is exercised here
+/// directly instead of through a probe that depends on kernel policy.
+fn alive_holder_matches(actual: Option<&str>, expected: &str) -> bool {
+    match actual {
+        Some(actual) => actual == expected,
         None => true,
     }
 }
@@ -324,25 +340,40 @@ mod tests {
 
     #[test]
     fn a_process_we_may_not_describe_is_alive() {
-        // pid 1 belongs to root on every unix we support, so describing it takes
-        // a permission this test does not have: `kill(pid, 0)` reports EPERM
-        // while both the identity probe and a spawned `kill -0` subprocess only
-        // see failure. Reading that as "dead" is exactly what let a runner steal
-        // a lease from a live holder on another uid — the regression this test
-        // exists to catch. It is portable and needs no second uid: the point is
-        // that existence and describability are different questions.
+        // `kill(pid, 0)` is the only probe that separates "gone" from "not
+        // yours": pid 1 is root-owned on every unix we support, so an ordinary
+        // user gets EPERM, which proves the pid exists. Reading that as "dead"
+        // is exactly what let a runner steal a lease from a live holder on
+        // another uid — the regression this test exists to catch. It is
+        // portable and needs no second uid.
         const INIT: u32 = 1;
         assert!(
             is_process_alive(INIT),
             "a live process owned by another uid is alive (EPERM is not absence)"
         );
+    }
 
-        // And the pair must fall back to the TTL rather than claim it is gone.
-        // Any identity string will do: the holder is unverifiable here.
-        let holder = format!("{}irrelevant", local_prefix());
+    #[test]
+    fn an_unreadable_identity_for_a_live_pid_is_alive() {
+        // The other half of the same regression: once the pid is known alive,
+        // an identity we cannot read must not be compared into a "dead"
+        // verdict. Asserted on the comparison itself rather than via pid 1,
+        // because whether pid 1's identity is readable is platform policy —
+        // denied on macOS (`proc_pidinfo` EPERM), allowed on Linux
+        // (`/proc/<pid>/stat` is world-readable) — so probing it would make
+        // this test pass on one OS and fail on the other. Both directions are
+        // pinned: unreadable ⇒ alive, readable-but-different ⇒ dead.
         assert!(
-            holder_is_alive(INIT, &holder),
+            super::alive_holder_matches(None, &format!("{}irrelevant", local_prefix())),
             "an unreadable identity for a live pid is 'unverifiable', so keep waiting"
+        );
+        assert!(
+            !super::alive_holder_matches(Some("macos:1.1"), "macos:2.2"),
+            "a readable identity that disagrees is pid reuse, so the holder is gone"
+        );
+        assert!(
+            super::alive_holder_matches(Some("macos:1.1"), "macos:1.1"),
+            "a readable identity that agrees is the same process"
         );
     }
 }

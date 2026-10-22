@@ -105,12 +105,22 @@ guard already used for legacy and foreign rows:
   no crate.
 - macOS identity: branch on `errno` — `ESRCH` ⇒ no process, `EPERM` ⇒ exists but
   unreadable ⇒ alive. Linux: `read_to_string("/proc/<pid>/stat")` fails
-  `ENOENT` when gone and `EACCES`/`EPERM` when just unreadable; the current
-  `.ok()?` flattens exactly the distinction that matters.
+  `ENOENT` when gone and `EACCES` when just unreadable; the current `.ok()?`
+  flattens exactly the distinction that matters.
 
 Neither branch is testable in CI, because every test runs as one uid — which is
 also why the existing suite is green. Measured evidence above is the substitute;
 a regression test would need a second uid.
+
+> **Correction (2026-10-22).** The Linux half of the bullet above is wrong:
+> `/proc/<pid>/stat` is mode `444`, so an ordinary user *can* read a root
+> process's start time — only `kill(1, 0)` answers `EPERM`. `EACCES` needs
+> `/proc` mounted with `hidepid`, which is not the default. Measured as uid 1000
+> in the host pid namespace: `kill -0 1` → EPERM, `head /proc/1/stat` →
+> succeeds, `process_identity(1)` = `Some("linux:…")`. The unverifiable arm is
+> therefore never entered on Linux, which is what made
+> `a_process_we_may_not_describe_is_alive` fail on CI; see the 2026-10-22 entry
+> in `book/26`.
 
 > **Fixed.** `is_process_alive` now uses `libc::kill(pid, 0)` and branches on the
 > error: only `ESRCH` is absence, `EPERM` is existence (and it rejects
@@ -123,6 +133,11 @@ a regression test would need a second uid.
 > uses pid 1, which is root-owned on every supported unix. It fails against the
 > old code. A third defect surfaced while fixing the first — the `u32::MAX`
 > wrap — and is now pinned by `absent_process_with_local_identity_is_dead`.
+>
+> **Amended 2026-10-22:** the "unreadable identity ⇒ alive" half could *not* be
+> asserted through pid 1, because pid 1's identity is readable on Linux. That
+> half now lives in `an_unreadable_identity_for_a_live_pid_is_alive`, which
+> pins the comparison itself (`alive_holder_matches`).
 >
 > Note the session lock keeps a *different* policy on purpose: `lock_epoch` is
 > local, so an unrecognised epoch there is stale and must stay reclaimable

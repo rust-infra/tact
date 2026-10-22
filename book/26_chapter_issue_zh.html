@@ -375,6 +375,7 @@
 </div>
 <div class="toc-group">
 <ol class="toc-list">
+<li class="toc-l2"><a href="#2026-10-22--pid-1-%E8%BA%AB%E4%BB%BD%E5%8F%AF%E8%AF%BB%E4%B8%8E%E5%90%A6%E6%98%AF%E5%B9%B3%E5%8F%B0%E7%AD%96%E7%95%A5" title="2026-10-22 — pid 1 的身份「可读与否」是平台策略，测试不能替它做假设"><span class="toc-label">2026-10-22 — pid 1 的身份「可读与否」是平台策略，测试不能替它做假设</span></a></li>
 <li class="toc-l2"><a href="#2026-10-21-runner-%E5%BE%AA%E7%8E%AF%E7%9A%84%E4%B8%89%E5%A4%84%E6%98%BE%E5%BC%8F%E5%8C%96" title="2026-10-21 — Runner 循环的三处显式化"><span class="toc-label">2026-10-21 — Runner 循环的三处显式化</span></a></li>
 <li class="toc-l2"><a href="#1-2026-10-20--lease-%E5%BF%83%E8%B7%B3%E4%B8%8D%E5%86%8D%E6%97%A0%E9%99%90%E9%9D%99%E9%BB%98%E9%87%8D%E8%AF%95" title="1. 2026-10-20 — lease 心跳不再无限静默重试"><span class="toc-label">1. 2026-10-20 — lease 心跳不再无限静默重试</span></a></li>
 <li class="toc-l2"><a href="#1-2026-10-20--goal-%E4%BA%8B%E4%BB%B6%E8%AE%B0%E5%BD%95%E6%9D%A5%E6%BA%90%E6%A8%A1%E5%9E%8B%E4%B8%8D%E8%83%BD%E5%86%8D%E5%86%99%E7%94%A8%E6%88%B7%E5%86%B3%E5%AE%9A" title="1. 2026-10-20 — Goal 事件记录来源，模型不能再写用户决定"><span class="toc-label">1. 2026-10-20 — Goal 事件记录来源，模型不能再写用户决定</span></a></li>
@@ -730,6 +731,41 @@ bugfix日志</strong>，记录有用户可见或 API
 可见行为变化的改动。它不是教程：每条写清问题、决策与代码 /
 设计文档位置，避免后续重复踩坑。</p>
 <p>相关流程：<code>AGENTS.md</code>（何时追加条目）、<code>docs/superpowers/specs/</code>（设计）、<code>docs/superpowers/plans/</code>（实现计划）。</p>
+<h2 id="2026-10-22--pid-1-身份可读与否是平台策略">2026-10-22 — pid 1 的身份「可读与否」是平台策略，测试不能替它做假设</h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Type</strong></td>
+<td>fix（CI：Linux 上 <code>store::process_identity</code> 稳定失败一条；无用户可见行为变化）</td>
+</tr>
+<tr>
+<td><strong>Symptom</strong></td>
+<td>CI 的 <code>cargo test -p tact --lib</code> 报 <code>a_process_we_may_not_describe_is_alive</code> 失败（1432 passed / 1 failed，<code>crates/tact/src/store/process_identity.rs:343</code>）。同一用例在 macOS 本机通过，所以本地全绿没有暴露它。</td>
+</tr>
+<tr>
+<td><strong>Cause</strong></td>
+<td>用例第二段断言 <code>holder_is_alive(1, "&lt;prefix&gt;irrelevant")</code>，注释里的理由是「identity 探测对 pid 1 只会看到失败」。这在 macOS 成立（<code>proc_pidinfo</code> 对别的 uid 返回 <code>EPERM</code> ⇒ <code>None</code> ⇒ 走不可核验分支），在 Linux <strong>不成立</strong>：<code>/proc/&lt;pid&gt;/stat</code> 权限是 <code>444</code>，普通用户读得到 root 进程的 starttime，只有 <code>kill(1, 0)</code> 报 <code>EPERM</code>。于是 Linux 上 <code>process_identity(1)</code> 是 <code>Some("linux:…")</code>，代码走进「身份读到了但不匹配 ⇒ PID 复用 ⇒ 死」并正确返回 <code>false</code>——<strong>生产逻辑是对的，错的是用例对平台权限的假设</strong>。旧文档「Linux <code>/proc/&lt;pid&gt;/stat</code> 报 <code>EACCES</code>」同样不准确（那需要 <code>hidepid</code>，并非默认）。</td>
+</tr>
+<tr>
+<td><strong>Decision</strong></td>
+<td>(1) 把「已确认存活后如何裁决身份」抽成 <code>alive_holder_matches(actual, expected)</code>，<code>holder_is_alive</code> 只负责先判存活。(2) <code>a_process_we_may_not_describe_is_alive</code> 只保留真正可移植的那半——<code>is_process_alive(1)</code> 为真（<code>EPERM</code> 即存在），不依赖身份是否可读。(3) 新增 <code>an_unreadable_identity_for_a_live_pid_is_alive</code>，直接对 <code>alive_holder_matches</code> 断言三条：<code>None</code> ⇒ 活、读得到但不匹配 ⇒ 死、读得到且匹配 ⇒ 活。回归覆盖没有减少，只是不再借内核权限来表达。(4) 同步修正 <code>process_identity</code> 的模块文档与 <code>docs/reviews/2026-10-17-lease-holder-liveness-review.md</code> 的 EACCES 说法。</td>
+</tr>
+<tr>
+<td><strong>Changed behaviour</strong></td>
+<td>无运行时变化。契约不变：pid 不存在 ⇒ 死；pid 存在且身份可读但不匹配 ⇒ 死；pid 存在但身份不可读（或 identity 为空 / 外部平台前缀）⇒ 活，退回 TTL。</td>
+</tr>
+<tr>
+<td><strong>Pointers</strong></td>
+<td><code>crates/tact/src/store/process_identity.rs</code>（<code>alive_holder_matches</code>、<code>holder_is_alive</code>、<code>is_process_alive</code>）；测试 <code>a_process_we_may_not_describe_is_alive</code>、<code>an_unreadable_identity_for_a_live_pid_is_alive</code>；评审记录 <code>docs/reviews/2026-10-17-lease-holder-liveness-review.md</code> 的 Correction 段</td>
+</tr>
+</tbody>
+</table>
 <h2 id="2026-10-21-runner-循环的三处显式化">2026-10-21 — Runner 循环的三处显式化</h2>
 <table>
 <thead>
@@ -1289,9 +1325,11 @@ Run；多进程首次打开同一个旧库不再因迁移竞态报错）</td>
 uid</strong> 的活进程只会得到 <code>EPERM</code>——<code>kill -0 1</code>
 报 <code>Operation not permitted</code>（exit
 1，与「无此进程」无法区分），macOS <code>proc_pidinfo</code> 返回
-<code>ret=0/EPERM</code>，Linux <code>/proc/&lt;pid&gt;/stat</code> 报
-<code>EACCES</code>。<code>EPERM</code> 恰恰证明该 pid
-<strong>存在</strong>。于是一个 root 持有 lease（容器 / devcontainer 里
+<code>ret=0/EPERM</code>。<code>EPERM</code> 恰恰证明该 pid
+<strong>存在</strong>。（Linux 的 <code>/proc/&lt;pid&gt;/stat</code>
+是 <code>444</code>，身份读得到，不可核验只发生在 macOS 与
+<code>hidepid</code> 场景——2026-10-22 条目更正了此处原先「报
+<code>EACCES</code>」的说法。）于是一个 root 持有 lease（容器 / devcontainer 里
 root 拥有工作区很常见）时，普通用户的 <code>tact-ui</code> 会把它的
 lease 判死：<code>recover_dead_active_runs</code> 或 15
 秒定时对账中断它的活动 Run、把它的 Goal 落 <code>paused</code>（stop
@@ -1337,7 +1375,11 @@ uid、读不到身份的——一律不抢，最坏退回原来的 TTL 语义（
 TTL」，方向是安全的：误判「死」会破坏互斥，误判「活」只推迟接管。旧库并发首次打开不再报错。</p>
 <p><strong>验证：</strong> <code>cargo test -p tact --lib</code>（1405
 全绿，新增 <code>a_process_we_may_not_describe_is_alive</code>——用 pid 1
-覆盖 EPERM 分支，无需第二个 uid；新增
+覆盖 EPERM 分支，无需第二个 uid（<strong>2026-10-22
+更正</strong>：该用例当时还顺带断言了「身份不可读 ⇒ 活」，而那只在 macOS
+成立，Linux 上 pid 1 的身份可读，CI 因此失败；现拆为
+<code>an_unreadable_identity_for_a_live_pid_is_alive</code>，见
+2026-10-22 条目）；新增
 <code>a_lost_migration_race_does_not_fail_store_construction</code>——直接驱动迁移竞态的败方，并确认非竞态失败仍上抛）、<code>store::process_identity</code>（5）、<code>store::goal_store::</code>（31）、<code>cargo test -p tact-ui --lib</code>（120）、<code>-p tact-ui --test driver_integration</code>（10）、<code>-p agent_tui_kit --lib</code>（427）、<code>-p tui --lib</code>（747）、<code>-p tact_protocol --lib</code>（27）；<code>cargo clippy --all-targets -D warnings</code>
 与 <code>cargo fmt --all --check</code>
 干净。<strong>踩坑记录</strong>：把 session lock 改成直接委托
