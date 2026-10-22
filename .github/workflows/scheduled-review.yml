@@ -142,29 +142,23 @@ jobs:
           cat > prompt.txt <<'PROMPT'
           You are reviewing this repository before its changes reach users.
 
-          This is a read-only review: you run in plan mode, which blocks every
-          write. Do not create, edit or delete files, and do not redirect output
-          to one — `git show HEAD > /tmp/x.diff` is rejected just like a real
-          write, because it is one. Read diffs and files directly instead:
+          You run in `auto` permission mode, so nothing blocks you: pipes,
+          redirections and `&&` chains all work, and you can write files. That
+          freedom is a means to read efficiently, not a licence to change
+          anything. This checkout is a throwaway CI runner, so a stray edit
+          costs nothing to the world — but it corrupts your own review, because
+          the code you judge afterwards is no longer the code you were sent.
+
+          So: never modify tracked files, never commit, never touch the git
+          index. Reading is unrestricted — use whatever pipeline is convenient:
 
             git show <hash>
-            git show <hash> -- <path>
+            git show <hash> -- <path> | head -100
             git log --oneline <old>..<new>
-
-          Plan mode is strict about shell syntax beyond redirection: a pipe
-          (`... | head`), a `2>/dev/null`, or an `&&` chain makes the whole
-          command count as a write, however read-only its parts are. So issue
-          plain single commands and let the tool cap the output:
-
-            grep -rn "needle" crates/tact/src
+            grep -rn "needle" crates/tact/src 2>/dev/null
             rg -n "needle" crates
-            sed -n '1,60p' path/to/file
-            git show <hash>
 
-          If a command is rejected, do not retry it with a different redirect
-          or a shorter pipe; drop the extra syntax entirely. Your findings go in
-          your final answer, which the harness saves for you — you never need to
-          write them to a file.
+          If you need a scratch file, put it under /tmp, never in the worktree.
 
           The commits to review are listed in `review-range.txt` (hash, date,
           subject), newest first. Read that file first, then inspect the actual
@@ -205,6 +199,14 @@ jobs:
           # The provider flags are *global* options: they precede the
           # subcommand, and `headless` itself takes only the prompt.
           #
+          # `auto`, not `plan`: plan mode's classifier counts any shell
+          # metacharacter as a write, so `git show | head` and `2>/dev/null`
+          # were denied along with real writes — the review spent its budget
+          # retrying read-only commands. The runner is a throwaway VM that is
+          # destroyed with the job, so the isolation plan mode was protecting
+          # is already given by the platform; the prompt asks the agent not to
+          # modify the worktree, which is the only stake left.
+          #
           # `tee` on stderr, not a plain `> review.log`: a plain redirect hides
           # the log until the step ends, so a stalled run shows an empty Actions
           # log and a cancelled run shows nothing at all. This keeps the live
@@ -222,7 +224,7 @@ jobs:
             --api-key "$API_KEY" \
             --base-url "$BASE_URL" \
             --model "$MODEL" \
-            --permission-mode plan \
+            --permission-mode auto \
             headless "$(cat prompt.txt)" 2>&1 > review.md | tee review.log
           echo "--- review log (tail) ---"
           tail -20 review.log || true
