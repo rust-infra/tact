@@ -86,6 +86,10 @@ jobs:
       # Passing it through the environment keeps it a plain string.
       - name: Resolve and validate the tag
         id: resolve
+        # `shell: bash` is required, not cosmetic: this step runs on the Windows
+        # matrix entry too, where the default shell is PowerShell and the
+        # `[[ ]]` tests below would be a syntax error.
+        shell: bash
         env:
           INPUT_TAG: ${{ inputs.tag }}
           REF_NAME: ${{ github.ref_name }}
@@ -189,6 +193,9 @@ jobs:
     steps:
       - name: Resolve the tag
         id: resolve
+        # This job runs on ubuntu-latest, so bash is already the default; the
+        # explicit shell keeps the `[[ ]]` tests valid if the runner changes.
+        shell: bash
         env:
           INPUT_TAG: ${{ inputs.tag }}
           REF_NAME: ${{ github.ref_name }}
