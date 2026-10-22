@@ -1,0 +1,1009 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>持久化记忆</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-memory-%E7%9A%84%E7%94%A8%E9%80%94" title="1. Memory 的用途"><span class="toc-label">1. Memory 的用途</span></a></li>
+<li class="toc-l2"><a href="#2-%E6%9E%B6%E6%9E%84%E6%A6%82%E8%A7%88" title="2. 架构概览"><span class="toc-label">2. 架构概览</span></a></li>
+<li class="toc-l2"><a href="#3-%E6%95%B0%E6%8D%AE%E6%A8%A1%E5%9E%8B" title="3. 数据模型"><span class="toc-label">3. 数据模型</span></a></li>
+<li class="toc-l3"><a href="#memorytype" title="MemoryType"><span class="toc-label">MemoryType</span></a></li>
+<li class="toc-l3"><a href="#memoryentry" title="MemoryEntry"><span class="toc-label">MemoryEntry</span></a></li>
+<li class="toc-l3"><a href="#%E7%A3%81%E7%9B%98%E6%A0%BC%E5%BC%8F" title="磁盘格式"><span class="toc-label">磁盘格式</span></a></li>
+<li class="toc-l2"><a href="#4-memorymanager-%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F" title="4. MemoryManager 生命周期"><span class="toc-label">4. MemoryManager 生命周期</span></a></li>
+<li class="toc-l3"><a href="#%E6%8F%90%E7%A4%BA%E8%AF%8D%E6%B8%B2%E6%9F%93" title="提示词渲染"><span class="toc-label">提示词渲染</span></a></li>
+<li class="toc-l3"><a href="#%E7%B4%A2%E5%BC%95%E6%96%87%E4%BB%B6" title="索引文件"><span class="toc-label">索引文件</span></a></li>
+<li class="toc-l2"><a href="#5-%E9%9B%86%E6%88%90%E7%82%B9" title="5. 集成点"><span class="toc-label">5. 集成点</span></a></li>
+<li class="toc-l3"><a href="#%E7%B3%BB%E7%BB%9F%E6%8F%90%E7%A4%BA%E8%AF%8D" title="系统提示词"><span class="toc-label">系统提示词</span></a></li>
+<li class="toc-l3"><a href="#toolcontext" title="ToolContext"><span class="toc-label">ToolContext</span></a></li>
+<li class="toc-l3"><a href="#save_memory-%E5%B7%A5%E5%85%B7" title="save_memory 工具"><span class="toc-label">save_memory 工具</span></a></li>
+<li class="toc-l3"><a href="#load_memory-%E5%B7%A5%E5%85%B7" title="load_memory 工具"><span class="toc-label">load_memory 工具</span></a></li>
+<li class="toc-l2"><a href="#6-%E5%AD%98%E5%82%A8%E5%B8%83%E5%B1%80" title="6. 存储布局"><span class="toc-label">6. 存储布局</span></a></li>
+<li class="toc-l3"><a href="#%E8%BF%81%E7%A7%BB" title="迁移"><span class="toc-label">迁移</span></a></li>
+<li class="toc-l2"><a href="#7-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="7. 代码地图"><span class="toc-label">7. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#8-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="8. 当前缺口"><span class="toc-label">8. 当前缺口</span></a></li>
+<li class="toc-l2"><a href="#%E7%9B%B8%E5%85%B3%E6%96%87%E6%A1%A3" title="相关文档"><span class="toc-label">相关文档</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="持久化记忆">持久化记忆</h1>
+<p>本章说明 Tact
+如何在对话上下文之外存储<strong>长期事实</strong>：用户偏好、纠正、项目约束与参考
+URL。记忆是带 YAML frontmatter 的 Markdown 文件，存放在<strong>按 git
+仓库切分</strong>的目录
+<code>~/.tact/projects/&lt;slug&gt;/memory/</code> 下；同一仓库的所有
+worktree 共用一个目录。系统提示词只注入 <code>MEMORY.md</code>
+<strong>索引</strong>（200 行 / 25 KB 上限），正文由
+<code>load_memory</code> 工具按需读取；写入走
+<code>save_memory</code>。</p>
+<p>这套结构对齐 Claude Code 的 auto
+memory（<code>~/.claude/projects/&lt;repo&gt;/memory/</code>）：<strong>每个仓库一份、索引进提示词、正文按需取</strong>。</p>
+<p><code>[agent].memory_enabled</code>（默认
+<code>true</code>）是总开关：设为 <code>false</code> 后既不注入记忆与
+<code>MEMORY_GUIDANCE</code>，也不注册 <code>save_memory</code> /
+<code>load_memory</code>；磁盘上的文件不会被删除。具体契约见 §5。</p>
+<p>记忆如何融入提示词组装与动态边界，见 <a
+href="./04_chapter_prompt_zh.html">系统提示词</a>。写入工具见 <a
+href="./07_chapter_tool_zh.html">工具系统</a>。</p>
+<hr />
+<h2 id="1-memory-的用途">1. Memory 的用途</h2>
+<p>Memory 回答：<em>跨会话 agent
+应记住什么，且无法从当前代码库直接看出？</em></p>
+<table>
+<thead>
+<tr>
+<th>类型</th>
+<th>示例</th>
+<th>何时保存</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>user</code></td>
+<td>「我偏好 tab 而非 space」</td>
+<td>用户陈述偏好</td>
+</tr>
+<tr>
+<td><code>feedback</code></td>
+<td>「库代码不要用 unwrap」</td>
+<td>用户纠正 agent</td>
+</tr>
+<tr>
+<td><code>project</code></td>
+<td>「遗留 billing 模块不能动」</td>
+<td>难以从代码推断的硬事实</td>
+</tr>
+<tr>
+<td><code>reference</code></td>
+<td>「设计文档在 https://…」</td>
+<td>外部资源位置</td>
+</tr>
+</tbody>
+</table>
+<p>静态字符串
+<code>MEMORY_GUIDANCE</code>（<code>crates/tact/src/memory/mod.rs</code>）注入系统提示词（动态边界之上），教模型<strong>何时保存</strong>与<strong>何时不要</strong>——例如不要存密钥、临时分支名，或可从仓库轻易推导的内容。</p>
+<hr />
+<h2 id="2-架构概览">2. 架构概览</h2>
+<pre class="mermaid">graph TD
+    mr[memory_root workdir] --&gt; mm[MemoryManager]
+    mm --&gt; files["~/.tact/projects/&amp;lt;slug&amp;gt;/memory/*.md"]
+    mm --&gt; idx["MEMORY.md 索引"]
+    bsp[build_system_prompt] --&gt; mm2[load_memory_index_prompt]
+    idx --&gt; mm2
+    mm2 --&gt; sp["系统提示词 § Memory（仅索引）"]
+    sm[save_memory] --&gt; files
+    lm[load_memory] --&gt; files</pre>
+<p>启动时，两个前端共用的
+<code>session_bootstrap::bootstrap_session</code>（<code>crates/tact-ui/src/session_bootstrap.rs</code>）调用
+<code>tact::memory::memory_root(&amp;work_dir)</code>
+得到本仓库的记忆目录，再把旧的全局目录迁移进来（§6），最后构造
+<code>MemoryManager</code>。</p>
+<p><strong>目录如何派生</strong>（<code>memory_root</code> →
+<code>repo_slug</code>）：向上查找 <code>.git</code>，取其<strong>common
+git dir</strong> 的父目录（即 checkout 根）作为仓库标识，把非
+<code>[A-Za-z0-9._-]</code> 字符替换为
+<code>-</code>。<code>/Users/me/Projects/tact</code> →
+<code>-Users-rg-Projects-tact</code>（与 Claude Code
+的同名约定一致）。</p>
+<p>关键点：<code>.git</code> 在主 checkout 里是<strong>目录</strong>，在
+linked worktree 里是内容为 <code>gitdir: &lt;main&gt;/.git</code>
+的<strong>文件</strong>。取两者的共同目标（common git dir）后，worktree
+与主 checkout 得到<strong>同一个
+slug</strong>，因此共享记忆目录——项目事实不会在 worktree
+之间分裂。解析是<strong>纯函数</strong>（只读 <code>$HOME</code> 与
+<code>.git</code>，不 spawn 进程、不做
+<code>canonicalize</code>），因为它在会话启动路径上。</p>
+<p>不在 git 仓库内时退回
+<code>&lt;workdir&gt;/.tact/memory</code>；<code>$HOME</code>
+未设置时同样退回该路径（测试与无家目录容器）。</p>
+<p><code>[agent].auto_memory_directory</code>
+可以<strong>覆盖</strong>上面这套派生：<code>~</code> / <code>~/x</code>
+展开为 <code>$HOME</code>，相对路径按 workdir 解析，绝对路径原样使用——与
+<code>[agent].skill_dirs</code>
+完全同一套规则（<code>expand_memory_dir</code>）。设置后所有项目共用该目录，这正是默认布局要避免的形态，因此它面向的是"共享盘
+/ 网络存储"这类需求，而不是"让多个仓库共享记忆"。</p>
+<p><code>[agent].memory_enabled</code>
+只控制后两条消费路径：关闭时系统提示不注入索引 /
+guidance，<code>toolset_with_memory(false)</code> 也不注册
+<code>save_memory</code> /
+<code>load_memory</code>。<code>MemoryManager</code>
+仍会构造并只读加载（不写盘），因此开关不是访问控制——模型仍可能通过
+<code>read_file</code> / <code>bash</code> 读到工作区内的
+<code>.tact/memory</code>（仓库外那份则被 <code>safe_path</code>
+挡住，见 §5）。</p>
+<hr />
+<h2 id="3-数据模型">3. 数据模型</h2>
+<h3 id="memorytype">MemoryType</h3>
+<pre class="rust"><code>pub enum MemoryType {
+    User,       // YAML: user
+    Feedback,   // feedback
+    Project,    // project
+    Reference,  // reference
+}</code></pre>
+<p>从 YAML <code>type</code> 字段经
+<code>strum</code>（<code>snake_case</code>）解析。非法类型在加载或保存解析时失败。</p>
+<h3 id="memoryentry">MemoryEntry</h3>
+<pre class="rust"><code>pub struct MemoryEntry {
+    pub name: String,
+    /// 磁盘文件名（stem）——`load_memory` 的句柄，索引里打印的就是它
+    pub file_stem: String,
+    pub description: String,
+    pub memory_type: MemoryType,
+    pub content: String,
+    /// frontmatter 的 `modified` 时间戳，文件没有则 `None`
+    pub modified: Option&lt;String&gt;,
+}</code></pre>
+<h3 id="磁盘格式">磁盘格式</h3>
+<p>每条记忆一个文件 <code>{sanitized_name}.md</code>：</p>
+<pre class="markdown"><code>---
+name: Prefer Tabs
+description: Indent with tabs
+type: user
+modified: 2026-10-09T13:21:04Z
+---
+Use tabs by default.</code></pre>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>来源</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>name</code></td>
+<td>frontmatter，或省略时用文件 stem</td>
+<td>显示名；文件名为 sanitized（小写，仅
+<code>_</code>/<code>-</code>）</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>frontmatter</td>
+<td>一行摘要</td>
+</tr>
+<tr>
+<td><code>type</code></td>
+<td>frontmatter</td>
+<td>缺失时默认为 <code>project</code></td>
+</tr>
+<tr>
+<td><code>modified</code></td>
+<td>写入时自动生成</td>
+<td>ISO-8601 UTC；让新旧记忆可辨，加载时同样读回</td>
+</tr>
+<tr>
+<td>body</td>
+<td>闭合 <code>---</code> 之后</td>
+<td>完整记忆内容</td>
+</tr>
+</tbody>
+</table>
+<p><strong>无</strong>合法 YAML frontmatter（<code>---</code> …
+<code>---</code>）的文件在加载时<strong>跳过</strong>——不视为记忆。</p>
+<hr />
+<h2 id="4-memorymanager-生命周期">4. MemoryManager 生命周期</h2>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>load_all()</code></td>
+<td>扫描 <code>memory_dir</code>（仅 depth 1）；解析 frontmatter；填充
+<code>HashMap</code>；索引缺失时补建</td>
+</tr>
+<tr>
+<td><code>load_memory_index_prompt()</code></td>
+<td>渲染注入系统提示词的<strong>索引</strong>块（含
+<code>load_memory</code> 使用说明）</td>
+</tr>
+<tr>
+<td><code>load_topic(name)</code></td>
+<td>按文件 stem（或显示名）返回一条记忆的完整原文</td>
+</tr>
+<tr>
+<td><code>save_memory(name, description, type, content)</code></td>
+<td>写文件（含 <code>modified</code>）、更新 map、重建索引</td>
+</tr>
+<tr>
+<td><code>describe_memories()</code></td>
+<td>紧凑列表供调试（<code>[type] name: description</code>）</td>
+</tr>
+<tr>
+<td><code>memories()</code> / <code>dir()</code></td>
+<td>只读访问内存 map / 目录</td>
+</tr>
+</tbody>
+</table>
+<h3 id="提示词渲染">提示词渲染</h3>
+<p><code>load_memory_index_prompt()</code> 注入的内容是
+<code>MEMORY.md</code> 本身，外加一句使用说明：</p>
+<pre class="markdown"><code>The index below lists memories from previous sessions in this repository.
+Read one in full with the `load_memory` tool (pass its file name without
+the `.md` suffix) before relying on it.
+
+# Memory Index
+
+- Prefer Tabs (prefer_tabs.md): Indent with tabs [user]</code></pre>
+<p><strong>正文不进提示词</strong>——这是与旧实现最重要的差别。旧版把每条记忆的完整内容拼进提示词，条目越多注入越大、且没有字节上限；现在无论积攒多少条，注入量都由索引的
+200 行 / 25 KB 封顶（Claude Code 的同两个限制）。</p>
+<h3 id="索引文件">索引文件</h3>
+<p><code>rebuild_index()</code> 在每次 <code>save_memory</code> 时写
+<code>MEMORY.md</code>；<code>load_all()</code>
+发现索引缺失（例如手写目录、从没调过
+<code>save_memory</code>）时也会补建——因为索引现在<strong>就是被注入的那个产物</strong>，不能只在保存时存在。</p>
+<p>索引行形如
+<code>- &lt;name&gt; (&lt;stem&gt;.md): &lt;description&gt; [&lt;type&gt;]</code>：<strong>文件名写进行里</strong>，因为它是
+<code>load_memory</code>
+的句柄，而索引是模型唯一能得知可读什么的入口。</p>
+<p>行数与字节两个上限由 <code>truncate_index</code>
+执行：<code>MAX_INDEX_LINES</code>（200）与
+<code>MAX_INDEX_BYTES</code>（25
+KB），谁先到算谁，并在截断处留一行说明。</p>
+<hr />
+<h2 id="5-集成点">5. 集成点</h2>
+<h3 id="系统提示词">系统提示词</h3>
+<p><code>Agent::build_system_prompt</code>（<code>crates/tact/src/agent/mod.rs</code>）：</p>
+<pre class="rust"><code>let memory_enabled = self.agent_settings.memory_enabled;
+let memory = if memory_enabled { self.load_memory_prompt()? } else { String::new() };
+let memory_guidance = if memory_enabled { MEMORY_GUIDANCE.trim() } else { &quot;&quot; };
+// …
+.memory(memory)
+.memory_guidance(memory_guidance)</code></pre>
+<p>二者在 agent loop 内每轮执行；<code>memory_enabled = false</code>
+时传入空字符串，模板的 <code>{% if %}</code>
+会直接略去两个节。记忆内容出现在 <code>=== DYNAMIC_BOUNDARY ===</code>
+<strong>之下</strong>（动态节）。见 <a
+href="./04_chapter_prompt_zh.html">系统提示词</a>。</p>
+<h3 id="toolcontext">ToolContext</h3>
+<pre class="rust"><code>pub memory_manager: Arc&lt;std::sync::Mutex&lt;MemoryManager&gt;&gt;,</code></pre>
+<p>在 <code>session_bootstrap::bootstrap_session</code>
+中与其他会话服务（五个领域 manager、MCP
+router、工具集、hooks）一并构造，headless 与交互两个前端共用。子 agent
+通过其 <code>ToolContext</code> 继承同一 manager。</p>
+<h3 id="save_memory-工具">save_memory 工具</h3>
+<p><code>crates/tact/src/tool/memory.rs</code> —
+<code>#[tool(name = "save_memory", …)]</code> 锁定 manager 并调用
+<code>save_memory()</code>。非法 <code>type</code> 字符串返回错误。</p>
+<h3 id="load_memory-工具">load_memory 工具</h3>
+<p>同文件的 <code>load_memory</code>
+读取一条记忆的完整原文，输入是索引里的<strong>文件名（不含
+<code>.md</code>）</strong>；显示名也接受，以免模型照抄索引标题时被为难。未知名字返回错误并列出已知名字。</p>
+<p>这个工具是「只注入索引」能成立的前提：<code>read_file</code> 受
+<code>tool::safe_path</code>
+约束、拒绝工作区之外的路径（<code>crates/tact/src/tool/path.rs</code>），而仓库记忆住在
+<code>$HOME/.tact/projects/…</code>。没有它，索引会列出模型<strong>读不到</strong>的内容。</p>
+<p>主 agent 的工具集在 <code>session_bootstrap::bootstrap_session</code>
+里由 <code>crates/tact/src/tool/registry.rs</code> 的
+<code>toolset_with_memory(tact::config::settings().agent.memory_enabled)</code>
+组装；关闭时两个工具都不进入
+router，因此既不出现在工具声明里，派发时也只会得到
+<code>unknown tool</code>。二者同开关是刻意的：只注入索引却拿不到
+<code>load_memory</code>，会让模型看见读不到的记忆。</p>
+<hr />
+<h2 id="6-存储布局">6. 存储布局</h2>
+<table>
+<thead>
+<tr>
+<th>路径</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>~/.tact/projects/&lt;slug&gt;/memory/</code></td>
+<td>本仓库的记忆目录（<code>memory_root()</code>）；<code>&lt;slug&gt;</code>
+由 common git dir 的父目录派生</td>
+</tr>
+<tr>
+<td><code>~/.tact/projects/&lt;slug&gt;/memory/{stem}.md</code></td>
+<td>单条记忆文件（含 <code>modified</code>）</td>
+</tr>
+<tr>
+<td><code>~/.tact/projects/&lt;slug&gt;/memory/MEMORY.md</code></td>
+<td>索引——<strong>注入系统提示词的就是它</strong>（200 行 / 25 KB
+上限）</td>
+</tr>
+<tr>
+<td><code>&lt;workdir&gt;/.tact/memory/</code></td>
+<td>不在 git 仓库内、或 <code>$HOME</code> 未设置时的回退目录</td>
+</tr>
+<tr>
+<td><code>~/.tact/memory/</code></td>
+<td><strong>旧</strong>的全局目录，已退役；仅作为迁移来源，不再读写</td>
+</tr>
+<tr>
+<td><code>[agent].auto_memory_directory</code></td>
+<td>可选覆盖，替代上面所有派生（<code>~</code>/相对路径按
+<code>skill_dirs</code> 规则展开）</td>
+</tr>
+</tbody>
+</table>
+<h3 id="迁移">迁移</h3>
+<p>旧布局把机器上所有项目塞进一个
+<code>~/.tact/memory/</code>。切分后这些文件会失去归属，因此
+<code>migrate_legacy_memory(legacy, dest)</code>
+在启动时把它们<strong>拷贝</strong>进本仓库目录：</p>
+<ul>
+<li>只在目标目录<strong>尚无</strong> <code>.md</code>
+时执行一次——一旦本仓库有了自己的记忆，陈旧的全局目录不得覆盖它。</li>
+<li>只拷贝，<strong>不删除</strong>：第二个 checkout
+也能从同一来源迁移。</li>
+<li>跳过 <code>MEMORY.md</code>（索引按目标目录重建）。</li>
+<li>拷贝数量经启动 <code>Notices</code>
+通道报告，迁移不会静默发生；迁移失败只损失导入，不影响会话。</li>
+</ul>
+<p>记忆<strong>直接使用 Markdown 文件</strong>，而非 <a
+href="./01_chapter_store_zh.html">存储与持久化</a> 中的 JSON
+<code>Store</code> 层。</p>
+<hr />
+<h2 id="7-代码地图">7. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/memory/mod.rs</code></td>
+<td><code>MemoryType</code>、<code>MemoryEntry</code>、<code>MemoryManager</code>、<code>memory_root</code>
+/
+<code>repo_slug</code>、<code>migrate_legacy_memory</code>、<code>MEMORY_GUIDANCE</code>、frontmatter
+解析与索引截断</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/memory.rs</code></td>
+<td><code>save_memory</code> / <code>load_memory</code> 原生工具</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td><code>toolset_with_memory()</code> 按
+<code>[agent].memory_enabled</code> 决定是否注册两个记忆工具</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>load_memory_prompt()</code>（转发到索引渲染）、系统提示词接线</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext.memory_manager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/session_bootstrap.rs</code></td>
+<td>解析 <code>memory_root(&amp;work_dir)</code>、跑迁移、构造
+manager、装配工具集；headless / 交互两个前端共用同一份</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/consts.rs</code></td>
+<td><code>TactPath::home_projects_dir()</code> →
+<code>~/.tact/projects</code>；<code>home_memory_dir()</code>
+保留为迁移来源</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-当前缺口">8. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>无删除或编辑工具</td>
+<td>仅有 <code>save_memory</code>；覆盖使用同名。删除需手工删文件</td>
+</tr>
+<tr>
+<td>会话中不从磁盘 reload</td>
+<td>外部编辑 <code>.md</code> 需重启才生效</td>
+</tr>
+<tr>
+<td>无全局共享层</td>
+<td>记忆严格按仓库隔离；Claude Code 同样如此，跨仓库复用的偏好只能写进
+<code>AGENTS.md</code> 或 <code>~/.tact/</code> 级配置</td>
+</tr>
+<tr>
+<td>不可改存储位置</td>
+<td>目录由 <code>memory_root</code> 派生，或由
+<code>[agent].auto_memory_directory</code>
+整体覆盖；没有"只加一层前缀"的选项</td>
+</tr>
+<tr>
+<td>浅层扫描</td>
+<td><code>load_all()</code> 使用
+<code>max_depth(1)</code>——忽略嵌套子目录</td>
+</tr>
+<tr>
+<td>必需 frontmatter</td>
+<td>无 <code>---</code> 头的文件静默跳过</td>
+</tr>
+<tr>
+<td>无去重</td>
+<td>相同显示名不同 sanitize 理论上可能文件名冲突</td>
+</tr>
+<tr>
+<td>热路径 Mutex</td>
+<td>每轮与每次 save 都锁 <code>memory_manager</code></td>
+</tr>
+<tr>
+<td>目录不可读时静默</td>
+<td><code>load_all</code> 的补建索引失败被忽略，提示词退回空块</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./04_chapter_prompt_zh.html">系统提示词</a> —
+动态边界与记忆节位置</li>
+<li><a href="./07_chapter_tool_zh.html">工具系统</a> —
+<code>save_memory</code> 与 <code>ToolContext</code></li>
+<li><a href="./01_chapter_store_zh.html">存储与持久化</a> — JSON store
+层（记忆独立）</li>
+<li><a href="../ARCHITECTURE.md">ARCHITECTURE.md</a> —
+提示词组装中的记忆高层说明</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

@@ -39,7 +39,7 @@ pub(crate) fn restyle_log_line_with_skills(
     if let LogItemKind::SystemPlain(style) = kind
         && style != SystemMsgStyle::Default
     {
-        return single_span(raw, style.color(theme));
+        return single_styled(raw, style.style(theme));
     }
 
     if kind == LogItemKind::SystemTool {
@@ -101,7 +101,11 @@ pub(crate) fn restyle_log_line_with_skills(
 }
 
 fn single_span(text: &str, fg: Color) -> Line<'static> {
-    Line::from(Span::styled(text.to_string(), Style::default().fg(fg)))
+    single_styled(text, Style::default().fg(fg))
+}
+
+fn single_styled(text: &str, style: Style) -> Line<'static> {
+    Line::from(Span::styled(text.to_string(), style))
 }
 
 fn restyle_code_line(stored: &Line, theme: &Theme) -> Line<'static> {
@@ -219,6 +223,23 @@ mod tests {
             ok_badge.spans.first().unwrap().style.fg,
             Some(theme.success)
         );
+    }
+
+    /// The Goal slot is the one system line that is also bold: its hue alone
+    /// would not carry across the log's density.
+    #[test]
+    fn goal_lines_restyle_to_the_goal_slot() {
+        for theme in [brutal(), retro(), Theme::from(ThemeName::InkLight)] {
+            let line = restyle_log_line(
+                &stored_plain("🎯 Goal 1 created (ship) - starting run", Color::White),
+                "🎯 Goal 1 created (ship) - starting run",
+                &theme,
+                LogItemKind::SystemPlain(SystemMsgStyle::Goal),
+            );
+            let span = line.spans.first().unwrap();
+            assert_eq!(span.style.fg, Some(theme.goal_fg()));
+            assert!(span.style.add_modifier.contains(Modifier::BOLD));
+        }
     }
 
     #[test]

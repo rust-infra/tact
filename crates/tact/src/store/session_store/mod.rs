@@ -10,7 +10,6 @@ pub mod sqlite;
 
 pub use sqlite::SqliteSessionStore;
 
-mod process_identity;
 mod session_lock;
 pub use session_lock::SessionLock;
 

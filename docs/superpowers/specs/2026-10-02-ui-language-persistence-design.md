@@ -107,8 +107,8 @@ and report in their own words.
 - `crates/tact/src/config/persist.rs`: `updates_ui_language_keeping_the_theme_line` (the sibling
   `theme` line and its trailing comment survive),
   `ui_language_is_created_when_the_table_is_missing`.
-- Docs: [Ch 23](../../../book/23_chapter_tui_zh.md) §6.10, [Ch 21](../../../book/21_chapter_config_zh.md)
-  §4 / §5 / §6, `config.example.toml`, [Ch 26](../../../book/26_chapter_issue_zh.md) 2026-10-02 entry.
+- Docs: [Ch 23](../../../book/23_chapter_tui_zh.html) §6.10, [Ch 21](../../../book/21_chapter_config_zh.html)
+  §4 / §5 / §6, `config.example.toml`, [Ch 26](../../../book/26_chapter_issue_zh.html) 2026-10-02 entry.
 
 ## Open question
 

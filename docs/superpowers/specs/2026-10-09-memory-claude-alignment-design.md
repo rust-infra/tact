@@ -143,4 +143,4 @@ project-local `<workdir>/.tact/memory/`). Scoping would strand both.
 | `load_memory` tool | `crates/tact/src/tool/memory.rs` |
 | Tool registration (both gates) | `crates/tact/src/tool/registry.rs` |
 | Bootstrap wiring + notices | `crates/tact-ui/src/session_bootstrap.rs` |
-| Docs | `book/03_chapter_memory_zh.md`, `README.md`, `ARCHITECTURE.md`, `config.example.toml` |
+| Docs | `book/03_chapter_memory_zh.html`, `README.md`, `ARCHITECTURE.md`, `config.example.toml` |

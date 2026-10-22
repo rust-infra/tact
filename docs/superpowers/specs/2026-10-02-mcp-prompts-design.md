@@ -3,7 +3,7 @@
 Date: 2026-10-02
 Status: approved for implementation
 
-Closes the last row of [Ch 8 §10](../../../book/08_chapter_mcp_zh.md). The predecessor spec
+Closes the last row of [Ch 8 §10](../../../book/08_chapter_mcp_zh.html). The predecessor spec
 ([`2026-09-30-mcp-resource-templates-design.md`](./2026-09-30-mcp-resource-templates-design.md) §3)
 declared Prompts a non-goal with a reason: *"a prompt template has no consumer in Tact's turn
 structure — it is a server-authored message sequence, not a tool call."* This spec does not overturn
@@ -140,7 +140,7 @@ a name per primitive would only invite the ceilings to drift apart for no reason
 
 ## 5. Docs sync
 
-- `book/08_chapter_mcp_zh.md`: Step 9 gains the two tools, the prompts paragraph that answers the old
+- `book/08_chapter_mcp_zh.html`: Step 9 gains the two tools, the prompts paragraph that answers the old
   non-goal, the four risk keys, the code map row, and the §10 gap row is deleted.
 - `config.example.toml`: the two keys beside the resource pair.
-- `book/26_chapter_issue_zh.md`: newest-first entry.
+- `book/26_chapter_issue_zh.html`: newest-first entry.

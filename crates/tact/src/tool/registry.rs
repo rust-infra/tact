@@ -7,6 +7,7 @@ use super::{
     bash::BashTool,
     compact::CompactTool,
     edit_file::EditFileTool,
+    goal::{GoalCheckpointTool, GoalProposeCompletionTool, GoalReadTool, GoalRequestInputTool},
     load_skill::LoadSkillTool,
     memory::{LoadMemoryTool, SaveMemoryTool},
     read_file::ReadFileTool,
@@ -42,7 +43,11 @@ fn try_toolset(memory_enabled: bool) -> anyhow::Result<ToolRouter> {
         .route(SleepTool)?
         .route(WriteFileTool)?
         .route(EditFileTool)?
-        .route(LoadSkillTool)?;
+        .route(LoadSkillTool)?
+        .route(GoalReadTool)?
+        .route(GoalCheckpointTool)?
+        .route(GoalRequestInputTool)?
+        .route(GoalProposeCompletionTool)?;
     let router = if memory_enabled {
         router.route(SaveMemoryTool)?.route(LoadMemoryTool)?
     } else {

@@ -40,8 +40,8 @@ Spec: [2026-10-02-ui-language-persistence-design.md](../specs/2026-10-02-ui-lang
    - `cargo test -p tact --lib config` — the two persist tests.
 7. **Docs sync** (one pass, per the AGENTS.md trigger table)
    - `config.example.toml`: `[ui] language`.
-   - `book/21_chapter_config_zh.md`: §1 table, §4 example, §5 defaults, §6 "no CLI flag" paragraph.
-   - `book/23_chapter_tui_zh.md` §6.10: `/lang` beside `/theme`.
-   - `book/26_chapter_issue_zh.md`: 2026-10-02 entry.
+   - `book/21_chapter_config_zh.html`: §1 table, §4 example, §5 defaults, §6 "no CLI flag" paragraph.
+   - `book/23_chapter_tui_zh.html` §6.10: `/lang` beside `/theme`.
+   - `book/26_chapter_issue_zh.html`: 2026-10-02 entry.
 8. **Gate** — `cargo fmt` first, then `fmt --check` → `clippy --all-targets --all-features -D warnings`
    → `build` → `test`, sequentially.

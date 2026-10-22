@@ -5,6 +5,7 @@ use ratatui::{
 };
 use tact_llm::content::{ContentBlock, Message, MessageContent, Role};
 
+use tact::goal::is_goal_context_text;
 use tact::hook::{hook_context_body, hook_context_source, is_hook_context_text};
 
 use agent_tui_kit::widgets::button::{Button, ButtonTheme, ButtonVariant};
@@ -70,6 +71,19 @@ fn format_hook_elapsed(ms: u64) -> String {
 fn is_hook_context_cell(message: &Message) -> bool {
     message.is_hook_context()
         || matches!(&message.content, MessageContent::Text { content } if is_hook_context_text(content))
+}
+
+/// True for a cell carrying the Goal runner's per-activation context
+/// (`<goal-context>`) instead of a user turn.
+///
+/// Same two signals as [`is_hook_context_cell`], for the same reason. Unlike
+/// hook context this cell is not rendered at all: the context is derived data
+/// (objective, criteria, linked tasks, latest checkpoint) that the Goal panel
+/// already shows, and it is re-injected fresh into every activation — a row
+/// per activation would only push the conversation off the log.
+fn is_goal_context_cell(message: &Message) -> bool {
+    message.is_goal_context()
+        || matches!(&message.content, MessageContent::Text { content } if is_goal_context_text(content))
 }
 
 /// Copy affordances written by older versions (`[copy]` / `[复制]`). Rows they
@@ -243,6 +257,12 @@ impl App {
                                 );
                                 continue;
                             }
+                            // Derived data, re-injected per activation: the
+                            // Goal panel is the authoritative view, and the
+                            // row would also count as a user turn.
+                            if is_goal_context_cell(&msg) {
+                                continue;
+                            }
                             // Seed the session turn counter: persisted user
                             // messages are the only durable record of past
                             // turns (no dedicated store query needed).
@@ -255,6 +275,9 @@ impl App {
                 }
             };
 
+            if msg.role == Role::User && is_goal_context_cell(&msg) {
+                continue;
+            }
             match msg.role {
                 Role::User => {
                     let texts: Vec<&str> = blocks
@@ -309,10 +332,7 @@ impl App {
         for line in content.split('\n') {
             let style = SystemMsgStyle::from_marker(line).unwrap_or(SystemMsgStyle::Default);
             self.append_msg(
-                Line::from(Span::styled(
-                    line.to_string(),
-                    Style::default().fg(style.color(&theme)),
-                )),
+                Line::from(Span::styled(line.to_string(), style.style(&theme))),
                 line.to_string(),
                 LogItemKind::SystemPlain(style),
             );
@@ -749,6 +769,52 @@ mod tests {
         );
     }
 
+    /// The Goal runner's per-activation context is not a user turn and is not
+    /// rendered: the panel already shows everything in it, and one row per
+    /// activation would bury the conversation.
+    ///
+    /// Both signals are covered — the in-memory kind and the markers that are
+    /// all a reload from disk carries.
+    #[test]
+    fn load_history_skips_goal_context_cells() {
+        let mut app = make_app();
+        app.load_history(vec![
+            tact_llm::Message::new_text(
+                tact_llm::Role::User,
+                format!(
+                    "{}\ngoal: ef770062\n{}\n",
+                    tact::goal::GOAL_CONTEXT_OPEN_TAG,
+                    tact::goal::GOAL_CONTEXT_CLOSE_TAG
+                ),
+            )
+            .with_kind(tact_llm::MessageKind::GoalContext),
+            tact_llm::Message::new_text(
+                tact_llm::Role::User,
+                format!(
+                    "{}\ngoal: ef770062\n{}\n",
+                    tact::goal::GOAL_CONTEXT_OPEN_TAG,
+                    tact::goal::GOAL_CONTEXT_CLOSE_TAG
+                ),
+            ),
+            tact_llm::Message::new_text(tact_llm::Role::User, "real".to_string()),
+        ]);
+
+        assert_eq!(
+            app.status_bar_mut().turn_user,
+            1,
+            "only the real turn counts"
+        );
+        let raws: Vec<&str> = app.log.items.iter().map(|item| item.raw.as_str()).collect();
+        assert!(
+            !raws.iter().any(|raw| raw.contains("ef770062")),
+            "the injected context is not rendered: {raws:?}"
+        );
+        assert!(
+            raws.iter().any(|raw| raw.contains("real")),
+            "the real turn is still rendered: {raws:?}"
+        );
+    }
+
     /// The hook block is a container: a labelled header row, then every body row
     /// behind the bar — and the row tails beside the bar still carry the theme
     /// background (a gutter that leaves unpainted cells behind is how residue
@@ -1105,6 +1171,25 @@ mod tests {
             app.log.items.last().unwrap().line.spans[0].style.fg,
             Some(app.theme.accent)
         );
+    }
+
+    /// A Goal notice must be identifiable without reading it: the `/goal`
+    /// panel row, the sticky strip and the log all describe the same durable
+    /// Goal, so the log line gets the Goal slot *and* the weight.
+    #[test]
+    fn goal_notices_get_the_goal_slot_and_bold() {
+        use ratatui::style::Modifier;
+
+        let mut app = make_app();
+        app.add_system_message("🎯 Goal 216ae6be created (review code) - starting run".into());
+
+        let row = app.log.items.last().unwrap();
+        assert_eq!(row.kind, LogItemKind::SystemPlain(SystemMsgStyle::Goal));
+        let style = row.line.spans[0].style;
+        assert_eq!(style.fg, Some(app.theme.goal_fg()));
+        assert!(style.add_modifier.contains(Modifier::BOLD));
+        // The marker is what copy/selection carry, so it must stay in `raw`.
+        assert!(row.raw.starts_with("🎯 Goal 216ae6be"));
     }
 
     #[test]

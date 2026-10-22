@@ -34,9 +34,10 @@ use agent_tui_kit::{
         util::wrap_line,
     },
     state::{
-        ActiveThinkingBlock, BackgroundPanelState, FocusedPanel, InputMode, LogCoordinator,
-        LogItemKind, LogScroll, MouseState, PlanPanel, SelectPopup, Status, StatusBarState,
-        StreamState, SubagentPanelState, TaskPanelState, ThinkingBlock, ThinkingState, ToolState,
+        ActiveThinkingBlock, BackgroundPanelState, FocusedPanel, GoalPanelState, InputMode,
+        LogCoordinator, LogItemKind, LogScroll, MouseState, PlanPanel, SelectPopup, Status,
+        StatusBarState, StreamState, SubagentPanelState, TaskPanelState, ThinkingBlock,
+        ThinkingState, ToolState,
     },
     theme::{Theme, ThemeName},
 };
@@ -288,6 +289,7 @@ impl MockShell {
                     task_dag_popup: None,
                     task_history: &[],
                     select: &SelectPopup::default(),
+                    goal_panel: &GoalPanelState::default(),
                     task_panel: &TaskPanelState::default(),
                     subagent_panel: &SubagentPanelState::default(),
                     background_panel: &BackgroundPanelState::default(),

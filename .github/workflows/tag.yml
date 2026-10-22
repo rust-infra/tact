@@ -1,0 +1,155 @@
+name: Tag
+
+# Tags every merge to `main` whose `[workspace.package].version` is new.
+#
+# The tag is what `release.yml` listens for (`on: push: tags: v*`), so this is
+# the switch that decides when binaries are built: bump the version in the same
+# PR that changes the behaviour, merge, and the release follows. A merge that
+# does not change the version is a no-op — nothing is re-released, and the log
+# says why.
+#
+# `workflow_dispatch` exists to retry a tag that failed to be created; it does
+# not force a duplicate tag.
+
+on:
+  push:
+    branches: [ "main" ]
+  workflow_dispatch:
+
+# `contents: write` is what allows pushing the tag. Nothing else is granted.
+permissions:
+  contents: write
+
+# Two merges landing together must not race on the tag: the later run waits and
+# then finds the tag already there (`exists` → skip).
+concurrency:
+  group: tag-main
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  tag:
+    name: Tag the workspace version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # Full history is not needed, but the tag must point at the commit
+          # that was merged, not at whatever `main` is by the time we push.
+          fetch-depth: 0
+
+      - name: Read the workspace version
+        id: version
+        run: |
+          set -euo pipefail
+          # The version lives in exactly one place: `[workspace.package]`.
+          version="$(python3 - <<'PY'
+          import re, pathlib
+          text = pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
+          match = re.search(
+              r'^\[workspace\.package\]\s*$(.*?)(?=^\[|\Z)',
+              text,
+              re.MULTILINE | re.DOTALL,
+          )
+          if not match:
+              raise SystemExit("[workspace.package] is missing from Cargo.toml")
+          version = re.search(
+              r'^version\s*=\s*"([^"]+)"\s*$', match.group(1), re.MULTILINE
+          )
+          if not version:
+              raise SystemExit("[workspace.package].version is missing")
+          print(version.group(1))
+          PY
+          )"
+          case "$version" in
+            [0-9]*.[0-9]*.[0-9]*) ;;
+            *) echo "::error::workspace version '$version' is not semver"; exit 1 ;;
+          esac
+          echo "tag=v$version" >> "$GITHUB_OUTPUT"
+          echo "Workspace version: $version"
+
+      - name: Every workspace-inheriting crate agrees
+        # A crate that declares `version.workspace = true` publishes the
+        # workspace number, so the tag already covers it. A crate that pins its
+        # own version is internal and deliberately unversioned against the
+        # release; only the inheriting ones are checked, because a tag that
+        # names a version one of them does not carry is a lie.
+        run: |
+          set -euo pipefail
+          root_version="${{ steps.version.outputs.tag }}"
+          root_version="${root_version#v}"
+          failed=0
+          for manifest in crates/*/Cargo.toml; do
+            name="$(sed -n 's/^name = "\(.*\)"$/\1/p' "$manifest" | head -n 1)"
+            # A manifest may carry both a `version.workspace = true` line and a
+            # literal `version = "..."` (a merge artefact, or a hand edit that
+            # meant to pin). Cargo rejects that outright, so it would never
+            # reach a tag — but naming it here beats a confusing build failure
+            # in `release.yml`, which runs only after the tag is pushed.
+            literal="$(sed -n 's/^version = "\(.*\)"$/\1/p' "$manifest" | head -n 1)"
+            inherits=0
+            if grep -qE '^\s*version\.workspace\s*=\s*true\s*$' "$manifest"; then
+              inherits=1
+            fi
+            if [ "$inherits" -eq 1 ] && [ -n "$literal" ]; then
+              echo "::error file=$manifest::$name declares both version.workspace and version = \"$literal\""
+              failed=1
+              continue
+            fi
+            if [ "$inherits" -eq 0 ]; then
+              # Internal crates pin their own version on purpose (`0.1.0`):
+              # they are not part of the release, so the tag does not name them.
+              echo "internal (own version): $name = ${literal:-<none>}"
+              continue
+            fi
+            echo "inherits workspace version: $name"
+          done
+          if [ "$failed" -ne 0 ]; then
+            exit 1
+          fi
+          echo "All workspace-inheriting crates agree with $root_version"
+
+      - name: Does the tag already exist?
+        id: existing
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+          if git rev-parse -q --verify "refs/tags/$tag" >/dev/null; then
+            echo "::notice::$tag already exists; nothing to tag"
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create and push the tag
+        if: steps.existing.outputs.exists == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${{ steps.version.outputs.tag }}"
+          sha="${{ github.sha }}"
+          # Annotated, and pointing at the commit this run checked out: a merge
+          # that lands while this job runs must not get today's tag.
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" "$sha" \
+            -m "$tag" \
+            -m "Tagged from main by the Tag workflow (${sha})."
+          git push origin "refs/tags/$tag"
+          echo "::notice::Pushed $tag at $sha"
+
+      - name: Summarize
+        if: always()
+        run: |
+          {
+            echo "### Tag"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Workspace version | \`${{ steps.version.outputs.tag }}\` |"
+            echo "| Already existed | \`${{ steps.existing.outputs.exists }}\` |"
+            echo "| Commit | \`${{ github.sha }}\` |"
+          } >> "$GITHUB_STEP_SUMMARY"

@@ -1,0 +1,18 @@
+{
+  "canvas": [1180, 1640],
+  "fade": 0.5,
+  "fps": 30,
+  "gif_fps": 10,
+  "segments": [
+    { "image": ".scratch/frames-lifecycle/s1.png",  "duration": 2.8, "title": "1. 创建与确认验收标准" },
+    { "image": ".scratch/frames-lifecycle/s2.png",  "duration": 3.0, "title": "2. 第一次 activation" },
+    { "image": ".scratch/frames-lifecycle/s3.png",  "duration": 3.0, "title": "3. 下一周期的门槛" },
+    { "image": ".scratch/frames-lifecycle/s4.png",  "duration": 3.4, "title": "4. 累计预算与记账" },
+    { "image": ".scratch/frames-lifecycle/s5.png",  "duration": 3.2, "title": "5. checkpoint：常驻协议与最后一轮兜底" },
+    { "image": ".scratch/frames-lifecycle/s6.png",  "duration": 3.4, "title": "6. Run outcome、结束行与无进展检测" },
+    { "image": ".scratch/frames-lifecycle/s7.png",  "duration": 3.0, "title": "7. 完成提议 → verifying" },
+    { "image": ".scratch/frames-lifecycle/s8.png",  "duration": 3.0, "title": "8. 人工验收 → succeeded" },
+    { "image": ".scratch/frames-lifecycle/s9.png",  "duration": 3.6, "title": "9. 等待用户与崩溃恢复" },
+    { "image": ".scratch/frames-lifecycle/s10.png", "duration": 3.4, "title": "10. 中断 vs 取消、终态" }
+  ]
+}

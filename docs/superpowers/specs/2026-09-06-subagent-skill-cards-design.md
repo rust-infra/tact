@@ -1,7 +1,7 @@
 # 子代理技能卡（Subagent Skill Cards）设计
 
 > 日期：2026-09-06 · 状态：草稿待批准（先写设计文档）
-> 关联：`crates/tact/src/tool/subagent.rs`、`crates/tact/src/consts.rs`（`TactPath`）、`book/12_chapter_subagent*.md`、`book/26_chapter_issue*.md`
+> 关联：`crates/tact/src/tool/subagent.rs`、`crates/tact/src/consts.rs`（`TactPath`）、`book/12_chapter_subagent_zh.html`、`book/26_chapter_issue_zh.html`
 > 背景提交：`8c74f4e`（移除声明式 agent definitions，分支 `feat/plugin-compat`）
 
 ## 1. 背景与动机
@@ -165,11 +165,11 @@ You are a principal reviewer. …
 
 ## 6. 文档同步（双语）
 
-- `book/12_chapter_subagent_zh.md` / `_zh.md`：
+- `book/12_chapter_subagent_zh.html`：
   - §2 `SubagentInput` 结构体与字段表补 `skill` 行；
   - 新小节（复用原 §2.1 位置）「Subagent skill cards」：目录、frontmatter、正文即角色、与主 agent skill 的隔离说明；
   - §5 Static prompt 段补技能卡拼接示例。
-- `book/26_chapter_issue*.md`：随实现推送前追加一条 `feat`/`optimization` 条目（含本 spec 链接）。
+- `book/26_chapter_issue_zh.html`：随实现推送前追加一条 `feat`/`optimization` 条目（含本 spec 链接）。
 - 不涉及 `config.example.toml`、`agent_tui_kit`、插件文档。
 
 ## 7. 未来扩展（v1 不做，留档）

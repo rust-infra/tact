@@ -217,6 +217,57 @@ fn full_frame_slash_popup_completes_subcommands_with_their_syntax() {
     }
 }
 
+/// The read-out popup's body is laid out by the *selection* path (one
+/// `selectable_text` row per display row), so pin the shape it must keep: the
+/// rendered Markdown is all there, and the footer now advertises the copy key
+/// that works on it.
+#[test]
+fn readout_popup_renders_its_markdown_body_and_copy_hint() {
+    let mut app = make_app();
+    app.open_markdown_popup(
+        "Goal: review code".into(),
+        "**ID:** `216ae6be`\n\n**Status:** `Paused` / `Execution`\n\nreview code\n".into(),
+    );
+
+    let text = render_main_area_text(&mut app, 100, 30);
+
+    for expected in [
+        "Goal: review code",
+        "ID: 216ae6be",
+        "Status: Paused / Execution",
+        "review code",
+        "y copy",
+    ] {
+        assert!(text.contains(expected), "missing {expected} in:\n{text}");
+    }
+}
+
+/// A Goal id row is picked, not typed: the popup shows the id the command
+/// takes *and* the panel's own title, so the row is self-explanatory.
+#[test]
+fn full_frame_slash_popup_offers_goal_ids_with_their_titles() {
+    use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
+
+    let mut app = make_app();
+    app.goal_panel_mut().apply_snapshot(vec![GoalSnapshot {
+        id: "216ae6be".into(),
+        title: "review code".into(),
+        status: GoalStatusSnapshot::Running,
+        ..Default::default()
+    }]);
+    app.input_mode = InputMode::Insert;
+    app.input = "/goal show ".into();
+    app.input_cursor = app.input.len();
+    app.slash_command.active = true;
+    app.slash_command.start_pos = 0;
+
+    let text = render_app_text(&mut app, 100, 30);
+
+    for expected in ["/goal show 216ae6be", "▶ review code"] {
+        assert!(text.contains(expected), "missing {expected} in:\n{text}");
+    }
+}
+
 /// Index of the `skill-<n>` candidate in the `/skill ` popup.
 ///
 /// Derived from the live candidate list rather than hardcoded: the built-in
@@ -464,6 +515,47 @@ fn select_popup_shows_navigation_footer_hint() {
     );
 }
 
+/// A permission popup raised by a `spawn_subagent` child must not read as the
+/// main agent's own ask: the border title names the origin.
+#[test]
+fn select_popup_titles_a_subagent_prompt_as_such() {
+    let mut app = make_app();
+    app.input_mode = InputMode::Select;
+    app.select.set(
+        "Allow write_file on task-5a-report.md?".into(),
+        vec!["Allow once".into(), "Deny".into()],
+        9,
+        false,
+        true,
+    );
+
+    let text = render_app_text(&mut app, 100, 30);
+    assert!(
+        text.contains("Select from subagent"),
+        "the popup must name its origin, got:\n{text}"
+    );
+}
+
+#[test]
+fn select_popup_keeps_the_plain_title_for_the_main_agent() {
+    let mut app = make_app();
+    app.input_mode = InputMode::Select;
+    app.select.set(
+        "Allow write_file on a.rs?".into(),
+        vec!["Allow once".into(), "Deny".into()],
+        9,
+        false,
+        false,
+    );
+
+    let text = render_app_text(&mut app, 100, 30);
+    assert!(text.contains("Select"), "got:\n{text}");
+    assert!(
+        !text.contains("from subagent"),
+        "the main agent's prompt must not claim a subagent, got:\n{text}"
+    );
+}
+
 #[test]
 fn select_popup_multi_shows_toggle_footer_hint() {
     let mut app = make_app();
@@ -472,6 +564,7 @@ fn select_popup_multi_shows_toggle_footer_hint() {
         "Pick options".into(),
         (0..3).map(|i| format!("opt-{i}")).collect(),
         1,
+        false,
         false,
     );
 
@@ -1125,8 +1218,13 @@ fn full_frame_done_status_renders_in_status_bar() {
 fn full_frame_select_mode_shows_in_status_bar() {
     let mut app = make_app();
     app.input_mode = InputMode::Select;
-    app.select
-        .set("Pick one".into(), vec!["A".into(), "B".into()], 0, false);
+    app.select.set(
+        "Pick one".into(),
+        vec!["A".into(), "B".into()],
+        0,
+        false,
+        false,
+    );
 
     let text = render_app_text(&mut app, 100, 24);
 

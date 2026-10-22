@@ -1,0 +1,770 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>桌面通知</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-%E9%80%9A%E7%9F%A5%E5%81%9A%E4%BB%80%E4%B9%88" title="1. 通知做什么"><span class="toc-label">1. 通知做什么</span></a></li>
+<li class="toc-l2"><a href="#2-%E5%B9%B3%E5%8F%B0%E8%A1%8C%E4%B8%BA" title="2. 平台行为"><span class="toc-label">2. 平台行为</span></a></li>
+<li class="toc-l3"><a href="#macos" title="macOS"><span class="toc-label">macOS</span></a></li>
+<li class="toc-l3"><a href="#%E9%9D%9E-macos" title="非 macOS"><span class="toc-label">非 macOS</span></a></li>
+<li class="toc-l2"><a href="#3-%E9%85%8D%E7%BD%AE" title="3. 配置"><span class="toc-label">3. 配置</span></a></li>
+<li class="toc-l2"><a href="#4-%E5%9C%A8-agent-%E4%B8%AD%E7%9A%84%E9%9B%86%E6%88%90" title="4. 在 Agent 中的集成"><span class="toc-label">4. 在 Agent 中的集成</span></a></li>
+<li class="toc-l3"><a href="#headless-%E8%B7%AF%E5%BE%84" title="Headless 路径"><span class="toc-label">Headless 路径</span></a></li>
+<li class="toc-l2"><a href="#5-%E4%BB%80%E4%B9%88-%E4%B8%8D-%E8%A7%A6%E5%8F%91%E9%80%9A%E7%9F%A5" title="5. 什么 不 触发通知"><span class="toc-label">5. 什么 不 触发通知</span></a></li>
+<li class="toc-l2"><a href="#6-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="6. 代码地图"><span class="toc-label">6. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#7-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="7. 当前缺口"><span class="toc-label">7. 当前缺口</span></a></li>
+<li class="toc-l2"><a href="#%E7%9B%B8%E5%85%B3%E6%96%87%E6%A1%A3" title="相关文档"><span class="toc-label">相关文档</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="桌面通知">桌面通知</h1>
+<p>本章说明 Tact 如何在关键 agent 生命周期事件发生时发送
+<strong>原生桌面通知</strong>——主要是任务完成和工具步骤失败。该模块小而平台相关：在
+macOS 上完整实现，其他平台为 no-op。</p>
+<p>通知与 TUI 日志面板正交。即使终端未聚焦也会触发，因此长时间 headless
+或后台会话可在 macOS 上提醒用户。</p>
+<hr />
+<h2 id="1-通知做什么">1. 通知做什么</h2>
+<p><code>crates/tact/src/notifications/mod.rs</code> 封装单一原语：</p>
+<pre class="rust"><code>pub fn notify(title: &amp;str, message: &amp;str) -&gt; Result&lt;()&gt;;</code></pre>
+<p>更高级别的辅助函数格式化常见事件：</p>
+<table>
+<thead>
+<tr>
+<th>函数</th>
+<th>标题</th>
+<th>使用时机</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>notify_task_complete(summary)</code></td>
+<td><code>Tact — Task Complete</code></td>
+<td>Agent 成功结束</td>
+</tr>
+<tr>
+<td><code>notify_step_failed(step_idx, error)</code></td>
+<td><code>Tact — Step Failed</code></td>
+<td>工具步骤失败</td>
+</tr>
+<tr>
+<td><code>notify_info(summary)</code></td>
+<td><code>Tact — Info</code></td>
+<td><strong>已定义但今日代码中无调用点</strong></td>
+</tr>
+</tbody>
+</table>
+<p>所有路径在干活前都会检查全局启用标志。</p>
+<hr />
+<h2 id="2-平台行为">2. 平台行为</h2>
+<pre class="mermaid">graph TD
+    a_call[notify title, message] --&gt; b_enabled{is_enabled?}
+    b_enabled --&gt;|No| c_skip[Ok — no-op]
+    b_enabled --&gt;|Yes| d_os{target_os?}
+    d_os --&gt;|macOS| e_script[osascript -e display notification]
+    d_os --&gt;|其他| f_noop[Ok — 静默跳过]
+    e_script --&gt; g_result[Ok 或 osascript 错误]</pre>
+<h3 id="macos">macOS</h3>
+<p>通过 <code>osascript</code> 使用 AppleScript：</p>
+<pre class="applescript"><code>display notification &quot;{message}&quot; with title &quot;{title}&quot;</code></pre>
+<p>标题和消息中的双引号会转义。spawn <code>osascript</code> 失败返回
+<code>Err</code>。</p>
+<h3 id="非-macos">非 macOS</h3>
+<p>函数立即返回 <code>Ok(())</code>。无回退（无
+<code>notify-send</code>、无 Windows toast API）。</p>
+<hr />
+<h2 id="3-配置">3. 配置</h2>
+<p>通知 <strong>默认启用</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>设置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>TOML</td>
+<td><code>[agent] notifications_enabled = false</code></td>
+</tr>
+<tr>
+<td>CLI</td>
+<td><code>--no-notifications</code></td>
+</tr>
+</tbody>
+</table>
+<p>在 <code>config/resolve.rs</code>
+中解析，运行时通过以下方式读取：</p>
+<pre class="rust"><code>pub fn is_enabled() -&gt; bool {
+    crate::config::settings().agent.notifications_enabled
+}</code></pre>
+<p>禁用时，每个公开函数在不 spawn 子进程的情况下返回
+<code>Ok(())</code>。</p>
+<hr />
+<h2 id="4-在-agent-中的集成">4. 在 Agent 中的集成</h2>
+<p>通知从
+<code>Agent::emit_update</code>（<code>crates/tact/src/agent/mod.rs</code>）触发，<strong>在</strong>
+更新转发到 TUI 通道 <strong>之前</strong>：</p>
+<pre class="rust"><code>match &amp;update {
+    AgentUpdate::TaskComplete(text) =&gt; {
+        let summary = text.chars().take(200).collect::&lt;String&gt;();
+        let _ = crate::notifications::notify_task_complete(&amp;summary);
+    }
+    AgentUpdate::StepFailed(idx, _, msg) =&gt; {
+        let _ = crate::notifications::notify_step_failed(*idx, msg);
+    }
+    _ =&gt; {}
+}</code></pre>
+<pre class="mermaid">sequenceDiagram
+    participant TUI as tact-ui driver
+    participant Agent
+    participant Notify as notifications::
+    participant UI as TUI
+
+    TUI-&gt;&gt;Agent: emit_update(TaskComplete)&lt;br/&gt;（agent_loop Ok 后，未取消）
+    Agent-&gt;&gt;Notify: notify_task_complete（≤200 字符）
+    Note over Notify: 仅 macOS；错误被忽略
+    Agent-&gt;&gt;UI: ui_tx.send(update)
+
+    Agent-&gt;&gt;Agent: emit_update(StepFailed)
+    Agent-&gt;&gt;Notify: notify_step_failed（错误 ≤120 字符）
+    Agent-&gt;&gt;UI: ui_tx.send(update)</pre>
+<h3 id="headless-路径">Headless 路径</h3>
+<p>Headless 运行设置 <code>ui_tx: None</code>，因此
+<code>agent_loop</code> 从不向 TUI 发送
+<code>AgentUpdate::TaskComplete</code>。完成
+<strong>只通知一次</strong>：<code>run_headless</code>
+在将最终文本打印到 stdout 后直接调用
+<code>notify_task_complete</code>（<code>tui.rs</code>）。循环期间
+<code>emit_update</code> 不会产生重复通知。</p>
+<p>交互运行不同：<code>interactive.rs</code> 在成功、未取消的
+<code>agent_loop</code> 返回后发出
+<code>TaskComplete</code>，<code>emit_update</code> 从该更新触发
+<code>notify_task_complete</code>。</p>
+<p>通知调用的错误在各处被丢弃（<code>let _ = …</code>）——失败的
+<code>osascript</code> 不会导致 agent 失败。</p>
+<hr />
+<h2 id="5-什么-不-触发通知">5. 什么 <em>不</em> 触发通知</h2>
+<p>这些 <code>AgentUpdate</code> 变体 <strong>不</strong> 通知：</p>
+<ul>
+<li><code>StepStarted</code>、<code>StepFinished</code>、<code>StepAdded</code></li>
+<li><code>Info</code>、<code>ModelInfo</code>、流式 token</li>
+<li>权限 prompt（<code>RequestSelect</code>）</li>
+<li>Thinking 块</li>
+</ul>
+<p>会话开始、压缩或 MCP 连接事件没有通知。</p>
+<hr />
+<h2 id="6-代码地图">6. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/notifications/mod.rs</code></td>
+<td><code>notify</code>、辅助函数、<code>is_enabled</code>、平台
+cfg</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>emit_update</code> — TaskComplete 与 StepFailed 钩子</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/headless.rs</code></td>
+<td>Headless 在 stdout 后的完成通知</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/config/types.rs</code></td>
+<td><code>AgentTomlConfig.notifications_enabled</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/config/resolve.rs</code></td>
+<td>CLI <code>--no-notifications</code> 覆盖</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="7-当前缺口">7. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>详情</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>仅 macOS</td>
+<td>Linux 和 Windows 用户无桌面提醒</td>
+</tr>
+<tr>
+<td><code>notify_info</code> 未使用</td>
+<td>代码库中无调用点</td>
+</tr>
+<tr>
+<td>错误被吞</td>
+<td><code>osascript</code> 失败被忽略；无 TUI 回退消息</td>
+</tr>
+<tr>
+<td>仅交互式 <code>TaskComplete</code> 通知</td>
+<td>Headless 跳过 <code>emit_update(TaskComplete)</code>；只有直接
+<code>notify_task_complete</code></td>
+</tr>
+<tr>
+<td>无限流</td>
+<td>快速连续步骤失败可能刷屏通知</td>
+</tr>
+<tr>
+<td>无每会话自定义标题</td>
+<td>所有通知使用固定 "Tact — …" 前缀</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./11_chapter_task_zh.html">任务与工具调度</a> —
+<code>StepFailed</code> 何时发出</li>
+<li><a href="../ARCHITECTURE.md">ARCHITECTURE.md</a> — agent
+更新流概览</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

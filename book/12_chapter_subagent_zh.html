@@ -1,0 +1,1421 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>子 Agent（Subagents）</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-%E5%AD%90-agent-%E6%98%AF%E4%BB%80%E4%B9%88" title="1. 子 Agent 是什么"><span class="toc-label">1. 子 Agent 是什么</span></a></li>
+<li class="toc-l2"><a href="#2-spawn_subagent-%E5%B7%A5%E5%85%B7" title="2. spawn_subagent 工具"><span class="toc-label">2. spawn_subagent 工具</span></a></li>
+<li class="toc-l3"><a href="#21-%E5%AD%90%E4%BB%A3%E7%90%86%E6%8A%80%E8%83%BD%E5%8D%A1subagent-skill-cards" title="2.1 子代理技能卡（Subagent skill cards）"><span class="toc-label">2.1 子代理技能卡（Subagent skill cards）</span></a></li>
+<li class="toc-l2"><a href="#3-spawn-%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F" title="3. Spawn 生命周期"><span class="toc-label">3. Spawn 生命周期</span></a></li>
+<li class="toc-l2"><a href="#4-%E5%8F%97%E9%99%90%E5%B7%A5%E5%85%B7%E9%9B%86" title="4. 受限工具集"><span class="toc-label">4. 受限工具集</span></a></li>
+<li class="toc-l2"><a href="#5-system-prompt-%E4%B8%8E-context" title="5. System Prompt 与 Context"><span class="toc-label">5. System Prompt 与 Context</span></a></li>
+<li class="toc-l2"><a href="#6-%E6%9D%83%E9%99%90%E4%B8%8E-ui" title="6. 权限与 UI"><span class="toc-label">6. 权限与 UI</span></a></li>
+<li class="toc-l2"><a href="#7-%E8%B0%83%E5%BA%A6%E4%BA%A4%E4%BA%92" title="7. 调度交互"><span class="toc-label">7. 调度交互</span></a></li>
+<li class="toc-l2"><a href="#8-%E6%8C%81%E4%B9%85%E5%8C%96%E4%B8%8E%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F" title="8. 持久化与生命周期"><span class="toc-label">8. 持久化与生命周期</span></a></li>
+<li class="toc-l2"><a href="#9-%E8%BF%94%E5%9B%9E%E5%80%BC" title="9. 返回值"><span class="toc-label">9. 返回值</span></a></li>
+<li class="toc-l2"><a href="#10-%E5%AD%90-agent-vs-teammate" title="10. 子 Agent vs Teammate"><span class="toc-label">10. 子 Agent vs Teammate</span></a></li>
+<li class="toc-l2"><a href="#11-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="11. 代码地图"><span class="toc-label">11. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#12-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="12. 当前缺口"><span class="toc-label">12. 当前缺口</span></a></li>
+<li class="toc-l2"><a href="#13-%E5%AE%9E%E6%88%98%E6%A1%88%E4%BE%8B%E5%BA%95%E9%83%A8%E6%A0%8F%E8%A7%86%E8%A7%89%E4%BC%98%E5%8C%96" title="13. 实战案例：底部栏视觉优化"><span class="toc-label">13. 实战案例：底部栏视觉优化</span></a></li>
+<li class="toc-l3"><a href="#131-%E4%BB%BB%E5%8A%A1%E4%BE%9D%E8%B5%96%E4%B8%BA%E4%BB%80%E4%B9%88%E4%B8%B2%E8%A1%8C" title="13.1 任务依赖——为什么串行"><span class="toc-label">13.1 任务依赖——为什么串行</span></a></li>
+<li class="toc-l3"><a href="#132-%E6%96%87%E4%BB%B6%E4%BC%A0%E9%80%92%E4%B8%8D%E8%B5%B0%E4%BC%9A%E8%AF%9D%E5%8E%86%E5%8F%B2" title="13.2 文件传递（不走会话历史）"><span class="toc-label">13.2 文件传递（不走会话历史）</span></a></li>
+<li class="toc-l3"><a href="#133-%E8%AF%84%E5%AE%A1%E5%BE%AA%E7%8E%AF%E6%AF%8F%E4%BB%BB%E5%8A%A1%E4%B8%80%E4%B8%AA%E9%97%A8%E7%A6%81" title="13.3 评审循环——每任务一个门禁"><span class="toc-label">13.3 评审循环——每任务一个门禁</span></a></li>
+<li class="toc-l3"><a href="#134-task-1-%E8%AF%84%E5%AE%A1%E5%8F%91%E7%8E%B0critical" title="13.4 Task 1 评审发现（Critical）"><span class="toc-label">13.4 Task 1 评审发现（Critical）</span></a></li>
+<li class="toc-l3"><a href="#135-%E8%AE%A1%E5%88%92-%E7%8E%B0%E5%AE%9E%E9%80%82%E9%85%8D" title="13.5 计划-现实适配"><span class="toc-label">13.5 计划-现实适配</span></a></li>
+<li class="toc-l3"><a href="#136-%E5%85%A8%E5%B1%80%E8%AF%84%E5%AE%A1%E5%88%86%E6%94%AF%E7%BA%A7%E9%97%A8%E7%A6%81" title="13.6 全局评审——分支级门禁"><span class="toc-label">13.6 全局评审——分支级门禁</span></a></li>
+<li class="toc-l3"><a href="#137-%E5%85%B3%E9%94%AE%E7%BB%8F%E9%AA%8C" title="13.7 关键经验"><span class="toc-label">13.7 关键经验</span></a></li>
+<li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="子-agentsubagents">子 Agent（Subagents）</h1>
+<p>本章说明 Tact 如何通过 <code>spawn_subagent</code> 工具 spawn
+<strong>隔离的工作
+agent</strong>：全新对话循环、受限工具集、<code>ToolContext</code>
+服务，以及——除非 <code>worktree: true</code> 请求隔离的 git
+泳道——共享文件系统，但无父级历史、hook 或 MCP 工具。每个子 agent
+有自己的 SQLite session 行，经 <code>sessions.ref_id</code>
+挂到父会话。</p>
+<p>实现：<code>crates/tact/src/tool/subagent.rs</code>。工具集装配：<code>subagent_toolset()</code>
+在 <code>crates/tact/src/tool/registry.rs</code>。</p>
+<p>勿与 <a href="./14_chapter_team_zh.html">团队协调</a> 混淆 ——
+<code>spawn_teammate</code> 仅写入 roster/inbox
+记录；<code>spawn_subagent</code> 实际运行嵌套的
+<code>Agent::agent_loop</code>。</p>
+<hr />
+<h2 id="1-子-agent-是什么">1. 子 Agent 是什么</h2>
+<table>
+<thead>
+<tr>
+<th>属性</th>
+<th>主 Agent</th>
+<th>子 Agent（<code>spawn_subagent</code> 工具）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>入口</td>
+<td>TUI / headless <code>agent_loop</code></td>
+<td>父级在工具执行期间调用 <code>spawn_subagent</code></td>
+</tr>
+<tr>
+<td>对话历史</td>
+<td>完整会话 context</td>
+<td>仅单条 user prompt（无父级消息）</td>
+</tr>
+<tr>
+<td>System prompt</td>
+<td>动态 Tera 模板（skills、memory、AGENTS.md）</td>
+<td>固定静态字符串</td>
+</tr>
+<tr>
+<td>Native 工具</td>
+<td><code>toolset()</code>（35 个，<code>save_memory</code> 随
+<code>memory_enabled</code> 增删）</td>
+<td><code>subagent_toolset()</code>（5 个）</td>
+</tr>
+<tr>
+<td>MCP 工具</td>
+<td>自 config 加载</td>
+<td><strong>无</strong>（<code>MCPToolRouter::new()</code>）</td>
+</tr>
+<tr>
+<td>Hook</td>
+<td>父级已注册 hook</td>
+<td>空 hook 列表</td>
+</tr>
+<tr>
+<td>Session SQLite</td>
+<td>有（<code>session_bootstrap::bootstrap_session</code> 接线）</td>
+<td><strong>有</strong> — 新建子 session；<code>sessions.ref_id</code> =
+父 id（父无 session 时为 <code>''</code>）</td>
+</tr>
+<tr>
+<td>Permission manager</td>
+<td>父级模式</td>
+<td><strong>继承</strong> — 从父级实时快照克隆（mode + always-allowed
+列表 + settings），经 <code>PermissionManager::from_snapshot</code></td>
+</tr>
+<tr>
+<td>TUI 通道</td>
+<td>父级 <code>ui_tx</code></td>
+<td><strong>打标</strong> — 流式/步骤以
+<code>ToolProgress</code>（卡头为
+<code>ToolMeta</code>）转发进父工具卡，<strong>并行</strong>发一条
+<code>ToolTranscript</code>（结构化：Assistant / Thinking / Step / Info
+/ Error）供<strong>子代理视图</strong>渲染（主区域整块换成子会话：面包屑
++ <code>Esc</code> / 点面包屑退层；工具块自包含、输出封顶 8
+行，<strong>点块底部的 <code>⋯ N more lines · ▾ expand</code>
+展开这一块</strong>到 50 行，<code>Enter</code> 全部展开 /
+收起）；<code>RequestSelect*</code> 透传（<code>from_subagent</code>
+打标，弹窗标题显示
+<code>Select from subagent</code>）。两条通道都过脱敏</td>
+</tr>
+<tr>
+<td>Cancel 标志</td>
+<td>主 runtime 共享</td>
+<td><strong>独立</strong> — 用户对父级 Cancel 不会停止进行中的子
+agent</td>
+</tr>
+<tr>
+<td>返回父级</td>
+<td>N/A</td>
+<td>同步：最后一条 assistant
+文本；异步（<code>run_in_background</code>）：<code>async_launched { id }</code>
++ 回注的 <code>&lt;subagent-finished&gt;</code></td>
+</tr>
+</tbody>
+</table>
+<p>子 agent 共享 <code>ToolContext</code>（克隆）：相同
+<code>work_dir</code>，以及 background/team/worktree/memory/skills 等
+manager。这些服务在内存中存在，但多数不可达，因为暴露它们的工具未在子
+agent router 上注册。</p>
+<hr />
+<h2 id="2-spawn_subagent-工具">2. <code>spawn_subagent</code> 工具</h2>
+<pre class="rust"><code>#[derive(Debug, Deserialize, JsonSchema)]
+pub struct SubagentInput {
+    pub prompt: String,
+    pub description: Option&lt;String&gt;,
+    pub run_in_background: Option&lt;bool&gt;,
+    pub max_turns: Option&lt;u32&gt;,
+    pub resume: Option&lt;String&gt;,
+    pub worktree: Option&lt;bool&gt;,
+    pub skill: Option&lt;String&gt;,
+}</code></pre>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prompt</code></td>
+<td>成为子 agent 的唯一 user 消息（任务）</td>
+</tr>
+<tr>
+<td><code>description</code></td>
+<td>仅 schema 提示给模型；<strong>handler 不读取</strong></td>
+</tr>
+<tr>
+<td><code>run_in_background</code></td>
+<td><code>true</code> 立即返回 <code>async_launched { id }</code>；子
+agent 脱钩运行，稍后回注 summary。需要交互式 UI 通道 —— 在 headless
+模式（没有 driver 提交唤醒轮）下退化为同步并直接返回 summary。</td>
+</tr>
+<tr>
+<td><code>max_turns</code></td>
+<td>上限嵌套 <code>agent_loop</code> 轮数（防止失控）</td>
+</tr>
+<tr>
+<td><code>resume</code></td>
+<td>复用已有子 session id（来自先前
+<code>async_launched</code>）追加一轮。handler
+校验目标：必须已有一条处于终态的 <code>subagent_runs</code> 记录 ——
+复用未知 id、仍 <code>Running</code> 的子 agent，或结束已超过 24h 的
+session，都会被拒绝。</td>
+</tr>
+<tr>
+<td><code>worktree</code></td>
+<td><code>true</code> 让子 agent 运行在隔离的 git worktree
+泳道（<code>subagent-&lt;child_id&gt;</code>，分支
+<code>wt/subagent-&lt;child_id&gt;</code>）；要求 <code>work_dir</code>
+是 git 仓库。<code>resume</code> 时复用已有泳道。泳道在 handler
+内同步创建（失败立即暴露），完成后保留供 <code>worktree_status</code> /
+<code>worktree_run</code> 检查；用 <code>worktree_remove { name }</code>
+清理（拒绝运行中子 agent 的泳道与脏工作树）。</td>
+</tr>
+<tr>
+<td><code>skill</code></td>
+<td>按名附加一张隔离的<strong>子代理技能卡</strong>（<code>~/.tact/subagent/&lt;name&gt;.md</code>）；正文作为角色拼进子代理
+system prompt（见 §2.1）。</td>
+</tr>
+</tbody>
+</table>
+<p>仅主 agent 的 <code>toolset()</code> 注册子 agent
+工具（<code>SpawnSubagentTool</code>、<code>CheckSubagentTool</code>、<code>WaitSubagentTool</code>、<code>CancelSubagentTool</code>）。子
+agent 不能 spawn 嵌套子 agent —— <code>subagent_toolset()</code> 中无
+<code>spawn_subagent</code>。</p>
+<hr />
+<h3 id="21-子代理技能卡subagent-skill-cards">2.1 子代理技能卡（Subagent
+skill cards）</h3>
+<p>子代理可通过一张<strong>隔离的技能卡</strong>获得可复用的角色/工作方法——即
+<code>~/.tact/subagent/&lt;name&gt;.md</code> 下的 Markdown
+文件。这些卡与主 agent 的 skill 系统物理隔离：不会载入
+<code>SkillRegistry</code>， 也不会出现在主 agent 的可用 skill 列表或
+<code>/skill</code> 命令里。</p>
+<pre class="markdown"><code>---
+description: Adversarial code review role for subagents
+---
+
+You are a principal reviewer. Assess diffs for correctness, test coverage,
+and scope creep. Verdicts: Critical / Important / Minor.</code></pre>
+<ul>
+<li>注册 key 是<strong>文件名 stem</strong>（<code>reviewer.md</code> →
+<code>reviewer</code>）；frontmatter 的 <code>name</code> 被忽略，
+<code>description</code> 用于报错列表与发现清单展示。名字必须是纯文件
+stem——<code>skill</code> 值无法逃逸技能卡目录。</li>
+<li><code>spawn_subagent { prompt, skill: "reviewer" }</code> 读取
+<code>~/.tact/subagent/reviewer.md</code>， 将其正文以
+<code>&lt;skill name=…&gt;</code> 块追加到子代理静态 system prompt（在
+<code>SubagentStart</code> hooks 之前）。</li>
+<li>未知 <code>skill</code> 使 spawn 失败并列出可用卡。</li>
+<li>会话启动时 <code>spawn_subagent</code>
+工具描述会附加可用卡名（单行、长度截断、上限 30 张），主 agent
+无需看到卡正文即可发现合法 <code>skill:</code> 值。</li>
+<li>工具集、权限继承、worktree 隔离与 <code>[agent.subagent]</code>
+模型配置均不受影响 —— 该段的解析规则见<a
+href="./21_chapter_config_zh.html">配置</a>。</li>
+</ul>
+<hr />
+<h2 id="3-spawn-生命周期">3. Spawn 生命周期</h2>
+<pre class="mermaid">sequenceDiagram
+    participant Parent as Main Agent
+    participant Task as task tool
+    participant Sub as Subagent
+    participant LLM as LLM API
+    participant Tools as subagent_toolset
+
+    Parent-&gt;&gt;Task: ToolUse(name=task, input)
+    Note over Parent,Task: PreToolUse + permission (High risk)
+    Task-&gt;&gt;Sub: Agent::new(static prompt, subagent_toolset, empty MCP, 继承权限)
+    Task-&gt;&gt;Sub: ensure_session_row(child_id, ref_id) + with_session
+    Task-&gt;&gt;Sub: with_ui_channel(tagged) if present
+    Task-&gt;&gt;Sub: agent_loop(Some(prompt))
+
+    loop until stop ≠ ToolUse
+        Sub-&gt;&gt;LLM: stream_message + 5 tool specs
+        LLM--&gt;&gt;Sub: assistant blocks
+        alt ToolUse
+            Sub-&gt;&gt;Tools: execute_tool_call (hooks empty, 继承权限)
+            Tools--&gt;&gt;Sub: ToolResult → context
+        else end_turn
+            Sub--&gt;&gt;Task: loop exits
+        end
+    end
+
+    Task-&gt;&gt;Task: extract last Assistant text
+    Task--&gt;&gt;Parent: Ok(summary) as ToolResult</pre>
+<p><strong>阻塞语义（同步）：</strong> <code>spawn_subagent</code> 为
+<code>async</code> 并 await 完整子 agent 循环。从父级视角它是一个 tool
+call，内部可能运行多轮 LLM。父级 <code>agent_loop</code> 在 summary
+字符串返回前暂停。</p>
+<p><strong>异步语义（<code>run_in_background: true</code>）：</strong>
+handler 立即返回
+<code>async_launched { id }</code>；嵌套循环运行在脱钩的
+<code>tokio::spawn</code> 任务中。完成后该任务 (a) 将
+<code>subagent_runs</code> 行转为
+<code>Completed</code>/<code>Failed</code>/<code>Cancelled</code>，(b)
+将 <code>SubagentResult</code> 入队父级
+<code>pending_subagent_results</code>，(c) 在<strong>父级</strong>
+<code>ui_tx</code> 上发
+<code>AgentUpdate::SubagentFinished</code>。父级下一轮
+<code>agent_loop</code> drain 队列，经
+<code>push_message</code>（持久化）注入合成
+<code>&lt;subagent-finished id=…&gt;</code> user 消息。若父级空闲，TUI
+将 <code>UserCommand::SubagentFinishedNotification</code> 转发给
+driver，driver 提交一个轻量唤醒轮；若一轮仍在进行，driver
+会<strong>保留</strong>该唤醒，并在那一轮的 <code>JoinHandle</code>
+完成后立即提交，从而避免通知落在「最后一次队列 drain
+与轮次退出之间」而被丢弃。唤醒以队列为准：若进行中的轮次已 drain
+该结果，<code>spawn_wakeup_task</code>
+会提前返回，不再提交一个无内容可注入的轮次。被取消的子代理即便在标志置位后干净退出，也按
+<code>success = false</code> 上报。</p>
+<p><strong>消息播种：</strong> handler 调用
+<code>agent_loop(Some(user_prompt))</code>，经 <code>push_message</code>
+写入并持久化到子 session。循环前 <code>spawn_subagent</code> 分配子
+session id（或复用 <code>resume</code>），将 <code>ref_id</code> 设为父
+session id（或 <code>''</code>），并调用 <code>with_session</code>。UI
+使用打标 <code>ui_tx</code>（<code>with_ui_channel</code> 同步
+<code>tool_context.ui_tx</code>，使 <code>ToolProgress</code>
+也被打标）。</p>
+<hr />
+<h2 id="4-受限工具集">4. 受限工具集</h2>
+<p><code>subagent_toolset()</code> 恰好注册五个工具：</p>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>bash</code></td>
+<td>Shell 命令（受 <code>validate_shell_command</code> 约束）</td>
+</tr>
+<tr>
+<td><code>read_file</code></td>
+<td>读工作区文件</td>
+</tr>
+<tr>
+<td><code>write_file</code></td>
+<td>创建或覆盖文件</td>
+</tr>
+<tr>
+<td><code>edit_file</code></td>
+<td>精确字符串替换（first 或 all）</td>
+</tr>
+<tr>
+<td><code>sleep</code></td>
+<td>计时 / 轮询</td>
+</tr>
+</tbody>
+</table>
+<p>与主 agent 相比 notable <strong>省略</strong>：</p>
+<ul>
+<li>无
+<code>spawn_subagent</code>、<code>load_skill</code>、<code>save_memory</code>、<code>compact</code>、<code>apply_patch</code>、<code>read_image</code>、<code>ask_user</code></li>
+<li>无 team、worktree、后台任务或持久任务管理工具</li>
+<li>无 MCP 前缀工具，也无 Tact 的 MCP 资源 / prompt 工具</li>
+</ul>
+<p>默认五件套由单元测试 <code>subagent_toolset_has_five_tools</code>
+强制。</p>
+<hr />
+<h2 id="5-system-prompt-与-context">5. System Prompt 与 Context</h2>
+<p>子 agent 使用 <code>AgentSystemPrompt::Static</code>：</p>
+<pre class="rust"><code>let system_prompt = format!(
+    &quot;You are a coding subagent at {}. Complete the given task, then summarize your findings.&quot;,
+    ctx.work_dir.display()
+);</code></pre>
+<p>当设置 <code>skill: &lt;name&gt;</code> 时，handler 会在 hooks
+之前把卡正文作为 <code>&lt;skill&gt;</code> 块追加：</p>
+<pre class="text"><code>You are a coding subagent at &lt;work_dir&gt;. Complete the given task, then summarize your findings.
+
+&lt;skill name=&quot;reviewer&quot;&gt;
+You are a principal reviewer. …
+&lt;/skill&gt;</code></pre>
+<p><code>build_system_prompt()</code> 每轮 verbatim 返回该字符串 —— 无
+skill 摘要、memory 注入、AGENTS.md 或目录快照。主 agent 差异见 <a
+href="./04_chapter_prompt_zh.html">System Prompt</a>。</p>
+<p>压缩与恢复 <strong>仍</strong> 在子 agent 循环内运行（<a
+href="./05_chapter_compact_zh.html">上下文压缩</a>、<a
+href="./06_chapter_recovery_zh.html">错误恢复</a>）：<code>micro_compact</code>（默认关闭，与主
+agent 同一开关）、<code>compact_history</code>、transport 重试与
+continuation 消息都作用于子 agent 私有的
+<code>runtime.context</code>。</p>
+<hr />
+<h2 id="6-权限与-ui">6. 权限与 UI</h2>
+<p><code>spawn_subagent</code> 的 <code>ToolMetadata.permission</code>
+声明 <code>PermissionPolicy::High</code>，因此 Default 模式始终触发
+Ask，即使 allowlist，因其将完整 shell 与文件系统访问委托给嵌套
+agent。（风险来自元数据，不是按工具名匹配的分类器——见 <a
+href="./10_chapter_permission_zh.html">权限模型</a> §2。）</p>
+<p><strong>权限继承（Claude 风格）：</strong>
+<code>execute_tool_call</code> 在 wave 运行前将
+<code>PermissionSnapshot</code>（mode + 会话内 always-allowed 列表 +
+已加载 settings）stamp 到 <code>ToolContext</code>
+上，<code>spawn_subagent</code> 用
+<code>PermissionManager::from_snapshot(...)</code> 构建子级
+manager。父级 <code>Default</code> → 子
+<code>Default</code>，<code>Plan</code> → 子
+<code>Plan</code>（只读），<code>Auto</code> → 子
+<code>Auto</code>（sticky）。子级 <code>consecutive_denials</code>
+计数归零。无父 agent 的 orphan/test context
+回退到旧行为：<code>PermissionMode::Default</code> + 从磁盘加载
+settings。这也修复了只读逃逸：<code>Plan</code> 父级不再能 spawn
+一个可写文件的 <code>Default</code> 子级。</p>
+<p>若父级有 TUI 通道，子 agent
+使用<strong>打标</strong>通道（<code>tagged_ui_channel_with_progress</code>）：流式、步骤、思考与工具结果以
+<code>AgentUpdate::ToolProgress</code>（卡头为
+<code>ToolMeta</code>）转发进父工具卡，该卡在 Log 历史中渲染为
+<code>ToolVisualKind::Subagent</code>。卡片的 meta 行带子会话短 id
+<code>#xxxxxxxx</code>（spawn 时由 <code>spawn_subagent</code>
+自己广播，见 §8；与 sticky 总览同一把柄），运行中的后台卡片右端还有
+<code>[Cancel]</code> 按钮——2026-10-16 起它画在 <strong>meta
+行</strong>并随同一份切片几何记录命中矩形（此前是渲染循环的标题行
+overlay，会被长标题写掉）。点击该卡进入<strong>子代理视图</strong>（<code>ToolPopupKind::SubagentTranscript</code>）：主区域整块换成子会话，顶部一行面包屑
+<code>‹ N. Subagent · 标题</code>，<code>Esc</code>
+或点击面包屑退回主日志；子会话的工具调用渲染成<strong>自包含块</strong>（<code>▎ N. ⚡ Bash args</code>
+/ <code>✓ Success · 133ms · 42 lines</code> / code band 输出 /
+溢出行），输出封顶 8 行，而块底部那行
+<code>⋯ N more lines · ▾ expand</code>
+<strong>本身就是展开键</strong>（点开把这一块提到 50 行，同一行随后变
+<code>▴ collapse</code>；<code>Enter</code> 是全部展开 /
+收起）——与主日志的可交互卡片刻意不同，原地变长不是「弹窗套弹窗」。<code>RequestSelect</code>
+/ <code>RequestMultiSelect</code> 仍透传（<code>from_subagent</code>
+打标：弹窗标题写 <code>Select from subagent</code>，提示正文不动，子
+agent 自己往 prompt 里写 <code>[Subagent]</code>
+也伪造不了这个标签），权限弹窗走主 TUI；并发子 agent
+权限请求排队，逐个处理。<strong>状态级总览</strong>另由 TUI 的 Log 下方
+Subagent sticky tab 承担（<code>AgentUpdate::SubagentsChanged</code>
+快照当前进程的子代理运行，按状态分组并显示摘要首行）——明细仍留在工具卡 /
+视图，绝不进入 sticky 或主 Log。见 <a
+href="./10_chapter_permission_zh.html">权限模型</a> 与 <a
+href="./23_chapter_tui_zh.html">TUI</a>。</p>
+<hr />
+<h2 id="7-调度交互">7. 调度交互</h2>
+<p><code>spawn_subagent</code> 的 <code>ToolMetadata.resources</code>
+声明
+<code>ResourcePolicy::Barrier</code>。普通的（共享文件系统）<code>spawn_subagent</code>
+调用绝不与同一 wave 中任何其他工具并行 —— 见 <a
+href="./11_chapter_task_zh.html">任务与工具调度</a>。该场景的后台并行来自
+<code>tokio::spawn</code>（<code>run_in_background</code>），而非放宽
+wave 调度。</p>
+<p><strong>worktree 隔离的 spawn 是例外。</strong>
+<code>execute_tool_call</code>
+按调用解析资源（<code>crates/tact/src/agent/tool_dispatch.rs</code> 的
+<code>tool_resources_for</code>）：<code>worktree: true</code> 的
+<code>spawn_subagent</code> 映射为
+<code>ToolResources::independent()</code> ——
+其文件影响被限定在泳道内，因此可与同一 wave 中其他工具（包括其他隔离子
+agent）并行 fan-out，而不会与主树竞争。这正是 2026-08-26 异步子 agent
+设计评审中的 "worktree follow-up"：一旦每个子 agent
+拥有作用域化文件系统，阻塞型子 agent 的同一 wave fan-out
+就安全了。注意：worktree
+是<strong>组织边界</strong>，<strong>不是</strong> OS 沙箱 —— 子 agent
+的 <code>bash</code>
+仍可访问泳道之外；隔离只是防止<em>常规</em>路径冲突编辑互相碰撞。</p>
+<p>泳道创建在 handler 内同步执行（在同步循环前，或在返回
+<code>async_launched { id }</code> 前），因此非 git 的
+<code>work_dir</code> 会让 spawn
+明确报错，而不是静默共享文件系统。泳道基于仓库根 <code>HEAD</code>，子
+agent 完成后保留；可用 <code>git worktree remove &lt;path&gt;</code>
+手动删除（尚无工具入口）。</p>
+<h2 id="8-持久化与生命周期">8. 持久化与生命周期</h2>
+<p>同步与异步子 agent 均将其运行持久化到 <code>subagent_runs</code>
+表（<code>child_id</code>、<code>status</code>、<code>summary</code>、<code>started_at</code>、<code>finished_at</code>），以子
+session id 为主键 —— 是 <code>background_tasks</code> 的子 agent
+对应物。<code>spawn_subagent</code> 在入口记录
+<code>Running</code>，并在<strong>两条路径</strong>（同步/异步）退出时记录
+<code>Completed</code>/<code>Failed</code>/<code>Cancelled</code>，因此
+<code>check_subagent</code> / <code>cancel_subagent</code> /
+<code>wait_subagent</code> 能统一看到每个子 agent（同步子 agent 也可通过
+<code>/subagent_cancel</code> 或父级退出来取消，且同步失败不再遗留陈旧的
+<code>Running</code> 行）。<code>SubagentManager::new</code>
+在启动时修复 orphan（任何 <code>running</code> 行 →
+<code>failed</code>，带
+<code>"Process interrupted (agent restarted)"</code>）。<code>check_subagent</code>
+工具读取此状态，<code>wait_subagent { child_id, timeout_ms? }</code>
+则阻塞（轮询 <code>subagent_runs</code>）直到子 agent 到达终态或超时 ——
+即 Codex <code>wait_agent</code> 的对应物，让父级可先 spawn N 个子 agent
+再逐个 wait，而不必跨多轮轮询 <code>check_subagent</code>。内存
+<code>pending_subagent_results</code>
+队列是实时快路径；持久化行是崩溃恢复的 source of truth。spawn 时
+<code>spawn_subagent</code> 还会在父级 <code>ui_tx</code> 上广播一条只带
+<code>subagent_id</code> 的 <code>AgentUpdate::ToolMeta</code>（同步 /
+后台都发），让父卡片 meta 行从第一帧起就是
+<code>#&lt;短id&gt;</code>（§6）。重启后 finished
+结果<strong>不会</strong>自动重投 —— 注入的
+<code>&lt;subagent-finished&gt;</code> 消息已在 transcript
+中，模型自行决定 <code>resume</code> 或重新 spawn。</p>
+<hr />
+<h2 id="9-返回值">9. 返回值</h2>
+<p><code>agent_loop</code> 完成后，handler 反向扫描
+<code>runtime.context</code> 找最后一条 <code>Role::Assistant</code>
+消息，经 <code>extract_text</code> 提取纯文本：</p>
+<pre class="rust"><code>let summary = subagent
+    .runtime
+    .context
+    .iter()
+    .rev()
+    .find(|message| matches!(message.role, Role::Assistant))
+    .map(|message| extract_text(&amp;message.content))
+    .filter(|text| !text.is_empty())
+    .unwrap_or_else(|| &quot;(no summary)&quot;.to_string());</code></pre>
+<p>含义：</p>
+<ul>
+<li>Thinking 块与 tool-use 元数据被剥离；仅 text 块计数。</li>
+<li>若模型在 tool-use 轮结束而无最终文本回复，父级可能收到
+<code>(no summary)</code>。</li>
+<li>中间 assistant 推理不返回 —— 仅最后 assistant 文本快照。</li>
+</ul>
+<p>该字符串成为 <code>spawn_subagent</code> 工具的 JSON/text
+结果，作为普通 <code>ToolResult</code> 追加到 <strong>父级</strong>
+context。</p>
+<hr />
+<h2 id="10-子-agent-vs-teammate">10. 子 Agent vs Teammate</h2>
+<table>
+<thead>
+<tr>
+<th></th>
+<th><code>spawn_subagent</code>（子 agent）</th>
+<th><code>spawn_teammate</code>（team）</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>运行 LLM 循环</td>
+<td>是，嵌套 <code>agent_loop</code></td>
+<td>否 — 仅 roster 条目</td>
+</tr>
+<tr>
+<td>隔离</td>
+<td>全新 context，5 个工具</td>
+<td>N/A</td>
+</tr>
+<tr>
+<td>持久化</td>
+<td>独立 SQLite session（<code>ref_id</code>→父）</td>
+<td>SQLite <code>teammates</code> + <code>inbox_messages</code> 表（遗留
+<code>team/*.json</code> 不再读取）</td>
+</tr>
+<tr>
+<td>用例</td>
+<td>委托聚焦的编码工作</td>
+<td>多 agent 协调协议</td>
+</tr>
+</tbody>
+</table>
+<p>见 <a href="./14_chapter_team_zh.html">团队协调</a>。</p>
+<hr />
+<h2 id="11-代码地图">11. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/tool/subagent.rs</code></td>
+<td><code>spawn_subagent</code> + <code>check_subagent</code> +
+<code>wait_subagent</code> + <code>cancel_subagent</code> handler —
+spawn、同步/异步循环、summary 提取、resume、max_turns</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext</code> 上的 <code>permission_snapshot</code> +
+<code>subagent_results</code> +
+<code>subagent_manager</code>（工具结构体由 <code>#[tool]</code>
+宏生成，见 <code>tool/subagent.rs</code>）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td><code>toolset()</code> 中的四个子 agent
+工具（<code>SpawnSubagentTool</code> / <code>CheckSubagentTool</code> /
+<code>WaitSubagentTool</code> /
+<code>CancelSubagentTool</code>）；<code>subagent_toolset()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>Agent::new</code>、<code>agent_loop</code>（drain +
+max_turns）、<code>ensure_session</code>、<code>pending_subagent_results</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
+<td>stamp <code>permission_snapshot</code> +
+<code>subagent_results</code>；输入感知 <code>keep_live</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/permission/mod.rs</code></td>
+<td><code>PermissionSnapshot</code>、<code>snapshot()</code>/<code>from_snapshot()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/subagent.rs</code></td>
+<td><code>SubagentManager</code> / <code>SubagentRun</code> /
+<code>SubagentStatus</code>（orphan repair）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/subagent_store/</code></td>
+<td><code>subagent_runs</code> SQLite 表 + trait</td>
+</tr>
+<tr>
+<td><code>crates/protocol/src/agent.rs</code></td>
+<td><code>AgentUpdate::SubagentFinished</code>、<code>UserCommand::SubagentFinishedNotification</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/driver.rs</code></td>
+<td><code>SubagentFinishedNotification</code>
+的唤醒轮（一轮进行中时保留；结果队列已 drain 时跳过）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_schedule.rs</code></td>
+<td><code>spawn_subagent</code> 作为调度 barrier</td>
+</tr>
+<tr>
+<td><code>ARCHITECTURE.md</code></td>
+<td>工具表中的一行摘要</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="12-当前缺口">12. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>详情</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>无嵌套 <code>spawn_subagent</code></td>
+<td>工具集设计如此（5 个工具），worker 无法进一步分解</td>
+</tr>
+<tr>
+<td>子 agent 无 MCP</td>
+<td>worker 内不可用外部工具</td>
+</tr>
+<tr>
+<td>无父级 hook</td>
+<td>PreToolUse / PostToolUse 策略不包裹子 agent 工具</td>
+</tr>
+<tr>
+<td>仅静态 prompt</td>
+<td>无 skills/memory/AGENTS.md，除非父级复制进 <code>prompt</code></td>
+</tr>
+<tr>
+<td><code>description</code> 被忽略</td>
+<td>JSON 字段无运行时效果</td>
+</tr>
+<tr>
+<td>独立 cancel 标志</td>
+<td>父级 <code>/cancel</code>
+只中止主任务。<strong>运行中的后台子代理</strong>通过
+<code>cancel_subagent</code>（工具）、<code>/subagent_cancel &lt;child-id&gt;</code>（slash
+命令）或运行中子代理工具卡片上的 <code>[Cancel]</code>
+按钮取消——三者都经由共享 <code>SubagentManager</code> 的 cancel handles
+翻转子代理的协作取消标志。当父级退出（TUI 退出 / driver
+循环结束）时，<code>cancel_all()</code> 翻转所有存活
+handle，后台子代理一起停止而非成为孤儿。（headless
+在退出时永远没有存活的后台子代理：那里 <code>run_in_background</code>
+已退化为同步。）</td>
+</tr>
+<tr>
+<td>无 worktree 删除</td>
+<td>隔离泳道现在可通过 <code>worktree_remove { name }</code> 清理（执行
+<code>git worktree remove</code>、删除跟踪记录、拒绝运行中子 agent
+的泳道与脏工作树）。已合并的 backing 分支 <code>wt/&lt;name&gt;</code>
+会被自动删除；未合并分支保留以便提交可恢复</td>
+</tr>
+<tr>
+<td>worktree 基准为仓库 HEAD</td>
+<td>从另一 worktree 内 spawn 的子 agent 仍基于主仓库 HEAD
+分支，而非父泳道</td>
+</tr>
+<tr>
+<td>列表隐藏子会话</td>
+<td><code>--list-sessions</code> / resume 只显示
+<code>ref_id = ''</code>；删父会级联删子</td>
+</tr>
+<tr>
+<td>Summary 启发式</td>
+<td>仅最后 assistant 文本；纯 tool 结尾返回
+<code>(no summary)</code></td>
+</tr>
+<tr>
+<td>相同 LLM client</td>
+<td><code>get_llm_client()</code> — worker 无 model
+覆盖（<code>subagent</code> 配置块除外）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="13-实战案例底部栏视觉优化">13. 实战案例：底部栏视觉优化</h2>
+<p><code>feat/web</code> 分支上的 3 任务 SDD
+会话。计划：<code>docs/superpowers/plans/2026-07-24-bottom-bar-polish.md</code>。
+数据：6 个子代理（3 实现 + 2 评审 + 1 修复），400 测试，5 个 commit
+推送。</p>
+<h3 id="131-任务依赖为什么串行">13.1 任务依赖——为什么串行</h3>
+<pre class="mermaid">graph TD
+    a_t1[Task 1 纯格式化函数 + i18n 清理 — 产出 6 个 icon 常量 + 5 个格式化函数] --&gt; b_t2[Task 2 重写 render_bottom_bar — 引用 T1 的 helper]
+    b_t2 --&gt; c_t3[Task 3 文档 + Ch 26 日志 — 反映最终代码状态]</pre>
+<p>三个任务都改 <code>crates/tui/src/render/bar.rs</code>。SDD
+禁止对共享文件并行 dispatch——控制器层面强制。</p>
+<h3 id="132-文件传递不走会话历史">13.2 文件传递（不走会话历史）</h3>
+<pre><code>.superworks/sdd/
+├── progress.md                          # 进度锚点（compaction 后存活）
+├── task-1-brief.md                      # 从计划提取的需求
+├── task-1-report.md                     # 实现者产出
+├── review-task-1.diff                   # 评审用 git diff
+├── review-task-1-v2.diff                # 修复后重新评审
+├── task-2-brief.md / task-2-report.md   # 同样模式
+├── ...
+└── final-review.diff                    # 全局评审用完整分支 diff</code></pre>
+<p>每个 dispatch prompt 只有 5 行——brief
+文件是<strong>唯一的需求来源</strong>：</p>
+<pre><code>┌── dispatch ─────────────────────────────────────────────────┐
+│ 实现 Task 1。                                               │
+│ 先读这个文件: .superworks/sdd/task-1-brief.md               │
+│ 工作目录: /Users/rg/Projects/tact, 分支 feat/web            │
+│ 验证: cargo check -p tact-tui; 然后 cargo test -p tact-ui   │
+│ 报告写入: .superworks/sdd/task-1-report.md                  │
+└─────────────────────────────────────────────────────────────┘</code></pre>
+<p><strong>brief
+文件里直接包含要写的代码</strong>——不是文字描述。实现者照抄、写测试、commit。没有上下文继承，没有历史污染：</p>
+<pre><code>.superworks/sdd/task-1-brief.md（缩略）
+├── Part A: i18n.rs — 从 struct + 中英文构造器删除 7 个字段
+├── Part B: bar.rs — 添加 6 个 icon 常量
+├── Part C: bar.rs — 添加 5 个纯格式化函数（代码块已提供）
+├── Part D: bar.rs — 添加 10 个单元测试（代码块已提供）
+└── Commit: &quot;feat(tui): add bottom-bar pure formatters ...&quot;</code></pre>
+<p><strong>report
+文件记录实际发生了什么</strong>——子代理退出后控制器读取：</p>
+<pre><code>.superworks/sdd/task-1-report.md（缩略）
+├── Status: DONE
+├── Commits: 3a8a186
+├── 测试结果: cargo check 失败（预期——T2 会修复 bar.rs）
+├── 变更: Part A 完成, Part B 完成, Part C 完成, Part D 完成
+└── 注意事项: WindowEntry 不存在 → 改用 UsageQuotaWindow</code></pre>
+<p>如果不走文件传递，每个子代理的代码和报告都会永久膨胀控制器的上下文。用文件传递，控制器只读
+SHA 和状态行——其余的都存在磁盘上。</p>
+<h3 id="133-评审循环每任务一个门禁">13.3 评审循环——每任务一个门禁</h3>
+<pre class="mermaid">flowchart LR
+    I["实现者"] --&gt;|DONE| C["控制器"]
+    C --&gt;|"git diff BASE..HEAD"| D["task-N.diff"]
+    C --&gt;|"dispatch brief + report + diff"| R["评审者"]
+    R --&gt;|"2 个 verdict"| C
+    C --&gt;|"Critical"| F["修复者"]
+    F --&gt;|"修复 + amend"| C
+    C --&gt;|"重新 dispatch"| R
+    R --&gt;|"✅"| C
+    C --&gt;|"追加到 progress.md"| N["下一个任务"]</pre>
+<p>每个评审者产出两个 verdict，每个二值：</p>
+<table>
+<thead>
+<tr>
+<th>Verdict</th>
+<th>通过条件</th>
+<th>不通过 →</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Spec compliance</strong></td>
+<td>brief 所有要求满足。无多余功能 (YAGNI)。</td>
+<td>修复者 dispatch</td>
+</tr>
+<tr>
+<td><strong>Task quality</strong></td>
+<td>测试覆盖边界。非测试代码无 unwrap。无死 import。</td>
+<td>修复者 dispatch</td>
+</tr>
+</tbody>
+</table>
+<p><strong>Severity 决定处理方式：</strong></p>
+<table>
+<thead>
+<tr>
+<th>等级</th>
+<th>含义</th>
+<th>行动</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Critical</td>
+<td>阻止正确性，逻辑 bug</td>
+<td>必须修复，必须重新评审</td>
+</tr>
+<tr>
+<td>Important</td>
+<td>可维护性风险，测试缺口</td>
+<td>建议修复</td>
+</tr>
+<tr>
+<td>Minor</td>
+<td>风格、命名</td>
+<td>记录在 ledger，终审时处理</td>
+</tr>
+</tbody>
+</table>
+<h3 id="134-task-1-评审发现critical">13.4 Task 1
+评审发现（Critical）</h3>
+<pre><code>format_quota_window_with_pct  期望值 &quot;75%&quot;
+                              实际值   &quot;25%&quot;
+usage_pct() = (limit - remaining) / limit * 100
+            = (200 - 150) / 200 * 100
+            = 25    ← 不是 75</code></pre>
+<p>Brief 指定了不存在的 <code>WindowEntry</code>。实现者正确适配到
+<code>UsageQuotaWindow</code>，但复制了 brief 里错误的期望值。修复：1
+行测试改动，<code>git commit --amend</code>，重新评审通过。</p>
+<p>如果没有这个门禁：测试在第一次 CI 运行失败 → 开发者标注 flaky →
+永远不被发现。</p>
+<h3 id="135-计划-现实适配">13.5 计划-现实适配</h3>
+<p>Plan 引用了 <code>FocusedPanel::Plan</code> 和
+<code>focus_plan</code> / <code>bottom_focus_log_plan</code> 等 i18n
+字段。实际代码没有 <code>Plan</code> 变体——之前的重构已删除。</p>
+<pre class="mermaid">graph TD
+    a_p[Plan 文档要求 FocusedPanel::Plan] --&gt;|过时| c_a[实现者适配为 FocusedPanel::Log]
+    b_c[仓库只有 FocusedPanel::Log] --&gt;|现实| c_a
+    c_a --&gt; d_r[评审者 ✅ 适配正确]</pre>
+<p>实现者不是机械代码生成器——他们阅读真实代码库，检测偏差，适配。控制器判断适配是否可接受。</p>
+<h3 id="136-全局评审分支级门禁">13.6 全局评审——分支级门禁</h3>
+<p>全分支
+diff（<code>git merge-base main HEAD</code>..<code>HEAD</code>）：<strong>5455
+行，37 个文件</strong>。</p>
+<table>
+<thead>
+<tr>
+<th>发现</th>
+<th>等级</th>
+<th>行动</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>expect()</code> 锁——poison 时会 panic</td>
+<td>Important</td>
+<td>暂缓</td>
+</tr>
+<tr>
+<td><code>display_width()</code> 用 <code>chars().count()</code> 不是
+Unicode 宽度</td>
+<td>Important</td>
+<td>暂缓</td>
+</tr>
+<tr>
+<td>Row 1 丢弃顺序是 path→uptime，规格要求 uptime→path</td>
+<td>Important</td>
+<td><strong>立即修复</strong></td>
+</tr>
+</tbody>
+</table>
+<p>结论：<strong>Ready to merge</strong>。drop-order
+修复最可行；其余两个风险较低。</p>
+<h3 id="137-关键经验">13.7 关键经验</h3>
+<table>
+<thead>
+<tr>
+<th>#</th>
+<th>经验</th>
+<th>证据</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1</td>
+<td>串行是必须的——同 crate 依赖阻止并行</td>
+<td>3 个任务都改 <code>bar.rs</code></td>
+</tr>
+<tr>
+<td>2</td>
+<td>Brief 文件是唯一来源——不是 prompt 文本</td>
+<td>Dispatch 5 行；brief 200 行代码</td>
+</tr>
+<tr>
+<td>3</td>
+<td>评审门禁抓到 CI 抓不到的 Critical bug</td>
+<td>75%→25% 测试会到达生产环境</td>
+</tr>
+<tr>
+<td>4</td>
+<td>BASE commit 必须是任务前的 SHA，不是 <code>HEAD~1</code></td>
+<td>多 commit 任务会被截断</td>
+</tr>
+<tr>
+<td>5</td>
+<td><code>.superworks/sdd/progress.md</code> 在 compaction 后存活</td>
+<td>compaction 后: <code>cat progress.md</code> + <code>git log</code> →
+继续</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./07_chapter_tool_zh.html">工具系统</a> —
+<code>toolset</code> vs
+<code>subagent_toolset</code>、<code>ToolContext</code></li>
+<li><a href="./11_chapter_task_zh.html">任务与工具调度</a> — barrier
+语义</li>
+<li><a href="./10_chapter_permission_zh.html">权限模型</a> — 高风险
+<code>spawn_subagent</code>、权限继承（Claude 风格）</li>
+<li><a href="./04_chapter_prompt_zh.html">System Prompt</a> — 主 agent
+动态 prompt</li>
+<li><a href="./02_chapter_skill_zh.html">Skill Registry</a> — 子 agent
+不可用 <code>load_skill</code></li>
+<li><a href="./14_chapter_team_zh.html">团队协调</a> — 仅 roster 的
+teammate</li>
+<li><a href="../ARCHITECTURE.md">ARCHITECTURE.md</a> — 工作区工具表</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

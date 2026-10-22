@@ -1,0 +1,949 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>后台任务（Background Tasks）</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-%E5%B7%A5%E5%85%B7%E8%A1%A8%E9%9D%A2" title="1. 工具表面"><span class="toc-label">1. 工具表面</span></a></li>
+<li class="toc-l2"><a href="#2-%E6%95%B0%E6%8D%AE%E6%A8%A1%E5%9E%8B" title="2. 数据模型"><span class="toc-label">2. 数据模型</span></a></li>
+<li class="toc-l2"><a href="#3-%E6%89%A7%E8%A1%8C%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F" title="3. 执行生命周期"><span class="toc-label">3. 执行生命周期</span></a></li>
+<li class="toc-l2"><a href="#4-id-%E7%94%9F%E6%88%90" title="4. ID 生成"><span class="toc-label">4. ID 生成</span></a></li>
+<li class="toc-l2"><a href="#5-%E5%90%AF%E5%8A%A8%E6%97%B6%E5%B4%A9%E6%BA%83%E6%81%A2%E5%A4%8D" title="5. 启动时崩溃恢复"><span class="toc-label">5. 启动时崩溃恢复</span></a></li>
+<li class="toc-l2"><a href="#6-%E4%B8%8E-agent-loop-%E7%9A%84%E4%BA%A4%E4%BA%92" title="6. 与 Agent Loop 的交互"><span class="toc-label">6. 与 Agent Loop 的交互</span></a></li>
+<li class="toc-l2"><a href="#7-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="7. 代码地图"><span class="toc-label">7. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#8-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="8. 当前缺口"><span class="toc-label">8. 当前缺口</span></a></li>
+<li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="后台任务background-tasks">后台任务（Background Tasks）</h1>
+<p>本章说明 Tact 的 <strong>异步 shell
+执行</strong>：<code>background_run</code> 工具在
+<code>tokio::spawn</code>
+任务上启动命令并立即返回；<code>wait_background</code>
+阻塞到它结束，<code>check_background</code>
+则不等待、只查状态。每个任务持久化到磁盘，结果不受轮询顺序影响 ——
+但进程重启后不保留（见 §5）。实现位于
+<code>crates/tact/src/background.rs</code>，工具包装在
+<code>crates/tact/src/tool/background_run.rs</code>。</p>
+<p>后台任务是同步 <code>bash</code> 工具的「即发即忘」对应物：相同
+shell、相同校验，但 agent 的一轮不会因完成而阻塞。</p>
+<hr />
+<h2 id="1-工具表面">1. 工具表面</h2>
+<table>
+<thead>
+<tr>
+<th>Tool</th>
+<th>Input</th>
+<th>Output</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>background_run</code></td>
+<td><code>command: String</code>、<code>wait_ms: Option&lt;u64&gt;</code>（上限
+10000）</td>
+<td>立即返回
+<code>"Background task &lt;id&gt; started: &lt;command&gt;"</code>；设了
+<code>wait_ms</code>
+且命令在窗口内结束时，直接返回任务结果与输出尾部</td>
+</tr>
+<tr>
+<td><code>check_background</code></td>
+<td><code>task_id: Option&lt;String&gt;</code></td>
+<td>单任务 pretty JSON（其 <code>output</code>
+与等待路径一样只保留尾部），或每行一个任务的列表</td>
+</tr>
+<tr>
+<td><code>wait_background</code></td>
+<td><code>task_id: Option&lt;String&gt;</code>、<code>timeout_ms: Option&lt;u64&gt;</code></td>
+<td>已完成任务（状态、耗时、输出尾部、日志路径），或"仍在运行"的原因</td>
+</tr>
+</tbody>
+</table>
+<p>三个工具仅在主 <code>toolset()</code> 中（子 agent 的 shell
+工作是同步 <code>bash</code>）。<code>check_background</code> 无
+<code>task_id</code>
+时列出<strong>本会话</strong>的任务（按开始时间排序）——即便同一项目下所有会话共用同一个
+store，一个会话也不会报告另一个会话的活；未知 id
+返回错误（<code>Unknown background task &lt;id&gt;</code>）。显式给出
+<code>task_id</code> 时不限会话：那是调用方点名要的。</p>
+<p>会话作用域同样适用于 TUI 的 <code>/background</code> 列表，也是
+<code>wait_background</code> / <code>wait</code> 在不给 id
+时使用的范围。子 agent 根本无法启动后台任务（受限 toolset 里没有
+<code>background_run</code>）；若将来有了，记录会挂在<strong>子</strong>会话
+id 下，父会话的列表不会显示它——届时把范围扩展到子会话即可。</p>
+<p><code>background_run</code> 是<strong>启动</strong>原语：它立刻返回
+id，任务在后台继续，且<strong>没有时间上限</strong>——任务要么自己跑完，要么因用户取消而结束。它的
+<code>wait_ms</code> 只是短任务捷径（上限 10
+秒），所以慢命令永远不会占住一个回合；等待到期时只回报“仍在运行”，不动任务本身。</p>
+<p><code>wait_background</code>
+是<strong>等待</strong>原语：任务一到终态就返回，模型不必再猜时长。不给
+<code>task_id</code> 时等待本会话的所有任务；<code>timeout_ms</code>
+默认 5 分钟（与 <code>sleep</code> 同一上限）。与
+<code>sleep</code>（future 完全不看取消标志）不同，等待会在下一次轮询（≤
+150 ms）观察到取消，因此在途等待是可打断的。</p>
+<p>TUI
+用户无需让模型调用工具即可查看后台任务：<strong><code>/background</code></strong>
+slash
+命令列出所有任务，<strong><code>/background &lt;id&gt;</code></strong>
+显示单个任务（pretty JSON）。该命令向命令 driver 发送
+<code>UserCommand::QueryBackground(Option&lt;String&gt;)</code>，driver
+调用同一个
+<code>SharedBackgroundManager::check</code>（与工具一样按会话收窄），并把结果以
+<code>AgentUpdate::PopupMarkdown</code> 交付；TUI
+用共用的只读弹窗展示（<code>Esc</code>
+关闭、<code>j</code>/<code>k</code>
+滚动），因此列表永远不会把对话挤出主面板——见 <a
+href="./23_chapter_tui_zh.html">Ch 23</a> §6.2。</p>
+<p><strong>实时输出（类 bash）。</strong> 任务运行期间，其 stdout/stderr
+会实时流入 <code>background_run</code> 工具卡片（约 50ms
+一批节流，实时预览保留最近 ~4 KB），与同步 <code>bash</code>
+卡片完全一致。即使调用已返回，卡片仍保持运行态，进程退出时以
+✓/✗、耗时与最终输出收尾（见 §3 与 §6）。任务 id 就挂在卡片的 meta
+行上、紧跟在阶段词之后（<code>⠋ Running · 018f3a2c · 1.50s</code>），因此在任务仍在运行时无需打开卡片即可读到它、并用于
+<code>/background &lt;id&gt;</code> 或
+<code>check_background</code>；<code>background_run</code> 通过
+<code>AgentUpdate::ToolMeta</code>
+上报它——是结构化字段，而不是从工具输出里反解出来的一行文本。收尾后与其它已完成的命令一样折叠：只剩
+title + meta 两行，输出移到双击弹窗里（见 <a
+href="./23_chapter_tui_zh.html">Ch 23</a> §6.16）。</p>
+<hr />
+<h2 id="2-数据模型">2. 数据模型</h2>
+<pre class="rust"><code>pub enum BackgroundTaskStatus { Running, Completed, Error }   // snake_case in JSON
+
+pub struct BackgroundTaskRecord {
+    pub id: String,                        // 8 位十六进制计数器，由 epoch millis 播种
+    pub status: BackgroundTaskStatus,
+    pub command: String,
+    pub session_id: String,                // 所属 agent 会话；会话外为 &quot;&quot;
+    pub started_at: DateTime&lt;Utc&gt;,
+    pub finished_at: Option&lt;DateTime&lt;Utc&gt;&gt;,
+    pub output: String,                    // stdout + stderr 合并，有上限
+    pub output_path: Option&lt;String&gt;,       // &lt;workdir&gt;/.tact/background/&lt;id&gt;.log，全量输出
+}</code></pre>
+<p><strong>混合存储（hybrid）。</strong> DB
+记录保留元数据与输出的<strong>最后</strong> 50,000
+字符（<code>OutputAccumulator</code> 超过 <code>MAX_OUTPUT_CHARS</code>
+时
+<code>keep_last</code>，丢的是<strong>最旧</strong>的部分——记的是尾部，不是开头），而
+<strong>完整</strong> stdout+stderr 流随到达即追加写入
+<code>&lt;workdir&gt;/.tact/background/&lt;id&gt;.log</code>。<code>output_path</code>
+字段指向该文件，agent（或人）可用 <code>bash</code> 工具
+<code>tail</code> / <code>grep</code> 全量日志，而无需把 50k JSON 塞进
+context。文件创建是 best-effort：失败时任务照常运行，DB
+记录仍持有截断输出。</p>
+<p><code>BackgroundManager</code> 持有 store 与 id 源：</p>
+<pre class="rust"><code>records: Arc&lt;dyn BackgroundStore&gt;,   // .tact/tact.db → background_tasks 表
+next_id: AtomicU64,                  // 单调递增 id 源</code></pre>
+<p><strong>没有内存镜像</strong>：SQLite
+连接池串行化写入，数据库是唯一数据源，因此
+<code>SharedBackgroundManager</code> 用
+<code>Arc&lt;BackgroundManager&gt;</code> 包装且无内部 mutex —— spawn 的
+tokio 任务通过克隆的 store 句柄写回结果。</p>
+<hr />
+<h2 id="3-执行生命周期">3. 执行生命周期</h2>
+<pre class="mermaid">sequenceDiagram
+    participant Agent
+    participant BM as BackgroundManager
+    participant Task as tokio::spawn
+    participant TUI as TUI card
+    participant DB as .tact/tact.db (background_tasks)
+
+    Agent-&gt;&gt;BM: background_run("cargo build")
+    BM-&gt;&gt;BM: validate_shell_command (blocks sudo, rm -rf /, …)
+    BM-&gt;&gt;DB: upsert record (status: running)
+    BM-&gt;&gt;Task: spawn sh -c "cargo build" (cwd = work_dir)
+    BM--&gt;&gt;Agent: "Background task 018f3a2c started"
+
+    Note over Task: runs concurrently with the agent loop
+
+    loop stdout/stderr 实时推送
+        Task-&gt;&gt;TUI: ToolProgress (约 50ms 节流)
+    end
+    Task-&gt;&gt;Task: await exit (无时间上限, kill_on_drop)
+    Task-&gt;&gt;TUI: BackgroundTaskFinished (✓/✗ + 最终输出)
+    Task-&gt;&gt;DB: upsert record (completed/error + output)
+
+    Agent-&gt;&gt;BM: check_background("018f3a2c")
+    BM-&gt;&gt;DB: read record by id
+    BM--&gt;&gt;Agent: record as pretty JSON</pre>
+<p>值得了解的细节：</p>
+<table>
+<thead>
+<tr>
+<th>方面</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Shell</td>
+<td><code>sh -c &lt;command&gt;</code>，cwd =
+<code>ToolContext.work_dir</code></td>
+</tr>
+<tr>
+<td>校验</td>
+<td><code>crate::shell::validate_shell_command</code> — 与
+<code>bash</code> 相同硬
+blocklist（<code>sudo</code>、<code>rm -rf /</code>、…）</td>
+</tr>
+<tr>
+<td>超时</td>
+<td><strong>没有。</strong>
+任务一直运行到命令退出或会话被取消——构建与测试套件可以跑任意久</td>
+</tr>
+<tr>
+<td>取消</td>
+<td>会话的取消标志（Esc / 取消）会终止该会话所有运行中的任务：标志在进度
+tick（约 50 ms）上被检查，<code>SIGKILL</code>
+发给任务的<strong>进程组</strong>，因此
+<code>cargo</code>/<code>npm</code> 等孙进程随 shell
+一起死，而不是变成孤儿继续跑。status 变为 <code>Error</code>，内容为
+<code>Cancelled by the user</code></td>
+</tr>
+<tr>
+<td>实时推送</td>
+<td>stdout/stderr 增量读取并以 <code>AgentUpdate::ToolProgress</code>
+推送（约 50ms 一批，实时预览保留最近 ~4
+KB）；不再等完成后一次性缓冲</td>
+</tr>
+<tr>
+<td>输出上限</td>
+<td>stdout+stderr 的<strong>最后</strong> 50,000
+字符持久化到记录（<code>MAX_OUTPUT_CHARS</code>，超出丢最旧）；<strong>全量</strong>输出按到达顺序追加到
+<code>&lt;workdir&gt;/.tact/background/&lt;id&gt;.log</code>（见
+<code>output_path</code>）</td>
+</tr>
+<tr>
+<td>退出码</td>
+<td>非零退出 → <code>Error</code>；退出码本身不记录</td>
+</tr>
+<tr>
+<td>进程清理</td>
+<td><code>kill_on_drop(true)</code> — future 被 drop 时子进程被
+kill</td>
+</tr>
+</tbody>
+</table>
+<p>spawn 任务最终 <code>save_record</code>
+结果被丢弃（<code>let _ =</code>）；该时点磁盘失败会静默丢失结果。</p>
+<hr />
+<h2 id="4-id-生成">4. ID 生成</h2>
+<pre class="rust"><code>next_id: AtomicU64::new(Utc::now().timestamp_millis() as u64)</code></pre>
+<p>ID 为原子计数器低 32 位，格式化为 8
+位十六进制（<code>{:08x}</code>），在 manager 构造时以当前 epoch
+毫秒播种。进程内顺序递增，实践中跨重启足够唯一 —— 但若两 manager
+在同一毫秒内启动或计数器回绕，不保证无碰撞。</p>
+<hr />
+<h2 id="5-启动时崩溃恢复">5. 启动时崩溃恢复</h2>
+<p><code>BackgroundManager::new</code>（在
+<code>session_bootstrap::bootstrap_session</code>
+里随会话启动调用，headless 与交互两个前端共用）扫描
+<code>background_tasks</code> 表并修复孤儿：仍标记 <code>running</code>
+的记录属于已不存在的进程，重写为：</p>
+<pre class="text"><code>status: error
+output: &quot;Process interrupted (agent restarted)&quot;</code></pre>
+<p>单元测试 <code>marks_stale_running_tasks_on_startup</code>
+覆盖此行为。后果：后台任务 <strong>不跨重启存活</strong> —— manager
+假定新进程意味着所有先前子进程已死（成立，因其在进程内 spawn 且
+<code>kill_on_drop</code>）。</p>
+<hr />
+<h2 id="6-与-agent-loop-的交互">6. 与 Agent Loop 的交互</h2>
+<p><code>background_run</code> 立即返回，因此对调度器（<a
+href="./11_chapter_task_zh.html">任务与工具调度</a>）是廉价调用 —— 但作为
+shell 邻近工具，其权限分类来自 <a
+href="./10_chapter_permission_zh.html">权限模型</a>，工具名为
+<code>background_run</code> 而非 <code>bash</code>。</p>
+<p><strong>TUI 获得实时进度 + 完成事件。</strong> spawn
+的任务在运行期间向该调用的工具卡片推送
+<code>AgentUpdate::ToolProgress</code>，退出时再推送
+<code>AgentUpdate::BackgroundTaskFinished</code>（keep-live 卡片契约见
+<a href="./25_chapter_protocol_zh.html">Ch 25</a>）。但 <strong>模型/agent
+仍无完成 push</strong>，所以要主动问：<code>wait_background</code>
+会阻塞到任务结束，并在同一次调用里返回结果；<code>background_run(wait_ms:)</code>
+对刚启动的命令做同样的事。只有当这一回合确实还有别的活要干时，才该退回轮询
+<code>check_background</code>（或用 <code>sleep</code> 烧时间）。</p>
+<p>与同步 <code>bash</code> 输出不同，后台输出 <strong>不</strong> 经
+<code>persist_large_output</code>（<a
+href="./05_chapter_compact_zh.html">上下文压缩</a>）—— 记录硬 cap 50k
+字符，而这仍远超应当进入 context
+的体量。因此所有面向模型的读法都只报告<strong>有界尾部</strong>：<code>wait_background</code>、<code>background_run(wait_ms:)</code>
+与 <code>check_background &lt;id&gt;</code> 共用同一份
+<code>background::output_tail</code>，把 <code>output</code> 截到最后
+4,000 字符并附上日志路径。<strong>全量</strong>流在磁盘上：记录带
+<code>output_path</code>，agent 可用 <code>bash tail &lt;path&gt;</code>
+/ <code>grep error &lt;path&gt;</code>
+深挖。<code>check_background</code> 的列表形式（无
+<code>task_id</code>）每行追加
+<code>(log: &lt;path&gt;)</code>，无需逐个调用即可发现路径。</p>
+<hr />
+<h2 id="7-代码地图">7. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/store/background_store/mod.rs</code></td>
+<td><code>BackgroundStore</code> trait（async：upsert/get/list）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/background_store/sqlite.rs</code></td>
+<td><code>SqliteBackgroundStore</code> — <code>background_tasks</code>
+表</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/background.rs</code></td>
+<td><code>BackgroundManager</code>、<code>SharedBackgroundManager</code>、记录类型、spawn
+逻辑、启动修复</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/background_run.rs</code></td>
+<td><code>background_run</code> / <code>check_background</code>
+工具</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/shell.rs</code></td>
+<td>与 <code>bash</code> 共享的 <code>validate_shell_command</code>
+blocklist</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/mod.rs</code></td>
+<td><code>ToolContext.background_manager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/tool/registry.rs</code></td>
+<td><code>toolset()</code> 中的后台工具</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/session_bootstrap.rs</code></td>
+<td><code>bootstrap_session</code> 里从 <code>tact.db</code> 构造
+manager；headless / 交互共用</td>
+</tr>
+<tr>
+<td><code>docs/state_machines.md</code></td>
+<td>后台 job 状态图</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="8-当前缺口">8. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>详情</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>只能靠取消提前结束</td>
+<td>没有按任务 kill
+的工具：要结束运行中的任务就得取消回合（会停掉该会话<strong>所有</strong>任务）。模型可用的
+<code>kill_background</code> 是后续可做的</td>
+</tr>
+<tr>
+<td>模型无完成 push</td>
+<td>TUI 卡片会收到 <code>BackgroundTaskFinished</code>，但
+<strong>模型</strong>
+不会被动收到任何东西：它必须主动问（<code>wait_background</code>、<code>background_run(wait_ms:)</code>）或轮询
+<code>check_background</code></td>
+</tr>
+<tr>
+<td>交错只有到达顺序</td>
+<td>stdout 与 stderr 由两个并发 reader
+读出，按<strong>到达顺序</strong>合并进同一个缓冲（<code>OutputAccumulator::push</code>），没有逐行时间戳——合并后无法还原两个流各自的真实时序</td>
+</tr>
+<tr>
+<td>退出码丢弃</td>
+<td>合并输出文本之外的失败原因不可用</td>
+</tr>
+<tr>
+<td>日志文件 best-effort</td>
+<td><code>&lt;workdir&gt;/.tact/background/&lt;id&gt;.log</code>
+创建失败时，仅剩 DB 截断记录</td>
+</tr>
+<tr>
+<td>日志文件累积</td>
+<td><code>.tact/background/*.log</code> 从不清理（生命周期与
+<code>background_tasks</code> 表一致）</td>
+</tr>
+<tr>
+<td>记录累积</td>
+<td><code>background_tasks</code> 表从不修剪</td>
+</tr>
+<tr>
+<td>DB 记录仍 cap 50k</td>
+<td>轮询 JSON 的 <code>output</code>
+是截断的；完整文本只在日志文件中</td>
+</tr>
+<tr>
+<td>ID 可能碰撞</td>
+<td>32 位 hex 计数器由 wall clock 播种；无对磁盘的唯一性检查</td>
+</tr>
+<tr>
+<td>不受沙箱约束</td>
+<td><code>background_run</code> 自己在宿主上起
+<code>sh -c</code>；可选的 <code>bash</code> 沙箱（<a
+href="./07_chapter_tool_zh.html">Ch 7</a> §7.1、<a
+href="./27_chapter_sandbox_zh.html">Ch 27</a>）不覆盖它</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./07_chapter_tool_zh.html">工具系统</a> —
+<code>ToolContext</code>、<code>toolset()</code> 与同步
+<code>bash</code> 对应物</li>
+<li><a href="./10_chapter_permission_zh.html">权限模型</a> —
+<code>background_run</code> 如何被 gate</li>
+<li><a href="./05_chapter_compact_zh.html">上下文压缩</a> —
+后台任务绕过的输出溢出机制</li>
+<li><a href="./01_chapter_store_zh.html">Store 与持久化</a> —
+<code>background_tasks</code> SQLite 表</li>
+<li><a href="../docs/state_machines.md">docs/state_machines.md</a> —
+后台 job 状态</li>
+<li><a href="../ARCHITECTURE.md">ARCHITECTURE.md</a> — §7
+后台任务行</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

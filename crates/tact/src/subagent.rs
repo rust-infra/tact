@@ -51,10 +51,10 @@ impl From<SubagentStatus> for &'static str {
     }
 }
 
-impl TryFrom<&str> for SubagentStatus {
-    type Error = anyhow::Error;
+impl std::str::FromStr for SubagentStatus {
+    type Err = anyhow::Error;
 
-    fn try_from(s: &str) -> Result<Self, Self::Error> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "running" => Ok(Self::Running),
             "completed" => Ok(Self::Completed),

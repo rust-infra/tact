@@ -1,0 +1,263 @@
+name: Scheduled review
+
+# A review agent on a timer: it reads the commits that landed on `main` since the
+# last run and writes down what it found. tact has no scheduler of its own (the
+# old cron subsystem was removed), and `spawn_subagent` cannot outlive its
+# parent session — so the timer lives here, and each run is one ordinary
+# `tact-ui headless` invocation.
+#
+# Findings go to two places on purpose: the run's Summary always carries them
+# (a failed Issue step still leaves the review readable), and an Issue makes
+# them something a person can be notified about and close.
+
+on:
+  schedule:
+    # Daily, 02:00 Asia/Shanghai — GitHub cron is UTC only, so 18:00 the day
+    # before. A daily cadence makes the review range "since yesterday", so the
+    # default below follows it.
+    - cron: "0 18 * * *"
+  workflow_dispatch:
+    inputs:
+      since:
+        description: "How far back to review (git --since). Default: 1 day ago."
+        required: false
+        default: "1 day ago"
+        type: string
+
+permissions:
+  contents: read
+  issues: write
+
+concurrency:
+  group: scheduled-review
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  review:
+    name: Review the recent commits on main
+    runs-on: ubuntu-latest
+    # The provider is reached over the network; a hung endpoint must not hold a
+    # runner for the default six hours. `timeout-minutes` is a *job* key — at
+    # the workflow top level it makes the whole file invalid, and GitHub reports
+    # that as a run with zero jobs rather than a schema error.
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # The review walks history, and `git log --since` needs all of it.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libsqlite3-dev libasound2-dev pkg-config clang libclang-dev
+
+      - name: Cache Cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: ${{ runner.os }}-cargo-review-${{ hashFiles('Cargo.lock') }}
+          restore-keys: ${{ runner.os }}-cargo-review-
+
+      - name: Build tact-ui
+        run: cargo build --release -p tact-ui
+
+      # `protocol` has no CLI flag: it is only settable from a provider entry,
+      # so the run needs a config file. `chat_completions` is not the provider
+      # default (that is `responses`) — the gateway this repo talks to serves
+      # the Chat Completions API only.
+      - name: Write the provider config
+        env:
+          PROVIDER: ${{ secrets.PROVIDER }}
+          MODEL: ${{ secrets.MODEL }}
+          API_KEY: ${{ secrets.API_KEY }}
+          BASE_URL: ${{ secrets.BASE_URL }}
+        run: |
+          set -euo pipefail
+          for name in PROVIDER MODEL API_KEY BASE_URL; do
+            if [ -z "${!name:-}" ]; then
+              echo "::error::secret $name is not set"
+              exit 1
+            fi
+          done
+          mkdir -p "$HOME/.tact"
+          # `printf` rather than a heredoc: a key or URL containing backslashes
+          # must not be reinterpreted.
+          {
+            printf '[llm]\n'
+            printf 'provider = "%s"\n' "$PROVIDER"
+            printf '\n'
+            printf '[llm.providers.%s]\n' "$PROVIDER"
+            printf 'api_key = "%s"\n' "$API_KEY"
+            printf 'base_url = "%s"\n' "$BASE_URL"
+            printf 'protocol = "chat_completions"\n'
+            printf 'model = "%s"\n' "$MODEL"
+          } > "$HOME/.tact/config.toml"
+          echo "provider config written for $PROVIDER/$MODEL"
+
+      - name: Collect the commits to review
+        env:
+          SINCE: ${{ inputs.since || '7 days ago' }}
+        run: |
+          set -euo pipefail
+          git log --since="$SINCE" --no-merges \
+            --pretty=format:'%h %ad %s' --date=short > review-range.txt
+          count="$(wc -l < review-range.txt | tr -d ' ')"
+          echo "commits in range ($SINCE): $count"
+          if [ "$count" -eq 0 ]; then
+            echo "nothing to review" > review.md
+            echo "empty=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "empty=false" >> "$GITHUB_OUTPUT"
+          fi
+        id: range
+
+      # The prompt is a file, not an inline string: it is long, it is quoted
+      # material, and a heredoc keeps both out of shell parsing.
+      - name: Write the review prompt
+        run: |
+          set -euo pipefail
+          cat > prompt.txt <<'PROMPT'
+          You are reviewing this repository before its changes reach users.
+
+          The commits to review are listed in `review-range.txt` (hash, date,
+          subject), newest first. Read that file first, then inspect the actual
+          diffs with `git show`, and read the surrounding code where a diff is
+          not enough to judge it.
+
+          Report only what a reviewer would act on, most severe first:
+
+          1. Correctness — a behaviour that is wrong, not merely different.
+          2. Data loss or silent failure — state that disappears, errors a user
+             cannot see, retries that cannot converge.
+          3. Security — a check that can be bypassed, a secret that can leak.
+          4. Tests — a claim the change makes that nothing verifies.
+
+          For each finding give: file:line, what is wrong, why it matters, and
+          what would fix it. Quote the code you are judging.
+
+          Do not report style, naming, or formatting. Do not speculate about
+          code you did not read. If nothing is wrong, say so plainly and stop —
+          an empty review is a valid result and is more useful than padding.
+
+          Write the complete findings in your final answer: that answer is the
+          only thing that is saved.
+          PROMPT
+          echo "prompt: $(wc -l < prompt.txt) lines"
+
+      - name: Run the review
+        if: steps.range.outputs.empty == 'false'
+        env:
+          PROVIDER: ${{ secrets.PROVIDER }}
+          MODEL: ${{ secrets.MODEL }}
+          API_KEY: ${{ secrets.API_KEY }}
+          BASE_URL: ${{ secrets.BASE_URL }}
+        run: |
+          set -euo pipefail
+          # `-e`: a non-zero exit fails the job instead of publishing an empty
+          # review. stdout is the final answer; stderr carries session notices.
+          # The provider flags are *global* options: they precede the
+          # subcommand, and `headless` itself takes only the prompt.
+          ./target/release/tact-ui \
+            --provider "$PROVIDER" \
+            --api-key "$API_KEY" \
+            --base-url "$BASE_URL" \
+            --model "$MODEL" \
+            --permission-mode plan \
+            headless "$(cat prompt.txt)" > review.md 2> review.log
+          echo "--- review log (tail) ---"
+          tail -20 review.log || true
+          echo "--- review body ---"
+          cat review.md
+
+      - name: Never publish an empty body
+        if: steps.range.outputs.empty == 'false'
+        run: |
+          set -euo pipefail
+          if [ ! -s review.md ]; then
+            echo "::error::the agent produced no final answer; see review.log"
+            exit 1
+          fi
+
+      - name: Run summary
+        if: always()
+        run: |
+          set -euo pipefail
+          {
+            echo "## Scheduled review"
+            echo ""
+            if [ -f review-range.txt ]; then
+              echo "Commits in range: $(wc -l < review-range.txt | tr -d ' ')"
+            fi
+            echo ""
+            if [ -s review.md ]; then
+              cat review.md
+            else
+              echo "_No review was produced._"
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # The Issue is the surface a person is notified about; the Summary above
+      # is the one that survives a failure here.
+      - name: File the findings as an issue
+        if: steps.range.outputs.empty == 'false'
+        uses: actions/github-script@v7
+        env:
+          REVIEW_BODY: review.md
+          REVIEW_RANGE: review-range.txt
+        with:
+          script: |
+            const fs = require('fs')
+            const body = fs.readFileSync(process.env.REVIEW_BODY, 'utf8')
+            const range = fs.readFileSync(process.env.REVIEW_RANGE, 'utf8').trim()
+            const count = range ? range.split('\n').length : 0
+            const today = new Date().toISOString().slice(0, 10)
+            // The label is created on first use: `issues.create` fails with
+            // 422 when a label does not exist, which would lose the review
+            // after the agent has already been paid for.
+            const label = 'automated-review'
+            try {
+              await github.rest.issues.getLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label,
+              })
+            } catch (error) {
+              if (error.status !== 404) throw error
+              await github.rest.issues.createLabel({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                name: label,
+                color: '0e8a16',
+                description: 'Filed by the scheduled review workflow',
+              })
+            }
+            await github.rest.issues.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              title: `Scheduled review — ${today} (${count} commits)`,
+              labels: [label],
+              body: [
+                `Automated review of ${count} commit(s) on \`main\`.`,
+                '',
+                '<details><summary>Commits in range</summary>',
+                '',
+                '```',
+                range,
+                '```',
+                '',
+                '</details>',
+                '',
+                body,
+                '',
+                `_Run: ${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}_`,
+              ].join('\n'),
+            })

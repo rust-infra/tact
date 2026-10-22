@@ -1,0 +1,1312 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>存储与持久化</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-%E4%B8%A4%E5%B1%82%E6%8C%81%E4%B9%85%E5%8C%96" title="1. 两层持久化"><span class="toc-label">1. 两层持久化</span></a></li>
+<li class="toc-l2"><a href="#2-storeroot%E5%AE%89%E5%85%A8%E8%B7%AF%E5%BE%84%E8%A7%A3%E6%9E%90" title="2. StoreRoot：安全路径解析"><span class="toc-label">2. StoreRoot：安全路径解析</span></a></li>
+<li class="toc-l2"><a href="#3-storet%E5%8D%95-json-%E6%96%87%E4%BB%B6" title="3. Store&lt;T&gt;：单 JSON 文件"><span class="toc-label">3. Store&lt;T&gt;：单 JSON 文件</span></a></li>
+<li class="toc-l2"><a href="#4-collectionstoret%E6%8C%89%E9%94%AE%E5%88%86%E6%96%87%E4%BB%B6%E7%9A%84-json" title="4. CollectionStore&lt;T&gt;：按键分文件的 JSON"><span class="toc-label">4. CollectionStore&lt;T&gt;：按键分文件的 JSON</span></a></li>
+<li class="toc-l2"><a href="#5-%E9%A2%86%E5%9F%9F%E6%B6%88%E8%B4%B9%E8%80%85" title="5. 领域消费者"><span class="toc-label">5. 领域消费者</span></a></li>
+<li class="toc-l2"><a href="#6-session-storesqlite" title="6. Session Store（SQLite）"><span class="toc-label">6. Session Store（SQLite）</span></a></li>
+<li class="toc-l3"><a href="#%E6%95%B0%E6%8D%AE%E5%BA%93%E4%BD%8D%E7%BD%AE" title="数据库位置"><span class="toc-label">数据库位置</span></a></li>
+<li class="toc-l3"><a href="#%E8%A1%A8" title="表"><span class="toc-label">表</span></a></li>
+<li class="toc-l3"><a href="#agent-%E9%9B%86%E6%88%90" title="Agent 集成"><span class="toc-label">Agent 集成</span></a></li>
+<li class="toc-l3"><a href="#%E8%BE%93%E5%85%A5%E5%8E%86%E5%8F%B2%E8%A3%81%E5%89%AA" title="输入历史裁剪"><span class="toc-label">输入历史裁剪</span></a></li>
+<li class="toc-l3"><a href="#%E8%AF%B7%E6%B1%82%E6%AD%A3%E6%96%87%E8%A3%81%E5%89%AA" title="请求正文裁剪"><span class="toc-label">请求正文裁剪</span></a></li>
+<li class="toc-l2"><a href="#7-%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F%E5%9B%BE" title="7. 生命周期图"><span class="toc-label">7. 生命周期图</span></a></li>
+<li class="toc-l2"><a href="#8-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="8. 代码地图"><span class="toc-label">8. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#9-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="9. 当前缺口"><span class="toc-label">9. 当前缺口</span></a></li>
+<li class="toc-l2"><a href="#%E7%9B%B8%E5%85%B3%E6%96%87%E6%A1%A3" title="相关文档"><span class="toc-label">相关文档</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="存储与持久化">存储与持久化</h1>
+<p>本章说明 Tact 的<strong>磁盘持久化层</strong>：<code>.tact/</code>
+下的 JSON 文件存储原语，以及独立的 SQLite
+数据库。对话历史、领域状态（任务、background、队友、worktree、subagent）与可观测性数据<strong>全部</strong>存放在
+SQLite 中；JSON store 目前没有领域消费者——它只剩单元测试在用。</p>
+<p>记忆（<a
+href="./03_chapter_memory_zh.html">持久化记忆</a>）使用按仓库切分的
+<code>~/.tact/projects/&lt;slug&gt;/memory/</code> 下的 Markdown
+文件，<strong>不属于</strong> JSON store API。</p>
+<hr />
+<h2 id="1-两层持久化">1. 两层持久化</h2>
+<p>Tact 刻意拆分职责：</p>
+<table>
+<thead>
+<tr>
+<th>层级</th>
+<th>位置</th>
+<th>API</th>
+<th>主要用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>JSON store</strong></td>
+<td><code>&lt;workdir&gt;/.tact/</code></td>
+<td><code>StoreRoot</code>、<code>Store&lt;T&gt;</code>、<code>CollectionStore&lt;T&gt;</code></td>
+<td>通用 JSON 持久化（域状态迁到 SQLite
+后<strong>只剩测试在用</strong>）</td>
+</tr>
+<tr>
+<td><strong>SQLite store</strong></td>
+<td><code>&lt;workdir&gt;/.tact/tact.db</code></td>
+<td><code>SessionStore</code> + <code>TaskStore</code> +
+<code>BackgroundStore</code> + <code>TeamStore</code> +
+<code>WorktreeStore</code> + <code>SubagentStore</code> trait</td>
+<td>消息、token 用量、provider
+会话状态、任务、background、team、worktrees、subagent、输入历史</td>
+</tr>
+</tbody>
+</table>
+<pre class="mermaid">graph TD
+    root[&lt;workdir&gt;/.tact/] --&gt; json[JSON store]
+    root --&gt; db[tact.db SQLite]
+    root --&gt; skills[skills/]
+    root --&gt; bg[background/&lt;id&gt;.log]
+    ss[6 个 Store trait] --&gt; db
+    mem[~/.tact/projects/&amp;lt;slug&amp;gt;/memory/]</pre>
+<p>图中 <code>.tact/</code> 的四个条目里，只有前两个走存储
+API：<code>JSON store</code> 是 <code>StoreRoot</code> /
+<code>Store&lt;T&gt;</code> /
+<code>CollectionStore&lt;T&gt;</code>（域状态迁到 SQLite
+后仅测试使用），<code>tact.db</code> 是上面那六个 Store trait 的 SQLite
+落点。<code>skills/</code> 与 <code>background/&lt;id&gt;.log</code>
+是<strong>普通文件</strong>，不属于
+<code>StoreRoot</code>。<code>~/.tact/projects/&lt;slug&gt;/memory/</code>
+是独立模块，不属于 JSON store API（见 <a
+href="./03_chapter_memory_zh.html">持久化记忆</a>）。</p>
+<p>启动时真正打开的只有 SQLite：<code>crates/tact-ui/src/main.rs</code>
+在 <code>Upgrade</code> 子命令之后调用
+<code>open_sqlite_session_store(&amp;tact_path.session_db_path())</code>（自升级不需要
+store），随后建行、抢锁、<code>touch</code> 由
+<code>session_bootstrap::open_session</code> 完成，headless
+与交互两个前端共用。<code>StoreRoot::new</code>
+如今<strong>只出现在单元测试里</strong>——域状态迁到 SQLite
+后它没有任何生产调用者。</p>
+<hr />
+<h2 id="2-storeroot安全路径解析">2. StoreRoot：安全路径解析</h2>
+<p><code>StoreRoot</code>（<code>crates/tact/src/store/mod.rs</code>）是所有
+JSON 持久化的入口。</p>
+<pre class="rust"><code>pub struct StoreRoot { root: PathBuf }</code></pre>
+<table>
+<thead>
+<tr>
+<th>规则</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>仅相对路径</td>
+<td>绝对路径会被拒绝</td>
+</tr>
+<tr>
+<td>禁止穿越</td>
+<td>解析后的路径必须留在规范化 root 之下</td>
+</tr>
+<tr>
+<td>自动创建</td>
+<td><code>StoreRoot::new()</code> 时创建 root 目录</td>
+</tr>
+<tr>
+<td>缺失文件</td>
+<td>打开新路径时允许缺失（<code>allow_missing: true</code>）</td>
+</tr>
+</tbody>
+</table>
+<p>工厂方法：</p>
+<pre class="rust"><code>root.file::&lt;T&gt;(relative)?                        // Store&lt;T&gt; — 单文件（仅测试调用）
+root.collection::&lt;T&gt;(relative_dir)?              // CollectionStore&lt;T&gt; — 按键分文件（仅测试调用）</code></pre>
+<p>域状态迁到 SQLite 之后，这两个工厂只剩 <code>store/mod.rs</code>
+的单元测试在用。保留它们是因为路径解析规则（只允许相对路径、禁止穿越）仍然是这套
+store 的契约。</p>
+<hr />
+<h2 id="3-storet单-json-文件">3. Store&lt;T&gt;：单 JSON 文件</h2>
+<p>对单个 JSON 文档的类型化封装（pretty-print，末尾带换行）。</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read()</code></td>
+<td>反序列化整个文件；缺失或 JSON 无效则报错</td>
+</tr>
+<tr>
+<td><code>write(value)</code></td>
+<td>创建父目录；覆盖文件</td>
+</tr>
+<tr>
+<td><code>update(f)</code></td>
+<td>读-改-写</td>
+</tr>
+<tr>
+<td><code>append(value)</code></td>
+<td>追加一行 JSON（JSONL）</td>
+</tr>
+<tr>
+<td><code>read_all()</code></td>
+<td>将所有非空行解析为 <code>Vec&lt;T&gt;</code></td>
+</tr>
+<tr>
+<td><code>delete()</code></td>
+<td>删除文件；返回是否曾存在</td>
+</tr>
+<tr>
+<td><code>exists()</code></td>
+<td>路径检查</td>
+</tr>
+</tbody>
+</table>
+<p>用于<strong>索引文件</strong>与<strong>单文档注册表</strong>——通用持久化原语（当前无领域模块使用；所有领域状态都在
+SQLite）。</p>
+<hr />
+<h2 id="4-collectionstoret按键分文件的-json">4.
+CollectionStore&lt;T&gt;：按键分文件的 JSON</h2>
+<p>目录内每个记录对应一个 <code>{key}.json</code> 文件。</p>
+<table>
+<thead>
+<tr>
+<th>方法</th>
+<th>行为</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>read(key)</code> / <code>write(key, value)</code></td>
+<td>按 key 读写文件</td>
+</tr>
+<tr>
+<td><code>append(key, value)</code></td>
+<td>对该 key 的文件做 JSONL 追加</td>
+</tr>
+<tr>
+<td><code>read_all_from(key)</code></td>
+<td>读取某 key 文件的全部行</td>
+</tr>
+<tr>
+<td><code>delete(key)</code></td>
+<td>删除 <code>{key}.json</code></td>
+</tr>
+<tr>
+<td><code>list()</code></td>
+<td>读取目录中所有 <code>*.json</code>（<code>index.json</code>
+除外）</td>
+</tr>
+<tr>
+<td><code>exists(key)</code></td>
+<td>检查 <code>{key}.json</code></td>
+</tr>
+</tbody>
+</table>
+<p>非法
+key（<code>/</code>、<code>\</code>、<code>.</code>、<code>..</code>）会被拒绝。</p>
+<p>当前无领域模块使用：tasks、background、team、worktree 都已迁到
+SQLite（见 §5、§6）。</p>
+<hr />
+<h2 id="5-领域消费者">5. 领域消费者</h2>
+<table>
+<thead>
+<tr>
+<th>模块</th>
+<th>Store 路径</th>
+<th>模式</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>task/</code></td>
+<td><code>tact.db</code> →
+<code>tasks</code>、<code>task_dependencies</code> 表</td>
+<td><code>TaskStore</code>（SQLite）</td>
+</tr>
+<tr>
+<td><code>background.rs</code>（<a
+href="./13_chapter_background_zh.html">后台任务</a>）</td>
+<td><code>tact.db</code> → <code>background_tasks</code> 表</td>
+<td><code>BackgroundStore</code>（SQLite）</td>
+</tr>
+<tr>
+<td><code>team.rs</code>（<a
+href="./14_chapter_team_zh.html">团队协调</a>）</td>
+<td><code>tact.db</code> →
+<code>teammates</code>、<code>inbox_messages</code> 表</td>
+<td><code>TeamStore</code>（SQLite）</td>
+</tr>
+<tr>
+<td><code>worktree/</code>（<a
+href="./15_chapter_worktree_zh.html">Worktree 泳道</a>）</td>
+<td><code>tact.db</code> →
+<code>worktrees</code>、<code>worktree_events</code> 表</td>
+<td><code>WorktreeStore</code>（SQLite）</td>
+</tr>
+<tr>
+<td><code>subagent.rs</code>（<a href="./12_chapter_subagent_zh.html">子
+agent</a>）</td>
+<td><code>tact.db</code> → <code>subagent_runs</code> 表</td>
+<td><code>SubagentStore</code>（SQLite）</td>
+</tr>
+</tbody>
+</table>
+<p>各领域模块包装原始 store（如 <code>SharedTaskManager</code> /
+<code>SharedBackgroundManager</code> /
+<code>SharedTeammateManager</code> / <code>SharedWorktreeManager</code>
+/ <code>SharedSubagentManager</code> 包
+<code>Arc&lt;…&gt;</code>——SQLite 连接池已串行化写入），并暴露面向工具的
+API——调用方不应直接操作底层 store（<code>Store</code> /
+<code>CollectionStore</code> 当前已无任何调用者）。</p>
+<p>五个领域 manager 在 <code>session_bootstrap::bootstrap_session</code>
+里一次性构建，两个前端共用（见 §7）。</p>
+<p>所有 SQLite store
+按数据库文件共享同一个连接池：<code>store::sqlite::open_pool</code>
+首次使用时打开并缓存连接池，向每个 store
+分发一个引用计数句柄（<code>PoolRef</code>），因此单个进程对
+<code>&lt;workdir&gt;/.tact/tact.db</code>
+只使用一个连接池；最后一个持有它的 store
+被释放时连接池随之关闭。首次打开时 <code>open_pool</code>
+会创建目录与空文件，然后以 <strong>WAL</strong> journal 连接（TUI
+读历史不必等 agent 写完）并设 5s <code>busy_timeout</code>；WAL 下
+<code>synchronous = NORMAL</code>（WAL 中无损
+durability），若并发打开导致 WAL 切换失败则记一条 warn 并回退到默认
+delete journal，此时 <code>synchronous</code> 回到
+<code>FULL</code>。</p>
+<hr />
+<h2 id="6-session-storesqlite">6. Session Store（SQLite）</h2>
+<p>定义于 <code>crates/tact/src/store/session_store/</code>。trait 为
+async；默认实现为 <code>SqliteSessionStore</code>。</p>
+<h3 id="数据库位置">数据库位置</h3>
+<pre class="text"><code>&lt;workdir&gt;/.tact/tact.db</code></pre>
+<p>在 <code>main.rs</code> 中通过 <code>open_sqlite_session_store</code>
+于 <code>&lt;workdir&gt;/.tact/tact.db</code>
+打开。此后「这次运行属于哪个会话」由
+<code>crates/tact-ui/src/session_bootstrap.rs</code> 的
+<code>open_session</code> 一次做完，两个前端共用（见 §7）：</p>
+<ol type="1">
+<li>解析 id —— <code>--session</code> 指定，或
+<code>--resume-last</code> 取 <code>list_sessions(Some(root_dir))</code>
+的第一行（<code>root_dir</code> 按当前工作目录过滤），否则新建
+UUID。</li>
+<li><code>ensure_session_row(id, root_dir, "")</code> ——
+行必须先存在，锁才有东西可锁。</li>
+<li><code>SessionLockGuard::acquire</code>（<code>crates/tact-ui/src/session_lock.rs</code>）——
+争用时重试 <code>try_lock_session</code>（最多 5 次，退避
+<code>50ms × attempt</code>），写入 <code>locked_by</code> +
+<code>lock_epoch</code>；<code>0</code>/空表示未锁定。</li>
+<li><code>lock_registry.register(...)</code> 与
+<code>touch_session(id, root_dir)</code> ——
+注册后退出信号能释放它；touch 过的会话下次才会被
+<code>--resume-last</code> 找到。</li>
+</ol>
+<p><code>lock_epoch</code> 是
+<code>process_identity(pid)</code>（<code>store/process_identity.rs</code>，2026-10-17
+从 <code>store/session_store/</code> 上移为共享模块）：Linux 读
+<code>/proc/&lt;pid&gt;/stat</code> 的 starttime，macOS 用
+<code>proc_pidinfo</code>，其他平台退回
+<code>ps -o lstart</code>。它的作用是把「同一个 PID
+被复用」与「同一个进程」区分开——只记 pid
+会让一个新进程误判自己仍持有锁。同一模块还导出
+<code>is_process_alive(pid)</code> 与
+<code>holder_is_alive(pid, identity)</code>，供 Goal 执行 lease
+判断「持有者是否还在」（见 <a href="./28_chapter_goal_zh.html">Ch 28</a>
+§7）。</p>
+<p><code>main</code> 通过
+<code>SessionLockRegistry::spawn_exit_listener()</code> 安装
+SIGINT/SIGTERM 监听，异常终止时释放锁并以
+<code>130</code>/<code>143</code> 退出进程。子 agent 的
+<code>resume</code> 路径（<code>tool/subagent.rs</code>
+复用一个已结束的子会话时）用的是
+<code>tact::store::SessionLock</code>（<code>store/session_store/session_lock.rs</code>）：同样是
+RAII，但<strong>没有 <code>Drop</code>
+实现</strong>——异常退出时不假装清理，必须显式
+<code>release()</code>。</p>
+<h3 id="表">表</h3>
+<table>
+<thead>
+<tr>
+<th>表</th>
+<th>用途</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>sessions</code></td>
+<td>会话 id、<code>root_dir</code>、<code>ref_id</code>（父会话
+id；<code>''</code> = 顶层）、<code>locked_by</code> +
+<code>lock_epoch</code>（进程锁）、时间戳</td>
+</tr>
+<tr>
+<td><code>messages</code></td>
+<td>序列化的 <code>MessageContent</code> JSON、序号排序</td>
+</tr>
+<tr>
+<td><code>token_usages</code></td>
+<td>每次 LLM 调用的 token 计数、可选 <code>request_body</code>
+blob、可选 <code>tool_schedule</code> JSON</td>
+</tr>
+<tr>
+<td><code>input_history</code></td>
+<td>TUI 召回用的用户输入字符串（每会话最多 100 条）</td>
+</tr>
+<tr>
+<td><code>responses_states</code></td>
+<td>每会话一行的 Responses
+协议基线：<code>schema_version</code>、<code>provider</code>、<code>base_url</code>、<code>model</code>、<code>state_json</code>、<code>compaction_id</code>——读回时
+<code>provider</code> 与 <code>base_url</code>
+必须匹配当前客户端，<code>model</code> 不同只被容忍（见 §「Agent
+集成」）</td>
+</tr>
+<tr>
+<td><code>tasks</code></td>
+<td>任务记录：<code>subject</code>、<code>description</code>、<code>session_id</code>、<code>status</code>（CHECK
+约束）、<code>owner</code>、<code>created_at</code>/<code>started_at</code>/<code>completed_at</code>（毫秒）</td>
+</tr>
+<tr>
+<td><code>task_dependencies</code></td>
+<td>每条依赖边一行（<code>blocker_id</code>、<code>blocked_id</code>），复合主键，无外键——由应用层清理</td>
+</tr>
+<tr>
+<td><code>background_tasks</code></td>
+<td>后台任务：<code>status</code>（CHECK
+约束）、<code>command</code>、<code>session_id</code>、<code>started_at</code>/<code>finished_at</code>、<code>output</code>、<code>output_path</code>（全量输出日志文件）</td>
+</tr>
+<tr>
+<td><code>teammates</code></td>
+<td>roster：<code>name</code>（PK）、<code>role</code>、<code>status</code></td>
+</tr>
+<tr>
+<td><code>inbox_messages</code></td>
+<td>inbox
+条目：<code>owner</code>、<code>from_name</code>、<code>to_name</code>、<code>body</code>、<code>kind</code>、<code>created_at</code>；自增
+<code>id</code> 保持插入顺序</td>
+</tr>
+<tr>
+<td><code>worktrees</code></td>
+<td>worktree
+泳道：<code>name</code>（UNIQUE）、<code>path</code>、<code>branch</code>、<code>task_id</code>、<code>status</code>、<code>session_id</code>、<code>created_at</code></td>
+</tr>
+<tr>
+<td><code>worktree_events</code></td>
+<td>泳道审计日志：<code>event</code>、<code>created_at</code>；<code>id</code>
+为排序键</td>
+</tr>
+<tr>
+<td><code>subagent_runs</code></td>
+<td>子 agent
+运行记录（<code>SubagentStore</code>，同库）：<code>child_id</code>（PK，即子会话
+id）、<code>status</code>（CHECK：<code>running</code>/<code>completed</code>/<code>failed</code>/<code>cancelled</code>）、<code>summary</code>、<code>started_at</code>/<code>finished_at</code>（毫秒）</td>
+</tr>
+<tr>
+<td><code>goals</code></td>
+<td>Goal 聚合整行 JSON（<code>data</code>）+ 索引列
+<code>status</code>、<code>version</code>（标准/证据随聚合一起序列化，无独立的
+<code>goal_criteria</code> 表）、<code>updated_at</code></td>
+</tr>
+<tr>
+<td><code>goal_runs</code> / <code>goal_events</code> /
+<code>goal_leases</code></td>
+<td>bounded Run（整行 JSON <code>data</code> + 索引列
+<code>state</code>、时间戳、<code>stop_reason</code>；<code>data</code>
+里带 <code>event_seq_anchor</code>）、追加式审计事件（自增
+<code>seq</code> 排序，另有 <code>kind</code> / <code>status</code> /
+<code>source</code> 三个投影列与对应索引）、工作区 singleton lease 与
+fencing epoch（含 <code>holder_pid</code> /
+<code>holder_identity</code>）</td>
+</tr>
+</tbody>
+</table>
+<p><code>goal_events</code> 的 <code>kind</code> / <code>status</code> /
+<code>source</code> 是 <code>data</code> 的<strong>投影列</strong>，与
+<code>data</code> 在同一条 INSERT 里写入：查询需要索引，而
+<code>json_extract(data, '$.kind')</code> 用不上索引。旧库在打开时按
+<code>kind = ''</code> 幂等回填一次（<code>source</code> 回填为
+<code>runner</code>，绝不读成用户决定）。</p>
+<p><code>archived_at</code> 不在列里：归档是 Goal JSON
+里的一个时间戳（<code>Option</code>，旧行缺字段即「未归档」），所以归档/取消归档不需要新列、不需要迁移，<code>status</code>
+列继续报 Goal 真正结束时的状态。Goal store 与 Task store 共用
+<code>.tact/tact.db</code>。<code>tasks.goal_id</code> 是 nullable
+迁移字段，旧 Task 保持可读；Goal 生命周期更新、事件追加和 run/lease
+写入通过 <code>GoalManager</code> 的 SQLite store
+完成，重启恢复不依赖内存队列。Goal 域的标识符由
+<code>goal::new_id</code> 统一铸造为 8 位十六进制短 ID，历史行保留更长的
+UUID：ID 在存储层是不透明字符串，从不解析、不校验长度（见 <a
+href="./28_chapter_goal_zh.html">Agent Goal</a> §4）。</p>
+<h3 id="agent-集成">Agent 集成</h3>
+<table>
+<thead>
+<tr>
+<th>Agent 方法</th>
+<th>SessionStore 调用</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>ensure_session()</code></td>
+<td><code>ensure_session_row</code>、<code>load_session</code> → 恢复
+<code>runtime.context</code>；<code>load_provider_state</code> → 恢复
+Responses 基线（<code>validate_provider_state_binding</code>：provider
+与 <code>base_url</code> 必须匹配，model
+允许不同，不匹配则报错而非静默使用）</td>
+</tr>
+<tr>
+<td><code>session_bootstrap::open_session</code>（两个前端共用）</td>
+<td><code>ensure_session_row</code> → <code>try_lock_session</code> →
+<code>touch_session</code>（持锁后仅更新元数据），顺序不可换：见 §6
+开头</td>
+</tr>
+<tr>
+<td><code>persist_message()</code></td>
+<td>每次 context push 后 <code>append_message</code></td>
+</tr>
+<tr>
+<td><code>persist_llm_call()</code></td>
+<td><code>record_token_usage</code>（在写入 assistant
+行<strong>之前</strong>快照 <code>llm_call_last_message_id</code> =
+<code>last_message_db_id</code>）</td>
+</tr>
+<tr>
+<td><code>compact_history()</code></td>
+<td><code>replace_session_messages</code> — 重写 SQLite
+<code>messages</code> 以匹配压缩后的 context</td>
+</tr>
+<tr>
+<td><code>replace_persisted_context_and_state()</code></td>
+<td><code>replace_session_messages_and_provider_state</code> — Responses
+路径专用：messages 与 provider state
+在<strong>同一事务</strong>里替换，避免逻辑上下文与协议基线在磁盘上分叉；<code>provider_state = None</code>
+会删掉已存的状态</td>
+</tr>
+<tr>
+<td><code>execute_tool_call</code>（调度后）</td>
+<td>在由 <code>llm_call_last_message_id</code> 定位的 token 行上
+<code>record_tool_schedule</code></td>
+</tr>
+</tbody>
+</table>
+<p>若未附加 session store（未调用
+<code>with_session</code>），持久化方法为
+no-op——便于测试。<code>list_sessions</code> 只返回
+<code>ref_id = ''</code> 的顶层会话；<code>delete_session</code>
+会级联删除 <code>ref_id = 该 id</code> 的子会话及其附属表。</p>
+<h3 id="输入历史裁剪">输入历史裁剪</h3>
+<p><code>MAX_INPUT_HISTORY</code> = 100。加载超过上限时，在 trim
+阶段删除最旧行。</p>
+<h3 id="请求正文裁剪">请求正文裁剪</h3>
+<p><code>[agent] max_token_usage_bodies</code>（默认 1，兜底常量
+<code>MAX_TOKEN_USAGE_BODIES</code>）。
+<code>token_usages.request_body</code> 存的是每次调用的整份序列化请求
+（system prompt + 全部工具 schema + 上下文），因此对每个会话中「比最新
+<code>max_token_usage_bodies</code> 条更旧」的普通调用，
+它会被<strong>就地清空</strong>——写成空
+blob（<code>X''</code>），既不是删行也不是
+NULL。每次插入只清一行（窗口边缘那行），
+因此遵守该策略的会话每次调用只做 O(1)
+工作；而策略生效时就已在窗口之外的老行不会被回访，那是一次性语句的活。压缩行（<code>compact</code>、
+<code>responses_compact</code>）无论多旧都保留正文：那个 BLOB
+是压缩基线及其加密内容唯一的存身处。
+计数列永不改动，<code>load_latest_request_body</code>
+会跳过被清空的行。文件只有在 <code>VACUUM</code> 之后才会变小；
+对该策略生效之前就已经长起来的库，<code>docs/token_usage_schema.md</code>
+里有一次性的回收配方。</p>
+<hr />
+<h2 id="7-生命周期图">7. 生命周期图</h2>
+<pre class="mermaid">sequenceDiagram
+    participant TUI as tact-ui
+    participant Agent
+    participant SQL as SqliteSessionStore
+
+    TUI-&gt;&gt;SQL: open_sqlite_session_store(tact.db)（main.rs，Upgrade 子命令除外）
+    TUI-&gt;&gt;SQL: open_session：ensure_session_row → 抢锁 → touch（session_bootstrap.rs）
+    TUI-&gt;&gt;SQL: Task / Background / Teammate / Worktree / Subagent manager（同一 tact.db）
+    TUI-&gt;&gt;Agent: with_session(id, store)
+
+    loop agent_loop
+        Agent-&gt;&gt;SQL: append_message (user/assistant/tool)
+        Agent-&gt;&gt;SQL: record_token_usage (last_message_id = assistant 前窗口)
+        Agent-&gt;&gt;SQL: task_* / background_* / team_* / worktree_* / subagent_* 读写（SQLite stores）
+        Agent-&gt;&gt;SQL: record_tool_schedule (同一 last_message_id 锚点)
+        Agent-&gt;&gt;SQL: replace_session_messages (compact_history 时)
+        Agent-&gt;&gt;SQL: replace_session_messages_and_provider_state (Responses 路径)
+    end</pre>
+<p>图中没有 <code>StoreRoot</code>：域状态迁到 SQLite
+之后它只在单元测试里被构造。</p>
+<hr />
+<h2 id="8-代码地图">8. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>角色</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/store/mod.rs</code></td>
+<td><code>StoreRoot</code>、<code>Store&lt;T&gt;</code>、<code>CollectionStore&lt;T&gt;</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/sqlite.rs</code></td>
+<td>共享 <code>SqlitePool</code>（每个 db
+一份、引用计数）、连接参数决策（WAL + <code>busy_timeout</code>，WAL
+失败回退）与各域共用的毫秒时间戳转换（<code>now_millis</code> /
+<code>from_millis</code>——后者决定"读不出来的时间戳"回退为
+<code>Utc::now()</code>，因为该列只是显示字段）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/session_store/mod.rs</code></td>
+<td><code>SessionStore</code>
+trait、<code>DynSessionStore</code>、<code>open_sqlite_session_store</code>、<code>MAX_INPUT_HISTORY</code>
+/ <code>MAX_TOKEN_USAGE_BODIES</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/session_store/sqlite.rs</code></td>
+<td>全新 schema（<code>CREATE TABLE IF NOT EXISTS</code>，含
+<code>responses_states</code>）、<code>SqliteSessionStore</code>
+实现</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/process_identity.rs</code></td>
+<td><code>process_identity(pid)</code>（<code>lock_epoch</code> /
+<code>holder_identity</code> 的来源，识别 PID
+复用）、<code>is_process_alive</code>、<code>holder_is_alive</code> ——
+session lock 与 Goal lease 共用</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/session_store/session_lock.rs</code></td>
+<td><code>SessionLock</code> —— 子 agent 用的轻量 RAII 锁（无
+<code>Drop</code>，需显式 <code>release</code>）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/test_support.rs</code></td>
+<td>仅测试：<code>temp_db(prefix, name)</code>，各域 store
+测试共用的临时库
+fixture（先清空目录，避免上一轮崩溃留下的行造成偶发失败）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/subagent_store/mod.rs</code></td>
+<td><code>SubagentStore</code> trait（async：upsert / get / list /
+list_running——最后一项供启动时把 orphan <code>running</code> 行改判
+<code>failed</code>）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/subagent_store/sqlite.rs</code></td>
+<td><code>SqliteSubagentStore</code> — <code>subagent_runs</code>
+表</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/task_store/mod.rs</code></td>
+<td><code>TaskStore</code>
+trait（async：create/get/update/list/delete）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/task_store/sqlite.rs</code></td>
+<td><code>SqliteTaskStore</code> — <code>tasks</code> +
+<code>task_dependencies</code> 表、<code>BEGIN IMMEDIATE</code>
+事务、<code>busy_timeout</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/background_store/mod.rs</code></td>
+<td><code>BackgroundStore</code> trait（async：upsert/get/list）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/background_store/sqlite.rs</code></td>
+<td><code>SqliteBackgroundStore</code> — <code>background_tasks</code>
+表、upsert + <code>CHECK</code> 约束 status</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/team_store/mod.rs</code></td>
+<td><code>TeamStore</code>
+trait（async：create_teammate/list_teammates/append_message/read_inbox）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/team_store/sqlite.rs</code></td>
+<td><code>SqliteTeamStore</code> — <code>teammates</code> +
+<code>inbox_messages</code> 表</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/worktree_store/mod.rs</code></td>
+<td><code>WorktreeStore</code>
+trait（async：create_worktree/find_worktree/list_worktrees/append_event/recent_events）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/store/worktree_store/sqlite.rs</code></td>
+<td><code>SqliteWorktreeStore</code> — <code>worktrees</code> +
+<code>worktree_events</code> 表</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>ensure_session</code>、<code>persist_message</code>、<code>persist_llm_call</code>、<code>replace_persisted_context</code>
+/
+<code>replace_persisted_context_and_state</code>、<code>compact_history*</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/session_lock.rs</code></td>
+<td><code>SessionLockGuard</code>（5 次重试 + 退避）+
+<code>SessionLockRegistry</code>（注册 / 退出信号释放 +
+<code>130</code>/<code>143</code> 退出）</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/session_bootstrap.rs</code></td>
+<td><code>open_session</code>（解析 id → 建行 → 抢锁 → 注册 → touch）与
+<code>bootstrap_session</code>（五个领域 manager +
+agent，两个前端共用）</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/consts.rs</code></td>
+<td><code>TactPath::session_db_path()</code> →
+<code>&lt;workdir&gt;/.tact/tact.db</code>；<code>TactPath::workdir()</code>
+存为 <code>sessions.root_dir</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/main.rs</code></td>
+<td>打开 SQLite session store（<code>Upgrade</code>
+子命令在此之前返回）；<code>--list-sessions</code>、<code>SessionLockRegistry::spawn_exit_listener()</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/task/mod.rs</code></td>
+<td><code>TaskManager</code>
+门面（<code>Box&lt;dyn TaskStore&gt;</code>）+
+<code>SharedTaskManager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/background.rs</code></td>
+<td><code>BackgroundManager</code>
+门面（<code>Arc&lt;dyn BackgroundStore&gt;</code>）+
+<code>SharedBackgroundManager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/team.rs</code></td>
+<td><code>TeammateManager</code>
+门面（<code>Box&lt;dyn TeamStore&gt;</code>）+
+<code>SharedTeammateManager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/worktree/mod.rs</code></td>
+<td><code>WorktreeManager</code>
+门面（<code>Box&lt;dyn WorktreeStore&gt;</code>）+
+<code>SharedWorktreeManager</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/subagent.rs</code></td>
+<td><code>SubagentManager</code> 门面（持有
+<code>SqliteSubagentStore</code>，启动时做 orphan 修复）+
+<code>SharedSubagentManager</code>（<code>Arc</code>，工具侧）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="9-当前缺口">9. 当前缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>说明</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>JSON store 无跨进程锁</td>
+<td>JSON 文件读-改-写无文件锁（SQLite 会话使用进程锁）</td>
+</tr>
+<tr>
+<td>JSON store 无生产调用者</td>
+<td><code>StoreRoot</code> / <code>Store&lt;T&gt;</code> /
+<code>CollectionStore&lt;T&gt;</code> 自域状态迁到 SQLite
+后只剩单元测试，未来要么删除要么重新接入</td>
+</tr>
+<tr>
+<td><code>CollectionStore::list()</code> 顺序</td>
+<td>目录迭代未排序——顺序依赖文件系统</td>
+</tr>
+<tr>
+<td>全新 SQLite schema</td>
+<td>主要为 <code>CREATE TABLE IF NOT EXISTS</code>；旧库通过
+<code>PRAGMA</code> + <code>ALTER TABLE</code> 补上
+<code>sessions.ref_id</code> 与
+<code>background_tasks.output_path</code></td>
+</tr>
+<tr>
+<td>Session store 可选</td>
+<td>测试与部分调用方可不附加 SQLite</td>
+</tr>
+<tr>
+<td>每 workdir 一个 Session DB</td>
+<td>SQLite 当前位于
+<code>&lt;workdir&gt;/.tact/tact.db</code>；<code>sessions.root_dir</code>
+记录项目路径，供未来共享 <code>$HOME/.tact/tact.db</code></td>
+</tr>
+<tr>
+<td>遗留 JSON 文件</td>
+<td><code>tasks/*.json</code>、<code>background/tasks/*.json</code>、<code>team/config.json</code>、<code>team/inbox/*.json</code>、<code>worktrees/index.json</code>、<code>cron/scheduled_tasks.json</code>
+在 SQLite 迁移（cron
+子系统随后整体移除）后不再读取；留在磁盘上，手动清理。注意
+<code>.tact/background/</code> 本身是<strong>活目录</strong>——当前
+<code>background_run</code> 把全量日志写到该目录下的
+<code>&lt;id&gt;.log</code>（见 <a
+href="./13_chapter_background_zh.html">Ch 13</a> §2），只能删其中的
+<code>background/tasks/</code> 子目录</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./11_chapter_task_zh.html">第 11 章 工具调度</a> —
+wave/barrier 模型（含 <code>spawn_subagent</code> 工具作为 barrier，非
+TaskManager API）</li>
+<li><a href="./12_chapter_subagent_zh.html">第 12 章 子 agent</a> —
+<code>subagent_runs</code> 的生命周期、orphan 修复与 <code>resume</code>
+校验</li>
+<li><a href="./23_chapter_tui_zh.html">第 23 章 TUI</a> —
+<code>open_session</code> / <code>bootstrap_session</code>
+在启动时序里的位置</li>
+<li><a href="./03_chapter_memory_zh.html">持久化记忆</a> — Markdown
+记忆（非 JSON store）</li>
+<li><a href="../ARCHITECTURE.md#12-configuration">ARCHITECTURE.md</a> —
+session store 与 token 用量说明</li>
+<li><a
+href="../docs/token_usage_schema.md">docs/token_usage_schema.md</a> —
+<code>token_usages</code> 列详情</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

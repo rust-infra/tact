@@ -63,16 +63,17 @@ pub struct ImageSource {
 /// compaction handoff so it can be detected by type instead of by string
 /// matching, and rendered / handled specially by callers (TUI, summarizer,
 /// rebuild filters). `HookContext` marks a plugin hook's injected context
-/// (Codex `SessionStart` `additionalContext`): it reaches the model as a real
-/// message but is not a user turn, so compaction and the turn counter ignore
-/// it.
+/// (Codex `SessionStart` `additionalContext`) and `GoalContext` a Goal
+/// runner's per-activation `<goal-context>`: both reach the model as a real
+/// message but are not a user turn, so compaction and the turn counter ignore
+/// them.
 ///
 /// The kind is **in-memory only**: the field is `#[serde(skip)]`, so the wire
 /// format (Anthropic messages, OpenAI conversion, JSONL transcripts) never
 /// carries it. Persisted sessions reload as `Normal` and fall back to the
 /// `SUMMARY_PREFIX` / `<context-handoff>` string detection in
-/// `crates/tact/src/compact` (and the `<hook-context>` markers for hook
-/// context).
+/// `crates/tact/src/compact` (and the `<hook-context>` / `<goal-context>`
+/// markers for the two injected-context kinds).
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum MessageKind {
     /// Real user / assistant turn.
@@ -83,6 +84,9 @@ pub enum MessageKind {
     /// Plugin hook context injected before the first turn (`crates/tact/src/hook`),
     /// not a real user turn.
     HookContext,
+    /// Goal runner context injected at the start of an activation
+    /// (`crates/tact-ui/src/goal_runner.rs`), not a real user turn.
+    GoalContext,
 }
 
 /// Message in a conversation.
@@ -134,6 +138,11 @@ impl Message {
     /// True for hook-injected context cells (see [`MessageKind::HookContext`]).
     pub fn is_hook_context(&self) -> bool {
         self.kind == MessageKind::HookContext
+    }
+
+    /// True for Goal-runner context cells (see [`MessageKind::GoalContext`]).
+    pub fn is_goal_context(&self) -> bool {
+        self.kind == MessageKind::GoalContext
     }
 
     /// Returns true if this message contains any `ContentBlock::Image`.
@@ -213,6 +222,18 @@ mod tests {
         let back: Message = serde_json::from_value(json).unwrap();
         assert_eq!(back.kind(), MessageKind::Normal);
         assert!(!back.is_summary());
+    }
+
+    /// The three injected-context kinds are distinct: a Goal runner's
+    /// `<goal-context>` must not read as a plugin hook's cell (or vice versa),
+    /// because each consumer filters on its own kind.
+    #[test]
+    fn injected_context_kinds_do_not_collide() {
+        let hook = Message::new_text(Role::User, "hook").with_kind(MessageKind::HookContext);
+        let goal = Message::new_text(Role::User, "goal").with_kind(MessageKind::GoalContext);
+        assert!(hook.is_hook_context() && !hook.is_goal_context());
+        assert!(goal.is_goal_context() && !goal.is_hook_context());
+        assert!(!goal.is_summary() && !goal.is_hook_context());
     }
 
     #[test]

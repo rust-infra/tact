@@ -80,7 +80,10 @@ pub fn format_duration(started_at: Option<i64>, finished_at: Option<i64>) -> Opt
     super::sticky_panel::elapsed_label(started_at, finished_at)
 }
 
-fn short_id(child_id: &str) -> &str {
+/// The scannable form of a child id: its first [`SUBAGENT_SHORT_ID_CHARS`]
+/// characters. Shared with the tool card's meta row, so the card and the
+/// sticky overview name a run the same way.
+pub fn short_id(child_id: &str) -> &str {
     child_id
         .char_indices()
         .nth(SUBAGENT_SHORT_ID_CHARS)

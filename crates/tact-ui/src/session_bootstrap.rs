@@ -22,6 +22,7 @@ use tact::{
     background::{BackgroundManager, SharedBackgroundManager},
     config::CliArgs,
     consts::TactPath,
+    goal::{GoalManager, SharedGoalManager},
     mcp::load_mcp_router_with_report,
     memory::memory_manager,
     permission::{PermissionManager, PermissionMode, settings::PermissionSettings},
@@ -178,6 +179,7 @@ pub async fn bootstrap_session(
 
     let db_path = tact_path.session_db_path();
     let task_manager = SharedTaskManager::new(TaskManager::new(&db_path).await?);
+    let goal_manager = SharedGoalManager::new(GoalManager::new(&db_path).await?);
     let background_manager = SharedBackgroundManager::new(BackgroundManager::new(&db_path).await?);
     let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&db_path).await?);
     let worktree_manager =
@@ -246,6 +248,8 @@ pub async fn bootstrap_session(
         memory_manager,
         work_dir,
         task_manager,
+        goal_manager,
+        active_goal_id: None,
         background_manager,
         teammate_manager,
         worktree_manager,
@@ -261,6 +265,7 @@ pub async fn bootstrap_session(
         session_id: None,
         session_store: None,
         permission_snapshot: None,
+        is_subagent: false,
         subagent_results: None,
     };
 

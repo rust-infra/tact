@@ -1228,6 +1228,84 @@ mod tests {
         );
     }
 
+    /// One running Goal in the panel — the live snapshot the id completion
+    /// reads. The panel row shows the title and hides the id, so this is the
+    /// only surface that has both.
+    fn seed_goal_panel(app: &mut App) {
+        use tact_protocol::{GoalCriterionSnapshot, GoalSnapshot, GoalStatusSnapshot};
+
+        app.goal_panel_mut().apply_snapshot(vec![GoalSnapshot {
+            id: "216ae6be".into(),
+            title: "review code".into(),
+            status: GoalStatusSnapshot::Running,
+            criteria: vec![GoalCriterionSnapshot {
+                id: "c1".into(),
+                description: "User accepts the result".into(),
+                required: true,
+                human: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        }]);
+    }
+
+    /// The id is picked from the popup instead of copied out of the log — the
+    /// announcement line is the only other place the id is written down.
+    #[test]
+    fn tab_completes_a_goal_id_and_enter_runs_it() {
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        seed_goal_panel(&mut app);
+
+        type_keys(&mut app, "/goal show 216");
+        press(&mut app, KeyCode::Tab);
+        assert_eq!(app.input, "/goal show 216ae6be ");
+
+        press(&mut app, KeyCode::Enter);
+        assert!(
+            matches!(
+                user_cmd_rx.try_recv(),
+                Ok(UserCommand::ShowGoal { goal_id }) if goal_id == "216ae6be"
+            ),
+            "the completed id must be what the command carries"
+        );
+    }
+
+    /// Enter on the highlighted row runs it directly: `/goal show` takes the id
+    /// alone, so the row is complete, not a step.
+    #[test]
+    fn enter_on_a_goal_row_runs_it_without_a_tab() {
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        seed_goal_panel(&mut app);
+
+        type_keys(&mut app, "/goal show 216");
+        press(&mut app, KeyCode::Enter);
+
+        assert!(
+            matches!(
+                user_cmd_rx.try_recv(),
+                Ok(UserCommand::ShowGoal { goal_id }) if goal_id == "216ae6be"
+            ),
+            "Enter on a complete row runs it"
+        );
+    }
+
+    /// `steer` takes the instruction after the id, so Enter stops at the id
+    /// rather than sending the verb with no text.
+    #[test]
+    fn enter_on_a_goal_id_that_still_needs_text_only_completes() {
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        seed_goal_panel(&mut app);
+
+        type_keys(&mut app, "/goal steer 216");
+        press(&mut app, KeyCode::Enter);
+
+        assert_eq!(app.input, "/goal steer 216ae6be ");
+        assert!(
+            user_cmd_rx.try_recv().is_err(),
+            "the instruction is still to be typed"
+        );
+    }
+
     #[test]
     fn slash_popup_enter_on_plugin_autocompletes_for_subcommand() {
         let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();

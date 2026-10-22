@@ -423,3 +423,95 @@ async fn cancel_emits_cancelled_by_user_info() {
         "cancelled agent_loop should emit info, got: {updates:?}"
     );
 }
+
+/// A crashed Goal runner leaves an active run behind an expired lease and a Goal
+/// still marked `Running`. Starting the command loop must reconcile that state
+/// once, report it, and keep serving commands.
+#[tokio::test]
+async fn command_loop_recovers_an_interrupted_goal_run() {
+    install_test_config();
+
+    let mock = MockClient::new(vec![]);
+    let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
+    let manager = agent.tool_context.goal_manager.clone();
+
+    let goal = manager
+        .create(tact::goal::GoalCreate {
+            title: "interrupted goal".to_string(),
+            objective: "survive a crash".to_string(),
+            criteria: vec![tact::goal::GoalCriterion::required_with_id(
+                "c1",
+                "the crash is recovered",
+            )],
+        })
+        .await
+        .unwrap();
+    let goal = manager
+        .update(
+            &goal.id,
+            goal.version,
+            tact::goal::GoalUpdate {
+                status: Some(tact::goal::GoalStatus::Queued),
+                ..Default::default()
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+    let goal = manager
+        .update(
+            &goal.id,
+            goal.version,
+            tact::goal::GoalUpdate {
+                status: Some(tact::goal::GoalStatus::Running),
+                ..Default::default()
+            },
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+    // The crashed process: an active run whose lease expires unreleased.
+    let ttl = Duration::from_millis(20);
+    let (_token, run) = manager
+        .start_run(
+            "crashed-runner",
+            ttl,
+            tact::goal::GoalRun::new(goal.id.clone()),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(Duration::from_millis(60)).await;
+
+    let (user_cmd_tx, user_cmd_rx) = user_command_channels();
+    let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
+
+    let updates = collect_updates_after(agent_rx).await;
+    drop(user_cmd_tx);
+    let agent = tokio::time::timeout(Duration::from_secs(5), driver)
+        .await
+        .expect("driver should finish")
+        .unwrap();
+
+    assert!(
+        updates.iter().any(|update| matches!(
+            update,
+            AgentUpdate::Info(message)
+                if message.contains("recovered interrupted run") && message.contains(&run.id)
+        )),
+        "the loop reports the recovered run, got: {updates:?}"
+    );
+    let manager = agent.tool_context.goal_manager.clone();
+    assert!(
+        manager.list_running_runs().await.unwrap().is_empty(),
+        "recovery interrupts the expired run"
+    );
+    assert_eq!(
+        manager.get(&goal.id).await.unwrap().status,
+        tact::goal::GoalStatus::Paused,
+        "an interrupted Goal is paused, never successful"
+    );
+}

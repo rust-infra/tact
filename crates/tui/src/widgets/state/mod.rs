@@ -127,6 +127,9 @@ pub(crate) struct AgentSelectRequest {
     pub request_id: u64,
     pub multi: bool,
     pub log_confirm: bool,
+    /// The queued request belongs to a `spawn_subagent` child; the popup shows
+    /// that in its title once the request reaches the front of the queue.
+    pub from_subagent: bool,
 }
 
 // ========== Main State ==========

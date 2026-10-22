@@ -18,7 +18,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License" />
-  <img src="https://img.shields.io/badge/version-1.1.41-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-1.1.42-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL-lightgrey?style=flat-square" alt="Platform" />
   <a href="https://ko-fi.com/00x80">
     <img src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-FF5E5B?style=flat-square&logo=ko-fi&logoColor=white" alt="Support on Ko-fi" />
@@ -123,8 +123,8 @@ cargo install --path crates/tact-ui   # or: cargo install -p tact-ui from the re
 **Binary releases:** push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
 
 ```bash
-git tag v1.1.41
-git push origin v1.1.41
+git tag v1.1.42
+git push origin v1.1.42
 ```
 
 GitHub Actions (`.github/workflows/release.yml`) uploads `tact-ui-v<version>-<target-triple>.tar.gz` / `.zip` plus `SHA256SUMS`.
@@ -264,7 +264,7 @@ Multi-turn conversation loop with progressive context management:
 
 The entry path reserves the incoming user turn before push, so a large prompt cannot overflow immediately after append. Failed `compact` tool calls leave history intact.
 
-Details: [`book/05_chapter_compact_zh.md`](./book/05_chapter_compact_zh.md), [`docs/compaction.md`](./docs/compaction.md).
+Details: [`book/05_chapter_compact_zh.html`](./book/05_chapter_compact_zh.html), [`docs/compaction.md`](./docs/compaction.md).
 
 ### 🔧 Built-in Tools
 
@@ -384,7 +384,7 @@ The agent loop:
 8. Writes results back to the conversation history; a successful `compact` tool then rewrites context
 9. Continues until the model stops requesting tools (or recovery exhausts)
 
-See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./book/index_zh.md) for chapter-length walkthroughs (compaction, recovery, tools, agent loop, bash sandbox).
+See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for a deeper dive, and the [book](./book/index_zh.html) for chapter-length walkthroughs (compaction, recovery, tools, agent loop, bash sandbox).
 
 ---
 

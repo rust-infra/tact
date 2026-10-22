@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Goal 图表画法备选（2026-10-17）</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+</head>
+<body>
+
+<h1 id="goal-图表画法备选">Goal 图表画法备选（2026-10-17，留存）</h1>
+<p>定稿前为两张图各画了几种候选。正文 <strong>§3</strong> 采用了
+<strong>B2（短标签版）</strong>、<strong>§5</strong> 采用了
+<strong>D1（循环体分组）</strong>；其余画法只作留存，不再回填章节。</p>
+<h2 id="第二张图run-循环5-runner-与-agent-主循环">第二张图：Run 循环（§5
+Runner 与 Agent 主循环）</h2>
+<div class="lab">
+
+<h3 id="d1-循环体分组--出口配色">D1. 循环体分组 + 出口配色（正文 §5 采用）</h3>
+<p>把「一个 Run 的边界」画成组，出口按落点配色。</p>
+<pre class="mermaid">flowchart TD
+    entry(["用户 /goal create 或 /goal resume"]) --&gt; claim["Runner claim workspace lease"]
+    claim --&gt; load
+
+    subgraph run["一个 Run：一条 goal_runs 记录 · 一份累计预算 · 一次 lease"]
+        direction TB
+        load["加载 Goal 上下文&lt;br/&gt;目标 / 标准 / Tasks / 最近 checkpoint"]
+        act["Agent 执行一个受控周期"]
+        outcome{"Run outcome"}
+        load --&gt; act --&gt; outcome
+    end
+
+    outcome --&gt;|"有进展且预算还有"| load
+    outcome --&gt;|"完成提议"| verify["Runner 执行验收"]
+    verify --&gt;|"通过"| success(["succeeded"])
+    verify --&gt;|"未过，仍可继续"| load
+    verify --&gt;|"需人工确认"| wait(["waiting_user"])
+    outcome --&gt;|"需要用户"| wait
+    outcome --&gt;|"预算耗尽"| pause(["paused"])
+    outcome --&gt;|"本轮无可观察进展"| idle(["running（无活动 Run）"])
+    outcome --&gt;|"取消 / 不可恢复失败"| terminal(["cancelled / failed"])
+
+    classDef step fill:#e8f0fe,stroke:#4a72b8,color:#16305c
+    classDef decide fill:#fff4e0,stroke:#c08a2e,color:#5c3d05
+    classDef ok fill:#e6f6ec,stroke:#2f8f52,color:#154d2b
+    classDef halted fill:#fff4e0,stroke:#c08a2e,color:#5c3d05
+    classDef stop fill:#fbeaea,stroke:#b3524f,color:#5c2020
+    class entry,claim,load,act,verify step
+    class outcome decide
+    class success ok
+    class wait,pause,idle halted
+    class terminal stop</pre>
+</div>
+
+<div class="lab">
+
+<h3 id="d2-横向两段式循环内--落点">D2. 横向两段式：循环内 / 落点</h3>
+<p>横着读，左边是循环体，右边是四种落点。</p>
+<pre class="mermaid">flowchart LR
+    entry(["用户 /goal create 或 /goal resume"]) --&gt; claim["claim lease"] --&gt; load["加载 Goal 上下文"] --&gt; act["Agent 周期"] --&gt; outcome{"Run outcome"}
+    outcome --&gt;|"有进展"| load
+    outcome --&gt;|"完成提议"| verify["验收"] --&gt;|"通过"| success(["succeeded"])
+    verify --&gt;|"未过"| load
+    verify --&gt;|"需人工"| wait(["waiting_user"])
+    outcome --&gt;|"需要用户"| wait
+    outcome --&gt;|"预算耗尽"| pause(["paused"])
+    outcome --&gt;|"无进展"| idle(["running（idle）"])
+    outcome --&gt;|"取消 / 失败"| terminal(["cancelled / failed"])
+
+    classDef step fill:#e8f0fe,stroke:#4a72b8,color:#16305c
+    classDef decide fill:#fff4e0,stroke:#c08a2e,color:#5c3d05
+    classDef ok fill:#e6f6ec,stroke:#2f8f52,color:#154d2b
+    classDef halted fill:#fff4e0,stroke:#c08a2e,color:#5c3d05
+    classDef stop fill:#fbeaea,stroke:#b3524f,color:#5c2020
+    class entry,claim,load,act,verify step
+    class outcome decide
+    class success ok
+    class wait,pause,idle halted
+    class terminal stop</pre>
+</div>
+
+<div class="lab">
+
+<h2 id="a-分组卡片流">A. 分组卡片流（信息最全，未采用）</h2>
+<p>分组 + 配色，信息最全；节点多时线条会绕。</p>
+<pre class="mermaid">flowchart TD
+    create(["用户：/goal create"])
+
+    subgraph act["推进"]
+        direction TB
+        draft["draft&lt;br/&gt;已落库"]
+        queued["queued&lt;br/&gt;等待 lease"]
+        running["running&lt;br/&gt;activation 在飞"]
+        verifying["verifying&lt;br/&gt;核验证据"]
+    end
+
+    subgraph hold["停住，可恢复"]
+        direction TB
+        waiting["waiting_user&lt;br/&gt;等用户决定"]
+        paused["paused&lt;br/&gt;预算耗尽 / Esc / pause"]
+        idle["running (idle)&lt;br/&gt;无活动 Run"]
+    end
+
+    subgraph term["终态（不可复活）"]
+        direction TB
+        succeeded["succeeded"]
+        failed["failed"]
+        cancelled["cancelled"]
+    end
+
+    create --&gt; draft
+    draft --&gt;|"driver 立即续跑"| queued
+    queued --&gt;|"claim 到 lease"| running
+    running --&gt;|"完成提议"| verifying
+    verifying --&gt;|"必需标准齐备"| succeeded
+    verifying --&gt;|"自动标准未过"| running
+    running --&gt;|"goal_request_input"| waiting
+    running --&gt;|"预算耗尽 / Esc / pause"| paused
+    running --&gt;|"本轮无可观察进展"| idle
+
+    idle --&gt;|"/goal resume"| running
+    waiting --&gt;|"回答后 /goal resume"| running
+    paused --&gt;|"/goal resume"| running
+    waiting --&gt;|"/goal accept"| succeeded
+
+    running --&gt;|"Stop hook 首轮拦截"| failed
+    cancel["任意非终态 Goal"] -.-&gt;|"/goal cancel"| cancelled
+
+    crash{{"进程崩溃 / 被强杀"}} -.-&gt;|"启动恢复，或每 15s 对账&lt;br/&gt;lease 过期或持有进程消失"| parked["Run → interrupted&lt;br/&gt;Goal → paused"]
+    parked -.-&gt; paused
+
+    classDef active fill:#e8f0fe,stroke:#4a72b8,color:#16305c
+    classDef held fill:#fff4e0,stroke:#c08a2e,color:#5c3d05
+    classDef idleState fill:#f2f2f6,stroke:#8a8a99,color:#33333d
+    classDef ok fill:#e6f6ec,stroke:#2f8f52,color:#154d2b
+    classDef stopped fill:#fbeaea,stroke:#b3524f,color:#5c2020
+    classDef recovery fill:#f7e9f2,stroke:#b0568a,color:#5c2144,stroke-dasharray:4 3
+    classDef rule fill:#fafafa,stroke:#9a9a9a,color:#55555f,stroke-dasharray:2 2
+
+    class draft,queued,running,verifying,create active
+    class waiting,paused held
+    class idle idleState
+    class succeeded ok
+    class failed,cancelled stopped
+    class crash,parked recovery
+    class cancel rule</pre>
+</div>
+
+<div class="lab">
+
+<h2 id="b-原生状态机statediagram-v2">B.
+原生状态机（stateDiagram-v2）</h2>
+<p>状态机的标准画法：起点/终点、转移标签直接贴在弧线上，恢复信息放注记。</p>
+<pre class="mermaid">stateDiagram-v2
+    direction TB
+    [*] --&gt; draft : /goal create
+    draft --&gt; queued : driver 立即续跑
+    queued --&gt; running : claim 到 lease
+
+    running --&gt; waiting_user : goal_request_input
+    running --&gt; paused : 预算耗尽 / Esc / pause
+    running --&gt; verifying : 完成提议
+    verifying --&gt; succeeded : 必需标准齐备
+    verifying --&gt; running : 自动标准未过
+
+    state "running (idle)" as idle
+    running --&gt; idle : 本轮无可观察进展
+    idle --&gt; running : /goal resume
+    waiting_user --&gt; running : 回答后 /goal resume
+    paused --&gt; running : /goal resume
+    waiting_user --&gt; succeeded : /goal accept
+
+    running --&gt; failed : Stop hook 首轮拦截
+    running --&gt; cancelled : /goal cancel
+    waiting_user --&gt; cancelled : /goal cancel
+    paused --&gt; cancelled : /goal cancel
+
+    note right of paused
+        崩溃恢复：启动时（或运行中每 15s 对账）
+        lease 过期或持有进程消失
+        → Run 标 interrupted，Goal 落 paused
+    end note
+
+    classDef active fill:#e8f0fe,stroke:#4a72b8,color:#16305c
+    classDef held fill:#fff4e0,stroke:#c08a2e,color:#5c3d05
+    classDef idleState fill:#f2f2f6,stroke:#8a8a99,color:#33333d
+    classDef ok fill:#e6f6ec,stroke:#2f8f52,color:#154d2b
+    classDef stopped fill:#fbeaea,stroke:#b3524f,color:#5c2020
+    class draft,queued,running,verifying active
+    class waiting_user,paused held
+    class idle idleState
+    class succeeded ok
+    class failed,cancelled stopped</pre>
+</div>
+
+<div class="lab">
+
+<h2 id="b2-状态机--短标签版">B2. 状态机 · 短标签版（正文 §3 采用）</h2>
+<p>把重复的 <code>/goal …</code>
+收进图注，弧线上只留动词；标签不再互相叠。</p>
+<pre class="mermaid">stateDiagram-v2
+    direction TB
+    [*] --&gt; draft : create
+    draft --&gt; queued : 立即续跑
+    queued --&gt; running : claim 到 lease
+
+    running --&gt; waiting_user : 需要用户
+    running --&gt; paused : 预算耗尽 / Esc
+    running --&gt; verifying : 完成提议
+    verifying --&gt; succeeded : 标准齐备
+    verifying --&gt; running : 未过
+
+    state "running (idle)" as idle
+    running --&gt; idle : 本轮无进展
+    idle --&gt; running : resume
+    waiting_user --&gt; running : resume
+    paused --&gt; running : resume
+    waiting_user --&gt; succeeded : accept
+
+    running --&gt; failed : hook 拦截
+    running --&gt; cancelled : cancel
+    waiting_user --&gt; cancelled : cancel
+    paused --&gt; cancelled : cancel
+
+    note right of paused
+        恢复：启动时（或运行中每 15s 对账）
+        lease 过期或持有进程消失
+        → Run 标 interrupted，Goal 落 paused
+    end note
+
+    classDef active fill:#e8f0fe,stroke:#4a72b8,color:#16305c
+    classDef held fill:#fff4e0,stroke:#c08a2e,color:#5c3d05
+    classDef idleState fill:#f2f2f6,stroke:#8a8a99,color:#33333d
+    classDef ok fill:#e6f6ec,stroke:#2f8f52,color:#154d2b
+    classDef stopped fill:#fbeaea,stroke:#b3524f,color:#5c2020
+    class draft,queued,running,verifying active
+    class waiting_user,paused held
+    class idle idleState
+    class succeeded ok
+    class failed,cancelled stopped</pre>
+<p><code>create</code> = <code>/goal create</code>，<code>resume</code>
+= <code>/goal resume</code>，<code>accept</code> =
+<code>/goal accept</code>，<code>cancel</code> =
+<code>/goal cancel</code>。</p>
+</div>
+
+<div class="lab">
+
+<h2 id="b3-状态机--横向--一条-cancel">B3. 状态机 · 横向 + 一条
+cancel</h2>
+<p><code>direction LR</code>
+摊开横向空间，取消只画一条边、由注记说明「任意非终态都可 cancel」。</p>
+<pre class="mermaid">stateDiagram-v2
+    direction LR
+    [*] --&gt; draft : create
+    draft --&gt; queued : 立即续跑
+    queued --&gt; running : claim 到 lease
+
+    running --&gt; waiting_user : 需要用户
+    running --&gt; paused : 预算耗尽 / Esc
+    running --&gt; verifying : 完成提议
+    verifying --&gt; succeeded : 标准齐备
+    verifying --&gt; running : 未过
+
+    state "running (idle)" as idle
+    running --&gt; idle : 本轮无进展
+    idle --&gt; running : resume
+    waiting_user --&gt; running : resume
+    paused --&gt; running : resume
+    waiting_user --&gt; succeeded : accept
+
+    running --&gt; failed : hook 拦截
+    running --&gt; cancelled : cancel
+
+    note right of cancelled
+        任意非终态都能 cancel；
+        恢复（启动时或每 15s 对账）：
+        lease 过期或持有进程消失
+        → Run interrupted，Goal 落 paused
+    end note
+
+    classDef active fill:#e8f0fe,stroke:#4a72b8,color:#16305c
+    classDef held fill:#fff4e0,stroke:#c08a2e,color:#5c3d05
+    classDef idleState fill:#f2f2f6,stroke:#8a8a99,color:#33333d
+    classDef ok fill:#e6f6ec,stroke:#2f8f52,color:#154d2b
+    classDef stopped fill:#fbeaea,stroke:#b3524f,color:#5c2020
+    class draft,queued,running,verifying active
+    class waiting_user,paused held
+    class idle idleState
+    class succeeded ok
+    class failed,cancelled stopped</pre>
+</div>
+
+<div class="lab">
+
+<h2 id="c-一条主链--侧挂状态flowchart-lr">C. 一条主链 +
+侧挂状态（flowchart LR）</h2>
+<p>主干只放 happy
+path，横着读；中断、取消、恢复都挂在下面，最少交叉。</p>
+<pre class="mermaid">flowchart LR
+    create(["用户：/goal create"]) --&gt; draft["draft"] --&gt; queued["queued"] --&gt; running["running"] --&gt; verifying["verifying"] --&gt; succeeded["succeeded"]
+
+    running --&gt;|"请求输入"| waiting["waiting_user"]
+    running --&gt;|"预算耗尽 / Esc / pause"| paused["paused"]
+    running --&gt;|"本轮无进展"| idle["running (idle)"]
+    waiting --&gt;|"回答后 resume"| running
+    paused --&gt;|"resume"| running
+    idle --&gt;|"resume"| running
+    waiting --&gt;|"accept"| succeeded
+
+    running -.-&gt;|"Stop hook"| failed["failed"]
+    running -.-&gt;|"cancel"| cancelled["cancelled"]
+    waiting -.-&gt;|"cancel"| cancelled
+    paused -.-&gt;|"cancel"| cancelled
+    crash(("崩溃 / 强杀")) -.-&gt;|"lease 过期或持有进程消失"| paused
+
+    classDef active fill:#e8f0fe,stroke:#4a72b8,color:#16305c
+    classDef held fill:#fff4e0,stroke:#c08a2e,color:#5c3d05
+    classDef idleState fill:#f2f2f6,stroke:#8a8a99,color:#33333d
+    classDef ok fill:#e6f6ec,stroke:#2f8f52,color:#154d2b
+    classDef stopped fill:#fbeaea,stroke:#b3524f,color:#5c2020
+    classDef crashKind fill:#f7e9f2,stroke:#b0568a,color:#5c2144
+    class draft,queued,running,verifying,create active
+    class waiting,paused held
+    class idle idleState
+    class succeeded ok
+    class failed,cancelled stopped
+    class crash crashKind</pre>
+</div>
+
+</body>
+</html>

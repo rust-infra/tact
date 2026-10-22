@@ -12,10 +12,11 @@ use ratatui::{layout::Rect, style::Style};
 use crate::{
     i18n::{Language, Messages},
     state::{
-        AccountState, BackgroundPanelState, CodeBlock, CodePopup, FocusedPanel, HistoryEntry,
-        InputMode, LogCoordinator, LogScroll, MermaidBlock, MermaidPopup, MouseState, PlanPanel,
-        SelectPopup, SkillEntry, Status, StatusBarState, StreamState, SubagentPanelState,
-        SubagentPopup, SystemPromptPopup, TaskDagPopup, TaskPanelState, ThinkingState, ToolState,
+        AccountState, BackgroundPanelState, CodeBlock, CodePopup, FocusedPanel, GoalPanelState,
+        HistoryEntry, InputMode, LogCoordinator, LogScroll, MermaidBlock, MermaidPopup, MouseState,
+        PlanPanel, SelectPopup, SkillEntry, Status, StatusBarState, StreamState,
+        SubagentPanelState, SubagentPopup, SystemPromptPopup, TaskDagPopup, TaskPanelState,
+        ThinkingState, ToolState,
     },
     theme::Theme,
 };
@@ -94,6 +95,8 @@ pub struct RenderCtx<'a> {
     pub task_history: &'a [HistoryEntry],
     /// Selection popup state (permission / model pickers).
     pub select: &'a SelectPopup,
+    /// Durable Goal sticky strip state.
+    pub goal_panel: &'a GoalPanelState,
     /// Persistent tasks sticky strip state.
     pub task_panel: &'a TaskPanelState,
     /// Subagent overview sticky strip state (current-process runs).

@@ -65,5 +65,5 @@ policy it drafts.
   (the draft is a suggestion and cannot loosen anything).
 - `crates/tact/src/mcp/mod.rs`: the measurement rides on `derive_exposed`, covered through the detail
   view rather than by a direct unit test.
-- Docs: [Ch 08](../../../book/08_chapter_mcp_zh.md), [Ch 26](../../../book/26_chapter_issue_zh.md)
+- Docs: [Ch 08](../../../book/08_chapter_mcp_zh.html), [Ch 26](../../../book/26_chapter_issue_zh.html)
   2026-10-01 entry.

@@ -126,10 +126,10 @@ impl From<BackgroundTaskStatus> for &'static str {
     }
 }
 
-impl TryFrom<&str> for BackgroundTaskStatus {
-    type Error = anyhow::Error;
+impl std::str::FromStr for BackgroundTaskStatus {
+    type Err = anyhow::Error;
 
-    fn try_from(s: &str) -> Result<Self, anyhow::Error> {
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
             "running" => Ok(Self::Running),
             "completed" => Ok(Self::Completed),

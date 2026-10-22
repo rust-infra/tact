@@ -38,8 +38,9 @@ use serde_json::Value;
 use tact_protocol::AgentUpdate;
 
 use crate::{
-    ToolSpec, background::SharedBackgroundManager, memory::MemoryManager, task::SharedTaskManager,
-    team::SharedTeammateManager, ui_responder::UiResponder, worktree::SharedWorktreeManager,
+    ToolSpec, background::SharedBackgroundManager, goal::SharedGoalManager, memory::MemoryManager,
+    task::SharedTaskManager, team::SharedTeammateManager, ui_responder::UiResponder,
+    worktree::SharedWorktreeManager,
 };
 
 mod ask_user;
@@ -47,6 +48,7 @@ mod background_run;
 mod bash;
 mod compact;
 mod edit_file;
+pub mod goal;
 mod load_skill;
 mod memory;
 mod metadata;
@@ -118,6 +120,8 @@ pub struct ToolContext {
     pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,
+    pub goal_manager: SharedGoalManager,
+    pub active_goal_id: Option<String>,
     pub background_manager: SharedBackgroundManager,
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
@@ -151,6 +155,13 @@ pub struct ToolContext {
     /// (Claude-style inheritance) instead of always starting in `Default`.
     /// `None` for orphan/test contexts that have no parent agent.
     pub permission_snapshot: Option<crate::permission::PermissionSnapshot>,
+    /// True for a context stamped by `spawn_subagent` for its child.
+    ///
+    /// The child inherits the parent's `ToolContext` wholesale, so this is the
+    /// one bit that says "the asker is a subagent" — it travels with every UI
+    /// prompt the child raises (permission popups, `ask_user`) and lets the
+    /// popup name its origin instead of looking like the main agent's own ask.
+    pub is_subagent: bool,
     /// Handle to the parent's `pending_subagent_results` queue, stamped at
     /// dispatch time so a detached async subagent task can push its summary
     /// back for re-injection. `None` when there is no parent agent runtime
@@ -346,9 +357,10 @@ pub(crate) fn copy_tool_spec(spec: &ToolSpec) -> ToolSpec {
 }
 
 pub use metadata::{
-    ArgumentSummaryPolicy, DetailPolicy, IntoToolCallResult, LiveOutputPolicy, OutputPolicy,
-    PermissionPolicy, PermissionPromptPolicy, PopupPolicy, ResourcePolicy, TaskOperation,
-    ToolCallResult, ToolDomain, ToolEffect, ToolMetadata, ToolPresentation, patch_target_paths,
+    ArgumentSummaryPolicy, DetailPolicy, GoalYieldReason, IntoToolCallResult, LiveOutputPolicy,
+    OutputPolicy, PermissionPolicy, PermissionPromptPolicy, PopupPolicy, ResourcePolicy,
+    TaskOperation, ToolCallResult, ToolDomain, ToolEffect, ToolMetadata, ToolPresentation,
+    patch_target_paths,
 };
 pub use path::{safe_path, safe_path_allow_missing};
 pub use progress::ToolProgressReporter;

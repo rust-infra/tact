@@ -108,5 +108,5 @@ asserted against `SlashCommand::Skill` from the host, so a rename cannot silentl
   `crates/tui/src/render/slash_style.rs` — `the_kit_gather_command_is_the_hosts_skill_command`,
   `the_skill_command_form_highlights_the_skill_name_too`;
   `crates/agent_tui_kit/src/render/slash_style.rs` — `split_skill_slash_covers_the_gathered_form`.
-- Docs: [Ch 23](../../../book/23_chapter_tui_zh.md), [Ch 26](../../../book/26_chapter_issue_zh.md)
+- Docs: [Ch 23](../../../book/23_chapter_tui_zh.html), [Ch 26](../../../book/26_chapter_issue_zh.html)
   2026-10-01 entries.

@@ -32,17 +32,26 @@ pub const TASK_CREATE_METADATA: ToolMetadata = ToolMetadata::task_write(
 /// Returns an error if the task manager fails to create the task
 /// (e.g., storage error).
 pub async fn task_create(ctx: ToolContext, input: TaskCreateInput) -> Result<String> {
-    let task = ctx
-        .task_manager
-        .create(
-            input.subject,
-            input
-                .description
-                .map(|value| value.trim().to_string())
-                .filter(|value| !value.is_empty()),
-            ctx.session_id.clone().unwrap_or_default(),
-        )
-        .await?;
+    let description = input
+        .description
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let session_id = ctx.session_id.clone().unwrap_or_default();
+    let task = match ctx.active_goal_id.clone() {
+        // A Goal activation's tasks belong to that Goal: the runner reads
+        // `list_for_goal` for context and the panel, and the binding is the
+        // only Goal identity the model can be trusted to use.
+        Some(goal_id) => {
+            ctx.task_manager
+                .create_for_goal(input.subject, description, session_id, goal_id)
+                .await?
+        }
+        None => {
+            ctx.task_manager
+                .create(input.subject, description, session_id)
+                .await?
+        }
+    };
     let listed = ctx.task_manager.list().await.unwrap_or_default();
     emit_tasks_changed(
         &ctx.ui_tx,
@@ -178,6 +187,50 @@ mod tests {
 
         assert!(output.contains("\"subject\": \"No description\""));
         assert!(!output.contains("\"description\""));
+    }
+
+    #[tokio::test]
+    async fn task_create_links_the_active_goal() {
+        let router = ToolRouter::new().route(TaskCreateTool).unwrap();
+        let mut context = test_context("task_create_links_the_active_goal");
+        let goal = context
+            .goal_manager
+            .create(crate::goal::GoalCreate {
+                title: "linked goal".into(),
+                objective: "keep the task graph on the Goal".into(),
+                criteria: vec![crate::goal::GoalCriterion::required("done")],
+            })
+            .await
+            .unwrap();
+        context.active_goal_id = Some(goal.id.clone());
+
+        let created = router
+            .call(
+                &context,
+                "task_create",
+                serde_json::json!({ "subject": "linked task" }),
+            )
+            .await
+            .unwrap();
+        let id: u64 = serde_json::from_str::<serde_json::Value>(&created)
+            .unwrap()
+            .get("id")
+            .unwrap()
+            .as_u64()
+            .unwrap();
+
+        let task = context.task_manager.get(id).await.unwrap();
+        assert_eq!(task.goal_id.as_deref(), Some(goal.id.as_str()));
+        assert_eq!(
+            context
+                .task_manager
+                .list_for_goal(&goal.id)
+                .await
+                .unwrap()
+                .len(),
+            1,
+            "the Goal context and panel can now see the task"
+        );
     }
 
     #[tokio::test]

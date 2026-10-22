@@ -24,6 +24,7 @@ pub mod background;
 pub mod compact;
 pub mod config;
 pub mod consts;
+pub mod goal;
 pub mod hook;
 pub mod mcp;
 pub mod memory;
@@ -49,7 +50,7 @@ pub mod utils;
 pub mod voice;
 pub mod worktree;
 
-pub use agent::{Agent, AgentRuntime, AgentSystemPrompt};
+pub use agent::{Agent, AgentLoopOutcome, AgentLoopStop, AgentRuntime, AgentSystemPrompt};
 pub use tact_llm::Tool as ToolSpec;
 use tact_llm::{ContentBlock, LlmProvider, MessageContent};
 

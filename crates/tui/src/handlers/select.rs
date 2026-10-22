@@ -217,11 +217,10 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         "Assembled current system prompt",
                         "## Unavailable\n\nNo persisted LLM request with a system prompt is available for this session.".to_string(),
                     ));
-                    app.system_prompt_popup = Some(crate::widgets::state::SystemPromptPopup {
-                        title: title.to_string(),
-                        source: content,
-                        scroll: 0,
-                    });
+                    app.system_prompt_popup = Some(crate::widgets::state::SystemPromptPopup::new(
+                        title.to_string(),
+                        content,
+                    ));
                     app.input_mode = InputMode::Normal;
                 }
                 SelectKind::PermissionModePick => {
@@ -382,11 +381,21 @@ fn dequeue_next_agent_select(app: &mut App) {
     };
     app.select_kind = SelectKind::Agent;
     if req.multi {
-        app.select
-            .set_multi(req.prompt, req.options, req.request_id, req.log_confirm);
+        app.select.set_multi(
+            req.prompt,
+            req.options,
+            req.request_id,
+            req.log_confirm,
+            req.from_subagent,
+        );
     } else {
-        app.select
-            .set(req.prompt, req.options, req.request_id, req.log_confirm);
+        app.select.set(
+            req.prompt,
+            req.options,
+            req.request_id,
+            req.log_confirm,
+            req.from_subagent,
+        );
     }
     app.input_mode = InputMode::Select;
 }
@@ -1162,6 +1171,7 @@ mod tests {
             vec!["Allow once".into(), "Deny".into()],
             1,
             true,
+            false,
         );
         rx
     }
@@ -1216,6 +1226,7 @@ mod tests {
             },
             voice: tact::config::VoiceSettings::disabled_defaults(),
             mcp: tact::config::McpSettings::default(),
+            goal: tact::config::GoalSettings::default(),
             permission_mode: None,
             tokio_console: false,
             config_path: None,
@@ -1447,6 +1458,7 @@ thinking_budget = {thinking_budget}
             "Allow write?".into(),
             vec!["Allow once".into(), "Deny".into()],
             false,
+            false,
         );
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, Some(request_id));
@@ -1478,6 +1490,7 @@ thinking_budget = {thinking_budget}
         let (request_id, mut waiter) = responder.register_select(
             "Allow write?".into(),
             vec!["Allow once".into(), "Deny".into()],
+            false,
             false,
         );
         app.reconcile_pending_ui();
@@ -1527,6 +1540,7 @@ thinking_budget = {thinking_budget}
             options: vec!["Yes".into(), "No".into()],
             request_id: 2,
             log_confirm: false,
+            from_subagent: false,
         });
         assert_eq!(app.select.request_id, Some(1), "first select stays open");
         assert_eq!(app.pending_agent_selects.len(), 1, "second select queued");

@@ -65,6 +65,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
         },
         voice: tact::config::VoiceSettings::disabled_defaults(),
         mcp: tact::config::McpSettings::default(),
+        goal: tact::config::GoalSettings::default(),
         permission_mode: None,
         tokio_console: false,
         config_path: None,

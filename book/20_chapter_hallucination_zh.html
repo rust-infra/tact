@@ -1,0 +1,904 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Agent 循环中的幻觉问题</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#0-%E4%B8%BA%E4%BB%80%E4%B9%88%E5%BE%AA%E7%8E%AF%E5%86%85%E7%9A%84%E5%B9%BB%E8%A7%89%E8%87%B3%E5%85%B3%E9%87%8D%E8%A6%81" title="0. 为什么循环内的幻觉至关重要"><span class="toc-label">0. 为什么循环内的幻觉至关重要</span></a></li>
+<li class="toc-l2"><a href="#1-%E5%9C%BA%E6%99%AF%E5%8E%8B%E7%BC%A9%E6%91%98%E8%A6%81%E7%BC%96%E9%80%A0" title="1. 场景：压缩摘要编造"><span class="toc-label">1. 场景：压缩摘要编造</span></a></li>
+<li class="toc-l3"><a href="#11-%E8%A7%A6%E5%8F%91%E6%9D%A1%E4%BB%B6" title="1.1 触发条件"><span class="toc-label">1.1 触发条件</span></a></li>
+<li class="toc-l3"><a href="#12-%E5%85%B7%E4%BD%93%E6%A1%88%E4%BE%8B" title="1.2 具体案例"><span class="toc-label">1.2 具体案例</span></a></li>
+<li class="toc-l3"><a href="#13-%E4%B8%8B%E6%B8%B8%E5%8D%B1%E5%AE%B3" title="1.3 下游危害"><span class="toc-label">1.3 下游危害</span></a></li>
+<li class="toc-l3"><a href="#14-%E6%A0%B9%E5%9B%A0" title="1.4 根因"><span class="toc-label">1.4 根因</span></a></li>
+<li class="toc-l2"><a href="#2-%E5%9C%BA%E6%99%AF%E6%88%AA%E6%96%AD%E5%8D%A0%E4%BD%8D%E7%AC%A6%E5%BC%95%E5%8F%91%E7%9A%84%E5%86%85%E5%AE%B9%E7%BC%96%E9%80%A0" title="2. 场景：截断占位符引发的内容编造"><span class="toc-label">2. 场景：截断占位符引发的内容编造</span></a></li>
+<li class="toc-l3"><a href="#21-%E8%A7%A6%E5%8F%91%E6%9D%A1%E4%BB%B6" title="2.1 触发条件"><span class="toc-label">2.1 触发条件</span></a></li>
+<li class="toc-l3"><a href="#22-%E8%A1%8C%E4%B8%BA" title="2.2 行为"><span class="toc-label">2.2 行为</span></a></li>
+<li class="toc-l3"><a href="#23-%E7%BC%93%E8%A7%A3%E7%BC%BA%E5%8F%A3" title="2.3 缓解缺口"><span class="toc-label">2.3 缓解缺口</span></a></li>
+<li class="toc-l2"><a href="#3-%E5%9C%BA%E6%99%AF%E5%B7%A5%E5%85%B7%E7%BB%93%E6%9E%9C%E5%B9%BB%E8%A7%89" title="3. 场景：工具结果幻觉"><span class="toc-label">3. 场景：工具结果幻觉</span></a></li>
+<li class="toc-l3"><a href="#31-%E8%A7%A6%E5%8F%91%E6%9D%A1%E4%BB%B6" title="3.1 触发条件"><span class="toc-label">3.1 触发条件</span></a></li>
+<li class="toc-l3"><a href="#32-%E7%A4%BA%E4%BE%8B" title="3.2 示例"><span class="toc-label">3.2 示例</span></a></li>
+<li class="toc-l2"><a href="#4-%E5%9C%BA%E6%99%AF%E8%BA%AB%E4%BB%BD%E6%B7%B7%E6%B7%86" title="4. 场景：身份混淆"><span class="toc-label">4. 场景：身份混淆</span></a></li>
+<li class="toc-l3"><a href="#41-%E8%A7%A6%E5%8F%91%E6%9D%A1%E4%BB%B6" title="4.1 触发条件"><span class="toc-label">4.1 触发条件</span></a></li>
+<li class="toc-l3"><a href="#42-%E7%A4%BA%E4%BE%8B" title="4.2 示例"><span class="toc-label">4.2 示例</span></a></li>
+<li class="toc-l2"><a href="#5-%E7%BC%93%E8%A7%A3%E7%AD%96%E7%95%A5" title="5. 缓解策略"><span class="toc-label">5. 缓解策略</span></a></li>
+<li class="toc-l3"><a href="#51-%E4%BC%98%E5%85%88%E7%BA%A7%E6%8E%92%E5%BA%8F" title="5.1 优先级排序"><span class="toc-label">5.1 优先级排序</span></a></li>
+<li class="toc-l2"><a href="#%E7%9B%B8%E5%85%B3%E6%96%87%E6%A1%A3" title="相关文档"><span class="toc-label">相关文档</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="agent-循环中的幻觉问题">Agent 循环中的幻觉问题</h1>
+<p>本章系统梳理编码 Agent 循环中的 <strong>LLM
+幻觉模式</strong>——模型凭空编造不存在的文件、函数签名、对话历史或工具输出。理解这些模式对于构建健壮的
+Agent 系统至关重要，因为 prompt
+中的幻觉（不仅是输出）会<strong>毒化后续回合</strong>，使整个任务偏离轨道。</p>
+<p>相关代码位于
+<code>crates/tact/src/compact/mod.rs</code>、<code>crates/tact/src/agent/mod.rs</code>（特别是
+prompt 构建和压缩逻辑）以及 <code>tact_llm</code> provider 适配层。</p>
+<hr />
+<h2 id="0-为什么循环内的幻觉至关重要">0. 为什么循环内的幻觉至关重要</h2>
+<p>编码 Agent 的本质是 <strong>LLM 被代码驱动</strong>。每回合 Agent
+基于真实数据（文件内容、工具结果、对话历史）构建 prompt。当 LLM 在
+<strong>prompt
+中</strong>（而非仅输出）产生幻觉时，该错误会成为下一回合的输入，形成自我增强的反馈循环：</p>
+<pre class="mermaid">sequenceDiagram
+    participant Agent as Agent
+    participant LLM as LLM
+    participant Context as Prompt Context
+
+    Note over Agent,Context: 正常流程
+    Agent-&gt;&gt;Context: 真实文件内容、真实工具结果
+    Context-&gt;&gt;LLM: 基于真实数据构建 prompt
+    LLM-&gt;&gt;Agent: 基于真实前提推理 → 正确的工作
+
+    Note over Agent,Context: 幻觉流程
+    Agent-&gt;&gt;Context: 注入幻觉摘要
+    Context-&gt;&gt;LLM: 基于虚构前提构建 prompt
+    LLM-&gt;&gt;Agent: 在错误前提上推理 → 错误的工作
+    Agent-&gt;&gt;Context: 更多幻觉内容
+    Note over Agent,Context: 循环放大错误</pre>
+<p>与输出幻觉（用户肉眼可见）不同，<strong>prompt
+幻觉对用户不可见</strong>——模型看到一个虚构的世界并在其中行动，产出的工作看起来正确，但操作的对象根本不存在。</p>
+<hr />
+<h2 id="1-场景压缩摘要编造">1. 场景：压缩摘要编造</h2>
+<p>这是 Tact
+中影响最大的幻觉模式，因为压缩摘要替换了大段对话历史，直接喂入下一回合
+LLM。</p>
+<h3 id="11-触发条件">1.1 触发条件</h3>
+<table>
+<thead>
+<tr>
+<th>条件</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>动作</strong></td>
+<td>LLM 被要求总结对话以进行压缩</td>
+</tr>
+<tr>
+<td><strong>Prompt</strong></td>
+<td><code>"总结本次编码 Agent 对话以便继续工作。保留：1. 当前目标和已完成工作 ..."</code></td>
+</tr>
+<tr>
+<td><strong>提供的上下文</strong></td>
+<td>仅有最近的消息（在 token 预算内）</td>
+</tr>
+<tr>
+<td><strong>模型</strong></td>
+<td>DeepSeek v4 Flash（已观测到），可能任何有强补全偏好的模型</td>
+</tr>
+</tbody>
+</table>
+<h3 id="12-具体案例">1.2 具体案例</h3>
+<p>在观测到的事故中（session
+<code>479d01ce</code>，2026-07-23），发送给摘要 LLM
+的对话<strong>只有三条消息</strong>：</p>
+<pre><code>[user]   call compact tool
+[assistant]  thinking + tool_use compact
+[user]   tool_result: &quot;Compacting conversation...&quot;</code></pre>
+<p>没有任何先前的编码任务、没有读过的文件、没有目标——整个"需要总结的对话"就是调用
+<code>compact</code> 本身。LLM
+被要求生成包含目标、文件和下一步具体步骤的摘要，但输入中什么都没有。</p>
+<p><strong>LLM 编造了一个完整的 Python 搜索系统：</strong></p>
+<pre><code>目标：实现一个可扩展的 LLM 对话数据集搜索系统...
+关键文件：
+- search/__init__.py — SearchResult(doc_id, doc_path, query_snippet)...
+- search/search.py — MiniSearch(MiniSearchClient)...
+- index/ 模块 — PositionalPostingList, IndexWriter, WildcardQuery...
+剩余工作：
+1. 查询引擎（DAAT）
+2. 结果排序/片段生成
+3. 集成/测试</code></pre>
+<p>这些文件没有一个存在。这些类没有一个存在。该项目是纯 Rust。</p>
+<h3 id="13-下游危害">1.3 下游危害</h3>
+<ol type="1">
+<li>幻觉摘要作为用户消息 ordinal 2 注入重建后的上下文</li>
+<li>Agent 读到摘要，相信自己正在处理一个 Python 搜索系统</li>
+<li>运行 <code>find . -name "*.py"</code> — 什么都没找到</li>
+<li>搜索更多 Python 文件 — 在这个 Rust 项目中什么都没找到</li>
+<li>陷入困惑，反复确认项目语言，试图调和摘要与现实</li>
+<li>用户不得不解释压缩的幻觉来重置上下文</li>
+</ol>
+<pre class="mermaid">graph TD
+    a_prompt[压缩 prompt 总结本次对话…] --&gt; b_ctx[消息 只有 call compact tool + 回应]
+    b_ctx --&gt; c_llm[LLM]
+    c_llm --&gt; d_out[幻觉输出 Python 搜索系统]
+    d_out --&gt; e_inj[作为真实历史注入上下文]
+    e_inj --&gt; f_agent[Agent 在虚构前提上行动]
+    f_agent --&gt; g_bash[find . -name *.py → 空]
+    f_agent --&gt; h_confused[Agent 困惑 这是一个 Rust 项目…]</pre>
+<h3 id="14-根因">1.4 根因</h3>
+<table>
+<thead>
+<tr>
+<th>因素</th>
+<th>为何导致</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>无最小内容检查</strong></td>
+<td>压缩在只有 3
+条无关紧要消息的会话中运行，其中没有任何有意义的工作</td>
+</tr>
+<tr>
+<td><strong>LLM 补全偏见</strong></td>
+<td>DeepSeek/OpenAI
+模型强烈倾向于输出详细答案，而非承认"无内容可总结"</td>
+</tr>
+<tr>
+<td><strong>Prompt 要求具体细节</strong></td>
+<td>指令明确要求目标、文件、签名——迫使模型在缺失时编造</td>
+</tr>
+<tr>
+<td><strong>无事实一致性检查</strong></td>
+<td>摘要照单全收；不验证提及的文件/路径是否真实存在</td>
+</tr>
+<tr>
+<td><strong>新会话边界</strong></td>
+<td>新会话从零开始，唯一的上下文就是 compact
+工具调用本身——没有继承任何先前工作</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="2-场景截断占位符引发的内容编造">2.
+场景：截断占位符引发的内容编造</h2>
+<h3 id="21-触发条件">2.1 触发条件</h3>
+<p><code>micro_compact</code>
+截断旧的工具结果后，原始内容被占位符替换：</p>
+<pre><code>[Earlier tool result compacted. Re-run the tool (e.g., read_file) for full content.]</code></pre>
+<h3 id="22-行为">2.2 行为</h3>
+<p>当 LLM 遇到此占位符，之后又需要该内容（例如构建
+<code>apply_patch</code> 调用）时，有两个选择：</p>
+<ol type="1">
+<li><strong>重新读取文件</strong>（正确，消耗 token）</li>
+<li><strong>凭记忆编造内容</strong>（错误，但常见）</li>
+</ol>
+<p>许多模型，特别在时间压力或 token 预算下，会选择方案
+2。它们基于记忆中的（通常不准确的）内容生成 diff 或 patch，导致：</p>
+<table>
+<thead>
+<tr>
+<th>症状</th>
+<th>失败原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>apply_patch</code> 上下文不匹配</td>
+<td>编造的行号或上下文字符串与真实文件不一致</td>
+</tr>
+<tr>
+<td>无声的错误编辑</td>
+<td>模型产出的代码看似合理但实际错误</td>
+</tr>
+<tr>
+<td>级联错误</td>
+<td>每个错误编辑产生更多工具结果，可能又被截断，放大错误</td>
+</tr>
+</tbody>
+</table>
+<h3 id="23-缓解缺口">2.3 缓解缺口</h3>
+<p>占位符本身写了"re-run the tool"，但系统 prompt
+的引导不足以强制执行重新读取。具有强自回归补全偏好的模型可能忽略指令，直接用编造内容继续。</p>
+<hr />
+<h2 id="3-场景工具结果幻觉">3. 场景：工具结果幻觉</h2>
+<h3 id="31-触发条件">3.1 触发条件</h3>
+<p>Agent 调用工具（如
+<code>bash</code>、<code>read_file</code>），工具返回错误或被中断。下一回合
+LLM 可能编造一个成功的结果。</p>
+<h3 id="32-示例">3.2 示例</h3>
+<pre><code>[user]    tool_use: bash(&quot;cat /etc/os-release&quot;)
+[assistant]  思考该做什么
+[user]    tool_result: [Tool execution error: command timed out after 30s]
+
+下一回合：
+[assistant]  &quot;我通过 /etc/os-release 找到 OS 是 Ubuntu 22.04&quot;</code></pre>
+<p>LLM
+"记住"了命令<em>应该</em>输出什么，并用它替换了失败结果。这特别危险因为：</p>
+<ul>
+<li>错误可能指示真实问题（网络、权限、缺工具）</li>
+<li>编造的输出可能看似合理但有误</li>
+<li>后续工作建立在这个输错上会放大错误</li>
+</ul>
+<hr />
+<h2 id="4-场景身份混淆">4. 场景：身份混淆</h2>
+<h3 id="41-触发条件">4.1 触发条件</h3>
+<p>当上下文被压缩或重组后，模型可能混淆一条消息的<strong>归属者</strong>。Tact
+将工具结果归入 <code>user</code> 角色（符合 Messages
+API），模型可能误以为是用户指令。</p>
+<h3 id="42-示例">4.2 示例</h3>
+<p>压缩后重建的上下文：</p>
+<pre><code>[user]    This conversation was compacted so the agent can continue working.
+          [摘要文本...]
+
+[user]    tool_result: { &quot;某次先前的输出&quot; }</code></pre>
+<p>模型可能将工具结果内容误解为新的用户指令，特别是当摘要是模糊的。这会导致：</p>
+<ul>
+<li>重复已经完成的工作</li>
+<li>将旧的命令输出当作当前状态</li>
+<li>把系统生成的占位符混淆为用户请求</li>
+</ul>
+<hr />
+<h2 id="5-缓解策略">5. 缓解策略</h2>
+<table>
+<thead>
+<tr>
+<th>策略</th>
+<th>描述</th>
+<th>实现位置</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>最小内容阈值</strong></td>
+<td>如果有意义的消息少于 N 条，跳过 LLM 压缩，使用硬编码回退摘要</td>
+<td><code>compact_history_with_mode</code> in
+<code>agent/mod.rs</code></td>
+</tr>
+<tr>
+<td><strong>事实一致性检查</strong></td>
+<td>压缩后扫描摘要中的文件/函数引用，验证它们是否在代码库中真实存在；过多引用不存在的则拒绝</td>
+<td>压缩后验证步骤</td>
+</tr>
+<tr>
+<td><strong>空内容回退摘要</strong></td>
+<td>当对话无实质内容时，返回极简事实性占位符，如"(无重要工作可总结)"，不必调用
+LLM</td>
+<td><code>compact_history_with_mode</code></td>
+</tr>
+<tr>
+<td><strong>遇占位符强制重新读取</strong></td>
+<td>改进系统 prompt，明确要求在存在截断占位符时，任何
+<code>apply_patch</code> 或编辑前必须先 <code>read_file</code></td>
+<td>系统 prompt 模板</td>
+</tr>
+<tr>
+<td><strong>改进占位符消息</strong></td>
+<td>让占位符更醒目（如
+<code>[⚠ 内容已截断 — 编辑前请重新读取文件]</code>），降低模型忽略的概率</td>
+<td><code>COMPACTED_TOOL_RESULT</code> in
+<code>compact/mod.rs</code></td>
+</tr>
+<tr>
+<td><strong>模型特定调参</strong></td>
+<td>部分模型在更低 temperature 下幻觉更少；对压缩调用使用更低
+temperature</td>
+<td>摘要器的 <code>CreateMessageParams</code></td>
+</tr>
+<tr>
+<td><strong>验证步骤</strong></td>
+<td>重要编辑后，重新读取文件验证修改是否准确执行；如果不匹配预期编辑，标记幻觉</td>
+<td>工具后钩子</td>
+</tr>
+<tr>
+<td><strong>会话连续性标记</strong></td>
+<td>检测压缩在近乎空的会话上运行（无先前工作）时，完全跳过 LLM 调用</td>
+<td><code>compact_history_with_mode</code></td>
+</tr>
+<tr>
+<td><strong>用户可见警告</strong></td>
+<td>压缩发生时通知用户对话被压缩了；提供 transcript 路径供人工审查</td>
+<td>压缩流程中的 <code>AgentUpdate::Info</code></td>
+</tr>
+</tbody>
+</table>
+<h3 id="51-优先级排序">5.1 优先级排序</h3>
+<table>
+<thead>
+<tr>
+<th>优先级</th>
+<th>策略</th>
+<th>工作量</th>
+<th>影响</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P0</td>
+<td>最小内容阈值</td>
+<td>低（加一个计数器检查）</td>
+<td>高（直接阻止观察到的 bug）</td>
+</tr>
+<tr>
+<td>P0</td>
+<td>空内容回退摘要</td>
+<td>低（LLM 调用前加分支）</td>
+<td>高（彻底消除空内容编造）</td>
+</tr>
+<tr>
+<td>P1</td>
+<td>遇占位符强制重新读取</td>
+<td>中（修改系统 prompt）</td>
+<td>高（减少占位符触发的编造）</td>
+</tr>
+<tr>
+<td>P2</td>
+<td>事实一致性检查</td>
+<td>高（需文件系统扫描）</td>
+<td>中（能捕捉编造，但代价高）</td>
+</tr>
+<tr>
+<td>P3</td>
+<td>验证步骤</td>
+<td>中（工具后钩子）</td>
+<td>中（捕捉下游错误）</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="相关文档">相关文档</h2>
+<ul>
+<li><a href="./05_chapter_compact_zh.html">上下文压缩</a> — 触发场景 1 和
+2 的机制</li>
+<li><a href="./06_chapter_recovery_zh.html">错误恢复</a> — 压缩作为
+prompt-too-long 的恢复策略</li>
+<li><a href="./18_chapter_agent_loop_zh.html">Agent 主循环</a> —
+压缩后上下文重建的位置</li>
+<li><a href="./04_chapter_prompt_zh.html">系统提示</a> —
+截断占位符引导所在</li>
+<li><a href="./07_chapter_tool_zh.html">工具系统</a> —
+验证用的工具后钩子</li>
+<li><code>crates/tact/src/agent/mod.rs</code> —
+<code>compact_history_with_mode</code> 实现</li>
+<li><code>crates/tact/src/compact/mod.rs</code> —
+<code>COMPACTED_TOOL_RESULT</code> 和 <code>micro_compact</code></li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

@@ -1,0 +1,1543 @@
+<!DOCTYPE html>
+<html xmlns="http://www.w3.org/1999/xhtml">
+<head>
+  <meta charset="utf-8" />
+  <meta name="generator" content="pandoc 3.12.1" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=yes" />
+  <title>Agent 生命周期钩子（Agent Lifecycle Hooks）</title>
+  <style>
+    /* Default styles provided by pandoc.
+    ** See https://pandoc.org/MANUAL.html#variables-for-html for config info.
+    */
+    html {
+      color: #1a1a1a;
+      color: light-dark(#1a1a1a, #fdfdfd);
+      background-color: #fdfdfd;
+      background-color: light-dark(#fdfdfd, #1a1a1a);
+      color-scheme: light dark;
+    }
+    body {
+      margin: 0 auto;
+      max-width: 36em;
+      padding-left: 50px;
+      padding-right: 50px;
+      padding-top: 50px;
+      padding-bottom: 50px;
+      hyphens: auto;
+      overflow-wrap: break-word;
+      text-rendering: optimizeLegibility;
+      font-kerning: normal;
+    }
+    @media (max-width: 600px) {
+      body {
+        font-size: 0.9em;
+        padding: 12px;
+      }
+      h1 {
+        font-size: 1.8em;
+      }
+    }
+    @media print {
+      html {
+        color-scheme: light only;
+      }
+      html, body, pre, code {
+        background-color: transparent;
+      }
+      body, a, a:visited, blockquote {
+        color: black;
+      }
+      pre, code {
+        padding: 0;
+      }
+      p, h2, h3 {
+        orphans: 3;
+        widows: 3;
+      }
+      h2, h3, h4 {
+        page-break-after: avoid;
+      }
+    }
+    p {
+      margin: 1em 0;
+    }
+    a, a:visited {
+      color: inherit;
+    }
+    img {
+      max-width: 100%;
+    }
+    svg {
+      height: auto;
+      max-width: 100%;
+    }
+    h1, h2, h3, h4, h5, h6 {
+      margin-top: 1.4em;
+    }
+    h5, h6 {
+      font-size: 1em;
+      font-style: italic;
+    }
+    h6 {
+      font-weight: normal;
+    }
+    ol, ul {
+      padding-left: 1.7em;
+      margin-top: 1em;
+    }
+    li > ol, li > ul {
+      margin-top: 0;
+    }
+    blockquote {
+      margin: 1em 0 1em 1.7em;
+      padding-left: 1em;
+      border-left: 2px solid;
+      border-color: #e6e6e6;
+      border-color: light-dark(#e6e6e6, #4c4c4c);
+      color: #606060;
+      color: light-dark(#606060, #b6b6b6);
+    }
+    code {
+      white-space: pre-wrap;
+      font-family: Menlo, Monaco, Consolas, 'Lucida Console', monospace;
+      font-size: 85%;
+      margin: 0;
+      hyphens: manual;
+    }
+    pre {
+      margin: 1em 0;
+      overflow: auto;
+    }
+    pre code {
+      padding: 0;
+      overflow: visible;
+      overflow-wrap: normal;
+    }
+    .sourceCode {
+     background-color: transparent;
+     overflow: visible;
+    }
+    hr {
+      border: none;
+      border-top: 1px solid currentColor;
+      height: 1px;
+      margin: 1em 0;
+    }
+    table {
+      margin: 1em 0;
+      border-collapse: collapse;
+      width: 100%;
+      overflow-x: auto;
+      display: block;
+      font-variant-numeric: lining-nums tabular-nums;
+    }
+    table caption {
+      margin-bottom: 0.75em;
+    }
+    tbody {
+      margin-top: 0.5em;
+      border-top: 1px solid currentColor;
+      border-bottom: 1px solid currentColor;
+    }
+    th {
+      border-top: 1px solid currentColor;
+      padding: 0.25em 0.5em 0.25em 0.5em;
+    }
+    td {
+      padding: 0.125em 0.5em 0.25em 0.5em;
+    }
+    header {
+      margin-bottom: 4em;
+      text-align: center;
+    }
+    #TOC li {
+      list-style: none;
+    }
+    #TOC ul {
+      padding-left: 1.3em;
+    }
+    #TOC > ul {
+      padding-left: 0;
+    }
+    #TOC a:not(:hover) {
+      text-decoration: none;
+    }
+    span.smallcaps{font-variant: small-caps;}
+    div.columns{display: flex; gap: 1.5em;}
+    div.column{flex: auto;}
+    @media screen {
+    div.columns{gap: min(4vw, 1.5em);}
+    div.column{overflow-x: auto;}
+    }
+    div.hanging-indent{margin-left: 1.5em; text-indent: -1.5em;}
+    /* The extra [class] is a hack that increases specificity enough to
+       override a similar rule in reveal.js */
+    ul.task-list[class]{list-style: none;}
+    ul.task-list li input[type="checkbox"] {
+      font-size: inherit;
+      width: 0.8em;
+      margin: 0 0.8em 0.2em -1.6em;
+      vertical-align: middle;
+    }
+  </style>
+  <style>
+    :root { color-scheme: light; }
+    body {
+      max-width: 900px; margin: 0 auto; padding: 40px 24px 120px;
+      font: 16px/1.75 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+      color: #1f2328;
+    }
+    h1 { font-size: 30px; border-bottom: 2px solid #e4e6ea; padding-bottom: 12px; }
+    h2 { font-size: 23px; margin-top: 44px; border-bottom: 1px solid #eceef1; padding-bottom: 8px; }
+    h3 { font-size: 18px; margin-top: 32px; }
+    code { background: #f4f5f7; padding: 2px 6px; border-radius: 4px; font-size: 13.5px; }
+    pre:not(.mermaid) { background: #f6f7f9; padding: 14px 16px; border-radius: 8px; overflow-x: auto; }
+    pre:not(.mermaid) code { background: none; padding: 0; }
+    blockquote {
+      margin: 18px 0; padding: 10px 18px; border-left: 4px solid #c9d4e6;
+      background: #f7f9fc; border-radius: 0 8px 8px 0; color: #3d4653;
+    }
+    table { border-collapse: collapse; margin: 18px 0; width: 100%; font-size: 15px; }
+    th, td { border: 1px solid #e0e3e8; padding: 8px 12px; text-align: left; vertical-align: top; }
+    th { background: #f6f7f9; }
+    hr { border: none; border-top: 1px solid #e4e6ea; margin: 40px 0; }
+    .mermaid { margin: 24px 0; text-align: center; }
+    .lab { background: #fffdf5; border: 1px dashed #d8c07a; border-radius: 10px; padding: 8px 22px 22px; }
+    .lab h2 { border: none; }
+  </style>
+  <script type="module">
+    import mermaid from "https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs";
+    mermaid.initialize({
+      startOnLoad: true,
+      securityLevel: "loose",
+      theme: "base",
+      fontFamily: '-apple-system, "SF Pro Text", "PingFang SC", sans-serif',
+      themeVariables: {
+        fontSize: "15px",
+        lineColor: "#8a93a3",
+        primaryTextColor: "#1f2328",
+        edgeLabelBackground: "#ffffff",
+      },
+      flowchart: { curve: "basis", nodeSpacing: 46, rankSpacing: 58, padding: 12 },
+      state: { nodeSpacing: 40, rankSpacing: 52 },
+    });
+  </script>
+  <style>
+    /* ---- book directory (generated by scripts/book-chapter-html.py) ---- */
+    /* Added after load so a deep link lands instantly; later jumps glide. */
+    html.toc-smooth { scroll-behavior: smooth; }
+    @media (prefers-reduced-motion: reduce) { html.toc-smooth { scroll-behavior: auto; } }
+    body.has-toc {
+      display: grid; grid-template-columns: 288px minmax(0, 1fr);
+      align-items: start; max-width: none; margin: 0; padding: 0;
+    }
+    body.has-toc > main {
+      box-sizing: border-box; width: 100%; max-width: 900px;
+      margin: 0 auto; padding: 40px 24px 120px;
+    }
+    body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 28px; }
+
+    .book-toc {
+      position: sticky; top: 0; align-self: start; z-index: 30;
+      box-sizing: border-box; height: 100vh;
+      display: flex; flex-direction: column;
+      background: #f5f6fa; border-right: 1px solid #e9ecf1;
+      overflow-y: auto; overscroll-behavior: contain;
+      font: 14px/1.5 -apple-system, "SF Pro Text", "PingFang SC", "Hiragino Sans GB", sans-serif;
+    }
+    .toc-card {
+      display: flex; align-items: center; gap: 10px;
+      margin: 18px 14px 0; padding: 13px 12px 13px 16px;
+      background: #fff; border-radius: 14px;
+      box-shadow: 0 1px 2px rgba(16, 24, 40, .05), 0 10px 24px -18px rgba(16, 24, 40, .35);
+    }
+    .toc-icon { display: inline-flex; color: #8b93a1; }
+    .toc-icon svg { width: 18px; height: 18px; }
+    .toc-title {
+      flex: 1; font-size: 15px; font-weight: 600; color: #545b68;
+      letter-spacing: .02em;
+    }
+    .toc-collapse {
+      appearance: none; border: 0; border-radius: 999px;
+      background: #eef0f4; color: #6b7280; cursor: pointer;
+      font: inherit; font-size: 12px; line-height: 1; padding: 7px 12px;
+    }
+    .toc-collapse:hover { background: #e4e7ed; color: #4b5563; }
+
+    .toc-group { padding-top: 18px; }
+    .toc-group-label {
+      margin: 0; padding: 0 14px 4px 56px;
+      font-size: 11px; font-weight: 600; letter-spacing: .14em; color: #a0a8b4;
+    }
+    .toc-list { position: relative; list-style: none; margin: 0; padding: 4px 0 2px; }
+    .toc-list::before {
+      content: ""; position: absolute; left: 31px; top: 19px; bottom: 19px;
+      width: 2px; border-radius: 1px; background: #e3e8ef;
+    }
+    .toc-list li { position: relative; }
+    .toc-list li::before {
+      content: ""; position: absolute; left: 28px; top: 50%;
+      width: 8px; height: 8px; margin-top: -4px; border-radius: 50%;
+      background: #b9c1cc;
+      transition: background .15s, width .15s, height .15s, margin .15s, left .15s, box-shadow .15s;
+    }
+    .toc-list > li > a, .toc-list > li > .toc-label {
+      display: block; box-sizing: border-box;
+      margin-right: 8px; padding: 9px 10px 9px 56px; border-radius: 8px;
+      color: #6f7784; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-list > li > a:hover { background: #eceff5; color: #3f4652; }
+    .toc-list .toc-l2 > a { color: #5b6270; font-weight: 500; }
+    .toc-list .toc-l3 > a, .toc-list .toc-l3 > .toc-label { padding-left: 76px; font-size: 13px; color: #7d8592; }
+    .toc-list .toc-l3 > a:hover { color: #4b5563; }
+    .toc-list > li > a > .toc-label {
+      display: block; overflow: hidden;
+      white-space: nowrap; text-overflow: ellipsis;
+    }
+    .toc-list .is-active > a,
+    .toc-list .is-active > a:hover { color: #2f74f0; font-weight: 600; }
+    .toc-list .is-active::before {
+      left: 27px; width: 10px; height: 10px; margin-top: -5px;
+      background: #2f74f0; box-shadow: 0 0 0 4px rgba(47, 116, 240, .12);
+    }
+    .toc-list .toc-l2.is-source > a { color: #7c8493; }
+    .toc-list .toc-l2.is-source > a:hover { color: #4b5563; }
+
+    .toc-index {
+      display: inline-flex; align-items: center; gap: 4px; flex: none;
+      padding: 5px 8px; border-radius: 7px;
+      font-size: 12px; line-height: 1; color: #7c8493; text-decoration: none;
+      transition: background .15s, color .15s;
+    }
+    .toc-index:hover { background: #eceff5; color: #2f74f0; }
+    .toc-index svg { width: 12px; height: 12px; }
+
+    .toc-fab {
+      position: fixed; top: 14px; left: 14px; z-index: 40;
+      display: none; align-items: center; gap: 7px;
+      padding: 8px 13px 8px 11px; border: 1px solid #e3e7ee; border-radius: 999px;
+      background: rgba(255, 255, 255, .94); backdrop-filter: blur(8px);
+      box-shadow: 0 6px 20px -10px rgba(16, 24, 40, .35);
+      color: #5b6270; font: inherit; font-size: 12.5px; cursor: pointer;
+    }
+    .toc-fab .toc-icon svg { width: 15px; height: 15px; }
+    .toc-scrim { display: none; }
+
+    @media (min-width: 1100px) {
+      html[data-toc="closed"] body.has-toc { display: block; }
+      html[data-toc="closed"] .book-toc { display: none; }
+      html[data-toc="closed"] .toc-fab { display: inline-flex; }
+    }
+    @media (max-width: 1099px) {
+      body.has-toc { display: block; }
+      body.has-toc > main { padding-top: 72px; }
+      body.has-toc :is(h1, h2, h3, h4) { scroll-margin-top: 76px; }
+      .book-toc {
+        position: fixed; inset: 0 auto 0 0; width: min(86vw, 320px); height: 100dvh;
+        transform: translateX(-102%); transition: transform .22s ease;
+      }
+      html[data-toc="open"] .book-toc {
+        transform: none; box-shadow: 24px 0 60px -30px rgba(16, 24, 40, .45);
+      }
+      html[data-toc="open"] .toc-scrim {
+        display: block; position: fixed; inset: 0; z-index: 25;
+        background: rgba(17, 24, 39, .28);
+      }
+      .toc-fab { display: inline-flex; }
+      html[data-toc="open"] .toc-fab { display: none; }
+    }
+    @media print {
+      .book-toc, .toc-fab, .toc-scrim { display: none !important; }
+      body.has-toc { display: block; }
+      body.has-toc > main { max-width: none; padding: 0; }
+    }
+  </style>
+  <script>
+    (function () {
+      var narrow = false, stored = null;
+      try { narrow = matchMedia("(max-width: 1099px)").matches; } catch (e) {}
+      try { stored = localStorage.getItem("tact-book-toc"); } catch (e) {}
+      document.documentElement.dataset.toc =
+        narrow || stored === "closed" ? "closed" : "open";
+    })();
+  </script>
+</head>
+<body class="has-toc">
+<button class="toc-fab" type="button" aria-label="展开目录"><span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span><span>目录</span></button>
+<div class="toc-scrim"></div>
+<nav class="book-toc" id="book-toc" aria-label="目录">
+<div class="toc-card">
+<span class="toc-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 4H5v16h3"/><path d="M11 8h9M11 12h9M11 16h6"/></svg></span>
+<span class="toc-title">目录</span>
+<a class="toc-index" href="index_zh.html" title="返回全书总目录"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 5l-7 7 7 7"/></svg><span>总目录</span></a>
+<button class="toc-collapse" type="button" aria-expanded="true">收起</button>
+</div>
+<div class="toc-group">
+<ol class="toc-list">
+<li class="toc-l2"><a href="#1-%E4%B8%BA%E4%BB%80%E4%B9%88%E9%9C%80%E8%A6%81-hooks" title="1. 为什么需要 Hooks"><span class="toc-label">1. 为什么需要 Hooks</span></a></li>
+<li class="toc-l2"><a href="#2-hook-%E7%B1%BB%E5%9E%8B" title="2. Hook 类型"><span class="toc-label">2. Hook 类型</span></a></li>
+<li class="toc-l2"><a href="#3-%E6%8E%A7%E5%88%B6%E6%B5%81hookcontrol" title="3. 控制流：HookControl"><span class="toc-label">3. 控制流：HookControl</span></a></li>
+<li class="toc-l2"><a href="#4-hooks-%E5%9C%A8%E8%BD%AE%E6%AC%A1%E6%B5%81%E6%B0%B4%E7%BA%BF%E4%B8%AD%E7%9A%84%E4%BD%8D%E7%BD%AE" title="4. Hooks 在轮次流水线中的位置"><span class="toc-label">4. Hooks 在轮次流水线中的位置</span></a></li>
+<li class="toc-l2"><a href="#5-%E6%A0%B8%E5%BF%83%E7%B1%BB%E5%9E%8B" title="5. 核心类型"><span class="toc-label">5. 核心类型</span></a></li>
+<li class="toc-l2"><a href="#6-%E6%B3%A8%E5%86%8C-hooks" title="6. 注册 Hooks"><span class="toc-label">6. 注册 Hooks</span></a></li>
+<li class="toc-l3"><a href="#%E5%91%BD%E4%BB%A4-hook" title="命令 hook"><span class="toc-label">命令 hook</span></a></li>
+<li class="toc-l3"><a href="#%E8%BF%90%E8%A1%8C%E5%89%8D%E7%9A%84%E5%AE%A1%E6%A0%B8" title="运行前的审核"><span class="toc-label">运行前的审核</span></a></li>
+<li class="toc-l2"><a href="#7-invoke_hooks-%E5%AE%8F" title="7. invoke_hooks! 宏"><span class="toc-label">7. invoke_hooks! 宏</span></a></li>
+<li class="toc-l2"><a href="#8-pretooluse-%E8%AF%A6%E8%A7%A3" title="8. PreToolUse 详解"><span class="toc-label">8. PreToolUse 详解</span></a></li>
+<li class="toc-l2"><a href="#9-posttooluse-%E8%AF%A6%E8%A7%A3" title="9. PostToolUse 详解"><span class="toc-label">9. PostToolUse 详解</span></a></li>
+<li class="toc-l2"><a href="#10-sessionstart" title="10. SessionStart"><span class="toc-label">10. SessionStart</span></a></li>
+<li class="toc-l3"><a href="#hook-%E7%9A%84-payload" title="hook 的 payload"><span class="toc-label">hook 的 payload</span></a></li>
+<li class="toc-l3"><a href="#%E5%93%AA%E4%BA%9B%E4%BA%8B%E4%BB%B6%E4%BC%9A%E6%8A%8A-additionalcontext-%E5%B8%A6%E8%BF%9B%E5%AF%B9%E8%AF%9D" title="哪些事件会把 additionalContext 带进对话"><span class="toc-label">哪些事件会把 additionalContext 带进对话</span></a></li>
+<li class="toc-l2"><a href="#11-%E8%AE%BE%E8%AE%A1%E7%BA%A6%E6%9D%9F" title="11. 设计约束"><span class="toc-label">11. 设计约束</span></a></li>
+<li class="toc-l2"><a href="#12-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="12. 代码地图"><span class="toc-label">12. 代码地图</span></a></li>
+<li class="toc-l2"><a href="#13-%E6%9C%89%E6%84%8F%E7%95%99%E4%B8%8B%E7%9A%84%E7%BC%BA%E5%8F%A3" title="13. 有意留下的缺口"><span class="toc-label">13. 有意留下的缺口</span></a></li>
+<li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
+</ol>
+</div>
+</nav>
+<main>
+<h1 id="agent-生命周期钩子agent-lifecycle-hooks">Agent
+生命周期钩子（Agent Lifecycle Hooks）</h1>
+<p>本章说明 Tact 如何在工具执行前后注入自定义逻辑：调用前检查或改写 tool
+输入，完成后改写输出，以及（通过注册 API）在会话开始前准备状态。</p>
+<p>Hooks 是 <strong>agent
+循环</strong>与<strong>工具调度器</strong>之间的扩展点。它们顺序执行，可通过返回
+<code>HookControl::Block</code> <strong>否决</strong>操作。</p>
+<hr />
+<h2 id="1-为什么需要-hooks">1. 为什么需要 Hooks</h2>
+<p>并非每种策略都适合写在 tool 实现或 <code>PermissionManager</code>
+里：</p>
+<ul>
+<li><strong>横切防护</strong> — 在任何 tool
+运行前拦截危险参数模式。</li>
+<li><strong>输入规范化</strong> —
+改写路径、注入默认值，或去掉模型常写错的字段。</li>
+<li><strong>输出整形</strong> — 截断、脱敏，或在结果进入 context
+前附加元数据。</li>
+<li><strong>集成</strong> — 发指标、审计日志或同步外部系统，而无需 fork
+每个 tool。</li>
+</ul>
+<p>Hooks 把这些关注点移出核心调度器，仍在流水线可预测的位置运行。</p>
+<hr />
+<h2 id="2-hook-类型">2. Hook 类型</h2>
+<p>定义于 <code>crates/tact/src/hook/mod.rs</code>：</p>
+<table>
+<thead>
+<tr>
+<th>Hook</th>
+<th>注册</th>
+<th>今天是否调用</th>
+<th>可否变更</th>
+<th>可否否决</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SessionStart</code></td>
+<td><code>Agent::session_start</code></td>
+<td>是 —
+每会话一次，初始化后（<code>dispatch_session_start_hooks</code>）；它收集的
+context 在第一轮之前被记录</td>
+<td><code>&amp;mut SessionStartContext</code>（追加注入的 context）</td>
+<td>是</td>
+</tr>
+<tr>
+<td><code>UserPromptSubmit</code></td>
+<td><code>Agent::user_prompt_submit</code></td>
+<td>是 — 用户回合消息进入 <code>agent_loop</code> 时</td>
+<td>prompt 文本（追加 <code>additionalContext</code>）</td>
+<td>是</td>
+</tr>
+<tr>
+<td><code>PreToolUse</code></td>
+<td><code>Agent::pre_tool</code></td>
+<td>是 — 权限检查之前，按 tool 顺序</td>
+<td><code>ToolUse</code> 输入（<code>name</code>、<code>input</code>
+JSON）</td>
+<td>是</td>
+</tr>
+<tr>
+<td><code>PostToolUse</code></td>
+<td><code>Agent::post_tool</code></td>
+<td>是 — 每个 tool 完成后，随结果流入</td>
+<td><code>ToolResult</code> content</td>
+<td>是</td>
+</tr>
+<tr>
+<td><code>PostToolUseFailure</code></td>
+<td><code>Agent::post_tool_failure</code></td>
+<td>是 — tool <strong>失败</strong>后，在 <code>PostToolUse</code>
+之外触发</td>
+<td>只读 <code>LoopState</code> + <code>ToolUse</code> + 错误文本</td>
+<td>仅记录（tool 已失败）</td>
+</tr>
+<tr>
+<td><code>Notification</code></td>
+<td><code>Agent::notification</code></td>
+<td>是 — agent 呈现用户通知时（目前仅
+<code>permission_prompt</code>）</td>
+<td>只读 <code>LoopState</code> + <code>NotificationContext</code></td>
+<td>仅记录（观测性）</td>
+</tr>
+<tr>
+<td><code>TaskCompleted</code></td>
+<td><code>Agent::task_completed</code></td>
+<td>是 —
+每个完成的用户任务一次（<code>dispatch_task_completed_hooks</code>）</td>
+<td>只读 <code>LoopState</code></td>
+<td>仅记录（任务已完成）</td>
+</tr>
+<tr>
+<td><code>Stop</code></td>
+<td><code>Agent::stop</code></td>
+<td>是 — 在外层回合边界调用一次（<code>dispatch_stop_hooks</code>）</td>
+<td>对 <code>LoopState</code> 只读</td>
+<td>是 — <code>Block(reason)</code> 表示用 <code>reason</code>
+作为下一条 prompt <em>继续</em>该回合</td>
+</tr>
+<tr>
+<td><code>SessionEnd</code></td>
+<td><code>Agent::session_end</code></td>
+<td>是 — 拆除时调用一次（<code>dispatch_session_end_hooks</code>）</td>
+<td>对 <code>LoopState</code> 只读</td>
+<td>仅记录（会话即将结束）</td>
+</tr>
+<tr>
+<td><code>PreCompact</code></td>
+<td><code>Agent::pre_compact</code></td>
+<td>是 — <code>compact_history</code> 路由到 native/local 之前</td>
+<td>只读 <code>LoopState</code> + <code>CompactTrigger</code></td>
+<td>是 — <code>Block</code> 否决压缩</td>
+</tr>
+<tr>
+<td><code>PostCompact</code></td>
+<td><code>Agent::post_compact</code></td>
+<td>是 — 压缩成功后，每条路径调用一次</td>
+<td>只读 <code>LoopState</code> + <code>CompactTrigger</code></td>
+<td>仅记录（已提交）</td>
+</tr>
+</tbody>
+</table>
+<p><code>SubagentStart</code> 与 <code>SubagentStop</code>
+是<strong>独立</strong>的 hook trait（<code>SubagentStartFn</code> /
+<code>SubagentStopFn</code>），不是 <code>Agent.hook</code>
+变体：<code>spawn_subagent</code> 是工具处理器、没有父
+<code>Agent</code> 句柄，所以闭包挂在
+<code>ToolContext.subagent_start_hooks</code> /
+<code>ToolContext.subagent_stop_hooks</code> 上，由 spawn
+路径调用。<code>SubagentStart</code> 修改子代理的 system
+prompt；<code>SubagentStop</code> 在子代理结束后运行，可改写回传给父级的
+summary。</p>
+<p><code>Stop</code> 是唯一一个 <code>Block</code>
+语义反转的事件：被「block」的「操作」是「停下」本身，因此
+<code>Block(reason)</code> 表示<em>继续</em>该回合（Codex
+continuation-fragment 语义），而不是否决。其余所有 hook 都用
+<code>Block</code> 来否决。</p>
+<p><code>LoopState</code> 是 <code>Agent</code> 的类型别名，因此 session
+hook 看到与循环相同的运行时（context、stats、tool router 等）。</p>
+<hr />
+<h2 id="3-控制流hookcontrol">3. 控制流：<code>HookControl</code></h2>
+<p>每个 hook 返回其一：</p>
+<pre class="rust"><code>pub enum HookControl {
+    Continue,
+    Allow,
+    Block(String),
+}</code></pre>
+<table>
+<thead>
+<tr>
+<th>结果</th>
+<th>含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Continue</code></td>
+<td>运行同类型下一个 hook，然后继续流水线。</td>
+</tr>
+<tr>
+<td><code>Allow</code></td>
+<td>hook 自行回答了审批询问（Codex 的
+<code>permissionDecision: "allow"</code>）。只有 <code>PreToolUse</code>
+与 <code>PermissionRequest</code> 会对它采取行动；其余事件把它当作
+<code>Continue</code>。</td>
+</tr>
+<tr>
+<td><code>Block(reason)</code></td>
+<td>立即停止 hook 链；该 tool 步骤视为失败，原因为
+<code>reason</code>。</td>
+</tr>
+</tbody>
+</table>
+<p><strong>block 永远优先。</strong> 宏在遇到 <code>Allow</code>
+后仍继续扫描，因此后面的 hook 依然可以拒绝，而拒绝不会被另一个 hook
+的批准撤销——与权限规则一致的 <code>deny &gt; allow</code>
+优先级。对于没有询问可回答的事件，<code>Allow</code>
+是无操作而非错误，因此同一个 hook 文件可以服务多个事件。</p>
+<p>对 <code>PreToolUse</code>，block
+会跳过执行与权限提示——模型仍会收到解释为何被拦的
+<code>ToolResult</code>。</p>
+<p>对 <code>PostToolUse</code>，block 会在结果写入 context
+前，用失败消息替换成功的 tool 输出。</p>
+<p>若 hook 返回 <code>Err(...)</code>，agent 视为
+block，附带通用失败消息（<code>PreToolUse hook failed: …</code> /
+<code>PostToolUse hook failed: …</code>）。</p>
+<hr />
+<h2 id="4-hooks-在轮次流水线中的位置">4. Hooks 在轮次流水线中的位置</h2>
+<p>Hooks 包裹 <a
+href="./11_chapter_task_zh.html">任务与工具调度</a>（英文）所述的并行核心：</p>
+<pre class="text"><code>对 assistant 消息中每个 ToolUse（Phase 1 — 顺序）：
+  StepAdded / StepStarted
+  ──► PreToolUse hooks（顺序，可改 input 或 Block）
+  ──► PermissionManager
+  ──► 标记 tool 为 Run 或 Resolved（blocked/denied）
+
+Phase 2 — 并行波次（此处无 hooks）
+
+对每个完成的 tool（仍按完成顺序）：
+  ──► PostToolUse hooks（顺序，可改 content 或 Block）
+  ──► StepFinished UI 事件
+  ──► 追加 ToolResult 到 context（Phase 3）</code></pre>
+<p>要点：</p>
+<ol type="1">
+<li><strong>PreToolUse 在权限之前</strong> — hooks 可改写权限随后评估的
+input。</li>
+<li><strong>PreToolUse 严格有序</strong> — 一次一个
+tool，按模型发出顺序。</li>
+<li><strong>PostToolUse 按每个完成的 tool 运行</strong> — 波次中每个
+future resolve 时，而非整波 join 之后。Hooks 仍在 agent task
+上逐个完成顺序执行。</li>
+<li><strong>并行 tool 不共享 hook 状态</strong> — 每次调用有独立的
+<code>ToolUse</code> / <code>ToolResult</code> 副本。</li>
+</ol>
+<hr />
+<h2 id="5-核心类型">5. 核心类型</h2>
+<pre class="rust"><code>pub struct ToolUse {
+    pub id: String,
+    pub name: String,
+    pub input: serde_json::Value,
+}
+
+pub struct ToolResult {
+    pub tool_use_id: String,
+    pub content: String,
+}</code></pre>
+<p>Hooks 以 trait object 存在 agent 上：</p>
+<pre class="rust"><code>pub enum Hook {
+    SessionStart(Box&lt;dyn SessionStartFn&gt;),
+    UserPromptSubmit(Box&lt;dyn UserPromptSubmitFn&gt;),
+    PreToolUse(Box&lt;dyn PreToolUseFn&gt;),
+    PermissionRequest(Box&lt;dyn PermissionRequestFn&gt;),
+    PostToolUse(Box&lt;dyn PostToolUseFn&gt;),
+    Interrupt(Box&lt;dyn InterruptFn&gt;),
+    Stop(Box&lt;dyn StopFn&gt;),
+    SessionEnd(Box&lt;dyn SessionEndFn&gt;),
+    PreCompact(Box&lt;dyn PreCompactFn&gt;),
+    PostCompact(Box&lt;dyn PostCompactFn&gt;),
+    PostToolUseFailure(Box&lt;dyn PostToolUseFailureFn&gt;),
+    Notification(Box&lt;dyn NotificationFn&gt;),
+    TaskCompleted(Box&lt;dyn TaskCompletedFn&gt;),
+}</code></pre>
+<p>13 个变体。<code>HookTypes</code> 是同一枚举的 strum
+discriminant（<code>#[strum_discriminants(name(HookTypes))]</code>），供
+<code>hooks_by_type</code> / <code>invoke_hooks!</code>
+过滤用——所以<strong>新增一个 hook 事件只需给 <code>Hook</code>
+加一个变体</strong>，过滤与分发自动跟上。<code>SubagentStart</code> /
+<code>SubagentStop</code> 不在这里（见 §2）。</p>
+<p>可直接注册闭包——任何签名正确的 <code>Send + Sync</code>
+异步闭包都实现对应 trait。</p>
+<hr />
+<h2 id="6-注册-hooks">6. 注册 Hooks</h2>
+<p>在 <code>Agent</code>
+上（<code>crates/tact/src/agent/mod.rs</code>）：</p>
+<pre class="rust"><code>agent.pre_tool(|agent, tool_use| {
+    Box::pin(async move {
+        if tool_use.name == &quot;bash&quot; {
+            let cmd = tool_use.input.get(&quot;command&quot;).and_then(|v| v.as_str()).unwrap_or(&quot;&quot;);
+            if cmd.contains(&quot;curl&quot;) {
+                return Ok(HookControl::Block(&quot;curl is disabled in this workspace&quot;.into()));
+            }
+        }
+        Ok(HookControl::Continue)
+    })
+});
+
+agent.post_tool(|_agent, tool_use, tool_result| {
+    Box::pin(async move {
+        if tool_use.name == &quot;bash&quot; &amp;&amp; tool_result.content.len() &gt; 50_000 {
+            tool_result.content.truncate(50_000);
+            tool_result.content.push_str(&quot;\n… (truncated by hook)&quot;);
+        }
+        Ok(HookControl::Continue)
+    })
+});</code></pre>
+<p>Hooks 按注册顺序追加到
+<code>Agent.hooks</code>，每次调用按该顺序执行。</p>
+<p>同类型多个 hook 组合：全部须 <code>Continue</code>，除非某个
+<code>Block</code>（首个 block 生效）。</p>
+<h3 id="命令-hook">命令 hook</h3>
+<p>hook 来自七处，且<strong>所有匹配的 hook
+都会运行</strong>——高层不会取代低层，与 Codex 叠加 user / project /
+managed 的方式一致：</p>
+<table>
+<thead>
+<tr>
+<th>来源</th>
+<th>路径</th>
+<th><code>${PLUGIN_ROOT}</code></th>
+<th><code>${PLUGIN_DATA}</code></th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>管理员托管</td>
+<td><code>/etc/tact/hooks.json</code></td>
+<td>该文件所在目录</td>
+<td>该文件所在目录</td>
+</tr>
+<tr>
+<td>user 文件</td>
+<td><code>~/.tact/hooks.json</code></td>
+<td>该文件所在目录</td>
+<td><code>~/.tact</code></td>
+</tr>
+<tr>
+<td>project 文件</td>
+<td><code>&lt;workdir&gt;/.tact/hooks.json</code></td>
+<td>该文件所在目录</td>
+<td><code>&lt;workdir&gt;/.tact</code></td>
+</tr>
+<tr>
+<td>已安装插件</td>
+<td>bundle 的 <code>hooks/hooks.json</code>，或 manifest 内联
+<code>hooks</code> 映射</td>
+<td>bundle 根</td>
+<td>该插件的数据目录</td>
+</tr>
+<tr>
+<td>user 配置</td>
+<td><code>~/.tact/config.toml</code> 的 <code>[hooks]</code> 表</td>
+<td>该文件所在目录</td>
+<td><code>~/.tact</code></td>
+</tr>
+<tr>
+<td>project 配置</td>
+<td><code>&lt;workdir&gt;/config.toml</code> 的 <code>[hooks]</code>
+表</td>
+<td>该文件所在目录</td>
+<td><code>&lt;workdir&gt;/.tact</code></td>
+</tr>
+<tr>
+<td>project 配置</td>
+<td><code>&lt;workdir&gt;/.tact/config.toml</code> 的
+<code>[hooks]</code> 表</td>
+<td>该文件所在目录</td>
+<td><code>&lt;workdir&gt;/.tact</code></td>
+</tr>
+</tbody>
+</table>
+<p>注册顺序即上表顺序——位于既有 Rust
+闭包之后——托管文件在最前（作用域最宽，而 <code>SessionStart</code>
+上下文按注册顺序拼接，因此管理员的简报为整个会话定调），随后是插件、user
+文件、project 文件，然后是 <code>config.toml</code>
+的各张表。顺序只影响这段拼接，因此此前存在的任何来源都不会被打乱。</p>
+<p><strong>托管文件凭其权限受信，而不是凭一个开关。</strong>
+审核闸门存在的原因是：插件包是下载来的内容，project
+文件是仓库内容。而一个只有 <code>root</code>
+能写的文件两者都不是：信任决策已由文件系统做出，再要求用户在 Tact
+的存储里重做一遍只是形式主义。因此收集器只在托管文件<strong>属主为
+root</strong>且<strong>组与他人均不可写</strong>时才接纳它；否则——包括在任何无法确定属主的平台上——它与其他所有来源一样走审核。这刻意是一个<strong>属性</strong>而非
+Codex 的 <code>bypass_trust</code>
+开关：开关让任何人都有办法关掉闸门，而这个属性无法被「写不了这个文件的人」打开，并且在权限一旦不再是管理员专属时自动失效。</p>
+<p><strong><code>[hooks]</code>
+表是第三种写法，而不是第三套机制。</strong> 它反序列化进 JSON
+文件用的同一个
+<code>HooksFile</code>，因此字段、校验与审核都是同一份实现：</p>
+<pre class="toml"><code># ~/.tact/config.toml
+[[hooks.PreToolUse]]
+matcher = &quot;bash&quot;
+[[hooks.PreToolUse.hooks]]
+type = &quot;command&quot;
+command = &quot;policy.sh&quot;
+timeout = 5</code></pre>
+<p>每个声明了 <code>[hooks]</code>
+的配置文件都成为<strong>它自己的</strong>一个来源，并以路径作为标签——绝不合并，尽管配置加载器会合并这些文件的其它取值。hook
+是按身份审核的，而审核必须点名它来自哪个文件；合并还会让「只批准这个文件的
+hook」变得不可能。由于收集器复用了同一个加载器，所有既有性质原样成立：条目一开始处于<strong>未审核</strong>状态，未审核<strong>绝不注册</strong>，因此仓库附带的
+<code>config.toml</code> 无法仅凭被克隆就执行任何东西。没有
+<code>[hooks]</code>
+表的文件完全不产生来源，而格式错误的文件会被警告并跳过，与格式错误的
+<code>hooks.json</code> 完全一致。</p>
+<p>文件名用 <code>hooks.json</code>（Codex 的），不是
+<code>.hooks.json</code>：从
+<code>bm hook install --harness codex</code>
+拷出来的文件可以原样使用。Tact 依然不读 <code>~/.codex/</code>。</p>
+<p>条目声明两种<strong>类型</strong>之一，而下游的一切都是共享的：同样的输出归一化、同样的决策契约（<code>decision</code>
+/ <code>hookSpecificOutput</code> / 裸 <code>exit 2</code>）、同样的
+<code>additionalContextLimit</code>。</p>
+<table>
+<thead>
+<tr>
+<th><code>type</code></th>
+<th>运行什么</th>
+<th>字段</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"command"</code>（或缺省）</td>
+<td>一条 shell 命令，JSON payload 走 stdin</td>
+<td><code>command</code>、<code>timeout</code>、<code>async</code>
+等</td>
+</tr>
+<tr>
+<td><code>"mcp_tool"</code></td>
+<td><strong>已连接 MCP server</strong> 上的一个工具 —— 经由 agent
+用的同一个 <code>MCPToolRouter</code> 抵达</td>
+<td><code>server</code>、<code>tool</code>、<code>arguments</code></td>
+</tr>
+</tbody>
+</table>
+<pre class="json"><code>{ &quot;type&quot;: &quot;mcp_tool&quot;, &quot;server&quot;: &quot;policy&quot;, &quot;tool&quot;: &quot;gate&quot;,
+  &quot;arguments&quot;: { &quot;path&quot;: &quot;secrets/.env&quot; } }</code></pre>
+<p>第二种类型的意义在于：策略可以住在那个已经持有集成工具的 MCP server
+里，返回与 shell 脚本相同的 <code>{"decision": …}</code> /
+<code>{"hookSpecificOutput": …}</code> 形状 ——
+而不是写一个脚本，再用它所用的语言重新实现 payload、决策契约与
+<code>additionalContext</code> 解析。回答
+<code>{"decision":"block","reason":…}</code> 的工具会阻断；回答
+<code>additionalContext</code> 的会注入上下文。</p>
+<p><code>arguments</code> 是<strong>静态</strong>的：hook payload
+刻意不合并进去。一个输入随事件漂移的工具调用会让被审核的定义变成谎言，而定义正是用户批准的东西。</p>
+<p>server
+不可达、工具不存在或工具报错，都会被上报并<strong>继续</strong> ——
+与所有其他 hook 失败一致：hook 不能靠自身损坏来中止循环。</p>
+<p>由于身份哈希与审核列表都读取这份定义，一个 <code>mcp_tool</code>
+条目以
+<code>mcp_tool &lt;server&gt;/&lt;tool&gt; &lt;arguments&gt;</code>
+标识。若对（不存在的）<code>command</code> 求哈希，同一来源里的每个
+<code>mcp_tool</code> 条目都会得到同一个身份 ——
+批准一个就等于批准其余全部，修改 <code>tool</code> 或
+<code>arguments</code>
+也不会让批准失效，而且审核界面会在本该显示定义的地方显示一行空白。缺少
+<code>server</code> 或 <code>tool</code>
+的条目会被上报为无法运行，而不是静默失效。</p>
+<h3 id="运行前的审核">运行前的审核</h3>
+<p>hook 文件是可执行的配置，而仓库可以附带
+<code>.tact/hooks.json</code>——所以克隆一个仓库绝不能执行它的命令。每个
+hook 定义默认处于<strong>未审核</strong>状态，未审核的 hook
+<strong>绝不注册</strong>：文件会被读取，然后被拒绝。这是 Codex 的
+<code>trusted_hash</code> 模型，配上 Tact 自己的存储。</p>
+<ul>
+<li><strong>身份</strong>就是定义本身：来源标签、事件、matcher
+与命令，用 SHA-256 哈希。改动命令即作废此前的批准。</li>
+<li><strong>存储</strong>是
+<code>~/.tact/hooks-state.json</code>（<code>{"version":1,"trusted":{hash:描述}}</code>）。它刻意不是
+<code>config.toml</code>：手改配置不该能授予执行权。无法解析的存储等同空存储，于是所有
+hook 回到待审核。</li>
+<li><strong>审核</strong>用
+<code>tact-ui hooks list</code>（看有哪些、状态如何），随后
+<code>tact-ui hooks trust --all</code> 或
+<code>tact-ui hooks trust --source &lt;label&gt;</code>；<code>tact-ui hooks forget --all</code>
+撤销全部。同一套审核也能在 hook 实际触发的地方完成：TUI 里的
+<code>/hooks list</code>、<code>/hooks trust --all</code>、<code>/hooks trust --source &lt;标签&gt;</code>、<code>/hooks forget --all</code>，措辞完全一致；<code>/hooks list</code>
+仅在空闲时可执行，因为 driver 会把非 fast 命令串行排到进行中的 turn
+之后。TUI 写法同样要求显式的 <code>--all</code> /
+<code>--source</code>，没有“全部批准”的捷径。</li>
+<li><strong>生效</strong>发生在 hook
+注册时，所以批准从下一次会话开始起作用；正在运行的会话保留它启动时的决定。</li>
+<li><strong>告知读者</strong>从不省略：未审核的 hook 会在 TUI 里走
+<code>AgentUpdate::Info</code> 通道，headless 下走
+stderr（<code>[hooks] …</code>）——与 MCP 加载报告相同的两条通道。</li>
+</ul>
+<p>输出契约以
+<strong>Codex</strong>（<code>codex-rs/hooks</code>）为准：<code>decision</code>
+/
+<code>reason</code>、<code>hookSpecificOutput.additionalContext</code>、<code>suppressOutput</code>、<code>continue</code>
+与 <code>command</code> handler 才是 Tact 建模并遵守的部分。只属于
+Claude 的输出有意不实现——这里没有 <code>systemPrompt</code>
+处理，因为没有插件能合法发出它（Claude 的 SessionStart 文档列的是
+<code>additionalContext</code> / <code>initialUserMessage</code> /
+<code>watchPaths</code> / <code>sessionTitle</code> /
+<code>reloadSkills</code>，而 Codex 的 schema 恰好只有
+<code>hookEventName</code> + <code>additionalContext</code>）。</p>
+<p>已安装的 marketplace 插件可通过
+<code>.codex-plugin/plugin.json</code>（<code>"hooks": "./hooks/hooks.json"</code>）声明命令
+hook。<code>apply_plugin_hooks_with_report</code>（<code>crates/tact/src/plugin/hooks.rs</code>）在
+<code>session_bootstrap::bootstrap_session</code>
+中把<strong>已审核</strong>的那些注册到 <code>Agent</code>
+上（两个前端共用同一次注册），覆盖十五个映射事件中的十三个（<code>SubagentStart</code>
+/ <code>SubagentStop</code> 改由 <code>plugin_subagent_*_hooks</code>
+构建 <code>ToolContext</code> 闭包）：</p>
+<ul>
+<li><code>SessionStart</code> — matcher 与真实的
+<code>source</code>（<code>startup</code> / <code>resume</code> /
+<code>compact</code>）匹配；<code>additionalContext</code>（JSON，或纯
+stdout —— 参考实现 <code>basic-memory</code>
+插件正是以这种形式打印它的简报）会在第一轮之前被记录为一条合成的
+<code>&lt;hook-context&gt;</code> user
+消息；<code>continue: false</code> 会跳过这一轮（该 schema 里没有
+<code>decision</code>）。</li>
+<li><code>UserPromptSubmit</code> — matcher 匹配 prompt
+文本；<code>additionalContext</code> 输出追加到用户 prompt。</li>
+<li><code>PreToolUse</code> — matcher
+匹配工具名；<code>additionalContext</code>
+会记录为下一轮请求之前的对话上下文；<code>block</code> 阻止执行，而
+<code>permissionDecision: "allow"</code>
+会在不询问的情况下执行该调用。</li>
+<li><code>PermissionRequest</code> — 只在 Tact
+<strong>即将询问审批</strong>时运行（matcher
+匹配工具名），因此一个只负责批准的策略 hook
+不必为无需审批的调用付出代价：<code>allow</code>
+跳过询问，<code>block</code> 带理由拒绝，其余把决定留给用户。</li>
+<li><code>Interrupt</code> — 仅观测，matcher 匹配字面量
+<code>interrupt</code>；用户取消（<code>/cancel</code>）时每轮触发一次，用于记日志或冲刷。</li>
+<li><code>PostToolUse</code> — matcher
+匹配工具名；<code>additionalContext</code>
+会记录为下一轮请求之前的对话上下文；<code>suppressOutput</code>
+清空结果；<code>block</code> 使其变为失败。</li>
+<li><code>PostToolUseFailure</code> — matcher
+匹配工具名；仅观测（<code>tool_name</code>、<code>tool_input</code>、<code>tool_use_id</code>、<code>error</code>）。</li>
+<li><code>Notification</code> — matcher
+匹配通知类型（<code>permission_prompt</code>）；仅观测（<code>notification_type</code>、<code>title</code>、<code>message</code>）。</li>
+<li><code>TaskCompleted</code> — matcher
+忽略（对齐）；仅观测（<code>task_description</code> = 最后一条 assistant
+消息）。</li>
+<li><code>SubagentStart</code> —
+<code>plugin_subagent_start_hooks</code> 构建 <code>ToolContext</code>
+闭包；<code>additionalContext</code> 追加到子代理 system prompt。</li>
+<li><code>SubagentStop</code> — <code>plugin_subagent_stop_hooks</code>
+构建 <code>ToolContext</code>
+闭包；子代理结束后运行；仅观测（<code>block</code>
+无法恢复已结束的子代理）。</li>
+<li><code>Stop</code> — matcher 忽略（与 Codex
+对齐）；<code>block</code> 以 <code>reason</code> 作为下一条 prompt
+继续该回合。</li>
+<li><code>SessionEnd</code> — matcher 匹配
+<code>reason</code>（<code>"other"</code>）；仅观测。</li>
+<li><code>PreCompact</code> — matcher 匹配 trigger
+字符串（<code>auto</code>/<code>manual</code>/<code>recovery</code>/<code>command</code>）；<code>block</code>
+否决压缩。</li>
+<li><code>PostCompact</code> — matcher 匹配 trigger
+字符串；仅观测。</li>
+</ul>
+<p>每条 hook 是一个 shell 命令（Unix 用
+<code>sh -c</code>，<code>commandWindows</code> 暂不处理），注入
+<code>CLAUDE_PLUGIN_ROOT</code> / <code>CLAUDE_PROJECT_DIR</code>
+环境变量，stdin 输入 Claude 输入
+JSON（<code>session_id</code>、<code>transcript_path</code>、<code>cwd</code>、<code>hook_event_name</code>
+及事件字段），stdout 输出 JSON 同时兼容新版 <code>decision</code> /
+<code>reason</code> / <code>additionalContext</code> 与旧版
+<code>hookSpecificOutput</code> 格式。<code>timeout</code> 默认
+60s，<code>async: true</code>
+即发即忘，<code>additionalContextLimit</code> 以 token 为单位限制单个
+hook 能注入多少上下文——作用在上下文产生处，而不是看会话还能装多少。</p>
+<p><strong><code>exit 2</code> 是最简单的阻断契约。</strong> 理由是 hook
+的 <strong>stderr</strong> 文本，而它阻断什么按事件区分，与 Codex
+的定义一致：</p>
+<table>
+<thead>
+<tr>
+<th>事件</th>
+<th><code>exit 2</code> 的含义</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PreToolUse</code>、<code>PermissionRequest</code></td>
+<td>阻断，<code>stderr</code> 即理由</td>
+</tr>
+<tr>
+<td><code>PostToolUse</code></td>
+<td>该 tool 结果变为携带 <code>stderr</code> 的失败</td>
+</tr>
+<tr>
+<td><code>Stop</code>、<code>SubagentStop</code>、<code>UserPromptSubmit</code></td>
+<td>携 <code>stderr</code> 作为下一轮 prompt 继续</td>
+</tr>
+<tr>
+<td>其余事件</td>
+<td>fail-open，但仍会上报</td>
+</tr>
+</tbody>
+</table>
+<p>JSON 决定永远优先于裸 <code>exit 2</code>：打印了决定的 hook
+已经表明了意图，只有<strong>什么都没决定</strong>的 hook
+才回退到退出码。<code>additionalContext</code> 与
+<code>systemMessage</code> 算附加而非决定，因此可以与
+<code>exit 2</code> 并存。</p>
+<p>其余所有失败——超时、启动失败、非 <code>2</code> 的非零退出、看着像
+JSON 却解析失败——仍然只告警、显示
+<code>[plugin hook &lt;Event&gt; failed] …</code> 并
+<strong>继续</strong>（fail-open，与 Claude Code 一致）。</p>
+<p>插件 hook 在既有 Rust 闭包之后按声明顺序执行；<code>Block</code>
+短路。</p>
+<p>堆叠多个来源时该顺序是确定的。插件按
+<code>&lt;marketplace&gt;/&lt;plugin&gt;</code> 键序访问——即
+<code>installed.json</code> 的 <code>BTreeMap</code>
+顺序，字典序，<strong>不是</strong>安装时间；同一插件内部按 hooks
+文件（或 manifest 内联映射）中该事件 matcher 的声明顺序。没有 priority
+字段：跨插件顺序由该键固定，你能控制的是单个插件内部的声明顺序。</p>
+<hr />
+<h2 id="7-invoke_hooks-宏">7. <code>invoke_hooks!</code> 宏</h2>
+<p>定义于 <code>crates/tact/src/hook/mod.rs</code>，在 crate
+根导出：</p>
+<pre class="rust"><code>invoke_hooks!(PreToolUse, self, &amp;mut tool_use)
+invoke_hooks!(PostToolUse, self, &amp;tool_use, &amp;mut tool_result)</code></pre>
+<p>行为：</p>
+<ol type="1">
+<li>从 <code>HookControl::Continue</code> 开始。</li>
+<li>过滤 <code>self.hooks</code> 到请求的 <code>HookTypes</code>
+变体。</li>
+<li>按注册顺序 await 每个 hook。</li>
+<li>首个 <code>Block</code> 时停止并返回该控制值。</li>
+<li>用 <code>?</code> 传播错误。</li>
+</ol>
+<p>调用点在 <code>crates/tact/src/agent/tool_dispatch.rs</code> 的
+<code>Agent::execute_tool_call</code> 内。</p>
+<hr />
+<h2 id="8-pretooluse-详解">8. PreToolUse 详解</h2>
+<p><strong>时机：</strong> <code>execute_tool_call</code> 的 Phase
+1，每个 <code>ContentBlock::ToolUse</code> 一次。</p>
+<p><strong>相对其他预检工作的顺序：</strong></p>
+<pre class="text"><code>stats.tool_counts += 1
+cancel 检查
+StepAdded / StepStarted
+PreToolUse  ◄── hooks
+PermissionManager::check
+PreparedState::Run | Resolved(blocked message)</code></pre>
+<p><strong>变更 input：</strong> 因 <code>tool_use</code> 是
+<code>&amp;mut ToolUse</code>，hook 可在权限与执行看到之前改
+<code>input</code>。被调度的 JSON 与日志用的是变更后的版本。</p>
+<p><strong>Blocking：</strong> <code>Block</code> 时 agent 设
+<code>PreparedState::Resolved(msg)</code> — tool
+不会进入调度器。模型仍会收到匹配的 <code>ToolResult</code>
+以满足协议。</p>
+<hr />
+<h2 id="9-posttooluse-详解">9. PostToolUse 详解</h2>
+<p><strong>时机：</strong> 在 wave 执行循环内，原生或 MCP tool
+返回后、发出 <code>StepFinished</code> 之前。</p>
+<p><strong>典型用途：</strong></p>
+<ul>
+<li>从命令输出中脱敏 API key 或 token。</li>
+<li>为模型规范化错误字符串。</li>
+<li>附加结构化前缀（<code>[cached]</code>、<code>[retry 2/3]</code>
+等）。</li>
+</ul>
+<p><strong>成功后 block：</strong> 若 tool 返回
+<code>StepStatus::Success</code> 但 hook block，UI 与 context
+会看到失败步骤及 hook 原因。</p>
+<hr />
+<h2 id="10-sessionstart">10. SessionStart</h2>
+<p><code>Agent::session_start</code> 接受签名如下的 hooks：</p>
+<pre class="rust"><code>Fn(&amp;LoopState, &amp;mut SessionStartContext) -&gt; Pin&lt;Box&lt;dyn Future&lt;Output = Result&lt;HookControl&gt;&gt; + Send + &#39;_&gt;&gt;</code></pre>
+<p>它们<strong>每会话运行一次，且发生在第一轮</strong>——不在启动时。插件
+hook 是一个子进程，可能要跑好几秒（参考实现 <code>basic-memory</code> 的
+hook 实测热启动约 8 秒、<code>uv</code> 缓存冷启动约 100
+秒），在首帧之前等它会让每次启动都变慢。<code>AgentRuntime::session_start_hooks_pending</code>
+保证这组 hook
+只跑一次，而它们之间是<strong>并发</strong>执行的，收集到的内容仍按注册顺序排列。</p>
+<p>hook 收集到的 context 落在
+<code>AgentRuntime::pending_session_context</code>
+上，而不是直接进入对话：<code>dispatch_session_start_hooks</code> 发生在
+<code>ensure_session</code> 之前，此时 <code>push_message</code> 会让
+context 非空、从而抑制历史恢复。<code>agent_loop</code>
+在<strong>本轮预压缩之后</strong>、本轮用户消息之前把它取走，每个片段各记为一条合成的
+<code>&lt;hook-context&gt;</code> user 消息，携带
+<code>MessageKind::HookContext</code>。必须在压缩之后：<code>build_compacted_history</code>
+只保留真实 user turn，早于压缩注入的 cell
+会被它伴随的那次压缩直接丢掉。</p>
+<p>超过约 2,500 token 的片段会全文写到
+<code>&lt;temp_dir&gt;/hook_outputs/&lt;session&gt;/</code>，模型看到的则是头尾预览加一句
+<code>Full hook output saved to: &lt;path&gt;</code>（Codex 的
+<code>HookOutputSpiller</code> 及其默认上限）；TUI 仍显示 hook
+的完整文本，并把整块渲染成一个<strong>带竖条的容器</strong>：header 行是
+<code>▎ ⌁ hook context · &lt;来源&gt;</code>，正文前 8
+行每一行（含空行）前置 accent 的 <code>▎ </code>，超过就补一行
+<code>▎ … N more lines · [󰜼 Open]</code>，双击 header 或这行尾巴用只读
+popup 看全文。这一块形状不是装饰：<code>&lt;hook-context&gt;</code>
+标记在渲染前就被剥掉，注入的内容与 Tact 自己的 markdown 通知同为
+<code>SystemMarkdown</code>，没有容器读者无法分辨哪一段来自插件（长文本里一行标签会滚出视野）。整块与<strong>工具块同列</strong>（<code>LogItemKind::HookContext</code>
+/ <code>HookStatus</code> 的 <code>log_indent()</code> 都是
+<code>LOG_TOOL_BLOCK_INDENT</code>），竖条因此与工具卡的边框齐平。注意是
+<code>LOG_TOOL_BLOCK_INDENT</code> 而不是
+<code>LOG_TOOL_INDENT</code>：后者属于工具卡<strong>覆盖掉的空白占位行</strong>，屏幕上根本不存在这一列，按它对齐会让竖条停在每条工具行左边
+4 列。header
+因此<strong>不写行数、也不写展开提示</strong>：它与工具块同缩进，窄面板里"块名
+/ 来源 / 行数 /
+手势"四个字段放不下，而行数是唯一能推出来的那个（隐藏了多少行由尾巴行给出，没被截断时正文全在屏上）——留着它要多花
+11 列，60 列宽就会把 header 折成两行；手势词则归尾巴行所有（用
+<code>[Open]</code>，与折叠的工具块 meta 行同一个定义
+<code>collapsed_action_text</code>，两处不会各写一份），header
+再写一遍就是同一个手势的第二种拼法。<strong>截断只在渲染层</strong>——模型拿到的文本一字未改。竖条是<strong>行属性</strong>（<code>LogItem::gutter</code>），不是写进文本的前缀：正文那块由
+<code>MarkdownCell</code> 的 <code>Gutter</code> 绘制（并把自身 2
+列从布局宽度中扣掉），header 与"还有 N
+行"这两行是普通文本行，由宿主在<strong>折行那一步</strong>给每一视觉行插入竖条并同样扣掉
+2 列——写进文本的 <code>▎</code>
+只标记第一个视觉行，窄面板一折行左轨就破一个洞。popup 走
+<code>LogItem::popup_source</code>（带它的行在鼠标层是控件，单击不选区）。live
+路径（<code>record_hook_context</code> 发
+<code>AgentUpdate::HookContext</code>）与重载路径（<code>load_history</code>
+按标记识别）共用
+<code>App::append_hook_context_markdown</code>，两条路的形状不会分叉。</p>
+<p>整块（进度行与上下文块）还受 <code>[ui] hook_output</code>（默认
+<code>true</code>，<code>/hook-output</code>
+翻转）控制：门设在<strong>行进入日志的那一刻</strong>，关掉就是一行都不进——只影响显示，hook
+照跑、stdout
+照进模型；进度行的<strong>完成</strong>那一半也必须先看这个开关，否则会给开头被跳过的行补上一行孤儿。见
+<a href="./21_chapter_config_zh.html">Ch 21</a> §5。</p>
+<p>插件这条路径还会补齐 Codex 的
+<code>session-start.command.input</code> 在 Claude
+基础字段之外要求的两个字段——<code>model</code> 与
+<code>permission_mode</code>（后者用 Tact 映射过去的 Claude Code
+词汇：<code>default</code> / <code>plan</code> /
+<code>acceptEdits</code>）。插件自己的 <code>statusMessage</code>
+则由<strong>两种 hook 共用的
+runner</strong>（<code>run_command_hook</code> /
+<code>run_mcp_tool_hook</code>）抛给
+UI，因此每个事件都有进度行，而不是只有 SessionStart：hook 开始时发一次
+<code>AgentUpdate::HookStatus</code>（<code>elapsed_ms: None</code>），返回后再发同一个
+<code>id</code>（<code>elapsed_ms: Some(..)</code>），TUI 按 id
+找到那一行<strong>原地改写</strong>成 muted +
+耗时，而不是留下一句永远成立的 "Loading"。来源取自
+<code>HookCommand::source</code>——它在准入处（<code>admit_trusted</code>）被盖章，<code>#[serde(skip)]</code>
+保证 hooks 文件不能自己写这个名字，它也不进
+<code>hook_definition_hash</code>。<code>async</code> 型 hook
+不开进度行：调用在子进程结束前就返回，没人能合上那一行。不删行的原因与工具卡一致：日志的物理索引是选区与卡片的键。id
+由
+<code>AgentRuntime::hook_status_seq</code>（<code>AtomicU64</code>）发放，因为
+SessionStart 的多个 hook 是并发跑的。</p>
+<p>这个时机与「一片段一条消息」的规则与 Codex 一致：它的
+<code>SessionStart</code> 处理把每个 <code>additionalContext</code>
+各记为一条 <code>developer</code> 角色消息，而它的 start hooks 也跑在
+<code>run_pre_sampling_compact</code> 之后。Tact 的消息模型只有
+user/assistant，所以改由 <code>&lt;hook-context&gt;</code>
+标记来承载来源信息 —— 而且与内存中的 kind
+不同，这些标记在重新加载后依然存在。<strong>来源本身也写在标记上</strong>：<code>&lt;hook-context source="plugin codex"&gt;</code>，因为正文之外没有第二个落点，而读者需要知道是哪个
+hook 说的（<code>HookContextChunk</code> 把 label
+从注册侧一路带到注入点；无法写成裸属性值的 label
+直接丢弃，不转义）。stdout 看起来像 JSON 却解析失败时，按失败的 hook
+处理而非注入，与 Codex 的 <code>looks_like_json</code> 检查一致。</p>
+<p>matcher 匹配的是<strong>真实的</strong>
+<code>source</code>：全新会话是
+<code>startup</code>，<code>ensure_session</code> 恢复了历史则是
+<code>resume</code>，而压缩重新排队这批 hook 时是
+<code>compact</code>。最后一种正是插件在上下文被摘要掉之后重新定位的手段——参考实现
+<code>basic-memory</code> 插件就是这样请求一份需要人工撰写的
+checkpoint——代价是每次压缩多跑一次 hook，与 Codex 完全一致。</p>
+<p><code>SessionStart</code> hook 返回 <code>continue: false</code>
+会<strong>跳过这一轮</strong>：<code>agent_loop</code>
+在用户消息入队之前就返回，与 Codex 的 <code>return Ok(None)</code>
+一致；读者看到的是它的 <code>stopReason</code>。那个 schema 里没有
+<code>decision: block</code>，所以它不是停止会话的手段。</p>
+<h3 id="hook-的-payload">hook 的 payload</h3>
+<p>每个事件 stdin 上的 payload 都带齐了 Codex 各 schema
+要求的字段，照着那些 schema 写的插件不会再读到 <code>null</code>：</p>
+<table>
+<thead>
+<tr>
+<th>字段</th>
+<th>值</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>session_id</code></td>
+<td>当前会话 id</td>
+</tr>
+<tr>
+<td><code>cwd</code>、<code>hook_event_name</code></td>
+<td>同以前</td>
+</tr>
+<tr>
+<td><code>model</code></td>
+<td><code>Agent::model()</code>——当前模型，会跟随
+<code>/model</code></td>
+</tr>
+<tr>
+<td><code>permission_mode</code></td>
+<td>Claude Code 词汇：<code>default</code> / <code>plan</code> /
+<code>acceptEdits</code></td>
+</tr>
+<tr>
+<td><code>turn_id</code></td>
+<td><code>Agent::turns_taken</code></td>
+</tr>
+<tr>
+<td><code>transcript_path</code></td>
+<td><strong><code>null</code></strong>——Tact 把会话放在
+SQLite，只在压缩时才写 transcript，因此没有单一的活动文件（Codex
+指向它的 rollout 文件）。此前这里报的是 transcripts
+<strong>目录</strong>，而插件会照着去打开它。</td>
+</tr>
+<tr>
+<td><code>tool_use_id</code></td>
+<td><code>PreToolUse</code> / <code>PostToolUse</code>
+上有：被标注的那次调用</td>
+</tr>
+</tbody>
+</table>
+<p>失败的 hook（非零退出、超时、命令起不来）是 fail-open
+的，而且从这次改动起<strong>可见</strong>：agent 会发出
+<code>[plugin hook &lt;Event&gt; failed] &lt;error&gt;</code>，因为单靠
+<code>tracing::warn!</code>
+只会写进一个默认会话永远不会写的日志文件。</p>
+<h3 id="哪些事件会把-additionalcontext-带进对话">哪些事件会把
+<code>additionalContext</code> 带进对话</h3>
+<p>Codex 一共只有四条这样的通道——<code>SessionStart</code> /
+<code>SubagentStart</code>（两者共用一个 outcome
+类型）、<code>UserPromptSubmit</code>、<code>PreToolUse</code>、<code>PostToolUse</code>——Tact
+现在覆盖同一集合：</p>
+<table>
+<thead>
+<tr>
+<th>事件</th>
+<th>context 的去处</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SessionStart</code></td>
+<td>第一轮用户消息之前的一条 <code>&lt;hook-context&gt;</code> 消息</td>
+</tr>
+<tr>
+<td><code>PreToolUse</code> / <code>PostToolUse</code></td>
+<td>下一轮请求之前的一条 <code>&lt;hook-context&gt;</code>
+消息，与它所标注的工具调用相邻</td>
+</tr>
+<tr>
+<td><code>SubagentStart</code></td>
+<td>追加到子代理的 system prompt（Claude Code 语义）</td>
+</tr>
+<tr>
+<td><code>UserPromptSubmit</code></td>
+<td>追加到 prompt 文本本身</td>
+</tr>
+</tbody>
+</table>
+<p>其余九个事件只承担控制/观察职责；它们的
+<code>additionalContext</code> 也不是 Codex
+定义的通道。特别地，<code>PreToolUse</code> 的 context
+<strong>不会</strong>写进工具参数——早先那个
+<code>tool_use.input["_hook_context"]</code> 键没有任何读取者，于是
+context 消失、字段还泄漏进了权限检查与工具本身能看到的内容里。</p>
+<p>session hooks 也适合一次性
+setup：预热缓存、校验工作区不变量或注入遥测 context。</p>
+<hr />
+<h2 id="11-设计约束">11. 设计约束</h2>
+<table>
+<thead>
+<tr>
+<th>约束</th>
+<th>理由</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Hooks 在 agent task 上运行</td>
+<td>经 <code>LoopState</code> 间接持有
+<code>&amp;mut Agent</code>；工作宜短或在内部 spawn。</td>
+</tr>
+<tr>
+<td>并行波次内无 hooks</td>
+<td>tool 不可变借用 router 时，避免共享 agent 状态的数据竞争。</td>
+</tr>
+<tr>
+<td>首个 <code>Block</code> 生效</td>
+<td>可预测、易推理的否决语义。</td>
+</tr>
+<tr>
+<td>错误即步骤失败</td>
+<td>hook bug 表现为 tool 失败，而非静默 no-op。</td>
+</tr>
+<tr>
+<td>注册顺序 = 运行顺序</td>
+<td>堆叠插件时 hook 优先级为
+<code>&lt;marketplace&gt;/&lt;plugin&gt;</code> 键序（见 §6）；没有
+priority 字段可设。</td>
+</tr>
+</tbody>
+</table>
+<p><strong>不要</strong>在 hooks 里做权限 UI——用
+<code>PermissionManager</code> 与现有 <code>RequestSelect</code>
+流程。</p>
+<hr />
+<h2 id="12-代码地图">12. 代码地图</h2>
+<table>
+<thead>
+<tr>
+<th>文件</th>
+<th>职责</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>crates/tact/src/hook/mod.rs</code></td>
+<td>类型、trait、<code>Hook</code> 枚举、<code>invoke_hooks!</code>
+宏</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/mod.rs</code></td>
+<td><code>pre_tool</code>、<code>post_tool</code>、<code>session_start</code>、<code>hooks_by_type</code></td>
+</tr>
+<tr>
+<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
+<td><code>execute_tool_call</code> 中的 PreToolUse / PostToolUse
+调用</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/permission/mod.rs</code></td>
+<td>PreToolUse 之后运行；与 hooks 分离</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/plugin/hooks.rs</code></td>
+<td><code>collect_hook_sources</code> /
+<code>collect_hook_sources_with</code> /
+<code>config_hook_paths</code>（<strong>七个</strong>来源，即 §6
+表）、<code>HooksFile::{from_file, from_toml_file}</code>、<code>admit_trusted</code>、<code>HookTrust</code>、<code>survey_hooks</code>、<code>trust_hooks</code>、<code>run_hook</code>（按
+<code>HookCommand::kind</code>
+分发）、<code>run_command_hook</code>、<code>run_mcp_tool_hook</code>、<code>definition_text</code>、<code>build_payload</code></td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/session_bootstrap.rs</code></td>
+<td><code>apply_plugin_hooks_with_report</code>
+的调用点（两个前端共用），以及 <code>plugin_subagent_start_hooks</code>
+/ <code>plugin_subagent_stop_hooks</code> 到 <code>ToolContext</code>
+的打戳</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/hooks_cli.rs</code></td>
+<td><code>tact-ui hooks list</code> / <code>trust</code> /
+<code>forget</code> 及其渲染函数</td>
+</tr>
+<tr>
+<td><code>crates/tui/src/handlers/hooks.rs</code></td>
+<td><code>/hooks list</code> / <code>trust</code> / <code>forget</code>
+—— 解析与空闲门控；实际工作由 driver 执行</td>
+</tr>
+<tr>
+<td><code>crates/tact-ui/src/driver.rs</code></td>
+<td><code>UserCommand::Hooks{List,Trust,Forget}</code> →
+<code>survey_hooks</code> / <code>trust_hooks</code> /
+<code>forget_hook_trust</code>，经 <code>Info</code> /
+<code>MdInfo</code> 通道上报</td>
+</tr>
+<tr>
+<td><code>docs/state_machines.md</code></td>
+<td>Hook 控制枚举与流水线摘要</td>
+</tr>
+</tbody>
+</table>
+<hr />
+<h2 id="13-有意留下的缺口">13. 有意留下的缺口</h2>
+<table>
+<thead>
+<tr>
+<th>缺口</th>
+<th>原因</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>SessionStart</code> 的 <code>clear</code> / <code>fork</code>
+来源</td>
+<td>Codex 会上报它们，但 Tact 没有清空历史的命令、也没有会话
+fork，因此这两个变体会不可达。词表是 <code>startup</code> /
+<code>resume</code> / <code>compact</code>——Tact 真正区分的那三个。</td>
+</tr>
+</tbody>
+</table>
+<p>| <code>bypass_trust</code> | Codex 用来「不经审核直接运行
+hook」的开关。Tact
+为真正需要它的场景提供了<strong>效果</strong>——管理员托管的
+<code>/etc/tact/hooks.json</code>
+不经审核即运行，因为只有管理员能写它——但没有提供这个开关，因为一个能关掉审核闸门的标志，任何能编辑配置文件的人都能设，其中也包括随仓库下发的配置。两种更窄的形态被权衡后否决：一是
+<code>--bypass-trust</code>
+一次性命令行标志，它不可组合（每次调用都得重复，而一旦被做成别名就变成永久的），并且不留下「到底批准过哪些定义」的记录——而
+<code>trust</code> 恰好写出这份记录，<code>forget --all</code>
+可撤销它；二是带启动提示的、有作用域的
+opt-in，它仍然是一个「任何能写配置的人都能设」的开关，而那条提示只有设它的人自己会读到。等价做法仍是
+<code>tact-ui hooks trust --all</code> /
+<code>trust --source &lt;标签&gt;</code>，它是显式的、可审计的、且按来源限定作用域。
+|</p>
+<hr />
+<h2 id="related-docs">Related Docs</h2>
+<ul>
+<li><a href="./10_chapter_permission_zh.html">权限模型</a> — 流水线中紧接
+PreToolUse 之后（英文）</li>
+<li><a href="./11_chapter_task_zh.html">任务与工具调度</a> — hooks
+所包裹的三阶段 tool 流水线（英文）</li>
+<li><a href="./07_chapter_tool_zh.html">工具系统</a> — 原生工具与
+dispatch</li>
+<li><a href="../ARCHITECTURE.md">ARCHITECTURE.md</a> — Hook Engine
+章节</li>
+<li><a href="../docs/tool_rendering.md">Tool Rendering</a> — TUI 中
+blocked/failed 步骤如何显示</li>
+<li><a href="../docs/parallel_tool_execution.md">Parallel Tool
+Execution</a> — hooks <strong>不</strong>运行的位置</li>
+</ul>
+</main>
+<script>
+  (() => {
+    const root = document.documentElement;
+    const nav = document.getElementById("book-toc");
+    if (!nav) return;
+    const main = document.querySelector("main");
+    const mq = matchMedia("(max-width: 1099px)");
+    const KEY = "tact-book-toc";
+    const collapse = nav.querySelector(".toc-collapse");
+    const fab = document.querySelector(".toc-fab");
+    const scrim = document.querySelector(".toc-scrim");
+    const calm = matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const save = (v) => { try { localStorage.setItem(KEY, v); } catch (e) {} };
+    const set = (open) => {
+      root.dataset.toc = open ? "open" : "closed";
+      if (collapse) collapse.setAttribute("aria-expanded", String(open));
+      if (!mq.matches) save(open ? "open" : "closed");
+    };
+    if (collapse) collapse.addEventListener("click", () => set(root.dataset.toc !== "open"));
+    if (fab) fab.addEventListener("click", () => set(true));
+    if (scrim) scrim.addEventListener("click", () => set(false));
+    addEventListener("keydown", (e) => {
+      if (e.key === "Escape" && root.dataset.toc === "open") set(false);
+    });
+    mq.addEventListener("change", () => {
+      let stored = null;
+      try { stored = localStorage.getItem(KEY); } catch (e) {}
+      set(mq.matches ? false : stored !== "closed");
+    });
+
+    // Mermaid renders after load and changes the page height, which would leave
+    // a jump short of its heading. Hold the target until the layout settles.
+    let pending = null;
+    let pendingUntil = 0;
+    const align = (heading, behavior) => {
+      heading.scrollIntoView({ behavior, block: "start" });
+    };
+    // The resting offset differs between the sticky sidebar and the drawer
+    // (28px vs 76px), so read it from the heading instead of assuming one.
+    const rest = (heading) =>
+      parseFloat(getComputedStyle(heading).scrollMarginTop) || 0;
+    const aim = (heading, behavior) => {
+      pending = heading;
+      pendingUntil = performance.now() + 5000;
+      align(heading, behavior);
+    };
+    const settle = () => {
+      if (!pending) return;
+      if (performance.now() > pendingUntil) { pending = null; return; }
+      const offset = rest(pending);
+      const top = pending.getBoundingClientRect().top;
+      if (Math.abs(top - offset) <= 2) return;
+      const want = Math.round(top + scrollY - offset);
+      const max = document.documentElement.scrollHeight - innerHeight;
+      // A heading inside the last screenful cannot reach the top: park at the
+      // bottom instead of stopping short of it.
+      if (want > max) {
+        window.scrollTo({ top: max, behavior: "auto" });
+        pending = null;
+      } else if (performance.now() > pendingUntil - 4200) {
+        // Keep holding until the last resize: mermaid may re-render again.
+        align(pending, "auto");
+      }
+    };
+    if ("ResizeObserver" in window && main) {
+      new ResizeObserver(settle).observe(main);
+    }
+
+    // A clicked entry keeps the highlight until the reader scrolls by hand;
+    // otherwise a heading near the page end would hand it to a later section.
+    let chosen = null;
+    const release = () => {
+      if (!chosen) return;
+      chosen = null;
+      pending = null;
+      pick();
+    };
+    ["wheel", "touchstart", "keydown"].forEach((type) =>
+      addEventListener(type, release, { passive: true })
+    );
+
+    // Deep links must land before smooth scrolling is switched on, otherwise the
+    // browser's own fragment jump can be interrupted mid-flight.
+    const glide = () => root.classList.add("toc-smooth");
+    const deep = location.hash ? decodeURIComponent(location.hash.slice(1)) : null;
+    if (calm) root.classList.add("toc-smooth");
+    else setTimeout(glide, 400);
+    if (deep) {
+      const heading = document.getElementById(deep);
+      if (heading) aim(heading, "auto");
+    }
+
+    const links = new Map();
+    let active = null;
+    nav.querySelectorAll('a[href^="#"]').forEach((a) => {
+      let id = a.getAttribute("href").slice(1);
+      try { id = decodeURIComponent(id); } catch (e) {}
+      const heading = document.getElementById(id);
+      if (!heading) return;
+      links.set(id, a);
+      a.addEventListener("click", () => {
+        if (mq.matches) set(false);
+        chosen = a;
+        mark(a);
+        aim(heading, calm ? "auto" : "smooth");
+      });
+    });
+    const heads = [...document.querySelectorAll("main h2[id], main h3[id]")]
+      .filter((h) => links.has(h.id));
+
+    const reveal = (a) => {
+      const r = a.getBoundingClientRect();
+      const n = nav.getBoundingClientRect();
+      if (r.top < n.top + 72) nav.scrollTop += r.top - n.top - 72;
+      else if (r.bottom > n.bottom - 16) nav.scrollTop += r.bottom - n.bottom + 16;
+    };
+    let primed = false;
+    const mark = (a, follow = true) => {
+      if (a === active) return;
+      if (active) {
+        active.parentElement.classList.remove("is-active");
+        active.removeAttribute("aria-current");
+      }
+      active = a || null;
+      if (!active) return;
+      active.parentElement.classList.add("is-active");
+      active.setAttribute("aria-current", "location");
+      if (follow) reveal(active);
+    };
+    const pick = () => {
+      if (!heads.length) return;
+      if (chosen) { mark(chosen, false); return; }
+      // The active entry is the last heading that has passed the reading line
+      // (a quarter of the viewport down, capped at 160px).
+      const y = scrollY + Math.min(innerHeight * 0.25, 160);
+      let found = heads[0];
+      for (const h of heads) {
+        if (h.getBoundingClientRect().top + scrollY <= y) found = h;
+        else break;
+      }
+      if (innerHeight + scrollY >= document.documentElement.scrollHeight - 4) {
+        found = heads[heads.length - 1];
+      }
+      mark(links.get(found.id), primed);
+      primed = true;
+    };
+    let ticking = false;
+    addEventListener("scroll", () => {
+      if (ticking) return;
+      ticking = true;
+      requestAnimationFrame(() => { ticking = false; pick(); });
+    }, { passive: true });
+    addEventListener("resize", pick);
+    if (deep) {
+      const landed = links.get(deep);
+      if (landed) mark(landed);
+    }
+    pick();
+  })();
+</script>
+
+</body>
+</html>

@@ -198,6 +198,7 @@ fn full_frame_select_popup_overlays() {
         prompt: "Allow bash?".into(),
         options: vec!["Allow once".into(), "Deny".into()],
         log_confirm: false,
+        from_subagent: false,
     });
 
     let text = render_app_text(&mut app, 100, 30);
@@ -222,6 +223,7 @@ fn full_frame_select_popup_wraps_long_prompt() {
             "D. Ø ... the".into(),
         ],
         log_confirm: false,
+        from_subagent: false,
     });
 
     let text = render_app_text(&mut app, 80, 28);

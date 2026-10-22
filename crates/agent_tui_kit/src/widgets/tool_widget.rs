@@ -298,20 +298,27 @@ fn subagent_ctx_segment(tokens: Option<&TokenUsageInfo>, window: Option<usize>) 
     ))
 }
 
-/// Trailing labels shared by every meta row: subagent model / ctx meter, then
-/// the collapsed-output hint.
+/// Trailing labels shared by every meta row: subagent id / model / ctx meter,
+/// then the collapsed-output hint.
 ///
 /// Both the widget — which stores the finished row's exact text so the log hit
 /// test knows where that text ends — and the cell render through here, so the
 /// clickable text and the drawn text cannot drift apart.
 pub fn meta_suffixes(
     sep: &str,
+    subagent_id: Option<&str>,
     subagent_model: Option<&str>,
     subagent_tokens: Option<&TokenUsageInfo>,
     subagent_window: Option<usize>,
     collapsed_hint: Option<&str>,
 ) -> String {
     let mut text = String::new();
+    if let Some(id) = subagent_id.filter(|id| !id.is_empty()) {
+        // `#` marks it as a handle, like task rows (`#42`), and the short form
+        // is the one the sticky Subagent overview lists.
+        text.push_str(sep);
+        text.push_str(&format!("#{}", crate::state::subagent_panel::short_id(id)));
+    }
     if let Some(model) = subagent_model {
         text.push_str(sep);
         text.push_str(&format!("🤖 {model}"));
@@ -429,7 +436,7 @@ pub fn tool_visual_rows(
 /// Storing a rendered row here instead would freeze the locale of the moment the
 /// output was built: `/lang` flips the language the cell draws with, so a stored
 /// row would stop describing what is on screen — and the click target measured
-/// from it would drift off the drawn hint (see `book/26_chapter_issue_zh.md`,
+/// from it would drift off the drawn hint (see `book/26_chapter_issue_zh.html`,
 /// 2026-09-14).
 #[derive(Debug, Clone)]
 pub struct ToolRenderOutput {
@@ -455,6 +462,10 @@ pub struct ToolRenderOutput {
     pub detail_total_lines: usize,
     /// Full detail text for popup display (preview may be truncated).
     pub detail_full: Option<String>,
+    /// Child session id of the subagent this call spawned (`spawn_subagent`).
+    /// The card's meta row shows its short form — the same handle the sticky
+    /// Subagent overview and `/subagent_cancel` use.
+    pub subagent_id: Option<String>,
     /// Subagent model name for tool-card header display.
     pub subagent_model: Option<String>,
     /// Subagent token usage for tool-card header display.
@@ -572,6 +583,7 @@ impl ToolRenderOutput {
         );
         text.push_str(&meta_suffixes(
             msgs.tool_meta_sep,
+            self.subagent_id.as_deref(),
             self.subagent_model.as_deref(),
             self.subagent_tokens.as_ref(),
             self.subagent_context_window,
@@ -628,6 +640,7 @@ pub struct ToolWidget {
     detail_lines: Option<Vec<ToolOutputLine>>,
     detail_total_lines: Option<usize>,
     live_detail: bool,
+    subagent_id: Option<String>,
     subagent_model: Option<String>,
     subagent_tokens: Option<TokenUsageInfo>,
     subagent_context_window: Option<usize>,
@@ -658,6 +671,7 @@ impl ToolWidget {
             detail_lines: None,
             detail_total_lines: None,
             live_detail: false,
+            subagent_id: None,
             subagent_model: None,
             subagent_tokens: None,
             subagent_context_window: None,
@@ -669,6 +683,13 @@ impl ToolWidget {
     #[allow(dead_code)]
     pub fn with_presentation(mut self, presentation: ToolPresentationInfo) -> Self {
         self.presentation = presentation;
+        self
+    }
+
+    /// Child session id of the subagent this call spawned, shown on the meta
+    /// row ([`meta_suffixes`]). `None` for everything that is not a subagent.
+    pub fn with_subagent_id(mut self, id: Option<String>) -> Self {
+        self.subagent_id = id;
         self
     }
 
@@ -854,6 +875,7 @@ impl ToolWidget {
             detail_lines: None,
             detail_total_lines: None,
             live_detail: false,
+            subagent_id: None,
             subagent_model: None,
             subagent_tokens: None,
             subagent_context_window: None,
@@ -1060,6 +1082,7 @@ impl ToolWidget {
             } else {
                 None
             },
+            subagent_id: self.subagent_id.clone(),
             subagent_model: self.subagent_model.clone(),
             subagent_tokens: self.subagent_tokens.clone(),
             subagent_context_window: self.subagent_context_window,
@@ -1257,6 +1280,7 @@ mod tests {
     fn meta_suffixes_render_a_ctx_meter_when_a_window_is_known() {
         let text = meta_suffixes(
             " · ",
+            None,
             Some("gpt-4o"),
             Some(&usage(45_000)),
             Some(500_000),
@@ -1265,12 +1289,41 @@ mod tests {
         assert_eq!(text, " · 🤖 gpt-4o · ctx 9% 45K/500K");
     }
 
+    /// The child id is the run's handle, so it is shown short — the same
+    /// `SUBAGENT_SHORT_ID_CHARS` form the sticky overview lists — and ahead of
+    /// the model: what the run *is* before what it runs on.
+    #[test]
+    fn meta_suffixes_render_the_subagent_id_short_and_first() {
+        let text = meta_suffixes(
+            " · ",
+            Some("4d2a5f1c-9e8b-4c1a-bdf0-112233445566"),
+            Some("gpt-4o"),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(text, " · #4d2a5f1c · 🤖 gpt-4o");
+
+        // An id shorter than the short form is shown whole, not padded or cut;
+        // a longer one is cut to the sticky's `SUBAGENT_SHORT_ID_CHARS`.
+        assert_eq!(
+            meta_suffixes(" · ", Some("child"), None, None, None, None),
+            " · #child"
+        );
+        assert_eq!(
+            meta_suffixes(" · ", Some("child-123"), None, None, None, None),
+            " · #child-12"
+        );
+        // Empty ids are not a handle: no bare `#` on the row.
+        assert_eq!(meta_suffixes(" · ", Some(""), None, None, None, None), "");
+    }
+
     /// No window (unknown model, or `0` = disabled) must fall back to the bare
     /// token total, not invent a percentage over a window nobody knows.
     #[test]
     fn meta_suffixes_fall_back_to_token_total_without_a_window() {
         for window in [None, Some(0)] {
-            let text = meta_suffixes(" · ", Some("m"), Some(&usage(4_200)), window, None);
+            let text = meta_suffixes(" · ", None, Some("m"), Some(&usage(4_200)), window, None);
             assert_eq!(text, " · 🤖 m · ⚡ 4.2K", "window={window:?}");
         }
     }
@@ -1280,11 +1333,11 @@ mod tests {
     #[test]
     fn meta_suffixes_skip_an_empty_ctx_meter() {
         assert_eq!(
-            meta_suffixes(" · ", Some("m"), Some(&usage(0)), Some(500_000), None),
+            meta_suffixes(" · ", None, Some("m"), Some(&usage(0)), Some(500_000), None),
             " · 🤖 m"
         );
         assert_eq!(
-            meta_suffixes(" · ", Some("m"), None, Some(500_000), None),
+            meta_suffixes(" · ", None, Some("m"), None, Some(500_000), None),
             " · 🤖 m"
         );
     }

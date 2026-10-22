@@ -508,6 +508,7 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             let _ = app.user_cmd_tx.send(UserCommand::QueryBackground(task_id));
             CommandExecOutcome::handled()
         }
+        C::Goal => run_goal_command(app),
         C::Lang => {
             // Toggling is the whole choice with two languages, so `Ctrl+L` and
             // `/lang` move the same way; `/lang` differs by asking whether the
@@ -517,6 +518,133 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             CommandExecOutcome::handled()
         }
     }
+}
+
+/// `/goal create <objective> [-- <criterion>; <criterion> ...]`.
+///
+/// Criteria are the user's own acceptance gate: without them the Goal finishes
+/// on the model's completion proposal (self-attested, like Codex). The `--`
+/// separator keeps ordinary prose — including hyphenated words — in the
+/// objective; everything after it is split on `;`.
+fn create_goal_command(args: &str) -> UserCommand {
+    let (objective, criteria) = match args.split_once(" -- ") {
+        Some((objective, criteria)) => (
+            objective.trim(),
+            criteria
+                .split(';')
+                .map(str::trim)
+                .filter(|criterion| !criterion.is_empty())
+                .map(str::to_string)
+                .collect::<Vec<_>>(),
+        ),
+        None => (args.trim(), Vec::new()),
+    };
+    UserCommand::CreateGoal {
+        title: objective.chars().take(80).collect(),
+        objective: objective.to_string(),
+        criteria,
+    }
+}
+
+fn run_goal_command(app: &mut App) -> CommandExecOutcome {
+    let rest = app.input.trim().strip_prefix("/goal").unwrap_or("").trim();
+    let mut tokens = rest.splitn(2, char::is_whitespace);
+    let verb = tokens.next().unwrap_or_default();
+    let args = tokens.next().unwrap_or_default().trim();
+    let command = match verb {
+        // `--all` is the one argument `list` takes: archived Goals are off the
+        // default list, and adding them back is what makes archiving safe
+        // rather than a one-way door.
+        "list" => match args {
+            "" => Some(UserCommand::ListGoals {
+                include_archived: false,
+            }),
+            "--all" => Some(UserCommand::ListGoals {
+                include_archived: true,
+            }),
+            _ => None,
+        },
+        "create" if !args.is_empty() => Some(create_goal_command(args)),
+        "show" | "pause" | "resume" | "cancel" | "archive" | "unarchive" if !args.is_empty() => {
+            let mut values = args.split_whitespace();
+            let goal_id = values.next().unwrap_or_default().to_string();
+            if values.next().is_some() {
+                None
+            } else {
+                Some(match verb {
+                    "show" => UserCommand::ShowGoal { goal_id },
+                    "pause" => UserCommand::PauseGoal { goal_id },
+                    "resume" => UserCommand::ResumeGoal { goal_id },
+                    "cancel" => UserCommand::CancelGoal { goal_id },
+                    "archive" => UserCommand::SetGoalArchived {
+                        goal_id,
+                        archived: true,
+                    },
+                    "unarchive" => UserCommand::SetGoalArchived {
+                        goal_id,
+                        archived: false,
+                    },
+                    _ => unreachable!("matched Goal verb"),
+                })
+            }
+        }
+        "steer" => steer_request(app, args),
+        "accept" => {
+            let mut values = args.splitn(2, char::is_whitespace);
+            let goal_id = values.next().unwrap_or_default().trim();
+            let text = values.next().unwrap_or_default().trim();
+            if goal_id.is_empty() || text.is_empty() {
+                None
+            } else {
+                Some(UserCommand::AcceptGoal {
+                    goal_id: goal_id.to_string(),
+                    text: text.to_string(),
+                })
+            }
+        }
+        _ => None,
+    };
+    if let Some(command) = command {
+        let _ = app.user_cmd_tx.send(command);
+    } else {
+        app.flash_msg = Some((
+            app.msgs().goal_usage_msg.to_string(),
+            std::time::Instant::now(),
+        ));
+    }
+    CommandExecOutcome::handled()
+}
+
+/// Parses `/goal steer [<goal-id>] <text>`.
+///
+/// Only a confidently matched id from the live panel snapshot is forwarded as
+/// `Some`; everything else goes to the driver as `None`, which resolves the
+/// target against the store. That keeps a stale or empty snapshot from turning
+/// the instruction into a fake id (and makes the store authoritative for the
+/// running Goal).
+fn steer_request(app: &App, args: &str) -> Option<UserCommand> {
+    let args = args.trim();
+    if args.is_empty() {
+        return None;
+    }
+    let mut tokens = args.splitn(2, char::is_whitespace);
+    let first = tokens.next().unwrap_or_default();
+    let rest = tokens.next().unwrap_or_default().trim();
+    let goals = &app.goal_panel().state().snapshot;
+
+    let mut matches = goals
+        .iter()
+        .filter(|goal| goal.id == first || goal.id.starts_with(first));
+    let goal_id = match (matches.next(), matches.next()) {
+        (Some(goal), None) if !rest.is_empty() => Some(goal.id.clone()),
+        _ => None,
+    };
+    let text = if goal_id.is_some() {
+        rest.to_string()
+    } else {
+        args.to_string()
+    };
+    Some(UserCommand::SteerGoal { goal_id, text })
 }
 
 /// `/skill list` output is plain markdown (heading + pipe table) appended as
@@ -917,6 +1045,36 @@ mod tests {
     }
 
     #[test]
+    fn task_idle_clears_the_busy_state_and_flushes_queued_messages() {
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.status = Status::Executing {
+            current_step: 1,
+            total: 2,
+        };
+        app.queue_pending_message("next".into(), "next".into());
+        assert_eq!(app.pending_messages.len(), 1);
+
+        app.handle_agent_update(tact_protocol::AgentUpdate::TaskIdle);
+
+        assert!(
+            matches!(app.status, Status::Idle),
+            "an out-of-band turn must leave the busy state"
+        );
+        super::flush_pending_when_idle(&mut app);
+        assert!(
+            app.pending_messages.is_empty(),
+            "the queue must flush once the Goal activation is idle"
+        );
+        match user_cmd_rx
+            .try_recv()
+            .expect("queued message should submit")
+        {
+            UserCommand::SubmitTask(task) => assert_eq!(task, "next"),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
     fn cancel_command_idle_keeps_noop_flash() {
         let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         app.status = Status::Idle;
@@ -1085,7 +1243,12 @@ mod tests {
                 format!("{prefix} {}", sub.name)
             };
             if sub.children.is_empty() {
-                let value = if sub.takes_value { " sample" } else { "" };
+                let value = if sub.takes_value {
+                    let count = sub.hint.split_whitespace().count().max(1);
+                    " sample".repeat(count)
+                } else {
+                    String::new()
+                };
                 out.push(format!("/{command} {path}{value}"));
             } else {
                 assert!(
@@ -1481,6 +1644,267 @@ mod tests {
             user_cmd_rx.try_recv().expect("expected QueryBackground"),
             UserCommand::QueryBackground(Some(id)) if id == "018f3a2c"
         ));
+    }
+
+    #[test]
+    fn goal_commands_forward_typed_ids_and_text() {
+        let cases = [
+            (
+                "/goal list",
+                UserCommand::ListGoals {
+                    include_archived: false,
+                },
+            ),
+            (
+                "/goal list --all",
+                UserCommand::ListGoals {
+                    include_archived: true,
+                },
+            ),
+            (
+                "/goal archive goal-1",
+                UserCommand::SetGoalArchived {
+                    goal_id: "goal-1".into(),
+                    archived: true,
+                },
+            ),
+            (
+                "/goal unarchive goal-1",
+                UserCommand::SetGoalArchived {
+                    goal_id: "goal-1".into(),
+                    archived: false,
+                },
+            ),
+            (
+                "/goal show goal-1",
+                UserCommand::ShowGoal {
+                    goal_id: "goal-1".into(),
+                },
+            ),
+            (
+                // The TUI only resolves an id it can see in the panel
+                // snapshot; with no snapshot yet the raw text goes to the
+                // driver, which resolves the leading id against the store.
+                "/goal steer goal-1 prefer the smaller design",
+                UserCommand::SteerGoal {
+                    goal_id: None,
+                    text: "goal-1 prefer the smaller design".into(),
+                },
+            ),
+            (
+                "/goal pause goal-1",
+                UserCommand::PauseGoal {
+                    goal_id: "goal-1".into(),
+                },
+            ),
+            (
+                "/goal resume goal-1",
+                UserCommand::ResumeGoal {
+                    goal_id: "goal-1".into(),
+                },
+            ),
+            (
+                "/goal cancel goal-1",
+                UserCommand::CancelGoal {
+                    goal_id: "goal-1".into(),
+                },
+            ),
+            (
+                "/goal accept goal-1 accepted after review",
+                UserCommand::AcceptGoal {
+                    goal_id: "goal-1".into(),
+                    text: "accepted after review".into(),
+                },
+            ),
+        ];
+
+        for (input, expected) in cases {
+            let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+            app.input = input.into();
+            let outcome = execute_palette_command(&mut app, "goal");
+            assert!(outcome.handled, "{input}");
+            assert!(outcome.clear_input, "{input}");
+            let actual = user_cmd_rx.try_recv().expect("expected Goal command");
+            assert_eq!(format!("{actual:?}"), format!("{expected:?}"), "{input}");
+        }
+    }
+
+    #[test]
+    fn goal_create_preserves_the_full_objective() {
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.input = "/goal create Ship Goal UI with durable lifecycle".into();
+
+        let outcome = execute_palette_command(&mut app, "goal");
+
+        assert!(outcome.handled);
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected CreateGoal"),
+            UserCommand::CreateGoal { title, objective, criteria }
+                if title == "Ship Goal UI with durable lifecycle"
+                    && objective == "Ship Goal UI with durable lifecycle"
+                    && criteria.is_empty()
+        ));
+    }
+
+    /// `--` starts the user's own acceptance gate; `;` separates criteria.
+    /// Both the objective and the criteria must survive intact.
+    #[test]
+    fn goal_create_accepts_user_criteria_after_a_separator() {
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.input =
+            "/goal create Ship the release -- the full test suite passes; the changelog is written"
+                .into();
+
+        let outcome = execute_palette_command(&mut app, "goal");
+
+        assert!(outcome.handled);
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected CreateGoal"),
+            UserCommand::CreateGoal { title, objective, criteria }
+                if title == "Ship the release"
+                    && objective == "Ship the release"
+                    && criteria
+                        == vec![
+                            "the full test suite passes".to_string(),
+                            "the changelog is written".to_string(),
+                        ]
+        ));
+    }
+
+    /// Without `--`, a dash in the objective is just a dash.
+    #[test]
+    fn goal_create_without_a_separator_keeps_dashes_in_the_objective() {
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.input = "/goal create Upgrade to rust-2024 edition".into();
+
+        let outcome = execute_palette_command(&mut app, "goal");
+
+        assert!(outcome.handled);
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected CreateGoal"),
+            UserCommand::CreateGoal { objective, criteria, .. }
+                if objective == "Upgrade to rust-2024 edition" && criteria.is_empty()
+        ));
+    }
+
+    #[test]
+    fn goal_steer_without_an_id_forwards_text_for_store_resolution() {
+        use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
+
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.goal_panel_mut().state_mut().snapshot = vec![
+            GoalSnapshot {
+                id: "goal-1".into(),
+                title: "paused work".into(),
+                status: GoalStatusSnapshot::Paused,
+                ..Default::default()
+            },
+            GoalSnapshot {
+                id: "goal-2".into(),
+                title: "review".into(),
+                status: GoalStatusSnapshot::Running,
+                ..Default::default()
+            },
+        ];
+        app.input = "/goal steer focus on the parser first".into();
+
+        let outcome = execute_palette_command(&mut app, "goal");
+
+        assert!(outcome.handled);
+        assert!(outcome.clear_input);
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected SteerGoal"),
+            UserCommand::SteerGoal { goal_id, text }
+                if goal_id.is_none() && text == "focus on the parser first"
+        ));
+    }
+
+    #[test]
+    fn goal_steer_without_an_id_forwards_text_when_only_one_goal_is_open() {
+        use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
+
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        // The panel can still show `draft` while a freshly created Goal's
+        // first activation is already in flight.
+        app.goal_panel_mut().state_mut().snapshot = vec![GoalSnapshot {
+            id: "goal-3".into(),
+            title: "new goal".into(),
+            status: GoalStatusSnapshot::Draft,
+            ..Default::default()
+        }];
+        app.input = "/goal steer keep the diff small".into();
+
+        execute_palette_command(&mut app, "goal");
+
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected SteerGoal"),
+            UserCommand::SteerGoal { goal_id, text }
+                if goal_id.is_none() && text == "keep the diff small"
+        ));
+    }
+
+    #[test]
+    fn goal_steer_with_an_explicit_id_wins_over_the_running_goal() {
+        use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
+
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.goal_panel_mut().state_mut().snapshot = vec![
+            GoalSnapshot {
+                id: "goal-1".into(),
+                title: "paused work".into(),
+                status: GoalStatusSnapshot::Paused,
+                ..Default::default()
+            },
+            GoalSnapshot {
+                id: "goal-2".into(),
+                title: "review".into(),
+                status: GoalStatusSnapshot::Running,
+                ..Default::default()
+            },
+        ];
+        app.input = "/goal steer goal-1 prefer the smaller design".into();
+
+        execute_palette_command(&mut app, "goal");
+
+        assert!(matches!(
+            user_cmd_rx.try_recv().expect("expected SteerGoal"),
+            UserCommand::SteerGoal { goal_id, text }
+                if goal_id.as_deref() == Some("goal-1")
+                    && text == "prefer the smaller design"
+        ));
+    }
+
+    #[test]
+    fn goal_steer_without_an_id_forwards_the_raw_text_for_driver_resolution() {
+        use tact_protocol::{GoalSnapshot, GoalStatusSnapshot};
+
+        let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.goal_panel_mut().state_mut().snapshot = vec![
+            GoalSnapshot {
+                id: "goal-1".into(),
+                title: "first".into(),
+                status: GoalStatusSnapshot::Draft,
+                ..Default::default()
+            },
+            GoalSnapshot {
+                id: "goal-2".into(),
+                title: "second".into(),
+                status: GoalStatusSnapshot::Paused,
+                ..Default::default()
+            },
+        ];
+        app.input = "/goal steer hurry up".into();
+
+        execute_palette_command(&mut app, "goal");
+
+        assert!(
+            matches!(
+                user_cmd_rx.try_recv().expect("expected SteerGoal"),
+                UserCommand::SteerGoal { goal_id, text }
+                    if goal_id.is_none() && text == "hurry up"
+            ),
+            "the TUI must forward the raw instruction, not guess a target"
+        );
     }
 
     #[test]

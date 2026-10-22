@@ -46,6 +46,12 @@ pub struct PopupMouseSurface {
     /// Render-time cache write-back: the selection text the thinking popup
     /// computed for its active block (host applies it to the popup state).
     pub thinking_selection_text: Option<String>,
+    /// Render-time cache write-back: the rendered text a read-out popup's
+    /// selection indexes into (host applies it to that popup's state).
+    ///
+    /// Separate from `thinking_selection_text` only because the two popups own
+    /// different state; the *hit rows* they publish still share one slot.
+    pub system_prompt_selection_text: Option<String>,
     /// Clickable block-toggle rows: `(child step id, screen rect)`.
     ///
     /// The subagent view draws one per tool block whose output is capped

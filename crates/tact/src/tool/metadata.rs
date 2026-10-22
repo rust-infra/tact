@@ -683,9 +683,15 @@ pub enum ArgumentSummaryPolicy {
 // Tool effects & structured results
 // ---------------------------------------------------------------------------
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GoalYieldReason {
+    NeedsUser,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ToolEffect {
     CompactHistory { focus: Option<String> },
+    GoalYield { reason: GoalYieldReason },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

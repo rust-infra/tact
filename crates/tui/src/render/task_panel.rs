@@ -8,7 +8,7 @@
 use ratatui::{Frame, layout::Rect};
 
 use agent_tui_kit::components::{
-    BackgroundPanelComponent, SubagentPanelComponent, TaskPanelComponent,
+    BackgroundPanelComponent, GoalPanelComponent, SubagentPanelComponent, TaskPanelComponent,
 };
 
 use crate::widgets::state::{App, SurfaceId};
@@ -37,6 +37,7 @@ pub(crate) fn active_sticky_tab(app: &App) -> agent_tui_kit::state::StickyTab {
 }
 
 enum StickyDomain<'a> {
+    Goals(&'a GoalPanelComponent),
     Tasks(&'a TaskPanelComponent),
     Subagent(&'a SubagentPanelComponent),
     Background(&'a BackgroundPanelComponent),
@@ -45,6 +46,7 @@ enum StickyDomain<'a> {
 impl StickyDomain<'_> {
     fn visible(self) -> bool {
         match self {
+            Self::Goals(panel) => panel.visible,
             Self::Tasks(panel) => panel.visible,
             Self::Subagent(panel) => panel.visible,
             Self::Background(panel) => panel.visible,
@@ -53,6 +55,7 @@ impl StickyDomain<'_> {
 
     fn expanded(self) -> bool {
         match self {
+            Self::Goals(panel) => panel.expanded,
             Self::Tasks(panel) => panel.expanded,
             Self::Subagent(panel) => panel.expanded,
             Self::Background(panel) => panel.expanded,
@@ -61,6 +64,7 @@ impl StickyDomain<'_> {
 }
 
 enum StickyDomainMut<'a> {
+    Goals(&'a mut GoalPanelComponent),
     Tasks(&'a mut TaskPanelComponent),
     Subagent(&'a mut SubagentPanelComponent),
     Background(&'a mut BackgroundPanelComponent),
@@ -69,6 +73,7 @@ enum StickyDomainMut<'a> {
 impl<'a> StickyDomainMut<'a> {
     fn set_expanded(self, expanded: bool) {
         match self {
+            Self::Goals(panel) => panel.expanded = expanded,
             Self::Tasks(panel) => panel.expanded = expanded,
             Self::Subagent(panel) => panel.expanded = expanded,
             Self::Background(panel) => panel.expanded = expanded,
@@ -77,6 +82,7 @@ impl<'a> StickyDomainMut<'a> {
 
     fn scroll_mut(self) -> &'a mut usize {
         match self {
+            Self::Goals(panel) => &mut panel.scroll,
             Self::Tasks(panel) => &mut panel.scroll,
             Self::Subagent(panel) => &mut panel.scroll,
             Self::Background(panel) => &mut panel.scroll,
@@ -86,6 +92,7 @@ impl<'a> StickyDomainMut<'a> {
 
 fn sticky_domain(app: &App, tab: agent_tui_kit::state::StickyTab) -> StickyDomain<'_> {
     match tab {
+        agent_tui_kit::state::StickyTab::Goals => StickyDomain::Goals(app.goal_panel()),
         agent_tui_kit::state::StickyTab::Tasks => StickyDomain::Tasks(app.task_panel()),
         agent_tui_kit::state::StickyTab::Subagent => StickyDomain::Subagent(app.subagent_panel()),
         agent_tui_kit::state::StickyTab::Background => {
@@ -96,6 +103,7 @@ fn sticky_domain(app: &App, tab: agent_tui_kit::state::StickyTab) -> StickyDomai
 
 fn sticky_domain_mut(app: &mut App, tab: agent_tui_kit::state::StickyTab) -> StickyDomainMut<'_> {
     match tab {
+        agent_tui_kit::state::StickyTab::Goals => StickyDomainMut::Goals(app.goal_panel_mut()),
         agent_tui_kit::state::StickyTab::Tasks => StickyDomainMut::Tasks(app.task_panel_mut()),
         agent_tui_kit::state::StickyTab::Subagent => {
             StickyDomainMut::Subagent(app.subagent_panel_mut())
@@ -144,7 +152,9 @@ pub(crate) fn render_task_panel(frame: &mut Frame, area: Rect, app: &mut App) {
 #[cfg(test)]
 mod sticky_host_tests {
     use tact_protocol::{
-        SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot,
+        GoalAcceptanceSnapshot, GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot,
+        GoalStatusSnapshot, SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot,
+        TaskStatusSnapshot,
     };
 
     use super::super::test_harness::{make_app, render_main_area_text};
@@ -167,6 +177,84 @@ mod sticky_host_tests {
                 started_at: Some(1),
                 finished_at: None,
             }]);
+    }
+
+    fn seed_goal(app: &mut crate::widgets::state::App, title: &str) {
+        app.handle_agent_update(tact_protocol::AgentUpdate::GoalsChanged {
+            goals: vec![GoalSnapshot {
+                id: "goal-1".into(),
+                title: title.into(),
+                objective: "Ship durable supervised execution".into(),
+                status: GoalStatusSnapshot::WaitingUser,
+                phase: GoalPhaseSnapshot::Verification,
+                task_total: 3,
+                task_completed: 2,
+                wait_reason: Some("needs explicit acceptance".into()),
+                acceptance: GoalAcceptanceSnapshot {
+                    required: 2,
+                    passed: 1,
+                    pending: 1,
+                    rejected: 0,
+                },
+                run_budget: Some(GoalRunBudgetSnapshot {
+                    turns_used: 4,
+                    turn_limit: 24,
+                    tool_calls_used: 9,
+                    elapsed_ms: 1_500,
+                    wall_clock_limit_ms: 600_000,
+                }),
+                ..Default::default()
+            }],
+        });
+    }
+
+    #[test]
+    fn goal_snapshot_renders_status_budget_tasks_wait_and_acceptance() {
+        let mut app = make_app();
+        seed_goal(&mut app, "Ship Goal UI");
+
+        let text = render_main_area_text(&mut app, 100, 22);
+
+        assert!(text.contains("[Goals]"), "Goal tab missing:\n{text}");
+        assert!(text.contains("Ship Goal UI"), "Goal title missing:\n{text}");
+        assert!(text.contains("waiting_user"), "status missing:\n{text}");
+        assert!(text.contains("verification"), "phase missing:\n{text}");
+        assert!(text.contains("tasks 2/3"), "task progress missing:\n{text}");
+        assert!(text.contains("accept 1/2"), "acceptance missing:\n{text}");
+        assert!(text.contains("turns 4/24"), "turn budget missing:\n{text}");
+        assert!(text.contains("tools 9"), "tool usage missing:\n{text}");
+        assert!(
+            text.contains("needs explicit acceptance"),
+            "wait reason missing:\n{text}"
+        );
+    }
+
+    #[test]
+    fn goal_sticky_narrow_layout_and_blank_cells_keep_theme_bg() {
+        let mut app = make_app();
+        seed_goal(
+            &mut app,
+            "A very long Goal title that must fit a narrow terminal",
+        );
+
+        let terminal = super::super::test_harness::render_main_area_terminal(&mut app, 42, 18);
+        let buf = terminal.backend().buffer();
+        let bg = app.theme.bg;
+        assert!(
+            super::super::test_harness::buffer_text(buf).contains("[Goals]"),
+            "narrow Goal tab must remain visible"
+        );
+        let mut blank_cells = 0usize;
+        for y in 0..buf.area.height {
+            for x in 0..buf.area.width {
+                let cell = &buf[(x, y)];
+                if cell.symbol() == " " || cell.symbol().is_empty() {
+                    blank_cells += 1;
+                    assert_eq!(cell.bg, bg, "blank cell at {x},{y} must carry theme.bg");
+                }
+            }
+        }
+        assert!(blank_cells > 0);
     }
 
     #[test]
@@ -269,6 +357,7 @@ mod sticky_host_tests {
             token_usage: None,
             context_window: None,
             task_id: Some(task_id.into()),
+            subagent_id: None,
         });
     }
 

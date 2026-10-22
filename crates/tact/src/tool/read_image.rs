@@ -181,6 +181,7 @@ mod tests {
             },
             voice: crate::config::VoiceSettings::disabled_defaults(),
             mcp: crate::config::McpSettings::default(),
+            goal: crate::config::GoalSettings::default(),
             permission_mode: None,
             tokio_console: false,
             config_path: None,

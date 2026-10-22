@@ -164,6 +164,7 @@ impl App {
                     next.options.clone(),
                     next.request_id,
                     next.log_confirm,
+                    next.from_subagent,
                 );
             }
             tact::ui_responder::PendingUiRequestKind::MultiSelect => {
@@ -172,6 +173,7 @@ impl App {
                     next.options.clone(),
                     next.request_id,
                     false,
+                    next.from_subagent,
                 );
             }
         }
@@ -396,6 +398,17 @@ impl App {
                 self.freeze_last_prompt_cost();
                 self.task_done_time = None;
             }
+            AgentUpdate::TaskIdle => {
+                // An out-of-band turn (a Goal activation) ended without going
+                // through `SubmitTask`, so no TaskComplete/TaskCancelled will
+                // arrive. Leave the busy state — otherwise the queue hint stays
+                // on screen forever and Enter keeps deferring the message.
+                self.flush_stream_pending();
+                self.add_task_end_separator();
+                self.status = Status::Idle;
+                self.freeze_last_prompt_cost();
+                self.task_done_time = None;
+            }
             // Error handling
             AgentUpdate::Error(AgentErrorKind::Other(msg)) => {
                 // Fatal error: flush leftover streaming lines
@@ -442,6 +455,7 @@ impl App {
                 options,
                 request_id,
                 log_confirm,
+                from_subagent,
             } => {
                 if self.pending_ui.is_none() {
                     self.select_kind = SelectKind::Agent;
@@ -453,9 +467,11 @@ impl App {
                             request_id,
                             multi: false,
                             log_confirm,
+                            from_subagent,
                         });
                     } else {
-                        self.select.set(prompt, options, request_id, log_confirm);
+                        self.select
+                            .set(prompt, options, request_id, log_confirm, from_subagent);
                         self.input_mode = InputMode::Select;
                     }
                 }
@@ -466,6 +482,7 @@ impl App {
                 prompt,
                 options,
                 request_id,
+                from_subagent,
             } => {
                 if self.pending_ui.is_none() {
                     self.select_kind = SelectKind::Agent;
@@ -477,9 +494,11 @@ impl App {
                             request_id,
                             multi: true,
                             log_confirm: false,
+                            from_subagent,
                         });
                     } else {
-                        self.select.set_multi(prompt, options, request_id, false);
+                        self.select
+                            .set_multi(prompt, options, request_id, false, from_subagent);
                         self.input_mode = InputMode::Select;
                     }
                 }
@@ -540,38 +559,90 @@ impl App {
             | AgentUpdate::TurnStats { .. }
             | AgentUpdate::ToolMeta { .. }
             | AgentUpdate::StreamChunk(_)
-            | AgentUpdate::SubagentsChanged { .. } => {}
+            | AgentUpdate::SubagentsChanged { .. }
+            | AgentUpdate::GoalsChanged { .. } => {}
         }
     }
 
     /// Coordinator pre-pass: reconcile cross-component invariants before any
     /// component handler sees the update.
     ///
-    /// - Close an open thinking region on content-producing updates that are
-    ///   not `ThinkingChunk` (explicit `Finished` is preferred; TokenUsage /
-    ///   ModelInfo / ToolMeta must not close the region — they can arrive
-    ///   mid-stream).
+    /// - Close an open thinking region when this update is about to append
+    ///   rows of **this turn's own** output at the log's tail (see
+    ///   [`Self::ends_thinking_region`]).
     /// - Remove the loading placeholder on any content-producing update
     ///   (metadata-only updates keep it).
     fn coordinator_prepass(&mut self, update: &AgentUpdate) {
+        if Self::ends_thinking_region(update) {
+            self.flush_and_close_thinking();
+        }
+        if Self::ends_thinking_region(update) || matches!(update, AgentUpdate::ThinkingChunk(_)) {
+            self.remove_loading_placeholder();
+        }
+    }
+
+    /// Updates that end an open thinking region.
+    ///
+    /// The region owns a placeholder block at the **tail** of the log, so it
+    /// has to be finalized before rows may be appended there — otherwise a
+    /// later reasoning delta would keep growing the card *below* the rows that
+    /// landed after it. These are the updates that append to that tail, or that
+    /// move the turn on to its next stage.
+    ///
+    /// The list is exhaustive rather than "everything but a few metadata
+    /// variants" (which is what it used to be), because another agent's traffic
+    /// arrives on this same channel: a `run_in_background` child streams while
+    /// the parent is mid-turn, and it appends to its *own* card, which sits
+    /// earlier in the log. Treating that as "content started" cut one reasoning
+    /// block into a card per child update — five `Thought` cards for one
+    /// paragraph, the short ones `0ms` (2026-10-14).
+    ///
+    /// The match has **no `_` arm on purpose**: it is the decision table, so a
+    /// variant added to [`AgentUpdate`] fails to compile here and someone has to
+    /// say which side it belongs on. A `_ => false` would have let the
+    /// `ToolTranscriptStream` above default silently into the wrong answer,
+    /// which is exactly how the split happened.
+    fn ends_thinking_region(update: &AgentUpdate) -> bool {
         match update {
+            // Rows about to land at the log's tail, plus the updates that move
+            // the turn on to its next stage.
+            AgentUpdate::StreamChunk(_)
+            | AgentUpdate::StepAdded(_)
+            | AgentUpdate::StepStarted { .. }
+            | AgentUpdate::StepFinished { .. }
+            | AgentUpdate::StepFailed { .. }
+            | AgentUpdate::Info(_)
+            | AgentUpdate::MdInfo(_)
+            | AgentUpdate::HookContext { .. }
+            | AgentUpdate::HookStatus { .. }
+            | AgentUpdate::Error(_)
+            | AgentUpdate::TaskComplete(_)
+            | AgentUpdate::TaskCancelled
+            | AgentUpdate::TaskIdle => true,
+
+            // The region keeps running through everything else:
+            // - the reasoning deltas themselves;
+            // - the status bar's metadata (it can arrive mid-stream);
+            // - modals — an overlay never touches the log's tail;
+            // - another agent's traffic: a background child's transcript and
+            //   its sticky snapshot, a background task's finalize, a task-list
+            //   change. It appends to its own card, earlier in the log.
             AgentUpdate::ThinkingChunk(_)
             | AgentUpdate::TokenUsage(_)
             | AgentUpdate::TurnStats { .. }
             | AgentUpdate::ModelInfo(_)
             | AgentUpdate::ToolMeta { .. }
-            | AgentUpdate::ToolProgress { .. } => {}
-            _ => self.flush_and_close_thinking(),
-        }
-        match update {
-            AgentUpdate::TokenUsage(_)
-            | AgentUpdate::TurnStats { .. }
-            | AgentUpdate::ModelInfo(_)
-            | AgentUpdate::ToolMeta { .. }
-            | AgentUpdate::ToolProgress { .. } => {}
-            _ => {
-                self.remove_loading_placeholder();
-            }
+            | AgentUpdate::ToolProgress { .. }
+            | AgentUpdate::ToolTranscript { .. }
+            | AgentUpdate::ToolTranscriptStream { .. }
+            | AgentUpdate::TasksChanged { .. }
+            | AgentUpdate::GoalsChanged { .. }
+            | AgentUpdate::BackgroundTaskFinished { .. }
+            | AgentUpdate::SubagentFinished { .. }
+            | AgentUpdate::SubagentsChanged { .. }
+            | AgentUpdate::PopupMarkdown { .. }
+            | AgentUpdate::RequestSelect { .. }
+            | AgentUpdate::RequestMultiSelect { .. } => false,
         }
     }
 
@@ -1580,6 +1651,7 @@ mod lifecycle_tests {
             token_usage: None,
             context_window: None,
             task_id: Some("id1".into()),
+            subagent_id: None,
         });
         app.handle_agent_update(AgentUpdate::ToolMeta {
             tool_id: "bg2".into(),
@@ -1587,6 +1659,7 @@ mod lifecycle_tests {
             token_usage: None,
             context_window: None,
             task_id: Some("id2".into()),
+            subagent_id: None,
         });
         assert!(
             app.tools_mut()
@@ -2312,10 +2385,31 @@ mod lifecycle_tests {
             prompt: "Allow bash?".into(),
             options: vec!["Yes".into(), "No".into()],
             log_confirm: false,
+            from_subagent: false,
         });
         assert!(matches!(app.input_mode, InputMode::Select));
         assert!(app.select.prompt.contains("Allow bash"));
         assert_eq!(app.select.request_id, Some(1));
+    }
+
+    /// A child's permission prompt has to be tellable from the main agent's —
+    /// the flag reaches the popup state here, and the title is drawn from it
+    /// (see `render::popup_scene_tests`).
+    #[test]
+    fn a_subagent_permission_prompt_keeps_its_origin() {
+        use crate::widgets::state::InputMode;
+
+        let mut app = make_app();
+        app.handle_agent_update(AgentUpdate::RequestSelect {
+            request_id: 3,
+            prompt: "Allow write_file on task-5a-report.md?".into(),
+            options: vec!["Allow once".into(), "Deny".into()],
+            log_confirm: false,
+            from_subagent: true,
+        });
+        assert!(matches!(app.input_mode, InputMode::Select));
+        assert!(app.select.from_subagent, "the flag must reach the popup");
+        assert_eq!(app.select.request_id, Some(3));
     }
 
     #[test]
@@ -2329,6 +2423,7 @@ mod lifecycle_tests {
             prompt: "Allow write?".into(),
             options: vec!["Allow once".into(), "Deny".into()],
             log_confirm: false,
+            from_subagent: false,
         });
         assert!(matches!(app.input_mode, InputMode::Select));
 
@@ -2356,6 +2451,7 @@ mod lifecycle_tests {
         let (request_id, _rx) = responder.register_select(
             "Allow write?".into(),
             vec!["Allow once".into(), "Deny".into()],
+            false,
             false,
         );
 
@@ -2385,6 +2481,7 @@ mod lifecycle_tests {
             "Allow write?".into(),
             vec!["Allow once".into(), "Deny".into()],
             false,
+            false,
         );
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, Some(request_id));
@@ -2401,8 +2498,10 @@ mod lifecycle_tests {
         let responder = tact::ui_responder::UiResponder::new();
         app.set_pending_ui(responder.clone());
 
-        let (first, _rx1) = responder.register_select("first".into(), vec!["1".into()], false);
-        let (second, _rx2) = responder.register_select("second".into(), vec!["2".into()], false);
+        let (first, _rx1) =
+            responder.register_select("first".into(), vec!["1".into()], false, false);
+        let (second, _rx2) =
+            responder.register_select("second".into(), vec!["2".into()], false, false);
 
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, Some(first));
@@ -2586,6 +2685,90 @@ mod lifecycle_tests {
                 .content
                 .contains("still thinking")
         );
+    }
+
+    /// A `run_in_background` child streams into the parent's own channel
+    /// *while the parent is mid-turn*, so the parent's reasoning region sees
+    /// the child's traffic between two of its deltas. None of it is the
+    /// parent's content: ending the region for it cut one reasoning block into
+    /// a card per child update (five `Thought` cards for one paragraph, the
+    /// short ones `0ms`).
+    #[test]
+    fn a_background_childs_traffic_does_not_split_the_thinking_region() {
+        use tact_protocol::SubagentTranscriptEntry;
+
+        let foreign = |i: usize| -> AgentUpdate {
+            match i {
+                0 => AgentUpdate::ToolTranscriptStream {
+                    tool_id: "t1".into(),
+                    text: "child answer so far".into(),
+                },
+                1 => AgentUpdate::ToolTranscript {
+                    tool_id: "t1".into(),
+                    entry: SubagentTranscriptEntry::Assistant("child turn".into()),
+                },
+                2 => AgentUpdate::ToolTranscript {
+                    tool_id: "t1".into(),
+                    entry: SubagentTranscriptEntry::Thinking {
+                        text: "child reasoning".into(),
+                        duration_us: Some(900),
+                    },
+                },
+                3 => AgentUpdate::SubagentsChanged { runs: Vec::new() },
+                4 => AgentUpdate::BackgroundTaskFinished {
+                    tool_id: "t2".into(),
+                    success: true,
+                    message: "Background task t2 completed".into(),
+                    output: String::new(),
+                },
+                5 => AgentUpdate::ToolProgress {
+                    tool_id: "t3".into(),
+                    chunks: vec![ToolOutputChunk::other("tick")],
+                },
+                6 => AgentUpdate::TasksChanged {
+                    tasks: Vec::new(),
+                    reason: TasksChangeReason::Updated,
+                },
+                _ => AgentUpdate::ToolMeta {
+                    tool_id: "t1".into(),
+                    model: Some("deepseek-v4.1-flash".into()),
+                    token_usage: None,
+                    context_window: None,
+                    task_id: None,
+                    subagent_id: None,
+                },
+            }
+        };
+
+        for i in 0..8 {
+            let mut app = make_app();
+            app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+            app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+                "first half ".into(),
+            )));
+
+            app.handle_agent_update(foreign(i));
+
+            assert!(
+                app.thinking_mut().active.is_some(),
+                "update #{i} ended the parent's thinking region"
+            );
+            app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+                "second half".into(),
+            )));
+            app.handle_agent_update(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+
+            assert_eq!(
+                app.thinking_mut().blocks.len(),
+                1,
+                "update #{i} split one thinking region into several cards"
+            );
+            assert_eq!(
+                app.thinking_mut().blocks[0].content,
+                "first half second half",
+                "update #{i} lost or reordered the region's text"
+            );
+        }
     }
 
     #[test]

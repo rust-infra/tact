@@ -6,6 +6,8 @@
 
 use ratatui::text::Line;
 
+use super::PopupTextSelection;
+
 /// Current keyboard input mode, determining how key presses are interpreted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum InputMode {
@@ -155,12 +157,44 @@ impl MermaidPopup {
 }
 
 /// System-prompt / session-stats popup state.
+///
+/// The read-out popup every `/`-command listing opens (`/stats`, `/background`,
+/// `/view-system-prompt`, `/goal show`, `/mcp list`, `/hooks list` …). Its body
+/// is *rendered* Markdown, so a text selection indexes into the rendered lines
+/// rather than the raw source — the same split the thinking popup makes, and
+/// why the copy buffer is cached at render time.
 #[derive(Debug, Clone)]
 pub struct SystemPromptPopup {
     pub title: String,
     /// Raw Markdown source; laid out width-aware at popup render time.
     pub source: String,
     pub scroll: u16,
+    /// Drag selection over the rendered body, if any.
+    pub selection: Option<PopupTextSelection>,
+    /// The rendered text the selection indexes into. Written during the render
+    /// pass, because only the layout knows where the rendered lines end.
+    pub selection_text: String,
+}
+
+impl SystemPromptPopup {
+    pub fn new(title: String, source: String) -> Self {
+        Self {
+            title,
+            source,
+            scroll: 0,
+            selection: None,
+            selection_text: String::new(),
+        }
+    }
+
+    /// The selected slice, or the whole source when nothing is selected — the
+    /// same contract the thinking popup's `y` follows.
+    pub fn copy_content(&self, full_content: &str) -> String {
+        self.selection
+            .and_then(|selection| selection.normalized_non_empty(&self.selection_text))
+            .map(|range| self.selection_text[range].to_string())
+            .unwrap_or_else(|| full_content.to_string())
+    }
 }
 
 /// Current agent execution state, driving the status bar and UI feedback.
@@ -174,13 +208,14 @@ pub enum Status {
 
 /// Which domain the sticky strip under the Log is showing.
 ///
-/// The sticky host has three domains: persistent tasks, the current-process
-/// subagent overview, and the current-process background tasks. A domain is
+/// The sticky host has four domains: durable Goals, persistent tasks, the
+/// current-process subagent overview, and current-process background tasks. A domain is
 /// only drawn when it is visible; `active` selects which expanded body / scroll
 /// the host renders when more than one is visible.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum StickyTab {
     #[default]
+    Goals,
     Tasks,
     Subagent,
     /// Running `background_run` tasks, derived from the live tool cards (no
@@ -190,5 +225,29 @@ pub enum StickyTab {
 
 impl StickyTab {
     /// All sticky domains in their stable display order.
-    pub const ALL: [Self; 3] = [Self::Tasks, Self::Subagent, Self::Background];
+    pub const ALL: [Self; 4] = [Self::Goals, Self::Tasks, Self::Subagent, Self::Background];
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `y` copies the drag selection when there is one, and the source the
+    /// popup was built from when there is not.
+    #[test]
+    fn copy_content_prefers_the_selection_over_the_source() {
+        let mut popup =
+            SystemPromptPopup::new("Goal: review code".into(), "**ID:** `216ae6be`".into());
+        assert_eq!(
+            popup.copy_content("**ID:** `216ae6be`"),
+            "**ID:** `216ae6be`",
+            "no selection copies the source"
+        );
+
+        // The selection indexes the *rendered* text, which is why `copy_content`
+        // needs the cached buffer rather than the raw source.
+        popup.selection_text = "ID: 216ae6be".into();
+        popup.selection = Some(PopupTextSelection::new(4, 12));
+        assert_eq!(popup.copy_content("**ID:** `216ae6be`"), "216ae6be");
+    }
 }

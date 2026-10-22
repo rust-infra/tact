@@ -32,10 +32,7 @@ use crate::{
     },
     state::{LogItemKind, find_thinking_at_logical, log_indent_at},
     theme::Theme,
-    widgets::{
-        button::{Button, ButtonChrome, ButtonTheme, ButtonVariant},
-        tool_widget::TOOL_RUNNING_SPINNER,
-    },
+    widgets::tool_widget::TOOL_RUNNING_SPINNER,
 };
 
 struct SelectedCell<T> {
@@ -365,6 +362,15 @@ pub fn render_log_panel_pure(
                 let msgs = &ctx.messages;
                 let spinner =
                     TOOL_RUNNING_SPINNER[(ctx.spinner_frame as usize) % TOOL_RUNNING_SPINNER.len()];
+                // A live async subagent card is cancellable until its child
+                // finishes. The button belongs to the card (its meta row), so
+                // the cell draws it; the id only decides *whether* there is one.
+                let cancel_child_id = ctx
+                    .tools
+                    .active
+                    .iter()
+                    .find(|active| active.phys_idx == phys_idx)
+                    .and_then(|active| active.subagent_child_id.clone());
                 let card_cell = ToolCell::from_output(
                     output,
                     started_at,
@@ -379,21 +385,37 @@ pub fn render_log_panel_pure(
                     ctx.theme.error,
                     ctx.theme.block_border_type(),
                     msgs,
-                );
+                )
+                .with_subagent_cancel(cancel_child_id.is_some());
                 if let Some((cell_area, skip_lines)) =
                     renderer.cell_slice(vis_start, card_cell.height(inner.width) as usize, inner)
-                    && let Some(tool_id) = tool_id_for_phys(ctx, phys_idx)
                 {
-                    if let Some(tool_rect) =
-                        card_cell.collapsed_open_button_rect(cell_area, skip_lines)
-                    {
-                        open_actions.push(OpenAction::new(
-                            OpenTarget::tool(tool_id.clone()),
-                            tool_rect,
-                        ));
+                    if let Some(tool_id) = tool_id_for_phys(ctx, phys_idx) {
+                        if let Some(tool_rect) =
+                            card_cell.collapsed_open_button_rect(cell_area, skip_lines)
+                        {
+                            open_actions.push(OpenAction::new(
+                                OpenTarget::tool(tool_id.clone()),
+                                tool_rect,
+                            ));
+                        }
+                        if let Some(rect) =
+                            card_cell.subagent_open_button_rect(cell_area, skip_lines)
+                        {
+                            open_actions.push(OpenAction::new(OpenTarget::subagent(tool_id), rect));
+                        }
                     }
-                    if let Some(rect) = card_cell.subagent_open_button_rect(cell_area, skip_lines) {
-                        open_actions.push(OpenAction::new(OpenTarget::subagent(tool_id), rect));
+                    // The cancel button is drawn by the cell, so its hit rect
+                    // has to be measured off the same clipped slice that will
+                    // be painted — the host no longer overlays it afterwards.
+                    if let Some(child_id) = &cancel_child_id
+                        && let Some(rect) =
+                            card_cell.subagent_cancel_button_rect(cell_area, skip_lines)
+                    {
+                        cancel_buttons.push(SubagentCancelButton {
+                            child_id: child_id.clone(),
+                            rect,
+                        });
                     }
                 }
                 if ctx
@@ -405,35 +427,6 @@ pub fn render_log_panel_pure(
                     renderer.push(vis_start, SelectedCell { inner: card_cell });
                 } else {
                     renderer.push(vis_start, card_cell);
-                }
-                // Live async subagent: draw a cancel button on the card's
-                // header row (right edge) and record its rect for the host's
-                // mouse routing.
-                if let Some(active) = ctx.tools.active.iter().find(|a| a.phys_idx == phys_idx)
-                    && let Some(child_id) = &active.subagent_child_id
-                {
-                    // The affordance is drawn by the shared button component, so
-                    // its width is the glyphs — which is exactly what the host
-                    // may click (the rect is recorded below).
-                    let cancel_button =
-                        Button::new(msgs.subagent_cancel_btn, ButtonTheme::from_theme(ctx.theme))
-                            .variant(ButtonVariant::Danger)
-                            .chrome(ButtonChrome::Brackets)
-                            .modifier(Modifier::BOLD);
-                    let button_width = cancel_button.preferred_size().0;
-                    let btn_x = area
-                        .right()
-                        .saturating_sub(right)
-                        .saturating_sub(button_width + 1);
-                    let btn_y = area.y + top + vis_start.saturating_sub(visual_scroll) as u16;
-                    let btn_area = Rect::new(btn_x, btn_y, button_width, 1);
-                    if btn_area.bottom() <= area.bottom() {
-                        frame.render_widget(cancel_button, btn_area);
-                        cancel_buttons.push(SubagentCancelButton {
-                            child_id: child_id.clone(),
-                            rect: btn_area,
-                        });
-                    }
                 }
                 logical_i += visual_rows - rows_before;
                 continue;

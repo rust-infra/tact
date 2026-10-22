@@ -4,7 +4,7 @@
 //! exchanged over channels; [`biz`] defines account / quota structures carried
 //! inside those messages.
 //!
-//! State machine transitions: [book/25_chapter_protocol_zh.md](../book/25_chapter_protocol_zh.md).
+//! State machine transitions: [book/25_chapter_protocol_zh.html](../book/25_chapter_protocol_zh.html).
 
 pub mod agent;
 pub mod biz;
@@ -12,10 +12,12 @@ pub mod subagent_transcript;
 pub mod tool_output;
 
 pub use agent::{
-    AgentErrorKind, AgentUpdate, ModelCallParams, PlanStep, StepResult, StepStatus,
-    SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot,
-    TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolDetailKind, ToolPopupKind,
-    ToolPresentationInfo, ToolVisualKind, UiResponse, UserCommand,
+    AgentErrorKind, AgentUpdate, GoalAcceptanceSnapshot, GoalCriterionSnapshot,
+    GoalCriterionStatusSnapshot, GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot,
+    GoalStatusSnapshot, ModelCallParams, PlanStep, StepResult, StepStatus, SubagentRunSnapshot,
+    SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ThinkingChunk,
+    TokenUsageInfo, ToolDetailKind, ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
+    UiResponse, UserCommand,
 };
 pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,

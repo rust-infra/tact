@@ -439,6 +439,20 @@ impl Theme {
     pub fn muted_fg(&self) -> Color {
         self.muted
     }
+
+    /// Goal-surface accent: the color of a Goal's own log notices.
+    ///
+    /// No built-in theme spends this hue on another slot (violet, against the
+    /// cyan/blue accents, amber/green status colors and red errors), so a Goal
+    /// line reads as a Goal line before its text is parsed — which is the whole
+    /// point of giving the surface its own slot instead of reusing `accent`.
+    pub fn goal_fg(&self) -> Color {
+        if self.is_light() {
+            Color::Rgb(130, 30, 160)
+        } else {
+            Color::Rgb(198, 120, 255)
+        }
+    }
 }
 
 #[cfg(test)]

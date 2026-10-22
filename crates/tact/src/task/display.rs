@@ -212,6 +212,7 @@ mod tests {
             created_at: None,
             started_at: None,
             completed_at: None,
+            goal_id: None,
         };
         let after = TaskRecord {
             blocked_by: vec![12, 24],

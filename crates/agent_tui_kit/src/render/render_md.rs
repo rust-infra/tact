@@ -112,7 +112,32 @@ pub fn render_mermaid_block(
     {
         return super::mermaid_sequence::render_sequence_diagram(source, width, theme);
     }
+    // The upstream state-diagram parser keeps a transition's `: label` inside
+    // the *node name* (`Idle --> Planning: startup` becomes a node called
+    // "Planning: startup"), so a labelled state machine renders as something
+    // that is not the state machine. Source is the honest fallback; unlabelled
+    // state diagrams still render normally.
+    if source
+        .lines()
+        .next()
+        .map(str::trim)
+        .is_some_and(|l| l.starts_with("stateDiagram"))
+        && has_labelled_state_transitions(source)
+    {
+        return None;
+    }
     render_mermaid(source, width, None, &TuiRichTextTheme { theme })
+}
+
+/// Whether a `stateDiagram` fence puts a label on any transition.
+///
+/// Only the transition lines matter: `note` bodies, `state "x" as y` aliases
+/// and `classDef`/`class` lines never contain `-->`.
+fn has_labelled_state_transitions(source: &str) -> bool {
+    source.lines().any(|line| {
+        line.split_once("-->")
+            .is_some_and(|(_, rest)| rest.contains(':'))
+    })
 }
 
 /// Layout width used when a caller has no explicit width to pass.
@@ -867,6 +892,30 @@ mod tests {
             !text.contains("sequenceDiagram"),
             "raw source leaked: {text}"
         );
+    }
+
+    /// A labelled state machine must not be drawn: the upstream parser folds
+    /// `: label` into the node name, so the picture would be a lie. Callers
+    /// fall back to source.
+    #[test]
+    fn labelled_state_diagram_is_not_rendered() {
+        let source = "stateDiagram-v2\n    [*] --> Idle: startup\n    Idle --> Running: go";
+        assert!(render_mermaid_block(source, &theme(), 80).is_none());
+    }
+
+    #[test]
+    fn unlabelled_state_diagram_still_renders() {
+        let source =
+            "stateDiagram-v2\n    [*] --> Idle\n    Idle --> Running\n    Running --> Idle";
+        let lines = render_mermaid_block(source, &theme(), 80)
+            .expect("an unlabelled state diagram renders");
+        let text = lines
+            .iter()
+            .map(Line::to_string)
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(text.contains("Idle"), "states are drawn: {text}");
+        assert!(text.contains("Running"), "states are drawn: {text}");
     }
 
     #[test]

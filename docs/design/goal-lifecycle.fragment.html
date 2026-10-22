@@ -1,0 +1,543 @@
+<div id="goal-lifecycle">
+<style>
+  /* Scope everything under the root id so the fragment cannot leak into the host page.
+     Host vars are used *with light/dark fallbacks*: the capture step extracts the inner
+     document to a top-level page, where the host stylesheet does not exist. */
+  #goal-lifecycle {
+    --gl-fg: var(--foreground, light-dark(#1a1a1a, #f2f2f2));
+    --gl-bg: var(--background, light-dark(#fdfdfd, #17181a));
+    --gl-card: var(--card, light-dark(#ffffff, #1f2124));
+    --gl-muted: var(--muted, light-dark(#eceef1, #2a2d31));
+    --gl-muted-fg: var(--muted-foreground, light-dark(#62686f, #9aa1a8));
+    --gl-border: var(--border, light-dark(#dcdfe4, #34383d));
+    --gl-primary: var(--primary, light-dark(#2563eb, #7aa2ff));
+    --gl-ok: var(--viz-series-2, light-dark(#0f9d58, #34c98a));
+    --gl-warn: var(--viz-series-3, light-dark(#c77700, #f0a13a));
+    --gl-bad: var(--viz-series-6, light-dark(#d93025, #ff6b60));
+
+    box-sizing: border-box;
+    margin: 0 auto;
+    padding: 18px 20px 22px;
+    max-width: 1140px;
+    /* Full-viewport paint: revealed content grows into a stable themed background, and
+       in dark mode the frames do not fall back to a white page around the fragment. */
+    min-height: 100vh;
+    background: var(--gl-bg);
+    color: var(--gl-fg);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+                 "Hiragino Sans GB", "Microsoft YaHei", Roboto, sans-serif;
+    font-size: var(--font-size-base, 14px);
+    line-height: 1.5;
+    color-scheme: light dark;
+  }
+  #goal-lifecycle * { box-sizing: border-box; }
+
+  /* ---------- control bar ---------- */
+  #goal-lifecycle .gl-bar {
+    display: flex; align-items: center; gap: 12px; flex-wrap: wrap;
+    padding-bottom: 12px; border-bottom: 1px solid var(--gl-border);
+  }
+  #goal-lifecycle .gl-label {
+    font-size: 12px; font-weight: 600; letter-spacing: .02em;
+    color: var(--gl-muted-fg); font-variant-numeric: tabular-nums;
+  }
+  #goal-lifecycle .gl-rail { display: flex; gap: 4px; margin: 0; padding: 0; list-style: none; }
+  #goal-lifecycle .gl-tick {
+    width: 17px; height: 4px; border-radius: 2px; background: var(--gl-muted);
+    transition: background .35s ease;
+  }
+  #goal-lifecycle .gl-tick.is-now { background: var(--gl-primary); }
+  #goal-lifecycle .gl-tick.is-past { background: var(--gl-border); }
+  #goal-lifecycle .gl-ctl { display: flex; gap: 6px; margin-left: auto; }
+  #goal-lifecycle .gl-ctl button {
+    font: inherit; font-size: 12px; padding: 4px 11px; cursor: pointer;
+    color: var(--gl-fg); background: var(--gl-card);
+    border: 1px solid var(--gl-border); border-radius: 6px;
+  }
+  #goal-lifecycle .gl-ctl #gl-play {
+    color: #fff; background: var(--gl-primary); border-color: transparent; min-width: 64px;
+  }
+
+  /* ---------- reveal machinery: hide rule + show rule, both required ---------- */
+  #goal-lifecycle [data-reveal] {
+    opacity: 0; transform: translateY(6px);
+    transition: opacity .45s ease, transform .45s ease;
+  }
+  #goal-lifecycle [data-reveal].is-on { opacity: 1; transform: none; }
+
+  /* ---------- lanes ---------- */
+  #goal-lifecycle .gl-rows { display: flex; flex-direction: column; gap: 12px; padding-top: 14px; }
+  #goal-lifecycle .gl-lane {
+    background: var(--gl-card); border: 1px solid var(--gl-border);
+    border-radius: 10px; padding: 11px 13px 13px;
+  }
+  #goal-lifecycle .gl-lane-title {
+    font-size: 11px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+    color: var(--gl-muted-fg); margin-bottom: 9px;
+  }
+
+  /* ---------- flow ---------- */
+  #goal-lifecycle .gl-flow { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  #goal-lifecycle .gl-arrow { color: var(--gl-border); font-size: 14px; user-select: none; }
+
+  #goal-lifecycle .gl-chip {
+    display: inline-flex; align-items: center; gap: 7px;
+    padding: 5px 11px; border-radius: 999px;
+    border: 1.5px solid var(--gl-border);
+    background: var(--gl-muted);
+    color: var(--gl-muted-fg);
+    font-size: 12.5px; font-weight: 600; white-space: nowrap;
+    opacity: .38;
+    transition: opacity .35s ease, color .35s ease, border-color .35s ease,
+                background .35s ease, box-shadow .35s ease;
+  }
+  #goal-lifecycle .gl-chip .gl-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex: none;
+  }
+  #goal-lifecycle .gl-chip.is-lit { opacity: 1; }
+  #goal-lifecycle .gl-chip.is-lit[data-tone="main"] {
+    color: var(--gl-primary); border-color: var(--gl-primary); background: var(--gl-card);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--gl-primary) 16%, transparent);
+  }
+  #goal-lifecycle .gl-chip.is-lit[data-tone="ok"] {
+    color: var(--gl-ok); border-color: var(--gl-ok); background: var(--gl-card);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--gl-ok) 16%, transparent);
+  }
+  #goal-lifecycle .gl-chip.is-lit[data-tone="warn"] {
+    color: var(--gl-warn); border-color: var(--gl-warn); background: var(--gl-card);
+  }
+  #goal-lifecycle .gl-chip.is-lit[data-tone="bad"] {
+    color: var(--gl-bad); border-color: var(--gl-bad); background: var(--gl-card);
+  }
+  #goal-lifecycle .gl-chip.is-lit[data-tone="idle"] {
+    color: var(--gl-muted-fg); border-color: var(--gl-muted-fg);
+    border-style: dashed; background: var(--gl-card);
+  }
+
+  /* ---------- activation chain ---------- */
+  #goal-lifecycle .gl-chain { display: flex; align-items: center; gap: 5px; flex-wrap: wrap; }
+  #goal-lifecycle .gl-act {
+    padding: 4px 10px; border-radius: 6px; font-size: 12px; font-weight: 600;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    border: 1px solid var(--gl-border); background: var(--gl-muted);
+    color: var(--gl-muted-fg); opacity: .38; white-space: nowrap;
+    transition: opacity .35s ease, color .35s ease, border-color .35s ease,
+                background .35s ease;
+  }
+  #goal-lifecycle .gl-act.is-lit { opacity: 1; }
+  #goal-lifecycle .gl-act.is-lit[data-tone="main"] {
+    color: var(--gl-primary); border-color: var(--gl-primary);
+    background: color-mix(in srgb, var(--gl-primary) 9%, var(--gl-card));
+  }
+  #goal-lifecycle .gl-act.is-lit[data-tone="warn"] {
+    color: var(--gl-warn); border-color: var(--gl-warn);
+    background: color-mix(in srgb, var(--gl-warn) 9%, var(--gl-card));
+  }
+  #goal-lifecycle .gl-gate {
+    font-size: 11px; color: var(--gl-muted-fg); font-style: italic; white-space: nowrap;
+  }
+
+  /* ---------- budget meter: fill keys off the revealed ancestor ---------- */
+  #goal-lifecycle .gl-meter {
+    margin-top: 10px; height: 9px; border-radius: 5px; overflow: hidden;
+    background: var(--gl-muted); border: 1px solid var(--gl-border);
+  }
+  #goal-lifecycle .gl-meter-fill {
+    height: 100%; width: 0; border-radius: 4px;
+    background: var(--gl-primary); transition: width .6s ease;
+  }
+  #goal-lifecycle .gl-lane.is-meter-warn .gl-meter-fill { background: var(--gl-warn); }
+  #goal-lifecycle .is-on .gl-meter-fill { width: var(--w, 0%); }
+  #goal-lifecycle .gl-meter-note {
+    display: flex; justify-content: space-between; gap: 10px;
+    font-size: 11.5px; color: var(--gl-muted-fg); margin-top: 6px;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ---------- cards ---------- */
+  #goal-lifecycle .gl-card {
+    margin-top: 10px; padding: 9px 11px;
+    border: 1px solid var(--gl-border); border-left: 3px solid var(--gl-primary);
+    border-radius: 7px; background: color-mix(in srgb, var(--gl-muted) 45%, var(--gl-card));
+    font-size: 12.5px;
+  }
+  #goal-lifecycle .gl-card b { font-weight: 700; }
+  #goal-lifecycle .gl-card code, #goal-lifecycle .gl-row code, #goal-lifecycle kbd {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px;
+    background: var(--gl-muted); padding: 1px 5px; border-radius: 4px;
+  }
+  #goal-lifecycle kbd { border: 1px solid var(--gl-border); }
+  #goal-lifecycle .gl-card.is-warn { border-left-color: var(--gl-warn); }
+  #goal-lifecycle .gl-card.is-ok { border-left-color: var(--gl-ok); }
+  #goal-lifecycle .gl-card.is-bad { border-left-color: var(--gl-bad); }
+
+  /* ---------- outcome pills ---------- */
+  #goal-lifecycle .gl-pills { display: flex; flex-wrap: wrap; gap: 5px; }
+  #goal-lifecycle .gl-pill {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px;
+    padding: 3px 8px; border-radius: 5px; border: 1px solid var(--gl-border);
+    background: var(--gl-muted); color: var(--gl-muted-fg); opacity: .4;
+    transition: opacity .35s ease, color .35s ease, border-color .35s ease;
+  }
+  #goal-lifecycle .gl-pill.is-lit { opacity: 1; }
+  #goal-lifecycle .gl-pill.is-lit[data-tone="main"] {
+    color: var(--gl-primary); border-color: var(--gl-primary);
+    background: color-mix(in srgb, var(--gl-primary) 10%, var(--gl-card));
+  }
+  #goal-lifecycle .gl-pill.is-lit[data-tone="warn"] {
+    color: var(--gl-warn); border-color: var(--gl-warn);
+    background: color-mix(in srgb, var(--gl-warn) 10%, var(--gl-card));
+  }
+  #goal-lifecycle .gl-pill.is-lit[data-tone="ok"] {
+    color: var(--gl-ok); border-color: var(--gl-ok);
+    background: color-mix(in srgb, var(--gl-ok) 10%, var(--gl-card));
+  }
+
+  /* ---------- split columns ---------- */
+  #goal-lifecycle .gl-split { display: flex; gap: 13px; align-items: flex-start; }
+  #goal-lifecycle .gl-split > * { flex: 1 1 0; min-width: 0; }
+  #goal-lifecycle .gl-sub { font-size: 11.5px; color: var(--gl-muted-fg); margin-bottom: 7px; }
+
+  /* ---------- evidence ledger ---------- */
+  #goal-lifecycle .gl-ledger { display: flex; flex-direction: column; gap: 6px; }
+  #goal-lifecycle .gl-row {
+    display: flex; align-items: center; gap: 8px; font-size: 12px;
+    padding: 6px 9px; border-radius: 6px;
+    border: 1px dashed var(--gl-border); color: var(--gl-muted-fg);
+    transition: border-color .35s ease, color .35s ease, background .35s ease;
+  }
+  #goal-lifecycle .gl-row.is-lit {
+    border-style: solid; border-color: var(--gl-ok); color: var(--gl-fg);
+    background: color-mix(in srgb, var(--gl-ok) 8%, var(--gl-card));
+  }
+  #goal-lifecycle .gl-row .gl-mark { font-weight: 700; font-family: ui-monospace, monospace; }
+
+  /* ---------- detail ---------- */
+  #goal-lifecycle .gl-detail {
+    margin: 13px 0 0; padding: 10px 12px;
+    border: 1px solid var(--gl-border); border-radius: 8px;
+    background: color-mix(in srgb, var(--gl-muted) 35%, var(--gl-card));
+    font-size: 12.5px; min-height: 54px;
+  }
+  #goal-lifecycle .gl-detail b { color: var(--gl-primary); }
+
+  /* ---------- static mode: a screenshot must land on a settled state ---------- */
+  #goal-lifecycle.is-static [data-reveal],
+  #goal-lifecycle.is-static .gl-chip,
+  #goal-lifecycle.is-static .gl-pill,
+  #goal-lifecycle.is-static .gl-act,
+  #goal-lifecycle.is-static .gl-tick,
+  #goal-lifecycle.is-static .gl-meter-fill,
+  #goal-lifecycle.is-static .gl-row { transition: none; }
+  @media (prefers-reduced-motion: reduce) {
+    #goal-lifecycle [data-reveal],
+    #goal-lifecycle .gl-chip,
+    #goal-lifecycle .gl-pill,
+    #goal-lifecycle .gl-act,
+    #goal-lifecycle .gl-tick,
+    #goal-lifecycle .gl-meter-fill,
+    #goal-lifecycle .gl-row { transition: none; }
+  }
+</style>
+
+<div class="gl-bar">
+  <span class="gl-label" id="gl-label"></span>
+  <ol class="gl-rail" id="gl-rail">
+    <li class="gl-tick"></li><li class="gl-tick"></li><li class="gl-tick"></li>
+    <li class="gl-tick"></li><li class="gl-tick"></li><li class="gl-tick"></li>
+    <li class="gl-tick"></li><li class="gl-tick"></li><li class="gl-tick"></li>
+    <li class="gl-tick"></li>
+  </ol>
+  <div class="gl-ctl">
+    <button type="button" id="gl-prev" aria-label="上一步">←</button>
+    <button type="button" id="gl-play" aria-pressed="true">Pause</button>
+    <button type="button" id="gl-next" aria-label="下一步">→</button>
+  </div>
+</div>
+
+<div class="gl-rows">
+  <!-- ============ lane 1: lifecycle ============ -->
+  <section class="gl-lane" data-reveal="1">
+    <div class="gl-lane-title">Goal 生命周期状态</div>
+    <div class="gl-flow">
+      <span class="gl-chip" data-lit="1" data-tone="idle"><i class="gl-dot"></i>draft</span>
+      <span class="gl-arrow">→</span>
+      <span class="gl-chip" data-lit="1" data-tone="idle"><i class="gl-dot"></i>queued</span>
+      <span class="gl-arrow">→</span>
+      <span class="gl-chip" data-lit="2" data-tone="main"><i class="gl-dot"></i>running</span>
+      <span class="gl-arrow">→</span>
+      <span class="gl-chip" data-lit="7" data-tone="main"><i class="gl-dot"></i>verifying</span>
+      <span class="gl-arrow">→</span>
+      <span class="gl-chip" data-lit="8" data-tone="ok"><i class="gl-dot"></i>succeeded</span>
+    </div>
+    <div class="gl-card" data-reveal="1">
+      <b>draft → queued</b>：验收标准仍在确认，尚未授权 Runner。<code>/goal create</code>
+      不写 <code>--</code> 段时<b>没有标准</b>，Goal 走「模型提交完成提议即完成」并标注
+      <b>self-attested</b>；写了才把每条片段变成必需的<b>人工</b>标准，完成前需
+      <code>/goal accept</code>。自动验证尚未实现，<code>Automatic</code> 标准仍被拒绝。
+    </div>
+  </section>
+
+  <!-- ============ lane 2: run / activation budget ============ -->
+  <section class="gl-lane" data-reveal="2">
+    <div class="gl-lane-title">Run：一次执行权 = 一到多个受限 activation</div>
+    <div class="gl-flow" style="margin-bottom:9px">
+      <span class="gl-act" data-lit="2" data-tone="main">activation 1</span>
+      <span class="gl-arrow">→</span>
+      <span class="gl-act" data-lit="3" data-tone="main">activation 2</span>
+      <span class="gl-arrow">→</span>
+      <span class="gl-act" data-lit="4" data-tone="main">activation 3</span>
+      <span class="gl-arrow">→</span>
+      <span class="gl-act" data-lit="4" data-tone="warn">… activation N</span>
+    </div>
+    <div class="gl-gate" data-reveal="3">
+      下一周期只在「上一个 activation 有<b>可观察进展</b>（跑过工具调用或追加过 Goal 事件）
+      且预算仍有剩余」时才启动；纯文字回合结束本次 Run。
+    </div>
+    <div class="gl-meter">
+      <div class="gl-meter-fill" style="--w:22%"></div>
+    </div>
+    <div class="gl-meter-note" data-reveal="4">
+      <span>累计预算（同一条 Run 记录）</span>
+      <span>500 turns · 600s 墙钟 · 跨 activation 累加</span>
+    </div>
+    <div class="gl-card" data-reveal="2">
+      <b>queued → running</b>：driver 创建后<b>立即</b>把 Goal 交给 Runner，不需要额外启动命令。
+      Runner 取得 lease、创建一次<b>有预算的 Run</b>，Agent 检查现状、规划并维护关联 Task DAG。
+      该 activation 跑在命令循环之外的可取消任务里，所以运行期间
+      <code>/goal list</code> / <code>pause</code> / <code>steer</code> / <code>cancel</code>
+      仍然可响应。
+    </div>
+    <div class="gl-card" data-reveal="2">
+      <b>每个周期重建注入上下文</b>：Runner 重新读 Goal、关联 Tasks 与事件事实，把
+      <code>&lt;goal-context&gt;</code>（目标 / 标准 / Tasks / 最近 checkpoint / 暂停原因）
+      注入 activation。它是<b>派生产物</b>，不是用户消息：<code>MessageKind::GoalContext</code>
+      与标记双重标识，compaction 重建不把它当作用户回合保留，TUI 历史<b>不渲染</b>它、
+      也不计入 <code>⟳</code> —— 面板才是它的权威视图。
+    </div>
+    <div class="gl-card" data-reveal="4">
+      <b>每一轮传的是「剩余」额度</b>：交给 agent loop 的是
+      <code>max_turns - turns_used</code>，且上限在 <code>turns_taken</code> 自增<b>之前</b>检查
+      —— 所以停下时那次探测不会被记成一次模型调用，多 cycle 的 Run 不会花到约 2× 预算。
+      工具调用数只作用量记录（<code>tool_calls_used</code>），<b>不设单独上限</b>：每次工具调用
+      本就发生在一次模型调用之内，turn 上限已经约束了总扇出。
+    </div>
+  </section>
+
+  <!-- ============ lane 3: checkpoint protocol + outcomes ============ -->
+  <section class="gl-lane" data-reveal="5">
+    <div class="gl-split">
+      <div>
+        <div class="gl-lane-title">checkpoint：每次 activation 常驻</div>
+        <div class="gl-sub" data-reveal="5">
+          每次注入的 <code>&lt;goal-context&gt;</code> 都带 <code>&lt;checkpoint-protocol&gt;</code>；
+          turn cap 最后一轮再补 <code>&lt;goal-budget-reminder&gt;</code>。
+        </div>
+        <div class="gl-card" data-reveal="5">
+          常驻协议要求模型在本次 activation 结束前调用 <code>goal_checkpoint</code> 记录
+          「已完成 / 仍待办 / 下一步」，达成目标时调 <code>goal_propose_completion</code>。
+          最后一轮提醒仍是 turn cap 上<b>唯一</b>能在运行中拦截的机会：turn cap 在模型调用
+          <b>之前</b>检查，该轮 system prompt 末尾追加 <code>&lt;goal-budget-reminder&gt;</code>。
+          两者都只存在于<b>该次请求</b>的 system prompt 里、不进入会话历史 ——
+          <b>预算是硬约束，提醒只是软引导</b>。
+        </div>
+      </div>
+      <div>
+        <div class="gl-lane-title">Run 结束时的 outcome</div>
+        <div class="gl-sub" data-reveal="6">
+          不让 driver 从 <code>Result&lt;()&gt;</code> 或最后一段模型文字里猜结局。
+        </div>
+        <div class="gl-pills" data-reveal="6">
+          <span class="gl-pill" data-lit="6" data-tone="main">progress_made</span>
+          <span class="gl-pill" data-lit="6" data-tone="warn">no_progress</span>
+          <span class="gl-pill" data-lit="6" data-tone="main">needs_user</span>
+          <span class="gl-pill" data-lit="6" data-tone="main">completion_proposed</span>
+          <span class="gl-pill" data-lit="6" data-tone="warn">budget_exhausted</span>
+          <span class="gl-pill" data-lit="6" data-tone="warn">transient_error</span>
+          <span class="gl-pill" data-lit="6" data-tone="ok">cancelled</span>
+        </div>
+      </div>
+    </div>
+    <div class="gl-card is-warn" data-reveal="6">
+      <b>无进展检测只看可观察变化</b>（工具调用、Goal 事件），不看模型自述：只有文字的周期
+      记为 <code>no_progress</code> 并结束本次 Run，Goal <b>保持</b> <code>running</code>
+      等下一次 activation —— 它不会因此被暂停，也不会被误记成 <code>progress_made</code>。
+      单次失败或偶发网络错误记 <code>transient_error</code>，Goal 状态不变。
+      暂停、等待和 Run 结束都<b>先落库，再通知 UI</b>。
+    </div>
+    <div class="gl-card is-ok" data-reveal="6">
+      <b>结束行说清两件事</b>：Run 结束时 Runner 查一次本 Run 期间是否写过 checkpoint；
+      没写且 Goal 仍非终态，就在 <code>🎯 … run finished: …</code> 那行追加
+      <code>(no checkpoint written)</code>，并把同一事实写进 <code>run_finished</code> 事件
+      （<code>note=no checkpoint written</code>）。若 Goal 保持 <code>running</code> 且没有活动
+      Run，同一行再追加 <code>— Goal idle; /goal resume to continue</code>，不让日志与面板
+      各说各话。
+    </div>
+  </section>
+
+  <!-- ============ lane 4: verification ============ -->
+  <section class="gl-lane" data-reveal="7">
+    <div class="gl-split">
+      <div>
+        <div class="gl-lane-title">完成提议 → 验证</div>
+        <div class="gl-card" data-reveal="7">
+          Agent 认为目标已满足时提交<b>完成提议</b>及不可信的 criterion claims，Runner 先验证才进
+          <code>verifying</code>。<b>claims 不写入 evidence</b> —— 模型的完成文字、所有 Task
+          已完成、某个 turn 正常结束，统统不是成功判据。<b>没有必需标准</b>时这就是成功路径，
+          但完成记录必须标注 <b>self-attested</b>，并附上模型自述的检查（<b>仍不是</b>验收证据）。
+        </div>
+      </div>
+      <div>
+        <div class="gl-lane-title">验收账本（evidence）</div>
+        <div class="gl-sub" data-reveal="8">
+          人工验收写入确认者、时间与所针对的标准版本。
+        </div>
+        <div class="gl-ledger">
+          <div class="gl-row" data-lit="7" data-reveal="7">
+            <span class="gl-mark">∅</span>无必需标准 · 模型自述检查 → <code>succeeded</code>
+            （self-attested）
+          </div>
+          <div class="gl-row" data-lit="8" data-reveal="8">
+            <span class="gl-mark">✓</span>全部必需标准 · 当前版本 evidence → <code>succeeded</code>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="gl-card is-ok" data-reveal="8">
+      <b>verifying → succeeded</b>：有必需标准时，全部标准都要有<b>当前版本</b>的 evidence 才算成功；
+      自动验证尚未实现，当前由人工验收写入。用户修改目标或标准要<b>提升版本号</b>，
+      旧版本 evidence 不能默认沿用，必须按影响重新验证。
+    </div>
+  </section>
+
+  <!-- ============ lane 5: branches, lease recovery, terminal ============ -->
+  <section class="gl-lane" data-reveal="9">
+    <div class="gl-flow" style="margin-bottom:9px">
+      <span class="gl-chip" data-lit="9" data-tone="warn"><i class="gl-dot"></i>waiting_user</span>
+      <span class="gl-arrow">→</span>
+      <span class="gl-chip" data-lit="9" data-tone="warn"><i class="gl-dot"></i>paused</span>
+      <span class="gl-arrow">→</span>
+      <span class="gl-chip" data-lit="10" data-tone="bad"><i class="gl-dot"></i>cancelled / failed</span>
+    </div>
+    <div class="gl-card is-warn" data-reveal="9">
+      <b>等待用户与崩溃恢复</b>：<code>needs_user</code> 落到 <code>waiting_user</code>；
+      人工验收<b>不要求</b> Goal 恰好停在 <code>waiting_user</code> —— <code>running</code>
+      （无活动 Run）与 <code>paused</code> 也能被 <code>/goal accept</code> 推进，只有
+      <b>活动 Run 在途</b>时拒绝。恢复的判据不能只看时间：lease 过期<b>或持有进程已消失</b>
+      （进程已退出，或 pid 被复用而 start-time 身份不匹配）就把 stranded <code>running</code>
+      落到 <code>paused</code>；identity 读不到或来自其他平台视为不可核验，退回纯时间过期语义，
+      绝不抢一个可能仍活着的持有者。<b>Lease 在 Run 执行期间按 <code>TTL/3</code> 持续心跳</b>，
+      收尾与释放只校验 owner + epoch（fencing），不再要求 lease 仍未过期。
+      <b>运行期定时恢复刻意不落 idle <code>running</code></b>：那是本轮 <code>no_progress</code>
+      的合法落点，后台定时器不能把用户的任务按成暂停。
+    </div>
+    <div class="gl-card is-bad" data-reveal="10">
+      <b>中断 vs 取消</b>：运行中按 <kbd>Esc</kbd> 只中断当前 Run → <code>paused</code>
+      （非终态，可 <code>/goal resume</code>）；只有 <code>/goal cancel</code> 写
+      <code>cancel_requested</code> 才落终态 <code>cancelled</code> —— 一次误触不会毁掉长任务。
+      预算耗尽时保存 checkpoint、用量和 stop reason 后进 <code>paused</code>。
+      已结束的 Goal 可 <code>archive</code>：它只把 Goal 移出面板，<b>状态是结局、不能被改写</b>
+      （<code>failed</code> 归档后仍报 <code>failed</code>），且归档是<b>唯一</b>被允许写终态
+      Goal 的操作。
+    </div>
+  </section>
+</div>
+
+<p class="gl-detail" id="gl-detail" aria-live="polite"></p>
+</div>
+
+<script>
+(function () {
+  var root = document.getElementById('goal-lifecycle');
+  if (!root) return;
+
+  var STEPS = [
+    { label: '创建与确认验收标准',
+      detail: '<b>1 / 10 · 创建</b> — <code>/goal create</code> 建出 <code>draft</code>；交互式命令的验收标准是<b>可选</b>的：不写 <code>--</code> 段时标准列表为空，Goal 以「模型提交完成提议即完成」运行并在事件里标注 <b>self-attested</b>；写了则每条非空片段成为一条必需的<b>人工</b>标准，成功前必须有当前版本的 evidence（<code>/goal accept</code>）。自动验证尚未实现，<code>Automatic</code> 标准在创建/更新时即被拒绝。' },
+    { label: '第一次 activation',
+      detail: '<b>2 / 10 · 启动</b> — 创建成功后 driver <b>立即</b>把 Goal 交给 Runner（<code>draft → queued → running</code>），不需要额外启动命令。Runner 取得 lease、创建一次<b>有预算的 Run</b>，Agent 检查现状、规划并维护 Task DAG。每次 activation 都重新注入精简的 <code>&lt;goal-context&gt;</code>（目标、标准、Tasks、最近 checkpoint、暂停原因）—— 它是派生产物，带 <code>MessageKind::GoalContext</code> 与标记，compaction 与 TUI 历史都不把它当用户回合。该 activation 在命令循环之外的可取消任务里运行，因此运行期间 <code>/goal list</code>、<code>/goal pause</code>、<code>/goal steer</code> 与 <code>/goal cancel</code> 仍然可响应。' },
+    { label: '下一周期的门槛',
+      detail: '<b>3 / 10 · 周期门槛</b> — 单次 <code>agent_loop</code> 正常结束只表示<b>本次交互</b>结束，不代表 Goal 完成。一个 activation 结束后，只有它有<b>可观察进展</b>（执行过工具调用，或追加过 Goal 事件：checkpoint / Task 关联 / 证据）<b>且</b> Run 累计预算仍有剩余，Runner 才接着跑下一个 activation；纯文本回合结束本次 Run。因为预算是按 turn 计的，周期数天然有界。' },
+    { label: '累计预算与记账',
+      detail: '<b>4 / 10 · 记账</b> — Run 预算同样是 <code>GoalLimits</code> 的 500 turns / 600 秒墙钟，<b>跨 activation 累加到同一条 Run 记录</b>上。每个 cycle 传给 agent loop 的是<b>剩余</b>额度 <code>max_turns - turns_used</code>，且上限在 <code>turns_taken</code> 自增<b>之前</b>检查 —— 停下时那次探测不会被记成一次模型调用，多 cycle 的 Run 不会花到约 2× 预算。工具调用数只作用量记录，<b>不设单独上限</b>；<code>Agent::max_turns</code> 约束的是进程累计的 <code>turns_taken</code>，所以传给循环的是「当前累计值 + 剩余预算」而不是裸的预算数字。' },
+    { label: 'checkpoint：常驻协议 + 最后一轮兜底',
+      detail: '<b>5 / 10 · 落盘</b> — 每次 activation 注入的 <code>&lt;goal-context&gt;</code> 都带 <code>&lt;checkpoint-protocol&gt;</code>：结束前调用 <code>goal_checkpoint</code> 记录「已完成 / 仍待办 / 下一步」，达成目标时调 <code>goal_propose_completion</code>。turn cap 那条路径另有 <code>&lt;goal-budget-reminder&gt;</code>：上限在模型调用<b>之前</b>检查，所以最后一轮是运行中唯一还能拦截的时机。两者都只存在于该次请求的 system prompt、不进入会话历史；<b>预算仍是硬约束，提醒只是软引导</b>。' },
+    { label: 'Run outcome、结束行与无进展检测',
+      detail: '<b>6 / 10 · 结局</b> — 每次 Run 结束都带明确 outcome（<code>progress_made</code> / <code>no_progress</code> / <code>needs_user</code> / <code>completion_proposed</code> / <code>budget_exhausted</code> / <code>transient_error</code> / <code>cancelled</code> …），而不是让 driver 去猜。无进展检测<b>只依赖可观察变化</b>（工具调用、Goal 事件），不依赖模型自述：只有文字的周期记为 <code>no_progress</code> 并结束本次 Run，Goal <b>保持</b> <code>running</code> 等待下一次 activation —— 既不因此暂停，也不会被误记成 <code>progress_made</code>。单次失败或偶发网络错误记 <code>transient_error</code>，Goal 状态不变。此外结束行如实报告：本 Run 没写过 checkpoint 且 Goal 仍非终态时追加 <code>(no checkpoint written)</code>（同一事实写进 <code>run_finished</code> 事件）；Goal 保持 <code>running</code> 且无活动 Run 时追加 <code>— Goal idle; /goal resume to continue</code>。' },
+    { label: '完成提议 → verifying',
+      detail: '<b>7 / 10 · 验证</b> — Agent 认为目标已满足时提交<b>完成提议</b>及不可信的 criterion claims，由 Runner 验证；<code>Verified</code> 才进 <code>verifying</code>，<code>NeedsUser</code> 转 <code>waiting_user</code>，未满足的标准保持 <code>running</code> 或按预算暂停。claims <b>不写入 evidence</b>：模型的完成文字、所有 Task 已完成、某个 turn 正常结束，均不是成功判据 —— 也<b>不得把「任务清单清空」当作验收通过</b>。没有必需标准的 Goal 走 <b>self-attested</b> 成功路径：事件写明 <code>completion self-attested</code>，并附模型自述的 checks（<b>不是</b>验收证据）。' },
+    { label: '人工验收 → succeeded',
+      detail: '<b>8 / 10 · 成功</b> — 有必需标准时，全部标准都要有<b>当前版本</b>的 evidence 才转 <code>succeeded</code>；自动验证尚未实现，当前由人工验收写入 evidence（记录确认者、时间及针对的标准版本）。用户修改目标或验收条件时<b>提升版本号</b>，旧版本的证据不能默认为新版本通过，必须按影响重新验证。验收失败则回到 <code>running</code> 修复；预算耗尽转 <code>paused</code> 并列出失败项。' },
+    { label: '等待用户、lease 心跳与崩溃恢复',
+      detail: '<b>9 / 10 · 恢复</b> — <code>needs_user</code> 把 Goal 落到 <code>waiting_user</code>，用户补充方向后唤醒回 <code>running</code>。人工验收<b>不要求</b> Goal 恰好停在 <code>waiting_user</code>：<code>running</code>（无活动 Run）与 <code>paused</code> 也能被 <code>/goal accept</code> 推进，只有<b>活动 Run 在途</b>时拒绝。恢复判据不能只看时间：lease 过期<b>或持有进程已消失</b>（进程已退出，或 pid 被复用而 start-time 身份不匹配）即把 stranded <code>running</code> 落到 <code>paused</code>；identity 读不到或来自其他平台视为不可核验，退回纯时间过期语义，绝不抢可能仍活着的持有者。Lease 在 Run 期间按 <code>TTL/3</code> 心跳，收尾与释放只校验 owner+epoch（fencing），不再要求 lease 未过期。运行期定时恢复<b>刻意不落</b> idle <code>running</code> —— 那是本轮 <code>no_progress</code> 的合法落点。' },
+    { label: '中断 vs 取消、终态',
+      detail: '<b>10 / 10 · 终态</b> — 运行中按 <kbd>Esc</kbd> / TUI Cancel 只中断当前 Run → <code>paused</code>（非终态，可 <code>/goal resume</code>）；只有带 <code>cancel_requested</code> 的 <code>/goal cancel</code> 才落终态 <code>cancelled</code>，一次误触不会毁掉长任务。预算耗尽时保存 checkpoint、用量与 stop reason 后进 <code>paused</code>。已结束的 Goal 可 <code>archive</code>：时间戳（<code>archived_at</code>）而非新状态，<b>状态是结局、不能被改写</b>（<code>failed</code> 归档后仍报 <code>failed</code>），且归档是<b>唯一</b>被允许写终态 Goal 的操作。' }
+  ];
+
+  var params = new URLSearchParams(window.location.search);
+  var requested = parseInt(params.get('step') || '', 10);
+  var still = params.has('static');
+  var reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  var step = 1, timer = null, playing = !reduce && !still, DWELL = 4400;
+  if (still) root.classList.add('is-static');
+
+  var ticks = root.querySelectorAll('#gl-rail .gl-tick');
+  var bits = root.querySelectorAll('[data-reveal]');
+  var lit = root.querySelectorAll('[data-lit]');
+  var label = document.getElementById('gl-label');
+  var detail = document.getElementById('gl-detail');
+  var playBtn = document.getElementById('gl-play');
+  var meter = root.querySelector('.gl-meter-fill');
+
+  // Budget meter creeps up across the budgeting steps so the lane tells a story.
+  var METER = { 1: '0%', 2: '22%', 3: '48%', 4: '72%', 5: '100%', 6: '100%' };
+
+  function apply() {
+    root.setAttribute('data-step', String(step));
+    label.textContent = step + ' / ' + STEPS.length + ' · ' + STEPS[step - 1].label;
+    detail.innerHTML = STEPS[step - 1].detail;
+    if (meter) meter.style.setProperty('--w', METER[Math.min(step, 6)] || '100%');
+
+    for (var i = 0; i < bits.length; i++) {
+      bits[i].classList.toggle('is-on', step >= Number(bits[i].getAttribute('data-reveal')));
+    }
+    for (var j = 0; j < lit.length; j++) {
+      lit[j].classList.toggle('is-lit', step >= Number(lit[j].getAttribute('data-lit')));
+    }
+    for (var k = 0; k < ticks.length; k++) {
+      ticks[k].classList.toggle('is-now', k === step - 1);
+      ticks[k].classList.toggle('is-past', k < step - 1);
+    }
+    playBtn.textContent = playing ? 'Pause' : 'Play';
+    playBtn.setAttribute('aria-pressed', playing ? 'true' : 'false');
+  }
+
+  function go(n) { step = Math.min(STEPS.length, Math.max(1, n)); apply(); }
+  function stop() {
+    playing = false;
+    if (timer) { clearInterval(timer); timer = null; }
+    apply();
+  }
+  function start() {
+    if (timer) clearInterval(timer);
+    playing = true;
+    timer = setInterval(function () {
+      if (step >= STEPS.length) { stop(); return; }
+      step += 1; apply();
+    }, DWELL);
+    apply();
+  }
+
+  document.getElementById('gl-prev').addEventListener('click', function () { stop(); go(step - 1); });
+  document.getElementById('gl-next').addEventListener('click', function () { stop(); go(step + 1); });
+  playBtn.addEventListener('click', function () {
+    if (playing) { stop(); } else { if (step >= STEPS.length) step = 1; start(); }
+  });
+
+  apply();
+  if (requested >= 1 && requested <= STEPS.length) { playing = false; go(requested); }
+  else if (playing) { start(); }
+})();
+</script>
+</div>
