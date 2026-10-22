@@ -1,6 +1,7 @@
 # Agent guidelines (Tact)
 
 - Small, focused diffs; no commit/push unless asked. Answers are Markdown lists.
+- Never commit directly to `main`: do the work on a feature branch and merge it through a PR. If a task starts while `main` is checked out, create a branch first; if the current branch is `main`, stop and ask rather than committing.
 - Cargo: one invocation at a time (parallel runs fight the `target/` lock); filter tests, then widen; channel-waiting async tests need timeouts.
 - Before pushing: `scripts/check-rust.sh` (with a proxy exported, also `no_proxy=127.0.0.1,localhost,::1`). Outside network: `export https_proxy=http://127.0.0.1:7890 http_proxy=$https_proxy all_proxy=$https_proxy`.
 - Docs to sync before pushing (`book/*_zh.html` Chinese, rest English; the book is hand-edited HTML — no Markdown source — and `python3 scripts/book-chapter-html.py --refresh book/*.html` rebuilds the sidebars after an edit): compaction/loop → `book/05` + `docs/compaction.md`; store → `book/01`; tokens → `docs/token_usage_schema.md`; config → `config.example.toml` + chapter; feature → `docs/superpowers/{specs,plans}`; user-visible fix → `book/26`. Before pushing, `python3 scripts/book-check.py book` must be clean.
