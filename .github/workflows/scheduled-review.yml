@@ -48,7 +48,14 @@ jobs:
     # runner for the default six hours. `timeout-minutes` is a *job* key — at
     # the workflow top level it makes the whole file invalid, and GitHub reports
     # that as a run with zero jobs rather than a schema error.
-    timeout-minutes: 30
+    #
+    # 30 minutes was too tight to separate "slow" from "stuck": a cold build
+    # costs ~10 minutes on an uncached runner, leaving only 20 for the agent,
+    # and the first real run was killed at 30m14s with an empty review. The
+    # limit is a backstop against a hung endpoint, not a budget for the work —
+    # and now that the log streams, a run that approaches it is visible while
+    # it happens instead of only after it dies.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
         with:
@@ -170,20 +177,48 @@ jobs:
         run: |
           set -euo pipefail
           # `-e`: a non-zero exit fails the job instead of publishing an empty
-          # review. stdout is the final answer; stderr carries session notices.
+          # review. stdout is the final answer; stderr is the progress log.
           # The provider flags are *global* options: they precede the
           # subcommand, and `headless` itself takes only the prompt.
+          #
+          # `tee` on stderr, not a plain `> review.log`: a plain redirect hides
+          # the log until the step ends, so a stalled run shows an empty Actions
+          # log and a cancelled run shows nothing at all. This keeps the live
+          # view and the saved file the same stream.
+          #
+          # Redirect order is load-bearing: `2>&1` first points stderr at the
+          # pipe, then `> review.md` moves *stdout only* into the file. So the
+          # final answer lands in review.md while the progress log goes to
+          # `tee` — and because `tee` is a real pipeline member, the shell
+          # waits for it, unlike a process substitution. `pipefail` (above)
+          # keeps a tact-ui failure from being masked by tee's exit status.
+          # tact-ui flushes each log line itself, so no `stdbuf` is needed.
           ./target/release/tact-ui \
             --provider "$PROVIDER" \
             --api-key "$API_KEY" \
             --base-url "$BASE_URL" \
             --model "$MODEL" \
             --permission-mode plan \
-            headless "$(cat prompt.txt)" > review.md 2> review.log
+            headless "$(cat prompt.txt)" 2>&1 > review.md | tee review.log
           echo "--- review log (tail) ---"
           tail -20 review.log || true
           echo "--- review body ---"
           cat review.md
+
+      # Uploaded even when the run fails or is cancelled: the point of the log
+      # is to explain a run that did not finish, and those are exactly the runs
+      # whose step-level output is truncated or lost.
+      - name: Keep the review log
+        if: always() && steps.range.outputs.empty == 'false'
+        uses: actions/upload-artifact@v4
+        with:
+          name: scheduled-review-log
+          path: |
+            review.log
+            review.md
+            review-range.txt
+          if-no-files-found: ignore
+          retention-days: 14
 
       - name: Never publish an empty body
         if: steps.range.outputs.empty == 'false'

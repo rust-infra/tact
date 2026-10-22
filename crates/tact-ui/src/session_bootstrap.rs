@@ -113,6 +113,20 @@ pub struct UiWiring {
     pub responder: UiResponder,
 }
 
+/// What a frontend can do with the events a session emits.
+///
+/// The distinction is not cosmetic: attaching to [`UiWiring::tx`] is a claim
+/// that prompts will be answered, so a frontend that cannot answer (headless)
+/// must not take that channel. It observes instead — it sees the same events,
+/// but permission checks still fall through to the non-interactive path.
+pub enum Frontend {
+    /// A UI that can answer prompts and draw the events itself (the TUI).
+    Interactive(UiWiring),
+    /// A frontend that only watches: it receives a copy of every event and
+    /// answers nothing. Used by headless, which has no one to ask.
+    Observing(UnboundedSender<AgentUpdate>),
+}
+
 /// Resolve (or start) this run's session, and take its lock.
 ///
 /// Both frontends do this as their first act, and the steps are not separable:
@@ -168,7 +182,7 @@ pub async fn bootstrap_session(
     skill_registry: SharedSkillRegistry,
     session_id: String,
     session_store: DynSessionStore,
-    ui: Option<UiWiring>,
+    frontend: Frontend,
     notices: Notices,
 ) -> anyhow::Result<Agent> {
     let client = get_llm_client().await?;
@@ -234,12 +248,12 @@ pub async fn bootstrap_session(
         tools.set_tool_description("bash", tact::tool::SANDBOXED_BASH_DESCRIPTION);
     }
 
-    let (ui_tx, ui_responder) = match &ui {
-        Some(wiring) => (Some(wiring.tx.clone()), wiring.responder.clone()),
+    let (ui_tx, ui_responder) = match &frontend {
+        Frontend::Interactive(wiring) => (Some(wiring.tx.clone()), wiring.responder.clone()),
         // An empty responder is the honest value for "nobody can answer": a
         // tool that asks fails cleanly instead of hanging on a prompt that has
         // no one behind it.
-        None => (None, UiResponder::new()),
+        Frontend::Observing(_) => (None, UiResponder::new()),
     };
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),
@@ -287,9 +301,12 @@ pub async fn bootstrap_session(
     )
     .with_session(session_id, session_store)
     .with_provider_kind(provider_kind);
-    if let Some(wiring) = ui {
-        agent = agent.with_ui_channel(wiring.tx);
-    }
+    agent = match frontend {
+        Frontend::Interactive(wiring) => agent.with_ui_channel(wiring.tx),
+        // Observation only: the agent keeps its empty responder, so every
+        // permission check still takes the non-interactive path.
+        Frontend::Observing(tx) => agent.with_event_observer(tx),
+    };
     // RTK filter is opt-in — `with_post_tool` no-ops unless the
     // `tools.rtk_filter` setting is enabled.
     agent = agent.with_post_tool(tact::hook::rtk_filter::create_rtk_post_tool_hook());

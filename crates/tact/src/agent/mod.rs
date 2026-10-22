@@ -434,6 +434,15 @@ pub struct AgentRuntime {
     /// the ids have to be unique across those parallel runs or one hook's
     /// "finished" would rewrite another's line.
     pub hook_status_seq: std::sync::atomic::AtomicU64,
+    /// A read-only mirror of every [`AgentUpdate`], for frontends that have no
+    /// interactive UI but still must show progress.
+    ///
+    /// Deliberately separate from [`Self::ui_tx`]: that channel is the *ask*
+    /// path (permission prompts, `ask_user`), and a frontend attaching a
+    /// receiver there is claiming it can answer. Headless cannot, so it
+    /// observes here instead — which is why this changes no permission
+    /// semantics, only visibility. See [`Agent::with_event_observer`].
+    pub observer_tx: Option<tokio::sync::mpsc::UnboundedSender<AgentUpdate>>,
 }
 
 /// How the agent builds its system prompt.
@@ -550,6 +559,7 @@ impl Agent {
                 session_start_source: SessionStartSource::Startup,
                 pending_hook_context: Arc::new(Mutex::new(VecDeque::new())),
                 hook_status_seq: std::sync::atomic::AtomicU64::new(1),
+                observer_tx: None,
             },
             tool_context,
             tools,
@@ -913,9 +923,30 @@ impl Agent {
             _ => {}
         }
 
+        // The observer gets its own copy so it can never consume the update the
+        // interactive UI needs; when both are attached, `ui_tx` keeps the
+        // original.
+        if let Some(observer) = &self.runtime.observer_tx {
+            let _ = observer.send(update.clone());
+        }
         if let Some(tx) = &self.runtime.ui_tx {
             let _ = tx.send(update);
         }
+    }
+
+    /// Attach a read-only observer for every [`AgentUpdate`] this agent emits.
+    ///
+    /// Distinct from [`Self::with_ui_channel`], which also makes the frontend
+    /// the answerer of permission prompts. A headless run has no one to ask, so
+    /// it must not claim that channel; it only needs to *see* progress. The
+    /// permission path is therefore untouched — [`Self::emit_update`] clones
+    /// into this channel and hands the original to `ui_tx` as before.
+    pub fn with_event_observer(
+        mut self,
+        tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>,
+    ) -> Self {
+        self.runtime.observer_tx = Some(tx);
+        self
     }
 
     /// Load persisted history into an empty context.

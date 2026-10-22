@@ -6,7 +6,7 @@ use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate};
 use crate::{
     account,
     driver::run_command_loop_with_account,
-    session_bootstrap::{Notices, UiWiring, bootstrap_session, open_session},
+    session_bootstrap::{Frontend, Notices, UiWiring, bootstrap_session, open_session},
     session_lock::{SessionLockGuard, SessionLockRegistry},
 };
 
@@ -281,7 +281,7 @@ async fn build_agent_for_interactive(
         skill_registry,
         session_id,
         session_store,
-        Some(UiWiring {
+        Frontend::Interactive(UiWiring {
             tx: agent_tx,
             responder: ui_responder,
         }),

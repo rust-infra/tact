@@ -12,6 +12,7 @@ pub mod test_support;
 
 mod account;
 mod headless;
+mod headless_log;
 mod interactive;
 mod permission;
 mod session_bootstrap;

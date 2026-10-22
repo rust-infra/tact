@@ -336,7 +336,12 @@ pub struct SubagentRunSnapshot {
 }
 
 /// Status update messages sent from the Agent to the TUI.
-#[derive(Debug)]
+///
+/// `Clone` because an event can have more than one destination: the interactive
+/// frontend consumes the only copy on its `ui_tx`, while a frontend that merely
+/// *observes* (headless) gets its own copy on the observer channel. Cloning is
+/// what keeps the observer from stealing the update the real UI needs.
+#[derive(Debug, Clone)]
 pub enum AgentUpdate {
     /// Dynamically append a step to the existing plan (does not reset selection state)
     StepAdded(PlanStep),
