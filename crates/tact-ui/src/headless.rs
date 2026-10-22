@@ -77,8 +77,10 @@ async fn run_headless_locked(
     // The observer channel is what makes the run legible: without it every
     // event the agent emits is dropped, and a long or wedged run is
     // indistinguishable from a working one until it exits. It is *not* a UI
-    // channel — headless still cannot answer permission prompts, which is why
-    // the run is started with `--permission-mode plan` in CI.
+    // channel — headless still cannot answer permission prompts, so a caller
+    // that needs its tools allowed must choose a mode that does not ask
+    // (`--permission-mode auto`; the scheduled review does this on the
+    // throwaway CI runner itself).
     let (observer_tx, observer_rx) = tokio::sync::mpsc::unbounded_channel();
     let pump = tokio::spawn(pump_events_to_stderr(observer_rx));
 
