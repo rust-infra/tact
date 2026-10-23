@@ -8,6 +8,27 @@
 //! Pools are reference-counted: the registry drops a pool when the last
 //! store holding it is dropped, so long test runs that create many
 //! temporary databases do not leak file descriptors.
+//!
+//! # Transactions that write must say so at `BEGIN`
+//!
+//! `Pool::begin` issues a bare `BEGIN`, which SQLite treats as *deferred*: it
+//! takes no lock, and the transaction's first statement decides what kind it
+//! becomes. That is fine for a transaction whose first statement is the write,
+//! and wrong for one that reads first — which is most of them here.
+//!
+//! The read opens a snapshot. When the write half then asks for the write
+//! lock, SQLite compares the WAL header against that snapshot and refuses if
+//! anything was committed in between (`SQLITE_BUSY_SNAPSHOT`), because writing
+//! would fork the log. It also does not wait: the retry loop in
+//! `btreeBeginTrans` only consults the busy handler while the connection has no
+//! transaction open, and a read snapshot is one. The result is a failure in
+//! microseconds on a connection configured with a five-second `busy_timeout`.
+//!
+//! So a transaction that reads before it writes opens with
+//! `pool.begin_with("BEGIN IMMEDIATE")`. That asks for the write lock at
+//! `BEGIN`, before any snapshot exists, where the busy handler does run — a
+//! concurrent writer is waited out instead of failing. Pure-read transactions
+//! keep using `begin()`; they must not queue behind writers.
 
 use std::collections::HashMap;
 use std::ops::Deref;

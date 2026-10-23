@@ -386,6 +386,7 @@
 <li class="toc-l3"><a href="#agent-%E9%9B%86%E6%88%90" title="Agent 集成"><span class="toc-label">Agent 集成</span></a></li>
 <li class="toc-l3"><a href="#%E8%BE%93%E5%85%A5%E5%8E%86%E5%8F%B2%E8%A3%81%E5%89%AA" title="输入历史裁剪"><span class="toc-label">输入历史裁剪</span></a></li>
 <li class="toc-l3"><a href="#%E8%AF%B7%E6%B1%82%E6%AD%A3%E6%96%87%E8%A3%81%E5%89%AA" title="请求正文裁剪"><span class="toc-label">请求正文裁剪</span></a></li>
+<li class="toc-l3"><a href="#%E4%BA%8B%E5%8A%A1%E8%B5%B7%E7%82%B9" title="事务起点：deferred 还是 IMMEDIATE"><span class="toc-label">事务起点：deferred 还是 IMMEDIATE</span></a></li>
 <li class="toc-l2"><a href="#7-%E7%94%9F%E5%91%BD%E5%91%A8%E6%9C%9F%E5%9B%BE" title="7. 生命周期图"><span class="toc-label">7. 生命周期图</span></a></li>
 <li class="toc-l2"><a href="#8-%E4%BB%A3%E7%A0%81%E5%9C%B0%E5%9B%BE" title="8. 代码地图"><span class="toc-label">8. 代码地图</span></a></li>
 <li class="toc-l2"><a href="#9-%E5%BD%93%E5%89%8D%E7%BC%BA%E5%8F%A3" title="9. 当前缺口"><span class="toc-label">9. 当前缺口</span></a></li>
@@ -886,6 +887,21 @@ NULL。每次插入只清一行（窗口边缘那行），
 会跳过被清空的行。文件只有在 <code>VACUUM</code> 之后才会变小；
 对该策略生效之前就已经长起来的库，<code>docs/token_usage_schema.md</code>
 里有一次性的回收配方。</p>
+<h3 id="事务起点">事务起点：deferred 还是 IMMEDIATE</h3>
+<p><code>Pool::begin</code> 发出的是裸 <code>BEGIN</code>，SQLite
+把它当 <strong>deferred</strong>：不拿任何锁，事务类型由第一条语句决定。对「第一条就是写」的事务这没问题；对「先读后写」的事务则是错的，而后者在本章几乎到处都是。</p>
+<p>读打开一个快照。等写那半去要写锁时，SQLite 会拿 WAL 头与该快照比对，只要中间有人提交过就拒绝（<code>SQLITE_BUSY_SNAPSHOT</code>）——继续写会让 WAL 分叉。它也不会等：<code>btreeBeginTrans</code>
+的重试循环只在「本连接没有事务」时才调用 busy handler，而读快照本身就是事务。结果是在一个配了 5 秒
+<code>busy_timeout</code> 的连接上，<strong>微秒级就失败</strong>。</p>
+<p>因此先读后写的事务一律用
+<code>pool.begin_with("BEGIN IMMEDIATE")</code>：在
+<code>BEGIN</code> 处、任何快照存在之前就要写锁，此时 busy
+handler 会正常运行，并发写者被「等过去」而不是报错。纯读事务继续用
+<code>begin()</code>——它们不该排在写者后面。</p>
+<p>当前实现：<code>TaskStore::update</code>（读行再改）、<code>delete_session</code>（先查子会话再删）已改为
+<code>BEGIN IMMEDIATE</code>；<code>create</code> / <code>delete</code> / <code>append_message</code> / <code>replace_session_messages*</code>
+的第一条语句就是写，保持 deferred。规则写在
+<code>crates/tact/src/store/sqlite.rs</code> 的模块文档里，两个回归测试各自持写锁 150ms 验证「会等而不是报错」。</p>
 <hr />
 <h2 id="7-生命周期图">7. 生命周期图</h2>
 <pre class="mermaid">sequenceDiagram
