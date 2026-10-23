@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use sqlx::{Row, Sqlite, Transaction};
 
-use crate::store::sqlite::{PoolRef, now_millis, open_pool};
+use crate::store::sqlite::{PoolRef, begin_write, now_millis, open_pool};
 use crate::task::{TaskRecord, TaskStatus, TaskUpdate};
 
 use super::TaskStore;
@@ -182,7 +182,7 @@ impl TaskStore for SqliteTaskStore {
     ) -> Result<TaskRecord> {
         validate_goal_id(&goal_id)?;
         let task = TaskRecord::new(0, subject, description, session_id);
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         ensure_goal_exists(&mut tx, &goal_id).await?;
         let id = sqlx::query("INSERT INTO tasks (subject, description, session_id, status, owner, created_at, goal_id) VALUES (?, ?, ?, 'pending', '', ?, ?)")
             .bind(&task.subject).bind(&task.description).bind(&task.session_id)
@@ -197,7 +197,7 @@ impl TaskStore for SqliteTaskStore {
 
     async fn associate_goal(&self, task_id: u64, goal_id: String) -> Result<TaskRecord> {
         validate_goal_id(&goal_id)?;
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         ensure_goal_exists(&mut tx, &goal_id).await?;
         let row = sqlx::query("SELECT goal_id FROM tasks WHERE id = ?")
             .bind(task_id as i64)
@@ -271,7 +271,7 @@ impl TaskStore for SqliteTaskStore {
         // and returns SQLITE_BUSY (SQLITE_BUSY_SNAPSHOT once that writer
         // committed) immediately — `busy_timeout` never gets a chance. Taking
         // the write lock first moves the wait to a point where it works.
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
 
         // Read the current row (inside the write transaction so the read is
         // isolated from concurrent writers).

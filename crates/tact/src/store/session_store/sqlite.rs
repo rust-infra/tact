@@ -8,7 +8,7 @@ use tact_protocol::TokenUsageInfo;
 
 use super::{MAX_INPUT_HISTORY, MAX_TOKEN_USAGE_BODIES, MessageCountByPeriod, SessionSummary};
 use crate::store::process_identity::{is_process_alive, process_identity};
-use crate::store::sqlite::{PoolRef, open_pool};
+use crate::store::sqlite::{PoolRef, begin_write, open_pool};
 
 pub struct SqliteSessionStore {
     pool: PoolRef,
@@ -664,9 +664,7 @@ impl super::SessionStore for SqliteSessionStore {
         // to be taken up front: a deferred transaction would open a read
         // snapshot at the SELECT and then fail immediately instead of waiting
         // when another connection is mid-write (see `TaskStore::update`).
-        let mut tx = self
-            .pool
-            .begin_with("BEGIN IMMEDIATE")
+        let mut tx = begin_write(&self.pool)
             .await
             .context("failed to begin delete session transaction")?;
 

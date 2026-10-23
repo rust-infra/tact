@@ -7,7 +7,7 @@ use sqlx::{Row, SqliteConnection};
 use crate::{
     goal::{Goal, GoalEvent, GoalEventKind, GoalRun, GoalStatus, GoalUpdate},
     store::process_identity::{current_process, holder_is_alive},
-    store::sqlite::{PoolRef, from_millis, now_millis, open_pool},
+    store::sqlite::{PoolRef, begin_write, from_millis, now_millis, open_pool},
 };
 
 use super::{GoalStore, GoalStoreError, LeaseToken};
@@ -514,7 +514,7 @@ impl GoalStore for SqliteGoalStore {
         event: Option<GoalEvent>,
         lease: Option<&LeaseToken>,
     ) -> Result<Goal> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         let goal = self
             .update_in_tx(&mut tx, goal_id, expected_version, update, event, lease)
             .await?;
@@ -523,7 +523,7 @@ impl GoalStore for SqliteGoalStore {
     }
 
     async fn append_event(&self, event: GoalEvent) -> Result<GoalEvent> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         sqlx::query("SELECT 1 FROM goals WHERE id = ?")
             .bind(&event.goal_id)
             .fetch_optional(&mut *tx)
@@ -658,7 +658,7 @@ impl GoalStore for SqliteGoalStore {
     }
 
     async fn claim_lease(&self, owner: &str, ttl: Duration) -> Result<LeaseToken> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         let (holder_pid, holder_identity) = current_process();
         let token = self
             .lease_tx(&mut tx, owner, ttl, (holder_pid, &holder_identity))
@@ -668,7 +668,7 @@ impl GoalStore for SqliteGoalStore {
     }
 
     async fn heartbeat_lease(&self, token: &LeaseToken, ttl: Duration) -> Result<LeaseToken> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         validate_lease(&mut tx, token).await?;
         let expires = now_millis().saturating_add(ttl.as_millis().min(i64::MAX as u128) as i64);
         let changed = sqlx::query(
@@ -688,7 +688,7 @@ impl GoalStore for SqliteGoalStore {
     }
 
     async fn release_lease(&self, token: &LeaseToken) -> Result<()> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         // Fencing only: a lapsed-but-not-taken-over lease is still this
         // runner's to release (see `validate_lease_fence`).
         validate_lease_fence(&mut tx, token).await?;
@@ -715,7 +715,7 @@ impl GoalStore for SqliteGoalStore {
                 run_id: run.id.clone(),
             }));
         }
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         let (holder_pid, holder_identity) = current_process();
         let token = self
             .lease_tx(&mut tx, owner, ttl, (holder_pid, &holder_identity))
@@ -747,7 +747,7 @@ impl GoalStore for SqliteGoalStore {
                 run_id: run.id.clone(),
             }));
         }
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         // The caller already holds this claim. Requiring a live expiry here
         // (rather than rotating the epoch) keeps the token the runner will use
         // for heartbeat, finish and release authoritative.
@@ -788,7 +788,7 @@ impl GoalStore for SqliteGoalStore {
     }
 
     async fn update_run_progress(&self, token: &LeaseToken, run: &GoalRun) -> Result<()> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         validate_lease_fence(&mut tx, token).await?;
         let data = serde_json::to_string(run)?;
         let changed = sqlx::query(
@@ -814,7 +814,7 @@ impl GoalStore for SqliteGoalStore {
         updates: Vec<(GoalUpdate, GoalEvent)>,
         lease: Option<&LeaseToken>,
     ) -> Result<Goal> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         if let Some(token) = lease {
             validate_lease(&mut tx, token).await?;
         } else {
@@ -850,7 +850,7 @@ impl GoalStore for SqliteGoalStore {
     }
 
     async fn finish_run(&self, token: &LeaseToken, run: GoalRun) -> Result<GoalRun> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         validate_lease_fence(&mut tx, token).await?;
         let finished = self.finish_run_in_tx(&mut tx, &run).await?;
         tx.commit().await?;
@@ -864,7 +864,7 @@ impl GoalStore for SqliteGoalStore {
         transitions: Vec<(GoalUpdate, GoalEvent)>,
         run_event: GoalEvent,
     ) -> Result<(GoalRun, Goal)> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         validate_lease_fence(&mut tx, token).await?;
         let finished = self.finish_run_in_tx(&mut tx, &run).await?;
         // Each transition CASes against the version the previous one produced,
@@ -905,7 +905,7 @@ impl GoalStore for SqliteGoalStore {
     }
 
     async fn recover_dead_active_runs(&self) -> Result<Vec<GoalRun>> {
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         let lease = sqlx::query(
             "SELECT expires_at, holder_pid, holder_identity FROM goal_leases WHERE singleton = 1",
         )

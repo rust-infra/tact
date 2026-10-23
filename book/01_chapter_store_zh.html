@@ -647,9 +647,25 @@ API——调用方不应直接操作底层 store（<code>Store</code> /
 会创建目录与空文件，然后以 <strong>WAL</strong> journal 连接（TUI
 读历史不必等 agent 写完）并设 5s <code>busy_timeout</code>；WAL 下
 <code>synchronous = NORMAL</code>（WAL 中无损
-durability），若并发打开导致 WAL 切换失败则记一条 warn 并回退到默认
-delete journal，此时 <code>synchronous</code> 回到
+durability），非 WAL 时回到
 <code>FULL</code>。</p>
+<p><strong>journal mode 只在新库上切换一次。</strong>
+切进 WAL 需要独占锁，而 SQLite 在这里<strong>不理会
+<code>busy_timeout</code></strong>、立刻返回
+<code>SQLITE_BUSY</code>。把
+<code>journal_mode</code> 写进连接参数会让池里<strong>每一条新连接</strong>都重跑一次该
+PRAGMA——于是一个处于 rollback-journal 的库，只要别人正在写，就再也拿不到连接。所以
+<code>open_pool</code> 先用一条连接探测
+<code>sqlite_master</code>：<strong>没有 schema 的新库</strong>（含首次初始化被打断留下的空库）才切到
+WAL，已初始化的库<strong>保持它原本的 journal
+mode</strong>，非 WAL 时记一条 warn。日常路径上每个库都是 WAL，对活库做转换只会换来卡顿。</p>
+<p><strong>写者准入有重试。</strong>
+<code>begin_write(&amp;pool)</code> 是
+<code>BEGIN IMMEDIATE</code> 的统一入口：先按
+<code>busy_timeout</code> 等 5s，若仍拿到
+<code>SQLITE_BUSY</code>/<code>SQLITE_LOCKED</code>（含
+<code>SQLITE_BUSY_SNAPSHOT</code> 等扩展码，按低字节 5/6 判定）再退避重试
+100ms、200ms。只有「重试可能成功」的忙等错误会被重试——约束冲突、语法错误在第一次就上抛，不会因为重试变成两条记录。</p>
 <hr />
 <h2 id="6-session-storesqlite">6. Session Store（SQLite）</h2>
 <p>定义于 <code>crates/tact/src/store/session_store/</code>。trait 为
@@ -894,14 +910,17 @@ NULL。每次插入只清一行（窗口边缘那行），
 的重试循环只在「本连接没有事务」时才调用 busy handler，而读快照本身就是事务。结果是在一个配了 5 秒
 <code>busy_timeout</code> 的连接上，<strong>微秒级就失败</strong>。</p>
 <p>因此先读后写的事务一律用
-<code>pool.begin_with("BEGIN IMMEDIATE")</code>：在
+<code>store::sqlite::begin_write(&amp;pool)</code>（内部即
+<code>BEGIN IMMEDIATE</code>，外加忙等重试）：在
 <code>BEGIN</code> 处、任何快照存在之前就要写锁，此时 busy
 handler 会正常运行，并发写者被「等过去」而不是报错。纯读事务继续用
 <code>begin()</code>——它们不该排在写者后面。</p>
-<p>当前实现：<code>TaskStore::update</code>（读行再改）、<code>delete_session</code>（先查子会话再删）已改为
-<code>BEGIN IMMEDIATE</code>；<code>create</code> / <code>delete</code> / <code>append_message</code> / <code>replace_session_messages*</code>
+<p>当前实现：<code>TaskStore::update</code>（读行再改）、<code>delete_session</code>（先查子会话再删）、以及
+<code>goal_store</code> 里全部 14 处事务（版本 CAS、lease、事件追加）都走
+<code>begin_write</code>；<code>create</code> / <code>delete</code> / <code>append_message</code> / <code>replace_session_messages*</code>
 的第一条语句就是写，保持 deferred。规则写在
-<code>crates/tact/src/store/sqlite.rs</code> 的模块文档里，两个回归测试各自持写锁 150ms 验证「会等而不是报错」。</p>
+<code>crates/tact/src/store/sqlite.rs</code> 的模块文档里，回归测试各自持写锁验证「会等而不是报错」，另有一组用
+<code>busy_timeout=0</code> 验证「重试确实救了第一次失败」，以及「重试耗尽后错误照样上抛」。</p>
 <hr />
 <h2 id="7-生命周期图">7. 生命周期图</h2>
 <pre class="mermaid">sequenceDiagram
@@ -941,9 +960,10 @@ handler 会正常运行，并发写者被「等过去」而不是报错。纯读
 <tr>
 <td><code>crates/tact/src/store/sqlite.rs</code></td>
 <td>共享 <code>SqlitePool</code>（每个 db
-一份、引用计数）、连接参数决策（WAL + <code>busy_timeout</code>，WAL
-失败回退）与各域共用的毫秒时间戳转换（<code>now_millis</code> /
-<code>from_millis</code>——后者决定"读不出来的时间戳"回退为
+一份、引用计数）、连接参数决策（仅新库切 WAL + <code>busy_timeout</code>，已初始化的库保持原
+journal mode）、写者准入 <code>begin_write</code>（<code>BEGIN
+IMMEDIATE</code> + 忙等退避重试）与各域共用的毫秒时间戳转换（<code>now_millis</code>
+/ <code>from_millis</code>——后者决定"读不出来的时间戳"回退为
 <code>Utc::now()</code>，因为该列只是显示字段）</td>
 </tr>
 <tr>
