@@ -10,6 +10,7 @@ use crate::{
     CreateMessageParams, LlmClient, LlmError, LlmResponse, ProviderConversationState,
     ProviderProfile, hook_select::hook_for_dialect,
 };
+use tact_protocol::UpdateSink;
 
 use super::{
     body::assemble_chat_completion_body,
@@ -66,9 +67,9 @@ impl LlmClient for ChatCompletionsAdapter {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<tokio::sync::mpsc::UnboundedSender<tact_protocol::AgentUpdate>>,
+        events: &UpdateSink,
     ) -> Result<LlmResponse, LlmError> {
-        stream_assembled(&self.adapter, request, provider_state, ui_tx, |r, s| {
+        stream_assembled(&self.adapter, request, provider_state, events, |r, s| {
             self.assemble_body(r, s)
         })
         .await

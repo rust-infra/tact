@@ -28,6 +28,7 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tact_protocol::UpdateSink;
 
 use crate::store::subagent_store::{SqliteSubagentStore, SubagentStore};
 
@@ -404,18 +405,15 @@ impl SubagentManager {
 /// does not flood the sticky strip.
 pub const MAX_SUBAGENT_SNAPSHOT: usize = 20;
 
-/// Notify the TUI that the current-process subagent set changed (no-op without
-/// `ui_tx`). Emitted after the run row is durable so the TUI never sees a
-/// snapshot that disagrees with the store.
-pub async fn emit_subagents_changed(
-    ui_tx: &Option<tokio::sync::mpsc::UnboundedSender<tact_protocol::AgentUpdate>>,
-    manager: &SharedSubagentManager,
-) {
-    let Some(tx) = ui_tx else {
+/// Notify the frontend that the current-process subagent set changed (no-op
+/// without an attached sink). Emitted after the run row is durable so the TUI
+/// never sees a snapshot that disagrees with the store.
+pub async fn emit_subagents_changed(events: &UpdateSink, manager: &SharedSubagentManager) {
+    if events.is_empty() {
         return;
-    };
+    }
     let runs = manager.ui_snapshot().await;
-    let _ = tx.send(tact_protocol::AgentUpdate::SubagentsChanged { runs });
+    events.send(tact_protocol::AgentUpdate::SubagentsChanged { runs });
 }
 
 impl SharedSubagentManager {

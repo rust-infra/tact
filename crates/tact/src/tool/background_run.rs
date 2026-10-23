@@ -118,16 +118,14 @@ pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Resu
     // Surface the id on the live card. The invocation returns while the task
     // keeps running, so this meta row is the only place a user can read the id
     // to poll it (`/background <id>`), long before the result text is opened.
-    if let Some(tx) = &ctx.ui_tx {
-        let _ = tx.send(AgentUpdate::ToolMeta {
-            tool_id: ctx.progress_reporter.tool_id().to_string(),
-            model: None,
-            token_usage: None,
-            context_window: None,
-            task_id: Some(id.clone()),
-            subagent_id: None,
-        });
-    }
+    ctx.events.send(AgentUpdate::ToolMeta {
+        tool_id: ctx.progress_reporter.tool_id().to_string(),
+        model: None,
+        token_usage: None,
+        context_window: None,
+        task_id: Some(id.clone()),
+        subagent_id: None,
+    });
 
     let Some(wait_ms) = input.wait_ms.map(capped_run_wait_ms).filter(|ms| *ms > 0) else {
         return Ok(started);
@@ -407,6 +405,7 @@ mod tests {
 
     use super::*;
     use crate::tool::test_support::{run_tool, test_context};
+    use tact_protocol::UpdateSink;
 
     #[tokio::test]
     async fn check_background_lists_empty_when_no_tasks() {
@@ -525,8 +524,9 @@ mod tests {
     async fn background_run_reports_the_started_id_to_the_card() {
         let mut context = test_context("background_run_reports_the_id");
         let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
-        context.ui_tx = Some(tx.clone());
-        context.progress_reporter = crate::tool::ToolProgressReporter::new("bg-card", Some(tx));
+        context.events = UpdateSink::for_ui(tx.clone());
+        context.progress_reporter =
+            crate::tool::ToolProgressReporter::new("bg-card", UpdateSink::for_ui(tx));
 
         let output = run_tool(
             &context,

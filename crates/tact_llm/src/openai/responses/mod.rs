@@ -19,8 +19,7 @@ use reqwest13::header::{AUTHORIZATION, HeaderMap};
 use secrecy::ExposeSecret as LegacyExposeSecret;
 use secrecy10::{ExposeSecret, SecretString};
 use serde_json::Value;
-use tact_protocol::AgentUpdate;
-use tokio::sync::mpsc::UnboundedSender;
+use tact_protocol::{AgentUpdate, UpdateSink};
 
 use self::{
     normalize::{NormalizedResponse, parse_compact_resource},
@@ -588,7 +587,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        events: &UpdateSink,
     ) -> Result<LlmResponse, LlmError> {
         if let Some(ProviderConversationState::OpenAiResponses(state)) = provider_state {
             self.validate_state_binding(state)?;
@@ -611,10 +610,8 @@ impl LlmClient for OpenAiResponsesAdapter {
                     None => continue,
                 },
                 Err(error) => {
-                    if let Some(update) = state.close_thinking()
-                        && let Some(tx) = &ui_tx
-                    {
-                        let _ = tx.send(update);
+                    if let Some(update) = state.close_thinking() {
+                        events.send(update);
                     }
                     return Err(LlmError::from(error));
                 }
@@ -622,31 +619,23 @@ impl LlmClient for OpenAiResponsesAdapter {
             let updates = match state.apply_with_raw(event.0, event.1) {
                 Ok(updates) => updates,
                 Err(error) => {
-                    if let Some(update) = state.close_thinking()
-                        && let Some(tx) = &ui_tx
-                    {
-                        let _ = tx.send(update);
+                    if let Some(update) = state.close_thinking() {
+                        events.send(update);
                     }
                     return Err(error);
                 }
             };
             for update in updates {
-                if let Some(tx) = &ui_tx {
-                    let _ = tx.send(update);
-                }
+                events.send(update);
             }
         }
 
-        if let Some(update) = state.close_thinking()
-            && let Some(tx) = &ui_tx
-        {
-            let _ = tx.send(update);
+        if let Some(update) = state.close_thinking() {
+            events.send(update);
         }
         let normalized = state.finish()?;
-        if let Some(usage) = &normalized.usage
-            && let Some(tx) = &ui_tx
-        {
-            let _ = tx.send(AgentUpdate::TokenUsage(usage.clone()));
+        if let Some(usage) = &normalized.usage {
+            events.send(AgentUpdate::TokenUsage(usage.clone()));
         }
         let state_update = self.state_update(&normalized, request, input_items)?;
         Ok(Self::into_result(normalized, request_body, state_update))
@@ -794,6 +783,7 @@ mod tests {
         StopReason, Thinking, ThinkingType, Tool,
     };
     use async_openai_responses::types::responses::{OutputItem, ResponseStreamEvent};
+    use tact_protocol::UpdateSink;
 
     #[test]
     fn opencode_config_headers_carry_the_session_id() {
@@ -1598,7 +1588,7 @@ mod tests {
         let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None);
 
         let response = adapter
-            .stream_message(&request, None, None)
+            .stream_message(&request, None, &UpdateSink::default())
             .await
             .expect("Responses stream request should succeed");
         let blocks = response.blocks;
@@ -1632,7 +1622,7 @@ mod tests {
             max_tokens: 128,
         });
         let response = adapter
-            .stream_message(&follow_up, None, None)
+            .stream_message(&follow_up, None, &UpdateSink::default())
             .await
             .expect("second Responses stream request should succeed");
         let follow_up_blocks = response.blocks;
@@ -1680,7 +1670,7 @@ mod tests {
         let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None);
 
         let response = adapter
-            .stream_message(&request, None, None)
+            .stream_message(&request, None, &UpdateSink::default())
             .await
             .expect("Responses stream request with a tool should succeed");
         let blocks = response.blocks;
@@ -1724,7 +1714,7 @@ mod tests {
         .with_tools(tools);
 
         let response = adapter
-            .stream_message(&follow_up, None, None)
+            .stream_message(&follow_up, None, &UpdateSink::default())
             .await
             .expect("Responses follow-up after a tool result should succeed");
         let follow_up_blocks = response.blocks;
@@ -1941,7 +1931,7 @@ mod tests {
             panic!("expected OpenAiResponses adapter");
         };
         adapter
-            .stream_message(&simple_request(), None, None)
+            .stream_message(&simple_request(), None, &UpdateSink::default())
             .await
             .expect("streamed Responses request should succeed");
 
@@ -1968,7 +1958,7 @@ mod tests {
             .await;
         let adapter = super::OpenAiResponsesAdapter::new("test-key", server.uri(), None);
         let response = adapter
-            .stream_message(&simple_request(), None, None)
+            .stream_message(&simple_request(), None, &UpdateSink::default())
             .await
             .expect("unknown stream event must not abort response");
         assert!(response.blocks.iter().any(|block| {
@@ -2006,7 +1996,7 @@ mod tests {
             .await;
         let adapter = super::OpenAiResponsesAdapter::new("test-key", server.uri(), None);
         let response = adapter
-            .stream_message(&simple_request(), None, None)
+            .stream_message(&simple_request(), None, &UpdateSink::default())
             .await
             .expect("a text-less reasoning summary part must not abort the stream");
         assert!(
@@ -2044,7 +2034,7 @@ mod tests {
             .await;
         let adapter = super::OpenAiResponsesAdapter::new("test-key", server.uri(), None);
         let response = adapter
-            .stream_message(&simple_request(), None, None)
+            .stream_message(&simple_request(), None, &UpdateSink::default())
             .await
             .expect("a function_call announced without arguments must not abort the stream");
         assert_eq!(
@@ -2089,7 +2079,7 @@ mod tests {
             .await;
         let adapter = super::OpenAiResponsesAdapter::new("test-key", server.uri(), None);
         let error = adapter
-            .stream_message(&simple_request(), None, None)
+            .stream_message(&simple_request(), None, &UpdateSink::default())
             .await
             .expect_err("a 400 must fail the turn");
         let message = error.to_string();

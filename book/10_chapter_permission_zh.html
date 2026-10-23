@@ -788,7 +788,7 @@ shell 命令、且跨会话。现在这次点击只批准当前调用，并由
 <hr />
 <h2 id="6-tui-requestselect-流程">6. TUI RequestSelect 流程</h2>
 <p>当 <code>check()</code> 返回 <code>Ask</code> 且 agent 有 UI
-通道（<code>runtime.ui_tx</code>）时，<code>tool_dispatch.rs</code>
+通道（<code>runtime.events.ui()</code>）时，<code>tool_dispatch.rs</code>
 发送：</p>
 <pre class="rust"><code>AgentUpdate::RequestSelect {
     prompt,      // 例如 &quot;Allow bash: {\&quot;command\&quot;:\&quot;npm test\&quot;}&quot;
@@ -835,7 +835,7 @@ deny 消息</td>
 TUI 工具 meta 行显示。见 <a href="../docs/tool_rendering.md">Tool
 Rendering</a>。</p>
 <h3 id="headless--无-ui-通道">Headless / 无 UI 通道</h3>
-<p>若缺少 <code>ui_tx</code>，agent 调用
+<p>若缺少回答方通道（<code>events.ui()</code> 为 <code>None</code>，包括只有 observer 的 headless），agent 调用
 <code>permission_manager.ask_user(tool, risk)</code>：</p>
 <table>
 <thead>
@@ -1042,7 +1042,7 @@ Phase 3: build ToolResult blocks in model order
 <code>AgentRuntime</code>（<code>crates/tact/src/agent/mod.rs</code>）上，不在
 <code>ToolContext</code>。<code>spawn_subagent</code> 工具创建的子 agent
 有独立 manager（始终 <code>PermissionMode::Default</code>），但继承主
-agent 的 <code>ui_tx</code>，权限弹窗仍可用。</p>
+agent 的回答方通道，权限弹窗仍可用；只读 observer 不参与弹窗。</p>
 <hr />
 <h2 id="9-配置">9. 配置</h2>
 <h3 id="toml">TOML</h3>
@@ -1172,7 +1172,7 @@ CLI；未知值回退 <strong>Auto</strong></td>
 </tr>
 <tr>
 <td><code>crates/tact/src/tool/subagent.rs</code></td>
-<td>子 agent 用 <code>Default</code> 模式；继承 <code>ui_tx</code></td>
+<td>子 agent 用 <code>Default</code> 模式；继承父级的 <code>UpdateSink</code></td>
 </tr>
 <tr>
 <td><code>crates/tact-ui/src/permission.rs</code></td>
@@ -1994,7 +1994,7 @@ allow」都到不了这里）</td>
 权限所在的三阶段流水线</li>
 <li><a href="./12_chapter_subagent_zh.html">子 Agent</a> —
 <code>spawn_subagent</code> 为 High 风险、独立
-<code>PermissionManager</code>、继承 <code>ui_tx</code></li>
+<code>PermissionManager</code>、继承 <code>UpdateSink</code></li>
 <li><a href="./09_chapter_hook_zh.html">Agent 生命周期 Hook</a> —
 PreToolUse 紧接在权限检查之前；但敏感目标守卫更早，见 <a
 href="#131-固定检查点">§13.1</a></li>

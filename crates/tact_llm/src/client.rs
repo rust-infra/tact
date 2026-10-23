@@ -1,7 +1,6 @@
 //! [`LlmClient`] trait and [`LlmProvider`] enum.
 
-use tact_protocol::{AgentUpdate, TokenUsageInfo};
-use tokio::sync::mpsc::UnboundedSender;
+use tact_protocol::{TokenUsageInfo, UpdateSink};
 
 use crate::{
     ContentBlock, CreateMessageParams, LlmError, ProviderConversationState, ProviderStateUpdate,
@@ -33,7 +32,12 @@ pub struct LlmResponse {
 /// Abstract interface for streaming and non-streaming LLM calls.
 #[allow(async_fn_in_trait)]
 pub trait LlmClient: Send + Sync {
-    /// Stream a message request, emitting real-time updates via `ui_tx`.
+    /// Stream a message request, emitting real-time updates through `events`.
+    ///
+    /// The sink is what lets a headless run show a slow model call: deltas go
+    /// to every attached destination, while the *answering* channel stays out
+    /// of reach of anything here — nothing in a provider adapter asks a
+    /// question.
     ///
     /// `provider_state` carries versioned provider-specific conversation
     /// state (currently only the OpenAI Responses protocol); non-Responses
@@ -42,7 +46,7 @@ pub trait LlmClient: Send + Sync {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        events: &UpdateSink,
     ) -> Result<LlmResponse, LlmError>;
 
     /// Non-streaming message request (used for context compaction).
@@ -86,17 +90,17 @@ impl LlmClient for LlmProvider {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        events: &UpdateSink,
     ) -> Result<LlmResponse, LlmError> {
         match self {
-            LlmProvider::Anthropic(a) => a.stream_message(request, provider_state, ui_tx).await,
+            LlmProvider::Anthropic(a) => a.stream_message(request, provider_state, events).await,
             LlmProvider::ChatCompletions(c) => {
-                c.stream_message(request, provider_state, ui_tx).await
+                c.stream_message(request, provider_state, events).await
             }
             LlmProvider::OpenAiResponses(o) => {
-                o.stream_message(request, provider_state, ui_tx).await
+                o.stream_message(request, provider_state, events).await
             }
-            LlmProvider::Mock(m) => m.stream_message(request, provider_state, ui_tx).await,
+            LlmProvider::Mock(m) => m.stream_message(request, provider_state, events).await,
         }
     }
 

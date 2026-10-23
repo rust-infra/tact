@@ -16,8 +16,18 @@
 //! - [`AgentUpdate::ThinkingChunk`]: reasoning text is not a progress signal.
 //! - [`AgentUpdate::RequestSelect`] and friends: headless cannot answer them
 //!   (see [`crate::headless`]), so they must not be logged as if it could.
+//! - `TaskComplete` / `TaskCancelled`: the driver emits those, and a headless
+//!   run has no driver. Logging them here would describe a state this process
+//!   never reaches.
+//!
+//! [`AgentUpdate::ToolProgress`] *is* logged: a command that prints for a
+//! minute is otherwise indistinguishable from one that is wedged.
+//!
+//! Every field that can carry model- or tool-authored text goes through
+//! [`truncate`], including [`AgentUpdate::Error`]: an error chain built with
+//! `{error:#}` contains newlines, and one event must stay one line.
 
-use tact_protocol::{AgentUpdate, StepResult, StepStatus, ThinkingChunk};
+use tact_protocol::{AgentUpdate, StepResult, StepStatus};
 
 /// Longest single-line field this module will print before truncating.
 ///
@@ -38,6 +48,22 @@ pub fn format_event(update: &AgentUpdate) -> Option<String> {
 
         AgentUpdate::StepFinished { result, .. } => Some(format_step_result(result)),
 
+        // A command that prints for a minute looks identical to one that is
+        // wedged, unless its output reaches the log. One line per chunk keeps
+        // the one-event-per-line shape; the final `StepFinished` line still
+        // carries the verdict and duration.
+        AgentUpdate::ToolProgress { tool_id, chunks } => {
+            let text: String = chunks.iter().map(|chunk| chunk.text.as_str()).collect();
+            let text = text.trim_end();
+            if text.is_empty() {
+                return None;
+            }
+            Some(format!(
+                "[out {tool_id}] {}",
+                truncate(text, MAX_FIELD_CHARS)
+            ))
+        }
+
         AgentUpdate::StepFailed { error, .. } => Some(format!(
             "[tool failed] {}",
             truncate(error, MAX_FIELD_CHARS)
@@ -47,11 +73,21 @@ pub fn format_event(update: &AgentUpdate) -> Option<String> {
             Some(format!("[info] {}", truncate(message, MAX_FIELD_CHARS)))
         }
 
-        AgentUpdate::Error(kind) => Some(format!("[error] {kind}")),
+        AgentUpdate::Error(kind) => Some(format!(
+            "[error] {}",
+            truncate(&kind.to_string(), MAX_FIELD_CHARS)
+        )),
 
-        AgentUpdate::TaskComplete(_) => Some("[done] final answer written to stdout".to_string()),
-
-        AgentUpdate::TaskCancelled => Some("[cancelled] the run was cancelled".to_string()),
+        // A plugin declares `statusMessage` because its hook can take seconds;
+        // headless has no row to rewrite, so it prints the open and the close.
+        AgentUpdate::HookStatus {
+            message,
+            elapsed_ms,
+            ..
+        } => Some(match elapsed_ms {
+            Some(ms) => format!("[hook done {ms}ms] {}", truncate(message, MAX_FIELD_CHARS)),
+            None => format!("[hook] {}", truncate(message, MAX_FIELD_CHARS)),
+        }),
 
         AgentUpdate::TurnStats {
             turns_taken,
@@ -68,7 +104,8 @@ pub fn format_event(update: &AgentUpdate) -> Option<String> {
 
         AgentUpdate::ModelInfo(params) => Some(format!(
             "[model] {} max_tokens={}",
-            params.model, params.max_tokens
+            truncate(&params.model, MAX_FIELD_CHARS),
+            params.max_tokens
         )),
 
         // The remaining variants are UI surface: cards, popups, task/goal
@@ -110,21 +147,13 @@ fn truncate(text: &str, max_chars: usize) -> String {
     format!("{cut}…")
 }
 
-/// Whether an event is reasoning noise that must never reach the log.
-///
-/// Exposed so the writer can skip the whole variant without matching on it
-/// again; the answer lives next to the format decision it belongs to.
-pub fn is_noise(update: &AgentUpdate) -> bool {
-    matches!(
-        update,
-        AgentUpdate::StreamChunk(_) | AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(_))
-    )
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tact_protocol::{AgentErrorKind, ModelCallParams, TokenUsageInfo, ToolPresentationInfo};
+    use tact_protocol::{
+        AgentErrorKind, ModelCallParams, ThinkingChunk, TokenUsageInfo, ToolOutputChunk,
+        ToolPresentationInfo,
+    };
 
     fn step_result(tool: &str, status: StepStatus, message: &str) -> StepResult {
         StepResult {
@@ -283,11 +312,66 @@ mod tests {
     }
 
     #[test]
-    fn noise_is_named_separately_from_being_formatted() {
-        assert!(is_noise(&AgentUpdate::StreamChunk("x".into())));
-        assert!(is_noise(&AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
-            "x".into()
-        ))));
-        assert!(!is_noise(&AgentUpdate::Info("x".into())));
+    fn an_error_chain_stays_on_one_line_and_is_capped() {
+        let chained = AgentErrorKind::Other("gateway 502\nretrying\nafter backoff".into());
+        assert_eq!(
+            format_event(&AgentUpdate::Error(chained)).as_deref(),
+            Some("[error] gateway 502 retrying after backoff")
+        );
+
+        let long = AgentErrorKind::Other("e".repeat(MAX_FIELD_CHARS + 20));
+        let line = format_event(&AgentUpdate::Error(long)).expect("errors are logged");
+        assert_eq!(line.chars().count(), "[error] ".len() + MAX_FIELD_CHARS + 1);
+    }
+
+    #[test]
+    fn a_hook_status_prints_open_and_closed() {
+        let running = AgentUpdate::HookStatus {
+            id: 1,
+            source: Some("plugin codex".into()),
+            message: "warming up".into(),
+            elapsed_ms: None,
+        };
+        assert_eq!(format_event(&running).as_deref(), Some("[hook] warming up"));
+
+        let done = AgentUpdate::HookStatus {
+            id: 1,
+            source: Some("plugin codex".into()),
+            message: "warming up".into(),
+            elapsed_ms: Some(2_500),
+        };
+        assert_eq!(
+            format_event(&done).as_deref(),
+            Some("[hook done 2500ms] warming up")
+        );
+    }
+
+    #[test]
+    fn live_tool_output_is_logged_so_a_slow_command_stays_visible() {
+        let update = AgentUpdate::ToolProgress {
+            tool_id: "bash-7".into(),
+            chunks: vec![
+                ToolOutputChunk::stdout("alpha\n"),
+                ToolOutputChunk::stdout("beta\n"),
+            ],
+        };
+        assert_eq!(
+            format_event(&update).as_deref(),
+            Some("[out bash-7] alpha beta")
+        );
+
+        let empty = AgentUpdate::ToolProgress {
+            tool_id: "bash-7".into(),
+            chunks: vec![ToolOutputChunk::stdout("\n")],
+        };
+        assert!(format_event(&empty).is_none(), "a blank chunk is not news");
+    }
+
+    #[test]
+    fn driver_only_lifecycle_events_are_not_logged() {
+        // A headless run has no driver, so these describe a state it never
+        // reaches; printing them would claim otherwise.
+        assert!(format_event(&AgentUpdate::TaskComplete("done".into())).is_none());
+        assert!(format_event(&AgentUpdate::TaskCancelled).is_none());
     }
 }

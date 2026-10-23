@@ -33,7 +33,7 @@ use tact::goal::{
 use tact::store::goal_store::{GoalStoreError, LeaseToken};
 use tact::task::TaskRecord;
 use tact_llm::{Message, MessageKind, Role};
-use tact_protocol::AgentUpdate;
+use tact_protocol::{AgentUpdate, UpdateSink};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Cap on the injected Goal context, in characters.
@@ -420,8 +420,8 @@ pub struct GoalRunner {
     /// from it), where no `Agent` is available to emit through, so a failure
     /// there had no way to reach the user: the run rows were interrupted and
     /// nothing said why. Every surface that has a UI sets this; a headless
-    /// caller leaves it `None` and stays silent.
-    ui_tx: Option<UnboundedSender<AgentUpdate>>,
+    /// caller leaves it empty and stays silent.
+    events: UpdateSink,
     /// Ceiling on activations per run. Only tests lower it; see
     /// [`MAX_ACTIVATION_CYCLES`] for why a ceiling exists at all.
     max_cycles: u32,
@@ -433,14 +433,17 @@ impl GoalRunner {
             goal_manager,
             limits,
             owner: unique_owner(DEFAULT_OWNER),
-            ui_tx: None,
+            events: UpdateSink::default(),
             max_cycles: MAX_ACTIVATION_CYCLES,
         }
     }
 
     /// Routes the runner's notices to a UI channel.
+    ///
+    /// A runner's notices are informational (`⚠ …`), never prompts, so an
+    /// optional channel is enough: `None` means nobody is watching.
     pub fn with_ui(mut self, ui_tx: Option<UnboundedSender<AgentUpdate>>) -> Self {
-        self.ui_tx = ui_tx;
+        self.events = UpdateSink::from_ui(ui_tx);
         self
     }
 
@@ -641,9 +644,7 @@ impl GoalRunner {
     /// `⚠ …` info line, not an error: nothing the user can retry failed, what
     /// failed is the explanation they may go looking for later.
     fn report_error(&self, message: impl Into<String>) {
-        if let Some(tx) = &self.ui_tx {
-            let _ = tx.send(AgentUpdate::Info(message.into()));
-        }
+        self.events.send(AgentUpdate::Info(message.into()));
     }
 
     /// Step 1: load the Goal and refuse anything that needs an explicit user
@@ -741,12 +742,12 @@ impl GoalRunner {
                 "⚠ Goal run progress could not be persisted: {error:#}"
             )));
         }
-        if agent.runtime.ui_tx.is_some() {
-            let _ = crate::driver::emit_goals_changed(
+        if !agent.runtime.events.is_empty() {
+            crate::driver::emit_goals_changed(
                 &self.goal_manager,
                 &agent.tool_context.task_manager,
                 self.limits,
-                &agent.runtime.ui_tx,
+                &agent.runtime.events,
             )
             .await;
         }
@@ -787,14 +788,12 @@ impl GoalRunner {
         period: Duration,
     ) -> tokio::task::JoinHandle<()> {
         let manager = self.goal_manager.clone();
-        let ui_tx = self.ui_tx.clone();
+        let events = self.events.clone();
         let token = token.clone();
         let ttl = self.lease_ttl();
         tokio::spawn(async move {
             let notify = |message: String| {
-                if let Some(tx) = &ui_tx {
-                    let _ = tx.send(AgentUpdate::Info(message));
-                }
+                events.send(AgentUpdate::Info(message));
             };
             let mut ticker = tokio::time::interval(period);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);

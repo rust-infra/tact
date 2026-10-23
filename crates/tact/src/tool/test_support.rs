@@ -3,6 +3,8 @@ use std::{
     sync::{Arc, Mutex},
 };
 
+use tact_protocol::UpdateSink;
+
 use super::{Tool, ToolCallResult, ToolContext, ToolRouter};
 use crate::{
     background::{BackgroundManager, SharedBackgroundManager},
@@ -94,7 +96,7 @@ pub fn test_context(name: &str) -> ToolContext {
         subagent_manager: SharedSubagentManager::new(
             block_on(SubagentManager::new(&db_path)).unwrap(),
         ),
-        ui_tx: None,
+        events: UpdateSink::default(),
         ui_responder: crate::ui_responder::UiResponder::new(),
         progress_reporter: super::ToolProgressReporter::default(),
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),

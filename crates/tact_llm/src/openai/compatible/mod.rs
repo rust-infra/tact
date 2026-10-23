@@ -33,8 +33,7 @@ pub use multi_model::ChatCompletionsAdapter;
 use reqwest13::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
-use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo};
-use tokio::sync::mpsc::UnboundedSender;
+use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo, UpdateSink};
 
 use crate::LlmError;
 use crate::{
@@ -465,7 +464,7 @@ impl OpenAiAdapter {
         &self,
         body: &serde_json::Value,
         _provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        events: &UpdateSink,
     ) -> Result<LlmResponse, LlmError> {
         let json_body = serde_json::to_vec(body)?;
 
@@ -562,17 +561,14 @@ impl OpenAiAdapter {
                                 }
                                 _ => {}
                             }
-                            if let Some(ref tx) = ui_tx {
-                                let _ = tx.send(event);
-                            }
+                            events.send(event);
                         }
 
                         // tool_calls
                         if !delta.tool_calls.is_empty()
                             && let Some(finished) = finish_thinking_event(&mut thinking_open)
-                            && let Some(ref tx) = ui_tx
                         {
-                            let _ = tx.send(finished);
+                            events.send(finished);
                         }
                         for tc in &delta.tool_calls {
                             let idx = tc.index as usize;
@@ -623,9 +619,7 @@ impl OpenAiAdapter {
                                 prompt_cache_miss_tokens: cache_miss,
                                 reasoning_tokens: reasoning,
                             };
-                            if let Some(ref tx) = ui_tx {
-                                let _ = tx.send(AgentUpdate::TokenUsage(info.clone()));
-                            }
+                            events.send(AgentUpdate::TokenUsage(info.clone()));
                             token_usage = Some(info);
                         }
                     }
@@ -633,10 +627,8 @@ impl OpenAiAdapter {
             }
         }
 
-        if let Some(finished) = finish_thinking_event(&mut thinking_open)
-            && let Some(ref tx) = ui_tx
-        {
-            let _ = tx.send(finished);
+        if let Some(finished) = finish_thinking_event(&mut thinking_open) {
+            events.send(finished);
         }
 
         // Build response blocks

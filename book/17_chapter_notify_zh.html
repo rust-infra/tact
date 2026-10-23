@@ -497,13 +497,13 @@ macOS 上完整实现，其他平台为 no-op。</p>
     TUI-&gt;&gt;Agent: emit_update(TaskComplete)&lt;br/&gt;（agent_loop Ok 后，未取消）
     Agent-&gt;&gt;Notify: notify_task_complete（≤200 字符）
     Note over Notify: 仅 macOS；错误被忽略
-    Agent-&gt;&gt;UI: ui_tx.send(update)
+    Agent-&gt;&gt;UI: events.send(update)
 
     Agent-&gt;&gt;Agent: emit_update(StepFailed)
     Agent-&gt;&gt;Notify: notify_step_failed（错误 ≤120 字符）
-    Agent-&gt;&gt;UI: ui_tx.send(update)</pre>
+    Agent-&gt;&gt;UI: events.send(update)</pre>
 <h3 id="headless-路径">Headless 路径</h3>
-<p>Headless 运行设置 <code>ui_tx: None</code>，因此
+<p>Headless 运行只挂只读 observer（<code>UpdateSink::observing</code>，没有回答方通道），因此
 <code>agent_loop</code> 从不向 TUI 发送
 <code>AgentUpdate::TaskComplete</code>。完成
 <strong>只通知一次</strong>：<code>run_headless</code>

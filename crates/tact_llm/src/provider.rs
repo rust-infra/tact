@@ -503,7 +503,7 @@ mod tests {
 
     use futures_util::future::BoxFuture;
     use secrecy::SecretString;
-    use tact_protocol::{AgentUpdate, TokenUsageInfo};
+    use tact_protocol::{AgentUpdate, TokenUsageInfo, UpdateSink};
 
     use super::*;
     use crate::{
@@ -964,7 +964,7 @@ mod tests {
                     max_tokens: 100,
                 }),
                 None,
-                Some(tx),
+                &UpdateSink::for_ui(tx),
             )
             .await
             .expect("stream");

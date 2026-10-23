@@ -375,6 +375,7 @@
 </div>
 <div class="toc-group">
 <ol class="toc-list">
+<li class="toc-l2"><a href="#2026-10-22--headless-%E6%97%A5%E5%BF%97%E5%8F%AA%E7%9C%8B%E5%88%B0%E4%B8%80%E5%8D%8A%E4%BA%8B%E4%BB%B6%E4%B8%80%E4%B8%AA-sink-%E7%BB%9F%E4%B8%80%E5%88%86%E5%8F%91" title="2026-10-22 — headless 日志只看到一半事件：一个 sink 统一分发"><span class="toc-label">2026-10-22 — headless 日志只看到一半事件：一个 sink 统一分发</span></a></li>
 <li class="toc-l2"><a href="#2026-10-22--pid-1-%E8%BA%AB%E4%BB%BD%E5%8F%AF%E8%AF%BB%E4%B8%8E%E5%90%A6%E6%98%AF%E5%B9%B3%E5%8F%B0%E7%AD%96%E7%95%A5" title="2026-10-22 — pid 1 的身份「可读与否」是平台策略，测试不能替它做假设"><span class="toc-label">2026-10-22 — pid 1 的身份「可读与否」是平台策略，测试不能替它做假设</span></a></li>
 <li class="toc-l2"><a href="#2026-10-21-runner-%E5%BE%AA%E7%8E%AF%E7%9A%84%E4%B8%89%E5%A4%84%E6%98%BE%E5%BC%8F%E5%8C%96" title="2026-10-21 — Runner 循环的三处显式化"><span class="toc-label">2026-10-21 — Runner 循环的三处显式化</span></a></li>
 <li class="toc-l2"><a href="#1-2026-10-20--lease-%E5%BF%83%E8%B7%B3%E4%B8%8D%E5%86%8D%E6%97%A0%E9%99%90%E9%9D%99%E9%BB%98%E9%87%8D%E8%AF%95" title="1. 2026-10-20 — lease 心跳不再无限静默重试"><span class="toc-label">1. 2026-10-20 — lease 心跳不再无限静默重试</span></a></li>
@@ -731,6 +732,41 @@ bugfix日志</strong>，记录有用户可见或 API
 可见行为变化的改动。它不是教程：每条写清问题、决策与代码 /
 设计文档位置，避免后续重复踩坑。</p>
 <p>相关流程：<code>AGENTS.md</code>（何时追加条目）、<code>docs/superpowers/specs/</code>（设计）、<code>docs/superpowers/plans/</code>（实现计划）。</p>
+<h2 id="2026-10-22--headless-日志只看到一半事件一个-sink-统一分发">2026-10-22 — headless 日志只看到一半事件：一个 sink 统一分发</h2>
+<table>
+<thead>
+<tr>
+<th>Field</th>
+<th>Value</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Type</strong></td>
+<td>fix（headless 日志遗漏；无 TUI 行为变化）</td>
+</tr>
+<tr>
+<td><strong>Symptom</strong></td>
+<td>为 headless 加只读 observer 之后，日志里只有 <code>emit_update</code> 发出的事件：<code>bash</code> 卡住时只有 <code>[tool] bash …</code> 一行，随后到命令结束都没有输出；子 agent、持久任务、token 用量、流式增量全部缺失。20 分钟的重试与 20 分钟的思考在日志里仍然无法区分。</td>
+</tr>
+<tr>
+<td><strong>Cause</strong></td>
+<td>事件有两个出口：<code>AgentRuntime.ui_tx</code>（<code>emit_update</code> 走它）与 <code>ToolContext.ui_tx</code>（<code>ToolProgressReporter</code>、<code>emit_tasks_changed</code>、<code>emit_subagents_changed</code>、<code>ask_user</code> 走它），LLM adapter 又单独收一个 <code>Option&lt;UnboundedSender&gt;</code>。observer 只挂在第一个上，所以第二类出口的事件全被丢掉。更深的问题是「能回答提问」与「能看见事件」被绑在同一个 <code>Option</code> 上：给 headless 接上 <code>ui_tx</code> 能修可见性，却会让权限检查以为有人能应答。</td>
+</tr>
+<tr>
+<td><strong>Decision</strong></td>
+<td>(1) 新增 <code>tact_protocol::UpdateSink</code>：一个「回答方通道 + 任意只读 observer」的组合，<code>send</code> 时 observer 各拿克隆、回答方拿原件。<code>ui()</code> 是提问唯一允许使用的出口，observer-only sink 返回 <code>None</code>，权限检查因此自然走非交互分支。(2) <code>AgentRuntime.ui_tx</code> 与 <code>ToolContext.ui_tx</code> 都换成 <code>events: UpdateSink</code>；<code>LlmClient::stream_message</code> 收 <code>&amp;UpdateSink</code> 而不是可空 sender，四个 adapter 一并改写。(3) <code>emit_update</code> 只做 <code>events.send(update)</code>；<code>with_ui_channel</code> 建回答方 sink，<code>with_event_observer</code> 建 observer-only sink，新增 <code>detach_event_observers</code> 让 headless 在 turn 结束后关掉 observer（pump 才能返回）。(4) 子 agent 无回答方通道时改用 <code>with_observed_events</code>：拿到父级 observer，但不继承「能回答」的身份。</td>
+</tr>
+<tr>
+<td><strong>Changed behaviour</strong></td>
+<td>headless 日志现在包含工具实时输出、子 agent 与任务快照、token 用量、模型参数与 hook 状态行；TUI 事件流不变（仍只有一个接收者）。<code>TaskComplete</code> / <code>TaskCancelled</code> 不再由 headless formatter 渲染——它们由 driver 发出，headless 永远不会到达该状态；失败改为在 <code>agent_loop</code> 返回后打印 <code>[error] …</code> 并继续输出统计。</td>
+</tr>
+<tr>
+<td><strong>Pointers</strong></td>
+<td><code>crates/protocol/src/events.rs</code>（<code>UpdateSink</code> 与 5 个单测）；<code>crates/tact/src/agent/mod.rs</code>（<code>with_event_observer</code>、<code>detach_event_observers</code>、<code>with_observed_events</code>）；<code>crates/tact/src/tool/{mod,progress}.rs</code>；<code>crates/tact_llm/src/client.rs</code>；<code>crates/tact-ui/src/{session_bootstrap,headless,headless_log,driver}.rs</code></td>
+</tr>
+</tbody>
+</table>
 <h2 id="2026-10-22--pid-1-身份可读与否是平台策略">2026-10-22 — pid 1 的身份「可读与否」是平台策略，测试不能替它做假设</h2>
 <table>
 <thead>

@@ -495,7 +495,7 @@ pub trait Tool: Send + Sync {
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
     pub subagent_manager: SharedSubagentManager,
-    pub ui_tx: Option&lt;UnboundedSender&lt;AgentUpdate&gt;&gt;,
+    pub events: UpdateSink,                      // 回答方 ui 通道 + 只读 observers
     pub ui_responder: UiResponder,               // ask_user / 权限选择 的请求-应答注册表
     pub progress_reporter: ToolProgressReporter,
     pub cancel_flag: Arc&lt;AtomicBool&gt;,
@@ -516,7 +516,7 @@ pub trait Tool: Send + Sync {
 额外设置实时输出脱敏级别（流式与最终结果分开处理）。
 <code>cancel_flag</code> 与 agent runtime
 共享，<code>bash_timeout_secs</code> 携带 resolved 墙钟时限。 当
-<code>ui_tx</code> 缺失或已关闭时，reporter 为
+没有任何接收方（<code>events.is_empty()</code>）或接收端已关闭时，reporter 为
 no-op；<code>ui_responder</code> 为空时 <code>ask_user</code>
 干净失败而不是挂在一个没人应答的提示上。</p>
 <hr />

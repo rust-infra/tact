@@ -5,8 +5,7 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use tact_protocol::{AgentUpdate, TokenUsageInfo};
-use tokio::sync::mpsc::UnboundedSender;
+use tact_protocol::{AgentUpdate, TokenUsageInfo, UpdateSink};
 
 use crate::{
     ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmResponse, ProviderConversationState,
@@ -140,7 +139,7 @@ impl MockClient {
     }
 
     /// Like [`Self::new`], but attaches token usage to each turn (and emits
-    /// [`AgentUpdate::TokenUsage`] on `stream_message` when `ui_tx` is set).
+    /// [`AgentUpdate::TokenUsage`] on `stream_message` when a sink is attached).
     pub fn with_usage(
         responses: Vec<(Vec<ContentBlock>, Option<StopReason>, TokenUsageInfo)>,
     ) -> Self {
@@ -219,14 +218,14 @@ impl MockClient {
         self.inner.next_turn(request, idx)
     }
 
-    fn emit_token_usage(ui_tx: &Option<UnboundedSender<AgentUpdate>>, usage: &TokenUsageInfo) {
-        if let Some(tx) = ui_tx {
-            let _ = tx.send(AgentUpdate::TokenUsage(usage.clone()));
-        }
+    fn emit_token_usage(events: &UpdateSink, usage: &TokenUsageInfo) {
+        events.send(AgentUpdate::TokenUsage(usage.clone()));
     }
 
-    fn emit_stream_chunks(ui_tx: &Option<UnboundedSender<AgentUpdate>>, blocks: &[ContentBlock]) {
-        let Some(tx) = ui_tx else { return };
+    fn emit_stream_chunks(events: &UpdateSink, blocks: &[ContentBlock]) {
+        if events.is_empty() {
+            return;
+        }
         for block in blocks {
             if let ContentBlock::Text { text } = block {
                 // Emit word-by-word to simulate streaming without overloading the channel.
@@ -238,7 +237,7 @@ impl MockClient {
                     } else {
                         format!("{word} ")
                     };
-                    let _ = tx.send(AgentUpdate::StreamChunk(chunk));
+                    events.send(AgentUpdate::StreamChunk(chunk));
                 }
             }
         }
@@ -250,14 +249,14 @@ impl LlmClient for MockClient {
         &self,
         request: &CreateMessageParams,
         _provider_state: Option<&ProviderConversationState>,
-        ui_tx: Option<UnboundedSender<AgentUpdate>>,
+        events: &UpdateSink,
     ) -> Result<LlmResponse, LlmError> {
         let (blocks, stop_reason, usage) = self.next_turn(request)?;
         if let Some(ref u) = usage {
-            Self::emit_token_usage(&ui_tx, u);
+            Self::emit_token_usage(events, u);
         }
         if self.emit_stream_chunks {
-            Self::emit_stream_chunks(&ui_tx, &blocks);
+            Self::emit_stream_chunks(events, &blocks);
         }
         Ok(LlmResponse {
             blocks,

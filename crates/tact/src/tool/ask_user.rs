@@ -73,7 +73,7 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>();
 
-    if let Some(tx) = &ctx.ui_tx {
+    if let Some(tx) = ctx.events.ui() {
         if !options.is_empty() {
             let responder = ctx.ui_responder.clone();
             // A subagent's question is the child's, not the parent's; the popup
@@ -152,7 +152,7 @@ fn format_headless_question(question: &str, options: &[String], multi: bool) -> 
 
 #[cfg(test)]
 mod tests {
-    use tact_protocol::{AgentUpdate, UiResponse};
+    use tact_protocol::{AgentUpdate, UiResponse, UpdateSink};
     use tokio::sync::mpsc::unbounded_channel;
 
     use super::*;
@@ -202,7 +202,7 @@ mod tests {
     async fn a_subagent_question_is_marked_as_one() {
         let mut context = test_context("a_subagent_question_is_marked_as_one");
         let (tx, mut rx) = unbounded_channel();
-        context.ui_tx = Some(tx);
+        context.events = UpdateSink::for_ui(tx);
         context.is_subagent = true;
         let responder = context.ui_responder.clone();
 
@@ -241,7 +241,7 @@ mod tests {
     async fn ask_user_popup_returns_selected_option() {
         let mut context = test_context("ask_user_popup_returns_selected_option");
         let (tx, mut rx) = unbounded_channel();
-        context.ui_tx = Some(tx);
+        context.events = UpdateSink::for_ui(tx);
         let responder = context.ui_responder.clone();
 
         let tool = tokio::spawn(async move {
@@ -289,7 +289,7 @@ mod tests {
     async fn ask_user_multi_popup_returns_several() {
         let mut context = test_context("ask_user_multi_popup_returns_several");
         let (tx, mut rx) = unbounded_channel();
-        context.ui_tx = Some(tx);
+        context.events = UpdateSink::for_ui(tx);
         let responder = context.ui_responder.clone();
 
         let tool = tokio::spawn(async move {
@@ -331,7 +331,7 @@ mod tests {
     async fn ask_user_popup_cancel() {
         let mut context = test_context("ask_user_popup_cancel");
         let (tx, mut rx) = unbounded_channel();
-        context.ui_tx = Some(tx);
+        context.events = UpdateSink::for_ui(tx);
         let responder = context.ui_responder.clone();
 
         let tool = tokio::spawn(async move {
@@ -365,7 +365,7 @@ mod tests {
     async fn ask_user_free_text_emits_info() {
         let mut context = test_context("ask_user_free_text_emits_info");
         let (tx, mut rx) = unbounded_channel();
-        context.ui_tx = Some(tx);
+        context.events = UpdateSink::for_ui(tx);
 
         let output = run_tool(
             &context,
