@@ -112,9 +112,10 @@ async fn run_headless_locked(
     // agent emits is dropped, and a long or wedged run is indistinguishable
     // from a working one until it exits. It carries no answering channel —
     // headless still cannot answer permission prompts, so a caller that needs
-    // its tools allowed must choose a mode that does not ask
-    // (`--permission-mode auto`; the scheduled review does this on the
-    // throwaway CI runner itself).
+    // its tools allowed must choose a mode that does not ask. Which mode that
+    // is, is the caller's decision and not this module's: the scheduled review
+    // passes `--permission-mode auto` because plan mode's classifier refuses
+    // the pipelines a review needs.
     let (observer_tx, observer_rx) = tokio::sync::mpsc::unbounded_channel();
     // The pump stops on this signal, not on the channel closing: a detached
     // background task holds a clone of the observer sender and may outlive the
