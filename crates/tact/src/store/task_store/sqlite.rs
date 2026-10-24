@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use sqlx::{Row, Sqlite, Transaction};
 
-use crate::store::sqlite::{PoolRef, now_millis, open_pool};
+use crate::store::sqlite::{PoolRef, begin_write, now_millis, open_pool};
 use crate::task::{TaskRecord, TaskStatus, TaskUpdate};
 
 use super::TaskStore;
@@ -182,7 +182,7 @@ impl TaskStore for SqliteTaskStore {
     ) -> Result<TaskRecord> {
         validate_goal_id(&goal_id)?;
         let task = TaskRecord::new(0, subject, description, session_id);
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         ensure_goal_exists(&mut tx, &goal_id).await?;
         let id = sqlx::query("INSERT INTO tasks (subject, description, session_id, status, owner, created_at, goal_id) VALUES (?, ?, ?, 'pending', '', ?, ?)")
             .bind(&task.subject).bind(&task.description).bind(&task.session_id)
@@ -197,7 +197,7 @@ impl TaskStore for SqliteTaskStore {
 
     async fn associate_goal(&self, task_id: u64, goal_id: String) -> Result<TaskRecord> {
         validate_goal_id(&goal_id)?;
-        let mut tx = self.pool.begin_with("BEGIN IMMEDIATE").await?;
+        let mut tx = begin_write(&self.pool).await?;
         ensure_goal_exists(&mut tx, &goal_id).await?;
         let row = sqlx::query("SELECT goal_id FROM tasks WHERE id = ?")
             .bind(task_id as i64)
@@ -264,7 +264,14 @@ impl TaskStore for SqliteTaskStore {
     }
 
     async fn update(&self, task_id: u64, update: TaskUpdate) -> Result<TaskRecord> {
-        let mut tx = self.pool.begin().await?;
+        // `BEGIN IMMEDIATE`, not `begin()`: this transaction reads the row
+        // before it writes it, and a deferred transaction cannot wait once its
+        // read snapshot exists. SQLite opens the snapshot at the SELECT, skips
+        // the busy handler when the write half collides with another writer,
+        // and returns SQLITE_BUSY (SQLITE_BUSY_SNAPSHOT once that writer
+        // committed) immediately — `busy_timeout` never gets a chance. Taking
+        // the write lock first moves the wait to a point where it works.
+        let mut tx = begin_write(&self.pool).await?;
 
         // Read the current row (inside the write transaction so the read is
         // isolated from concurrent writers).
@@ -728,5 +735,58 @@ mod tests {
         let blocked = store.get(blocked.id).await.unwrap();
         assert_eq!(blocker.blocks, vec![blocked.id]);
         assert_eq!(blocked.blocked_by, vec![blocker.id]);
+    }
+
+    /// `update` reads the row before it writes it. With a deferred `BEGIN`
+    /// that read opens a snapshot, and SQLite then refuses to wait for another
+    /// writer: the busy handler is skipped once a transaction is open, so the
+    /// UPDATE fails in microseconds even with a five-second `busy_timeout`.
+    /// Taking the write lock up front is what turns that into a wait, so this
+    /// holds the lock from a second connection and expects `update` to ride it
+    /// out instead of returning SQLITE_BUSY.
+    #[tokio::test]
+    async fn update_waits_for_a_concurrent_writer_instead_of_failing() {
+        use sqlx::{Connection, SqliteConnection};
+
+        let db = temp_db("update_contended");
+        let store = SqliteTaskStore::new(&db).await.unwrap();
+        let task = store
+            .create("contended".into(), None, String::new())
+            .await
+            .unwrap();
+
+        // A second connection stands in for another tact-ui instance holding
+        // the write lock for a moment.
+        let mut blocker = SqliteConnection::connect(&format!("sqlite:{}", db.display()))
+            .await
+            .expect("open the second connection");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut blocker)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE tasks SET owner = 'blocker' WHERE id = ?")
+            .bind(task.id as i64)
+            .execute(&mut blocker)
+            .await
+            .unwrap();
+
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            sqlx::query("COMMIT").execute(&mut blocker).await.unwrap();
+        });
+
+        let updated = store
+            .update(
+                task.id,
+                TaskUpdate {
+                    status: Some(TaskStatus::Completed),
+                    ..Default::default()
+                },
+            )
+            .await
+            .expect("update must wait out the writer instead of returning SQLITE_BUSY");
+
+        release.await.unwrap();
+        assert_eq!(updated.status, TaskStatus::Completed);
     }
 }

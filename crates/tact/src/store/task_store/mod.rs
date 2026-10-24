@@ -2,8 +2,13 @@
 //!
 //! Tasks live in the same `tact.db` as sessions, under `tasks` /
 //! `task_dependencies` tables. Dependency edges are stored as rows
-//! (no mirrored fields), and every mutation runs inside a single
-//! `BEGIN IMMEDIATE` transaction.
+//! (no mirrored fields), and every mutation runs inside one transaction.
+//!
+//! Which `BEGIN` that transaction uses depends on its first statement: the
+//! ones that read before writing (`update`, and the Goal-linked creates that
+//! validate a Goal row first) open with `BEGIN IMMEDIATE` so a concurrent
+//! writer is waited out; the ones that write first (`create`, `delete`) keep
+//! the deferred `begin()`. See `store::sqlite` for why the difference matters.
 
 pub use sqlite::SqliteTaskStore;
 

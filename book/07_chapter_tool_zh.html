@@ -424,11 +424,19 @@ href="./11_chapter_task_zh.html">任务与工具调度</a>。</p>
 <p>LLM 能原生调用的每一项能力都实现 <code>Tool</code>：</p>
 <pre class="rust"><code>#[async_trait]
 pub trait Tool: Send + Sync {
-    fn name(&amp;self) -&gt; &amp;&#39;static str;
-    fn description(&amp;self) -&gt; &amp;&#39;static str;
+    fn metadata(&amp;self) -&gt; &amp;&#39;static ToolMetadata;
     fn input_schema(&amp;self) -&gt; Value;
-    async fn call(&amp;self, context: ToolContext, input: Value) -&gt; Result&lt;String&gt;;
+    async fn call(&amp;self, context: ToolContext, input: Value) -&gt; Result&lt;ToolCallResult&gt;;
+
+    // 默认实现：由 metadata 的 name/description 与上面的 schema 拼出 ToolSpec
+    fn tool_spec(&amp;self) -&gt; ToolSpec { /* … */ }
 }</code></pre>
+<p>返回类型是 <code>ToolCallResult</code> 而不是
+<code>String</code>：除了正文，它还携带 <code>effects</code>（<code>CompactHistory</code>
+/ <code>GoalYield</code>，让一次调用能请求压缩历史或把控制权交回 Goal
+Runner）与可选的 <code>image</code>（<code>read_image</code>）。handler
+直接返回 <code>String</code> 也可以——<code>IntoToolCallResult</code>
+负责包成只有正文的结果。</p>
 <table>
 <thead>
 <tr>
@@ -439,7 +447,7 @@ pub trait Tool: Send + Sync {
 <tbody>
 <tr>
 <td><code>Tool</code></td>
-<td>名称、JSON schema、异步 handler</td>
+<td>元数据（名称、描述、权限/资源/呈现策略）、JSON schema、异步 handler</td>
 </tr>
 <tr>
 <td><code>ToolContext</code></td>
@@ -491,6 +499,8 @@ pub trait Tool: Send + Sync {
     pub memory_manager: Arc&lt;Mutex&lt;MemoryManager&gt;&gt;,
     pub work_dir: PathBuf,
     pub task_manager: SharedTaskManager,
+    pub goal_manager: SharedGoalManager,
+    pub active_goal_id: Option&lt;String&gt;,          // 本上下文绑定到哪个 Goal；Goal 工具据此定位
     pub background_manager: SharedBackgroundManager,
     pub teammate_manager: SharedTeammateManager,
     pub worktree_manager: SharedWorktreeManager,
@@ -506,6 +516,7 @@ pub trait Tool: Send + Sync {
     pub session_id: Option&lt;String&gt;,              // with_session 时有值
     pub session_store: Option&lt;DynSessionStore&gt;,
     pub permission_snapshot: Option&lt;PermissionSnapshot&gt;,   // spawn_subagent 继承父级权限
+    pub is_subagent: bool,                       // 由 spawn_subagent 打戳：提示里标明"子 agent 在问"
     pub subagent_results: Option&lt;Arc&lt;Mutex&lt;VecDeque&lt;SubagentResult&gt;&gt;&gt;&gt;,
 }</code></pre>
 <p>在 <code>session_bootstrap::bootstrap_session</code>
@@ -522,8 +533,9 @@ no-op；<code>ui_responder</code> 为空时 <code>ask_user</code>
 <hr />
 <h2 id="4-toolrouter">4. ToolRouter</h2>
 <pre class="rust"><code>pub struct ToolRouter {
-    tools: HashMap&lt;String, Box&lt;dyn Tool&gt;&gt;,
+    tools: HashMap&lt;String, RegisteredTool&gt;,      // handler + &amp;&#39;static ToolMetadata
     cached_specs: OnceLock&lt;Vec&lt;ToolSpec&gt;&gt;,
+    description_overrides: HashMap&lt;String, String&gt;,   // 运行期改写某条 spec 的 description
 }</code></pre>
 <table>
 <thead>
@@ -539,11 +551,18 @@ no-op；<code>ui_responder</code> 为空时 <code>ask_user</code>
 </tr>
 <tr>
 <td><code>route(tool)</code></td>
-<td>Builder 式注册；key = <code>tool.name()</code></td>
+<td>Builder 式注册；key = <code>metadata.name</code>；重名直接报错
+<code>duplicate native tool name</code></td>
+</tr>
+<tr>
+<td><code>resolve(name)</code></td>
+<td>返回 <code>ResolvedNativeTool</code>——handler 与
+<code>&amp;&#39;static ToolMetadata</code> 的把手</td>
 </tr>
 <tr>
 <td><code>tool_specs()</code></td>
-<td>缓存的 <code>Vec&lt;ToolSpec&gt;</code> 供 LLM API</td>
+<td>缓存的 <code>Vec&lt;ToolSpec&gt;</code> 供 LLM API；再叠加
+<code>description_overrides</code></td>
 </tr>
 <tr>
 <td><code>call(ctx, name, input)</code></td>
@@ -553,16 +572,29 @@ no-op；<code>ui_responder</code> 为空时 <code>ask_user</code>
 </table>
 <p>Spec 通过 <code>OnceLock</code> 只算一次——正常用法下首次
 <code>tool_specs()</code> 之后不支持再注册工具。</p>
+<p><strong><code>set_tool_description</code> 是唯一一处运行期改写。</strong>
+它只改已注册工具在 spec 里的 description，目前两个用途：把子 agent 的
+skill 卡片目录拼进 <code>spawn_subagent</code>
+的描述（<code>annotate_spawn_subagent_skill_catalog</code>），以及把
+<code>bash</code> 的描述换成按<strong>实际生效</strong>的沙箱语义重写过的版本（§7.1）。因为 override
+在<strong>发 spec 时</strong>叠加、且
+<code>Agent::new</code> 会把 spec 快照进
+<code>cached_tool_specs</code>，调用方必须在构造 agent
+<strong>之前</strong>设置（<code>session_bootstrap</code> 里就紧跟在
+<code>toolset()</code> 之后）。</p>
 <hr />
 <h2 id="5-toolset-与-subagent_toolset">5. toolset 与
 subagent_toolset</h2>
 <h3 id="主-agenttoolset">主 agent（<code>toolset()</code>）</h3>
 <p><code>try_toolset()</code>（<code>crates/tact/src/tool/registry.rs</code>
-第 33–75 行）注册 <strong>35
-个</strong>工具：文件系统、shell、后台任务、任务、团队、worktree、memory、skills、压缩与子
-agent spawn。<code>save_memory</code> 随
-<code>[agent].memory_enabled</code> 增删，因此关闭 memory 时是 34
-个。</p>
+第 34–80 行）注册 <strong>40
+个</strong>工具：文件系统、shell、后台任务、任务、团队、worktree、memory、skills、Goal、压缩与子
+agent spawn。<code>save_memory</code> / <code>load_memory</code> 这一对随
+<code>[agent].memory_enabled</code> 一起增删，因此关闭 memory 时是 38
+个。另外 <code>compact</code> 虽在 router 里，但 Responses
+协议下不会出现在发给模型的 spec 里（见 §10）——那是
+<code>Agent::rebuild_cached_tool_specs</code> 的过滤，不是 registry
+的差别。</p>
 <p><strong>注意 <code>apply_patch</code> 不在其中。</strong>
 它的模块（<code>tool/apply_patch.rs</code>）与
 <code>APPLY_PATCH_METADATA</code> 都还在，但 <code>454367d6</code>
@@ -611,43 +643,63 @@ agent）。默认五件套由 <code>subagent_toolset_has_five_tools</code>
 href="./12_chapter_subagent_zh.html">Subagents</a>。</p>
 <hr />
 <h2 id="6-tool-过程宏">6. <code>#[tool]</code> 过程宏</h2>
-<p>多数内置工具使用 <code>tool_refactor_macros::tool</code>：</p>
-<pre class="rust"><code>#[tool(name = &quot;save_memory&quot;, description = &quot;Save a persistent memory…&quot;)]
+<p>所有 41 个内置 handler 都用 <code>tool_refactor_macros::tool</code>（<code>apply_patch</code> 的 handler 也在，只是没有 toolset 注册它）。
+属性<strong>不接受参数</strong>——名字、描述、权限这些全部来自同名的
+<code>*_METADATA</code> 常量，宏只负责把 handler 包成
+<code>Tool</code>：</p>
+<pre class="rust"><code>pub const SAVE_MEMORY_METADATA: ToolMetadata = ToolMetadata { /* … */ };
+
+#[tool]
 pub async fn save_memory(ctx: ToolContext, input: SaveMemoryInput) -&gt; Result&lt;String&gt; {
     // …
-}</code></pre>
+}
+// 宏生成 SaveMemoryTool：metadata() 返回 &amp;SAVE_MEMORY_METADATA
+</code></pre>
 <p>宏生成：</p>
 <ul>
-<li>实现 <code>Tool</code> 的 <code>{FnName}Tool</code> 包装结构体</li>
-<li>从 <code>JsonSchema</code> 输入结构体生成 JSON
+<li>实现 <code>Tool</code> 的 <code>{FnName}Tool</code> 包装结构体，其
+<code>metadata()</code> 指向 <code>{FN_NAME}_METADATA</code>——常量<strong>必须</strong>按这个命名存在，否则编译不过</li>
+<li>从输入类型的 <code>JsonSchema</code> 生成 JSON
 Schema（<code>input_schema::&lt;T&gt;()</code>）</li>
 <li>将 <code>input</code> JSON 反序列化为 typed struct</li>
+<li>把 handler 的返回值经 <code>IntoToolCallResult</code> 归一成
+<code>ToolCallResult</code>（<code>Result&lt;T&gt;</code> 与裸 <code>T</code>
+两种返回都支持）</li>
 </ul>
-<p>支持两种 handler 形态：</p>
+<p>支持两种 handler 形态，由<strong>参数形状</strong>判定，不看属性：</p>
 <table>
 <thead>
 <tr>
 <th>形态</th>
 <th>签名</th>
+<th>判定</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>Stateful</td>
 <td><code>(ToolContext, InputStruct)</code> — 访问会话服务</td>
+<td>恰好两个参数，且第一个类型名是 <code>ToolContext</code></td>
 </tr>
 <tr>
 <td>Pure</td>
-<td>仅 <code>(InputStruct)</code> — 无 context</td>
+<td>仅具名参数（如 <code>(path: String, limit: Option&lt;u64&gt;)</code>）— 无 context</td>
+<td>其余一切：宏为这些参数<strong>生成</strong>
+<code>{FnName}Input</code> 结构体</td>
 </tr>
 </tbody>
 </table>
-<p>手动 <code>impl Tool</code>（例如测试里）仍可用于自定义工具。</p>
+<p>两种形态都<strong>必须</strong>是 <code>async</code>；Pure
+形态的参数还必须是具名绑定（<code>a: T</code>，不能是模式）。目前 41
+个内置 handler 全部是 Stateful，Pure 形态留给将来无状态的自定义工具。</p>
+<p>手写 <code>impl Tool</code>（例如测试里的 <code>EchoTool</code>）仍可用于自定义工具，此时
+<code>metadata()</code> 返回哪份常量由你决定。</p>
 <h3 id="元数据常量">元数据常量</h3>
 <p>工具的身份、权限声明与呈现策略声明为 <code>*_METADATA</code>
 常量（<code>ToolMetadata</code>，定义在
-<code>crates/tact/src/tool/metadata.rs</code>）。37 个常量里 23 个由
-<code>metadata.rs</code> 的 const 构造器生成，分两层：</p>
+<code>crates/tact/src/tool/metadata.rs</code>）。<strong>42 个常量里 24
+个</strong>由 <code>metadata.rs</code> 的 const 构造器生成（其中
+<code>ECHO_METADATA</code> 只在测试里用），分两层：</p>
 <p><strong>预设：整份形状完全一致</strong>（成员之间没有任何字段不同）：</p>
 <table>
 <thead>
@@ -661,8 +713,8 @@ Schema（<code>input_schema::&lt;T&gt;()</code>）</li>
 <tr>
 <td><code>read_json(name, desc, display)</code></td>
 <td><code>Read</code> + <code>Independent</code>，输入按 JSON 摘要</td>
-<td>八个只读列举类工具（<code>load_skill</code>、<code>check_subagent</code>、<code>worktree_list</code>
-…）</td>
+<td>九个只读列举类工具（<code>load_skill</code>、<code>load_memory</code>、<code>check_subagent</code>、<code>worktree_list</code>
+…；外加测试用的 <code>echo</code>）</td>
 </tr>
 <tr>
 <td><code>team_write(…)</code></td>
@@ -717,7 +769,18 @@ task 操作、哪个输入字段）：</p>
 <code>visual_kind</code>）、<code>write_file</code> /
 <code>edit_file</code>（差 <code>visual_kind</code> +
 <code>detail</code>）、<code>sleep</code>、<code>compact</code>、<code>save_memory</code>、<code>cancel_subagent</code>、<code>apply_patch</code>、<code>ask_user</code>、<code>spawn_subagent</code>
-各写自己的字面量。<code>metadata.rs</code>
+各写自己的字面量。</p>
+<p><strong>第四个 Goal 工具族走文件内私有构造器。</strong>
+<code>goal_read</code> / <code>goal_checkpoint</code> /
+<code>goal_request_input</code> / <code>goal_propose_completion</code>
+的四份字面量除了名字、描述、权限与资源声明外完全一致（<code>permission_prompt</code>
+恒为 <code>Json</code>、<code>argument_summary</code> 恒为
+<code>Json</code>、卡片统一是 <code>🎯 Goal</code>），所以
+<code>tool/goal.rs</code> 里有一个私有
+<code>const fn goal_metadata(name, desc, permission, resources)</code>。
+它<strong>没有</strong>放进
+<code>metadata.rs</code>：那四个参数里既有数据（资源声明）也有声明（权限），且这四个工具不会再被别的模块复用——把它提升成公共构造器只会让「这个模块有什么形状」多一个入口。</p>
+<p><code>metadata.rs</code>
 的测试把每一层钉住：预设「共享的那一半」逐字段、三个预设之间只差「权限 +
 资源声明」、三个家族之间只差被参数化的那一项。</p>
 <p><strong>字段名必须三处一致。</strong>
@@ -732,10 +795,11 @@ task 操作、哪个输入字段）：</p>
 上逐工具断言这三者一致（新增工具若不一致，即使每个策略单独看都合法也会失败）。构造器只是把这个不变式写得更难违反，它不能替代这条测试。</p>
 <hr />
 <h2 id="7-工作区路径安全">7. 工作区路径安全</h2>
-<p>文件工具通过 <code>crates/tact/src/tool/path.rs</code> 的
-<code>resolve_safe_path</code>：</p>
-<pre class="rust"><code>pub(crate) fn safe_path(work_dir: &amp;Path, path: &amp;str) -&gt; Result&lt;PathBuf&gt;;
-pub(crate) fn safe_path_allow_missing(work_dir: &amp;Path, path: &amp;str) -&gt; Result&lt;PathBuf&gt;;</code></pre>
+<p>文件工具通过 <code>crates/tact/src/tool/path.rs</code> 的两个公开入口，
+它们都转调私有的
+<code>resolve_safe_path(work_dir, path, allow_missing)</code>：</p>
+<pre class="rust"><code>pub fn safe_path(work_dir: &amp;Path, path: &amp;str) -&gt; Result&lt;PathBuf&gt;;             // 目标必须已存在
+pub fn safe_path_allow_missing(work_dir: &amp;Path, path: &amp;str) -&gt; Result&lt;PathBuf&gt;; // 目标可以还不存在</code></pre>
 <table>
 <thead>
 <tr>
@@ -746,7 +810,7 @@ pub(crate) fn safe_path_allow_missing(work_dir: &amp;Path, path: &amp;str) -&gt;
 <tbody>
 <tr>
 <td>规范化 <code>work_dir</code></td>
-<td>作为 containment 基准</td>
+<td>作为 containment 基准（<code>canonicalize</code>）</td>
 </tr>
 <tr>
 <td>拼接相对路径</td>
@@ -754,17 +818,25 @@ pub(crate) fn safe_path_allow_missing(work_dir: &amp;Path, path: &amp;str) -&gt;
 </tr>
 <tr>
 <td>文件缺失（allow_missing）</td>
-<td>父目录仍须在工作区内</td>
+<td>父目录仍须 canonicalize 且在工作区内</td>
 </tr>
 </tbody>
 </table>
 <p>失败消息：<code>"Path escapes workspace"</code>。</p>
+<p>调用方：<code>read_file</code> / <code>read_image</code> /
+<code>edit_file</code> / <code>apply_patch</code> 用
+<code>safe_path</code>（只改已存在的文件），<code>write_file</code>
+用 <code>safe_path_allow_missing</code>（它随后自己
+<code>create_dir_all</code> 父目录）。<code>bash</code>
+<strong>不</strong>经过这一层——见 §7.1。</p>
 <p>这与 <code>StoreRoot</code> 路径规则（<a
 href="./01_chapter_store_zh.html">Store 与持久化</a>，守护
 <code>.tact/</code> JSON 文件）是分开的。</p>
 <h3 id="71-shell-执行沙箱可选开启">7.1 Shell 执行沙箱（可选开启）</h3>
-<p>上面的检查约束的是 <code>read_file</code> / <code>edit_file</code> /
-<code>grep</code>，并不约束 <code>bash</code>：命令一旦被
+<p>上面的检查约束的是走 <code>safe_path</code>
+那一层的文件工具（<code>read_file</code> / <code>read_image</code> /
+<code>write_file</code> / <code>edit_file</code> /
+<code>apply_patch</code>），并不约束 <code>bash</code>：命令一旦被
 批准就以普通宿主进程运行。可选的 OS
 级沙箱在不改动权限模型的前提下收窄这一缺口：</p>
 <pre class="text"><code>Hook → Permission → bash 工具 → Sandbox（可选）→ bwrap → sh -c → command</code></pre>
@@ -796,20 +868,35 @@ href="./15_chapter_worktree_zh.html">Worktree</a>）。</p>
 href="./27_chapter_sandbox_zh.html">Bash 沙箱</a>。</p>
 <hr />
 <h2 id="8-从-agent-分发">8. 从 Agent 分发</h2>
-<p><code>tool_dispatch.rs</code> 的 Phase 2：</p>
+<p><code>tool_dispatch.rs</code> 的 Phase 2（<code>run_tool_waves</code>
+里每个 wave 的每个调用）：</p>
 <pre class="rust"><code>let exec = if is_mcp {
-    run_mcp_tool(mcp, &amp;prep.name, &amp;prep.input).await
+    run_mcp_tool(mcp, ctx, &amp;prep.id, &amp;prep.name, &amp;prep.input).await
 } else {
-    run_native_tool(tools, ctx, &amp;prep.id, &amp;prep.name, &amp;prep.input).await
+    run_native_tool(
+        tools, ctx, &amp;prep.id, &amp;prep.name, &amp;prep.input,
+        output_policy,      // 来自 ToolMetadata.output
+        stream_redaction,   // 来自本次调用的目标是否敏感
+    ).await
 };</code></pre>
 <p><code>run_native_tool</code> 先调用
-<code>ctx.for_invocation(tool_use_id)</code>，再调用
-<code>tools.call(ctx, name, input)</code>。特例：超过 30,000
-字符的原生/MCP 输出可能经 <code>persist_large_output</code> 溢出到
-<code>.tact/tool-results/{tool_use_id}.txt</code>——<strong><code>read_file</code>
-除外</strong>。 <code>read_file</code> 以流式分页返回有界内容（默认
-2,000 行 / <code>READ_FILE_MAX_OUTPUT_TOKENS</code> ≈ 25k 近似 token），
-更多内容时以
+<code>ctx.for_invocation_with_redaction(tool_use_id, stream_redaction)</code>，再调用
+<code>tools.call_result(&amp;call_ctx, name, input)</code>。特例：超过
+30,000 字符的输出<strong>且</strong>该工具声明了
+<code>OutputPolicy::PersistLargeOutput</code> 时，经
+<code>persist_large_output</code> 溢出到
+<code>.tact/tool-results/{tool_use_id}.txt</code>。原生工具里只有
+<code>bash</code> 与 <code>spawn_subagent</code> 是这个策略，其余（含
+<code>read_file</code>）都是 <code>KeepInline</code>；MCP
+<strong>工具</strong>调用（<code>run_mcp_tool</code>）一律溢出，个别
+server 的 <code>tools.&lt;name&gt;.output_token_limit</code>
+会取代全局的字符阈值（<code>persist_large_output_over_tokens</code>）。例外是
+<code>run_mcp_resource_tool</code> / <code>run_mcp_prompt_tool</code>
+那五个列表/读取工具：它们不走
+<code>run_mcp_tool</code>（resource 根本没有
+<code>mcp__&lt;server&gt;__&lt;tool&gt;</code> 形式的工具名），也就没有溢出这一层。
+<code>read_file</code> 以流式分页返回有界内容（默认 2,000 行 /
+<code>READ_FILE_MAX_OUTPUT_TOKENS</code> ≈ 25k 近似 token），更多内容时以
 <code>[PARTIAL view — lines …; continue with offset=…]</code>
 标记续读；显式范围仍超预算则报错而非静默截断。</p>
 <p><code>bash</code> 用两个并发 Tokio reader 读取 pipe
@@ -935,18 +1022,19 @@ I/O）全在中间一段，所以并行收益正好落在该落的地方。中�
 <code>task_update</code>（<code>task</code>）；<code>spawn_teammate</code>
 / <code>send_message</code> / <code>broadcast</code> /
 <code>plan_approval</code> / <code>shutdown_request</code> /
-<code>shutdown_response</code>（<code>team</code>）</td>
+<code>shutdown_response</code>（<code>team</code>）；<code>goal_checkpoint</code>
+/ <code>goal_propose_completion</code>（<code>goal</code>）</td>
 </tr>
 <tr>
 <td><code>Independent</code></td>
 <td>空集——永不冲突</td>
-<td><code>sleep</code>、<code>save_memory</code>、<code>check_background</code>、<code>wait_background</code>、<code>check_subagent</code>、<code>wait_subagent</code>、<code>cancel_subagent</code>、<code>load_skill</code>、<code>task_get</code>、<code>task_list</code>、<code>list_teammates</code>、<code>read_inbox</code>、<code>worktree_list</code>、<code>worktree_status</code>、<code>worktree_events</code></td>
+<td><code>sleep</code>、<code>save_memory</code>、<code>load_memory</code>、<code>check_background</code>、<code>wait_background</code>、<code>check_subagent</code>、<code>wait_subagent</code>、<code>cancel_subagent</code>、<code>load_skill</code>、<code>task_get</code>、<code>task_list</code>、<code>goal_read</code>、<code>list_teammates</code>、<code>read_inbox</code>、<code>worktree_list</code>、<code>worktree_status</code>、<code>worktree_events</code></td>
 </tr>
 <tr>
 <td><code>Barrier</code></td>
 <td><code>barrier = true</code></td>
 <td><code>bash</code>、<code>ask_user</code>、<code>compact</code>、<code>background_run</code>、<code>worktree_run</code>、<code>worktree_create</code>、<code>worktree_remove</code>、<code>spawn_subagent</code>（不带
-<code>worktree</code>）</td>
+<code>worktree</code>）、<code>goal_request_input</code></td>
 </tr>
 <tr>
 <td><code>PatchFiles { … }</code></td>
@@ -975,6 +1063,10 @@ equal / ancestor 判定。</p>
 <code>Independent</code>，只有 <code>task_create</code> /
 <code>task_update</code> 走
 <code>SharedState</code>——读任务表不改变状态。</li>
+<li><code>goal_read</code> 是 <code>Independent</code>，<code>goal_checkpoint</code>
+/ <code>goal_propose_completion</code> 走
+<code>SharedState { scope: "goal" }</code>（同一 Goal 上的两次追加要保序，但它们不挡文件读）。<code>goal_request_input</code>
+是 <code>Barrier</code>：它要把控制权交回 Runner，等它跑完再并行别的东西没有意义。</li>
 </ul>
 <hr />
 <h3 id="94-冲突判定">9.4 冲突判定</h3>
@@ -1423,8 +1515,16 @@ barrier</td>
 </tr>
 <tr>
 <td><code>memory.rs</code></td>
-<td><code>save_memory</code></td>
-<td>见 <a href="./03_chapter_memory_zh.html">持久化 Memory</a></td>
+<td><code>save_memory</code>、<code>load_memory</code></td>
+<td>见 <a href="./03_chapter_memory_zh.html">持久化 Memory</a>；两者随
+<code>[agent].memory_enabled</code> 一起增删</td>
+</tr>
+<tr>
+<td><code>goal.rs</code></td>
+<td><code>goal_read</code> / <code>goal_checkpoint</code> /
+<code>goal_request_input</code> / <code>goal_propose_completion</code></td>
+<td>只在 <code>ToolContext.active_goal_id</code> 绑定时可用；见
+<a href="./28_chapter_goal_zh.html">Agent Goal</a></td>
 </tr>
 <tr>
 <td><code>load_skill.rs</code></td>
@@ -1446,7 +1546,17 @@ barrier</td>
 <tr>
 <td><code>compact.rs</code></td>
 <td><code>compact</code></td>
-<td>上下文压缩触发（Responses 下不注册）</td>
+<td>上下文压缩触发（Responses 下由 <code>Agent::rebuild_cached_tool_specs</code> 从 spec 里滤掉，改走
+<code>/responses/compact</code>）</td>
+</tr>
+<tr>
+<td><code>team.rs</code> / <code>worktree.rs</code> / <code>ask_user.rs</code> /
+<code>sleep.rs</code></td>
+<td>队友 8 个、worktree 6 个、<code>ask_user</code>、<code>sleep</code></td>
+<td>前两组全部走预设构造器；<code>ask_user</code> 与 <code>sleep</code>
+各写自己的字面量（<code>ask_user</code> 是
+<code>High</code> + <code>Question</code> 摘要，<code>sleep</code> 是纯
+<code>Independent</code> 读）</td>
 </tr>
 <tr>
 <td><code>apply_patch.rs</code></td>
@@ -1472,13 +1582,16 @@ barrier</td>
 <tr>
 <td><code>crates/tact/src/tool/metadata.rs</code></td>
 <td><code>ToolMetadata</code> 与各策略类型（含
-<code>ResourcePolicy</code> 及其 <code>resolve</code>）；三个共享形状的
+<code>ResourcePolicy</code> 及其 <code>resolve</code>）；六个共享形状的
 const 构造器 <code>read_json</code> / <code>team_write</code> /
-<code>barrier_write</code></td>
+<code>barrier_write</code> / <code>path_read</code> /
+<code>task_read</code> / <code>task_write</code>，外加私有的
+<code>plain</code> 与 <code>task_presentation</code></td>
 </tr>
 <tr>
 <td><code>crates/tact/src/tool/registry.rs</code></td>
-<td><code>toolset()</code>、<code>subagent_toolset()</code></td>
+<td><code>toolset()</code>、<code>toolset_with_memory()</code>、<code>subagent_toolset()</code>，以及字段名一致性的
+toolset 级测试</td>
 </tr>
 <tr>
 <td><code>crates/tact/src/tool/path.rs</code></td>
@@ -1545,6 +1658,20 @@ const 构造器 <code>read_json</code> / <code>team_write</code> /
 <tr>
 <td><code>ToolRouter</code> 非动态</td>
 <td>会话中途不能增删工具</td>
+</tr>
+<tr>
+<td>router 里有、模型看不到的工具</td>
+<td>两类：<code>apply_patch</code>（没有 toolset 注册它）与
+<code>compact</code>（Responses 协议下由
+<code>rebuild_cached_tool_specs</code> 从 spec 滤掉）。前者是残留，后者是有意的路由——但两者在
+<code>ToolRouter</code> 看来没有区别</td>
+</tr>
+<tr>
+<td>Goal 工具永远注册</td>
+<td><code>goal_*</code> 四个工具无条件出现在 toolset 里；上下文没有绑定
+<code>active_goal_id</code> 时，它们被调用只会返回
+<code>no active Goal is bound to this tool context</code>。模型只能从
+system prompt 得知当前没有 Goal</td>
 </tr>
 <tr>
 <td>沙箱只覆盖 <code>bash</code></td>

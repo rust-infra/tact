@@ -34,7 +34,8 @@ pub async fn run_headless(
     run_result
 }
 
-/// Drain agent events onto stderr for as long as `rx` is open.
+/// Drain agent events onto stderr until `shutdown` fires, then drain what is
+/// already queued and return.
 ///
 /// A dedicated task rather than a callback because the events are produced
 /// inside `agent_loop`, which the caller must also await: draining inline would
@@ -49,10 +50,29 @@ pub async fn run_headless(
 /// dropping. A reader that stops draining entirely (a suspended terminal) makes
 /// the queue grow; the alternative — a bounded channel — would silently drop
 /// the lines that explain a hang, which is the one thing this log is for.
-async fn pump_events_to_stderr(mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentUpdate>) {
+///
+/// **The end of the log is signalled, not inferred from the channel closing.**
+/// Waiting for `rx.recv()` to return `None` waits for the last *sender*, and
+/// `detach_event_observers` only drops the agent's own. A clone handed to a
+/// detached task keeps one alive — `background_run` does exactly that, and its
+/// task has no time limit — so the pump would block until the background
+/// command finished, and the stats and final answer below it would never print.
+async fn pump_events_to_stderr(
+    mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentUpdate>,
+    shutdown: tokio::sync::oneshot::Receiver<()>,
+) {
     use std::io::Write;
 
-    while let Some(update) = rx.recv().await {
+    let mut shutdown = shutdown;
+    loop {
+        let update = tokio::select! {
+            biased;
+            _ = &mut shutdown => break,
+            update = rx.recv() => update,
+        };
+        let Some(update) = update else {
+            break;
+        };
         let Some(line) = headless_log::format_event(&update) else {
             continue;
         };
@@ -61,6 +81,17 @@ async fn pump_events_to_stderr(mut rx: tokio::sync::mpsc::UnboundedReceiver<Agen
         let mut stderr = std::io::stderr().lock();
         let _ = writeln!(stderr, "{line}");
         let _ = stderr.flush();
+    }
+
+    // The turn is over, but a detached task may have queued output while the
+    // last event was being written. Drain what is already there so the log ends
+    // where the turn did, without waiting for a sender that may never close.
+    while let Ok(update) = rx.try_recv() {
+        if let Some(line) = headless_log::format_event(&update) {
+            let mut stderr = std::io::stderr().lock();
+            let _ = writeln!(stderr, "{line}");
+            let _ = stderr.flush();
+        }
     }
 }
 
@@ -85,7 +116,11 @@ async fn run_headless_locked(
     // (`--permission-mode auto`; the scheduled review does this on the
     // throwaway CI runner itself).
     let (observer_tx, observer_rx) = tokio::sync::mpsc::unbounded_channel();
-    let pump = tokio::spawn(pump_events_to_stderr(observer_rx));
+    // The pump stops on this signal, not on the channel closing: a detached
+    // background task holds a clone of the observer sender and may outlive the
+    // turn indefinitely.
+    let (pump_shutdown_tx, pump_shutdown_rx) = tokio::sync::oneshot::channel();
+    let pump = tokio::spawn(pump_events_to_stderr(observer_rx, pump_shutdown_rx));
 
     let mut agent = bootstrap_session(
         &tact_path,
@@ -104,9 +139,12 @@ async fn run_headless_locked(
     let prompt_message = build_user_message(&prompt, &work_dir).await;
     let loop_result = agent.agent_loop(Some(prompt_message)).await;
 
-    // Close the observer so the pump drains and returns instead of waiting for
-    // a sender the agent will never drop on its own.
+    // Stop the pump explicitly. Detaching the observers only drops the agent's
+    // own sender; a `background_run` task holds another one for as long as its
+    // command runs, so waiting for the channel to close would wait for that
+    // command — and the stats and answer below would never print.
     agent.detach_event_observers();
+    let _ = pump_shutdown_tx.send(());
     let _ = pump.await;
 
     // Report a failed turn as a log line, then still print what the run did.
@@ -159,4 +197,52 @@ async fn run_headless_locked(
 
     agent.shutdown_mcp().await;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The pump returns when told to, even while a sender is still alive.
+    ///
+    /// This is the headless hang in miniature: `background_run` hands a clone
+    /// of the observer sender to a detached task that has no time limit, so
+    /// waiting for the channel to close waits for that task. The shutdown
+    /// signal is what makes the turn's end observable on its own.
+    #[tokio::test]
+    async fn the_pump_stops_on_the_shutdown_signal_with_a_live_sender() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+        let pump = tokio::spawn(pump_events_to_stderr(rx, shutdown_rx));
+
+        // Stand in for the detached background task's reporter.
+        let _detached_sender = tx.clone();
+
+        shutdown_tx.send(()).unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), pump)
+            .await
+            .expect("the pump must return without the channel closing")
+            .expect("the pump task must not panic");
+    }
+
+    /// Events queued before the signal are still drained, so the log does not
+    /// lose the last thing the turn did.
+    #[tokio::test]
+    async fn the_pump_drains_queued_events_before_returning() {
+        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
+        let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
+
+        // Queue first, then signal: `select!` is biased toward the signal, so
+        // these are exactly the events only the drain loop can recover.
+        tx.send(AgentUpdate::Info("queued before the signal".into()))
+            .unwrap();
+        let pump = tokio::spawn(pump_events_to_stderr(rx, shutdown_rx));
+        shutdown_tx.send(()).unwrap();
+
+        tokio::time::timeout(std::time::Duration::from_secs(5), pump)
+            .await
+            .expect("the pump must return")
+            .expect("the pump task must not panic");
+    }
 }

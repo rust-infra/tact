@@ -8,7 +8,7 @@ use tact_protocol::TokenUsageInfo;
 
 use super::{MAX_INPUT_HISTORY, MAX_TOKEN_USAGE_BODIES, MessageCountByPeriod, SessionSummary};
 use crate::store::process_identity::{is_process_alive, process_identity};
-use crate::store::sqlite::{PoolRef, open_pool};
+use crate::store::sqlite::{PoolRef, begin_write, open_pool};
 
 pub struct SqliteSessionStore {
     pool: PoolRef,
@@ -660,9 +660,11 @@ impl super::SessionStore for SqliteSessionStore {
     }
 
     async fn delete_session(&self, session_id: &str) -> Result<()> {
-        let mut tx = self
-            .pool
-            .begin()
+        // Child ids are read before anything is deleted, so the write lock has
+        // to be taken up front: a deferred transaction would open a read
+        // snapshot at the SELECT and then fail immediately instead of waiting
+        // when another connection is mid-write (see `TaskStore::update`).
+        let mut tx = begin_write(&self.pool)
             .await
             .context("failed to begin delete session transaction")?;
 
@@ -2296,5 +2298,48 @@ mod tests {
         let listed = store.list_sessions(None).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, "orphan-child");
+    }
+
+    /// `delete_session` reads the child ids before it deletes anything, so its
+    /// transaction must already hold the write lock: a deferred `BEGIN` opens
+    /// a read snapshot at the SELECT, after which SQLite skips the busy handler
+    /// and fails the DELETEs immediately instead of waiting out a concurrent
+    /// writer.
+    #[tokio::test]
+    async fn delete_session_waits_for_a_concurrent_writer_instead_of_failing() {
+        use sqlx::Connection;
+
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        let mut blocker = sqlx::SqliteConnection::connect(&format!("sqlite:{}", db.display()))
+            .await
+            .expect("open the second connection");
+        sqlx::query("BEGIN IMMEDIATE")
+            .execute(&mut blocker)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sessions SET root_dir = '/tmp/blocker' WHERE id = 'session-1'")
+            .execute(&mut blocker)
+            .await
+            .unwrap();
+
+        let release = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+            sqlx::query("COMMIT").execute(&mut blocker).await.unwrap();
+        });
+
+        store
+            .delete_session("session-1")
+            .await
+            .expect("delete must wait out the writer instead of returning SQLITE_BUSY");
+
+        release.await.unwrap();
+        assert!(store.load_session("session-1").await.unwrap().is_empty());
     }
 }

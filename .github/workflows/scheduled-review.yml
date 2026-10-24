@@ -119,12 +119,20 @@ jobs:
 
       - name: Collect the commits to review
         env:
-          SINCE: ${{ inputs.since || '7 days ago' }}
+          # The cron runs daily, so the range is "since yesterday" — the same
+          # default the manual dispatch declares above. `inputs` is empty for a
+          # `schedule` event, and a 7-day fallback there re-reviewed the whole
+          # week every day, re-filing the same findings as a new issue.
+          SINCE: ${{ inputs.since || '1 day ago' }}
         run: |
           set -euo pipefail
           git log --since="$SINCE" --no-merges \
             --pretty=format:'%h %ad %s' --date=short > review-range.txt
-          count="$(wc -l < review-range.txt | tr -d ' ')"
+          # `--pretty=format:` emits no trailing newline, so an N-commit range
+          # has N-1 of them: `wc -l` reports 0 for a single commit and skips the
+          # review entirely. Counting lines the way `grep` does counts the last
+          # one too.
+          count="$(grep -c '' review-range.txt || true)"
           echo "commits in range ($SINCE): $count"
           if [ "$count" -eq 0 ]; then
             echo "nothing to review" > review.md
@@ -263,7 +271,10 @@ jobs:
             echo "## Scheduled review"
             echo ""
             if [ -f review-range.txt ]; then
-              echo "Commits in range: $(wc -l < review-range.txt | tr -d ' ')"
+              # Same `--pretty=format:` newline trap as the range step: the
+              # last commit has no line ending, so `wc -l` would report one
+              # fewer than the issue title says.
+              echo "Commits in range: $(grep -c '' review-range.txt || true)"
             fi
             echo ""
             if [ -s review.md ]; then

@@ -6940,6 +6940,52 @@ mod tests {
         );
     }
 
+    /// A clone handed to a detached background task keeps the observer channel
+    /// open, so detaching alone does not end the pump.
+    ///
+    /// This is the headless hang: `background_run` gives the spawned task a
+    /// `BackgroundProgressSink` built from the invocation's reporter, and that
+    /// reporter holds a clone of the observer sender. The task outlives the
+    /// tool call by design ("there is no time limit"), so the sender outlives
+    /// `detach_event_observers` too, and a pump that waits for the channel to
+    /// close waits for the command.
+    #[test]
+    fn a_cloned_reporter_keeps_the_observer_channel_open_after_detach() {
+        ensure_config();
+        use crate::tool::test_support::test_context;
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let context = test_context("detach_with_cloned_reporter");
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_event_observer(tx);
+
+        // What `background_run` does: a per-invocation clone, moved into a task
+        // that outlives the call.
+        let detached = agent.tool_context.progress_reporter.clone();
+
+        agent.detach_event_observers();
+
+        assert!(
+            rx.try_recv().is_err(),
+            "the channel is still open: the cloned reporter holds a sender"
+        );
+
+        // The channel closes only once that clone is dropped — i.e. when the
+        // background command ends, which may be never.
+        drop(detached);
+        assert!(rx.try_recv().is_err(), "now it is closed");
+    }
+
     #[tokio::test]
     async fn agent_loop_runs_parallel_read_tools() {
         ensure_config();
