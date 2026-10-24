@@ -164,6 +164,27 @@ pub async fn open_session(
     Ok((session_id, session_lock))
 }
 
+/// The event sink and prompt responder a frontend gets.
+///
+/// Split out from [`bootstrap_session`] so the one decision that keeps a
+/// headless run from claiming it can answer prompts is testable without an LLM
+/// client and a session database. Attaching to [`UiWiring::tx`] is that claim;
+/// an observer must get a sink with no answering channel and an empty
+/// responder, or every permission check stops taking the non-interactive
+/// branch.
+fn frontend_wiring(frontend: &Frontend) -> (UpdateSink, UiResponder) {
+    match frontend {
+        Frontend::Interactive(wiring) => (
+            UpdateSink::for_ui(wiring.tx.clone()),
+            wiring.responder.clone(),
+        ),
+        // An empty responder is the honest value for "nobody can answer": a
+        // tool that asks fails cleanly instead of hanging on a prompt that has
+        // no one behind it.
+        Frontend::Observing(_) => (UpdateSink::default(), UiResponder::new()),
+    }
+}
+
 /// Build the main agent: everything both frontends do identically.
 ///
 /// `work_dir` is the workspace root the session is scoped to — a parameter
@@ -248,16 +269,7 @@ pub async fn bootstrap_session(
         tools.set_tool_description("bash", tact::tool::SANDBOXED_BASH_DESCRIPTION);
     }
 
-    let (events, ui_responder) = match &frontend {
-        Frontend::Interactive(wiring) => (
-            UpdateSink::for_ui(wiring.tx.clone()),
-            wiring.responder.clone(),
-        ),
-        // An empty responder is the honest value for "nobody can answer": a
-        // tool that asks fails cleanly instead of hanging on a prompt that has
-        // no one behind it.
-        Frontend::Observing(_) => (UpdateSink::default(), UiResponder::new()),
-    };
+    let (events, ui_responder) = frontend_wiring(&frontend);
     let tool_context = ToolContext {
         skill_registry: skill_registry.clone(),
         subagent_start_hooks: tact::plugin::plugin_subagent_start_hooks(tact_path.workdir())?,
@@ -332,6 +344,57 @@ pub async fn bootstrap_session(
 mod tests {
     use super::*;
     use tokio::sync::mpsc::unbounded_channel;
+
+    /// An observing frontend gets no way to answer a prompt.
+    ///
+    /// This is the guard that keeps a headless run from accepting the calls
+    /// `PermissionManager::ask_user` denies when nobody can answer. Both halves
+    /// matter: the sink must carry no answering channel, *and* the responder
+    /// handed to the tool context must be an empty one.
+    ///
+    /// The observer's sender is deliberately not consumed here — it is attached
+    /// to the agent afterwards by `with_event_observer`, which also syncs
+    /// `tool_context.events`. What must be true at *this* stage is that nothing
+    /// claims the answering channel.
+    #[tokio::test]
+    async fn an_observing_frontend_cannot_answer_prompts() {
+        let (tx, _rx) = unbounded_channel();
+        let (events, responder) = frontend_wiring(&Frontend::Observing(tx));
+
+        assert!(!events.has_ui(), "an observer is not an answering frontend");
+        assert!(events.ui().is_none());
+        assert!(
+            responder.snapshot().is_empty(),
+            "an empty responder has no pending request"
+        );
+    }
+
+    /// The interactive frontend keeps both, or the TUI could not prompt.
+    #[tokio::test]
+    async fn an_interactive_frontend_keeps_its_channel_and_responder() {
+        let (tx, mut rx) = unbounded_channel();
+        let responder = UiResponder::new();
+        let wiring = UiWiring {
+            tx: tx.clone(),
+            responder: responder.clone(),
+        };
+        let (events, got_responder) = frontend_wiring(&Frontend::Interactive(wiring));
+
+        assert!(events.has_ui(), "the TUI answers prompts");
+        events.send(AgentUpdate::Info("progress".into()));
+        assert!(
+            matches!(rx.try_recv(), Ok(AgentUpdate::Info(text)) if text == "progress"),
+            "the TUI receives the event"
+        );
+
+        // The responder is the one the frontend supplied, not a fresh empty
+        // one — a copy would silently strand every pending prompt.
+        assert_eq!(
+            got_responder.snapshot().len(),
+            responder.snapshot().len(),
+            "the frontend's own responder is passed through"
+        );
+    }
 
     /// The UI path carries the finding and drops the tag.
     ///

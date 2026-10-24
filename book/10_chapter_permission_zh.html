@@ -1377,7 +1377,7 @@ glob 之前（<code>~/.ssh/config</code> 排在 <code>~/.ssh/**</code>
 <code>*.kdbx</code>、<code>id_*</code>、<code>*_rsa</code>、<code>*.tfstate</code>、<code>credentials.json</code>、<code>secrets.{json,yml,toml}</code>、仓库内的
 <code>.npmrc</code> / <code>.pypirc</code> / <code>.pgpass</code> /
 <code>.netrc</code>，以及携带 <code>env</code> token 的 agent
-宿主配置（<code>~/.claude/settings.json</code>、<code>~/.codex/auth.json</code>、<code>~/.tact/settings.json</code>）</td>
+宿主配置（<code>~/.claude/settings.json</code>、<code>~/.codex/auth.json</code>、<code>~/.tact/settings.json</code>、<code>~/.tact/config.toml</code>）</td>
 <td><strong>拒绝</strong>——在预检直接拒，不弹窗</td>
 <td><code>permissions.sensitive_paths.allow</code>，需要改文件</td>
 </tr>
@@ -1440,7 +1440,10 @@ href="./07_chapter_tool_zh.html">工具系统</a> §5）</td>
 </table>
 <p><code>classify_command</code> 先去掉引号再切分（因此
 <code>~/.ss"h"/id_rsa</code> 会还原成 shell 实际传入的词元），并按 shell
-元字符切分，这也是重定向目标（<code>&gt; .env</code>）能被抓到的原因。不含
+元字符切分，这也是重定向目标（<code>&gt; .env</code>）能被抓到的原因。每个词元还会剥掉前导的
+<code>-</code>（<code>--file=~/.netrc</code> 这类 flag）与
+<code>@</code>（<code>curl -d @~/.netrc</code>——curl 自己会读
+<code>@file</code>，等价于换个名字读该文件）。不含
 <code>.</code> 与 <code>/</code> 的裸词只与
 <code>BARE_SECRET_NAMES</code> 比对——否则像 <code>"foo_rsa"</code>
 这样的 grep
