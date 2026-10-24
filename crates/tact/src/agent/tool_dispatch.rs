@@ -60,8 +60,7 @@ const PERMISSION_OPTIONS: [&str; 4] = [
 ///
 /// Dropping the *last* entry is what keeps every other index stable. A disabled
 /// entry would be worse than an absent one: it advertises a gesture that
-/// records nothing, which is the shape of bug the "no rule could be narrowed"
-/// notice exists to prevent.
+/// records nothing.
 fn permission_options(with_program_choice: bool) -> Vec<String> {
     let count = if with_program_choice {
         PERMISSION_OPTIONS.len()
@@ -1078,7 +1077,13 @@ impl Agent {
                                         PermissionChoice::AlwaysAllowProgram => {
                                             permission_label =
                                                 Some("Always allow this pattern".to_string());
-                                            let outcome = self
+                                            // The outcome is ignored on purpose: a
+                                            // rule that could not be narrowed only
+                                            // means the next identical call asks
+                                            // again, which the popup already says by
+                                            // appearing. Reporting it turned into a
+                                            // line on every second `bash` approval.
+                                            let _ = self
                                                 .runtime
                                                 .permission_manager
                                                 .allow_tool_as_prefix(
@@ -1086,15 +1091,14 @@ impl Agent {
                                                     permit_prompt,
                                                     &tool_use.input,
                                                 );
-                                            if !outcome.is_recorded() {
-                                                self.report_unrecorded_approval(stable_name);
-                                            }
                                             PreparedState::Run
                                         }
                                         PermissionChoice::AlwaysAllow => {
                                             permission_label =
                                                 Some("Always allow this tool".to_string());
-                                            let outcome = self
+                                            // See above: an unrecorded rule needs
+                                            // no notice.
+                                            let _ = self
                                                 .runtime
                                                 .permission_manager
                                                 .allow_tool_with_input(
@@ -1102,9 +1106,6 @@ impl Agent {
                                                     permit_prompt,
                                                     &tool_use.input,
                                                 );
-                                            if !outcome.is_recorded() {
-                                                self.report_unrecorded_approval(stable_name);
-                                            }
                                             PreparedState::Run
                                         }
                                         PermissionChoice::Deny => {
@@ -1592,19 +1593,6 @@ impl Agent {
         let mut prepared: Vec<PreparedTool> = Vec::new();
         self.append_unexecuted_tool_uses(&mut prepared, content, reason);
         build_tool_results(prepared, Vec::new())
-    }
-
-    /// Tell the user that an "always allow"-family choice approved only the
-    /// call it was made on, because no rule narrower than the whole tool could
-    /// be built for it.
-    ///
-    /// The gesture promised to be remembered; saying so when it cannot be is
-    /// the difference between a limitation and a bug.
-    fn report_unrecorded_approval(&self, tool_name: &str) {
-        self.emit_update(AgentUpdate::Info(format!(
-            "Approved {tool_name} for this call only — no rule could be narrowed for it, and a \
-             tool-wide rule would allow calls you were not asked about."
-        )));
     }
 }
 
