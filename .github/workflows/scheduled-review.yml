@@ -115,6 +115,10 @@ jobs:
             printf 'protocol = "chat_completions"\n'
             printf 'model = "%s"\n' "$MODEL"
           } > "$HOME/.tact/config.toml"
+          # Owner-only, so a stray process or a later step running as another
+          # user cannot read it either. The agent's own guard (the registry
+          # rule) is what covers the agent.
+          chmod 600 "$HOME/.tact/config.toml"
           echo "provider config written for $PROVIDER/$MODEL"
 
       - name: Collect the commits to review
@@ -198,7 +202,6 @@ jobs:
         env:
           PROVIDER: ${{ secrets.PROVIDER }}
           MODEL: ${{ secrets.MODEL }}
-          API_KEY: ${{ secrets.API_KEY }}
           BASE_URL: ${{ secrets.BASE_URL }}
         run: |
           set -euo pipefail
@@ -227,9 +230,17 @@ jobs:
           # waits for it, unlike a process substitution. `pipefail` (above)
           # keeps a tact-ui failure from being masked by tee's exit status.
           # tact-ui flushes each log line itself, so no `stdbuf` is needed.
+          #
+          # The key is deliberately absent from both the command line and this
+          # step's environment, and comes from `$HOME/.tact/config.toml`
+          # instead: `auto` lets the agent run any command, including `ps` and
+          # `echo $API_KEY`, so a secret in argv or in the environment of
+          # tact-ui is one injection away from the review body. A file can be
+          # guarded — `~/.tact/config.toml` is registered as credential
+          # material, so reading it is refused in every mode — and argv and the
+          # environment cannot.
           ./target/release/tact-ui \
             --provider "$PROVIDER" \
-            --api-key "$API_KEY" \
             --base-url "$BASE_URL" \
             --model "$MODEL" \
             --permission-mode auto \
@@ -253,6 +264,13 @@ jobs:
             review-range.txt
           if-no-files-found: ignore
           retention-days: 14
+
+      # Delete the key file as soon as nothing needs it. `always()` matters
+      # here: the run that failed or was cancelled is exactly the one where
+      # nobody would notice it still sitting on disk.
+      - name: Remove the provider config
+        if: always()
+        run: rm -f "$HOME/.tact/config.toml"
 
       - name: Never publish an empty body
         if: steps.range.outputs.empty == 'false'
