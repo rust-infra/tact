@@ -114,9 +114,8 @@ async fn run_headless_locked(
     // headless still cannot answer permission prompts, so a caller that needs
     // its tools allowed must choose a mode that does not ask. Which mode that
     // is, is the caller's decision and not this module's: the scheduled review
-    // passes `--permission-mode auto` because it must read the repository, and
-    // pays for that by keeping the provider key out of the model's reach
-    // rather than by assuming the run is read-only.
+    // passes `--permission-mode auto` because plan mode's classifier refuses
+    // the pipelines a review needs.
     let (observer_tx, observer_rx) = tokio::sync::mpsc::unbounded_channel();
     // The pump stops on this signal, not on the channel closing: a detached
     // background task holds a clone of the observer sender and may outlive the
