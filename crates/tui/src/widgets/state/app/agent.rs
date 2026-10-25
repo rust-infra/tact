@@ -102,8 +102,11 @@ impl App {
         }
     }
 
-    /// Install the in-process pending UI broker and reconcile immediately.
-    pub(crate) fn set_pending_ui(&mut self, pending_ui: tact::ui_responder::UiResponder) {
+    /// Install the interaction port and reconcile immediately.
+    pub(crate) fn set_pending_ui(
+        &mut self,
+        pending_ui: std::sync::Arc<dyn crate::ports::InteractionPort>,
+    ) {
         self.pending_ui = Some(pending_ui);
         self.reconcile_pending_ui();
     }
@@ -114,13 +117,13 @@ impl App {
     /// be lost or duplicated, but the broker snapshot is authoritative.
     pub(crate) fn reconcile_pending_ui(&mut self) {
         let pending = match &self.pending_ui {
-            Some(ui) => ui.snapshot(),
+            Some(ui) => ui.pending(),
             None => return,
         };
         self.reconcile_pending_selects(&pending);
     }
 
-    fn reconcile_pending_selects(&mut self, pending: &[tact::ui_responder::PendingUiRequest]) {
+    fn reconcile_pending_selects(&mut self, pending: &[crate::ports::PendingPrompt]) {
         if let Some(current_id) = self.select.request_id {
             if pending
                 .iter()
@@ -157,25 +160,22 @@ impl App {
             return;
         };
 
-        match next.kind {
-            tact::ui_responder::PendingUiRequestKind::Select => {
-                self.select.set(
-                    next.prompt.clone(),
-                    next.options.clone(),
-                    next.request_id,
-                    next.log_confirm,
-                    next.from_subagent,
-                );
-            }
-            tact::ui_responder::PendingUiRequestKind::MultiSelect => {
-                self.select.set_multi(
-                    next.prompt.clone(),
-                    next.options.clone(),
-                    next.request_id,
-                    false,
-                    next.from_subagent,
-                );
-            }
+        if next.multi {
+            self.select.set_multi(
+                next.prompt.clone(),
+                next.options.clone(),
+                next.request_id,
+                false,
+                next.from_subagent,
+            );
+        } else {
+            self.select.set(
+                next.prompt.clone(),
+                next.options.clone(),
+                next.request_id,
+                next.log_confirm,
+                next.from_subagent,
+            );
         }
         self.select_kind = SelectKind::Agent;
         self.input_mode = InputMode::Select;
@@ -2476,26 +2476,23 @@ mod lifecycle_tests {
         use crate::widgets::state::InputMode;
 
         let mut app = make_app();
-        let responder = tact::ui_responder::UiResponder::new();
-        app.set_pending_ui(responder.clone());
-
-        let (request_id, _rx) = responder.register_select(
-            "Allow write?".into(),
-            vec!["Allow once".into(), "Deny".into()],
-            false,
-            false,
-        );
+        let port = std::sync::Arc::new(crate::test_fixtures::FakeInteraction::with_pending(vec![
+            crate::test_fixtures::FakeInteraction::select(
+                7,
+                "Allow write?",
+                &["Allow once", "Deny"],
+            ),
+        ]));
+        app.set_pending_ui(port.clone());
 
         // No AgentUpdate::RequestSelect was delivered — reconcile still shows
-        // the authoritative broker state.
+        // the authoritative pending state.
         app.reconcile_pending_ui();
-        assert_eq!(app.select.request_id, Some(request_id));
+        assert_eq!(app.select.request_id, Some(7));
         assert!(matches!(app.input_mode, InputMode::Select));
 
-        assert!(responder.respond(tact_protocol::UiResponse::Select {
-            request_id,
-            choice: Some(0),
-        }));
+        // Answering removes it from the snapshot, so the popup closes.
+        port.clear();
         app.reconcile_pending_ui();
         assert_eq!(app.select.request_id, None);
         assert!(matches!(app.input_mode, InputMode::Normal));
@@ -2506,44 +2503,40 @@ mod lifecycle_tests {
         use crate::widgets::state::InputMode;
 
         let mut app = make_app();
-        let responder = tact::ui_responder::UiResponder::new();
-        app.set_pending_ui(responder.clone());
-        let (request_id, _rx) = responder.register_select(
-            "Allow write?".into(),
-            vec!["Allow once".into(), "Deny".into()],
-            false,
-            false,
-        );
+        let port = std::sync::Arc::new(crate::test_fixtures::FakeInteraction::with_pending(vec![
+            crate::test_fixtures::FakeInteraction::select(
+                7,
+                "Allow write?",
+                &["Allow once", "Deny"],
+            ),
+        ]));
+        app.set_pending_ui(port);
         app.reconcile_pending_ui();
-        assert_eq!(app.select.request_id, Some(request_id));
+        assert_eq!(app.select.request_id, Some(7));
 
         app.input_mode = InputMode::Normal;
         app.reconcile_pending_ui();
         assert!(matches!(app.input_mode, InputMode::Select));
-        assert_eq!(app.select.request_id, Some(request_id));
+        assert_eq!(app.select.request_id, Some(7));
     }
 
     #[test]
     fn broker_snapshot_advances_to_next_pending_request() {
         let mut app = make_app();
-        let responder = tact::ui_responder::UiResponder::new();
-        app.set_pending_ui(responder.clone());
-
-        let (first, _rx1) =
-            responder.register_select("first".into(), vec!["1".into()], false, false);
-        let (second, _rx2) =
-            responder.register_select("second".into(), vec!["2".into()], false, false);
+        let port = std::sync::Arc::new(crate::test_fixtures::FakeInteraction::with_pending(vec![
+            crate::test_fixtures::FakeInteraction::select(1, "first", &["1"]),
+            crate::test_fixtures::FakeInteraction::select(2, "second", &["2"]),
+        ]));
+        app.set_pending_ui(port.clone());
 
         app.reconcile_pending_ui();
-        assert_eq!(app.select.request_id, Some(first));
+        assert_eq!(app.select.request_id, Some(1));
         assert_eq!(app.select.prompt, "first");
 
-        assert!(responder.respond(tact_protocol::UiResponse::Select {
-            request_id: first,
-            choice: Some(0),
-        }));
+        // The first waiter is answered, so the next prompt takes the popup.
+        assert!(crate::ports::InteractionPort::withdraw(&*port, 1));
         app.reconcile_pending_ui();
-        assert_eq!(app.select.request_id, Some(second));
+        assert_eq!(app.select.request_id, Some(2));
         assert_eq!(app.select.prompt, "second");
     }
 

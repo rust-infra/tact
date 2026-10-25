@@ -82,6 +82,56 @@ pub fn skill_catalog(
     Arc::new(RuntimeSkillCatalog::new(registry, work_dir))
 }
 
+/// The runtime's interaction broker, seen through the view's port.
+///
+/// Holds the same `UiResponder` the tool contexts use, so an answer given in the
+/// popup reaches the waiting tool — a separate responder would answer a waiter
+/// nobody has.
+pub struct RuntimeInteractionPort {
+    responder: tact::ui_responder::UiResponder,
+}
+
+impl RuntimeInteractionPort {
+    pub fn new(responder: tact::ui_responder::UiResponder) -> Self {
+        Self { responder }
+    }
+}
+
+impl tui::ports::InteractionPort for RuntimeInteractionPort {
+    fn pending(&self) -> Vec<tui::ports::PendingPrompt> {
+        self.responder
+            .snapshot()
+            .into_iter()
+            .map(|pending| tui::ports::PendingPrompt {
+                request_id: pending.request_id,
+                prompt: pending.prompt,
+                options: pending.options,
+                multi: matches!(
+                    pending.kind,
+                    tact::ui_responder::PendingUiRequestKind::MultiSelect
+                ),
+                log_confirm: pending.log_confirm,
+                from_subagent: pending.from_subagent,
+            })
+            .collect()
+    }
+
+    fn respond(&self, response: tact_protocol::UiResponse) -> bool {
+        self.responder.respond(response)
+    }
+
+    fn withdraw(&self, request_id: u64) -> bool {
+        self.responder.withdraw(request_id)
+    }
+}
+
+/// Wrap a responder for the view.
+pub fn interaction_port(
+    responder: tact::ui_responder::UiResponder,
+) -> std::sync::Arc<dyn tui::ports::InteractionPort> {
+    std::sync::Arc::new(RuntimeInteractionPort::new(responder))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

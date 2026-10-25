@@ -118,7 +118,7 @@ async fn run_interactive_locked(
             input_history_entries: input_history,
             session_id,
             session_store,
-            pending_ui: tui_ui_responder,
+            pending_ui: crate::view_ports::interaction_port(tui_ui_responder),
             config_snapshot: Some(config_snapshot.clone()),
             history_save_tx,
             theme,

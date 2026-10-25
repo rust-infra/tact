@@ -253,7 +253,7 @@ pub struct App {
     /// Authoritative in-process pending UI requests. When set, the TUI
     /// reconciles its select popup from this snapshot instead of treating
     /// individual `RequestSelect` events as the source of truth.
-    pub(crate) pending_ui: Option<tact::ui_responder::UiResponder>,
+    pub(crate) pending_ui: Option<std::sync::Arc<dyn crate::ports::InteractionPort>>,
     // File picker popup (triggered by @ in insert mode)
     pub(crate) file_picker: FilePicker,
     pub(crate) slash_command: SlashCommandState,

@@ -52,6 +52,44 @@ pub trait SkillCatalog: Send + Sync {
     fn description(&self) -> String;
 }
 
+/// A prompt waiting for the user, as the view renders it.
+///
+/// A view reconciles from a snapshot rather than trusting one event: a request
+/// event can be missed (the view attaches late) or duplicated, and a waiter that
+/// was dropped must not leave a ghost popup on screen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingPrompt {
+    pub request_id: u64,
+    pub prompt: String,
+    pub options: Vec<String>,
+    /// Whether the answer is a set of indices rather than one.
+    pub multi: bool,
+    pub log_confirm: bool,
+    /// The request came from a `spawn_subagent` child, so the popup titles
+    /// itself accordingly. The prompt itself stays clean — the model wrote it.
+    pub from_subagent: bool,
+}
+
+/// What the view needs from the interaction broker.
+///
+/// The runtime's broker is richer (it also carries the request kind and the
+/// answer channel); the view only ever asks these three questions, so the port
+/// stays this small on purpose. A method per caller would rebuild the object it
+/// replaced.
+pub trait InteractionPort: Send + Sync {
+    /// The prompts waiting for an answer, oldest first.
+    fn pending(&self) -> Vec<PendingPrompt>;
+
+    /// Answer one prompt. Returns whether a waiter was actually waiting.
+    ///
+    /// `false` means the request had already been answered or withdrawn — the
+    /// caller logs it rather than pretending the answer landed.
+    fn respond(&self, response: tact_protocol::UiResponse) -> bool;
+
+    /// Abandon one prompt, if it is still waiting.
+    fn withdraw(&self, request_id: u64) -> bool;
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -101,6 +139,41 @@ mod tests {
         assert!(
             offenders.is_empty(),
             "these files reach into tact::skill from production code: {offenders:?}"
+        );
+    }
+
+    /// The view's production code reaches interaction only through this port.
+    ///
+    /// The runtime's responder is one implementation; a view that named it
+    /// directly could not be driven by anything else, and the reverse
+    /// `UserCommand::UiResponse` path would have to stay alive beside it.
+    #[test]
+    fn production_code_reaches_interaction_only_through_the_port() {
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))
+            .expect("the source directory is readable")
+        {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a readable source file");
+            let production = text.split("#[cfg(test)]").next().unwrap_or_default();
+            if production.contains("tact::ui_responder") {
+                offenders.push(
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                );
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these files reach into tact::ui_responder from production code: {offenders:?}"
         );
     }
 

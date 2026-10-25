@@ -64,10 +64,13 @@ where
     setup(&work_dir);
 
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
-    let ui_responder = agent.tool_context.ui_responder.clone();
+    // The headless view answers through the same port the TUI uses, over the
+    // responder the agent's tool contexts hold — a separate one would answer a
+    // waiter nobody has.
+    let interaction = crate::view_ports::interaction_port(agent.tool_context.ui_responder.clone());
     let mut app = HeadlessApp::new(agent_rx, work_dir.clone())
         .with_auto_select(permission_choice)
-        .with_ui_responder(ui_responder);
+        .with_interaction_port(interaction);
     if capture_frames {
         app = app.with_frame_capture();
     }

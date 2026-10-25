@@ -1547,35 +1547,35 @@ thinking_budget = {thinking_budget}
     }
 
     #[test]
-    fn broker_mode_enter_wakes_registered_waiter() {
+    fn broker_mode_enter_answers_through_the_port() {
         let mut app = make_app();
         let (tx, mut user_rx) = tokio::sync::mpsc::unbounded_channel();
         app.user_cmd_tx = tx;
-        let responder = tact::ui_responder::UiResponder::new();
-        app.set_pending_ui(responder.clone());
-
-        let (request_id, mut waiter) = responder.register_select(
-            "Allow write?".into(),
-            vec!["Allow once".into(), "Deny".into()],
-            false,
-            false,
-        );
+        let port = std::sync::Arc::new(crate::test_fixtures::FakeInteraction::with_pending(vec![
+            crate::test_fixtures::FakeInteraction::select(
+                7,
+                "Allow write?",
+                &["Allow once", "Deny"],
+            ),
+        ]));
+        app.set_pending_ui(port.clone());
         app.reconcile_pending_ui();
-        assert_eq!(app.select.request_id, Some(request_id));
+        assert_eq!(app.select.request_id, Some(7));
 
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
-        match waiter.try_recv() {
-            Ok(UiResponse::Select {
-                request_id: id,
-                choice: Some(0),
-            }) => assert_eq!(id, request_id),
-            other => panic!("expected broker Select response, got {other:?}"),
+        match port.answers().as_slice() {
+            [
+                UiResponse::Select {
+                    request_id: 7,
+                    choice: Some(0),
+                },
+            ] => {}
+            other => panic!("expected a Select answer through the port, got {other:?}"),
         }
-        assert!(responder.snapshot().is_empty());
         assert!(
             user_rx.try_recv().is_err(),
-            "broker mode must not fall back to UserCommand::UiResponse"
+            "port mode must not fall back to UserCommand::UiResponse"
         );
     }
 
@@ -1584,26 +1584,27 @@ thinking_budget = {thinking_budget}
         let mut app = make_app();
         let (tx, mut user_rx) = tokio::sync::mpsc::unbounded_channel();
         app.user_cmd_tx = tx;
-        let responder = tact::ui_responder::UiResponder::new();
-        app.set_pending_ui(responder.clone());
-
-        let (request_id, mut waiter) = responder.register_select(
-            "Allow write?".into(),
-            vec!["Allow once".into(), "Deny".into()],
-            false,
-            false,
-        );
+        let port = std::sync::Arc::new(crate::test_fixtures::FakeInteraction::with_pending(vec![
+            crate::test_fixtures::FakeInteraction::select(
+                9,
+                "Allow write?",
+                &["Allow once", "Deny"],
+            ),
+        ]));
+        app.set_pending_ui(port.clone());
         app.reconcile_pending_ui();
-        assert_eq!(app.select.request_id, Some(request_id));
+        assert_eq!(app.select.request_id, Some(9));
 
         app.cancel_task();
 
-        match waiter.try_recv() {
-            Ok(UiResponse::Select {
-                request_id: id,
-                choice: None,
-            }) => assert_eq!(id, request_id),
-            other => panic!("expected cancelled broker Select response, got {other:?}"),
+        match port.answers().as_slice() {
+            [
+                UiResponse::Select {
+                    request_id: 9,
+                    choice: None,
+                },
+            ] => {}
+            other => panic!("expected a cancelled Select through the port, got {other:?}"),
         }
         match user_rx.try_recv() {
             Ok(UserCommand::Cancel) => {}

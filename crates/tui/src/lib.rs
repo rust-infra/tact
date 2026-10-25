@@ -212,7 +212,7 @@ pub struct TuiConfig {
     pub skills: std::sync::Arc<dyn ports::SkillCatalog>,
     /// Authoritative in-process pending UI request broker. The TUI reconciles
     /// from `snapshot()` instead of trusting a single `RequestSelect` event.
-    pub pending_ui: tact::ui_responder::UiResponder,
+    pub pending_ui: std::sync::Arc<dyn ports::InteractionPort>,
     /// Voice-to-text settings (independent of LLM providers).
     pub voice: tact::config::VoiceSettings,
     /// The resolved configuration the host assembled with.

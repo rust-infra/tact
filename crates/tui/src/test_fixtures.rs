@@ -141,6 +141,66 @@ impl crate::ports::SkillCatalog for FakeSkillCatalog {
     }
 }
 
+/// An interaction port for tests.
+///
+/// Records what the view asked and answers whatever the test staged, so a test
+/// can assert the popup reconciled against a snapshot without standing up the
+/// runtime's responder.
+#[derive(Default, Clone)]
+pub struct FakeInteraction {
+    pending: std::sync::Arc<std::sync::Mutex<Vec<crate::ports::PendingPrompt>>>,
+    answers: std::sync::Arc<std::sync::Mutex<Vec<tact_protocol::UiResponse>>>,
+}
+
+impl FakeInteraction {
+    /// A port holding `pending`.
+    pub fn with_pending(pending: Vec<crate::ports::PendingPrompt>) -> Self {
+        let port = Self::default();
+        *port.pending.lock().expect("pending lock") = pending;
+        port
+    }
+
+    /// One select prompt, as the runtime would report it.
+    pub fn select(request_id: u64, prompt: &str, options: &[&str]) -> crate::ports::PendingPrompt {
+        crate::ports::PendingPrompt {
+            request_id,
+            prompt: prompt.to_string(),
+            options: options.iter().map(|option| (*option).to_string()).collect(),
+            multi: false,
+            log_confirm: false,
+            from_subagent: false,
+        }
+    }
+
+    /// The answers the view has given.
+    pub fn answers(&self) -> Vec<tact_protocol::UiResponse> {
+        self.answers.lock().expect("answers lock").clone()
+    }
+
+    /// Remove a pending request, as an answered one would disappear.
+    pub fn clear(&self) {
+        self.pending.lock().expect("pending lock").clear();
+    }
+}
+
+impl crate::ports::InteractionPort for FakeInteraction {
+    fn pending(&self) -> Vec<crate::ports::PendingPrompt> {
+        self.pending.lock().expect("pending lock").clone()
+    }
+
+    fn respond(&self, response: tact_protocol::UiResponse) -> bool {
+        self.answers.lock().expect("answers lock").push(response);
+        true
+    }
+
+    fn withdraw(&self, request_id: u64) -> bool {
+        let mut pending = self.pending.lock().expect("pending lock");
+        let before = pending.len();
+        pending.retain(|entry| entry.request_id != request_id);
+        pending.len() != before
+    }
+}
+
 /// An app under test, still holding the channels it talks through.
 pub struct TestApp {
     /// The app itself. Public so a render test can take it and drop the rest.

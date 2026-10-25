@@ -164,7 +164,7 @@ pub struct HeadlessApp {
     capture_frames: bool,
     /// Direct route for auto-confirmed select responses. The driver owns the
     /// same shared registry, so `handle_response` reaches the waiting tool.
-    ui_responder: Option<tact::ui_responder::UiResponder>,
+    ui_responder: Option<std::sync::Arc<dyn crate::ports::InteractionPort>>,
 }
 
 impl HeadlessApp {
@@ -182,12 +182,15 @@ impl HeadlessApp {
         self
     }
 
-    /// Answer auto-confirmed selects through the shared [`UiResponder`] directly
+    /// Answer auto-confirmed selects through the interaction port directly
     /// instead of the (disconnected) command channel. The headless App and the
     /// driver do not share a `user_cmd` channel, so routing responses this way
     /// is what lets a blocked tool unblock.
-    pub fn with_ui_responder(mut self, responder: tact::ui_responder::UiResponder) -> Self {
-        self.ui_responder = Some(responder);
+    pub fn with_interaction_port(
+        mut self,
+        port: std::sync::Arc<dyn crate::ports::InteractionPort>,
+    ) -> Self {
+        self.ui_responder = Some(port);
         self
     }
 
@@ -230,7 +233,9 @@ impl HeadlessApp {
             return;
         };
         match &self.ui_responder {
-            Some(responder) => responder.handle_response(response),
+            Some(port) => {
+                port.respond(response);
+            }
             None => {
                 let _ = self
                     .inner
