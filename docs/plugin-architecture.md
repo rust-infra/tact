@@ -71,15 +71,31 @@ the first implementation plan is
   - `ToolCatalog` can be reached through a shared handle, so a host registers
     dynamic sources (MCP) without invalidating live tickets, and `handler_for`
     resolves a handler whether a native insert or a source provided it.
+- Phase 4 has started on the kernel side:
+  - `Command` carries `run()`/`complete()`, and `CommandCatalog` routes by name
+    (resolving aliases) and completes by either listing names or delegating to
+    the command's own grammar. The kernel never parses arguments: a command's
+    verbs belong to whoever contributes it, and there is no unknown-command
+    error — an unknown name is a `Usage` line the host prints verbatim.
+  - `prompt:skills` and `prompt:memory` no longer reach into `skill`/`memory`
+    from `agent/`; the module guard's allowlist lost both, so the only remaining
+    entry is `mcp` on the two files that still call the router.
 - `tui` still depends on `tact` for view services. The target has no such edge;
   Phase 4 removes it and its test/fixture dependencies.
 
 ## Not implemented yet
 
 - MCP tools as kernel descriptors: `McpToolSource` and `McpControlSource` adapt
-  them, but the Agent does not register either yet, so MCP calls still bypass the
-  executor and keep their `[mcp]`-settings risk and their own ladder. That is the
-  last legacy permission path.
+  them *and* `McpToolEntry` already carries the `[mcp]` risk, output budget and
+  auto-approve bit, but the Agent does not register either source yet — sharing
+  the router needs an ownership change whose two obvious designs are recorded as
+  rejected in
+  [`docs/superpowers/plans/2026-10-25-mcp-through-executor.md`](superpowers/plans/2026-10-25-mcp-through-executor.md).
+  MCP calls therefore still keep their own ladder: the last legacy permission
+  path.
+- Phase 4's view half is untouched: `tui` still depends on `tact` and `tact_llm`,
+  and slash commands still dispatch through the `SlashCommand` enum rather than a
+  catalog. That is the next large change.
 - Domain families beyond tools and prompt sections: Goal/Task/Team/Worktree/
   Background/Subagent are tool families but not yet plugins with their own
   lifecycle, and Skills/Memory/MCP still reach into `agent/` directly (the module
