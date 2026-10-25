@@ -24,6 +24,7 @@ pub mod background_store;
 pub mod goal_store;
 pub mod plugin;
 pub(crate) mod process_identity;
+pub mod session_plugin;
 pub mod session_store;
 pub mod sqlite;
 pub mod subagent_store;
@@ -32,6 +33,7 @@ pub mod team_store;
 #[cfg(test)]
 mod test_support;
 pub mod worktree_store;
+pub use session_plugin::{RuntimeSessionService, SessionPlugin, session_service};
 pub use session_store::{DynSessionStore, SessionLock, SessionStore, open_sqlite_session_store};
 
 /// Outcome of a successful write.

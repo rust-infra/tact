@@ -173,7 +173,12 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
     }
     if let Some(storage) = extras.storage {
         host.install_sync(crate::store::plugin::StoragePlugin::new(&storage.path))?;
+        // The service takes its own handle: the session service needs the store
+        // after the plugin that provides it, and installing before it would leave
+        // the service orphaned from the bundle's lifetime.
+        let session_store = storage.store.clone();
         host.install_sync(crate::store::plugin::SessionStorePlugin::new(storage.store))?;
+        host.install_sync(crate::store::SessionPlugin::new(session_store))?;
     }
 
     let skipped = host
@@ -405,6 +410,59 @@ mod tests {
         .unwrap();
         assert!(crate::plugin::marketplace(assembled.services()).is_ok());
         assert!(crate::plugin::installer(assembled.services()).is_ok());
+    }
+
+    /// A host that installed storage also gets the session service.
+    ///
+    /// The service is what a frontend drives to resolve, list and close sessions;
+    /// without it a host would have to reach into the store itself, which is the
+    /// dependency this plugin exists to remove.
+    #[tokio::test]
+    async fn a_host_with_storage_gets_the_session_service() {
+        crate::config::test_support::install_default();
+        let dir = std::env::temp_dir().join("tact-host-session-service");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.join("session.db"))
+            .await
+            .unwrap();
+        let manager = manager();
+        let assembled = assemble_with(
+            HostOptions {
+                permission_manager: &manager,
+                ui_available: Arc::new(|| false),
+                config: None,
+                provider: None,
+                filter: CapabilityFilter::default(),
+            },
+            HostExtras {
+                storage: Some(StorageOptions {
+                    store,
+                    path: dir.join("session.db"),
+                }),
+                ..HostExtras::default()
+            },
+        )
+        .unwrap();
+
+        assert!(
+            crate::store::session_service(assembled.services()).is_ok(),
+            "the storage bundle must also provide the session service"
+        );
+        // Order matters at shutdown, so it is asserted rather than assumed.
+        let ids = assembled.plugin_ids();
+        let store_at = ids
+            .iter()
+            .position(|id| id == "builtin.session_store")
+            .expect("session store installed");
+        let service_at = ids
+            .iter()
+            .position(|id| id == "builtin.session_service")
+            .expect("session service installed");
+        assert!(
+            service_at > store_at,
+            "the service is installed after the store it reads: {ids:?}"
+        );
     }
 
     #[test]

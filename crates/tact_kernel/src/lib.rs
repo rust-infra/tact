@@ -18,5 +18,6 @@ pub mod capability;
 pub mod catalog;
 pub mod permission;
 pub mod plugin;
+pub mod runtime;
 pub mod service;
 pub mod tool;
