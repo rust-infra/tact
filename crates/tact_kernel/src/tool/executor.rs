@@ -96,6 +96,9 @@ pub enum HookControl {
 pub struct PreToolUseEvent {
     pub tool_name: String,
     pub input: serde_json::Value,
+    /// Context a hook wants recorded before the next request, not injected into
+    /// the tool input. The kernel never interprets it; the caller drains it.
+    pub additional_context: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -103,6 +106,7 @@ pub struct PostToolUseEvent {
     pub tool_name: String,
     pub input: serde_json::Value,
     pub result: ToolCallResult,
+    pub additional_context: Vec<String>,
 }
 
 #[async_trait]
@@ -196,6 +200,7 @@ impl ToolExecutor {
         let mut hook_event = PreToolUseEvent {
             tool_name: request.tool_name.clone(),
             input: request.input.clone(),
+            additional_context: Vec::new(),
         };
         match self.hooks.pre_tool_use(&mut hook_event).await? {
             HookControl::Continue => {}
@@ -344,6 +349,7 @@ impl ToolExecutor {
             tool_name: prepared.descriptor.name,
             input: prepared.input,
             result: result.clone(),
+            additional_context: Vec::new(),
         };
         match self.hooks.post_tool_use(&mut post).await? {
             HookControl::Continue => {}

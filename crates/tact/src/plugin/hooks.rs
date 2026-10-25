@@ -5044,3 +5044,206 @@ mod tests {
         assert_eq!(report.trusted.len(), 1);
     }
 }
+
+/// The kernel `HookService` port for command hooks and MCP-tool hooks.
+///
+/// Phase 1b keeps the hook *engine* here: the declarations, the trust check,
+/// the command/MCP runtime and the output normalization are unchanged. This
+/// adapter only removes the `Agent` parameter that `run_hook` used for status
+/// rows and notices, so the kernel pipeline can call hooks without an `Agent`.
+pub struct KernelHookService {
+    source: HookSource,
+    work_dir: PathBuf,
+    notices: Arc<dyn Fn(&str) + Send + Sync>,
+}
+
+impl KernelHookService {
+    pub fn new(
+        source: HookSource,
+        work_dir: PathBuf,
+        notices: Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Self {
+        Self {
+            source,
+            work_dir,
+            notices,
+        }
+    }
+
+    fn run<'a>(
+        &'a self,
+        event: HookEventKind,
+        hook_event_name: &'static str,
+        payload: serde_json::Value,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = HookControl> + Send + 'a>> {
+        Box::pin(async move {
+            let mut control = HookControl::Continue;
+            for (matcher, command) in self.source.hooks.commands_for(event) {
+                let subject = tool_name_of(&payload).unwrap_or_default();
+                if !matcher_matches(matcher.matcher.as_deref(), subject) {
+                    continue;
+                }
+                let output = run_hook(
+                    command,
+                    &self.source.dirs,
+                    &HookRunInput {
+                        session_id: String::new(),
+                        work_dir: self.work_dir.clone(),
+                        hook_event_name,
+                        event: payload.clone(),
+                    },
+                    None,
+                )
+                .await;
+                if let Some(message) = output.system_message {
+                    (self.notices)(&message);
+                }
+                match output.control {
+                    HookControl::Continue => {}
+                    HookControl::Allow => {
+                        if matches!(control, HookControl::Continue) {
+                            control = HookControl::Allow;
+                        }
+                    }
+                    HookControl::Block(reason) => return HookControl::Block(reason),
+                }
+            }
+            control
+        })
+    }
+}
+
+fn tool_name_of(payload: &serde_json::Value) -> Option<&str> {
+    payload.get("tool_name").and_then(|value| value.as_str())
+}
+
+#[async_trait::async_trait]
+impl tact_kernel::tool::executor::HookService for KernelHookService {
+    async fn pre_tool_use(
+        &self,
+        event: &mut tact_kernel::tool::executor::PreToolUseEvent,
+    ) -> anyhow::Result<tact_kernel::tool::executor::HookControl> {
+        let control = self
+            .run(
+                HookEventKind::PreToolUse,
+                "PreToolUse",
+                json!({ "tool_name": event.tool_name, "tool_input": event.input }),
+            )
+            .await;
+        Ok(match control {
+            HookControl::Continue => tact_kernel::tool::executor::HookControl::Continue,
+            HookControl::Allow => tact_kernel::tool::executor::HookControl::Continue,
+            HookControl::Block(reason) => tact_kernel::tool::executor::HookControl::Block(reason),
+        })
+    }
+
+    async fn post_tool_use(
+        &self,
+        event: &mut tact_kernel::tool::executor::PostToolUseEvent,
+    ) -> anyhow::Result<tact_kernel::tool::executor::HookControl> {
+        let control = self
+            .run(
+                HookEventKind::PostToolUse,
+                "PostToolUse",
+                json!({
+                    "tool_name": event.tool_name,
+                    "tool_input": event.input,
+                    "tool_response": event.result.content,
+                }),
+            )
+            .await;
+        Ok(match control {
+            HookControl::Continue => tact_kernel::tool::executor::HookControl::Continue,
+            HookControl::Allow => tact_kernel::tool::executor::HookControl::Continue,
+            HookControl::Block(reason) => tact_kernel::tool::executor::HookControl::Block(reason),
+        })
+    }
+}
+
+#[cfg(test)]
+mod kernel_hook_service_tests {
+    use super::*;
+    use serde_json::json;
+    use tact_kernel::tool::executor::{
+        HookControl as KernelControl, HookService, PostToolUseEvent, PreToolUseEvent,
+    };
+
+    fn source(dir: &std::path::Path, script: &str) -> HookSource {
+        let mut hooks = HooksFile::default();
+        hooks.hooks.insert(
+            HookEventKind::PreToolUse.as_str().to_string(),
+            vec![HookMatcher {
+                matcher: Some("Bash".to_string()),
+                hooks: vec![HookCommand {
+                    command: Some(script.to_string()),
+                    ..HookCommand::default()
+                }],
+            }],
+        );
+        HookSource {
+            label: "test".into(),
+            origin: HookOrigin::ProjectFile,
+            dirs: PluginDirs::from(dir),
+            hooks,
+        }
+    }
+
+    fn service(dir: &std::path::Path, script: &str) -> KernelHookService {
+        KernelHookService::new(source(dir, script), dir.to_path_buf(), Arc::new(|_| {}))
+    }
+
+    #[tokio::test]
+    async fn non_matching_tool_runs_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = service(dir.path(), "exit 2");
+        let mut event = PreToolUseEvent {
+            tool_name: "Read".into(),
+            input: json!({"path": "x"}),
+            additional_context: Vec::new(),
+        };
+        let control = service.pre_tool_use(&mut event).await.unwrap();
+        assert!(matches!(control, KernelControl::Continue));
+    }
+
+    #[tokio::test]
+    async fn matching_block_is_translated() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = service(
+            dir.path(),
+            "printf '%s' '{\"decision\":\"block\",\"reason\":\"no bash\"}'",
+        );
+        let mut event = PreToolUseEvent {
+            tool_name: "Bash".into(),
+            input: json!({"command": "ls"}),
+            additional_context: Vec::new(),
+        };
+        let control = service.pre_tool_use(&mut event).await.unwrap();
+        let KernelControl::Block(reason) = control else {
+            panic!("expected a block");
+        };
+        assert!(reason.contains("no bash"), "{reason}");
+    }
+
+    #[tokio::test]
+    async fn post_event_receives_tool_response() {
+        let dir = tempfile::tempdir().unwrap();
+        let service = KernelHookService::new(
+            HookSource {
+                label: "test".into(),
+                origin: HookOrigin::ProjectFile,
+                dirs: PluginDirs::from(dir.path()),
+                hooks: HooksFile::default(),
+            },
+            dir.path().to_path_buf(),
+            Arc::new(|_| {}),
+        );
+        let mut event = PostToolUseEvent {
+            tool_name: "Bash".into(),
+            input: json!({"command": "ls"}),
+            result: tact_kernel::tool::ToolCallResult::text("output"),
+            additional_context: Vec::new(),
+        };
+        let control = service.post_tool_use(&mut event).await.unwrap();
+        assert!(matches!(control, KernelControl::Continue));
+    }
+}
