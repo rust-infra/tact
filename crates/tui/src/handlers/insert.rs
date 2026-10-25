@@ -124,11 +124,11 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSe
         }
 
         let display = app.input.clone();
-        if tact::consts::exceeds_input_char_limit(display.chars().count()) {
+        if tact_protocol::exceeds_input_char_limit(display.chars().count()) {
             let msg = app
                 .msgs()
                 .input_too_long_tmpl
-                .replace("{}", &tact::consts::MAX_INPUT_CHARS.to_string());
+                .replace("{}", &tact_protocol::MAX_INPUT_CHARS.to_string());
             app.add_system_message(msg);
             return;
         }
@@ -845,7 +845,7 @@ mod tests {
         let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
         app.model_context_window = 200_000;
-        app.input = "x".repeat(tact::consts::MAX_INPUT_CHARS + 1);
+        app.input = "x".repeat(tact_protocol::MAX_INPUT_CHARS + 1);
         app.input_cursor = app.input.chars().count();
 
         handle_insert_mode(
@@ -865,12 +865,12 @@ mod tests {
                 .any(|item| item.raw.contains("too long")
                     || item
                         .raw
-                        .contains(&tact::consts::MAX_INPUT_CHARS.to_string())),
+                        .contains(&tact_protocol::MAX_INPUT_CHARS.to_string())),
             "expected a system message indicating input is too long"
         );
         assert_eq!(
             app.input.chars().count(),
-            tact::consts::MAX_INPUT_CHARS + 1,
+            tact_protocol::MAX_INPUT_CHARS + 1,
             "expected oversize input to remain uncleared"
         );
     }

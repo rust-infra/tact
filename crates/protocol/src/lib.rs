@@ -31,6 +31,24 @@ pub use tool_output::{
     ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
 };
 
+/// The most characters one user input may carry.
+///
+/// Both sides need this number: the runtime enforces it and the view reports it
+/// in the "input too long" message. It lives here so neither has to depend on
+/// the other for a constant.
+pub const MAX_INPUT_CHARS: usize = 500_000;
+
+/// Whether `char_count` exceeds [`MAX_INPUT_CHARS`].
+///
+/// A function rather than an inline comparison so the boundary is stated once:
+/// the limit is inclusive, and an off-by-one here silently rejects a valid
+/// paste or accepts one the runtime will truncate.
+#[inline]
+#[must_use]
+pub fn exceeds_input_char_limit(char_count: usize) -> bool {
+    char_count > MAX_INPUT_CHARS
+}
+
 /// Format a byte count using human-readable units: B, KB, MB, GB.
 ///
 /// Uses 1024 as the unit base. Values below 1024 are shown as
@@ -64,7 +82,7 @@ pub fn format_bytes(bytes: usize) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{UsageQuotaWindow, format_bytes};
+    use super::{MAX_INPUT_CHARS, UsageQuotaWindow, exceeds_input_char_limit, format_bytes};
 
     #[test]
     fn format_bytes_units() {
@@ -109,6 +127,18 @@ mod tests {
         };
         assert_eq!(w.usage_pct(), None);
         assert!(w.has_remaining());
+    }
+
+    /// The limit is inclusive: exactly `MAX_INPUT_CHARS` is allowed.
+    ///
+    /// The view rejects a paste on this predicate and reports the number, so an
+    /// off-by-one here would either reject a valid input or accept one the
+    /// runtime truncates.
+    #[test]
+    fn the_input_limit_is_inclusive() {
+        assert!(!exceeds_input_char_limit(0));
+        assert!(!exceeds_input_char_limit(MAX_INPUT_CHARS));
+        assert!(exceeds_input_char_limit(MAX_INPUT_CHARS + 1));
     }
 
     #[test]

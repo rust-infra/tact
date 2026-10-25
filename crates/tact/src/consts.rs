@@ -4,7 +4,11 @@ use std::path::{Path, PathBuf};
 ///
 /// Independent of the model context window (token budget). Do not use
 /// `model_context_window` as a character submit limit.
-pub const MAX_INPUT_CHARS: usize = 500_000;
+/// The most characters one user input may carry.
+///
+/// Re-exported from the protocol crate: both sides enforce or report it, so the
+/// number belongs where neither has to depend on the other for it.
+pub use tact_protocol::MAX_INPUT_CHARS;
 
 /// Home-directory paths used by the plugin marketplace.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -136,11 +140,7 @@ impl From<&PluginDirs> for PluginDirs {
     }
 }
 
-/// Returns true when `char_count` exceeds [`MAX_INPUT_CHARS`].
-#[inline]
-pub fn exceeds_input_char_limit(char_count: usize) -> bool {
-    char_count > MAX_INPUT_CHARS
-}
+pub use tact_protocol::exceeds_input_char_limit;
 
 #[cfg(test)]
 mod tact_path_tests {
