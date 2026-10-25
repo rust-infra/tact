@@ -23,6 +23,7 @@ pub mod compact;
 pub mod goal;
 pub mod hooks;
 pub mod mcp;
+pub mod permission;
 pub mod plugin;
 pub mod stats;
 
@@ -136,6 +137,8 @@ pub fn builtin_catalog(
     hooks: Option<HooksWiring>,
     // `/mcp list` and `/mcp prompts` read the router; the host supplies the view.
     mcp: Option<McpWiring>,
+    // `/permission` writes through the manager the whole runtime shares.
+    permission: Option<crate::permission::SharedPermissionManager>,
 ) -> tact_kernel::catalog::CommandCatalog {
     let mut catalog = tact_kernel::catalog::CommandCatalog::default();
     for command in builtin_commands(stats) {
@@ -146,6 +149,11 @@ pub fn builtin_catalog(
     if let Some(chat) = chat {
         catalog
             .insert(Arc::new(compact::CompactCommand::new(chat)))
+            .expect("built-in command names are unique");
+    }
+    if let Some(permission) = permission {
+        catalog
+            .insert(permission::wiring(permission))
             .expect("built-in command names are unique");
     }
     if let Some(mcp) = mcp {
@@ -247,6 +255,7 @@ mod tests {
         // unreachable even though it exists.
         let catalog = builtin_catalog(
             Arc::new(std::sync::RwLock::new(crate::stats::SessionStats::default())),
+            None,
             None,
             None,
             None,

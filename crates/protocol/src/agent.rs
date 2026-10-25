@@ -665,10 +665,6 @@ pub enum UserCommand {
     /// File a finished Goal out of the panel (`archived: true`), or bring it
     /// back (`false`). Not a lifecycle change: the Goal keeps its status.
     SetGoalArchived { goal_id: String, archived: bool },
-    /// Set the active permission mode.
-    /// The TUI sends this after the user picks through the `/permission` popup.
-    /// Only affects the in-memory session; config is never written.
-    SetPermissionMode(String),
     /// Set the active session's thinking budget for subsequent LLM requests.
     /// The TUI sends this after `/model` budget confirmation; config persistence
     /// is a separate optional local flow.

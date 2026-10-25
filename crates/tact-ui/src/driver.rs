@@ -286,6 +286,7 @@ fn build_command_catalog(
             catalog: std::sync::Arc::new(RuntimeMcpCatalog { slot: slot.clone() }),
             render: std::sync::Arc::new(crate::mcp_cli::render_live_listing),
         }),
+        agent.map(|agent| agent.runtime.permission_manager.clone()),
     )
 }
 
@@ -1967,15 +1968,6 @@ async fn handle_user_command_with_account(
                     let _ = account_tx.send(AccountUpdate::Error(err));
                 }
             }
-        }
-        UserCommand::SetPermissionMode(mode) => {
-            let parsed = match mode.as_str() {
-                "plan" => tact::permission::PermissionMode::Plan,
-                "default" => tact::permission::PermissionMode::Default,
-                _ => tact::permission::PermissionMode::Auto,
-            };
-            // TUI already shows the localized confirmation; do not emit Info here.
-            agent.runtime.permission_manager.set_mode(parsed);
         }
         UserCommand::SetThinkingBudget(budget) => {
             agent.set_thinking_budget(budget);

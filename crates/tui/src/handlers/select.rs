@@ -237,9 +237,12 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                     };
                     app.status_bar_mut().permission_mode = mode_str.to_string();
                     app.add_system_message(msgs.permission_set_tmpl.replace("{}", display_label));
-                    let _ = app
-                        .user_cmd_tx
-                        .send(UserCommand::SetPermissionMode(mode_str.to_string()));
+                    // A catalog command now: the view says "run `/permission`",
+                    // which is what it says for every other command.
+                    let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                        name: "permission".to_string(),
+                        args: mode_str.to_string(),
+                    });
                     app.input_mode = InputMode::Normal;
                 }
                 SelectKind::ThemePick => {

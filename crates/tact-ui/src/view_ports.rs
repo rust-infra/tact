@@ -210,6 +210,7 @@ pub fn install_command_directory(
             catalog: std::sync::Arc::new(crate::driver::EmptyMcpCatalog),
             render: std::sync::Arc::new(crate::mcp_cli::render_live_listing),
         }),
+        Some(agent.runtime.permission_manager.clone()),
     );
     RuntimeCommandDirectory::new(catalog).install(slot);
 }
@@ -637,6 +638,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let expected: Vec<String> = catalog
             .descriptors()
@@ -666,6 +668,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let directory = RuntimeCommandDirectory::new(catalog);
         let stats = tui::ports::CommandDirectory::resolve(&directory, "stats")
@@ -685,6 +688,7 @@ mod tests {
 
         let catalog = tact::command::builtin_catalog(
             Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
+            None,
             None,
             None,
             None,

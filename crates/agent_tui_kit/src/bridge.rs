@@ -59,7 +59,10 @@ impl From<Command> for UserCommand {
                 name: "background".to_string(),
                 args: id.unwrap_or_default(),
             },
-            Command::SetPermissionMode(mode) => UserCommand::SetPermissionMode(mode),
+            Command::SetPermissionMode(mode) => UserCommand::RunCommand {
+                name: "permission".to_string(),
+                args: mode,
+            },
             Command::SetThinkingBudget(budget) => UserCommand::SetThinkingBudget(budget),
             Command::SetReasoningEffort(effort) => UserCommand::SetReasoningEffort(effort),
             Command::SetModel(model) => UserCommand::SetModel(model),
@@ -81,9 +84,11 @@ impl TryFrom<UserCommand> for Command {
             UserCommand::RunCommand { name, args } if name == "compact" && args.is_empty() => {
                 Ok(Self::Compact)
             }
+            UserCommand::RunCommand { name, args } if name == "permission" => {
+                Ok(Self::SetPermissionMode(args))
+            }
             UserCommand::RunCommand { .. } => Err(()),
             UserCommand::Cancel => Ok(Self::Cancel),
-            UserCommand::SetPermissionMode(mode) => Ok(Self::SetPermissionMode(mode)),
             UserCommand::SetThinkingBudget(budget) => Ok(Self::SetThinkingBudget(budget)),
             UserCommand::SetReasoningEffort(effort) => Ok(Self::SetReasoningEffort(effort)),
             UserCommand::SetModel(model) => Ok(Self::SetModel(model)),
