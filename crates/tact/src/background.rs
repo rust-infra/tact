@@ -1619,3 +1619,112 @@ mod tests {
         assert_eq!(record.session_id, "sess-42");
     }
 }
+
+/// Background tasks, contributed as a plugin.
+///
+/// The manager is already an `Arc` the runtime shares; this is the lifecycle seam
+/// that makes the domain a plugin. It registers the shared manager so a host that
+/// wants a different execution backend can install its own plugin instead of
+/// replacing what every caller writes against.
+pub struct BackgroundPlugin {
+    manager: SharedBackgroundManager,
+}
+
+impl BackgroundPlugin {
+    /// A plugin over an already-opened manager.
+    ///
+    /// Opening is async and happens before assembly, like every other store-backed
+    /// plugin: `register` cannot await.
+    pub fn new(manager: SharedBackgroundManager) -> Self {
+        Self { manager }
+    }
+}
+
+#[async_trait::async_trait]
+impl tact_kernel::plugin::Plugin for BackgroundPlugin {
+    fn manifest(&self) -> tact_kernel::plugin::PluginManifest {
+        tact_kernel::plugin::PluginManifest::new(
+            tact_kernel::plugin::PluginId::new("builtin.background").expect("a literal id"),
+            "Background tasks",
+            env!("CARGO_PKG_VERSION"),
+            tact_kernel::plugin::PluginKind::Capability,
+            "Long-running shell tasks: start, wait, check and record",
+        )
+    }
+
+    fn register(&self, registrar: &mut tact_kernel::plugin::Registrar<'_>) -> Result<()> {
+        registrar.service(std::sync::Arc::new(BackgroundHandle(self.manager.clone())))
+    }
+}
+
+/// The manager a [`BackgroundPlugin`] provided.
+#[derive(Clone)]
+pub struct BackgroundHandle(pub SharedBackgroundManager);
+
+impl std::ops::Deref for BackgroundHandle {
+    type Target = SharedBackgroundManager;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// The background manager a host resolved from its registry.
+///
+/// # Errors
+///
+/// Returns an error when no `BackgroundPlugin` was installed, which is a
+/// composition bug: the background tools need it.
+pub fn background_manager(
+    services: &tact_kernel::service::ServiceRegistry,
+) -> Result<SharedBackgroundManager> {
+    services
+        .get::<BackgroundHandle>()
+        .map(|handle| handle.0.clone())
+        .ok_or_else(|| anyhow::anyhow!("no background manager installed; install BackgroundPlugin"))
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+    use tact_kernel::capability::CapabilityFilter;
+    use tact_kernel::plugin::PluginHost;
+
+    async fn manager() -> SharedBackgroundManager {
+        let dir = std::env::temp_dir().join(format!("tact-bg-plugin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = BackgroundManager::new(&dir.join("bg.db")).await.unwrap();
+        SharedBackgroundManager::new(manager)
+    }
+
+    /// The plugin registers a manager the host can resolve.
+    #[tokio::test]
+    async fn the_plugin_provides_a_resolvable_manager() {
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(BackgroundPlugin::new(manager().await))
+            .await
+            .unwrap();
+        let runtime = host.seal().await.unwrap();
+        assert!(background_manager(runtime.services()).is_ok());
+    }
+
+    /// A host with no plugin is told so by name.
+    #[test]
+    fn a_missing_plugin_is_an_error_that_names_it() {
+        let registry = tact_kernel::service::ServiceRegistry::default();
+        let error = match background_manager(&registry) {
+            Ok(_) => panic!("no manager was installed, so this must fail"),
+            Err(error) => error,
+        };
+        assert!(format!("{error}").contains("BackgroundPlugin"), "{error}");
+    }
+
+    /// The manifest says what it contributes.
+    #[tokio::test]
+    async fn the_manifest_says_what_it_is() {
+        use tact_kernel::plugin::Plugin;
+        let manifest = BackgroundPlugin::new(manager().await).manifest();
+        assert_eq!(manifest.id.as_str(), "builtin.background");
+        assert_eq!(manifest.kind, tact_kernel::plugin::PluginKind::Capability);
+    }
+}

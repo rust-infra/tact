@@ -101,6 +101,12 @@ pub struct HostExtras {
     /// each other: a turn and a compaction touching one conversation
     /// concurrently would interleave their messages.
     pub chat_service: Option<std::sync::Arc<crate::agent::chat::RuntimeChatService>>,
+    /// The already-opened background manager.
+    ///
+    /// Opening is async and happens before the agent exists, like the session
+    /// store: the host opens it and installs it here, and the registry is the
+    /// single handoff.
+    pub background: Option<crate::background::SharedBackgroundManager>,
 }
 
 /// The assembled pieces, after sealing.
@@ -211,6 +217,10 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
     // Notifications are a capability domain: the platform notifier is the default,
     // and a host that renders them elsewhere installs its own sink instead.
     host.install_sync(crate::notifications::NotificationsPlugin::platform())?;
+
+    if let Some(manager) = extras.background.clone() {
+        host.install_sync(crate::background::BackgroundPlugin::new(manager))?;
+    }
 
     let skipped = host
         .skipped()

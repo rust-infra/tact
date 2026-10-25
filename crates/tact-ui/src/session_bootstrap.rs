@@ -223,6 +223,9 @@ pub async fn bootstrap_session(
     let task_manager = SharedTaskManager::new(TaskManager::new(&db_path).await?);
     let goal_manager = SharedGoalManager::new(GoalManager::new(&db_path).await?);
     let background_manager = SharedBackgroundManager::new(BackgroundManager::new(&db_path).await?);
+    // One clone for the plugin bundle: the tool context takes the original below,
+    // and the registry is what a replacement plugin would read.
+    let plugin_background = background_manager.clone();
     let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&db_path).await?);
     let worktree_manager =
         SharedWorktreeManager::new(WorktreeManager::new(&db_path, work_dir.clone()).await?);
@@ -348,6 +351,7 @@ pub async fn bootstrap_session(
             }),
             agent_service: Some(agent_service.clone()),
             chat_service: Some(chat_service.clone()),
+            background: Some(plugin_background),
             ..tact::host::HostExtras::default()
         },
     )
