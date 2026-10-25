@@ -30,7 +30,7 @@ verified. "Verified by" names a command or test, not an opinion.
 | 4 | Agent/Chat/Session ports in the kernel; implementations in extensions | **Met** |
 | 5 | Plugins shut down in reverse install order, releasing resources | **Met** |
 | 6 | TUI/headless are views; the host holds only composition and adapters | **Met** |
-| 7 | Commands distributed; no central command enum survives | **Partial** (18 → see below) |
+| 7 | Commands distributed; no central command enum survives | **Partial** (16 → see below) |
 | 8 | Migration phases independently shippable and testable | **Met** |
 | 9 | Configuration ownership unambiguous; TOML keys preserved | **Met** |
 | 10 | Dynamic MCP/ToolSource items obey the same capability filter | **Met** |
@@ -182,7 +182,7 @@ Eighteen variants remain, and they are not one kind:
 
 | Group | Count | Why it is still a transport variant |
 |---|---|---|
-| Goal lifecycle | 8 | Drive the agent loop; needs `GoalService` |
+| Goal lifecycle | 6 | Drive the agent loop; needs `GoalService` |
 | Agent reconfiguration | 3 | Setters take `&mut Agent` |
 | Turn control | 3 | `SubmitTask`, `Cancel`, `RunCommand` — the target transport |
 | Runtime control | 2 | `CancelSubagent`, `SubagentFinishedNotification` |
