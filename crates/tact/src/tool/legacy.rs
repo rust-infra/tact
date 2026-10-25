@@ -52,6 +52,11 @@ pub trait ToolContextFactory: Send + Sync {
         None
     }
 
+    /// The prompt/answer registry, on the same terms.
+    fn ui_responder(&self) -> Option<crate::ui_responder::UiResponder> {
+        None
+    }
+
     /// The sink a tool's read-out goes to.
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
         None
@@ -149,6 +154,10 @@ impl ToolContextFactory for SharedToolContextFactory {
         Some(self.with_base(|base| base.worktree_manager.clone()))
     }
 
+    fn ui_responder(&self) -> Option<crate::ui_responder::UiResponder> {
+        Some(self.with_base(|base| base.ui_responder.clone()))
+    }
+
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
         Some(self.with_base(|base| base.events.clone()))
     }
@@ -238,6 +247,12 @@ impl KernelTool for LegacyToolAdapter {
                     }
                     super::DomainHandle::Workspace => {
                         handles.workspace = Some(ctx.workspace.clone());
+                    }
+                    super::DomainHandle::UiResponder => {
+                        handles.ui_responder = self.contexts.ui_responder();
+                    }
+                    super::DomainHandle::FromSubagent => {
+                        handles.from_subagent = Some(matches!(ctx.origin, ToolOrigin::Subagent));
                     }
                     super::DomainHandle::SessionId => {
                         handles.session_id = ctx.session_id.clone();

@@ -154,6 +154,14 @@ fn expand_domain_tool(
             quote!(crate::tool::DomainHandle::WorktreeManager),
         ),
         ("workspace", quote!(crate::tool::DomainHandle::Workspace)),
+        (
+            "ui_responder",
+            quote!(crate::tool::DomainHandle::UiResponder),
+        ),
+        (
+            "from_subagent",
+            quote!(crate::tool::DomainHandle::FromSubagent),
+        ),
     ] {
         if text.contains(&format!(".{field}")) {
             needs.push(variant);
@@ -204,6 +212,8 @@ fn expand_domain_tool(
                     workspace: Some(tact_kernel::tool::context::Workspace::new(
                         context.work_dir.clone(),
                     )),
+                    ui_responder: Some(context.ui_responder.clone()),
+                    from_subagent: Some(context.is_subagent),
                     session_id: context.session_id.clone(),
                     active_goal_id: context.active_goal_id.clone(),
                     events: Some(context.events.clone()),

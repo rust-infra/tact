@@ -258,6 +258,8 @@ pub enum DomainHandle {
     SubagentManager,
     WorktreeManager,
     Workspace,
+    UiResponder,
+    FromSubagent,
     /// The run's session id, when this tool keys its rows by it.
     SessionId,
     /// The Goal a call runs inside, when the caller is a Goal activation.
@@ -287,6 +289,14 @@ pub struct DomainHandles {
     /// for the mixed case (`write_file` writes into the workspace and announces
     /// its progress).
     pub workspace: Option<tact_kernel::tool::context::Workspace>,
+    /// The prompt/answer registry, for a tool that asks a human.
+    pub ui_responder: Option<UiResponder>,
+    /// Whether the caller is a subagent, when a tool's wording depends on it.
+    ///
+    /// Carried from the kernel's `ToolOrigin` rather than re-derived: the origin
+    /// is what the pipeline knows, and a tool reading a flag it was handed cannot
+    /// disagree with it.
+    pub from_subagent: Option<bool>,
     /// The session the call belongs to, for a tool that keys rows by it.
     pub session_id: Option<String>,
     /// The Goal a call is running inside, when the caller is a Goal activation.
@@ -334,6 +344,12 @@ impl DomainHandles {
         }
         if self.workspace.is_some() {
             carried.push("workspace");
+        }
+        if self.ui_responder.is_some() {
+            carried.push("ui_responder");
+        }
+        if self.from_subagent.is_some() {
+            carried.push("from_subagent");
         }
         if self.session_id.is_some() {
             carried.push("session_id");
@@ -1246,6 +1262,8 @@ mod domain_handle_guard_tests {
             (DomainHandle::SubagentManager, "subagent_manager"),
             (DomainHandle::WorktreeManager, "worktree_manager"),
             (DomainHandle::Workspace, "workspace"),
+            (DomainHandle::UiResponder, "ui_responder"),
+            (DomainHandle::FromSubagent, "from_subagent"),
             (DomainHandle::SessionId, "session_id"),
             (DomainHandle::ActiveGoalId, "active_goal_id"),
             (DomainHandle::Events, "events"),
@@ -1276,12 +1294,14 @@ mod domain_handle_guard_tests {
                 DomainHandle::SubagentManager,
                 DomainHandle::WorktreeManager,
                 DomainHandle::Workspace,
+                DomainHandle::UiResponder,
+                DomainHandle::FromSubagent,
                 DomainHandle::SessionId,
                 DomainHandle::ActiveGoalId,
                 DomainHandle::Events,
             ]
             .len(),
-            10,
+            12,
             "update this list (and the macro's table) when adding a DomainHandle"
         );
     }

@@ -13,7 +13,7 @@ use crate::tool::{
     PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
     ToolPresentation,
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::AgentUpdate;
@@ -21,7 +21,7 @@ use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 use tracing::debug;
 
-use crate::tool::ToolContext;
+use crate::tool::DomainHandles;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct AskUserInput {
@@ -61,7 +61,18 @@ pub const ASK_USER_METADATA: ToolMetadata = ToolMetadata {
 ///
 /// This function always returns `Ok`. Communication failures with the UI
 /// channel are silently handled and produce user-facing messages instead of errors.
-pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
+pub async fn ask_user(handles: DomainHandles, input: AskUserInput) -> Result<String> {
+    let Some(events) = handles.events else {
+        return Err(anyhow!(
+            "ask_user needs an update sink to show the question"
+        ));
+    };
+    let Some(responder) = handles.ui_responder else {
+        return Err(anyhow!(
+            "ask_user needs a responder: this host cannot accept an answer"
+        ));
+    };
+    let from_subagent = handles.from_subagent.unwrap_or(false);
     debug!(question = %input.question, multi = input.multi_select, "Asking user");
     let question = input.question;
     let multi = input.multi_select;
@@ -73,12 +84,12 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
         .filter(|s| !s.is_empty())
         .collect::<Vec<_>>();
 
-    if let Some(tx) = ctx.events.ui() {
+    if let Some(tx) = events.ui() {
         if !options.is_empty() {
-            let responder = ctx.ui_responder.clone();
+            let responder = responder.clone();
             // A subagent's question is the child's, not the parent's; the popup
             // names the origin so the user knows who is asking.
-            let from_subagent = ctx.is_subagent;
+
             if multi {
                 return match responder
                     .request_multi(tx, question.clone(), options.clone(), from_subagent)
