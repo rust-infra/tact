@@ -16,11 +16,10 @@ import sys
 
 # Phase-0 debt: repo-relative file path -> forbidden modules imported there.
 PHASE0_ALLOWLIST = {
-    # MCP *dispatch* is a catalog source (McpToolSource / McpControlSource) and the
-    # name classification is neutral (`tool::name_class`), so the only edge left is
-    # the router's own lifecycle: loading and reloading the servers. Phase 3's
-    # McpPlugin owns that; until it exists, this one file is where it lives.
-    "crates/tact/src/agent/mod.rs": {"mcp"},
+    # Empty: MCP *dispatch* is a catalog source (McpToolSource / McpControlSource),
+    # name classification is neutral (`tool::name_class`), and the router's
+    # lifecycle moved to `mcp::lifecycle`. The guard keeps the mechanism so a new
+    # edge has to be declared rather than merely appear.
 }
 
 MODULES = ("skill", "memory", "mcp")
@@ -44,12 +43,26 @@ def production_text(text: str) -> str:
     )
 
 
+# Facades a module may expose: `mcp::lifecycle` is the one operation the agent
+# loop is allowed to ask for (refresh the external tool set), and naming it is
+# not the edge this guard is about. Anything else under `mcp` still is.
+FACADES = {
+    "mcp": ("crate::mcp::lifecycle",),
+}
+
 failures = []
 for path in sorted(root.rglob("*.rs")):
     text = production_text(path.read_text())
     allowed = PHASE0_ALLOWLIST.get(str(path), set())
     for module in MODULES:
-        if f"crate::{module}" in text and module not in allowed:
+        if f"crate::{module}" not in text or module in allowed:
+            continue
+        # Strip the sanctioned facade and re-check: a file that only mentions
+        # `crate::mcp::lifecycle` has no edge to `mcp` at large.
+        remaining = text
+        for facade in FACADES.get(module, ()):
+            remaining = remaining.replace(facade, "")
+        if f"crate::{module}" in remaining:
             failures.append(f"{path}: forbidden crate::{module} import")
 
 if failures:
@@ -69,6 +82,26 @@ if production_text("// crate::skill::X\n") != "":
     raise SystemExit(1)
 if production_text("fn a() {}\n#[cfg(test)]\nfn b() { crate::skill::X; }\n").find("crate::skill") != -1:
     print("self-check failed: production_text kept a test body", file=sys.stderr)
+    raise SystemExit(1)
+
+# The facade rule must be narrow: the sanctioned path is stripped, anything else
+# under that module is still an edge. Without this, emptying the allowlist could
+# have been achieved by a rule that strips too much.
+def edge_after_facades(module: str, text: str) -> bool:
+    for facade in FACADES.get(module, ()):
+        text = text.replace(facade, "")
+    return f"crate::{module}" in text
+
+if edge_after_facades("mcp", "let _ = crate::mcp::lifecycle::reload();\n"):
+    print("self-check failed: the facade was not stripped", file=sys.stderr)
+    raise SystemExit(1)
+if not edge_after_facades("mcp", "let _ = crate::mcp::MCPToolRouter::new();\n"):
+    print("self-check failed: a direct mcp edge was stripped", file=sys.stderr)
+    raise SystemExit(1)
+if not edge_after_facades(
+    "mcp", "let _ = crate::mcp::lifecycle::reload(); let _ = crate::mcp::McpClient;\n"
+):
+    print("self-check failed: a facade hid a second edge", file=sys.stderr)
     raise SystemExit(1)
 
 print(f"module boundaries ok: {len(PHASE0_ALLOWLIST)} Phase-0 allowlist entries")

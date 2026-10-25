@@ -121,6 +121,7 @@ use crate::{
 };
 
 mod edit;
+pub mod lifecycle;
 mod prompt;
 mod remote;
 mod resource;

@@ -779,19 +779,18 @@ impl Agent {
     /// propagated, mirroring startup semantics.
     pub async fn reload_mcp_router(&mut self) -> McpLoadReport {
         self.mcp_router.disconnect_all().await;
-        match crate::mcp::load_mcp_router_with_report().await {
-            Ok((router, report)) => {
+        // The load lives behind `mcp::lifecycle` so the loop does not spell the
+        // transport out: asking to refresh the external tool set is the whole
+        // operation, and a failure is a report rather than an error.
+        match crate::mcp::lifecycle::reload().await {
+            crate::mcp::lifecycle::Reloaded::Loaded(router, report) => {
                 self.mcp_router = router;
                 self.rebuild_cached_tool_specs();
                 report
             }
-            Err(error) => {
-                tracing::warn!(error = %error, "failed to reload MCP servers");
-                McpLoadReport {
-                    failures: vec![("mcp".to_owned(), format!("{error:#}"))],
-                    ..McpLoadReport::default()
-                }
-            }
+            // The router already in place is kept: a failed reload must not
+            // discard the connections that still work.
+            crate::mcp::lifecycle::Reloaded::Failed(report) => report,
         }
     }
 
