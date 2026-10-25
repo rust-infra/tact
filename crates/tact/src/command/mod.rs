@@ -19,9 +19,11 @@ use tact_kernel::capability::command::CommandMeta;
 pub use tact_kernel::capability::command::Command;
 
 pub mod background;
+pub mod plugin;
 pub mod stats;
 
 pub use background::BackgroundCommand;
+pub use plugin::CommandPlugin;
 pub use stats::StatsCommand;
 
 pub use tact_kernel::capability::command::{CommandInvocation, CommandOutcome};
