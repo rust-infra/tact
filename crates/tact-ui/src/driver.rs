@@ -512,6 +512,9 @@ pub async fn run_command_loop_with_account(
                 pending_subagent_wakeup = false;
                 let work_dir = image_work_dir.clone();
                 let slot = agent_slot.clone();
+                // Cloned per spawn: the loop keeps its own handle for the
+                // `Cancel` arm.
+                let chat = chat.clone();
                 if let Some(goal_id) = answer_for {
                     // The reply is the answer: record it and continue that
                     // Goal through the same entry `/goal resume` uses.
@@ -529,12 +532,30 @@ pub async fn run_command_loop_with_account(
                     active_goal_run = false;
                     active_goal_id = None;
                     active = Some(tokio::spawn(async move {
-                        let mut guard = slot.lock().await;
-                        let Some(task_agent) = guard.as_mut() else {
-                            return;
-                        };
-                        handle_user_command(task_agent, UserCommand::SubmitTask(task), &work_dir)
-                            .await;
+                        // Through the chat service when the host installed one:
+                        // it locks the same slot this loop owns, so a turn and a
+                        // compaction cannot interleave. `run_turn` is the same
+                        // lifecycle the fallback uses, so the two paths cannot
+                        // diverge on Stop-hook continuation or completion.
+                        match chat {
+                            Some(chat) => {
+                                let _ = chat
+                                    .submit(tact::agent::chat::TurnRequest::text(task))
+                                    .await;
+                            }
+                            None => {
+                                let mut guard = slot.lock().await;
+                                let Some(task_agent) = guard.as_mut() else {
+                                    return;
+                                };
+                                handle_user_command(
+                                    task_agent,
+                                    UserCommand::SubmitTask(task),
+                                    &work_dir,
+                                )
+                                .await;
+                            }
+                        }
                     }));
                 }
             }

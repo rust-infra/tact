@@ -13,7 +13,8 @@ use std::sync::Arc;
 use std::sync::atomic::Ordering;
 
 use anyhow::Result;
-use tact_kernel::runtime::{ChatService, TurnRequest};
+use tact_kernel::runtime::ChatService;
+pub use tact_kernel::runtime::TurnRequest;
 use tact_llm::{Message, Role};
 use tact_protocol::{AgentErrorKind, AgentUpdate};
 
@@ -41,6 +42,19 @@ impl RuntimeChatService {
         cancel_flag: Arc<std::sync::atomic::AtomicBool>,
     ) -> Self {
         Self { agent, cancel_flag }
+    }
+
+    /// Submit a user turn.
+    ///
+    /// An inherent method as well as the trait one, for the same reason `cancel`
+    /// is: the driver submits turns and should not have to import the kernel
+    /// trait to do it.
+    ///
+    /// # Errors
+    ///
+    /// Returns an error when the turn could not be started at all.
+    pub async fn submit(&self, request: TurnRequest) -> Result<()> {
+        ChatService::submit(self, request).await
     }
 
     /// Ask the running turn to stop.
