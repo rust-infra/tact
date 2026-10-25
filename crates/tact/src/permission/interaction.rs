@@ -6,10 +6,12 @@
 //! unchanged.
 
 use async_trait::async_trait;
-use tact_kernel::tool::context::{InteractionBroker, InteractionRequest, InteractionResponse};
+use tact_kernel::tool::context::{
+    InteractionBroker, InteractionRequest, InteractionResponse, PendingInteraction,
+};
 use tact_protocol::UpdateSink;
 
-use crate::ui_responder::UiResponder;
+use crate::ui_responder::{PendingUiRequestKind, UiResponder};
 
 /// Asks the attached UI, or answers headlessly when nobody can.
 pub struct UiInteractionBroker {
@@ -49,11 +51,18 @@ impl InteractionBroker for UiInteractionBroker {
                     // only ever ran for risks the policy had already allowed.
                     return Ok(InteractionResponse::Cancelled);
                 };
-                let selection = self
+                let selection = match self
                     .responder
                     .request_select(tx, prompt, options.clone(), false, self.from_subagent)
                     .await
-                    .map_err(|error| anyhow::anyhow!("{error}"))?;
+                {
+                    Ok(selection) => selection,
+                    // A closed channel means the prompt is gone — withdrawn, or
+                    // the UI went away. That is a cancellation, not an error: the
+                    // caller turns it into a denial, and surfacing it as `Err`
+                    // would report a refusal as a tool failure.
+                    Err(_) => return Ok(InteractionResponse::Cancelled),
+                };
                 Ok(match selection {
                     Some(index) => match options.get(index) {
                         Some(label) => InteractionResponse::Selected(vec![label.clone()]),
@@ -71,6 +80,41 @@ impl InteractionBroker for UiInteractionBroker {
             InteractionRequest::Confirm { .. } => Ok(InteractionResponse::Cancelled),
             InteractionRequest::Input { .. } => Ok(InteractionResponse::Cancelled),
         }
+    }
+
+    /// The prompts a view should be showing right now.
+    ///
+    /// Read through the responder rather than mirrored here: it already owns the
+    /// authoritative pending set, and a second copy would be able to disagree
+    /// with the waiters it describes.
+    fn pending(&self) -> Vec<PendingInteraction> {
+        self.responder
+            .snapshot()
+            .into_iter()
+            .map(|pending| PendingInteraction {
+                request_id: pending.request_id,
+                request: match pending.kind {
+                    PendingUiRequestKind::Select => InteractionRequest::Select {
+                        prompt: pending.prompt,
+                        options: pending.options,
+                    },
+                    // The kernel port has no multi-select request: the only
+                    // multi-select the TUI shows is a permission prompt built as
+                    // a `Select`. Reporting it as one keeps the popup renderable
+                    // instead of dropping it from the snapshot, which would close
+                    // a prompt that is still waiting.
+                    PendingUiRequestKind::MultiSelect => InteractionRequest::Select {
+                        prompt: pending.prompt,
+                        options: pending.options,
+                    },
+                },
+                from_subagent: pending.from_subagent,
+            })
+            .collect()
+    }
+
+    fn withdraw(&self, request_id: u64) -> bool {
+        self.responder.withdraw(request_id)
     }
 }
 
@@ -134,6 +178,58 @@ mod tests {
             answer,
             InteractionResponse::Selected(vec!["Allow once".to_string()])
         );
+        let _ = &mut fixture.rx;
+    }
+
+    /// The broker reports the prompts a view should be showing.
+    ///
+    /// A view reconciles from this snapshot, so it has to describe the *same*
+    /// waiters the responder holds: a prompt missing here would be closed on
+    /// screen while its tool still waits, and a stale one would stay on screen
+    /// after its waiter gave up.
+    #[tokio::test]
+    async fn pending_mirrors_the_responder() {
+        let mut fixture = fixture(true);
+        let responder = fixture.responder.clone();
+        let broker = fixture.broker;
+        assert!(
+            InteractionBroker::pending(&broker).is_empty(),
+            "nothing is waiting yet"
+        );
+
+        let ask = tokio::spawn(async move {
+            broker
+                .request(InteractionRequest::Select {
+                    prompt: "Allow?".into(),
+                    options: vec!["Allow once".into(), "Deny".into()],
+                })
+                .await
+        });
+        let request_id = loop {
+            if let Some(pending) = responder.snapshot().into_iter().next() {
+                break pending.request_id;
+            }
+            tokio::task::yield_now().await;
+        };
+
+        // Rebuild a broker over the same responder: the snapshot is shared
+        // state, not per-call state.
+        let observer = UiInteractionBroker::new(responder.clone(), UpdateSink::default(), false);
+        let pending = InteractionBroker::pending(&observer);
+        assert_eq!(pending.len(), 1, "{pending:?}");
+        assert_eq!(pending[0].request_id, request_id);
+        assert_eq!(
+            pending[0].request,
+            InteractionRequest::Select {
+                prompt: "Allow?".into(),
+                options: vec!["Allow once".into(), "Deny".into()],
+            }
+        );
+
+        // Withdrawing ends the wait as a cancellation and empties the snapshot.
+        assert!(InteractionBroker::withdraw(&observer, request_id));
+        assert!(InteractionBroker::pending(&observer).is_empty());
+        assert_eq!(ask.await.unwrap().unwrap(), InteractionResponse::Cancelled);
         let _ = &mut fixture.rx;
     }
 
