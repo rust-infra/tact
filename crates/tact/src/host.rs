@@ -112,6 +112,11 @@ pub struct HostExtras {
     /// Loading reads the memory directory, so it happens before assembly for the
     /// same reason the session store does.
     pub memory: Option<crate::memory::SharedMemoryManager>,
+    /// The already-scanned skill registry.
+    ///
+    /// Scanning reads the working directory, so it happens before assembly for the
+    /// same reason the session store does.
+    pub skills: Option<crate::skill::SharedSkillRegistry>,
 }
 
 /// The assembled pieces, after sealing.
@@ -228,6 +233,9 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
     }
     if let Some(manager) = extras.memory.clone() {
         host.install_sync(crate::memory::MemoryPlugin::new(manager))?;
+    }
+    if let Some(registry) = extras.skills.clone() {
+        host.install_sync(crate::skill::SkillsPlugin::new(registry))?;
     }
 
     let skipped = host

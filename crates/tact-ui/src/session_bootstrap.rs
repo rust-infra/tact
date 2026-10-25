@@ -355,6 +355,7 @@ pub async fn bootstrap_session(
             chat_service: Some(chat_service.clone()),
             background: Some(plugin_background),
             memory: Some(plugin_memory),
+            skills: Some(skill_registry.clone()),
             ..tact::host::HostExtras::default()
         },
     )

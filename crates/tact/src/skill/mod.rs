@@ -1146,3 +1146,108 @@ mod tests {
         assert!(block.contains("<skill name=\"demo\""), "{block}");
     }
 }
+
+/// Skills, contributed as a plugin.
+///
+/// The registry is already an `Arc<Mutex<_>>` the agent tools and the view share;
+/// this is the lifecycle seam. What it buys is replacement: a host that loads
+/// skills from somewhere else installs its own plugin instead of replacing what
+/// every caller writes against.
+pub struct SkillsPlugin {
+    registry: SharedSkillRegistry,
+}
+
+impl SkillsPlugin {
+    /// A plugin over an already-scanned registry.
+    ///
+    /// Scanning reads the working directory, which happens before assembly: like
+    /// every store-backed plugin, `register` cannot do file I/O.
+    pub fn new(registry: SharedSkillRegistry) -> Self {
+        Self { registry }
+    }
+}
+
+#[async_trait::async_trait]
+impl tact_kernel::plugin::Plugin for SkillsPlugin {
+    fn manifest(&self) -> tact_kernel::plugin::PluginManifest {
+        tact_kernel::plugin::PluginManifest::new(
+            tact_kernel::plugin::PluginId::new("builtin.skills").expect("a literal id"),
+            "Skills",
+            env!("CARGO_PKG_VERSION"),
+            tact_kernel::plugin::PluginKind::Capability,
+            "Loadable instruction files: discovery, descriptions and bodies",
+        )
+    }
+
+    fn register(&self, registrar: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
+        registrar.service(std::sync::Arc::new(SkillsHandle(self.registry.clone())))
+    }
+}
+
+/// The registry a [`SkillsPlugin`] provided.
+#[derive(Clone)]
+pub struct SkillsHandle(pub SharedSkillRegistry);
+
+impl std::ops::Deref for SkillsHandle {
+    type Target = SharedSkillRegistry;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// The skill registry a host resolved from its registry.
+///
+/// # Errors
+///
+/// Returns an error when no `SkillsPlugin` was installed. A host without one offers
+/// no skills, which is a valid configuration — but a caller that asked must be told
+/// it got nothing.
+pub fn skills_from(
+    services: &tact_kernel::service::ServiceRegistry,
+) -> anyhow::Result<SharedSkillRegistry> {
+    services
+        .get::<SkillsHandle>()
+        .map(|handle| handle.0.clone())
+        .ok_or_else(|| anyhow::anyhow!("no skill registry installed; install SkillsPlugin"))
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+    use tact_kernel::capability::CapabilityFilter;
+    use tact_kernel::plugin::PluginHost;
+
+    fn registry() -> SharedSkillRegistry {
+        shared_skill_registry(std::env::temp_dir()).expect("a registry")
+    }
+
+    /// The plugin registers a registry the host can resolve.
+    #[tokio::test]
+    async fn the_plugin_provides_a_resolvable_registry() {
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(SkillsPlugin::new(registry())).await.unwrap();
+        let runtime = host.seal().await.unwrap();
+        assert!(skills_from(runtime.services()).is_ok());
+    }
+
+    /// A host with no plugin is told so by name.
+    #[test]
+    fn a_missing_plugin_is_an_error_that_names_it() {
+        let registry = tact_kernel::service::ServiceRegistry::default();
+        let error = match skills_from(&registry) {
+            Ok(_) => panic!("no registry was installed, so this must fail"),
+            Err(error) => error,
+        };
+        assert!(format!("{error}").contains("SkillsPlugin"), "{error}");
+    }
+
+    /// The manifest says what it contributes.
+    #[test]
+    fn the_manifest_says_what_it_is() {
+        use tact_kernel::plugin::Plugin;
+        let manifest = SkillsPlugin::new(registry()).manifest();
+        assert_eq!(manifest.id.as_str(), "builtin.skills");
+        assert_eq!(manifest.kind, tact_kernel::plugin::PluginKind::Capability);
+    }
+}
