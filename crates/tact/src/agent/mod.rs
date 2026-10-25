@@ -1,6 +1,7 @@
 //! Agent runtime: conversation loop, tool dispatch, and session state.
 
 mod outcome;
+pub mod prompt_sections;
 mod tool_dispatch;
 pub(crate) mod tool_schedule;
 
@@ -2860,27 +2861,16 @@ impl Agent {
         // Resolved before the builder chain: the chain holds
         // `cached_dir_snapshot` mutably, so `&self` is not available inside it.
         let advisory = self.context_advisory();
-        let prompt = prompt_builder
-            .role(format!(
+        // Every part is a kernel prompt section now: the list below is what the
+        // `builtin.prompt.*` plugins contribute, and `apply` puts them on the
+        // builder in template order. Adding a part means adding a fragment, not
+        // editing this chain.
+        let fragments = vec![
+            crate::agent::prompt_sections::PromptFragment::Role(format!(
                 "You are a coding agent operating in {}.",
                 workdir.display()
-            ))
-            .guidelines([
-                "Try to understand how to complete the task well before completing it.",
-            ])
-            .constraints([
-                "Think step by step",
-                "Think before you act; respond with your thoughts before calling tools",
-                "Do not make up any assumptions, use tools to get the information you need",
-                "Use the provided tools to interact with the system and accomplish the task",
-                "If you are stuck, or otherwise cannot complete the task, respond with your thoughts and stop",
-                "If the task is completed, or otherwise cannot continue, like requiring user feedback, stop.",
-                "Always end your response with a visible text conclusion; never exit after thinking alone without a text block — even a single-sentence summary of your reasoning result is enough.",
-                "When editing files, always re-read the file first if its content may have changed since you last read it",
-                "If a tool result was truncated and you need the details, re-run the relevant tool (e.g., read_file)",
-                "For small edits to existing files, prefer edit_file over write_file; use write_file only for new files or complete rewrites",
-            ])
-            .skills_available({
+            )),
+            crate::agent::prompt_sections::PromptFragment::Skills({
                 let reg = crate::skill::lock_skills(&self.tool_context.skill_registry);
                 if self.agent_settings.skill_body_auto_inject {
                     reg.describe_available_with_body()
@@ -2890,21 +2880,49 @@ impl Agent {
                         self.agent_settings.skill_description_cap,
                     )
                 }
-            })
-            .memory(memory)
-            .additional(cached_md_section(&mut self.runtime.cached_agents_md, || {
-                assemble_agents_md_prompt(workdir, &self.agent_settings.instruction_sources)
-            }))
-            .mcp_instructions(self.mcp_router.instructions_block())
-            .dynamic_context(load_dynamic_context(
+            }),
+            crate::agent::prompt_sections::PromptFragment::Guidelines(vec![
+                "Try to understand how to complete the task well before completing it.".to_string(),
+            ]),
+            crate::agent::prompt_sections::PromptFragment::Constraints(
+                [
+                    "Think step by step",
+                    "Think before you act; respond with your thoughts before calling tools",
+                    "Do not make up any assumptions, use tools to get the information you need",
+                    "Use the provided tools to interact with the system and accomplish the task",
+                    "If you are stuck, or otherwise cannot complete the task, respond with your thoughts and stop",
+                    "If the task is completed, or otherwise cannot continue, like requiring user feedback, stop.",
+                    "Always end your response with a visible text conclusion; never exit after thinking alone without a text block — even a single-sentence summary of your reasoning result is enough.",
+                    "When editing files, always re-read the file first if its content may have changed since you last read it",
+                    "If a tool result was truncated and you need the details, re-run the relevant tool (e.g., read_file)",
+                    "For small edits to existing files, prefer edit_file over write_file; use write_file only for new files or complete rewrites",
+                ]
+                .iter()
+                .map(|line| (*line).to_string())
+                .collect(),
+            ),
+            crate::agent::prompt_sections::PromptFragment::MemoryGuidance(
+                memory_guidance.to_string(),
+            ),
+            crate::agent::prompt_sections::PromptFragment::Additional(cached_md_section(
+                &mut self.runtime.cached_agents_md,
+                || {
+                    assemble_agents_md_prompt(workdir, &self.agent_settings.instruction_sources)
+                },
+            )),
+            crate::agent::prompt_sections::PromptFragment::McpInstructions(
+                self.mcp_router.instructions_block(),
+            ),
+            crate::agent::prompt_sections::PromptFragment::Memory(memory),
+            crate::agent::prompt_sections::PromptFragment::DynamicContext(load_dynamic_context(
                 workdir,
                 &mut self.runtime.cached_dir_snapshot,
                 self.agent_settings.snapshot_max_items,
                 &self.agent_settings.model,
                 advisory,
-            ))
-            .memory_guidance(memory_guidance)
-            .build()?;
+            )),
+        ];
+        let prompt = crate::agent::prompt_sections::apply(prompt_builder, &fragments)?;
 
         prompt
             .to_prompt()
