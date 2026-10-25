@@ -144,6 +144,36 @@ pub struct ToolRequest {
     pub snapshot_generation: u64,
 }
 
+/// A call whose handler and descriptor are resolved, and whose *initial* input
+/// passed the security guard.
+///
+/// Exposed so a host that must run its own PreToolUse hooks (one that needs
+/// host state the kernel cannot see) can interpose them between `resolve` and
+/// [`ToolExecutor::authorize`] without re-implementing the guard or the ticket.
+pub struct ResolvedCall {
+    tool: Arc<dyn Tool>,
+    descriptor: ToolDescriptor,
+    input: serde_json::Value,
+}
+
+impl ResolvedCall {
+    pub fn descriptor(&self) -> &ToolDescriptor {
+        &self.descriptor
+    }
+
+    pub fn input(&self) -> &serde_json::Value {
+        &self.input
+    }
+
+    /// The input a hook rewrote. The security guard runs again on it inside
+    /// [`ToolExecutor::authorize`], so a rewrite cannot smuggle a credential
+    /// path past the guard that already ran.
+    pub fn with_input(mut self, input: serde_json::Value) -> Self {
+        self.input = input;
+        self
+    }
+}
+
 /// A prepared call. Opaque on purpose: only `execute` may consume it.
 pub struct ToolPreflight {
     ticket: u64,
@@ -195,6 +225,35 @@ impl ToolExecutor {
         request: ToolRequest,
         ctx: ToolCallContext,
     ) -> anyhow::Result<ToolPreflight> {
+        let call = self.resolve(&request).await?;
+        let mut event = PreToolUseEvent {
+            tool_name: request.tool_name.clone(),
+            input: call.input().clone(),
+            additional_context: Vec::new(),
+        };
+        let control = match self.hooks.pre_tool_use(&mut event).await {
+            Ok(control) => control,
+            Err(error) => anyhow::bail!("PreToolUse hook failed: {error}"),
+        };
+        if let HookControl::Block(reason) = control {
+            anyhow::bail!("Tool blocked by PreToolUse hook: {reason}");
+        }
+        self.authorize(
+            call.with_input(event.input),
+            ctx,
+            control == HookControl::Allow,
+        )
+        .await
+    }
+
+    /// Resolve a request to a handler, checking the generation and running the
+    /// security guard on the input as the model sent it.
+    ///
+    /// Split out from [`Self::authorize`] so a host that runs its own PreToolUse
+    /// hooks (one whose hooks need host state) can interpose them between the
+    /// two without re-implementing the guard, the descriptor lookup or the
+    /// ticket.
+    pub async fn resolve(&self, request: &ToolRequest) -> anyhow::Result<ResolvedCall> {
         let snapshot = self.catalog.descriptor_snapshot(&self.filter).await?;
         anyhow::ensure!(
             snapshot.generation == request.snapshot_generation,
@@ -216,24 +275,33 @@ impl ToolExecutor {
             .ok_or_else(|| anyhow::anyhow!("tool has no handler: {}", request.tool_name))?;
 
         self.security.guard(&descriptor, &request.input)?;
-        let mut hook_event = PreToolUseEvent {
-            tool_name: request.tool_name.clone(),
+        Ok(ResolvedCall {
+            tool,
+            descriptor,
             input: request.input.clone(),
-            additional_context: Vec::new(),
-        };
-        let pre_control = self.hooks.pre_tool_use(&mut hook_event).await?;
-        if let HookControl::Block(reason) = pre_control {
-            anyhow::bail!("tool blocked by PreToolUse hook: {reason}");
-        }
-        self.security.guard(&descriptor, &hook_event.input)?;
+        })
+    }
+
+    /// Authorize a resolved call: re-guard the final input, consult permission
+    /// (unless a PreToolUse hook already allowed it), and mint a one-use ticket.
+    pub async fn authorize(
+        &self,
+        call: ResolvedCall,
+        ctx: ToolCallContext,
+        hook_allowed: bool,
+    ) -> anyhow::Result<ToolPreflight> {
+        let ResolvedCall {
+            tool,
+            descriptor,
+            input,
+        } = call;
+        self.security.guard(&descriptor, &input)?;
 
         let permission_request = PermissionRequest {
             descriptor: descriptor.clone(),
-            input: hook_event.input.clone(),
+            input: input.clone(),
         };
-        // A hook that allows skips the permission check entirely: the decision
-        // was already made, and asking anyway would defeat the hook.
-        let decision = if pre_control == HookControl::Allow {
+        let decision = if hook_allowed {
             PermissionDecision::Allow
         } else {
             self.permissions.decide(permission_request.clone()).await?
@@ -241,16 +309,18 @@ impl ToolExecutor {
         let prompted = matches!(decision, PermissionDecision::Ask(_));
         match decision {
             PermissionDecision::Allow => {}
-            PermissionDecision::Deny(reason) => anyhow::bail!("permission denied: {reason}"),
+            PermissionDecision::Deny(reason) => {
+                anyhow::bail!("Permission denied: {reason}")
+            }
             PermissionDecision::Ask(prompt) => {
                 anyhow::ensure!(
                     !prompt.options.is_empty(),
                     "permission prompt for {} offered no options",
-                    request.tool_name
+                    descriptor.name
                 );
                 let answer = self.ask(ctx.interaction.as_ref(), &prompt).await?;
                 if answer.kind == PermissionOptionKind::Deny {
-                    anyhow::bail!("permission denied by user")
+                    anyhow::bail!("Permission denied by user for {}", descriptor.name);
                 }
                 self.permissions
                     .record(&permission_request, &answer)
@@ -258,6 +328,13 @@ impl ToolExecutor {
             }
         }
 
+        let authorization = if hook_allowed {
+            PreflightAuthorization::HookAllowed
+        } else if prompted {
+            PreflightAuthorization::Prompted
+        } else {
+            PreflightAuthorization::PolicyAllowed
+        };
         let ticket = {
             let mut next = self.next_ticket.lock().unwrap();
             let ticket = *next;
@@ -265,19 +342,12 @@ impl ToolExecutor {
             self.tickets.lock().unwrap().insert(ticket);
             ticket
         };
-        let authorization = if pre_control == HookControl::Allow {
-            PreflightAuthorization::HookAllowed
-        } else if prompted {
-            PreflightAuthorization::Prompted
-        } else {
-            PreflightAuthorization::PolicyAllowed
-        };
         Ok(ToolPreflight {
             ticket,
             authorization,
             tool,
             descriptor,
-            input: hook_event.input,
+            input,
             ctx,
         })
     }
@@ -304,7 +374,7 @@ impl ToolExecutor {
             InteractionResponse::Selected(labels) => labels,
             InteractionResponse::Approved => Vec::new(),
             InteractionResponse::Rejected | InteractionResponse::Cancelled => {
-                anyhow::bail!("permission denied by user")
+                anyhow::bail!("Permission cancelled by user")
             }
             InteractionResponse::Text(text) => vec![text],
         };
@@ -1070,7 +1140,7 @@ mod permission_prompt_tests {
             .await
             .err()
             .expect("deny must fail preflight");
-        assert!(error.to_string().contains("denied"));
+        assert!(error.to_string().contains("Permission denied"));
         assert_eq!(calls.load(Ordering::SeqCst), 0);
         assert!(recorded.lock().unwrap().is_empty());
     }
@@ -1302,5 +1372,181 @@ mod hook_allow_tests {
             executor.authorization(&prepared),
             PreflightAuthorization::PolicyAllowed
         );
+    }
+}
+
+#[cfg(test)]
+mod resolve_authorize_tests {
+    use super::*;
+    use crate::capability::tool::Tool;
+    use crate::tool::context::{
+        CancelToken, EventSink, InteractionBroker, InteractionRequest, InteractionResponse,
+        RedactionPolicy, ToolCallContext, ToolEvent, ToolOrigin, Workspace,
+    };
+    use crate::tool::descriptor::ToolDescriptor;
+    use crate::tool::metadata::{PermissionPolicy, PermissionPromptPolicy};
+    use crate::tool::{ToolCallResult, ToolMetadata};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct FixedTool(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Tool for FixedTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            let mut metadata = ToolMetadata::read_json("read_file", "Read", "Read");
+            metadata.permission = PermissionPolicy::ReadPath { path_field: "path" };
+            metadata.permission_prompt = PermissionPromptPolicy::Path { field: "path" };
+            ToolDescriptor::from_native("read_file", "Read", json!({"type": "object"}), &metadata)
+        }
+
+        async fn call(
+            &self,
+            _ctx: ToolCallContext,
+            _input: serde_json::Value,
+        ) -> anyhow::Result<ToolCallResult> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolCallResult::text("read"))
+        }
+    }
+
+    struct RecordingGuard;
+    impl SecurityService for RecordingGuard {
+        fn guard(
+            &self,
+            _descriptor: &ToolDescriptor,
+            input: &serde_json::Value,
+        ) -> anyhow::Result<()> {
+            if input["path"].as_str() == Some(".ssh/id_ed25519") {
+                anyhow::bail!("Refused: credential material");
+            }
+            Ok(())
+        }
+    }
+
+    struct AllowAll;
+    #[async_trait]
+    impl PermissionService for AllowAll {
+        async fn decide(&self, _request: PermissionRequest) -> anyhow::Result<PermissionDecision> {
+            Ok(PermissionDecision::Allow)
+        }
+    }
+
+    struct NoHooks;
+    #[async_trait]
+    impl HookService for NoHooks {
+        async fn pre_tool_use(&self, _event: &mut PreToolUseEvent) -> anyhow::Result<HookControl> {
+            Ok(HookControl::Continue)
+        }
+
+        async fn post_tool_use(
+            &self,
+            _event: &mut PostToolUseEvent,
+        ) -> anyhow::Result<HookControl> {
+            Ok(HookControl::Continue)
+        }
+    }
+
+    struct NoEvents;
+    impl EventSink for NoEvents {
+        fn emit(&self, _event: ToolEvent) {}
+    }
+
+    struct NoInteractions;
+    #[async_trait]
+    impl InteractionBroker for NoInteractions {
+        async fn request(
+            &self,
+            _request: InteractionRequest,
+        ) -> anyhow::Result<InteractionResponse> {
+            Ok(InteractionResponse::Cancelled)
+        }
+    }
+
+    fn ctx() -> ToolCallContext {
+        ToolCallContext {
+            run_id: "run".into(),
+            tool_use_id: "call".into(),
+            session_id: None,
+            active_goal_id: None,
+            origin: ToolOrigin::Main,
+            workspace: Workspace::new("/repo"),
+            events: Arc::new(NoEvents),
+            interaction: Arc::new(NoInteractions),
+            cancel: CancelToken::new(),
+            redaction: RedactionPolicy::Off,
+        }
+    }
+
+    async fn executor(calls: Arc<AtomicUsize>) -> ToolExecutor {
+        let mut catalog = ToolCatalog::default();
+        catalog.insert(Arc::new(FixedTool(calls))).unwrap();
+        ToolExecutor::new(
+            Arc::new(catalog),
+            CapabilityFilter::default(),
+            Arc::new(RecordingGuard),
+            Arc::new(AllowAll),
+            Arc::new(NoHooks),
+        )
+    }
+
+    fn request(path: &str, generation: u64) -> ToolRequest {
+        ToolRequest {
+            call_id: "call".into(),
+            tool_name: "read_file".into(),
+            input: json!({ "path": path }),
+            snapshot_generation: generation,
+        }
+    }
+
+    #[tokio::test]
+    async fn resolve_guards_before_a_host_hook_can_rewrite() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = executor(calls).await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let error = executor
+            .resolve(&request(".ssh/id_ed25519", generation))
+            .await
+            .err()
+            .expect("the guard runs during resolve");
+        assert!(error.to_string().contains("Refused"));
+    }
+
+    #[tokio::test]
+    async fn authorize_rechecks_the_rewritten_input() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = executor(calls.clone()).await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let resolved = executor
+            .resolve(&request("src/main.rs", generation))
+            .await
+            .unwrap();
+        // A host hook rewrites the path to a credential after the first guard.
+        let rewritten = resolved.with_input(json!({ "path": ".ssh/id_ed25519" }));
+        let error = executor
+            .authorize(rewritten, ctx(), false)
+            .await
+            .err()
+            .expect("the second guard must catch the rewrite");
+        assert!(error.to_string().contains("Refused"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn hook_allowed_authorization_reports_the_reason() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = executor(calls.clone()).await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let resolved = executor
+            .resolve(&request("src/main.rs", generation))
+            .await
+            .unwrap();
+        let prepared = executor.authorize(resolved, ctx(), true).await.unwrap();
+        assert_eq!(
+            executor.authorization(&prepared),
+            PreflightAuthorization::HookAllowed
+        );
+        executor.execute(prepared).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
     }
 }
