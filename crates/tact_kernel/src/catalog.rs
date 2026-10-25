@@ -11,7 +11,9 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
-use crate::capability::command::{Command, CommandMeta};
+use crate::capability::command::{
+    Command, CommandCandidate, CommandInvocation, CommandMeta, CommandOutcome,
+};
 use crate::capability::prompt::PromptSection;
 use crate::capability::tool::Tool;
 use crate::capability::view::View;
@@ -220,6 +222,51 @@ impl CommandCatalog {
 
     pub fn is_empty(&self) -> bool {
         self.commands.is_empty()
+    }
+
+    /// Run a command by name, resolving an alias.
+    ///
+    /// An unknown name is `Usage`, not an error: the host shows the same line
+    /// whether the user mistyped a built-in or typed a command no plugin
+    /// contributes, and neither should abort a turn.
+    pub fn run(&self, invocation: &CommandInvocation) -> CommandOutcome {
+        match self.get(&invocation.name) {
+            Some(command) => command.run(invocation),
+            None => CommandOutcome::Usage(format!("unknown command: /{}", invocation.name)),
+        }
+    }
+
+    /// Every command's categories plus their own completions for `args`.
+    ///
+    /// The first token decides the command; everything after it is the command's
+    /// grammar. A name that resolves to nothing contributes only itself, which is
+    /// what keeps a typo completable back to a real command.
+    pub fn complete(&self, query: &str) -> Vec<CommandCandidate> {
+        let (name, args) = match query.split_once(char::is_whitespace) {
+            Some((name, args)) => (name, args.trim_start()),
+            None => (query, ""),
+        };
+        match self.get(name) {
+            Some(command) if !args.is_empty() || command.meta().needs_args => command
+                .complete(args)
+                .into_iter()
+                .map(|candidate| CommandCandidate {
+                    path: format!("{name} {}", candidate.path.trim_start()),
+                    detail: candidate.detail,
+                    incomplete: candidate.incomplete,
+                })
+                .collect(),
+            _ => self
+                .commands
+                .values()
+                .filter(|command| command.meta().name.starts_with(name))
+                .map(|command| CommandCandidate {
+                    path: command.meta().name.clone(),
+                    detail: command.meta().summary.clone(),
+                    incomplete: command.meta().needs_args,
+                })
+                .collect(),
+        }
     }
 }
 
@@ -616,5 +663,163 @@ mod snapshot_tests {
             .await
             .unwrap();
         assert_eq!(snapshot.tools.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod command_tests {
+    use super::*;
+    use crate::capability::command::{
+        Command, CommandCandidate, CommandInvocation, CommandMeta, CommandOutcome, CommandScope,
+    };
+
+    struct FixedCommand {
+        meta: CommandMeta,
+    }
+
+    impl FixedCommand {
+        fn new(name: &str, needs_args: bool, aliases: &[&str]) -> Self {
+            Self {
+                meta: CommandMeta {
+                    name: name.to_string(),
+                    aliases: aliases.iter().map(|alias| (*alias).to_string()).collect(),
+                    summary: format!("{name} summary"),
+                    usage: format!("/{name}"),
+                    scope: CommandScope::Runtime,
+                    needs_args,
+                },
+            }
+        }
+    }
+
+    impl Command for FixedCommand {
+        fn meta(&self) -> &CommandMeta {
+            &self.meta
+        }
+
+        fn run(&self, invocation: &CommandInvocation) -> CommandOutcome {
+            CommandOutcome::Message(format!("{}:{}", self.meta.name, invocation.args))
+        }
+
+        fn complete(&self, args: &str) -> Vec<CommandCandidate> {
+            vec![
+                CommandCandidate {
+                    path: "list".to_string(),
+                    detail: "list".to_string(),
+                    incomplete: false,
+                },
+                CommandCandidate {
+                    path: format!("get {args}"),
+                    detail: "get".to_string(),
+                    incomplete: false,
+                },
+            ]
+        }
+    }
+
+    fn catalog() -> CommandCatalog {
+        let mut catalog = CommandCatalog::default();
+        catalog
+            .insert(Arc::new(FixedCommand::new("plugin", true, &["p"])))
+            .unwrap();
+        catalog
+            .insert(Arc::new(FixedCommand::new("theme", false, &[])))
+            .unwrap();
+        catalog
+    }
+
+    #[test]
+    fn run_dispatches_to_the_owning_command() {
+        let outcome = catalog().run(&CommandInvocation {
+            name: "plugin".into(),
+            args: "list".into(),
+        });
+        assert_eq!(outcome, CommandOutcome::Message("plugin:list".into()));
+    }
+
+    #[test]
+    fn run_resolves_an_alias_to_the_same_command() {
+        let outcome = catalog().run(&CommandInvocation {
+            name: "p".into(),
+            args: "list".into(),
+        });
+        assert_eq!(outcome, CommandOutcome::Message("plugin:list".into()));
+    }
+
+    #[test]
+    fn an_unknown_command_is_a_usage_line_not_a_panic() {
+        let outcome = catalog().run(&CommandInvocation {
+            name: "nope".into(),
+            args: String::new(),
+        });
+        assert_eq!(
+            outcome,
+            CommandOutcome::Usage("unknown command: /nope".into())
+        );
+    }
+
+    #[test]
+    fn an_unwired_command_says_so_instead_of_succeeding() {
+        struct DeclaredOnly;
+        impl Command for DeclaredOnly {
+            fn meta(&self) -> &CommandMeta {
+                static META: std::sync::OnceLock<CommandMeta> = std::sync::OnceLock::new();
+                META.get_or_init(|| CommandMeta {
+                    name: "later".into(),
+                    aliases: Vec::new(),
+                    summary: "not wired".into(),
+                    usage: "/later".into(),
+                    scope: CommandScope::Runtime,
+                    needs_args: false,
+                })
+            }
+        }
+        let mut catalog = CommandCatalog::default();
+        catalog.insert(Arc::new(DeclaredOnly)).unwrap();
+        let outcome = catalog.run(&CommandInvocation {
+            name: "later".into(),
+            args: "x".into(),
+        });
+        assert!(matches!(outcome, CommandOutcome::Usage(_)));
+        assert!(format!("{outcome:?}").contains("not runnable yet"));
+    }
+
+    #[test]
+    fn completion_without_args_lists_matching_names() {
+        let candidates = catalog().complete("pl");
+        assert_eq!(
+            candidates,
+            vec![CommandCandidate {
+                path: "plugin".into(),
+                detail: "plugin summary".into(),
+                // `plugin` takes a subcommand, so Enter completes rather than runs.
+                incomplete: true,
+            }]
+        );
+    }
+
+    #[test]
+    fn completion_with_args_delegates_to_the_command() {
+        // A command that takes arguments owns its own grammar; the catalog only
+        // prefixes the name back on.
+        let candidates = catalog().complete("plugin ");
+        let paths: Vec<&str> = candidates.iter().map(|c| c.path.as_str()).collect();
+        assert_eq!(paths, vec!["plugin list", "plugin get "]);
+    }
+
+    #[test]
+    fn completion_of_a_command_without_args_still_lists_names() {
+        // `theme` needs no arguments, so trailing space must not switch modes.
+        let candidates = catalog().complete("the");
+        assert_eq!(candidates.len(), 1);
+        assert_eq!(candidates[0].path, "theme");
+        assert!(!candidates[0].incomplete);
+    }
+
+    #[test]
+    fn a_typed_alias_completes_to_its_own_subcommands() {
+        let candidates = catalog().complete("p ");
+        assert_eq!(candidates.len(), 2);
+        assert_eq!(candidates[0].path, "p list");
     }
 }
