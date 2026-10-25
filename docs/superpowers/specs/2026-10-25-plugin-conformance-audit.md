@@ -5,7 +5,7 @@ Audit of the approved spec
 against the implemented state on `feat/plugin-first-architecture`.
 
 **Status: 6 of 11 checklist items met, 3 partially met, 2 not met.**
-Item 2 is now the largest gap and is measurable: 6 of the spec's 15 capability
+Item 2 is now the largest gap and is measurable: 7 of the spec's 15 capability
 domains have a plugin object.
 Phases 0, 1, and the view half of Phase 4 are done. The remaining gaps all trace
 to one undecided thing — the neutral message model — plus the deletions that wait
@@ -61,16 +61,20 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   `ChatService` owns the turn lifecycle (message assembly, Stop-hook
   continuation, completion) over the same agent slot, so a turn and a compaction
   serialise structurally rather than by convention.
-- Capability domains: **6 of 15**. `HooksPlugin`, `NotificationsPlugin`,
-  `BackgroundPlugin`, `MemoryPlugin`, `SkillsPlugin` and `WorktreePlugin` have
-  plugin objects with a lifecycle and a resolve-by-name port.
+- Capability domains: **7 of 15**. `HooksPlugin`, `NotificationsPlugin`,
+  `BackgroundPlugin`, `MemoryPlugin`, `SkillsPlugin`, `WorktreePlugin` and
+  `VoicePlugin` have plugin objects with a lifecycle and a resolve-by-name port.
 
-  The remaining nine are not six more of the same. Four own **live resources**
-  (`Tools`, `Mcp`, `Subagent`, `Voice`) and need an ownership decision before they
-  need a plugin — `VoiceWorkerHandle` holds a receiver and a join handle and cannot
-  be shared behind an `Arc` at all. Three are **state machines** (`Goal`, `Task`,
-  `Team`) whose seam is a policy boundary rather than a handle. Two are **views**
-  (`Tui`, `Headless`), which item 6 covers.
+  `VoicePlugin` also settled the ownership question for live-resource domains: the
+  worker moved from the view to the domain (`RuntimeVoiceService` owns it and shuts
+  it down in `Drop`), and the view keeps only a forwarding port. `RuntimeVoicePort`
+  was deleted — it existed solely to keep the worker alive.
+
+  The remaining eight split two ways. Three own **live resources** (`Tools`, `Mcp`,
+  `Subagent`) and now have a precedent: move ownership to the domain, hand the view
+  a port. Three are **state machines** (`Goal`, `Task`, `Team`) whose seam is a
+  policy boundary rather than a handle. Two are **views** (`Tui`, `Headless`), which
+  item 6 covers.
 
   The shape is now stable: a named shared type, a `Plugin` impl that registers it,
   a resolver that errors by name when absent, and three tests (resolve, missing,
