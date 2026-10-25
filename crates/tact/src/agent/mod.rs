@@ -2,6 +2,7 @@
 
 mod outcome;
 pub mod prompt_sections;
+pub mod service;
 mod tool_dispatch;
 pub(crate) mod tool_schedule;
 
