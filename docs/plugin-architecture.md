@@ -121,12 +121,21 @@ the first implementation plan is
     `/background` paths through it, so the two cannot word the answer
     differently. `/stats` refuses an argument it does not take by name, and
     reads through a poisoned lock.
-  - A command that has to drive the agent loop (`/model`, `/compact`, the Goal
-    verbs, …) is *not* in the catalog yet: it cannot own a `&mut Agent` through
-    one, so those arms stay on the driver's side until the loop is a plugin. The
-    Goal verbs are further blocked: `goal_snapshots_with` lives in `tact-ui`, so
-    moving `/goal list` into `tact` would reverse the dependency — the Goal logic
-    has to move first.
+  - `/goal [list [--all] | show <id>]` is a catalog command. Getting it there
+    required moving the read path first: `goal_snapshots_with`, its three
+    status/phase/criterion mappers and `GoalLimits` now live in
+    `crates/tact/src/goal/` (`snapshots.rs`, `limits.rs`), and `tact-ui`
+    delegates. Keeping the projection in the frontend would have made the
+    extension crate depend on the view.
+  - Two behaviours the migration had to preserve, both caught by existing tests:
+    `show` still emits the panel refresh first (the panel never lists archived
+    Goals, but `show` reaches them — that is what keeps archiving from being a
+    dead end), and an empty list still says `(no goals)` in the log. The command
+    produces only the projection; the log line is now the host's job.
+  - A command that has to drive the agent loop (`/model`, `/compact`,
+    `create`/`resume`/`pause`/`cancel` for Goals, …) is *not* in the catalog yet:
+    it cannot own a `&mut Agent` through one, so those arms stay on the driver's
+    side until the loop is a plugin.
 - Phase 4's view half on the kernel side:
   - `Command` carries `run()`/`complete()`, and `CommandCatalog` routes by name
     (resolving aliases) and completes by either listing names or delegating to
