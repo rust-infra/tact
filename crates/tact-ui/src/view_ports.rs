@@ -543,58 +543,6 @@ pub fn settings_writer() -> std::sync::Arc<dyn tui::ports::SettingsWriter> {
     std::sync::Arc::new(RuntimeSettingsWriter::new())
 }
 
-/// The runtime's voice worker, seen through the view's port.
-///
-/// Holds the command sender; the events receiver goes to the view directly (it is
-/// single-consumer, and a port that handed it out would have to hide a lock
-/// behind a `&mut` requirement the view already satisfies).
-pub struct RuntimeVoicePort {
-    command_tx: tokio::sync::mpsc::UnboundedSender<tact::voice::VoiceCommand>,
-    /// Keeps the worker task alive.
-    ///
-    /// The handle owns the join handle and the shutdown token, so dropping it
-    /// would cancel the worker the view is still sending commands to. Holding it
-    /// here ties the task's lifetime to the port the view owns.
-    _handle: std::sync::Arc<std::sync::Mutex<Option<tact::voice::VoiceWorkerHandle>>>,
-    missing_api_key: bool,
-}
-
-impl RuntimeVoicePort {
-    pub fn new(
-        command_tx: tokio::sync::mpsc::UnboundedSender<tact::voice::VoiceCommand>,
-        handle: tact::voice::VoiceWorkerHandle,
-        missing_api_key: bool,
-    ) -> Self {
-        Self {
-            command_tx,
-            _handle: std::sync::Arc::new(std::sync::Mutex::new(Some(handle))),
-            missing_api_key,
-        }
-    }
-}
-
-impl tui::ports::VoicePort for RuntimeVoicePort {
-    fn send(&self, command: tact_protocol::VoiceCommand) -> bool {
-        // The view's command type is the protocol's; the worker's is the same set,
-        // so the mapping is exhaustive rather than a widening cast.
-        let mapped = match command {
-            tact_protocol::VoiceCommand::Start => tact::voice::VoiceCommand::Start,
-            tact_protocol::VoiceCommand::Stop => tact::voice::VoiceCommand::Stop,
-            tact_protocol::VoiceCommand::Cancel => tact::voice::VoiceCommand::Cancel,
-            tact_protocol::VoiceCommand::Shutdown => tact::voice::VoiceCommand::Shutdown,
-        };
-        self.command_tx.send(mapped).is_ok()
-    }
-
-    fn is_enabled(&self) -> bool {
-        !self.command_tx.is_closed()
-    }
-
-    fn missing_api_key(&self) -> bool {
-        self.missing_api_key
-    }
-}
-
 /// Start the voice worker and adapt it for the view.
 ///
 /// `None` when voice is disabled, which is the common case: nothing is spawned
@@ -603,22 +551,57 @@ pub fn voice_worker(settings: tact::config::VoiceSettings) -> Option<tui::VoiceW
     if !settings.enabled {
         return None;
     }
-    let missing_api_key = matches!(settings.provider, tact::config::VoiceProvider::OpenAi)
-        && settings.api_key.is_none();
-    let mut handle = tact::voice::spawn_worker(settings);
-    let command_tx = handle.command_tx.clone();
-    // The receiver is single-consumer and the view is its consumer, so it moves
-    // out; the handle keeps the task alive inside the port.
-    let events = std::mem::replace(
-        &mut handle.event_rx,
-        tokio::sync::mpsc::unbounded_channel().1,
-    );
-    let port = std::sync::Arc::new(RuntimeVoicePort::new(command_tx, handle, missing_api_key));
-    Some(tui::VoiceWorker {
-        port,
+    let service: std::sync::Arc<dyn tact::voice::VoiceService> =
+        std::sync::Arc::new(tact::voice::RuntimeVoiceService::spawn(settings));
+    Some(voice_worker_from(service))
+}
+
+/// Adapt an already-spawned service for the view.
+///
+/// The service owns the worker; the view gets a port over it plus the event stream,
+/// which it takes here because it is the stream's single consumer. The plugin is
+/// what lets both halves exist without the view owning the worker.
+pub fn voice_worker_from(
+    service: std::sync::Arc<dyn tact::voice::VoiceService>,
+) -> tui::VoiceWorker {
+    let events = service
+        .take_events()
+        .expect("the event stream is taken once, and this is the consumer");
+    tui::VoiceWorker {
+        port: std::sync::Arc::new(ServiceVoicePort {
+            service: service.clone(),
+        }),
         events,
-        missing_api_key,
-    })
+        missing_api_key: service.missing_api_key(),
+    }
+}
+
+/// The view's voice port, over a domain service.
+///
+/// Replaces the old port that held the worker handle: the domain owns the worker
+/// now, and this only forwards.
+struct ServiceVoicePort {
+    service: std::sync::Arc<dyn tact::voice::VoiceService>,
+}
+
+impl tui::ports::VoicePort for ServiceVoicePort {
+    fn send(&self, command: tact_protocol::VoiceCommand) -> bool {
+        let mapped = match command {
+            tact_protocol::VoiceCommand::Start => tact::voice::VoiceCommand::Start,
+            tact_protocol::VoiceCommand::Stop => tact::voice::VoiceCommand::Stop,
+            tact_protocol::VoiceCommand::Cancel => tact::voice::VoiceCommand::Cancel,
+            tact_protocol::VoiceCommand::Shutdown => tact::voice::VoiceCommand::Shutdown,
+        };
+        self.service.send(mapped)
+    }
+
+    fn is_enabled(&self) -> bool {
+        self.service.is_enabled()
+    }
+
+    fn missing_api_key(&self) -> bool {
+        self.service.missing_api_key()
+    }
 }
 
 #[cfg(test)]

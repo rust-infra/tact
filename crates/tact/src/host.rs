@@ -119,6 +119,11 @@ pub struct HostExtras {
     pub skills: Option<crate::skill::SharedSkillRegistry>,
     /// The already-built worktree manager.
     pub worktree: Option<crate::worktree::SharedWorktreeManager>,
+    /// The already-spawned voice service.
+    ///
+    /// Spawning needs a Tokio runtime, so the host does it and installs the result.
+    /// `None` is the common case: voice is off by default.
+    pub voice: Option<std::sync::Arc<dyn crate::voice::VoiceService>>,
 }
 
 /// The assembled pieces, after sealing.
@@ -241,6 +246,9 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
     }
     if let Some(manager) = extras.worktree.clone() {
         host.install_sync(crate::worktree::WorktreePlugin::new(manager))?;
+    }
+    if let Some(service) = extras.voice.clone() {
+        host.install_sync(crate::voice::VoicePlugin::new(service))?;
     }
 
     let skipped = host

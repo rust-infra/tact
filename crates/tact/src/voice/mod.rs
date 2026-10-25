@@ -566,3 +566,262 @@ mod tests {
         worker.shutdown().await;
     }
 }
+
+/// Voice input, as a domain service.
+///
+/// The event stream is single-consumer, and that shapes the API: [`take_events`]
+/// hands it out once and returns `None` afterwards, rather than pretending the
+/// stream is shareable. A second caller that needs events is a design error, and an
+/// `Option` says so at the call site.
+///
+/// [`take_events`]: VoiceService::take_events
+pub trait VoiceService: Send + Sync {
+    /// Queue one command for the worker.
+    fn send(&self, command: VoiceCommand) -> bool;
+
+    /// Whether the worker is still running.
+    fn is_enabled(&self) -> bool;
+
+    /// Whether the configured provider needs an API key that is not set.
+    fn missing_api_key(&self) -> bool;
+
+    /// Take the event stream, once.
+    fn take_events(&self) -> Option<UnboundedReceiver<VoiceEvent>>;
+}
+
+/// The worker, owned by the service rather than by the view.
+///
+/// That ownership move is the point of the plugin: the domain owns its worker's
+/// lifetime, and a view gets a port over it. Before this, the view held the handle
+/// and the plugin could not exist at all.
+pub struct RuntimeVoiceService {
+    handle: std::sync::Mutex<Option<VoiceWorkerHandle>>,
+    events: std::sync::Mutex<Option<UnboundedReceiver<VoiceEvent>>>,
+    command_tx: UnboundedSender<VoiceCommand>,
+    missing_api_key: bool,
+}
+
+impl RuntimeVoiceService {
+    /// Spawn the worker and take ownership of it.
+    ///
+    /// Must be called inside a Tokio runtime: the worker is a spawned task.
+    pub fn spawn(settings: VoiceSettings) -> Self {
+        let missing_api_key = matches!(settings.provider, crate::config::VoiceProvider::OpenAi)
+            && settings.api_key.is_none();
+        let mut handle = spawn_worker(settings);
+        let command_tx = handle.command_tx.clone();
+        // Single-consumer, so it moves out of the handle here and is handed out
+        // once through `take_events`.
+        let events = std::mem::replace(
+            &mut handle.event_rx,
+            tokio::sync::mpsc::unbounded_channel().1,
+        );
+        Self {
+            handle: std::sync::Mutex::new(Some(handle)),
+            events: std::sync::Mutex::new(Some(events)),
+            command_tx,
+            missing_api_key,
+        }
+    }
+}
+
+impl VoiceService for RuntimeVoiceService {
+    fn send(&self, command: VoiceCommand) -> bool {
+        self.command_tx.send(command).is_ok()
+    }
+
+    fn is_enabled(&self) -> bool {
+        !self.command_tx.is_closed()
+    }
+
+    fn missing_api_key(&self) -> bool {
+        self.missing_api_key
+    }
+
+    fn take_events(&self) -> Option<UnboundedReceiver<VoiceEvent>> {
+        self.events
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+    }
+}
+
+impl Drop for RuntimeVoiceService {
+    fn drop(&mut self) {
+        // Cancels the worker when the service goes away. Without this the task
+        // would outlive the domain that owns it, which is what holding the handle
+        // in the view used to prevent.
+        if let Some(handle) = self
+            .handle
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        {
+            // `shutdown` is async and `Drop` cannot await, so the pieces it does
+            // are done here: cancel the token the worker selects on, then tell it
+            // to stop. The join handle is dropped, which detaches the task — the
+            // token is what actually ends it.
+            handle.shutdown_token.cancel();
+            let _ = handle.command_tx.send(VoiceCommand::Shutdown);
+        }
+    }
+}
+
+/// Voice input, contributed as a plugin.
+pub struct VoicePlugin {
+    service: std::sync::Arc<dyn VoiceService>,
+}
+
+impl VoicePlugin {
+    /// A plugin over an already-spawned service.
+    ///
+    /// Spawning needs a Tokio runtime, so the host does it and hands the result
+    /// here — the same shape as the store-backed domains, which open before
+    /// assembly.
+    pub fn new(service: std::sync::Arc<dyn VoiceService>) -> Self {
+        Self { service }
+    }
+}
+
+#[async_trait::async_trait]
+impl tact_kernel::plugin::Plugin for VoicePlugin {
+    fn manifest(&self) -> tact_kernel::plugin::PluginManifest {
+        tact_kernel::plugin::PluginManifest::new(
+            tact_kernel::plugin::PluginId::new("builtin.voice").expect("a literal id"),
+            "Voice input",
+            env!("CARGO_PKG_VERSION"),
+            tact_kernel::plugin::PluginKind::Capability,
+            "Record, transcribe and report voice events",
+        )
+    }
+
+    fn register(&self, registrar: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
+        registrar.service(std::sync::Arc::new(VoiceHandle(self.service.clone())))
+    }
+}
+
+/// The service a [`VoicePlugin`] provided.
+#[derive(Clone)]
+pub struct VoiceHandle(pub std::sync::Arc<dyn VoiceService>);
+
+impl std::ops::Deref for VoiceHandle {
+    type Target = dyn VoiceService;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+/// The voice service a host resolved from its registry.
+///
+/// # Errors
+///
+/// Returns an error when no `VoicePlugin` was installed — which is the common
+/// case, because voice is off by default. A caller that asked must still be told.
+pub fn voice_service(
+    services: &tact_kernel::service::ServiceRegistry,
+) -> anyhow::Result<std::sync::Arc<dyn VoiceService>> {
+    services
+        .get::<VoiceHandle>()
+        .map(|handle| handle.0.clone())
+        .ok_or_else(|| anyhow::anyhow!("no voice service installed; install VoicePlugin"))
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+    use tact_kernel::capability::CapabilityFilter;
+    use tact_kernel::plugin::PluginHost;
+
+    /// A service with no worker behind it, for tests that only need the wiring.
+    struct Stub {
+        events: std::sync::Mutex<Option<UnboundedReceiver<VoiceEvent>>>,
+        sent: std::sync::Mutex<Vec<VoiceCommand>>,
+    }
+
+    impl Stub {
+        fn new() -> Self {
+            Self {
+                events: std::sync::Mutex::new(Some(tokio::sync::mpsc::unbounded_channel().1)),
+                sent: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl VoiceService for Stub {
+        fn send(&self, command: VoiceCommand) -> bool {
+            self.sent.lock().unwrap().push(command);
+            true
+        }
+
+        fn is_enabled(&self) -> bool {
+            true
+        }
+
+        fn missing_api_key(&self) -> bool {
+            false
+        }
+
+        fn take_events(&self) -> Option<UnboundedReceiver<VoiceEvent>> {
+            self.events.lock().unwrap().take()
+        }
+    }
+
+    /// The plugin registers a service the host can resolve.
+    #[tokio::test]
+    async fn the_plugin_provides_a_resolvable_service() {
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(VoicePlugin::new(std::sync::Arc::new(Stub::new())))
+            .await
+            .unwrap();
+        let runtime = host.seal().await.unwrap();
+        assert!(voice_service(runtime.services()).is_ok());
+    }
+
+    /// A host with no plugin is told so by name.
+    #[test]
+    fn a_missing_plugin_is_an_error_that_names_it() {
+        let registry = tact_kernel::service::ServiceRegistry::default();
+        let error = match voice_service(&registry) {
+            Ok(_) => panic!("no service was installed, so this must fail"),
+            Err(error) => error,
+        };
+        assert!(format!("{error}").contains("VoicePlugin"), "{error}");
+    }
+
+    /// Commands reach the service the host resolved.
+    #[tokio::test]
+    async fn commands_reach_the_resolved_service() {
+        let stub = std::sync::Arc::new(Stub::new());
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(VoicePlugin::new(stub.clone())).await.unwrap();
+        let runtime = host.seal().await.unwrap();
+        let service = voice_service(runtime.services()).unwrap();
+        assert!(service.send(VoiceCommand::Start));
+        assert_eq!(stub.sent.lock().unwrap().len(), 1);
+    }
+
+    /// The event stream is handed out once, and the second call says so.
+    ///
+    /// This is the property that made the plugin hard: the stream is
+    /// single-consumer, so pretending it is shareable would be a lie the type
+    /// system could not catch.
+    #[tokio::test]
+    async fn the_event_stream_is_handed_out_once() {
+        let service = Stub::new();
+        assert!(service.take_events().is_some());
+        assert!(
+            service.take_events().is_none(),
+            "a second take must return None, not a dead receiver"
+        );
+    }
+
+    /// The manifest says what it contributes.
+    #[test]
+    fn the_manifest_says_what_it_is() {
+        use tact_kernel::plugin::Plugin;
+        let manifest = VoicePlugin::new(std::sync::Arc::new(Stub::new())).manifest();
+        assert_eq!(manifest.id.as_str(), "builtin.voice");
+        assert_eq!(manifest.kind, tact_kernel::plugin::PluginKind::Capability);
+    }
+}
