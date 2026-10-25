@@ -208,6 +208,10 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
     // wants a different one registers its own plugin instead.
     host.install_sync(crate::compact::plugin::CompactionPlugin::builtin())?;
 
+    // Notifications are a capability domain: the platform notifier is the default,
+    // and a host that renders them elsewhere installs its own sink instead.
+    host.install_sync(crate::notifications::NotificationsPlugin::platform())?;
+
     let skipped = host
         .skipped()
         .iter()
@@ -411,10 +415,13 @@ mod tests {
                 "builtin.permission",
                 "builtin.hooks",
                 "builtin.marketplace",
-                // Compaction last: it depends on nothing else here, and being
-                // last is what makes "every host gets a policy" true even when
-                // the earlier plugins are filtered out.
+                // Compaction after the policy plugins: it depends on nothing
+                // else here, and being late is what makes "every host gets a
+                // policy" true even when the earlier plugins are filtered out.
                 "builtin.compaction_service",
+                // Notifications are a capability domain, installed last so a
+                // filtered-out host still gets no sink rather than a partial one.
+                "builtin.notifications",
             ]
         );
     }

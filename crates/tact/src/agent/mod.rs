@@ -1176,13 +1176,28 @@ impl Agent {
             let enabled = self
                 .config()
                 .is_some_and(|config| config.agent.notifications_enabled);
+            // Through the plugin when the host installed one: a host that renders
+            // notifications itself replaces the sink, not the agent.
+            let sink = crate::notifications::notifications(self.plugins.services()).ok();
+            let deliver = |title: &str, message: &str| match &sink {
+                Some(sink) => {
+                    let _ = sink.notify(enabled, title, message);
+                }
+                None => {
+                    let _ = crate::notifications::notify(enabled, title, message);
+                }
+            };
             match &update {
                 AgentUpdate::TaskComplete(text) => {
                     let summary = text.chars().take(200).collect::<String>();
-                    let _ = crate::notifications::notify_task_complete(enabled, &summary);
+                    deliver("Tact — Task Complete", &summary);
                 }
                 AgentUpdate::StepFailed { idx, error, .. } => {
-                    let _ = crate::notifications::notify_step_failed(enabled, *idx, error);
+                    let message = format!(
+                        "Step {idx} failed: {}",
+                        error.chars().take(120).collect::<String>()
+                    );
+                    deliver("Tact — Step Failed", &message);
                 }
                 _ => {}
             }
