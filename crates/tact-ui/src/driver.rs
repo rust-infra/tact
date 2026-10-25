@@ -272,6 +272,10 @@ pub async fn run_command_loop_with_account(
 ) -> Agent {
     let image_work_dir = image_work_dir.as_ref().to_path_buf();
     let cancel_flag = agent.runtime.cancel_flag.clone();
+    // The turn lifecycle's service, when the host installed one. Cancelling
+    // through it and through the flag are the same operation — the service holds
+    // the same flag — so the fallback below is not a second behaviour.
+    let chat = agent.chat_service();
     let events = agent.runtime.events.clone();
     // Shared stats snapshot: QueryStats can read it without awaiting the
     // in-flight task (the Agent itself is exclusively owned by that task).
@@ -389,7 +393,12 @@ pub async fn run_command_loop_with_account(
 
         match cmd {
             UserCommand::Cancel => {
-                cancel_flag.store(true, Ordering::Relaxed);
+                // Through the service when there is one: it is the component that
+                // owns the turn, and its cancel is the same lock-free flag write.
+                match &chat {
+                    Some(chat) => chat.cancel(),
+                    None => cancel_flag.store(true, Ordering::Relaxed),
+                }
                 events.send(AgentUpdate::Info("Cancelling...".into()));
             }
             UserCommand::CancelSubagent { child_id } => {

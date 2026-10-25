@@ -1009,6 +1009,16 @@ impl Agent {
     /// agent actually runs under, which is the one whose budgets and modes its
     /// behaviour follows — and, unlike the global, the type system can see it.
     #[must_use]
+    /// The chat service this agent's bundle provides, when the host installed
+    /// one.
+    ///
+    /// Resolved from the bundle rather than stored as a second field: the
+    /// registry is the single handoff, and a copy here could be replaced without
+    /// the registry knowing.
+    pub fn chat_service(&self) -> Option<std::sync::Arc<crate::agent::chat::RuntimeChatService>> {
+        crate::agent::plugin::chat_service(self.plugins.services()).ok()
+    }
+
     pub fn config(&self) -> Option<crate::config::ResolvedConfig> {
         crate::plugin::config(self.plugins.services()).ok()
     }

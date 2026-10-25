@@ -43,6 +43,16 @@ impl RuntimeChatService {
         Self { agent, cancel_flag }
     }
 
+    /// Ask the running turn to stop.
+    ///
+    /// An inherent method as well as the trait one so a host can cancel without
+    /// importing the kernel trait: cancelling is the one operation a view needs
+    /// outside a turn, and making it require a trait import is friction for no
+    /// benefit.
+    pub fn cancel(&self) {
+        self.cancel_flag.store(true, Ordering::Relaxed);
+    }
+
     /// A service that shares `agent`'s slot.
     pub fn from_agent_service(service: &crate::agent::service::RuntimeAgentService) -> Self {
         Self::new(service.shared_slot(), service.cancel_flag())
@@ -268,6 +278,26 @@ mod tests {
             Err(error) => error,
         };
         assert!(format!("{error}").contains("not installed"), "{error}");
+    }
+
+    /// The inherent cancel and the trait cancel are the same operation.
+    ///
+    /// A view cancels through the inherent one (no trait import); the driver may
+    /// cancel through either. If they diverged, one path would stop the turn and
+    /// the other would not.
+    #[tokio::test]
+    async fn the_two_cancel_entry_points_agree() {
+        let flag = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let slot = Arc::new(tokio::sync::Mutex::new(None));
+
+        let first = RuntimeChatService::new(slot.clone(), flag.clone());
+        first.cancel();
+        assert!(flag.load(Ordering::Relaxed), "the inherent method sets it");
+
+        flag.store(false, Ordering::Relaxed);
+        let second = RuntimeChatService::new(slot, flag.clone());
+        ChatService::cancel(&second);
+        assert!(flag.load(Ordering::Relaxed), "the trait method sets it");
     }
 
     /// Cancelling sets the flag without waiting for the turn to finish.
