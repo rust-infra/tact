@@ -133,6 +133,30 @@ impl ToolCatalog {
         self.tools.get(name)
     }
 
+    /// The handler for `name`, whether a native insert or a dynamic source
+    /// provided it.
+    ///
+    /// A native tool wins over a source tool of the same name, matching
+    /// [`Self::descriptor_snapshot`], so a server cannot shadow a built-in.
+    pub fn handler_for(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        if let Some(tool) = self.tools.get(name) {
+            return Some(tool.clone());
+        }
+        let sources: Vec<Arc<dyn ToolSource>> = self
+            .sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        for source in &sources {
+            for tool in source.tools() {
+                if tool.descriptor().name == name {
+                    return Some(tool);
+                }
+            }
+        }
+        None
+    }
+
     pub fn len(&self) -> usize {
         self.tools.len()
     }
@@ -478,6 +502,31 @@ mod snapshot_tests {
             .await
             .unwrap();
         assert!(snapshot.tools.iter().all(|tool| tool.name != "remote"));
+    }
+
+    #[tokio::test]
+    async fn handler_for_finds_a_tool_only_a_source_provides() {
+        // `get` answers from the native map only; the executor resolves handlers
+        // through `handler_for`, so a source tool must be reachable there or a
+        // descriptor would exist with no way to run it.
+        let catalog = ToolCatalog::default();
+        catalog.add_source(source("one", "remote"));
+        assert!(catalog.get("remote").is_none());
+        assert_eq!(
+            catalog
+                .handler_for("remote")
+                .map(|tool| tool.descriptor().name),
+            Some("remote".to_string())
+        );
+    }
+
+    #[tokio::test]
+    async fn handler_for_prefers_the_native_handler() {
+        let mut catalog = ToolCatalog::default();
+        catalog.insert(Arc::new(FixedTool("same"))).unwrap();
+        catalog.add_source(source("one", "same"));
+        let handler = catalog.handler_for("same").unwrap();
+        assert_eq!(handler.descriptor().name, "same");
     }
 
     #[tokio::test]

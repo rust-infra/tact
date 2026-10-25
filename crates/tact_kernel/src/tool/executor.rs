@@ -333,8 +333,7 @@ impl ToolExecutor {
 
         let tool = self
             .catalog
-            .get(&request.tool_name)
-            .cloned()
+            .handler_for(&request.tool_name)
             .ok_or_else(|| anyhow::anyhow!("tool has no handler: {}", request.tool_name))?;
 
         self.security.guard(&descriptor, &request.input)?;
