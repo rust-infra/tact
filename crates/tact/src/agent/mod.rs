@@ -470,6 +470,13 @@ pub struct Agent {
     /// resources/prompts still use the legacy ladder until their risk is carried
     /// on a descriptor.
     pub tool_executor: std::sync::Arc<tact_kernel::tool::executor::ToolExecutor>,
+    /// The installed plugin bundle.
+    ///
+    /// Owned here rather than dropped after assembly: `Runtime::shutdown` runs
+    /// each plugin's teardown in reverse order, and a plugin that owns a
+    /// resource would leak it if the bundle were dropped at construction time.
+    /// Session teardown closes it (see `dispatch_session_end_hooks`).
+    plugins: crate::host::AssembledRuntime,
     /// The factory every contributed tool maps its context through.
     ///
     /// Held so pre-flight can hand it the Agent's *current* `ToolContext`:
@@ -517,7 +524,10 @@ impl Agent {
         memory_enabled: bool,
         contexts: std::sync::Arc<crate::tool::SharedToolContextFactory>,
         ui_available: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
-    ) -> std::sync::Arc<tact_kernel::tool::executor::ToolExecutor> {
+    ) -> (
+        std::sync::Arc<tact_kernel::tool::executor::ToolExecutor>,
+        crate::host::AssembledRuntime,
+    ) {
         // One composition root, shared with every other host: it installs the
         // policy plugins and the built-in tool families, so neither list can
         // drift from the other.
@@ -529,12 +539,14 @@ impl Agent {
             filter: tact_kernel::capability::CapabilityFilter::default(),
         })
         .expect("the built-in plugin set is valid: ids are literals and names are unique");
+        let services = assembled.services().clone();
         crate::host::executor_from_families(
             tools,
             contexts,
-            assembled.services(),
+            &services,
             tact_kernel::capability::CapabilityFilter::default(),
             memory_enabled,
+            assembled,
         )
         .expect("the built-in family table is valid: ids are literals and names are unique")
     }
@@ -598,7 +610,7 @@ impl Agent {
             let factory = contexts.clone();
             std::sync::Arc::new(move || factory.with_base(|base| base.events.ui().is_some()))
         };
-        let executor = Agent::build_tool_executor(
+        let (executor, plugins) = Agent::build_tool_executor(
             &tools,
             &permission_manager,
             memory_enabled,
@@ -640,6 +652,7 @@ impl Agent {
             mcp_router,
             hooks: Vec::new(),
             tool_executor: executor,
+            plugins,
             tool_contexts: contexts,
             system_prompt,
             tool_use_counter: 0,
@@ -2197,7 +2210,9 @@ impl Agent {
     /// Runs [`Hook::SessionEnd`] hooks at real teardown. Observational only:
     /// a `Block` is surfaced as info and ignored because the session is ending.
     pub async fn dispatch_session_end_hooks(&mut self) -> Result<()> {
-        match invoke_hooks!(SessionEnd, self)? {
+        // Plugins are torn down here rather than in `Drop`: a teardown may need
+        // to await (flush a store, close a server), which a destructor cannot.
+        let result = match invoke_hooks!(SessionEnd, self)? {
             HookControl::Continue | HookControl::Allow => Ok(()),
             HookControl::Block(reason) => {
                 self.emit_update(AgentUpdate::Info(format!(
@@ -2205,7 +2220,9 @@ impl Agent {
                 )));
                 Ok(())
             }
-        }
+        };
+        self.plugins.shutdown().await?;
+        result
     }
 
     /// The last assistant message text, if any — exposed so Stop/SubagentStop
@@ -8239,6 +8256,21 @@ mod tests {
             Box::pin(async move { Ok(HookControl::Block("ignored".into())) })
         });
         // A block must not fail the dispatch — the session is ending.
+        agent.dispatch_session_end_hooks().await.unwrap();
+    }
+
+    /// Session teardown must actually tear the plugins down, and must survive
+    /// being asked twice.
+    ///
+    /// A `Runtime` that is dropped without `shutdown` leaks any resource a plugin
+    /// owns; a driver that ends a session twice (a crash path plus a clean exit)
+    /// must not fail the second time.
+    #[tokio::test]
+    async fn session_teardown_shuts_the_plugins_down_once() {
+        let mut agent = hook_test_agent("session_teardown_plugins");
+        agent.dispatch_session_end_hooks().await.unwrap();
+        // The second call is a no-op rather than an error: `Runtime::shutdown`
+        // is idempotent, and a driver that already cleaned up must not panic.
         agent.dispatch_session_end_hooks().await.unwrap();
     }
 

@@ -139,7 +139,8 @@ pub fn executor_from_families(
     services: &ServiceRegistry,
     filter: CapabilityFilter,
     memory_enabled: bool,
-) -> Result<Arc<ToolExecutor>> {
+    runtime: AssembledRuntime,
+) -> Result<(Arc<ToolExecutor>, AssembledRuntime)> {
     let ports = policy::resolve(services)?;
     let (catalog, _skipped) = crate::tool::catalog_from_families(
         tools,
@@ -148,7 +149,7 @@ pub fn executor_from_families(
         contexts,
         filter.clone(),
     )?;
-    Ok(Arc::new(ToolExecutor::new(
+    let executor = Arc::new(ToolExecutor::new(
         Arc::new(catalog),
         filter,
         ports.security,
@@ -157,7 +158,8 @@ pub fn executor_from_families(
         // that installed no hooks gets the explicit no-op rather than a silent
         // different behaviour.
         hook_port(services),
-    )))
+    ));
+    Ok((executor, runtime))
 }
 
 /// The kernel hook port, or a no-op when the host installed none.
