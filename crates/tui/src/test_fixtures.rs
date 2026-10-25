@@ -189,8 +189,17 @@ impl crate::ports::InteractionPort for FakeInteraction {
     }
 
     fn respond(&self, response: tact_protocol::UiResponse) -> bool {
+        // Answering removes the entry, like the runtime's responder: a fixture
+        // that kept it would let the next reconcile reopen a popup the user just
+        // answered.
+        let request_id = response.request_id();
+        let mut pending = self.pending.lock().expect("pending lock");
+        let before = pending.len();
+        pending.retain(|entry| entry.request_id != request_id);
+        let delivered = pending.len() != before;
+        drop(pending);
         self.answers.lock().expect("answers lock").push(response);
-        true
+        delivered
     }
 
     fn withdraw(&self, request_id: u64) -> bool {

@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-use tact_protocol::{AgentUpdate, UiResponse, UserCommand};
+use tact_protocol::{AgentUpdate, UiResponse};
 use tokio::sync::mpsc::UnboundedReceiver;
 
 use crate::widgets::state::{App, InputMode, SelectKind};
@@ -52,11 +52,14 @@ pub fn build_auto_confirm_response(app: &mut App, choice: usize) -> Option<UiRes
     response
 }
 
-/// Confirm the current select popup programmatically, sending the response on
-/// the App's command channel (headless substitute for Enter).
+/// Confirm the current select popup programmatically (headless substitute for
+/// Enter).
+///
+/// Goes through the same port the keyboard path uses: a second transport would
+/// let a headless run answer a prompt the host cannot see.
 pub fn auto_confirm_select(app: &mut App, choice: usize) {
     if let Some(response) = build_auto_confirm_response(app, choice) {
-        let _ = app.user_cmd_tx.send(UserCommand::UiResponse(response));
+        app.respond_ui(response);
     }
 }
 

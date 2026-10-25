@@ -744,9 +744,6 @@ pub enum UserCommand {
     HooksTrust { all: bool, source: Option<String> },
     /// Revoke every hook approval (triggered by `/hooks forget --all`).
     HooksForget,
-    /// Answer a pending [`AgentUpdate::RequestSelect`] / [`RequestMultiSelect`]
-    /// (see [`UiResponse`]). Routed by the driver to the shared responder.
-    UiResponse(UiResponse),
 }
 
 /// A single step in the execution plan.

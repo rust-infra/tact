@@ -316,7 +316,6 @@ impl UiResponder {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use tact_protocol::UserCommand;
     use tokio::sync::mpsc::unbounded_channel;
 
     #[tokio::test]
@@ -489,16 +488,23 @@ mod tests {
         h2.await.unwrap().unwrap();
     }
 
+    /// A response carries the id it answers.
+    ///
+    /// The reverse command that used to wrap it is gone (the interaction port
+    /// answers directly), so this pins the accessor the responder itself uses to
+    /// route an answer to its waiter.
     #[test]
     fn ui_response_request_id_accessor() {
-        let resp = UserCommand::UiResponse(UiResponse::Select {
+        let resp = UiResponse::Select {
             request_id: 7,
             choice: Some(1),
-        });
-        let UserCommand::UiResponse(resp) = resp else {
-            panic!("expected UiResponse");
         };
         assert_eq!(resp.request_id(), 7);
+        let multi = UiResponse::MultiSelect {
+            request_id: 9,
+            choices: None,
+        };
+        assert_eq!(multi.request_id(), 9);
     }
     #[test]
     fn snapshot_orders_pending_requests_and_clears_on_respond() {

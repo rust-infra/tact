@@ -388,13 +388,6 @@ pub async fn run_command_loop_with_account(
         let Some(cmd) = cmd else { break };
 
         match cmd {
-            UserCommand::UiResponse(response) => {
-                // Never await the in-flight task: the agent may be blocked
-                // waiting for exactly this answer. A stale response (already
-                // answered/withdrawn) is harmless; `respond` returns false and
-                // must not affect any other pending request.
-                ui_responder.respond(response);
-            }
             UserCommand::Cancel => {
                 cancel_flag.store(true, Ordering::Relaxed);
                 events.send(AgentUpdate::Info("Cancelling...".into()));

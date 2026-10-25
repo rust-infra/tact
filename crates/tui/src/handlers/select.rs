@@ -1321,11 +1321,14 @@ mod tests {
         );
     }
 
-    fn seed_select(app: &mut App) -> tokio::sync::mpsc::UnboundedReceiver<UserCommand> {
-        let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
-        // Swap in an observable command channel so tests can assert the
-        // UiResponse the confirm/cancel path emits.
-        app.user_cmd_tx = tx;
+    fn seed_select(app: &mut App) -> std::sync::Arc<crate::test_fixtures::FakeInteraction> {
+        // The port is the only path an answer can take now, so the fixture
+        // installs one holding the request the popup below belongs to: an empty
+        // port would make the first reconcile close the popup it never knew about.
+        let port = std::sync::Arc::new(crate::test_fixtures::FakeInteraction::with_pending(vec![
+            crate::test_fixtures::FakeInteraction::select(1, "Pick one", &["Allow once", "Deny"]),
+        ]));
+        app.set_pending_ui(port.clone());
         app.select_kind = SelectKind::Agent;
         app.input_mode = InputMode::Select;
         app.select.set(
@@ -1335,7 +1338,7 @@ mod tests {
             true,
             false,
         );
-        rx
+        port
     }
 
     fn install_models_config(models: Vec<&str>, current: &str) {
@@ -1620,18 +1623,20 @@ thinking_budget = {thinking_budget}
     #[test]
     fn enter_confirms_selection_and_returns_to_normal() {
         let mut app = make_app();
-        let mut rx = seed_select(&mut app);
+        let port = seed_select(&mut app);
 
         handle_select_mode(&mut app, key(KeyCode::Char('j')));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
         assert!(matches!(app.input_mode, InputMode::Normal));
-        match rx.try_recv() {
-            Ok(UserCommand::UiResponse(UiResponse::Select {
-                request_id: 1,
-                choice: Some(1),
-            })) => {}
-            other => panic!("expected Select response, got {other:?}"),
+        match port.answers().as_slice() {
+            [
+                UiResponse::Select {
+                    request_id: 1,
+                    choice: Some(1),
+                },
+            ] => {}
+            other => panic!("expected a Select answer on the port, got {other:?}"),
         }
         assert!(
             app.log.items.iter().any(|item| {
@@ -1713,60 +1718,74 @@ thinking_budget = {thinking_budget}
     #[test]
     fn esc_cancels_and_sends_none() {
         let mut app = make_app();
-        let mut rx = seed_select(&mut app);
+        let port = seed_select(&mut app);
 
         handle_select_mode(&mut app, key(KeyCode::Esc));
 
         assert!(matches!(app.input_mode, InputMode::Normal));
-        match rx.try_recv() {
-            Ok(UserCommand::UiResponse(UiResponse::Select {
-                request_id: 1,
-                choice: None,
-            })) => {}
-            other => panic!("expected cancelled Select response, got {other:?}"),
+        match port.answers().as_slice() {
+            [
+                UiResponse::Select {
+                    request_id: 1,
+                    choice: None,
+                },
+            ] => {}
+            other => panic!("expected a cancelled Select on the port, got {other:?}"),
         }
     }
 
+    /// Two concurrent prompts are shown one at a time, in arrival order.
+    ///
+    /// This is the property that matters when two subagents ask at once: the
+    /// second prompt must not overwrite the first, because overwriting it would
+    /// leave the first waiter hanging with no popup to answer.
     #[test]
-    fn concurrent_agent_selects_queue_and_drain_in_order() {
+    fn concurrent_agent_selects_show_one_at_a_time_in_order() {
         let mut app = make_app();
-        let mut rx = seed_select(&mut app); // request_id = 1
+        // Both requests are already waiting when the view reconciles, which is
+        // what the runtime's snapshot looks like when two children ask together.
+        let port = std::sync::Arc::new(crate::test_fixtures::FakeInteraction::with_pending(vec![
+            crate::test_fixtures::FakeInteraction::select(1, "First", &["Allow once", "Deny"]),
+            crate::test_fixtures::FakeInteraction::select(2, "Second", &["Yes", "No"]),
+        ]));
+        app.set_pending_ui(port.clone());
 
-        // A second agent select arrives while the first is open → queued, not
-        // overwritten (the overwrite would hang the first subagent's waiter).
-        app.handle_agent_update(tact_protocol::AgentUpdate::RequestSelect {
-            prompt: "Second".into(),
-            options: vec!["Yes".into(), "No".into()],
-            request_id: 2,
-            log_confirm: false,
-            from_subagent: false,
-        });
-        assert_eq!(app.select.request_id, Some(1), "first select stays open");
-        assert_eq!(app.pending_agent_selects.len(), 1, "second select queued");
-
-        // Confirm the first → emits Select(1) and dequeues the second.
-        handle_select_mode(&mut app, key(KeyCode::Enter));
-        match rx.try_recv() {
-            Ok(UserCommand::UiResponse(UiResponse::Select {
-                request_id: 1,
-                choice: Some(_),
-            })) => {}
-            other => panic!("expected first Select response, got {other:?}"),
-        }
-        assert_eq!(app.select.request_id, Some(2), "second select dequeued");
+        assert_eq!(
+            app.select.request_id,
+            Some(1),
+            "the oldest request is shown"
+        );
+        assert_eq!(app.select.prompt, "First");
         assert!(matches!(app.input_mode, InputMode::Select));
 
-        // Confirm the second → emits Select(2) and returns to Normal.
+        // Answering the first lets the second take the popup.
         handle_select_mode(&mut app, key(KeyCode::Enter));
-        match rx.try_recv() {
-            Ok(UserCommand::UiResponse(UiResponse::Select {
-                request_id: 2,
-                choice: Some(_),
-            })) => {}
-            other => panic!("expected second Select response, got {other:?}"),
+        match port.answers().as_slice() {
+            [
+                UiResponse::Select {
+                    request_id: 1,
+                    choice: Some(_),
+                },
+            ] => {}
+            other => panic!("expected the first Select on the port, got {other:?}"),
         }
+        assert_eq!(
+            app.select.request_id,
+            Some(2),
+            "the next request takes over"
+        );
+        assert_eq!(app.select.prompt, "Second");
+        assert!(matches!(app.input_mode, InputMode::Select));
+
+        // Answering the second closes the popup.
+        handle_select_mode(&mut app, key(KeyCode::Enter));
+        assert_eq!(
+            port.answers().len(),
+            2,
+            "both answers reached the port: {:?}",
+            port.answers()
+        );
         assert!(matches!(app.input_mode, InputMode::Normal));
-        assert!(app.pending_agent_selects.is_empty());
     }
 
     /// Serialize model-picker tests that share global `CACHE` / `PROVIDER`.

@@ -183,14 +183,23 @@ impl App {
     }
 
     /// Answer a UI request through the in-process broker when available; fall
-    /// back to the legacy `UserCommand::UiResponse` transport otherwise.
+    /// Answers through the interaction port.
+    ///
+    /// There is no fallback to a reverse command: the port is what the host
+    /// always supplies (`TuiConfig::pending_ui` is not optional), and a second
+    /// path would be a way for an answer to reach the runtime that the host
+    /// cannot see. A missing port means the view never reconciled a prompt, so
+    /// there is nothing to answer — reported rather than routed elsewhere.
     pub(crate) fn respond_ui(&self, response: UiResponse) {
-        if let Some(ui) = &self.pending_ui {
-            if !ui.respond(response) {
-                tracing::warn!("stale UI response for unknown request id");
+        match &self.pending_ui {
+            Some(ui) => {
+                if !ui.respond(response) {
+                    // Stale: the request was answered or withdrawn already. Worth
+                    // a line, because it means two answers raced.
+                    tracing::warn!("stale UI response for unknown request id");
+                }
             }
-        } else {
-            let _ = self.user_cmd_tx.send(UserCommand::UiResponse(response));
+            None => tracing::warn!("UI response with no interaction port installed"),
         }
     }
 

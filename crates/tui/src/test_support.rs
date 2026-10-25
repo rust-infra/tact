@@ -226,8 +226,11 @@ impl HeadlessApp {
         self.deliver_response(response);
     }
 
-    /// Deliver a select response to the waiting tool: directly through the
-    /// shared responder when wired, else on the App's command channel.
+    /// Deliver a select response to the waiting tool through the interaction
+    /// port.
+    ///
+    /// One path only: a fallback on the command channel would answer the
+    /// runtime through a route the headless driver cannot observe.
     fn deliver_response(&self, response: Option<tact_protocol::UiResponse>) {
         let Some(response) = response else {
             return;
@@ -237,10 +240,9 @@ impl HeadlessApp {
                 port.respond(response);
             }
             None => {
-                let _ = self
-                    .inner
-                    .user_cmd_tx
-                    .send(tact_protocol::UserCommand::UiResponse(response));
+                // No port wired: the fixture never reconciled a prompt, so there
+                // is nothing to answer.
+                debug_assert!(false, "deliver_response without an interaction port");
             }
         }
     }
