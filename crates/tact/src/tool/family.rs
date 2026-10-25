@@ -352,8 +352,15 @@ pub fn catalog_from_families(
         .iter()
         .map(|skipped| skipped.capability.to_string())
         .collect();
+    // The catalog outlives the runtime on purpose — the executor keeps it while
+    // the plugins were only a registration mechanism. Their `shutdown` is the
+    // default no-op (they own no resource; the handlers live in the router), so
+    // dropping the runtime here is honest rather than a leak. A family that ever
+    // grows a resource must move its cleanup into the handler, not the plugin.
     let runtime = host.seal_sync()?;
-    Ok((runtime.tools().clone(), skipped))
+    let catalog = runtime.tools().clone();
+    drop(runtime);
+    Ok((catalog, skipped))
 }
 
 /// Assemble a router from a family list.
