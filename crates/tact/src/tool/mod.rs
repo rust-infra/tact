@@ -119,11 +119,19 @@ use team::{ListTeammatesTool, ReadInboxTool, SendMessageTool, SpawnTeammateTool}
 #[cfg(test)]
 use write_file::WriteFileTool;
 
-/// Shared state available to every tool invocation.
+/// The whole run's state, for the one tool that genuinely needs all of it.
 ///
-/// Contains the skill registry, persistent memory manager, current work
-/// directory, and typed handles for task management, background tasks,
-/// teammates, and worktrees.
+/// This started as "shared state available to every tool invocation" and grew to
+/// 25 fields because adding a field was easier than asking whether a tool should
+/// have it. It is now the **fallback**: every other tool declares what it reads
+/// ([`Tool::call_in_workspace`], [`Tool::call_in_domain`]) and receives only that,
+/// so a handler cannot consult a session handoff or a permission snapshot it has
+/// no business with.
+///
+/// `spawn_subagent` is the one remaining reader, and it is the honest case: it
+/// hands its child a session, a store, the parent's hooks and a permission
+/// snapshot, which is the entire struct. A new tool should not add itself to this
+/// list — declare a handle instead.
 #[derive(Clone)]
 pub struct ToolContext {
     /// Shared with the TUI in interactive mode so `/skill reload` updates
@@ -1217,6 +1225,55 @@ mod tests {
         assert!(updated.contains("\"status\": \"in_progress\""));
         assert!(updated.contains("\"owner\": \"alice\""));
     }
+    /// Only `spawn_subagent` may take a `ToolContext`.
+    ///
+    /// The struct reached 25 fields because adding one was easier than asking
+    /// whether a tool should have one. Every other tool now declares the handles
+    /// it reads, so this guard keeps a new tool from quietly rejoining the list.
+    ///
+    /// It is a second line of defence rather than the first: the `#[tool]` macro
+    /// only accepts `ToolContext`, `Workspace` or `DomainHandles` as a handler's
+    /// context parameter, so a context-free tool cannot declare one back (that
+    /// was checked by trying — the macro rejects it). This catches the case the
+    /// macro cannot, a tool that opts back into the full-context shape on
+    /// purpose.
+    #[test]
+    fn only_the_subagent_tool_takes_the_whole_context() {
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tool"))
+            .expect("the tool directory is readable")
+        {
+            let path = entry.expect("a directory entry").path();
+            if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                continue;
+            }
+            let name = path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .to_string();
+            // `mod.rs` declares it, `legacy.rs` is the adapter, `test_support`
+            // builds fixtures; the rest are handlers.
+            if matches!(
+                name.as_str(),
+                "mod.rs" | "legacy.rs" | "test_support.rs" | "family.rs"
+            ) {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a readable source file");
+            // A handler signature, not any mention: `compact`'s doc comment and a
+            // test's helper both name the type without taking it as a parameter.
+            if text.contains("ctx: ToolContext") || text.contains("context: ToolContext") {
+                offenders.push(name);
+            }
+        }
+        assert_eq!(
+            offenders,
+            vec!["subagent.rs".to_string()],
+            "only the subagent tool may take the whole context"
+        );
+    }
+
     /// Every `ToolContext` field must have a reader outside this file.
     ///
     /// The struct grew to 25 fields, and the way it grew was a field being added
