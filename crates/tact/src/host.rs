@@ -44,6 +44,12 @@ pub struct HostOptions<'a> {
     /// `Option` for the same reason as `provider`: a host without `$HOME` cannot
     /// install plugins, but it can still run.
     pub marketplace: Option<crate::consts::PluginHome>,
+    /// The resolved configuration, when one was installed.
+    ///
+    /// `Option` for the same reason as `provider`: a unit test may build an agent
+    /// before any configuration exists, and a host must record that honestly
+    /// rather than claim a snapshot it does not have.
+    pub config: Option<crate::config::ResolvedConfig>,
     /// The provider snapshot, when one was installed.
     ///
     /// `Option` because a test may build an agent before any provider exists;
@@ -130,6 +136,9 @@ pub fn assemble(options: HostOptions<'_>) -> Result<AssembledRuntime> {
     }
     if let Some(home) = options.marketplace {
         host.install_sync(crate::plugin::MarketplacePlugin::new(home))?;
+    }
+    if let Some(config) = options.config {
+        host.install_sync(crate::plugin::ConfigPlugin::new(config))?;
     }
     if let Some(info) = options.provider {
         host.install_sync(crate::plugin::ProvidersPlugin::new(info))?;
@@ -237,6 +246,7 @@ mod tests {
             hooks: None,
             storage: None,
             marketplace: None,
+            config: None,
             provider: None,
             filter: CapabilityFilter::default(),
         })
@@ -266,6 +276,7 @@ mod tests {
             hooks: None,
             storage: None,
             marketplace: None,
+            config: None,
             provider: None,
             filter: CapabilityFilter::new([disabled]),
         })
@@ -282,6 +293,31 @@ mod tests {
         let port = hook_port(&services);
         // The port is usable, which is the contract: an executor always has one.
         assert!(Arc::strong_count(&port) >= 1);
+    }
+
+    #[test]
+    fn a_host_with_config_provides_the_snapshot() {
+        // The frontend's 45 direct `settings()` calls are the reason it cannot be
+        // decoupled from this crate; the plugin is what gives new code a way to
+        // receive the configuration instead of reaching for it.
+        let manager = manager();
+        crate::config::test_support::install_default();
+        let assembled = assemble(HostOptions {
+            permission_manager: &manager,
+            ui_available: Arc::new(|| false),
+            hooks: None,
+            storage: None,
+            marketplace: None,
+            config: crate::config::try_settings(),
+            provider: None,
+            filter: CapabilityFilter::default(),
+        })
+        .unwrap();
+        let resolved = crate::plugin::config(assembled.services()).unwrap();
+        assert_eq!(
+            resolved.tools.bash_timeout_secs,
+            crate::config::settings().tools.bash_timeout_secs
+        );
     }
 
     #[test]
@@ -307,6 +343,7 @@ mod tests {
             }),
             storage: None,
             marketplace: Some(crate::consts::PluginHome::from_home(&dir)),
+            config: None,
             provider: None,
             filter: CapabilityFilter::default(),
         })
@@ -335,6 +372,7 @@ mod tests {
             hooks: None,
             storage: None,
             marketplace: Some(crate::consts::PluginHome::from_home(&dir)),
+            config: None,
             provider: None,
             filter: CapabilityFilter::default(),
         })
@@ -361,6 +399,7 @@ mod tests {
             }),
             storage: None,
             marketplace: None,
+            config: None,
             provider: None,
             filter: CapabilityFilter::default(),
         })

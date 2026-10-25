@@ -537,6 +537,9 @@ impl Agent {
             hooks: None,
             storage: None,
             marketplace: None,
+            // Read once and held by the registry: a consumer that resolved the
+            // configuration keeps the one the agent was assembled with.
+            config: crate::config::try_settings(),
             // Read once here and held by the registry: the provider is a
             // process-wide snapshot, and a consumer that resolved it should not
             // silently read a different global later.

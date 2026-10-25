@@ -1,3 +1,4 @@
+mod config_plugin;
 mod hook_host;
 mod hooks;
 mod install;
@@ -8,6 +9,7 @@ mod providers;
 mod store;
 
 use anyhow::{Context, Result};
+pub use config_plugin::*;
 pub use hook_host::*;
 pub use hooks::*;
 pub use install::*;
