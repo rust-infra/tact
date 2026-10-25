@@ -44,6 +44,21 @@ impl SecurityService for SensitivePathGuard {
     }
 }
 
+/// Whether this call's target is credential material, using the built-in rules.
+///
+/// Exposed so parity tests (and any caller that needs the *reason* rather than a
+/// refusal) can ask the same question the guard asks, without reaching into the
+/// private `security` module.
+#[must_use]
+pub fn is_credential_target(
+    policy: &tact_kernel::tool::PermissionPolicy,
+    input: &serde_json::Value,
+) -> bool {
+    policy
+        .sensitive(input, &Scanner::builtin())
+        .is_some_and(|hit| hit.tier == Tier::Credential)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -32,5 +32,6 @@ cargo clippy --all-targets -- -D warnings
 echo "==> cargo test -p tact-ui -p tui -p tact -p tact_llm -p tact_kernel"
 cargo test -p tact-ui -p tui -p tact -p tact_llm -p tact_kernel --quiet
 cargo test -p tact --test plugin_contracts --quiet
+cargo test -p tact --test execution_parity --quiet
 
 echo "Rust checks passed."

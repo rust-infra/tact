@@ -16,7 +16,7 @@ pub mod service;
 pub mod settings;
 
 pub use policy_ext::PermissionPolicyExt;
-pub use security_service::SensitivePathGuard;
+pub use security_service::{SensitivePathGuard, is_credential_target};
 pub use service::ManagerPermissionService;
 
 use std::fmt;
