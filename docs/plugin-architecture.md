@@ -100,14 +100,24 @@ the first implementation plan is
     `executor_from_families` builds the catalog and resolves the ports. The
     Agent's executor goes through it, so the production path is assembled the
     same way the tests are.
+  - The optional infrastructure travels in `HostExtras` (`hooks`, `storage`,
+    `marketplace`) and `assemble_with(options, extras)` is the entry point that
+    takes it. `assemble` stays a two-line wrapper so the Agent's own assembly —
+    which has none of it — reads as one call instead of three `None`s.
   - `Runtime::plugin_ids` exposes the install order, and tests fix what it
     means: `assemble` installs security before permission, and shutdown runs the
     reverse — a plugin's `register` may only assume what was installed before it.
-  - `Agent::with_installed_session` can pull the store from the registry instead
-    of taking one directly, naming `builtin.session_store` when storage was never
-    installed. The production bootstrap still passes a store to `with_session`,
-    because it resolves the session id before the agent exists and the store
-    handoff has to wait for that id.
+  - The production bootstrap now hands the session store over **through the
+    bundle**, not beside it: `Agent::new_with_host` takes the `HostExtras` with
+    `StorageOptions`, and the bootstrap then calls `with_installed_session`.
+    `HostOptions::storage` was previously exercised only by tests while the real
+    path passed a store straight to `with_session` — two answers to "where does
+    the store come from". A source-level guard in `session_bootstrap` fails if
+    the direct handoff comes back.
+  - `Agent::with_installed_session` pulls the store from the registry, naming
+    `builtin.session_store` when storage was never installed. `with_session` still
+    exists for a host that has no bundle (a unit test, and the subagent path that
+    opens its own fallback store); it is no longer what the shared bootstrap uses.
   - The installed bundle is owned by the Agent and shut down in
     `dispatch_session_end_hooks`, not dropped at construction: a plugin that
     owns a resource is released on the real exit path, and a second teardown is
@@ -247,11 +257,10 @@ the first implementation plan is
 - Phase 3's remaining half: `CompactionPlugin`, `AgentPlugin`, `ChatPlugin`.
   Compaction cannot be extracted as it stands: the whole trigger/threshold/
   recovery path is methods on `Agent`, so a plugin would have to own the loop.
-  `StoragePlugin` and `SessionStorePlugin` exist and are installable, but the
-  production bootstrap still opens the store itself and passes it to
-  `Agent::with_session`, so `HostOptions::storage` is exercised only by tests.
-  `HostOptions::marketplace` is likewise unset by the production bootstrap: the
-  TUI still builds its marketplace service where it needs one.
+  `StoragePlugin` and `SessionStorePlugin` are installed by the production
+  bootstrap now (through `HostExtras`), so the store is no longer a second path.
+  `HostOptions::marketplace` is still unset by the production bootstrap: the TUI
+  builds its marketplace service where it needs one.
 - The guard's facade rule (`mcp::lifecycle` may be named without counting as an
   edge to `mcp`) is only as good as its self-check: it strips the sanctioned path
   and re-checks, and asserts that a second direct use on the same line is still

@@ -29,21 +29,16 @@ use tact_kernel::tool::executor::ToolExecutor;
 use crate::permission::{SharedPermissionManager, plugin as policy};
 
 /// What a host has to supply to build a runtime.
+///
+/// The optional infrastructure (hooks, storage, marketplace) travels in
+/// [`HostExtras`] instead: a host that has none of it should not have to write
+/// three `None`s, and the Agent's own assembly — which never has any of it —
+/// must stay readable.
 pub struct HostOptions<'a> {
     pub permission_manager: &'a SharedPermissionManager,
     /// Asked live: a frontend attached after assembly must still be able to
     /// answer a prompt.
     pub ui_available: Arc<dyn Fn() -> bool + Send + Sync>,
-    /// The two directories a hook command may expand, if this host installs the
-    /// kernel hook port.
-    pub hooks: Option<HookOptions>,
-    /// The opened store, if this host persists sessions.
-    pub storage: Option<StorageOptions>,
-    /// The plugin home, when the host installs the marketplace.
-    ///
-    /// `Option` for the same reason as `provider`: a host without `$HOME` cannot
-    /// install plugins, but it can still run.
-    pub marketplace: Option<crate::consts::PluginHome>,
     /// The resolved configuration, when one was installed.
     ///
     /// `Option` for the same reason as `provider`: a unit test may build an agent
@@ -70,6 +65,29 @@ pub struct HookOptions {
 pub struct StorageOptions {
     pub store: crate::store::session_store::DynSessionStore,
     pub path: std::path::PathBuf,
+}
+
+/// The optional infrastructure a host installs into its runtime.
+///
+/// Separate from [`HostOptions`] so the Agent can assemble its bundle with
+/// [`HostExtras::default`] and only a caller that has something to install pays
+/// attention. Every field is `None` in a unit test, which is what keeps
+/// `Agent::new` a constructor rather than a five-field host description — and
+/// what makes the production path (which *does* have a store) go through the
+/// same assembly as the tests instead of passing one in behind the registry.
+#[derive(Default)]
+pub struct HostExtras {
+    /// Hooks the host runs through the kernel port rather than on its own side.
+    pub hooks: Option<HookOptions>,
+    /// The already-opened session store.
+    ///
+    /// Opening is async and happens before the agent exists (the session id and
+    /// its lock are resolved against the store first), so the host opens it and
+    /// installs it here. What the caller must not do is *also* hand the same
+    /// store to `Agent::with_session`: the registry is the single handoff.
+    pub storage: Option<StorageOptions>,
+    /// The plugin home, when the host installs the marketplace.
+    pub marketplace: Option<crate::consts::PluginHome>,
 }
 
 /// The assembled pieces, after sealing.
@@ -118,6 +136,16 @@ impl AssembledRuntime {
 /// installs through [`install_tool_families`], because a family's handlers are
 /// already owned by the router the caller built.
 pub fn assemble(options: HostOptions<'_>) -> Result<AssembledRuntime> {
+    assemble_with(options, HostExtras::default())
+}
+
+/// [`assemble`], with the optional infrastructure named in one place.
+///
+/// The split exists so the Agent's own assembly (which has no hooks, store or
+/// marketplace of its own) reads as a two-argument call, while a host that owns
+/// infrastructure describes it once in a [`HostExtras`] instead of in five
+/// separate `Option` fields at the call site.
+pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<AssembledRuntime> {
     let mut host = PluginHost::new(options.filter);
     host.install_sync(policy::SecurityPlugin::new(
         options.permission_manager.scanner(),
@@ -127,14 +155,14 @@ pub fn assemble(options: HostOptions<'_>) -> Result<AssembledRuntime> {
         options.ui_available,
     ))?;
 
-    if let Some(hooks) = options.hooks {
+    if let Some(hooks) = extras.hooks {
         host.install_sync(crate::plugin::HooksPlugin::new(
             hooks.source,
             hooks.work_dir,
             hooks.notices,
         ))?;
     }
-    if let Some(home) = options.marketplace {
+    if let Some(home) = extras.marketplace {
         host.install_sync(crate::plugin::MarketplacePlugin::new(home))?;
     }
     if let Some(config) = options.config {
@@ -143,7 +171,7 @@ pub fn assemble(options: HostOptions<'_>) -> Result<AssembledRuntime> {
     if let Some(info) = options.provider {
         host.install_sync(crate::plugin::ProvidersPlugin::new(info))?;
     }
-    if let Some(storage) = options.storage {
+    if let Some(storage) = extras.storage {
         host.install_sync(crate::store::plugin::StoragePlugin::new(&storage.path))?;
         host.install_sync(crate::store::plugin::SessionStorePlugin::new(storage.store))?;
     }
@@ -243,9 +271,6 @@ mod tests {
         let assembled = assemble(HostOptions {
             permission_manager: &manager,
             ui_available: Arc::new(|| false),
-            hooks: None,
-            storage: None,
-            marketplace: None,
             config: None,
             provider: None,
             filter: CapabilityFilter::default(),
@@ -273,9 +298,6 @@ mod tests {
         let assembled = assemble(HostOptions {
             permission_manager: &manager,
             ui_available: Arc::new(|| false),
-            hooks: None,
-            storage: None,
-            marketplace: None,
             config: None,
             provider: None,
             filter: CapabilityFilter::new([disabled]),
@@ -305,9 +327,6 @@ mod tests {
         let assembled = assemble(HostOptions {
             permission_manager: &manager,
             ui_available: Arc::new(|| false),
-            hooks: None,
-            storage: None,
-            marketplace: None,
             config: crate::config::try_settings(),
             provider: None,
             filter: CapabilityFilter::default(),
@@ -328,25 +347,29 @@ mod tests {
         let dir = std::env::temp_dir().join("tact-host-order");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let assembled = assemble(HostOptions {
-            permission_manager: &manager,
-            ui_available: Arc::new(|| false),
-            hooks: Some(HookOptions {
-                source: crate::plugin::HookSource {
-                    label: "test".into(),
-                    origin: crate::plugin::HookOrigin::ProjectFile,
-                    dirs: crate::consts::PluginDirs::root_only("/tmp"),
-                    hooks: crate::plugin::HooksFile::default(),
-                },
-                work_dir: std::path::PathBuf::from("/tmp"),
-                notices: Arc::new(|_| {}),
-            }),
-            storage: None,
-            marketplace: Some(crate::consts::PluginHome::from_home(&dir)),
-            config: None,
-            provider: None,
-            filter: CapabilityFilter::default(),
-        })
+        let assembled = assemble_with(
+            HostOptions {
+                permission_manager: &manager,
+                ui_available: Arc::new(|| false),
+                config: None,
+                provider: None,
+                filter: CapabilityFilter::default(),
+            },
+            HostExtras {
+                hooks: Some(HookOptions {
+                    source: crate::plugin::HookSource {
+                        label: "test".into(),
+                        origin: crate::plugin::HookOrigin::ProjectFile,
+                        dirs: crate::consts::PluginDirs::root_only("/tmp"),
+                        hooks: crate::plugin::HooksFile::default(),
+                    },
+                    work_dir: std::path::PathBuf::from("/tmp"),
+                    notices: Arc::new(|_| {}),
+                }),
+                marketplace: Some(crate::consts::PluginHome::from_home(&dir)),
+                ..HostExtras::default()
+            },
+        )
         .unwrap();
         assert_eq!(
             assembled.plugin_ids(),
@@ -366,16 +389,19 @@ mod tests {
         let dir = std::env::temp_dir().join("tact-host-marketplace");
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
-        let assembled = assemble(HostOptions {
-            permission_manager: &manager,
-            ui_available: Arc::new(|| false),
-            hooks: None,
-            storage: None,
-            marketplace: Some(crate::consts::PluginHome::from_home(&dir)),
-            config: None,
-            provider: None,
-            filter: CapabilityFilter::default(),
-        })
+        let assembled = assemble_with(
+            HostOptions {
+                permission_manager: &manager,
+                ui_available: Arc::new(|| false),
+                config: None,
+                provider: None,
+                filter: CapabilityFilter::default(),
+            },
+            HostExtras {
+                marketplace: Some(crate::consts::PluginHome::from_home(&dir)),
+                ..HostExtras::default()
+            },
+        )
         .unwrap();
         assert!(crate::plugin::marketplace(assembled.services()).is_ok());
         assert!(crate::plugin::installer(assembled.services()).is_ok());
@@ -384,25 +410,28 @@ mod tests {
     #[test]
     fn a_host_with_hooks_gets_the_installed_port() {
         let manager = manager();
-        let assembled = assemble(HostOptions {
-            permission_manager: &manager,
-            ui_available: Arc::new(|| false),
-            hooks: Some(HookOptions {
-                source: crate::plugin::HookSource {
-                    label: "test".into(),
-                    origin: crate::plugin::HookOrigin::ProjectFile,
-                    dirs: crate::consts::PluginDirs::root_only("/tmp"),
-                    hooks: crate::plugin::HooksFile::default(),
-                },
-                work_dir: std::path::PathBuf::from("/tmp"),
-                notices: Arc::new(|_| {}),
-            }),
-            storage: None,
-            marketplace: None,
-            config: None,
-            provider: None,
-            filter: CapabilityFilter::default(),
-        })
+        let assembled = assemble_with(
+            HostOptions {
+                permission_manager: &manager,
+                ui_available: Arc::new(|| false),
+                config: None,
+                provider: None,
+                filter: CapabilityFilter::default(),
+            },
+            HostExtras {
+                hooks: Some(HookOptions {
+                    source: crate::plugin::HookSource {
+                        label: "test".into(),
+                        origin: crate::plugin::HookOrigin::ProjectFile,
+                        dirs: crate::consts::PluginDirs::root_only("/tmp"),
+                        hooks: crate::plugin::HooksFile::default(),
+                    },
+                    work_dir: std::path::PathBuf::from("/tmp"),
+                    notices: Arc::new(|_| {}),
+                }),
+                ..HostExtras::default()
+            },
+        )
         .unwrap();
         assert!(crate::plugin::hook_service(assembled.services()).is_ok());
     }

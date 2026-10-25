@@ -17,6 +17,8 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use anyhow::Context;
+
 use tact::{
     Agent, AgentSystemPrompt,
     background::{BackgroundManager, SharedBackgroundManager},
@@ -306,15 +308,28 @@ pub async fn bootstrap_session(
     } else {
         tact_llm::get_provider().provider
     };
-    let mut agent = Agent::new(
+    let mut agent = Agent::new_with_host(
         client,
         tool_context,
         tools,
         mcp_router,
         permission_manager,
         AgentSystemPrompt::Dynamic,
+        // The store travels through the plugin bundle, not as a second direct
+        // handoff: opening it is async and had to happen before the session id
+        // was resolved, but from here on the registry is the only path.
+        tact::host::HostExtras {
+            storage: Some(tact::host::StorageOptions {
+                store: session_store.clone(),
+                path: db_path.clone(),
+            }),
+            ..tact::host::HostExtras::default()
+        },
     )
-    .with_session(session_id, session_store)
+    // The plugin was installed in the line above, so a failure here means the
+    // bundle is broken rather than that the caller forgot something.
+    .with_installed_session(session_id)
+    .context("the storage plugin installed by this bootstrap must provide the store")?
     .with_provider_kind(provider_kind);
     agent = match frontend {
         Frontend::Interactive(wiring) => agent.with_ui_channel(wiring.tx),
@@ -434,6 +449,40 @@ mod tests {
         assert_eq!(
             stderr_line("mcp", "server demo did not answer"),
             "[mcp] server demo did not answer"
+        );
+    }
+
+    /// The store reaches the agent through the plugin bundle, once.
+    ///
+    /// `HostOptions::storage` existed before this bootstrap used it, so the
+    /// production path and the tests disagreed about how a store is handed over
+    /// — and the direct `with_session` call was the second path the architecture
+    /// forbids. Reading the source is the only check that sees the shape of this
+    /// function without standing up an LLM client and an MCP connect: the
+    /// runtime behaviour is pinned separately, by the agent test that resolves an
+    /// installed store.
+    #[test]
+    fn the_bootstrap_hands_the_store_over_through_the_plugin_bundle() {
+        let source = include_str!("session_bootstrap.rs");
+        let body = source
+            .split_once("pub async fn bootstrap_session(")
+            .expect("the shared bootstrap is declared here")
+            .1;
+        let body = body
+            .split_once("\n#[cfg(test)]")
+            .expect("and ends where the tests begin")
+            .0;
+        assert!(
+            body.contains("tact::host::HostExtras"),
+            "the bootstrap must install the store as plugin infrastructure"
+        );
+        assert!(
+            body.contains("with_installed_session"),
+            "and resolve it from the registry rather than taking a second copy"
+        );
+        assert!(
+            !body.contains(".with_session("),
+            "the direct handoff is what made HostOptions::storage test-only"
         );
     }
 }

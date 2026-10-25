@@ -524,6 +524,7 @@ impl Agent {
         memory_enabled: bool,
         contexts: std::sync::Arc<crate::tool::SharedToolContextFactory>,
         ui_available: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+        extras: crate::host::HostExtras,
     ) -> (
         std::sync::Arc<tact_kernel::tool::executor::ToolExecutor>,
         crate::host::AssembledRuntime,
@@ -531,21 +532,21 @@ impl Agent {
         // One composition root, shared with every other host: it installs the
         // policy plugins and the built-in tool families, so neither list can
         // drift from the other.
-        let assembled = crate::host::assemble(crate::host::HostOptions {
-            permission_manager,
-            ui_available,
-            hooks: None,
-            storage: None,
-            marketplace: None,
-            // Read once and held by the registry: a consumer that resolved the
-            // configuration keeps the one the agent was assembled with.
-            config: crate::config::try_settings(),
-            // Read once here and held by the registry: the provider is a
-            // process-wide snapshot, and a consumer that resolved it should not
-            // silently read a different global later.
-            provider: tact_llm::try_get_provider(),
-            filter: tact_kernel::capability::CapabilityFilter::default(),
-        })
+        let assembled = crate::host::assemble_with(
+            crate::host::HostOptions {
+                permission_manager,
+                ui_available,
+                // Read once and held by the registry: a consumer that resolved the
+                // configuration keeps the one the agent was assembled with.
+                config: crate::config::try_settings(),
+                // Read once here and held by the registry: the provider is a
+                // process-wide snapshot, and a consumer that resolved it should not
+                // silently read a different global later.
+                provider: tact_llm::try_get_provider(),
+                filter: tact_kernel::capability::CapabilityFilter::default(),
+            },
+            extras,
+        )
         .expect("the built-in plugin set is valid: ids are literals and names are unique");
         let services = assembled.services().clone();
         crate::host::executor_from_families(
@@ -578,11 +579,38 @@ impl Agent {
 
     pub fn new(
         client: LlmProvider,
+        tool_context: ToolContext,
+        tools: ToolRouter,
+        mcp_router: MCPToolRouter,
+        permission_manager: PermissionManager,
+        system_prompt: AgentSystemPrompt,
+    ) -> Self {
+        Self::new_with_host(
+            client,
+            tool_context,
+            tools,
+            mcp_router,
+            permission_manager,
+            system_prompt,
+            crate::host::HostExtras::default(),
+        )
+    }
+
+    /// [`Self::new`], with the optional infrastructure the host owns.
+    ///
+    /// The production bootstrap is the only caller that passes a store here, and
+    /// it passes it *once*: the plugin bundle provides it and
+    /// [`Self::with_installed_session`] resolves it. Handing the same store to
+    /// `with_session` as well would be the second path the architecture forbids.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_host(
+        client: LlmProvider,
         mut tool_context: ToolContext,
         tools: ToolRouter,
         mcp_router: MCPToolRouter,
         permission_manager: PermissionManager,
         system_prompt: AgentSystemPrompt,
+        extras: crate::host::HostExtras,
     ) -> Self {
         // Responses models do not expose Tact's local `compact` tool: the
         // user `/compact` command and automatic triggers dispatch to the
@@ -624,6 +652,7 @@ impl Agent {
             memory_enabled,
             contexts.clone(),
             ui_available,
+            extras,
         );
         let mut agent = Self {
             runtime: AgentRuntime {
@@ -3527,6 +3556,61 @@ mod tests {
         assert!(
             error.to_string().contains("builtin.session_store"),
             "{error}"
+        );
+    }
+
+    /// A host that installed storage hands the agent a store it pulls by name.
+    ///
+    /// The production bootstrap used to pass its store straight to
+    /// `with_session`, which is why `HostOptions::storage` was exercised only by
+    /// tests: the real path never installed the plugin. This pins the production
+    /// shape — storage is a plugin contribution and the agent resolves it — so a
+    /// second, direct handoff cannot creep back in.
+    #[tokio::test]
+    async fn a_host_installed_store_is_what_the_agent_attaches() {
+        ensure_config();
+        let dir = tempfile::tempdir().unwrap();
+        let db = dir.path().join("session.db");
+        let store = crate::store::open_sqlite_session_store(&db).await.unwrap();
+        let root = dir.path().to_str().unwrap();
+        store
+            .create_session("host-session", root, "")
+            .await
+            .unwrap();
+
+        let agent = Agent::new_with_host(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            test_context("host_installed_store"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+            crate::host::HostExtras {
+                storage: Some(crate::host::StorageOptions {
+                    store: store.clone(),
+                    path: db.clone(),
+                }),
+                ..Default::default()
+            },
+        )
+        .with_installed_session("host-session".to_string())
+        .expect("storage was installed, so the agent can pull the store");
+
+        assert_eq!(agent.runtime.session_id.as_deref(), Some("host-session"));
+        let attached = agent
+            .runtime
+            .session_store
+            .as_ref()
+            .expect("the store travels with the session");
+        // The same database, not a copy: the row the host wrote is visible
+        // through the agent's handle.
+        let sessions = attached.list_sessions(Some(root)).await.unwrap();
+        assert!(
+            sessions.iter().any(|session| session.id == "host-session"),
+            "{sessions:?}"
         );
     }
 
