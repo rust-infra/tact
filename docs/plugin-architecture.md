@@ -24,8 +24,9 @@ the first implementation plan is
   one-use tickets.
 - Phase 1b adds the production adapters, still without changing user-visible
   behaviour:
-  - `LegacyToolAdapter` + `ToolRouter::into_kernel_catalog` — the existing
-    native tool set adapts into a kernel catalog with no handler rewritten.
+  - `ContextualToolAdapter` (then called `LegacyToolAdapter`) +
+    `ToolRouter::into_kernel_catalog` — the existing native tool set adapts into a
+    kernel catalog with no handler rewritten.
   - `McpToolSource` — MCP tools become a dynamic `ToolSource` with owned
     descriptors and per-tool risk from the server policy.
   - `ManagerPermissionService` — `PermissionManager` stays the only authority
@@ -46,9 +47,10 @@ the first implementation plan is
   - Hooks stay on the Agent side (a callback takes `&Agent`), so the Agent
     drives `resolve` → `authorize_policy` → its own `PermissionRequest` hook →
     `finish_authorization` instead of the executor's `preflight`.
-  - Tact's own MCP resource/prompt tools, and regular `mcp__server__tool` calls,
-    keep the hand-written ladder: their risk lives in `[mcp]` settings rather
-    than a kernel descriptor. That is the last legacy permission path.
+  - (Superseded in Phase 2.) Tact's own MCP resource/prompt tools and regular
+    `mcp__server__tool` calls kept a hand-written ladder at this point because
+    their risk lived in `[mcp]` settings rather than a kernel descriptor. They are
+    kernel tools now and that ladder is deleted — see the MCP section below.
   - Redaction level is decided once and travels on `ToolCallContext`;
     `CancelToken` wraps the agent's live flag so a cancel mid-call is seen.
 - Phase 2 is in progress. What has moved so far:
