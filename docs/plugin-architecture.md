@@ -198,13 +198,17 @@ the first implementation plan is
     exhaustive count so a new variant has to be listed.
   - Converted so far: `read_file`, `read_image`, `edit_file`, `apply_patch`
     (workspace only), plus `load_skill`, every team / task / goal / worktree tool,
-    `write_file`, `ask_user` and the memory tools (declared handles, 13 variants).
-  - Still on the full context, and now each name has a reason: `bash` and
-    `background_run` (shell limits, sandbox, progress, cancel) and `subagent`
-    (session handoff, permission snapshot, the parent's hooks). `compact` and
-    `sleep` read nothing at all but keep the parameter because the macro's
-    pure-tool branch generates the `Input` type and these two declare theirs by
-    hand.
+    `write_file`, `ask_user`, the memory tools and the background tools (declared
+    handles, 16 variants).
+  - Still on the full context, and now each remaining name has a reason: `bash`
+    (shell limits, sandbox, priority) and `subagent` (session handoff, permission
+    snapshot, the parent's hooks, its own store). `compact` and `sleep` read
+    nothing at all but keep the parameter because the macro's pure-tool branch
+    generates the `Input` type and these two declare theirs by hand.
+  - Per-call state is *rebuilt*, not carried: `ToolProgressReporter` is built from
+    `tool_use_id` + `events` at the point of use, because it is not a domain
+    handle. Trying to carry it would have put a per-call object into a set that
+    describes a run.
 - ~~MCP tools as kernel descriptors.~~ **Done.** Every MCP family — regular
   tools, resource tools and prompt tools — is a catalog source now, and all three
   run through the kernel pipeline. The legacy permission ladder is deleted.
