@@ -145,14 +145,22 @@ gate log in `.superpowers/sdd/2026-10-25-tool-execution-contracts/`.
 agent's own snapshot. Existing TOML keys are unchanged — the project's own
 `config.example.toml` is still the reference and no key was renamed.
 
-**Not met:** `config::settings()` remains a process global with real readers
-(`tui`'s test fixtures, `tact` internals). The spec's target — "each plugin
-receives its typed settings at construction and never reads another plugin's
-configuration" — is true for the view, false for the extension crate.
+`read_image` and the notification gate no longer read the global: both take a
+policy (`VisionPolicy`) or the answer (`enabled`) from the caller, and the
+production bootstrap resolves the vision policy from the snapshot it already
+read. `Agent::new` reads the configuration once at construction rather than twice,
+so the tool families and the settings snapshot cannot disagree.
 
-Verified by: `grep -rn 'config::settings()' crates --include=*.rs` — 34 readers.
-Most are in `tact` itself (the extension crate reading its own global, which the
-spec's final state forbids); `tui`'s are confined to test fixtures.
+**Not met:** `config::settings()` still has 6 production readers — three of them
+are the `tact-ui` process-start points (`main`, `interactive`,
+`session_bootstrap`), which is what a composition root is for; the rest are
+`Agent::new`'s one construction-time read, `spawn_subagent`'s settings, and the
+`#[tool]` macro's fallback fill. The spec's target — "each plugin receives its
+typed settings at construction" — is true for the view and for the two tools
+above, not yet for the extension crate as a whole.
+
+Verified by: `grep -rn 'config::settings()' crates --include=*.rs`, filtered to
+the region before `#[cfg(test)]` — 6 production readers (down from 11).
 
 ## 10. Dynamic sources filtered — met
 
