@@ -201,6 +201,95 @@ impl crate::ports::InteractionPort for FakeInteraction {
     }
 }
 
+/// A model catalog for tests.
+///
+/// Answers from what the test staged, so a picker test does not depend on the
+/// model library's process-wide cache or on a live endpoint.
+#[derive(Default, Clone)]
+pub struct FakeModelCatalog {
+    models: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    effort_models: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    provider: std::sync::Arc<std::sync::Mutex<String>>,
+    family: crate::ports::ProviderFamily,
+    subagent_family: Option<crate::ports::ProviderFamily>,
+}
+
+impl FakeModelCatalog {
+    /// A catalog whose endpoint reports `models`.
+    pub fn with_models(models: &[&str]) -> Self {
+        let catalog = Self::default();
+        *catalog.models.lock().expect("models lock") =
+            models.iter().map(|model| (*model).to_string()).collect();
+        catalog
+    }
+
+    /// Treat `models` as effort-semantic rather than budget-semantic.
+    pub fn with_effort_models(self, models: &[&str]) -> Self {
+        *self.effort_models.lock().expect("effort lock") =
+            models.iter().map(|model| (*model).to_string()).collect();
+        self
+    }
+
+    /// The label the picker prompt shows.
+    pub fn with_provider(self, provider: &str) -> Self {
+        *self.provider.lock().expect("provider lock") = provider.to_string();
+        self
+    }
+
+    /// The provider family the effort tiers come from.
+    pub fn with_family(mut self, family: crate::ports::ProviderFamily) -> Self {
+        self.family = family;
+        self
+    }
+
+    /// A family for the subagent target, so its picker opens.
+    pub fn with_subagent_family(mut self, family: crate::ports::ProviderFamily) -> Self {
+        self.subagent_family = Some(family);
+        self
+    }
+}
+
+impl crate::ports::ModelCatalog for FakeModelCatalog {
+    fn candidates(&self, configured: &[String]) -> Vec<String> {
+        // Same rule the runtime uses: configured first, then whatever the
+        // endpoint reported that is not already there.
+        let mut out = configured.to_vec();
+        for id in self.models.lock().expect("models lock").iter() {
+            if !out.iter().any(|known| known == id) {
+                out.push(id.clone());
+            }
+        }
+        out
+    }
+
+    fn candidates_for(&self, configured: &[String], _provider_label: &str) -> Vec<String> {
+        self.candidates(configured)
+    }
+
+    fn uses_effort(&self, model: &str) -> bool {
+        self.effort_models
+            .lock()
+            .expect("effort lock")
+            .iter()
+            .any(|effort_model| effort_model == model)
+    }
+
+    fn provider_label(&self) -> String {
+        self.provider.lock().expect("provider lock").clone()
+    }
+
+    fn family(&self) -> crate::ports::ProviderFamily {
+        self.family
+    }
+
+    fn subagent_family(&self) -> Option<crate::ports::ProviderFamily> {
+        // Default to the main family so a subagent picker opens in a test that
+        // did not think about it — the same shape as a config where the
+        // subagent inherits the main provider.
+        Some(self.subagent_family.unwrap_or(self.family))
+    }
+}
+
 /// An app under test, still holding the channels it talks through.
 pub struct TestApp {
     /// The app itself. Public so a render test can take it and drop the rest.
@@ -247,10 +336,13 @@ impl TestApp {
             String::new(),
             Vec::new(),
         );
-        // The host seeds this from its resolved configuration; a fixture that
-        // skipped it would exercise a different `/model` path than production
-        // and hide a regression in the handoff.
+        // The host seeds these from its resolved configuration and provider; a
+        // fixture that skipped them would exercise a different `/model` path
+        // than production and hide a regression in the handoff. The model
+        // catalog starts empty (no discovered ids) so a test that cares states
+        // what the endpoint reports.
         app.set_config_snapshot(tact::config::try_settings());
+        app.models = Some(std::sync::Arc::new(FakeModelCatalog::default()));
         Self {
             app,
             user_cmds,

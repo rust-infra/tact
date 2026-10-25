@@ -152,6 +152,7 @@ impl App {
             skills_data,
             // No catalog until the host supplies one; every reader treats
             // `None` as "no skills", which is what a bare fixture wants.
+            models: None,
             skills: None,
             session_store: None,
             spinner_frame: 0,

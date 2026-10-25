@@ -269,6 +269,12 @@ pub struct App {
     pub(crate) skills_description: String,
     /// Skills for `/name` slash + palette picker.
     pub(crate) skills_data: Vec<SkillEntry>,
+    /// The host's model queries, when it supplied them.
+    ///
+    /// A port rather than the model library's free functions: the `/model`
+    /// picker asks which models exist and whether one selects an effort, and
+    /// none of that needs the client.
+    pub(crate) models: Option<std::sync::Arc<dyn crate::ports::ModelCatalog>>,
     /// The host's skill catalog, when it supplied one.
     ///
     /// A port rather than the extension crate's registry: the view lists,

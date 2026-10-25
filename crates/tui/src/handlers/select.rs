@@ -12,13 +12,18 @@ const THINKING_BUDGETS: [usize; 5] = [0, 8_000, 32_000, 64_000, 128_000];
 /// openai: minimal..max (official enum, default medium);
 /// deepseek: low/high/max (minimal/medium illegal, xhigh not offered in UI);
 /// kimi k3 family: low/high/max (default high).
-fn default_effort_tiers(info: &tact_llm::ProviderInfo) -> Vec<tact_protocol::ReasoningEffort> {
+fn default_effort_tiers(
+    family: crate::ports::ProviderFamily,
+) -> Vec<tact_protocol::ReasoningEffort> {
+    use crate::ports::ProviderFamily;
     use tact_protocol::ReasoningEffort as E;
-    match &info.provider {
-        tact_llm::ProviderKind::DeepSeek | tact_llm::ProviderKind::Kimi => {
-            vec![E::Low, E::High, E::Max]
+    match family {
+        // These reject `minimal`/`medium` on the wire, so offering them would
+        // send a tier the endpoint refuses.
+        ProviderFamily::DeepSeek | ProviderFamily::Kimi => vec![E::Low, E::High, E::Max],
+        ProviderFamily::OpenAi | ProviderFamily::Anthropic | ProviderFamily::Custom => {
+            vec![E::Minimal, E::Low, E::Medium, E::High, E::Xhigh, E::Max]
         }
-        _ => vec![E::Minimal, E::Low, E::Medium, E::High, E::Xhigh, E::Max],
     }
 }
 
@@ -402,9 +407,8 @@ fn dequeue_next_agent_select(app: &mut App) {
 
 /// `/model` second step: branch by the selected model's semantics.
 fn open_second_step(app: &mut App, model: String, target: ModelTarget) {
-    let config = app.config_snapshot();
-    let provider = provider_for_second_step(config.as_ref(), target);
-    let Some(provider) = provider else {
+    let models = app.models.clone();
+    let Some(family) = provider_for_second_step(models.as_ref(), target) else {
         app.input_mode = InputMode::Normal;
         return;
     };
@@ -412,10 +416,17 @@ fn open_second_step(app: &mut App, model: String, target: ModelTarget) {
         .config_snapshot()
         .and_then(|config| config.llm.model_profiles.get(&model).cloned());
 
-    if tact_llm::model_uses_effort(&model, &provider) {
+    // The port decides: effort and budget semantics are mutually exclusive on
+    // the wire, so the second step has to branch on the same answer the runtime
+    // sends.
+    let uses_effort = match &app.models {
+        Some(models) => models.uses_effort(&model),
+        None => false,
+    };
+    if uses_effort {
         let efforts = profile
             .and_then(|p| (!p.reasoning_efforts.is_empty()).then_some(p.reasoning_efforts))
-            .unwrap_or_else(|| default_effort_tiers(&provider));
+            .unwrap_or_else(|| default_effort_tiers(family));
         open_effort_picker(app, target, model, efforts);
     } else {
         let budgets = profile
@@ -425,16 +436,19 @@ fn open_second_step(app: &mut App, model: String, target: ModelTarget) {
     }
 }
 
-/// Provider identity used to decide the second step (main vs subagent).
+/// The provider family the second step branches on, if there is one.
+///
+/// `None` means "this target has no provider configured", which is what a
+/// subagent target is before the user sets one — the picker then closes instead
+/// of offering tiers for a provider that does not exist.
 fn provider_for_second_step(
-    config: Option<&tact::config::ResolvedConfig>,
+    models: Option<&std::sync::Arc<dyn crate::ports::ModelCatalog>>,
     target: ModelTarget,
-) -> Option<tact_llm::ProviderInfo> {
+) -> Option<crate::ports::ProviderFamily> {
+    let models = models?;
     match target {
-        ModelTarget::Subagent => config
-            .and_then(|config| config.agent.subagent.as_ref())
-            .map(|sa| sa.provider.clone()),
-        ModelTarget::Main => Some(tact_llm::get_provider()),
+        ModelTarget::Subagent => models.subagent_family(),
+        ModelTarget::Main => Some(models.family()),
     }
 }
 
@@ -916,19 +930,12 @@ pub(crate) fn start_model_picker(app: &mut App) {
         return;
     };
 
-    let api_ids = if tact_llm::is_models_query_supported() {
-        match tokio::runtime::Handle::try_current() {
-            Ok(handle) => {
-                tokio::task::block_in_place(|| handle.block_on(tact_llm::ensure_api_model_ids()))
-            }
-            // Sync call sites (e.g. unit tests without a runtime) keep config-only.
-            Err(_) => Vec::new(),
-        }
-    } else {
-        Vec::new()
+    // Ask the host's catalog: it owns how the endpoint is queried, and a view
+    // without one keeps the configured list.
+    let mut candidates = match &app.models {
+        Some(models) => models.candidates(&config.llm.models),
+        None => config.llm.models.clone(),
     };
-
-    let mut candidates = tact_llm::merge_model_candidates(&config.llm.models, &api_ids);
 
     if candidates.is_empty() {
         app.add_system_message(
@@ -970,17 +977,11 @@ pub(crate) fn start_subagent_model_picker(app: &mut App) {
         return;
     };
 
-    let api_ids = match tokio::runtime::Handle::try_current() {
-        Ok(handle) => tokio::task::block_in_place(|| {
-            handle.block_on(tact_llm::ensure_api_model_ids_for_provider(
-                &subagent.provider,
-            ))
-        }),
-        Err(_) => Vec::new(),
-    };
-
     let subagent_provider_name = subagent.provider.provider.as_str();
-    let mut candidates = tact_llm::merge_model_candidates(&subagent.models, &api_ids);
+    let mut candidates = match &app.models {
+        Some(models) => models.candidates_for(&subagent.models, subagent_provider_name),
+        None => subagent.models.clone(),
+    };
 
     if candidates.is_empty() {
         app.add_system_message(
@@ -1023,6 +1024,36 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    /// An app whose `/model` picker asks a fake catalog instead of an endpoint.
+    ///
+    /// The view no longer reads the model library's process-wide cache, so a
+    /// test states what the endpoint would have reported.
+    fn app_with_models(discovered: &[&str], effort_models: &[&str]) -> App {
+        app_with_models_from(
+            crate::ports::ProviderFamily::OpenAi,
+            discovered,
+            effort_models,
+        )
+    }
+
+    /// The same, with the provider family stated.
+    ///
+    /// The family decides which effort tiers are offered (`deepseek`/`kimi`
+    /// reject `minimal`/`medium`), so a test that asserts a tier list has to say
+    /// which provider it is.
+    fn app_with_models_from(
+        family: crate::ports::ProviderFamily,
+        discovered: &[&str],
+        effort_models: &[&str],
+    ) -> App {
+        let mut app = make_app();
+        let catalog = crate::test_fixtures::FakeModelCatalog::with_models(discovered)
+            .with_effort_models(effort_models)
+            .with_family(family);
+        app.models = Some(std::sync::Arc::new(catalog));
+        app
     }
 
     /// The `/model` second step reads its profiles from the app's snapshot.
@@ -1682,6 +1713,11 @@ thinking_budget = {thinking_budget}
         install_models_config(vec![], "kimi-k2.5");
 
         let mut app = app_with_current_config();
+        // A catalog is what makes the second step exist; without one the picker
+        // applies the model directly, which is the config-less behaviour.
+        app.models = Some(std::sync::Arc::new(
+            crate::test_fixtures::FakeModelCatalog::with_models(&[]),
+        ));
         start_model_picker(&mut app);
         assert!(!matches!(app.input_mode, InputMode::Select));
         assert!(
@@ -1928,16 +1964,10 @@ thinking_budget = {thinking_budget}
     #[tokio::test(flavor = "multi_thread")]
     async fn subagent_effort_pick_applies_subagent_reasoning_effort() {
         let _lock = MODELS_TEST_LOCK.lock().await;
-        tact_llm::clear_models_cache_for_tests();
         // k3 is effort-semantic; subagent has no config path → session-only.
         install_models_config_with_subagent(vec!["k3"], "kimi-k2.5", "k3", 0, None);
-        tact_llm::seed_models_cache_for_tests(
-            "https://api.moonshot.cn/v1",
-            "sk-test",
-            vec!["k3".into()],
-        );
 
-        let mut app = make_app();
+        let mut app = app_with_models_from(crate::ports::ProviderFamily::Kimi, &["k3"], &["k3"]);
         start_subagent_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Enter)); // k3 (single model)
         assert!(matches!(
@@ -1964,19 +1994,18 @@ thinking_budget = {thinking_budget}
     #[tokio::test(flavor = "multi_thread")]
     async fn effort_picker_highlights_current_session_effort() {
         let _lock = MODELS_TEST_LOCK.lock().await;
-        tact_llm::clear_models_cache_for_tests();
-        // Kimi K3 model → effort-semantic second step.
         install_models_config(vec!["k3", "k3-256k"], "k3");
-        tact_llm::seed_models_cache_for_tests(
-            "https://api.moonshot.cn/v1",
-            "sk-test",
-            vec!["k3".into(), "k3-256k".into()],
-        );
         let mut cfg = tact::config::settings();
         cfg.agent.reasoning_effort = Some(tact_protocol::ReasoningEffort::Max);
         tact::config::install_or_override(cfg);
 
-        let mut app = make_app();
+        // Effort-semantic: the second step is the effort picker, not the budget
+        // one. The catalog decides that now.
+        let mut app = app_with_models_from(
+            crate::ports::ProviderFamily::Kimi,
+            &["k3", "k3-256k"],
+            &["k3", "k3-256k"],
+        );
         start_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Down)); // k3-256k
         handle_select_mode(&mut app, key(KeyCode::Enter));
@@ -1995,14 +2024,8 @@ thinking_budget = {thinking_budget}
         // agent.reasoning_effort in sync so re-opening the picker (and
         // subagent inheritance) sees the new value.
         let _lock = MODELS_TEST_LOCK.lock().await;
-        tact_llm::clear_models_cache_for_tests();
         install_models_config(vec!["k3"], "k3");
-        tact_llm::seed_models_cache_for_tests(
-            "https://api.moonshot.cn/v1",
-            "sk-test",
-            vec!["k3".into()],
-        );
-        let mut app = make_app();
+        let mut app = app_with_models_from(crate::ports::ProviderFamily::Kimi, &["k3"], &["k3"]);
         start_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Enter)); // k3 (single model)
 
@@ -2027,14 +2050,8 @@ thinking_budget = {thinking_budget}
         // clear a stale thinking_budget left over from a budget-semantic model
         // (kimi-for-coding) — otherwise the bottom bar renders `think high(32K)`.
         let _lock = MODELS_TEST_LOCK.lock().await;
-        tact_llm::clear_models_cache_for_tests();
         install_models_config_with_budget(vec!["k3"], "k3", 32_000);
-        tact_llm::seed_models_cache_for_tests(
-            "https://api.moonshot.cn/v1",
-            "sk-test",
-            vec!["k3".into()],
-        );
-        let mut app = make_app();
+        let mut app = app_with_models_from(crate::ports::ProviderFamily::Kimi, &["k3"], &["k3"]);
         start_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Enter)); // k3 (single model)
         handle_select_mode(&mut app, key(KeyCode::Enter)); // first effort (Low)
@@ -2246,15 +2263,9 @@ thinking_budget = {thinking_budget}
     #[tokio::test(flavor = "multi_thread")]
     async fn model_picker_merges_api_ids_after_config() {
         let _lock = MODELS_TEST_LOCK.lock().await;
-        tact_llm::clear_models_cache_for_tests();
         install_models_config(vec!["cfg-a", "overlap"], "cfg-a");
-        tact_llm::seed_models_cache_for_tests(
-            "https://api.moonshot.cn/v1",
-            "sk-test",
-            vec!["overlap".into(), "api-only".into()],
-        );
 
-        let mut app = make_app();
+        let mut app = app_with_models(&["overlap", "api-only"], &[]);
         start_model_picker(&mut app);
         assert!(matches!(app.input_mode, InputMode::Select));
         let options = &app.select.options;
@@ -2270,15 +2281,9 @@ thinking_budget = {thinking_budget}
     #[tokio::test(flavor = "multi_thread")]
     async fn model_picker_api_only_when_config_empty() {
         let _lock = MODELS_TEST_LOCK.lock().await;
-        tact_llm::clear_models_cache_for_tests();
         install_models_config(vec![], "current-x");
-        tact_llm::seed_models_cache_for_tests(
-            "https://api.moonshot.cn/v1",
-            "sk-test",
-            vec!["api-1".into(), "api-2".into()],
-        );
 
-        let mut app = make_app();
+        let mut app = app_with_models(&["api-1", "api-2"], &[]);
         start_model_picker(&mut app);
         assert!(matches!(app.input_mode, InputMode::Select));
         let options = &app.select.options;

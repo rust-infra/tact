@@ -70,6 +70,22 @@ pub struct PendingPrompt {
     pub from_subagent: bool,
 }
 
+/// Which provider family a target uses.
+///
+/// The picker only needs this much: which effort tiers a model offers depends on
+/// the family (`deepseek`/`kimi` reject `minimal`/`medium`, openai accepts the
+/// range). Naming the family keeps the model library's `ProviderInfo` out of the
+/// view, which had it in two signatures for one `match`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ProviderFamily {
+    #[default]
+    OpenAi,
+    DeepSeek,
+    Kimi,
+    Anthropic,
+    Custom,
+}
+
 /// What the view needs from the interaction broker.
 ///
 /// The runtime's broker is richer (it also carries the request kind and the
@@ -88,6 +104,42 @@ pub trait InteractionPort: Send + Sync {
 
     /// Abandon one prompt, if it is still waiting.
     fn withdraw(&self, request_id: u64) -> bool;
+}
+
+/// What the view needs to populate the `/model` pickers.
+///
+/// Everything here is a *query* about the current provider and the model ids the
+/// endpoint reports. The view does not care how those are discovered — it needs
+/// the merged candidate list and the current ids — so the port stays a question
+/// rather than exposing the model library's client.
+pub trait ModelCatalog: Send + Sync {
+    /// The configured models, plus any the endpoint reported.
+    ///
+    /// Blocking on purpose: the caller already runs it inside `block_in_place`
+    /// when a runtime exists, and making the trait async would force every test
+    /// fake to carry one.
+    fn candidates(&self, configured: &[String]) -> Vec<String>;
+
+    /// The configured models, plus the ids `provider` reports.
+    ///
+    /// A subagent can target a different provider than the main run, so the
+    /// endpoint to ask is a parameter rather than the process global.
+    fn candidates_for(&self, configured: &[String], provider_label: &str) -> Vec<String>;
+
+    /// Whether `model` selects a reasoning effort rather than a thinking budget.
+    ///
+    /// The two are mutually exclusive on the wire, so the picker's second step
+    /// branches on this.
+    fn uses_effort(&self, model: &str) -> bool;
+
+    /// The configured provider's label, for the picker prompt.
+    fn provider_label(&self) -> String;
+
+    /// The family the main run's provider belongs to.
+    fn family(&self) -> ProviderFamily;
+
+    /// The family a subagent's provider belongs to.
+    fn subagent_family(&self) -> Option<ProviderFamily>;
 }
 
 #[cfg(test)]

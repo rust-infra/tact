@@ -210,6 +210,8 @@ pub struct TuiConfig {
     /// Shared session store used to inspect persisted request payloads.
     pub session_store: tact::store::DynSessionStore,
     pub skills: std::sync::Arc<dyn ports::SkillCatalog>,
+    /// The model queries the `/model` pickers need.
+    pub models: std::sync::Arc<dyn ports::ModelCatalog>,
     /// Authoritative in-process pending UI request broker. The TUI reconciles
     /// from `snapshot()` instead of trusting a single `RequestSelect` event.
     pub pending_ui: std::sync::Arc<dyn ports::InteractionPort>,
@@ -251,6 +253,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_description,
         skills_data,
         skills,
+        models,
         session_store,
         pending_ui,
         voice,
@@ -298,6 +301,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.set_hook_output(hook_output);
     app.set_pending_ui(pending_ui);
     app.skills = Some(skills);
+    app.models = Some(models);
     app.session_store = Some(session_store);
     app.model_context_window = model_context_window;
     app.voice_parsed_keybind = voice_parsed_keybind;

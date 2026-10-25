@@ -132,6 +132,112 @@ pub fn interaction_port(
     std::sync::Arc::new(RuntimeInteractionPort::new(responder))
 }
 
+/// The runtime's model queries, seen through the view's port.
+///
+/// Wraps the two failures a discovery call can have (no endpoint for this
+/// provider, no network) into an empty id list: a picker that cannot reach the
+/// endpoint still offers the configured models, which is what a user needs to
+/// switch between what they already have.
+pub struct RuntimeModelCatalog;
+
+impl RuntimeModelCatalog {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for RuntimeModelCatalog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Ask the endpoint for its model ids when the runtime allows it.
+///
+/// `block_in_place` because callers hold the UI loop; without a runtime (sync
+/// unit tests) the config-only list is returned, which is the documented
+/// behaviour of the picker in that situation.
+fn api_model_ids(provider: Option<&tact_llm::ProviderInfo>) -> Vec<String> {
+    let Ok(handle) = tokio::runtime::Handle::try_current() else {
+        return Vec::new();
+    };
+    tokio::task::block_in_place(|| match provider {
+        Some(provider) => handle.block_on(tact_llm::ensure_api_model_ids_for_provider(provider)),
+        None => handle.block_on(tact_llm::ensure_api_model_ids()),
+    })
+}
+
+impl tui::ports::ModelCatalog for RuntimeModelCatalog {
+    fn candidates(&self, configured: &[String]) -> Vec<String> {
+        if !tact_llm::is_models_query_supported() {
+            return tact_llm::merge_model_candidates(configured, &[]);
+        }
+        let api = api_model_ids(None);
+        tact_llm::merge_model_candidates(configured, &api)
+    }
+
+    fn candidates_for(&self, configured: &[String], provider_label: &str) -> Vec<String> {
+        // The subagent target is resolved from its own provider entry, so the
+        // label the caller already has is enough to pick the endpoint.
+        let provider = tact_llm::try_get_provider().filter(|info| {
+            info.provider.as_str() == provider_label || info.base_url.contains(provider_label)
+        });
+        let api = api_model_ids(provider.as_ref());
+        tact_llm::merge_model_candidates(configured, &api)
+    }
+
+    fn uses_effort(&self, model: &str) -> bool {
+        match tact_llm::try_get_provider() {
+            Some(info) => tact_llm::model_uses_effort(model, &info),
+            // No provider installed (a test): the budget semantics are the
+            // historical default, so the picker still opens.
+            None => false,
+        }
+    }
+
+    fn provider_label(&self) -> String {
+        tact_llm::try_get_provider()
+            .map(|info| info.provider.as_str().to_string())
+            .unwrap_or_default()
+    }
+
+    fn family(&self) -> tui::ports::ProviderFamily {
+        tact_llm::try_get_provider()
+            .map(|info| family_of(info.provider))
+            .unwrap_or_default()
+    }
+
+    fn subagent_family(&self) -> Option<tui::ports::ProviderFamily> {
+        // Read from the resolved configuration, not the process provider: a
+        // subagent may target a different endpoint than the main run, and the
+        // picker's tiers follow the target.
+        let config = tact::config::try_settings()?;
+        let subagent = config.agent.subagent?;
+        Some(family_of(subagent.provider.provider))
+    }
+}
+
+/// Map the model library's provider kind onto the view's family.
+///
+/// One `match` in one place: the view never sees `ProviderKind`, so adding a
+/// provider kind fails to compile here rather than silently rendering as the
+/// openai tier list.
+fn family_of(kind: tact_llm::ProviderKind) -> tui::ports::ProviderFamily {
+    use tui::ports::ProviderFamily;
+    match kind {
+        tact_llm::ProviderKind::OpenAi => ProviderFamily::OpenAi,
+        tact_llm::ProviderKind::DeepSeek => ProviderFamily::DeepSeek,
+        tact_llm::ProviderKind::Kimi => ProviderFamily::Kimi,
+        tact_llm::ProviderKind::Anthropic => ProviderFamily::Anthropic,
+        tact_llm::ProviderKind::Custom(_) => ProviderFamily::Custom,
+    }
+}
+
+/// The model catalog for the view.
+pub fn model_catalog() -> std::sync::Arc<dyn tui::ports::ModelCatalog> {
+    std::sync::Arc::new(RuntimeModelCatalog::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
