@@ -17,7 +17,7 @@ use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 use tracing::debug;
 
-use crate::tool::{ToolContext, safe_path};
+use crate::tool::safe_path;
 
 // ---------------------------------------------------------------------------
 // Input
@@ -251,7 +251,10 @@ pub const APPLY_PATCH_METADATA: ToolMetadata = ToolMetadata {
 /// - A target file does not exist or cannot be read.
 /// - The patch context does not match the file contents.
 /// - Writing the patched file fails (rolls back already-written files on failure).
-pub async fn apply_patch(ctx: ToolContext, input: ApplyPatchInput) -> Result<String> {
+pub async fn apply_patch(
+    workspace: tact_kernel::tool::context::Workspace,
+    input: ApplyPatchInput,
+) -> Result<String> {
     debug!(dry_run = input.dry_run, "Applying patch");
 
     // Parse the patch.
@@ -268,7 +271,7 @@ pub async fn apply_patch(ctx: ToolContext, input: ApplyPatchInput) -> Result<Str
     let mut to_write: Vec<(PathBuf, Vec<u8>, String)> = Vec::new();
 
     for fp in &file_patches {
-        let path = safe_path(&ctx.work_dir, &fp.path)
+        let path = safe_path(workspace.root(), &fp.path)
             .map_err(|e| anyhow::anyhow!("Invalid path '{}': {}", fp.path, e))?;
 
         let original_content = tokio::fs::read_to_string(&path)
