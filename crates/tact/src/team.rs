@@ -164,3 +164,114 @@ impl SharedTeammateManager {
         self.inner.protocol_request(from, to, kind, body).await
     }
 }
+
+/// Teammates, contributed as a plugin.
+///
+/// The manager already exists and is shared behind an `Arc`; this is the lifecycle
+/// seam. What it buys is replacement: a host that coordinates teammates some other
+/// way installs its own plugin instead of replacing what every tool writes against.
+pub struct TeamPlugin {
+    manager: SharedTeammateManager,
+}
+
+impl TeamPlugin {
+    /// A plugin over an already-opened manager.
+    pub fn new(manager: SharedTeammateManager) -> Self {
+        Self { manager }
+    }
+}
+
+#[async_trait::async_trait]
+impl tact_kernel::plugin::Plugin for TeamPlugin {
+    fn manifest(&self) -> tact_kernel::plugin::PluginManifest {
+        tact_kernel::plugin::PluginManifest::new(
+            tact_kernel::plugin::PluginId::new("builtin.team").expect("a literal id"),
+            "Team",
+            env!("CARGO_PKG_VERSION"),
+            tact_kernel::plugin::PluginKind::Capability,
+            "Teammates: membership, direct messages and broadcast",
+        )
+    }
+
+    fn register(&self, registrar: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
+        registrar.service(std::sync::Arc::new(TeamHandle(self.manager.clone())))
+    }
+}
+
+/// The manager a [`TeamPlugin`] provided.
+#[derive(Clone)]
+pub struct TeamHandle(pub SharedTeammateManager);
+
+impl std::ops::Deref for TeamHandle {
+    type Target = SharedTeammateManager;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// The teammate manager a host resolved from its registry.
+///
+/// # Errors
+///
+/// Returns an error when no `TeamPlugin` was installed. The team tools report that
+/// they cannot run rather than silently addressing nobody.
+pub fn team_manager(
+    services: &tact_kernel::service::ServiceRegistry,
+) -> anyhow::Result<SharedTeammateManager> {
+    services
+        .get::<TeamHandle>()
+        .map(|handle| handle.0.clone())
+        .ok_or_else(|| anyhow::anyhow!("no team manager installed; install TeamPlugin"))
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    /// Unique per test, so parallel tests in one process do not share a database.
+    static TEAM_PLUGIN_DIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    use super::*;
+    use tact_kernel::capability::CapabilityFilter;
+    use tact_kernel::plugin::PluginHost;
+
+    async fn manager() -> SharedTeammateManager {
+        let dir = std::env::temp_dir().join(format!(
+            "tact-team-plugin-{}-{}",
+            std::process::id(),
+            TEAM_PLUGIN_DIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        SharedTeammateManager::new(TeammateManager::new(&dir.join("team.db")).await.unwrap())
+    }
+
+    /// The plugin registers a manager the host can resolve.
+    #[tokio::test]
+    async fn the_plugin_provides_a_resolvable_manager() {
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(TeamPlugin::new(manager().await))
+            .await
+            .unwrap();
+        let runtime = host.seal().await.unwrap();
+        assert!(team_manager(runtime.services()).is_ok());
+    }
+
+    /// A host with no plugin is told so by name.
+    #[test]
+    fn a_missing_plugin_is_an_error_that_names_it() {
+        let registry = tact_kernel::service::ServiceRegistry::default();
+        let error = match team_manager(&registry) {
+            Ok(_) => panic!("no manager was installed, so this must fail"),
+            Err(error) => error,
+        };
+        assert!(format!("{error}").contains("TeamPlugin"), "{error}");
+    }
+
+    /// The manifest says what it contributes.
+    #[tokio::test]
+    async fn the_manifest_says_what_it_is() {
+        use tact_kernel::plugin::Plugin;
+        let manifest = TeamPlugin::new(manager().await).manifest();
+        assert_eq!(manifest.id.as_str(), "builtin.team");
+        assert_eq!(manifest.kind, tact_kernel::plugin::PluginKind::Capability);
+    }
+}

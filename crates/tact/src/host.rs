@@ -137,6 +137,10 @@ pub struct HostExtras {
     /// a host that gates completion on a command or an external reviewer installs
     /// its own `GoalPlugin` instead.
     pub acceptance: Option<std::sync::Arc<dyn crate::goal::AcceptancePolicy>>,
+    /// The already-opened task manager.
+    pub task: Option<crate::task::SharedTaskManager>,
+    /// The already-opened teammate manager.
+    pub team: Option<crate::team::SharedTeammateManager>,
 }
 
 /// The assembled pieces, after sealing.
@@ -278,6 +282,12 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
         Some(policy) => crate::goal::GoalPlugin::new(policy),
         None => crate::goal::GoalPlugin::evidence(),
     })?;
+    if let Some(manager) = extras.task.clone() {
+        host.install_sync(crate::task::TaskPlugin::new(manager))?;
+    }
+    if let Some(manager) = extras.team.clone() {
+        host.install_sync(crate::team::TeamPlugin::new(manager))?;
+    }
 
     let skipped = host
         .skipped()

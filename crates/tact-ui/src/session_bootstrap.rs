@@ -221,12 +221,15 @@ pub async fn bootstrap_session(
 
     let db_path = tact_path.session_db_path();
     let task_manager = SharedTaskManager::new(TaskManager::new(&db_path).await?);
+    // One clone each for the plugin bundle: the tool context takes the originals.
+    let plugin_task = task_manager.clone();
     let goal_manager = SharedGoalManager::new(GoalManager::new(&db_path).await?);
     let background_manager = SharedBackgroundManager::new(BackgroundManager::new(&db_path).await?);
     // One clone for the plugin bundle: the tool context takes the original below,
     // and the registry is what a replacement plugin would read.
     let plugin_background = background_manager.clone();
     let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&db_path).await?);
+    let plugin_team = teammate_manager.clone();
     let worktree_manager =
         SharedWorktreeManager::new(WorktreeManager::new(&db_path, work_dir.clone()).await?);
     // One clone for the plugin bundle: the tool context takes the original.
@@ -362,6 +365,8 @@ pub async fn bootstrap_session(
             skills: Some(skill_registry.clone()),
             worktree: Some(plugin_worktree),
             subagent: Some(plugin_subagent),
+            task: Some(plugin_task),
+            team: Some(plugin_team),
             ..tact::host::HostExtras::default()
         },
     )

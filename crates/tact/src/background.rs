@@ -1686,12 +1686,19 @@ pub fn background_manager(
 
 #[cfg(test)]
 mod plugin_tests {
+    /// Unique per test, so parallel tests in one process do not share a database.
+    static BG_PLUGIN_DIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     use super::*;
     use tact_kernel::capability::CapabilityFilter;
     use tact_kernel::plugin::PluginHost;
 
     async fn manager() -> SharedBackgroundManager {
-        let dir = std::env::temp_dir().join(format!("tact-bg-plugin-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "tact-bg-plugin-{}-{}",
+            std::process::id(),
+            BG_PLUGIN_DIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         let manager = BackgroundManager::new(&dir.join("bg.db")).await.unwrap();
         SharedBackgroundManager::new(manager)

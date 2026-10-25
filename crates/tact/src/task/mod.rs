@@ -695,3 +695,117 @@ mod task3_association_tests {
         assert_eq!(listed[1].blocked_by, vec![blocker.id]);
     }
 }
+
+/// Tasks, contributed as a plugin.
+///
+/// The manager already exists and is shared behind an `Arc`; this is the lifecycle
+/// seam. What it buys is replacement: a host that keeps its task list elsewhere
+/// installs its own plugin instead of replacing what every tool writes against.
+pub struct TaskPlugin {
+    manager: SharedTaskManager,
+}
+
+impl TaskPlugin {
+    /// A plugin over an already-opened manager.
+    ///
+    /// Opening touches the database, so it happens before assembly: like every
+    /// store-backed plugin, `register` cannot await.
+    pub fn new(manager: SharedTaskManager) -> Self {
+        Self { manager }
+    }
+}
+
+#[async_trait::async_trait]
+impl tact_kernel::plugin::Plugin for TaskPlugin {
+    fn manifest(&self) -> tact_kernel::plugin::PluginManifest {
+        tact_kernel::plugin::PluginManifest::new(
+            tact_kernel::plugin::PluginId::new("builtin.task").expect("a literal id"),
+            "Tasks",
+            env!("CARGO_PKG_VERSION"),
+            tact_kernel::plugin::PluginKind::Capability,
+            "Durable task list: create, update, list and fetch",
+        )
+    }
+
+    fn register(&self, registrar: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
+        registrar.service(std::sync::Arc::new(TaskHandle(self.manager.clone())))
+    }
+}
+
+/// The manager a [`TaskPlugin`] provided.
+#[derive(Clone)]
+pub struct TaskHandle(pub SharedTaskManager);
+
+impl std::ops::Deref for TaskHandle {
+    type Target = SharedTaskManager;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// The task manager a host resolved from its registry.
+///
+/// # Errors
+///
+/// Returns an error when no `TaskPlugin` was installed. The task tools report that
+/// they cannot run rather than silently dropping a task.
+pub fn task_manager(
+    services: &tact_kernel::service::ServiceRegistry,
+) -> anyhow::Result<SharedTaskManager> {
+    services
+        .get::<TaskHandle>()
+        .map(|handle| handle.0.clone())
+        .ok_or_else(|| anyhow::anyhow!("no task manager installed; install TaskPlugin"))
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    /// Unique per test, so parallel tests in one process do not share a database.
+    static TASK_PLUGIN_DIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+    use super::*;
+    use tact_kernel::capability::CapabilityFilter;
+    use tact_kernel::plugin::PluginHost;
+
+    async fn manager() -> SharedTaskManager {
+        let dir = std::env::temp_dir().join(format!(
+            "tact-task-plugin-{}-{}",
+            std::process::id(),
+            TASK_PLUGIN_DIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        SharedTaskManager::new(TaskManager::new(&dir.join("t.db")).await.unwrap())
+    }
+
+    /// The plugin registers a manager the host can resolve.
+    #[tokio::test]
+    async fn the_plugin_provides_a_resolvable_manager() {
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(TaskPlugin::new(manager().await))
+            .await
+            .unwrap();
+        let runtime = host.seal().await.unwrap();
+        assert!(task_manager(runtime.services()).is_ok());
+    }
+
+    /// A host with no plugin is told so by name.
+    #[test]
+    fn a_missing_plugin_is_an_error_that_names_it() {
+        let registry = tact_kernel::service::ServiceRegistry::default();
+        let error = match task_manager(&registry) {
+            Ok(_) => panic!("no manager was installed, so this must fail"),
+            Err(error) => error,
+        };
+        assert!(format!("{error}").contains("TaskPlugin"), "{error}");
+    }
+
+    /// The manifest says what it contributes.
+    #[tokio::test]
+    async fn the_manifest_says_what_it_is() {
+        use tact_kernel::plugin::Plugin;
+        let manifest = TaskPlugin::new(manager().await).manifest();
+        assert_eq!(manifest.id.as_str(), "builtin.task");
+        assert_eq!(manifest.kind, tact_kernel::plugin::PluginKind::Capability);
+    }
+}

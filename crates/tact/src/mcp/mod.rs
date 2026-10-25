@@ -6352,6 +6352,9 @@ mod tests {
 
 #[cfg(test)]
 mod plugin_tests {
+    /// Unique per test, so parallel tests in one process do not share a database.
+    static MCP_CFG_DIR_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
     use super::*;
     use tact_kernel::capability::CapabilityFilter;
     use tact_kernel::plugin::PluginHost;
@@ -6416,7 +6419,11 @@ mod plugin_tests {
     /// it reports.
     #[test]
     fn the_file_source_uses_the_directory_it_is_given() {
-        let dir = std::env::temp_dir().join(format!("tact-mcp-cfg-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!(
+            "tact-mcp-cfg-{}-{}",
+            std::process::id(),
+            MCP_CFG_DIR_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        ));
         std::fs::create_dir_all(&dir).unwrap();
         std::fs::write(
             dir.join(".mcp.json"),
