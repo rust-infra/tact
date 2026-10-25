@@ -79,8 +79,12 @@ the first implementation plan is
     different things under one name; a second provider is an error naming the
     first. It is not a locator — the composition root pulls the specific handle
     and passes it to the plugins built after it.
-  - `PermissionPlugin`, `SecurityPlugin` and `HooksPlugin` provide their ports
-    through it. The Agent's `ToolExecutor` now resolves the policy pair from the
+  - `PermissionPlugin`, `SecurityPlugin`, `HooksPlugin`, `ProvidersPlugin` and
+    `MarketplacePlugin` provide their ports through it. `ProvidersPlugin` needed
+    a non-panicking `tact_llm::try_get_provider` first — the assembly has to be
+    able to ask "is there a provider?" without the question aborting the process.
+    `Agent::provider()` now answers from the plugin bundle, so a consumer that
+    already has an agent no longer re-reads the process global. The Agent's `ToolExecutor` now resolves the policy pair from the
     registry, so a host that forgets a policy plugin gets a named error instead
     of a silently different permission policy.
   - `crates/tact/src/host.rs` is the composition root: `assemble` installs the
@@ -171,11 +175,12 @@ the first implementation plan is
 - Phase 4's view half is untouched: `tui` still depends on `tact` and `tact_llm`,
   and slash commands still dispatch through the `SlashCommand` enum rather than a
   catalog. That is the next large change.
-- Phase 3's remaining half: `ProvidersPlugin`, `MarketplacePlugin`,
-  `CompactionPlugin`, `AgentPlugin`, `ChatPlugin`. `StoragePlugin` and
-  `SessionStorePlugin` exist and are installable, but the production bootstrap
-  still opens the store itself and passes it to `Agent::with_session`, so
-  `HostOptions::storage` is exercised only by tests.
+- Phase 3's remaining half: `CompactionPlugin`, `AgentPlugin`, `ChatPlugin`.
+  `StoragePlugin` and `SessionStorePlugin` exist and are installable, but the
+  production bootstrap still opens the store itself and passes it to
+  `Agent::with_session`, so `HostOptions::storage` is exercised only by tests.
+  `HostOptions::marketplace` is likewise unset by the production bootstrap: the
+  TUI still builds its marketplace service where it needs one.
 - Domain families beyond tools and prompt sections: Goal/Task/Team/Worktree/
   Background/Subagent are tool families but not yet plugins with their own
   lifecycle. The remaining `agent/` → `mcp` edge is only the router's lifecycle
