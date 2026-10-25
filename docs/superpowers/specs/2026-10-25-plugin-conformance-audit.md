@@ -5,7 +5,7 @@ Audit of the approved spec
 against the implemented state on `feat/plugin-first-architecture`.
 
 **Status: 6 of 11 checklist items met, 3 partially met, 2 not met.**
-Item 2 is now the largest gap and is measurable: 8 of the spec's 15 capability
+Item 2 is now the largest gap and is measurable: 9 of the spec's 15 capability
 domains have a plugin object.
 Phases 0, 1, and the view half of Phase 4 are done. The remaining gaps all trace
 to one undecided thing — the neutral message model — plus the deletions that wait
@@ -61,23 +61,27 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   `ChatService` owns the turn lifecycle (message assembly, Stop-hook
   continuation, completion) over the same agent slot, so a turn and a compaction
   serialise structurally rather than by convention.
-- Capability domains: **8 of 15**. `HooksPlugin`, `NotificationsPlugin`,
+- Capability domains: **9 of 15**. `HooksPlugin`, `NotificationsPlugin`,
   `BackgroundPlugin`, `MemoryPlugin`, `SkillsPlugin`, `WorktreePlugin`,
-  `VoicePlugin` and `SubagentPlugin` have plugin objects with a lifecycle and a
-  resolve-by-name port.
+  `VoicePlugin`, `SubagentPlugin` and `McpPlugin` have plugin objects with a
+  lifecycle and a resolve-by-name port.
 
   `VoicePlugin` also settled the ownership question for live-resource domains: the
   worker moved from the view to the domain (`RuntimeVoiceService` owns it and shuts
   it down in `Drop`), and the view keeps only a forwarding port. `RuntimeVoicePort`
   was deleted — it existed solely to keep the worker alive.
 
-  The remaining seven split two ways. Two own **live resources** (`Tools`, `Mcp`)
-  and have a precedent — move ownership to the domain, hand the view a port — but
-  `Mcp` is not a small instance of it: `Agent::mcp_router` is a bare field with 44
-  reference sites across two crates, so making it shareable is a 44-site refactor,
-  not a registration. Three are **state machines** (`Goal`, `Task`, `Team`) whose
-  seam is a policy boundary rather than a handle. Two are **views** (`Tui`,
-  `Headless`), which item 6 covers.
+  `McpPlugin` is worth reading as a sizing lesson: I had estimated it at 44 call
+  sites because `Agent::mcp_router` has that many references, but the replaceable
+  seam turned out to be *where the declarations come from* (`McpConfigSource`)
+  rather than the live connections — the router's clients were already `Clone` over
+  `Arc`ed services. The same slice removed a process-CWD read from the command
+  path, which `resolve_current()` had been hiding.
+
+  The remaining six split two ways. One owns **live resources** (`Tools`), with the
+  Voice/Mcp precedent available. Three are **state machines** (`Goal`, `Task`,
+  `Team`) whose seam is a policy boundary rather than a handle. Two are **views**
+  (`Tui`, `Headless`), which item 6 covers.
 
   The shape is now stable: a named shared type, a `Plugin` impl that registers it,
   a resolver that errors by name when absent, and three tests (resolve, missing,
