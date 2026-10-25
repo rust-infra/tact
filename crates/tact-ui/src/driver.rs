@@ -12,17 +12,15 @@ use std::{
 use anyhow::Result;
 use chrono::Utc;
 use tact::{
-    Agent, extract_text,
+    Agent,
     goal::{
         Goal, GoalCreate, GoalCriterion, GoalEvent, GoalEventKind, GoalEventSource,
         GoalEvidenceUpdate, GoalStatus, GoalUpdate, GoalVerification, GoalVerificationKind,
         GoalVerifier, SharedGoalManager, new_event_id,
     },
-    hook::HookControl,
     store::goal_store::GoalStoreError,
     task::SharedTaskManager,
 };
-use tact_llm::{Message, Role};
 use tact_protocol::{
     AccountUpdate, AgentErrorKind, AgentUpdate, GoalSnapshot, UpdateSink, UserCommand,
 };
@@ -1800,61 +1798,10 @@ async fn handle_user_command_with_account(
                 return;
             }
 
-            // A Stop hook may `block` to request one more turn (Codex
-            // continuation-fragment semantics: the block reason becomes the
-            // next prompt). Bound the loop so a misbehaving hook cannot spin
-            // the agent forever.
-            const MAX_STOP_CONTINUATIONS: u32 = 4;
-            let mut task_message = Some(task_message);
-            let mut stop_continuations = 0u32;
-            loop {
-                match agent.agent_loop(task_message.take()).await {
-                    Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) => {
-                        // Turn completed normally: run Stop hooks to decide
-                        // whether to keep going.
-                        match agent.dispatch_stop_hooks().await {
-                            Ok(HookControl::Block(reason))
-                                if stop_continuations < MAX_STOP_CONTINUATIONS =>
-                            {
-                                stop_continuations += 1;
-                                agent.emit_update(AgentUpdate::Info(format!(
-                                    "[Stop hook] continuing: {reason}"
-                                )));
-                                task_message = Some(Message::new_text(Role::User, reason));
-                                continue;
-                            }
-                            Ok(HookControl::Block(reason)) => {
-                                agent.emit_update(AgentUpdate::Info(format!(
-                                    "[Stop hook] continuation limit reached; stopping: {reason}"
-                                )));
-                            }
-                            // An `allow` from a Stop hook means "nothing
-                            // to add", the same as `continue`.
-                            Ok(HookControl::Continue | HookControl::Allow) | Err(_) => {}
-                        }
-                        if let Some(last) = agent.runtime.context.last() {
-                            let text = extract_text(&last.content);
-                            agent.emit_update(AgentUpdate::TaskComplete(text));
-                        }
-                        // TaskCompleted hooks fire once per completed user task.
-                        if let Err(error) = agent.dispatch_task_completed_hooks().await {
-                            agent.emit_update(AgentUpdate::Info(format!(
-                                "[TaskCompleted hook failed] {error}"
-                            )));
-                        }
-                    }
-                    Ok(()) => {
-                        // Cancelled: clear TUI busy state (Planning/Executing) so
-                        // queued (pending) messages are flushed rather than waiting
-                        // on a stale busy state.
-                        agent.emit_update(AgentUpdate::TaskCancelled);
-                    }
-                    Err(e) => {
-                        agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(e.to_string())));
-                    }
-                }
-                break;
-            }
+            // One turn lifecycle, shared with `ChatService`: the Stop-hook
+            // continuation and the completion notice live in one place, so the
+            // command path and the service path cannot drift.
+            tact::agent::chat::run_turn(agent, task_message).await;
         }
         UserCommand::Compact => {
             agent.emit_update(AgentUpdate::Info("[compacting]".into()));

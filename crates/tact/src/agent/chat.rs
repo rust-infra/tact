@@ -106,6 +106,64 @@ pub(crate) fn turn_message(request: &TurnRequest) -> Message {
     Message::new_blocks(Role::User, blocks)
 }
 
+/// Run one turn on an agent the caller already owns.
+///
+/// This is the lifecycle itself, without the locking: the driver holds `&mut
+/// Agent` for the duration of a command, and a service that locked the same slot
+/// underneath it would deadlock. Both callers go through here, so the Stop-hook
+/// continuation and the completion notice cannot drift between them — which is
+/// exactly what happened when this logic lived in two places.
+///
+/// `message` is the already-built user message; `None` continues the
+/// conversation as-is (a Stop-hook continuation passes its reason instead).
+pub async fn run_turn(agent: &mut Agent, message: Message) {
+    let mut next = Some(message);
+    let mut continuations = 0u32;
+    loop {
+        match agent.agent_loop(next.take()).await {
+            Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) => {
+                match agent.dispatch_stop_hooks().await {
+                    Ok(HookControl::Block(reason)) if continuations < MAX_STOP_CONTINUATIONS => {
+                        continuations += 1;
+                        agent.emit_update(AgentUpdate::Info(format!(
+                            "[Stop hook] continuing: {reason}"
+                        )));
+                        // The block reason becomes the next prompt, which is what
+                        // lets a Stop hook steer one more turn.
+                        next = Some(Message::new_text(Role::User, reason));
+                        continue;
+                    }
+                    Ok(HookControl::Block(reason)) => {
+                        agent.emit_update(AgentUpdate::Info(format!(
+                            "[Stop hook] continuation limit reached; stopping: {reason}"
+                        )));
+                    }
+                    // `allow` means "nothing to add", the same as `continue`.
+                    Ok(HookControl::Continue | HookControl::Allow) | Err(_) => {}
+                }
+                if let Some(last) = agent.runtime.context.last() {
+                    let text = crate::extract_text(&last.content);
+                    agent.emit_update(AgentUpdate::TaskComplete(text));
+                }
+                if let Err(error) = agent.dispatch_task_completed_hooks().await {
+                    agent.emit_update(AgentUpdate::Info(format!(
+                        "[TaskCompleted hook failed] {error}"
+                    )));
+                }
+            }
+            Ok(()) => {
+                // Cancelled: the view clears its busy state so queued messages
+                // are flushed rather than waiting on a stale one.
+                agent.emit_update(AgentUpdate::TaskCancelled);
+            }
+            Err(error) => {
+                agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(error.to_string())));
+            }
+        }
+        break;
+    }
+}
+
 #[async_trait::async_trait]
 impl ChatService for RuntimeChatService {
     async fn submit(&self, request: TurnRequest) -> Result<()> {
@@ -121,53 +179,7 @@ impl ChatService for RuntimeChatService {
             .as_mut()
             .ok_or_else(|| anyhow::anyhow!("the agent is not installed yet"))?;
 
-        let mut next = Some(message);
-        let mut continuations = 0u32;
-        loop {
-            match agent.agent_loop(next.take()).await {
-                Ok(()) if !self.cancel_flag.load(Ordering::Relaxed) => {
-                    match agent.dispatch_stop_hooks().await {
-                        Ok(HookControl::Block(reason))
-                            if continuations < MAX_STOP_CONTINUATIONS =>
-                        {
-                            continuations += 1;
-                            agent.emit_update(AgentUpdate::Info(format!(
-                                "[Stop hook] continuing: {reason}"
-                            )));
-                            // The block reason becomes the next prompt, which is
-                            // what makes a Stop hook able to steer one more turn.
-                            next = Some(Message::new_text(Role::User, reason));
-                            continue;
-                        }
-                        Ok(HookControl::Block(reason)) => {
-                            agent.emit_update(AgentUpdate::Info(format!(
-                                "[Stop hook] continuation limit reached; stopping: {reason}"
-                            )));
-                        }
-                        // `allow` means "nothing to add", the same as `continue`.
-                        Ok(HookControl::Continue | HookControl::Allow) | Err(_) => {}
-                    }
-                    if let Some(last) = agent.runtime.context.last() {
-                        let text = crate::extract_text(&last.content);
-                        agent.emit_update(AgentUpdate::TaskComplete(text));
-                    }
-                    if let Err(error) = agent.dispatch_task_completed_hooks().await {
-                        agent.emit_update(AgentUpdate::Info(format!(
-                            "[TaskCompleted hook failed] {error}"
-                        )));
-                    }
-                }
-                Ok(()) => {
-                    // Cancelled: the view clears its busy state so queued
-                    // messages are flushed rather than waiting on a stale one.
-                    agent.emit_update(AgentUpdate::TaskCancelled);
-                }
-                Err(error) => {
-                    agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(error.to_string())));
-                }
-            }
-            break;
-        }
+        run_turn(agent, message).await;
         Ok(())
     }
 
