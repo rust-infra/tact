@@ -117,6 +117,8 @@ pub struct HostExtras {
     /// Scanning reads the working directory, so it happens before assembly for the
     /// same reason the session store does.
     pub skills: Option<crate::skill::SharedSkillRegistry>,
+    /// The already-built worktree manager.
+    pub worktree: Option<crate::worktree::SharedWorktreeManager>,
 }
 
 /// The assembled pieces, after sealing.
@@ -236,6 +238,9 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
     }
     if let Some(registry) = extras.skills.clone() {
         host.install_sync(crate::skill::SkillsPlugin::new(registry))?;
+    }
+    if let Some(manager) = extras.worktree.clone() {
+        host.install_sync(crate::worktree::WorktreePlugin::new(manager))?;
     }
 
     let skipped = host

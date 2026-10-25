@@ -563,3 +563,111 @@ mod tests {
         );
     }
 }
+
+/// Worktrees, contributed as a plugin.
+///
+/// The manager already exists and is shared; this is the lifecycle seam that makes
+/// the domain a plugin. What it buys is replacement: a host that isolates subagent
+/// work some other way installs its own plugin instead of replacing what every
+/// caller writes against.
+pub struct WorktreePlugin {
+    manager: SharedWorktreeManager,
+}
+
+impl WorktreePlugin {
+    /// A plugin over an already-built manager.
+    pub fn new(manager: SharedWorktreeManager) -> Self {
+        Self { manager }
+    }
+}
+
+#[async_trait::async_trait]
+impl tact_kernel::plugin::Plugin for WorktreePlugin {
+    fn manifest(&self) -> tact_kernel::plugin::PluginManifest {
+        tact_kernel::plugin::PluginManifest::new(
+            tact_kernel::plugin::PluginId::new("builtin.worktree").expect("a literal id"),
+            "Worktrees",
+            env!("CARGO_PKG_VERSION"),
+            tact_kernel::plugin::PluginKind::Capability,
+            "Git worktree lanes for isolated subagent work",
+        )
+    }
+
+    fn register(&self, registrar: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
+        registrar.service(std::sync::Arc::new(WorktreeHandle(self.manager.clone())))
+    }
+}
+
+/// The manager a [`WorktreePlugin`] provided.
+#[derive(Clone)]
+pub struct WorktreeHandle(pub SharedWorktreeManager);
+
+impl std::ops::Deref for WorktreeHandle {
+    type Target = SharedWorktreeManager;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// The worktree manager a host resolved from its registry.
+///
+/// # Errors
+///
+/// Returns an error when no `WorktreePlugin` was installed. The worktree tools
+/// report that they cannot run rather than silently isolating nothing.
+pub fn worktree_manager(
+    services: &tact_kernel::service::ServiceRegistry,
+) -> anyhow::Result<SharedWorktreeManager> {
+    services
+        .get::<WorktreeHandle>()
+        .map(|handle| handle.0.clone())
+        .ok_or_else(|| anyhow::anyhow!("no worktree manager installed; install WorktreePlugin"))
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+    use tact_kernel::capability::CapabilityFilter;
+    use tact_kernel::plugin::PluginHost;
+
+    async fn manager() -> SharedWorktreeManager {
+        let dir = std::env::temp_dir().join(format!("tact-wt-plugin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = WorktreeManager::new(&dir.join("wt.db"), dir.clone())
+            .await
+            .expect("a worktree manager");
+        SharedWorktreeManager::new(manager)
+    }
+
+    /// The plugin registers a manager the host can resolve.
+    #[tokio::test]
+    async fn the_plugin_provides_a_resolvable_manager() {
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(WorktreePlugin::new(manager().await))
+            .await
+            .unwrap();
+        let runtime = host.seal().await.unwrap();
+        assert!(worktree_manager(runtime.services()).is_ok());
+    }
+
+    /// A host with no plugin is told so by name.
+    #[test]
+    fn a_missing_plugin_is_an_error_that_names_it() {
+        let registry = tact_kernel::service::ServiceRegistry::default();
+        let error = match worktree_manager(&registry) {
+            Ok(_) => panic!("no manager was installed, so this must fail"),
+            Err(error) => error,
+        };
+        assert!(format!("{error}").contains("WorktreePlugin"), "{error}");
+    }
+
+    /// The manifest says what it contributes.
+    #[tokio::test]
+    async fn the_manifest_says_what_it_is() {
+        use tact_kernel::plugin::Plugin;
+        let manifest = WorktreePlugin::new(manager().await).manifest();
+        assert_eq!(manifest.id.as_str(), "builtin.worktree");
+        assert_eq!(manifest.kind, tact_kernel::plugin::PluginKind::Capability);
+    }
+}

@@ -229,6 +229,8 @@ pub async fn bootstrap_session(
     let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&db_path).await?);
     let worktree_manager =
         SharedWorktreeManager::new(WorktreeManager::new(&db_path, work_dir.clone()).await?);
+    // One clone for the plugin bundle: the tool context takes the original.
+    let plugin_worktree = worktree_manager.clone();
     let subagent_manager = SharedSubagentManager::new(SubagentManager::new(&db_path).await?);
     // Memory is scoped to the git **repository** (`~/.tact/projects/<slug>/memory`),
     // so a project fact stays inside the project that produced it. Worktrees of
@@ -356,6 +358,7 @@ pub async fn bootstrap_session(
             background: Some(plugin_background),
             memory: Some(plugin_memory),
             skills: Some(skill_registry.clone()),
+            worktree: Some(plugin_worktree),
             ..tact::host::HostExtras::default()
         },
     )
