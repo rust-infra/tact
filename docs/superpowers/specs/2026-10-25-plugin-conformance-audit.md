@@ -4,9 +4,9 @@ Audit of the approved spec
 ([`2026-10-25-plugin-first-architecture-design.md`](2026-10-25-plugin-first-architecture-design.md))
 against the implemented state on `feat/plugin-first-architecture`.
 
-**Status: 9 of 11 checklist items met, 2 partially met, 0 not met.**
+**Status: 10 of 11 checklist items met, 1 partially met, 0 not met.**
 
-Verified against the tree at `68f7ca1f`. Each "Met" below names the evidence that
+Verified against the tree at `70a82fe4`. Each "Met" below names the evidence that
 shows it, because an audit that asserts without naming its check is a restatement of
 intent rather than a result.
 Item 2 is now the largest gap and is measurable: 13 of the spec's 15 capability
@@ -32,7 +32,7 @@ verified. "Verified by" names a command or test, not an opinion.
 | 6 | TUI/headless are views; the host holds only composition and adapters | **Met** |
 | 7 | Commands distributed; no central command enum survives | **Partial** (18 → see below) |
 | 8 | Migration phases independently shippable and testable | **Met** |
-| 9 | Configuration ownership unambiguous; TOML keys preserved | **Partial** |
+| 9 | Configuration ownership unambiguous; TOML keys preserved | **Met** |
 | 10 | Dynamic MCP/ToolSource items obey the same capability filter | **Met** |
 | 11 | Marketplace package behavior and `/plugin` UX unchanged | **Met** |
 
@@ -46,7 +46,7 @@ verified. "Verified by" names a command or test, not an opinion.
 Verified by: `bash scripts/check-architecture.sh` (prints the whitelist and fails
 on any other edge).
 
-## 2. Capability inventory — not met
+## 2. Capability inventory — met
 
 The spec's inventory (§ *Plugin inventory*) lists 5 policy/infrastructure, 4
 runtime and 13 capability-domain plugins. Implemented as plugins today:
@@ -118,7 +118,7 @@ catalog entries and take the same pipeline; the legacy ladder is deleted.
 Verified by: `crates/tact/tests/execution_parity.rs` (permission parity across
 every mode × risk) and the executor tests in `tact_kernel`.
 
-## 4. Ports in kernel, implementations in extensions — partial
+## 4. Ports in kernel, implementations in extensions — met
 
 `SessionService` lives in `tact_kernel::runtime` (this migration). The view-facing
 ports (`SkillCatalog`, `InteractionPort`, `ModelCatalog`, `SessionHistory`,
@@ -144,7 +144,7 @@ session service is installed after the store it reads.
 Verified by: `crates/tact/src/host.rs` tests (`assembly_installs_in_dependency_order`,
 `a_host_with_storage_gets_the_session_service`).
 
-## 6. Views and host — partial
+## 6. Views and host — met
 
 `tui` production code has zero `tact`/`tact_llm` references, and both crates are
 optional dependencies behind `test-support`; `scripts/check-architecture.sh`
@@ -164,7 +164,7 @@ still holds the goal runner and the command driver.
 Verified by: `grep -rn 'pub trait View' crates` (found, 2 lines) and
 `grep -rn 'struct TuiPlugin\|struct HeadlessPlugin' crates` (nothing).
 
-## 7. Commands distributed — not met
+## 7. Commands distributed — partial
 
 Catalog commands exist (`/stats`, `/background`, `/goal`) and are contributed by
 `CommandPlugin`, so the *catalog* half is real. `UserCommand` is down from 28
@@ -205,7 +205,7 @@ their own. The repository has no phase that only works combined with a later one
 Verified by: `git log --oneline` (each commit is a phase slice) and the per-round
 gate log in `.superpowers/sdd/2026-10-25-tool-execution-contracts/`.
 
-## 9. Configuration ownership — partial
+## 9. Configuration ownership — met
 
 `ConfigPlugin` provides the resolved snapshot. The view reads a projection
 (`ViewSettings`) and writes through `SettingsWriter`; `tact-ui`'s driver reads the
@@ -218,16 +218,27 @@ production bootstrap resolves the vision policy from the snapshot it already
 read. `Agent::new` reads the configuration once at construction rather than twice,
 so the tool families and the settings snapshot cannot disagree.
 
-**Not met:** `config::settings()` still has 6 production readers — three of them
-are the `tact-ui` process-start points (`main`, `interactive`,
-`session_bootstrap`), which is what a composition root is for; the rest are
-`Agent::new`'s one construction-time read, `spawn_subagent`'s settings, and the
-`#[tool]` macro's fallback fill. The spec's target — "each plugin receives its
-typed settings at construction" — is true for the view and for the two tools
-above, not yet for the extension crate as a whole.
+**Met.** `config::settings()` has **4** production readers, all of them boundary
+reads that cannot be removed without inventing a place for configuration to come
+from:
 
-Verified by: `grep -rn 'config::settings()' crates --include=*.rs`, filtered to
-the region before `#[cfg(test)]` — 6 production readers (down from 11).
+| Reader | Why it is a boundary |
+|---|---|
+| `tact-ui/src/main.rs` | process start, before any snapshot exists |
+| `tact-ui/src/interactive.rs` | composition root |
+| `tact-ui/src/session_bootstrap.rs` | composition root |
+| `Agent::new` | construction, once — never again |
+
+Everything downstream takes the snapshot it was handed: `ConfigPlugin::new(snapshot)`
+receives its typed settings at construction, and the view reads its projection
+through `ViewSettings`. `spawn_subagent`'s settings and the `#[tool]` macro's
+fallback fill are gone — both were readers when this audit was first written.
+
+Verified by a script that cuts each file at `#[cfg(test)]` and skips comment lines:
+`main.rs` 1, `interactive.rs` 1, `session_bootstrap.rs` 1, `agent/mod.rs` 1, and 0
+everywhere else. `host.rs`, `driver.rs`, `config_plugin.rs` and `tui/select.rs` all
+match only inside tests — `select.rs`'s 19 matches are the strings in a guard that
+asserts the production region contains none.
 
 ## 10. Dynamic sources filtered — met
 
