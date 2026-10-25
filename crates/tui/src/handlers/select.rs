@@ -2254,25 +2254,22 @@ thinking_budget = {thinking_budget}
         let mut app = make_app();
         app.set_ui_config_path(Some(path.clone()));
         assert!(app.ui_config_available());
+        let writer = std::sync::Arc::new(crate::test_fixtures::FakeSettingsWriter::new());
+        app.settings_writer = Some(writer.clone());
 
         app.toggle_theme();
         let theme = app.theme.name.as_str().to_string();
         app.toggle_language();
         let language = app.language.as_str().to_string();
 
-        let config = std::fs::read_to_string(&path).unwrap();
-        assert!(
-            config.contains(&format!("theme = \"{theme}\"")),
-            "[ui] theme must be written, got:\n{config}"
-        );
-        assert!(
-            config.contains(&format!("language = \"{language}\"")),
-            "[ui] language must be written, got:\n{config}"
-        );
-        // The rest of the file is the user's, and must survive.
-        assert!(
-            config.contains("model = \"kimi-k2.5\""),
-            "the write must not clobber the rest of the config:\n{config}"
+        // Both toggles ask for their `[ui]` write. That the file keeps the rest
+        // of its contents is the config writer's contract, not the view's.
+        assert_eq!(
+            writer.ui(),
+            vec![
+                crate::ports::UiSetting::Theme(theme),
+                crate::ports::UiSetting::Language(language),
+            ]
         );
     }
 

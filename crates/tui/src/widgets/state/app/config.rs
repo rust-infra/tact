@@ -130,7 +130,13 @@ impl App {
             self.add_system_message(msgs.theme_session_only_tmpl.replace("{}", label));
             return;
         }
-        match tact::config::persist_theme(name.as_str()) {
+        let result = match self.settings_writer.clone() {
+            Some(writer) => {
+                writer.persist_ui(crate::ports::UiSetting::Theme(name.as_str().to_string()))
+            }
+            None => Ok(()),
+        };
+        match result {
             Ok(()) => {
                 self.add_system_message(msgs.theme_persisted_tmpl.replace("{}", name.as_str()))
             }
@@ -230,7 +236,13 @@ impl App {
             self.add_system_message(msgs.lang_session_only_tmpl.replace("{}", label));
             return;
         }
-        match tact::config::persist_language(language.as_str()) {
+        let result = match self.settings_writer.clone() {
+            Some(writer) => writer.persist_ui(crate::ports::UiSetting::Language(
+                language.as_str().to_string(),
+            )),
+            None => Ok(()),
+        };
+        match result {
             Ok(()) => {
                 self.add_system_message(msgs.lang_persisted_tmpl.replace("{}", language.as_str()))
             }
@@ -269,6 +281,11 @@ impl App {
     /// the previous ceiling. This is the one place the view refreshes it, so the
     /// reason is stated once instead of at each call site.
     pub(crate) fn refresh_config_snapshot(&mut self) {
+        // Reads the process configuration on purpose: this runs immediately after
+        // a write went through the settings port, and re-reading is how the view
+        // picks up the derived values that write recomputed (a budget that no
+        // longer fits raises `max_tokens`). The port owns *writing*; the snapshot
+        // stays a read of the state that write produced.
         self.config_snapshot = tact::config::try_settings();
     }
 
