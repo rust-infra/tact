@@ -49,13 +49,13 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   `SessionStorePlugin`, `ProvidersPlugin`, `MarketplacePlugin`, `ConfigPlugin`
   — all present. (Eight `impl Plugin` blocks are production; two more are test
   impostors in `command/plugin.rs` and `permission/plugin.rs`.)
-- Runtime: `SessionPlugin` present (this migration's addition). `AgentPlugin`,
-  `ChatPlugin` and `CompactionPlugin` are **absent**: their contracts
-  (`AgentService`, `ChatService`, `CompactionService`) are not defined because
-  `AgentService::run` needs a neutral message model that the spec leaves open
-  (§ *Host-facing services* gives `TurnRequest` / `TurnOutcome` by name only,
-  and forbids `tact_llm` types). Defining that model is a design decision, not
-  an extraction.
+- Runtime: `SessionPlugin`, `AgentPlugin` and `CompactionPlugin` are present.
+  The neutral turn contract exists (`TurnRequest`, `TurnOptions`, `TurnStop`,
+  `TurnOutcome` in `tact_kernel::runtime`), with the conversation deliberately
+  not crossing the boundary. `CompactionService` is extension-level per the spec,
+  and covers the pure half (micro-compaction, estimates, history shaping,
+  transcripts) while the trigger policy stays on the agent.
+  `ChatPlugin` is **absent**.
 - Capability domains: tools exist as `ToolFamily` plugins (`FamilyPlugin`), but
   Skills, Memory, Goal, Task, Team, Worktree, Background, Subagent, Voice and
   Notifications have **no plugin object of their own** — they are modules with
@@ -81,8 +81,9 @@ ports (`SkillCatalog`, `InteractionPort`, `ModelCatalog`, `SessionHistory`,
 `SettingsWriter`, `VoicePort`) live in `tui`, which is where the spec says
 view-side ports belong.
 
-`AgentService` and `ChatService` do **not** exist in either crate. Same blocker
-as item 2.
+`AgentService` exists in the kernel and `AgentPlugin` registers it, but the
+service is not yet the path a host runs turns through: `driver.rs` still holds
+`Agent` directly (164 accesses). `ChatService` does not exist yet.
 
 Verified by: `grep -n 'pub trait' crates/tact_kernel/src/runtime.rs`.
 
