@@ -191,6 +191,10 @@ the first implementation plan is
   `Agent::with_session`, so `HostOptions::storage` is exercised only by tests.
   `HostOptions::marketplace` is likewise unset by the production bootstrap: the
   TUI still builds its marketplace service where it needs one.
+- The guard's facade rule (`mcp::lifecycle` may be named without counting as an
+  edge to `mcp`) is only as good as its self-check: it strips the sanctioned path
+  and re-checks, and asserts that a second direct use on the same line is still
+  rejected. A new facade has to be added deliberately, with the same proof.
 - Domain families beyond tools and prompt sections: Goal/Task/Team/Worktree/
   Background/Subagent are tool families but not yet plugins with their own
   lifecycle. The remaining `agent/` → `mcp` edge is only the router's lifecycle
