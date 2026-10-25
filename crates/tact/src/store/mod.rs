@@ -22,6 +22,7 @@ use serde::{Serialize, de::DeserializeOwned};
 
 pub mod background_store;
 pub mod goal_store;
+pub mod plugin;
 pub(crate) mod process_identity;
 pub mod session_store;
 pub mod sqlite;
