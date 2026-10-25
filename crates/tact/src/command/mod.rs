@@ -25,6 +25,7 @@ pub use background::BackgroundCommand;
 pub use stats::StatsCommand;
 
 pub use tact_kernel::capability::command::{CommandInvocation, CommandOutcome};
+pub use tact_kernel::catalog::CommandCatalog;
 
 /// A command whose metadata is fixed and whose body is a closure.
 ///
@@ -68,6 +69,44 @@ pub fn builtin_commands(
     vec![Arc::new(StatsCommand::new(stats))]
 }
 
+/// The catalog a host serves, with every built-in command inserted.
+///
+/// Returned as a kernel type so a frontend does not have to depend on the kernel
+/// to hold one. Duplicate names are a programming error and panic: two built-ins
+/// sharing a name would be silently shadowed, which is worse than a startup
+/// crash in a test.
+pub fn builtin_catalog(
+    stats: Arc<std::sync::RwLock<crate::stats::SessionStats>>,
+    background: Option<BackgroundWiring>,
+) -> tact_kernel::catalog::CommandCatalog {
+    let mut catalog = tact_kernel::catalog::CommandCatalog::default();
+    for command in builtin_commands(stats) {
+        catalog
+            .insert(command)
+            .expect("built-in command names are unique");
+    }
+    if let Some(wiring) = background {
+        catalog
+            .insert(Arc::new(BackgroundCommand::new(
+                wiring.manager,
+                wiring.session,
+            )))
+            .expect("built-in command names are unique");
+    }
+    catalog
+}
+
+/// What `/background` needs: the manager, and a way to learn the session id.
+///
+/// A struct rather than a tuple because both fields are `Arc<dyn …>`-shaped and
+/// a two-tuple of those reads badly at the call site.
+pub struct BackgroundWiring {
+    pub manager: Arc<crate::background::SharedBackgroundManager>,
+    /// Resolved per call: the driver learns the session id only after the
+    /// session row exists, which is after the catalog is built.
+    pub session: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+}
+
 /// A metadata literal with `Runtime` scope, for the built-ins.
 pub(crate) fn runtime_meta(name: &str, aliases: &[&str], summary: &str) -> CommandMeta {
     CommandMeta {
@@ -108,6 +147,21 @@ mod tests {
             args: String::new(),
         });
         assert!(matches!(outcome, CommandOutcome::Usage(_)), "{outcome:?}");
+    }
+
+    #[test]
+    fn the_host_catalog_carries_every_builtin() {
+        // The driver builds one of these per loop; a command missing from it is
+        // unreachable even though it exists.
+        let catalog = builtin_catalog(
+            Arc::new(std::sync::RwLock::new(crate::stats::SessionStats::default())),
+            None,
+        );
+        assert!(catalog.get("stats").is_some());
+        assert!(
+            catalog.get("background").is_none(),
+            "background needs its manager, so a caller without one does not get it"
+        );
     }
 
     #[test]

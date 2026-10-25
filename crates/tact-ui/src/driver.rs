@@ -22,7 +22,6 @@ use tact::{
     hook::HookControl,
     store::goal_store::GoalStoreError,
     task::{SharedTaskManager, TaskStatus},
-    utils::RwLockExt,
 };
 use tact_llm::{Message, Role};
 use tact_protocol::{
@@ -197,6 +196,27 @@ pub async fn run_command_loop(
     run_command_loop_with_account(agent, user_cmd_rx, image_work_dir, None).await
 }
 
+/// The catalog of host-side commands this loop serves.
+///
+/// Built where the shared state is, because each command closes over its own
+/// handle (the stats snapshot, the background manager). A command that needs the
+/// agent loop itself is not here: it cannot own a `&mut Agent` through a
+/// catalog, so it keeps its arm on the driver's side.
+fn builtin_command_catalog(
+    stats: &std::sync::Arc<std::sync::RwLock<tact::stats::SessionStats>>,
+    background: &tact::background::SharedBackgroundManager,
+    session_id: &Option<String>,
+) -> tact::command::CommandCatalog {
+    let session = session_id.clone();
+    tact::command::builtin_catalog(
+        stats.clone(),
+        Some(tact::command::BackgroundWiring {
+            manager: std::sync::Arc::new(background.clone()),
+            session: std::sync::Arc::new(move || session.clone()),
+        }),
+    )
+}
+
 /// Like [`run_command_loop`], but forwards balance / usage quota results to the
 /// provided account-update channel instead of mixing them into agent updates.
 pub async fn run_command_loop_with_account(
@@ -225,6 +245,10 @@ pub async fn run_command_loop_with_account(
     let goal_manager = agent.tool_context.goal_manager.clone();
     let task_manager = agent.tool_context.task_manager.clone();
     let limits = goal_limits();
+    // The host-side commands, built once: a command answers from shared state,
+    // so the loop does not rebuild one per invocation, and a name that is not
+    // here is not a command at all.
+    let commands = builtin_command_catalog(&stats, &background_manager, &background_session_id);
 
     // Reconcile durable Goal state once, before serving commands: a crashed
     // runner leaves an active run with an expired lease and a Goal still marked
@@ -346,23 +370,16 @@ pub async fn run_command_loop_with_account(
                 // The answer comes from the catalog command rather than from a
                 // `summary()` call here, so the text has one owner and the
                 // catalog test covers it.
-                let commands = tact::command::builtin_commands(stats.clone());
-                let outcome = commands
-                    .iter()
-                    .find(|command| command.meta().name == "stats")
-                    .map(|command| {
-                        command.run(&tact::command::CommandInvocation {
-                            name: "stats".to_string(),
-                            args: String::new(),
-                        })
-                    });
+                let outcome = commands.run(&tact::command::CommandInvocation {
+                    name: "stats".to_string(),
+                    args: String::new(),
+                });
                 let source = match outcome {
-                    Some(tact::command::CommandOutcome::Message(text)) => text,
-                    // A `Usage` answer here would mean the catalog lost the
-                    // command's own metadata; fall back to the summary rather
-                    // than showing an argument error the user did not cause.
-                    Some(other) => format!("{other:?}"),
-                    None => stats.read_recover().summary(),
+                    tact::command::CommandOutcome::Message(text) => text,
+                    // Anything else here means the catalog lost the command's
+                    // own metadata; fall back to the summary rather than showing
+                    // an error the user did not cause.
+                    other => format!("{other:?}"),
                 };
                 events.send(AgentUpdate::PopupMarkdown {
                     title: "Session Statistics".to_string(),
@@ -375,18 +392,11 @@ pub async fn run_command_loop_with_account(
                 // owner; answered from the shared manager, so the popup opens
                 // immediately even while a turn is running (the Agent is owned
                 // by that task).
-                let command = tact::command::BackgroundCommand::new(
-                    std::sync::Arc::new(background_manager.clone()),
-                    {
-                        let session = background_session_id.clone();
-                        std::sync::Arc::new(move || session.clone())
-                    },
-                );
                 let invocation = tact::command::CommandInvocation {
                     name: "background".to_string(),
                     args: task_id.clone().unwrap_or_default(),
                 };
-                match tact::command::Command::run_async(&command, &invocation).await {
+                match commands.run_async(&invocation).await {
                     tact::command::CommandOutcome::Message(source) => {
                         events.send(AgentUpdate::PopupMarkdown {
                             title: "⚙️ Background Tasks".to_string(),
@@ -2101,18 +2111,16 @@ async fn handle_user_command_with_account(
             // caller bypassed the command loop. Answer anyway — through the same
             // catalog command, so the two paths cannot word the answer
             // differently.
-            let command = tact::command::BackgroundCommand::new(
-                std::sync::Arc::new(agent.tool_context.background_manager.clone()),
-                {
-                    let session = agent.runtime.session_id.clone();
-                    std::sync::Arc::new(move || session.clone())
-                },
+            let catalog = builtin_command_catalog(
+                &agent.runtime.stats,
+                &agent.tool_context.background_manager,
+                &agent.runtime.session_id,
             );
             let invocation = tact::command::CommandInvocation {
                 name: "background".to_string(),
                 args: task_id.unwrap_or_default(),
             };
-            match tact::command::Command::run_async(&command, &invocation).await {
+            match catalog.run_async(&invocation).await {
                 tact::command::CommandOutcome::Message(source) => {
                     agent.runtime.events.send(AgentUpdate::PopupMarkdown {
                         title: "⚙️ Background Tasks".to_string(),
