@@ -18,12 +18,47 @@ use crate::tool::descriptor::ToolDescriptor;
 use crate::tool::result::ToolCallResult;
 use crate::tool::source::ToolDescriptorSnapshot;
 
+/// The meaning of one permission option, in policy-neutral terms.
+///
+/// A service maps these onto its own rules; the kernel only routes the
+/// human's pick back to [`PermissionService::record`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PermissionOptionKind {
+    AllowOnce,
+    AlwaysAllow,
+    AlwaysAllowWide,
+    Deny,
+}
+
+/// One choice a permission prompt offers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionOption {
+    pub id: String,
+    pub label: String,
+    pub detail: Option<String>,
+    pub kind: PermissionOptionKind,
+}
+
+/// A prompt the kernel shows through [`InteractionRequest::Select`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionPrompt {
+    pub message: String,
+    pub options: Vec<PermissionOption>,
+}
+
+/// The human's pick, minted by the kernel from the selected option id.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionAnswer {
+    pub option_id: String,
+    pub kind: PermissionOptionKind,
+}
+
 /// A port that classifies a concrete input's risk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermissionDecision {
     Allow,
     Deny(String),
-    Ask(String),
+    Ask(PermissionPrompt),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -35,6 +70,19 @@ pub struct PermissionRequest {
 #[async_trait]
 pub trait PermissionService: Send + Sync {
     async fn decide(&self, request: PermissionRequest) -> anyhow::Result<PermissionDecision>;
+
+    /// Persist or remember an answer the human gave.
+    ///
+    /// Called only for a real prompt answer, never for `Allow`/`Deny`, so a
+    /// service can keep "always allow" semantics (rule text, persistence,
+    /// denial counters) entirely on its own side.
+    async fn record(
+        &self,
+        _request: &PermissionRequest,
+        _answer: &PermissionAnswer,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
 }
 
 /// A hook's verdict.
@@ -157,31 +205,27 @@ impl ToolExecutor {
         }
         self.security.guard(&descriptor, &hook_event.input)?;
 
-        let decision = self
-            .permissions
-            .decide(PermissionRequest {
-                descriptor: descriptor.clone(),
-                input: hook_event.input.clone(),
-            })
-            .await?;
+        let permission_request = PermissionRequest {
+            descriptor: descriptor.clone(),
+            input: hook_event.input.clone(),
+        };
+        let decision = self.permissions.decide(permission_request.clone()).await?;
         match decision {
             PermissionDecision::Allow => {}
             PermissionDecision::Deny(reason) => anyhow::bail!("permission denied: {reason}"),
             PermissionDecision::Ask(prompt) => {
-                let response = ctx
-                    .interaction
-                    .request(InteractionRequest::Confirm { prompt })
-                    .await?;
-                match response {
-                    InteractionResponse::Approved => {}
-                    InteractionResponse::Rejected => {
-                        anyhow::bail!("permission denied by user")
-                    }
-                    InteractionResponse::Cancelled => {
-                        anyhow::bail!("permission request cancelled")
-                    }
-                    _ => anyhow::bail!("permission request needs a confirm answer"),
+                anyhow::ensure!(
+                    !prompt.options.is_empty(),
+                    "permission prompt for {} offered no options",
+                    request.tool_name
+                );
+                let answer = self.ask(ctx.interaction.as_ref(), &prompt).await?;
+                if answer.kind == PermissionOptionKind::Deny {
+                    anyhow::bail!("permission denied by user")
                 }
+                self.permissions
+                    .record(&permission_request, &answer)
+                    .await?;
             }
         }
 
@@ -198,6 +242,60 @@ impl ToolExecutor {
             descriptor,
             input: hook_event.input,
             ctx,
+        })
+    }
+
+    /// Ask the human and translate the answer into a typed verdict.
+    async fn ask(
+        &self,
+        interaction: &dyn crate::tool::context::InteractionBroker,
+        prompt: &PermissionPrompt,
+    ) -> anyhow::Result<PermissionAnswer> {
+        let request = InteractionRequest::Select {
+            prompt: prompt.message.clone(),
+            options: prompt
+                .options
+                .iter()
+                .map(|option| match &option.detail {
+                    Some(detail) => format!("{} ({detail})", option.label),
+                    None => option.label.clone(),
+                })
+                .collect(),
+        };
+        let response = interaction.request(request).await?;
+        let picked = match response {
+            InteractionResponse::Selected(labels) => labels,
+            InteractionResponse::Approved => Vec::new(),
+            InteractionResponse::Rejected | InteractionResponse::Cancelled => {
+                anyhow::bail!("permission denied by user")
+            }
+            InteractionResponse::Text(text) => vec![text],
+        };
+        let fallback = || {
+            prompt
+                .options
+                .iter()
+                .find(|option| option.kind != PermissionOptionKind::Deny)
+        };
+        let option = if picked.is_empty() {
+            fallback().ok_or_else(|| anyhow::anyhow!("permission prompt has no allow option"))?
+        } else {
+            let first = &picked[0];
+            prompt
+                .options
+                .iter()
+                .find(|option| &option.id == first || &option.label == first)
+                .or_else(|| {
+                    prompt
+                        .options
+                        .iter()
+                        .find(|option| option.label.starts_with(first.as_str()))
+                })
+                .ok_or_else(|| anyhow::anyhow!("unknown permission option: {first}"))?
+        };
+        Ok(PermissionAnswer {
+            option_id: option.id.clone(),
+            kind: option.kind,
         })
     }
 
@@ -586,7 +684,15 @@ mod tests {
             },
             RecordingPermissions {
                 log: OrderLog::default(),
-                decision: PermissionDecision::Ask("allow?".into()),
+                decision: PermissionDecision::Ask(PermissionPrompt {
+                    message: "allow?".into(),
+                    options: vec![PermissionOption {
+                        id: "allow_once".into(),
+                        label: "Allow once".into(),
+                        detail: None,
+                        kind: PermissionOptionKind::AllowOnce,
+                    }],
+                }),
             },
             RecordingHooks {
                 log: OrderLog::default(),
@@ -725,5 +831,220 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(seen.lock().unwrap().clone(), vec!["hello", "rewritten"]);
+    }
+}
+
+#[cfg(test)]
+mod permission_prompt_tests {
+    use super::*;
+    use crate::capability::tool::Tool;
+    use crate::tool::context::{
+        CancelToken, EventSink, RedactionPolicy, ToolCallContext, ToolEvent, ToolOrigin, Workspace,
+    };
+    use crate::tool::descriptor::ToolDescriptor;
+    use crate::tool::{ToolCallResult, ToolMetadata};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NoopTool(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Tool for NoopTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::from_native(
+                "echo",
+                "echo",
+                json!({"type": "object"}),
+                &ToolMetadata::read_json("echo", "echo", "Echo"),
+            )
+        }
+
+        async fn call(
+            &self,
+            _ctx: ToolCallContext,
+            _input: serde_json::Value,
+        ) -> anyhow::Result<ToolCallResult> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolCallResult::text("ok"))
+        }
+    }
+
+    struct NoSecurity;
+    impl SecurityService for NoSecurity {
+        fn guard(
+            &self,
+            _descriptor: &ToolDescriptor,
+            _input: &serde_json::Value,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct NoHooks;
+    #[async_trait]
+    impl HookService for NoHooks {
+        async fn pre_tool_use(&self, _event: &mut PreToolUseEvent) -> anyhow::Result<HookControl> {
+            Ok(HookControl::Continue)
+        }
+
+        async fn post_tool_use(
+            &self,
+            _event: &mut PostToolUseEvent,
+        ) -> anyhow::Result<HookControl> {
+            Ok(HookControl::Continue)
+        }
+    }
+
+    struct Asking {
+        recorded: Arc<Mutex<Vec<(String, PermissionOptionKind)>>>,
+    }
+
+    #[async_trait]
+    impl PermissionService for Asking {
+        async fn decide(&self, _request: PermissionRequest) -> anyhow::Result<PermissionDecision> {
+            Ok(PermissionDecision::Ask(PermissionPrompt {
+                message: "run echo?".into(),
+                options: vec![
+                    PermissionOption {
+                        id: "once".into(),
+                        label: "Allow once".into(),
+                        detail: None,
+                        kind: PermissionOptionKind::AllowOnce,
+                    },
+                    PermissionOption {
+                        id: "always".into(),
+                        label: "Always allow echo".into(),
+                        detail: Some("records a rule".into()),
+                        kind: PermissionOptionKind::AlwaysAllow,
+                    },
+                    PermissionOption {
+                        id: "deny".into(),
+                        label: "Deny".into(),
+                        detail: None,
+                        kind: PermissionOptionKind::Deny,
+                    },
+                ],
+            }))
+        }
+
+        async fn record(
+            &self,
+            _request: &PermissionRequest,
+            answer: &PermissionAnswer,
+        ) -> anyhow::Result<()> {
+            self.recorded
+                .lock()
+                .unwrap()
+                .push((answer.option_id.clone(), answer.kind));
+            Ok(())
+        }
+    }
+
+    struct Pick(String);
+    #[async_trait]
+    impl crate::tool::context::InteractionBroker for Pick {
+        async fn request(
+            &self,
+            _request: crate::tool::context::InteractionRequest,
+        ) -> anyhow::Result<crate::tool::context::InteractionResponse> {
+            Ok(crate::tool::context::InteractionResponse::Selected(vec![
+                self.0.clone(),
+            ]))
+        }
+    }
+
+    struct Events;
+    impl EventSink for Events {
+        fn emit(&self, _event: ToolEvent) {}
+    }
+
+    fn context(pick: &str) -> ToolCallContext {
+        ToolCallContext {
+            run_id: "run".into(),
+            tool_use_id: "call".into(),
+            session_id: None,
+            active_goal_id: None,
+            origin: ToolOrigin::Main,
+            workspace: Workspace::new("/repo"),
+            events: Arc::new(Events),
+            interaction: Arc::new(Pick(pick.into())),
+            cancel: CancelToken::new(),
+            redaction: RedactionPolicy::Off,
+        }
+    }
+
+    async fn executor(
+        calls: Arc<AtomicUsize>,
+        recorded: Arc<Mutex<Vec<(String, PermissionOptionKind)>>>,
+    ) -> ToolExecutor {
+        let mut catalog = ToolCatalog::default();
+        catalog.insert(Arc::new(NoopTool(calls))).unwrap();
+        ToolExecutor::new(
+            Arc::new(catalog),
+            CapabilityFilter::default(),
+            Arc::new(NoSecurity),
+            Arc::new(Asking { recorded }),
+            Arc::new(NoHooks),
+        )
+    }
+
+    fn request(generation: u64) -> ToolRequest {
+        ToolRequest {
+            call_id: "call".into(),
+            tool_name: "echo".into(),
+            input: json!({"text": "hi"}),
+            snapshot_generation: generation,
+        }
+    }
+
+    #[tokio::test]
+    async fn selecting_by_option_id_records_the_answer() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let executor = executor(calls.clone(), recorded.clone()).await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let prepared = executor
+            .preflight(request(generation), context("always"))
+            .await
+            .unwrap();
+        executor.execute(prepared).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+        assert_eq!(
+            recorded.lock().unwrap().clone(),
+            vec![("always".to_string(), PermissionOptionKind::AlwaysAllow)]
+        );
+    }
+
+    #[tokio::test]
+    async fn selecting_deny_runs_nothing_and_records_nothing() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let executor = executor(calls.clone(), recorded.clone()).await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let error = executor
+            .preflight(request(generation), context("deny"))
+            .await
+            .err()
+            .expect("deny must fail preflight");
+        assert!(error.to_string().contains("denied"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+        assert!(recorded.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn selecting_by_rendered_label_works() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let recorded = Arc::new(Mutex::new(Vec::new()));
+        let executor = executor(calls.clone(), recorded.clone()).await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let prepared = executor
+            .preflight(request(generation), context("Always allow echo"))
+            .await
+            .unwrap();
+        executor.execute(prepared).await.unwrap();
+        assert_eq!(
+            recorded.lock().unwrap().clone(),
+            vec![("always".to_string(), PermissionOptionKind::AlwaysAllow)]
+        );
     }
 }
