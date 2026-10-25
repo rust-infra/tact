@@ -162,6 +162,13 @@ the first implementation plan is
 
 ## Not implemented yet
 
+- Phase 5 has a measurable first step: `Tool` gained a defaulted
+  `call_in_workspace(Workspace, Value)`. `read_file`, `read_image` and
+  `edit_file` only ever read `work_dir` and `sleep` reads nothing, yet each call
+  built a whole `ToolContext`; those three now skip it, and a test counts context
+  builds to prove it. The `#[tool]` macro chooses the narrower impl from the
+  handler's signature, so a tool cannot declare one shape and receive the other.
+  The remaining ~17 tools genuinely need the full context.
 - ~~MCP tools as kernel descriptors.~~ **Done.** Every MCP family — regular
   tools, resource tools and prompt tools — is a catalog source now, and all three
   run through the kernel pipeline. The legacy permission ladder is deleted.
