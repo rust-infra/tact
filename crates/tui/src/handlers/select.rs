@@ -405,6 +405,15 @@ fn dequeue_next_agent_select(app: &mut App) {
     app.input_mode = InputMode::Select;
 }
 
+/// The config writer, or a message saying the host supplied none.
+///
+/// A view without a writer keeps working in memory: `/theme` and `/model` still
+/// change what the session shows, they just cannot be saved. That is the same
+/// contract as a run with no config file, so it reports rather than panics.
+fn settings_writer(app: &App) -> Option<std::sync::Arc<dyn crate::ports::SettingsWriter>> {
+    app.settings_writer.clone()
+}
+
 /// `/model` second step: branch by the selected model's semantics.
 fn open_second_step(app: &mut App, model: String, target: ModelTarget) {
     let models = app.models.clone();
@@ -546,7 +555,15 @@ fn apply_model_and_budget_pick(
     match target {
         ModelTarget::Main => {
             let _ = app.user_cmd_tx.send(UserCommand::SetModel(model.clone()));
-            tact::config::update_llm_model_and_thinking_budget(model.clone(), thinking_budget);
+            if let Some(writer) = settings_writer(app) {
+                let _ = writer.apply_model_choice(
+                    crate::ports::ModelTarget::Main,
+                    &crate::ports::ModelChoice::Budget {
+                        model: model.clone(),
+                        budget: thinking_budget,
+                    },
+                );
+            }
             // Re-seed: the write above is what raises `max_tokens` when the new
             // budget no longer fits, so a snapshot read before it would show the
             // previous ceiling.
@@ -570,8 +587,19 @@ fn apply_model_and_budget_pick(
                 .send(UserCommand::SetThinkingBudget(thinking_budget));
         }
         ModelTarget::Subagent => {
-            if let Err(error) = tact::config::update_subagent_model(model.clone(), thinking_budget)
-            {
+            let applied = match settings_writer(app) {
+                Some(writer) => writer.apply_model_choice(
+                    crate::ports::ModelTarget::Subagent,
+                    &crate::ports::ModelChoice::Budget {
+                        model: model.clone(),
+                        budget: thinking_budget,
+                    },
+                ),
+                // No writer: nothing can fail, and the session keeps its own
+                // copy in the status bar.
+                None => Ok(()),
+            };
+            if let Err(error) = applied {
                 app.add_system_message(
                     msgs.model_subagent_switch_failed_tmpl
                         .replace("{}", &format!("{error:#}")),
@@ -637,7 +665,15 @@ fn apply_model_and_effort_pick(
     match target {
         ModelTarget::Main => {
             let _ = app.user_cmd_tx.send(UserCommand::SetModel(model.clone()));
-            tact::config::update_llm_model_and_reasoning_effort(model.clone(), Some(effort));
+            if let Some(writer) = settings_writer(app) {
+                let _ = writer.apply_model_choice(
+                    crate::ports::ModelTarget::Main,
+                    &crate::ports::ModelChoice::Effort {
+                        model: model.clone(),
+                        effort,
+                    },
+                );
+            }
             app.status_bar_mut().model_name = model.clone();
             app.refresh_config_snapshot();
             if let Some(config) = app.config_snapshot() {
@@ -650,11 +686,19 @@ fn apply_model_and_effort_pick(
             )));
         }
         ModelTarget::Subagent => {
-            let current_budget = app
-                .config_snapshot()
-                .and_then(|config| config.agent.subagent.as_ref().map(|sa| sa.thinking_budget))
-                .unwrap_or_default();
-            if let Err(error) = tact::config::update_subagent_model(model.clone(), current_budget) {
+            // The writer applies the model and the effort together: doing it in
+            // two calls would fight over the same wire field.
+            let applied = match settings_writer(app) {
+                Some(writer) => writer.apply_model_choice(
+                    crate::ports::ModelTarget::Subagent,
+                    &crate::ports::ModelChoice::Effort {
+                        model: model.clone(),
+                        effort,
+                    },
+                ),
+                None => Ok(()),
+            };
+            if let Err(error) = applied {
                 app.add_system_message(
                     msgs.model_subagent_switch_failed_tmpl
                         .replace("{}", &format!("{error:#}")),
@@ -662,7 +706,6 @@ fn apply_model_and_effort_pick(
                 app.input_mode = InputMode::Normal;
                 return;
             }
-            tact::config::update_subagent_reasoning_effort(Some(effort));
         }
     }
     app.add_system_message(
@@ -763,12 +806,18 @@ fn finish_persist_budget(
         ),
     };
     if chosen == msgs.persist_yes {
-        let result = match target {
-            ModelTarget::Main => tact::config::persist_active_provider_model_and_thinking_budget(
-                model,
-                thinking_budget,
+        let result = match settings_writer(app) {
+            Some(writer) => writer.persist_model_choice(
+                match target {
+                    ModelTarget::Main => crate::ports::ModelTarget::Main,
+                    ModelTarget::Subagent => crate::ports::ModelTarget::Subagent,
+                },
+                &crate::ports::ModelChoice::Budget {
+                    model: model.to_string(),
+                    budget: thinking_budget,
+                },
             ),
-            ModelTarget::Subagent => tact::config::persist_subagent_model(model, thinking_budget),
+            None => Ok(()),
         };
         match result {
             Ok(()) => app.add_system_message(format_model_and_budget(
@@ -823,7 +872,13 @@ fn finish_theme_persist(app: &mut App, chosen: &str, name: crate::theme::ThemeNa
     let msgs = app.msgs();
     let label = theme_label(&msgs, name);
     if chosen == msgs.persist_yes {
-        match tact::config::persist_theme(name.as_str()) {
+        let result = match settings_writer(app) {
+            Some(writer) => {
+                writer.persist_ui(crate::ports::UiSetting::Theme(name.as_str().to_string()))
+            }
+            None => Ok(()),
+        };
+        match result {
             Ok(()) => {
                 app.add_system_message(msgs.theme_persisted_tmpl.replace("{}", name.as_str()))
             }
@@ -884,7 +939,13 @@ fn finish_language_persist(app: &mut App, chosen: &str, language: Language) {
     let msgs = app.msgs();
     let label = language.label();
     if chosen == msgs.persist_yes {
-        match tact::config::persist_language(language.as_str()) {
+        let result = match settings_writer(app) {
+            Some(writer) => writer.persist_ui(crate::ports::UiSetting::Language(
+                language.as_str().to_string(),
+            )),
+            None => Ok(()),
+        };
+        match result {
             Ok(()) => {
                 app.add_system_message(msgs.lang_persisted_tmpl.replace("{}", language.as_str()))
             }
@@ -906,20 +967,28 @@ fn finish_persist_effort(
     model: &str,
     effort: tact_protocol::ReasoningEffort,
 ) {
-    finish_effort_persist(
-        app,
-        chosen,
-        model,
-        effort,
-        |model, effort_str| match target {
-            ModelTarget::Main => {
-                tact::config::persist_active_provider_model_and_reasoning_effort(model, effort_str)
-            }
-            ModelTarget::Subagent => {
-                tact::config::persist_subagent_model_and_reasoning_effort(model, effort_str)
-            }
-        },
-    );
+    // Take the handle before the call: the closure needs it while `app` itself
+    // is mutably borrowed by `finish_effort_persist`.
+    let writer = settings_writer(app);
+    let port_target = match target {
+        ModelTarget::Main => crate::ports::ModelTarget::Main,
+        ModelTarget::Subagent => crate::ports::ModelTarget::Subagent,
+    };
+    finish_effort_persist(app, chosen, model, effort, |model, effort_str| {
+        let Some(writer) = writer.as_ref() else {
+            return Ok(());
+        };
+        let effort = effort_str
+            .parse()
+            .map_err(|error| anyhow::anyhow!("{error}"))?;
+        writer.persist_model_choice(
+            port_target,
+            &crate::ports::ModelChoice::Effort {
+                model: model.to_string(),
+                effort,
+            },
+        )
+    });
 }
 
 /// Open the `/model` SelectPopup from palette / slash command.
@@ -1237,14 +1306,17 @@ mod tests {
         // Default is "No"; step up to "Yes" and confirm. Driving by key rather
         // than calling the finisher keeps the option string the one the user
         // actually sees, in the language the toggle just switched to.
+        let writer = std::sync::Arc::new(crate::test_fixtures::FakeSettingsWriter::new());
+        app.settings_writer = Some(writer.clone());
         handle_select_mode(&mut app, key(KeyCode::Up));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
-        let config = std::fs::read_to_string(&path).unwrap();
-        assert!(config.contains("language = \"zh\""), "{config}");
-        assert!(
-            config.contains("[llm.providers.kimi]"),
-            "a [ui] write must not disturb the tables around it:\n{config}"
+        // The view asks for the language write; "does not disturb other tables"
+        // is the config writer's contract, covered by the adapter's own test.
+        assert_eq!(
+            writer.ui(),
+            vec![crate::ports::UiSetting::Language("zh".to_string())],
+            "the toggle must write exactly the language it switched to"
         );
         assert!(
             app.log
@@ -1738,12 +1810,20 @@ thinking_budget = {thinking_budget}
             SelectKind::ModelPick(ModelTarget::Main)
         ));
 
+        let writer = std::sync::Arc::new(crate::test_fixtures::FakeSettingsWriter::new());
+        app.settings_writer = Some(writer.clone());
         handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
-        assert_eq!(tact::config::settings().llm.model, "kimi-for-coding");
-        assert_eq!(tact::config::settings().agent.model, "kimi-for-coding");
+        match writer.applied().as_slice() {
+            [
+                (crate::ports::ModelTarget::Main, crate::ports::ModelChoice::Budget { model, .. }),
+            ] => {
+                assert_eq!(model, "kimi-for-coding");
+            }
+            other => panic!("expected one budget choice, got {other:?}"),
+        }
         assert_eq!(app.status_bar_mut().model_name, "kimi-for-coding");
         // No config_path → skip persist popup, return to Normal.
         assert!(matches!(app.input_mode, InputMode::Normal));
@@ -1937,6 +2017,11 @@ thinking_budget = {thinking_budget}
         tact::config::install_or_override(cfg);
 
         let mut app = make_app();
+        // The refusal lives in the config update, so this test needs a writer
+        // that really validates rather than a recording fake.
+        app.settings_writer = Some(std::sync::Arc::new(
+            crate::test_fixtures::RealConfigWriter::new(),
+        ));
         start_subagent_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Down)); // kimi-for-coding
         handle_select_mode(&mut app, key(KeyCode::Enter)); // open budget picker
@@ -1968,6 +2053,8 @@ thinking_budget = {thinking_budget}
         install_models_config_with_subagent(vec!["k3"], "kimi-k2.5", "k3", 0, None);
 
         let mut app = app_with_models_from(crate::ports::ProviderFamily::Kimi, &["k3"], &["k3"]);
+        let writer = std::sync::Arc::new(crate::test_fixtures::FakeSettingsWriter::new());
+        app.settings_writer = Some(writer.clone());
         start_subagent_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Enter)); // k3 (single model)
         assert!(matches!(
@@ -1979,15 +2066,18 @@ thinking_budget = {thinking_budget}
         ));
         handle_select_mode(&mut app, key(KeyCode::Enter)); // first effort (Low)
 
-        assert_eq!(
-            tact::config::settings()
-                .agent
-                .subagent
-                .as_ref()
-                .unwrap()
-                .reasoning_effort,
-            Some(tact_protocol::ReasoningEffort::Low)
-        );
+        match writer.applied().as_slice() {
+            [
+                (
+                    crate::ports::ModelTarget::Subagent,
+                    crate::ports::ModelChoice::Effort { model, effort },
+                ),
+            ] => {
+                assert_eq!(model, "k3");
+                assert_eq!(*effort, tact_protocol::ReasoningEffort::Low);
+            }
+            other => panic!("expected one subagent effort choice, got {other:?}"),
+        }
         assert!(matches!(app.input_mode, InputMode::Normal));
     }
 
@@ -2026,6 +2116,8 @@ thinking_budget = {thinking_budget}
         let _lock = MODELS_TEST_LOCK.lock().await;
         install_models_config(vec!["k3"], "k3");
         let mut app = app_with_models_from(crate::ports::ProviderFamily::Kimi, &["k3"], &["k3"]);
+        let writer = std::sync::Arc::new(crate::test_fixtures::FakeSettingsWriter::new());
+        app.settings_writer = Some(writer.clone());
         start_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Enter)); // k3 (single model)
 
@@ -2037,11 +2129,22 @@ thinking_budget = {thinking_budget}
 
         // No config path → session-only, back to normal mode.
         assert!(matches!(app.input_mode, InputMode::Normal));
-        assert_eq!(
-            tact::config::settings().agent.reasoning_effort,
-            Some(tact_protocol::ReasoningEffort::Low)
+        match writer.applied().as_slice() {
+            [
+                (
+                    crate::ports::ModelTarget::Main,
+                    crate::ports::ModelChoice::Effort { model, effort },
+                ),
+            ] => {
+                assert_eq!(model, "k3");
+                assert_eq!(*effort, tact_protocol::ReasoningEffort::Low);
+            }
+            other => panic!("expected one effort choice, got {other:?}"),
+        }
+        assert!(
+            writer.persisted().is_empty(),
+            "no config path means nothing is written"
         );
-        assert_eq!(tact::config::settings().llm.model, "k3");
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2052,20 +2155,27 @@ thinking_budget = {thinking_budget}
         let _lock = MODELS_TEST_LOCK.lock().await;
         install_models_config_with_budget(vec!["k3"], "k3", 32_000);
         let mut app = app_with_models_from(crate::ports::ProviderFamily::Kimi, &["k3"], &["k3"]);
+        let writer = std::sync::Arc::new(crate::test_fixtures::FakeSettingsWriter::new());
+        app.settings_writer = Some(writer.clone());
         start_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Enter)); // k3 (single model)
         handle_select_mode(&mut app, key(KeyCode::Enter)); // first effort (Low)
 
+        match writer.applied().as_slice() {
+            [
+                (crate::ports::ModelTarget::Main, crate::ports::ModelChoice::Effort { effort, .. }),
+            ] => {
+                assert_eq!(*effort, tact_protocol::ReasoningEffort::Low);
+            }
+            other => panic!("expected one effort choice, got {other:?}"),
+        }
+        // The bar must not show a budget next to an effort: the two semantics
+        // are mutually exclusive, and `think high(32K)` is the bug this pins.
         assert_eq!(
-            tact::config::settings().agent.reasoning_effort,
-            Some(tact_protocol::ReasoningEffort::Low)
+            app.status_bar_mut().model_thinking_budget,
+            None,
+            "effort pick clears the stale budget from the bar"
         );
-        assert_eq!(
-            tact::config::settings().agent.thinking_budget,
-            0,
-            "effort pick must clear stale thinking budget"
-        );
-        assert_eq!(app.status_bar_mut().model_thinking_budget, None);
         assert_eq!(
             app.status_bar_mut().model_reasoning_effort,
             Some("low".to_string())
@@ -2081,19 +2191,29 @@ thinking_budget = {thinking_budget}
             32_000,
         );
         let mut app = make_app();
+        let writer = std::sync::Arc::new(crate::test_fixtures::FakeSettingsWriter::new());
+        app.settings_writer = Some(writer.clone());
         start_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
         handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
-        assert_eq!(tact::config::settings().llm.model, "kimi-for-coding");
-        assert_eq!(tact::config::settings().agent.model, "kimi-for-coding");
-        assert_eq!(tact::config::settings().agent.thinking_budget, 64_000);
-        assert!(tact::config::settings().agent.max_tokens > 64_000);
+        // The choice reaches the writer; what it does with it is the adapter's
+        // contract, covered by tact-ui.
+        match writer.applied().as_slice() {
+            [
+                (
+                    crate::ports::ModelTarget::Main,
+                    crate::ports::ModelChoice::Budget { model, budget },
+                ),
+            ] => {
+                assert_eq!(model, "kimi-for-coding");
+                assert_eq!(*budget, 64_000, "the picker's second step is the budget");
+            }
+            other => panic!("expected one budget choice for the main target, got {other:?}"),
+        }
         assert_eq!(app.status_bar_mut().model_name, "kimi-for-coding");
-        assert_eq!(app.status_bar_mut().model_thinking_budget, Some(64_000));
-        assert!(app.status_bar_mut().model_max_tokens > 64_000);
         assert!(matches!(app.input_mode, InputMode::Normal));
     }
 
@@ -2203,12 +2323,14 @@ thinking_budget = {thinking_budget}
     #[tokio::test(flavor = "multi_thread")]
     async fn persisted_model_and_budget_are_written_after_confirming_save() {
         let _lock = MODELS_TEST_LOCK.lock().await;
-        let (_temp_dir, path) = install_models_config_with_path(
+        let (_temp_dir, _path) = install_models_config_with_path(
             vec!["kimi-k2.5", "kimi-for-coding"],
             "kimi-k2.5",
             32_000,
         );
         let mut app = make_app();
+        let writer = std::sync::Arc::new(crate::test_fixtures::FakeSettingsWriter::new());
+        app.settings_writer = Some(writer.clone());
         start_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
@@ -2222,9 +2344,18 @@ thinking_budget = {thinking_budget}
         handle_select_mode(&mut app, key(KeyCode::Up));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
-        let config = std::fs::read_to_string(&path).unwrap();
-        assert!(config.contains("model = \"kimi-for-coding\""));
-        assert!(config.contains("thinking_budget = 64000"));
+        match writer.persisted().as_slice() {
+            [
+                (
+                    crate::ports::ModelTarget::Main,
+                    crate::ports::ModelChoice::Budget { model, budget },
+                ),
+            ] => {
+                assert_eq!(model, "kimi-for-coding");
+                assert_eq!(*budget, 64_000);
+            }
+            other => panic!("expected one persisted budget choice, got {other:?}"),
+        }
     }
 
     #[tokio::test(flavor = "multi_thread")]
@@ -2237,6 +2368,8 @@ thinking_budget = {thinking_budget}
         );
         let original = std::fs::read_to_string(&path).unwrap();
         let mut app = make_app();
+        let writer = std::sync::Arc::new(crate::test_fixtures::FakeSettingsWriter::new());
+        app.settings_writer = Some(writer.clone());
         start_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
@@ -2249,9 +2382,13 @@ thinking_budget = {thinking_budget}
 
         handle_select_mode(&mut app, key(KeyCode::Esc));
 
-        assert_eq!(tact::config::settings().llm.model, "kimi-for-coding");
-        assert_eq!(tact::config::settings().agent.model, "kimi-for-coding");
-        assert_eq!(tact::config::settings().agent.thinking_budget, 64_000);
+        // Applied for the session, never written: escaping the prompt is the
+        // "not to disk" answer.
+        assert_eq!(writer.applied().len(), 1);
+        assert!(
+            writer.persisted().is_empty(),
+            "escaping the prompt must not write the config"
+        );
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         assert!(app.log.items.iter().any(|message| {
             message.raw.contains(

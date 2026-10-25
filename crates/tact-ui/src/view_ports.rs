@@ -316,6 +316,102 @@ pub fn session_history(
     std::sync::Arc::new(RuntimeSessionHistory::new(store))
 }
 
+/// The runtime's config writes, seen through the view's port.
+///
+/// Every method funnels into the `tact::config` helper that owns the file format
+/// and the in-memory update, so the view states *what* changed and this adapter
+/// keeps knowing *how* it is stored.
+pub struct RuntimeSettingsWriter;
+
+impl RuntimeSettingsWriter {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl Default for RuntimeSettingsWriter {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl tui::ports::SettingsWriter for RuntimeSettingsWriter {
+    fn apply_model_choice(
+        &self,
+        target: tui::ports::ModelTarget,
+        choice: &tui::ports::ModelChoice,
+    ) -> anyhow::Result<()> {
+        use tui::ports::{ModelChoice, ModelTarget};
+        match (target, choice) {
+            (ModelTarget::Main, ModelChoice::Effort { model, effort }) => {
+                tact::config::update_llm_model_and_reasoning_effort(model.clone(), Some(*effort));
+                Ok(())
+            }
+            (ModelTarget::Main, ModelChoice::Budget { model, budget }) => {
+                tact::config::update_llm_model_and_thinking_budget(model.clone(), *budget);
+                Ok(())
+            }
+            (ModelTarget::Subagent, ModelChoice::Budget { model, budget }) => {
+                tact::config::update_subagent_model(model.clone(), *budget)
+            }
+            (ModelTarget::Subagent, ModelChoice::Effort { model, effort }) => {
+                // The subagent update carries a budget, so the effort is applied
+                // separately: applying both at once would fight over the same
+                // wire field.
+                let budget = tact::config::try_settings()
+                    .and_then(|config| config.agent.subagent.map(|sa| sa.thinking_budget))
+                    .unwrap_or_default();
+                tact::config::update_subagent_model(model.clone(), budget)?;
+                tact::config::update_subagent_reasoning_effort(Some(*effort));
+                Ok(())
+            }
+        }
+    }
+
+    fn persist_model_choice(
+        &self,
+        target: tui::ports::ModelTarget,
+        choice: &tui::ports::ModelChoice,
+    ) -> anyhow::Result<()> {
+        use tui::ports::{ModelChoice, ModelTarget};
+        match (target, choice) {
+            (ModelTarget::Main, ModelChoice::Effort { model, effort }) => {
+                tact::config::persist_active_provider_model_and_reasoning_effort(
+                    model,
+                    effort.as_str(),
+                )
+            }
+            (ModelTarget::Main, ModelChoice::Budget { model, budget }) => {
+                tact::config::persist_active_provider_model_and_thinking_budget(model, *budget)
+            }
+            (ModelTarget::Subagent, ModelChoice::Effort { model, effort }) => {
+                tact::config::persist_subagent_model_and_reasoning_effort(model, effort.as_str())
+            }
+            (ModelTarget::Subagent, ModelChoice::Budget { model, budget }) => {
+                tact::config::persist_subagent_model(model, *budget)
+            }
+        }
+    }
+
+    fn persist_ui(&self, setting: tui::ports::UiSetting) -> anyhow::Result<()> {
+        use tui::ports::UiSetting;
+        match setting {
+            UiSetting::Theme(theme) => tact::config::persist_theme(&theme),
+            UiSetting::Language(language) => tact::config::persist_language(&language),
+            UiSetting::HookOutput(enabled) => tact::config::persist_hook_output(enabled),
+        }
+    }
+
+    fn persist_disabled_skills(&self, names: &[String]) -> anyhow::Result<()> {
+        tact::config::persist_skill_disable(names)
+    }
+}
+
+/// The settings writer for the view.
+pub fn settings_writer() -> std::sync::Arc<dyn tui::ports::SettingsWriter> {
+    std::sync::Arc::new(RuntimeSettingsWriter::new())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

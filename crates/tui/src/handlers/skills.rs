@@ -341,7 +341,11 @@ fn set_skill_catalog_visibility(app: &mut App, name: &str, show: bool) -> Comman
     let outcome = if !app.ui_config_available() {
         msgs.skill_catalog_session_only
     } else {
-        match tact::config::persist_skill_disable(&names) {
+        let result = match app.settings_writer.clone() {
+            Some(writer) => writer.persist_disabled_skills(&names),
+            None => Ok(()),
+        };
+        match result {
             Ok(()) => msgs.skill_catalog_persisted,
             Err(error) => {
                 app.add_system_message(

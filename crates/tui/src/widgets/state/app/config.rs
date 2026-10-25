@@ -88,7 +88,11 @@ impl App {
         let outcome = if !self.ui_config_available() {
             msgs.hook_output_session_only
         } else {
-            match tact::config::persist_hook_output(enabled) {
+            let result = match self.settings_writer.clone() {
+                Some(writer) => writer.persist_ui(crate::ports::UiSetting::HookOutput(enabled)),
+                None => Ok(()),
+            };
+            match result {
                 Ok(()) => msgs.hook_output_persisted,
                 Err(error) => {
                     let message = msgs

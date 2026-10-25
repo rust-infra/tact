@@ -106,6 +106,66 @@ pub trait InteractionPort: Send + Sync {
     fn withdraw(&self, request_id: u64) -> bool;
 }
 
+/// Which target a `/model` change applies to.
+///
+/// The view branches on this in a dozen places (which prompt to show, which
+/// persist call to make). Naming it here keeps the branch in one vocabulary
+/// instead of passing `bool is_subagent` around.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelTarget {
+    Main,
+    Subagent,
+}
+
+/// A model choice the user made, as the writer needs it.
+///
+/// The two semantics are mutually exclusive: an effort-semantic model carries an
+/// effort and no budget, a budget-semantic one the reverse. Modelling that as an
+/// enum means neither can be silently dropped.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ModelChoice {
+    /// Effort semantics (openai / deepseek / kimi k3).
+    Effort {
+        model: String,
+        effort: tact_protocol::ReasoningEffort,
+    },
+    /// Budget semantics (anthropic / kimi coding).
+    Budget { model: String, budget: usize },
+}
+
+/// What the view needs in order to *write* configuration.
+///
+/// Separate from reading (`config_snapshot`): a read is a value the host handed
+/// over, a write changes the file the next run reads. Keeping them apart is what
+/// lets the view be tested with a snapshot and a recording writer, without a
+/// config file on disk.
+pub trait SettingsWriter: Send + Sync {
+    /// Remember a model choice in memory, for this session.
+    fn apply_model_choice(&self, target: ModelTarget, choice: &ModelChoice) -> anyhow::Result<()>;
+
+    /// Write a model choice to the config file, when there is one.
+    fn persist_model_choice(&self, target: ModelTarget, choice: &ModelChoice)
+    -> anyhow::Result<()>;
+
+    /// Write back one `[ui]` preference.
+    ///
+    /// `Setting` is an enum rather than a key string: the set is closed, and a
+    /// typo in a key would silently write nothing.
+    fn persist_ui(&self, setting: UiSetting) -> anyhow::Result<()>;
+
+    /// Write back the skill-disable list.
+    fn persist_disabled_skills(&self, names: &[String]) -> anyhow::Result<()>;
+}
+
+/// The `[ui]` preferences the view can write back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum UiSetting {
+    Theme(String),
+    Language(String),
+    /// Whether hook-injected content is drawn in the log.
+    HookOutput(bool),
+}
+
 /// One persisted conversation turn, as the log renders it.
 ///
 /// The view needs the role, the text blocks, and whether the cell is derived

@@ -269,6 +269,12 @@ pub struct App {
     pub(crate) skills_description: String,
     /// Skills for `/name` slash + palette picker.
     pub(crate) skills_data: Vec<SkillEntry>,
+    /// The host's config writer, when it supplied one.
+    ///
+    /// Reads come from `config_snapshot`; writes go through this port. Keeping
+    /// them apart lets a test hand the view a snapshot and a recording writer,
+    /// with no config file on disk.
+    pub(crate) settings_writer: Option<std::sync::Arc<dyn crate::ports::SettingsWriter>>,
     /// The host's model queries, when it supplied them.
     ///
     /// A port rather than the model library's free functions: the `/model`

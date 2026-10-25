@@ -290,6 +290,151 @@ impl crate::ports::ModelCatalog for FakeModelCatalog {
     }
 }
 
+/// A settings writer for tests.
+///
+/// Records every write and applies nothing, so a test asserts *what the view
+/// asked for* without a config file. The in-memory `tact::config` state is left
+/// alone: a test that needs it should say so, because a writer that silently
+/// mutates process state is what made the old assertions racy.
+#[derive(Default, Clone)]
+pub struct FakeSettingsWriter {
+    applied: std::sync::Arc<
+        std::sync::Mutex<Vec<(crate::ports::ModelTarget, crate::ports::ModelChoice)>>,
+    >,
+    persisted: std::sync::Arc<
+        std::sync::Mutex<Vec<(crate::ports::ModelTarget, crate::ports::ModelChoice)>>,
+    >,
+    ui: std::sync::Arc<std::sync::Mutex<Vec<crate::ports::UiSetting>>>,
+    disabled_skills: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+}
+
+impl FakeSettingsWriter {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The model choices applied in memory, in order.
+    pub fn applied(&self) -> Vec<(crate::ports::ModelTarget, crate::ports::ModelChoice)> {
+        self.applied.lock().expect("applied lock").clone()
+    }
+
+    /// The model choices written to the config file, in order.
+    pub fn persisted(&self) -> Vec<(crate::ports::ModelTarget, crate::ports::ModelChoice)> {
+        self.persisted.lock().expect("persisted lock").clone()
+    }
+
+    /// The `[ui]` writes, in order.
+    pub fn ui(&self) -> Vec<crate::ports::UiSetting> {
+        self.ui.lock().expect("ui lock").clone()
+    }
+
+    /// The skill-disable lists written, in order.
+    pub fn disabled_skills(&self) -> Vec<Vec<String>> {
+        self.disabled_skills.lock().expect("skills lock").clone()
+    }
+}
+
+impl crate::ports::SettingsWriter for FakeSettingsWriter {
+    fn apply_model_choice(
+        &self,
+        target: crate::ports::ModelTarget,
+        choice: &crate::ports::ModelChoice,
+    ) -> anyhow::Result<()> {
+        self.applied
+            .lock()
+            .expect("applied lock")
+            .push((target, choice.clone()));
+        Ok(())
+    }
+
+    fn persist_model_choice(
+        &self,
+        target: crate::ports::ModelTarget,
+        choice: &crate::ports::ModelChoice,
+    ) -> anyhow::Result<()> {
+        self.persisted
+            .lock()
+            .expect("persisted lock")
+            .push((target, choice.clone()));
+        Ok(())
+    }
+
+    fn persist_ui(&self, setting: crate::ports::UiSetting) -> anyhow::Result<()> {
+        self.ui.lock().expect("ui lock").push(setting);
+        Ok(())
+    }
+
+    fn persist_disabled_skills(&self, names: &[String]) -> anyhow::Result<()> {
+        self.disabled_skills
+            .lock()
+            .expect("skills lock")
+            .push(names.to_vec());
+        Ok(())
+    }
+}
+
+/// A settings writer that reaches the real config helpers.
+///
+/// For the rare test whose subject *is* the validation inside those helpers (a
+/// subagent model the pinned context window cannot fit). It does write to the
+/// process-global config, so a test using it must be the only one asserting on
+/// that state.
+#[derive(Default, Clone, Copy)]
+pub struct RealConfigWriter;
+
+impl RealConfigWriter {
+    pub fn new() -> Self {
+        Self
+    }
+}
+
+impl crate::ports::SettingsWriter for RealConfigWriter {
+    fn apply_model_choice(
+        &self,
+        target: crate::ports::ModelTarget,
+        choice: &crate::ports::ModelChoice,
+    ) -> anyhow::Result<()> {
+        use crate::ports::{ModelChoice, ModelTarget};
+        match (target, choice) {
+            (ModelTarget::Main, ModelChoice::Effort { model, effort }) => {
+                tact::config::update_llm_model_and_reasoning_effort(model.clone(), Some(*effort));
+                Ok(())
+            }
+            (ModelTarget::Main, ModelChoice::Budget { model, budget }) => {
+                tact::config::update_llm_model_and_thinking_budget(model.clone(), *budget);
+                Ok(())
+            }
+            (ModelTarget::Subagent, ModelChoice::Budget { model, budget }) => {
+                tact::config::update_subagent_model(model.clone(), *budget)
+            }
+            (ModelTarget::Subagent, ModelChoice::Effort { model, effort }) => {
+                let budget = tact::config::try_settings()
+                    .and_then(|config| config.agent.subagent.map(|sa| sa.thinking_budget))
+                    .unwrap_or_default();
+                tact::config::update_subagent_model(model.clone(), budget)?;
+                tact::config::update_subagent_reasoning_effort(Some(*effort));
+                Ok(())
+            }
+        }
+    }
+
+    fn persist_model_choice(
+        &self,
+        _target: crate::ports::ModelTarget,
+        _choice: &crate::ports::ModelChoice,
+    ) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn persist_ui(&self, _setting: crate::ports::UiSetting) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    fn persist_disabled_skills(&self, _names: &[String]) -> anyhow::Result<()> {
+        Ok(())
+    }
+}
+
 /// An app under test, still holding the channels it talks through.
 pub struct TestApp {
     /// The app itself. Public so a render test can take it and drop the rest.
@@ -343,6 +488,7 @@ impl TestApp {
         // what the endpoint reports.
         app.set_config_snapshot(tact::config::try_settings());
         app.models = Some(std::sync::Arc::new(FakeModelCatalog::default()));
+        app.settings_writer = Some(std::sync::Arc::new(FakeSettingsWriter::new()));
         Self {
             app,
             user_cmds,
