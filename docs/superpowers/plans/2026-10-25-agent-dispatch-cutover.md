@@ -1,5 +1,23 @@
 # Agent Dispatch Cutover Implementation Plan
 
+Status: **implemented (Phase 1c), committed**. Deviations from the plan as
+written:
+- The executor does not own the only handler copy. `ToolRouter` keeps the
+  handlers as `Arc<dyn Tool>` and the catalog wraps the same instances, because
+  the router must keep emitting model-facing specs (`compact` filtering for the
+  Responses provider, `set_tool_description` overrides, cached specs).
+- `preflight` is not used by the Agent. Hooks take `&Agent`, so the Agent runs
+  its own and drives `resolve` → `authorize_policy` → `finish_authorization`
+  instead; those three are the seam the kernel exposes for exactly this.
+- MCP tools (including regular `mcp__server__tool` calls) still use the legacy
+  ladder. They have no kernel descriptor, so their `[mcp]`-settings risk and
+  popup had to stay until `McpToolSource` is registered by the Agent.
+- Three bugs surfaced only under the full workspace gate, not in the kernel
+  suites: the legacy context factory must stamp the per-call progress reporter
+  (background rows collapsed to one), `CancelToken` must wrap the live cancel
+  flag (a mid-call cancel was invisible), and the MCP ladder had to be restored
+  verbatim. Recorded in the Phase 1c ledger.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Make `ToolExecutor` the only path from a model `ToolUse` to a handler, and delete the legacy dispatch pipeline.

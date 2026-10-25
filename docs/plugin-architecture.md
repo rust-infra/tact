@@ -1,12 +1,12 @@
 # Plugin architecture
 
-This page records the **Phase 0** boundary that the plugin-first migration has
-actually implemented. The approved target design is
+This page records what the plugin-first migration has actually implemented, up
+to Phase 1c. The approved target design is
 [`docs/superpowers/specs/2026-10-25-plugin-first-architecture-design.md`](superpowers/specs/2026-10-25-plugin-first-architecture-design.md);
 the first implementation plan is
 [`docs/superpowers/plans/2026-10-25-plugin-kernel-foundation.md`](superpowers/plans/2026-10-25-plugin-kernel-foundation.md).
 
-## Implemented in Phase 0
+## Implemented (Phases 0 – 1c)
 
 - `crates/tact_kernel` exists as a leaf crate above `tact_protocol`.
 - Plugin identity (`PluginId`, `PluginKind`, `PluginManifest`), capability
@@ -36,24 +36,35 @@ the first implementation plan is
     normalization, but runs without an `Agent`.
   - `tests/execution_parity.rs` pins both permission paths to the same verdict
     across every mode × risk, so the cutover cannot silently change behaviour.
-- The production Agent still dispatches through the old path. Phase 1c is
-  planned in
-  [`docs/superpowers/plans/2026-10-25-agent-dispatch-cutover.md`](superpowers/plans/2026-10-25-agent-dispatch-cutover.md)
-  and is **not started**: it moves tool ownership into the executor, which
-  touches 76 `Agent::new` call sites and the 2 600-line dispatch module, so it
-  needs its own review cycle.
+- Phase 1c cut the production Agent over to the kernel pipeline. `Agent` owns an
+  `Arc<ToolExecutor>` whose catalog wraps the *same* `Arc<dyn Tool>` handlers the
+  router holds, so a tool has one instance, not two. Every native call now goes
+  resolve → PreToolUse → guard again on the rewritten input →
+  `PermissionRequest` hook → permission ladder → one-use ticket → execute. A
+  native call that reaches the execution wave without a ticket is an explicit
+  error rather than a dispatch.
+  - Hooks stay on the Agent side (a callback takes `&Agent`), so the Agent
+    drives `resolve` → `authorize_policy` → its own `PermissionRequest` hook →
+    `finish_authorization` instead of the executor's `preflight`.
+  - Tact's own MCP resource/prompt tools, and regular `mcp__server__tool` calls,
+    keep the hand-written ladder: their risk lives in `[mcp]` settings rather
+    than a kernel descriptor. That is the last legacy permission path.
+  - Redaction level is decided once and travels on `ToolCallContext`;
+    `CancelToken` wraps the agent's live flag so a cancel mid-call is seen.
 - `tui` still depends on `tact` for view services. The target has no such edge;
   Phase 4 removes it and its test/fixture dependencies.
 
 ## Not implemented yet
 
-- The Agent dispatch cutover (Phase 1c): `Agent` still owns a `ToolRouter`, and
-  `into_kernel_catalog` consumes it, so the swap has to move tool ownership
-  into the executor in one change.
+- MCP tools as kernel descriptors: `McpToolSource` adapts them, but the Agent
+  does not yet register it, so MCP calls still bypass the executor and keep their
+  `[mcp]`-settings risk and their own permission ladder.
 - `AgentService`, `ChatService`, `SessionService` and view execution.
-- Redaction, output persistence and streaming progress are still driven by the
-  legacy dispatch path; the kernel pipeline emits `ToolEvent`s but nothing
-  consumes them yet.
+- `ToolEvent`s: the kernel emits them, but nothing consumes them yet — the TUI
+  still renders from the legacy `AgentUpdate`s.
+- Output persistence and streaming progress are still applied by the Agent after
+  the kernel returns, not by the kernel itself (deliberate: the kernel owns no
+  session store).
 - Domain plugin migration (Agent, Tools, MCP, Skills, Memory, Goal, Task, Team,
   Worktree, Background, Subagent, Voice).
 - TUI/headless views as plugins and command/view execution.
