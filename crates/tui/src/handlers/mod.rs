@@ -493,7 +493,12 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             CommandExecOutcome::handled()
         }
         C::Stats => {
-            let _ = app.user_cmd_tx.send(UserCommand::QueryStats);
+            // A catalog command: the transport carries the name, the runtime's
+            // catalog owns the answer.
+            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                name: "stats".to_string(),
+                args: String::new(),
+            });
             CommandExecOutcome::handled()
         }
         C::TasksDag => {
@@ -504,8 +509,16 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             // `/background` lists all background tasks; `/background <id>`
             // shows one task (pretty JSON). The optional id comes from the
             // remaining input after the command token.
-            let task_id = app.input.split_whitespace().nth(1).map(str::to_string);
-            let _ = app.user_cmd_tx.send(UserCommand::QueryBackground(task_id));
+            let task_id = app
+                .input
+                .split_whitespace()
+                .nth(1)
+                .map(str::to_string)
+                .unwrap_or_default();
+            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                name: "background".to_string(),
+                args: task_id,
+            });
             CommandExecOutcome::handled()
         }
         C::Goal => run_goal_command(app),
@@ -555,15 +568,13 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
         // `--all` is the one argument `list` takes: archived Goals are off the
         // default list, and adding them back is what makes archiving safe
         // rather than a one-way door.
-        "list" => match args {
-            "" => Some(UserCommand::ListGoals {
-                include_archived: false,
-            }),
-            "--all" => Some(UserCommand::ListGoals {
-                include_archived: true,
-            }),
-            _ => None,
-        },
+        // Read-only verbs travel as catalog invocations: the goal command owns
+        // this grammar, so the view forwards it rather than re-deriving it.
+        "list" if args.is_empty() || args == "--all" => Some(UserCommand::RunCommand {
+            name: "goal".to_string(),
+            args: format!("list {args}").trim_end().to_string(),
+        }),
+        "list" => None,
         "create" if !args.is_empty() => Some(create_goal_command(args)),
         "show" | "pause" | "resume" | "cancel" | "archive" | "unarchive" if !args.is_empty() => {
             let mut values = args.split_whitespace();
@@ -572,7 +583,10 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
                 None
             } else {
                 Some(match verb {
-                    "show" => UserCommand::ShowGoal { goal_id },
+                    "show" => UserCommand::RunCommand {
+                        name: "goal".to_string(),
+                        args: format!("show {goal_id}"),
+                    },
                     "pause" => UserCommand::PauseGoal { goal_id },
                     "resume" => UserCommand::ResumeGoal { goal_id },
                     "cancel" => UserCommand::CancelGoal { goal_id },
@@ -1627,7 +1641,8 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected QueryBackground"),
-            UserCommand::QueryBackground(None)
+            UserCommand::RunCommand { name, args }
+                if name == "background" && args.is_empty()
         ));
     }
 
@@ -1640,7 +1655,8 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected QueryBackground"),
-            UserCommand::QueryBackground(Some(id)) if id == "018f3a2c"
+            UserCommand::RunCommand { name, args }
+                if name == "background" && args == "018f3a2c"
         ));
     }
 
@@ -1649,14 +1665,16 @@ mod tests {
         let cases = [
             (
                 "/goal list",
-                UserCommand::ListGoals {
-                    include_archived: false,
+                UserCommand::RunCommand {
+                    name: "goal".into(),
+                    args: "list".into(),
                 },
             ),
             (
                 "/goal list --all",
-                UserCommand::ListGoals {
-                    include_archived: true,
+                UserCommand::RunCommand {
+                    name: "goal".into(),
+                    args: "list --all".into(),
                 },
             ),
             (
@@ -1675,8 +1693,9 @@ mod tests {
             ),
             (
                 "/goal show goal-1",
-                UserCommand::ShowGoal {
-                    goal_id: "goal-1".into(),
+                UserCommand::RunCommand {
+                    name: "goal".to_string(),
+                    args: "show goal-1".to_string(),
                 },
             ),
             (

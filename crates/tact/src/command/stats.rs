@@ -7,7 +7,10 @@
 
 use std::sync::{Arc, RwLock};
 
-use tact_kernel::capability::command::{Command, CommandInvocation, CommandMeta, CommandOutcome};
+use tact_kernel::capability::command::{
+    Command, CommandInvocation, CommandMeta, CommandOutcome, Emitted,
+};
+use tact_protocol::AgentUpdate;
 
 use super::runtime_meta;
 use crate::stats::SessionStats;
@@ -48,7 +51,13 @@ impl Command for StatsCommand {
             // still readable and a reader should not fail because of it.
             Err(poisoned) => poisoned.into_inner().summary(),
         };
-        CommandOutcome::Message(summary)
+        // A read-out popup, not a log line: a snapshot is not conversation, and
+        // the title is part of what this command produces — a host that
+        // reformatted it would be re-deciding the command's own output.
+        CommandOutcome::Emit(Emitted::new(AgentUpdate::PopupMarkdown {
+            title: "Session Statistics".to_string(),
+            source: summary,
+        }))
     }
 }
 
@@ -81,10 +90,16 @@ mod tests {
             name: "stats".into(),
             args: String::new(),
         });
-        let CommandOutcome::Message(text) = outcome else {
-            panic!("expected a message, got {outcome:?}");
+        // A titled read-out, not a bare message: the command owns the popup
+        // shape, so a host cannot render the same command two ways.
+        let CommandOutcome::Emit(emitted) = outcome else {
+            panic!("expected a popup, got {outcome:?}");
         };
-        assert!(text.contains("Session Stats"), "{text}");
+        let AgentUpdate::PopupMarkdown { title, source } = emitted.into_inner() else {
+            panic!("expected PopupMarkdown");
+        };
+        assert_eq!(title, "Session Statistics");
+        assert!(source.contains("Session Stats"), "{source}");
     }
 
     #[test]
@@ -114,6 +129,9 @@ mod tests {
             name: "stats".into(),
             args: String::new(),
         });
-        assert!(matches!(outcome, CommandOutcome::Message(_)), "{outcome:?}");
+        assert!(
+            matches!(outcome, CommandOutcome::Emit(_)),
+            "the summary is still produced through the poison: {outcome:?}"
+        );
     }
 }

@@ -194,6 +194,8 @@ mod tests {
             name: "stats".into(),
             args: String::new(),
         });
-        assert!(matches!(outcome, CommandOutcome::Message(_)), "{outcome:?}");
+        // The outcome is whatever the owner produced — a titled popup for
+        // `/stats` — and the catalog must not reshape it.
+        assert!(matches!(outcome, CommandOutcome::Emit(_)), "{outcome:?}");
     }
 }

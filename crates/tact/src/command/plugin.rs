@@ -140,7 +140,10 @@ mod tests {
                 args: String::new(),
             })
             .await;
-        assert!(matches!(outcome, CommandOutcome::Message(_)), "{outcome:?}");
+        assert!(
+            matches!(outcome, CommandOutcome::Emit(_)),
+            "the command answers with its own popup: {outcome:?}"
+        );
     }
 
     #[tokio::test]

@@ -1264,7 +1264,8 @@ mod tests {
         assert!(
             matches!(
                 user_cmd_rx.try_recv(),
-                Ok(UserCommand::ShowGoal { goal_id }) if goal_id == "216ae6be"
+                Ok(UserCommand::RunCommand { name, args })
+                    if name == "goal" && args == "show 216ae6be"
             ),
             "the completed id must be what the command carries"
         );
@@ -1283,7 +1284,8 @@ mod tests {
         assert!(
             matches!(
                 user_cmd_rx.try_recv(),
-                Ok(UserCommand::ShowGoal { goal_id }) if goal_id == "216ae6be"
+                Ok(UserCommand::RunCommand { name, args })
+                    if name == "goal" && args == "show 216ae6be"
             ),
             "Enter on a complete row runs it"
         );

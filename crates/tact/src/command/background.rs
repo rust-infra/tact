@@ -7,7 +7,8 @@
 
 use std::sync::Arc;
 
-use tact_kernel::capability::command::{Command, CommandMeta, CommandOutcome};
+use tact_kernel::capability::command::{Command, CommandMeta, CommandOutcome, Emitted};
+use tact_protocol::AgentUpdate;
 
 use crate::background::SharedBackgroundManager;
 
@@ -57,8 +58,13 @@ impl Command for BackgroundCommand {
         match self.manager.check(task_id, session.as_deref()).await {
             Ok(output) => {
                 // Fenced so the one-line-per-task listing (and the single-task
-                // pretty JSON) stays aligned and copyable in the popup.
-                CommandOutcome::Message(format!("```text\n{output}\n```"))
+                // pretty JSON) stays aligned and copyable in the popup; the
+                // popup and its title are part of this command's output, not
+                // something a host should re-decide.
+                CommandOutcome::Emit(Emitted::new(AgentUpdate::PopupMarkdown {
+                    title: "⚙️ Background Tasks".to_string(),
+                    source: format!("```text\n{output}\n```"),
+                }))
             }
             // A failure here is the manager's, not the user's. `Usage` would
             // blame the arguments and `Message` would open a popup, so the
@@ -106,11 +112,15 @@ mod tests {
                 args: String::new(),
             })
             .await;
-        let CommandOutcome::Message(text) = outcome else {
-            panic!("expected a message, got {outcome:?}");
+        let CommandOutcome::Emit(emitted) = outcome else {
+            panic!("expected a popup, got {outcome:?}");
         };
-        assert!(text.starts_with("```text"), "{text}");
-        assert!(text.trim_end().ends_with("```"), "{text}");
+        let AgentUpdate::PopupMarkdown { title, source } = emitted.into_inner() else {
+            panic!("expected PopupMarkdown");
+        };
+        assert_eq!(title, "⚙️ Background Tasks");
+        assert!(source.starts_with("```text"), "{source}");
+        assert!(source.trim_end().ends_with("```"), "{source}");
     }
 
     #[tokio::test]

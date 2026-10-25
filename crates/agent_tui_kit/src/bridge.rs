@@ -48,8 +48,14 @@ impl From<Command> for UserCommand {
             Command::SubmitTask(task) => UserCommand::SubmitTask(task),
             Command::Cancel => UserCommand::Cancel,
             Command::Compact => UserCommand::Compact,
-            Command::QueryStats => UserCommand::QueryStats,
-            Command::QueryBackground(id) => UserCommand::QueryBackground(id),
+            Command::QueryStats => UserCommand::RunCommand {
+                name: "stats".to_string(),
+                args: String::new(),
+            },
+            Command::QueryBackground(id) => UserCommand::RunCommand {
+                name: "background".to_string(),
+                args: id.unwrap_or_default(),
+            },
             Command::SetPermissionMode(mode) => UserCommand::SetPermissionMode(mode),
             Command::SetThinkingBudget(budget) => UserCommand::SetThinkingBudget(budget),
             Command::SetReasoningEffort(effort) => UserCommand::SetReasoningEffort(effort),
@@ -66,10 +72,12 @@ impl TryFrom<UserCommand> for Command {
     fn try_from(cmd: UserCommand) -> Result<Self, Self::Error> {
         match cmd {
             UserCommand::SubmitTask(task) => Ok(Self::SubmitTask(task)),
+            // A catalog command has no equivalent in this kit's closed
+            // vocabulary: the kit names the commands it knows, and a name it
+            // does not know is not one it can drive.
+            UserCommand::RunCommand { .. } => Err(()),
             UserCommand::Cancel => Ok(Self::Cancel),
             UserCommand::Compact => Ok(Self::Compact),
-            UserCommand::QueryStats => Ok(Self::QueryStats),
-            UserCommand::QueryBackground(id) => Ok(Self::QueryBackground(id)),
             UserCommand::SetPermissionMode(mode) => Ok(Self::SetPermissionMode(mode)),
             UserCommand::SetThinkingBudget(budget) => Ok(Self::SetThinkingBudget(budget)),
             UserCommand::SetReasoningEffort(effort) => Ok(Self::SetReasoningEffort(effort)),
@@ -99,8 +107,6 @@ impl TryFrom<UserCommand> for Command {
             // Durable Goal lifecycle is a Tact host capability backed by its
             // SQLite stores and bounded runner, not a generic kit command.
             UserCommand::CreateGoal { .. }
-            | UserCommand::ListGoals { .. }
-            | UserCommand::ShowGoal { .. }
             | UserCommand::SteerGoal { .. }
             | UserCommand::PauseGoal { .. }
             | UserCommand::ResumeGoal { .. }

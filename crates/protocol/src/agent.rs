@@ -640,12 +640,6 @@ pub enum UserCommand {
     Compact,
     /// Query account balance (DeepSeek/Kimi)
     QueryBalance,
-    /// Query session statistics (triggered by the /stats command)
-    QueryStats,
-    /// Query background task status (triggered by the `/background` slash
-    /// command). `None` lists all tasks one line per task; `Some(id)` shows a
-    /// single task as pretty JSON.
-    QueryBackground(Option<String>),
     /// Create a durable Goal. Empty `criteria` lets the driver install its
     /// default human-acceptance criterion for interactive use.
     CreateGoal {
@@ -655,13 +649,6 @@ pub enum UserCommand {
     },
     /// List every durable Goal as a full replacement snapshot.
     ///
-    /// `include_archived` is the difference between "my working set" (the
-    /// sticky panel) and "everything this workspace ever recorded": an archived
-    /// Goal is finished and filed, so it leaves the default list rather than
-    /// deleting its record.
-    ListGoals { include_archived: bool },
-    /// Show one Goal while still refreshing the full replacement snapshot.
-    ShowGoal { goal_id: String },
     /// Persist user steering text in the Goal event stream.
     ///
     /// `goal_id` is `None` when the user omitted it; the driver resolves the
@@ -744,6 +731,19 @@ pub enum UserCommand {
     HooksTrust { all: bool, source: Option<String> },
     /// Revoke every hook approval (triggered by `/hooks forget --all`).
     HooksForget,
+    /// Run a catalog command by name.
+    ///
+    /// The transport for commands that already own their grammar: the view
+    /// forwards the name and the raw argument string, and the runtime's catalog
+    /// parses it. A dedicated variant per read-only command (`QueryStats`,
+    /// `ListGoals`, …) was a second definition of the same grammar, and the two
+    /// could disagree about what an argument means.
+    RunCommand {
+        /// The command name, without the leading `/`.
+        name: String,
+        /// Everything after the name, unparsed. The command owns its grammar.
+        args: String,
+    },
 }
 
 /// A single step in the execution plan.
@@ -899,11 +899,16 @@ mod tests {
                 objective: "Finish the feature".into(),
                 criteria: vec!["Tests pass".into()],
             },
-            UserCommand::ListGoals {
-                include_archived: false,
+            // Read-only goal commands travel as catalog invocations: the goal
+            // command owns the `list --all` / `show <id>` grammar, so the
+            // transport carries the name and the raw arguments.
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: "list".into(),
             },
-            UserCommand::ShowGoal {
-                goal_id: "goal-1".into(),
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: "show goal-1".into(),
             },
             UserCommand::SteerGoal {
                 goal_id: Some("goal-1".into()),
@@ -925,10 +930,8 @@ mod tests {
         ];
 
         assert!(matches!(
-            commands[1],
-            UserCommand::ListGoals {
-                include_archived: false
-            }
+            &commands[1],
+            UserCommand::RunCommand { name, args } if name == "goal" && args == "list"
         ));
         assert!(matches!(
             &commands[3],

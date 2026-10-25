@@ -405,76 +405,12 @@ pub async fn run_command_loop_with_account(
                     )));
                 }
             }
-            UserCommand::QueryStats => {
-                // Immediate snapshot: does NOT wait for the running task — the
-                // stats live in an Arc<RwLock<SessionStats>> shared with the
-                // agent, so /stats responds instantly even mid-run. Shown in the
-                // read-out popup, like /background: a snapshot is not
-                // conversation.
-                //
-                // The answer comes from the catalog command rather than from a
-                // `summary()` call here, so the text has one owner and the
-                // catalog test covers it.
-                let outcome = commands.run(&tact::command::CommandInvocation {
-                    name: "stats".to_string(),
-                    args: String::new(),
-                });
-                let source = match outcome {
-                    tact::command::CommandOutcome::Message(text) => text,
-                    // Anything else here means the catalog lost the command's
-                    // own metadata; fall back to the summary rather than showing
-                    // an error the user did not cause.
-                    other => format!("{other:?}"),
-                };
-                events.send(AgentUpdate::PopupMarkdown {
-                    title: "Session Statistics".to_string(),
-                    source,
-                });
-            }
-            UserCommand::QueryBackground(task_id) => {
-                // `/background` and `/background <id>`. Routed through the
-                // catalog command so its argument grammar and wording have one
-                // owner; answered from the shared manager, so the popup opens
-                // immediately even while a turn is running (the Agent is owned
-                // by that task).
-                let invocation = tact::command::CommandInvocation {
-                    name: "background".to_string(),
-                    args: task_id.clone().unwrap_or_default(),
-                };
-                match commands.run_async(&invocation).await {
-                    tact::command::CommandOutcome::Message(source) => {
-                        events.send(AgentUpdate::PopupMarkdown {
-                            title: "⚙️ Background Tasks".to_string(),
-                            source,
-                        });
-                    }
-                    tact::command::CommandOutcome::Done => {}
-                    // A command that produced a structured frame sends it as-is;
-                    // the host does not reformat what the command built.
-                    tact::command::CommandOutcome::Emit(emitted) => {
-                        events.send(emitted.into_inner());
-                    }
-                    // A failure and a usage error both reach the user as an
-                    // error line; they stay distinct in the outcome so a host
-                    // that wants to render them differently still can.
-                    tact::command::CommandOutcome::Failed(text)
-                    | tact::command::CommandOutcome::Usage(text) => {
-                        events.send(AgentUpdate::Error(AgentErrorKind::Other(text)));
-                    }
-                }
-            }
-            UserCommand::ListGoals { include_archived } => {
-                // Routed through the catalog command: the archived switch is the
-                // command's grammar, and the projection it emits is the one the
-                // panel draws.
-                let invocation = tact::command::CommandInvocation {
-                    name: "goal".to_string(),
-                    args: if include_archived {
-                        "list --all".to_string()
-                    } else {
-                        "list".to_string()
-                    },
-                };
+            UserCommand::RunCommand { name, args } => {
+                // One transport for every catalog command: the view forwards the
+                // name and the raw arguments, and the catalog parses them. A
+                // dedicated variant per command was a second definition of the
+                // same grammar.
+                let invocation = tact::command::CommandInvocation { name, args };
                 forward_command_outcome(&commands.run_async(&invocation).await, &events);
             }
             UserCommand::SetGoalArchived { goal_id, archived } => {
@@ -487,20 +423,6 @@ pub async fn run_command_loop_with_account(
                     archived,
                 )
                 .await;
-            }
-            UserCommand::ShowGoal { goal_id } => {
-                // The panel refresh comes first and stays the default list: the
-                // detail popup reaches archived Goals, the panel does not.
-                let refresh = tact::command::CommandInvocation {
-                    name: "goal".to_string(),
-                    args: "list".to_string(),
-                };
-                forward_command_outcome(&commands.run_async(&refresh).await, &events);
-                let invocation = tact::command::CommandInvocation {
-                    name: "goal".to_string(),
-                    args: format!("show {goal_id}"),
-                };
-                forward_command_outcome(&commands.run_async(&invocation).await, &events);
             }
             // These three are safe to serve while the Agent is owned by an
             // in-flight Goal run: they only touch the shared managers (and the
@@ -1775,9 +1697,9 @@ async fn handle_user_command_with_account(
                 resume_goal(agent, &goal_id).await;
             }
         }
-        UserCommand::ListGoals { include_archived } => {
-            // Same catalog command as the loop-level arm, so the two cannot show
-            // different projections.
+        UserCommand::RunCommand { name, args } => {
+            // Same catalog the loop-level arm uses, so the two cannot answer
+            // differently.
             let catalog = builtin_command_catalog(
                 &agent.runtime.stats,
                 &agent.tool_context.background_manager,
@@ -1786,35 +1708,18 @@ async fn handle_user_command_with_account(
                 &agent.tool_context.task_manager,
                 agent_goal_limits(agent),
             );
-            let invocation = tact::command::CommandInvocation {
-                name: "goal".to_string(),
-                args: if include_archived {
-                    "list --all".to_string()
-                } else {
-                    "list".to_string()
-                },
-            };
-            forward_command_outcome(&catalog.run_async(&invocation).await, &agent.runtime.events);
-        }
-        UserCommand::ShowGoal { goal_id } => {
-            let catalog = builtin_command_catalog(
-                &agent.runtime.stats,
-                &agent.tool_context.background_manager,
-                &agent.runtime.session_id,
-                &agent.tool_context.goal_manager,
-                &agent.tool_context.task_manager,
-                agent_goal_limits(agent),
-            );
-            // Panel first, then the detail: same order as the loop-level arm.
-            let refresh = tact::command::CommandInvocation {
-                name: "goal".to_string(),
-                args: "list".to_string(),
-            };
-            forward_command_outcome(&catalog.run_async(&refresh).await, &agent.runtime.events);
-            let invocation = tact::command::CommandInvocation {
-                name: "goal".to_string(),
-                args: format!("show {goal_id}"),
-            };
+            // `goal show` answers with the detail popup only; the panel refresh
+            // is a separate `list`, because one command outcome carries one
+            // update. Doing it here keeps the order the loop-level path had:
+            // panel first, then the detail.
+            if name == "goal" && args.starts_with("show ") {
+                let refresh = tact::command::CommandInvocation {
+                    name: name.clone(),
+                    args: "list".to_string(),
+                };
+                forward_command_outcome(&catalog.run_async(&refresh).await, &agent.runtime.events);
+            }
+            let invocation = tact::command::CommandInvocation { name, args };
             forward_command_outcome(&catalog.run_async(&invocation).await, &agent.runtime.events);
         }
         UserCommand::SteerGoal { goal_id, text } => {
@@ -1968,76 +1873,6 @@ async fn handle_user_command_with_account(
                 }
                 Err(err) => {
                     let _ = account_tx.send(AccountUpdate::Error(err));
-                }
-            }
-        }
-        UserCommand::QueryStats => {
-            // Handled at the loop level (immediate shared-stats snapshot); this
-            // arm is the fallback for a caller that bypassed the command loop.
-            // It answers rather than ignoring the request — the sibling
-            // `QueryBackground` arm below does, and a command that silently does
-            // nothing on one path and answers on the other is a bug waiting to be
-            // reported as "the panel did not open".
-            let catalog = builtin_command_catalog(
-                &agent.runtime.stats,
-                &agent.tool_context.background_manager,
-                &agent.runtime.session_id,
-                &agent.tool_context.goal_manager,
-                &agent.tool_context.task_manager,
-                agent_goal_limits(agent),
-            );
-            let invocation = tact::command::CommandInvocation {
-                name: "stats".to_string(),
-                args: String::new(),
-            };
-            // Shown in a popup, like the loop-level arm: a read-out is not
-            // conversation, so it must not become a log line just because this
-            // path was taken.
-            match catalog.run(&invocation) {
-                tact::command::CommandOutcome::Message(source) => {
-                    agent.runtime.events.send(AgentUpdate::PopupMarkdown {
-                        title: "Session Statistics".to_string(),
-                        source,
-                    });
-                }
-                other => forward_command_outcome(&other, &agent.runtime.events),
-            }
-        }
-        UserCommand::QueryBackground(task_id) => {
-            // Handled at the loop level (answering from the shared manager, so
-            // it never awaits the in-flight turn); reaching this arm means the
-            // caller bypassed the command loop. Answer anyway — through the same
-            // catalog command, so the two paths cannot word the answer
-            // differently.
-            let catalog = builtin_command_catalog(
-                &agent.runtime.stats,
-                &agent.tool_context.background_manager,
-                &agent.runtime.session_id,
-                &agent.tool_context.goal_manager,
-                &agent.tool_context.task_manager,
-                agent_goal_limits(agent),
-            );
-            let invocation = tact::command::CommandInvocation {
-                name: "background".to_string(),
-                args: task_id.unwrap_or_default(),
-            };
-            match catalog.run_async(&invocation).await {
-                tact::command::CommandOutcome::Message(source) => {
-                    agent.runtime.events.send(AgentUpdate::PopupMarkdown {
-                        title: "⚙️ Background Tasks".to_string(),
-                        source,
-                    });
-                }
-                tact::command::CommandOutcome::Done => {}
-                tact::command::CommandOutcome::Emit(emitted) => {
-                    agent.runtime.events.send(emitted.into_inner());
-                }
-                tact::command::CommandOutcome::Failed(text)
-                | tact::command::CommandOutcome::Usage(text) => {
-                    agent
-                        .runtime
-                        .events
-                        .send(AgentUpdate::Error(AgentErrorKind::Other(text)));
                 }
             }
         }
@@ -2736,8 +2571,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let start = std::time::Instant::now();
         user_cmd_tx
-            .send(UserCommand::ListGoals {
-                include_archived: false,
+            .send(UserCommand::RunCommand {
+                name: "goal".to_string(),
+                args: "list".to_string(),
             })
             .unwrap();
         let mut answered = false;
@@ -3036,8 +2872,9 @@ mod tests {
         // and marked as archived.
         super::handle_user_command(
             &mut agent,
-            UserCommand::ListGoals {
-                include_archived: true,
+            UserCommand::RunCommand {
+                name: "goal".to_string(),
+                args: "list --all".to_string(),
             },
             &work_dir,
         )
@@ -3056,8 +2893,9 @@ mod tests {
         // ... and `show` says so, instead of pretending the Goal is live.
         super::handle_user_command(
             &mut agent,
-            UserCommand::ShowGoal {
-                goal_id: created.id.clone(),
+            UserCommand::RunCommand {
+                name: "goal".to_string(),
+                args: format!("show {}", created.id),
             },
             &work_dir,
         )
@@ -3726,8 +3564,9 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let start = std::time::Instant::now();
         user_cmd_tx
-            .send(UserCommand::ListGoals {
-                include_archived: false,
+            .send(UserCommand::RunCommand {
+                name: "goal".to_string(),
+                args: "list".to_string(),
             })
             .unwrap();
 
@@ -4139,7 +3978,15 @@ mod tests {
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
         let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
 
-        super::handle_user_command(&mut agent, UserCommand::QueryBackground(None), &work_dir).await;
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::RunCommand {
+                name: "background".to_string(),
+                args: String::new(),
+            },
+            &work_dir,
+        )
+        .await;
 
         let mut popup = None;
         while let Ok(update) = agent_rx.try_recv() {
@@ -4163,7 +4010,10 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::QueryBackground(Some("deadbeef".into())),
+            UserCommand::RunCommand {
+                name: "background".to_string(),
+                args: "deadbeef".to_string(),
+            },
             &work_dir,
         )
         .await;
@@ -4408,7 +4258,15 @@ mod tests {
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
         let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
 
-        super::handle_user_command(&mut agent, UserCommand::QueryStats, &work_dir).await;
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::RunCommand {
+                name: "stats".to_string(),
+                args: String::new(),
+            },
+            &work_dir,
+        )
+        .await;
 
         let mut saw_popup = false;
         while let Ok(update) = agent_rx.try_recv() {
@@ -4466,7 +4324,12 @@ mod tests {
             .unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         let start = std::time::Instant::now();
-        user_cmd_tx.send(UserCommand::QueryStats).unwrap();
+        user_cmd_tx
+            .send(UserCommand::RunCommand {
+                name: "stats".to_string(),
+                args: String::new(),
+            })
+            .unwrap();
 
         // The stats snapshot must arrive while the task is still blocked. A
         // single deadline bounds the whole receive loop: a stream of unrelated
@@ -4539,7 +4402,10 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let start = std::time::Instant::now();
         user_cmd_tx
-            .send(UserCommand::QueryBackground(None))
+            .send(UserCommand::RunCommand {
+                name: "background".to_string(),
+                args: String::new(),
+            })
             .unwrap();
 
         let mut saw_popup = false;
