@@ -81,12 +81,18 @@ the first implementation plan is
     different things under one name; a second provider is an error naming the
     first. It is not a locator — the composition root pulls the specific handle
     and passes it to the plugins built after it.
-  - `PermissionPlugin`, `SecurityPlugin`, `HooksPlugin`, `ProvidersPlugin` and
-    `MarketplacePlugin` provide their ports through it. `ProvidersPlugin` needed
+  - `PermissionPlugin`, `SecurityPlugin`, `HooksPlugin`, `ProvidersPlugin`,
+    `MarketplacePlugin` and `ConfigPlugin` provide their ports through it. `ProvidersPlugin` needed
     a non-panicking `tact_llm::try_get_provider` first — the assembly has to be
     able to ask "is there a provider?" without the question aborting the process.
     `Agent::provider()` now answers from the plugin bundle, so a consumer that
-    already has an agent no longer re-reads the process global. The Agent's `ToolExecutor` now resolves the policy pair from the
+    already has an agent no longer re-reads the process global.
+  - `ConfigPlugin` does the same for the resolved configuration, which is the
+    prerequisite for the frontend decoupling: `tui` has 45 direct `settings()`
+    calls and `tact-ui` 18, and none of them is a dependency the type system can
+    see. The plugin does not remove the global — it gives new code a way to
+    receive the configuration, and the host one place to record which snapshot it
+    assembled with. The Agent's `ToolExecutor` now resolves the policy pair from the
     registry, so a host that forgets a policy plugin gets a named error instead
     of a silently different permission policy.
   - `crates/tact/src/host.rs` is the composition root: `assemble` installs the
