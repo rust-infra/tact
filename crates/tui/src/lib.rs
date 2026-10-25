@@ -49,8 +49,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     widgets::ScrollbarState,
 };
-use tact::plugin::{PluginEvent, PluginRequest};
-use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, AgentUpdate, PluginEvent, PluginRequest, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::StreamExt;
 

@@ -4,12 +4,12 @@ version = "0.1.0"
 edition = "2024"
 
 [features]
-test-support = []
+# Enabling this compiles the fixture module for external integration tests,
+# which build their agents through the runtime's own helpers.
+test-support = ["dep:tact", "dep:tact_llm"]
 
 [dependencies]
 agent_tui_kit = { path = "../agent_tui_kit" }
-tact = { path = "../tact" }
-tact_llm = { path = "../tact_llm" }
 tact_protocol = { path = "../protocol" }
 anyhow = { workspace = true }
 arboard = { workspace = true }
@@ -34,5 +34,27 @@ unicode-width = { workspace = true }
 toml = { workspace = true }
 
 [dev-dependencies]
-tact = { path = "../tact", features = ["test-support"] }
 tempfile = { workspace = true }
+
+# Optional, enabled by `test-support`: the fixture module instantiates the
+# runtime's real config helpers so a test asserts what production would. The
+# production target deliberately has neither, which is what the architecture
+# guard checks.
+[dependencies.tact]
+path = "../tact"
+features = ["test-support"]
+optional = true
+
+[dependencies.tact_llm]
+path = "../tact_llm"
+optional = true
+
+# The crate's own unit tests also compile `test_fixtures`, so they need the same
+# optional dependencies that `test-support` pulls in. Same versions, no feature
+# activation of their own.
+[dev-dependencies.tact]
+path = "../tact"
+features = ["test-support"]
+
+[dev-dependencies.tact_llm]
+path = "../tact_llm"
