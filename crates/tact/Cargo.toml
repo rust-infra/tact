@@ -6,6 +6,7 @@ license.workspace = true
 
 [dependencies]
 tact_protocol = { path = "../protocol" }
+tact_kernel = { path = "../tact_kernel" }
 tact_llm = { path = "../tact_llm" }
 tool_refactor_macros = { path = "../tool_refactor_macros" }
 anyhow = { workspace = true }

@@ -5,7 +5,8 @@
 
 use anyhow::Result;
 use futures_util::{StreamExt, stream::FuturesUnordered};
-use tact_llm::ContentBlock;
+use tact_kernel::tool::ToolImage;
+use tact_llm::{ContentBlock, ImageSource};
 use tact_protocol::{AgentUpdate, StepResult, StepStatus, ToolPresentationInfo};
 
 use super::Agent;
@@ -14,7 +15,10 @@ use crate::{
     hook::{HookControl, NotificationContext, ToolResult, ToolUse},
     invoke_hooks,
     mcp::MCPToolRouter,
-    permission::{CapabilityRisk, PermissionBehavior, PermissionManager, format_permission_prompt},
+    permission::{
+        CapabilityRisk, PermissionBehavior, PermissionManager, format_permission_prompt,
+        policy_ext::PermissionPolicyExt,
+    },
     tool::{
         ArgumentSummaryPolicy, DetailPolicy, GoalYieldReason, OutputPolicy, TaskOperation,
         ToolDomain, ToolEffect, ToolRouter,
@@ -145,6 +149,14 @@ pub(super) const TOOL_TRUNCATED_MSG: &str =
 pub(super) const TOOL_TURN_ENDED_MSG: &str = "Not executed: the turn ended before this tool ran";
 const MAX_TOOL_ARG_SUMMARY_CHARS: usize = 120;
 
+fn to_image_source(image: ToolImage) -> ImageSource {
+    ImageSource {
+        type_: "base64".to_string(),
+        media_type: image.mime_type,
+        data: image.data,
+    }
+}
+
 fn build_tool_results(
     prepared: Vec<PreparedTool>,
     outputs: Vec<Option<ExecResult>>,
@@ -170,7 +182,9 @@ fn build_tool_results(
             // Harness-style: the image cannot ride `role:tool` (string-only), so
             // it is emitted as a companion block; `convert.rs` folds it into a
             // following `user` message.
-            blocks.push(ContentBlock::Image { source: image });
+            blocks.push(ContentBlock::Image {
+                source: to_image_source(image),
+            });
         }
     }
     blocks
@@ -355,7 +369,7 @@ pub(crate) struct ToolExecutionOutcome {
 struct ExecResult {
     content: String,
     status: StepStatus,
-    image: Option<tact_llm::ImageSource>,
+    image: Option<ToolImage>,
     effects: Vec<ToolEffect>,
 }
 
@@ -1485,7 +1499,7 @@ impl Agent {
 
                 self.record_tool_stats(&prep_name, succeeded, duration_us);
                 if let Some(reason) = effects.iter().find_map(|effect| match effect {
-                    ToolEffect::GoalYield { reason } => Some(*reason),
+                    ToolEffect::YieldTurn { reason } => Some(*reason),
                     _ => None,
                 }) {
                     outcome.goal_yield = Some(reason);

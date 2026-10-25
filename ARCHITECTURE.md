@@ -12,9 +12,10 @@ This project is a Cargo Workspace containing the following crates:
 
 | Directory | Package | Version | Responsibility |
 |---|---|---|---|
+| `crates/tact_kernel` | `tact_kernel` | `1.1.42` (workspace) | Plugin lifecycle, capability identity/filtering, registration catalogs and the neutral contracts shared with extensions. It must not depend on `tact`, a view crate, `tact_llm`, SQLite, MCP or ratatui; `scripts/check-architecture.sh` enforces that boundary. |
 | `crates/protocol` | `tact_protocol` | `0.1.0` (local) | Shared wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Also contains a legacy `Agent` implementation that is no longer used by the runtime. |
-| `crates/tui` | `tui` | `0.1.0` (local) | Terminal UI built with `ratatui`. |
-| `crates/tact` | `tact` | `0.19.0` (workspace) | Agent runtime, tool router, MCP client, hooks, permissions, context compaction (library). |
+| `crates/tui` | `tui` | `0.1.0` (local) | Terminal UI built with `ratatui`. Phase 0 still imports `tact` view services; Phase 4 removes that edge. |
+| `crates/tact` | `tact` | `0.19.0` (workspace) | Official extension bundle: agent runtime, tools, MCP, hooks, permissions, context compaction, and compatibility re-exports of the kernel contracts while the migration proceeds. |
 | `crates/tact-ui` | `tact-ui` | `0.19.0` (workspace) | CLI binary: interactive TUI and `headless` subcommand; wires `tact` + `tui`. |
 | `crates/tact_llm` | `tact_llm` | `0.19.0` (workspace) | Shared LLM provider layer (Anthropic/OpenAI/DeepSeek/Kimi adapters, request conversion, provider/env resolution). |
 | `crates/tool_refactor_macros` | `tool_refactor_macros` | `0.19.0` (workspace) | Proc-macro `#[tool(name = "...", description = "...")]` that generates `Tool` trait implementations from async functions. |
@@ -25,10 +26,13 @@ Dependency graph:
 flowchart TB
     tact_ui["tact-ui"] --> tact
     tact_ui --> tui
+    tact --> tact_kernel
+    tact_kernel --> tact_protocol
     tact --> tact_protocol
     tact --> tact_llm
     tact --> tool_refactor_macros
     tact_llm --> tact_protocol
+    tui --> tact
     tui --> tact_protocol
 ```
 

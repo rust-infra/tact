@@ -10,7 +10,10 @@
 //! - Consecutive denials (which may trigger a suggestion to switch to Plan mode).
 //! - Loaded JSON permission settings (global and project) — see [`settings`].
 
+pub mod policy_ext;
 pub mod settings;
+
+pub use policy_ext::PermissionPolicyExt;
 
 use std::fmt;
 
@@ -19,14 +22,7 @@ use serde_json::Value;
 use strum_macros::{Display, EnumString};
 
 use crate::tool::PermissionPromptPolicy;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
-#[strum(serialize_all = "snake_case")]
-pub enum CapabilityRisk {
-    Read,
-    Write,
-    High,
-}
+pub use tact_kernel::permission::CapabilityRisk;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
 #[strum(serialize_all = "snake_case")]
@@ -640,6 +636,7 @@ pub fn normalize_mcp_capability(_server: &str, _tool: &str) -> CapabilityRisk {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::permission::policy_ext::PermissionPolicyExt;
     use crate::permission::settings::PermissionSettings;
 
     #[test]

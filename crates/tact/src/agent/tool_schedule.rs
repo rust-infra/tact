@@ -19,33 +19,7 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// The workspace files a tool reads and/or writes, used to decide whether two
-/// tool calls in the same turn may run concurrently.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub struct ToolResources {
-    pub reads: Vec<PathBuf>,
-    pub writes: Vec<PathBuf>,
-    /// `true` for tools whose effects we cannot scope (bash, MCP, subagents,
-    /// patch application, state mutations, …). A barrier conflicts with every
-    /// other call and is therefore always scheduled alone in its own wave —
-    /// equivalent to the previous fully-sequential behaviour for that tool.
-    pub barrier: bool,
-}
-
-impl ToolResources {
-    pub fn barrier() -> Self {
-        Self {
-            barrier: true,
-            ..Default::default()
-        }
-    }
-
-    /// A tool that touches no workspace file (e.g. `web_search`); it never
-    /// conflicts and may run alongside anything.
-    pub fn independent() -> Self {
-        Self::default()
-    }
-}
+pub use tact_kernel::tool::ToolResources;
 
 /// Normalise a tool path argument to an absolute path rooted at `work_dir`.
 ///

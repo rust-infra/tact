@@ -4793,6 +4793,7 @@ dependencies = [
  "sqlx",
  "strum 0.27.2",
  "strum_macros 0.27.2",
+ "tact_kernel",
  "tact_llm",
  "tact_protocol",
  "tar",
@@ -4831,6 +4832,19 @@ dependencies = [
  "tui",
  "uuid",
  "wiremock",
+]
+
+[[package]]
+name = "tact_kernel"
+version = "1.1.42"
+dependencies = [
+ "anyhow",
+ "async-trait",
+ "serde",
+ "serde_json",
+ "strum 0.27.2",
+ "tact_protocol",
+ "tokio",
 ]
 
 [[package]]

@@ -56,7 +56,7 @@ mod path;
 mod progress;
 mod read_file;
 mod read_image;
-mod readonly_shell;
+pub(crate) mod readonly_shell;
 mod registry;
 mod sleep;
 mod subagent;
@@ -365,11 +365,12 @@ pub(crate) fn copy_tool_spec(spec: &ToolSpec) -> ToolSpec {
 pub use metadata::{
     ArgumentSummaryPolicy, DetailPolicy, GoalYieldReason, IntoToolCallResult, LiveOutputPolicy,
     OutputPolicy, PermissionPolicy, PermissionPromptPolicy, PopupPolicy, ResourcePolicy,
-    TaskOperation, ToolCallResult, ToolDomain, ToolEffect, ToolMetadata, ToolPresentation,
-    patch_target_paths,
+    TaskOperation, ToolCallResult, ToolDomain, ToolEffect, ToolImage, ToolMetadata,
+    ToolPresentation, extract_patch_paths, patch_target_paths,
 };
 pub use path::{safe_path, safe_path_allow_missing};
 pub use progress::ToolProgressReporter;
+pub use tact_kernel::tool::ToolResources;
 
 #[cfg(test)]
 mod tests {

@@ -14,6 +14,10 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "==> architecture guards"
+bash scripts/check-architecture.sh
+bash scripts/check-module-boundaries.sh
+
 echo "==> cargo fmt -- --check"
 cargo fmt -- --check
 
@@ -25,7 +29,8 @@ cargo clippy --all-targets -- -D warnings
 # which matters because this script's stdout is read by humans *and* pasted into
 # agent transcripts. libtest still prints the full failure block and the
 # `test result:` summary in quiet mode, so a red run stays diagnosable.
-echo "==> cargo test -p tact-ui -p tui -p tact -p tact_llm"
-cargo test -p tact-ui -p tui -p tact -p tact_llm --quiet
+echo "==> cargo test -p tact-ui -p tui -p tact -p tact_llm -p tact_kernel"
+cargo test -p tact-ui -p tui -p tact -p tact_llm -p tact_kernel --quiet
+cargo test -p tact --test plugin_contracts --quiet
 
 echo "Rust checks passed."

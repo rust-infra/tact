@@ -1,0 +1,17 @@
+[package]
+name = "tact_kernel"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tact_protocol = { path = "../protocol" }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+strum = { workspace = true }
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

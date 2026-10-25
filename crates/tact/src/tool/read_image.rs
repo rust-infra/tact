@@ -111,9 +111,8 @@ pub async fn read_image(ctx: ToolContext, input: ReadImageInput) -> Result<ToolC
 
     Ok(ToolCallResult::text_image(
         envelope,
-        tact_llm::ImageSource {
-            type_: "base64".to_string(),
-            media_type,
+        tact_kernel::tool::ToolImage {
+            mime_type: media_type,
             data: b64,
         },
     ))
@@ -219,7 +218,7 @@ mod tests {
         assert!(result.content.contains("<path>"), "envelope has path");
         assert!(result.content.contains("image"), "envelope mentions image");
         let img = result.image.expect("read_image carries an image");
-        assert_eq!(img.media_type, "image/jpeg");
+        assert_eq!(img.mime_type, "image/jpeg");
         assert!(!img.data.is_empty());
     }
 

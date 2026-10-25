@@ -194,7 +194,7 @@ pub async fn goal_request_input(
         .await?;
     Ok(ToolCallResult {
         content: "User input requested; yield to Runner.".to_string(),
-        effects: vec![ToolEffect::GoalYield {
+        effects: vec![ToolEffect::YieldTurn {
             reason: crate::tool::GoalYieldReason::NeedsUser,
         }],
         image: None,
@@ -289,7 +289,7 @@ mod goal_tool_tests {
 
         assert_eq!(
             result.effects,
-            vec![crate::tool::ToolEffect::GoalYield {
+            vec![crate::tool::ToolEffect::YieldTurn {
                 reason: crate::tool::GoalYieldReason::NeedsUser,
             }]
         );
