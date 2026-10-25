@@ -98,7 +98,23 @@ the first implementation plan is
     `AgentHookHost<&Agent>` adapts the existing call sites. That was the
     prerequisite for `HooksPlugin`; without it the hook engine could not live
     behind a port at all.
-- Phase 4 has started on the kernel side:
+- Phase 4 has started, and the command half now has a real contributor:
+  - `Command` gained a defaulted `run_async`, so an async command (one that asks
+    a manager owning running processes, or a server) is one type rather than a
+    second registry. A pure command still implements `run` alone.
+  - `CommandOutcome` gained `Failed`. Collapsing a manager error into `Usage` was
+    how a failure used to surface as a help message; collapsing it into
+    `Message` made it open a read-out popup instead of an error line.
+  - `/stats` and `/background` are catalog commands
+    (`crates/tact/src/command/`), each owning its metadata, argument grammar and
+    answer. The driver holds one catalog per loop and routes both of its
+    `/background` paths through it, so the two cannot word the answer
+    differently. `/stats` refuses an argument it does not take by name, and
+    reads through a poisoned lock.
+  - A command that has to drive the agent loop (`/model`, `/compact`, the Goal
+    verbs, …) is *not* in the catalog yet: it cannot own a `&mut Agent` through
+    one, so those arms stay on the driver's side until the loop is a plugin.
+- Phase 4's view half on the kernel side:
   - `Command` carries `run()`/`complete()`, and `CommandCatalog` routes by name
     (resolving aliases) and completes by either listing names or delegating to
     the command's own grammar. The kernel never parses arguments: a command's
