@@ -423,7 +423,7 @@ fn open_second_step(app: &mut App, model: String, target: ModelTarget) {
     };
     let profile = app
         .config_snapshot()
-        .and_then(|config| config.llm.model_profiles.get(&model).cloned());
+        .and_then(|config| config.model_profiles.get(&model).cloned());
 
     // The port decides: effort and budget semantics are mutually exclusive on
     // the wire, so the second step has to branch on the same answer the runtime
@@ -473,11 +473,9 @@ fn open_effort_picker(
     let current = match target {
         ModelTarget::Subagent => config
             .as_ref()
-            .and_then(|config| config.agent.subagent.as_ref())
+            .and_then(|config| config.subagent.as_ref())
             .and_then(|sa| sa.reasoning_effort),
-        ModelTarget::Main => config
-            .as_ref()
-            .and_then(|config| config.agent.reasoning_effort),
+        ModelTarget::Main => config.as_ref().and_then(|config| config.reasoning_effort),
     };
     let selected = current
         .and_then(|effort| efforts.iter().position(|e| *e == effort))
@@ -507,11 +505,11 @@ fn open_budget_picker(app: &mut App, target: ModelTarget, model: String, budgets
     let thinking_budget = match target {
         ModelTarget::Subagent => config
             .as_ref()
-            .and_then(|config| config.agent.subagent.as_ref().map(|sa| sa.thinking_budget))
+            .and_then(|config| config.subagent.as_ref().map(|sa| sa.thinking_budget))
             .unwrap_or_default(),
         ModelTarget::Main => config
             .as_ref()
-            .map(|config| config.agent.thinking_budget)
+            .map(|config| config.thinking_budget)
             .unwrap_or_default(),
     };
     let selected = nearest_budget_index(&budgets, thinking_budget);
@@ -572,7 +570,7 @@ fn apply_model_and_budget_pick(
             if let Some(config) = app.config_snapshot() {
                 // Keep out/think in sync immediately; agent may still be busy so
                 // SetModel / SetThinkingBudget (and their ModelInfo) can arrive later.
-                app.status_bar_mut().model_max_tokens = config.agent.max_tokens;
+                app.status_bar_mut().model_max_tokens = config.max_tokens;
             }
             app.status_bar_mut().model_thinking_budget =
                 (thinking_budget > 0).then_some(thinking_budget as u32);
@@ -629,7 +627,7 @@ fn apply_model_and_budget_pick(
             msgs.model_subagent_persist_with_budget_prompt,
         ),
     };
-    if config.config_path.is_none() {
+    if !config.has_config_path {
         app.add_system_message(format_model_and_budget(
             session_only_tmpl,
             &model,
@@ -677,7 +675,7 @@ fn apply_model_and_effort_pick(
             app.status_bar_mut().model_name = model.clone();
             app.refresh_config_snapshot();
             if let Some(config) = app.config_snapshot() {
-                app.status_bar_mut().model_max_tokens = config.agent.max_tokens;
+                app.status_bar_mut().model_max_tokens = config.max_tokens;
             }
             app.status_bar_mut().model_reasoning_effort = Some(effort.as_str().to_string());
             app.status_bar_mut().model_thinking_budget = None; // effort semantics: budget not shown
@@ -731,7 +729,7 @@ fn open_effort_persist_prompt(
         app.input_mode = InputMode::Normal;
         return;
     };
-    if config.config_path.is_none() {
+    if !config.has_config_path {
         app.add_system_message(
             msgs.model_session_only_with_effort_tmpl
                 .replace("{}", &model)
@@ -1002,19 +1000,19 @@ pub(crate) fn start_model_picker(app: &mut App) {
     // Ask the host's catalog: it owns how the endpoint is queried, and a view
     // without one keeps the configured list.
     let mut candidates = match &app.models {
-        Some(models) => models.candidates(&config.llm.models),
-        None => config.llm.models.clone(),
+        Some(models) => models.candidates(&config.models),
+        None => config.models.clone(),
     };
 
     if candidates.is_empty() {
         app.add_system_message(
             msgs.model_list_empty_tmpl
-                .replace("{}", config.llm.provider.as_str()),
+                .replace("{}", &config.provider_label),
         );
         return;
     }
 
-    let current = config.llm.model.clone();
+    let current = config.model.clone();
     if !candidates.iter().any(|m| m == &current) {
         candidates.insert(0, current.clone());
     }
@@ -1028,7 +1026,7 @@ pub(crate) fn start_model_picker(app: &mut App) {
 
     let prompt = msgs
         .model_select_prompt_tmpl
-        .replace("{}", config.llm.provider.as_str());
+        .replace("{}", &config.provider_label);
     app.select_kind = SelectKind::ModelPick(ModelTarget::Main);
     app.select.set_local(prompt, options, selected, false);
     app.input_mode = InputMode::Select;
@@ -1041,12 +1039,12 @@ pub(crate) fn start_subagent_model_picker(app: &mut App) {
         app.add_system_message(msgs.model_subagent_not_configured.to_string());
         return;
     };
-    let Some(subagent) = &config.agent.subagent else {
+    let Some(subagent) = config.subagent.as_ref() else {
         app.add_system_message(msgs.model_subagent_not_configured.to_string());
         return;
     };
 
-    let subagent_provider_name = subagent.provider.provider.as_str();
+    let subagent_provider_name = subagent.provider_label.as_str();
     let mut candidates = match &app.models {
         Some(models) => models.candidates_for(&subagent.models, subagent_provider_name),
         None => subagent.models.clone(),
@@ -1060,7 +1058,7 @@ pub(crate) fn start_subagent_model_picker(app: &mut App) {
         return;
     }
 
-    let current = subagent.provider.model.clone();
+    let current = subagent.model.clone();
     if !candidates.iter().any(|m| m == &current) {
         candidates.insert(0, current.clone());
     }
@@ -1135,24 +1133,19 @@ mod tests {
     #[test]
     fn the_model_second_step_offers_the_profiles_from_the_app_snapshot() {
         let mut app = make_app();
-        let Some(mut config) = tact::config::try_settings() else {
-            // No installed configuration means this module's other tests cannot
-            // run either; nothing to compare against.
-            return;
-        };
-        config.llm.model_profiles.insert(
+        let mut config = crate::ports::ViewSettings::default();
+        config.model_profiles.insert(
             "profile-model".to_string(),
-            tact::config::ModelProfileToml {
+            crate::ports::ModelProfile {
                 reasoning_efforts: vec![tact_protocol::ReasoningEffort::High],
                 thinking_budgets: vec![4_242],
-                ..Default::default()
             },
         );
         app.set_config_snapshot(Some(config));
 
         let profile = app
             .config_snapshot()
-            .and_then(|config| config.llm.model_profiles.get("profile-model").cloned())
+            .and_then(|config| config.model_profiles.get("profile-model").cloned())
             .expect("the app exposes the profile it was given");
         assert_eq!(profile.thinking_budgets, vec![4_242]);
         assert_eq!(
@@ -1440,7 +1433,9 @@ mod tests {
     /// production does: the view reads the host's resolved configuration.
     fn app_with_current_config() -> App {
         let mut app = make_app();
-        app.set_config_snapshot(tact::config::try_settings());
+        // Re-project through the port, the same route `refresh_config_snapshot`
+        // takes after a write.
+        app.refresh_config_snapshot();
         app
     }
 
@@ -1802,7 +1797,12 @@ thinking_budget = {thinking_budget}
         );
 
         install_models_config(vec!["kimi-k2.5", "kimi-for-coding"], "kimi-k2.5");
-        app.set_config_snapshot(tact::config::try_settings());
+        // The fixture's projection mirrors the installed configuration, so the
+        // re-install has to be followed by a re-projection.
+        let seeded = crate::test_fixtures::RealConfigWriter::new()
+            .current_settings()
+            .unwrap_or_default();
+        app.set_config_snapshot(Some(seeded));
         start_model_picker(&mut app);
         assert!(matches!(app.input_mode, InputMode::Select));
         assert!(matches!(
@@ -2192,7 +2192,13 @@ thinking_budget = {thinking_budget}
         );
         let mut app = make_app();
         let writer = std::sync::Arc::new(crate::test_fixtures::FakeSettingsWriter::new());
+        writer.set_settings(
+            crate::test_fixtures::RealConfigWriter::new()
+                .current_settings()
+                .unwrap_or_default(),
+        );
         app.settings_writer = Some(writer.clone());
+        app.refresh_config_snapshot();
         start_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
@@ -2327,7 +2333,13 @@ thinking_budget = {thinking_budget}
         );
         let mut app = make_app();
         let writer = std::sync::Arc::new(crate::test_fixtures::FakeSettingsWriter::new());
+        writer.set_settings(
+            crate::test_fixtures::RealConfigWriter::new()
+                .current_settings()
+                .unwrap_or_default(),
+        );
         app.settings_writer = Some(writer.clone());
+        app.refresh_config_snapshot();
         start_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
@@ -2366,7 +2378,13 @@ thinking_budget = {thinking_budget}
         let original = std::fs::read_to_string(&path).unwrap();
         let mut app = make_app();
         let writer = std::sync::Arc::new(crate::test_fixtures::FakeSettingsWriter::new());
+        writer.set_settings(
+            crate::test_fixtures::RealConfigWriter::new()
+                .current_settings()
+                .unwrap_or_default(),
+        );
         app.settings_writer = Some(writer.clone());
+        app.refresh_config_snapshot();
         start_model_picker(&mut app);
         handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));

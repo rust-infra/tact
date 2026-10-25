@@ -269,7 +269,7 @@ impl App {
     /// the other configured values. A view that is never given one keeps every
     /// reader on its built-in default — the behaviour a test and a config-less
     /// run both need.
-    pub(crate) fn set_config_snapshot(&mut self, config: Option<tact::config::ResolvedConfig>) {
+    pub(crate) fn set_config_snapshot(&mut self, config: Option<crate::ports::ViewSettings>) {
         self.config_snapshot = config;
     }
 
@@ -281,12 +281,13 @@ impl App {
     /// the previous ceiling. This is the one place the view refreshes it, so the
     /// reason is stated once instead of at each call site.
     pub(crate) fn refresh_config_snapshot(&mut self) {
-        // Reads the process configuration on purpose: this runs immediately after
-        // a write went through the settings port, and re-reading is how the view
-        // picks up the derived values that write recomputed (a budget that no
-        // longer fits raises `max_tokens`). The port owns *writing*; the snapshot
-        // stays a read of the state that write produced.
-        self.config_snapshot = tact::config::try_settings();
+        // Through the port, immediately after a write went through it: the write
+        // may have recomputed derived values (a budget that no longer fits raises
+        // `max_tokens`), and the port owns the projection.
+        self.config_snapshot = self
+            .settings_writer
+            .as_ref()
+            .and_then(|writer| writer.current_settings());
     }
 
     /// The resolved configuration, if the host supplied one.
@@ -294,7 +295,7 @@ impl App {
     /// Cloned rather than borrowed because the callers consume parts of it
     /// (`model_profiles.get(..).cloned()`), and a `ResolvedConfig` is a few
     /// small structs rather than a large tree.
-    pub(crate) fn config_snapshot(&self) -> Option<tact::config::ResolvedConfig> {
+    pub(crate) fn config_snapshot(&self) -> Option<crate::ports::ViewSettings> {
         self.config_snapshot.clone()
     }
 

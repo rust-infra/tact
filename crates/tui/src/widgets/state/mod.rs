@@ -321,7 +321,7 @@ pub struct App {
     /// and a view whose host assembled a different snapshot must show *that*
     /// snapshot's choices. `None` (the test default) means "nothing installed",
     /// and every reader falls back to its documented default.
-    pub(crate) config_snapshot: Option<tact::config::ResolvedConfig>,
+    pub(crate) config_snapshot: Option<crate::ports::ViewSettings>,
     /// Whether hook-injected content is drawn in the log — a hook's progress
     /// line (`LogItemKind::HookStatus`) and the block of context it injects
     /// (`LogItemKind::HookContext`).

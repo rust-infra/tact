@@ -203,7 +203,7 @@ impl tui::ports::ModelCatalog for RuntimeModelCatalog {
 
     fn family(&self) -> tui::ports::ProviderFamily {
         tact_llm::try_get_provider()
-            .map(|info| family_of(info.provider))
+            .map(|info| family_of(&info.provider))
             .unwrap_or_default()
     }
 
@@ -213,7 +213,7 @@ impl tui::ports::ModelCatalog for RuntimeModelCatalog {
         // picker's tiers follow the target.
         let config = tact::config::try_settings()?;
         let subagent = config.agent.subagent?;
-        Some(family_of(subagent.provider.provider))
+        Some(family_of(&subagent.provider.provider))
     }
 }
 
@@ -222,7 +222,7 @@ impl tui::ports::ModelCatalog for RuntimeModelCatalog {
 /// One `match` in one place: the view never sees `ProviderKind`, so adding a
 /// provider kind fails to compile here rather than silently rendering as the
 /// openai tier list.
-fn family_of(kind: tact_llm::ProviderKind) -> tui::ports::ProviderFamily {
+fn family_of(kind: &tact_llm::ProviderKind) -> tui::ports::ProviderFamily {
     use tui::ports::ProviderFamily;
     match kind {
         tact_llm::ProviderKind::OpenAi => ProviderFamily::OpenAi,
@@ -404,6 +404,50 @@ impl tui::ports::SettingsWriter for RuntimeSettingsWriter {
 
     fn persist_disabled_skills(&self, names: &[String]) -> anyhow::Result<()> {
         tact::config::persist_skill_disable(names)
+    }
+
+    fn current_settings(&self) -> Option<tui::ports::ViewSettings> {
+        tact::config::try_settings().map(|config| project_settings(&config))
+    }
+}
+
+/// Project the runtime configuration onto what the view reads.
+///
+/// One function, so a field the view stops using disappears here instead of
+/// being carried forever, and the eight-value list stays visible in one place.
+pub fn project_settings(config: &tact::config::ResolvedConfig) -> tui::ports::ViewSettings {
+    use std::collections::HashMap;
+    let mut model_profiles = HashMap::new();
+    for (model, profile) in &config.llm.model_profiles {
+        model_profiles.insert(
+            model.clone(),
+            tui::ports::ModelProfile {
+                reasoning_efforts: profile.reasoning_efforts.clone(),
+                thinking_budgets: profile.thinking_budgets.clone(),
+            },
+        );
+    }
+    tui::ports::ViewSettings {
+        model: config.llm.model.clone(),
+        provider_label: config.llm.provider.as_str().to_string(),
+        models: config.llm.models.clone(),
+        model_profiles,
+        reasoning_effort: config.agent.reasoning_effort,
+        thinking_budget: config.agent.thinking_budget,
+        max_tokens: config.agent.max_tokens,
+        has_config_path: config.config_path.is_some(),
+        subagent: config
+            .agent
+            .subagent
+            .as_ref()
+            .map(|sa| tui::ports::SubagentSettings {
+                model: sa.provider.model.clone(),
+                models: sa.models.clone(),
+                reasoning_effort: sa.reasoning_effort,
+                thinking_budget: sa.thinking_budget,
+                provider_label: sa.provider.provider.as_str().to_string(),
+                family: family_of(&sa.provider.provider),
+            }),
     }
 }
 

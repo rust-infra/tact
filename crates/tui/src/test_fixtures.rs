@@ -306,6 +306,7 @@ pub struct FakeSettingsWriter {
     >,
     ui: std::sync::Arc<std::sync::Mutex<Vec<crate::ports::UiSetting>>>,
     disabled_skills: std::sync::Arc<std::sync::Mutex<Vec<Vec<String>>>>,
+    settings: std::sync::Arc<std::sync::Mutex<Option<crate::ports::ViewSettings>>>,
 }
 
 impl FakeSettingsWriter {
@@ -331,6 +332,18 @@ impl FakeSettingsWriter {
     /// The skill-disable lists written, in order.
     pub fn disabled_skills(&self) -> Vec<Vec<String>> {
         self.disabled_skills.lock().expect("skills lock").clone()
+    }
+}
+
+impl FakeSettingsWriter {
+    /// Make the next projection return `settings`.
+    pub fn set_settings(&self, settings: crate::ports::ViewSettings) {
+        *self.settings.lock().expect("settings lock") = Some(settings);
+    }
+
+    /// The projection this writer would report.
+    pub fn settings(&self) -> Option<crate::ports::ViewSettings> {
+        self.settings.lock().expect("settings lock").clone()
     }
 }
 
@@ -371,6 +384,10 @@ impl crate::ports::SettingsWriter for FakeSettingsWriter {
             .push(names.to_vec());
         Ok(())
     }
+
+    fn current_settings(&self) -> Option<crate::ports::ViewSettings> {
+        self.settings.lock().expect("settings lock").clone()
+    }
 }
 
 /// A settings writer that reaches the real config helpers.
@@ -385,6 +402,11 @@ pub struct RealConfigWriter;
 impl RealConfigWriter {
     pub fn new() -> Self {
         Self
+    }
+
+    /// The current configuration projected for the view.
+    pub fn current_settings(&self) -> Option<crate::ports::ViewSettings> {
+        <Self as crate::ports::SettingsWriter>::current_settings(self)
     }
 }
 
@@ -432,6 +454,44 @@ impl crate::ports::SettingsWriter for RealConfigWriter {
 
     fn persist_disabled_skills(&self, _names: &[String]) -> anyhow::Result<()> {
         Ok(())
+    }
+
+    fn current_settings(&self) -> Option<crate::ports::ViewSettings> {
+        // Built from the real configuration, so a test that asserts the derived
+        // values (a raised `max_tokens`) sees what production would.
+        let config = tact::config::try_settings()?;
+        let mut model_profiles = std::collections::HashMap::new();
+        for (model, profile) in &config.llm.model_profiles {
+            model_profiles.insert(
+                model.clone(),
+                crate::ports::ModelProfile {
+                    reasoning_efforts: profile.reasoning_efforts.clone(),
+                    thinking_budgets: profile.thinking_budgets.clone(),
+                },
+            );
+        }
+        Some(crate::ports::ViewSettings {
+            model: config.llm.model.clone(),
+            provider_label: config.llm.provider.as_str().to_string(),
+            models: config.llm.models.clone(),
+            model_profiles,
+            reasoning_effort: config.agent.reasoning_effort,
+            thinking_budget: config.agent.thinking_budget,
+            max_tokens: config.agent.max_tokens,
+            has_config_path: config.config_path.is_some(),
+            subagent: config
+                .agent
+                .subagent
+                .as_ref()
+                .map(|sa| crate::ports::SubagentSettings {
+                    model: sa.provider.model.clone(),
+                    models: sa.models.clone(),
+                    reasoning_effort: sa.reasoning_effort,
+                    thinking_budget: sa.thinking_budget,
+                    provider_label: sa.provider.provider.as_str().to_string(),
+                    family: crate::ports::ProviderFamily::Kimi,
+                }),
+        })
     }
 }
 
@@ -530,9 +590,20 @@ impl TestApp {
         // than production and hide a regression in the handoff. The model
         // catalog starts empty (no discovered ids) so a test that cares states
         // what the endpoint reports.
-        app.set_config_snapshot(tact::config::try_settings());
+        // The fixture's writer mirrors the installed configuration, so a test
+        // that installs one after building the app can re-project through it —
+        // the same route production takes.
+        let writer = std::sync::Arc::new(FakeSettingsWriter::new());
+        // Default to the installed configuration so a picker test sees the same
+        // values production would; a test that cares calls `set_settings`.
+        writer.set_settings(
+            RealConfigWriter::new()
+                .current_settings()
+                .unwrap_or_default(),
+        );
+        app.set_config_snapshot(writer.settings());
         app.models = Some(std::sync::Arc::new(FakeModelCatalog::default()));
-        app.settings_writer = Some(std::sync::Arc::new(FakeSettingsWriter::new()));
+        app.settings_writer = Some(writer);
         Self {
             app,
             user_cmds,

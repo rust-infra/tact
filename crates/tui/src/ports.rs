@@ -155,6 +155,14 @@ pub trait SettingsWriter: Send + Sync {
 
     /// Write back the skill-disable list.
     fn persist_disabled_skills(&self, names: &[String]) -> anyhow::Result<()>;
+
+    /// The current settings, projected for the view.
+    ///
+    /// Read *after* a write: a write can recompute derived values (a budget that
+    /// no longer fits raises `max_tokens`), and the view has to show the new
+    /// ceiling. Projecting here rather than handing over the runtime's whole
+    /// configuration keeps the view free of that tree.
+    fn current_settings(&self) -> Option<ViewSettings>;
 }
 
 /// The `[ui]` preferences the view can write back.
@@ -234,6 +242,51 @@ pub trait VoicePort: Send + Sync {
     /// A voice button that works but cannot transcribe is worse than one that
     /// says why, so the state carries it.
     fn missing_api_key(&self) -> bool;
+}
+
+/// The configuration values the `/model` flow needs.
+///
+/// A projection, not the runtime's whole resolved configuration: the view reads
+/// eight fields and never the tree around them, and passing the tree is what made
+/// every picker test depend on the config subsystem.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ViewSettings {
+    /// The configured main model.
+    pub model: String,
+    /// The configured provider label, for the picker prompt.
+    pub provider_label: String,
+    /// Provider-reported model ids plus the configured ones.
+    pub models: Vec<String>,
+    /// Per-model effort tiers and thinking budgets.
+    pub model_profiles: std::collections::HashMap<String, ModelProfile>,
+    /// The current effort for the main target.
+    pub reasoning_effort: Option<tact_protocol::ReasoningEffort>,
+    /// The current thinking budget for the main target.
+    pub thinking_budget: usize,
+    /// The ceiling on output tokens, shown in the status bar.
+    pub max_tokens: u32,
+    /// Whether a config file exists to persist into.
+    pub has_config_path: bool,
+    /// The subagent target, when configured.
+    pub subagent: Option<SubagentSettings>,
+}
+
+/// One model's selectable tiers.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct ModelProfile {
+    pub reasoning_efforts: Vec<tact_protocol::ReasoningEffort>,
+    pub thinking_budgets: Vec<usize>,
+}
+
+/// The subagent target's settings.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SubagentSettings {
+    pub model: String,
+    pub models: Vec<String>,
+    pub reasoning_effort: Option<tact_protocol::ReasoningEffort>,
+    pub thinking_budget: usize,
+    pub provider_label: String,
+    pub family: ProviderFamily,
 }
 
 /// What the view needs to populate the `/model` pickers.

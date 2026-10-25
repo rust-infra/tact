@@ -119,7 +119,7 @@ async fn run_interactive_locked(
             session_id,
             history: crate::view_ports::session_history(session_store.clone()),
             pending_ui: crate::view_ports::interaction_port(tui_ui_responder),
-            config_snapshot: Some(config_snapshot.clone()),
+            config_snapshot: Some(crate::view_ports::project_settings(&config_snapshot)),
             history_save_tx,
             theme,
             language,

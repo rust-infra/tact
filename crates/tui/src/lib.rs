@@ -229,7 +229,7 @@ pub struct TuiConfig {
     /// flow needs the profiles, effort/budget defaults and config path, and a
     /// view whose host assembled a different snapshot must show that one.
     /// `None` keeps every reader on its built-in default.
-    pub config_snapshot: Option<tact::config::ResolvedConfig>,
+    pub config_snapshot: Option<ports::ViewSettings>,
     /// Keyboard shortcut to start/stop voice recording (e.g. "ctrl+g").
     /// Parsed from voice.voice_keybind; ready for crossterm matching.
     pub voice_parsed_keybind: Option<(KeyModifiers, KeyCode)>,
@@ -335,7 +335,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     // status bar must describe the configuration this view was started with.
     app.status_bar_mut().model_reasoning_effort = app
         .config_snapshot()
-        .and_then(|config| config.agent.reasoning_effort)
+        .and_then(|config| config.reasoning_effort)
         .map(|effort| effort.as_str().to_string());
     app.add_startup_banner();
 
