@@ -61,7 +61,7 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   `ChatService` owns the turn lifecycle (message assembly, Stop-hook
   continuation, completion) over the same agent slot, so a turn and a compaction
   serialise structurally rather than by convention.
-- Capability domains: **13 of 15**. `HooksPlugin`, `NotificationsPlugin`,
+- Capability domains: **15 of 15**. `HooksPlugin`, `NotificationsPlugin`,
   `BackgroundPlugin`, `MemoryPlugin`, `SkillsPlugin`, `WorktreePlugin`,
   `VoicePlugin`, `SubagentPlugin` and `McpPlugin` have plugin objects with a
   lifecycle and a resolve-by-name port. `Tools` was already done and this audit
@@ -86,8 +86,11 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   was already a trait and the runner is the loop. `Task` and `Team` turned out to be
   store-backed like the rest, so they took the plain pattern.
 
-  The remaining two are **views** (`Tui`, `Headless`), which item 6 covers. They are
-  not item 2 gaps: a view is a consumer of capabilities, not one of them.
+  The last two are **views**: `TuiPlugin` lives in `crates/tui` and
+  `HeadlessPlugin` in `tact-ui`, each contributing a `View` capability, chosen by
+  the composition root from its `Frontend`. `tact_ui::view_plugin::attached`
+  enforces one view per process — the catalog deliberately allows more, because it
+  is a registry, and the rule belongs to whoever composes.
 
   The shape is now stable: a named shared type, a `Plugin` impl that registers it,
   a resolver that errors by name when absent, and three tests (resolve, missing,
