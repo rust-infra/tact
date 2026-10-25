@@ -513,43 +513,30 @@ impl Agent {
     /// one `Arc` per handler rather than two copies with independent state.
     fn build_tool_executor(
         tools: &crate::tool::ToolRouter,
-        context: &crate::tool::ToolContext,
         permission_manager: &crate::permission::SharedPermissionManager,
         memory_enabled: bool,
         contexts: std::sync::Arc<crate::tool::SharedToolContextFactory>,
         ui_available: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> std::sync::Arc<tact_kernel::tool::executor::ToolExecutor> {
-        // Assembled by installing the built-in families as plugins, so the tool
-        // list is what the plugin set contributes rather than a second list that
-        // has to stay in step with `toolset()`.
-        let catalog = crate::tool::catalog_from_families(
+        // One composition root, shared with every other host: it installs the
+        // policy plugins and the built-in tool families, so neither list can
+        // drift from the other.
+        let assembled = crate::host::assemble(crate::host::HostOptions {
+            permission_manager,
+            ui_available,
+            hooks: None,
+            storage: None,
+            filter: tact_kernel::capability::CapabilityFilter::default(),
+        })
+        .expect("the built-in plugin set is valid: ids are literals and names are unique");
+        crate::host::executor_from_families(
             tools,
-            &crate::tool::ToolFamily::ALL,
-            memory_enabled,
             contexts,
+            assembled.services(),
             tact_kernel::capability::CapabilityFilter::default(),
+            memory_enabled,
         )
         .expect("the built-in family table is valid: ids are literals and names are unique")
-        .0;
-        let _ = context;
-        // The policy ports arrive the way every other contribution does: a
-        // plugin provides them and the composition root pulls the handle it
-        // needs. A host that forgets to install one gets a named error instead
-        // of a silently different permission policy.
-        let services = crate::permission::plugin::install(permission_manager, ui_available)
-            .expect("the built-in policy plugins are valid");
-        let ports = crate::permission::plugin::resolve(&services)
-            .expect("builtin.permission and builtin.security were just installed");
-        std::sync::Arc::new(tact_kernel::tool::executor::ToolExecutor::new(
-            std::sync::Arc::new(catalog),
-            tact_kernel::capability::CapabilityFilter::default(),
-            ports.security,
-            ports.permissions,
-            // The Agent runs its own hooks: they take `&Agent`, which the kernel
-            // cannot see. The ports' hook methods are therefore never called
-            // through this instance.
-            std::sync::Arc::new(crate::agent::tool_dispatch::NoKernelHooks),
-        ))
     }
 
     /// Whether a background subagent result is waiting to be re-injected.
@@ -613,7 +600,6 @@ impl Agent {
         };
         let executor = Agent::build_tool_executor(
             &tools,
-            &tool_context,
             &permission_manager,
             memory_enabled,
             contexts.clone(),

@@ -639,32 +639,6 @@ impl Agent {
     }
 }
 
-/// The hook port the kernel pipeline would call.
-///
-/// The Agent keeps hooks on its own side because a hook callback takes
-/// `&Agent`; the pipeline is driven through `resolve`/`authorize_policy`/
-/// `finish_authorization` instead of `preflight`, so these methods are never
-/// reached. Implemented rather than optional so `ToolExecutor` stays a plain
-/// struct with no `Option` in the hot path.
-pub(super) struct NoKernelHooks;
-
-#[async_trait::async_trait]
-impl tact_kernel::tool::executor::HookService for NoKernelHooks {
-    async fn pre_tool_use(
-        &self,
-        _event: &mut tact_kernel::tool::executor::PreToolUseEvent,
-    ) -> Result<tact_kernel::tool::executor::HookControl> {
-        Ok(tact_kernel::tool::executor::HookControl::Continue)
-    }
-
-    async fn post_tool_use(
-        &self,
-        _event: &mut tact_kernel::tool::executor::PostToolUseEvent,
-    ) -> Result<tact_kernel::tool::executor::HookControl> {
-        Ok(tact_kernel::tool::executor::HookControl::Continue)
-    }
-}
-
 /// A permission answer plus the label the UI should show for it.
 struct KernelPermissionAnswer {
     label: &'static str,
