@@ -402,3 +402,67 @@ async fn a_failed_registration_provides_nothing() {
         "a failed commit provides nothing"
     );
 }
+
+/// The plugin list is what `Runtime::plugin_ids` reports, in install order.
+#[tokio::test]
+async fn the_runtime_reports_its_plugins_in_install_order() {
+    let mut host = PluginHost::new(CapabilityFilter::default());
+    host.install(ServicePlugin).await.unwrap();
+    host.install(RecordingPlugin::new(
+        "second",
+        std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+    ))
+    .await
+    .unwrap();
+    let runtime = host.seal().await.unwrap();
+    let ids: Vec<String> = runtime
+        .plugin_ids()
+        .iter()
+        .map(|id| id.as_str().to_string())
+        .collect();
+    assert_eq!(ids, vec!["service.plugin", "second"]);
+}
+
+#[tokio::test]
+async fn shutdown_runs_the_reverse_of_the_install_order() {
+    // The order is a dependency order: a plugin's register may only assume what
+    // was installed before it, so teardown has to be the reverse.
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut host = PluginHost::new(CapabilityFilter::default());
+    host.install(RecordingPlugin::new("first", log.clone()))
+        .await
+        .unwrap();
+    host.install(RecordingPlugin::new("second", log.clone()))
+        .await
+        .unwrap();
+    let mut runtime = host.seal().await.unwrap();
+    runtime.shutdown().await.unwrap();
+    assert_eq!(*log.lock().unwrap(), vec!["second", "first"]);
+}
+
+struct RecordingPlugin {
+    id: &'static str,
+    log: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+}
+
+impl RecordingPlugin {
+    fn new(id: &'static str, log: std::sync::Arc<std::sync::Mutex<Vec<String>>>) -> Self {
+        Self { id, log }
+    }
+}
+
+#[async_trait::async_trait]
+impl Plugin for RecordingPlugin {
+    fn manifest(&self) -> PluginManifest {
+        manifest(self.id)
+    }
+
+    fn register(&self, _reg: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
+        Ok(())
+    }
+
+    async fn shutdown(&self) -> anyhow::Result<()> {
+        self.log.lock().unwrap().push(self.id.to_string());
+        Ok(())
+    }
+}

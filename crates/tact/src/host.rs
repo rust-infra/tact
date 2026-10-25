@@ -91,6 +91,15 @@ impl AssembledRuntime {
         policy::resolve(&self.services)
     }
 
+    /// The installed plugins, in installation order.
+    pub fn plugin_ids(&self) -> Vec<String> {
+        self.runtime
+            .plugin_ids()
+            .iter()
+            .map(|id| id.as_str().to_string())
+            .collect()
+    }
+
     /// Shut the plugins down in reverse installation order.
     pub async fn shutdown(&mut self) -> Result<()> {
         self.runtime.shutdown().await
@@ -273,6 +282,45 @@ mod tests {
         let port = hook_port(&services);
         // The port is usable, which is the contract: an executor always has one.
         assert!(Arc::strong_count(&port) >= 1);
+    }
+
+    #[test]
+    fn assembly_installs_in_dependency_order() {
+        // A plugin's `register` may only assume what was installed before it, so
+        // the order is part of the contract, not an implementation detail.
+        let manager = manager();
+        let dir = std::env::temp_dir().join("tact-host-order");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let assembled = assemble(HostOptions {
+            permission_manager: &manager,
+            ui_available: Arc::new(|| false),
+            hooks: Some(HookOptions {
+                source: crate::plugin::HookSource {
+                    label: "test".into(),
+                    origin: crate::plugin::HookOrigin::ProjectFile,
+                    dirs: crate::consts::PluginDirs::root_only("/tmp"),
+                    hooks: crate::plugin::HooksFile::default(),
+                },
+                work_dir: std::path::PathBuf::from("/tmp"),
+                notices: Arc::new(|_| {}),
+            }),
+            storage: None,
+            marketplace: Some(crate::consts::PluginHome::from_home(&dir)),
+            provider: None,
+            filter: CapabilityFilter::default(),
+        })
+        .unwrap();
+        assert_eq!(
+            assembled.plugin_ids(),
+            vec![
+                // Security first: the permission port depends on a guard.
+                "builtin.security",
+                "builtin.permission",
+                "builtin.hooks",
+                "builtin.marketplace",
+            ]
+        );
     }
 
     #[test]

@@ -1070,7 +1070,21 @@ impl Agent {
     ///
     /// Callers must create/resolve the id and persist the session row before
     /// this (startup path). Also wires DeepSeek `user_id` for KV cache isolation.
-    pub fn with_session(mut self, session_id: String, store: DynSessionStore) -> Self {
+    pub fn with_session(self, session_id: String, store: DynSessionStore) -> Self {
+        self.attach_session(session_id, store)
+    }
+
+    /// Attach the session the plugin bundle provides.
+    ///
+    /// The store arrives the way every other dependency does: a plugin provides
+    /// it and this pulls the handle. `with_session` still takes a store directly,
+    /// so a host that has not installed storage (a unit test) keeps working.
+    pub fn with_installed_session(self, session_id: String) -> anyhow::Result<Self> {
+        let store = crate::store::plugin::session_store(self.plugins.services())?;
+        Ok(self.attach_session(session_id, store))
+    }
+
+    fn attach_session(mut self, session_id: String, store: DynSessionStore) -> Self {
         self.runtime.client.set_user_id(&session_id);
         self.tool_context.session_id = Some(session_id.clone());
         self.tool_context.session_store = Some(store.clone());
@@ -3499,6 +3513,21 @@ mod tests {
     /// Asserts the shape rather than a value: whether one is installed is
     /// process-wide, and a test that never called `init_provider` must still be
     /// able to build an agent.
+    /// `with_installed_session` fails with the plugin's name when storage was
+    /// never installed, rather than silently running without persistence.
+    #[tokio::test]
+    async fn attaching_an_uninstalled_session_names_the_plugin() {
+        ensure_config();
+        let agent = chat_completions_test_agent("installed_session_missing");
+        let Err(error) = agent.with_installed_session("sess".to_string()) else {
+            panic!("no storage plugin means no store");
+        };
+        assert!(
+            error.to_string().contains("builtin.session_store"),
+            "{error}"
+        );
+    }
+
     #[test]
     fn the_agent_carries_the_provider_snapshot_it_was_assembled_with() {
         ensure_config();

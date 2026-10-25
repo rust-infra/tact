@@ -353,6 +353,19 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// The installed plugins, in installation order.
+    ///
+    /// Exposed so a host can verify its own composition: the install order is a
+    /// dependency order (a plugin's `register` may only assume what was installed
+    /// before it), and that is a property of the assembled set, not of any one
+    /// plugin. Shutdown runs the reverse of this list.
+    pub fn plugin_ids(&self) -> Vec<PluginId> {
+        self.plugins
+            .iter()
+            .map(|plugin| plugin.manifest().id)
+            .collect()
+    }
+
     /// The services the installed plugins provide.
     pub fn services(&self) -> &crate::service::ServiceRegistry {
         &self.catalogs.services
