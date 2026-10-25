@@ -255,6 +255,8 @@ pub async fn bootstrap_session(
         }
     }
     let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager(memory_dir)?));
+    // One clone for the plugin bundle: the tool context takes the original.
+    let plugin_memory = memory_manager.clone();
     let (mcp_router, mcp_report) = load_mcp_router_with_report().await?;
     // MCP problems are collected, never fatal (one broken server must not stop
     // startup), so they have to be surfaced here — otherwise a typo'd command
@@ -352,6 +354,7 @@ pub async fn bootstrap_session(
             agent_service: Some(agent_service.clone()),
             chat_service: Some(chat_service.clone()),
             background: Some(plugin_background),
+            memory: Some(plugin_memory),
             ..tact::host::HostExtras::default()
         },
     )

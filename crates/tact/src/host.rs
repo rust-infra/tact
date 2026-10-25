@@ -107,6 +107,11 @@ pub struct HostExtras {
     /// store: the host opens it and installs it here, and the registry is the
     /// single handoff.
     pub background: Option<crate::background::SharedBackgroundManager>,
+    /// The already-loaded memory manager.
+    ///
+    /// Loading reads the memory directory, so it happens before assembly for the
+    /// same reason the session store does.
+    pub memory: Option<crate::memory::SharedMemoryManager>,
 }
 
 /// The assembled pieces, after sealing.
@@ -220,6 +225,9 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
 
     if let Some(manager) = extras.background.clone() {
         host.install_sync(crate::background::BackgroundPlugin::new(manager))?;
+    }
+    if let Some(manager) = extras.memory.clone() {
+        host.install_sync(crate::memory::MemoryPlugin::new(manager))?;
     }
 
     let skipped = host

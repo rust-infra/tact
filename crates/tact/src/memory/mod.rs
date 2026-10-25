@@ -1165,3 +1165,116 @@ mod tests {
         std::fs::remove_dir_all(second).unwrap();
     }
 }
+
+/// The memory manager, as the runtime shares it.
+pub type SharedMemoryManager = std::sync::Arc<std::sync::Mutex<MemoryManager>>;
+
+/// Wrap a manager for sharing.
+#[must_use]
+pub fn shared_memory_manager(manager: MemoryManager) -> SharedMemoryManager {
+    std::sync::Arc::new(std::sync::Mutex::new(manager))
+}
+
+/// Memory, contributed as a plugin.
+///
+/// Memory is a capability domain like background tasks: the manager already
+/// exists and is shared, and this is the lifecycle seam that makes it a plugin. It
+/// registers the shared handle so a host that keeps memory somewhere else installs
+/// its own plugin rather than replacing what every tool writes against.
+pub struct MemoryPlugin {
+    manager: SharedMemoryManager,
+}
+
+impl MemoryPlugin {
+    /// A plugin over an already-loaded manager.
+    ///
+    /// Loading reads the memory directory, which happens before assembly: like
+    /// every store-backed plugin, `register` cannot await or do file I/O.
+    pub fn new(manager: SharedMemoryManager) -> Self {
+        Self { manager }
+    }
+}
+
+#[async_trait::async_trait]
+impl tact_kernel::plugin::Plugin for MemoryPlugin {
+    fn manifest(&self) -> tact_kernel::plugin::PluginManifest {
+        tact_kernel::plugin::PluginManifest::new(
+            tact_kernel::plugin::PluginId::new("builtin.memory").expect("a literal id"),
+            "Memory",
+            env!("CARGO_PKG_VERSION"),
+            tact_kernel::plugin::PluginKind::Capability,
+            "Durable notes: the injected index and per-topic bodies",
+        )
+    }
+
+    fn register(&self, registrar: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
+        registrar.service(std::sync::Arc::new(MemoryHandle(self.manager.clone())))
+    }
+}
+
+/// The manager a [`MemoryPlugin`] provided.
+#[derive(Clone)]
+pub struct MemoryHandle(pub SharedMemoryManager);
+
+impl std::ops::Deref for MemoryHandle {
+    type Target = SharedMemoryManager;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// The memory manager a host resolved from its registry.
+///
+/// # Errors
+///
+/// Returns an error when no `MemoryPlugin` was installed. Memory tools report that
+/// they cannot run rather than silently dropping a note.
+pub fn memory_from(
+    services: &tact_kernel::service::ServiceRegistry,
+) -> anyhow::Result<SharedMemoryManager> {
+    services
+        .get::<MemoryHandle>()
+        .map(|handle| handle.0.clone())
+        .ok_or_else(|| anyhow::anyhow!("no memory manager installed; install MemoryPlugin"))
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+    use tact_kernel::capability::CapabilityFilter;
+    use tact_kernel::plugin::PluginHost;
+
+    fn manager() -> SharedMemoryManager {
+        shared_memory_manager(MemoryManager::new(std::env::temp_dir()))
+    }
+
+    /// The plugin registers a manager the host can resolve.
+    #[tokio::test]
+    async fn the_plugin_provides_a_resolvable_manager() {
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(MemoryPlugin::new(manager())).await.unwrap();
+        let runtime = host.seal().await.unwrap();
+        assert!(memory_from(runtime.services()).is_ok());
+    }
+
+    /// A host with no plugin is told so by name.
+    #[test]
+    fn a_missing_plugin_is_an_error_that_names_it() {
+        let registry = tact_kernel::service::ServiceRegistry::default();
+        let error = match memory_from(&registry) {
+            Ok(_) => panic!("no manager was installed, so this must fail"),
+            Err(error) => error,
+        };
+        assert!(format!("{error}").contains("MemoryPlugin"), "{error}");
+    }
+
+    /// The manifest says what it contributes.
+    #[test]
+    fn the_manifest_says_what_it_is() {
+        use tact_kernel::plugin::Plugin;
+        let manifest = MemoryPlugin::new(manager()).manifest();
+        assert_eq!(manifest.id.as_str(), "builtin.memory");
+        assert_eq!(manifest.kind, tact_kernel::plugin::PluginKind::Capability);
+    }
+}
