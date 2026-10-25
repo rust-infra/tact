@@ -21,18 +21,31 @@ use crate::capability::{
 use crate::tool::descriptor::ToolDescriptor;
 use crate::tool::source::{ToolDescriptorSnapshot, ToolSource};
 
-#[derive(Clone)]
 pub struct ToolCatalog {
     tools: BTreeMap<String, Arc<dyn Tool>>,
-    sources: Vec<Arc<dyn ToolSource>>,
+    /// Shared by every clone: a source registered through one handle is
+    /// visible to the catalog that dispatches.
+    sources: Arc<std::sync::Mutex<Vec<Arc<dyn ToolSource>>>>,
+    /// Shared by every clone, so a source added after a clone is visible to it
+    /// and the generation both of them report cannot drift.
     generation: Arc<AtomicU64>,
+}
+
+impl Clone for ToolCatalog {
+    fn clone(&self) -> Self {
+        Self {
+            tools: self.tools.clone(),
+            sources: self.sources.clone(),
+            generation: self.generation.clone(),
+        }
+    }
 }
 
 impl Default for ToolCatalog {
     fn default() -> Self {
         Self {
             tools: BTreeMap::new(),
-            sources: Vec::new(),
+            sources: Arc::new(std::sync::Mutex::new(Vec::new())),
             generation: Arc::new(AtomicU64::new(0)),
         }
     }
@@ -50,13 +63,38 @@ impl ToolCatalog {
         Ok(())
     }
 
-    pub fn add_source(&mut self, source: Arc<dyn ToolSource>) {
-        self.sources.push(source);
+    /// Register a dynamic source.
+    ///
+    /// Takes `&self` so a host can add one through a shared `Arc<ToolCatalog>`
+    /// (the executor holds it that way) without rebuilding the catalog and
+    /// invalidating every ticket.
+    pub fn add_source(&self, source: Arc<dyn ToolSource>) {
+        let mut sources = self
+            .sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        sources.push(source);
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Drop every dynamic source. Used when the host replaces its MCP router.
+    pub fn clear_sources(&self) {
+        self.sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
         self.generation.fetch_add(1, Ordering::SeqCst);
     }
 
     pub async fn refresh_sources(&self) -> anyhow::Result<()> {
-        for source in &self.sources {
+        // Cloned out of the lock: `refresh` is async and may re-enter the
+        // catalog through a tool.
+        let sources: Vec<Arc<dyn ToolSource>> = self
+            .sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        for source in &sources {
             source.refresh().await?;
         }
         self.generation.fetch_add(1, Ordering::SeqCst);
@@ -69,7 +107,12 @@ impl ToolCatalog {
     ) -> anyhow::Result<ToolDescriptorSnapshot> {
         let mut tools: Vec<ToolDescriptor> =
             self.tools.values().map(|tool| tool.descriptor()).collect();
-        for source in &self.sources {
+        let sources: Vec<Arc<dyn ToolSource>> = self
+            .sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        for source in &sources {
             for tool in source.tools() {
                 tools.push(tool.descriptor());
             }
@@ -427,7 +470,7 @@ mod snapshot_tests {
 
     #[tokio::test]
     async fn disabled_source_tool_is_absent_from_snapshot() {
-        let mut catalog = ToolCatalog::default();
+        let catalog = ToolCatalog::default();
         catalog.add_source(source("one", "remote"));
         let disabled: crate::capability::CapabilityId = "tool:remote".parse().unwrap();
         let snapshot = catalog
@@ -438,8 +481,36 @@ mod snapshot_tests {
     }
 
     #[tokio::test]
+    async fn a_source_added_after_clone_is_visible_to_the_clone() {
+        // The executor keeps one clone and the host keeps another; a source
+        // registered later must not be invisible to the catalog that dispatches.
+        let catalog = ToolCatalog::default();
+        let shared = catalog.clone();
+        catalog.add_source(source("late", "late_tool"));
+        let snapshot = shared
+            .descriptor_snapshot(&CapabilityFilter::default())
+            .await
+            .unwrap();
+        assert!(snapshot.tools.iter().any(|tool| tool.name == "late_tool"));
+    }
+
+    #[tokio::test]
+    async fn clearing_sources_removes_only_the_dynamic_ones() {
+        let catalog = ToolCatalog::default();
+        let mut with_native = catalog.clone();
+        with_native.insert(Arc::new(FixedTool("native"))).unwrap();
+        catalog.add_source(source("one", "remote"));
+        catalog.clear_sources();
+        let snapshot = catalog
+            .descriptor_snapshot(&CapabilityFilter::default())
+            .await
+            .unwrap();
+        assert!(snapshot.tools.iter().all(|tool| tool.name != "remote"));
+    }
+
+    #[tokio::test]
     async fn duplicate_source_tool_keeps_the_first_source() {
-        let mut catalog = ToolCatalog::default();
+        let catalog = ToolCatalog::default();
         catalog.add_source(source("one", "same"));
         catalog.add_source(source("two", "same"));
         let snapshot = catalog
