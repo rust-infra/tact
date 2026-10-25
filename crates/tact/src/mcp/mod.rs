@@ -487,6 +487,99 @@ pub fn describe_servers(connected: &[(String, usize)]) -> Result<Vec<McpServerVi
     Ok(describe_resolved(resolve_current()?, connected))
 }
 
+/// Where the configured MCP servers come from.
+///
+/// The domain's replaceable seam is *what servers exist*, not the live
+/// connections: a router's clients are already `Clone` over `Arc`ed services, so
+/// sharing one is free, while a host that reads its MCP configuration from
+/// somewhere else (a database, a remote registry) needs to replace this. Keeping
+/// the port here is also what removes `resolve_current`'s read of the process
+/// working directory from the path a caller takes.
+pub trait McpConfigSource: Send + Sync {
+    /// Describe every configured server, given what is currently connected.
+    ///
+    /// `work_dir` is explicit rather than read from the process: a caller that
+    /// resolved it once should not have a later `cd` change what it reports.
+    fn describe(
+        &self,
+        work_dir: &std::path::Path,
+        connected: &[(String, usize)],
+    ) -> Result<Vec<McpServerView>>;
+}
+
+/// MCP servers as declared in the project's configuration files.
+///
+/// This is the behaviour [`describe_servers`] has always had; it is a type now so
+/// a host can install a different one.
+pub struct FileMcpConfigSource;
+
+impl McpConfigSource for FileMcpConfigSource {
+    fn describe(
+        &self,
+        work_dir: &std::path::Path,
+        connected: &[(String, usize)],
+    ) -> Result<Vec<McpServerView>> {
+        Ok(describe_resolved(
+            resolve_servers(collect_sourced_servers(work_dir)?),
+            connected,
+        ))
+    }
+}
+
+/// MCP servers, contributed as a plugin.
+pub struct McpPlugin {
+    source: std::sync::Arc<dyn McpConfigSource>,
+}
+
+impl McpPlugin {
+    /// A plugin over the given configuration source.
+    pub fn new(source: std::sync::Arc<dyn McpConfigSource>) -> Self {
+        Self { source }
+    }
+
+    /// The project-configuration source, which is what a normal host wants.
+    pub fn project_files() -> Self {
+        Self::new(std::sync::Arc::new(FileMcpConfigSource))
+    }
+}
+
+#[async_trait::async_trait]
+impl tact_kernel::plugin::Plugin for McpPlugin {
+    fn manifest(&self) -> tact_kernel::plugin::PluginManifest {
+        tact_kernel::plugin::PluginManifest::new(
+            tact_kernel::plugin::PluginId::new("builtin.mcp").expect("a literal id"),
+            "MCP",
+            env!("CARGO_PKG_VERSION"),
+            tact_kernel::plugin::PluginKind::Capability,
+            "Server declarations, listings and prompt browsing",
+        )
+    }
+
+    fn register(&self, registrar: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
+        registrar.service(std::sync::Arc::new(McpConfigHandle(self.source.clone())))
+    }
+}
+
+/// The source a [`McpPlugin`] provided.
+#[derive(Clone)]
+pub struct McpConfigHandle(pub std::sync::Arc<dyn McpConfigSource>);
+
+/// The MCP configuration source a host resolved from its registry.
+///
+/// # Errors
+///
+/// Returns an error when no `McpPlugin` was installed. A host without one declares
+/// no servers, which is a valid configuration — but a caller that asked must be
+/// told it got nothing.
+pub fn mcp_config_source(
+    services: &tact_kernel::service::ServiceRegistry,
+) -> anyhow::Result<std::sync::Arc<dyn McpConfigSource>> {
+    services
+        .get::<McpConfigHandle>()
+        .map(|handle| handle.0.clone())
+        .ok_or_else(|| anyhow::anyhow!("no MCP config source installed; install McpPlugin"))
+}
+
 /// Pure core of [`describe_servers`], separated so classification is testable
 /// without reading the working directory.
 fn describe_resolved(
@@ -6254,5 +6347,96 @@ mod tests {
             McpLiveStatus::Connected { tools: 7 },
             "{views:?}"
         );
+    }
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+    use tact_kernel::capability::CapabilityFilter;
+    use tact_kernel::plugin::PluginHost;
+
+    /// A source that declares nothing, so the test does not read the disk.
+    struct Empty;
+
+    impl McpConfigSource for Empty {
+        fn describe(
+            &self,
+            _work_dir: &std::path::Path,
+            _connected: &[(String, usize)],
+        ) -> Result<Vec<McpServerView>> {
+            Ok(Vec::new())
+        }
+    }
+
+    /// The plugin registers a source the host can resolve.
+    #[tokio::test]
+    async fn the_plugin_provides_a_resolvable_source() {
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(McpPlugin::new(std::sync::Arc::new(Empty)))
+            .await
+            .unwrap();
+        let runtime = host.seal().await.unwrap();
+        assert!(mcp_config_source(runtime.services()).is_ok());
+    }
+
+    /// A host with no plugin is told so by name.
+    #[test]
+    fn a_missing_plugin_is_an_error_that_names_it() {
+        let registry = tact_kernel::service::ServiceRegistry::default();
+        let error = match mcp_config_source(&registry) {
+            Ok(_) => panic!("no source was installed, so this must fail"),
+            Err(error) => error,
+        };
+        assert!(format!("{error}").contains("McpPlugin"), "{error}");
+    }
+
+    /// A replacement source is what the host gets.
+    ///
+    /// This is the point of the port: a host that keeps its declarations in a
+    /// database answers from there, and the caller sees no difference.
+    #[tokio::test]
+    async fn a_replacement_source_is_what_the_host_gets() {
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(McpPlugin::new(std::sync::Arc::new(Empty)))
+            .await
+            .unwrap();
+        let runtime = host.seal().await.unwrap();
+        let source = mcp_config_source(runtime.services()).unwrap();
+        let views = source
+            .describe(std::path::Path::new("/nonexistent"), &[])
+            .unwrap();
+        assert!(views.is_empty(), "the replacement declares nothing");
+    }
+
+    /// The file source reads the directory it is given, not the process's.
+    ///
+    /// This is the property the port buys on top of replaceability: a caller that
+    /// resolved its working directory once does not have a later `cd` change what
+    /// it reports.
+    #[test]
+    fn the_file_source_uses_the_directory_it_is_given() {
+        let dir = std::env::temp_dir().join(format!("tact-mcp-cfg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join(".mcp.json"),
+            r#"{"mcpServers":{"from-temp":{"command":"echo"}}}"#,
+        )
+        .unwrap();
+
+        let views = FileMcpConfigSource.describe(&dir, &[]).unwrap();
+        assert!(
+            views.iter().any(|view| view.server.name == "from-temp"),
+            "expected the temp dir's declaration: {views:?}"
+        );
+    }
+
+    /// The manifest says what it contributes.
+    #[test]
+    fn the_manifest_says_what_it_is() {
+        use tact_kernel::plugin::Plugin;
+        let manifest = McpPlugin::new(std::sync::Arc::new(Empty)).manifest();
+        assert_eq!(manifest.id.as_str(), "builtin.mcp");
+        assert_eq!(manifest.kind, tact_kernel::plugin::PluginKind::Capability);
     }
 }

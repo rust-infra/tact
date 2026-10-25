@@ -1030,6 +1030,16 @@ impl Agent {
         crate::plugin::config(self.plugins.services()).ok()
     }
 
+    /// The service registry this agent's plugins contributed to.
+    ///
+    /// Exposed read-only because a view adapter legitimately needs to resolve a
+    /// capability the agent holds but does not own — the MCP configuration source
+    /// is one: `/mcp list` answers from it, and the command has no agent.
+    #[must_use]
+    pub fn services(&self) -> &tact_kernel::service::ServiceRegistry {
+        self.plugins.services()
+    }
+
     /// Configured at construction and rewritten by [`Self::set_model`], so it is
     /// the value a `SessionStart` hook payload should carry as `model`.
     #[must_use]

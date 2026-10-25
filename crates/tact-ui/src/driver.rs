@@ -302,6 +302,16 @@ impl tact::command::McpCatalog for EmptyMcpCatalog {
         Vec::new()
     }
 
+    fn describe(
+        &self,
+        connected: &[(String, usize)],
+    ) -> anyhow::Result<Vec<tact::mcp::McpServerView>> {
+        // No configuration source in this view, so it declares nothing. The
+        // command still runs; it lists what is connected and no declarations.
+        let _ = connected;
+        Ok(Vec::new())
+    }
+
     fn list_prompts<'a>(
         &'a self,
         _server: Option<&'a str>,
@@ -331,6 +341,23 @@ impl tact::command::McpCatalog for RuntimeMcpCatalog {
             // servers rather than stalling the caller behind that turn.
             Err(_) => Vec::new(),
         }
+    }
+
+    fn describe(
+        &self,
+        connected: &[(String, usize)],
+    ) -> anyhow::Result<Vec<tact::mcp::McpServerView>> {
+        // The working directory comes from the agent, not the process, and the
+        // source comes from the registry — so a host that keeps its declarations
+        // somewhere else is answered from there.
+        let guard = self.slot.try_lock().map_err(|_| {
+            anyhow::anyhow!("the agent is busy; its configuration is not readable right now")
+        })?;
+        let agent = guard
+            .as_ref()
+            .ok_or_else(|| anyhow::anyhow!("the agent is not installed yet"))?;
+        let source = tact::mcp::mcp_config_source(agent.services())?;
+        source.describe(&agent.tool_context.work_dir, connected)
     }
 
     fn list_prompts<'a>(

@@ -92,7 +92,7 @@ impl Command for McpCommand {
                 // A live view of the router the agent holds: never reload here,
                 // because a reconnect would drop live stdio children and
                 // duplicate remote dials just to print a table.
-                match crate::mcp::describe_servers(&self.catalog.server_summaries()) {
+                match self.catalog.describe(&self.catalog.server_summaries()) {
                     Ok(views) => CommandOutcome::Emit(crate::command::Emitted::new(
                         tact_protocol::AgentUpdate::MdInfo((self.render)(&views)),
                     )),
@@ -123,6 +123,16 @@ mod tests {
     impl McpCatalog for FixedCatalog {
         fn server_summaries(&self) -> Vec<(String, usize)> {
             self.servers.clone()
+        }
+
+        fn describe(
+            &self,
+            connected: &[(String, usize)],
+        ) -> anyhow::Result<Vec<crate::mcp::McpServerView>> {
+            // The fixed catalog declares nothing of its own; the renderer counts
+            // what it is given, which is what the listing assertions read.
+            let _ = connected;
+            Ok(Vec::new())
         }
 
         fn list_prompts<'a>(

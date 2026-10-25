@@ -126,6 +126,11 @@ pub struct HostExtras {
     pub voice: Option<std::sync::Arc<dyn crate::voice::VoiceService>>,
     /// The already-opened subagent manager.
     pub subagent: Option<crate::subagent::SharedSubagentManager>,
+    /// Where the MCP server declarations come from.
+    ///
+    /// `None` uses the project's configuration files, which is what a normal host
+    /// wants; a host that keeps them elsewhere installs its own `McpPlugin` instead.
+    pub mcp_config: Option<std::sync::Arc<dyn crate::mcp::McpConfigSource>>,
 }
 
 /// The assembled pieces, after sealing.
@@ -255,6 +260,12 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
     if let Some(manager) = extras.subagent.clone() {
         host.install_sync(crate::subagent::SubagentPlugin::new(manager))?;
     }
+    // MCP always installs: the project files are the default, so a host that does
+    // not care still gets a working `/mcp list`.
+    host.install_sync(match extras.mcp_config.clone() {
+        Some(source) => crate::mcp::McpPlugin::new(source),
+        None => crate::mcp::McpPlugin::project_files(),
+    })?;
 
     let skipped = host
         .skipped()
@@ -466,6 +477,9 @@ mod tests {
                 // Notifications are a capability domain, installed last so a
                 // filtered-out host still gets no sink rather than a partial one.
                 "builtin.notifications",
+                // MCP always installs, with the project files as the default
+                // source, so `/mcp list` works on a host that never configured it.
+                "builtin.mcp",
             ]
         );
     }

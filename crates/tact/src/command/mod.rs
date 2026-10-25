@@ -98,6 +98,16 @@ pub trait McpCatalog: Send + Sync {
     /// The connected servers and their tool counts.
     fn server_summaries(&self) -> Vec<(String, usize)>;
 
+    /// Describe every configured server.
+    ///
+    /// On the port rather than resolved inside the command, because resolution
+    /// needs a working directory and the process's is a global: a caller that
+    /// captured its own must not have a later `cd` change the answer.
+    fn describe(
+        &self,
+        connected: &[(String, usize)],
+    ) -> anyhow::Result<Vec<crate::mcp::McpServerView>>;
+
     /// A rendered `prompts/list`, optionally scoped to one server.
     ///
     /// A boxed future rather than `async fn` so an implementor does not need the
