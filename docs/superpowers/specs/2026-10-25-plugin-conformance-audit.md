@@ -49,13 +49,16 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   `SessionStorePlugin`, `ProvidersPlugin`, `MarketplacePlugin`, `ConfigPlugin`
   — all present. (Eight `impl Plugin` blocks are production; two more are test
   impostors in `command/plugin.rs` and `permission/plugin.rs`.)
-- Runtime: `SessionPlugin`, `AgentPlugin` and `CompactionPlugin` are present.
+- Runtime: all four are present — `SessionPlugin`, `AgentPlugin`,
+  `CompactionPlugin` and `ChatPlugin`.
   The neutral turn contract exists (`TurnRequest`, `TurnOptions`, `TurnStop`,
   `TurnOutcome` in `tact_kernel::runtime`), with the conversation deliberately
   not crossing the boundary. `CompactionService` is extension-level per the spec,
   and covers the pure half (micro-compaction, estimates, history shaping,
   transcripts) while the trigger policy stays on the agent.
-  `ChatPlugin` is **absent**.
+  `ChatService` owns the turn lifecycle (message assembly, Stop-hook
+  continuation, completion) over the same agent slot, so a turn and a compaction
+  serialise structurally rather than by convention.
 - Capability domains: tools exist as `ToolFamily` plugins (`FamilyPlugin`), but
   Skills, Memory, Goal, Task, Team, Worktree, Background, Subagent, Voice and
   Notifications have **no plugin object of their own** — they are modules with
@@ -81,9 +84,12 @@ ports (`SkillCatalog`, `InteractionPort`, `ModelCatalog`, `SessionHistory`,
 `SettingsWriter`, `VoicePort`) live in `tui`, which is where the spec says
 view-side ports belong.
 
-`AgentService` exists in the kernel and `AgentPlugin` registers it, but the
-service is not yet the path a host runs turns through: `driver.rs` still holds
-`Agent` directly (164 accesses). `ChatService` does not exist yet.
+All three kernel contracts exist and all three plugins register them. What is
+**not** done: the driver still holds `Agent` directly (164 accesses) instead of
+driving `ChatService`. Profiling showed why that is a separate slice — the
+driver's accesses are host operations (managers, events, reconfiguration), not
+turn execution, so the migration is a deletion of inline lifecycle code rather
+than a swap of one handle for another.
 
 Verified by: `grep -n 'pub trait' crates/tact_kernel/src/runtime.rs`.
 
