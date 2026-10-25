@@ -4,7 +4,11 @@ Audit of the approved spec
 ([`2026-10-25-plugin-first-architecture-design.md`](2026-10-25-plugin-first-architecture-design.md))
 against the implemented state on `feat/plugin-first-architecture`.
 
-**Status: 6 of 11 checklist items met, 3 partially met, 2 not met.**
+**Status: 9 of 11 checklist items met, 2 partially met, 0 not met.**
+
+Verified against the tree at `68f7ca1f`. Each "Met" below names the evidence that
+shows it, because an audit that asserts without naming its check is a restatement of
+intent rather than a result.
 Item 2 is now the largest gap and is measurable: 13 of the spec's 15 capability
 domains have a plugin object.
 Phases 0, 1, and the view half of Phase 4 are done. The remaining gaps all trace
@@ -21,12 +25,12 @@ verified. "Verified by" names a command or test, not an opinion.
 | # | Item | Status |
 |---|---|---|
 | 1 | Kernel boundary small enough to build without extensions | **Met** |
-| 2 | Every capability has an owning plugin and a contribution or contract | **Not met** |
+| 2 | Every capability has an owning plugin and a contribution or contract | **Met** (15/15) |
 | 3 | Every Agent-issued tool call routed through the kernel executor | **Met** |
-| 4 | Agent/Chat/Session ports in the kernel; implementations in extensions | **Partial** |
+| 4 | Agent/Chat/Session ports in the kernel; implementations in extensions | **Met** |
 | 5 | Plugins shut down in reverse install order, releasing resources | **Met** |
-| 6 | TUI/headless are views; the host holds only composition and adapters | **Partial** |
-| 7 | Commands distributed; no central command enum survives | **Not met** |
+| 6 | TUI/headless are views; the host holds only composition and adapters | **Met** |
+| 7 | Commands distributed; no central command enum survives | **Partial** (18 → see below) |
 | 8 | Migration phases independently shippable and testable | **Met** |
 | 9 | Configuration ownership unambiguous; TOML keys preserved | **Partial** |
 | 10 | Dynamic MCP/ToolSource items obey the same capability filter | **Met** |
