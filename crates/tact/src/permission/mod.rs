@@ -10,11 +10,13 @@
 //! - Consecutive denials (which may trigger a suggestion to switch to Plan mode).
 //! - Loaded JSON permission settings (global and project) — see [`settings`].
 
+pub mod interaction;
 pub mod policy_ext;
 pub mod security_service;
 pub mod service;
 pub mod settings;
 
+pub use interaction::UiInteractionBroker;
 pub use policy_ext::PermissionPolicyExt;
 pub use security_service::{SensitivePathGuard, is_credential_target};
 pub use service::ManagerPermissionService;
