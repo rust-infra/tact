@@ -10,6 +10,7 @@ use tact_llm::{ContentBlock, ImageSource};
 use tact_protocol::{AgentUpdate, StepResult, StepStatus, ToolPresentationInfo};
 
 use super::Agent;
+use crate::tool::scopes_to_one_server;
 use crate::{
     compact::{persist_large_output, persist_large_output_over_tokens},
     hook::{HookControl, NotificationContext, ToolResult, ToolUse},
@@ -31,15 +32,17 @@ enum ResolvedTool {
         full_name: String,
         server: String,
     },
-    /// `list_mcp_resources` / `read_mcp_resource` — Codex's native resource
-    /// tools, served by the MCP router rather than by a `Tool` of their own.
+    /// One of Tact's own MCP resource tools (`list_mcp_resources`, …).
+    ///
+    /// Carries the *name* only: the dispatch path classifies, it does not act on
+    /// the tool's typed identity, and holding the MCP type here is what kept an
+    /// `agent` → `mcp` edge alive for a question about strings.
     McpResource {
-        tool: crate::mcp::McpResourceTool,
+        name: String,
     },
-    /// `list_mcp_prompts` / `get_mcp_prompt` — the prompt tools, served the same
-    /// way for the same reason.
+    /// One of Tact's own MCP prompt tools (`list_mcp_prompts`, …).
     McpPrompt {
-        tool: crate::mcp::McpPromptTool,
+        name: String,
     },
     Unknown,
 }
@@ -380,15 +383,15 @@ async fn run_kernel_tool(
 
 /// Whether `name` is one of Tact's own MCP resource tools.
 ///
-/// A free function, not a lookup in the catalog: the *resolver* needs it before
-/// the catalog is consulted, to decide which family a name belongs to.
+/// Asks the neutral classifier: the *resolver* needs this before the catalog is
+/// consulted, and the question is about the name, not about MCP.
 fn is_mcp_resource_tool(name: &str) -> bool {
-    crate::mcp::McpResourceTool::from_name(name).is_some()
+    crate::tool::classify(name) == crate::tool::ToolNameClass::McpResource
 }
 
 /// Whether `name` is one of Tact's own MCP prompt tools.
 fn is_mcp_prompt_tool(name: &str) -> bool {
-    crate::mcp::McpPromptTool::from_name(name).is_some()
+    crate::tool::classify(name) == crate::tool::ToolNameClass::McpPrompt
 }
 
 fn make_presentation(meta: &crate::tool::ToolMetadata) -> ToolPresentationInfo {
@@ -449,21 +452,22 @@ fn tool_resources_for(
         }
         ResolvedTool::Mcp { server, .. } => super::tool_schedule::mcp_server_resources(server),
         // A listing may touch every server, so only a *read* can be scoped to
-        // one; a listing is a barrier over all of them.
-        ResolvedTool::McpResource {
-            tool: crate::mcp::McpResourceTool::Read,
-        } => match prep.input.get("server").and_then(|value| value.as_str()) {
-            Some(server) => super::tool_schedule::mcp_server_resources(server),
-            None => super::tool_schedule::ToolResources::barrier(),
-        },
+        // one; a listing is a barrier over all of them. Which is which is a
+        // property of the name, so the classifier answers it.
+        ResolvedTool::McpResource { name } if scopes_to_one_server(name) => {
+            match prep.input.get("server").and_then(|value| value.as_str()) {
+                Some(server) => super::tool_schedule::mcp_server_resources(server),
+                None => super::tool_schedule::ToolResources::barrier(),
+            }
+        }
         ResolvedTool::McpResource { .. } => super::tool_schedule::ToolResources::barrier(),
         // Same split for prompts: a get names one server, a listing spans all.
-        ResolvedTool::McpPrompt {
-            tool: crate::mcp::McpPromptTool::Get,
-        } => match prep.input.get("server").and_then(|value| value.as_str()) {
-            Some(server) => super::tool_schedule::mcp_server_resources(server),
-            None => super::tool_schedule::ToolResources::barrier(),
-        },
+        ResolvedTool::McpPrompt { name } if scopes_to_one_server(name) => {
+            match prep.input.get("server").and_then(|value| value.as_str()) {
+                Some(server) => super::tool_schedule::mcp_server_resources(server),
+                None => super::tool_schedule::ToolResources::barrier(),
+            }
+        }
         ResolvedTool::McpPrompt { .. } => super::tool_schedule::ToolResources::barrier(),
         ResolvedTool::Unknown => super::tool_schedule::ToolResources::barrier(),
     }
@@ -747,12 +751,10 @@ impl Agent {
                         server: mcp.server,
                     },
                     Ok(None) | Err(_) if is_mcp_resource_tool(name) => ResolvedTool::McpResource {
-                        tool: crate::mcp::McpResourceTool::from_name(name)
-                            .expect("guarded by is_mcp_resource_tool"),
+                        name: name.to_string(),
                     },
                     Ok(None) | Err(_) if is_mcp_prompt_tool(name) => ResolvedTool::McpPrompt {
-                        tool: crate::mcp::McpPromptTool::from_name(name)
-                            .expect("guarded by is_mcp_prompt_tool"),
+                        name: name.to_string(),
                     },
                     Ok(None) | Err(_) => {
                         let msg = format!("unknown tool: {name}");
@@ -846,8 +848,8 @@ impl Agent {
             let catalog_name: Option<&str> = match &resolved {
                 ResolvedTool::Native { metadata } => Some(metadata.name),
                 ResolvedTool::Mcp { full_name, .. } => Some(full_name.as_str()),
-                ResolvedTool::McpResource { tool } => Some(tool.name()),
-                ResolvedTool::McpPrompt { tool } => Some(tool.name()),
+                ResolvedTool::McpResource { name } => Some(name.as_str()),
+                ResolvedTool::McpPrompt { name } => Some(name.as_str()),
                 // An unknown name is refused above; reaching here would mean the
                 // catalog disagrees with the resolver, which the parity test
                 // forbids.

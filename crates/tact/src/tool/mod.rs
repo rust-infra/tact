@@ -56,6 +56,7 @@ mod mcp_control;
 mod mcp_source;
 mod memory;
 mod metadata;
+mod name_class;
 mod path;
 mod progress;
 mod read_file;
@@ -96,6 +97,7 @@ pub use mcp_control::{
 pub use mcp_source::{McpTool, McpToolBackend, McpToolEntry, McpToolSource, SnapshotMcpBackend};
 #[cfg(test)]
 use memory::SaveMemoryTool;
+pub use name_class::{ToolNameClass, classify, scopes_to_one_server};
 #[cfg(test)]
 use read_file::ReadFileTool;
 pub use registry::{subagent_toolset, toolset, toolset_with_memory};
