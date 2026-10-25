@@ -105,6 +105,42 @@ mod tests {
         assert!(!resolved.is_installed(), "the slot starts empty");
     }
 
+    /// The chat plugin registers a service the host can resolve.
+    #[tokio::test]
+    async fn the_chat_plugin_provides_a_resolvable_service() {
+        let chat = Arc::new(crate::agent::chat::RuntimeChatService::new(
+            Arc::new(tokio::sync::Mutex::new(None)),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        ));
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(ChatPlugin::new(chat)).await.unwrap();
+        let runtime = host.seal().await.unwrap();
+        assert!(chat_service(runtime.services()).is_ok());
+    }
+
+    /// A host with no chat plugin is told so by name.
+    #[test]
+    fn a_missing_chat_plugin_is_an_error_that_names_it() {
+        let registry = tact_kernel::service::ServiceRegistry::default();
+        let error = match chat_service(&registry) {
+            Ok(_) => panic!("no service was installed, so this must fail"),
+            Err(error) => error,
+        };
+        assert!(format!("{error}").contains("ChatPlugin"), "{error}");
+    }
+
+    /// The chat manifest says what it contributes.
+    #[test]
+    fn the_chat_manifest_says_what_it_is() {
+        let chat = Arc::new(crate::agent::chat::RuntimeChatService::new(
+            Arc::new(tokio::sync::Mutex::new(None)),
+            Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        ));
+        let manifest = ChatPlugin::new(chat).manifest();
+        assert_eq!(manifest.id.as_str(), "builtin.chat_service");
+        assert_eq!(manifest.kind, PluginKind::Runtime);
+    }
+
     /// A host with no agent plugin gets a named error, not a silent `None`.
     ///
     /// A caller that runs turns must be told the composition is wrong; returning
@@ -146,4 +182,60 @@ mod tests {
         };
         assert!(format!("{error}").contains("not installed"), "{error}");
     }
+}
+
+/// Contributes the turn lifecycle.
+pub struct ChatPlugin {
+    service: Arc<crate::agent::chat::RuntimeChatService>,
+}
+
+impl ChatPlugin {
+    /// A plugin over a service sharing the agent service's slot.
+    pub fn new(service: Arc<crate::agent::chat::RuntimeChatService>) -> Self {
+        Self { service }
+    }
+}
+
+#[async_trait]
+impl Plugin for ChatPlugin {
+    fn manifest(&self) -> PluginManifest {
+        PluginManifest::new(
+            PluginId::new("builtin.chat_service").expect("a literal id"),
+            "Chat service",
+            env!("CARGO_PKG_VERSION"),
+            PluginKind::Runtime,
+            "The user turn lifecycle: message assembly, Stop-hook continuation and completion",
+        )
+    }
+
+    fn register(&self, registrar: &mut Registrar<'_>) -> Result<()> {
+        registrar.service(Arc::new(ChatServiceHandle(self.service.clone())))
+    }
+}
+
+/// The chat service a [`ChatPlugin`] provided.
+#[derive(Clone)]
+pub struct ChatServiceHandle(pub Arc<crate::agent::chat::RuntimeChatService>);
+
+impl std::ops::Deref for ChatServiceHandle {
+    type Target = crate::agent::chat::RuntimeChatService;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// The chat service a host resolved from its registry.
+///
+/// # Errors
+///
+/// Returns an error when no `ChatPlugin` was installed: a view that submits turns
+/// needs one.
+pub fn chat_service(
+    services: &tact_kernel::service::ServiceRegistry,
+) -> Result<Arc<crate::agent::chat::RuntimeChatService>> {
+    services
+        .get::<ChatServiceHandle>()
+        .map(|handle| handle.0.clone())
+        .ok_or_else(|| anyhow::anyhow!("no chat service installed; install ChatPlugin"))
 }

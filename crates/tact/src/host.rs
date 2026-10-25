@@ -95,6 +95,12 @@ pub struct HostExtras {
     /// finishes. The host creates the empty service, hands it here, and the agent
     /// installs itself into it at the end of its own construction.
     pub agent_service: Option<std::sync::Arc<crate::agent::service::RuntimeAgentService>>,
+    /// The chat service, sharing the agent service's slot.
+    ///
+    /// Registered beside the agent service because they must serialise against
+    /// each other: a turn and a compaction touching one conversation
+    /// concurrently would interleave their messages.
+    pub chat_service: Option<std::sync::Arc<crate::agent::chat::RuntimeChatService>>,
 }
 
 /// The assembled pieces, after sealing.
@@ -192,6 +198,9 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
     // registry like every other service; the agent fills its slot afterwards.
     if let Some(service) = extras.agent_service.clone() {
         host.install_sync(crate::agent::plugin::AgentPlugin::new(service))?;
+    }
+    if let Some(service) = extras.chat_service.clone() {
+        host.install_sync(crate::agent::plugin::ChatPlugin::new(service))?;
     }
 
     // Compaction is not optional — an uncompacted context eventually exceeds the

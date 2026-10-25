@@ -326,6 +326,11 @@ pub async fn bootstrap_session(
     let agent_service = std::sync::Arc::new(tact::agent::service::RuntimeAgentService::pending(
         tool_context.cancel_flag.clone(),
     ));
+    // Shares the agent service's slot, so a turn and a compaction serialise
+    // against each other.
+    let chat_service = std::sync::Arc::new(
+        tact::agent::chat::RuntimeChatService::from_agent_service(&agent_service),
+    );
     let mut agent = Agent::new_with_host(
         client,
         tool_context,
@@ -342,6 +347,7 @@ pub async fn bootstrap_session(
                 path: db_path.clone(),
             }),
             agent_service: Some(agent_service.clone()),
+            chat_service: Some(chat_service.clone()),
             ..tact::host::HostExtras::default()
         },
     )

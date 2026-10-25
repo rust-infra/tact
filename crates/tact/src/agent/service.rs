@@ -58,6 +58,21 @@ impl RuntimeAgentService {
         Ok(())
     }
 
+    /// The cancel flag, so a sibling service cancels the same run.
+    pub fn cancel_flag(&self) -> Arc<std::sync::atomic::AtomicBool> {
+        self.cancel_flag.clone()
+    }
+
+    /// The shared slot, for a sibling service that drives the same agent.
+    ///
+    /// `ChatService` and `AgentService` must serialise against each other: a turn
+    /// and a compaction touching one conversation concurrently would interleave
+    /// their messages. Sharing the slot is what makes that structural rather than
+    /// a rule someone has to remember.
+    pub fn shared_slot(&self) -> Arc<tokio::sync::Mutex<Option<Agent>>> {
+        self.agent.clone()
+    }
+
     /// Whether an agent is in place.
     pub fn is_installed(&self) -> bool {
         self.agent
