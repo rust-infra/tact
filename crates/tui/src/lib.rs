@@ -214,6 +214,13 @@ pub struct TuiConfig {
     pub pending_ui: tact::ui_responder::UiResponder,
     /// Voice-to-text settings (independent of LLM providers).
     pub voice: tact::config::VoiceSettings,
+    /// The resolved configuration the host assembled with.
+    ///
+    /// Passed in rather than read from `tact::config` by the view: the `/model`
+    /// flow needs the profiles, effort/budget defaults and config path, and a
+    /// view whose host assembled a different snapshot must show that one.
+    /// `None` keeps every reader on its built-in default.
+    pub config_snapshot: Option<tact::config::ResolvedConfig>,
     /// Keyboard shortcut to start/stop voice recording (e.g. "ctrl+g").
     /// Parsed from voice.voice_keybind; ready for crossterm matching.
     pub voice_parsed_keybind: Option<(KeyModifiers, KeyCode)>,
@@ -247,6 +254,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         pending_ui,
         voice,
         voice_parsed_keybind,
+        config_snapshot,
     } = cfg;
     // Refuse a dead voice binding before the terminal is touched: the global
     // dispatcher runs first and consumes the key, so this is a config error, not
@@ -283,6 +291,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_data,
     );
 
+    app.set_config_snapshot(config_snapshot);
     app.set_configured_language(&language);
     app.set_ui_config_path(ui_config_path);
     app.set_hook_output(hook_output);

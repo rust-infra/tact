@@ -88,12 +88,15 @@ async fn run_interactive_locked(
     let agent_session_id = session_id.clone();
     let agent_session_store = session_store.clone();
 
-    let theme = tact::config::settings().ui.theme.clone();
-    let language = tact::config::settings().ui.language.clone();
-    let model_context_window = tact::config::settings().agent.model_context_window;
-    let model_name = tact::config::settings().agent.model.clone();
-    let model_max_tokens = tact::config::settings().agent.max_tokens;
-    let model_thinking_budget = tact::config::settings().agent.thinking_budget;
+    // One snapshot for the whole view: the TUI's `/model` flow reads its
+    // profiles and defaults from this rather than from the process global.
+    let config_snapshot = tact::config::settings();
+    let theme = config_snapshot.ui.theme.clone();
+    let language = config_snapshot.ui.language.clone();
+    let model_context_window = config_snapshot.agent.model_context_window;
+    let model_name = config_snapshot.agent.model.clone();
+    let model_max_tokens = config_snapshot.agent.max_tokens;
+    let model_thinking_budget = config_snapshot.agent.thinking_budget;
     let account_enabled = account::is_supported();
     let tui_ui_responder = ui_responder.clone();
     let mut tui_handle = tokio::spawn(Box::pin(async move {
@@ -113,16 +116,17 @@ async fn run_interactive_locked(
             session_id,
             session_store,
             pending_ui: tui_ui_responder,
+            config_snapshot: Some(config_snapshot.clone()),
             history_save_tx,
             theme,
             language,
-            ui_config_path: tact::config::settings().config_path.clone(),
-            hook_output: tact::config::settings().ui.hook_output,
+            ui_config_path: config_snapshot.config_path.clone(),
+            hook_output: config_snapshot.ui.hook_output,
             model_context_window,
             model_name,
             model_max_tokens,
             model_thinking_budget,
-            permission_mode: match tact::config::settings().permission_mode.as_deref() {
+            permission_mode: match config_snapshot.permission_mode.as_deref() {
                 Some("plan") => "plan",
                 Some("default") => "default",
                 _ => "auto",
@@ -146,8 +150,8 @@ async fn run_interactive_locked(
                     .collect()
             },
             skill_registry,
-            voice: tact::config::settings().voice.clone(),
-            voice_parsed_keybind: tact::config::settings()
+            voice: config_snapshot.voice.clone(),
+            voice_parsed_keybind: config_snapshot
                 .voice
                 .voice_keybind
                 .as_deref()

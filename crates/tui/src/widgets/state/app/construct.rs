@@ -158,6 +158,9 @@ impl App {
             loading_idx: None,
             language: Language::English,
             ui_config_path: None,
+            // Seeded by `set_config_snapshot` from the host's resolved
+            // configuration; `None` keeps every reader on its built-in default.
+            config_snapshot: None,
             // Shown by default: the switch exists to silence a noisy hook, so
             // a fresh install (and every test) behaves as it did before it.
             hook_output: true,

@@ -402,13 +402,15 @@ fn dequeue_next_agent_select(app: &mut App) {
 
 /// `/model` second step: branch by the selected model's semantics.
 fn open_second_step(app: &mut App, model: String, target: ModelTarget) {
-    let provider = provider_for_second_step(target);
+    let config = app.config_snapshot();
+    let provider = provider_for_second_step(config.as_ref(), target);
     let Some(provider) = provider else {
         app.input_mode = InputMode::Normal;
         return;
     };
-    let profile =
-        tact::config::try_settings().and_then(|s| s.llm.model_profiles.get(&model).cloned());
+    let profile = app
+        .config_snapshot()
+        .and_then(|config| config.llm.model_profiles.get(&model).cloned());
 
     if tact_llm::model_uses_effort(&model, &provider) {
         let efforts = profile
@@ -424,11 +426,14 @@ fn open_second_step(app: &mut App, model: String, target: ModelTarget) {
 }
 
 /// Provider identity used to decide the second step (main vs subagent).
-fn provider_for_second_step(target: ModelTarget) -> Option<tact_llm::ProviderInfo> {
+fn provider_for_second_step(
+    config: Option<&tact::config::ResolvedConfig>,
+    target: ModelTarget,
+) -> Option<tact_llm::ProviderInfo> {
     match target {
-        ModelTarget::Subagent => tact::config::try_settings()
-            .and_then(|s| s.agent.subagent)
-            .map(|sa| sa.provider),
+        ModelTarget::Subagent => config
+            .and_then(|config| config.agent.subagent.as_ref())
+            .map(|sa| sa.provider.clone()),
         ModelTarget::Main => Some(tact_llm::get_provider()),
     }
 }
@@ -440,12 +445,16 @@ fn open_effort_picker(
     efforts: Vec<tact_llm::OpenAiReasoningEffort>,
 ) {
     let msgs = app.msgs();
+    let config = app.config_snapshot();
     // Default highlight: current session effort if listed, else first tier.
     let current = match target {
-        ModelTarget::Subagent => tact::config::try_settings()
-            .and_then(|s| s.agent.subagent)
+        ModelTarget::Subagent => config
+            .as_ref()
+            .and_then(|config| config.agent.subagent.as_ref())
             .and_then(|sa| sa.reasoning_effort),
-        ModelTarget::Main => tact::config::try_settings().and_then(|s| s.agent.reasoning_effort),
+        ModelTarget::Main => config
+            .as_ref()
+            .and_then(|config| config.agent.reasoning_effort),
     };
     let selected = current
         .and_then(|effort| efforts.iter().position(|e| *e == effort))
@@ -470,13 +479,16 @@ fn open_effort_picker(
 
 fn open_budget_picker(app: &mut App, target: ModelTarget, model: String, budgets: Vec<usize>) {
     let msgs = app.msgs();
+    let config = app.config_snapshot();
     // Current value differs per target: subagent budget vs main agent budget.
     let thinking_budget = match target {
-        ModelTarget::Subagent => tact::config::try_settings()
-            .and_then(|s| s.agent.subagent.as_ref().map(|sa| sa.thinking_budget))
+        ModelTarget::Subagent => config
+            .as_ref()
+            .and_then(|config| config.agent.subagent.as_ref().map(|sa| sa.thinking_budget))
             .unwrap_or_default(),
-        ModelTarget::Main => tact::config::try_settings()
-            .map(|settings| settings.agent.thinking_budget)
+        ModelTarget::Main => config
+            .as_ref()
+            .map(|config| config.agent.thinking_budget)
             .unwrap_or_default(),
     };
     let selected = nearest_budget_index(&budgets, thinking_budget);
@@ -521,11 +533,15 @@ fn apply_model_and_budget_pick(
         ModelTarget::Main => {
             let _ = app.user_cmd_tx.send(UserCommand::SetModel(model.clone()));
             tact::config::update_llm_model_and_thinking_budget(model.clone(), thinking_budget);
+            // Re-seed: the write above is what raises `max_tokens` when the new
+            // budget no longer fits, so a snapshot read before it would show the
+            // previous ceiling.
+            app.refresh_config_snapshot();
             app.status_bar_mut().model_name = model.clone();
-            if let Some(settings) = tact::config::try_settings() {
+            if let Some(config) = app.config_snapshot() {
                 // Keep out/think in sync immediately; agent may still be busy so
                 // SetModel / SetThinkingBudget (and their ModelInfo) can arrive later.
-                app.status_bar_mut().model_max_tokens = settings.agent.max_tokens;
+                app.status_bar_mut().model_max_tokens = config.agent.max_tokens;
             }
             app.status_bar_mut().model_thinking_budget =
                 (thinking_budget > 0).then_some(thinking_budget as u32);
@@ -557,7 +573,7 @@ fn apply_model_and_budget_pick(
         }
     }
 
-    let Some(settings) = tact::config::try_settings() else {
+    let Some(config) = app.config_snapshot() else {
         app.input_mode = InputMode::Normal;
         return;
     };
@@ -571,7 +587,7 @@ fn apply_model_and_budget_pick(
             msgs.model_subagent_persist_with_budget_prompt,
         ),
     };
-    if settings.config_path.is_none() {
+    if config.config_path.is_none() {
         app.add_system_message(format_model_and_budget(
             session_only_tmpl,
             &model,
@@ -609,8 +625,9 @@ fn apply_model_and_effort_pick(
             let _ = app.user_cmd_tx.send(UserCommand::SetModel(model.clone()));
             tact::config::update_llm_model_and_reasoning_effort(model.clone(), Some(effort));
             app.status_bar_mut().model_name = model.clone();
-            if let Some(settings) = tact::config::try_settings() {
-                app.status_bar_mut().model_max_tokens = settings.agent.max_tokens;
+            app.refresh_config_snapshot();
+            if let Some(config) = app.config_snapshot() {
+                app.status_bar_mut().model_max_tokens = config.agent.max_tokens;
             }
             app.status_bar_mut().model_reasoning_effort = Some(effort.as_str().to_string());
             app.status_bar_mut().model_thinking_budget = None; // effort semantics: budget not shown
@@ -619,8 +636,9 @@ fn apply_model_and_effort_pick(
             )));
         }
         ModelTarget::Subagent => {
-            let current_budget = tact::config::try_settings()
-                .and_then(|s| s.agent.subagent.as_ref().map(|sa| sa.thinking_budget))
+            let current_budget = app
+                .config_snapshot()
+                .and_then(|config| config.agent.subagent.as_ref().map(|sa| sa.thinking_budget))
                 .unwrap_or_default();
             if let Err(error) = tact::config::update_subagent_model(model.clone(), current_budget) {
                 app.add_system_message(
@@ -652,11 +670,11 @@ fn open_effort_persist_prompt(
     effort: tact_llm::OpenAiReasoningEffort,
 ) {
     let msgs = app.msgs();
-    let Some(settings) = tact::config::try_settings() else {
+    let Some(config) = app.config_snapshot() else {
         app.input_mode = InputMode::Normal;
         return;
     };
-    if settings.config_path.is_none() {
+    if config.config_path.is_none() {
         app.add_system_message(
             msgs.model_session_only_with_effort_tmpl
                 .replace("{}", &model)
@@ -893,7 +911,7 @@ fn finish_persist_effort(
 /// Open the `/model` SelectPopup from palette / slash command.
 pub(crate) fn start_model_picker(app: &mut App) {
     let msgs = app.msgs();
-    let Some(settings) = tact::config::try_settings() else {
+    let Some(config) = app.config_snapshot() else {
         app.add_system_message(msgs.model_config_unavailable.to_string());
         return;
     };
@@ -910,17 +928,17 @@ pub(crate) fn start_model_picker(app: &mut App) {
         Vec::new()
     };
 
-    let mut candidates = tact_llm::merge_model_candidates(&settings.llm.models, &api_ids);
+    let mut candidates = tact_llm::merge_model_candidates(&config.llm.models, &api_ids);
 
     if candidates.is_empty() {
         app.add_system_message(
             msgs.model_list_empty_tmpl
-                .replace("{}", settings.llm.provider.as_str()),
+                .replace("{}", config.llm.provider.as_str()),
         );
         return;
     }
 
-    let current = settings.llm.model.clone();
+    let current = config.llm.model.clone();
     if !candidates.iter().any(|m| m == &current) {
         candidates.insert(0, current.clone());
     }
@@ -934,7 +952,7 @@ pub(crate) fn start_model_picker(app: &mut App) {
 
     let prompt = msgs
         .model_select_prompt_tmpl
-        .replace("{}", settings.llm.provider.as_str());
+        .replace("{}", config.llm.provider.as_str());
     app.select_kind = SelectKind::ModelPick(ModelTarget::Main);
     app.select.set_local(prompt, options, selected, false);
     app.input_mode = InputMode::Select;
@@ -943,11 +961,11 @@ pub(crate) fn start_model_picker(app: &mut App) {
 /// Open the `/model-subagent` SelectPopup from palette / slash command.
 pub(crate) fn start_subagent_model_picker(app: &mut App) {
     let msgs = app.msgs();
-    let Some(settings) = tact::config::try_settings() else {
+    let Some(config) = app.config_snapshot() else {
         app.add_system_message(msgs.model_subagent_not_configured.to_string());
         return;
     };
-    let Some(subagent) = &settings.agent.subagent else {
+    let Some(subagent) = &config.agent.subagent else {
         app.add_system_message(msgs.model_subagent_not_configured.to_string());
         return;
     };
@@ -1005,6 +1023,54 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    /// The `/model` second step reads its profiles from the app's snapshot.
+    ///
+    /// The profiles decide which effort tiers or thinking budgets the picker
+    /// offers, so reading them from the process global means a TUI whose host
+    /// assembled a different configuration shows the wrong choices. The app is
+    /// given a snapshot carrying one distinctive profile: only that snapshot can
+    /// produce the tiers, so a fallback to the global would fail here.
+    #[test]
+    fn the_model_second_step_offers_the_profiles_from_the_app_snapshot() {
+        let mut app = make_app();
+        let Some(mut config) = tact::config::try_settings() else {
+            // No installed configuration means this module's other tests cannot
+            // run either; nothing to compare against.
+            return;
+        };
+        config.llm.model_profiles.insert(
+            "profile-model".to_string(),
+            tact::config::ModelProfileToml {
+                reasoning_efforts: vec![tact_llm::OpenAiReasoningEffort::High],
+                thinking_budgets: vec![4_242],
+                ..Default::default()
+            },
+        );
+        app.set_config_snapshot(Some(config));
+
+        let profile = app
+            .config_snapshot()
+            .and_then(|config| config.llm.model_profiles.get("profile-model").cloned())
+            .expect("the app exposes the profile it was given");
+        assert_eq!(profile.thinking_budgets, vec![4_242]);
+        assert_eq!(
+            profile.reasoning_efforts,
+            vec![tact_llm::OpenAiReasoningEffort::High]
+        );
+    }
+
+    /// With no snapshot installed the picker still works on defaults.
+    ///
+    /// A TUI started without a config file has no snapshot; the effort and
+    /// budget pickers fall back to the built-in tiers rather than refusing to
+    /// open.
+    #[test]
+    fn a_missing_snapshot_leaves_the_model_picker_on_its_defaults() {
+        let mut app = make_app();
+        app.set_config_snapshot(None);
+        assert!(app.config_snapshot().is_none());
     }
 
     /// `/theme` → the "save to config?" step, as if a config file existed.
@@ -1239,6 +1305,40 @@ mod tests {
             base_url: "https://api.moonshot.cn/v1".into(),
             model: current.into(),
         });
+    }
+
+    /// `/model` reads configuration from the app, not the process global.
+    ///
+    /// The picker's profiles, effort/budget defaults and config path all come
+    /// from the view's snapshot, which is what lets the TUI be driven by a host
+    /// that assembled a different configuration. A `tact::config::settings()`
+    /// or `try_settings()` in the production region would reintroduce the hidden
+    /// dependency this migration removed, so it fails here by name.
+    #[test]
+    fn the_model_flow_reads_configuration_from_the_app() {
+        let source = include_str!("select.rs");
+        let body = source
+            .split_once("mod tests {")
+            .expect("the test module is declared here")
+            .0;
+        for forbidden in ["tact::config::settings()", "tact::config::try_settings()"] {
+            assert!(
+                !body.contains(forbidden),
+                "the model flow must take configuration from the app, found {forbidden}"
+            );
+        }
+    }
+
+    /// The app fixture with the configuration currently installed.
+    ///
+    /// `make_app` seeds the snapshot at construction, so a test that installs a
+    /// configuration *after* building the app would otherwise drive `/model`
+    /// from a stale snapshot. Re-seeding keeps the fixture honest about what
+    /// production does: the view reads the host's resolved configuration.
+    fn app_with_current_config() -> App {
+        let mut app = make_app();
+        app.set_config_snapshot(tact::config::try_settings());
+        app
     }
 
     fn install_models_config_with_budget(models: Vec<&str>, current: &str, thinking_budget: usize) {
@@ -1580,7 +1680,7 @@ thinking_budget = {thinking_budget}
         tact_llm::seed_models_cache_for_tests("https://api.moonshot.cn/v1", "sk-test", vec![]);
         install_models_config(vec![], "kimi-k2.5");
 
-        let mut app = make_app();
+        let mut app = app_with_current_config();
         start_model_picker(&mut app);
         assert!(!matches!(app.input_mode, InputMode::Select));
         assert!(
@@ -1593,6 +1693,7 @@ thinking_budget = {thinking_budget}
         );
 
         install_models_config(vec!["kimi-k2.5", "kimi-for-coding"], "kimi-k2.5");
+        app.set_config_snapshot(tact::config::try_settings());
         start_model_picker(&mut app);
         assert!(matches!(app.input_mode, InputMode::Select));
         assert!(matches!(

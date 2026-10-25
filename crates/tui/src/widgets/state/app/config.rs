@@ -247,6 +247,36 @@ impl App {
         self.ui_config_path = path;
     }
 
+    /// Record the resolved configuration this view was started with.
+    ///
+    /// Called once at startup, after `App::new`, from the same place that seeds
+    /// the other configured values. A view that is never given one keeps every
+    /// reader on its built-in default — the behaviour a test and a config-less
+    /// run both need.
+    pub(crate) fn set_config_snapshot(&mut self, config: Option<tact::config::ResolvedConfig>) {
+        self.config_snapshot = config;
+    }
+
+    /// Re-read the configuration after this view changed it.
+    ///
+    /// The `/model` writes go through `tact::config`'s update helpers, which
+    /// also adjust derived values (a budget that no longer fits raises
+    /// `max_tokens`). The snapshot has to follow, or the status bar would show
+    /// the previous ceiling. This is the one place the view refreshes it, so the
+    /// reason is stated once instead of at each call site.
+    pub(crate) fn refresh_config_snapshot(&mut self) {
+        self.config_snapshot = tact::config::try_settings();
+    }
+
+    /// The resolved configuration, if the host supplied one.
+    ///
+    /// Cloned rather than borrowed because the callers consume parts of it
+    /// (`model_profiles.get(..).cloned()`), and a `ResolvedConfig` is a few
+    /// small structs rather than a large tree.
+    pub(crate) fn config_snapshot(&self) -> Option<tact::config::ResolvedConfig> {
+        self.config_snapshot.clone()
+    }
+
     /// Whether there is a config file to write a `[ui]` preference into.
     ///
     /// Shared by `/theme`, `/lang`, `/hook-output`, `Ctrl+T` and `Ctrl+L`: all

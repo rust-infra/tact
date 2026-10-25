@@ -51,21 +51,26 @@ impl TestApp {
         let (plugin_tx, plugin_requests) = unbounded_channel::<PluginRequest>();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel::<PluginEvent>();
         let (history_tx, _history_rx) = unbounded_channel::<(String, String)>();
+        let mut app = App::new(
+            agent_rx,
+            None,
+            plugin_rx,
+            plugin_tx,
+            user_cmd_tx,
+            PathBuf::from("."),
+            Vec::new(),
+            session_id.to_string(),
+            history_tx,
+            theme.to_string(),
+            String::new(),
+            Vec::new(),
+        );
+        // The host seeds this from its resolved configuration; a fixture that
+        // skipped it would exercise a different `/model` path than production
+        // and hide a regression in the handoff.
+        app.set_config_snapshot(tact::config::try_settings());
         Self {
-            app: App::new(
-                agent_rx,
-                None,
-                plugin_rx,
-                plugin_tx,
-                user_cmd_tx,
-                PathBuf::from("."),
-                Vec::new(),
-                session_id.to_string(),
-                history_tx,
-                theme.to_string(),
-                String::new(),
-                Vec::new(),
-            ),
+            app,
             user_cmds,
             plugin_requests,
         }

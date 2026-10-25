@@ -259,8 +259,21 @@ the first implementation plan is
     `ToolPolicy::auto_approved`, consulted *after* plan mode so it cannot unlock
     it) and `tools.<name>.output_token_limit` (carried as
     `ToolPolicy::output_token_limit`).
-- Phase 4's view half is untouched: `tui` still depends on `tact` and `tact_llm`,
-  and slash commands still dispatch through the `SlashCommand` enum rather than a
+- Phase 4's view half is in progress. What has moved:
+  - The `/model` flow no longer reads the configuration global. `App` carries a
+    `config_snapshot` (seeded once from `TuiConfig::config_snapshot`, which the
+    host fills from its resolved configuration), and the 13 production reads in
+    `handlers/select.rs` — model profiles, the subagent provider, the current
+    effort and budget, `max_tokens`, the config path, the provider name and the
+    model list — take it from there. A source-level test fails if `settings()` /
+    `try_settings()` comes back into that file.
+  - One subtlety the migration surfaced: writing through
+    `tact::config::update_llm_model_and_*` also adjusts derived values (a budget
+    that no longer fits raises `max_tokens`), so the view re-reads after writing.
+    That refresh is `App::refresh_config_snapshot`, named so the reason lives in
+    one place instead of at each call site.
+- Still untouched on the view side: `tui` depends on `tact` and `tact_llm`, and
+  slash commands still dispatch through the `SlashCommand` enum rather than a
   catalog. That is the next large change.
 - Phase 3's remaining half: `CompactionPlugin`, `AgentPlugin`, `ChatPlugin`.
   Compaction cannot be extracted as it stands: the whole trigger/threshold/
