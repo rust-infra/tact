@@ -380,6 +380,14 @@ pub struct AgentRuntime {
     pub cached_dir_snapshot: Option<String>,
     /// Cached `AGENTS.md` assembly (once per session) for a stable prompt prefix.
     pub cached_agents_md: Option<String>,
+    /// The MCP `InitializeResult.instructions` block, cached beside the tool
+    /// specs.
+    ///
+    /// Cached for the same reason the specs are: it is part of the tool-set
+    /// snapshot, it must change exactly when the servers do, and building it
+    /// during prompt assembly would force a synchronous read of the router that
+    /// an async refresh can be holding.
+    pub cached_mcp_instructions: String,
     /// Total tokens from the most recent LLM usage report (`0` = none yet).
     pub last_token_total: u32,
     /// Provider-specific conversation state (currently only the OpenAI
@@ -626,6 +634,7 @@ impl Agent {
                 llm_call_last_message_id: 0,
                 cached_dir_snapshot: None,
                 cached_agents_md: None,
+                cached_mcp_instructions: String::new(),
                 last_token_total: 0,
                 provider_state: None,
                 goal_yield_reason: None,
@@ -701,6 +710,7 @@ impl Agent {
         // Stamped together with the specs, because the two are one fact: these
         // are the tools, from this generation, that the model is about to see.
         self.advertised_generation = self.tool_executor.catalog().generation();
+        self.runtime.cached_mcp_instructions = self.mcp_router.instructions_block();
     }
 
     /// Picks up any MCP server that announced a tool-list change.
@@ -2944,7 +2954,7 @@ impl Agent {
                 },
             )),
             crate::agent::prompt_sections::PromptFragment::McpInstructions(
-                self.mcp_router.instructions_block(),
+                self.runtime.cached_mcp_instructions.clone(),
             ),
             crate::agent::prompt_sections::PromptFragment::Memory(memory),
             crate::agent::prompt_sections::PromptFragment::DynamicContext(load_dynamic_context(
@@ -3391,6 +3401,46 @@ mod tests {
         })
         .with_instructions(instructions);
         crate::mcp::McpClient::with_service(server, vec![tool], Arc::new(service))
+    }
+
+    /// The instructions block is cached beside the tool specs, so it must move
+    /// when the servers do.
+    ///
+    /// A cache refreshed only at construction would keep serving the first
+    /// server's guidance forever — the prompt would describe tools from a server
+    /// that has since disconnected, which is exactly the sort of quiet staleness
+    /// the spec-cache rebuild exists to prevent.
+    #[test]
+    fn a_new_mcp_server_reaches_the_next_prompt() {
+        ensure_config();
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            test_context("mcp_instructions_refresh"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Dynamic,
+        );
+        assert!(
+            !agent
+                .build_system_prompt()
+                .unwrap()
+                .contains("basic-memory")
+        );
+
+        agent
+            .mcp_router
+            .register_client(mcp_client_with_instructions(
+                "basic-memory",
+                "Call recent_activity to orient yourself.",
+            ));
+        agent.rebuild_cached_tool_specs();
+
+        let prompt = agent.build_system_prompt().unwrap();
+        assert!(prompt.contains("## basic-memory"), "{prompt}");
     }
 
     #[test]
