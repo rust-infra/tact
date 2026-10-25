@@ -106,6 +106,51 @@ pub trait InteractionPort: Send + Sync {
     fn withdraw(&self, request_id: u64) -> bool;
 }
 
+/// One persisted conversation turn, as the log renders it.
+///
+/// The view needs the role, the text blocks, and whether the cell is derived
+/// context (a hook injection or the Goal runner's per-activation block) rather
+/// than something the user typed. Naming that here keeps the runtime's `Message`
+/// out of the view: the two signals that matter are decided by the store's
+/// reader, which is the only code that can see the metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryTurn {
+    pub role: HistoryRole,
+    /// The text of each `Text` block, in order. Tool calls and results are not
+    /// rendered by the log, so they are not carried.
+    pub text: String,
+    /// A hook's injected context, rendered as a hook cell rather than a turn.
+    pub is_hook_context: bool,
+    /// The Goal runner's per-activation block, not rendered at all.
+    ///
+    /// Derived data the Goal panel already shows, re-injected every activation;
+    /// a row per activation would only push the conversation off the log.
+    pub is_goal_context: bool,
+}
+
+/// Who wrote a turn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryRole {
+    User,
+    Assistant,
+}
+
+/// What the view needs to restore a session's history.
+///
+/// One question: the turns, in order. The store owns how they are read.
+pub trait SessionHistory: Send + Sync {
+    /// The persisted turns for a session, oldest first.
+    ///
+    /// Blocking on purpose: the caller runs it at startup before the loop, and
+    /// making the trait async would force every test fake to carry a runtime.
+    fn turns(&self, session_id: &str) -> anyhow::Result<Vec<HistoryTurn>>;
+
+    /// The most recent request body, for the prompt-inspection popup.
+    ///
+    /// `None` when nothing was persisted (a fresh session).
+    fn latest_request_body(&self, session_id: &str) -> anyhow::Result<Option<String>>;
+}
+
 /// What the view needs to populate the `/model` pickers.
 ///
 /// Everything here is a *query* about the current provider and the model ids the

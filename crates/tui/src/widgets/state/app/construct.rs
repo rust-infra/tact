@@ -154,7 +154,7 @@ impl App {
             // `None` as "no skills", which is what a bare fixture wants.
             models: None,
             skills: None,
-            session_store: None,
+            history: None,
             spinner_frame: 0,
             loading_idx: None,
             language: Language::English,

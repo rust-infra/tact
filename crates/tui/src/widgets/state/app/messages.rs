@@ -3,7 +3,6 @@ use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
-use tact_llm::content::{ContentBlock, Message, MessageContent, Role};
 
 use tact::goal::is_goal_context_text;
 use tact::hook::{hook_context_body, hook_context_source, is_hook_context_text};
@@ -68,11 +67,6 @@ fn format_hook_elapsed(ms: u64) -> String {
 /// Accepts both signals: the in-memory `MessageKind::HookContext` set at
 /// injection time, and the marker text — which is all that survives a reload
 /// from disk, since the kind is never serialized.
-fn is_hook_context_cell(message: &Message) -> bool {
-    message.is_hook_context()
-        || matches!(&message.content, MessageContent::Text { content } if is_hook_context_text(content))
-}
-
 /// True for a cell carrying the Goal runner's per-activation context
 /// (`<goal-context>`) instead of a user turn.
 ///
@@ -81,11 +75,6 @@ fn is_hook_context_cell(message: &Message) -> bool {
 /// (objective, criteria, linked tasks, latest checkpoint) that the Goal panel
 /// already shows, and it is re-injected fresh into every activation — a row
 /// per activation would only push the conversation off the log.
-fn is_goal_context_cell(message: &Message) -> bool {
-    message.is_goal_context()
-        || matches!(&message.content, MessageContent::Text { content } if is_goal_context_text(content))
-}
-
 /// Copy affordances written by older versions (`[copy]` / `[复制]`). Rows they
 /// persisted are re-rendered from `raw`, so they must stay both recognizable
 /// ([`is_task_stats_line`]) and clickable ([`find_task_stats_copy_button`]).
@@ -240,74 +229,40 @@ impl App {
     /// Converts stored `Message` objects into display cells or lines.
     /// Only `Text` blocks are rendered; `Thinking`, `ToolUse`, `ToolResult`,
     /// and `Image` blocks are skipped.
-    pub(crate) fn load_history(&mut self, messages: Vec<Message>) {
-        for msg in messages {
-            let blocks: Vec<&ContentBlock> = match &msg.content {
-                MessageContent::Blocks { content } => content.iter().collect(),
-                MessageContent::Text { content } => {
-                    if content.trim().is_empty() {
-                        continue;
-                    }
-                    match msg.role {
-                        Role::User => {
-                            if is_hook_context_cell(&msg) {
-                                self.append_hook_context_markdown(
-                                    hook_context_source(content),
-                                    hook_context_body(content),
-                                );
-                                continue;
-                            }
-                            // Derived data, re-injected per activation: the
-                            // Goal panel is the authoritative view, and the
-                            // row would also count as a user turn.
-                            if is_goal_context_cell(&msg) {
-                                continue;
-                            }
-                            // Seed the session turn counter: persisted user
-                            // messages are the only durable record of past
-                            // turns (no dedicated store query needed).
-                            self.status_bar_mut().turn_user += 1;
-                            self.add_user_message(content.clone());
-                        }
-                        Role::Assistant => self.append_markdown(content.clone()),
-                    }
-                    continue;
-                }
-            };
+    pub(crate) fn load_history(&mut self, turns: Vec<crate::ports::HistoryTurn>) {
+        use crate::ports::HistoryRole;
 
-            if msg.role == Role::User && is_goal_context_cell(&msg) {
+        for turn in turns {
+            let text = turn.text;
+            if text.trim().is_empty() {
                 continue;
             }
-            match msg.role {
-                Role::User => {
-                    let texts: Vec<&str> = blocks
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.as_str()),
-                            _ => None,
-                        })
-                        .collect();
-                    if texts.is_empty() {
+            match turn.role {
+                HistoryRole::User => {
+                    // Two signals, not one: an explicitly flagged cell, and a row
+                    // whose text carries the marker. The marker matters because
+                    // rows persisted by older versions have no kind recorded, and
+                    // a context row rendered as a user turn is exactly the bug
+                    // this check exists to prevent.
+                    if turn.is_hook_context || is_hook_context_text(&text) {
+                        self.append_hook_context_markdown(
+                            hook_context_source(&text),
+                            hook_context_body(&text),
+                        );
                         continue;
                     }
-                    // Seed the session turn counter (see the Text branch above).
+                    // Derived data, re-injected per activation: the Goal panel
+                    // is the authoritative view, and the row would also count as
+                    // a user turn.
+                    if turn.is_goal_context || is_goal_context_text(&text) {
+                        continue;
+                    }
+                    // Seed the session turn counter: persisted user messages are
+                    // the only durable record of past turns.
                     self.status_bar_mut().turn_user += 1;
-                    self.add_user_message(texts.join("\n"));
+                    self.add_user_message(text);
                 }
-                Role::Assistant => {
-                    let has_text = blocks
-                        .iter()
-                        .any(|b| matches!(b, ContentBlock::Text { .. }));
-                    if !has_text {
-                        continue;
-                    }
-                    self.add_new_line();
-                    for block in &blocks {
-                        if let ContentBlock::Text { text } = block {
-                            self.append_markdown(text.clone());
-                        }
-                    }
-                }
+                HistoryRole::Assistant => self.append_markdown(text),
             }
         }
     }
@@ -663,13 +618,41 @@ mod tests {
     use agent_tui_kit::render::util::{LOG_TOOL_BLOCK_INDENT, LOG_TOOL_INDENT};
     use tact::hook::{HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG};
 
+    /// A plain history turn.
+    fn turn(role: crate::ports::HistoryRole, text: &str) -> crate::ports::HistoryTurn {
+        crate::ports::HistoryTurn {
+            role,
+            text: text.to_string(),
+            is_hook_context: false,
+            is_goal_context: false,
+        }
+    }
+
+    /// The same turn, flagged as a hook's injected context.
+    trait HistoryTurnBuilder {
+        fn with_hook_context(self) -> Self;
+        fn with_goal_context(self) -> Self;
+    }
+
+    impl HistoryTurnBuilder for crate::ports::HistoryTurn {
+        fn with_hook_context(mut self) -> Self {
+            self.is_hook_context = true;
+            self
+        }
+
+        fn with_goal_context(mut self) -> Self {
+            self.is_goal_context = true;
+            self
+        }
+    }
+
     #[test]
     fn load_history_seeds_session_turn_counter() {
         let mut app = make_app();
         app.load_history(vec![
-            tact_llm::Message::new_text(tact_llm::Role::User, "first".to_string()),
-            tact_llm::Message::new_text(tact_llm::Role::Assistant, "answer".to_string()),
-            tact_llm::Message::new_text(tact_llm::Role::User, "second".to_string()),
+            turn(crate::ports::HistoryRole::User, "first"),
+            turn(crate::ports::HistoryRole::Assistant, "answer"),
+            turn(crate::ports::HistoryRole::User, "second"),
         ]);
 
         assert_eq!(
@@ -688,8 +671,8 @@ mod tests {
     fn load_history_skips_blank_user_text_when_seeding_turns() {
         let mut app = make_app();
         app.load_history(vec![
-            tact_llm::Message::new_text(tact_llm::Role::User, "   ".to_string()),
-            tact_llm::Message::new_text(tact_llm::Role::User, "real".to_string()),
+            turn(crate::ports::HistoryRole::User, "   "),
+            turn(crate::ports::HistoryRole::User, "real"),
         ]);
 
         assert_eq!(
@@ -711,19 +694,19 @@ mod tests {
         // As injected, and as a reload from disk would deliver it: same
         // markers, no in-memory kind.
         app.load_history(vec![
-            tact_llm::Message::new_text(
-                tact_llm::Role::User,
-                format!(
+            turn(
+                crate::ports::HistoryRole::User,
+                &format!(
                     "{}\nbrief body\n{}",
                     HOOK_CONTEXT_OPEN_TAG, HOOK_CONTEXT_CLOSE_TAG
                 ),
             )
-            .with_kind(tact_llm::MessageKind::HookContext),
-            tact_llm::Message::new_text(
-                tact_llm::Role::User,
-                tact::hook::frame_hook_context(Some("plugin codex"), "from disk"),
+            .with_hook_context(),
+            turn(
+                crate::ports::HistoryRole::User,
+                &tact::hook::frame_hook_context(Some("plugin codex"), "from disk"),
             ),
-            tact_llm::Message::new_text(tact_llm::Role::User, "real".to_string()),
+            turn(crate::ports::HistoryRole::User, "real"),
         ]);
 
         assert_eq!(
@@ -779,24 +762,24 @@ mod tests {
     fn load_history_skips_goal_context_cells() {
         let mut app = make_app();
         app.load_history(vec![
-            tact_llm::Message::new_text(
-                tact_llm::Role::User,
-                format!(
+            turn(
+                crate::ports::HistoryRole::User,
+                &format!(
                     "{}\ngoal: ef770062\n{}\n",
                     tact::goal::GOAL_CONTEXT_OPEN_TAG,
                     tact::goal::GOAL_CONTEXT_CLOSE_TAG
                 ),
             )
-            .with_kind(tact_llm::MessageKind::GoalContext),
-            tact_llm::Message::new_text(
-                tact_llm::Role::User,
-                format!(
+            .with_goal_context(),
+            turn(
+                crate::ports::HistoryRole::User,
+                &format!(
                     "{}\ngoal: ef770062\n{}\n",
                     tact::goal::GOAL_CONTEXT_OPEN_TAG,
                     tact::goal::GOAL_CONTEXT_CLOSE_TAG
                 ),
             ),
-            tact_llm::Message::new_text(tact_llm::Role::User, "real".to_string()),
+            turn(crate::ports::HistoryRole::User, "real"),
         ]);
 
         assert_eq!(

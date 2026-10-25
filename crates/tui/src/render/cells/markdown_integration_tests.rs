@@ -18,10 +18,12 @@ use crate::{
 fn assistant_history_mermaid_uses_width_aware_cell() {
     let mut app = make_app();
     let md = "```mermaid\nflowchart TD\n  A[This is a long start node] --> B[This is a long end node]\n```";
-    app.load_history(vec![tact_llm::Message::new_text(
-        tact_llm::Role::Assistant,
-        md,
-    )]);
+    app.load_history(vec![crate::ports::HistoryTurn {
+        role: crate::ports::HistoryRole::Assistant,
+        text: md.to_string(),
+        is_hook_context: false,
+        is_goal_context: false,
+    }]);
 
     assert_eq!(app.log.items.len(), 1);
     assert!(

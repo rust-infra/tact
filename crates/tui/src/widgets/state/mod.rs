@@ -281,8 +281,12 @@ pub struct App {
     /// reloads and toggles skills, and none of that needs the discovery or
     /// frontmatter machinery behind it.
     pub(crate) skills: Option<std::sync::Arc<dyn crate::ports::SkillCatalog>>,
-    /// Shared session store used to inspect persisted request payloads.
-    pub(crate) session_store: Option<tact::store::DynSessionStore>,
+    /// The host's session history, when it supplied one.
+    ///
+    /// A port rather than the store: the view restores a transcript and, for the
+    /// prompt-inspection popup, reads the last request body. Everything else the
+    /// store can do belongs to the runtime.
+    pub(crate) history: Option<std::sync::Arc<dyn crate::ports::SessionHistory>>,
     /// Animation tick, advanced once per painted frame in an active state.
     ///
     /// **Monotonic, not `% 10`.** The tool/loading spinners only need a frame

@@ -207,15 +207,15 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                                 .to_string(),
                         ))
                     } else {
-                        app.session_store.as_ref().and_then(|store| {
-                            tokio::task::block_in_place(|| {
-                                tokio::runtime::Handle::current()
-                                    .block_on(store.load_latest_request_body(&app.session_id))
-                            })
-                            .ok()
-                            .flatten()
-                            .and_then(|body| crate::system_prompt::assemble_prompt_view(&body).ok())
-                            .map(|content| ("Assembled current system prompt", content))
+                        app.history.as_ref().and_then(|history| {
+                            history
+                                .latest_request_body(&app.session_id)
+                                .ok()
+                                .flatten()
+                                .and_then(|body| {
+                                    crate::system_prompt::assemble_prompt_view(body.as_bytes()).ok()
+                                })
+                                .map(|content| ("Assembled current system prompt", content))
                         })
                     };
                     let (title, content) = content.unwrap_or_else(|| (

@@ -208,7 +208,7 @@ pub struct TuiConfig {
     pub skills_description: String,
     pub skills_data: Vec<SkillEntry>,
     /// Shared session store used to inspect persisted request payloads.
-    pub session_store: tact::store::DynSessionStore,
+    pub history: std::sync::Arc<dyn ports::SessionHistory>,
     pub skills: std::sync::Arc<dyn ports::SkillCatalog>,
     /// The model queries the `/model` pickers need.
     pub models: std::sync::Arc<dyn ports::ModelCatalog>,
@@ -254,7 +254,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         skills_data,
         skills,
         models,
-        session_store,
+        history,
         pending_ui,
         voice,
         voice_parsed_keybind,
@@ -302,7 +302,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.set_pending_ui(pending_ui);
     app.skills = Some(skills);
     app.models = Some(models);
-    app.session_store = Some(session_store);
+    app.history = Some(history);
     app.model_context_window = model_context_window;
     app.voice_parsed_keybind = voice_parsed_keybind;
     // Seed the bottom bar from config so model/token info renders at startup;
@@ -328,12 +328,14 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         app.voice = crate::widgets::state::VoiceState::enabled(worker, missing_api_key);
     }
 
-    // Restore session history into the Log area after startup messages
-    if let Some(store) = &app.session_store
-        && let Ok(messages) = store.load_session(&app.session_id).await
-        && !messages.is_empty()
+    // Restore session history into the Log area after startup messages. The
+    // history port reads and projects it; the view never sees the runtime's
+    // message type.
+    if let Some(history) = &app.history
+        && let Ok(turns) = history.turns(&app.session_id)
+        && !turns.is_empty()
     {
-        app.load_history(messages);
+        app.load_history(turns);
     }
 
     // Record the previous terminal size so we can recompute layout on resize

@@ -238,6 +238,84 @@ pub fn model_catalog() -> std::sync::Arc<dyn tui::ports::ModelCatalog> {
     std::sync::Arc::new(RuntimeModelCatalog::new())
 }
 
+/// The runtime's session store, seen through the view's history port.
+///
+/// Reads the persisted transcript and projects each row onto what the log
+/// renders: the role, the text blocks, and the two "this is derived context"
+/// flags. The projection lives here because only the reader can see the stored
+/// kind; the view still checks the tag text as well, for rows written before
+/// the kind was recorded.
+pub struct RuntimeSessionHistory {
+    store: tact::store::DynSessionStore,
+}
+
+impl RuntimeSessionHistory {
+    pub fn new(store: tact::store::DynSessionStore) -> Self {
+        Self { store }
+    }
+}
+
+impl tui::ports::SessionHistory for RuntimeSessionHistory {
+    fn turns(&self, session_id: &str) -> anyhow::Result<Vec<tui::ports::HistoryTurn>> {
+        let messages = tokio::runtime::Handle::try_current()
+            .map(|handle| {
+                tokio::task::block_in_place(|| handle.block_on(self.store.load_session(session_id)))
+            })
+            .unwrap_or_else(|_| {
+                // No runtime: nothing can read the database here, and pretending
+                // an empty transcript is better than panicking in a view.
+                Ok(Vec::new())
+            })?;
+        Ok(messages
+            .into_iter()
+            .map(|message| tui::ports::HistoryTurn {
+                role: match message.role {
+                    tact_llm::Role::User => tui::ports::HistoryRole::User,
+                    tact_llm::Role::Assistant => tui::ports::HistoryRole::Assistant,
+                },
+                text: message_text(&message),
+                is_hook_context: message.is_hook_context(),
+                is_goal_context: message.is_goal_context(),
+            })
+            .collect())
+    }
+
+    fn latest_request_body(&self, session_id: &str) -> anyhow::Result<Option<String>> {
+        let handle = tokio::runtime::Handle::try_current()?;
+        let body = tokio::task::block_in_place(|| {
+            handle.block_on(self.store.load_latest_request_body(session_id))
+        })?;
+        // The stored body is bytes; the popup renders text, so a body that is
+        // not UTF-8 is reported as absent rather than mojibake.
+        Ok(body.and_then(|bytes| String::from_utf8(bytes).ok()))
+    }
+}
+
+/// The text a turn carries, joining text blocks with newlines.
+///
+/// Tool calls and results are not rendered by the log, so they are dropped here
+/// rather than handed to the view to ignore.
+fn message_text(message: &tact_llm::Message) -> String {
+    match &message.content {
+        tact_llm::MessageContent::Text { content } => content.clone(),
+        tact_llm::MessageContent::Blocks { content } => content
+            .iter()
+            .filter_map(|block| match block {
+                tact_llm::ContentBlock::Text { text } => Some(text.as_str()),
+                _ => None,
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+    }
+}
+
+/// Wrap a store for the view.
+pub fn session_history(
+    store: tact::store::DynSessionStore,
+) -> std::sync::Arc<dyn tui::ports::SessionHistory> {
+    std::sync::Arc::new(RuntimeSessionHistory::new(store))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
