@@ -260,6 +260,14 @@ impl ToolPreflight {
         &self.descriptor.name
     }
 
+    /// The per-tool result budget this call's source declared, if any.
+    ///
+    /// Applied by the host, not the kernel: persisting a large output is a
+    /// session-store concern, and the kernel owns no store.
+    pub fn output_token_limit(&self) -> Option<usize> {
+        self.descriptor.policy.output_token_limit
+    }
+
     /// A second handle, for a host that must move the call into a spawned task
     /// while keeping the original for bookkeeping.
     ///

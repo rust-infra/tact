@@ -11,7 +11,7 @@ use tact_protocol::{AgentUpdate, StepResult, StepStatus, ToolPresentationInfo};
 
 use super::Agent;
 use crate::{
-    compact::persist_large_output,
+    compact::{persist_large_output, persist_large_output_over_tokens},
     hook::{HookControl, NotificationContext, ToolResult, ToolUse},
     invoke_hooks,
     permission::policy_ext::PermissionPolicyExt,
@@ -312,6 +312,7 @@ async fn run_kernel_tool(
     work_dir: std::path::PathBuf,
     tool_use_id: String,
     output_policy: OutputPolicy,
+    output_token_limit: Option<usize>,
 ) -> ExecResult {
     let name = prepared.tool_name().to_string();
     // An MCP failure names the transport, not just the tool: a reader needs to
@@ -328,7 +329,24 @@ async fn run_kernel_tool(
             let tact_path = crate::consts::TactPath::new(&work_dir);
             match output_policy {
                 OutputPolicy::PersistLargeOutput => {
-                    match persist_large_output(&tact_path, &tool_use_id, &result.content).await {
+                    // A source that declares a per-tool budget (an MCP entry's
+                    // `tools.<name>.output_token_limit`) spills on its own
+                    // threshold; without one the session-wide rule applies.
+                    let persisted = match output_token_limit {
+                        Some(limit) => {
+                            persist_large_output_over_tokens(
+                                &tact_path,
+                                &tool_use_id,
+                                &result.content,
+                                limit,
+                            )
+                            .await
+                        }
+                        None => {
+                            persist_large_output(&tact_path, &tool_use_id, &result.content).await
+                        }
+                    };
+                    match persisted {
                         Ok(content) => ExecResult {
                             content,
                             status: StepStatus::Success,
@@ -1206,6 +1224,13 @@ impl Agent {
                     ResolvedTool::Native { metadata } => metadata.output,
                     _ => OutputPolicy::PersistLargeOutput,
                 };
+                // Read from the descriptor the pipeline resolved: a source's
+                // per-tool budget lives on its policy, not on the static
+                // metadata a built-in has.
+                let output_token_limit = prep
+                    .kernel
+                    .as_ref()
+                    .and_then(|call| call.output_token_limit());
                 futures.push(async move {
                     let start = std::time::Instant::now();
                     // Every family — native, MCP, MCP control — is a catalog entry
@@ -1217,6 +1242,7 @@ impl Agent {
                             work_dir.clone(),
                             tool_use_id.clone(),
                             output_policy,
+                            output_token_limit,
                         )
                         .await
                     } else {

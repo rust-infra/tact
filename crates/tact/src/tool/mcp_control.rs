@@ -179,7 +179,9 @@ fn policy_for(control: McpControl, display_name: String) -> ToolPolicy {
         },
         output: OutputPolicy::PersistLargeOutput,
         argument_summary: ArgumentSummaryPolicy::Json,
-        // Tact's own control tools are never pre-approved by a remote entry.
+        // Tact's own control tools are never pre-approved by a remote entry, and
+        // no entry declares a budget for them.
+        output_token_limit: None,
         auto_approved: false,
     }
 }

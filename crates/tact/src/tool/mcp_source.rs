@@ -132,7 +132,9 @@ impl McpTool {
     }
 }
 
-fn policy_for(risk: CapabilityRisk, display_name: String, auto_approved: bool) -> ToolPolicy {
+fn policy_for(entry: &McpToolEntry) -> ToolPolicy {
+    let risk = entry.risk;
+    let display_name = entry.name.clone();
     let permission = match risk {
         CapabilityRisk::Read => PermissionPolicy::Read,
         CapabilityRisk::Write => PermissionPolicy::Write,
@@ -153,7 +155,8 @@ fn policy_for(risk: CapabilityRisk, display_name: String, auto_approved: bool) -
         },
         output: OutputPolicy::PersistLargeOutput,
         argument_summary: ArgumentSummaryPolicy::Json,
-        auto_approved,
+        output_token_limit: entry.output_token_limit,
+        auto_approved: entry.auto_approved,
     }
 }
 
@@ -168,11 +171,7 @@ impl KernelTool for McpTool {
                 .clone()
                 .unwrap_or_else(|| self.entry.name.clone()),
             input_schema: self.entry.input_schema.clone(),
-            policy: policy_for(
-                self.entry.risk,
-                self.entry.name.clone(),
-                self.entry.auto_approved,
-            ),
+            policy: policy_for(&self.entry),
         }
     }
 
@@ -414,6 +413,24 @@ mod tests {
     }
 
     #[test]
+    fn a_declared_budget_travels_on_the_descriptor() {
+        // The budget used to be read from the router at execution time; the
+        // descriptor now carries it, and the runner reads it from there. A
+        // dropped field would mean a per-tool budget silently reverting to the
+        // session-wide rule.
+        let policy = policy_for(&McpToolEntry {
+            name: "mcp__demo__echo".into(),
+            description: None,
+            input_schema: json!({}),
+            risk: CapabilityRisk::High,
+            output_token_limit: Some(500),
+            auto_approved: true,
+        });
+        assert_eq!(policy.output_token_limit, Some(500));
+        assert!(policy.auto_approved);
+    }
+
+    #[test]
     fn the_entry_carries_the_policy_so_the_descriptor_is_a_pure_read() {
         // The descriptor is built on every snapshot. Asking the backend there
         // would take the router lock again (deadlock during a refresh) and could
@@ -432,7 +449,14 @@ mod tests {
 
     #[test]
     fn high_risk_descriptor_maps_to_high_permission() {
-        let policy = policy_for(CapabilityRisk::High, "mcp__demo__echo".into(), false);
+        let policy = policy_for(&McpToolEntry {
+            name: "mcp__demo__echo".into(),
+            description: None,
+            input_schema: json!({}),
+            risk: CapabilityRisk::High,
+            output_token_limit: None,
+            auto_approved: false,
+        });
         assert_eq!(policy.permission, PermissionPolicy::High);
         assert_eq!(policy.presentation.display_name, "mcp__demo__echo");
         assert_eq!(policy.output, OutputPolicy::PersistLargeOutput);

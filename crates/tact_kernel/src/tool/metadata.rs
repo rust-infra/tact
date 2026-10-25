@@ -218,6 +218,13 @@ pub struct ToolPolicy {
     pub presentation: ToolPresentationOwned,
     pub output: OutputPolicy,
     pub argument_summary: ArgumentSummaryPolicy,
+    /// A per-tool result budget, in tokens, when the source declares one.
+    ///
+    /// An MCP entry's `tools.<name>.output_token_limit` wins over the
+    /// session-wide character threshold; without one the global rule applies
+    /// unchanged. Carried on the policy rather than on [`OutputPolicy`] because
+    /// that enum is `Copy` and used by every built-in constant.
+    pub output_token_limit: Option<usize>,
     /// The source declared this call pre-approved (an MCP entry's
     /// `approval_mode: "auto"`).
     ///
@@ -240,8 +247,9 @@ impl ToolMetadata {
             presentation: self.presentation.into(),
             output: self.output,
             argument_summary: self.argument_summary,
-            // A built-in tool never declares itself pre-approved: that is a
-            // property of a remotely-configured source.
+            // Neither is a remote-source property: a built-in has no entry to
+            // declare a budget, and never pre-approves itself.
+            output_token_limit: None,
             auto_approved: false,
         }
     }
