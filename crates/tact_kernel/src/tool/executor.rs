@@ -114,10 +114,29 @@ pub struct PostToolUseEvent {
     pub additional_context: Vec<String>,
 }
 
+/// A call that is about to prompt a human.
+///
+/// Runs only when a prompt would actually appear, so a policy hook can answer
+/// it without paying for every call: `Allow` skips the prompt, `Block` denies
+/// outright, anything else leaves the decision to the user.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PermissionRequestEvent {
+    pub tool_name: String,
+    pub input: serde_json::Value,
+}
+
 #[async_trait]
 pub trait HookService: Send + Sync {
     async fn pre_tool_use(&self, event: &mut PreToolUseEvent) -> anyhow::Result<HookControl>;
     async fn post_tool_use(&self, event: &mut PostToolUseEvent) -> anyhow::Result<HookControl>;
+
+    /// Answer a prompt that is about to be shown.
+    async fn permission_request(
+        &self,
+        _event: &mut PermissionRequestEvent,
+    ) -> anyhow::Result<HookControl> {
+        Ok(HookControl::Continue)
+    }
 }
 
 /// The security guard, run before and after a PreToolUse rewrite.
@@ -134,6 +153,8 @@ pub enum PreflightAuthorization {
     HookAllowed,
     /// The human answered a prompt.
     Prompted,
+    /// A `PermissionRequest` hook allowed it, so no prompt appeared.
+    PermissionRequestHookAllowed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -307,6 +328,7 @@ impl ToolExecutor {
             self.permissions.decide(permission_request.clone()).await?
         };
         let prompted = matches!(decision, PermissionDecision::Ask(_));
+        let mut permission_hook_allowed = false;
         match decision {
             PermissionDecision::Allow => {}
             PermissionDecision::Deny(reason) => {
@@ -318,18 +340,35 @@ impl ToolExecutor {
                     "permission prompt for {} offered no options",
                     descriptor.name
                 );
-                let answer = self.ask(ctx.interaction.as_ref(), &prompt).await?;
-                if answer.kind == PermissionOptionKind::Deny {
-                    anyhow::bail!("Permission denied by user for {}", descriptor.name);
+                let mut event = PermissionRequestEvent {
+                    tool_name: descriptor.name.clone(),
+                    input: input.clone(),
+                };
+                match self.hooks.permission_request(&mut event).await {
+                    // Fail open, like every other hook failure: a broken policy
+                    // hook must not block work.
+                    Ok(HookControl::Allow) => permission_hook_allowed = true,
+                    Ok(HookControl::Block(reason)) => {
+                        anyhow::bail!("Permission denied by PermissionRequest hook: {reason}")
+                    }
+                    Ok(HookControl::Continue) | Err(_) => {}
                 }
-                self.permissions
-                    .record(&permission_request, &answer)
-                    .await?;
+                if !permission_hook_allowed {
+                    let answer = self.ask(ctx.interaction.as_ref(), &prompt).await?;
+                    if answer.kind == PermissionOptionKind::Deny {
+                        anyhow::bail!("Permission denied by user for {}", descriptor.name);
+                    }
+                    self.permissions
+                        .record(&permission_request, &answer)
+                        .await?;
+                }
             }
         }
 
         let authorization = if hook_allowed {
             PreflightAuthorization::HookAllowed
+        } else if permission_hook_allowed {
+            PreflightAuthorization::PermissionRequestHookAllowed
         } else if prompted {
             PreflightAuthorization::Prompted
         } else {
@@ -1548,5 +1587,187 @@ mod resolve_authorize_tests {
         );
         executor.execute(prepared).await.unwrap();
         assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+}
+
+#[cfg(test)]
+mod permission_request_hook_tests {
+    use super::*;
+    use crate::capability::tool::Tool;
+    use crate::tool::context::{
+        CancelToken, EventSink, InteractionBroker, InteractionRequest, InteractionResponse,
+        RedactionPolicy, ToolCallContext, ToolEvent, ToolOrigin, Workspace,
+    };
+    use crate::tool::descriptor::ToolDescriptor;
+    use crate::tool::{ToolCallResult, ToolMetadata};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NoopTool;
+    #[async_trait]
+    impl Tool for NoopTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::from_native(
+                "bash",
+                "bash",
+                json!({"type": "object"}),
+                &ToolMetadata::read_json("bash", "bash", "Bash"),
+            )
+        }
+
+        async fn call(
+            &self,
+            _ctx: ToolCallContext,
+            _input: serde_json::Value,
+        ) -> anyhow::Result<ToolCallResult> {
+            Ok(ToolCallResult::text("ran"))
+        }
+    }
+
+    struct Asking(Arc<AtomicUsize>);
+    #[async_trait]
+    impl PermissionService for Asking {
+        async fn decide(&self, _request: PermissionRequest) -> anyhow::Result<PermissionDecision> {
+            Ok(PermissionDecision::Ask(PermissionPrompt {
+                message: "run?".into(),
+                options: vec![PermissionOption {
+                    id: "allow_once".into(),
+                    label: "Allow once".into(),
+                    detail: None,
+                    kind: PermissionOptionKind::AllowOnce,
+                }],
+            }))
+        }
+
+        async fn record(
+            &self,
+            _request: &PermissionRequest,
+            _answer: &PermissionAnswer,
+        ) -> anyhow::Result<()> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+    }
+
+    struct PolicyHook(HookControl);
+    #[async_trait]
+    impl HookService for PolicyHook {
+        async fn pre_tool_use(&self, _event: &mut PreToolUseEvent) -> anyhow::Result<HookControl> {
+            Ok(HookControl::Continue)
+        }
+
+        async fn post_tool_use(
+            &self,
+            _event: &mut PostToolUseEvent,
+        ) -> anyhow::Result<HookControl> {
+            Ok(HookControl::Continue)
+        }
+
+        async fn permission_request(
+            &self,
+            _event: &mut PermissionRequestEvent,
+        ) -> anyhow::Result<HookControl> {
+            Ok(self.0.clone())
+        }
+    }
+
+    struct NoGuard;
+    impl SecurityService for NoGuard {
+        fn guard(
+            &self,
+            _descriptor: &ToolDescriptor,
+            _input: &serde_json::Value,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct NoEvents;
+    impl EventSink for NoEvents {
+        fn emit(&self, _event: ToolEvent) {}
+    }
+
+    /// Would refuse any prompt, so a test that passes proves none was asked.
+    struct RefusePrompts;
+    #[async_trait]
+    impl InteractionBroker for RefusePrompts {
+        async fn request(
+            &self,
+            _request: InteractionRequest,
+        ) -> anyhow::Result<InteractionResponse> {
+            Ok(InteractionResponse::Cancelled)
+        }
+    }
+
+    fn ctx() -> ToolCallContext {
+        ToolCallContext {
+            run_id: "run".into(),
+            tool_use_id: "call".into(),
+            session_id: None,
+            active_goal_id: None,
+            origin: ToolOrigin::Main,
+            workspace: Workspace::new("/repo"),
+            events: Arc::new(NoEvents),
+            interaction: Arc::new(RefusePrompts),
+            cancel: CancelToken::new(),
+            redaction: RedactionPolicy::Off,
+        }
+    }
+
+    async fn executor(recorded: Arc<AtomicUsize>, hook: HookControl) -> ToolExecutor {
+        let mut catalog = ToolCatalog::default();
+        catalog.insert(Arc::new(NoopTool)).unwrap();
+        ToolExecutor::new(
+            Arc::new(catalog),
+            CapabilityFilter::default(),
+            Arc::new(NoGuard),
+            Arc::new(Asking(recorded)),
+            Arc::new(PolicyHook(hook)),
+        )
+    }
+
+    fn request(generation: u64) -> ToolRequest {
+        ToolRequest {
+            call_id: "call".into(),
+            tool_name: "bash".into(),
+            input: json!({"command": "ls"}),
+            snapshot_generation: generation,
+        }
+    }
+
+    #[tokio::test]
+    async fn allow_skips_the_prompt_and_is_reported() {
+        let recorded = Arc::new(AtomicUsize::new(0));
+        let executor = executor(recorded.clone(), HookControl::Allow).await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let prepared = executor
+            .preflight(request(generation), ctx())
+            .await
+            .expect("a hook allow must not need a human");
+        assert_eq!(
+            executor.authorization(&prepared),
+            PreflightAuthorization::PermissionRequestHookAllowed
+        );
+        executor.execute(prepared).await.unwrap();
+        assert_eq!(recorded.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn block_denies_with_the_legacy_wording() {
+        let recorded = Arc::new(AtomicUsize::new(0));
+        let executor = executor(recorded.clone(), HookControl::Block("policy".into())).await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let error = executor
+            .preflight(request(generation), ctx())
+            .await
+            .err()
+            .expect("a blocking policy hook must deny");
+        assert!(
+            error
+                .to_string()
+                .starts_with("Permission denied by PermissionRequest hook:"),
+            "{error}"
+        );
+        assert_eq!(recorded.load(Ordering::SeqCst), 0);
     }
 }
