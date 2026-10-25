@@ -24,22 +24,30 @@ use crate::mcp::MCPToolRouter;
 /// The runtime backend the adapter reads from and calls through.
 #[async_trait]
 pub trait McpToolBackend: Send + Sync {
-    /// Every visible tool, as `(full name, description, schema)`.
+    /// Every visible tool, with the policy this server entry declares.
     fn tools(&self) -> Vec<McpToolEntry>;
     async fn call(&self, full_name: &str, input: serde_json::Value) -> anyhow::Result<String>;
-    fn risk(&self, full_name: &str) -> CapabilityRisk;
-    fn is_auto_approved(&self, full_name: &str) -> bool;
     /// Re-list servers that announced `notifications/tools/list_changed`,
     /// reporting whether the visible set changed.
     async fn refresh(&self) -> anyhow::Result<bool>;
 }
 
 /// One discovered MCP tool, already namespaced as `mcp__server__tool`.
+///
+/// The policy lives here, not behind the backend: a descriptor is read on every
+/// snapshot, and a `descriptor()` that re-locked the router would deadlock
+/// during a refresh and could disagree with the risk that was advertised.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpToolEntry {
     pub name: String,
     pub description: Option<String>,
     pub input_schema: serde_json::Value,
+    /// From `tools.<name>.risk` / `default_tool_risk`, else `High`.
+    pub risk: CapabilityRisk,
+    /// From `tools.<name>.output_token_limit`, when the entry declares one.
+    pub output_token_limit: Option<usize>,
+    /// `approval_mode: "auto"` for this tool.
+    pub auto_approved: bool,
 }
 
 /// A backend over a shared router.
@@ -69,47 +77,27 @@ impl McpToolBackend for SharedMcpBackend {
         router
             .all_tools()
             .into_iter()
-            .map(|spec| McpToolEntry {
-                name: spec.name,
-                description: spec.description,
-                input_schema: spec.input_schema,
+            .map(|spec| {
+                let policy = parse_full_name(&spec.name);
+                McpToolEntry {
+                    risk: policy
+                        .as_ref()
+                        .map(|(server, tool)| router.risk_for(server, tool))
+                        .unwrap_or(CapabilityRisk::High),
+                    output_token_limit: router.output_token_limit(&spec.name),
+                    auto_approved: policy
+                        .as_ref()
+                        .is_some_and(|(server, tool)| router.is_auto_approved(server, tool)),
+                    name: spec.name,
+                    description: spec.description,
+                    input_schema: spec.input_schema,
+                }
             })
             .collect()
     }
 
     async fn call(&self, full_name: &str, input: serde_json::Value) -> anyhow::Result<String> {
         self.router.lock().await.call(full_name, input).await
-    }
-
-    fn risk(&self, full_name: &str) -> CapabilityRisk {
-        self.router
-            .try_lock()
-            .map(|router| {
-                let Some(parsed) = full_name.split_once("__") else {
-                    return CapabilityRisk::High;
-                };
-                let rest = parsed.1;
-                let Some((server, tool)) = rest.rsplit_once("__") else {
-                    return CapabilityRisk::High;
-                };
-                router.risk_for(server, tool)
-            })
-            .unwrap_or(CapabilityRisk::High)
-    }
-
-    fn is_auto_approved(&self, full_name: &str) -> bool {
-        self.router
-            .try_lock()
-            .map(|router| {
-                let Some(rest) = full_name.strip_prefix("mcp__") else {
-                    return false;
-                };
-                let Some((server, tool)) = rest.rsplit_once("__") else {
-                    return false;
-                };
-                router.is_auto_approved(server, tool)
-            })
-            .unwrap_or(false)
     }
 
     async fn refresh(&self) -> anyhow::Result<bool> {
@@ -124,6 +112,13 @@ impl McpToolBackend for SharedMcpBackend {
         // non-empty report is exactly "the visible tool set moved".
         Ok(!report.changed.is_empty())
     }
+}
+
+/// Split a `mcp__<server>__<tool>` name, the same way `McpToolName` does.
+fn parse_full_name(full_name: &str) -> Option<(String, String)> {
+    let rest = full_name.strip_prefix("mcp__")?;
+    let (server, tool) = rest.rsplit_once("__")?;
+    (!server.is_empty() && !tool.is_empty()).then(|| (server.to_string(), tool.to_string()))
 }
 
 /// One discovered tool exposed as a kernel [`KernelTool`].
@@ -165,7 +160,6 @@ fn policy_for(risk: CapabilityRisk, display_name: String) -> ToolPolicy {
 #[async_trait]
 impl KernelTool for McpTool {
     fn descriptor(&self) -> ToolDescriptor {
-        let risk = self.backend.risk(&self.entry.name);
         ToolDescriptor {
             name: self.entry.name.clone(),
             description: self
@@ -174,7 +168,7 @@ impl KernelTool for McpTool {
                 .clone()
                 .unwrap_or_else(|| self.entry.name.clone()),
             input_schema: self.entry.input_schema.clone(),
-            policy: policy_for(risk, self.entry.name.clone()),
+            policy: policy_for(self.entry.risk, self.entry.name.clone()),
         }
     }
 
@@ -313,10 +307,30 @@ mod tests {
     }
 
     #[test]
-    fn unknown_names_default_to_high_risk() {
+    fn an_unparseable_name_is_not_an_mcp_tool() {
+        assert!(parse_full_name("read_file").is_none());
+        assert!(parse_full_name("mcp__..").is_none());
+        assert_eq!(
+            parse_full_name("mcp__demo__echo"),
+            Some(("demo".to_string(), "echo".to_string()))
+        );
+    }
+
+    #[test]
+    fn the_entry_carries_the_policy_so_the_descriptor_is_a_pure_read() {
+        // The descriptor is built on every snapshot. Asking the backend there
+        // would take the router lock again (deadlock during a refresh) and could
+        // report a risk different from the one that was advertised.
         let backend = backend();
-        assert_eq!(backend.risk("not-an-mcp-tool"), CapabilityRisk::High);
-        assert!(!backend.is_auto_approved("not-an-mcp-tool"));
+        let entry = backend.tools().into_iter().next().unwrap();
+        assert_eq!(entry.name, "mcp__demo__echo");
+        assert_eq!(
+            entry.risk,
+            CapabilityRisk::High,
+            "an undeclared tool is High"
+        );
+        assert_eq!(entry.output_token_limit, None);
+        assert!(!entry.auto_approved);
     }
 
     #[test]
