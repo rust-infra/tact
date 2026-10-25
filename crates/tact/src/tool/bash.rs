@@ -1,14 +1,15 @@
 use std::{sync::atomic::Ordering, time::Duration};
 
 use crate::tool::{
-    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
-    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
-    ToolPresentation,
+    ArgumentSummaryPolicy, DetailPolicy, DomainHandles, LiveOutputPolicy, OutputPolicy,
+    PermissionPolicy, PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ShellPolicy, ToolDomain,
+    ToolMetadata, ToolPresentation,
 };
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::ToolVisualKind;
+use tact_protocol::UpdateSink;
 use tact_protocol::{AgentUpdate, ToolOutputBuffer, ToolOutputChunk, ToolOutputStream};
 use tokio::{
     process::{Child, Command},
@@ -23,7 +24,6 @@ use crate::{
         read_pipe, stream_index,
     },
     shell::validate_shell_command,
-    tool::ToolContext,
 };
 
 const OUTPUT_LIMIT_CHARS: usize = 50_000;
@@ -43,14 +43,14 @@ fn push_decoded(
 }
 
 fn report_pending(
-    ctx: &ToolContext,
+    reporter: &crate::tool::ToolProgressReporter,
     pending: &mut PendingProgress,
     progress_tick: &mut Interval,
 ) -> bool {
     if pending.is_empty() {
         return false;
     }
-    ctx.progress_reporter.report(pending.take());
+    reporter.report(pending.take());
     progress_tick.reset();
     true
 }
@@ -141,21 +141,15 @@ pub struct BashInput {
 /// quiet; this only fires when the switch is on and no sandbox could be
 /// started. Startup already reported the degradation, but that line scrolls away,
 /// so the notice is repeated at the point of use.
-fn notice_unsandboxed(ctx: &ToolContext) {
-    let Some(degraded) = &ctx.sandbox_degraded else {
+fn notice_unsandboxed(shell: &ShellPolicy, events: &UpdateSink) {
+    let Some(degraded) = &shell.degraded else {
         return;
     };
     if !degraded.first_command_notice() {
         return;
     }
     tracing::warn!(reason = %degraded.reason, "bash: command not sandboxed");
-    ctx.events.send(AgentUpdate::Info(degraded.reason.clone()));
-}
-
-/// Resolve the effective wall-clock limit: a per-call `timeout` (if given)
-/// wins over the configured `[tools].bash_timeout_secs`, and `0` disables it.
-fn resolve_timeout_secs(input_timeout: Option<u64>, configured_secs: u64) -> u64 {
-    input_timeout.unwrap_or(configured_secs)
+    events.send(AgentUpdate::Info(degraded.reason.clone()));
 }
 
 /// `bash` tool description used when the sandbox is active.
@@ -205,23 +199,44 @@ pub const BASH_METADATA: ToolMetadata = ToolMetadata {
 /// - The shell command is invalid or potentially dangerous.
 /// - The shell process cannot be spawned.
 /// - The stdout or stderr pipes cannot be captured.
-/// - The command times out (per-call `timeout`, else `ctx.bash_timeout_secs`).
+/// - The command times out (per-call `timeout`, else the session's configured one).
 /// - The command is cancelled by the user.
 /// - The command exits with a failure or the pipe readers encounter an error.
-pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
+pub async fn bash(handles: DomainHandles, input: BashInput) -> Result<String> {
+    let Some(shell) = handles.shell.clone() else {
+        return Err(anyhow!(
+            "bash is unavailable: this host has no shell policy"
+        ));
+    };
+    let Some(events) = handles.events.clone() else {
+        return Err(anyhow!("bash needs an update sink for its live output"));
+    };
+    let Some(workspace) = handles.workspace.clone() else {
+        return Err(anyhow!("bash needs a workspace"));
+    };
+    let Some(cancel) = handles.cancel_flag.clone() else {
+        return Err(anyhow!("bash needs the run's cancel flag"));
+    };
+    let reporter = crate::tool::ToolProgressReporter::new(
+        handles
+            .tool_use_id
+            .clone()
+            .unwrap_or_else(|| "bash".to_string()),
+        events.clone(),
+    );
     let command = input.command;
-    let timeout_secs = resolve_timeout_secs(input.timeout, ctx.bash_timeout_secs);
+    let timeout_secs = shell.timeout_for(input.timeout);
 
     validate_shell_command(&command)?;
 
     // The sandbox (if any) only changes how the process is started; everything
     // after `spawn` — piped stdio, process group, timeout, cancellation,
     // process-group teardown — is unchanged.
-    let mut process = match &ctx.sandbox {
+    let mut process = match &shell.sandbox {
         Some(sandbox) => {
             let args = vec!["-c".to_string(), command];
             sandbox
-                .command("sh", &args, &ctx.work_dir)
+                .command("sh", &args, workspace.root())
                 .with_context(|| {
                     format!(
                         "failed to build the {} sandbox invocation",
@@ -231,9 +246,9 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
         }
         None => {
             // Default, or a sandbox that degraded at startup (§ sandbox module).
-            notice_unsandboxed(&ctx);
+            notice_unsandboxed(&shell, &events);
             let mut direct = Command::new("sh");
-            direct.arg("-c").arg(command).current_dir(&ctx.work_dir);
+            direct.arg("-c").arg(command).current_dir(workspace.root());
             direct
         }
     };
@@ -245,7 +260,7 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
     let mut child = process.spawn().context("failed to spawn shell process")?;
     let process_group_id = child.id();
     if let Some(pgid) = process_group_id {
-        set_process_group_priority(pgid, ctx.bash_nice);
+        set_process_group_priority(pgid, shell.nice);
     }
 
     let stdout = child.stdout.take().context("stdout pipe unavailable")?;
@@ -280,7 +295,7 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
                     Some(PipeEvent::Bytes(stream, bytes)) => {
                         let text = decoders[stream_index(stream)].push(&bytes);
                         push_decoded(stream, text, &mut capture, &mut pending);
-                        if !sent_progress && report_pending(&ctx, &mut pending, &mut progress_tick) {
+                        if !sent_progress && report_pending(&reporter, &mut pending, &mut progress_tick) {
                             sent_progress = true;
                         }
                     }
@@ -323,10 +338,10 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
                 }
             }
             _ = progress_tick.tick() => {
-                if report_pending(&ctx, &mut pending, &mut progress_tick) {
+                if report_pending(&reporter, &mut pending, &mut progress_tick) {
                     sent_progress = true;
                 }
-                if failure_reason.is_none() && ctx.cancel_flag.load(Ordering::Relaxed) {
+                if failure_reason.is_none() && cancel.load(Ordering::Relaxed) {
                     // Relaxed ordering is sufficient here: the cancel flag is a
                     // plain boolean signal set by the parent task and consumed
                     // periodically by this select loop — there is no need for
@@ -365,12 +380,12 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
         push_decoded(stream, text, &mut capture, &mut pending);
     }
     if !pending.is_empty() {
-        ctx.progress_reporter.report(pending.take());
+        reporter.report(pending.take());
     }
     // Release whatever the live-output redactor is still holding back (anything
     // after the last newline). Called on every exit path below, including the
     // two error returns, because a missed flush truncates the live view.
-    ctx.progress_reporter.flush();
+    reporter.flush();
     let _ = stdout_task.await;
     let _ = stderr_task.await;
 
@@ -475,13 +490,23 @@ mod tests {
     }
 
     #[test]
-    fn resolve_timeout_prefers_input_then_config() {
-        assert_eq!(resolve_timeout_secs(None, 1_800), 1_800);
-        assert_eq!(resolve_timeout_secs(Some(5), 1_800), 5);
+    fn the_shell_policy_resolves_the_timeout() {
+        // The rule lives on `ShellPolicy::timeout_for` now; this keeps the four
+        // cases that used to be here, because they are the contract a caller sees.
+        let configured = ShellPolicy {
+            timeout_secs: 1_800,
+            ..ShellPolicy::default()
+        };
+        assert_eq!(configured.timeout_for(None), 1_800);
+        assert_eq!(configured.timeout_for(Some(5)), 5);
         // Explicit 0 disables the timeout even when the config enables it.
-        assert_eq!(resolve_timeout_secs(Some(0), 1_800), 0);
+        assert_eq!(configured.timeout_for(Some(0)), 0);
         // `None` still inherits a config that disables the timeout.
-        assert_eq!(resolve_timeout_secs(None, 0), 0);
+        let disabled = ShellPolicy {
+            timeout_secs: 0,
+            ..ShellPolicy::default()
+        };
+        assert_eq!(disabled.timeout_for(None), 0);
     }
 
     #[tokio::test]
@@ -521,6 +546,30 @@ mod tests {
     }
 
     #[cfg(unix)]
+    /// The handles a `bash` call needs, from a test context.
+    ///
+    /// The entry point takes handles now, and a test still wants to build a
+    /// `ToolContext` (that is where the sandbox and timeout come from). This is
+    /// the one-line bridge, and it fills every handle so the test exercises the
+    /// same set a real call does.
+    fn handles_for(context: &crate::tool::ToolContext) -> DomainHandles {
+        DomainHandles {
+            shell: Some(ShellPolicy {
+                timeout_secs: context.bash_timeout_secs,
+                nice: context.bash_nice,
+                sandbox: context.sandbox.clone(),
+                degraded: context.sandbox_degraded.clone(),
+            }),
+            events: Some(context.events.clone()),
+            workspace: Some(tact_kernel::tool::context::Workspace::new(
+                context.work_dir.clone(),
+            )),
+            cancel_flag: Some(context.cancel_flag.clone()),
+            tool_use_id: Some("bash-test".to_string()),
+            ..DomainHandles::none()
+        }
+    }
+
     #[tokio::test]
     async fn orphaned_background_grandchild_does_not_hang() {
         // Regression: after the shell exits, a background grandchild that
@@ -532,7 +581,7 @@ mod tests {
         let done = tokio::time::timeout(
             Duration::from_secs(3),
             bash(
-                context,
+                handles_for(&context),
                 BashInput {
                     command: "sh -c 'sleep 2 &'".to_string(),
                     timeout: None,
@@ -557,7 +606,7 @@ mod tests {
         let context = test_context("bash_cancel_long_running");
         let cancel_flag = context.cancel_flag.clone();
         let mut task = tokio::spawn(bash(
-            context,
+            handles_for(&context),
             BashInput {
                 command: "sleep 10".to_string(),
                 timeout: None,
@@ -584,6 +633,8 @@ mod tests {
     #[tokio::test]
     async fn regular_progress_waits_after_the_immediate_first_batch() {
         let context = test_context("bash_progress_interval");
+        // The helper takes the reporter now, which is the only thing it reads.
+        let reporter = crate::tool::ToolProgressReporter::new("bash", context.events.clone());
         let mut pending = PendingProgress::default();
         pending.push(ToolOutputChunk::stdout("first\n"));
         let first_tick = tokio::time::Instant::now() + Duration::from_millis(40);
@@ -592,7 +643,7 @@ mod tests {
 
         progress_tick.tick().await;
         tokio::time::sleep(Duration::from_millis(30)).await;
-        assert!(report_pending(&context, &mut pending, &mut progress_tick));
+        assert!(report_pending(&reporter, &mut pending, &mut progress_tick));
         let sent_at = tokio::time::Instant::now();
         progress_tick.tick().await;
         let gap = sent_at.elapsed();
@@ -815,7 +866,7 @@ mod sandbox_tests {
         };
         let cancel_flag = context.cancel_flag.clone();
         let mut task = tokio::spawn(bash(
-            context,
+            handles_for(&context),
             BashInput {
                 command: "sh -c 'sleep 322 & wait'".to_string(),
                 timeout: None,

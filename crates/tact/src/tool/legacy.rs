@@ -77,6 +77,11 @@ pub trait ToolContextFactory: Send + Sync {
         None
     }
 
+    /// The shell policy, on the same terms.
+    fn shell_policy(&self) -> Option<crate::tool::ShellPolicy> {
+        None
+    }
+
     /// The sink a tool's read-out goes to.
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
         None
@@ -186,6 +191,15 @@ impl ToolContextFactory for SharedToolContextFactory {
 
     fn background_manager(&self) -> Option<crate::tool::SharedBackgroundManager> {
         Some(self.with_base(|base| base.background_manager.clone()))
+    }
+
+    fn shell_policy(&self) -> Option<crate::tool::ShellPolicy> {
+        Some(self.with_base(|base| crate::tool::ShellPolicy {
+            timeout_secs: base.bash_timeout_secs,
+            nice: base.bash_nice,
+            sandbox: base.sandbox.clone(),
+            degraded: base.sandbox_degraded.clone(),
+        }))
     }
 
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
@@ -298,6 +312,9 @@ impl KernelTool for ContextualToolAdapter {
                     }
                     super::DomainHandle::ToolUseId => {
                         handles.tool_use_id = Some(ctx.tool_use_id.clone());
+                    }
+                    super::DomainHandle::Shell => {
+                        handles.shell = self.contexts.shell_policy();
                     }
                     super::DomainHandle::FromSubagent => {
                         handles.from_subagent = Some(matches!(ctx.origin, ToolOrigin::Subagent));

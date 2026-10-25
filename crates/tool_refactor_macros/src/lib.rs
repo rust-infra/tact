@@ -172,6 +172,7 @@ fn expand_domain_tool(
         ),
         ("cancel_flag", quote!(crate::tool::DomainHandle::CancelFlag)),
         ("tool_use_id", quote!(crate::tool::DomainHandle::ToolUseId)),
+        ("shell", quote!(crate::tool::DomainHandle::Shell)),
     ] {
         if text.contains(&format!(".{field}")) {
             needs.push(variant);
@@ -232,6 +233,12 @@ fn expand_domain_tool(
                     // from there rather than inventing an empty id that would make
                     // every background run share one row.
                     tool_use_id: Some(context.progress_reporter.tool_id().to_string()),
+                    shell: Some(crate::tool::ShellPolicy {
+                        timeout_secs: context.bash_timeout_secs,
+                        nice: context.bash_nice,
+                        sandbox: context.sandbox.clone(),
+                        degraded: context.sandbox_degraded.clone(),
+                    }),
                     session_id: context.session_id.clone(),
                     active_goal_id: context.active_goal_id.clone(),
                     events: Some(context.events.clone()),

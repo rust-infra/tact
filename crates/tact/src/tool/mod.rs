@@ -63,6 +63,7 @@ mod read_file;
 mod read_image;
 pub(crate) mod readonly_shell;
 mod registry;
+mod shell_policy;
 mod sleep;
 mod subagent;
 #[cfg(feature = "test-support")]
@@ -103,6 +104,7 @@ pub use name_class::{ToolNameClass, classify, scopes_to_one_server};
 #[cfg(test)]
 use read_file::ReadFileTool;
 pub use registry::{subagent_toolset, toolset, toolset_with_memory};
+pub use shell_policy::ShellPolicy;
 // Re-exported so `crate::agent::tool_dispatch` can do per-invocation resource
 // resolution for worktree-isolated `spawn_subagent` calls without naming the
 // private `subagent` module.
@@ -265,6 +267,8 @@ pub enum DomainHandle {
     BackgroundManager,
     CancelFlag,
     ToolUseId,
+    /// The shell policy: timeout, priority, sandbox and its degradation.
+    Shell,
     FromSubagent,
     /// The run's session id, when this tool keys its rows by it.
     SessionId,
@@ -303,6 +307,8 @@ pub struct DomainHandles {
     pub cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
     /// This call's id, for a tool that keys progress or metadata rows by it.
     pub tool_use_id: Option<String>,
+    /// How a shell command may run. One value, not four fields.
+    pub shell: Option<ShellPolicy>,
     /// Whether the caller is a subagent, when a tool's wording depends on it.
     ///
     /// Carried from the kernel's `ToolOrigin` rather than re-derived: the origin
@@ -371,6 +377,9 @@ impl DomainHandles {
         }
         if self.tool_use_id.is_some() {
             carried.push("tool_use_id");
+        }
+        if self.shell.is_some() {
+            carried.push("shell");
         }
         if self.from_subagent.is_some() {
             carried.push("from_subagent");
@@ -1293,6 +1302,7 @@ mod domain_handle_guard_tests {
             (DomainHandle::BackgroundManager, "background_manager"),
             (DomainHandle::CancelFlag, "cancel_flag"),
             (DomainHandle::ToolUseId, "tool_use_id"),
+            (DomainHandle::Shell, "shell"),
             (DomainHandle::FromSubagent, "from_subagent"),
             (DomainHandle::SessionId, "session_id"),
             (DomainHandle::ActiveGoalId, "active_goal_id"),
@@ -1329,13 +1339,14 @@ mod domain_handle_guard_tests {
                 DomainHandle::BackgroundManager,
                 DomainHandle::CancelFlag,
                 DomainHandle::ToolUseId,
+                DomainHandle::Shell,
                 DomainHandle::FromSubagent,
                 DomainHandle::SessionId,
                 DomainHandle::ActiveGoalId,
                 DomainHandle::Events,
             ]
             .len(),
-            16,
+            17,
             "update this list (and the macro's table) when adding a DomainHandle"
         );
     }
