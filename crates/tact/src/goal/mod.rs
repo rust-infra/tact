@@ -6,6 +6,7 @@
 
 mod verifier;
 
+pub mod lifecycle;
 pub mod limits;
 pub mod snapshots;
 

@@ -654,12 +654,8 @@ pub enum UserCommand {
         goal_id: Option<String>,
         text: String,
     },
-    /// Pause a non-terminal Goal after any active activation releases it.
-    PauseGoal { goal_id: String },
     /// Resume a paused/waiting Goal and start one bounded activation.
     ResumeGoal { goal_id: String },
-    /// Cancel a non-terminal Goal after any active activation releases it.
-    CancelGoal { goal_id: String },
     /// Record explicit human acceptance and resume one bounded activation.
     AcceptGoal { goal_id: String, text: String },
     /// File a finished Goal out of the panel (`archived: true`), or bring it
@@ -887,14 +883,16 @@ mod tests {
                 goal_id: Some("goal-1".into()),
                 text: "Prefer the smaller design".into(),
             },
-            UserCommand::PauseGoal {
-                goal_id: "goal-1".into(),
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: "pause goal-1".into(),
             },
             UserCommand::ResumeGoal {
                 goal_id: "goal-1".into(),
             },
-            UserCommand::CancelGoal {
-                goal_id: "goal-1".into(),
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: "cancel goal-1".into(),
             },
             UserCommand::AcceptGoal {
                 goal_id: "goal-1".into(),

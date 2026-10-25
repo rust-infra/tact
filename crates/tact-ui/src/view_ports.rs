@@ -194,6 +194,7 @@ pub fn install_command_directory(
             goal_manager: agent.tool_context.goal_manager.clone(),
             task_manager: agent.tool_context.task_manager.clone(),
             limits: crate::driver::agent_goal_limits(agent),
+            events: agent.runtime.events.clone(),
         }),
         // The palette offers `/compact` only when the runtime can run it.
         agent

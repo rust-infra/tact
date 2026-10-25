@@ -185,6 +185,7 @@ pub fn builtin_catalog(
                 wiring.goal_manager,
                 wiring.task_manager,
                 wiring.limits,
+                wiring.events,
             )))
             .expect("built-in command names are unique");
     }
@@ -215,6 +216,12 @@ pub struct GoalWiring {
     pub goal_manager: crate::goal::SharedGoalManager,
     pub task_manager: crate::task::SharedTaskManager,
     pub limits: crate::goal::GoalLimits,
+    /// Where a pause or cancel reports itself.
+    ///
+    /// The lifecycle helpers answer by emitting, so the command needs the same sink
+    /// the driver uses — otherwise `/goal pause` would be the one Goal operation
+    /// that says nothing.
+    pub events: tact_protocol::events::UpdateSink,
 }
 
 /// A metadata literal with `Runtime` scope, for the built-ins.

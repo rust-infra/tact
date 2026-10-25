@@ -26,6 +26,10 @@ enum GoalVerb {
     List { include_archived: bool },
     /// `/goal show <id>` — one Goal, as text for the reader.
     Show { id: String },
+    /// `/goal pause <id>` — ask the owning run to stop at a safe point.
+    Pause { id: String },
+    /// `/goal cancel <id>` — an explicit terminal decision.
+    Cancel { id: String },
 }
 
 /// The `/goal` command.
@@ -33,6 +37,8 @@ pub struct GoalCommand {
     goal_manager: SharedGoalManager,
     task_manager: SharedTaskManager,
     limits: GoalLimits,
+    /// Where a pause or cancel reports itself.
+    events: tact_protocol::events::UpdateSink,
     meta: CommandMeta,
 }
 
@@ -41,16 +47,18 @@ impl GoalCommand {
         goal_manager: SharedGoalManager,
         task_manager: SharedTaskManager,
         limits: GoalLimits,
+        events: tact_protocol::events::UpdateSink,
     ) -> Self {
         Self {
             goal_manager,
             task_manager,
             limits,
+            events,
             meta: CommandMeta {
                 name: "goal".to_string(),
                 aliases: Vec::new(),
-                summary: "List Goals, or show one".to_string(),
-                usage: "/goal [list [--all] | show <id>]".to_string(),
+                summary: "List Goals, show one, or pause/cancel one".to_string(),
+                usage: "/goal [list [--all] | show <id> | pause <id> | cancel <id>]".to_string(),
                 scope: CommandScope::Runtime,
                 // Verbs follow, so Enter completes instead of running.
                 needs_args: true,
@@ -87,7 +95,20 @@ impl GoalCommand {
                     Err(format!("`/goal show` takes one id (got extra `{extra}`)"))
                 }
             },
-            Some(other) => Err(format!("unknown verb `{other}`; expected `list` or `show`")),
+            Some(verb @ ("pause" | "cancel")) => match (words.next(), words.next()) {
+                (Some(id), None) => Ok(if verb == "pause" {
+                    GoalVerb::Pause { id: id.to_string() }
+                } else {
+                    GoalVerb::Cancel { id: id.to_string() }
+                }),
+                (None, _) => Err(format!("`/goal {verb}` needs an id")),
+                (Some(_), Some(extra)) => {
+                    Err(format!("`/goal {verb}` takes one id (got extra `{extra}`)"))
+                }
+            },
+            Some(other) => Err(format!(
+                "unknown verb `{other}`; expected `list`, `show`, `pause` or `cancel`"
+            )),
         }
     }
 }
@@ -151,6 +172,38 @@ impl Command for GoalCommand {
                     // id was the user's input, and they can retype it.
                     None => CommandOutcome::Usage(format!("Goal {id} not found")),
                 }
+            }
+            GoalVerb::Pause { id } => {
+                // The lifecycle helper answers by emitting, and it may emit more
+                // than one line (a request, then the panel refresh), so it reports
+                // through the sink the host supplied rather than through the single
+                // outcome a command may return.
+                crate::goal::lifecycle::request_pause(
+                    &self.goal_manager,
+                    &self.task_manager,
+                    self.limits,
+                    &self.events,
+                    // Not an interrupt of *this* process: the request is durable
+                    // first, so it reaches the owner wherever it runs. A command
+                    // cannot know whether this process owns the Goal, and flipping
+                    // the flag blind would cancel whatever turn *is* running here.
+                    None,
+                    &id,
+                )
+                .await;
+                CommandOutcome::Done
+            }
+            GoalVerb::Cancel { id } => {
+                crate::goal::lifecycle::request_cancel(
+                    &self.goal_manager,
+                    &self.task_manager,
+                    self.limits,
+                    &self.events,
+                    None,
+                    &id,
+                )
+                .await;
+                CommandOutcome::Done
             }
         }
     }
@@ -223,7 +276,12 @@ mod tests {
         // The stores are kept alive by the managers, so the directory has to
         // outlive them; a fresh one per test means no shared state.
         std::mem::forget(dir);
-        GoalCommand::new(goal_manager, task_manager, GoalLimits::default())
+        GoalCommand::new(
+            goal_manager,
+            task_manager,
+            GoalLimits::default(),
+            tact_protocol::events::UpdateSink::default(),
+        )
     }
 
     #[tokio::test]

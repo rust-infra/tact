@@ -116,9 +116,7 @@ impl TryFrom<UserCommand> for Command {
             // SQLite stores and bounded runner, not a generic kit command.
             UserCommand::CreateGoal { .. }
             | UserCommand::SteerGoal { .. }
-            | UserCommand::PauseGoal { .. }
             | UserCommand::ResumeGoal { .. }
-            | UserCommand::CancelGoal { .. }
             | UserCommand::AcceptGoal { .. }
             | UserCommand::SetGoalArchived { .. } => Err(()),
         }

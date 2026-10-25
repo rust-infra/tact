@@ -606,9 +606,15 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
                         name: "goal".to_string(),
                         args: format!("show {goal_id}"),
                     },
-                    "pause" => UserCommand::PauseGoal { goal_id },
+                    "pause" => UserCommand::RunCommand {
+                        name: "goal".to_string(),
+                        args: format!("pause {goal_id}"),
+                    },
                     "resume" => UserCommand::ResumeGoal { goal_id },
-                    "cancel" => UserCommand::CancelGoal { goal_id },
+                    "cancel" => UserCommand::RunCommand {
+                        name: "goal".to_string(),
+                        args: format!("cancel {goal_id}"),
+                    },
                     "archive" => UserCommand::SetGoalArchived {
                         goal_id,
                         archived: true,
@@ -1818,8 +1824,9 @@ mod tests {
             ),
             (
                 "/goal pause goal-1",
-                UserCommand::PauseGoal {
-                    goal_id: "goal-1".into(),
+                UserCommand::RunCommand {
+                    name: "goal".into(),
+                    args: "pause goal-1".into(),
                 },
             ),
             (
@@ -1830,8 +1837,9 @@ mod tests {
             ),
             (
                 "/goal cancel goal-1",
-                UserCommand::CancelGoal {
-                    goal_id: "goal-1".into(),
+                UserCommand::RunCommand {
+                    name: "goal".into(),
+                    args: "cancel goal-1".into(),
                 },
             ),
             (
