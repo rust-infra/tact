@@ -323,6 +323,38 @@ mod tests {
         assert_eq!(decision, PermissionDecision::Allow);
     }
 
+    /// The popup's indices are load-bearing — the UI answers with a position —
+    /// so the list and the kinds it maps onto are pinned, not inferred.
+    #[tokio::test]
+    async fn popup_indices_map_to_their_option_kinds() {
+        let service = service(PermissionMode::Default);
+        let decision = service
+            .decide(PermissionRequest {
+                descriptor: descriptor(),
+                input: json!({"path": "src/main.rs"}),
+            })
+            .await
+            .unwrap();
+        let PermissionDecision::Ask(prompt) = decision else {
+            panic!("a write in Default mode must ask");
+        };
+        let kinds: Vec<_> = prompt.options.iter().map(|option| option.kind).collect();
+        assert_eq!(kinds[0], PermissionOptionKind::AllowOnce);
+        assert_eq!(kinds[1], PermissionOptionKind::Deny);
+        assert_eq!(kinds[2], PermissionOptionKind::AlwaysAllow);
+        // The wide option is appended, never inserted: gating it out cannot move
+        // an index a user has already learned.
+        assert!(kinds.len() == 3 || kinds[3] == PermissionOptionKind::AlwaysAllowWide);
+        assert_eq!(
+            prompt.options.last().map(|option| option.label.as_str()),
+            if kinds.len() == 4 {
+                Some("Always allow this pattern")
+            } else {
+                Some("Always allow this tool")
+            }
+        );
+    }
+
     #[tokio::test]
     async fn headless_write_is_allowed_once_and_high_is_denied() {
         let service = service(PermissionMode::Default).with_ui_available(Arc::new(|| false));

@@ -12,88 +12,19 @@ use tact_protocol::{AgentUpdate, StepResult, StepStatus, ToolPresentationInfo};
 use super::Agent;
 use crate::{
     compact::{persist_large_output, persist_large_output_over_tokens},
-    hook::{HookControl, NotificationContext, ToolResult, ToolUse},
+    hook::{HookControl, ToolResult, ToolUse},
     invoke_hooks,
     mcp::MCPToolRouter,
     permission::{
-        CapabilityRisk, PermissionBehavior, PermissionManager, format_permission_prompt,
+        CapabilityRisk, PermissionBehavior, format_permission_prompt,
         policy_ext::PermissionPolicyExt,
     },
     tool::{
-        ArgumentSummaryPolicy, DetailPolicy, GoalYieldReason, OutputPolicy, TaskOperation,
-        ToolDomain, ToolEffect, ToolRouter,
+        ArgumentSummaryPolicy, DetailPolicy, GoalYieldReason, OutputPolicy, PermissionPromptPolicy,
+        TaskOperation, ToolDomain, ToolEffect, ToolRouter,
     },
     utils::RwLockExt,
 };
-
-/// What the interactive permission popup's selection means.
-///
-/// A typed replacement for the `"allow_once"` strings this used to carry: the
-/// `match` on it is exhaustive, so a new option cannot silently fall through to
-/// whichever arm happened to be last.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum PermissionChoice {
-    AllowOnce,
-    AlwaysAllow,
-    AlwaysAllowProgram,
-    Deny,
-}
-
-/// The permission popup's options, in the order the popup shows them.
-///
-/// Indices are load-bearing — [`permission_choice_for`] is the only reader — so
-/// the list is stated once. `Deny` keeps index 1 and "always allow this tool"
-/// keeps index 2, because those positions are muscle memory; every later option
-/// is appended rather than inserted.
-///
-/// A narrow in-memory-only option ("Allow for this session") used to sit at
-/// index 3. It recorded exactly the same rule as "Always allow this tool" —
-/// `PermissionRule::generate`, same narrowness — and differed only in not
-/// persisting it, so it was a fourth button for a distinction nobody acts on.
-/// Removing it renumbers only the *appended* pattern option (4 → 3); the three
-/// muscle-memory positions are untouched.
-const PERMISSION_OPTIONS: [&str; 4] = [
-    "Allow once",
-    "Deny",
-    "Always allow this tool",
-    "Always allow this pattern",
-];
-
-/// The options to show, dropping the program-level one when no rule for it
-/// could be built.
-///
-/// Dropping the *last* entry is what keeps every other index stable. A disabled
-/// entry would be worse than an absent one: it advertises a gesture that
-/// records nothing.
-fn permission_options(with_program_choice: bool) -> Vec<String> {
-    let count = if with_program_choice {
-        PERMISSION_OPTIONS.len()
-    } else {
-        PERMISSION_OPTIONS.len() - 1
-    };
-    PERMISSION_OPTIONS[..count]
-        .iter()
-        .map(|option| (*option).to_string())
-        .collect()
-}
-
-/// One label for both prefix kinds: the preview is what names the rule, and a
-/// second wording ("this program" vs "this folder") would be a second thing to
-/// keep in step with the generator for no gain.
-///
-/// Which decision a popup selection means.
-///
-/// Anything unexpected denies, which is the only safe default: a cancelled
-/// popup arrives as `None`, and an out-of-range index can only come from a UI
-/// that disagrees with [`PERMISSION_OPTIONS`].
-fn permission_choice_for(selection: Option<usize>) -> PermissionChoice {
-    match selection {
-        Some(0) => PermissionChoice::AllowOnce,
-        Some(2) => PermissionChoice::AlwaysAllow,
-        Some(3) => PermissionChoice::AlwaysAllowProgram,
-        _ => PermissionChoice::Deny,
-    }
-}
 
 /// A resolved tool — either native (with owned metadata copy) or MCP.
 enum ResolvedTool {
@@ -130,6 +61,10 @@ struct PreparedTool {
     state: PreparedState,
     resolved: ResolvedTool,
     task_before: Option<crate::task::TaskRecord>,
+    /// Present for a native tool that went through the kernel pipeline. Its
+    /// one-use ticket is what phase 2 redeems, so nothing can call a handler
+    /// that was never authorized.
+    kernel: Option<tact_kernel::tool::executor::ToolPreflight>,
 }
 
 enum PreparedState {
@@ -420,6 +355,56 @@ async fn run_native_tool(
     }
 }
 
+/// Run a kernel-authorized native call and shape its result for the transcript.
+///
+/// The output policy, image and effects are applied here rather than in the
+/// kernel: persisting a large output is a session-store concern, and the kernel
+/// deliberately owns no store.
+async fn run_kernel_tool(
+    executor: std::sync::Arc<tact_kernel::tool::executor::ToolExecutor>,
+    prepared: tact_kernel::tool::executor::ToolPreflight,
+    work_dir: std::path::PathBuf,
+    tool_use_id: String,
+    output_policy: OutputPolicy,
+) -> ExecResult {
+    let name = prepared.tool_name().to_string();
+    match executor.execute(prepared).await {
+        Ok(result) => {
+            let tact_path = crate::consts::TactPath::new(&work_dir);
+            match output_policy {
+                OutputPolicy::PersistLargeOutput => {
+                    match persist_large_output(&tact_path, &tool_use_id, &result.content).await {
+                        Ok(content) => ExecResult {
+                            content,
+                            status: StepStatus::Success,
+                            image: result.image,
+                            effects: result.effects,
+                        },
+                        Err(error) => ExecResult {
+                            content: format!("Error persisting large output: {error}"),
+                            status: StepStatus::Failed,
+                            image: None,
+                            effects: Vec::new(),
+                        },
+                    }
+                }
+                OutputPolicy::KeepInline => ExecResult {
+                    content: result.content,
+                    status: StepStatus::Success,
+                    image: result.image,
+                    effects: result.effects,
+                },
+            }
+        }
+        Err(error) => ExecResult {
+            content: format!("Error invoking tool {}: {}", name, error),
+            status: StepStatus::Failed,
+            image: None,
+            effects: Vec::new(),
+        },
+    }
+}
+
 async fn run_mcp_tool(
     mcp_router: &MCPToolRouter,
     ctx: &crate::tool::ToolContext,
@@ -698,6 +683,391 @@ fn make_presentation_for(
 
 // ── Main dispatch ────────────────────────────────────────────────────────
 
+impl Agent {
+    /// The generation of the descriptor set the model was last shown.
+    ///
+    /// The kernel compares it before touching a handler, so a tool appearing or
+    /// disappearing between the request and the call is a refusal instead of a
+    /// dispatch to something the model never saw.
+    async fn tool_catalog_generation(&self) -> Result<u64> {
+        Ok(self.tool_executor.descriptor_snapshot().await?.generation)
+    }
+
+    /// The run-scoped context the kernel pipeline hands a tool.
+    ///
+    /// `metadata` and `input` decide only the redaction level: the same
+    /// per-call question the result pass asks, so live progress and the final
+    /// result cannot disagree about how much to hide.
+    fn kernel_tool_context(
+        &self,
+        tool_use_id: &str,
+        metadata: &crate::tool::ToolMetadata,
+        input: &serde_json::Value,
+    ) -> tact_kernel::tool::context::ToolCallContext {
+        use tact_kernel::tool::context::{
+            CancelToken, EventSink, ToolCallContext, ToolEvent, ToolOrigin, Workspace,
+        };
+
+        struct AgentEvents;
+        impl EventSink for AgentEvents {
+            fn emit(&self, _event: ToolEvent) {}
+        }
+
+        // The token wraps the agent's live flag: a cancel that arrives while the
+        // tool is running has to be visible to it, which a private copy could
+        // not see.
+        let cancel = CancelToken::from_shared(self.tool_context.cancel_flag.clone());
+        let redaction = {
+            let config = self.runtime.permission_manager.security_config().redaction;
+            let sensitive = metadata
+                .permission
+                .sensitive(input, &self.runtime.security)
+                .is_some();
+            let target = metadata.permission.target(input);
+            crate::security::redact::level_for_call(&config, sensitive, target.as_deref())
+        };
+        ToolCallContext {
+            run_id: self.runtime.session_id.clone().unwrap_or_default(),
+            tool_use_id: tool_use_id.to_string(),
+            session_id: self.runtime.session_id.clone(),
+            active_goal_id: self.tool_context.active_goal_id.clone(),
+            origin: if self.tool_context.is_subagent {
+                ToolOrigin::Subagent
+            } else {
+                ToolOrigin::Main
+            },
+            workspace: Workspace::new(self.tool_context.work_dir.clone()),
+            events: std::sync::Arc::new(AgentEvents),
+            interaction: std::sync::Arc::new(crate::permission::UiInteractionBroker::from_context(
+                &self.tool_context,
+            )),
+            cancel,
+            redaction: match redaction {
+                crate::security::RedactionLevel::Off => {
+                    tact_kernel::tool::context::RedactionPolicy::Off
+                }
+                crate::security::RedactionLevel::Basic => {
+                    tact_kernel::tool::context::RedactionPolicy::Basic
+                }
+                crate::security::RedactionLevel::Credential => {
+                    tact_kernel::tool::context::RedactionPolicy::Credential
+                }
+            },
+        }
+    }
+
+    /// The label the UI shows for a kernel-authorized call.
+    fn authorization_label(&self, prepared: &tact_kernel::tool::executor::ToolPreflight) -> String {
+        use tact_kernel::tool::executor::PreflightAuthorization;
+        match self.tool_executor.authorization(prepared) {
+            PreflightAuthorization::HookAllowed => "Allowed by PreToolUse hook".to_string(),
+            PreflightAuthorization::PermissionRequestHookAllowed => {
+                "Allowed by PermissionRequest hook".to_string()
+            }
+            PreflightAuthorization::Prompted => "Allow once".to_string(),
+            PreflightAuthorization::PolicyAllowed => String::new(),
+        }
+    }
+
+    /// Ask the human about a kernel permission prompt.
+    ///
+    /// Returns the picked option (label + typed kind) or `None` when there is no
+    /// UI to ask or the answer was cancelled / denied.
+    async fn ask_permission(
+        &self,
+        prompt: &tact_kernel::tool::executor::PermissionPrompt,
+        tool_name: &str,
+    ) -> Option<KernelPermissionAnswer> {
+        let tx = self.runtime.events.ui()?;
+        let mut body = prompt.message.clone();
+        let labels: Vec<String> = prompt
+            .options
+            .iter()
+            .map(|option| option.label.clone())
+            .collect();
+        let responder = self.tool_context.ui_responder.clone();
+        let from_subagent = self.tool_context.is_subagent;
+        let selection = responder
+            .request_select(tx, body.clone(), labels.clone(), false, from_subagent)
+            .await
+            .ok()
+            .flatten();
+        let index = selection?;
+        let option = prompt.options.get(index)?;
+        if option.kind == tact_kernel::tool::executor::PermissionOptionKind::Deny {
+            return None;
+        }
+        // Keep the same label the legacy popup produced: it names the gesture,
+        // not the option's generic text, because "Always allow this tool" is
+        // what the toast has to say afterwards.
+        let label = match option.kind {
+            tact_kernel::tool::executor::PermissionOptionKind::AllowOnce => "Allow once",
+            tact_kernel::tool::executor::PermissionOptionKind::AlwaysAllow => {
+                "Always allow this tool"
+            }
+            tact_kernel::tool::executor::PermissionOptionKind::AlwaysAllowWide => {
+                "Always allow this pattern"
+            }
+            tact_kernel::tool::executor::PermissionOptionKind::Deny => return None,
+        };
+        body.clear();
+        let _ = tool_name;
+        Some(KernelPermissionAnswer {
+            label,
+            answer: tact_kernel::tool::executor::PermissionAnswer {
+                option_id: option.id.clone(),
+                kind: option.kind,
+            },
+        })
+    }
+
+    /// The ladder for calls the kernel pipeline did not decide.
+    ///
+    /// Tact's own MCP resource/prompt tools carry their risk in `[mcp]` settings
+    /// rather than a descriptor, so they keep the hand-written order: PreToolUse
+    /// → sensitive guard → ladder → PermissionRequest hook → popup.
+    #[allow(clippy::too_many_arguments)]
+    async fn legacy_authorize(
+        &mut self,
+        resolved: &ResolvedTool,
+        tool_use: &mut ToolUse,
+        permission_label: &mut Option<String>,
+        step_idx: usize,
+        id: &str,
+    ) -> Result<PreparedState> {
+        let stable_name = match resolved {
+            ResolvedTool::Native { metadata } => metadata.name,
+            ResolvedTool::Mcp { full_name, .. } => full_name.as_str(),
+            ResolvedTool::McpResource { tool } => tool.name(),
+            ResolvedTool::McpPrompt { tool } => tool.name(),
+            ResolvedTool::Unknown { name } => name.as_str(),
+        };
+        let risk = match resolved {
+            ResolvedTool::Mcp { server, tool, .. } => self.mcp_router.risk_for(server, tool),
+            ResolvedTool::McpResource { tool } => crate::mcp::resource_tool_risk(*tool),
+            ResolvedTool::McpPrompt { tool } => crate::mcp::prompt_tool_risk(*tool),
+            _ => CapabilityRisk::High,
+        };
+        let auto_approved = match resolved {
+            ResolvedTool::Mcp { server, tool, .. } => {
+                self.mcp_router.is_auto_approved(server, tool)
+            }
+            _ => false,
+        };
+        let policy = PermissionPromptPolicy::Json;
+        let permit_prompt = policy;
+
+        match invoke_hooks!(PreToolUse, self, tool_use)? {
+            HookControl::Allow => {
+                *permission_label = Some("Allowed by PreToolUse hook".to_string());
+                return Ok(PreparedState::Run);
+            }
+            HookControl::Block(reason) => {
+                let msg = format!("Tool blocked by PreToolUse hook: {reason}");
+                self.emit_update(AgentUpdate::StepFailed {
+                    idx: step_idx,
+                    tool_id: id.to_string(),
+                    arg_summary: String::new(),
+                    error: msg.clone(),
+                });
+                return Ok(PreparedState::Resolved(msg));
+            }
+            HookControl::Continue => {}
+        }
+
+        let decision = self.runtime.permission_manager.check_with_auto(
+            stable_name,
+            risk,
+            &tool_use.input,
+            auto_approved,
+        );
+        match decision.behavior {
+            PermissionBehavior::Allow => Ok(PreparedState::Run),
+            PermissionBehavior::Deny => {
+                let msg = format!("Permission denied: {}", decision.reason);
+                self.emit_update(AgentUpdate::StepFailed {
+                    idx: step_idx,
+                    tool_id: id.to_string(),
+                    arg_summary: String::new(),
+                    error: msg.clone(),
+                });
+                Ok(PreparedState::Resolved(msg))
+            }
+            PermissionBehavior::Ask => {
+                // Codex's `PermissionRequest`: runs only when a prompt would
+                // actually appear, so a policy hook answers it for free.
+                let hook_control = match invoke_hooks!(PermissionRequest, self, tool_use) {
+                    Ok(control) => control,
+                    Err(error) => {
+                        // Fail open, like every other hook failure.
+                        self.emit_update(AgentUpdate::Info(format!(
+                            "[PermissionRequest hook failed] {error}"
+                        )));
+                        HookControl::Continue
+                    }
+                };
+                match hook_control {
+                    HookControl::Allow => {
+                        *permission_label = Some("Allowed by PermissionRequest hook".to_string());
+                        Ok(PreparedState::Run)
+                    }
+                    HookControl::Block(reason) => {
+                        let msg = format!("Permission denied by PermissionRequest hook: {reason}");
+                        self.emit_update(AgentUpdate::StepFailed {
+                            idx: step_idx,
+                            tool_id: id.to_string(),
+                            arg_summary: String::new(),
+                            error: msg.clone(),
+                        });
+                        Ok(PreparedState::Resolved(msg))
+                    }
+                    HookControl::Continue => {
+                        let mut prompt =
+                            format_permission_prompt(stable_name, permit_prompt, &tool_use.input);
+                        let prefix_rule = crate::permission::PermissionManager::prefix_rule_for(
+                            stable_name,
+                            permit_prompt,
+                            &tool_use.input,
+                        );
+                        let choice = if let Some(tx) = self.runtime.events.ui() {
+                            if let Some(rule) = &prefix_rule {
+                                prompt.push_str(&format!(
+                                    "\n\n\"Always allow this pattern\" would record: {}",
+                                    rule.to_rule_string()
+                                ));
+                            }
+                            let options = legacy_permission_options(prefix_rule.is_some());
+                            let responder = self.tool_context.ui_responder.clone();
+                            let from_subagent = self.tool_context.is_subagent;
+                            let selection = responder
+                                .request_select(tx, prompt, options, false, from_subagent)
+                                .await
+                                .ok()
+                                .flatten();
+                            legacy_permission_choice_for(selection)
+                        } else if self
+                            .runtime
+                            .permission_manager
+                            .ask_user(stable_name, risk)?
+                        {
+                            LegacyPermissionChoice::AllowOnce
+                        } else {
+                            LegacyPermissionChoice::Deny
+                        };
+                        match choice {
+                            LegacyPermissionChoice::AllowOnce => {
+                                *permission_label = Some("Allow once".to_string());
+                                Ok(PreparedState::Run)
+                            }
+                            LegacyPermissionChoice::AlwaysAllowProgram => {
+                                *permission_label = Some("Always allow this pattern".to_string());
+                                let _ = self.runtime.permission_manager.allow_tool_as_prefix(
+                                    stable_name,
+                                    permit_prompt,
+                                    &tool_use.input,
+                                );
+                                Ok(PreparedState::Run)
+                            }
+                            LegacyPermissionChoice::AlwaysAllow => {
+                                *permission_label = Some("Always allow this tool".to_string());
+                                let _ = self.runtime.permission_manager.allow_tool_with_input(
+                                    stable_name,
+                                    permit_prompt,
+                                    &tool_use.input,
+                                );
+                                Ok(PreparedState::Run)
+                            }
+                            LegacyPermissionChoice::Deny => {
+                                let msg = format!("Permission denied by user for {}", stable_name);
+                                self.emit_update(AgentUpdate::StepFailed {
+                                    idx: step_idx,
+                                    tool_id: id.to_string(),
+                                    arg_summary: String::new(),
+                                    error: msg.clone(),
+                                });
+                                Ok(PreparedState::Resolved(msg))
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The legacy popup's options, in the order the popup shows them.
+///
+/// Only the MCP resource/prompt tools still use this list; native tools get
+/// their options from the kernel permission port, which keeps the same three
+/// muscle-memory positions.
+const LEGACY_PERMISSION_OPTIONS: [&str; 4] = [
+    "Allow once",
+    "Deny",
+    "Always allow this tool",
+    "Always allow this pattern",
+];
+
+fn legacy_permission_options(with_program_choice: bool) -> Vec<String> {
+    let count = if with_program_choice {
+        LEGACY_PERMISSION_OPTIONS.len()
+    } else {
+        LEGACY_PERMISSION_OPTIONS.len() - 1
+    };
+    LEGACY_PERMISSION_OPTIONS[..count]
+        .iter()
+        .map(|option| (*option).to_string())
+        .collect()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum LegacyPermissionChoice {
+    AllowOnce,
+    AlwaysAllow,
+    AlwaysAllowProgram,
+    Deny,
+}
+
+fn legacy_permission_choice_for(selection: Option<usize>) -> LegacyPermissionChoice {
+    match selection {
+        Some(0) => LegacyPermissionChoice::AllowOnce,
+        Some(2) => LegacyPermissionChoice::AlwaysAllow,
+        Some(3) => LegacyPermissionChoice::AlwaysAllowProgram,
+        _ => LegacyPermissionChoice::Deny,
+    }
+}
+
+/// The hook port the kernel pipeline would call.
+///
+/// The Agent keeps hooks on its own side because a hook callback takes
+/// `&Agent`; the pipeline is driven through `resolve`/`authorize_policy`/
+/// `finish_authorization` instead of `preflight`, so these methods are never
+/// reached. Implemented rather than optional so `ToolExecutor` stays a plain
+/// struct with no `Option` in the hot path.
+pub(super) struct NoKernelHooks;
+
+#[async_trait::async_trait]
+impl tact_kernel::tool::executor::HookService for NoKernelHooks {
+    async fn pre_tool_use(
+        &self,
+        _event: &mut tact_kernel::tool::executor::PreToolUseEvent,
+    ) -> Result<tact_kernel::tool::executor::HookControl> {
+        Ok(tact_kernel::tool::executor::HookControl::Continue)
+    }
+
+    async fn post_tool_use(
+        &self,
+        _event: &mut tact_kernel::tool::executor::PostToolUseEvent,
+    ) -> Result<tact_kernel::tool::executor::HookControl> {
+        Ok(tact_kernel::tool::executor::HookControl::Continue)
+    }
+}
+
+/// A permission answer plus the label the UI should show for it.
+struct KernelPermissionAnswer {
+    label: &'static str,
+    answer: tact_kernel::tool::executor::PermissionAnswer,
+}
+
 /// Phase-1 result: every tool use in the assistant turn, resolved to a native
 /// or MCP tool and run through the permission pipeline.
 struct Preflight {
@@ -820,6 +1190,7 @@ impl Agent {
                             state: PreparedState::Resolved(msg),
                             resolved: ResolvedTool::Unknown { name: name.clone() },
                             task_before: None,
+                            kernel: None,
                         });
                         continue;
                     }
@@ -860,15 +1231,15 @@ impl Agent {
                 name: name.clone(),
                 input: input.clone(),
             };
-            let mut permission_label: Option<String> = None;
-            let stable_name = match &resolved {
+            let _permission_label: Option<String> = None;
+            let _stable_name = match &resolved {
                 ResolvedTool::Native { metadata } => metadata.name,
                 ResolvedTool::Mcp { full_name, .. } => full_name.as_str(),
                 ResolvedTool::McpResource { tool } => tool.name(),
                 ResolvedTool::McpPrompt { tool } => tool.name(),
                 ResolvedTool::Unknown { name } => name.as_str(),
             };
-            let risk = match &resolved {
+            let _risk = match &resolved {
                 ResolvedTool::Native { metadata } => metadata.permission.resolve(&tool_use.input),
                 // The entry declares a tier through `tools.<name>.risk` or
                 // `default_tool_risk`; a silent entry keeps High.
@@ -881,259 +1252,219 @@ impl Agent {
                 ResolvedTool::Unknown { .. } => CapabilityRisk::High,
             };
 
-            // ── Sensitive-target guard ──────────────────────────────────────
+            // ── Authorization ──────────────────────────────────────────────
             //
-            // Deliberately *here*, before the PreToolUse hook and before the
-            // permission ladder: a `Credential` hit has to be unreachable by
-            // `Auto` mode, by an explicit settings `allow` rule, by an
-            // in-session "always allow", and by a `PermissionRequest` hook.
-            // Anything evaluated later can be talked out of it; this cannot.
+            // The kernel pipeline owns this order: sensitive-path guard →
+            // PreToolUse hook → guard again on the rewritten input →
+            // PermissionRequest hook → permission ladder → one-use ticket. The
+            // Agent only keeps what needs host state: the hook callbacks
+            // themselves (they take `&Agent`), the display label, and the step
+            // events.
             //
-            // The `Secret` tier needs no special case — it escalates to `High`
-            // below and then follows the ordinary decision path, so plan mode
-            // denies it, Default asks, and the user's rules compose as usual.
-            let sensitive_hit = match &resolved {
-                ResolvedTool::Native { metadata } => metadata
-                    .permission
-                    .sensitive(&tool_use.input, &self.runtime.security),
-                // MCP tools are third-party and High by default; no path field
-                // of theirs is known here. Their *results* are still redacted.
-                _ => None,
-            };
-            if let Some(hit) = &sensitive_hit
-                && hit.tier == crate::security::sensitive::Tier::Credential
-            {
-                let msg = crate::security::sensitive::refusal_text(hit);
-                self.emit_update(AgentUpdate::StepFailed {
-                    idx: step_idx,
-                    tool_id: id.clone(),
-                    arg_summary: String::new(),
-                    error: msg.clone(),
-                });
-                prepared.push(PreparedTool {
-                    id: id.clone(),
-                    name: name.clone(),
+            // MCP resources/prompts still use the legacy ladder below: they are
+            // Tact's own tools rather than a plugin's, and their risk comes from
+            // `[mcp]` settings that the descriptor does not carry yet.
+            let mut permission_label: Option<String> = None;
+            let mut preflight: Option<tact_kernel::tool::executor::ToolPreflight> = None;
+            let state = if let ResolvedTool::Native { metadata } = &resolved {
+                let generation = self.tool_catalog_generation().await?;
+                let request = tact_kernel::tool::executor::ToolRequest {
+                    call_id: tool_use.id.clone(),
+                    tool_name: metadata.name.to_string(),
                     input: tool_use.input.clone(),
-                    step_idx,
-                    permission_label: Some(format!("Refused: {}", hit.kind.label())),
-                    state: PreparedState::Resolved(msg),
-                    resolved,
-                    task_before: None,
-                });
-                continue;
-            }
-            // A `Secret` hit escalates the declared risk; the manager then
-            // decides it like any other High call.
-            let risk = if sensitive_hit.is_some() {
-                CapabilityRisk::High
-            } else {
-                risk
-            };
-            // An MCP entry's `approval_mode: "auto"` skips the default prompt
-            // without lowering the risk: it must not unlock plan mode, and an
-            // explicit local deny/ask rule still wins.
-            let auto_approved = match &resolved {
-                ResolvedTool::Mcp { server, tool, .. } => {
-                    self.mcp_router.is_auto_approved(server, tool)
-                }
-                _ => false,
-            };
-
-            let state = match invoke_hooks!(PreToolUse, self, &mut tool_use) {
-                Ok(HookControl::Continue) => {
-                    let decision = self.runtime.permission_manager.check_with_auto(
-                        stable_name,
-                        risk,
-                        &tool_use.input,
-                        auto_approved,
-                    );
-                    match decision.behavior {
-                        PermissionBehavior::Allow => PreparedState::Run,
-                        PermissionBehavior::Deny => {
-                            let msg = format!("Permission denied: {}", decision.reason);
+                    snapshot_generation: generation,
+                };
+                let call_ctx = self.kernel_tool_context(&tool_use.id, metadata, &tool_use.input);
+                match self.tool_executor.resolve(&request).await {
+                    Err(error) => {
+                        let msg = format!("{error}");
+                        self.emit_update(AgentUpdate::StepFailed {
+                            idx: step_idx,
+                            tool_id: id.clone(),
+                            arg_summary: String::new(),
+                            error: msg.clone(),
+                        });
+                        PreparedState::Resolved(msg)
+                    }
+                    Ok(resolved_call) => {
+                        // The PreToolUse hooks run here, between resolve and
+                        // authorize, because they take `&Agent`.
+                        let control = match invoke_hooks!(PreToolUse, self, &mut tool_use) {
+                            Ok(control) => control,
+                            Err(error) => {
+                                let msg = format!("PreToolUse hook failed: {error}");
+                                self.emit_update(AgentUpdate::StepFailed {
+                                    idx: step_idx,
+                                    tool_id: id.clone(),
+                                    arg_summary: String::new(),
+                                    error: msg.clone(),
+                                });
+                                prepared.push(PreparedTool {
+                                    id: tool_use.id,
+                                    name: tool_use.name,
+                                    input: tool_use.input,
+                                    step_idx,
+                                    permission_label: None,
+                                    state: PreparedState::Resolved(msg),
+                                    resolved,
+                                    task_before: None,
+                                    kernel: None,
+                                });
+                                continue;
+                            }
+                        };
+                        if let HookControl::Block(reason) = &control {
+                            let msg = format!("Tool blocked by PreToolUse hook: {reason}");
                             self.emit_update(AgentUpdate::StepFailed {
                                 idx: step_idx,
                                 tool_id: id.clone(),
                                 arg_summary: String::new(),
                                 error: msg.clone(),
                             });
-                            PreparedState::Resolved(msg)
+                            prepared.push(PreparedTool {
+                                id: tool_use.id,
+                                name: tool_use.name,
+                                input: tool_use.input,
+                                step_idx,
+                                permission_label: None,
+                                state: PreparedState::Resolved(msg),
+                                resolved,
+                                task_before: None,
+                                kernel: None,
+                            });
+                            continue;
                         }
-                        PermissionBehavior::Ask => {
-                            // Codex's `PermissionRequest`: runs only when a
-                            // prompt would actually appear, so a policy hook
-                            // answers it without paying for every call.
-                            // `allow` skips the prompt, `block` denies outright,
-                            // anything else leaves the decision to the user.
-                            let hook_control =
-                                match invoke_hooks!(PermissionRequest, self, &mut tool_use) {
-                                    Ok(control) => control,
-                                    Err(error) => {
-                                        // Fail-open, like every other hook failure:
-                                        // a broken policy hook must not block work.
-                                        self.emit_update(AgentUpdate::Info(format!(
-                                            "[PermissionRequest hook failed] {error}"
-                                        )));
-                                        HookControl::Continue
-                                    }
-                                };
-                            match hook_control {
-                                HookControl::Allow => {
-                                    permission_label =
-                                        Some("Allowed by PermissionRequest hook".to_string());
-                                    PreparedState::Run
-                                }
-                                HookControl::Block(reason) => {
-                                    let msg = format!(
-                                        "Permission denied by PermissionRequest hook: {reason}"
-                                    );
-                                    self.emit_update(AgentUpdate::StepFailed {
-                                        idx: step_idx,
-                                        tool_id: id.clone(),
-                                        arg_summary: String::new(),
-                                        error: msg.clone(),
-                                    });
-                                    PreparedState::Resolved(msg)
-                                }
-                                HookControl::Continue => {
-                                    let permit_prompt = match &resolved {
-                                        ResolvedTool::Native { metadata } => {
-                                            metadata.permission_prompt
-                                        }
-                                        _ => crate::tool::PermissionPromptPolicy::Json,
-                                    };
-                                    let mut prompt = format_permission_prompt(
-                                        stable_name,
-                                        permit_prompt,
-                                        &tool_use.input,
-                                    );
 
-                                    // `Notification` hooks fire when the agent surfaces
-                                    // a user notification; a permission prompt is the
-                                    // only kind Tact emits today. Observational.
-                                    let notification = NotificationContext {
-                                        notification_type: "permission_prompt".to_string(),
-                                        title: stable_name.to_string(),
-                                        message: prompt.clone(),
-                                    };
-                                    match invoke_hooks!(Notification, self, &notification) {
-                                        Ok(HookControl::Continue | HookControl::Allow) => {}
-                                        Ok(HookControl::Block(reason)) => {
-                                            self.emit_update(AgentUpdate::Info(format!(
-                                                "[Notification hook blocked] {reason}"
-                                            )));
-                                        }
+                        let rewritten = resolved_call.with_input(tool_use.input.clone());
+                        let authorized = self
+                            .tool_executor
+                            .authorize_policy(
+                                rewritten,
+                                call_ctx.clone(),
+                                control == HookControl::Allow,
+                            )
+                            .await;
+                        match authorized {
+                            Err(error) => {
+                                let msg = format!("{error}");
+                                self.emit_update(AgentUpdate::StepFailed {
+                                    idx: step_idx,
+                                    tool_id: id.clone(),
+                                    arg_summary: String::new(),
+                                    error: msg.clone(),
+                                });
+                                PreparedState::Resolved(msg)
+                            }
+                            Ok(tact_kernel::tool::executor::AuthorizedCall::Denied(message)) => {
+                                self.emit_update(AgentUpdate::StepFailed {
+                                    idx: step_idx,
+                                    tool_id: id.clone(),
+                                    arg_summary: String::new(),
+                                    error: message.clone(),
+                                });
+                                PreparedState::Resolved(message)
+                            }
+                            Ok(tact_kernel::tool::executor::AuthorizedCall::Allowed(
+                                prepared_call,
+                            )) => {
+                                let label = self.authorization_label(&prepared_call);
+                                permission_label = Some(label);
+                                preflight = Some(prepared_call);
+                                PreparedState::Run
+                            }
+                            Ok(tact_kernel::tool::executor::AuthorizedCall::NeedsPrompt {
+                                call,
+                                prompt,
+                                request,
+                            }) => {
+                                // Codex's `PermissionRequest`: a policy hook may
+                                // answer the prompt. `allow` skips it, `block`
+                                // denies outright, anything else asks the user.
+                                let hook_control =
+                                    match invoke_hooks!(PermissionRequest, self, &mut tool_use) {
+                                        Ok(control) => control,
                                         Err(error) => {
+                                            // Fail open, like every other hook
+                                            // failure: a broken policy hook must not
+                                            // block work.
                                             self.emit_update(AgentUpdate::Info(format!(
-                                                "[Notification hook failed] {error}"
+                                                "[PermissionRequest hook failed] {error}"
                                             )));
+                                            HookControl::Continue
                                         }
-                                    }
-
-                                    // The program-level choice is offered
-                                    // only when a rule for it can be built, and
-                                    // the popup then previews that exact rule:
-                                    // the gesture is worth nothing if the user
-                                    // cannot see how wide it is.
-                                    let prefix_rule = PermissionManager::prefix_rule_for(
-                                        stable_name,
-                                        permit_prompt,
-                                        &tool_use.input,
-                                    );
-
-                                    let choice = if let Some(tx) = self.runtime.events.ui() {
-                                        if let Some(rule) = &prefix_rule {
-                                            prompt.push_str(&format!(
-                                                "\n\n\"Always allow this pattern\" would \
-                                                 record: {}",
-                                                rule.to_rule_string()
-                                            ));
-                                        }
-                                        let options = permission_options(prefix_rule.is_some());
-                                        let responder = self.tool_context.ui_responder.clone();
-                                        // A child's context is stamped by
-                                        // `spawn_subagent`, so the popup can say
-                                        // whose permission this is.
-                                        let from_subagent = self.tool_context.is_subagent;
-                                        // No artificial timeout: the popup is guaranteed
-                                        // to stay rendered (see
-                                        // `restore_pending_select_mode`), so the wait
-                                        // ends on a real user answer or when the UI
-                                        // closes (both route through the responder).
-                                        let selection = responder
-                                            .request_select(
-                                                tx,
-                                                prompt,
-                                                options,
-                                                false,
-                                                from_subagent,
+                                    };
+                                match hook_control {
+                                    HookControl::Allow => {
+                                        match self
+                                            .tool_executor
+                                            .finish_authorization(
+                                                call, request, None, call_ctx, true,
                                             )
                                             .await
-                                            .ok()
-                                            .flatten();
-                                        permission_choice_for(selection)
-                                    } else {
-                                        let approved = self
-                                            .runtime
-                                            .permission_manager
-                                            .ask_user(stable_name, risk)?;
-                                        if approved {
-                                            PermissionChoice::AllowOnce
-                                        } else {
-                                            PermissionChoice::Deny
-                                        }
-                                    };
-                                    match choice {
-                                        PermissionChoice::AllowOnce => {
-                                            permission_label = Some("Allow once".to_string());
-                                            PreparedState::Run
-                                        }
-                                        PermissionChoice::AlwaysAllowProgram => {
-                                            permission_label =
-                                                Some("Always allow this pattern".to_string());
-                                            // The outcome is ignored on purpose: a
-                                            // rule that could not be narrowed only
-                                            // means the next identical call asks
-                                            // again, which the popup already says by
-                                            // appearing. Reporting it turned into a
-                                            // line on every second `bash` approval.
-                                            let _ = self
-                                                .runtime
-                                                .permission_manager
-                                                .allow_tool_as_prefix(
-                                                    stable_name,
-                                                    permit_prompt,
-                                                    &tool_use.input,
+                                        {
+                                            Ok(prepared_call) => {
+                                                permission_label = Some(
+                                                    "Allowed by PermissionRequest hook".to_string(),
                                                 );
-                                            PreparedState::Run
+                                                preflight = Some(prepared_call);
+                                                PreparedState::Run
+                                            }
+                                            Err(error) => {
+                                                PreparedState::Resolved(format!("{error}"))
+                                            }
                                         }
-                                        PermissionChoice::AlwaysAllow => {
-                                            permission_label =
-                                                Some("Always allow this tool".to_string());
-                                            // See above: an unrecorded rule needs
-                                            // no notice.
-                                            let _ = self
-                                                .runtime
-                                                .permission_manager
-                                                .allow_tool_with_input(
-                                                    stable_name,
-                                                    permit_prompt,
-                                                    &tool_use.input,
+                                    }
+                                    HookControl::Block(reason) => {
+                                        let msg = format!(
+                                            "Permission denied by PermissionRequest hook: {reason}"
+                                        );
+                                        self.emit_update(AgentUpdate::StepFailed {
+                                            idx: step_idx,
+                                            tool_id: id.clone(),
+                                            arg_summary: String::new(),
+                                            error: msg.clone(),
+                                        });
+                                        PreparedState::Resolved(msg)
+                                    }
+                                    HookControl::Continue => {
+                                        let answer =
+                                            self.ask_permission(&prompt, metadata.name).await;
+                                        match answer {
+                                            None => {
+                                                let msg = format!(
+                                                    "Permission denied by user for {}",
+                                                    metadata.name
                                                 );
-                                            PreparedState::Run
-                                        }
-                                        PermissionChoice::Deny => {
-                                            let msg = format!(
-                                                "Permission denied by user for {}",
-                                                stable_name
-                                            );
-                                            self.emit_update(AgentUpdate::StepFailed {
-                                                idx: step_idx,
-                                                tool_id: id.clone(),
-                                                arg_summary: String::new(),
-                                                error: msg.clone(),
-                                            });
-                                            PreparedState::Resolved(msg)
+                                                self.emit_update(AgentUpdate::StepFailed {
+                                                    idx: step_idx,
+                                                    tool_id: id.clone(),
+                                                    arg_summary: String::new(),
+                                                    error: msg.clone(),
+                                                });
+                                                PreparedState::Resolved(msg)
+                                            }
+                                            Some(answer) => {
+                                                permission_label = Some(answer.label.to_string());
+                                                match self
+                                                    .tool_executor
+                                                    .finish_authorization(
+                                                        call,
+                                                        request,
+                                                        Some(answer.answer),
+                                                        call_ctx,
+                                                        false,
+                                                    )
+                                                    .await
+                                                {
+                                                    Ok(prepared_call) => {
+                                                        preflight = Some(prepared_call);
+                                                        PreparedState::Run
+                                                    }
+                                                    Err(error) => {
+                                                        PreparedState::Resolved(format!("{error}"))
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1141,33 +1472,15 @@ impl Agent {
                         }
                     }
                 }
-                // A hook that allows skips the permission check entirely: the
-                // decision was already made, and asking anyway would defeat the
-                // point of the hook.
-                Ok(HookControl::Allow) => {
-                    permission_label = Some("Allowed by PreToolUse hook".to_string());
-                    PreparedState::Run
-                }
-                Ok(HookControl::Block(reason)) => {
-                    let msg = format!("Tool blocked by PreToolUse hook: {reason}");
-                    self.emit_update(AgentUpdate::StepFailed {
-                        idx: step_idx,
-                        tool_id: id.clone(),
-                        arg_summary: String::new(),
-                        error: msg.clone(),
-                    });
-                    PreparedState::Resolved(msg)
-                }
-                Err(error) => {
-                    let msg = format!("PreToolUse hook failed: {error}");
-                    self.emit_update(AgentUpdate::StepFailed {
-                        idx: step_idx,
-                        tool_id: id.clone(),
-                        arg_summary: String::new(),
-                        error: msg.clone(),
-                    });
-                    PreparedState::Resolved(msg)
-                }
+            } else {
+                self.legacy_authorize(
+                    &resolved,
+                    &mut tool_use,
+                    &mut permission_label,
+                    step_idx,
+                    id,
+                )
+                .await?
             };
 
             // Pre-call snapshot of the task a Task-domain call is about to
@@ -1191,6 +1504,7 @@ impl Agent {
                 state,
                 resolved,
                 task_before,
+                kernel: preflight,
             });
         }
 
@@ -1263,6 +1577,14 @@ impl Agent {
                 let ctx = &self.tool_context;
                 let prep = &prepared[pi];
                 let is_mcp = matches!(prep.resolved, ResolvedTool::Mcp { .. });
+                // Native calls redeem their one-use ticket here, so a handler
+                // can only run through a call the pipeline authorized.
+                let kernel = prep.kernel.as_ref().map(|prepared_call| {
+                    tact_kernel::tool::executor::ToolPreflight::clone_for_host(prepared_call)
+                });
+                let executor = self.tool_executor.clone();
+                let work_dir = self.tool_context.work_dir.clone();
+                let tool_use_id = prep.id.clone();
                 let resource_tool = match &prep.resolved {
                     ResolvedTool::McpResource { tool } => Some(*tool),
                     _ => None,
@@ -1304,7 +1626,18 @@ impl Agent {
                         run_mcp_prompt_tool(mcp, tool, &prep.input).await
                     } else if is_mcp {
                         run_mcp_tool(mcp, ctx, &prep.id, &prep.name, &prep.input).await
+                    } else if let Some(prepared_call) = kernel {
+                        run_kernel_tool(
+                            executor,
+                            prepared_call,
+                            work_dir.clone(),
+                            tool_use_id.clone(),
+                            output_policy,
+                        )
+                        .await
                     } else {
+                        // No ticket: the call never went through the pipeline
+                        // (a legacy MCP-family tool keeps its own path above).
                         run_native_tool(
                             tools,
                             ctx,
@@ -1586,6 +1919,7 @@ impl Agent {
                 state: PreparedState::Resolved(reason.to_string()),
                 resolved: ResolvedTool::Unknown { name: name.clone() },
                 task_before: None,
+                kernel: None,
             });
         }
     }
@@ -1834,81 +2168,6 @@ mod tests {
             })
             .next()
             .unwrap_or_else(|| "none".to_string())
-    }
-
-    // ── Permission popup choices ────────────────────────────────────────
-
-    /// The popup's indices are load-bearing — `request_select` answers with a
-    /// position — so the mapping is pinned rather than inferred from the list.
-    #[test]
-    fn permission_popup_indices_map_to_their_choices() {
-        assert_eq!(permission_choice_for(Some(0)), PermissionChoice::AllowOnce);
-        assert_eq!(permission_choice_for(Some(1)), PermissionChoice::Deny);
-        assert_eq!(
-            permission_choice_for(Some(2)),
-            PermissionChoice::AlwaysAllow
-        );
-        assert_eq!(
-            permission_choice_for(Some(3)),
-            PermissionChoice::AlwaysAllowProgram
-        );
-
-        // A cancelled popup arrives as `None`, and an index past the end can
-        // only come from a UI that disagrees with the list. Both deny.
-        assert_eq!(permission_choice_for(None), PermissionChoice::Deny);
-        assert_eq!(permission_choice_for(Some(99)), PermissionChoice::Deny);
-    }
-
-    /// The program-level choice is appended, never inserted, so gating it out
-    /// cannot move any index a user has learned.
-    #[test]
-    fn the_pattern_choice_is_appended_and_can_be_withheld() {
-        let offered = permission_options(true);
-        let withheld = permission_options(false);
-
-        assert_eq!(offered.len(), PERMISSION_OPTIONS.len());
-        assert_eq!(withheld.len(), PERMISSION_OPTIONS.len() - 1);
-        assert_eq!(withheld, offered[..withheld.len()].to_vec());
-        assert_eq!(
-            offered.last().map(String::as_str),
-            Some("Always allow this pattern")
-        );
-
-        // With the option withheld, no index the popup can produce reaches it —
-        // which is what makes offering it conditionally safe.
-        for index in 0..withheld.len() {
-            assert_ne!(
-                permission_choice_for(Some(index)),
-                PermissionChoice::AlwaysAllowProgram,
-                "index {index} is reachable without the program option"
-            );
-        }
-        assert_eq!(
-            permission_choice_for(Some(withheld.len())),
-            PermissionChoice::AlwaysAllowProgram,
-            "the withheld index is the one the option occupies when offered"
-        );
-    }
-
-    /// The list and the mapping must stay in step: every option index maps back
-    /// to the choice the label advertises, and exactly one of them denies.
-    #[test]
-    fn every_permission_option_maps_back_to_its_choice() {
-        let expected = [
-            PermissionChoice::AllowOnce,
-            PermissionChoice::Deny,
-            PermissionChoice::AlwaysAllow,
-            PermissionChoice::AlwaysAllowProgram,
-        ];
-        assert_eq!(PERMISSION_OPTIONS.len(), expected.len());
-        for (index, choice) in expected.iter().enumerate() {
-            assert_eq!(
-                permission_choice_for(Some(index)),
-                *choice,
-                "option {index} ({}) does not round-trip",
-                PERMISSION_OPTIONS[index]
-            );
-        }
     }
 
     /// The refusal text, when pre-flight refused rather than denied.
@@ -2573,6 +2832,7 @@ mod tests {
                 metadata: &crate::tool::SPAWN_SUBAGENT_METADATA,
             },
             task_before: None,
+            kernel: None,
         }
     }
 

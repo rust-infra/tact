@@ -152,6 +152,94 @@ pub struct PermissionManager {
     settings: Option<settings::PermissionSettings>,
 }
 
+/// One [`PermissionManager`] shared by the agent, the kernel permission port and
+/// the UI command that switches modes.
+///
+/// A newtype rather than a bare `Arc<Mutex<_>>` so the accessors keep their old
+/// spelling at the call sites (`permission_manager.mode()`,
+/// `.set_mode(..)`, `.snapshot()`), and so the lock is taken in exactly one
+/// place per accessor instead of at every caller.
+#[derive(Clone)]
+pub struct SharedPermissionManager(std::sync::Arc<std::sync::Mutex<PermissionManager>>);
+
+impl SharedPermissionManager {
+    pub fn new(manager: PermissionManager) -> Self {
+        Self(std::sync::Arc::new(std::sync::Mutex::new(manager)))
+    }
+
+    /// The underlying handle, for the kernel permission port.
+    pub fn handle(&self) -> std::sync::Arc<std::sync::Mutex<PermissionManager>> {
+        self.0.clone()
+    }
+
+    fn with<T>(&self, read: impl FnOnce(&PermissionManager) -> T) -> T {
+        read(&self.0.lock().unwrap_or_else(|error| error.into_inner()))
+    }
+
+    fn with_mut<T>(&self, write: impl FnOnce(&mut PermissionManager) -> T) -> T {
+        write(&mut self.0.lock().unwrap_or_else(|error| error.into_inner()))
+    }
+
+    pub fn mode(&self) -> PermissionMode {
+        self.with(|manager| manager.mode())
+    }
+
+    pub fn set_mode(&self, mode: PermissionMode) {
+        self.with_mut(|manager| manager.set_mode(mode));
+    }
+
+    pub fn snapshot(&self) -> PermissionSnapshot {
+        self.with(|manager| manager.snapshot())
+    }
+
+    pub fn scanner(&self) -> crate::security::sensitive::Scanner {
+        self.with(|manager| manager.scanner())
+    }
+
+    pub fn security_config(&self) -> crate::security::SecurityConfig {
+        self.with(|manager| manager.security_config())
+    }
+
+    /// Run the permission ladder for a call the kernel pipeline did not decide.
+    ///
+    /// Used for Tact's own MCP resource/prompt tools: their risk comes from
+    /// `[mcp]` settings rather than a descriptor, so the ladder has to run here.
+    pub fn check_with_auto(
+        &self,
+        tool_name: &str,
+        risk: CapabilityRisk,
+        input: &serde_json::Value,
+        auto_approved: bool,
+    ) -> PermissionDecision {
+        self.with_mut(|manager| manager.check_with_auto(tool_name, risk, input, auto_approved))
+    }
+
+    /// The non-interactive fallback, for when no UI can answer.
+    pub fn ask_user(&self, tool_name: &str, risk: CapabilityRisk) -> anyhow::Result<bool> {
+        self.with_mut(|manager| manager.ask_user(tool_name, risk))
+    }
+
+    /// Record a parameter-aware "always allow this tool" grant.
+    pub fn allow_tool_with_input(
+        &self,
+        tool_name: &str,
+        policy: PermissionPromptPolicy,
+        input: &serde_json::Value,
+    ) -> AllowOutcome {
+        self.with_mut(|manager| manager.allow_tool_with_input(tool_name, policy, input))
+    }
+
+    /// Record a program-level "always allow this pattern" grant.
+    pub fn allow_tool_as_prefix(
+        &self,
+        tool_name: &str,
+        policy: PermissionPromptPolicy,
+        input: &serde_json::Value,
+    ) -> AllowOutcome {
+        self.with_mut(|manager| manager.allow_tool_as_prefix(tool_name, policy, input))
+    }
+}
+
 /// A `Clone`-able point-in-time view of a [`PermissionManager`]'s inherited
 /// state: the active mode, the in-session always-allowed list, and the loaded
 /// settings. Stamped onto [`crate::tool::ToolContext`] at dispatch time so a

@@ -37,7 +37,23 @@ impl SharedToolContextFactory {
 
 impl ToolContextFactory for SharedToolContextFactory {
     fn build(&self, ctx: &ToolCallContext) -> ToolContext {
-        let mut context = self.base.clone();
+        // `for_invocation_with_redaction` is what stamps the per-call progress
+        // reporter: without it a background run's sticky row is keyed by the
+        // empty base id, so every run lands on the same row (or on none).
+        let level = match ctx.redaction {
+            tact_kernel::tool::context::RedactionPolicy::Off => {
+                crate::security::RedactionLevel::Off
+            }
+            tact_kernel::tool::context::RedactionPolicy::Basic => {
+                crate::security::RedactionLevel::Basic
+            }
+            tact_kernel::tool::context::RedactionPolicy::Credential => {
+                crate::security::RedactionLevel::Credential
+            }
+        };
+        let mut context = self
+            .base
+            .for_invocation_with_redaction(&ctx.tool_use_id, level);
         context.work_dir = ctx.workspace.root().to_path_buf();
         context.session_id = ctx.session_id.clone();
         context.active_goal_id = ctx.active_goal_id.clone();

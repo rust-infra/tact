@@ -56,6 +56,15 @@ impl CancelToken {
     pub fn shared_flag(&self) -> Arc<AtomicBool> {
         self.0.clone()
     }
+
+    /// A token over a flag someone else already owns.
+    ///
+    /// A host that keeps its own cancel flag uses this so `is_cancelled()` sees
+    /// a cancellation that happens *during* the call, not just one that was
+    /// already set when the context was built.
+    pub fn from_shared(flag: Arc<AtomicBool>) -> Self {
+        Self(flag)
+    }
 }
 
 /// How much of a tool's live/final output to redact.

@@ -353,7 +353,7 @@ pub struct AgentRuntime {
     pub context: Vec<Message>,
     pub compact_state: CompactState,
     pub recovery_state: RecoveryState,
-    pub permission_manager: PermissionManager,
+    pub permission_manager: crate::permission::SharedPermissionManager,
     /// The sensitive-path guard, derived from the permission settings at
     /// construction and inherited by subagents through the same snapshot that
     /// carries the permission context. Evaluated **before** modes, hooks and
@@ -457,6 +457,10 @@ pub struct Agent {
     pub tools: ToolRouter,
     pub mcp_router: MCPToolRouter,
     pub hooks: Vec<Hook>,
+    /// The kernel-owned tool pipeline. Native tools dispatch through it; MCP
+    /// resources/prompts still use the legacy ladder until their risk is carried
+    /// on a descriptor.
+    pub tool_executor: std::sync::Arc<tact_kernel::tool::executor::ToolExecutor>,
     pub system_prompt: AgentSystemPrompt,
     pub tool_use_counter: usize,
     /// Optional cap on nested agent-loop turns (set by `spawn_subagent`'s
@@ -482,6 +486,37 @@ pub struct Agent {
 }
 
 impl Agent {
+    /// Build the kernel pipeline over the same handlers the router holds.
+    ///
+    /// The router keeps emitting specs and this owns dispatch, so the two see
+    /// one `Arc` per handler rather than two copies with independent state.
+    fn build_tool_executor(
+        tools: &crate::tool::ToolRouter,
+        context: &crate::tool::ToolContext,
+        permission_manager: &crate::permission::SharedPermissionManager,
+    ) -> std::sync::Arc<tact_kernel::tool::executor::ToolExecutor> {
+        let contexts =
+            std::sync::Arc::new(crate::tool::SharedToolContextFactory::new(context.clone()));
+        let catalog = tools
+            .kernel_catalog(contexts)
+            .expect("the router rejects duplicate names, so the catalog cannot either");
+        let ui = context.events.clone();
+        let service = crate::permission::ManagerPermissionService::new(permission_manager.handle())
+            .with_ui_available(std::sync::Arc::new(move || ui.ui().is_some()));
+        std::sync::Arc::new(tact_kernel::tool::executor::ToolExecutor::new(
+            std::sync::Arc::new(catalog),
+            tact_kernel::capability::CapabilityFilter::default(),
+            std::sync::Arc::new(crate::permission::SensitivePathGuard::new(
+                permission_manager.scanner(),
+            )),
+            std::sync::Arc::new(service),
+            // The Agent runs its own hooks: they take `&Agent`, which the kernel
+            // cannot see. The ports' hook methods are therefore never called
+            // through this instance.
+            std::sync::Arc::new(crate::agent::tool_dispatch::NoKernelHooks),
+        ))
+    }
+
     /// Whether a background subagent result is waiting to be re-injected.
     ///
     /// The driver consults this before submitting a subagent-finished wake-up
@@ -524,6 +559,11 @@ impl Agent {
         // TUI, headless, and a subagent built from a permission snapshot —
         // inherits the same guard without a second parameter to thread.
         let security = permission_manager.scanner();
+        let permission_manager =
+            crate::permission::SharedPermissionManager::new(permission_manager);
+        // Built before either is moved into `Self`: the pipeline reads the
+        // router (for handlers) and the context (for the legacy adapter).
+        let executor = Agent::build_tool_executor(&tools, &tool_context, &permission_manager);
         let mut agent = Self {
             runtime: AgentRuntime {
                 interrupt_hooks_fired: false,
@@ -557,6 +597,7 @@ impl Agent {
             tools,
             mcp_router,
             hooks: Vec::new(),
+            tool_executor: executor,
             system_prompt,
             tool_use_counter: 0,
             max_turns: None,

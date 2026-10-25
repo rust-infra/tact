@@ -235,6 +235,30 @@ pub struct ToolExecutor {
     next_ticket: Mutex<u64>,
 }
 
+impl ToolPreflight {
+    /// The tool this call will run, for a host that wants to look before it runs.
+    pub fn tool_name(&self) -> &str {
+        &self.descriptor.name
+    }
+
+    /// A second handle, for a host that must move the call into a spawned task
+    /// while keeping the original for bookkeeping.
+    ///
+    /// Both handles share one ticket: whoever reaches [`ToolExecutor::execute`]
+    /// first consumes it, and any later attempt is refused, so this is not a way
+    /// to run a call twice.
+    pub fn clone_for_host(&self) -> Self {
+        Self {
+            ticket: self.ticket,
+            authorization: self.authorization,
+            tool: self.tool.clone(),
+            descriptor: self.descriptor.clone(),
+            input: self.input.clone(),
+            ctx: self.ctx.clone(),
+        }
+    }
+}
+
 impl ToolExecutor {
     pub fn new(
         catalog: Arc<ToolCatalog>,
@@ -566,6 +590,16 @@ impl ToolExecutor {
             option_id: option.id.clone(),
             kind: option.kind,
         })
+    }
+
+    /// The hook port, for a host that must run its own hook callbacks.
+    pub fn hooks(&self) -> &dyn HookService {
+        self.hooks.as_ref()
+    }
+
+    /// The catalog this executor dispatches from.
+    pub fn catalog(&self) -> &ToolCatalog {
+        self.catalog.as_ref()
     }
 
     /// Why this prepared call was authorized.
