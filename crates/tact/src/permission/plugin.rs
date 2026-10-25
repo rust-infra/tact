@@ -112,6 +112,27 @@ pub fn security_service(
     })
 }
 
+/// Install both policy plugins into a fresh host and return their services.
+///
+/// The entry point a composition root uses before building a `ToolExecutor`: it
+/// does not have to know which plugin provides which port, only that the policy
+/// pair is installed. Synchronous because `Agent::new` is; `install_sync` runs
+/// the same transaction as the async form, minus an awaited shutdown that a
+/// policy plugin (owning no resource) does not need.
+pub fn install(
+    permission_manager: &SharedPermissionManager,
+    ui_available: Arc<dyn Fn() -> bool + Send + Sync>,
+) -> Result<tact_kernel::service::ServiceRegistry> {
+    let mut host =
+        tact_kernel::plugin::PluginHost::new(tact_kernel::capability::CapabilityFilter::default());
+    host.install_sync(SecurityPlugin::new(permission_manager.scanner()))?;
+    host.install_sync(PermissionPlugin::new(
+        permission_manager.clone(),
+        ui_available,
+    ))?;
+    Ok(host.seal_sync()?.services().clone())
+}
+
 /// The ports a host needs to build a `ToolExecutor`, resolved together.
 pub struct PolicyPorts {
     pub permissions: Arc<dyn PermissionService>,
@@ -138,6 +159,17 @@ mod tests {
 
     fn manager() -> PermissionManager {
         PermissionManager::try_new(crate::permission::PermissionMode::Default).unwrap()
+    }
+
+    #[test]
+    fn install_brings_up_both_ports() {
+        // One call, two plugins, both ports resolvable: the composition root does
+        // not have to know which plugin owns which.
+        let manager = SharedPermissionManager::new(manager());
+        let services = install(&manager, Arc::new(|| false)).unwrap();
+        assert!(services.contains::<SensitivePathGuard>());
+        assert!(services.contains::<ManagerPermissionService>());
+        assert!(resolve(&services).is_ok());
     }
 
     #[tokio::test]

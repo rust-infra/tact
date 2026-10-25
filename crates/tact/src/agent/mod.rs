@@ -506,27 +506,6 @@ pub struct Agent {
     advertised_generation: u64,
 }
 
-/// Install the policy plugins and return the services they provide.
-///
-/// Synchronous because `Agent::new` is: `install_sync` runs the same transaction
-/// as the async form, minus the awaited shutdown that a policy plugin (which
-/// owns no resource) does not need.
-fn install_policy_plugins(
-    permission_manager: &crate::permission::SharedPermissionManager,
-    ui_available: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
-) -> Result<tact_kernel::service::ServiceRegistry> {
-    let mut host =
-        tact_kernel::plugin::PluginHost::new(tact_kernel::capability::CapabilityFilter::default());
-    host.install_sync(crate::permission::plugin::SecurityPlugin::new(
-        permission_manager.scanner(),
-    ))?;
-    host.install_sync(crate::permission::plugin::PermissionPlugin::new(
-        permission_manager.clone(),
-        ui_available,
-    ))?;
-    Ok(host.seal_sync()?.services().clone())
-}
-
 impl Agent {
     /// Build the kernel pipeline over the same handlers the router holds.
     ///
@@ -557,7 +536,7 @@ impl Agent {
         // plugin provides them and the composition root pulls the handle it
         // needs. A host that forgets to install one gets a named error instead
         // of a silently different permission policy.
-        let services = install_policy_plugins(permission_manager, ui_available)
+        let services = crate::permission::plugin::install(permission_manager, ui_available)
             .expect("the built-in policy plugins are valid");
         let ports = crate::permission::plugin::resolve(&services)
             .expect("builtin.permission and builtin.security were just installed");

@@ -119,6 +119,18 @@ and after, or the KV-cache prefix changes and every turn is slower.
       must still pass, which proves the Agent no longer calls MCP directly.
 - [ ] Full `scripts/check-rust.sh`, then checkpoint commit.
 
+## Follow-on: Phase 3 blocks this for the hook half
+
+- MCP through the executor is **done** (see `docs/plugin-architecture.md`): the
+  router is shared through lock-free `McpCallHandle`s rather than a mutex, so
+  Tasks 2-4 above were completed by a different route than the one sketched.
+- What remains of Phase 3 is the *hook* port: `Agent` calls `invoke_hooks!` at
+  12 sites because every callback takes `&Agent`, which the kernel cannot see.
+  `NoKernelHooks` is the empty port that fact forces. Turning hooks into a
+  plugin service requires the hook engine to stop taking `&Agent` — a change to
+  ~30 callbacks across `hook/mod.rs`, `plugin/hooks.rs` and the dispatch path.
+  It is a prerequisite for `HooksPlugin`, not something to bolt on beside it.
+
 ## Self-Review Notes
 
 - Risk: Task 1 touches every `mcp_router` call site (16 methods, 4 files).
