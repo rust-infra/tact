@@ -18,30 +18,52 @@ use tact_llm::{Message, MessageContent};
 use crate::agent::{Agent, AgentLoopStop};
 
 /// The agent, as a host-facing service.
+///
+/// The agent cannot exist before it is assembled, and this service is registered
+/// *during* assembly, so the slot starts empty and is filled the moment the agent
+/// finishes building itself. Every method reports that state honestly rather than
+/// blocking: a caller that reaches the service before the fill is a composition
+/// bug, and hanging would hide it.
 pub struct RuntimeAgentService {
-    agent: Arc<tokio::sync::Mutex<Agent>>,
+    agent: Arc<tokio::sync::Mutex<Option<Agent>>>,
     cancel_flag: Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl RuntimeAgentService {
-    /// Wrap an agent for service use.
+    /// A service with no agent yet.
     ///
-    /// The cancel flag is captured before the agent moves into the mutex,
-    /// because `cancel` must work while a turn holds the lock — a cancel that
-    /// had to wait for the lock would arrive only after the turn it was meant to
-    /// stop had finished.
-    pub fn new(agent: Agent) -> Self {
-        let cancel_flag = agent.runtime.cancel_flag.clone();
+    /// The cancel flag is captured here, before any agent exists, because
+    /// `cancel` must work while a turn holds the lock — a cancel that had to wait
+    /// for the lock would arrive only after the turn it was meant to stop.
+    pub fn pending(cancel_flag: Arc<std::sync::atomic::AtomicBool>) -> Self {
         Self {
-            agent: Arc::new(tokio::sync::Mutex::new(agent)),
+            agent: Arc::new(tokio::sync::Mutex::new(None)),
             cancel_flag,
         }
     }
 
-    /// The shared handle, for a composition root that also wants to inspect the
-    /// agent between turns.
-    pub fn handle(&self) -> Arc<tokio::sync::Mutex<Agent>> {
-        self.agent.clone()
+    /// Put the assembled agent in place.
+    ///
+    /// Called once by the composition root, right after the agent is built. A
+    /// second call would mean two agents claim the same slot, which is why this
+    /// is not a silent overwrite.
+    pub fn install(&self, agent: Agent) -> anyhow::Result<()> {
+        let mut slot = self.agent.try_lock().map_err(|_| {
+            anyhow::anyhow!("the agent slot is busy; install must run before any turn")
+        })?;
+        if slot.is_some() {
+            anyhow::bail!("an agent is already installed in this service");
+        }
+        *slot = Some(agent);
+        Ok(())
+    }
+
+    /// Whether an agent is in place.
+    pub fn is_installed(&self) -> bool {
+        self.agent
+            .try_lock()
+            .map(|slot| slot.is_some())
+            .unwrap_or(true)
     }
 }
 
@@ -87,7 +109,10 @@ impl AgentService for RuntimeAgentService {
         }
 
         let message = turn_message(&request);
-        let mut agent = self.agent.lock().await;
+        let mut guard = self.agent.lock().await;
+        let agent = guard
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("the agent is not installed yet"))?;
 
         // The per-turn bindings are copied onto the agent for the duration of
         // this turn: the loop reads them from `self` rather than threading a
@@ -111,7 +136,7 @@ impl AgentService for RuntimeAgentService {
         let outcome = outcome?;
         Ok(TurnOutcome {
             stop: to_turn_stop(outcome.stop),
-            final_text: last_text(&agent),
+            final_text: last_text(agent),
         })
     }
 
@@ -124,7 +149,10 @@ impl AgentService for RuntimeAgentService {
     }
 
     async fn compact(&self) -> anyhow::Result<()> {
-        let mut agent = self.agent.lock().await;
+        let mut guard = self.agent.lock().await;
+        let agent = guard
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("the agent is not installed yet"))?;
         agent.compact_history(None).await
     }
 }

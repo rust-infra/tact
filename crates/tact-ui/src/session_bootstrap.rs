@@ -315,6 +315,13 @@ pub async fn bootstrap_session(
     } else {
         tact_llm::get_provider().provider
     };
+    // The loop's service is registered during assembly, so it has to exist
+    // first. Its slot stays empty until the agent below installs itself. The
+    // cancel flag is the same one the tools see: a cancel through the service and
+    // a cancel through the UI must stop the same run.
+    let agent_service = std::sync::Arc::new(tact::agent::service::RuntimeAgentService::pending(
+        tool_context.cancel_flag.clone(),
+    ));
     let mut agent = Agent::new_with_host(
         client,
         tool_context,
@@ -330,6 +337,7 @@ pub async fn bootstrap_session(
                 store: session_store.clone(),
                 path: db_path.clone(),
             }),
+            agent_service: Some(agent_service.clone()),
             ..tact::host::HostExtras::default()
         },
     )

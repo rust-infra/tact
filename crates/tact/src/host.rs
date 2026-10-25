@@ -88,6 +88,13 @@ pub struct HostExtras {
     pub storage: Option<StorageOptions>,
     /// The plugin home, when the host installs the marketplace.
     pub marketplace: Option<crate::consts::PluginHome>,
+    /// The agent service whose slot this agent will fill.
+    ///
+    /// Passed in rather than built here because the service must be registered
+    /// *during* assembly, while the agent it wraps does not exist until assembly
+    /// finishes. The host creates the empty service, hands it here, and the agent
+    /// installs itself into it at the end of its own construction.
+    pub agent_service: Option<std::sync::Arc<crate::agent::service::RuntimeAgentService>>,
 }
 
 /// The assembled pieces, after sealing.
@@ -179,6 +186,12 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
         let session_store = storage.store.clone();
         host.install_sync(crate::store::plugin::SessionStorePlugin::new(storage.store))?;
         host.install_sync(crate::store::SessionPlugin::new(session_store))?;
+    }
+
+    // The loop's service is registered here so a view can resolve it from the
+    // registry like every other service; the agent fills its slot afterwards.
+    if let Some(service) = extras.agent_service.clone() {
+        host.install_sync(crate::agent::plugin::AgentPlugin::new(service))?;
     }
 
     let skipped = host
