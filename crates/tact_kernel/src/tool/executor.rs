@@ -592,17 +592,28 @@ impl ToolExecutor {
             fallback().ok_or_else(|| anyhow::anyhow!("permission prompt has no allow option"))?
         } else {
             let first = &picked[0];
-            prompt
+            // Exact id, exact rendered label, then a *unique* rendered-option
+            // match. Never a bare prefix test: "Always allow this tool" is a
+            // strict prefix of "Always allow this pattern", so a prefix match
+            // would record the far wider rule when the user clicked the narrow
+            // one — a permission escalation that looks like a typo.
+            let rendered = |option: &PermissionOption| match &option.detail {
+                Some(detail) => format!("{} ({detail})", option.label),
+                None => option.label.clone(),
+            };
+            let exactly: Vec<&PermissionOption> = prompt
                 .options
                 .iter()
-                .find(|option| &option.id == first || &option.label == first)
-                .or_else(|| {
-                    prompt
-                        .options
-                        .iter()
-                        .find(|option| option.label.starts_with(first.as_str()))
-                })
-                .ok_or_else(|| anyhow::anyhow!("unknown permission option: {first}"))?
+                .filter(|option| &option.id == first || rendered(option) == *first)
+                .collect();
+            match exactly.as_slice() {
+                [only] => *only,
+                // Two options rendering identically is a bug in the *prompt*,
+                // not in the answer: refuse rather than guess which was meant.
+                [] | [_, ..] => {
+                    return Err(anyhow::anyhow!("unknown permission option: {first}"));
+                }
+            }
         };
         Ok(PermissionAnswer {
             option_id: option.id.clone(),
@@ -1374,8 +1385,13 @@ mod permission_prompt_tests {
         let recorded = Arc::new(Mutex::new(Vec::new()));
         let executor = executor(calls.clone(), recorded.clone()).await;
         let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        // The rendered text, not the bare label: this option has a `detail`, and
+        // a UI answers with exactly what it drew.
         let prepared = executor
-            .preflight(request(generation), context("Always allow echo"))
+            .preflight(
+                request(generation),
+                context("Always allow echo (records a rule)"),
+            )
             .await
             .unwrap();
         executor.execute(prepared).await.unwrap();
@@ -2364,5 +2380,285 @@ mod release_tests {
         };
         assert!(error.to_string().contains("ticket"), "{error}");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[cfg(test)]
+mod ask_matching_tests {
+    use super::*;
+    use crate::capability::tool::Tool;
+    use crate::tool::context::{
+        CancelToken, EventSink, InteractionBroker, InteractionRequest, InteractionResponse,
+        RedactionPolicy, ToolCallContext, ToolEvent, ToolOrigin, Workspace,
+    };
+    use crate::tool::descriptor::ToolDescriptor;
+    use crate::tool::{ToolCallResult, ToolMetadata};
+    use serde_json::json;
+
+    struct NoopTool;
+
+    #[async_trait]
+    impl Tool for NoopTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::from_native(
+                "bash",
+                "bash",
+                json!({"type": "object"}),
+                &ToolMetadata::read_json("bash", "bash", "Bash"),
+            )
+        }
+
+        async fn call(
+            &self,
+            _ctx: ToolCallContext,
+            _input: serde_json::Value,
+        ) -> anyhow::Result<ToolCallResult> {
+            Ok(ToolCallResult::text("ran"))
+        }
+    }
+
+    /// Records the answer the executor resolved, so a test can assert *which*
+    /// option a rendered label was mapped to.
+    struct Asking {
+        recorded: Arc<std::sync::Mutex<Vec<PermissionOptionKind>>>,
+    }
+    #[async_trait]
+    impl PermissionService for Asking {
+        async fn decide(&self, _request: PermissionRequest) -> anyhow::Result<PermissionDecision> {
+            // The real prompt: "Always allow this tool" is a strict prefix of
+            // "Always allow this pattern", which is the pair a prefix match gets
+            // wrong.
+            Ok(PermissionDecision::Ask(PermissionPrompt {
+                message: "run?".into(),
+                options: vec![
+                    PermissionOption {
+                        id: "allow_once".into(),
+                        label: "Allow once".into(),
+                        detail: None,
+                        kind: PermissionOptionKind::AllowOnce,
+                    },
+                    PermissionOption {
+                        id: "always_allow".into(),
+                        label: "Always allow this tool".into(),
+                        detail: None,
+                        kind: PermissionOptionKind::AlwaysAllow,
+                    },
+                    PermissionOption {
+                        id: "always_allow_pattern".into(),
+                        label: "Always allow this pattern".into(),
+                        detail: None,
+                        kind: PermissionOptionKind::AlwaysAllowWide,
+                    },
+                    PermissionOption {
+                        id: "deny".into(),
+                        label: "Deny".into(),
+                        detail: None,
+                        kind: PermissionOptionKind::Deny,
+                    },
+                ],
+            }))
+        }
+
+        async fn record(
+            &self,
+            _request: &PermissionRequest,
+            answer: &PermissionAnswer,
+        ) -> anyhow::Result<()> {
+            self.recorded.lock().unwrap().push(answer.kind);
+            Ok(())
+        }
+    }
+
+    struct NoHooks;
+    #[async_trait]
+    impl HookService for NoHooks {
+        async fn pre_tool_use(&self, _event: &mut PreToolUseEvent) -> anyhow::Result<HookControl> {
+            Ok(HookControl::Continue)
+        }
+
+        async fn post_tool_use(
+            &self,
+            _event: &mut PostToolUseEvent,
+        ) -> anyhow::Result<HookControl> {
+            Ok(HookControl::Continue)
+        }
+    }
+
+    struct NoGuard;
+    impl SecurityService for NoGuard {
+        fn guard(
+            &self,
+            _descriptor: &ToolDescriptor,
+            _input: &serde_json::Value,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct NoEvents;
+    impl EventSink for NoEvents {
+        fn emit(&self, _event: ToolEvent) {}
+    }
+
+    /// Answers with whatever the UI would send: the rendered option text.
+    struct Picks(&'static str);
+    #[async_trait]
+    impl InteractionBroker for Picks {
+        async fn request(
+            &self,
+            _request: InteractionRequest,
+        ) -> anyhow::Result<InteractionResponse> {
+            Ok(InteractionResponse::Selected(vec![self.0.to_string()]))
+        }
+    }
+
+    fn ctx(pick: &'static str) -> ToolCallContext {
+        ToolCallContext {
+            run_id: "run".into(),
+            tool_use_id: "call".into(),
+            session_id: None,
+            active_goal_id: None,
+            origin: ToolOrigin::Main,
+            workspace: Workspace::new("/repo"),
+            events: Arc::new(NoEvents),
+            interaction: Arc::new(Picks(pick)),
+            cancel: CancelToken::new(),
+            redaction: RedactionPolicy::Off,
+        }
+    }
+
+    async fn executor() -> (
+        ToolExecutor,
+        Arc<std::sync::Mutex<Vec<PermissionOptionKind>>>,
+    ) {
+        let recorded = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mut catalog = ToolCatalog::default();
+        catalog.insert(Arc::new(NoopTool)).unwrap();
+        (
+            ToolExecutor::new(
+                Arc::new(catalog),
+                CapabilityFilter::default(),
+                Arc::new(NoGuard),
+                Arc::new(Asking {
+                    recorded: recorded.clone(),
+                }),
+                Arc::new(NoHooks),
+            ),
+            recorded,
+        )
+    }
+
+    fn request(generation: u64) -> ToolRequest {
+        ToolRequest {
+            call_id: "call".into(),
+            tool_name: "bash".into(),
+            input: json!({"command": "ls"}),
+            snapshot_generation: generation,
+        }
+    }
+
+    /// The rendered text must resolve to the option it was rendered from.
+    ///
+    /// A prefix match gets the pair "Always allow this tool" / "Always allow this
+    /// pattern" wrong: the shorter label prefixes the longer one, so picking the
+    /// tool-wide grant silently records the far wider pattern rule instead.
+    #[tokio::test]
+    async fn every_rendered_label_resolves_to_its_own_option() {
+        let (executor, recorded) = executor().await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        for (label, expected) in [
+            ("Allow once", PermissionOptionKind::AllowOnce),
+            ("Always allow this tool", PermissionOptionKind::AlwaysAllow),
+            (
+                "Always allow this pattern",
+                PermissionOptionKind::AlwaysAllowWide,
+            ),
+        ] {
+            recorded.lock().unwrap().clear();
+            let prepared = executor
+                .preflight(request(generation), ctx(label))
+                .await
+                .unwrap_or_else(|error| panic!("{label} must be answerable: {error}"));
+            assert_eq!(
+                executor.authorization(&prepared),
+                PreflightAuthorization::Prompted
+            );
+            executor.release(prepared);
+            assert_eq!(
+                recorded.lock().unwrap().as_slice(),
+                std::slice::from_ref(&expected),
+                "{label} was resolved to the wrong option"
+            );
+        }
+    }
+
+    /// Two options that render identically are refused, not guessed.
+    ///
+    /// This can only come from a prompt bug, and guessing would record a
+    /// permission rule the user did not pick.
+    #[tokio::test]
+    async fn ambiguous_rendered_labels_are_refused() {
+        struct Twins;
+        #[async_trait]
+        impl PermissionService for Twins {
+            async fn decide(
+                &self,
+                _request: PermissionRequest,
+            ) -> anyhow::Result<PermissionDecision> {
+                Ok(PermissionDecision::Ask(PermissionPrompt {
+                    message: "run?".into(),
+                    options: vec![
+                        PermissionOption {
+                            id: "a".into(),
+                            label: "Allow once".into(),
+                            detail: None,
+                            kind: PermissionOptionKind::AllowOnce,
+                        },
+                        PermissionOption {
+                            id: "b".into(),
+                            label: "Allow once".into(),
+                            detail: None,
+                            kind: PermissionOptionKind::AlwaysAllow,
+                        },
+                    ],
+                }))
+            }
+        }
+        let mut catalog = ToolCatalog::default();
+        catalog.insert(Arc::new(NoopTool)).unwrap();
+        let executor = ToolExecutor::new(
+            Arc::new(catalog),
+            CapabilityFilter::default(),
+            Arc::new(NoGuard),
+            Arc::new(Twins),
+            Arc::new(NoHooks),
+        );
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let error = executor
+            .preflight(request(generation), ctx("Allow once"))
+            .await
+            .err()
+            .expect("an ambiguous label must not be guessed");
+        assert!(
+            error.to_string().contains("unknown permission option"),
+            "{error}"
+        );
+    }
+
+    /// A deny pick is a denial, not an accidental approval.
+    #[tokio::test]
+    async fn picking_deny_denies() {
+        let (executor, recorded) = executor().await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let error = executor
+            .preflight(request(generation), ctx("Deny"))
+            .await
+            .err()
+            .expect("deny must refuse");
+        assert!(error.to_string().contains("Permission denied"), "{error}");
+        assert!(
+            recorded.lock().unwrap().is_empty(),
+            "a denial records nothing"
+        );
     }
 }
