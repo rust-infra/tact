@@ -259,6 +259,7 @@ pub enum DomainHandle {
     WorktreeManager,
     Workspace,
     UiResponder,
+    MemoryManager,
     FromSubagent,
     /// The run's session id, when this tool keys its rows by it.
     SessionId,
@@ -291,6 +292,7 @@ pub struct DomainHandles {
     pub workspace: Option<tact_kernel::tool::context::Workspace>,
     /// The prompt/answer registry, for a tool that asks a human.
     pub ui_responder: Option<UiResponder>,
+    pub memory_manager: Option<std::sync::Arc<std::sync::Mutex<crate::memory::MemoryManager>>>,
     /// Whether the caller is a subagent, when a tool's wording depends on it.
     ///
     /// Carried from the kernel's `ToolOrigin` rather than re-derived: the origin
@@ -347,6 +349,9 @@ impl DomainHandles {
         }
         if self.ui_responder.is_some() {
             carried.push("ui_responder");
+        }
+        if self.memory_manager.is_some() {
+            carried.push("memory_manager");
         }
         if self.from_subagent.is_some() {
             carried.push("from_subagent");
@@ -1263,6 +1268,7 @@ mod domain_handle_guard_tests {
             (DomainHandle::WorktreeManager, "worktree_manager"),
             (DomainHandle::Workspace, "workspace"),
             (DomainHandle::UiResponder, "ui_responder"),
+            (DomainHandle::MemoryManager, "memory_manager"),
             (DomainHandle::FromSubagent, "from_subagent"),
             (DomainHandle::SessionId, "session_id"),
             (DomainHandle::ActiveGoalId, "active_goal_id"),
@@ -1295,13 +1301,14 @@ mod domain_handle_guard_tests {
                 DomainHandle::WorktreeManager,
                 DomainHandle::Workspace,
                 DomainHandle::UiResponder,
+                DomainHandle::MemoryManager,
                 DomainHandle::FromSubagent,
                 DomainHandle::SessionId,
                 DomainHandle::ActiveGoalId,
                 DomainHandle::Events,
             ]
             .len(),
-            12,
+            13,
             "update this list (and the macro's table) when adding a DomainHandle"
         );
     }

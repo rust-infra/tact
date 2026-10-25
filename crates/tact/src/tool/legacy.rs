@@ -57,6 +57,13 @@ pub trait ToolContextFactory: Send + Sync {
         None
     }
 
+    /// The memory manager, on the same terms.
+    fn memory_manager(
+        &self,
+    ) -> Option<std::sync::Arc<std::sync::Mutex<crate::memory::MemoryManager>>> {
+        None
+    }
+
     /// The sink a tool's read-out goes to.
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
         None
@@ -158,6 +165,12 @@ impl ToolContextFactory for SharedToolContextFactory {
         Some(self.with_base(|base| base.ui_responder.clone()))
     }
 
+    fn memory_manager(
+        &self,
+    ) -> Option<std::sync::Arc<std::sync::Mutex<crate::memory::MemoryManager>>> {
+        Some(self.with_base(|base| base.memory_manager.clone()))
+    }
+
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
         Some(self.with_base(|base| base.events.clone()))
     }
@@ -250,6 +263,9 @@ impl KernelTool for LegacyToolAdapter {
                     }
                     super::DomainHandle::UiResponder => {
                         handles.ui_responder = self.contexts.ui_responder();
+                    }
+                    super::DomainHandle::MemoryManager => {
+                        handles.memory_manager = self.contexts.memory_manager();
                     }
                     super::DomainHandle::FromSubagent => {
                         handles.from_subagent = Some(matches!(ctx.origin, ToolOrigin::Subagent));

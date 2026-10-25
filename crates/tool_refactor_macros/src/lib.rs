@@ -162,6 +162,10 @@ fn expand_domain_tool(
             "from_subagent",
             quote!(crate::tool::DomainHandle::FromSubagent),
         ),
+        (
+            "memory_manager",
+            quote!(crate::tool::DomainHandle::MemoryManager),
+        ),
     ] {
         if text.contains(&format!(".{field}")) {
             needs.push(variant);
@@ -214,6 +218,7 @@ fn expand_domain_tool(
                     )),
                     ui_responder: Some(context.ui_responder.clone()),
                     from_subagent: Some(context.is_subagent),
+                    memory_manager: Some(context.memory_manager.clone()),
                     session_id: context.session_id.clone(),
                     active_goal_id: context.active_goal_id.clone(),
                     events: Some(context.events.clone()),

@@ -3,13 +3,13 @@ use crate::tool::{
     PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
     ToolPresentation,
 };
-use anyhow::{Context as _, Result};
+use anyhow::{Context as _, Result, anyhow};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 
-use crate::{memory::MemoryType, tool::ToolContext};
+use crate::{memory::MemoryType, tool::DomainHandles};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SaveMemoryInput {
@@ -62,10 +62,14 @@ pub const SAVE_MEMORY_METADATA: ToolMetadata = ToolMetadata {
 /// - The memory type string is invalid (must be one of: user, feedback, project, or reference).
 /// - The memory manager lock is poisoned.
 /// - The memory cannot be saved (e.g., file I/O failure).
-pub async fn save_memory(ctx: ToolContext, input: SaveMemoryInput) -> Result<String> {
+pub async fn save_memory(handles: DomainHandles, input: SaveMemoryInput) -> Result<String> {
+    let Some(memory) = handles.memory_manager else {
+        return Err(anyhow!(
+            "memory tools are unavailable: this host has no memory manager"
+        ));
+    };
     let memory_type = input.memory_type.parse::<MemoryType>()?;
-    let mut manager = ctx
-        .memory_manager
+    let mut manager = memory
         .lock()
         .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))?;
     manager
@@ -80,9 +84,13 @@ pub async fn save_memory(ctx: ToolContext, input: SaveMemoryInput) -> Result<Str
 /// - The memory name is unknown (the message lists the known ones).
 /// - The memory manager lock is poisoned.
 /// - The memory file cannot be read.
-pub async fn load_memory(ctx: ToolContext, input: LoadMemoryInput) -> Result<String> {
-    let manager = ctx
-        .memory_manager
+pub async fn load_memory(handles: DomainHandles, input: LoadMemoryInput) -> Result<String> {
+    let Some(memory) = handles.memory_manager else {
+        return Err(anyhow!(
+            "memory tools are unavailable: this host has no memory manager"
+        ));
+    };
+    let manager = memory
         .lock()
         .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))?;
     manager.load_topic(&input.name)
