@@ -1,105 +1,30 @@
 //! Built-in tool registration for the main agent and sub-agents.
+//!
+//! The set itself lives in [`super::family`]; this module only names the two
+//! entry points the rest of the crate calls.
 
-use super::{
-    ToolRouter,
-    ask_user::AskUserTool,
-    background_run::{BackgroundRunTool, CheckBackgroundTool, WaitBackgroundTool},
-    bash::BashTool,
-    compact::CompactTool,
-    edit_file::EditFileTool,
-    goal::{GoalCheckpointTool, GoalProposeCompletionTool, GoalReadTool, GoalRequestInputTool},
-    load_skill::LoadSkillTool,
-    memory::{LoadMemoryTool, SaveMemoryTool},
-    read_file::ReadFileTool,
-    read_image::ReadImageTool,
-    sleep::SleepTool,
-    subagent::{CancelSubagentTool, CheckSubagentTool, SpawnSubagentTool, WaitSubagentTool},
-    task::{TaskCreateTool, TaskGetTool, TaskListTool, TaskUpdateTool},
-    team::{
-        BroadcastTool, ListTeammatesTool, PlanApprovalTool, ReadInboxTool, SendMessageTool,
-        ShutdownRequestTool, ShutdownResponseTool, SpawnTeammateTool,
-    },
-    worktree::{
-        WorktreeCreateTool, WorktreeEventsTool, WorktreeListTool, WorktreeRemoveTool,
-        WorktreeRunTool, WorktreeStatusTool,
-    },
-    write_file::WriteFileTool,
-};
-
-/// Assembles the full tool set for the main agent loop.
-///
-/// `memory_enabled` mirrors `[agent].memory_enabled`: when false, neither
-/// `save_memory` nor `load_memory` is registered, so they disappear from the
-/// advertised specs and dispatch rejects them as unknown tools.
-fn try_toolset(memory_enabled: bool) -> anyhow::Result<ToolRouter> {
-    let router = ToolRouter::new()
-        .route(AskUserTool)?
-        .route(BashTool)?
-        .route(BackgroundRunTool)?
-        .route(CheckBackgroundTool)?
-        .route(WaitBackgroundTool)?
-        .route(ReadFileTool)?
-        .route(ReadImageTool)?
-        .route(SleepTool)?
-        .route(WriteFileTool)?
-        .route(EditFileTool)?
-        .route(LoadSkillTool)?
-        .route(GoalReadTool)?
-        .route(GoalCheckpointTool)?
-        .route(GoalRequestInputTool)?
-        .route(GoalProposeCompletionTool)?;
-    let router = if memory_enabled {
-        router.route(SaveMemoryTool)?.route(LoadMemoryTool)?
-    } else {
-        router
-    };
-    router
-        .route(CompactTool)?
-        .route(SpawnSubagentTool)?
-        .route(CheckSubagentTool)?
-        .route(WaitSubagentTool)?
-        .route(CancelSubagentTool)?
-        .route(TaskCreateTool)?
-        .route(TaskGetTool)?
-        .route(TaskListTool)?
-        .route(TaskUpdateTool)?
-        .route(SpawnTeammateTool)?
-        .route(ListTeammatesTool)?
-        .route(SendMessageTool)?
-        .route(BroadcastTool)?
-        .route(ReadInboxTool)?
-        .route(PlanApprovalTool)?
-        .route(ShutdownRequestTool)?
-        .route(ShutdownResponseTool)?
-        .route(WorktreeCreateTool)?
-        .route(WorktreeListTool)?
-        .route(WorktreeStatusTool)?
-        .route(WorktreeRunTool)?
-        .route(WorktreeRemoveTool)?
-        .route(WorktreeEventsTool)
-}
+use super::ToolRouter;
 
 pub fn toolset() -> ToolRouter {
     toolset_with_memory(true)
 }
 
 /// Tool set for the main agent, with Tact's persistent memory optionally off.
+///
+/// A fold over [`super::family::ToolFamily`], so the set of built-ins is a value
+/// rather than a chain of `.route(..)` calls at this call site.
 pub fn toolset_with_memory(memory_enabled: bool) -> ToolRouter {
-    try_toolset(memory_enabled).expect("built-in tool metadata must be valid")
+    super::router_from(&super::ToolFamily::ALL, memory_enabled)
+        .expect("built-in tool metadata must be valid")
 }
 
-/// Assembles the restricted tool set for sub-agents.
-fn try_subagent_toolset() -> anyhow::Result<ToolRouter> {
-    ToolRouter::new()
-        .route(BashTool)?
-        .route(ReadFileTool)?
-        .route(SleepTool)?
-        .route(WriteFileTool)?
-        .route(EditFileTool)
-}
-
+/// The restricted tool set for sub-agents.
+///
+/// The set lives in [`super::SubagentBasics`]; `tool::family`'s tests pin it to
+/// exactly `bash`, `read_file`, `sleep`, `write_file`, `edit_file`.
 pub fn subagent_toolset() -> ToolRouter {
-    try_subagent_toolset().expect("subagent tool metadata must be valid")
+    super::router_from(&super::SUBAGENT_FAMILIES, false)
+        .expect("subagent tool metadata must be valid")
 }
 
 #[cfg(test)]

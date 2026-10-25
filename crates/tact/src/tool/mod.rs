@@ -48,6 +48,7 @@ mod background_run;
 mod bash;
 mod compact;
 mod edit_file;
+mod family;
 pub mod goal;
 mod legacy;
 mod load_skill;
@@ -81,6 +82,7 @@ use bash::BashTool;
 pub use bash::SANDBOXED_BASH_DESCRIPTION;
 #[cfg(test)]
 use edit_file::EditFileTool;
+pub use family::{SUBAGENT_FAMILIES, ToolFamily, router_from};
 pub use legacy::{LegacyToolAdapter, SharedToolContextFactory, ToolContextFactory};
 #[cfg(test)]
 use load_skill::LoadSkillTool;
@@ -332,6 +334,27 @@ impl ToolRouter {
         contexts: std::sync::Arc<dyn legacy::ToolContextFactory>,
     ) -> Result<tact_kernel::catalog::ToolCatalog> {
         self.kernel_catalog(contexts)
+    }
+
+    /// Register a handler that is already type-erased.
+    ///
+    /// The composition root declares every built-in as `fn() -> Box<dyn Tool>`
+    /// in one table, so the router can no longer name each concrete type at the
+    /// call site.
+    pub fn route_boxed(mut self, tool: Box<dyn Tool>) -> Result<Self> {
+        let metadata = tool.metadata();
+        let name = metadata.name.to_string();
+        if self.tools.contains_key(&name) {
+            anyhow::bail!("duplicate native tool name: {name}");
+        }
+        self.tools.insert(
+            name,
+            RegisteredTool {
+                handler: std::sync::Arc::from(tool),
+                metadata,
+            },
+        );
+        Ok(self)
     }
 
     pub fn resolve(&self, name: &str) -> Result<ResolvedNativeTool<'_>> {
