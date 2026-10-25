@@ -64,5 +64,38 @@ if failures:
         print(failure, file=sys.stderr)
     raise SystemExit(1)
 
+# The view must not depend on the runtime: a view that names extension types
+# cannot be driven by another host, and the dependency is invisible to a source
+# scan. Dev-dependencies are exempt on purpose — a unit test may build fixtures
+# through the runtime's own helpers, and the production target is what the
+# boundary is about.
+VIEW = "tui"
+VIEW_FORBIDDEN_NORMAL = {"tact", "tact_llm", "tact-ui"}
+view = packages.get(VIEW)
+if view is None:
+    print(f"missing workspace package: {VIEW}", file=sys.stderr)
+    raise SystemExit(1)
+
+for dependency in view["dependencies"]:
+    name = dependency["name"]
+    kind = dependency.get("kind")
+    optional = dependency.get("optional", False)
+    if kind is not None:
+        # A normal dependency may be optional (feature-gated); `kind` is null for
+        # those, and `dev`/`build` are the ones we skip.
+        if kind in {"dev", "build"}:
+            continue
+    if name in VIEW_FORBIDDEN_NORMAL and not optional:
+        failures.append(
+            f"forbidden dependency: {VIEW} -> {name} (make it optional + "
+            f"feature-gated, or pass it through a view port)"
+        )
+
+if failures:
+    for failure in failures:
+        print(failure, file=sys.stderr)
+    raise SystemExit(1)
+
 print(f"architecture ok: {KERNEL} deps = {', '.join(sorted(ALLOWED))}")
+print(f"architecture ok: {VIEW} has no un-gated runtime dependency")
 PY
