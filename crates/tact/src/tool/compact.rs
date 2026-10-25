@@ -4,18 +4,8 @@ use crate::tool::{
     ToolPresentation,
 };
 use anyhow::Result;
-use schemars::JsonSchema;
-use serde::Deserialize;
 use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
-
-use crate::tool::ToolContext;
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct CompactInput {
-    #[schemars(description = "Optional focus to preserve in the compacted summary.")]
-    pub focus: Option<String>,
-}
 
 pub const COMPACT_METADATA: ToolMetadata = ToolMetadata {
     name: "compact",
@@ -40,9 +30,12 @@ pub const COMPACT_METADATA: ToolMetadata = ToolMetadata {
 /// # Errors
 ///
 /// This function always returns `Ok`.
-pub async fn compact(_ctx: ToolContext, input: CompactInput) -> Result<String> {
-    let focus = input
-        .focus
+pub async fn compact(
+    #[schemars(description = "Optional focus to preserve in the compacted summary.")] focus: Option<
+        String,
+    >,
+) -> Result<String> {
+    let focus = focus
         .map(|focus| format!(" Focus to preserve: {focus}"))
         .unwrap_or_default();
     Ok(format!("Compacting conversation...{focus}"))

@@ -12,24 +12,9 @@ use crate::tool::{
     ToolPresentation,
 };
 use anyhow::Result;
-use schemars::JsonSchema;
-use serde::Deserialize;
 use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 use tracing::debug;
-
-use crate::tool::ToolContext;
-
-#[derive(Debug, Deserialize, JsonSchema)]
-pub struct SleepInput {
-    /// Duration in milliseconds (capped at 300_000 = 5 minutes).
-    #[schemars(
-        description = "Duration to sleep in milliseconds (max 300000 = 5 minutes). Do not use \
-                       this to wait for a background task; use wait_background."
-    )]
-    #[serde(alias = "ms", alias = "duration_ms")]
-    pub ms: u64,
-}
 
 fn capped_sleep_ms(ms: u64) -> u64 {
     ms.min(300_000)
@@ -60,8 +45,16 @@ pub const SLEEP_METADATA: ToolMetadata = ToolMetadata {
 /// # Errors
 ///
 /// This function always returns `Ok`.
-pub async fn sleep(_ctx: ToolContext, input: SleepInput) -> Result<String> {
-    let duration_ms = capped_sleep_ms(input.ms);
+pub async fn sleep(
+    /// Duration in milliseconds (capped at 300_000 = 5 minutes).
+    #[schemars(
+        description = "Duration to sleep in milliseconds (max 300000 = 5 minutes). Do not use \
+                       this to wait for a background task; use wait_background."
+    )]
+    #[serde(alias = "ms", alias = "duration_ms")]
+    ms: u64,
+) -> Result<String> {
+    let duration_ms = capped_sleep_ms(ms);
     debug!(ms = duration_ms, "Sleeping");
 
     tokio::time::sleep(Duration::from_millis(duration_ms)).await;
