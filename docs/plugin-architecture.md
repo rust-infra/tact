@@ -198,13 +198,19 @@ the first implementation plan is
     exhaustive count so a new variant has to be listed.
   - Converted so far: `read_file`, `read_image`, `edit_file`, `apply_patch`
     (workspace only), plus `load_skill`, every team / task / goal / worktree tool,
-    `write_file`, `ask_user`, the memory tools and the background tools (declared
-    handles, 16 variants).
-  - Still on the full context, and now each remaining name has a reason: `bash`
-    (shell limits, sandbox, priority) and `subagent` (session handoff, permission
-    snapshot, the parent's hooks, its own store). `compact` and `sleep` read
-    nothing at all but keep the parameter because the macro's pure-tool branch
-    generates the `Input` type and these two declare theirs by hand.
+    `write_file`, `ask_user`, the memory tools, the background tools and `bash`
+    (declared handles, 17 variants).
+  - `bash` needed a `ShellPolicy` handle rather than four loose fields: the four
+    shell settings are resolved once at startup and never change, so they are one
+    value answering "how may this command run". The timeout rule lives on
+    `ShellPolicy::timeout_for`, including the case that matters — a per-call `0`
+    still disables the limit, so a model cannot grant itself more time than the
+    user configured.
+  - Still on the full context: `subagent` (session handoff, permission snapshot,
+    the parent's hooks, its own store — the one tool for which the whole context
+    is the honest input). `compact` and `sleep` read nothing at all but keep the
+    parameter because the macro's pure-tool branch generates the `Input` type and
+    these two declare theirs by hand.
   - Per-call state is *rebuilt*, not carried: `ToolProgressReporter` is built from
     `tool_use_id` + `events` at the point of use, because it is not a domain
     handle. Trying to carry it would have put a per-call object into a set that
