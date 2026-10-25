@@ -206,11 +206,13 @@ the first implementation plan is
     `ShellPolicy::timeout_for`, including the case that matters — a per-call `0`
     still disables the limit, so a model cannot grant itself more time than the
     user configured.
-  - Still on the full context: `subagent` (session handoff, permission snapshot,
-    the parent's hooks, its own store — the one tool for which the whole context
-    is the honest input). `compact` and `sleep` read nothing at all but keep the
-    parameter because the macro's pure-tool branch generates the `Input` type and
-    these two declare theirs by hand.
+  - **`subagent` is now the only tool that takes a `ToolContext`**, and it is the
+    one whose input genuinely is the whole run: session handoff, permission
+    snapshot, the parent's hooks, its own store. `compact` and `sleep` came off
+    last: the macro's pure-tool branch expands *parameters* into fields, so a
+    handler that reads nothing can drop the parameter and let the macro generate
+    the input struct — the hand-written one had no outside references and its
+    `#[schemars]`/`#[serde(alias)]` attributes move onto the parameters verbatim.
   - Per-call state is *rebuilt*, not carried: `ToolProgressReporter` is built from
     `tool_use_id` + `events` at the point of use, because it is not a domain
     handle. Trying to carry it would have put a per-call object into a set that
