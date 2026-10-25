@@ -195,6 +195,24 @@ impl ResolvedCall {
     }
 }
 
+/// The policy verdict on a resolved call, before any ticket is minted.
+///
+/// Split from [`ToolExecutor::authorize`] so a host that must run its own
+/// PermissionRequest hooks (ones that need host state the kernel cannot see)
+/// can do that between the verdict and the ticket.
+pub enum AuthorizedCall {
+    /// The call may run; the ticket is already minted.
+    Allowed(ToolPreflight),
+    /// A prompt must be answered before the call may run.
+    NeedsPrompt {
+        call: ResolvedCall,
+        prompt: PermissionPrompt,
+        request: PermissionRequest,
+    },
+    /// The call is refused, with the message the caller should surface.
+    Denied(String),
+}
+
 /// A prepared call. Opaque on purpose: only `execute` may consume it.
 pub struct ToolPreflight {
     ticket: u64,
@@ -301,6 +319,111 @@ impl ToolExecutor {
             descriptor,
             input: request.input.clone(),
         })
+    }
+
+    /// Re-guard the final input, then ask the permission service for a verdict.
+    ///
+    /// This is the seam a host with its own hooks uses: run its PreToolUse
+    /// before, its PermissionRequest in the `NeedsPrompt` arm, then call
+    /// [`Self::finish_authorization`].
+    pub async fn authorize_policy(
+        &self,
+        call: ResolvedCall,
+        ctx: ToolCallContext,
+        hook_allowed: bool,
+    ) -> anyhow::Result<AuthorizedCall> {
+        let ResolvedCall {
+            tool,
+            descriptor,
+            input,
+        } = call;
+        self.security.guard(&descriptor, &input)?;
+
+        let request = PermissionRequest {
+            descriptor: descriptor.clone(),
+            input: input.clone(),
+        };
+        let decision = if hook_allowed {
+            PermissionDecision::Allow
+        } else {
+            self.permissions.decide(request.clone()).await?
+        };
+        Ok(match decision {
+            PermissionDecision::Allow => AuthorizedCall::Allowed(self.issue_ticket(
+                tool,
+                descriptor,
+                input,
+                ctx,
+                if hook_allowed {
+                    PreflightAuthorization::HookAllowed
+                } else {
+                    PreflightAuthorization::PolicyAllowed
+                },
+            )),
+            PermissionDecision::Deny(reason) => {
+                AuthorizedCall::Denied(format!("Permission denied: {reason}"))
+            }
+            PermissionDecision::Ask(prompt) => AuthorizedCall::NeedsPrompt {
+                call: ResolvedCall {
+                    tool,
+                    descriptor,
+                    input,
+                },
+                prompt,
+                request,
+            },
+        })
+    }
+
+    /// Turn an answered prompt into a ticket.
+    ///
+    /// `hook_allowed` marks the case where a PermissionRequest hook answered the
+    /// prompt itself; then no human answer is recorded.
+    pub async fn finish_authorization(
+        &self,
+        call: ResolvedCall,
+        request: PermissionRequest,
+        answer: Option<PermissionAnswer>,
+        ctx: ToolCallContext,
+        hook_allowed: bool,
+    ) -> anyhow::Result<ToolPreflight> {
+        if let Some(answer) = &answer {
+            if answer.kind == PermissionOptionKind::Deny {
+                anyhow::bail!("Permission denied by user for {}", call.descriptor.name);
+            }
+            self.permissions.record(&request, answer).await?;
+        }
+        let authorization = if hook_allowed {
+            PreflightAuthorization::PermissionRequestHookAllowed
+        } else {
+            PreflightAuthorization::Prompted
+        };
+        Ok(self.issue_ticket(call.tool, call.descriptor, call.input, ctx, authorization))
+    }
+
+    fn issue_ticket(
+        &self,
+        tool: Arc<dyn Tool>,
+        descriptor: ToolDescriptor,
+        input: serde_json::Value,
+        ctx: ToolCallContext,
+        authorization: PreflightAuthorization,
+    ) -> ToolPreflight {
+        let ticket = {
+            let mut next = self.next_ticket.lock().unwrap();
+            let ticket = *next;
+            *next += 1;
+            self.tickets.lock().unwrap().insert(ticket);
+            ticket
+        };
+        ToolPreflight {
+            ticket,
+            authorization,
+            tool,
+            descriptor,
+            input,
+            ctx,
+        }
     }
 
     /// Authorize a resolved call: re-guard the final input, consult permission
@@ -1769,5 +1892,278 @@ mod permission_request_hook_tests {
             "{error}"
         );
         assert_eq!(recorded.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[cfg(test)]
+mod host_seam_tests {
+    use super::*;
+    use crate::capability::tool::Tool;
+    use crate::tool::context::{
+        CancelToken, EventSink, InteractionBroker, InteractionRequest, InteractionResponse,
+        RedactionPolicy, ToolCallContext, ToolEvent, ToolOrigin, Workspace,
+    };
+    use crate::tool::descriptor::ToolDescriptor;
+    use crate::tool::{ToolCallResult, ToolMetadata};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NoopTool(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Tool for NoopTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::from_native(
+                "bash",
+                "bash",
+                json!({"type": "object"}),
+                &ToolMetadata::read_json("bash", "bash", "Bash"),
+            )
+        }
+
+        async fn call(
+            &self,
+            _ctx: ToolCallContext,
+            _input: serde_json::Value,
+        ) -> anyhow::Result<ToolCallResult> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolCallResult::text("ran"))
+        }
+    }
+
+    struct Fixed(PermissionDecision);
+    #[async_trait]
+    impl PermissionService for Fixed {
+        async fn decide(&self, _request: PermissionRequest) -> anyhow::Result<PermissionDecision> {
+            Ok(self.0.clone())
+        }
+
+        async fn record(
+            &self,
+            _request: &PermissionRequest,
+            _answer: &PermissionAnswer,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct NoHooks;
+    #[async_trait]
+    impl HookService for NoHooks {
+        async fn pre_tool_use(&self, _event: &mut PreToolUseEvent) -> anyhow::Result<HookControl> {
+            Ok(HookControl::Continue)
+        }
+
+        async fn post_tool_use(
+            &self,
+            _event: &mut PostToolUseEvent,
+        ) -> anyhow::Result<HookControl> {
+            Ok(HookControl::Continue)
+        }
+    }
+
+    struct NoGuard;
+    impl SecurityService for NoGuard {
+        fn guard(
+            &self,
+            _descriptor: &ToolDescriptor,
+            _input: &serde_json::Value,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct NoEvents;
+    impl EventSink for NoEvents {
+        fn emit(&self, _event: ToolEvent) {}
+    }
+
+    struct NoInteractions;
+    #[async_trait]
+    impl InteractionBroker for NoInteractions {
+        async fn request(
+            &self,
+            _request: InteractionRequest,
+        ) -> anyhow::Result<InteractionResponse> {
+            Ok(InteractionResponse::Cancelled)
+        }
+    }
+
+    fn ctx() -> ToolCallContext {
+        ToolCallContext {
+            run_id: "run".into(),
+            tool_use_id: "call".into(),
+            session_id: None,
+            active_goal_id: None,
+            origin: ToolOrigin::Main,
+            workspace: Workspace::new("/repo"),
+            events: Arc::new(NoEvents),
+            interaction: Arc::new(NoInteractions),
+            cancel: CancelToken::new(),
+            redaction: RedactionPolicy::Off,
+        }
+    }
+
+    async fn executor(calls: Arc<AtomicUsize>, decision: PermissionDecision) -> ToolExecutor {
+        let mut catalog = ToolCatalog::default();
+        catalog.insert(Arc::new(NoopTool(calls))).unwrap();
+        ToolExecutor::new(
+            Arc::new(catalog),
+            CapabilityFilter::default(),
+            Arc::new(NoGuard),
+            Arc::new(Fixed(decision)),
+            Arc::new(NoHooks),
+        )
+    }
+
+    fn request(generation: u64) -> ToolRequest {
+        ToolRequest {
+            call_id: "call".into(),
+            tool_name: "bash".into(),
+            input: json!({"command": "ls"}),
+            snapshot_generation: generation,
+        }
+    }
+
+    fn prompt() -> PermissionPrompt {
+        PermissionPrompt {
+            message: "run?".into(),
+            options: vec![PermissionOption {
+                id: "allow_once".into(),
+                label: "Allow once".into(),
+                detail: None,
+                kind: PermissionOptionKind::AllowOnce,
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn allow_mints_a_ticket_immediately() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = executor(calls.clone(), PermissionDecision::Allow).await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let resolved = executor.resolve(&request(generation)).await.unwrap();
+        let AuthorizedCall::Allowed(prepared) = executor
+            .authorize_policy(resolved, ctx(), false)
+            .await
+            .unwrap()
+        else {
+            panic!("allow must mint a ticket");
+        };
+        executor.execute(prepared).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn ask_returns_the_prompt_without_a_ticket() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = executor(calls.clone(), PermissionDecision::Ask(prompt())).await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let resolved = executor.resolve(&request(generation)).await.unwrap();
+        let AuthorizedCall::NeedsPrompt {
+            call,
+            prompt,
+            request,
+        } = executor
+            .authorize_policy(resolved, ctx(), false)
+            .await
+            .unwrap()
+        else {
+            panic!("an ask must not mint a ticket");
+        };
+        assert_eq!(prompt.options.len(), 1);
+        // The host answers it (here: allow once) and finishes authorization.
+        let prepared = executor
+            .finish_authorization(
+                call,
+                request,
+                Some(PermissionAnswer {
+                    option_id: "allow_once".into(),
+                    kind: PermissionOptionKind::AllowOnce,
+                }),
+                ctx(),
+                false,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            executor.authorization(&prepared),
+            PreflightAuthorization::Prompted
+        );
+        executor.execute(prepared).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn deny_returns_the_legacy_message_and_no_ticket() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = executor(calls.clone(), PermissionDecision::Deny("nope".into())).await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let resolved = executor.resolve(&request(generation)).await.unwrap();
+        let AuthorizedCall::Denied(message) = executor
+            .authorize_policy(resolved, ctx(), false)
+            .await
+            .unwrap()
+        else {
+            panic!("a deny must be reported");
+        };
+        assert_eq!(message, "Permission denied: nope");
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn a_hook_answer_records_no_human_choice() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = executor(calls.clone(), PermissionDecision::Ask(prompt())).await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let resolved = executor.resolve(&request(generation)).await.unwrap();
+        let AuthorizedCall::NeedsPrompt { call, request, .. } = executor
+            .authorize_policy(resolved, ctx(), false)
+            .await
+            .unwrap()
+        else {
+            panic!("expected a prompt");
+        };
+        let prepared = executor
+            .finish_authorization(call, request, None, ctx(), true)
+            .await
+            .unwrap();
+        assert_eq!(
+            executor.authorization(&prepared),
+            PreflightAuthorization::PermissionRequestHookAllowed
+        );
+        executor.execute(prepared).await.unwrap();
+        assert_eq!(calls.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn denying_answer_never_reaches_the_tool() {
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = executor(calls.clone(), PermissionDecision::Ask(prompt())).await;
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let resolved = executor.resolve(&request(generation)).await.unwrap();
+        let AuthorizedCall::NeedsPrompt { call, request, .. } = executor
+            .authorize_policy(resolved, ctx(), false)
+            .await
+            .unwrap()
+        else {
+            panic!("expected a prompt");
+        };
+        let error = executor
+            .finish_authorization(
+                call,
+                request,
+                Some(PermissionAnswer {
+                    option_id: "deny".into(),
+                    kind: PermissionOptionKind::Deny,
+                }),
+                ctx(),
+                false,
+            )
+            .await
+            .err()
+            .expect("a deny answer must fail");
+        assert!(error.to_string().contains("Permission denied by user"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }
