@@ -19,6 +19,7 @@ use tact_kernel::capability::command::CommandMeta;
 pub use tact_kernel::capability::command::Command;
 
 pub mod background;
+pub mod compact;
 pub mod goal;
 pub mod plugin;
 pub mod stats;
@@ -79,15 +80,29 @@ pub fn builtin_commands(
 /// to hold one. Duplicate names are a programming error and panic: two built-ins
 /// sharing a name would be silently shadowed, which is worse than a startup
 /// crash in a test.
+/// The turn lifecycle as a catalog command sees it.
+///
+/// Re-exported so a frontend can pass one in without depending on the kernel
+/// directly — the same reason `builtin_catalog` returns a kernel type.
+pub use tact_kernel::runtime::ChatService;
+
 pub fn builtin_catalog(
     stats: Arc<std::sync::RwLock<crate::stats::SessionStats>>,
     background: Option<BackgroundWiring>,
     goals: Option<GoalWiring>,
+    // `/compact` needs the turn lifecycle, so a host that has one gets the
+    // command and a host without one does not offer a command it cannot run.
+    chat: Option<Arc<dyn tact_kernel::runtime::ChatService>>,
 ) -> tact_kernel::catalog::CommandCatalog {
     let mut catalog = tact_kernel::catalog::CommandCatalog::default();
     for command in builtin_commands(stats) {
         catalog
             .insert(command)
+            .expect("built-in command names are unique");
+    }
+    if let Some(chat) = chat {
+        catalog
+            .insert(Arc::new(compact::CompactCommand::new(chat)))
             .expect("built-in command names are unique");
     }
     if let Some(wiring) = goals {
@@ -176,6 +191,7 @@ mod tests {
         // unreachable even though it exists.
         let catalog = builtin_catalog(
             Arc::new(std::sync::RwLock::new(crate::stats::SessionStats::default())),
+            None,
             None,
             None,
         );

@@ -520,7 +520,12 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
                 let msg = app.msgs().input_busy_msg.to_string();
                 app.flash_msg = Some((msg, std::time::Instant::now()));
             } else {
-                let _ = app.user_cmd_tx.send(UserCommand::Compact);
+                // A catalog command: the view forwards the name and the runtime's
+                // catalog owns the work, so the transport keeps no variant for it.
+                let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                    name: "compact".to_string(),
+                    args: String::new(),
+                });
             }
             CommandExecOutcome::handled()
         }

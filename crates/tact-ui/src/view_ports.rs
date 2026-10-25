@@ -195,6 +195,10 @@ pub fn install_command_directory(
             task_manager: agent.tool_context.task_manager.clone(),
             limits: crate::driver::agent_goal_limits(agent),
         }),
+        // The palette offers `/compact` only when the runtime can run it.
+        agent
+            .chat_service()
+            .map(|chat| chat as std::sync::Arc<dyn tact::command::ChatService>),
     );
     RuntimeCommandDirectory::new(catalog).install(slot);
 }
@@ -619,6 +623,7 @@ mod tests {
             Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
             None,
             None,
+            None,
         );
         let expected: Vec<String> = catalog
             .descriptors()
@@ -645,6 +650,7 @@ mod tests {
             Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
             None,
             None,
+            None,
         );
         let directory = RuntimeCommandDirectory::new(catalog);
         let stats = tui::ports::CommandDirectory::resolve(&directory, "stats")
@@ -664,6 +670,7 @@ mod tests {
 
         let catalog = tact::command::builtin_catalog(
             Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
+            None,
             None,
             None,
         );

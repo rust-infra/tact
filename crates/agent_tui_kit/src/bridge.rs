@@ -47,7 +47,10 @@ impl From<Command> for UserCommand {
         match cmd {
             Command::SubmitTask(task) => UserCommand::SubmitTask(task),
             Command::Cancel => UserCommand::Cancel,
-            Command::Compact => UserCommand::Compact,
+            Command::Compact => UserCommand::RunCommand {
+                name: "compact".to_string(),
+                args: String::new(),
+            },
             Command::QueryStats => UserCommand::RunCommand {
                 name: "stats".to_string(),
                 args: String::new(),
@@ -72,12 +75,14 @@ impl TryFrom<UserCommand> for Command {
     fn try_from(cmd: UserCommand) -> Result<Self, Self::Error> {
         match cmd {
             UserCommand::SubmitTask(task) => Ok(Self::SubmitTask(task)),
-            // A catalog command has no equivalent in this kit's closed
-            // vocabulary: the kit names the commands it knows, and a name it
-            // does not know is not one it can drive.
+            // The kit names the commands it can drive. `/compact` is one of
+            // them, so it maps back to the closed variant; anything else is a
+            // name this kit does not know and cannot drive.
+            UserCommand::RunCommand { name, args } if name == "compact" && args.is_empty() => {
+                Ok(Self::Compact)
+            }
             UserCommand::RunCommand { .. } => Err(()),
             UserCommand::Cancel => Ok(Self::Cancel),
-            UserCommand::Compact => Ok(Self::Compact),
             UserCommand::SetPermissionMode(mode) => Ok(Self::SetPermissionMode(mode)),
             UserCommand::SetThinkingBudget(budget) => Ok(Self::SetThinkingBudget(budget)),
             UserCommand::SetReasoningEffort(effort) => Ok(Self::SetReasoningEffort(effort)),

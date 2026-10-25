@@ -244,6 +244,7 @@ fn builtin_command_catalog(
     goal_manager: &tact::goal::SharedGoalManager,
     task_manager: &tact::task::SharedTaskManager,
     limits: tact::goal::GoalLimits,
+    chat: Option<std::sync::Arc<dyn tact::command::ChatService>>,
 ) -> tact::command::CommandCatalog {
     let session = session_id.clone();
     tact::command::builtin_catalog(
@@ -257,6 +258,7 @@ fn builtin_command_catalog(
             task_manager: task_manager.clone(),
             limits,
         }),
+        chat,
     )
 }
 
@@ -302,6 +304,8 @@ pub async fn run_command_loop_with_account(
         &goal_manager,
         &task_manager,
         limits,
+        chat.as_ref()
+            .map(|chat| chat.clone() as std::sync::Arc<dyn tact::command::ChatService>),
     );
 
     // Reconcile durable Goal state once, before serving commands: a crashed
@@ -1767,6 +1771,9 @@ async fn handle_user_command_with_account(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
                 agent_goal_limits(agent),
+                // The agent service path has no chat handle in scope here; the
+                // loop-level arm is where `/compact` runs, and it passes one.
+                None,
             );
             // `goal show` answers with the detail popup only; the panel refresh
             // is a separate `list`, because one command outcome carries one
@@ -1855,19 +1862,6 @@ async fn handle_user_command_with_account(
             // continuation and the completion notice live in one place, so the
             // command path and the service path cannot drift.
             tact::agent::chat::run_turn(agent, task_message).await;
-        }
-        UserCommand::Compact => {
-            agent.emit_update(AgentUpdate::Info("[compacting]".into()));
-            if let Err(error) = agent
-                .compact_history_with_trigger(tact::compact::CompactTrigger::Command, None)
-                .await
-            {
-                agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                    "Compaction failed: {error}"
-                ))));
-            } else {
-                agent.emit_update(AgentUpdate::Info("Compaction complete.".into()));
-            }
         }
         UserCommand::QueryBalance => {
             let Some(account_tx) = account_tx else {
@@ -2495,6 +2489,7 @@ mod tests {
             &agent.tool_context.goal_manager,
             &agent.tool_context.task_manager,
             super::GoalLimits::default(),
+            None,
         );
         let outcome = catalog
             .run_async(&tact::command::CommandInvocation {
