@@ -404,6 +404,11 @@ pub async fn run_command_loop_with_account(
                         });
                     }
                     tact::command::CommandOutcome::Done => {}
+                    // A command that produced a structured frame sends it as-is;
+                    // the host does not reformat what the command built.
+                    tact::command::CommandOutcome::Emit(emitted) => {
+                        events.send(emitted.into_inner());
+                    }
                     // A failure and a usage error both reach the user as an
                     // error line; they stay distinct in the outcome so a host
                     // that wants to render them differently still can.
@@ -2128,6 +2133,9 @@ async fn handle_user_command_with_account(
                     });
                 }
                 tact::command::CommandOutcome::Done => {}
+                tact::command::CommandOutcome::Emit(emitted) => {
+                    agent.runtime.events.send(emitted.into_inner());
+                }
                 tact::command::CommandOutcome::Failed(text)
                 | tact::command::CommandOutcome::Usage(text) => {
                     agent

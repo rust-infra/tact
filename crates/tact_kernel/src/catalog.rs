@@ -794,7 +794,10 @@ mod command_tests {
             name: "plugin".into(),
             args: "list".into(),
         });
-        assert_eq!(outcome, CommandOutcome::Message("plugin:list".into()));
+        assert!(
+            matches!(&outcome, CommandOutcome::Message(text) if text == "plugin:list"),
+            "{outcome:?}"
+        );
     }
 
     #[test]
@@ -803,7 +806,10 @@ mod command_tests {
             name: "p".into(),
             args: "list".into(),
         });
-        assert_eq!(outcome, CommandOutcome::Message("plugin:list".into()));
+        assert!(
+            matches!(&outcome, CommandOutcome::Message(text) if text == "plugin:list"),
+            "{outcome:?}"
+        );
     }
 
     #[test]
@@ -812,9 +818,10 @@ mod command_tests {
             name: "nope".into(),
             args: String::new(),
         });
-        assert_eq!(
-            outcome,
-            CommandOutcome::Usage("unknown command: /nope".into())
+        assert!(
+            matches!(&outcome, CommandOutcome::Usage(text)
+                if text == "unknown command: /nope"),
+            "{outcome:?}"
         );
     }
 
@@ -938,7 +945,10 @@ mod async_command_tests {
                 args: String::new(),
             })
             .await;
-        assert_eq!(outcome, CommandOutcome::Message("awaited".into()));
+        assert!(
+            matches!(&outcome, CommandOutcome::Message(text) if text == "awaited"),
+            "{outcome:?}"
+        );
         assert!(ran.load(Ordering::SeqCst), "the async body ran");
     }
 

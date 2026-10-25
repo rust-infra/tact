@@ -31,7 +31,11 @@ pub struct CommandInvocation {
 /// A plain enum rather than `Result<(), Error>`: "the user asked for something
 /// this command does not do" is not an error, and a plugin must be able to say
 /// so without the host having to interpret a message.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Not `PartialEq`: [`Self::Emit`] carries an `AgentUpdate`, which is a transport
+/// frame rather than a value — it holds floats and opaque payloads, and deriving
+/// equality for it would only be to satisfy this enum. A test that needs to
+/// compare an outcome matches on it instead.
+#[derive(Debug, Clone)]
 pub enum CommandOutcome {
     /// The command ran; nothing to show.
     Done,
@@ -40,6 +44,14 @@ pub enum CommandOutcome {
     /// The command did not run because its arguments were unusable. The text
     /// names what was expected, so the host can show it verbatim.
     Usage(String),
+    /// The command produced a structured update rather than text.
+    ///
+    /// A read-out that drives a panel (`GoalsChanged`) or opens a typed popup
+    /// (`PopupMarkdown`) is not a string: flattening it into [`Self::Message`]
+    /// would make the host parse the text back into the shape it already had.
+    /// The kernel does not interpret the update — it only carries it, so a
+    /// command stays as far from the frontend as a tool does.
+    Emit(Emitted),
     /// The command ran and the thing it asked on its behalf failed.
     ///
     /// Distinct from [`Self::Message`] because the host renders it differently —
@@ -47,6 +59,30 @@ pub enum CommandOutcome {
     /// [`Self::Usage`] because the user's input was fine. Collapsing these was
     /// how a manager error used to surface as a help message.
     Failed(String),
+}
+
+/// An update a command produced, boxed so `CommandOutcome` stays small.
+///
+/// A newtype rather than the bare `AgentUpdate`: the frame is large and a
+/// command outcome is passed by value on the routing path, so the pointer is
+/// what keeps the hot path from copying a full update.
+#[derive(Debug, Clone)]
+pub struct Emitted(pub Box<tact_protocol::AgentUpdate>);
+
+impl Emitted {
+    pub fn new(update: tact_protocol::AgentUpdate) -> Self {
+        Self(Box::new(update))
+    }
+
+    #[must_use]
+    pub fn into_inner(self) -> tact_protocol::AgentUpdate {
+        *self.0
+    }
+
+    #[must_use]
+    pub fn get(&self) -> &tact_protocol::AgentUpdate {
+        &self.0
+    }
 }
 
 /// One entry the popup offers.

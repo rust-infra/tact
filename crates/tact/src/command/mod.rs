@@ -26,7 +26,7 @@ pub use background::BackgroundCommand;
 pub use plugin::CommandPlugin;
 pub use stats::StatsCommand;
 
-pub use tact_kernel::capability::command::{CommandInvocation, CommandOutcome};
+pub use tact_kernel::capability::command::{CommandInvocation, CommandOutcome, Emitted};
 pub use tact_kernel::catalog::CommandCatalog;
 
 /// A command whose metadata is fixed and whose body is a closure.

@@ -200,3 +200,74 @@ mod tests {
         assert!(error.to_string().contains("stats"), "{error}");
     }
 }
+
+#[cfg(test)]
+mod emit_tests {
+    use super::*;
+    use tact_kernel::capability::CapabilityFilter;
+    use tact_kernel::capability::command::{
+        Command, CommandInvocation, CommandMeta, CommandOutcome, Emitted,
+    };
+    use tact_kernel::plugin::PluginHost;
+
+    /// A command that answers with a structured update.
+    struct Emitter {
+        meta: CommandMeta,
+    }
+
+    impl Emitter {
+        fn new() -> Self {
+            Self {
+                meta: CommandMeta {
+                    name: "emitting".into(),
+                    aliases: Vec::new(),
+                    summary: "answers with an update".into(),
+                    usage: "/emitting".into(),
+                    scope: tact_kernel::capability::command::CommandScope::Runtime,
+                    needs_args: false,
+                },
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Command for Emitter {
+        fn meta(&self) -> &CommandMeta {
+            &self.meta
+        }
+
+        async fn run_async(&self, _invocation: &CommandInvocation) -> CommandOutcome {
+            CommandOutcome::Emit(Emitted::new(tact_protocol::AgentUpdate::Info(
+                "from a command".into(),
+            )))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_command_can_answer_with_a_structured_update() {
+        // A read-out that drives a panel is not a string; flattening it would
+        // make the host parse text back into the shape it already had.
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(CommandPlugin::new("builtin.command.emitting", "test", {
+            Arc::new(Emitter::new())
+        }))
+        .await
+        .unwrap();
+        let runtime = host.seal().await.unwrap();
+        let outcome = runtime
+            .commands()
+            .run_async(&CommandInvocation {
+                name: "emitting".into(),
+                args: String::new(),
+            })
+            .await;
+        let CommandOutcome::Emit(emitted) = outcome else {
+            panic!("expected an update, got {outcome:?}");
+        };
+        assert!(
+            matches!(emitted.get(), tact_protocol::AgentUpdate::Info(text) if text == "from a command"),
+            "{:?}",
+            emitted.get()
+        );
+    }
+}
