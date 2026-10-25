@@ -527,6 +527,10 @@ impl Agent {
         memory_enabled: bool,
         contexts: std::sync::Arc<crate::tool::SharedToolContextFactory>,
         ui_available: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
+        // Passed in rather than read here: the caller already resolved it for
+        // its own use, and two reads of the process global could observe
+        // different values if it were replaced between them.
+        config: Option<crate::config::ResolvedConfig>,
         extras: crate::host::HostExtras,
     ) -> (
         std::sync::Arc<tact_kernel::tool::executor::ToolExecutor>,
@@ -541,7 +545,7 @@ impl Agent {
                 ui_available,
                 // Read once and held by the registry: a consumer that resolved the
                 // configuration keeps the one the agent was assembled with.
-                config: crate::config::try_settings(),
+                config,
                 // Read once here and held by the registry: the provider is a
                 // process-wide snapshot, and a consumer that resolved it should not
                 // silently read a different global later.
@@ -659,6 +663,9 @@ impl Agent {
             memory_enabled,
             contexts.clone(),
             ui_available,
+            // The same snapshot the settings below use, so the registry and the
+            // agent cannot disagree about which configuration is in force.
+            Some(construction_config.clone()),
             extras,
         );
         let mut agent = Self {
@@ -3473,6 +3480,43 @@ mod tests {
         assert_eq!(
             agent.agent_settings.model_context_window,
             tiny.model_context_window
+        );
+    }
+
+    /// The executor's configuration comes from the caller, not a second read.
+    ///
+    /// `Agent::new` reads the process configuration once and passes it to both
+    /// the tool-executor assembly and its own settings snapshot. A second read
+    /// inside `build_tool_executor` could observe a different value if the global
+    /// were replaced between them, leaving the registry and the agent disagreeing
+    /// about which configuration is in force.
+    ///
+    /// A source scan rather than a behavioural test: the difference is invisible
+    /// at runtime unless something replaces the global mid-construction, which no
+    /// test can schedule deterministically.
+    #[test]
+    fn the_executor_takes_its_configuration_from_the_caller() {
+        let source = include_str!("mod.rs");
+        let start = source
+            .find("fn build_tool_executor(")
+            .expect("the assembler is in this file");
+        // Bounded by the next top-level item, not the next method: the
+        // assembler's own body contains nested `fn` (closures), so a method
+        // boundary would cut the scan short and pass vacuously.
+        let end = source[start..]
+            .find("\n    pub fn ")
+            .map(|offset| start + offset)
+            .expect("the next public method ends it");
+        let body = &source[start..end];
+        for forbidden in ["config::settings()", "config::try_settings()"] {
+            assert!(
+                !body.contains(forbidden),
+                "build_tool_executor must not read {forbidden}; the caller passes it"
+            );
+        }
+        assert!(
+            body.contains("config,"),
+            "the configuration is threaded through as a parameter"
         );
     }
 
