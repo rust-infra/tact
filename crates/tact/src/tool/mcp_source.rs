@@ -32,6 +32,69 @@ pub trait McpToolBackend: Send + Sync {
     async fn refresh(&self) -> anyhow::Result<bool>;
 }
 
+/// A backend over an immutable snapshot of dispatch handles.
+///
+/// The host rebuilds it after every load or refresh and swaps it in, so a source
+/// never observes a half-updated set and never contends with the router the
+/// Agent owns. A handle is an `Arc<McpClient>` clone — every field is immutable
+/// and `call_tool` takes `&self` — so a call in flight keeps working even if the
+/// snapshot is replaced underneath it, and no lock is ever held across an await.
+pub struct SnapshotMcpBackend {
+    handles: Vec<crate::mcp::McpCallHandle>,
+    entries: Vec<McpToolEntry>,
+}
+
+impl SnapshotMcpBackend {
+    /// Snapshot `router`'s visible tools and the handles that serve them.
+    pub fn new(router: &MCPToolRouter) -> Self {
+        let handles = router.call_handles();
+        let entries = router
+            .all_tools()
+            .into_iter()
+            .filter_map(|spec| {
+                let (server, tool) = parse_full_name(&spec.name)?;
+                Some(McpToolEntry {
+                    risk: router.risk_for(&server, &tool),
+                    output_token_limit: router.output_token_limit(&spec.name),
+                    auto_approved: router.is_auto_approved(&server, &tool),
+                    name: spec.name,
+                    description: spec.description,
+                    input_schema: spec.input_schema,
+                })
+            })
+            .collect();
+        Self { handles, entries }
+    }
+
+    fn handle_for(&self, full_name: &str) -> Option<(&crate::mcp::McpCallHandle, String)> {
+        let (server, tool) = parse_full_name(full_name)?;
+        self.handles
+            .iter()
+            .find(|handle| handle.server() == server)
+            .map(|handle| (handle, tool))
+    }
+}
+
+#[async_trait]
+impl McpToolBackend for SnapshotMcpBackend {
+    fn tools(&self) -> Vec<McpToolEntry> {
+        self.entries.clone()
+    }
+
+    async fn call(&self, full_name: &str, input: serde_json::Value) -> anyhow::Result<String> {
+        let (handle, tool) = self
+            .handle_for(full_name)
+            .ok_or_else(|| anyhow::anyhow!("unknown MCP server for {full_name}"))?;
+        handle.call(&tool, input).await
+    }
+
+    async fn refresh(&self) -> anyhow::Result<bool> {
+        // A snapshot cannot re-list: the host owns the router and swaps a new
+        // snapshot in instead. Reporting "no change" keeps the generation honest.
+        Ok(false)
+    }
+}
+
 /// One discovered MCP tool, already namespaced as `mcp__server__tool`.
 ///
 /// The policy lives here, not behind the backend: a descriptor is read on every
@@ -48,70 +111,6 @@ pub struct McpToolEntry {
     pub output_token_limit: Option<usize>,
     /// `approval_mode: "auto"` for this tool.
     pub auto_approved: bool,
-}
-
-/// A backend over a shared router.
-///
-/// The router is behind a `tokio` mutex because `MCPToolRouter::call` is async
-/// and the tool-list refresh mutates it.
-pub struct SharedMcpBackend {
-    router: tokio::sync::Mutex<MCPToolRouter>,
-}
-
-impl SharedMcpBackend {
-    pub fn new(router: MCPToolRouter) -> Self {
-        Self {
-            router: tokio::sync::Mutex::new(router),
-        }
-    }
-}
-
-#[async_trait]
-impl McpToolBackend for SharedMcpBackend {
-    fn tools(&self) -> Vec<McpToolEntry> {
-        // `try_lock` keeps this method synchronous; the router is only mutated
-        // by `refresh`, which runs before the snapshot is taken.
-        let Ok(router) = self.router.try_lock() else {
-            return Vec::new();
-        };
-        router
-            .all_tools()
-            .into_iter()
-            .map(|spec| {
-                let policy = parse_full_name(&spec.name);
-                McpToolEntry {
-                    risk: policy
-                        .as_ref()
-                        .map(|(server, tool)| router.risk_for(server, tool))
-                        .unwrap_or(CapabilityRisk::High),
-                    output_token_limit: router.output_token_limit(&spec.name),
-                    auto_approved: policy
-                        .as_ref()
-                        .is_some_and(|(server, tool)| router.is_auto_approved(server, tool)),
-                    name: spec.name,
-                    description: spec.description,
-                    input_schema: spec.input_schema,
-                }
-            })
-            .collect()
-    }
-
-    async fn call(&self, full_name: &str, input: serde_json::Value) -> anyhow::Result<String> {
-        self.router.lock().await.call(full_name, input).await
-    }
-
-    async fn refresh(&self) -> anyhow::Result<bool> {
-        let mut router = self.router.lock().await;
-        let report = router.refresh_changed().await;
-        anyhow::ensure!(
-            report.failed.is_empty(),
-            "MCP tool refresh failed: {:?}",
-            report.failed
-        );
-        // The router only re-lists servers that announced a change, so a
-        // non-empty report is exactly "the visible tool set moved".
-        Ok(!report.changed.is_empty())
-    }
 }
 
 /// Split a `mcp__<server>__<tool>` name, the same way `McpToolName` does.
@@ -219,7 +218,7 @@ impl ToolSource for McpToolSource {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::mcp::{McpClient, MockMcpService};
+    use crate::mcp::{MCPToolRouter, McpClient, MockMcpService};
     use rmcp::model::{CallToolResult, Content, JsonObject, Tool as McpToolModel};
     use serde_json::json;
     use std::borrow::Cow;
@@ -256,7 +255,7 @@ mod tests {
             vec![echo_tool()],
             Arc::new(service),
         ));
-        Arc::new(SharedMcpBackend::new(router))
+        Arc::new(SnapshotMcpBackend::new(&router))
     }
 
     #[test]
@@ -314,6 +313,99 @@ mod tests {
             parse_full_name("mcp__demo__echo"),
             Some(("demo".to_string(), "echo".to_string()))
         );
+    }
+
+    #[tokio::test]
+    async fn a_snapshot_backend_dispatches_without_the_router() {
+        // The property the Agent needs: register the source, then drop the
+        // router it was built from. A call must still reach the server, because
+        // the handle is an Arc clone of the client, not a borrow.
+        let calls = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let recorded = calls.clone();
+        let service = MockMcpService::new(vec![echo_tool()], move |params| {
+            let text = params
+                .arguments
+                .as_ref()
+                .and_then(|args| args.get("text"))
+                .and_then(|value| value.as_str())
+                .unwrap_or("")
+                .to_string();
+            recorded.lock().unwrap().push(text.clone());
+            Ok(CallToolResult::success(vec![Content::text(text)]))
+        });
+        let mut router = MCPToolRouter::new();
+        router.register_client(McpClient::with_service(
+            "demo",
+            vec![echo_tool()],
+            Arc::new(service),
+        ));
+
+        let source = McpToolSource::new("mcp", Arc::new(SnapshotMcpBackend::new(&router)));
+        let tools = source.tools();
+        assert_eq!(tools.len(), 1);
+        drop(router);
+
+        let result = tools[0]
+            .call(empty_ctx(), json!({"text": "snapshot"}))
+            .await
+            .unwrap();
+        assert_eq!(result.content, "snapshot");
+        assert_eq!(calls.lock().unwrap().as_slice(), ["snapshot"]);
+    }
+
+    #[test]
+    fn a_snapshot_carries_the_declared_policy() {
+        let mut router = MCPToolRouter::new();
+        let service = MockMcpService::new(vec![echo_tool()], |_| {
+            Ok(CallToolResult::success(vec![Content::text("x")]))
+        });
+        router.register_client(McpClient::with_service(
+            "demo",
+            vec![echo_tool()],
+            Arc::new(service),
+        ));
+        let entry = SnapshotMcpBackend::new(&router)
+            .tools()
+            .into_iter()
+            .next()
+            .unwrap();
+        assert_eq!(entry.name, "mcp__demo__echo");
+        assert_eq!(
+            entry.risk,
+            CapabilityRisk::High,
+            "an undeclared tool is High"
+        );
+        assert!(entry.output_token_limit.is_none());
+        assert!(!entry.auto_approved);
+    }
+
+    fn empty_ctx() -> ToolCallContext {
+        struct NoEvents;
+        impl tact_kernel::tool::context::EventSink for NoEvents {
+            fn emit(&self, _event: tact_kernel::tool::context::ToolEvent) {}
+        }
+        struct NoInteractions;
+        #[async_trait]
+        impl tact_kernel::tool::context::InteractionBroker for NoInteractions {
+            async fn request(
+                &self,
+                _request: tact_kernel::tool::context::InteractionRequest,
+            ) -> anyhow::Result<tact_kernel::tool::context::InteractionResponse> {
+                Ok(tact_kernel::tool::context::InteractionResponse::Cancelled)
+            }
+        }
+        ToolCallContext {
+            run_id: "run".into(),
+            tool_use_id: "call".into(),
+            session_id: None,
+            active_goal_id: None,
+            origin: tact_kernel::tool::context::ToolOrigin::Main,
+            workspace: tact_kernel::tool::context::Workspace::new("/repo"),
+            events: Arc::new(NoEvents),
+            interaction: Arc::new(NoInteractions),
+            cancel: tact_kernel::tool::context::CancelToken::new(),
+            redaction: tact_kernel::tool::context::RedactionPolicy::Off,
+        }
     }
 
     #[test]

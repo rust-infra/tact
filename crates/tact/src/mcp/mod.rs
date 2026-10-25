@@ -1916,6 +1916,7 @@ fn cap_instructions(text: &str) -> String {
     format!("{kept}\n… (truncated at {MCP_INSTRUCTIONS_MAX_CHARS} characters)")
 }
 
+#[derive(Clone)]
 pub struct McpClient {
     pub server_name: String,
     service: Arc<dyn McpService>,
@@ -2615,6 +2616,34 @@ pub struct MCPToolRouter {
     clients: HashMap<String, McpClient>,
 }
 
+/// A dispatch handle to one connected server.
+///
+/// Borrowed from a router, and usable after the router is gone: every field of
+/// `McpClient` is immutable and its calls take `&self`, so an `Arc` clone needs
+/// no lock. This is what lets the kernel dispatch a call without owning the
+/// router — and without a mutex that an async refresh could hold.
+#[derive(Clone)]
+pub struct McpCallHandle {
+    server: String,
+    client: Arc<McpClient>,
+}
+
+impl McpCallHandle {
+    pub fn server(&self) -> &str {
+        &self.server
+    }
+
+    /// Call a tool on this server, honouring the entry's `tool_timeout_sec`.
+    pub async fn call(&self, tool: &str, arguments: Value) -> Result<String> {
+        self.client.call_tool(tool, arguments).await
+    }
+
+    /// The per-tool result budget this entry declares.
+    pub fn output_token_limit(&self, tool: &str) -> Option<usize> {
+        self.client.policy().output_token_limit(tool)
+    }
+}
+
 impl MCPToolRouter {
     pub fn new() -> Self {
         Self::default()
@@ -2631,6 +2660,22 @@ impl MCPToolRouter {
     /// Resolve a tool name without connecting to servers.
     /// Returns `Ok(Some(ResolvedMcpTool))` for valid MCP-prefixed names,
     /// `Ok(None)` for non-MCP names, or an error for misformatted MCP names.
+    /// A dispatch handle for `server`, or `None` when it is not connected.
+    pub fn call_handle(&self, server: &str) -> Option<McpCallHandle> {
+        self.clients.get(server).map(|client| McpCallHandle {
+            server: server.to_string(),
+            client: Arc::new(client.clone()),
+        })
+    }
+
+    /// Dispatch handles for every connected server, in name order.
+    pub fn call_handles(&self) -> Vec<McpCallHandle> {
+        self.known_servers()
+            .into_iter()
+            .filter_map(|server| self.call_handle(&server))
+            .collect()
+    }
+
     pub fn resolve_tool(&self, name: &str) -> Result<Option<ResolvedMcpTool>> {
         if !Self::is_mcp_tool(name) {
             return Ok(None);
@@ -3900,6 +3945,52 @@ mod tests {
             icons: None,
             meta: None,
         }
+    }
+
+    /// A call handle outlives the router it came from.
+    ///
+    /// This is the property the kernel dispatch relies on: a source can hold
+    /// handles while the Agent still owns (and reloads) the router, with no lock
+    /// between them and no mutex for an async refresh to hold.
+    #[tokio::test]
+    async fn a_call_handle_survives_its_router() {
+        let echo_tool = echo_tool();
+        let service = MockMcpService::new(vec![echo_tool.clone()], |params| {
+            let text = params
+                .arguments
+                .as_ref()
+                .and_then(|args| args.get("text"))
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            Ok(CallToolResult::success(vec![Content::text(text)]))
+        });
+        let mut router = MCPToolRouter::new();
+        router.register_client(McpClient::with_service(
+            "test",
+            vec![echo_tool],
+            Arc::new(service),
+        ));
+
+        let handles = router.call_handles();
+        assert_eq!(handles.len(), 1);
+        assert_eq!(handles[0].server(), "test");
+        // Drop the router before using the handle: an ownership bug would show
+        // up here as a dangling call.
+        drop(router);
+
+        let output = handles[0]
+            .call("echo", json!({"text": "hi"}))
+            .await
+            .unwrap();
+        assert_eq!(output, "hi");
+    }
+
+    #[tokio::test]
+    async fn a_handle_for_an_unknown_server_is_absent() {
+        let router = MCPToolRouter::new();
+        assert!(router.call_handle("nope").is_none());
+        assert!(router.call_handles().is_empty());
     }
 
     #[tokio::test]

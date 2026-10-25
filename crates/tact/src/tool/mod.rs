@@ -92,7 +92,7 @@ use load_skill::LoadSkillTool;
 pub use mcp_control::{
     McpControl, McpControlBackend, McpControlSource, McpControlTool, SharedMcpControlBackend,
 };
-pub use mcp_source::{McpTool, McpToolBackend, McpToolEntry, McpToolSource, SharedMcpBackend};
+pub use mcp_source::{McpTool, McpToolBackend, McpToolEntry, McpToolSource, SnapshotMcpBackend};
 #[cfg(test)]
 use memory::SaveMemoryTool;
 #[cfg(test)]
