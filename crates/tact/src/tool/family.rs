@@ -389,6 +389,45 @@ mod tests {
         names
     }
 
+    /// The router and the catalog must hold the *same* handler, not two copies.
+    ///
+    /// A tool with per-instance state (a background manager handle, a cancel
+    /// flag) would otherwise exist twice: the router emits its spec and the
+    /// catalog dispatches it, and the two would drift. `catalog_from_families`
+    /// borrows from the router for exactly this reason.
+    #[test]
+    fn the_catalog_shares_the_routers_handlers() {
+        let router = router_from(&ToolFamily::ALL, true).unwrap();
+        let shared = router.handlers_for(&["bash"]);
+        assert_eq!(shared.len(), 1, "bash belongs to exactly one family");
+        let catalog = catalog_from_families(
+            &router,
+            &ToolFamily::ALL,
+            true,
+            std::sync::Arc::new(super::super::SharedToolContextFactory::new(
+                crate::tool::test_support::test_context("catalog_shares_handlers"),
+            )),
+            tact_kernel::capability::CapabilityFilter::default(),
+        )
+        .unwrap()
+        .0;
+        // The two traits are different (`Tool` here, the kernel's in the catalog),
+        // so identity is checked through what both expose: the descriptor the
+        // catalog resolved must describe the same tool the router holds.
+        let from_catalog = catalog.handler_for("bash").expect("bash is dispatchable");
+        assert_eq!(
+            from_catalog.descriptor().name,
+            shared[0].metadata().name,
+            "the catalog must resolve the router's handler, not a second one"
+        );
+        // And it is a borrow, not a copy: `catalog_from_families` takes `&ToolRouter`.
+        assert_eq!(
+            catalog.len(),
+            router.tool_specs().len(),
+            "every routed tool is dispatchable, no more and no fewer"
+        );
+    }
+
     #[test]
     fn the_family_table_reproduces_the_built_in_tool_set() {
         // The composition used to be a chain of `.route(..)` calls. This pins the

@@ -62,12 +62,13 @@ impl InteractionBroker for UiInteractionBroker {
                     None => InteractionResponse::Cancelled,
                 })
             }
-            InteractionRequest::Confirm { .. } => {
-                // The permission flow uses `Select` exclusively; a Confirm has no
-                // renderer, and silently approving one would be worse than
-                // refusing it.
-                Ok(InteractionResponse::Cancelled)
-            }
+            // The permission flow uses `Select` exclusively, and `ask_user` — the
+            // only tool that confirms or asks for text — talks to the responder
+            // directly rather than through this port. So no renderer exists for
+            // these two, and silently approving one would be worse than refusing
+            // it. The alternative (answering `Approved`) would let a port nobody
+            // is listening on grant consent.
+            InteractionRequest::Confirm { .. } => Ok(InteractionResponse::Cancelled),
             InteractionRequest::Input { .. } => Ok(InteractionResponse::Cancelled),
         }
     }
@@ -157,6 +158,21 @@ mod tests {
             .broker
             .request(InteractionRequest::Confirm {
                 prompt: "sure?".into(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(answer, InteractionResponse::Cancelled);
+    }
+
+    /// `Input` has no renderer either, for the same reason as `Confirm`: the one
+    /// tool that asks for text (`ask_user`) talks to the responder directly.
+    #[tokio::test]
+    async fn input_has_no_renderer_and_cancels() {
+        let fixture = fixture(true);
+        let answer = fixture
+            .broker
+            .request(InteractionRequest::Input {
+                prompt: "name?".into(),
             })
             .await
             .unwrap();
