@@ -223,7 +223,10 @@ pub trait Tool: Send + Sync {
 
 /// A registered tool: handler + its static metadata.
 struct RegisteredTool {
-    handler: Box<dyn Tool>,
+    /// Shared, not boxed: the same handler instance is reachable from both the
+    /// spec emitter and the kernel catalog, so a tool cannot exist twice with
+    /// two different states.
+    handler: std::sync::Arc<dyn Tool>,
     metadata: &'static ToolMetadata,
 }
 
@@ -294,29 +297,37 @@ impl ToolRouter {
         self.tools.insert(
             name,
             RegisteredTool {
-                handler: Box::new(tool),
+                handler: std::sync::Arc::new(tool),
                 metadata,
             },
         );
         Ok(self)
     }
 
-    /// Consume the router into a kernel catalog, wrapping every handler.
+    /// Build a kernel catalog over the same handlers this router holds.
     ///
-    /// This is the Phase 1b bridge: the kernel executor sees the same tools the
-    /// legacy dispatch path saw, with no handler rewritten.
-    pub fn into_kernel_catalog(
-        self,
+    /// Borrowing rather than consuming: the router keeps emitting specs and the
+    /// catalog dispatches, and both see one `Arc` per handler.
+    pub fn kernel_catalog(
+        &self,
         contexts: std::sync::Arc<dyn legacy::ToolContextFactory>,
     ) -> Result<tact_kernel::catalog::ToolCatalog> {
         let mut catalog = tact_kernel::catalog::ToolCatalog::default();
-        for (_, registered) in self.tools {
-            catalog.insert(std::sync::Arc::new(legacy::LegacyToolAdapter::from_boxed(
-                registered.handler,
+        for registered in self.tools.values() {
+            catalog.insert(std::sync::Arc::new(legacy::LegacyToolAdapter::from_arc(
+                registered.handler.clone(),
                 contexts.clone(),
             )))?;
         }
         Ok(catalog)
+    }
+
+    /// Consume the router into a kernel catalog, wrapping every handler.
+    pub fn into_kernel_catalog(
+        self,
+        contexts: std::sync::Arc<dyn legacy::ToolContextFactory>,
+    ) -> Result<tact_kernel::catalog::ToolCatalog> {
+        self.kernel_catalog(contexts)
     }
 
     pub fn resolve(&self, name: &str) -> Result<ResolvedNativeTool<'_>> {

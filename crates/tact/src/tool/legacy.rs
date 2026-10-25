@@ -49,20 +49,28 @@ impl ToolContextFactory for SharedToolContextFactory {
 
 /// A legacy handler exposed as a kernel [`KernelTool`].
 pub struct LegacyToolAdapter {
-    inner: Box<dyn LegacyTool>,
+    inner: Arc<dyn LegacyTool>,
     contexts: Arc<dyn ToolContextFactory>,
 }
 
 impl LegacyToolAdapter {
     pub fn new<T: LegacyTool + 'static>(inner: T, contexts: Arc<dyn ToolContextFactory>) -> Self {
         Self {
-            inner: Box::new(inner),
+            inner: Arc::new(inner),
             contexts,
         }
     }
 
     /// Wrap a handler that is already boxed.
     pub fn from_boxed(inner: Box<dyn LegacyTool>, contexts: Arc<dyn ToolContextFactory>) -> Self {
+        Self {
+            inner: Arc::from(inner),
+            contexts,
+        }
+    }
+
+    /// Wrap a handler that is shared with another owner.
+    pub fn from_arc(inner: Arc<dyn LegacyTool>, contexts: Arc<dyn ToolContextFactory>) -> Self {
         Self { inner, contexts }
     }
 }
