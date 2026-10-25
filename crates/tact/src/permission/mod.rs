@@ -11,6 +11,7 @@
 //! - Loaded JSON permission settings (global and project) — see [`settings`].
 
 pub mod interaction;
+pub mod plugin;
 pub mod policy_ext;
 pub mod security_service;
 pub mod service;
