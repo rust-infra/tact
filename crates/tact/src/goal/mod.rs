@@ -31,20 +31,9 @@ pub const ID_LEN: usize = 8;
 /// (compaction rebuild, TUI history load) recognizes it. Like the hook-context
 /// markers it is the only signal that survives a reload, because
 /// `MessageKind` is never serialized.
-pub const GOAL_CONTEXT_OPEN_TAG: &str = "<goal-context>";
-/// Closing tag of the injected context (see [`GOAL_CONTEXT_OPEN_TAG`]).
-pub const GOAL_CONTEXT_CLOSE_TAG: &str = "</goal-context>";
+pub use tact_protocol::{GOAL_CONTEXT_CLOSE_TAG, GOAL_CONTEXT_OPEN_TAG};
 
-/// True when `text` is the runner's injected Goal context rather than a user
-/// turn.
-///
-/// Detection is by marker, not by kind, for the same reason as
-/// `hook::is_hook_context_text`: a session reloaded from disk carries no kind.
-/// Leading whitespace is tolerated because a reload may have trimmed or
-/// re-indented the cell.
-pub fn is_goal_context_text(text: &str) -> bool {
-    text.trim_start().starts_with(GOAL_CONTEXT_OPEN_TAG)
-}
+pub use tact_protocol::is_goal_context_text;
 
 /// New user-facing identifier: Goals and criteria share one width, so no surface
 /// has to explain two shapes. Runs and events use [`new_event_id`].

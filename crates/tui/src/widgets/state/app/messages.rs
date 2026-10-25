@@ -4,8 +4,8 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use tact::goal::is_goal_context_text;
-use tact::hook::{hook_context_body, hook_context_source, is_hook_context_text};
+use tact_protocol::is_goal_context_text;
+use tact_protocol::{hook_context_body, hook_context_source, is_hook_context_text};
 
 use agent_tui_kit::widgets::button::{Button, ButtonTheme, ButtonVariant};
 use agent_tui_kit::widgets::tool_widget::collapsed_action_text;

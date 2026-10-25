@@ -8,6 +8,7 @@
 
 pub mod agent;
 pub mod biz;
+pub mod context_markers;
 pub mod events;
 pub mod marketplace;
 pub mod reasoning;
@@ -24,6 +25,11 @@ pub use agent::{
 };
 pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,
+};
+pub use context_markers::{
+    GOAL_CONTEXT_CLOSE_TAG, GOAL_CONTEXT_OPEN_TAG, HOOK_CONTEXT_CLOSE_TAG, HOOK_CONTEXT_OPEN_TAG,
+    frame_hook_context, hook_context_body, hook_context_source, is_goal_context_text,
+    is_hook_context_text,
 };
 pub use events::UpdateSink;
 pub use marketplace::{
