@@ -194,10 +194,15 @@ the first implementation plan is
     `goal_manager` and cost four agent-level tests to find. A guard now asserts
     every `DomainHandle` variant names a field `DomainHandles` declares, plus an
     exhaustive count so a new variant has to be listed.
-  - Still on the full context: `worktree` needs three fields, and
-    `bash`/`background_run`/`subagent`/`write_file` need most of it or a field no
-    handle covers. Those are the tools for which `ToolContext` is
-    genuinely the right shape.
+  - Converted so far: `read_file`, `read_image`, `edit_file`, `apply_patch`
+    (workspace only), plus `load_skill`, every team / task / goal / worktree tool,
+    `write_file`, `ask_user` and the memory tools (declared handles, 13 variants).
+  - Still on the full context, and now each name has a reason: `bash` and
+    `background_run` (shell limits, sandbox, progress, cancel) and `subagent`
+    (session handoff, permission snapshot, the parent's hooks). `compact` and
+    `sleep` read nothing at all but keep the parameter because the macro's
+    pure-tool branch generates the `Input` type and these two declare theirs by
+    hand.
 - ~~MCP tools as kernel descriptors.~~ **Done.** Every MCP family — regular
   tools, resource tools and prompt tools — is a catalog source now, and all three
   run through the kernel pipeline. The legacy permission ladder is deleted.
