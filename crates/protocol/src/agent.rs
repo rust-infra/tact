@@ -647,20 +647,10 @@ pub enum UserCommand {
     ///
     /// Persist user steering text in the Goal event stream.
     ///
-    /// `goal_id` is `None` when the user omitted it; the driver resolves the
-    /// target against the store (the single running Goal, or a leading
-    /// id/prefix in `text`).
-    SteerGoal {
-        goal_id: Option<String>,
-        text: String,
-    },
     /// Resume a paused/waiting Goal and start one bounded activation.
     ResumeGoal { goal_id: String },
     /// Record explicit human acceptance and resume one bounded activation.
     AcceptGoal { goal_id: String, text: String },
-    /// File a finished Goal out of the panel (`archived: true`), or bring it
-    /// back (`false`). Not a lifecycle change: the Goal keeps its status.
-    SetGoalArchived { goal_id: String, archived: bool },
     /// Set the active session's thinking budget for subsequent LLM requests.
     /// The TUI sends this after `/model` budget confirmation; config persistence
     /// is a separate optional local flow.
@@ -879,9 +869,9 @@ mod tests {
                 name: "goal".into(),
                 args: "show goal-1".into(),
             },
-            UserCommand::SteerGoal {
-                goal_id: Some("goal-1".into()),
-                text: "Prefer the smaller design".into(),
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: "steer goal-1 Prefer the smaller design".into(),
             },
             UserCommand::RunCommand {
                 name: "goal".into(),
@@ -906,8 +896,8 @@ mod tests {
         ));
         assert!(matches!(
             &commands[3],
-            UserCommand::SteerGoal { goal_id, text }
-                if goal_id.as_deref() == Some("goal-1") && text == "Prefer the smaller design"
+            UserCommand::RunCommand { name, args }
+                if name == "goal" && args == "steer goal-1 Prefer the smaller design"
         ));
         assert!(matches!(
             &commands[7],

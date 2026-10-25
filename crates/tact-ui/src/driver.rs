@@ -13,8 +13,8 @@ use anyhow::Result;
 use tact::{
     Agent,
     goal::{
-        Goal, GoalCreate, GoalCriterion, GoalEventKind, GoalEventSource, GoalEvidenceUpdate,
-        GoalStatus, GoalUpdate, GoalVerification, GoalVerificationKind, SharedGoalManager,
+        GoalCreate, GoalCriterion, GoalEventKind, GoalEventSource, GoalEvidenceUpdate, GoalStatus,
+        GoalUpdate, GoalVerification, GoalVerificationKind, SharedGoalManager,
     },
     task::SharedTaskManager,
 };
@@ -30,7 +30,7 @@ use tokio::{
 // it at eleven places.
 pub use tact::goal::lifecycle::{
     emit_goal_error, emit_goals_changed, goal_event, request_cancel as request_goal_cancel,
-    request_pause as request_goal_pause,
+    request_pause as request_goal_pause, set_archived as set_goal_archived, steer as steer_goal,
 };
 
 use crate::{
@@ -540,31 +540,9 @@ pub async fn run_command_loop_with_account(
                 let invocation = tact::command::CommandInvocation { name, args };
                 forward_command_outcome(&commands.run_async(&invocation).await, &events);
             }
-            UserCommand::SetGoalArchived { goal_id, archived } => {
-                set_goal_archived(
-                    &goal_manager,
-                    &task_manager,
-                    limits,
-                    &events,
-                    &goal_id,
-                    archived,
-                )
-                .await;
-            }
             // These three are safe to serve while the Agent is owned by an
             // in-flight Goal run: they only touch the shared managers (and the
             // cancel flag), so they must not await the run handle.
-            UserCommand::SteerGoal { goal_id, text } => {
-                steer_goal(
-                    &goal_manager,
-                    &task_manager,
-                    &events,
-                    limits,
-                    goal_id.as_deref(),
-                    &text,
-                )
-                .await;
-            }
             UserCommand::SubagentFinishedNotification { .. } => {
                 // If a turn is active, retain the wake-up until that turn's
                 // JoinHandle completes. Otherwise the notification could be
@@ -877,233 +855,6 @@ async fn create_goal(
             );
             None
         }
-    }
-}
-
-/// File a finished Goal out of the panel, or bring it back.
-///
-/// Not a lifecycle change: `archived_at` is a stamp on the Goal, so a failed
-/// Goal stays `failed` while it is off the list. Only a terminal Goal can be
-/// archived — an archive that hid running work would take it off the panel
-/// while it kept going — and repeating the verb reports the state instead of
-/// erroring, the same rule `/skill disable` follows.
-async fn set_goal_archived(
-    goal_manager: &SharedGoalManager,
-    task_manager: &SharedTaskManager,
-    limits: GoalLimits,
-    events: &UpdateSink,
-    goal_id: &str,
-    archived: bool,
-) {
-    let goal = match goal_manager.get(goal_id).await {
-        Ok(goal) => goal,
-        Err(error) => {
-            emit_goal_error(events, format!("Goal {goal_id} not found: {error:#}"));
-            return;
-        }
-    };
-    if archived && !goal.status.is_terminal() {
-        emit_goal_error(
-            events,
-            format!(
-                "Goal {goal_id} is {:?}; only a finished Goal can be archived",
-                goal.status
-            ),
-        );
-        return;
-    }
-    if goal.is_archived() == archived {
-        events.send(AgentUpdate::Info(format!(
-            "Goal {goal_id} is {}",
-            if archived {
-                "already archived"
-            } else {
-                "not archived"
-            }
-        )));
-        return;
-    }
-    let kind = if archived {
-        GoalEventKind::Archived
-    } else {
-        GoalEventKind::Unarchived
-    };
-    let event = goal_event(
-        &goal,
-        kind,
-        None,
-        format!("{kind} by user"),
-        // `/goal archive` is a user command; the event says who filed it.
-        GoalEventSource::User,
-    );
-    match goal_manager
-        .update(
-            goal_id,
-            goal.version,
-            GoalUpdate {
-                archived: Some(archived),
-                ..GoalUpdate::default()
-            },
-            Some(event),
-            None,
-        )
-        .await
-    {
-        Ok(updated) => {
-            // The panel refresh goes first: the announcement names a Goal the
-            // panel may no longer show.
-            emit_goals_changed(goal_manager, task_manager, limits, events).await;
-            events.send(AgentUpdate::Info(format!(
-                "🎯 Goal {} {kind} ({})",
-                updated.id, updated.title
-            )));
-        }
-        Err(error) => {
-            emit_goal_error(events, format!("Goal {goal_id} {kind} failed: {error:#}"));
-        }
-    }
-}
-
-/// Resolves and records `/goal steer [<id>] <text>`.
-///
-/// The TUI forwards an id only when it recognized one in its own snapshot; the
-/// store is authoritative here, so an empty or lagging snapshot can neither
-/// mis-target a Goal nor turn the instruction into a fake id. Without an
-/// explicit id, a leading id/prefix in the text is accepted (the panel may not
-/// have caught up), then the single running Goal, then the single non-terminal
-/// Goal. An ambiguous target is an error, never a guess.
-async fn steer_goal(
-    goal_manager: &SharedGoalManager,
-    task_manager: &SharedTaskManager,
-    events: &UpdateSink,
-    limits: GoalLimits,
-    requested: Option<&str>,
-    text: &str,
-) {
-    let text = text.trim();
-    if text.is_empty() {
-        emit_goal_error(events, "Goal steering text must not be empty".to_string());
-        return;
-    }
-    let goals = match goal_manager.list().await {
-        Ok(goals) => goals,
-        Err(error) => {
-            emit_goal_error(events, format!("Goal steering failed: {error:#}"));
-            return;
-        }
-    };
-
-    let resolved = match requested {
-        Some(prefix) => match unique_goal_matching(&goals, prefix) {
-            Ok(Some(goal)) if !goal.status.is_terminal() => Ok((goal, text.to_string())),
-            Ok(Some(goal)) => Err(format!(
-                "Goal {} is terminal ({:?}); there is nothing left to steer",
-                goal.id, goal.status
-            )),
-            Ok(None) => Err(format!("Goal {prefix} not found")),
-            Err(count) => Err(format!(
-                "Goal id prefix {prefix} matches {count} goals; type more characters"
-            )),
-        },
-        None => {
-            let mut parts = text.splitn(2, char::is_whitespace);
-            let first = parts.next().unwrap_or_default();
-            let rest = parts.next().unwrap_or_default().trim();
-            match unique_goal_matching(&goals, first) {
-                // An explicit id that the TUI could not resolve (empty or
-                // stale snapshot) is still honored.
-                Ok(Some(goal)) if !rest.is_empty() && !goal.status.is_terminal() => {
-                    Ok((goal, rest.to_string()))
-                }
-                // A known id with nothing after it is a missing instruction,
-                // not an instruction that happens to be the id itself.
-                Ok(Some(_)) => Err("goal steering text must not be empty".to_string()),
-                // An ambiguous first token is an id/prefix the user tried to
-                // address, not ordinary instruction text.
-                Err(count) => Err(format!(
-                    "Goal id prefix {first} matches {count} goals; type more characters"
-                )),
-                Ok(None) => match implicit_steer_target(&goals) {
-                    Ok(Some(goal)) => Ok((goal, text.to_string())),
-                    Ok(None) => {
-                        Err("no running Goal to steer; use /goal steer <goal-id> <text>"
-                            .to_string())
-                    }
-                    Err(count) => Err(format!(
-                        "{count} goals are open and none is uniquely running; use /goal steer <goal-id> <text>"
-                    )),
-                },
-            }
-        }
-    };
-    let (goal, instruction) = match resolved {
-        Ok(pair) => pair,
-        Err(message) => {
-            emit_goal_error(events, message);
-            return;
-        }
-    };
-
-    match goal_manager
-        .append_event(goal_event(
-            goal,
-            GoalEventKind::Steering,
-            None,
-            instruction,
-            GoalEventSource::User,
-        ))
-        .await
-    {
-        Ok(_) => {
-            emit_goals_changed(goal_manager, task_manager, limits, events).await;
-        }
-        Err(error) => emit_goal_error(
-            events,
-            format!("Goal {} steering failed: {error:#}", goal.id),
-        ),
-    }
-}
-
-/// Exact id or unique prefix; `Err(n)` means the prefix is ambiguous.
-fn unique_goal_matching<'a>(goals: &'a [Goal], prefix: &str) -> Result<Option<&'a Goal>, usize> {
-    let mut matches = goals
-        .iter()
-        .filter(|goal| goal.id == prefix || goal.id.starts_with(prefix));
-    match (matches.next(), matches.next()) {
-        (None, _) => Ok(None),
-        (Some(goal), None) => Ok(Some(goal)),
-        (Some(_), Some(_)) => {
-            let count = goals
-                .iter()
-                .filter(|goal| goal.id == prefix || goal.id.starts_with(prefix))
-                .count();
-            Err(count)
-        }
-    }
-}
-
-/// The single running Goal, or the single non-terminal Goal when none is
-/// running (a fresh activation can still be reported as `draft`/`queued`).
-/// `Err(n)` means several candidates exist.
-fn implicit_steer_target(goals: &[Goal]) -> Result<Option<&Goal>, usize> {
-    let running: Vec<&Goal> = goals
-        .iter()
-        .filter(|goal| goal.status == GoalStatus::Running)
-        .collect();
-    match running.len() {
-        1 => Ok(Some(running[0])),
-        0 => {
-            let open: Vec<&Goal> = goals
-                .iter()
-                .filter(|goal| !goal.status.is_terminal())
-                .collect();
-            match open.len() {
-                0 => Ok(None),
-                1 => Ok(Some(open[0])),
-                count => Err(count),
-            }
-        }
-        count => Err(count),
     }
 }
 
@@ -1549,30 +1300,8 @@ async fn handle_user_command_with_account(
             let invocation = tact::command::CommandInvocation { name, args };
             forward_command_outcome(&catalog.run_async(&invocation).await, &agent.runtime.events);
         }
-        UserCommand::SteerGoal { goal_id, text } => {
-            steer_goal(
-                &agent.tool_context.goal_manager,
-                &agent.tool_context.task_manager,
-                &agent.runtime.events,
-                agent_goal_limits(agent),
-                goal_id.as_deref(),
-                &text,
-            )
-            .await;
-        }
         UserCommand::ResumeGoal { goal_id } => resume_goal(agent, &goal_id).await,
         UserCommand::AcceptGoal { goal_id, text } => accept_goal(agent, &goal_id, &text).await,
-        UserCommand::SetGoalArchived { goal_id, archived } => {
-            set_goal_archived(
-                &agent.tool_context.goal_manager,
-                &agent.tool_context.task_manager,
-                agent_goal_limits(agent),
-                &agent.runtime.events,
-                &goal_id,
-                archived,
-            )
-            .await;
-        }
         UserCommand::SubmitTask(task) => {
             agent.tool_use_counter = 0;
             agent.runtime.cancel_flag.store(false, Ordering::Relaxed);
@@ -1991,20 +1720,23 @@ mod tests {
         ];
 
         assert_eq!(
-            super::unique_goal_matching(&goals, "bbbb")
+            tact::goal::lifecycle::unique_goal_matching(&goals, "bbbb")
                 .unwrap()
                 .map(|goal| goal.id.as_str()),
             Some("bbbb3333")
         );
         assert!(
-            super::unique_goal_matching(&goals, "cccc")
+            tact::goal::lifecycle::unique_goal_matching(&goals, "cccc")
                 .unwrap()
                 .is_none()
         );
-        assert_eq!(super::unique_goal_matching(&goals, "aaaa"), Err(2));
+        assert_eq!(
+            tact::goal::lifecycle::unique_goal_matching(&goals, "aaaa"),
+            Err(2)
+        );
 
         assert_eq!(
-            super::implicit_steer_target(&goals)
+            tact::goal::lifecycle::implicit_steer_target(&goals)
                 .unwrap()
                 .map(|goal| goal.id.as_str()),
             Some("bbbb3333"),
@@ -2016,16 +1748,20 @@ mod tests {
             goal_in_status("aaaa1111", GoalStatus::Paused),
             goal_in_status("aaaa2222", GoalStatus::Draft),
         ];
-        assert_eq!(super::implicit_steer_target(&open), Err(2));
+        assert_eq!(tact::goal::lifecycle::implicit_steer_target(&open), Err(2));
         let single = vec![goal_in_status("aaaa1111", GoalStatus::Draft)];
         assert_eq!(
-            super::implicit_steer_target(&single)
+            tact::goal::lifecycle::implicit_steer_target(&single)
                 .unwrap()
                 .map(|goal| goal.id.as_str()),
             Some("aaaa1111")
         );
         let none: Vec<tact::goal::Goal> = Vec::new();
-        assert!(super::implicit_steer_target(&none).unwrap().is_none());
+        assert!(
+            tact::goal::lifecycle::implicit_steer_target(&none)
+                .unwrap()
+                .is_none()
+        );
     }
 
     #[tokio::test]
@@ -2058,9 +1794,9 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::SteerGoal {
-                goal_id: Some(goal.id.clone()),
-                text: "this must not land".into(),
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: format!("steer {} this must not land", goal.id),
             },
             &work_dir,
         )
@@ -2331,9 +2067,9 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::SteerGoal {
-                goal_id: Some(created.id.clone()),
-                text: "Prefer a focused diff".into(),
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: format!("steer {} Prefer a focused diff", created.id),
             },
             &work_dir,
         )
@@ -2352,9 +2088,9 @@ mod tests {
         // may not have caught up).
         super::handle_user_command(
             &mut agent,
-            UserCommand::SteerGoal {
-                goal_id: None,
-                text: "Keep the diff focused".into(),
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: "steer Keep the diff focused".into(),
             },
             &work_dir,
         )
@@ -2375,9 +2111,9 @@ mod tests {
         let text = format!("{} Prefer fewer files", created.id);
         super::handle_user_command(
             &mut agent,
-            UserCommand::SteerGoal {
-                goal_id: None,
-                text,
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: format!("steer {text}"),
             },
             &work_dir,
         )
@@ -2403,9 +2139,9 @@ mod tests {
             .count();
         super::handle_user_command(
             &mut agent,
-            UserCommand::SteerGoal {
-                goal_id: None,
-                text: created.id.clone(),
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: format!("steer {}", created.id),
             },
             &work_dir,
         )
@@ -2504,9 +2240,9 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::SetGoalArchived {
-                goal_id: created.id.clone(),
-                archived: true,
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: format!("archive {}", created.id),
             },
             &work_dir,
         )
@@ -2605,9 +2341,9 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::SetGoalArchived {
-                goal_id: created.id.clone(),
-                archived: true,
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: format!("archive {}", created.id),
             },
             &work_dir,
         )

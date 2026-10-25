@@ -30,6 +30,13 @@ enum GoalVerb {
     Pause { id: String },
     /// `/goal cancel <id>` — an explicit terminal decision.
     Cancel { id: String },
+    /// `/goal archive <id>` or `/goal unarchive <id>`.
+    Archive { id: String, archived: bool },
+    /// `/goal steer [<id>] <text>` — redirect an active Goal.
+    ///
+    /// No id field: a leading id in the text is resolved by [`steer`], which can
+    /// read the store — the parser cannot, so it must not try.
+    Steer { text: String },
 }
 
 /// The `/goal` command.
@@ -57,8 +64,10 @@ impl GoalCommand {
             meta: CommandMeta {
                 name: "goal".to_string(),
                 aliases: Vec::new(),
-                summary: "List Goals, show one, or pause/cancel one".to_string(),
-                usage: "/goal [list [--all] | show <id> | pause <id> | cancel <id>]".to_string(),
+                summary: "List, show, pause, cancel, archive or steer a Goal".to_string(),
+                usage: "/goal [list [--all] | show <id> | pause <id> | cancel <id> | \
+                     archive <id> | unarchive <id> | steer [<id>] <text>]"
+                    .to_string(),
                 scope: CommandScope::Runtime,
                 // Verbs follow, so Enter completes instead of running.
                 needs_args: true,
@@ -106,8 +115,30 @@ impl GoalCommand {
                     Err(format!("`/goal {verb}` takes one id (got extra `{extra}`)"))
                 }
             },
+            Some(verb @ ("archive" | "unarchive")) => match (words.next(), words.next()) {
+                (Some(id), None) => Ok(GoalVerb::Archive {
+                    id: id.to_string(),
+                    archived: verb == "archive",
+                }),
+                (None, _) => Err(format!("`/goal {verb}` needs an id")),
+                (Some(_), Some(extra)) => {
+                    Err(format!("`/goal {verb}` takes one id (got extra `{extra}`)"))
+                }
+            },
+            Some("steer") => {
+                // Whole-line text, with no id split here: `steer` accepts a leading
+                // id/prefix in the text and the store is authoritative about whether
+                // it matches. Splitting in the parser would mean two places deciding
+                // what "the id" is, and the one that cannot read the store would win.
+                let text = words.collect::<Vec<_>>().join(" ");
+                if text.is_empty() {
+                    return Err("`/goal steer` needs an instruction".to_string());
+                }
+                Ok(GoalVerb::Steer { text })
+            }
             Some(other) => Err(format!(
-                "unknown verb `{other}`; expected `list`, `show`, `pause` or `cancel`"
+                "unknown verb `{other}`; expected `list`, `show`, `pause`, `cancel`, \
+                 `archive` or `steer`"
             )),
         }
     }
@@ -201,6 +232,30 @@ impl Command for GoalCommand {
                     &self.events,
                     None,
                     &id,
+                )
+                .await;
+                CommandOutcome::Done
+            }
+            GoalVerb::Archive { id, archived } => {
+                crate::goal::lifecycle::set_archived(
+                    &self.goal_manager,
+                    &self.task_manager,
+                    self.limits,
+                    &self.events,
+                    &id,
+                    archived,
+                )
+                .await;
+                CommandOutcome::Done
+            }
+            GoalVerb::Steer { text } => {
+                crate::goal::lifecycle::steer(
+                    &self.goal_manager,
+                    &self.task_manager,
+                    &self.events,
+                    self.limits,
+                    None,
+                    &text,
                 )
                 .await;
                 CommandOutcome::Done

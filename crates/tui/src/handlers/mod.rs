@@ -615,13 +615,9 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
                         name: "goal".to_string(),
                         args: format!("cancel {goal_id}"),
                     },
-                    "archive" => UserCommand::SetGoalArchived {
-                        goal_id,
-                        archived: true,
-                    },
-                    "unarchive" => UserCommand::SetGoalArchived {
-                        goal_id,
-                        archived: false,
+                    "archive" | "unarchive" => UserCommand::RunCommand {
+                        name: "goal".to_string(),
+                        args: format!("{verb} {goal_id}"),
                     },
                     _ => unreachable!("matched Goal verb"),
                 })
@@ -683,7 +679,13 @@ fn steer_request(app: &App, args: &str) -> Option<UserCommand> {
     } else {
         args.to_string()
     };
-    Some(UserCommand::SteerGoal { goal_id, text })
+    Some(UserCommand::RunCommand {
+        name: "goal".to_string(),
+        args: match goal_id {
+            Some(id) => format!("steer {id} {text}"),
+            None => format!("steer {text}"),
+        },
+    })
 }
 
 /// `/skill list` output is plain markdown (heading + pipe table) appended as
@@ -1793,16 +1795,16 @@ mod tests {
             ),
             (
                 "/goal archive goal-1",
-                UserCommand::SetGoalArchived {
-                    goal_id: "goal-1".into(),
-                    archived: true,
+                UserCommand::RunCommand {
+                    name: "goal".into(),
+                    args: "archive goal-1".into(),
                 },
             ),
             (
                 "/goal unarchive goal-1",
-                UserCommand::SetGoalArchived {
-                    goal_id: "goal-1".into(),
-                    archived: false,
+                UserCommand::RunCommand {
+                    name: "goal".into(),
+                    args: "unarchive goal-1".into(),
                 },
             ),
             (
@@ -1817,9 +1819,9 @@ mod tests {
                 // snapshot; with no snapshot yet the raw text goes to the
                 // driver, which resolves the leading id against the store.
                 "/goal steer goal-1 prefer the smaller design",
-                UserCommand::SteerGoal {
-                    goal_id: None,
-                    text: "goal-1 prefer the smaller design".into(),
+                UserCommand::RunCommand {
+                    name: "goal".into(),
+                    args: "steer goal-1 prefer the smaller design".into(),
                 },
             ),
             (
@@ -1947,8 +1949,8 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected SteerGoal"),
-            UserCommand::SteerGoal { goal_id, text }
-                if goal_id.is_none() && text == "focus on the parser first"
+            UserCommand::RunCommand { name, args }
+                if name == "goal" && args == "steer focus on the parser first"
         ));
     }
 
@@ -1971,8 +1973,8 @@ mod tests {
 
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected SteerGoal"),
-            UserCommand::SteerGoal { goal_id, text }
-                if goal_id.is_none() && text == "keep the diff small"
+            UserCommand::RunCommand { name, args }
+                if name == "goal" && args == "steer keep the diff small"
         ));
     }
 
@@ -2001,9 +2003,8 @@ mod tests {
 
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected SteerGoal"),
-            UserCommand::SteerGoal { goal_id, text }
-                if goal_id.as_deref() == Some("goal-1")
-                    && text == "prefer the smaller design"
+            UserCommand::RunCommand { name, args }
+                if name == "goal" && args == "steer goal-1 prefer the smaller design"
         ));
     }
 
@@ -2033,8 +2034,8 @@ mod tests {
         assert!(
             matches!(
                 user_cmd_rx.try_recv().expect("expected SteerGoal"),
-                UserCommand::SteerGoal { goal_id, text }
-                    if goal_id.is_none() && text == "hurry up"
+                UserCommand::RunCommand { name, args }
+                if name == "goal" && args == "steer hurry up"
             ),
             "the TUI must forward the raw instruction, not guess a target"
         );

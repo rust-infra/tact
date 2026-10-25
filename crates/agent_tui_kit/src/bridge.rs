@@ -115,10 +115,8 @@ impl TryFrom<UserCommand> for Command {
             // Durable Goal lifecycle is a Tact host capability backed by its
             // SQLite stores and bounded runner, not a generic kit command.
             UserCommand::CreateGoal { .. }
-            | UserCommand::SteerGoal { .. }
             | UserCommand::ResumeGoal { .. }
-            | UserCommand::AcceptGoal { .. }
-            | UserCommand::SetGoalArchived { .. } => Err(()),
+            | UserCommand::AcceptGoal { .. } => Err(()),
         }
     }
 }
