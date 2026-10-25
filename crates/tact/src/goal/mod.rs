@@ -6,6 +6,9 @@
 
 mod verifier;
 
+pub mod limits;
+pub mod snapshots;
+
 pub use verifier::{GoalVerification, GoalVerifier};
 
 use std::fmt;
@@ -2121,3 +2124,5 @@ mod tests {
         );
     }
 }
+
+pub use limits::GoalLimits;

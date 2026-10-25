@@ -19,10 +19,12 @@ use tact_kernel::capability::command::CommandMeta;
 pub use tact_kernel::capability::command::Command;
 
 pub mod background;
+pub mod goal;
 pub mod plugin;
 pub mod stats;
 
 pub use background::BackgroundCommand;
+pub use goal::GoalCommand;
 pub use plugin::CommandPlugin;
 pub use stats::StatsCommand;
 
@@ -80,11 +82,21 @@ pub fn builtin_commands(
 pub fn builtin_catalog(
     stats: Arc<std::sync::RwLock<crate::stats::SessionStats>>,
     background: Option<BackgroundWiring>,
+    goals: Option<GoalWiring>,
 ) -> tact_kernel::catalog::CommandCatalog {
     let mut catalog = tact_kernel::catalog::CommandCatalog::default();
     for command in builtin_commands(stats) {
         catalog
             .insert(command)
+            .expect("built-in command names are unique");
+    }
+    if let Some(wiring) = goals {
+        catalog
+            .insert(Arc::new(GoalCommand::new(
+                wiring.goal_manager,
+                wiring.task_manager,
+                wiring.limits,
+            )))
             .expect("built-in command names are unique");
     }
     if let Some(wiring) = background {
@@ -107,6 +119,13 @@ pub struct BackgroundWiring {
     /// Resolved per call: the driver learns the session id only after the
     /// session row exists, which is after the catalog is built.
     pub session: Arc<dyn Fn() -> Option<String> + Send + Sync>,
+}
+
+/// What `/goal` needs: the two managers and the run budget it reports.
+pub struct GoalWiring {
+    pub goal_manager: crate::goal::SharedGoalManager,
+    pub task_manager: crate::task::SharedTaskManager,
+    pub limits: crate::goal::GoalLimits,
 }
 
 /// A metadata literal with `Runtime` scope, for the built-ins.
@@ -157,6 +176,7 @@ mod tests {
         // unreachable even though it exists.
         let catalog = builtin_catalog(
             Arc::new(std::sync::RwLock::new(crate::stats::SessionStats::default())),
+            None,
             None,
         );
         assert!(catalog.get("stats").is_some());

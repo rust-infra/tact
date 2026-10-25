@@ -1,7 +1,6 @@
 //! Interactive-mode command driver: bridges `UserCommand` from the TUI to `Agent`.
 
 use std::{
-    collections::HashMap,
     path::Path,
     sync::{
         Arc,
@@ -15,19 +14,17 @@ use chrono::Utc;
 use tact::{
     Agent, extract_text,
     goal::{
-        Goal, GoalCreate, GoalCriterion, GoalCriterionStatus, GoalEvent, GoalEventKind,
-        GoalEventSource, GoalEvidenceUpdate, GoalPhase, GoalStatus, GoalUpdate, GoalVerification,
-        GoalVerificationKind, GoalVerifier, SharedGoalManager, new_event_id,
+        Goal, GoalCreate, GoalCriterion, GoalEvent, GoalEventKind, GoalEventSource,
+        GoalEvidenceUpdate, GoalStatus, GoalUpdate, GoalVerification, GoalVerificationKind,
+        GoalVerifier, SharedGoalManager, new_event_id,
     },
     hook::HookControl,
     store::goal_store::GoalStoreError,
-    task::{SharedTaskManager, TaskStatus},
+    task::SharedTaskManager,
 };
 use tact_llm::{Message, Role};
 use tact_protocol::{
-    AccountUpdate, AgentErrorKind, AgentUpdate, GoalAcceptanceSnapshot, GoalCriterionSnapshot,
-    GoalCriterionStatusSnapshot, GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot,
-    GoalStatusSnapshot, UpdateSink, UserCommand,
+    AccountUpdate, AgentErrorKind, AgentUpdate, GoalSnapshot, UpdateSink, UserCommand,
 };
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
@@ -196,6 +193,35 @@ pub async fn run_command_loop(
     run_command_loop_with_account(agent, user_cmd_rx, image_work_dir, None).await
 }
 
+/// Send a command's answer to the frontend.
+///
+/// The one place that decides how an outcome becomes an update, so the loop-level
+/// and agent-side paths cannot render the same answer differently.
+fn forward_command_outcome(outcome: &tact::command::CommandOutcome, events: &UpdateSink) {
+    match outcome {
+        tact::command::CommandOutcome::Done => {}
+        tact::command::CommandOutcome::Message(text) => {
+            events.send(AgentUpdate::Info(text.clone()));
+        }
+        tact::command::CommandOutcome::Emit(emitted) => {
+            let update = emitted.get().clone();
+            // An empty Goal projection is also the log's cue: the panel clears
+            // either way, but a bare `/goal` in a fresh workspace must not look
+            // like it did nothing.
+            if let AgentUpdate::GoalsChanged { goals } = &update
+                && goals.is_empty()
+            {
+                events.send(AgentUpdate::Info("(no goals)".to_string()));
+            }
+            events.send(update);
+        }
+        tact::command::CommandOutcome::Failed(text)
+        | tact::command::CommandOutcome::Usage(text) => {
+            events.send(AgentUpdate::Error(AgentErrorKind::Other(text.clone())));
+        }
+    }
+}
+
 /// The catalog of host-side commands this loop serves.
 ///
 /// Built where the shared state is, because each command closes over its own
@@ -206,6 +232,9 @@ fn builtin_command_catalog(
     stats: &std::sync::Arc<std::sync::RwLock<tact::stats::SessionStats>>,
     background: &tact::background::SharedBackgroundManager,
     session_id: &Option<String>,
+    goal_manager: &tact::goal::SharedGoalManager,
+    task_manager: &tact::task::SharedTaskManager,
+    limits: tact::goal::GoalLimits,
 ) -> tact::command::CommandCatalog {
     let session = session_id.clone();
     tact::command::builtin_catalog(
@@ -213,6 +242,11 @@ fn builtin_command_catalog(
         Some(tact::command::BackgroundWiring {
             manager: std::sync::Arc::new(background.clone()),
             session: std::sync::Arc::new(move || session.clone()),
+        }),
+        Some(tact::command::GoalWiring {
+            goal_manager: goal_manager.clone(),
+            task_manager: task_manager.clone(),
+            limits,
         }),
     )
 }
@@ -248,7 +282,14 @@ pub async fn run_command_loop_with_account(
     // The host-side commands, built once: a command answers from shared state,
     // so the loop does not rebuild one per invocation, and a name that is not
     // here is not a command at all.
-    let commands = builtin_command_catalog(&stats, &background_manager, &background_session_id);
+    let commands = builtin_command_catalog(
+        &stats,
+        &background_manager,
+        &background_session_id,
+        &goal_manager,
+        &task_manager,
+        limits,
+    );
 
     // Reconcile durable Goal state once, before serving commands: a crashed
     // runner leaves an active run with an expired lease and a Goal still marked
@@ -419,14 +460,18 @@ pub async fn run_command_loop_with_account(
                 }
             }
             UserCommand::ListGoals { include_archived } => {
-                list_goals(
-                    &goal_manager,
-                    &task_manager,
-                    limits,
-                    &events,
-                    include_archived,
-                )
-                .await;
+                // Routed through the catalog command: the archived switch is the
+                // command's grammar, and the projection it emits is the one the
+                // panel draws.
+                let invocation = tact::command::CommandInvocation {
+                    name: "goal".to_string(),
+                    args: if include_archived {
+                        "list --all".to_string()
+                    } else {
+                        "list".to_string()
+                    },
+                };
+                forward_command_outcome(&commands.run_async(&invocation).await, &events);
             }
             UserCommand::SetGoalArchived { goal_id, archived } => {
                 set_goal_archived(
@@ -440,7 +485,18 @@ pub async fn run_command_loop_with_account(
                 .await;
             }
             UserCommand::ShowGoal { goal_id } => {
-                show_goal(&goal_manager, &task_manager, limits, &goal_id, &events).await;
+                // The panel refresh comes first and stays the default list: the
+                // detail popup reaches archived Goals, the panel does not.
+                let refresh = tact::command::CommandInvocation {
+                    name: "goal".to_string(),
+                    args: "list".to_string(),
+                };
+                forward_command_outcome(&commands.run_async(&refresh).await, &events);
+                let invocation = tact::command::CommandInvocation {
+                    name: "goal".to_string(),
+                    args: format!("show {goal_id}"),
+                };
+                forward_command_outcome(&commands.run_async(&invocation).await, &events);
             }
             // These three are safe to serve while the Agent is owned by an
             // in-flight Goal run: they only touch the shared managers (and the
@@ -701,37 +757,6 @@ async fn render_mcp_prompt(
         .map_err(|error| format!("MCP prompt {server}/{name} failed: {error:#}"))
 }
 
-fn goal_status_snapshot(status: GoalStatus) -> GoalStatusSnapshot {
-    match status {
-        GoalStatus::Draft => GoalStatusSnapshot::Draft,
-        GoalStatus::Queued => GoalStatusSnapshot::Queued,
-        GoalStatus::Running => GoalStatusSnapshot::Running,
-        GoalStatus::WaitingUser => GoalStatusSnapshot::WaitingUser,
-        GoalStatus::WaitingPermission => GoalStatusSnapshot::WaitingPermission,
-        GoalStatus::Paused => GoalStatusSnapshot::Paused,
-        GoalStatus::Verifying => GoalStatusSnapshot::Verifying,
-        GoalStatus::Succeeded => GoalStatusSnapshot::Succeeded,
-        GoalStatus::Failed => GoalStatusSnapshot::Failed,
-        GoalStatus::Cancelled => GoalStatusSnapshot::Cancelled,
-    }
-}
-
-fn goal_phase_snapshot(phase: GoalPhase) -> GoalPhaseSnapshot {
-    match phase {
-        GoalPhase::Planning => GoalPhaseSnapshot::Planning,
-        GoalPhase::Execution => GoalPhaseSnapshot::Execution,
-        GoalPhase::Verification => GoalPhaseSnapshot::Verification,
-    }
-}
-
-fn criterion_status_snapshot(status: GoalCriterionStatus) -> GoalCriterionStatusSnapshot {
-    match status {
-        GoalCriterionStatus::Pending => GoalCriterionStatusSnapshot::Pending,
-        GoalCriterionStatus::Passed => GoalCriterionStatusSnapshot::Passed,
-        GoalCriterionStatus::Rejected => GoalCriterionStatusSnapshot::Rejected,
-    }
-}
-
 async fn goal_snapshots(
     goal_manager: &SharedGoalManager,
     task_manager: &SharedTaskManager,
@@ -752,113 +777,9 @@ async fn goal_snapshots_with(
     limits: GoalLimits,
     include_archived: bool,
 ) -> Result<Vec<GoalSnapshot>> {
-    let running_by_goal: HashMap<_, _> = goal_manager
-        .list_running_runs()
-        .await?
-        .into_iter()
-        .map(|run| (run.goal_id.clone(), run))
-        .collect();
-    let mut snapshots = Vec::new();
-    for goal in goal_manager.list().await? {
-        if goal.is_archived() && !include_archived {
-            continue;
-        }
-        let tasks = task_manager.list_for_goal(&goal.id).await?;
-        // The wait reason is only ever asked of a Goal that is *in* a waiting
-        // or paused state, and the answer is one targeted query — so a Goal
-        // that is running costs no event read at all, and a waiting one costs
-        // one row instead of its whole history (2026-10-16).
-        let wait_reason = if matches!(
-            goal.status,
-            GoalStatus::WaitingUser | GoalStatus::WaitingPermission | GoalStatus::Paused
-        ) {
-            let status_reason = goal_manager
-                .latest_event_with_status(&goal.id, goal.status)
-                .await?
-                .and_then(|event| event.payload);
-            if goal.status == GoalStatus::WaitingUser {
-                // A `goal_request_input` question is more useful than the
-                // generic "run ended as NeedsUser" status payload. Only use
-                // it when it was asked after the latest Running transition;
-                // an old question from a previous wait must not masquerade as
-                // the reason the Goal is waiting for acceptance now.
-                let question = goal_manager
-                    .latest_event_of_kind(&goal.id, GoalEventKind::NeedsUser)
-                    .await?;
-                let last_running = goal_manager
-                    .latest_event_with_status(&goal.id, GoalStatus::Running)
-                    .await?;
-                match (question, last_running) {
-                    (Some(question), Some(running))
-                        if question.occurred_at >= running.occurred_at =>
-                    {
-                        question.payload.or(status_reason)
-                    }
-                    (Some(question), None) => question.payload.or(status_reason),
-                    _ => status_reason,
-                }
-            } else {
-                status_reason
-            }
-        } else {
-            None
-        };
-        let criteria: Vec<_> = goal
-            .criteria
-            .iter()
-            .map(|criterion| GoalCriterionSnapshot {
-                id: criterion.id.clone(),
-                description: criterion.description.clone(),
-                required: criterion.required,
-                human: criterion.verification_kind == GoalVerificationKind::Human,
-                status: criterion_status_snapshot(criterion.status),
-                evidence_count: criterion.evidence.len(),
-            })
-            .collect();
-        let required = goal.criteria.iter().filter(|criterion| criterion.required);
-        let acceptance = GoalAcceptanceSnapshot {
-            required: required.clone().count(),
-            passed: required
-                .clone()
-                .filter(|criterion| criterion.status == GoalCriterionStatus::Passed)
-                .count(),
-            pending: required
-                .clone()
-                .filter(|criterion| criterion.status == GoalCriterionStatus::Pending)
-                .count(),
-            rejected: required
-                .filter(|criterion| criterion.status == GoalCriterionStatus::Rejected)
-                .count(),
-        };
-        let run_budget = running_by_goal
-            .get(&goal.id)
-            .map(|run| GoalRunBudgetSnapshot {
-                turns_used: run.turns_used.min(u32::MAX as u64) as u32,
-                turn_limit: limits.max_turns,
-                tool_calls_used: run.tool_calls_used.min(u32::MAX as u64) as u32,
-                elapsed_ms: run.elapsed_ms,
-                wall_clock_limit_ms: limits.max_elapsed.as_millis().min(u64::MAX as u128) as u64,
-            });
-        let archived = goal.is_archived();
-        snapshots.push(GoalSnapshot {
-            id: goal.id.clone(),
-            title: goal.title,
-            objective: goal.objective,
-            status: goal_status_snapshot(goal.status),
-            phase: goal_phase_snapshot(goal.phase),
-            criteria,
-            task_total: tasks.len(),
-            task_completed: tasks
-                .iter()
-                .filter(|task| task.status == TaskStatus::Completed)
-                .count(),
-            wait_reason,
-            acceptance,
-            run_budget,
-            archived,
-        });
-    }
-    Ok(snapshots)
+    // The projection lives in `tact` so a command can reach it without the
+    // extension crate depending on the view.
+    tact::goal::snapshots::snapshots(goal_manager, task_manager, limits, include_archived).await
 }
 
 pub(crate) async fn emit_goals_changed(
@@ -869,30 +790,6 @@ pub(crate) async fn emit_goals_changed(
 ) {
     match goal_snapshots(goal_manager, task_manager, limits).await {
         Ok(goals) => {
-            events.send(AgentUpdate::GoalsChanged { goals });
-        }
-        Err(error) => emit_goal_error(events, format!("Goal snapshot failed: {error:#}")),
-    }
-}
-
-/// `/goal list` read-out.
-///
-/// The snapshot drives the sticky panel, and that panel hides itself when it has
-/// nothing to show — so in a workspace with no Goals the screen would not change
-/// at all and the command would look broken. Answer in the log as well; unlike
-/// `emit_goals_changed`, only this path speaks when the list is empty.
-async fn list_goals(
-    goal_manager: &SharedGoalManager,
-    task_manager: &SharedTaskManager,
-    limits: GoalLimits,
-    events: &UpdateSink,
-    include_archived: bool,
-) {
-    match goal_snapshots_with(goal_manager, task_manager, limits, include_archived).await {
-        Ok(goals) => {
-            if goals.is_empty() {
-                events.send(AgentUpdate::Info("(no goals)".to_string()));
-            }
             events.send(AgentUpdate::GoalsChanged { goals });
         }
         Err(error) => emit_goal_error(events, format!("Goal snapshot failed: {error:#}")),
@@ -1045,72 +942,6 @@ async fn set_goal_archived(
         Err(error) => {
             emit_goal_error(events, format!("Goal {goal_id} {kind} failed: {error:#}"));
         }
-    }
-}
-
-async fn show_goal(
-    goal_manager: &SharedGoalManager,
-    task_manager: &SharedTaskManager,
-    limits: GoalLimits,
-    goal_id: &str,
-    events: &UpdateSink,
-) {
-    // `show` is the read that has to reach *any* Goal, archived ones included
-    // (that is what keeps archiving from being a dead end), while the panel
-    // refresh it piggybacks on stays the default list.
-    match goal_snapshots_with(goal_manager, task_manager, limits, true).await {
-        Ok(goals) => {
-            let selected = goals.iter().find(|goal| goal.id == goal_id).cloned();
-            events.send(AgentUpdate::GoalsChanged {
-                goals: goals
-                    .iter()
-                    .filter(|goal| !goal.archived)
-                    .cloned()
-                    .collect(),
-            });
-            match selected {
-                Some(goal) => {
-                    let criteria = if goal.criteria.is_empty() {
-                        "- (none)".to_string()
-                    } else {
-                        goal.criteria
-                            .iter()
-                            .map(|criterion| {
-                                format!(
-                                    "- {:?}: {}{}",
-                                    criterion.status,
-                                    criterion.description,
-                                    if criterion.required {
-                                        " (required)"
-                                    } else {
-                                        ""
-                                    }
-                                )
-                            })
-                            .collect::<Vec<_>>()
-                            .join("\n")
-                    };
-                    events.send(AgentUpdate::PopupMarkdown {
-                        title: format!("Goal: {}", goal.title),
-                        source: format!(
-                            "**ID:** `{}`\n\n**Status:** `{:?}` / `{:?}`{}\n\n{}\n\n**Tasks:** {}/{}\n\n**Acceptance:** {}/{} passed\n\n{}",
-                            goal.id,
-                            goal.status,
-                            goal.phase,
-                            if goal.archived { "\n\n**Archived:** yes" } else { "" },
-                            goal.objective,
-                            goal.task_completed,
-                            goal.task_total,
-                            goal.acceptance.passed,
-                            goal.acceptance.required,
-                            criteria
-                        ),
-                    });
-                }
-                None => emit_goal_error(events, format!("Goal {goal_id} not found")),
-            }
-        }
-        Err(error) => emit_goal_error(events, format!("Goal show failed: {error:#}")),
     }
 }
 
@@ -1936,24 +1767,46 @@ async fn handle_user_command_with_account(
             }
         }
         UserCommand::ListGoals { include_archived } => {
-            list_goals(
+            // Same catalog command as the loop-level arm, so the two cannot show
+            // different projections.
+            let catalog = builtin_command_catalog(
+                &agent.runtime.stats,
+                &agent.tool_context.background_manager,
+                &agent.runtime.session_id,
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
                 goal_limits(),
-                &agent.runtime.events,
-                include_archived,
-            )
-            .await;
+            );
+            let invocation = tact::command::CommandInvocation {
+                name: "goal".to_string(),
+                args: if include_archived {
+                    "list --all".to_string()
+                } else {
+                    "list".to_string()
+                },
+            };
+            forward_command_outcome(&catalog.run_async(&invocation).await, &agent.runtime.events);
         }
         UserCommand::ShowGoal { goal_id } => {
-            show_goal(
+            let catalog = builtin_command_catalog(
+                &agent.runtime.stats,
+                &agent.tool_context.background_manager,
+                &agent.runtime.session_id,
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
                 goal_limits(),
-                &goal_id,
-                &agent.runtime.events,
-            )
-            .await;
+            );
+            // Panel first, then the detail: same order as the loop-level arm.
+            let refresh = tact::command::CommandInvocation {
+                name: "goal".to_string(),
+                args: "list".to_string(),
+            };
+            forward_command_outcome(&catalog.run_async(&refresh).await, &agent.runtime.events);
+            let invocation = tact::command::CommandInvocation {
+                name: "goal".to_string(),
+                args: format!("show {goal_id}"),
+            };
+            forward_command_outcome(&catalog.run_async(&invocation).await, &agent.runtime.events);
         }
         UserCommand::SteerGoal { goal_id, text } => {
             steer_goal(
@@ -2120,6 +1973,9 @@ async fn handle_user_command_with_account(
                 &agent.runtime.stats,
                 &agent.tool_context.background_manager,
                 &agent.runtime.session_id,
+                &agent.tool_context.goal_manager,
+                &agent.tool_context.task_manager,
+                goal_limits(),
             );
             let invocation = tact::command::CommandInvocation {
                 name: "background".to_string(),
@@ -2675,14 +2531,23 @@ mod tests {
         let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
         let events = agent.runtime.events.clone();
 
-        super::list_goals(
+        // The command answers; the host is what turns an empty projection into a
+        // log line, so this test covers both halves.
+        let catalog = super::builtin_command_catalog(
+            &agent.runtime.stats,
+            &agent.tool_context.background_manager,
+            &agent.runtime.session_id,
             &agent.tool_context.goal_manager,
             &agent.tool_context.task_manager,
             super::GoalLimits::default(),
-            &events,
-            false,
-        )
-        .await;
+        );
+        let outcome = catalog
+            .run_async(&tact::command::CommandInvocation {
+                name: "goal".into(),
+                args: "list".into(),
+            })
+            .await;
+        super::forward_command_outcome(&outcome, &events);
 
         let first = tokio::time::timeout(std::time::Duration::from_secs(1), agent_rx.recv())
             .await
