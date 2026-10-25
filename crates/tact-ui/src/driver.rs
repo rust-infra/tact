@@ -44,14 +44,14 @@ use crate::{
 /// the budgets the loop enforces are the ones that agent actually runs under.
 /// `None` (no configuration installed) keeps the built-in defaults, which is the
 /// shape a unit test and the non-LLM subcommand paths rely on.
-fn goal_limits(config: Option<&tact::config::ResolvedConfig>) -> GoalLimits {
+pub(crate) fn goal_limits(config: Option<&tact::config::ResolvedConfig>) -> GoalLimits {
     config
         .map(|config| GoalLimits::from_settings(&config.goal))
         .unwrap_or_default()
 }
 
 /// The budgets the agent's own bundle recorded.
-fn agent_goal_limits(agent: &Agent) -> GoalLimits {
+pub(crate) fn agent_goal_limits(agent: &Agent) -> GoalLimits {
     let config = agent.config();
     goal_limits(config.as_ref())
 }

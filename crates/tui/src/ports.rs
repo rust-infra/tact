@@ -289,6 +289,51 @@ pub struct SubagentSettings {
     pub family: ProviderFamily,
 }
 
+/// What the view needs to offer commands: names, one-line help, and the rules
+/// that decide whether a command can run now.
+///
+/// The catalog is where a command's own metadata lives. The view used to derive
+/// the same list from its own enum, which meant a command contributed by a
+/// plugin was unreachable from the palette, and a command the runtime no longer
+/// had still appeared there.
+pub trait CommandDirectory: Send + Sync {
+    /// Every command, in the order the catalog holds them.
+    fn commands(&self) -> Vec<CommandEntry>;
+
+    /// Resolve a name the user typed, honouring aliases.
+    ///
+    /// `None` means "not a catalog command" — the view still has local ones, and
+    /// the caller falls back to them rather than treating it as an error.
+    fn resolve(&self, name: &str) -> Option<CommandEntry>;
+}
+
+/// The runtime's command directory, installed after the view is already up.
+///
+/// The TUI comes up before the agent is built (a deliberate choice: users should
+/// not stare at a blank terminal while MCP connects), so the catalog does not
+/// exist when `TuiConfig` is assembled. A shared slot lets the composition root
+/// fill it once the runtime is ready, without the view polling or the protocol
+/// carrying a view-only concern.
+pub type SharedCommandDirectory =
+    std::sync::Arc<std::sync::Mutex<Option<std::sync::Arc<dyn CommandDirectory>>>>;
+
+/// An empty slot, ready to be filled.
+#[must_use]
+pub fn shared_command_directory() -> SharedCommandDirectory {
+    std::sync::Arc::new(std::sync::Mutex::new(None))
+}
+
+/// One command, as a picker shows it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CommandEntry {
+    /// What the user types, without the leading `/`.
+    pub name: String,
+    /// One line, shown beside the name.
+    pub summary: String,
+    /// Whether the command needs arguments before it can run.
+    pub needs_args: bool,
+}
+
 /// What the view needs to populate the `/model` pickers.
 ///
 /// Everything here is a *query* about the current provider and the model ids the

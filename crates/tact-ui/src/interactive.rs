@@ -102,6 +102,10 @@ async fn run_interactive_locked(
     let model_thinking_budget = config_snapshot.agent.thinking_budget;
     let account_enabled = account::is_supported();
     let tui_ui_responder = ui_responder.clone();
+    // The view is up before the agent exists, so the catalog is installed into
+    // this slot once the runtime is ready (see below, after the build).
+    let command_directory = tui::ports::shared_command_directory();
+    let tui_command_directory = command_directory.clone();
     let mut tui_handle = tokio::spawn(Box::pin(async move {
         let account_rx = if account_enabled {
             Some(account_rx)
@@ -119,6 +123,7 @@ async fn run_interactive_locked(
             session_id,
             history: crate::view_ports::session_history(session_store.clone()),
             pending_ui: crate::view_ports::interaction_port(tui_ui_responder),
+            command_directory: tui_command_directory,
             config_snapshot: Some(crate::view_ports::project_settings(&config_snapshot)),
             history_save_tx,
             theme,
@@ -217,12 +222,19 @@ async fn run_interactive_locked(
         // stats below would go missing for no reason the user could see.
         biased;
         built = &mut build => match built {
-            Ok(agent) => Some(tokio::spawn(run_command_loop_with_account(
-                agent,
-                user_cmd_rx,
-                image_work_dir,
-                Some(account_tx),
-            ))),
+            Ok(agent) => {
+                // The runtime exists now, so its catalog can be offered to the
+                // palette. Done before the driver starts: a user typing `/` the
+                // moment the prompt appears should see every command the
+                // runtime can actually run.
+                crate::view_ports::install_command_directory(&agent, &command_directory);
+                Some(tokio::spawn(run_command_loop_with_account(
+                    agent,
+                    user_cmd_rx,
+                    image_work_dir,
+                    Some(account_tx),
+                )))
+            }
             Err(err) => {
                 // Deliver the failure into the already-running TUI instead of
                 // propagating it past the raw-mode boundary. The TUI shows the

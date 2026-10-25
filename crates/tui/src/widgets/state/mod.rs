@@ -275,6 +275,12 @@ pub struct App {
     /// them apart lets a test hand the view a snapshot and a recording writer,
     /// with no config file on disk.
     pub(crate) settings_writer: Option<std::sync::Arc<dyn crate::ports::SettingsWriter>>,
+    /// The runtime's command catalog, installed after the view is up.
+    ///
+    /// The palette offers these beside the view's own commands, so a command a
+    /// plugin contributes is reachable by name instead of only by someone who
+    /// already knows it exists.
+    pub(crate) commands: crate::ports::SharedCommandDirectory,
     /// The host's model queries, when it supplied them.
     ///
     /// A port rather than the model library's free functions: the `/model`

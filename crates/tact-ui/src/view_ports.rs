@@ -152,6 +152,77 @@ impl Default for RuntimeModelCatalog {
     }
 }
 
+/// The runtime's command catalog, seen through the view's narrow port.
+///
+/// It holds the built catalog rather than rebuilding one per keystroke: the
+/// palette asks on every input change, and constructing a catalog allocates a
+/// map of every contributed command.
+pub struct RuntimeCommandDirectory {
+    catalog: tact::command::CommandCatalog,
+}
+
+impl RuntimeCommandDirectory {
+    pub fn new(catalog: tact::command::CommandCatalog) -> Self {
+        Self { catalog }
+    }
+
+    /// Install this directory into a view slot.
+    ///
+    /// The view comes up before the runtime, so the host fills the slot once the
+    /// agent exists; this is the one place that knows how.
+    pub fn install(self, slot: &tui::ports::SharedCommandDirectory) {
+        *slot.lock().unwrap_or_else(|error| error.into_inner()) = Some(std::sync::Arc::new(self));
+    }
+}
+
+/// Build the runtime's catalog and install it into a view slot.
+///
+/// Built from the same wiring the driver uses, so the palette and `/stats`
+/// cannot disagree about which commands exist or what they are called.
+pub fn install_command_directory(
+    agent: &tact::agent::Agent,
+    slot: &tui::ports::SharedCommandDirectory,
+) {
+    let session = agent.runtime.session_id.clone();
+    let catalog = tact::command::builtin_catalog(
+        agent.runtime.stats.clone(),
+        Some(tact::command::BackgroundWiring {
+            manager: std::sync::Arc::new(agent.tool_context.background_manager.clone()),
+            session: std::sync::Arc::new(move || session.clone()),
+        }),
+        Some(tact::command::GoalWiring {
+            goal_manager: agent.tool_context.goal_manager.clone(),
+            task_manager: agent.tool_context.task_manager.clone(),
+            limits: crate::driver::agent_goal_limits(agent),
+        }),
+    );
+    RuntimeCommandDirectory::new(catalog).install(slot);
+}
+
+impl tui::ports::CommandDirectory for RuntimeCommandDirectory {
+    fn commands(&self) -> Vec<tui::ports::CommandEntry> {
+        self.catalog
+            .descriptors()
+            .into_iter()
+            .map(|meta| tui::ports::CommandEntry {
+                name: meta.name,
+                summary: meta.summary,
+                needs_args: meta.needs_args,
+            })
+            .collect()
+    }
+
+    fn resolve(&self, name: &str) -> Option<tui::ports::CommandEntry> {
+        let command = self.catalog.get(name)?;
+        let meta = command.meta();
+        Some(tui::ports::CommandEntry {
+            name: meta.name.clone(),
+            summary: meta.summary.clone(),
+            needs_args: meta.needs_args,
+        })
+    }
+}
+
 /// Ask the endpoint for its model ids when the runtime allows it.
 ///
 /// `block_in_place` because callers hold the UI loop; without a runtime (sync
@@ -537,6 +608,70 @@ pub fn voice_worker(settings: tact::config::VoiceSettings) -> Option<tui::VoiceW
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The directory lists what the catalog holds, in the catalog's order.
+    ///
+    /// The palette renders this verbatim, so a name or summary that went
+    /// missing here is a command a user cannot find.
+    #[test]
+    fn the_directory_lists_the_catalogs_commands() {
+        let catalog = tact::command::builtin_catalog(
+            Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
+            None,
+            None,
+        );
+        let expected: Vec<String> = catalog
+            .descriptors()
+            .into_iter()
+            .map(|meta| meta.name)
+            .collect();
+        assert!(!expected.is_empty(), "the built-ins contribute something");
+
+        let directory = RuntimeCommandDirectory::new(catalog);
+        let listed: Vec<String> = tui::ports::CommandDirectory::commands(&directory)
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert_eq!(listed, expected);
+    }
+
+    /// Resolving by name answers with the command the catalog routes to.
+    ///
+    /// An unknown name is `None`, not an error: the view still owns local
+    /// commands and falls back to them.
+    #[test]
+    fn resolve_answers_with_the_routed_command() {
+        let catalog = tact::command::builtin_catalog(
+            Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
+            None,
+            None,
+        );
+        let directory = RuntimeCommandDirectory::new(catalog);
+        let stats = tui::ports::CommandDirectory::resolve(&directory, "stats")
+            .expect("stats is a built-in");
+        assert_eq!(stats.name, "stats");
+        assert!(
+            tui::ports::CommandDirectory::resolve(&directory, "no-such-command").is_none(),
+            "an unknown name is not a catalog command"
+        );
+    }
+
+    /// Installing fills the slot the view reads.
+    #[test]
+    fn installing_fills_the_view_slot() {
+        let slot = tui::ports::shared_command_directory();
+        assert!(slot.lock().unwrap().is_none(), "starts empty");
+
+        let catalog = tact::command::builtin_catalog(
+            Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
+            None,
+            None,
+        );
+        RuntimeCommandDirectory::new(catalog).install(&slot);
+
+        let installed = slot.lock().unwrap().clone().expect("the slot is filled");
+        assert!(!installed.commands().is_empty());
+    }
 
     fn catalog_with(skills: &[(&str, bool)]) -> (tempfile::TempDir, Arc<dyn SkillCatalog>) {
         let dir = tempfile::tempdir().unwrap();

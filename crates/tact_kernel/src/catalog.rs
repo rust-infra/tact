@@ -242,6 +242,21 @@ impl CommandCatalog {
         self.commands.get(name)
     }
 
+    /// Every command's metadata, sorted by name.
+    ///
+    /// Sorted rather than insertion-ordered so a picker's list is stable across
+    /// runs: a palette that reshuffles when a plugin loads makes the same
+    /// keystrokes land on a different command.
+    pub fn descriptors(&self) -> Vec<CommandMeta> {
+        let mut metas: Vec<CommandMeta> = self
+            .commands
+            .values()
+            .map(|command| command.meta().clone())
+            .collect();
+        metas.sort_by(|left, right| left.name.cmp(&right.name));
+        metas
+    }
+
     pub fn len(&self) -> usize {
         self.commands.len()
     }
@@ -472,6 +487,50 @@ mod tests {
                 .insert(Arc::new(FixedCommand::new("first", &["x", "x"])))
                 .is_err()
         );
+    }
+
+    /// Every command is listed, with the metadata it owns.
+    ///
+    /// This is what a picker renders; a command the catalog can route but not
+    /// list is unreachable for a user who does not already know its name.
+    #[test]
+    fn descriptors_list_every_command_with_its_own_metadata() {
+        let mut catalog = CommandCatalog::default();
+        catalog
+            .insert(Arc::new(FixedCommand::new("beta", &[])))
+            .unwrap();
+        catalog
+            .insert(Arc::new(FixedCommand::new("alpha", &["a"])))
+            .unwrap();
+
+        let listed = catalog.descriptors();
+        assert_eq!(
+            listed
+                .iter()
+                .map(|meta| meta.name.as_str())
+                .collect::<Vec<_>>(),
+            vec!["alpha", "beta"],
+            "sorted by name, so the list is stable across runs"
+        );
+        // Each entry is the owning command's own metadata, aliases included:
+        // a picker shows what the command declares, not what the catalog
+        // reconstructs from the name.
+        assert_eq!(listed[0].aliases, vec!["a".to_string()]);
+        assert!(listed[1].aliases.is_empty());
+    }
+
+    /// A command whose registration was rejected is not listed.
+    ///
+    /// The catalog is transactional: a failed insert must leave no trace, or a
+    /// picker would offer a command that cannot run.
+    #[test]
+    fn a_rejected_command_is_not_listed() {
+        let mut catalog = CommandCatalog::default();
+        catalog
+            .insert(Arc::new(FixedCommand::new("real", &[])))
+            .unwrap();
+        let _ = catalog.insert(Arc::new(FixedCommand::new("real", &[])));
+        assert_eq!(catalog.descriptors().len(), 1);
     }
 }
 

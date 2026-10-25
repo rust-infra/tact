@@ -216,6 +216,12 @@ pub struct TuiConfig {
     /// Authoritative in-process pending UI request broker. The TUI reconciles
     /// from `snapshot()` instead of trusting a single `RequestSelect` event.
     pub pending_ui: std::sync::Arc<dyn ports::InteractionPort>,
+    /// The slot the runtime's command catalog is installed into.
+    ///
+    /// The view is up before the agent is built, so the catalog cannot be part
+    /// of this struct's value: the host fills the slot when the runtime is
+    /// ready, and the palette reads it on demand.
+    pub command_directory: ports::SharedCommandDirectory,
     /// Voice-to-text settings (independent of LLM providers).
     /// The started voice worker, when the host started one.
     ///
@@ -249,6 +255,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     let TuiConfig {
         agent_rx,
         account_rx,
+        command_directory,
         plugin_rx,
         plugin_tx,
         user_cmd_tx,
@@ -316,6 +323,9 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.set_ui_config_path(ui_config_path);
     app.set_hook_output(hook_output);
     app.set_pending_ui(pending_ui);
+    // The catalog is installed by the composition root once the runtime exists;
+    // this hands the view the slot to read, not the catalog itself.
+    app.set_command_directory(command_directory);
     app.skills = Some(skills);
     app.models = Some(models);
     app.settings_writer = Some(settings_writer);

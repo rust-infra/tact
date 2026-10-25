@@ -15,14 +15,47 @@ impl App {
     /// under `/skill`: the popup offers them there (`/skill `, `/skill co`),
     /// `slash_candidates` is what knows about them, and `/{name}` still runs
     /// one directly for anyone who types it.
+    /// Adopt the shared slot the host fills with the runtime's catalog.
+    ///
+    /// The slot, not the catalog: the view is up before the agent is built, so
+    /// it has to hold the place the catalog will appear in. Reading it happens
+    /// in `palette_commands`, which is why there is no "is it ready" flag to
+    /// keep in step.
+    pub(crate) fn set_command_directory(&mut self, slot: crate::ports::SharedCommandDirectory) {
+        self.commands = slot;
+    }
+
     pub(crate) fn palette_commands(&self) -> Vec<(String, String)> {
         let account_enabled = self.account_rx.is_some();
         let msgs = self.msgs();
-        SlashCommand::ALL
+        // Local (view-scoped) commands first: they exist whether or not a
+        // runtime catalog was installed, and a picker that lost `/theme`
+        // because a plugin failed to load would be a regression.
+        let mut commands: Vec<(String, String)> = SlashCommand::ALL
             .iter()
             .filter(|cmd| account_enabled || !cmd.needs_account())
             .map(|cmd| (cmd.name().to_string(), cmd.desc(msgs).to_string()))
-            .collect()
+            .collect();
+
+        // Then the catalog's commands, which are the ones a plugin contributed.
+        // Without this a command the runtime can route is unreachable from the
+        // palette, which is the half of "commands are distributed" a user sees.
+        let directory = self
+            .commands
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        if let Some(directory) = directory {
+            for entry in directory.commands() {
+                // A local command owns its name: the catalog must not shadow
+                // `/theme` with a contributed command of the same name.
+                if commands.iter().any(|(name, _)| name == &entry.name) {
+                    continue;
+                }
+                commands.push((entry.name, entry.summary));
+            }
+        }
+        commands
     }
 
     /// Indices into [`Self::palette_commands`] that match the current
@@ -354,7 +387,110 @@ pub(crate) fn theme_label(msgs: &Messages, name: ThemeName) -> &'static str {
 mod tests {
 
     use super::theme_label;
-    use crate::{i18n::Language, render::test_harness::make_app, theme::ThemeName};
+    use crate::{
+        i18n::Language, ports::CommandDirectory, ports::CommandEntry,
+        render::test_harness::make_app, theme::ThemeName,
+    };
+
+    /// A directory holding exactly the entries it was built with.
+    struct FixedDirectory(Vec<CommandEntry>);
+
+    impl CommandDirectory for FixedDirectory {
+        fn commands(&self) -> Vec<CommandEntry> {
+            self.0.clone()
+        }
+
+        fn resolve(&self, name: &str) -> Option<CommandEntry> {
+            self.0.iter().find(|entry| entry.name == name).cloned()
+        }
+    }
+
+    /// A slot already holding `directory`, which is what the host hands the view.
+    fn filled(
+        directory: std::sync::Arc<dyn CommandDirectory>,
+    ) -> crate::ports::SharedCommandDirectory {
+        let slot = crate::ports::shared_command_directory();
+        *slot.lock().unwrap() = Some(directory);
+        slot
+    }
+
+    fn entry(name: &str, summary: &str) -> CommandEntry {
+        CommandEntry {
+            name: name.to_string(),
+            summary: summary.to_string(),
+            needs_args: false,
+        }
+    }
+
+    /// A command the runtime contributes appears in the palette.
+    ///
+    /// Without this a plugin's command is reachable only by someone who already
+    /// knows its name — the palette is the only discovery surface there is.
+    #[test]
+    fn catalog_commands_join_the_palette() {
+        let mut app = make_app();
+        // A name no local command owns, so this measures the wiring rather than
+        // a shadowing rule.
+        assert!(
+            !app.palette_commands()
+                .iter()
+                .any(|(name, _)| name == "contributed"),
+            "the fixture starts without a catalog"
+        );
+
+        app.set_command_directory(filled(std::sync::Arc::new(FixedDirectory(vec![entry(
+            "contributed",
+            "A command a plugin contributed",
+        )]))));
+
+        let listed = app.palette_commands();
+        let found = listed
+            .iter()
+            .find(|(name, _)| name == "contributed")
+            .expect("the contributed command is offered");
+        assert_eq!(found.1, "A command a plugin contributed");
+    }
+
+    /// A local command owns its name: the catalog cannot shadow it.
+    ///
+    /// The view's own commands must keep working whether or not a plugin was
+    /// loaded, and a contributed `/theme` would otherwise replace a local one
+    /// that the keybinding path still uses.
+    #[test]
+    fn a_local_command_is_not_shadowed_by_the_catalog() {
+        let mut app = make_app();
+        let local = app
+            .palette_commands()
+            .into_iter()
+            .find(|(name, _)| name == "theme")
+            .expect("theme is a local command");
+
+        app.set_command_directory(filled(std::sync::Arc::new(FixedDirectory(vec![entry(
+            "theme",
+            "A contributed theme command",
+        )]))));
+
+        let listed = app.palette_commands();
+        let themes: Vec<_> = listed.iter().filter(|(name, _)| name == "theme").collect();
+        assert_eq!(themes.len(), 1, "the name appears once, not twice");
+        assert_eq!(
+            themes[0].1, local.1,
+            "the local description wins over the contributed one"
+        );
+    }
+
+    /// Without a catalog the palette is exactly the local commands.
+    #[test]
+    fn no_catalog_means_local_commands_only() {
+        let app = make_app();
+        assert!(
+            app.commands.lock().unwrap().is_none(),
+            "the fixture starts without a catalog"
+        );
+        let listed = app.palette_commands();
+        assert!(!listed.is_empty());
+        assert!(listed.iter().all(|(name, _)| !name.is_empty()));
+    }
 
     #[test]
     fn toggle_theme_cycles_from_ink() {
