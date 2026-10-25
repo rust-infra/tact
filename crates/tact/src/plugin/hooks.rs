@@ -44,6 +44,7 @@ use tracing::warn;
 
 use tact_protocol::AgentUpdate;
 
+use super::hook_host::{HookHost, close_status, open_status, report_failure};
 use crate::{
     compact::CompactTrigger,
     consts::{PluginDirs, PluginHome},
@@ -327,7 +328,7 @@ pub async fn run_hook(
     command: &HookCommand,
     dirs: impl Into<PluginDirs>,
     input: &HookRunInput,
-    agent: Option<&crate::Agent>,
+    agent: Option<&dyn HookHost>,
 ) -> HookOutput {
     let dirs = dirs.into();
     match command.kind() {
@@ -338,7 +339,7 @@ pub async fn run_hook(
         HookKind::Invalid(reason) => {
             // A declaration the user reviewed and approved must not be silently
             // inert — which is exactly what an `mcp_tool` entry was before this.
-            report_hook_failure(input, agent, reason);
+            report_failure(agent, input.hook_event_name, reason);
             HookOutput::continue_default()
         }
     }
@@ -361,26 +362,31 @@ async fn run_mcp_tool_hook(
     server: &str,
     tool: &str,
     input: &HookRunInput,
-    agent: Option<&crate::Agent>,
+    agent: Option<&dyn HookHost>,
 ) -> HookOutput {
     if let Some(message) = command.status_message.as_deref() {
         tracing::debug!("plugin hook status: {message}");
     }
-    let Some(agent) = agent else {
-        report_hook_failure(
-            input,
-            None,
-            "an `mcp_tool` hook needs a live agent to reach the MCP router",
+    let name = crate::mcp::mcp_tool_name(server, tool);
+    let arguments = command.arguments.clone().unwrap_or_else(|| json!({}));
+    // The host owns the router; a host without one reports rather than failing
+    // silently, which is what an absent router used to do.
+    let call = agent.and_then(|host| host.mcp_call(name.clone(), arguments));
+    let Some(call) = call else {
+        report_failure(
+            agent,
+            input.hook_event_name,
+            "an `mcp_tool` hook needs a host with an MCP router",
         );
         return HookOutput::continue_default();
     };
-
-    let name = crate::mcp::mcp_tool_name(server, tool);
-    let arguments = command.arguments.clone().unwrap_or_else(|| json!({}));
-    let status = open_hook_status(command, Some(agent));
+    let status = open_status(
+        agent,
+        command.source.as_deref().unwrap_or("hook"),
+        command.status_message.as_deref(),
+    );
     // The hook's own budget, not the server's `tool_timeout_sec`: this timeout
     // belongs to the definition the user reviewed.
-    let call = agent.mcp_router.call(&name, arguments);
     let outcome = match resolve_timeout(command.timeout) {
         Some(secs) => match tokio::time::timeout(Duration::from_secs(secs), call).await {
             Ok(result) => result,
@@ -388,16 +394,16 @@ async fn run_mcp_tool_hook(
         },
         None => call.await,
     };
-    close_hook_status(command, Some(agent), status);
+    close_status(agent, status);
 
     match outcome {
         Ok(text) => {
             let mut output = parse_output(&text, input.hook_event_name);
-            finish_hook_output(&mut output, command, Some(agent));
+            finish_hook_output(&mut output, command, agent);
             output
         }
         Err(error) => {
-            report_hook_failure(input, Some(agent), &format!("{error:#}"));
+            report_failure(agent, input.hook_event_name, &format!("{error:#}"));
             HookOutput::continue_default()
         }
     }
@@ -412,7 +418,7 @@ pub async fn run_command_hook(
     command: &HookCommand,
     dirs: impl Into<PluginDirs>,
     input: &HookRunInput,
-    agent: Option<&crate::Agent>,
+    agent: Option<&dyn HookHost>,
 ) -> HookOutput {
     let dirs = dirs.into();
     let Some(raw) = command.command.as_deref() else {
@@ -439,7 +445,11 @@ pub async fn run_command_hook(
         return HookOutput::continue_default();
     }
 
-    let status = open_hook_status(command, agent);
+    let status = open_status(
+        agent,
+        command.source.as_deref().unwrap_or("hook"),
+        command.status_message.as_deref(),
+    );
     let payload = build_payload(input, agent);
     // Claude semantics: default 60s; an explicit `0` disables the timeout.
     let timeout_secs = resolve_timeout(command.timeout);
@@ -471,7 +481,7 @@ pub async fn run_command_hook(
                     } else {
                         format!("exited with {:?}: {}", run.exit_code, run.stderr)
                     };
-                    report_hook_failure(input, agent, &detail);
+                    report_failure(agent, input.hook_event_name, &detail);
                 }
                 // Otherwise the hook printed a decision: honour it. A JSON
                 // decision is the richer contract, so a bare exit status must
@@ -481,11 +491,11 @@ pub async fn run_command_hook(
             output
         }
         Err(error) => {
-            report_hook_failure(input, agent, &format!("{error}"));
+            report_failure(agent, input.hook_event_name, &format!("{error}"));
             HookOutput::continue_default()
         }
     };
-    close_hook_status(command, agent, status);
+    close_status(agent, status);
     output
 }
 
@@ -495,53 +505,12 @@ pub async fn run_command_hook(
 /// `None` when the plugin declared no `statusMessage` or there is no UI to tell:
 /// a hook with nothing to say must not produce a row. The row is deliberately
 /// *not* opened for `async` hooks — see `run_command_hook`.
-fn open_hook_status(
-    command: &HookCommand,
-    agent: Option<&crate::Agent>,
-) -> Option<(u64, std::time::Instant)> {
-    let agent = agent?;
-    let message = command.status_message.as_deref()?;
-    let id = agent.next_hook_status_id();
-    agent.emit_update(AgentUpdate::HookStatus {
-        id,
-        source: command.source.clone(),
-        message: message.to_string(),
-        elapsed_ms: None,
-    });
-    Some((id, std::time::Instant::now()))
-}
-
-/// Closes the row [`open_hook_status`] opened: same id, same wording, now muted
-/// and timed.
-///
-/// The plugin's own words are kept rather than rewritten — what changes is the
-/// styling and the measured time, which is what stops the line claiming to be
-/// loading. Failure closes the row too: the line is a trace, not a verdict.
-fn close_hook_status(
-    command: &HookCommand,
-    agent: Option<&crate::Agent>,
-    opened: Option<(u64, std::time::Instant)>,
-) {
-    let (Some(agent), Some((id, started_at))) = (agent, opened) else {
-        return;
-    };
-    agent.emit_update(AgentUpdate::HookStatus {
-        id,
-        source: command.source.clone(),
-        message: command.status_message.clone().unwrap_or_default(),
-        elapsed_ms: Some(started_at.elapsed().as_millis() as u64),
-    });
-}
-
 /// Applies the post-processing every hook kind shares.
 ///
 /// Both kinds produce a [`HookOutput`], and both must then honour the same two
-/// rules. Factored out so a fix to one cannot miss the other.
-fn finish_hook_output(
-    output: &mut HookOutput,
-    command: &HookCommand,
-    agent: Option<&crate::Agent>,
-) {
+/// rules: cap `additionalContext` at the hook's declared budget, and surface
+/// `systemMessage` as a notice rather than injecting it.
+fn finish_hook_output(output: &mut HookOutput, command: &HookCommand, host: Option<&dyn HookHost>) {
     // A per-hook budget, applied where the context is produced: the hook's
     // author declared how much of it should reach the model. A let-chain, not a
     // tuple pattern: in `if let (Some(limit), Some(context)) = …` the `take()`
@@ -561,24 +530,9 @@ fn finish_hook_output(
     // Codex records `systemMessage` as a warning entry; it never reaches the
     // conversation.
     if let Some(message) = &output.system_message
-        && let Some(agent) = agent
+        && let Some(host) = host
     {
-        agent.emit_update(AgentUpdate::Info(message.clone()));
-    }
-}
-
-/// Reports a hook failure, so it is not a log-only event.
-///
-/// The warning alone only reaches a log file, and `tact-ui` installs no
-/// subscriber unless `RUST_LOG` is set. A hook that failed is otherwise
-/// indistinguishable from one that had nothing to say.
-fn report_hook_failure(input: &HookRunInput, agent: Option<&crate::Agent>, detail: &str) {
-    warn!("plugin hook command failed (continuing): {detail}");
-    if let Some(agent) = agent {
-        agent.emit_update(AgentUpdate::Info(format!(
-            "[plugin hook {} failed] {detail}",
-            input.hook_event_name
-        )));
+        host.emit(AgentUpdate::Info(message.clone()));
     }
 }
 
@@ -712,21 +666,21 @@ fn resolve_timeout(timeout: Option<u64>) -> Option<u64> {
 /// name (Codex points at its rollout file). Reporting the transcripts
 /// *directory* here — as this did — was worse than null, because a plugin opens
 /// what it is given.
-fn build_payload(input: &HookRunInput, agent: Option<&crate::Agent>) -> Value {
+fn build_payload(input: &HookRunInput, host: Option<&dyn HookHost>) -> Value {
     let mut payload = json!({
         // Callers historically passed `String::new()`; the live session id is
         // the one a plugin can use to correlate runs.
-        "session_id": agent
-            .and_then(|agent| agent.runtime.session_id.clone())
+        "session_id": host
+            .and_then(|host| host.session_id())
             .unwrap_or_else(|| input.session_id.clone()),
         "transcript_path": Value::Null,
         "cwd": input.work_dir,
         "hook_event_name": input.hook_event_name,
     });
-    if let Some(agent) = agent {
-        payload["model"] = json!(agent.model());
-        payload["permission_mode"] = json!(agent.runtime.permission_manager.mode().hook_name());
-        payload["turn_id"] = json!(agent.turns_taken.to_string());
+    if let Some(host) = host {
+        payload["model"] = json!(host.model());
+        payload["permission_mode"] = json!(host.permission_mode().hook_name());
+        payload["turn_id"] = json!(host.turns_taken().to_string());
     }
     if let Some(object) = input.event.as_object() {
         for (key, value) in object {
@@ -1887,7 +1841,7 @@ fn apply_hook_sources(
                                 // read `null` and degrade.
                                 event: json!({ "source": source }),
                             },
-                            Some(agent),
+                            Some(&crate::plugin::AgentHookHost::new(agent)),
                         )
                         .await;
                         collect_session_start_output(&output, context, Some(&hook_source));
@@ -1930,7 +1884,7 @@ fn apply_hook_sources(
                                 hook_event_name: "UserPromptSubmit",
                                 event: json!({ "prompt": prompt_snapshot }),
                             },
-                            Some(agent),
+                            Some(&crate::plugin::AgentHookHost::new(agent)),
                         )
                         .await;
                         if let Some(extra) = output.additional_context {
@@ -1973,7 +1927,7 @@ fn apply_hook_sources(
                                 "tool_use_id": tool_use_id,
                             }),
                         },
-                        Some(agent),
+                        Some(&crate::plugin::AgentHookHost::new(agent)),
                     )
                     .await;
                     if let Some(extra) = output.additional_context {
@@ -2021,7 +1975,7 @@ fn apply_hook_sources(
                                     "tool_input": tool_use.input,
                                 }),
                             },
-                            Some(agent),
+                            Some(&crate::plugin::AgentHookHost::new(agent)),
                         )
                         .await;
                         // `allow` skips the prompt, `block` denies with the
@@ -2070,7 +2024,7 @@ fn apply_hook_sources(
                                     "tool_response": tool_response,
                                 }),
                             },
-                            Some(agent),
+                            Some(&crate::plugin::AgentHookHost::new(agent)),
                         )
                         .await;
                         if output.suppress_output {
@@ -2125,7 +2079,7 @@ fn apply_hook_sources(
                                     "is_interrupt": false,
                                 }),
                             },
-                            Some(agent),
+                            Some(&crate::plugin::AgentHookHost::new(agent)),
                         )
                         .await;
                         // Observational: the tool already failed.
@@ -2169,7 +2123,7 @@ fn apply_hook_sources(
                                     "message": message,
                                 }),
                             },
-                            Some(agent),
+                            Some(&crate::plugin::AgentHookHost::new(agent)),
                         )
                         .await;
                         // Observational.
@@ -2207,7 +2161,7 @@ fn apply_hook_sources(
                                 "task_description": task_description,
                             }),
                         },
-                        Some(agent),
+                        Some(&crate::plugin::AgentHookHost::new(agent)),
                     )
                     .await;
                     // Observational.
@@ -2243,7 +2197,7 @@ fn apply_hook_sources(
                             hook_event_name: "Interrupt",
                             event: json!({ "reason": "user_interrupt" }),
                         },
-                        Some(agent),
+                        Some(&crate::plugin::AgentHookHost::new(agent)),
                     )
                     .await;
                     Ok(output.control)
@@ -2280,7 +2234,7 @@ fn apply_hook_sources(
                                 "last_assistant_message": last,
                             }),
                         },
-                        Some(agent),
+                        Some(&crate::plugin::AgentHookHost::new(agent)),
                     )
                     .await;
                     // `block` means "continue the turn with reason as the next
@@ -2314,7 +2268,7 @@ fn apply_hook_sources(
                             hook_event_name: "SessionEnd",
                             event: json!({ "reason": "other" }),
                         },
-                        Some(agent),
+                        Some(&crate::plugin::AgentHookHost::new(agent)),
                     )
                     .await;
                     // Observational: a block cannot prevent teardown.
@@ -2347,7 +2301,7 @@ fn apply_hook_sources(
                             hook_event_name: "PreCompact",
                             event: json!({ "trigger": trigger.as_str() }),
                         },
-                        Some(agent),
+                        Some(&crate::plugin::AgentHookHost::new(agent)),
                     )
                     .await;
                     // `block` vetoes the compaction (Codex `should_stop`).
@@ -2380,7 +2334,7 @@ fn apply_hook_sources(
                                 hook_event_name: "PostCompact",
                                 event: json!({ "trigger": trigger.as_str() }),
                             },
-                            Some(agent),
+                            Some(&crate::plugin::AgentHookHost::new(agent)),
                         )
                         .await;
                         // Observational: compaction already committed.
@@ -2720,7 +2674,7 @@ mod tests {
                 hook_event_name: "PreCompact",
                 event: json!({ "trigger": "auto" }),
             },
-            Some(&agent),
+            Some(&crate::plugin::AgentHookHost::new(&agent)),
         )
         .await;
 
@@ -2957,7 +2911,7 @@ mod tests {
                 hook_event_name: "SessionStart",
                 event: json!({ "source": "startup" }),
             },
-            Some(&agent),
+            Some(&crate::plugin::AgentHookHost::new(&agent)),
         )
         .await;
 
@@ -4492,7 +4446,7 @@ mod tests {
             &command,
             PluginDirs::root_only(dir.path()),
             &hook_input(dir.path(), "PreToolUse"),
-            Some(&agent),
+            Some(&crate::plugin::AgentHookHost::new(&agent)),
         )
         .await;
 
@@ -4527,7 +4481,7 @@ mod tests {
             &command,
             PluginDirs::root_only(dir.path()),
             &hook_input(dir.path(), "UserPromptSubmit"),
-            Some(&agent),
+            Some(&crate::plugin::AgentHookHost::new(&agent)),
         )
         .await;
 
@@ -4559,7 +4513,7 @@ mod tests {
             &command,
             PluginDirs::root_only(dir.path()),
             &hook_input(dir.path(), "UserPromptSubmit"),
-            Some(&agent),
+            Some(&crate::plugin::AgentHookHost::new(&agent)),
         )
         .await;
 
@@ -4582,7 +4536,7 @@ mod tests {
             &command,
             PluginDirs::root_only(dir.path()),
             &hook_input(dir.path(), "PreToolUse"),
-            Some(&agent),
+            Some(&crate::plugin::AgentHookHost::new(&agent)),
         )
         .await;
 
@@ -4613,7 +4567,7 @@ mod tests {
                 &command,
                 PluginDirs::root_only(dir.path()),
                 &hook_input(dir.path(), "PreToolUse"),
-                Some(&agent),
+                Some(&crate::plugin::AgentHookHost::new(&agent)),
             )
             .await;
             assert_eq!(output.control, HookControl::Continue);

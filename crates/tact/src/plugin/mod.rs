@@ -1,3 +1,4 @@
+mod hook_host;
 mod hooks;
 mod install;
 mod marketplace;
@@ -5,6 +6,7 @@ mod model;
 mod store;
 
 use anyhow::{Context, Result};
+pub use hook_host::*;
 pub use hooks::*;
 pub use install::*;
 pub use marketplace::*;
