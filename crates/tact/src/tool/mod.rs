@@ -363,6 +363,12 @@ impl ToolRouter {
     ///
     /// Borrowing rather than consuming: the router keeps emitting specs and the
     /// catalog dispatches, and both see one `Arc` per handler.
+    ///
+    /// The production path does not use this — it installs
+    /// [`family::FamilyPlugin`]s into a host, which is the same handlers through
+    /// the same adapter but with contributions and a capability filter. This is
+    /// the direct form, kept for tests and for a caller that wants a catalog
+    /// without a plugin host.
     pub fn kernel_catalog(
         &self,
         contexts: std::sync::Arc<dyn legacy::ToolContextFactory>,
@@ -375,14 +381,6 @@ impl ToolRouter {
             )))?;
         }
         Ok(catalog)
-    }
-
-    /// Consume the router into a kernel catalog, wrapping every handler.
-    pub fn into_kernel_catalog(
-        self,
-        contexts: std::sync::Arc<dyn legacy::ToolContextFactory>,
-    ) -> Result<tact_kernel::catalog::ToolCatalog> {
-        self.kernel_catalog(contexts)
     }
 
     /// Register a handler that is already type-erased.

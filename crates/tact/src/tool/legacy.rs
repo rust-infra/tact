@@ -314,7 +314,7 @@ mod catalog_tests {
         let router = toolset();
         let expected = router.tool_specs().len();
         let catalog = router
-            .into_kernel_catalog(Arc::new(SharedToolContextFactory::new(test_context(
+            .kernel_catalog(Arc::new(SharedToolContextFactory::new(test_context(
                 "router_bridge",
             ))))
             .unwrap();
@@ -355,7 +355,7 @@ mod catalog_tests {
         let catalog = ToolRouter::new()
             .route(Echo)
             .unwrap()
-            .into_kernel_catalog(Arc::new(SharedToolContextFactory::new(test_context(
+            .kernel_catalog(Arc::new(SharedToolContextFactory::new(test_context(
                 "router_bridge_call",
             ))))
             .unwrap();

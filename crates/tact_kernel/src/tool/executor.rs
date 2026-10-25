@@ -624,11 +624,6 @@ impl ToolExecutor {
             .remove(&prepared.ticket);
     }
 
-    /// The hook port, for a host that must run its own hook callbacks.
-    pub fn hooks(&self) -> &dyn HookService {
-        self.hooks.as_ref()
-    }
-
     /// The catalog this executor dispatches from.
     pub fn catalog(&self) -> &ToolCatalog {
         self.catalog.as_ref()
