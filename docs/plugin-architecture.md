@@ -51,14 +51,39 @@ the first implementation plan is
     than a kernel descriptor. That is the last legacy permission path.
   - Redaction level is decided once and travels on `ToolCallContext`;
     `CancelToken` wraps the agent's live flag so a cancel mid-call is seen.
+- Phase 2 is in progress. What has moved so far:
+  - The built-in tools are a `ToolFamily` table (`shell`, `files`,
+    `interaction`, `task`, `goal`, `team`, `worktree`, `background`,
+    `subagent`, `memory`, `skill`, plus a restricted `subagent_basics`), and
+    `toolset()`/`subagent_toolset()` are folds over it. The family table is
+    pinned to the previous 40-tool set, so a family edit that changes the
+    advertised tools fails a test.
+  - The Agent's catalog is assembled by *installing* those families as plugins
+    (`FamilyPlugin` → `PluginHost` → `Runtime::tools`), over the same
+    `Arc<dyn Tool>` handlers the router holds. A disabled capability is skipped
+    and reported, not silently dropped.
+  - The system prompt's parts are kernel prompt sections
+    (`prompt:role`, `prompt:skills`, `prompt:guidelines`, `prompt:constraints`,
+    `prompt:memory_guidance`, `prompt:additional`, `prompt:mcp_instructions`,
+    `prompt:memory`, `prompt:dynamic_context`). The Tera template still owns the
+    framing, and a test pins the assembled prompt byte-for-byte against the old
+    builder chain.
+  - `ToolCatalog` can be reached through a shared handle, so a host registers
+    dynamic sources (MCP) without invalidating live tickets, and `handler_for`
+    resolves a handler whether a native insert or a source provided it.
 - `tui` still depends on `tact` for view services. The target has no such edge;
   Phase 4 removes it and its test/fixture dependencies.
 
 ## Not implemented yet
 
-- MCP tools as kernel descriptors: `McpToolSource` adapts them, but the Agent
-  does not yet register it, so MCP calls still bypass the executor and keep their
-  `[mcp]`-settings risk and their own permission ladder.
+- MCP tools as kernel descriptors: `McpToolSource` and `McpControlSource` adapt
+  them, but the Agent does not register either yet, so MCP calls still bypass the
+  executor and keep their `[mcp]`-settings risk and their own ladder. That is the
+  last legacy permission path.
+- Domain families beyond tools and prompt sections: Goal/Task/Team/Worktree/
+  Background/Subagent are tool families but not yet plugins with their own
+  lifecycle, and Skills/Memory/MCP still reach into `agent/` directly (the module
+  guard's allowlist is still 2 entries).
 - `AgentService`, `ChatService`, `SessionService` and view execution.
 - `ToolEvent`s: the kernel emits them, but nothing consumes them yet — the TUI
   still renders from the legacy `AgentUpdate`s.
