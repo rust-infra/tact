@@ -240,9 +240,11 @@ fn expand_domain_tool(
                         sandbox: context.sandbox.clone(),
                         degraded: context.sandbox_degraded.clone(),
                     }),
-                    vision: Some(crate::tool::VisionPolicy::from_settings(
-                        &crate::config::settings().ui.vision_image,
-                    )),
+                    // From the context, like the shell policy above it: the
+                    // snapshot was resolved when the run started, and a macro
+                    // that re-read the global could hand a tool a policy from a
+                    // different session than the one it is running in.
+                    vision: Some(context.vision),
                     session_id: context.session_id.clone(),
                     active_goal_id: context.active_goal_id.clone(),
                     events: Some(context.events.clone()),
