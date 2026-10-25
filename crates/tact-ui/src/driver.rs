@@ -238,31 +238,113 @@ fn forward_command_outcome(outcome: &tact::command::CommandOutcome, events: &Upd
 /// agent loop itself is not here: it cannot own a `&mut Agent` through a
 /// catalog, so it keeps its arm on the driver's side.
 fn builtin_command_catalog(
-    agent: &Agent,
+    slot: &Arc<tokio::sync::Mutex<Option<Agent>>>,
     chat: Option<std::sync::Arc<dyn tact::command::ChatService>>,
     work_dir: &std::path::Path,
 ) -> tact::command::CommandCatalog {
-    // Read from the agent rather than taken as six parameters: every one of them
-    // is a field on it, and a signature that listed them had grown to eight
-    // arguments — the point at which a caller cannot tell which one is which.
-    let session = agent.runtime.session_id.clone();
+    // The loop holds the slot, so this lock is uncontended here.
+    let guard = slot.try_lock().expect("the loop owns the slot here");
+    build_command_catalog(guard.as_ref(), slot, chat, work_dir)
+}
+
+/// Build a catalog for a caller that already holds the agent.
+///
+/// Two entry points because the two callers differ in what they own: the loop
+/// holds a slot, while `handle_user_command` holds `&mut Agent` outright. Passing
+/// an empty slot from the second would silently drop `/goal` and `/background`,
+/// which is exactly what the tests caught.
+fn build_command_catalog(
+    agent: Option<&Agent>,
+    slot: &Arc<tokio::sync::Mutex<Option<Agent>>>,
+    chat: Option<std::sync::Arc<dyn tact::command::ChatService>>,
+    work_dir: &std::path::Path,
+) -> tact::command::CommandCatalog {
+    let session = agent.and_then(|agent| agent.runtime.session_id.clone());
+    let background = agent.map(|agent| tact::command::BackgroundWiring {
+        manager: std::sync::Arc::new(agent.tool_context.background_manager.clone()),
+        session: std::sync::Arc::new(move || session.clone()),
+    });
+    let goals = agent.map(|agent| tact::command::GoalWiring {
+        goal_manager: agent.tool_context.goal_manager.clone(),
+        task_manager: agent.tool_context.task_manager.clone(),
+        limits: agent_goal_limits(agent),
+    });
+    let stats = agent.map_or_else(
+        || std::sync::Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
+        |agent| agent.runtime.stats.clone(),
+    );
     tact::command::builtin_catalog(
-        agent.runtime.stats.clone(),
-        Some(tact::command::BackgroundWiring {
-            manager: std::sync::Arc::new(agent.tool_context.background_manager.clone()),
-            session: std::sync::Arc::new(move || session.clone()),
-        }),
-        Some(tact::command::GoalWiring {
-            goal_manager: agent.tool_context.goal_manager.clone(),
-            task_manager: agent.tool_context.task_manager.clone(),
-            limits: agent_goal_limits(agent),
-        }),
+        stats,
+        background,
+        goals,
         chat,
         Some(tact::command::HooksWiring {
             work_dir: work_dir.to_path_buf(),
             render: std::sync::Arc::new(crate::hooks_cli::render_hooks_listing),
         }),
+        Some(tact::command::McpWiring {
+            catalog: std::sync::Arc::new(RuntimeMcpCatalog { slot: slot.clone() }),
+            render: std::sync::Arc::new(crate::mcp_cli::render_live_listing),
+        }),
     )
+}
+
+/// An MCP view for a host that has no router in scope.
+///
+/// The palette needs the command to exist so it can be offered; the listing
+/// itself runs in the command loop, which holds the live router. Reporting no
+/// servers is the honest answer for a view that cannot see any.
+pub struct EmptyMcpCatalog;
+
+impl tact::command::McpCatalog for EmptyMcpCatalog {
+    fn server_summaries(&self) -> Vec<(String, usize)> {
+        Vec::new()
+    }
+
+    fn list_prompts<'a>(
+        &'a self,
+        _server: Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'a>>
+    {
+        Box::pin(async { anyhow::bail!("no MCP router is available in this view") })
+    }
+}
+
+/// The read-only MCP view a `/mcp` listing uses.
+///
+/// It reads through the agent slot rather than capturing the router: `auth`
+/// replaces the router on reload, and a captured copy would answer from the
+/// router the session started with.
+struct RuntimeMcpCatalog {
+    slot: Arc<tokio::sync::Mutex<Option<Agent>>>,
+}
+
+impl tact::command::McpCatalog for RuntimeMcpCatalog {
+    fn server_summaries(&self) -> Vec<(String, usize)> {
+        match self.slot.try_lock() {
+            Ok(guard) => guard
+                .as_ref()
+                .map(|agent| agent.mcp_router.server_summaries())
+                .unwrap_or_default(),
+            // A held lock means a turn is running; the listing then reports no
+            // servers rather than stalling the caller behind that turn.
+            Err(_) => Vec::new(),
+        }
+    }
+
+    fn list_prompts<'a>(
+        &'a self,
+        server: Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'a>>
+    {
+        Box::pin(async move {
+            let guard = self.slot.lock().await;
+            let agent = guard
+                .as_ref()
+                .ok_or_else(|| anyhow::anyhow!("the agent is not installed yet"))?;
+            agent.mcp_router.list_prompts(server).await
+        })
+    }
 }
 
 /// Like [`run_command_loop`], but forwards balance / usage quota results to the
@@ -300,13 +382,6 @@ pub async fn run_command_loop_with_account(
     let task_manager = agent.tool_context.task_manager.clone();
     let background_session_id = agent.runtime.session_id.clone();
     let limits = agent_goal_limits(&agent);
-    let commands = builtin_command_catalog(
-        &agent,
-        chat.as_ref()
-            .map(|chat| chat.clone() as std::sync::Arc<dyn tact::command::ChatService>),
-        &image_work_dir,
-    );
-
     // Reconcile durable Goal state once, before serving commands: a crashed
     // runner leaves an active run with an expired lease and a Goal still marked
     // `Running`. Non-fatal by design - a recovery failure is reported, never
@@ -327,12 +402,22 @@ pub async fn run_command_loop_with_account(
     // empty until some later Goal command happens to emit a snapshot.
     emit_goals_changed(&goal_manager, &task_manager, limits, &events).await;
 
+    // The slot is created before the catalog: `/mcp` reads the router through it,
+    // and a command that captured the router directly would go stale the first
+    // time `auth` reloaded it.
+    let agent_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
+        Arc::new(tokio::sync::Mutex::new(Some(agent)));
+    let commands = builtin_command_catalog(
+        &agent_slot,
+        chat.as_ref()
+            .map(|chat| chat.clone() as std::sync::Arc<dyn tact::command::ChatService>),
+        &image_work_dir,
+    );
+
     // One owner for the whole loop: the agent lives in this slot and is never
     // moved into a task. A task locks it for the duration of its work, which is
     // what the single-owner model gave for free — and which the chat service
     // already relies on, since it holds the same slot.
-    let agent_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
-        Arc::new(tokio::sync::Mutex::new(Some(agent)));
     let mut active: Option<JoinHandle<()>> = None;
     // Whether the local in-flight task is a Goal activation, and which Goal.
     // `None` while a normal task runs; the id is unknown during CreateGoal
@@ -1763,8 +1848,17 @@ async fn handle_user_command_with_account(
         UserCommand::RunCommand { name, args } => {
             // Same catalog the loop-level arm uses, so the two cannot answer
             // differently.
-            let catalog = builtin_command_catalog(
-                agent,
+            // The agent-side path has no slot here (it holds `&mut Agent`
+            // directly), so `/mcp` answers from no servers rather than stalling;
+            // the loop-level arm is where a listing really runs.
+            // This path holds `&mut Agent` outright, so it builds the catalog
+            // from it directly. An empty slot here would silently drop `/goal`
+            // and `/background`.
+            let local_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
+                Arc::new(tokio::sync::Mutex::new(None));
+            let catalog = build_command_catalog(
+                Some(agent),
+                &local_slot,
                 // The agent service path has no chat handle in scope here; the
                 // loop-level arm is where `/compact` runs, and it passes one.
                 None,
@@ -2435,7 +2529,9 @@ mod tests {
 
         // The command answers; the host is what turns an empty projection into a
         // log line, so this test covers both halves.
-        let catalog = super::builtin_command_catalog(&agent, None, std::path::Path::new("/tmp"));
+        let slot: std::sync::Arc<tokio::sync::Mutex<Option<tact::Agent>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(Some(agent)));
+        let catalog = super::builtin_command_catalog(&slot, None, std::path::Path::new("/tmp"));
         let outcome = catalog
             .run_async(&tact::command::CommandInvocation {
                 name: "goal".into(),

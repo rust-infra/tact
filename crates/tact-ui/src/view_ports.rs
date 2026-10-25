@@ -203,6 +203,13 @@ pub fn install_command_directory(
             work_dir: agent.tool_context.work_dir.clone(),
             render: std::sync::Arc::new(crate::hooks_cli::render_hooks_listing),
         }),
+        // The palette lists `/mcp`. The listing itself runs in the command loop,
+        // which holds the live router; here the catalog only needs to exist so
+        // the command is offered.
+        Some(tact::command::McpWiring {
+            catalog: std::sync::Arc::new(crate::driver::EmptyMcpCatalog),
+            render: std::sync::Arc::new(crate::mcp_cli::render_live_listing),
+        }),
     );
     RuntimeCommandDirectory::new(catalog).install(slot);
 }
@@ -629,6 +636,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let expected: Vec<String> = catalog
             .descriptors()
@@ -657,6 +665,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let directory = RuntimeCommandDirectory::new(catalog);
         let stats = tui::ports::CommandDirectory::resolve(&directory, "stats")
@@ -676,6 +685,7 @@ mod tests {
 
         let catalog = tact::command::builtin_catalog(
             Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
+            None,
             None,
             None,
             None,

@@ -22,6 +22,7 @@ pub mod background;
 pub mod compact;
 pub mod goal;
 pub mod hooks;
+pub mod mcp;
 pub mod plugin;
 pub mod stats;
 
@@ -87,6 +88,34 @@ pub fn builtin_commands(
 /// directly — the same reason `builtin_catalog` returns a kernel type.
 pub use tact_kernel::runtime::ChatService;
 
+/// What the MCP commands need from the host.
+///
+/// A narrow read-only view rather than the router itself: `/mcp list` and
+/// `/mcp prompts` only ever read, and handing a command the whole router would
+/// let it reconnect or dispatch tools, which is not what a listing does.
+pub trait McpCatalog: Send + Sync {
+    /// The connected servers and their tool counts.
+    fn server_summaries(&self) -> Vec<(String, usize)>;
+
+    /// A rendered `prompts/list`, optionally scoped to one server.
+    ///
+    /// A boxed future rather than `async fn` so an implementor does not need the
+    /// `async_trait` macro — the only implementation lives in a frontend crate
+    /// that has no reason to depend on it.
+    fn list_prompts<'a>(
+        &'a self,
+        server: Option<&'a str>,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<String>> + Send + 'a>>;
+}
+
+/// What `/mcp` needs from the host.
+pub struct McpWiring {
+    /// The read-only view of the connected servers.
+    pub catalog: Arc<dyn McpCatalog>,
+    /// How a server listing becomes text.
+    pub render: mcp::McpRenderer,
+}
+
 /// What `/hooks` needs from the host.
 pub struct HooksWiring {
     /// The project directory whose hooks are inspected.
@@ -105,6 +134,8 @@ pub fn builtin_catalog(
     chat: Option<Arc<dyn tact_kernel::runtime::ChatService>>,
     // `/hooks` needs a directory and a renderer, both of which the host owns.
     hooks: Option<HooksWiring>,
+    // `/mcp list` and `/mcp prompts` read the router; the host supplies the view.
+    mcp: Option<McpWiring>,
 ) -> tact_kernel::catalog::CommandCatalog {
     let mut catalog = tact_kernel::catalog::CommandCatalog::default();
     for command in builtin_commands(stats) {
@@ -115,6 +146,11 @@ pub fn builtin_catalog(
     if let Some(chat) = chat {
         catalog
             .insert(Arc::new(compact::CompactCommand::new(chat)))
+            .expect("built-in command names are unique");
+    }
+    if let Some(mcp) = mcp {
+        catalog
+            .insert(Arc::new(mcp::McpCommand::new(mcp.catalog, mcp.render)))
             .expect("built-in command names are unique");
     }
     if let Some(hooks) = hooks {
@@ -211,6 +247,7 @@ mod tests {
         // unreachable even though it exists.
         let catalog = builtin_catalog(
             Arc::new(std::sync::RwLock::new(crate::stats::SessionStats::default())),
+            None,
             None,
             None,
             None,
