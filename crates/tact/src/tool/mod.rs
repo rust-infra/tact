@@ -87,7 +87,9 @@ pub use family::{
     FamilyPlugin, SUBAGENT_FAMILIES, ToolFamily, catalog_from_families, install_families,
     router_from,
 };
-pub use legacy::{LegacyToolAdapter, SharedToolContextFactory, ToolContextFactory};
+pub use legacy::{
+    ContextualToolAdapter, LegacyToolAdapter, SharedToolContextFactory, ToolContextFactory,
+};
 #[cfg(test)]
 use load_skill::LoadSkillTool;
 pub use mcp_control::{
@@ -554,10 +556,12 @@ impl ToolRouter {
     ) -> Result<tact_kernel::catalog::ToolCatalog> {
         let mut catalog = tact_kernel::catalog::ToolCatalog::default();
         for registered in self.tools.values() {
-            catalog.insert(std::sync::Arc::new(legacy::LegacyToolAdapter::from_arc(
-                registered.handler.clone(),
-                contexts.clone(),
-            )))?;
+            catalog.insert(std::sync::Arc::new(
+                legacy::ContextualToolAdapter::from_arc(
+                    registered.handler.clone(),
+                    contexts.clone(),
+                ),
+            ))?;
         }
         Ok(catalog)
     }

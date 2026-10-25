@@ -1,4 +1,12 @@
-//! Adapter from the legacy `tact::tool::Tool` to the kernel `Tool` contract.
+//! Adapter from the crate's `tact::tool::Tool` to the kernel `Tool` contract.
+//!
+//! The name said "legacy" while this was a migration scaffold. It no longer is:
+//! every built-in family reaches the kernel through this adapter, and the narrower
+//! paths ([`Tool::call_in_workspace`](crate::tool::Tool::call_in_workspace) and
+//! [`Tool::call_in_domain`](crate::tool::Tool::call_in_domain)) are optimisations
+//! of it, not replacements. The adapter kept its old name only as a published
+//! alias; the trait side was never a separate trait — `LegacyTool` is this file's
+//! alias for `super::Tool`.
 //!
 //! Phase 1b uses this to put existing tools behind `ToolExecutor` without
 //! rewriting every handler at once. The adapter owns no policy: permission,
@@ -14,7 +22,7 @@ use tact_kernel::tool::result::ToolCallResult;
 
 use super::{Tool as LegacyTool, ToolContext};
 
-/// Builds the legacy context a wrapped tool still expects.
+/// Builds the crate context a wrapped tool still expects.
 pub trait ToolContextFactory: Send + Sync {
     fn build(&self, ctx: &ToolCallContext) -> ToolContext;
 
@@ -176,13 +184,19 @@ impl ToolContextFactory for SharedToolContextFactory {
     }
 }
 
-/// A legacy handler exposed as a kernel [`KernelTool`].
-pub struct LegacyToolAdapter {
+/// The adapter's published name.
+///
+/// Kept because the type is reachable from outside this crate; new code should use
+/// [`ContextualToolAdapter`], which says what it is.
+pub type LegacyToolAdapter = ContextualToolAdapter;
+
+/// A crate handler exposed as a kernel [`KernelTool`].
+pub struct ContextualToolAdapter {
     inner: Arc<dyn LegacyTool>,
     contexts: Arc<dyn ToolContextFactory>,
 }
 
-impl LegacyToolAdapter {
+impl ContextualToolAdapter {
     pub fn new<T: LegacyTool + 'static>(inner: T, contexts: Arc<dyn ToolContextFactory>) -> Self {
         Self {
             inner: Arc::new(inner),
@@ -205,7 +219,7 @@ impl LegacyToolAdapter {
 }
 
 #[async_trait]
-impl KernelTool for LegacyToolAdapter {
+impl KernelTool for ContextualToolAdapter {
     fn descriptor(&self) -> ToolDescriptor {
         let metadata = self.inner.metadata();
         ToolDescriptor::from_native(
@@ -444,7 +458,7 @@ mod tests {
         }
 
         let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let adapter = LegacyToolAdapter::from_arc(
+        let adapter = ContextualToolAdapter::from_arc(
             Arc::new(NeedsSkills) as Arc<dyn crate::tool::Tool>,
             Arc::new(CountingFactory {
                 builds: builds.clone(),
@@ -549,7 +563,7 @@ mod tests {
         let tool = NeedsWorkspaceOnly {
             builds: builds.clone(),
         };
-        let adapter = LegacyToolAdapter::from_arc(
+        let adapter = ContextualToolAdapter::from_arc(
             Arc::new(tool) as Arc<dyn crate::tool::Tool>,
             Arc::new(CountingFactory {
                 builds: builds.clone(),
@@ -573,7 +587,7 @@ mod tests {
     #[tokio::test]
     async fn adapter_maps_context_and_shares_cancel() {
         let seen = Arc::new(std::sync::Mutex::new(None));
-        let adapter = LegacyToolAdapter::new(
+        let adapter = ContextualToolAdapter::new(
             InspectingLegacyTool { seen: seen.clone() },
             Arc::new(SharedToolContextFactory::new(test_context(
                 "legacy_adapter",
@@ -639,7 +653,7 @@ mod tests {
 
     #[test]
     fn adapter_descriptor_comes_from_legacy_metadata() {
-        let adapter = LegacyToolAdapter::new(
+        let adapter = ContextualToolAdapter::new(
             InspectingLegacyTool {
                 seen: Arc::default(),
             },

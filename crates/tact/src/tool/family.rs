@@ -272,7 +272,7 @@ impl tact_kernel::plugin::Plugin for FamilyPlugin {
 
     fn register(&self, registrar: &mut Registrar<'_>) -> anyhow::Result<()> {
         for handler in &self.shared {
-            registrar.tool(super::LegacyToolAdapter::from_arc(
+            registrar.tool(super::ContextualToolAdapter::from_arc(
                 handler.clone(),
                 self.contexts.clone(),
             ))?;
@@ -293,7 +293,7 @@ impl tact_kernel::plugin::Plugin for FamilyPlugin {
             return Ok(());
         };
         for handler in taken.drain(..) {
-            registrar.tool(super::LegacyToolAdapter::from_boxed(
+            registrar.tool(super::ContextualToolAdapter::from_boxed(
                 handler,
                 self.contexts.clone(),
             ))?;
