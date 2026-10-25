@@ -143,7 +143,11 @@ impl ManagerPermissionService {
 impl PermissionService for ManagerPermissionService {
     async fn decide(&self, request: PermissionRequest) -> anyhow::Result<PermissionDecision> {
         let risk = request.descriptor.policy.permission.resolve(&request.input);
-        let auto = (self.auto_approved)(&request.descriptor.name);
+        // The descriptor's own bit first (an MCP entry's `approval_mode: auto`),
+        // then the host's predicate, so a host can add policy without a source
+        // having to declare it.
+        let auto = request.descriptor.policy.auto_approved
+            || (self.auto_approved)(&request.descriptor.name);
         let mut manager = self
             .manager
             .lock()
@@ -285,6 +289,44 @@ mod tests {
             .await
             .unwrap();
         assert!(matches!(decision, PermissionDecision::Deny(_)));
+    }
+
+    /// A source that declares `approval_mode: auto` skips the prompt but does
+    /// not lower the risk.
+    ///
+    /// The distinction matters: `Read` is allowed before plan mode is consulted,
+    /// so mapping auto-approve onto `Read` would let an auto-approved MCP write
+    /// run in plan mode.
+    #[tokio::test]
+    async fn a_descriptor_auto_approved_skips_the_prompt_but_not_plan_mode() {
+        let mut declared = descriptor();
+        declared.policy.auto_approved = true;
+
+        let default_mode = service(PermissionMode::Default);
+        assert_eq!(
+            default_mode
+                .decide(PermissionRequest {
+                    descriptor: declared.clone(),
+                    input: json!({"path": "src/main.rs"}),
+                })
+                .await
+                .unwrap(),
+            PermissionDecision::Allow,
+            "auto-approved must not prompt"
+        );
+
+        let plan_mode = service(PermissionMode::Plan);
+        let decided = plan_mode
+            .decide(PermissionRequest {
+                descriptor: declared,
+                input: json!({"path": "src/main.rs"}),
+            })
+            .await
+            .unwrap();
+        assert!(
+            matches!(decided, PermissionDecision::Deny(_)),
+            "auto-approve must not unlock plan mode, got {decided:?}"
+        );
     }
 
     #[tokio::test]

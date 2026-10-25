@@ -218,6 +218,14 @@ pub struct ToolPolicy {
     pub presentation: ToolPresentationOwned,
     pub output: OutputPolicy,
     pub argument_summary: ArgumentSummaryPolicy,
+    /// The source declared this call pre-approved (an MCP entry's
+    /// `approval_mode: "auto"`).
+    ///
+    /// Deliberately *not* a lower risk: `Read` is allowed before plan mode, so
+    /// mapping this onto `Read` would let a write run in plan mode. It is
+    /// consulted after plan mode and after an explicit `deny` rule, so it can
+    /// only skip the prompt.
+    pub auto_approved: bool,
 }
 
 impl ToolMetadata {
@@ -232,6 +240,9 @@ impl ToolMetadata {
             presentation: self.presentation.into(),
             output: self.output,
             argument_summary: self.argument_summary,
+            // A built-in tool never declares itself pre-approved: that is a
+            // property of a remotely-configured source.
+            auto_approved: false,
         }
     }
 }

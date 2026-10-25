@@ -132,7 +132,7 @@ impl McpTool {
     }
 }
 
-fn policy_for(risk: CapabilityRisk, display_name: String) -> ToolPolicy {
+fn policy_for(risk: CapabilityRisk, display_name: String, auto_approved: bool) -> ToolPolicy {
     let permission = match risk {
         CapabilityRisk::Read => PermissionPolicy::Read,
         CapabilityRisk::Write => PermissionPolicy::Write,
@@ -153,6 +153,7 @@ fn policy_for(risk: CapabilityRisk, display_name: String) -> ToolPolicy {
         },
         output: OutputPolicy::PersistLargeOutput,
         argument_summary: ArgumentSummaryPolicy::Json,
+        auto_approved,
     }
 }
 
@@ -167,7 +168,11 @@ impl KernelTool for McpTool {
                 .clone()
                 .unwrap_or_else(|| self.entry.name.clone()),
             input_schema: self.entry.input_schema.clone(),
-            policy: policy_for(self.entry.risk, self.entry.name.clone()),
+            policy: policy_for(
+                self.entry.risk,
+                self.entry.name.clone(),
+                self.entry.auto_approved,
+            ),
         }
     }
 
@@ -427,7 +432,7 @@ mod tests {
 
     #[test]
     fn high_risk_descriptor_maps_to_high_permission() {
-        let policy = policy_for(CapabilityRisk::High, "mcp__demo__echo".into());
+        let policy = policy_for(CapabilityRisk::High, "mcp__demo__echo".into(), false);
         assert_eq!(policy.permission, PermissionPolicy::High);
         assert_eq!(policy.presentation.display_name, "mcp__demo__echo");
         assert_eq!(policy.output, OutputPolicy::PersistLargeOutput);
