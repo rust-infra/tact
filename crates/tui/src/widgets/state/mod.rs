@@ -76,7 +76,7 @@ pub(crate) enum SelectKind {
     ModelProfileEffortPick {
         target: ModelTarget,
         model: String,
-        efforts: Vec<tact_llm::OpenAiReasoningEffort>,
+        efforts: Vec<tact_protocol::ReasoningEffort>,
     },
     /// Second step — choose a thinking budget before applying. `budgets` =
     /// selectable tiers for this model (mapped or default 5).
@@ -95,7 +95,7 @@ pub(crate) enum SelectKind {
     PersistModelAndEffort {
         target: ModelTarget,
         model: String,
-        effort: tact_llm::OpenAiReasoningEffort,
+        effort: tact_protocol::ReasoningEffort,
     },
     /// Prompt source selection for `/view-system-prompt`.
     ViewSystemPrompt,

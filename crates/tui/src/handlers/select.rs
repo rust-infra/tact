@@ -12,8 +12,8 @@ const THINKING_BUDGETS: [usize; 5] = [0, 8_000, 32_000, 64_000, 128_000];
 /// openai: minimal..max (official enum, default medium);
 /// deepseek: low/high/max (minimal/medium illegal, xhigh not offered in UI);
 /// kimi k3 family: low/high/max (default high).
-fn default_effort_tiers(info: &tact_llm::ProviderInfo) -> Vec<tact_llm::OpenAiReasoningEffort> {
-    use tact_llm::OpenAiReasoningEffort as E;
+fn default_effort_tiers(info: &tact_llm::ProviderInfo) -> Vec<tact_protocol::ReasoningEffort> {
+    use tact_protocol::ReasoningEffort as E;
     match &info.provider {
         tact_llm::ProviderKind::DeepSeek | tact_llm::ProviderKind::Kimi => {
             vec![E::Low, E::High, E::Max]
@@ -57,8 +57,8 @@ fn budget_option_labels(msgs: &crate::i18n::Messages, budgets: &[usize]) -> Vec<
     }
 }
 
-fn effort_label(msgs: &crate::i18n::Messages, effort: tact_llm::OpenAiReasoningEffort) -> String {
-    use tact_llm::OpenAiReasoningEffort as E;
+fn effort_label(msgs: &crate::i18n::Messages, effort: tact_protocol::ReasoningEffort) -> String {
+    use tact_protocol::ReasoningEffort as E;
     match effort {
         E::Minimal => msgs.model_effort_minimal.to_string(),
         E::Low => msgs.model_effort_low.to_string(),
@@ -267,7 +267,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                         efforts
                             .last()
                             .copied()
-                            .unwrap_or(tact_llm::OpenAiReasoningEffort::Medium)
+                            .unwrap_or(tact_protocol::ReasoningEffort::Medium)
                     });
                     apply_model_and_effort_pick(app, target, model, effort);
                 }
@@ -442,7 +442,7 @@ fn open_effort_picker(
     app: &mut App,
     target: ModelTarget,
     model: String,
-    efforts: Vec<tact_llm::OpenAiReasoningEffort>,
+    efforts: Vec<tact_protocol::ReasoningEffort>,
 ) {
     let msgs = app.msgs();
     let config = app.config_snapshot();
@@ -617,7 +617,7 @@ fn apply_model_and_effort_pick(
     app: &mut App,
     target: ModelTarget,
     model: String,
-    effort: tact_llm::OpenAiReasoningEffort,
+    effort: tact_protocol::ReasoningEffort,
 ) {
     let msgs = app.msgs();
     match target {
@@ -667,7 +667,7 @@ fn open_effort_persist_prompt(
     app: &mut App,
     target: ModelTarget,
     model: String,
-    effort: tact_llm::OpenAiReasoningEffort,
+    effort: tact_protocol::ReasoningEffort,
 ) {
     let msgs = app.msgs();
     let Some(config) = app.config_snapshot() else {
@@ -702,7 +702,7 @@ fn finish_effort_persist(
     app: &mut App,
     chosen: &str,
     model: &str,
-    effort: tact_llm::OpenAiReasoningEffort,
+    effort: tact_protocol::ReasoningEffort,
     persist: impl FnOnce(&str, &str) -> anyhow::Result<()>,
 ) {
     let msgs = app.msgs();
@@ -890,7 +890,7 @@ fn finish_persist_effort(
     target: ModelTarget,
     chosen: &str,
     model: &str,
-    effort: tact_llm::OpenAiReasoningEffort,
+    effort: tact_protocol::ReasoningEffort,
 ) {
     finish_effort_persist(
         app,
@@ -1043,7 +1043,7 @@ mod tests {
         config.llm.model_profiles.insert(
             "profile-model".to_string(),
             tact::config::ModelProfileToml {
-                reasoning_efforts: vec![tact_llm::OpenAiReasoningEffort::High],
+                reasoning_efforts: vec![tact_protocol::ReasoningEffort::High],
                 thinking_budgets: vec![4_242],
                 ..Default::default()
             },
@@ -1057,7 +1057,7 @@ mod tests {
         assert_eq!(profile.thinking_budgets, vec![4_242]);
         assert_eq!(
             profile.reasoning_efforts,
-            vec![tact_llm::OpenAiReasoningEffort::High]
+            vec![tact_protocol::ReasoningEffort::High]
         );
     }
 
@@ -1353,7 +1353,7 @@ mod tests {
         current: &str,
         subagent_model: &str,
         subagent_budget: usize,
-        subagent_effort: Option<tact_llm::OpenAiReasoningEffort>,
+        subagent_effort: Option<tact_protocol::ReasoningEffort>,
     ) {
         install_models_config(models, current);
         let mut cfg = tact::config::settings();
@@ -1956,7 +1956,7 @@ thinking_budget = {thinking_budget}
                 .as_ref()
                 .unwrap()
                 .reasoning_effort,
-            Some(tact_llm::OpenAiReasoningEffort::Low)
+            Some(tact_protocol::ReasoningEffort::Low)
         );
         assert!(matches!(app.input_mode, InputMode::Normal));
     }
@@ -1973,7 +1973,7 @@ thinking_budget = {thinking_budget}
             vec!["k3".into(), "k3-256k".into()],
         );
         let mut cfg = tact::config::settings();
-        cfg.agent.reasoning_effort = Some(tact_llm::OpenAiReasoningEffort::Max);
+        cfg.agent.reasoning_effort = Some(tact_protocol::ReasoningEffort::Max);
         tact::config::install_or_override(cfg);
 
         let mut app = make_app();
@@ -2016,7 +2016,7 @@ thinking_budget = {thinking_budget}
         assert!(matches!(app.input_mode, InputMode::Normal));
         assert_eq!(
             tact::config::settings().agent.reasoning_effort,
-            Some(tact_llm::OpenAiReasoningEffort::Low)
+            Some(tact_protocol::ReasoningEffort::Low)
         );
         assert_eq!(tact::config::settings().llm.model, "k3");
     }
@@ -2041,7 +2041,7 @@ thinking_budget = {thinking_budget}
 
         assert_eq!(
             tact::config::settings().agent.reasoning_effort,
-            Some(tact_llm::OpenAiReasoningEffort::Low)
+            Some(tact_protocol::ReasoningEffort::Low)
         );
         assert_eq!(
             tact::config::settings().agent.thinking_budget,

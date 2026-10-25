@@ -57,72 +57,65 @@ impl ChatCompletionsDialect {
 }
 
 /// Reasoning effort forwarded to OpenAI reasoning models.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum OpenAiReasoningEffort {
-    None,
-    Minimal,
-    Low,
-    Medium,
-    High,
-    Xhigh,
-    Max,
-}
-
-impl OpenAiReasoningEffort {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::None => "none",
-            Self::Minimal => "minimal",
-            Self::Low => "low",
-            Self::Medium => "medium",
-            Self::High => "high",
-            Self::Xhigh => "xhigh",
-            Self::Max => "max",
-        }
-    }
-}
-
-impl FromStr for OpenAiReasoningEffort {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        match value {
-            "none" => Ok(Self::None),
-            "minimal" => Ok(Self::Minimal),
-            "low" => Ok(Self::Low),
-            "medium" => Ok(Self::Medium),
-            "high" => Ok(Self::High),
-            "xhigh" => Ok(Self::Xhigh),
-            "max" => Ok(Self::Max),
-            other => Err(format!(
-                "unknown OpenAI reasoning effort '{other}'; expected none|minimal|low|medium|high|xhigh|max"
-            )),
-        }
-    }
-}
-
-impl fmt::Display for OpenAiReasoningEffort {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
+///
+/// Re-exported rather than defined here: both the runtime and a view render or
+/// forward these tiers, so the type belongs to the protocol crate that both
+/// depend on. The alias keeps every existing `tact_llm::OpenAiReasoningEffort`
+/// import working.
+pub use tact_protocol::ReasoningEffort as OpenAiReasoningEffort;
 
 /// Convert Tact's provider-agnostic effort into the SDK's typed
-/// `ReasoningEffort` (vendored `async-openai-local`), so the Responses
-/// adapter can build the request with the typed builder instead of injecting
-/// `reasoning.effort` through JSON. The vendor adds `Max` so every variant
-/// maps one-to-one; the wire strings match `as_str()`.
-impl From<OpenAiReasoningEffort> for async_openai_responses::types::responses::ReasoningEffort {
-    fn from(effort: OpenAiReasoningEffort) -> Self {
-        match effort {
-            OpenAiReasoningEffort::None => Self::None,
-            OpenAiReasoningEffort::Minimal => Self::Minimal,
-            OpenAiReasoningEffort::Low => Self::Low,
-            OpenAiReasoningEffort::Medium => Self::Medium,
-            OpenAiReasoningEffort::High => Self::High,
-            OpenAiReasoningEffort::Xhigh => Self::Xhigh,
-            OpenAiReasoningEffort::Max => Self::Max,
+/// `ReasoningEffort` (vendored `async-openai-local`), so a caller can build a
+/// request with the typed builder instead of injecting `reasoning.effort`
+/// through JSON. The vendor adds `Max` so every variant maps one-to-one; the
+/// wire strings match `as_str()`.
+///
+/// A free function rather than `impl From`: the tiers now live in
+/// `tact_protocol`, and the orphan rule forbids implementing a foreign trait for
+/// a foreign type. Every variant is still listed explicitly, so adding a tier
+/// fails to compile here instead of falling through a `_` arm.
+pub fn to_sdk_reasoning_effort(
+    effort: OpenAiReasoningEffort,
+) -> async_openai_responses::types::responses::ReasoningEffort {
+    use async_openai_responses::types::responses::ReasoningEffort as Sdk;
+    match effort {
+        OpenAiReasoningEffort::None => Sdk::None,
+        OpenAiReasoningEffort::Minimal => Sdk::Minimal,
+        OpenAiReasoningEffort::Low => Sdk::Low,
+        OpenAiReasoningEffort::Medium => Sdk::Medium,
+        OpenAiReasoningEffort::High => Sdk::High,
+        OpenAiReasoningEffort::Xhigh => Sdk::Xhigh,
+        OpenAiReasoningEffort::Max => Sdk::Max,
+    }
+}
+
+#[cfg(test)]
+mod effort_mapping_tests {
+    use super::*;
+
+    /// Every tier maps onto the SDK's matching variant.
+    ///
+    /// Written as a loop over `ALL` so a new tier cannot be added without
+    /// appearing here; the mapping is what the Responses adapter sends.
+    #[test]
+    fn every_tier_maps_onto_the_sdk_variant() {
+        use async_openai_responses::types::responses::ReasoningEffort as Sdk;
+        let expected = [
+            (OpenAiReasoningEffort::None, Sdk::None),
+            (OpenAiReasoningEffort::Minimal, Sdk::Minimal),
+            (OpenAiReasoningEffort::Low, Sdk::Low),
+            (OpenAiReasoningEffort::Medium, Sdk::Medium),
+            (OpenAiReasoningEffort::High, Sdk::High),
+            (OpenAiReasoningEffort::Xhigh, Sdk::Xhigh),
+            (OpenAiReasoningEffort::Max, Sdk::Max),
+        ];
+        assert_eq!(
+            expected.len(),
+            OpenAiReasoningEffort::ALL.len(),
+            "a new tier needs a mapping here"
+        );
+        for (effort, sdk) in expected {
+            assert_eq!(to_sdk_reasoning_effort(effort), sdk, "{effort:?}");
         }
     }
 }

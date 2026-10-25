@@ -394,7 +394,7 @@ pub(crate) fn create_response_with_policy(
     }
     if request.thinking.is_some() || request.reasoning_effort.is_some() {
         builder.reasoning(Reasoning {
-            effort: request.reasoning_effort.map(Into::into),
+            effort: request.reasoning_effort.map(crate::to_sdk_reasoning_effort),
             summary: Some(ReasoningSummary::Detailed),
         });
     }

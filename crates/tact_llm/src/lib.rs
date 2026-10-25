@@ -69,4 +69,5 @@ pub use transport::SharedHttpClient;
 pub use types::{
     ChatCompletionsDialect, CreateMessageParams, OpenAiProtocol, OpenAiReasoningEffort,
     ProviderKind, RequiredMessageParams, StopReason, Thinking, ThinkingType, Tool, ToolChoice,
+    to_sdk_reasoning_effort,
 };
