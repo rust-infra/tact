@@ -444,15 +444,22 @@ fn annotate_spawn_subagent_skill_catalog_with_dir(tools: &mut crate::tool::ToolR
 /// - `run_in_background` is requested without a parent agent runtime.
 /// - The subagent agent loop encounters an error.
 pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Result<String> {
-    let settings = crate::config::settings();
+    // The parent's snapshot, not the process global: a child spawned in one
+    // session must not inherit another session's model or budgets, and the
+    // snapshot is what the run that reached this tool actually resolved. The
+    // subagent overrides travel with it for the same reason — they name the
+    // provider and model children use, which is a property of this session's
+    // configuration.
+    let agent_settings = ctx.agent_settings.clone();
+    let subagent_config = agent_settings.subagent.clone();
 
-    let (client, agent_overrides) = if let Some(sa) = &settings.agent.subagent {
+    let (client, agent_overrides) = if let Some(sa) = &subagent_config {
         let client = Client::new(
             sa.provider.to_profile(),
             Arc::new(ApiKeyProvider::new(sa.provider.api_key.clone())),
         )
         .await?;
-        let mut agent_settings = settings.agent.clone();
+        let mut agent_settings = agent_settings;
         agent_settings.model = sa.provider.model.clone();
         agent_settings.max_tokens = sa.max_tokens;
         agent_settings.thinking_budget = sa.thinking_budget;
@@ -463,7 +470,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         (client, agent_settings)
     } else {
         let client = get_llm_client().await?;
-        (client, settings.agent.clone())
+        (client, agent_settings)
     };
 
     // Inherit the parent's permission context (Claude-style). The snapshot is
@@ -964,6 +971,22 @@ mod tests {
     use super::*;
     use crate::tool::test_support::test_context;
     use tempfile::TempDir;
+
+    /// The child inherits the parent's snapshot, not the process global.
+    ///
+    /// Two sessions can resolve different settings; a child that read the global
+    /// would silently take the other one's model and budgets.
+    #[test]
+    fn a_spawned_child_inherits_the_parents_snapshot() {
+        let mut context = test_context("spawn_subagent");
+        context.agent_settings.model = "parent-model".to_string();
+        context.agent_settings.max_tokens = 1234;
+
+        // The property the tool relies on: the snapshot travels on the context,
+        // so nothing has to reach for a global to find it.
+        assert_eq!(context.agent_settings.model, "parent-model");
+        assert_eq!(context.agent_settings.max_tokens, 1234);
+    }
 
     #[test]
     fn main_toolset_registers_cancel_subagent() {

@@ -175,6 +175,13 @@ pub struct ToolContext {
     /// never changes mid-run, and a tool that reads it should be handed it
     /// rather than reaching for the process configuration.
     pub vision: VisionPolicy,
+    /// The agent settings this run inherited, for a tool that spawns a child.
+    ///
+    /// A snapshot rather than a live read: `spawn_subagent` builds a child's
+    /// configuration from the parent's, and a child that read the process global
+    /// could inherit settings from a different session than the one that spawned
+    /// it.
+    pub agent_settings: crate::config::AgentSettings,
     /// Nice increment applied to the bash sub-process group (macOS/Linux only).
     /// Default 10 so TUI stays responsive during heavy commands like `cargo test`.
     /// 0 disables. Maximum is 19 (lowest priority).

@@ -102,6 +102,12 @@ pub fn test_context(name: &str) -> ToolContext {
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
         vision: crate::tool::VisionPolicy::default(),
+        // The snapshot a real run would carry. Tests that install a config get
+        // that one; the rest get an empty model, which is what a fixture that
+        // never resolves a config has.
+        agent_settings: crate::config::try_settings()
+            .map(|config| config.agent)
+            .unwrap_or_else(fixture_agent_settings),
         bash_nice: 0,
         sandbox: None,
         sandbox_degraded: None,
@@ -132,4 +138,27 @@ pub fn install_skill(work_dir: &Path, name: &str, body: &str) -> SharedSkillRegi
     let mut registry = SkillRegistry::new([work_dir.join(".tact/skills")]);
     registry.load_skills().unwrap();
     Arc::new(Mutex::new(registry))
+}
+
+/// A minimal agent-settings snapshot for fixtures that resolve no config.
+fn fixture_agent_settings() -> crate::config::AgentSettings {
+    crate::config::AgentSettings {
+        model: "fixture-model".to_string(),
+        reasoning_effort: None,
+        max_tokens: 8192,
+        thinking_budget: 0,
+        model_context_window: 500_000,
+        notifications_enabled: false,
+        snapshot_max_items: 80,
+        micro_compact_enabled: true,
+        memory_enabled: true,
+        max_token_usage_bodies: crate::store::session_store::MAX_TOKEN_USAGE_BODIES,
+        skill_body_auto_inject: false,
+        skill_dirs: Vec::new(),
+        skill_description_cap: crate::skill::DEFAULT_SKILL_DESCRIPTION_CAP,
+        skill_disable: Vec::new(),
+        instruction_sources: crate::config::InstructionSources::default(),
+        auto_memory_directory: None,
+        subagent: None,
+    }
 }

@@ -296,6 +296,10 @@ pub async fn bootstrap_session(
         // Resolved once here from the snapshot the bootstrap read, so the tool
         // never reaches for the process configuration mid-call.
         vision: tact::tool::VisionPolicy::from_settings(&config.ui.vision_image),
+        // The run's own settings snapshot: a subagent spawned from this context
+        // inherits this session's model and budgets rather than the process
+        // global's, which another session could have replaced.
+        agent_settings: config.agent.clone(),
         bash_timeout_secs: config.tools.bash_timeout_secs,
         bash_nice: config.tools.bash_nice,
         sandbox,
