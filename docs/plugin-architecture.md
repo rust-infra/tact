@@ -286,11 +286,28 @@ the first implementation plan is
     look like a broken install), and `set_disabled` replaces the whole set rather
     than appending (the list is what gets written to config, so a partial write
     silently re-enables everything it left out).
-- Still untouched on the view side: `tui` still depends on `tact` for `voice`,
-  `goal`, `plugin`, `consts`, `hook`, `store` and `ui_responder`, and on
-  `tact_llm` for message/model types; slash commands still dispatch through the
-  `SlashCommand` enum rather than a catalog. Those are the remaining Phase 4
-  pieces.
+  - The rest of the view's runtime coupling followed the same shape, one port per
+    capability: `ModelCatalog` (model queries + `ProviderFamily`), `SessionHistory`
+    (`HistoryTurn`/`HistoryRole`), `SettingsWriter` (`ModelChoice`/`UiSetting`/
+    `ModelTarget`), `VoicePort`, and `InteractionPort` (`PendingPrompt`). Each is
+    declared by `tui`, implemented in `tact-ui`'s `view_ports`, and stood up by
+    the host through `TuiConfig`.
+  - `tui`'s production code now has **zero** `tact`/`tact_llm` references, and
+    both crates are optional dependencies behind `test-support` (plus dev-deps so
+    the crate's own unit tests can compile `test_fixtures`, which deliberately
+    uses the runtime's real config helpers). `scripts/check-architecture.sh`
+    enforces this from `cargo metadata`: a non-optional dependency on `tact`,
+    `tact_llm` or `tact-ui` fails the guard before tests run.
+  - Values both sides need moved to `tact_protocol` rather than being re-declared:
+    `ReasoningEffort`, `MAX_INPUT_CHARS`/`exceeds_input_char_limit`, the
+    marketplace package DTOs, the in-band context markers, and the voice
+    command/event pair. A view renders or recognizes these, so neither crate
+    should own them.
+- Still untouched on the view side: slash commands dispatch through the
+  `SlashCommand` enum rather than a catalog, and the reverse
+  `UserCommand::UiResponse` path is still alive beside `InteractionPort`.
+  `tui`'s own unit tests still build fixtures through `tact`, which is what the
+  dev-dependency exemption is for.
 - Phase 3's remaining half: `CompactionPlugin`, `AgentPlugin`, `ChatPlugin`.
   Compaction cannot be extracted as it stands: the whole trigger/threshold/
   recovery path is methods on `Agent`, so a plugin would have to own the loop.
