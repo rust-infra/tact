@@ -199,6 +199,10 @@ pub fn install_command_directory(
         agent
             .chat_service()
             .map(|chat| chat as std::sync::Arc<dyn tact::command::ChatService>),
+        Some(tact::command::HooksWiring {
+            work_dir: agent.tool_context.work_dir.clone(),
+            render: std::sync::Arc::new(crate::hooks_cli::render_hooks_listing),
+        }),
     );
     RuntimeCommandDirectory::new(catalog).install(slot);
 }
@@ -624,6 +628,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let expected: Vec<String> = catalog
             .descriptors()
@@ -651,6 +656,7 @@ mod tests {
             None,
             None,
             None,
+            None,
         );
         let directory = RuntimeCommandDirectory::new(catalog);
         let stats = tui::ports::CommandDirectory::resolve(&directory, "stats")
@@ -670,6 +676,7 @@ mod tests {
 
         let catalog = tact::command::builtin_catalog(
             Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
+            None,
             None,
             None,
             None,

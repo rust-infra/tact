@@ -103,12 +103,10 @@ impl TryFrom<UserCommand> for Command {
             // Same for prompts: the listing and the fetch both read that router,
             // and running one submits a Tact user turn.
             UserCommand::McpPrompts { .. } | UserCommand::RunMcpPrompt { .. } => Err(()),
-            // Hook review reads Tact's hook sources and writes its review
-            // store (`~/.tact/hooks-state.json`) — Tact-specific, and
-            // deliberately not a generic kit command.
-            UserCommand::HooksList | UserCommand::HooksTrust { .. } | UserCommand::HooksForget => {
-                Err(())
-            }
+            // Hook review reads Tact's hook sources and writes its review store
+            // (`~/.tact/hooks-state.json`) — Tact-specific, and deliberately not a
+            // generic kit command. It travels as `RunCommand { name: "hooks" }`,
+            // which the catch-all below already refuses.
             // Durable Goal lifecycle is a Tact host capability backed by its
             // SQLite stores and bounded runner, not a generic kit command.
             UserCommand::CreateGoal { .. }

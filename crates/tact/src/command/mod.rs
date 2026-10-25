@@ -21,6 +21,7 @@ pub use tact_kernel::capability::command::Command;
 pub mod background;
 pub mod compact;
 pub mod goal;
+pub mod hooks;
 pub mod plugin;
 pub mod stats;
 
@@ -86,6 +87,15 @@ pub fn builtin_commands(
 /// directly — the same reason `builtin_catalog` returns a kernel type.
 pub use tact_kernel::runtime::ChatService;
 
+/// What `/hooks` needs from the host.
+pub struct HooksWiring {
+    /// The project directory whose hooks are inspected.
+    pub work_dir: std::path::PathBuf,
+    /// How a listing becomes text; the renderer lives with the other CLI
+    /// surfaces, so the host supplies it rather than the command reaching for it.
+    pub render: hooks::HooksRenderer,
+}
+
 pub fn builtin_catalog(
     stats: Arc<std::sync::RwLock<crate::stats::SessionStats>>,
     background: Option<BackgroundWiring>,
@@ -93,6 +103,8 @@ pub fn builtin_catalog(
     // `/compact` needs the turn lifecycle, so a host that has one gets the
     // command and a host without one does not offer a command it cannot run.
     chat: Option<Arc<dyn tact_kernel::runtime::ChatService>>,
+    // `/hooks` needs a directory and a renderer, both of which the host owns.
+    hooks: Option<HooksWiring>,
 ) -> tact_kernel::catalog::CommandCatalog {
     let mut catalog = tact_kernel::catalog::CommandCatalog::default();
     for command in builtin_commands(stats) {
@@ -103,6 +115,14 @@ pub fn builtin_catalog(
     if let Some(chat) = chat {
         catalog
             .insert(Arc::new(compact::CompactCommand::new(chat)))
+            .expect("built-in command names are unique");
+    }
+    if let Some(hooks) = hooks {
+        catalog
+            .insert(Arc::new(hooks::HooksCommand::new(
+                hooks.work_dir,
+                hooks.render,
+            )))
             .expect("built-in command names are unique");
     }
     if let Some(wiring) = goals {
@@ -191,6 +211,7 @@ mod tests {
         // unreachable even though it exists.
         let catalog = builtin_catalog(
             Arc::new(std::sync::RwLock::new(crate::stats::SessionStats::default())),
+            None,
             None,
             None,
             None,

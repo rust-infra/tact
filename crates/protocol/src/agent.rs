@@ -716,17 +716,6 @@ pub enum UserCommand {
         name: String,
         arguments: std::collections::BTreeMap<String, String>,
     },
-    /// List every configured command hook with its review status (triggered by
-    /// `/hooks list`). Read-only; the driver answers it because only the Tact
-    /// crate can read the hook sources and the review store.
-    HooksList,
-    /// Approve hooks that are waiting for review (triggered by
-    /// `/hooks trust --all` or `/hooks trust --source <label>`). One of the two
-    /// is required — approving a hook by accident is the failure the review
-    /// step exists to prevent.
-    HooksTrust { all: bool, source: Option<String> },
-    /// Revoke every hook approval (triggered by `/hooks forget --all`).
-    HooksForget,
     /// Run a catalog command by name.
     ///
     /// The transport for commands that already own their grammar: the view

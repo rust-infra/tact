@@ -238,27 +238,30 @@ fn forward_command_outcome(outcome: &tact::command::CommandOutcome, events: &Upd
 /// agent loop itself is not here: it cannot own a `&mut Agent` through a
 /// catalog, so it keeps its arm on the driver's side.
 fn builtin_command_catalog(
-    stats: &std::sync::Arc<std::sync::RwLock<tact::stats::SessionStats>>,
-    background: &tact::background::SharedBackgroundManager,
-    session_id: &Option<String>,
-    goal_manager: &tact::goal::SharedGoalManager,
-    task_manager: &tact::task::SharedTaskManager,
-    limits: tact::goal::GoalLimits,
+    agent: &Agent,
     chat: Option<std::sync::Arc<dyn tact::command::ChatService>>,
+    work_dir: &std::path::Path,
 ) -> tact::command::CommandCatalog {
-    let session = session_id.clone();
+    // Read from the agent rather than taken as six parameters: every one of them
+    // is a field on it, and a signature that listed them had grown to eight
+    // arguments — the point at which a caller cannot tell which one is which.
+    let session = agent.runtime.session_id.clone();
     tact::command::builtin_catalog(
-        stats.clone(),
+        agent.runtime.stats.clone(),
         Some(tact::command::BackgroundWiring {
-            manager: std::sync::Arc::new(background.clone()),
+            manager: std::sync::Arc::new(agent.tool_context.background_manager.clone()),
             session: std::sync::Arc::new(move || session.clone()),
         }),
         Some(tact::command::GoalWiring {
-            goal_manager: goal_manager.clone(),
-            task_manager: task_manager.clone(),
-            limits,
+            goal_manager: agent.tool_context.goal_manager.clone(),
+            task_manager: agent.tool_context.task_manager.clone(),
+            limits: agent_goal_limits(agent),
         }),
         chat,
+        Some(tact::command::HooksWiring {
+            work_dir: work_dir.to_path_buf(),
+            render: std::sync::Arc::new(crate::hooks_cli::render_hooks_listing),
+        }),
     )
 }
 
@@ -279,7 +282,6 @@ pub async fn run_command_loop_with_account(
     let events = agent.runtime.events.clone();
     // Shared stats snapshot: QueryStats can read it without awaiting the
     // in-flight task (the Agent itself is exclusively owned by that task).
-    let stats = agent.runtime.stats.clone();
     // Shared UI responder: routes TUI select responses to the waiter (parent
     // or subagent) even while the Agent is owned by the in-flight task.
     let ui_responder = agent.tool_context.ui_responder.clone();
@@ -289,23 +291,20 @@ pub async fn run_command_loop_with_account(
     // Shared background manager + session id: `/background` answers from the
     // manager directly instead of waiting for the in-flight turn to hand the
     // Agent back, so a listing opens the moment it is asked for.
-    let background_manager = agent.tool_context.background_manager.clone();
-    let background_session_id = agent.runtime.session_id.clone();
-    let goal_manager = agent.tool_context.goal_manager.clone();
-    let task_manager = agent.tool_context.task_manager.clone();
-    let limits = agent_goal_limits(&agent);
     // The host-side commands, built once: a command answers from shared state,
     // so the loop does not rebuild one per invocation, and a name that is not
     // here is not a command at all.
+    // Read again for the loop's own use: the catalog takes the agent now, but the
+    // reconciliation and the goal panel still need these handles directly.
+    let goal_manager = agent.tool_context.goal_manager.clone();
+    let task_manager = agent.tool_context.task_manager.clone();
+    let background_session_id = agent.runtime.session_id.clone();
+    let limits = agent_goal_limits(&agent);
     let commands = builtin_command_catalog(
-        &stats,
-        &background_manager,
-        &background_session_id,
-        &goal_manager,
-        &task_manager,
-        limits,
+        &agent,
         chat.as_ref()
             .map(|chat| chat.clone() as std::sync::Arc<dyn tact::command::ChatService>),
+        &image_work_dir,
     );
 
     // Reconcile durable Goal state once, before serving commands: a crashed
@@ -1765,15 +1764,11 @@ async fn handle_user_command_with_account(
             // Same catalog the loop-level arm uses, so the two cannot answer
             // differently.
             let catalog = builtin_command_catalog(
-                &agent.runtime.stats,
-                &agent.tool_context.background_manager,
-                &agent.runtime.session_id,
-                &agent.tool_context.goal_manager,
-                &agent.tool_context.task_manager,
-                agent_goal_limits(agent),
+                agent,
                 // The agent service path has no chat handle in scope here; the
                 // loop-level arm is where `/compact` runs, and it passes one.
                 None,
+                image_work_dir,
             );
             // `goal show` answers with the detail popup only; the panel refresh
             // is a separate `list`, because one command outcome carries one
@@ -1979,48 +1974,6 @@ async fn handle_user_command_with_account(
             Err(message) => {
                 agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(message)));
             }
-        },
-        UserCommand::HooksList => match tact::plugin::survey_hooks(image_work_dir) {
-            // The same wording `tact-ui hooks list` uses: two surfaces naming
-            // the same hooks must not describe them differently.
-            Ok(report) => agent.emit_update(AgentUpdate::MdInfo(
-                crate::hooks_cli::render_hooks_listing(&report),
-            )),
-            Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                "Hooks list failed: {error:#}"
-            )))),
-        },
-        UserCommand::HooksTrust { all, source } => {
-            match tact::plugin::trust_hooks(image_work_dir, all, source.as_deref()) {
-                Ok(approved) if approved.is_empty() => agent.emit_update(AgentUpdate::Info(
-                    "Nothing to approve: every configured hook has already been reviewed."
-                        .to_string(),
-                )),
-                Ok(approved) => {
-                    let mut lines = vec![format!("Approved {} hook(s):", approved.len())];
-                    lines.extend(approved.iter().map(|hook| format!("  {}", hook.describe())));
-                    // Hooks are registered when the agent is built, so an
-                    // approval that only takes effect next session must say so.
-                    lines.push(
-                        "They run from the next session onward. Revoke with /hooks forget --all."
-                            .to_string(),
-                    );
-                    agent.emit_update(AgentUpdate::Info(lines.join("\n")));
-                }
-                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
-                    format!("Hooks trust failed: {error:#}"),
-                ))),
-            }
-        }
-        UserCommand::HooksForget => match tact::plugin::forget_hook_trust() {
-            Ok(()) => agent.emit_update(AgentUpdate::Info(
-                "Forgot every hook approval. No hook runs until it is reviewed again with \
-                 /hooks trust --all."
-                    .to_string(),
-            )),
-            Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                "Hooks forget failed: {error:#}"
-            )))),
         },
         _ => {}
     }
@@ -2482,15 +2435,7 @@ mod tests {
 
         // The command answers; the host is what turns an empty projection into a
         // log line, so this test covers both halves.
-        let catalog = super::builtin_command_catalog(
-            &agent.runtime.stats,
-            &agent.tool_context.background_manager,
-            &agent.runtime.session_id,
-            &agent.tool_context.goal_manager,
-            &agent.tool_context.task_manager,
-            super::GoalLimits::default(),
-            None,
-        );
+        let catalog = super::builtin_command_catalog(&agent, None, std::path::Path::new("/tmp"));
         let outcome = catalog
             .run_async(&tact::command::CommandInvocation {
                 name: "goal".into(),
@@ -4053,25 +3998,36 @@ mod tests {
         assert!(saw_md, "McpList must emit MdInfo with the server listing");
     }
 
+    /// `/hooks list` reaches the loader and its listing is shown.
+    ///
+    /// The command owns the verb now, so this drives it directly: what matters is
+    /// that the listing reaches the user rather than being dropped.
     #[tokio::test]
     async fn hooks_list_emits_the_review_listing() {
         install_test_config();
-        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let work_dir = std::env::temp_dir();
+        let command = tact::command::hooks::HooksCommand::new(
+            work_dir,
+            std::sync::Arc::new(crate::hooks_cli::render_hooks_listing),
+        );
+        let outcome = tact::command::Command::run_async(
+            &command,
+            &tact::command::CommandInvocation {
+                name: "hooks".to_string(),
+                args: String::new(),
+            },
+        )
+        .await;
 
-        super::handle_user_command(&mut agent, UserCommand::HooksList, &work_dir).await;
-
-        let mut rendered = None;
-        while let Ok(update) = agent_rx.try_recv() {
-            if let AgentUpdate::MdInfo(md) = update {
-                rendered = Some(md);
-            }
-        }
         // Both wordings come from `hooks_cli::render_hooks_listing`, so the
-        // assertion holds whether or not this machine has hooks configured —
-        // what it pins is that `/hooks list` reaches the loader and is shown,
-        // rather than being silently dropped by the driver.
-        let text = rendered.expect("HooksList must emit MdInfo");
+        // assertion holds whether or not this machine has hooks configured.
+        let text = match outcome {
+            tact::command::CommandOutcome::Emit(emitted) => match emitted.into_inner() {
+                AgentUpdate::MdInfo(md) => md,
+                other => panic!("expected MdInfo, got {other:?}"),
+            },
+            other => panic!("expected an emitted listing, got {other:?}"),
+        };
         assert!(
             text.contains("hook(s) configured") || text.contains("No command hooks configured"),
             "unexpected listing: {text}"
@@ -4084,26 +4040,25 @@ mod tests {
         // one trust path a test can exercise without writing the developer's
         // real `~/.tact/hooks-state.json`.
         install_test_config();
-        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
-
-        super::handle_user_command(
-            &mut agent,
-            UserCommand::HooksTrust {
-                all: false,
-                source: None,
+        let command = tact::command::hooks::HooksCommand::new(
+            std::env::temp_dir(),
+            std::sync::Arc::new(crate::hooks_cli::render_hooks_listing),
+        );
+        // A bare `trust` with no selector is the path that bails before touching
+        // the review store.
+        let outcome = tact::command::Command::run_async(
+            &command,
+            &tact::command::CommandInvocation {
+                name: "hooks".to_string(),
+                args: "trust".to_string(),
             },
-            &work_dir,
         )
         .await;
 
-        let mut message = None;
-        while let Ok(update) = agent_rx.try_recv() {
-            if let AgentUpdate::Error(kind) = update {
-                message = Some(kind.to_string());
-            }
-        }
-        let message = message.expect("a refusal must be reported, not swallowed");
+        let message = match outcome {
+            tact::command::CommandOutcome::Failed(text) => text,
+            other => panic!("a refusal must be reported, not swallowed: {other:?}"),
+        };
         assert!(message.contains("Hooks trust failed"), "{message}");
         assert!(message.contains("--source"), "{message}");
     }

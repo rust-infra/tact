@@ -38,7 +38,10 @@ pub(crate) fn handle_hooks_command(app: &mut App) -> CommandExecOutcome {
                 let msg = app.msgs().input_busy_msg.to_string();
                 app.flash_msg = Some((msg, std::time::Instant::now()));
             } else {
-                let _ = app.user_cmd_tx.send(UserCommand::HooksList);
+                let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                    name: "hooks".to_string(),
+                    args: String::new(),
+                });
             }
             CommandExecOutcome {
                 handled: true,
@@ -49,9 +52,9 @@ pub(crate) fn handle_hooks_command(app: &mut App) -> CommandExecOutcome {
         // as the CLI requires. A bare `/hooks trust` reaches the usage hint
         // instead of approving everything.
         "trust --all" => {
-            let _ = app.user_cmd_tx.send(UserCommand::HooksTrust {
-                all: true,
-                source: None,
+            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                name: "hooks".to_string(),
+                args: "trust --all".to_string(),
             });
             CommandExecOutcome {
                 handled: true,
@@ -68,9 +71,9 @@ pub(crate) fn handle_hooks_command(app: &mut App) -> CommandExecOutcome {
             else {
                 return usage(app);
             };
-            let _ = app.user_cmd_tx.send(UserCommand::HooksTrust {
-                all: false,
-                source: Some(source.to_string()),
+            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                name: "hooks".to_string(),
+                args: format!("trust {source}"),
             });
             CommandExecOutcome {
                 handled: true,
@@ -78,7 +81,10 @@ pub(crate) fn handle_hooks_command(app: &mut App) -> CommandExecOutcome {
             }
         }
         "forget --all" => {
-            let _ = app.user_cmd_tx.send(UserCommand::HooksForget);
+            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                name: "hooks".to_string(),
+                args: "forget --all".to_string(),
+            });
             CommandExecOutcome {
                 handled: true,
                 clear_input: true,
@@ -118,7 +124,7 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::HooksList
+            UserCommand::RunCommand { name, args } if name == "hooks" && args.is_empty()
         ));
     }
 
@@ -151,10 +157,8 @@ mod tests {
 
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::HooksTrust {
-                all: true,
-                source: None
-            }
+            UserCommand::RunCommand { name, args }
+                if name == "hooks" && args == "trust --all"
         ));
     }
 
@@ -167,8 +171,8 @@ mod tests {
 
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::HooksTrust { all: false, source: Some(source) }
-                if source == "plugin ponytail"
+            UserCommand::RunCommand { name, args }
+                if name == "hooks" && args == "trust plugin ponytail"
         ));
     }
 
@@ -203,7 +207,8 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::HooksForget
+            UserCommand::RunCommand { name, args }
+                if name == "hooks" && args == "forget --all"
         ));
     }
 
