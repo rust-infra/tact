@@ -92,6 +92,14 @@ the first implementation plan is
     `executor_from_families` builds the catalog and resolves the ports. The
     Agent's executor goes through it, so the production path is assembled the
     same way the tests are.
+  - `Runtime::plugin_ids` exposes the install order, and tests fix what it
+    means: `assemble` installs security before permission, and shutdown runs the
+    reverse — a plugin's `register` may only assume what was installed before it.
+  - `Agent::with_installed_session` can pull the store from the registry instead
+    of taking one directly, naming `builtin.session_store` when storage was never
+    installed. The production bootstrap still passes a store to `with_session`,
+    because it resolves the session id before the agent exists and the store
+    handoff has to wait for that id.
   - The installed bundle is owned by the Agent and shut down in
     `dispatch_session_end_hooks`, not dropped at construction: a plugin that
     owns a resource is released on the real exit path, and a second teardown is
@@ -176,6 +184,8 @@ the first implementation plan is
   and slash commands still dispatch through the `SlashCommand` enum rather than a
   catalog. That is the next large change.
 - Phase 3's remaining half: `CompactionPlugin`, `AgentPlugin`, `ChatPlugin`.
+  Compaction cannot be extracted as it stands: the whole trigger/threshold/
+  recovery path is methods on `Agent`, so a plugin would have to own the loop.
   `StoragePlugin` and `SessionStorePlugin` exist and are installable, but the
   production bootstrap still opens the store itself and passes it to
   `Agent::with_session`, so `HostOptions::storage` is exercised only by tests.
