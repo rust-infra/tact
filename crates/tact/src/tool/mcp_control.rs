@@ -133,10 +133,8 @@ impl McpControlBackend for SnapshotMcpControlBackend {
                     .ok_or_else(|| {
                         anyhow::anyhow!("Error invoking get_mcp_prompt: `name` is required")
                     })?;
-                let arguments = input
-                    .get("arguments")
-                    .and_then(|value| value.as_object())
-                    .cloned();
+                let arguments = prompt_arguments(&input)
+                    .map_err(|error| anyhow::anyhow!("Error invoking get_mcp_prompt: {error}"))?;
                 router.get_prompt(server, name, arguments).await
             }
         }
@@ -240,6 +238,31 @@ impl ToolSource for McpControlSource {
             })
             .collect()
     }
+}
+
+/// The protocol's prompt arguments are a string map.
+///
+/// A number or a bool is stringified — a model that writes `{"count": 3}` means
+/// `"3"` — but anything else is refused *by name* rather than dropped: a
+/// silently omitted argument reaches the server as an unfilled placeholder and
+/// still reports success.
+pub fn prompt_arguments(
+    input: &serde_json::Value,
+) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
+    let Some(map) = input.get("arguments").and_then(|value| value.as_object()) else {
+        return Ok(None);
+    };
+    let mut arguments = serde_json::Map::new();
+    for (key, value) in map {
+        let text = match value {
+            serde_json::Value::String(text) => text.clone(),
+            serde_json::Value::Number(_) | serde_json::Value::Bool(_) => value.to_string(),
+            _ => return Err(format!("argument `{key}` must be a string (got {value})")),
+        };
+        arguments.insert(key.clone(), serde_json::Value::String(text));
+    }
+    // Absent and empty are the same request, so both are `None`.
+    Ok((!arguments.is_empty()).then_some(arguments))
 }
 
 #[cfg(test)]

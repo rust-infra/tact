@@ -11,17 +11,13 @@ use tact_protocol::{AgentUpdate, StepResult, StepStatus, ToolPresentationInfo};
 
 use super::Agent;
 use crate::{
-    compact::{persist_large_output, persist_large_output_over_tokens},
+    compact::persist_large_output,
     hook::{HookControl, NotificationContext, ToolResult, ToolUse},
     invoke_hooks,
-    mcp::MCPToolRouter,
-    permission::{
-        CapabilityRisk, PermissionBehavior, format_permission_prompt,
-        policy_ext::PermissionPolicyExt,
-    },
+    permission::policy_ext::PermissionPolicyExt,
     tool::{
-        ArgumentSummaryPolicy, DetailPolicy, GoalYieldReason, OutputPolicy, PermissionPromptPolicy,
-        TaskOperation, ToolDomain, ToolEffect,
+        ArgumentSummaryPolicy, DetailPolicy, GoalYieldReason, OutputPolicy, TaskOperation,
+        ToolDomain, ToolEffect,
     },
     utils::RwLockExt,
 };
@@ -34,7 +30,6 @@ enum ResolvedTool {
     Mcp {
         full_name: String,
         server: String,
-        tool: String,
     },
     /// `list_mcp_resources` / `read_mcp_resource` — Codex's native resource
     /// tools, served by the MCP router rather than by a `Tool` of their own.
@@ -46,9 +41,7 @@ enum ResolvedTool {
     McpPrompt {
         tool: crate::mcp::McpPromptTool,
     },
-    Unknown {
-        name: String,
-    },
+    Unknown,
 }
 
 /// A tool call after phase-1 pre-flight.
@@ -321,6 +314,15 @@ async fn run_kernel_tool(
     output_policy: OutputPolicy,
 ) -> ExecResult {
     let name = prepared.tool_name().to_string();
+    // An MCP failure names the transport, not just the tool: a reader needs to
+    // know whether Tact's own handler failed or a server did. The wording is a
+    // user-visible contract that predates the pipeline, so it is preserved here
+    // rather than flattened into one message.
+    let prefix = if name.starts_with("mcp__") {
+        "Error invoking MCP tool"
+    } else {
+        "Error invoking tool"
+    };
     match executor.execute(prepared).await {
         Ok(result) => {
             let tact_path = crate::consts::TactPath::new(&work_dir);
@@ -350,7 +352,7 @@ async fn run_kernel_tool(
             }
         }
         Err(error) => ExecResult {
-            content: format!("Error invoking tool {}: {}", name, error),
+            content: format!("{prefix} {name}: {error}"),
             status: StepStatus::Failed,
             image: None,
             effects: Vec::new(),
@@ -358,185 +360,18 @@ async fn run_kernel_tool(
     }
 }
 
-async fn run_mcp_tool(
-    mcp_router: &MCPToolRouter,
-    ctx: &crate::tool::ToolContext,
-    tool_use_id: &str,
-    name: &str,
-    input: &serde_json::Value,
-) -> ExecResult {
-    match mcp_router.call(name, input.clone()).await {
-        Ok(output) => {
-            let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
-            // A `tools.<name>.output_token_limit` on the server's entry wins
-            // over the session-wide character threshold; without one the
-            // global rule applies unchanged.
-            let persisted = match mcp_router.output_token_limit(name) {
-                Some(limit) => {
-                    persist_large_output_over_tokens(&tact_path, tool_use_id, &output, limit).await
-                }
-                None => persist_large_output(&tact_path, tool_use_id, &output).await,
-            };
-            match persisted {
-                Ok(content) => ExecResult {
-                    content,
-                    status: StepStatus::Success,
-                    image: None,
-                    effects: Vec::new(),
-                },
-                Err(error) => ExecResult {
-                    content: format!("Error persisting large MCP output: {error}"),
-                    status: StepStatus::Failed,
-                    image: None,
-                    effects: Vec::new(),
-                },
-            }
-        }
-        Err(e) => ExecResult {
-            content: format!("Error invoking MCP tool {}: {}", name, e),
-            status: StepStatus::Failed,
-            image: None,
-            effects: Vec::new(),
-        },
-    }
-}
-
-/// Whether `name` is one of Codex's two MCP resource tools.
+/// Whether `name` is one of Tact's own MCP resource tools.
+///
+/// A free function, not a lookup in the catalog: the *resolver* needs it before
+/// the catalog is consulted, to decide which family a name belongs to.
 fn is_mcp_resource_tool(name: &str) -> bool {
     crate::mcp::McpResourceTool::from_name(name).is_some()
 }
 
-/// Whether `name` is one of Tact's two MCP prompt tools.
+/// Whether `name` is one of Tact's own MCP prompt tools.
 fn is_mcp_prompt_tool(name: &str) -> bool {
     crate::mcp::McpPromptTool::from_name(name).is_some()
 }
-
-/// Runs the two prompt tools against the live router.
-///
-/// Outside `run_mcp_tool` for the resource tools' reason: those take an
-/// `mcp__<server>__<tool>` name parsed into a server/tool pair, and a prompt has
-/// no tool name at all.
-async fn run_mcp_prompt_tool(
-    mcp_router: &MCPToolRouter,
-    tool: crate::mcp::McpPromptTool,
-    input: &serde_json::Value,
-) -> ExecResult {
-    let server = input.get("server").and_then(|value| value.as_str());
-    let result = match tool {
-        crate::mcp::McpPromptTool::List => mcp_router.list_prompts(server).await,
-        crate::mcp::McpPromptTool::Get => {
-            let Some(server) = server else {
-                return ExecResult {
-                    content: "Error invoking get_mcp_prompt: `server` is required".to_string(),
-                    status: StepStatus::Failed,
-                    image: None,
-                    effects: Vec::new(),
-                };
-            };
-            let Some(name) = input.get("name").and_then(|value| value.as_str()) else {
-                return ExecResult {
-                    content: "Error invoking get_mcp_prompt: `name` is required".to_string(),
-                    status: StepStatus::Failed,
-                    image: None,
-                    effects: Vec::new(),
-                };
-            };
-            match prompt_arguments(input) {
-                Ok(arguments) => mcp_router.get_prompt(server, name, arguments).await,
-                Err(message) => Err(anyhow::anyhow!(message)),
-            }
-        }
-    };
-
-    match result {
-        Ok(content) => ExecResult {
-            content,
-            status: StepStatus::Success,
-            image: None,
-            effects: Vec::new(),
-        },
-        Err(error) => ExecResult {
-            content: format!("Error invoking {}: {error}", tool.name()),
-            status: StepStatus::Failed,
-            image: None,
-            effects: Vec::new(),
-        },
-    }
-}
-
-/// Collects `get_mcp_prompt`'s `arguments` object.
-///
-/// The protocol's prompt arguments are a *string* map, so a number or a bool is
-/// stringified rather than dropped — a model that writes `{"count": 3}` means
-/// `"3"`. Anything else (an object, an array, null) is refused by name: silently
-/// omitting it would hand the server a template with an unfilled placeholder and
-/// report success.
-fn prompt_arguments(
-    input: &serde_json::Value,
-) -> Result<Option<serde_json::Map<String, serde_json::Value>>, String> {
-    let Some(map) = input.get("arguments").and_then(|value| value.as_object()) else {
-        return Ok(None);
-    };
-    let mut arguments = serde_json::Map::new();
-    for (key, value) in map {
-        let text = match value {
-            serde_json::Value::String(text) => text.clone(),
-            serde_json::Value::Number(_) | serde_json::Value::Bool(_) => value.to_string(),
-            _ => {
-                return Err(format!("argument `{key}` must be a string (got {value})"));
-            }
-        };
-        arguments.insert(key.clone(), serde_json::Value::String(text));
-    }
-    Ok((!arguments.is_empty()).then_some(arguments))
-}
-
-/// Runs the three resource tools against the live router.
-///
-/// Deliberately outside `run_mcp_tool`: those tools take a `mcp__<server>__<tool>`
-/// name parsed into a server/tool pair, and a resource has no tool name at all.
-async fn run_mcp_resource_tool(
-    mcp_router: &MCPToolRouter,
-    tool: crate::mcp::McpResourceTool,
-    input: &serde_json::Value,
-) -> ExecResult {
-    let server = input.get("server").and_then(|value| value.as_str());
-    let result = match tool {
-        crate::mcp::McpResourceTool::List => mcp_router.list_resources(server).await,
-        crate::mcp::McpResourceTool::Templates => mcp_router.list_resource_templates(server).await,
-        crate::mcp::McpResourceTool::Read => {
-            let Some(server) = server else {
-                return ExecResult {
-                    content: "Error invoking read_mcp_resource: `server` is required".to_string(),
-                    status: StepStatus::Failed,
-                    image: None,
-                    effects: Vec::new(),
-                };
-            };
-            match input.get("uri").and_then(|value| value.as_str()) {
-                Some(uri) => mcp_router.read_resource(server, uri).await,
-                None => Err(anyhow::anyhow!("`uri` is required")),
-            }
-        }
-    };
-
-    match result {
-        Ok(content) => ExecResult {
-            content,
-            status: StepStatus::Success,
-            image: None,
-            effects: Vec::new(),
-        },
-        Err(error) => ExecResult {
-            content: format!("Error invoking {}: {error}", tool.name()),
-            status: StepStatus::Failed,
-            image: None,
-            effects: Vec::new(),
-        },
-    }
-}
-
-// ── Presentation helper ─────────────────────────────────────────────────
 
 fn make_presentation(meta: &crate::tool::ToolMetadata) -> ToolPresentationInfo {
     ToolPresentationInfo {
@@ -612,7 +447,7 @@ fn tool_resources_for(
             None => super::tool_schedule::ToolResources::barrier(),
         },
         ResolvedTool::McpPrompt { .. } => super::tool_schedule::ToolResources::barrier(),
-        ResolvedTool::Unknown { .. } => super::tool_schedule::ToolResources::barrier(),
+        ResolvedTool::Unknown => super::tool_schedule::ToolResources::barrier(),
     }
 }
 
@@ -784,223 +619,6 @@ impl Agent {
             },
         })
     }
-
-    /// The ladder for calls the kernel pipeline did not decide.
-    ///
-    /// Tact's own MCP resource/prompt tools carry their risk in `[mcp]` settings
-    /// rather than a descriptor, so they keep the hand-written order:
-    /// PreToolUse → ladder → PermissionRequest hook → popup. There is no
-    /// sensitive-target guard on this path, and there never was: an MCP tool
-    /// has no path field of its own, so there is nothing for the classifier to
-    /// read. Their *results* are still redacted.
-    #[allow(clippy::too_many_arguments)]
-    async fn legacy_authorize(
-        &mut self,
-        resolved: &ResolvedTool,
-        tool_use: &mut ToolUse,
-        permission_label: &mut Option<String>,
-        step_idx: usize,
-        id: &str,
-    ) -> Result<PreparedState> {
-        let stable_name = match resolved {
-            ResolvedTool::Native { metadata } => metadata.name,
-            ResolvedTool::Mcp { full_name, .. } => full_name.as_str(),
-            ResolvedTool::McpResource { tool } => tool.name(),
-            ResolvedTool::McpPrompt { tool } => tool.name(),
-            ResolvedTool::Unknown { name } => name.as_str(),
-        };
-        let risk = match resolved {
-            ResolvedTool::Mcp { server, tool, .. } => self.mcp_router.risk_for(server, tool),
-            ResolvedTool::McpResource { tool } => crate::mcp::resource_tool_risk(*tool),
-            ResolvedTool::McpPrompt { tool } => crate::mcp::prompt_tool_risk(*tool),
-            _ => CapabilityRisk::High,
-        };
-        let auto_approved = match resolved {
-            ResolvedTool::Mcp { server, tool, .. } => {
-                self.mcp_router.is_auto_approved(server, tool)
-            }
-            _ => false,
-        };
-        let policy = PermissionPromptPolicy::Json;
-        let permit_prompt = policy;
-
-        match invoke_hooks!(PreToolUse, self, tool_use)? {
-            HookControl::Allow => {
-                *permission_label = Some("Allowed by PreToolUse hook".to_string());
-                return Ok(PreparedState::Run);
-            }
-            HookControl::Block(reason) => {
-                let msg = format!("Tool blocked by PreToolUse hook: {reason}");
-                self.emit_update(AgentUpdate::StepFailed {
-                    idx: step_idx,
-                    tool_id: id.to_string(),
-                    arg_summary: String::new(),
-                    error: msg.clone(),
-                });
-                return Ok(PreparedState::Resolved(msg));
-            }
-            HookControl::Continue => {}
-        }
-
-        let decision = self.runtime.permission_manager.check_with_auto(
-            stable_name,
-            risk,
-            &tool_use.input,
-            auto_approved,
-        );
-        match decision.behavior {
-            PermissionBehavior::Allow => Ok(PreparedState::Run),
-            PermissionBehavior::Deny => {
-                let msg = format!("Permission denied: {}", decision.reason);
-                self.emit_update(AgentUpdate::StepFailed {
-                    idx: step_idx,
-                    tool_id: id.to_string(),
-                    arg_summary: String::new(),
-                    error: msg.clone(),
-                });
-                Ok(PreparedState::Resolved(msg))
-            }
-            PermissionBehavior::Ask => {
-                // Codex's `PermissionRequest`: runs only when a prompt would
-                // actually appear, so a policy hook answers it for free.
-                let hook_control = match invoke_hooks!(PermissionRequest, self, tool_use) {
-                    Ok(control) => control,
-                    Err(error) => {
-                        // Fail open, like every other hook failure.
-                        self.emit_update(AgentUpdate::Info(format!(
-                            "[PermissionRequest hook failed] {error}"
-                        )));
-                        HookControl::Continue
-                    }
-                };
-                match hook_control {
-                    HookControl::Allow => {
-                        *permission_label = Some("Allowed by PermissionRequest hook".to_string());
-                        Ok(PreparedState::Run)
-                    }
-                    HookControl::Block(reason) => {
-                        let msg = format!("Permission denied by PermissionRequest hook: {reason}");
-                        self.emit_update(AgentUpdate::StepFailed {
-                            idx: step_idx,
-                            tool_id: id.to_string(),
-                            arg_summary: String::new(),
-                            error: msg.clone(),
-                        });
-                        Ok(PreparedState::Resolved(msg))
-                    }
-                    HookControl::Continue => {
-                        let mut prompt =
-                            format_permission_prompt(stable_name, permit_prompt, &tool_use.input);
-                        let prefix_rule = crate::permission::PermissionManager::prefix_rule_for(
-                            stable_name,
-                            permit_prompt,
-                            &tool_use.input,
-                        );
-                        let choice = if let Some(tx) = self.runtime.events.ui() {
-                            if let Some(rule) = &prefix_rule {
-                                prompt.push_str(&format!(
-                                    "\n\n\"Always allow this pattern\" would record: {}",
-                                    rule.to_rule_string()
-                                ));
-                            }
-                            let options = legacy_permission_options(prefix_rule.is_some());
-                            let responder = self.tool_context.ui_responder.clone();
-                            let from_subagent = self.tool_context.is_subagent;
-                            let selection = responder
-                                .request_select(tx, prompt, options, false, from_subagent)
-                                .await
-                                .ok()
-                                .flatten();
-                            legacy_permission_choice_for(selection)
-                        } else if self
-                            .runtime
-                            .permission_manager
-                            .ask_user(stable_name, risk)?
-                        {
-                            LegacyPermissionChoice::AllowOnce
-                        } else {
-                            LegacyPermissionChoice::Deny
-                        };
-                        match choice {
-                            LegacyPermissionChoice::AllowOnce => {
-                                *permission_label = Some("Allow once".to_string());
-                                Ok(PreparedState::Run)
-                            }
-                            LegacyPermissionChoice::AlwaysAllowProgram => {
-                                *permission_label = Some("Always allow this pattern".to_string());
-                                let _ = self.runtime.permission_manager.allow_tool_as_prefix(
-                                    stable_name,
-                                    permit_prompt,
-                                    &tool_use.input,
-                                );
-                                Ok(PreparedState::Run)
-                            }
-                            LegacyPermissionChoice::AlwaysAllow => {
-                                *permission_label = Some("Always allow this tool".to_string());
-                                let _ = self.runtime.permission_manager.allow_tool_with_input(
-                                    stable_name,
-                                    permit_prompt,
-                                    &tool_use.input,
-                                );
-                                Ok(PreparedState::Run)
-                            }
-                            LegacyPermissionChoice::Deny => {
-                                let msg = format!("Permission denied by user for {}", stable_name);
-                                self.emit_update(AgentUpdate::StepFailed {
-                                    idx: step_idx,
-                                    tool_id: id.to_string(),
-                                    arg_summary: String::new(),
-                                    error: msg.clone(),
-                                });
-                                Ok(PreparedState::Resolved(msg))
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-/// The legacy popup's options, in the order the popup shows them.
-///
-/// Only the MCP resource/prompt tools still use this list; native tools get
-/// their options from the kernel permission port, which keeps the same three
-/// muscle-memory positions.
-const LEGACY_PERMISSION_OPTIONS: [&str; 4] = [
-    "Allow once",
-    "Deny",
-    "Always allow this tool",
-    "Always allow this pattern",
-];
-
-fn legacy_permission_options(with_program_choice: bool) -> Vec<String> {
-    let count = if with_program_choice {
-        LEGACY_PERMISSION_OPTIONS.len()
-    } else {
-        LEGACY_PERMISSION_OPTIONS.len() - 1
-    };
-    LEGACY_PERMISSION_OPTIONS[..count]
-        .iter()
-        .map(|option| (*option).to_string())
-        .collect()
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum LegacyPermissionChoice {
-    AllowOnce,
-    AlwaysAllow,
-    AlwaysAllowProgram,
-    Deny,
-}
-
-fn legacy_permission_choice_for(selection: Option<usize>) -> LegacyPermissionChoice {
-    match selection {
-        Some(0) => LegacyPermissionChoice::AllowOnce,
-        Some(2) => LegacyPermissionChoice::AlwaysAllow,
-        Some(3) => LegacyPermissionChoice::AlwaysAllowProgram,
-        _ => LegacyPermissionChoice::Deny,
-    }
 }
 
 /// The hook port the kernel pipeline would call.
@@ -1135,7 +753,6 @@ impl Agent {
                     Ok(Some(mcp)) => ResolvedTool::Mcp {
                         full_name: mcp.full_name,
                         server: mcp.server,
-                        tool: mcp.tool,
                     },
                     Ok(None) | Err(_) if is_mcp_resource_tool(name) => ResolvedTool::McpResource {
                         tool: crate::mcp::McpResourceTool::from_name(name)
@@ -1174,7 +791,7 @@ impl Agent {
                             step_idx,
                             permission_label: None,
                             state: PreparedState::Resolved(msg),
-                            resolved: ResolvedTool::Unknown { name: name.clone() },
+                            resolved: ResolvedTool::Unknown,
                             task_before: None,
                             kernel: None,
                         });
@@ -1236,9 +853,13 @@ impl Agent {
             // `McpResource`/`McpPrompt` are kernel tools too (McpControlSource).
             let catalog_name: Option<&str> = match &resolved {
                 ResolvedTool::Native { metadata } => Some(metadata.name),
+                ResolvedTool::Mcp { full_name, .. } => Some(full_name.as_str()),
                 ResolvedTool::McpResource { tool } => Some(tool.name()),
                 ResolvedTool::McpPrompt { tool } => Some(tool.name()),
-                _ => None,
+                // An unknown name is refused above; reaching here would mean the
+                // catalog disagrees with the resolver, which the parity test
+                // forbids.
+                ResolvedTool::Unknown => None,
             };
             let static_metadata = match &resolved {
                 ResolvedTool::Native { metadata } => Some(*metadata),
@@ -1482,14 +1103,16 @@ impl Agent {
                     }
                 }
             } else {
-                self.legacy_authorize(
-                    &resolved,
-                    &mut tool_use,
-                    &mut permission_label,
-                    step_idx,
-                    id,
-                )
-                .await?
+                // Every dispatchable tool is a catalog entry now, so an
+                // unresolvable name is a refusal rather than a second pipeline.
+                let msg = format!("unknown tool: {name}");
+                self.emit_update(AgentUpdate::StepFailed {
+                    idx: step_idx,
+                    tool_id: id.clone(),
+                    arg_summary: String::new(),
+                    error: msg.clone(),
+                });
+                PreparedState::Resolved(msg)
             };
 
             // Pre-call snapshot of the task a Task-domain call is about to
@@ -1570,10 +1193,7 @@ impl Agent {
             let mut futures = FuturesUnordered::new();
             for &pos in &wave {
                 let pi = run_indices[pos];
-                let mcp = &self.mcp_router;
-                let ctx = &self.tool_context;
                 let prep = &prepared[pi];
-                let is_mcp = matches!(prep.resolved, ResolvedTool::Mcp { .. });
                 // Native calls redeem their one-use ticket here, so a handler
                 // can only run through a call the pipeline authorized.
                 let kernel = prep.kernel.as_ref().map(|prepared_call| {
@@ -1582,27 +1202,15 @@ impl Agent {
                 let executor = self.tool_executor.clone();
                 let work_dir = self.tool_context.work_dir.clone();
                 let tool_use_id = prep.id.clone();
-                let resource_tool = match &prep.resolved {
-                    ResolvedTool::McpResource { tool } => Some(*tool),
-                    _ => None,
-                };
-                let prompt_tool = match &prep.resolved {
-                    ResolvedTool::McpPrompt { tool } => Some(*tool),
-                    _ => None,
-                };
                 let output_policy = match &prep.resolved {
                     ResolvedTool::Native { metadata } => metadata.output,
                     _ => OutputPolicy::PersistLargeOutput,
                 };
                 futures.push(async move {
                     let start = std::time::Instant::now();
-                    let exec = if let Some(tool) = resource_tool {
-                        run_mcp_resource_tool(mcp, tool, &prep.input).await
-                    } else if let Some(tool) = prompt_tool {
-                        run_mcp_prompt_tool(mcp, tool, &prep.input).await
-                    } else if is_mcp {
-                        run_mcp_tool(mcp, ctx, &prep.id, &prep.name, &prep.input).await
-                    } else if let Some(prepared_call) = kernel {
+                    // Every family — native, MCP, MCP control — is a catalog entry
+                    // with a ticket, so this branch is the only execution path.
+                    let exec = if let Some(prepared_call) = kernel {
                         run_kernel_tool(
                             executor,
                             prepared_call,
@@ -1893,7 +1501,7 @@ impl Agent {
                 step_idx,
                 permission_label: None,
                 state: PreparedState::Resolved(reason.to_string()),
-                resolved: ResolvedTool::Unknown { name: name.clone() },
+                resolved: ResolvedTool::Unknown,
                 task_before: None,
                 kernel: None,
             });
@@ -1925,7 +1533,8 @@ mod tests {
     use std::sync::Arc;
 
     use super::*;
-    use crate::mcp::{McpClient, McpResourceTool, MockMcpService};
+    use crate::mcp::{MCPToolRouter, McpClient, McpResourceTool, MockMcpService};
+    use crate::tool::McpControl;
     use tact_protocol::StepStatus;
 
     /// A router with one server that publishes one readable resource.
@@ -2265,52 +1874,6 @@ mod tests {
         );
     }
 
-    /// The legacy popup's indices must stay index-identical to the kernel's.
-    ///
-    /// Two lists now exist: the kernel's `OPTIONS` (native tools) and this one
-    /// (MCP resource/prompt tools). The three muscle-memory positions — allow
-    /// once, deny, always allow this tool — are what a user's hands know, so a
-    /// reordering in either list is a bug even though each is internally
-    /// consistent.
-    #[test]
-    fn the_legacy_popup_matches_the_kernel_index_mapping() {
-        assert_eq!(
-            legacy_permission_options(true),
-            vec![
-                "Allow once",
-                "Deny",
-                "Always allow this tool",
-                "Always allow this pattern",
-            ]
-        );
-        assert_eq!(legacy_permission_options(false).len(), 3);
-        assert_eq!(
-            legacy_permission_choice_for(Some(0)),
-            LegacyPermissionChoice::AllowOnce
-        );
-        assert_eq!(
-            legacy_permission_choice_for(Some(1)),
-            LegacyPermissionChoice::Deny
-        );
-        assert_eq!(
-            legacy_permission_choice_for(Some(2)),
-            LegacyPermissionChoice::AlwaysAllow
-        );
-        assert_eq!(
-            legacy_permission_choice_for(Some(3)),
-            LegacyPermissionChoice::AlwaysAllowProgram
-        );
-        // Cancelled (`None`) and out-of-range both deny.
-        assert_eq!(
-            legacy_permission_choice_for(None),
-            LegacyPermissionChoice::Deny
-        );
-        assert_eq!(
-            legacy_permission_choice_for(Some(99)),
-            LegacyPermissionChoice::Deny
-        );
-    }
-
     /// A credential refusal still names what it refused.
     ///
     /// The cell's label line is the only place a reader learns the *kind* of
@@ -2583,9 +2146,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_resource_listing_is_a_successful_tool_result() {
-        let exec = run_mcp_resource_tool(
+        let exec = run_control_tool(
             &router_with_a_resource(),
-            McpResourceTool::List,
+            McpControl::Resource(McpResourceTool::List),
             &serde_json::json!({}),
         )
         .await;
@@ -2599,9 +2162,9 @@ mod tests {
         // The schema marks both required, but a model can still send the wrong
         // shape; failing with a named argument beats an "unknown server" from a
         // lookup with an empty name.
-        let exec = run_mcp_resource_tool(
+        let exec = run_control_tool(
             &router_with_a_resource(),
-            McpResourceTool::Read,
+            McpControl::Resource(McpResourceTool::Read),
             &serde_json::json!({"uri": "memory://guide"}),
         )
         .await;
@@ -2612,9 +2175,9 @@ mod tests {
             exec.content
         );
 
-        let exec = run_mcp_resource_tool(
+        let exec = run_control_tool(
             &router_with_a_resource(),
-            McpResourceTool::Read,
+            McpControl::Resource(McpResourceTool::Read),
             &serde_json::json!({"server": "bm"}),
         )
         .await;
@@ -2628,9 +2191,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_resource_read_returns_the_text() {
-        let exec = run_mcp_resource_tool(
+        let exec = run_control_tool(
             &router_with_a_resource(),
-            McpResourceTool::Read,
+            McpControl::Resource(McpResourceTool::Read),
             &serde_json::json!({"server": "bm", "uri": "memory://guide"}),
         )
         .await;
@@ -2651,9 +2214,12 @@ mod tests {
         let mut router = MCPToolRouter::new();
         router.register_client(McpClient::with_service("bm", Vec::new(), Arc::new(service)));
 
-        let exec =
-            run_mcp_resource_tool(&router, McpResourceTool::Templates, &serde_json::json!({}))
-                .await;
+        let exec = run_control_tool(
+            &router,
+            McpControl::Resource(McpResourceTool::Templates),
+            &serde_json::json!({}),
+        )
+        .await;
 
         assert!(matches!(exec.status, StepStatus::Success));
         assert!(
@@ -2673,6 +2239,64 @@ mod tests {
     }
 
     /// A router whose one server publishes `getting_started`.
+    /// Run one MCP control tool the way the pipeline does, returning the shape
+    /// the tests assert on (`StepStatus` + content).
+    async fn run_control_tool(
+        router: &MCPToolRouter,
+        control: crate::tool::McpControl,
+        input: &serde_json::Value,
+    ) -> ExecResult {
+        let backend = std::sync::Arc::new(crate::tool::SnapshotMcpControlBackend::new(router));
+        let tool = crate::tool::McpControlTool::new(control, backend);
+        // A per-call directory: `test_context` wipes and recreates its target,
+        // so a shared name makes these tests destroy each other's workspace when
+        // they run in parallel.
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let name = format!(
+            "mcp_control_runner_{}",
+            NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+        );
+        let context = crate::tool::test_support::test_context(&name);
+        let call_ctx = kernel_ctx(&context);
+        match tact_kernel::capability::tool::Tool::call(&tool, call_ctx, input.clone()).await {
+            Ok(result) => ExecResult {
+                content: result.content,
+                status: StepStatus::Success,
+                image: None,
+                effects: Vec::new(),
+            },
+            Err(error) => ExecResult {
+                content: format!("{error}"),
+                status: StepStatus::Failed,
+                image: None,
+                effects: Vec::new(),
+            },
+        }
+    }
+
+    fn kernel_ctx(
+        context: &crate::tool::ToolContext,
+    ) -> tact_kernel::tool::context::ToolCallContext {
+        struct Events;
+        impl tact_kernel::tool::context::EventSink for Events {
+            fn emit(&self, _event: tact_kernel::tool::context::ToolEvent) {}
+        }
+        tact_kernel::tool::context::ToolCallContext {
+            run_id: "run".into(),
+            tool_use_id: "call".into(),
+            session_id: None,
+            active_goal_id: None,
+            origin: tact_kernel::tool::context::ToolOrigin::Main,
+            workspace: tact_kernel::tool::context::Workspace::new(&context.work_dir),
+            events: std::sync::Arc::new(Events),
+            interaction: std::sync::Arc::new(crate::permission::UiInteractionBroker::from_context(
+                context,
+            )),
+            cancel: tact_kernel::tool::context::CancelToken::new(),
+            redaction: tact_kernel::tool::context::RedactionPolicy::Off,
+        }
+    }
+
     fn router_with_a_prompt() -> MCPToolRouter {
         let service = MockMcpService::new(Vec::new(), |_| {
             Ok(rmcp::model::CallToolResult::success(Vec::new()))
@@ -2696,9 +2320,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_prompt_listing_is_a_successful_tool_result() {
-        let exec = run_mcp_prompt_tool(
+        let exec = run_control_tool(
             &router_with_a_prompt(),
-            crate::mcp::McpPromptTool::List,
+            McpControl::Prompt(crate::mcp::McpPromptTool::List),
             &serde_json::json!({}),
         )
         .await;
@@ -2717,9 +2341,9 @@ mod tests {
         // The schema marks both required, but a model can still send the wrong
         // shape; failing with a named argument beats an "unknown server" from a
         // lookup with an empty name.
-        let exec = run_mcp_prompt_tool(
+        let exec = run_control_tool(
             &router_with_a_prompt(),
-            crate::mcp::McpPromptTool::Get,
+            McpControl::Prompt(crate::mcp::McpPromptTool::Get),
             &serde_json::json!({"name": "getting_started"}),
         )
         .await;
@@ -2730,9 +2354,9 @@ mod tests {
             exec.content
         );
 
-        let exec = run_mcp_prompt_tool(
+        let exec = run_control_tool(
             &router_with_a_prompt(),
-            crate::mcp::McpPromptTool::Get,
+            McpControl::Prompt(crate::mcp::McpPromptTool::Get),
             &serde_json::json!({"server": "bm"}),
         )
         .await;
@@ -2746,9 +2370,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_prompt_get_returns_the_messages() {
-        let exec = run_mcp_prompt_tool(
+        let exec = run_control_tool(
             &router_with_a_prompt(),
-            crate::mcp::McpPromptTool::Get,
+            McpControl::Prompt(crate::mcp::McpPromptTool::Get),
             &serde_json::json!({"server": "bm", "name": "getting_started"}),
         )
         .await;
@@ -2768,7 +2392,7 @@ mod tests {
         // anything else is refused by name rather than dropped, because a
         // silently omitted argument reaches the server as an unfilled
         // placeholder and still reports success.
-        let ok = prompt_arguments(&serde_json::json!({
+        let ok = crate::tool::prompt_arguments(&serde_json::json!({
             "arguments": {
                 "topic": "notes",
                 "count": 3,
@@ -2783,14 +2407,18 @@ mod tests {
 
         // Absent or empty is `None`, not an empty map: the two are the same
         // request, and the caller passes `None` through to the server.
-        assert_eq!(prompt_arguments(&serde_json::json!({})).unwrap(), None);
         assert_eq!(
-            prompt_arguments(&serde_json::json!({"arguments": {}})).unwrap(),
+            crate::tool::prompt_arguments(&serde_json::json!({})).unwrap(),
+            None
+        );
+        assert_eq!(
+            crate::tool::prompt_arguments(&serde_json::json!({"arguments": {}})).unwrap(),
             None
         );
 
-        let error = prompt_arguments(&serde_json::json!({"arguments": {"topic": ["a", "b"]}}))
-            .expect_err("an array is not a string");
+        let error =
+            crate::tool::prompt_arguments(&serde_json::json!({"arguments": {"topic": ["a", "b"]}}))
+                .expect_err("an array is not a string");
         assert!(error.contains("topic"), "{error}");
     }
 
@@ -2958,9 +2586,7 @@ mod tests {
 
     #[test]
     fn arg_pair_uses_json_for_unknown_tools() {
-        let resolved = ResolvedTool::Unknown {
-            name: "nope".into(),
-        };
+        let resolved = ResolvedTool::Unknown;
         let (full, _) = arg_pair(&resolved, &serde_json::json!({"a": 1}), None, None);
         assert_eq!(full, "{\"a\":1}");
     }
