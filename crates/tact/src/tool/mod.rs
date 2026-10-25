@@ -301,6 +301,24 @@ impl ToolRouter {
         Ok(self)
     }
 
+    /// Consume the router into a kernel catalog, wrapping every handler.
+    ///
+    /// This is the Phase 1b bridge: the kernel executor sees the same tools the
+    /// legacy dispatch path saw, with no handler rewritten.
+    pub fn into_kernel_catalog(
+        self,
+        contexts: std::sync::Arc<dyn legacy::ToolContextFactory>,
+    ) -> Result<tact_kernel::catalog::ToolCatalog> {
+        let mut catalog = tact_kernel::catalog::ToolCatalog::default();
+        for (_, registered) in self.tools {
+            catalog.insert(std::sync::Arc::new(legacy::LegacyToolAdapter::from_boxed(
+                registered.handler,
+                contexts.clone(),
+            )))?;
+        }
+        Ok(catalog)
+    }
+
     pub fn resolve(&self, name: &str) -> Result<ResolvedNativeTool<'_>> {
         self.tools
             .get(name)

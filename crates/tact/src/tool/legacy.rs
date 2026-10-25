@@ -48,19 +48,27 @@ impl ToolContextFactory for SharedToolContextFactory {
 }
 
 /// A legacy handler exposed as a kernel [`KernelTool`].
-pub struct LegacyToolAdapter<T: LegacyTool> {
-    inner: T,
+pub struct LegacyToolAdapter {
+    inner: Box<dyn LegacyTool>,
     contexts: Arc<dyn ToolContextFactory>,
 }
 
-impl<T: LegacyTool> LegacyToolAdapter<T> {
-    pub fn new(inner: T, contexts: Arc<dyn ToolContextFactory>) -> Self {
+impl LegacyToolAdapter {
+    pub fn new<T: LegacyTool + 'static>(inner: T, contexts: Arc<dyn ToolContextFactory>) -> Self {
+        Self {
+            inner: Box::new(inner),
+            contexts,
+        }
+    }
+
+    /// Wrap a handler that is already boxed.
+    pub fn from_boxed(inner: Box<dyn LegacyTool>, contexts: Arc<dyn ToolContextFactory>) -> Self {
         Self { inner, contexts }
     }
 }
 
 #[async_trait]
-impl<T: LegacyTool + 'static> KernelTool for LegacyToolAdapter<T> {
+impl KernelTool for LegacyToolAdapter {
     fn descriptor(&self) -> ToolDescriptor {
         let metadata = self.inner.metadata();
         ToolDescriptor::from_native(
@@ -203,5 +211,96 @@ mod tests {
             descriptor.policy.permission,
             crate::tool::PermissionPolicy::Read
         );
+    }
+}
+
+#[cfg(test)]
+mod catalog_tests {
+    use super::*;
+    use crate::tool::test_support::test_context;
+    use crate::tool::{ToolMetadata, ToolRouter, toolset};
+    use serde_json::{Value, json};
+
+    #[tokio::test]
+    async fn router_bridges_every_tool_into_the_kernel_catalog() {
+        let router = toolset();
+        let expected = router.tool_specs().len();
+        let catalog = router
+            .into_kernel_catalog(Arc::new(SharedToolContextFactory::new(test_context(
+                "router_bridge",
+            ))))
+            .unwrap();
+        let snapshot = catalog
+            .descriptor_snapshot(&tact_kernel::capability::CapabilityFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(snapshot.tools.len(), expected);
+        assert!(
+            snapshot.tools.iter().any(|tool| tool.name == "bash"),
+            "the bridge must keep the real tool set"
+        );
+    }
+
+    #[tokio::test]
+    async fn bridged_tool_is_callable_through_the_kernel_contract() {
+        struct Echo;
+        #[async_trait]
+        impl LegacyTool for Echo {
+            fn metadata(&self) -> &'static ToolMetadata {
+                static META: ToolMetadata = ToolMetadata::read_json("echo", "Echo", "Echo");
+                &META
+            }
+
+            fn input_schema(&self) -> Value {
+                json!({"type": "object"})
+            }
+
+            async fn call(
+                &self,
+                _context: ToolContext,
+                input: Value,
+            ) -> anyhow::Result<ToolCallResult> {
+                Ok(ToolCallResult::text(input["text"].as_str().unwrap_or("")))
+            }
+        }
+
+        let catalog = ToolRouter::new()
+            .route(Echo)
+            .unwrap()
+            .into_kernel_catalog(Arc::new(SharedToolContextFactory::new(test_context(
+                "router_bridge_call",
+            ))))
+            .unwrap();
+        let tool = catalog.get("echo").cloned().unwrap();
+        let ctx = ToolCallContext {
+            run_id: "run".into(),
+            tool_use_id: "call".into(),
+            session_id: None,
+            active_goal_id: None,
+            origin: ToolOrigin::Main,
+            workspace: tact_kernel::tool::context::Workspace::new("/repo"),
+            events: Arc::new(NoEvents),
+            interaction: Arc::new(NoInteractions),
+            cancel: tact_kernel::tool::context::CancelToken::new(),
+            redaction: tact_kernel::tool::context::RedactionPolicy::Off,
+        };
+        let result = tool.call(ctx, json!({"text": "bridged"})).await.unwrap();
+        assert_eq!(result.content, "bridged");
+    }
+
+    struct NoEvents;
+    impl tact_kernel::tool::context::EventSink for NoEvents {
+        fn emit(&self, _event: tact_kernel::tool::context::ToolEvent) {}
+    }
+
+    struct NoInteractions;
+    #[async_trait]
+    impl tact_kernel::tool::context::InteractionBroker for NoInteractions {
+        async fn request(
+            &self,
+            _request: tact_kernel::tool::context::InteractionRequest,
+        ) -> anyhow::Result<tact_kernel::tool::context::InteractionResponse> {
+            Ok(tact_kernel::tool::context::InteractionResponse::Rejected)
+        }
     }
 }
