@@ -82,6 +82,11 @@ pub trait ToolContextFactory: Send + Sync {
         None
     }
 
+    /// The image pipeline's settings, when this factory has one.
+    fn vision_policy(&self) -> Option<crate::tool::VisionPolicy> {
+        None
+    }
+
     /// The sink a tool's read-out goes to.
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
         None
@@ -202,6 +207,10 @@ impl ToolContextFactory for SharedToolContextFactory {
         }))
     }
 
+    fn vision_policy(&self) -> Option<crate::tool::VisionPolicy> {
+        Some(self.with_base(|base| base.vision))
+    }
+
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
         Some(self.with_base(|base| base.events.clone()))
     }
@@ -315,6 +324,9 @@ impl KernelTool for ContextualToolAdapter {
                     }
                     super::DomainHandle::Shell => {
                         handles.shell = self.contexts.shell_policy();
+                    }
+                    super::DomainHandle::Vision => {
+                        handles.vision = self.contexts.vision_policy();
                     }
                     super::DomainHandle::FromSubagent => {
                         handles.from_subagent = Some(matches!(ctx.origin, ToolOrigin::Subagent));

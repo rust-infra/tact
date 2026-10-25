@@ -74,6 +74,7 @@ mod task;
 mod team;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
+mod vision_policy;
 mod worktree;
 mod write_file;
 
@@ -105,6 +106,7 @@ pub use name_class::{ToolNameClass, classify, scopes_to_one_server};
 use read_file::ReadFileTool;
 pub use registry::{subagent_toolset, toolset, toolset_with_memory};
 pub use shell_policy::ShellPolicy;
+pub use vision_policy::VisionPolicy;
 // Re-exported so `crate::agent::tool_dispatch` can do per-invocation resource
 // resolution for worktree-isolated `spawn_subagent` calls without naming the
 // private `subagent` module.
@@ -167,6 +169,12 @@ pub struct ToolContext {
     pub progress_reporter: ToolProgressReporter,
     pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
     pub bash_timeout_secs: u64,
+    /// How an image is prepared before it reaches the model.
+    ///
+    /// A session constant resolved at startup, like the shell settings: it
+    /// never changes mid-run, and a tool that reads it should be handed it
+    /// rather than reaching for the process configuration.
+    pub vision: VisionPolicy,
     /// Nice increment applied to the bash sub-process group (macOS/Linux only).
     /// Default 10 so TUI stays responsive during heavy commands like `cargo test`.
     /// 0 disables. Maximum is 19 (lowest priority).
@@ -277,6 +285,8 @@ pub enum DomainHandle {
     ToolUseId,
     /// The shell policy: timeout, priority, sandbox and its degradation.
     Shell,
+    /// The image pipeline: compression, longest edge and JPEG quality.
+    Vision,
     FromSubagent,
     /// The run's session id, when this tool keys its rows by it.
     SessionId,
@@ -317,6 +327,8 @@ pub struct DomainHandles {
     pub tool_use_id: Option<String>,
     /// How a shell command may run. One value, not four fields.
     pub shell: Option<ShellPolicy>,
+    /// How an image is prepared before it reaches the model.
+    pub vision: Option<VisionPolicy>,
     /// Whether the caller is a subagent, when a tool's wording depends on it.
     ///
     /// Carried from the kernel's `ToolOrigin` rather than re-derived: the origin

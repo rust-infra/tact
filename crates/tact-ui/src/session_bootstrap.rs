@@ -293,6 +293,9 @@ pub async fn bootstrap_session(
         ui_responder,
         progress_reporter: tact::tool::ToolProgressReporter::default(),
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        // Resolved once here from the snapshot the bootstrap read, so the tool
+        // never reaches for the process configuration mid-call.
+        vision: tact::tool::VisionPolicy::from_settings(&config.ui.vision_image),
         bash_timeout_secs: config.tools.bash_timeout_secs,
         bash_nice: config.tools.bash_nice,
         sandbox,

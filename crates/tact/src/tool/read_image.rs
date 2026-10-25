@@ -66,9 +66,15 @@ fn encode_jpeg(
 /// - The file does not exist or is not a supported image type.
 /// - The current model does not accept image input.
 pub async fn read_image(
-    workspace: tact_kernel::tool::context::Workspace,
+    handles: crate::tool::DomainHandles,
     input: ReadImageInput,
 ) -> Result<ToolCallResult> {
+    let Some(workspace) = handles.workspace.clone() else {
+        return Err(anyhow!(
+            "read_image is unavailable: this host has no workspace"
+        ));
+    };
+    let vision = handles.vision.unwrap_or_default();
     // Align with DeepSeek Harness `read_image`: gate on the current model
     // declaring image support before doing any I/O; a text-only target cannot
     // consume the returned image block. `config` (not `tact_llm`) is the gate:
@@ -95,8 +101,7 @@ pub async fn read_image(
         .await
         .map_err(|e| anyhow!("failed to read {}: {e}", path.display()))?;
 
-    let settings = crate::config::settings().ui.vision_image;
-    let (encoded, width, height) = encode_jpeg(&bytes, settings.max_edge, settings.jpeg_quality)?;
+    let (encoded, width, height) = encode_jpeg(&bytes, vision.edge(), vision.jpeg_quality)?;
 
     let b64 = base64::engine::general_purpose::STANDARD.encode(&encoded);
     let media_type = "image/jpeg".to_string();

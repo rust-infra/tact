@@ -101,6 +101,7 @@ pub fn test_context(name: &str) -> ToolContext {
         progress_reporter: super::ToolProgressReporter::default(),
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
+        vision: crate::tool::VisionPolicy::default(),
         bash_nice: 0,
         sandbox: None,
         sandbox_degraded: None,

@@ -173,6 +173,7 @@ fn expand_domain_tool(
         ("cancel_flag", quote!(crate::tool::DomainHandle::CancelFlag)),
         ("tool_use_id", quote!(crate::tool::DomainHandle::ToolUseId)),
         ("shell", quote!(crate::tool::DomainHandle::Shell)),
+        ("vision", quote!(crate::tool::DomainHandle::Vision)),
     ] {
         if text.contains(&format!(".{field}")) {
             needs.push(variant);
@@ -239,6 +240,9 @@ fn expand_domain_tool(
                         sandbox: context.sandbox.clone(),
                         degraded: context.sandbox_degraded.clone(),
                     }),
+                    vision: Some(crate::tool::VisionPolicy::from_settings(
+                        &crate::config::settings().ui.vision_image,
+                    )),
                     session_id: context.session_id.clone(),
                     active_goal_id: context.active_goal_id.clone(),
                     events: Some(context.events.clone()),

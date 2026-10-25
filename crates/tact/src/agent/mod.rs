@@ -32,7 +32,7 @@ use crate::{
         recent_messages_for_summary, retained_user_message_token_budget, should_auto_compact,
         write_transcript,
     },
-    config::{self, AgentSettings},
+    config::AgentSettings,
     hook::{
         Hook, HookContextChunk, HookControl, HookTypes, InterruptFn, NotificationFn,
         PermissionRequestFn, PostCompactFn, PostToolUseFailureFn, PostToolUseFn, PreCompactFn,
@@ -2055,8 +2055,12 @@ impl Agent {
     }
 
     pub fn with_post_tool(mut self, hook: impl PostToolUseFn + 'static) -> Self {
-        // RTK filter is opt-in — defaults to off for privacy.
-        if !config::settings().tools.rtk_filter {
+        // RTK filter is opt-in — defaults to off for privacy. Read from the
+        // bundle this agent was assembled with rather than the process global:
+        // the two can disagree when a host assembled a different snapshot, and
+        // the bundle is the one whose tools this agent actually runs.
+        let enabled = self.config().is_some_and(|config| config.tools.rtk_filter);
+        if !enabled {
             return self;
         }
         self.hooks.push(Hook::PostToolUse(Box::new(hook)));
