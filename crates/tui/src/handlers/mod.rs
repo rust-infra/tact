@@ -340,13 +340,52 @@ pub(crate) fn command_needs_args(cmd: &str) -> bool {
 }
 
 pub(crate) fn execute_palette_command(app: &mut App, cmd: &str) -> CommandExecOutcome {
-    // A name that is not a built-in may still be a skill; built-ins always win
-    // so a skill named `cancel`/`help`/… cannot shadow them.
-    let Some(command) = SlashCommand::from_name(cmd) else {
-        return skills::handle_skill_command(app, cmd)
-            .unwrap_or_else(CommandExecOutcome::unhandled);
+    // Local commands first: they exist whether or not a plugin loaded, and a
+    // contributed command must not take over `/cancel`.
+    if let Some(command) = SlashCommand::from_name(cmd) {
+        return run_command(app, command);
+    }
+    // Then the runtime's catalog, which is where a plugin-contributed command
+    // lives. Forwarding the name and the raw arguments is the whole contract:
+    // the catalog owns the grammar.
+    if run_catalog_command(app, cmd) {
+        return CommandExecOutcome::handled();
+    }
+    // Last, a skill: a name nobody else claimed may be one, and this ordering
+    // is what keeps a skill from shadowing a built-in.
+    skills::handle_skill_command(app, cmd).unwrap_or_else(CommandExecOutcome::unhandled)
+}
+
+/// Ask the runtime to run a catalog command, if `cmd` names one.
+///
+/// Returns whether the name was a catalog command. The view forwards the name
+/// and the raw argument text; it does not parse either, because the command owns
+/// its own grammar.
+fn run_catalog_command(app: &mut App, cmd: &str) -> bool {
+    let Some(directory) = app
+        .commands
+        .lock()
+        .unwrap_or_else(|error| error.into_inner())
+        .clone()
+    else {
+        return false;
     };
-    run_command(app, command)
+    if directory.resolve(cmd).is_none() {
+        return false;
+    }
+    let args = app
+        .input
+        .trim()
+        .strip_prefix('/')
+        .unwrap_or_default()
+        .split_once(char::is_whitespace)
+        .map(|(_, rest)| rest.trim().to_string())
+        .unwrap_or_default();
+    let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+        name: cmd.to_string(),
+        args,
+    });
+    true
 }
 
 /// Dispatch one built-in command.
@@ -855,6 +894,92 @@ mod tests {
     use crate::widgets::state::{App, InputMode, SlashCommand, Status, Subcommand};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use tact_protocol::UserCommand;
+
+    /// A directory holding exactly the names it was built with.
+    struct FixedDirectory(Vec<crate::ports::CommandEntry>);
+
+    impl crate::ports::CommandDirectory for FixedDirectory {
+        fn commands(&self) -> Vec<crate::ports::CommandEntry> {
+            self.0.clone()
+        }
+
+        fn resolve(&self, name: &str) -> Option<crate::ports::CommandEntry> {
+            self.0.iter().find(|entry| entry.name == name).cloned()
+        }
+    }
+
+    fn directory_of(names: &[&str]) -> crate::ports::SharedCommandDirectory {
+        let entries = names
+            .iter()
+            .map(|name| crate::ports::CommandEntry {
+                name: (*name).to_string(),
+                summary: String::new(),
+                needs_args: false,
+            })
+            .collect();
+        let slot = crate::ports::shared_command_directory();
+        *slot.lock().unwrap() = Some(std::sync::Arc::new(FixedDirectory(entries)));
+        slot
+    }
+
+    /// A name the catalog owns is forwarded to the runtime, arguments included.
+    ///
+    /// This is the path a plugin-contributed command takes; without it such a
+    /// command is listed in the palette but does nothing when chosen.
+    #[test]
+    fn a_catalog_command_is_forwarded_with_its_arguments() {
+        let (mut app, mut rx) = TestApp::new().into_commands();
+        app.commands = directory_of(&["deploy"]);
+        app.input = "/deploy production".to_string();
+
+        let outcome = execute_palette_command(&mut app, "deploy");
+
+        assert!(outcome.handled, "the catalog claimed the name");
+        match rx.try_recv() {
+            Ok(UserCommand::RunCommand { name, args }) => {
+                assert_eq!(name, "deploy");
+                assert_eq!(args, "production", "the command owns its grammar");
+            }
+            other => panic!("expected a RunCommand, got {other:?}"),
+        }
+    }
+
+    /// A local command still wins over a catalog command of the same name.
+    ///
+    /// `/cancel` must keep cancelling even if a plugin contributes one.
+    #[test]
+    fn a_local_command_wins_over_the_catalog() {
+        let (mut app, mut rx) = TestApp::new().into_commands();
+        app.commands = directory_of(&["cancel"]);
+
+        let outcome = execute_palette_command(&mut app, "cancel");
+
+        assert!(outcome.handled);
+        // The local `/cancel` runs its own no-op branch when idle rather than
+        // forwarding a `RunCommand`, which is what proves it was not treated as
+        // a catalog command.
+        assert!(
+            app.flash_msg.is_some(),
+            "the local handler ran (its idle notice)"
+        );
+        assert!(
+            rx.try_recv().is_err(),
+            "a local command is not forwarded to the runtime"
+        );
+    }
+
+    /// A name nobody claims is unhandled, not a catalog invocation.
+    #[test]
+    fn an_unknown_name_is_not_forwarded() {
+        let (mut app, mut rx) = TestApp::new().into_commands();
+        app.commands = directory_of(&["deploy"]);
+        app.input = "/nonsense".to_string();
+
+        let outcome = execute_palette_command(&mut app, "nonsense");
+
+        assert!(!outcome.handled);
+        assert!(rx.try_recv().is_err(), "nothing was sent to the runtime");
+    }
 
     /// Runs `/skill <sub>` the way the input box does: the palette dispatches on
     /// the command name alone, and the handler reads the subcommand from the
