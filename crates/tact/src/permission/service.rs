@@ -102,6 +102,7 @@ fn build_prompt(
 pub struct ManagerPermissionService {
     manager: Arc<Mutex<PermissionManager>>,
     auto_approved: Arc<dyn Fn(&str) -> bool + Send + Sync>,
+    ui_available: Arc<dyn Fn() -> bool + Send + Sync>,
 }
 
 impl ManagerPermissionService {
@@ -109,6 +110,10 @@ impl ManagerPermissionService {
         Self {
             manager,
             auto_approved: Arc::new(|_| false),
+            // Default to "a prompt can be shown": a caller that never wires a UI
+            // must opt into the headless ladder explicitly, so a missing wiring
+            // fails loudly at the prompt instead of silently auto-approving.
+            ui_available: Arc::new(|| true),
         }
     }
 
@@ -118,6 +123,16 @@ impl ManagerPermissionService {
         auto_approved: Arc<dyn Fn(&str) -> bool + Send + Sync>,
     ) -> Self {
         self.auto_approved = auto_approved;
+        self
+    }
+
+    /// Declare whether a prompt can reach a human.
+    ///
+    /// When it cannot, an `Ask` is resolved by
+    /// [`PermissionManager::ask_user`] — the same non-interactive ladder the
+    /// agent used before the port existed (High denied, Write allowed once).
+    pub fn with_ui_available(mut self, ui_available: Arc<dyn Fn() -> bool + Send + Sync>) -> Self {
+        self.ui_available = ui_available;
         self
     }
 }
@@ -136,6 +151,19 @@ impl PermissionService for ManagerPermissionService {
         Ok(match decision.behavior {
             PermissionBehavior::Allow => PermissionDecision::Allow,
             PermissionBehavior::Deny => PermissionDecision::Deny(decision.reason),
+            PermissionBehavior::Ask if !(self.ui_available)() => {
+                // No human can answer. Fall back to the documented headless
+                // ladder rather than deciding for them: High is refused, and a
+                // Write is allowed once (a Read never reaches `Ask`).
+                if manager.ask_user(&request.descriptor.name, risk)? {
+                    PermissionDecision::Allow
+                } else {
+                    PermissionDecision::Deny(format!(
+                        "{} (no interactive UI available)",
+                        decision.reason
+                    ))
+                }
+            }
             PermissionBehavior::Ask => PermissionDecision::Ask(build_prompt(
                 &request.descriptor,
                 &request.input,
@@ -293,6 +321,38 @@ mod tests {
             .unwrap();
         let decision = service.decide(request).await.unwrap();
         assert_eq!(decision, PermissionDecision::Allow);
+    }
+
+    #[tokio::test]
+    async fn headless_write_is_allowed_once_and_high_is_denied() {
+        let service = service(PermissionMode::Default).with_ui_available(Arc::new(|| false));
+
+        let write = service
+            .decide(PermissionRequest {
+                descriptor: descriptor(),
+                input: json!({"path": "src/main.rs"}),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            write,
+            PermissionDecision::Allow,
+            "headless allows a write once"
+        );
+
+        let mut high = descriptor();
+        high.policy.permission = PermissionPolicy::High;
+        let denied = service
+            .decide(PermissionRequest {
+                descriptor: high,
+                input: json!({"path": "src/main.rs"}),
+            })
+            .await
+            .unwrap();
+        let PermissionDecision::Deny(reason) = denied else {
+            panic!("headless must refuse a high-risk call");
+        };
+        assert!(reason.contains("no interactive UI"), "{reason}");
     }
 
     #[tokio::test]
