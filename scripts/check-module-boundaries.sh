@@ -16,11 +16,12 @@ import sys
 
 # Phase-0 debt: repo-relative file path -> forbidden modules imported there.
 PHASE0_ALLOWLIST = {
-    # `skill` and `memory` now go through `ToolContext` helpers; `mcp` here is
-    # the router reload path, which Phase 2's MCP plugin takes over.
+    # MCP *dispatch* is a catalog source now (McpToolSource / McpControlSource),
+    # so what is left here is the router's own lifecycle: loading/reloading the
+    # servers, the prompt/spec queries built from it, and the name-resolver
+    # predicates that decide which family a tool name belongs to. Phase 3's
+    # McpPlugin owns those; until it exists, these two files are where it lives.
     "crates/tact/src/agent/mod.rs": {"mcp"},
-    # The MCP families still run through the router in this file until they are
-    # registered as sources on the executor.
     "crates/tact/src/agent/tool_dispatch.rs": {"mcp"},
 }
 
