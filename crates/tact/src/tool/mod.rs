@@ -254,6 +254,7 @@ pub enum DomainHandle {
     SkillRegistry,
     TeammateManager,
     TaskManager,
+    GoalManager,
     /// The run's session id, when this tool keys its rows by it.
     SessionId,
     /// The Goal a call runs inside, when the caller is a Goal activation.
@@ -274,6 +275,7 @@ pub struct DomainHandles {
     pub skill_registry: Option<crate::skill::SharedSkillRegistry>,
     pub teammate_manager: Option<SharedTeammateManager>,
     pub task_manager: Option<SharedTaskManager>,
+    pub goal_manager: Option<SharedGoalManager>,
     /// The session the call belongs to, for a tool that keys rows by it.
     pub session_id: Option<String>,
     /// The Goal a call is running inside, when the caller is a Goal activation.
@@ -309,6 +311,9 @@ impl DomainHandles {
         }
         if self.task_manager.is_some() {
             carried.push("task_manager");
+        }
+        if self.goal_manager.is_some() {
+            carried.push("goal_manager");
         }
         if self.session_id.is_some() {
             carried.push("session_id");
@@ -1193,6 +1198,65 @@ mod tests {
         assert!(
             unread.is_empty(),
             "these ToolContext fields have no reader outside tool/mod.rs: {unread:?}"
+        );
+    }
+}
+
+#[cfg(test)]
+mod domain_handle_guard_tests {
+    use super::*;
+
+    /// Every `DomainHandle` variant must have a field in `DomainHandles` that the
+    /// `#[tool]` macro can detect.
+    ///
+    /// The macro's detection table is hand-maintained, and forgetting an entry does
+    /// not fail to compile: the tool simply declares fewer handles than it reads,
+    /// gets `None`, and reports "unavailable" at runtime. That happened with
+    /// `goal_manager` and was only caught by a test three layers away, so the two
+    /// lists are asserted to agree here.
+    #[test]
+    fn every_domain_handle_variant_has_a_detectable_field() {
+        // The field names the macro looks for, one per variant. Adding a variant
+        // without a field (or a field the macro does not know) fails here.
+        for (variant, field) in [
+            (DomainHandle::SkillRegistry, "skill_registry"),
+            (DomainHandle::TeammateManager, "teammate_manager"),
+            (DomainHandle::TaskManager, "task_manager"),
+            (DomainHandle::GoalManager, "goal_manager"),
+            (DomainHandle::SessionId, "session_id"),
+            (DomainHandle::ActiveGoalId, "active_goal_id"),
+            (DomainHandle::Events, "events"),
+        ] {
+            let source = include_str!("mod.rs");
+            // The field must exist on the struct the macro reads.
+            let declared = source
+                .split_once("pub struct DomainHandles {")
+                .expect("the struct is declared here")
+                .1
+                .split_once("\n}")
+                .expect("and closed here")
+                .0
+                .contains(&format!("pub {field}:"));
+            assert!(
+                declared,
+                "{variant:?} names field `{field}`, which DomainHandles does not declare"
+            );
+        }
+        // And the count is exhaustive: a new variant must be added to the list
+        // above, which is the reminder this test exists to give.
+        assert_eq!(
+            [
+                DomainHandle::SkillRegistry,
+                DomainHandle::TeammateManager,
+                DomainHandle::TaskManager,
+                DomainHandle::GoalManager,
+                DomainHandle::SessionId,
+                DomainHandle::ActiveGoalId,
+                DomainHandle::Events,
+            ]
+            .len(),
+            7,
+            "update this list (and the macro's table) when adding a DomainHandle"
         );
     }
 }

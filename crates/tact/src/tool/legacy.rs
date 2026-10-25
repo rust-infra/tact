@@ -37,6 +37,11 @@ pub trait ToolContextFactory: Send + Sync {
         None
     }
 
+    /// The goal manager, on the same terms.
+    fn goal_manager(&self) -> Option<crate::tool::SharedGoalManager> {
+        None
+    }
+
     /// The sink a tool's read-out goes to.
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
         None
@@ -122,6 +127,10 @@ impl ToolContextFactory for SharedToolContextFactory {
         Some(self.with_base(|base| base.task_manager.clone()))
     }
 
+    fn goal_manager(&self) -> Option<crate::tool::SharedGoalManager> {
+        Some(self.with_base(|base| base.goal_manager.clone()))
+    }
+
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
         Some(self.with_base(|base| base.events.clone()))
     }
@@ -199,6 +208,9 @@ impl KernelTool for LegacyToolAdapter {
                     }
                     super::DomainHandle::TaskManager => {
                         handles.task_manager = self.contexts.task_manager();
+                    }
+                    super::DomainHandle::GoalManager => {
+                        handles.goal_manager = self.contexts.goal_manager();
                     }
                     super::DomainHandle::SessionId => {
                         handles.session_id = ctx.session_id.clone();

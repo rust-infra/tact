@@ -6,7 +6,7 @@ use tool_refactor_macros::tool;
 use crate::{
     goal::GoalEvent,
     tool::{
-        PermissionPolicy, ResourcePolicy, ToolCallResult, ToolContext, ToolEffect, ToolMetadata,
+        DomainHandles, PermissionPolicy, ResourcePolicy, ToolCallResult, ToolEffect, ToolMetadata,
         ToolPresentation,
     },
 };
@@ -110,10 +110,13 @@ pub const GOAL_PROPOSE_COMPLETION_METADATA: ToolMetadata = goal_metadata(
     ResourcePolicy::SharedState { scope: "goal" },
 );
 
-fn active_goal_id(ctx: &ToolContext) -> Result<&str> {
-    ctx.active_goal_id
-        .as_deref()
-        .ok_or_else(|| anyhow!("no active Goal is bound to this tool context"))
+/// The Goal this call is bound to.
+///
+/// Every Goal tool is meaningless without one, so the missing case is an error
+/// rather than a default: a call outside a Goal activation must say so instead of
+/// reading or writing the wrong Goal.
+fn active_goal_id(value: Option<&str>) -> Result<&str> {
+    value.ok_or_else(|| anyhow!("no active Goal is bound to this tool context"))
 }
 
 fn non_empty(value: String, field: &str) -> Result<String> {
@@ -159,16 +162,28 @@ fn event_text(goal_id: &str, kind: crate::goal::GoalEventKind, text: String) -> 
 }
 
 #[tool]
-pub async fn goal_read(ctx: ToolContext, _input: GoalReadInput) -> Result<String> {
-    let goal = ctx.goal_manager.get(active_goal_id(&ctx)?).await?;
+pub async fn goal_read(handles: DomainHandles, _input: GoalReadInput) -> Result<String> {
+    let Some(goals) = handles.goal_manager else {
+        return Err(anyhow!(
+            "goal tools are unavailable: this host has no goal manager"
+        ));
+    };
+    let goal = goals
+        .get(active_goal_id(handles.active_goal_id.as_deref())?)
+        .await?;
     Ok(serde_json::to_string(&goal)?)
 }
 
 #[tool]
-pub async fn goal_checkpoint(ctx: ToolContext, input: GoalCheckpointInput) -> Result<String> {
-    let goal_id = active_goal_id(&ctx)?;
+pub async fn goal_checkpoint(handles: DomainHandles, input: GoalCheckpointInput) -> Result<String> {
+    let Some(goals) = handles.goal_manager else {
+        return Err(anyhow!(
+            "goal tools are unavailable: this host has no goal manager"
+        ));
+    };
+    let goal_id = active_goal_id(handles.active_goal_id.as_deref())?;
     let summary = non_empty(input.summary, "summary")?;
-    ctx.goal_manager
+    goals
         .append_event(event(
             goal_id,
             crate::goal::GoalEventKind::Checkpoint,
@@ -180,12 +195,17 @@ pub async fn goal_checkpoint(ctx: ToolContext, input: GoalCheckpointInput) -> Re
 
 #[tool]
 pub async fn goal_request_input(
-    ctx: ToolContext,
+    handles: DomainHandles,
     input: GoalRequestInputInput,
 ) -> Result<ToolCallResult> {
-    let goal_id = active_goal_id(&ctx)?;
+    let Some(goals) = handles.goal_manager else {
+        return Err(anyhow!(
+            "goal tools are unavailable: this host has no goal manager"
+        ));
+    };
+    let goal_id = active_goal_id(handles.active_goal_id.as_deref())?;
     let question = non_empty(input.question, "question")?;
-    ctx.goal_manager
+    goals
         .append_event(event_text(
             goal_id,
             crate::goal::GoalEventKind::NeedsUser,
@@ -203,10 +223,15 @@ pub async fn goal_request_input(
 
 #[tool]
 pub async fn goal_propose_completion(
-    ctx: ToolContext,
+    handles: DomainHandles,
     input: GoalProposeCompletionInput,
 ) -> Result<String> {
-    let goal_id = active_goal_id(&ctx)?;
+    let Some(goals) = handles.goal_manager else {
+        return Err(anyhow!(
+            "goal tools are unavailable: this host has no goal manager"
+        ));
+    };
+    let goal_id = active_goal_id(handles.active_goal_id.as_deref())?;
     let summary = non_empty(input.summary, "summary")?;
     let checks: Vec<String> = input
         .checks
@@ -226,7 +251,7 @@ pub async fn goal_propose_completion(
             }))
         })
         .collect::<Result<_>>()?;
-    ctx.goal_manager
+    goals
         .append_event(event(
             goal_id,
             crate::goal::GoalEventKind::CompletionProposed,

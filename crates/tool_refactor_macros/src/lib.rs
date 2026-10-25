@@ -141,6 +141,10 @@ fn expand_domain_tool(
             quote!(crate::tool::DomainHandle::ActiveGoalId),
         ),
         ("events", quote!(crate::tool::DomainHandle::Events)),
+        (
+            "goal_manager",
+            quote!(crate::tool::DomainHandle::GoalManager),
+        ),
     ] {
         if text.contains(&format!(".{field}")) {
             needs.push(variant);
@@ -185,6 +189,7 @@ fn expand_domain_tool(
                     skill_registry: Some(context.skill_registry.clone()),
                     teammate_manager: Some(context.teammate_manager.clone()),
                     task_manager: Some(context.task_manager.clone()),
+                    goal_manager: Some(context.goal_manager.clone()),
                     session_id: context.session_id.clone(),
                     active_goal_id: context.active_goal_id.clone(),
                     events: Some(context.events.clone()),
