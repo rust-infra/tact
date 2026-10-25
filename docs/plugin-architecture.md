@@ -71,6 +71,24 @@ the first implementation plan is
   - `ToolCatalog` can be reached through a shared handle, so a host registers
     dynamic sources (MCP) without invalidating live tickets, and `handler_for`
     resolves a handler whether a native insert or a source provided it.
+- Phase 3 has started. What has moved:
+  - The kernel has a typed `ServiceRegistry`: a plugin provides a handle at
+    registration (`Registrar::service`), the host commits it with the same
+    transaction as the four catalogs, and `Runtime::services()` exposes it after
+    sealing. The key is the Rust type, so two plugins cannot quietly provide two
+    different things under one name; a second provider is an error naming the
+    first. It is not a locator — the composition root pulls the specific handle
+    and passes it to the plugins built after it.
+  - `PermissionPlugin`, `SecurityPlugin` and `HooksPlugin` provide their ports
+    through it. The Agent's `ToolExecutor` now resolves the policy pair from the
+    registry, so a host that forgets a policy plugin gets a named error instead
+    of a silently different permission policy.
+  - The hook engine no longer takes `&Agent`. A neutral `HookHost` port carries
+    exactly what a hook payload reads (session id, model, permission mode, turn
+    count, session-start source) plus emit/status/queue-context/mcp-call, and
+    `AgentHookHost<&Agent>` adapts the existing call sites. That was the
+    prerequisite for `HooksPlugin`; without it the hook engine could not live
+    behind a port at all.
 - Phase 4 has started on the kernel side:
   - `Command` carries `run()`/`complete()`, and `CommandCatalog` routes by name
     (resolving aliases) and completes by either listing names or delegating to
@@ -106,6 +124,11 @@ the first implementation plan is
 - Phase 4's view half is untouched: `tui` still depends on `tact` and `tact_llm`,
   and slash commands still dispatch through the `SlashCommand` enum rather than a
   catalog. That is the next large change.
+- Phase 3's remaining half: `StoragePlugin`, `ProvidersPlugin`,
+  `MarketplacePlugin`, `SessionPlugin`, `CompactionPlugin`, `AgentPlugin`,
+  `ChatPlugin`, and installing `PluginHost` in the production path with
+  `runtime.shutdown()`. Until that lands, the registry is used only where an
+  Agent is assembled.
 - Domain families beyond tools and prompt sections: Goal/Task/Team/Worktree/
   Background/Subagent are tool families but not yet plugins with their own
   lifecycle. The remaining `agent/` → `mcp` edge is only the router's lifecycle
