@@ -182,9 +182,15 @@ the first implementation plan is
     registry) and all eight team tools (teammate manager) are converted, and the
     `#[tool]` macro derives the declaration from the handler's own field access,
     so declaring one handle and reading another cannot compile past the macro.
-  - Still on the full context: `goal`/`task`/`worktree` need two or three fields
-    each, and `bash`/`background_run`/`subagent` need most of it. Those are the
-    tools for which `ToolContext` is genuinely the right shape.
+    The four `task` tools are converted too, which grew the handle set
+    (`task_manager`, `session_id`, `active_goal_id`, `events`). `DomainHandles`
+    is `Default` with a `none()` constructor for that reason: a flat struct that
+    has to be spelled out in full at every site is exactly how it would turn back
+    into `ToolContext`.
+  - Still on the full context: `goal` and `worktree` need two or three fields
+    each, and `bash`/`background_run`/`subagent`/`write_file` need most of it or
+    a field no handle covers. Those are the tools for which `ToolContext` is
+    genuinely the right shape.
 - ~~MCP tools as kernel descriptors.~~ **Done.** Every MCP family — regular
   tools, resource tools and prompt tools — is a catalog source now, and all three
   run through the kernel pipeline. The legacy permission ladder is deleted.
