@@ -174,11 +174,17 @@ the first implementation plan is
     the saving is one `PathBuf` and one `String` — the reason to do this is that
     a handler reading `work_dir` should not be *handed* a session handoff, a
     permission snapshot and a sandbox it can never consult, not the allocation.
-  - The remaining ~16 tools each need a *different* field (`write_file` →
-    `events` for progress, `load_skill` → `skill_registry`, `goal` →
-    `goal_manager` + `active_goal_id`). Adding one narrow method per field shape
-    would rebuild `ToolContext` one signature at a time, so the next step is
-    per-domain handles rather than more shapes of this method.
+  - The remaining tools each need a *different* field, so instead of one narrow
+    method per shape there is now a per-domain path: `Tool::domain_needs()`
+    declares the handles a tool reads, the adapter fills exactly those into
+    `DomainHandles`, and an undeclared handle arrives as `None` — the tool has to
+    say so rather than silently seeing a partial context. `load_skill` (skill
+    registry) and all eight team tools (teammate manager) are converted, and the
+    `#[tool]` macro derives the declaration from the handler's own field access,
+    so declaring one handle and reading another cannot compile past the macro.
+  - Still on the full context: `goal`/`task`/`worktree` need two or three fields
+    each, and `bash`/`background_run`/`subagent` need most of it. Those are the
+    tools for which `ToolContext` is genuinely the right shape.
 - ~~MCP tools as kernel descriptors.~~ **Done.** Every MCP family — regular
   tools, resource tools and prompt tools — is a catalog source now, and all three
   run through the kernel pipeline. The legacy permission ladder is deleted.
