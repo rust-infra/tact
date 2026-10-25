@@ -248,6 +248,40 @@ impl ToolContext {
     }
 }
 
+/// One domain handle a tool can declare.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DomainHandle {
+    SkillRegistry,
+    TeammateManager,
+}
+
+/// The per-domain handles a tool may ask the adapter for.
+///
+/// A flat struct of optional handles, not one method per handle: the adapter
+/// fills the ones the tool asked for (by the tool's own `needs` declaration) and
+/// leaves the rest `None`. A tool that reads a handle it did not declare gets
+/// `None` and must say so — that is the invariant, and it is what stops this from
+/// becoming `ToolContext` with a different name.
+pub struct DomainHandles {
+    pub skill_registry: Option<crate::skill::SharedSkillRegistry>,
+    pub teammate_manager: Option<SharedTeammateManager>,
+}
+
+impl DomainHandles {
+    /// Which handles this set carries, for a diagnostic and for the tests.
+    #[must_use]
+    pub fn carried(&self) -> Vec<&'static str> {
+        let mut carried = Vec::new();
+        if self.skill_registry.is_some() {
+            carried.push("skill_registry");
+        }
+        if self.teammate_manager.is_some() {
+            carried.push("teammate_manager");
+        }
+        carried
+    }
+}
+
 #[allow(clippy::double_must_use)] // async_trait generates #[must_use] on Pin<Box<dyn Future>> which is already #[must_use]
 #[async_trait]
 pub trait Tool: Send + Sync {
@@ -255,6 +289,35 @@ pub trait Tool: Send + Sync {
     fn input_schema(&self) -> Value;
 
     async fn call(&self, context: ToolContext, input: Value) -> Result<ToolCallResult>;
+
+    /// Which domain handles this tool reads.
+    ///
+    /// The adapter fills these into [`DomainHandles`] before calling
+    /// [`Self::call_in_domain`]; a handle the tool did not declare arrives as
+    /// `None`, so a tool cannot read one it never asked for.
+    fn domain_needs(&self) -> &'static [DomainHandle] {
+        &[]
+    }
+
+    /// Run this tool with the one domain handle it needs.
+    ///
+    /// The remaining tools each want a single field: a skill registry, a
+    /// teammate manager, a goal manager. Adding one narrow method per field shape
+    /// would rebuild `ToolContext` one signature at a time, so instead the tool
+    /// names the handle it wants and the adapter hands over exactly that.
+    ///
+    /// Defaulted to `None`: a tool that needs more than one handle keeps
+    /// [`Self::call`], and the adapter cannot hand a tool a context it did not
+    /// ask for.
+    fn call_in_domain<'a>(
+        &'a self,
+        _domain: DomainHandles,
+        _input: Value,
+    ) -> Option<
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<ToolCallResult>> + Send + 'a>>,
+    > {
+        None
+    }
 
     /// Run this tool with only the workspace it operates in.
     ///

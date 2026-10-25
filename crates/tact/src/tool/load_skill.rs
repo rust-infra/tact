@@ -1,10 +1,10 @@
 use crate::tool::ToolMetadata;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tool_refactor_macros::tool;
 
-use crate::tool::ToolContext;
+use crate::tool::DomainHandles;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct LoadSkillInput {
@@ -23,8 +23,16 @@ pub const LOAD_SKILL_METADATA: ToolMetadata = ToolMetadata::read_json(
 ///
 /// This function always returns `Ok`. Unknown skills produce an error message
 /// in the returned string rather than an `Err`.
-pub async fn load_skill(ctx: ToolContext, input: LoadSkillInput) -> Result<String> {
-    Ok(crate::skill::lock_skills(&ctx.skill_registry).load_full_text(&input.name))
+pub async fn load_skill(handles: DomainHandles, input: LoadSkillInput) -> Result<String> {
+    // The declaration and the read are the same fact: the macro derives
+    // `DomainHandle::SkillRegistry` from this field access, so a handler cannot
+    // read a handle it never asked the adapter for.
+    let Some(registry) = handles.skill_registry else {
+        return Err(anyhow!(
+            "skill loading is unavailable: this host has no skill registry"
+        ));
+    };
+    Ok(crate::skill::lock_skills(&registry).load_full_text(&input.name))
 }
 
 #[cfg(test)]

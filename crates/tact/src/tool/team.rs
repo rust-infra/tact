@@ -1,10 +1,10 @@
 use crate::tool::ToolMetadata;
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tool_refactor_macros::tool;
 
-use crate::tool::ToolContext;
+use crate::tool::DomainHandles;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct SpawnTeammateInput {
@@ -22,10 +22,13 @@ pub const SPAWN_TEAMMATE_METADATA: ToolMetadata = ToolMetadata::team_write(
 /// # Errors
 ///
 /// Returns an error if a teammate with the same name already exists.
-pub async fn spawn_teammate(ctx: ToolContext, input: SpawnTeammateInput) -> Result<String> {
-    ctx.teammate_manager
-        .spawn_teammate(input.name, input.role)
-        .await
+pub async fn spawn_teammate(handles: DomainHandles, input: SpawnTeammateInput) -> Result<String> {
+    let Some(teammates) = handles.teammate_manager else {
+        return Err(anyhow!(
+            "team tools are unavailable: this host has no teammate manager"
+        ));
+    };
+    teammates.spawn_teammate(input.name, input.role).await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -38,8 +41,13 @@ pub const LIST_TEAMMATES_METADATA: ToolMetadata =
 /// # Errors
 ///
 /// Returns an error if the teammate manager fails to retrieve the list.
-pub async fn list_teammates(ctx: ToolContext, _input: ListTeammatesInput) -> Result<String> {
-    ctx.teammate_manager.list_teammates().await
+pub async fn list_teammates(handles: DomainHandles, _input: ListTeammatesInput) -> Result<String> {
+    let Some(teammates) = handles.teammate_manager else {
+        return Err(anyhow!(
+            "team tools are unavailable: this host has no teammate manager"
+        ));
+    };
+    teammates.list_teammates().await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -60,8 +68,13 @@ pub const SEND_MESSAGE_METADATA: ToolMetadata = ToolMetadata::team_write(
 ///
 /// Returns an error if the recipient does not exist or the teammate
 /// manager fails to send the message.
-pub async fn send_message(ctx: ToolContext, input: SendMessageInput) -> Result<String> {
-    ctx.teammate_manager
+pub async fn send_message(handles: DomainHandles, input: SendMessageInput) -> Result<String> {
+    let Some(teammates) = handles.teammate_manager else {
+        return Err(anyhow!(
+            "team tools are unavailable: this host has no teammate manager"
+        ));
+    };
+    teammates
         .send_message(input.from, input.to, input.body)
         .await
 }
@@ -82,8 +95,13 @@ pub const BROADCAST_METADATA: ToolMetadata = ToolMetadata::team_write(
 /// # Errors
 ///
 /// Returns an error if the teammate manager fails to deliver the broadcast.
-pub async fn broadcast(ctx: ToolContext, input: BroadcastInput) -> Result<String> {
-    ctx.teammate_manager.broadcast(input.from, input.body).await
+pub async fn broadcast(handles: DomainHandles, input: BroadcastInput) -> Result<String> {
+    let Some(teammates) = handles.teammate_manager else {
+        return Err(anyhow!(
+            "team tools are unavailable: this host has no teammate manager"
+        ));
+    };
+    teammates.broadcast(input.from, input.body).await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -99,8 +117,13 @@ pub const READ_INBOX_METADATA: ToolMetadata =
 ///
 /// Returns an error if the owner does not exist or the teammate
 /// manager fails to read the inbox.
-pub async fn read_inbox(ctx: ToolContext, input: ReadInboxInput) -> Result<String> {
-    ctx.teammate_manager.read_inbox(&input.owner).await
+pub async fn read_inbox(handles: DomainHandles, input: ReadInboxInput) -> Result<String> {
+    let Some(teammates) = handles.teammate_manager else {
+        return Err(anyhow!(
+            "team tools are unavailable: this host has no teammate manager"
+        ));
+    };
+    teammates.read_inbox(&input.owner).await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -121,8 +144,13 @@ pub const PLAN_APPROVAL_METADATA: ToolMetadata = ToolMetadata::team_write(
 ///
 /// Returns an error if the recipient does not exist or the teammate
 /// manager fails to send the protocol request.
-pub async fn plan_approval(ctx: ToolContext, input: ProtocolInput) -> Result<String> {
-    ctx.teammate_manager
+pub async fn plan_approval(handles: DomainHandles, input: ProtocolInput) -> Result<String> {
+    let Some(teammates) = handles.teammate_manager else {
+        return Err(anyhow!(
+            "team tools are unavailable: this host has no teammate manager"
+        ));
+    };
+    teammates
         .protocol_request(
             input.from,
             input.to,
@@ -143,8 +171,13 @@ pub const SHUTDOWN_REQUEST_METADATA: ToolMetadata = ToolMetadata::team_write(
 ///
 /// Returns an error if the recipient does not exist or the teammate
 /// manager fails to send the protocol request.
-pub async fn shutdown_request(ctx: ToolContext, input: ProtocolInput) -> Result<String> {
-    ctx.teammate_manager
+pub async fn shutdown_request(handles: DomainHandles, input: ProtocolInput) -> Result<String> {
+    let Some(teammates) = handles.teammate_manager else {
+        return Err(anyhow!(
+            "team tools are unavailable: this host has no teammate manager"
+        ));
+    };
+    teammates
         .protocol_request(
             input.from,
             input.to,
@@ -165,8 +198,13 @@ pub const SHUTDOWN_RESPONSE_METADATA: ToolMetadata = ToolMetadata::team_write(
 ///
 /// Returns an error if the recipient does not exist or the teammate
 /// manager fails to send the protocol request.
-pub async fn shutdown_response(ctx: ToolContext, input: ProtocolInput) -> Result<String> {
-    ctx.teammate_manager
+pub async fn shutdown_response(handles: DomainHandles, input: ProtocolInput) -> Result<String> {
+    let Some(teammates) = handles.teammate_manager else {
+        return Err(anyhow!(
+            "team tools are unavailable: this host has no teammate manager"
+        ));
+    };
+    teammates
         .protocol_request(
             input.from,
             input.to,
@@ -181,7 +219,7 @@ mod tests {
     use super::*;
     use crate::tool::test_support::{run_tool, test_context};
 
-    async fn spawn(context: &ToolContext, name: &str, role: &str) {
+    async fn spawn(context: &crate::tool::ToolContext, name: &str, role: &str) {
         run_tool(
             context,
             SpawnTeammateTool,

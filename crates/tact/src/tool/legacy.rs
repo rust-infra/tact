@@ -17,6 +17,20 @@ use super::{Tool as LegacyTool, ToolContext};
 /// Builds the legacy context a wrapped tool still expects.
 pub trait ToolContextFactory: Send + Sync {
     fn build(&self, ctx: &ToolCallContext) -> ToolContext;
+
+    /// The skill registry, for a tool that declared only that handle.
+    ///
+    /// A default so an existing test factory keeps compiling; the real factory
+    /// overrides it. Returning `None` is honest — a host with no skills has no
+    /// registry — and a tool that declared the handle then reports it is missing.
+    fn skill_registry(&self) -> Option<crate::skill::SharedSkillRegistry> {
+        None
+    }
+
+    /// The teammate manager, on the same terms.
+    fn teammate_manager(&self) -> Option<crate::tool::SharedTeammateManager> {
+        None
+    }
 }
 
 /// A factory over a base context, mapping the run-scoped fields.
@@ -85,6 +99,14 @@ impl ToolContextFactory for SharedToolContextFactory {
         context.cancel_flag = ctx.cancel.shared_flag();
         context
     }
+
+    fn skill_registry(&self) -> Option<crate::skill::SharedSkillRegistry> {
+        Some(self.with_base(|base| base.skill_registry.clone()))
+    }
+
+    fn teammate_manager(&self) -> Option<crate::tool::SharedTeammateManager> {
+        Some(self.with_base(|base| base.teammate_manager.clone()))
+    }
 }
 
 /// A legacy handler exposed as a kernel [`KernelTool`].
@@ -141,6 +163,26 @@ impl KernelTool for LegacyToolAdapter {
             .call_in_workspace(ctx.workspace.clone(), input.clone())
         {
             return future.await;
+        }
+        // A tool that declared domain handles gets exactly those, built without a
+        // `ToolContext`. The declaration is what makes "hand it the one thing it
+        // asked for" checkable rather than a convention: an undeclared handle
+        // arrives as `None`.
+        let needs = self.inner.domain_needs();
+        if !needs.is_empty() {
+            let handles = super::DomainHandles {
+                skill_registry: needs
+                    .contains(&super::DomainHandle::SkillRegistry)
+                    .then(|| self.contexts.skill_registry())
+                    .flatten(),
+                teammate_manager: needs
+                    .contains(&super::DomainHandle::TeammateManager)
+                    .then(|| self.contexts.teammate_manager())
+                    .flatten(),
+            };
+            if let Some(future) = self.inner.call_in_domain(handles, input.clone()) {
+                return future.await;
+            }
         }
         let context = self.contexts.build(&ctx);
         self.inner.call(context, input).await
@@ -223,6 +265,113 @@ mod tests {
             cancel: token,
             redaction: tact_kernel::tool::context::RedactionPolicy::Basic,
         }
+    }
+
+    /// A tool that declared a domain handle gets that handle, and only that one.
+    ///
+    /// `DomainHandles` is a flat struct of options; the declaration is what keeps
+    /// it from becoming `ToolContext` again. The test asserts both halves: the
+    /// declared handle arrives, and the undeclared one does not.
+    #[tokio::test]
+    async fn a_declared_domain_handle_arrives_and_nothing_else_does() {
+        use crate::tool::{DomainHandle, DomainHandles, Tool, ToolCallResult, ToolContext};
+
+        struct NeedsSkills;
+
+        #[async_trait::async_trait]
+        impl Tool for NeedsSkills {
+            fn metadata(&self) -> &'static crate::tool::ToolMetadata {
+                static META: crate::tool::ToolMetadata =
+                    crate::tool::ToolMetadata::read_json("needs_skills", "Needs", "Needs");
+                &META
+            }
+
+            fn input_schema(&self) -> serde_json::Value {
+                json!({"type": "object"})
+            }
+
+            fn domain_needs(&self) -> &'static [DomainHandle] {
+                &[DomainHandle::SkillRegistry]
+            }
+
+            async fn call(
+                &self,
+                _context: ToolContext,
+                _input: serde_json::Value,
+            ) -> anyhow::Result<ToolCallResult> {
+                Ok(ToolCallResult::text("full"))
+            }
+
+            fn call_in_domain<'a>(
+                &'a self,
+                domain: DomainHandles,
+                _input: serde_json::Value,
+            ) -> Option<
+                std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<Output = anyhow::Result<ToolCallResult>>
+                            + Send
+                            + 'a,
+                    >,
+                >,
+            > {
+                Some(Box::pin(async move {
+                    Ok(ToolCallResult::text(format!("{:?}", domain.carried())))
+                }))
+            }
+        }
+
+        struct CountingFactory {
+            builds: Arc<std::sync::atomic::AtomicUsize>,
+            context: ToolContext,
+        }
+
+        impl ToolContextFactory for CountingFactory {
+            fn build(&self, _ctx: &ToolCallContext) -> ToolContext {
+                self.builds
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                self.context.clone()
+            }
+
+            fn skill_registry(&self) -> Option<crate::skill::SharedSkillRegistry> {
+                Some(self.context.skill_registry.clone())
+            }
+
+            fn teammate_manager(&self) -> Option<crate::tool::SharedTeammateManager> {
+                Some(self.context.teammate_manager.clone())
+            }
+        }
+
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let adapter = LegacyToolAdapter::from_arc(
+            Arc::new(NeedsSkills) as Arc<dyn crate::tool::Tool>,
+            Arc::new(CountingFactory {
+                builds: builds.clone(),
+                context: test_context("declared_domain_handle"),
+            }),
+        );
+        let result = tact_kernel::capability::tool::Tool::call(
+            &adapter,
+            kernel_context(ToolOrigin::Main, false),
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert!(
+            result.content.contains("skill_registry"),
+            "{}",
+            result.content
+        );
+        assert!(
+            !result.content.contains("teammate_manager"),
+            "an undeclared handle must not be filled: {}",
+            result.content
+        );
+        assert_eq!(
+            builds.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the declared handle must not cost a ToolContext"
+        );
     }
 
     /// A tool that only needs the workspace must not make the adapter build a

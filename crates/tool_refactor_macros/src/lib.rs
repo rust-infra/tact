@@ -28,6 +28,9 @@ fn expand_tool(item_fn: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
             HandlerContext::Workspace => {
                 expand_workspace_tool(item_fn, wrapper_ident, metadata_ident, input_ty, output)
             }
+            HandlerContext::Domain => {
+                expand_domain_tool(item_fn, wrapper_ident, metadata_ident, input_ty, output)
+            }
         }
     } else {
         expand_pure_tool(item_fn, wrapper_ident, metadata_ident, output)
@@ -44,6 +47,7 @@ fn expand_tool(item_fn: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
 enum HandlerContext {
     Full,
     Workspace,
+    Domain,
 }
 
 struct OutputHandling {
@@ -88,6 +92,95 @@ fn is_result_type(ty: &Type) -> bool {
     };
 
     segment.ident == "Result"
+}
+
+/// A handler that takes `DomainHandles` instead of `ToolContext`.
+///
+/// The handler names the field it reads on `DomainHandles`, and the macro reads
+/// that from the handler's own signature so the declaration cannot drift from the
+/// use: `handles.skill_registry` means `DomainHandle::SkillRegistry`.
+fn expand_domain_tool(
+    item_fn: ItemFn,
+    wrapper_ident: Ident,
+    metadata_ident: Ident,
+    input_ty: Type,
+    output: OutputHandling,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let fn_ident = &item_fn.sig.ident;
+    let await_expr = output.await_expr;
+
+    // Which handle does the body read? Derived from the parameter name the
+    // handler used, so a handler that switches fields cannot forget to update a
+    // separate declaration.
+    let text = quote!(#item_fn).to_string();
+    let mut needs = Vec::new();
+    for (field, variant) in [
+        (
+            "skill_registry",
+            quote!(crate::tool::DomainHandle::SkillRegistry),
+        ),
+        (
+            "teammate_manager",
+            quote!(crate::tool::DomainHandle::TeammateManager),
+        ),
+    ] {
+        if text.contains(&format!(". {field}")) || text.contains(&format!(".{field}")) {
+            needs.push(variant);
+        }
+    }
+    if needs.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &item_fn.sig.ident,
+            "a DomainHandles handler must read one of its fields (crate::tool::DomainHandles)",
+        ));
+    }
+
+    Ok(quote! {
+        #item_fn
+
+        pub struct #wrapper_ident;
+
+        #[async_trait::async_trait]
+        impl crate::tool::Tool for #wrapper_ident {
+            fn metadata(&self) -> &'static crate::tool::ToolMetadata {
+                &#metadata_ident
+            }
+
+            fn input_schema(&self) -> serde_json::Value {
+                crate::tool::input_schema::<#input_ty>()
+            }
+
+            fn domain_needs(&self) -> &'static [crate::tool::DomainHandle] {
+                &[#(#needs),*]
+            }
+
+            async fn call(
+                &self,
+                context: crate::tool::ToolContext,
+                input: serde_json::Value,
+            ) -> anyhow::Result<crate::tool::ToolCallResult> {
+                let handles = crate::tool::DomainHandles {
+                    skill_registry: Some(context.skill_registry.clone()),
+                    teammate_manager: Some(context.teammate_manager.clone()),
+                };
+                let input: #input_ty = serde_json::from_value(input)?;
+                let call_future = #fn_ident(handles, input);
+                #await_expr
+            }
+
+            fn call_in_domain<'a>(
+                &'a self,
+                handles: crate::tool::DomainHandles,
+                input: serde_json::Value,
+            ) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<crate::tool::ToolCallResult>> + Send + 'a>>> {
+                Some(Box::pin(async move {
+                    let input: #input_ty = serde_json::from_value(input)?;
+                    let call_future = #fn_ident(handles, input);
+                    #await_expr
+                }))
+            }
+        }
+    })
 }
 
 /// A handler that takes `Workspace` instead of `ToolContext`.
@@ -298,6 +391,8 @@ fn extract_stateful_handler_input_type(
         HandlerContext::Full
     } else if is_type_named(context_arg, "Workspace") {
         HandlerContext::Workspace
+    } else if is_type_named(context_arg, "DomainHandles") {
+        HandlerContext::Domain
     } else {
         return Ok(None);
     };
