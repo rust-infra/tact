@@ -1136,32 +1136,33 @@ mod tests {
 
     #[test]
     fn voice_button_click_starts_and_stops_recording() {
-        use tact::voice::VoiceCommand;
-        use tokio::sync::mpsc::unbounded_channel;
+        use tact_protocol::VoiceCommand;
 
         let mut app = make_app();
-        let (cmd_tx, mut cmd_rx) = unbounded_channel();
-        let (_event_tx, event_rx) = unbounded_channel();
-        app.voice = crate::widgets::state::VoiceState::enabled(
-            tact::voice::VoiceWorkerHandle::stub_for_test(cmd_tx, event_rx),
-            false,
-        );
+        let voice = std::sync::Arc::new(crate::test_fixtures::FakeVoice::new());
+        let (_event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel();
+        app.voice = crate::widgets::state::VoiceState::enabled(voice.clone(), event_rx, false);
         let title_row = 0u16;
         let button_x = 70u16;
         app.voice
             .set_button_area(Rect::new(button_x, title_row, 8, 1));
 
         handle_mouse_event(&mut app, mouse_down(button_x, title_row));
-        assert!(matches!(cmd_rx.try_recv(), Ok(VoiceCommand::Start)));
+        assert_eq!(voice.commands(), vec![VoiceCommand::Start]);
 
         app.voice
-            .apply_event(tact::voice::VoiceEvent::RecordingStarted);
+            .apply_event(tact_protocol::VoiceEvent::RecordingStarted);
         handle_mouse_event(&mut app, mouse_down(button_x, title_row));
-        assert!(matches!(cmd_rx.try_recv(), Ok(VoiceCommand::Stop)));
+        assert_eq!(
+            voice.commands(),
+            vec![VoiceCommand::Start, VoiceCommand::Stop]
+        );
 
+        let before = voice.commands().len();
         handle_mouse_event(&mut app, mouse_down(1, title_row));
-        assert!(
-            cmd_rx.try_recv().is_err(),
+        assert_eq!(
+            voice.commands().len(),
+            before,
             "outside click should not send commands"
         );
     }

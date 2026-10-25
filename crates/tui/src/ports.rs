@@ -211,6 +211,31 @@ pub trait SessionHistory: Send + Sync {
     fn latest_request_body(&self, session_id: &str) -> anyhow::Result<Option<String>>;
 }
 
+/// What the view needs from the voice worker.
+///
+/// The runtime's handle owns a task, a shutdown token and two channels; the view
+/// only sends three commands and, when it closes, asks the worker to stop. Naming
+/// those four operations keeps the task plumbing out of the view.
+pub trait VoicePort: Send + Sync {
+    /// Send one command to the worker.
+    ///
+    /// Returns whether it was delivered: a worker that already exited is not an
+    /// error the user needs to see, but a caller may want to log it.
+    fn send(&self, command: tact_protocol::VoiceCommand) -> bool;
+
+    /// Whether the view should offer the voice button at all.
+    ///
+    /// `false` for a run with voice disabled, which is the common case: no
+    /// worker is started and nothing is drawn.
+    fn is_enabled(&self) -> bool;
+
+    /// Whether the configured provider has no API key.
+    ///
+    /// A voice button that works but cannot transcribe is worse than one that
+    /// says why, so the state carries it.
+    fn missing_api_key(&self) -> bool;
+}
+
 /// What the view needs to populate the `/model` pickers.
 ///
 /// Everything here is a *query* about the current provider and the model ids the

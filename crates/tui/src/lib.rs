@@ -218,7 +218,11 @@ pub struct TuiConfig {
     /// from `snapshot()` instead of trusting a single `RequestSelect` event.
     pub pending_ui: std::sync::Arc<dyn ports::InteractionPort>,
     /// Voice-to-text settings (independent of LLM providers).
-    pub voice: tact::config::VoiceSettings,
+    /// The started voice worker, when the host started one.
+    ///
+    /// The host owns the decision (`[voice].enabled`) and the task; the view gets
+    /// the port and the events channel it drains.
+    pub voice_worker: Option<VoiceWorker>,
     /// The resolved configuration the host assembled with.
     ///
     /// Passed in rather than read from `tact::config` by the view: the `/model`
@@ -232,6 +236,16 @@ pub struct TuiConfig {
 }
 
 /// TUI entry point: initializes the terminal, starts the event loop, runs until the user exits.
+/// A started voice worker, as the view receives it.
+pub struct VoiceWorker {
+    /// Sends commands and answers whether the worker is usable.
+    pub port: std::sync::Arc<dyn ports::VoicePort>,
+    /// The events the view drains each tick.
+    pub events: tokio::sync::mpsc::UnboundedReceiver<tact_protocol::VoiceEvent>,
+    /// The configured provider has no API key, so transcription would fail.
+    pub missing_api_key: bool,
+}
+
 pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     let TuiConfig {
         agent_rx,
@@ -259,7 +273,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         settings_writer,
         history,
         pending_ui,
-        voice,
+        voice_worker,
         voice_parsed_keybind,
         config_snapshot,
     } = cfg;
@@ -325,11 +339,15 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         .map(|effort| effort.as_str().to_string());
     app.add_startup_banner();
 
-    if voice.enabled {
-        let missing_api_key = matches!(voice.provider, tact::config::VoiceProvider::OpenAi)
-            && voice.api_key.is_none();
-        let worker = tact::voice::spawn_worker(voice);
-        app.voice = crate::widgets::state::VoiceState::enabled(worker, missing_api_key);
+    // The host decides whether to start a worker and hands the view a port plus
+    // the events channel; the view never spawns one, so it needs nothing from the
+    // voice implementation.
+    if let Some(voice) = voice_worker {
+        app.voice = crate::widgets::state::VoiceState::enabled(
+            voice.port,
+            voice.events,
+            voice.missing_api_key,
+        );
     }
 
     // Restore session history into the Log area after startup messages. The

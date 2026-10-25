@@ -6,8 +6,8 @@ use crate::widgets::state::{App, VoiceEventOutcome, VoicePhase, VoiceStartResult
 impl App {
     pub(crate) fn drain_voice_events(&mut self) {
         let mut pending = Vec::new();
-        if let Some(worker) = self.voice.worker.as_mut() {
-            while let Ok(event) = worker.event_rx.try_recv() {
+        if let Some(rx) = self.voice.event_rx.as_mut() {
+            while let Ok(event) = rx.try_recv() {
                 pending.push(event);
             }
         }

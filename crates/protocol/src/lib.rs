@@ -8,6 +8,26 @@
 
 pub mod agent;
 pub mod biz;
+/// A command the view sends to the voice worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VoiceCommand {
+    Start,
+    Stop,
+    Cancel,
+    Shutdown,
+}
+
+/// What the voice worker reports back.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum VoiceEvent {
+    RecordingStarted,
+    RecordingStopped,
+    Transcribing,
+    Transcript(String),
+    Error(String),
+    Cancelled,
+}
+
 pub mod context_markers;
 pub mod events;
 pub mod marketplace;

@@ -435,6 +435,50 @@ impl crate::ports::SettingsWriter for RealConfigWriter {
     }
 }
 
+/// A voice worker for tests.
+///
+/// Records the commands the view sends and answers the two state questions, so a
+/// test asserts what the view asked for without a spawned task.
+#[derive(Default, Clone)]
+pub struct FakeVoice {
+    commands: std::sync::Arc<std::sync::Mutex<Vec<tact_protocol::VoiceCommand>>>,
+    missing_api_key: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl FakeVoice {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Mark the configured provider as lacking an API key.
+    pub fn without_api_key(self) -> Self {
+        self.missing_api_key
+            .store(true, std::sync::atomic::Ordering::Relaxed);
+        self
+    }
+
+    /// The commands sent so far.
+    pub fn commands(&self) -> Vec<tact_protocol::VoiceCommand> {
+        self.commands.lock().expect("commands lock").clone()
+    }
+}
+
+impl crate::ports::VoicePort for FakeVoice {
+    fn send(&self, command: tact_protocol::VoiceCommand) -> bool {
+        self.commands.lock().expect("commands lock").push(command);
+        true
+    }
+
+    fn is_enabled(&self) -> bool {
+        true
+    }
+
+    fn missing_api_key(&self) -> bool {
+        self.missing_api_key
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
 /// An app under test, still holding the channels it talks through.
 pub struct TestApp {
     /// The app itself. Public so a render test can take it and drop the rest.

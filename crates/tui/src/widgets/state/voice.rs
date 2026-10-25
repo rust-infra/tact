@@ -1,7 +1,7 @@
 use std::time::Instant;
 
 use ratatui::layout::Rect;
-use tact::voice::{VoiceCommand, VoiceEvent, VoiceWorkerHandle};
+use tact_protocol::{VoiceCommand, VoiceEvent};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum VoicePhase {
@@ -15,7 +15,12 @@ pub(crate) struct VoiceState {
     pub(crate) phase: VoicePhase,
     pub(crate) button_area: Rect,
     pub(crate) missing_api_key: bool,
-    pub(crate) worker: Option<VoiceWorkerHandle>,
+    pub(crate) worker: Option<std::sync::Arc<dyn crate::ports::VoicePort>>,
+    /// The events the worker produced, drained each tick.
+    ///
+    /// Held here rather than behind the port because a receiver needs `&mut` and
+    /// the port is shared; the view is its single consumer by construction.
+    pub(crate) event_rx: Option<tokio::sync::mpsc::UnboundedReceiver<tact_protocol::VoiceEvent>>,
 }
 
 impl VoiceState {
@@ -25,6 +30,7 @@ impl VoiceState {
             button_area: Rect::default(),
             missing_api_key: false,
             worker: None,
+            event_rx: None,
         }
     }
 
@@ -35,15 +41,21 @@ impl VoiceState {
             button_area: Rect::default(),
             missing_api_key: false,
             worker: None,
+            event_rx: None,
         }
     }
 
-    pub(crate) fn enabled(worker: VoiceWorkerHandle, missing_api_key: bool) -> Self {
+    pub(crate) fn enabled(
+        worker: std::sync::Arc<dyn crate::ports::VoicePort>,
+        event_rx: tokio::sync::mpsc::UnboundedReceiver<tact_protocol::VoiceEvent>,
+        missing_api_key: bool,
+    ) -> Self {
         Self {
             phase: VoicePhase::Idle,
             button_area: Rect::default(),
             missing_api_key,
             worker: Some(worker),
+            event_rx: Some(event_rx),
         }
     }
 
@@ -66,7 +78,7 @@ impl VoiceState {
             return VoiceStartResult::MissingApiKey;
         }
         if let Some(worker) = &self.worker {
-            let _ = worker.command_tx.send(VoiceCommand::Start);
+            worker.send(VoiceCommand::Start);
             VoiceStartResult::Started
         } else {
             VoiceStartResult::Ignored
@@ -77,7 +89,7 @@ impl VoiceState {
         if matches!(self.phase, VoicePhase::Recording { .. })
             && let Some(worker) = &self.worker
         {
-            let _ = worker.command_tx.send(VoiceCommand::Stop);
+            worker.send(VoiceCommand::Stop);
         }
     }
 
@@ -85,7 +97,7 @@ impl VoiceState {
         if self.is_active()
             && let Some(worker) = &self.worker
         {
-            let _ = worker.command_tx.send(VoiceCommand::Cancel);
+            worker.send(VoiceCommand::Cancel);
             self.phase = VoicePhase::Idle;
         }
     }
@@ -120,7 +132,9 @@ impl VoiceState {
 
     pub(crate) async fn shutdown(&mut self) {
         if let Some(worker) = self.worker.take() {
-            worker.shutdown().await;
+            // Ask the worker to stop through the port; awaiting its task is the
+            // adapter's job, not the view's.
+            worker.send(VoiceCommand::Shutdown);
         }
         self.phase = VoicePhase::Disabled;
     }

@@ -15,23 +15,7 @@ pub mod wav;
 pub use transcriber::{GoogleTranscriber, OpenAiTranscriber, Transcriber, WhisperCppTranscriber};
 pub use wav::encode_wav_mono_16k;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum VoiceCommand {
-    Start,
-    Stop,
-    Cancel,
-    Shutdown,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum VoiceEvent {
-    RecordingStarted,
-    RecordingStopped,
-    Transcribing,
-    Transcript(String),
-    Error(String),
-    Cancelled,
-}
+pub use tact_protocol::{VoiceCommand, VoiceEvent};
 
 #[allow(clippy::double_must_use)] // async_trait generates #[must_use] on Pin<Box<dyn Future>> which is already #[must_use]
 #[async_trait]

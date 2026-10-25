@@ -155,7 +155,7 @@ async fn run_interactive_locked(
             skills: crate::view_ports::skill_catalog(skill_registry, tui_skill_work_dir),
             models: crate::view_ports::model_catalog(),
             settings_writer: crate::view_ports::settings_writer(),
-            voice: config_snapshot.voice.clone(),
+            voice_worker: crate::view_ports::voice_worker(config_snapshot.voice.clone()),
             voice_parsed_keybind: config_snapshot
                 .voice
                 .voice_keybind
