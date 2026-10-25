@@ -102,9 +102,19 @@ the first implementation plan is
   - `Command` gained a defaulted `run_async`, so an async command (one that asks
     a manager owning running processes, or a server) is one type rather than a
     second registry. A pure command still implements `run` alone.
+  - `CommandOutcome` gained `Emit(Emitted)` for a read-out that drives a panel
+    (`GoalsChanged`) or opens a typed popup: flattening that into `Message` would
+    make the host parse text back into the shape it already had. `Emitted` boxes
+    the frame, and the enum is deliberately not `PartialEq` because an
+    `AgentUpdate` is a transport frame rather than a value.
   - `CommandOutcome` gained `Failed`. Collapsing a manager error into `Usage` was
     how a failure used to surface as a help message; collapsing it into
     `Message` made it open a read-out popup instead of an error line.
+  - A command is now a *plugin contribution*: `CommandPlugin` registers through
+    `Registrar::command`, so it gets name validation, the capability filter (a
+    disabled `/stats` is absent from the catalog and recorded in `skipped`) and a
+    transactional install. One plugin per command keeps the plugin id stable
+    while the command keeps its own name.
   - `/stats` and `/background` are catalog commands
     (`crates/tact/src/command/`), each owning its metadata, argument grammar and
     answer. The driver holds one catalog per loop and routes both of its
@@ -113,7 +123,10 @@ the first implementation plan is
     reads through a poisoned lock.
   - A command that has to drive the agent loop (`/model`, `/compact`, the Goal
     verbs, …) is *not* in the catalog yet: it cannot own a `&mut Agent` through
-    one, so those arms stay on the driver's side until the loop is a plugin.
+    one, so those arms stay on the driver's side until the loop is a plugin. The
+    Goal verbs are further blocked: `goal_snapshots_with` lives in `tact-ui`, so
+    moving `/goal list` into `tact` would reverse the dependency — the Goal logic
+    has to move first.
 - Phase 4's view half on the kernel side:
   - `Command` carries `run()`/`complete()`, and `CommandCatalog` routes by name
     (resolving aliases) and completes by either listing names or delegating to
