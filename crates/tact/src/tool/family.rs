@@ -539,6 +539,40 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// The production entry point produces the catalog from plugins.
+    ///
+    /// The test above builds its own host, which proves families *can* be
+    /// installed; this drives `catalog_from_families` — the function
+    /// `executor_from_families` actually calls — and checks the catalog it returns
+    /// holds every family's tools. The catalog comes out of a sealed `PluginHost`,
+    /// so a family that stopped being a plugin would vanish from it.
+    #[tokio::test]
+    async fn the_production_entry_point_builds_the_catalog_from_plugins() {
+        let context = crate::tool::test_support::test_context("family_catalog");
+        let router = router_from(&ToolFamily::ALL, true).unwrap();
+        let (catalog, _skipped) = catalog_from_families(
+            &router,
+            &ToolFamily::ALL,
+            true,
+            std::sync::Arc::new(crate::tool::SharedToolContextFactory::new(context.clone())),
+            tact_kernel::capability::CapabilityFilter::default(),
+        )
+        .unwrap();
+
+        let mut actual: Vec<String> = catalog
+            .descriptor_snapshot(&tact_kernel::capability::CapabilityFilter::default())
+            .await
+            .unwrap()
+            .tools
+            .into_iter()
+            .map(|descriptor| descriptor.name)
+            .collect();
+        let mut expected = names_of(&ToolFamily::ALL, true);
+        expected.sort();
+        actual.sort();
+        assert_eq!(actual, expected);
+    }
+
     #[tokio::test]
     async fn a_disabled_capability_is_not_installed() {
         use tact_kernel::capability::{CapabilityFilter, CapabilityId};
