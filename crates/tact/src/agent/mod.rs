@@ -536,6 +536,7 @@ impl Agent {
             ui_available,
             hooks: None,
             storage: None,
+            marketplace: None,
             // Read once here and held by the registry: the provider is a
             // process-wide snapshot, and a consumer that resolved it should not
             // silently read a different global later.

@@ -39,6 +39,11 @@ pub struct HostOptions<'a> {
     pub hooks: Option<HookOptions>,
     /// The opened store, if this host persists sessions.
     pub storage: Option<StorageOptions>,
+    /// The plugin home, when the host installs the marketplace.
+    ///
+    /// `Option` for the same reason as `provider`: a host without `$HOME` cannot
+    /// install plugins, but it can still run.
+    pub marketplace: Option<crate::consts::PluginHome>,
     /// The provider snapshot, when one was installed.
     ///
     /// `Option` because a test may build an agent before any provider exists;
@@ -113,6 +118,9 @@ pub fn assemble(options: HostOptions<'_>) -> Result<AssembledRuntime> {
             hooks.work_dir,
             hooks.notices,
         ))?;
+    }
+    if let Some(home) = options.marketplace {
+        host.install_sync(crate::plugin::MarketplacePlugin::new(home))?;
     }
     if let Some(info) = options.provider {
         host.install_sync(crate::plugin::ProvidersPlugin::new(info))?;
@@ -219,6 +227,7 @@ mod tests {
             ui_available: Arc::new(|| false),
             hooks: None,
             storage: None,
+            marketplace: None,
             provider: None,
             filter: CapabilityFilter::default(),
         })
@@ -247,6 +256,7 @@ mod tests {
             ui_available: Arc::new(|| false),
             hooks: None,
             storage: None,
+            marketplace: None,
             provider: None,
             filter: CapabilityFilter::new([disabled]),
         })
@@ -266,6 +276,26 @@ mod tests {
     }
 
     #[test]
+    fn a_host_with_a_marketplace_gets_both_handles() {
+        let manager = manager();
+        let dir = std::env::temp_dir().join("tact-host-marketplace");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let assembled = assemble(HostOptions {
+            permission_manager: &manager,
+            ui_available: Arc::new(|| false),
+            hooks: None,
+            storage: None,
+            marketplace: Some(crate::consts::PluginHome::from_home(&dir)),
+            provider: None,
+            filter: CapabilityFilter::default(),
+        })
+        .unwrap();
+        assert!(crate::plugin::marketplace(assembled.services()).is_ok());
+        assert!(crate::plugin::installer(assembled.services()).is_ok());
+    }
+
+    #[test]
     fn a_host_with_hooks_gets_the_installed_port() {
         let manager = manager();
         let assembled = assemble(HostOptions {
@@ -282,6 +312,7 @@ mod tests {
                 notices: Arc::new(|_| {}),
             }),
             storage: None,
+            marketplace: None,
             provider: None,
             filter: CapabilityFilter::default(),
         })
