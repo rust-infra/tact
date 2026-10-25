@@ -122,11 +122,19 @@ Catalog commands exist (`/stats`, `/background`, `/goal`) and are contributed by
 `CommandPlugin`, so the *catalog* half is real. `UserCommand` is down from 28
 variants to 25 by replacing four read-only variants with `RunCommand { name, args }`.
 
+The view's palette now reads the runtime catalog through a `CommandDirectory`
+port, and `/stats` plus `/background` have left the local enum entirely — the
+catalog owns their names, descriptions and dispatch. `execute_palette_command`
+routes local → catalog → skill, so a plugin-contributed command is both listed and
+runnable.
+
 **Not met:** the spec's checklist line is "no central command enum survives".
-`UserCommand` still carries 25 variants, and the TUI still dispatches through its
-own `SlashCommand` enum. Commands that drive the agent loop (`create`/`pause`/
-`resume`/`cancel` for Goals, `/model`, `/compact`) cannot move until the loop is a
-plugin — the same blocker as item 2.
+`UserCommand` still carries 25 variants, and the TUI still holds 21 local
+commands. Commands that drive the agent loop (`/goal`'s `create`/`pause`/
+`resume`/`cancel`, `/model`, `/compact`) cannot move until the loop is a
+plugin — the same blocker as item 2. The rest are genuinely view-local
+(`/theme`, `/quit`, `/help`, pickers), which the spec allows: they belong to
+`TuiPlugin`, and no such plugin exists yet (item 6).
 
 Verified by: variant count in `crates/protocol/src/agent.rs`.
 
