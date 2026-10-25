@@ -255,6 +255,8 @@ pub enum DomainHandle {
     TeammateManager,
     TaskManager,
     GoalManager,
+    SubagentManager,
+    WorktreeManager,
     /// The run's session id, when this tool keys its rows by it.
     SessionId,
     /// The Goal a call runs inside, when the caller is a Goal activation.
@@ -276,6 +278,8 @@ pub struct DomainHandles {
     pub teammate_manager: Option<SharedTeammateManager>,
     pub task_manager: Option<SharedTaskManager>,
     pub goal_manager: Option<SharedGoalManager>,
+    pub subagent_manager: Option<crate::subagent::SharedSubagentManager>,
+    pub worktree_manager: Option<SharedWorktreeManager>,
     /// The session the call belongs to, for a tool that keys rows by it.
     pub session_id: Option<String>,
     /// The Goal a call is running inside, when the caller is a Goal activation.
@@ -314,6 +318,12 @@ impl DomainHandles {
         }
         if self.goal_manager.is_some() {
             carried.push("goal_manager");
+        }
+        if self.subagent_manager.is_some() {
+            carried.push("subagent_manager");
+        }
+        if self.worktree_manager.is_some() {
+            carried.push("worktree_manager");
         }
         if self.session_id.is_some() {
             carried.push("session_id");
@@ -1223,6 +1233,8 @@ mod domain_handle_guard_tests {
             (DomainHandle::TeammateManager, "teammate_manager"),
             (DomainHandle::TaskManager, "task_manager"),
             (DomainHandle::GoalManager, "goal_manager"),
+            (DomainHandle::SubagentManager, "subagent_manager"),
+            (DomainHandle::WorktreeManager, "worktree_manager"),
             (DomainHandle::SessionId, "session_id"),
             (DomainHandle::ActiveGoalId, "active_goal_id"),
             (DomainHandle::Events, "events"),
@@ -1250,12 +1262,14 @@ mod domain_handle_guard_tests {
                 DomainHandle::TeammateManager,
                 DomainHandle::TaskManager,
                 DomainHandle::GoalManager,
+                DomainHandle::SubagentManager,
+                DomainHandle::WorktreeManager,
                 DomainHandle::SessionId,
                 DomainHandle::ActiveGoalId,
                 DomainHandle::Events,
             ]
             .len(),
-            7,
+            9,
             "update this list (and the macro's table) when adding a DomainHandle"
         );
     }

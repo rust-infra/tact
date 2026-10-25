@@ -3,13 +3,13 @@ use crate::tool::{
     PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
     ToolPresentation,
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::ToolVisualKind;
 use tool_refactor_macros::tool;
 
-use crate::tool::ToolContext;
+use crate::tool::DomainHandles;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WorktreeCreateInput {
@@ -29,13 +29,19 @@ pub const WORKTREE_CREATE_METADATA: ToolMetadata = ToolMetadata::barrier_write(
 ///
 /// Returns an error if the git worktree cannot be created (e.g., invalid
 /// branch reference, name conflict, or git error).
-pub async fn worktree_create(ctx: ToolContext, input: WorktreeCreateInput) -> Result<String> {
-    ctx.worktree_manager
+pub async fn worktree_create(handles: DomainHandles, input: WorktreeCreateInput) -> Result<String> {
+    let Some(worktrees) = handles.worktree_manager else {
+        return Err(anyhow!(
+            "worktree tools are unavailable: this host has no worktree manager"
+        ));
+    };
+    let session_id = handles.session_id.clone().unwrap_or_default();
+    worktrees
         .create(
             input.name,
             input.task_id,
             input.base_ref.unwrap_or_else(|| "HEAD".to_string()),
-            ctx.session_id.clone().unwrap_or_default(),
+            session_id,
         )
         .await
 }
@@ -53,8 +59,13 @@ pub const WORKTREE_LIST_METADATA: ToolMetadata = ToolMetadata::read_json(
 /// # Errors
 ///
 /// Returns an error if the worktree manager fails to retrieve the list.
-pub async fn worktree_list(ctx: ToolContext, _input: WorktreeListInput) -> Result<String> {
-    ctx.worktree_manager.list().await
+pub async fn worktree_list(handles: DomainHandles, _input: WorktreeListInput) -> Result<String> {
+    let Some(worktrees) = handles.worktree_manager else {
+        return Err(anyhow!(
+            "worktree tools are unavailable: this host has no worktree manager"
+        ));
+    };
+    worktrees.list().await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -73,8 +84,13 @@ pub const WORKTREE_STATUS_METADATA: ToolMetadata = ToolMetadata::read_json(
 ///
 /// Returns an error if the worktree name does not exist or the git
 /// status command fails.
-pub async fn worktree_status(ctx: ToolContext, input: WorktreeNameInput) -> Result<String> {
-    ctx.worktree_manager.status(&input.name).await
+pub async fn worktree_status(handles: DomainHandles, input: WorktreeNameInput) -> Result<String> {
+    let Some(worktrees) = handles.worktree_manager else {
+        return Err(anyhow!(
+            "worktree tools are unavailable: this host has no worktree manager"
+        ));
+    };
+    worktrees.status(&input.name).await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -109,8 +125,13 @@ pub const WORKTREE_RUN_METADATA: ToolMetadata = ToolMetadata {
 ///
 /// Returns an error if the worktree name does not exist or the
 /// command execution fails.
-pub async fn worktree_run(ctx: ToolContext, input: WorktreeRunInput) -> Result<String> {
-    ctx.worktree_manager.run(&input.name, &input.command).await
+pub async fn worktree_run(handles: DomainHandles, input: WorktreeRunInput) -> Result<String> {
+    let Some(worktrees) = handles.worktree_manager else {
+        return Err(anyhow!(
+            "worktree tools are unavailable: this host has no worktree manager"
+        ));
+    };
+    worktrees.run(&input.name, &input.command).await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -128,8 +149,13 @@ pub const WORKTREE_EVENTS_METADATA: ToolMetadata = ToolMetadata::read_json(
 /// # Errors
 ///
 /// Returns an error if the worktree manager fails to retrieve events.
-pub async fn worktree_events(ctx: ToolContext, input: WorktreeEventsInput) -> Result<String> {
-    ctx.worktree_manager.events(input.limit.unwrap_or(20)).await
+pub async fn worktree_events(handles: DomainHandles, input: WorktreeEventsInput) -> Result<String> {
+    let Some(worktrees) = handles.worktree_manager else {
+        return Err(anyhow!(
+            "worktree tools are unavailable: this host has no worktree manager"
+        ));
+    };
+    worktrees.events(input.limit.unwrap_or(20)).await
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -150,12 +176,22 @@ pub const WORKTREE_REMOVE_METADATA: ToolMetadata = ToolMetadata::barrier_write(
 /// Returns an error if the worktree does not exist, `git worktree remove`
 /// fails (e.g. the lane has uncommitted changes), or the lane belongs to a
 /// subagent that is still running.
-pub async fn worktree_remove(ctx: ToolContext, input: WorktreeRemoveInput) -> Result<String> {
+pub async fn worktree_remove(handles: DomainHandles, input: WorktreeRemoveInput) -> Result<String> {
+    let Some(worktrees) = handles.worktree_manager else {
+        return Err(anyhow!(
+            "worktree tools are unavailable: this host has no worktree manager"
+        ));
+    };
+    let Some(subagents) = handles.subagent_manager else {
+        return Err(anyhow!(
+            "worktree_remove needs the subagent manager to stop a running child"
+        ));
+    };
     // Guard: never remove the lane of a subagent that is still running —
     // the child's tools still resolve against it and removal would be
     // destructive. `spawn_subagent` names isolated lanes `subagent-<child_id>`.
     if let Some(child_id) = input.name.strip_prefix("subagent-")
-        && let Some(run) = ctx.subagent_manager.get(child_id).await?
+        && let Some(run) = subagents.get(child_id).await?
         && run.status == crate::subagent::SubagentStatus::Running
     {
         anyhow::bail!(
@@ -164,7 +200,7 @@ pub async fn worktree_remove(ctx: ToolContext, input: WorktreeRemoveInput) -> Re
             input.name
         );
     }
-    ctx.worktree_manager.remove(&input.name).await
+    worktrees.remove(&input.name).await
 }
 
 #[cfg(test)]

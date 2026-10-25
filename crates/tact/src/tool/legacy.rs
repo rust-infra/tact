@@ -42,6 +42,16 @@ pub trait ToolContextFactory: Send + Sync {
         None
     }
 
+    /// The subagent manager, on the same terms.
+    fn subagent_manager(&self) -> Option<crate::subagent::SharedSubagentManager> {
+        None
+    }
+
+    /// The worktree manager, on the same terms.
+    fn worktree_manager(&self) -> Option<crate::tool::SharedWorktreeManager> {
+        None
+    }
+
     /// The sink a tool's read-out goes to.
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
         None
@@ -131,6 +141,14 @@ impl ToolContextFactory for SharedToolContextFactory {
         Some(self.with_base(|base| base.goal_manager.clone()))
     }
 
+    fn subagent_manager(&self) -> Option<crate::subagent::SharedSubagentManager> {
+        Some(self.with_base(|base| base.subagent_manager.clone()))
+    }
+
+    fn worktree_manager(&self) -> Option<crate::tool::SharedWorktreeManager> {
+        Some(self.with_base(|base| base.worktree_manager.clone()))
+    }
+
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
         Some(self.with_base(|base| base.events.clone()))
     }
@@ -211,6 +229,12 @@ impl KernelTool for LegacyToolAdapter {
                     }
                     super::DomainHandle::GoalManager => {
                         handles.goal_manager = self.contexts.goal_manager();
+                    }
+                    super::DomainHandle::SubagentManager => {
+                        handles.subagent_manager = self.contexts.subagent_manager();
+                    }
+                    super::DomainHandle::WorktreeManager => {
+                        handles.worktree_manager = self.contexts.worktree_manager();
                     }
                     super::DomainHandle::SessionId => {
                         handles.session_id = ctx.session_id.clone();

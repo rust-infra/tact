@@ -145,6 +145,14 @@ fn expand_domain_tool(
             "goal_manager",
             quote!(crate::tool::DomainHandle::GoalManager),
         ),
+        (
+            "subagent_manager",
+            quote!(crate::tool::DomainHandle::SubagentManager),
+        ),
+        (
+            "worktree_manager",
+            quote!(crate::tool::DomainHandle::WorktreeManager),
+        ),
     ] {
         if text.contains(&format!(".{field}")) {
             needs.push(variant);
@@ -190,6 +198,8 @@ fn expand_domain_tool(
                     teammate_manager: Some(context.teammate_manager.clone()),
                     task_manager: Some(context.task_manager.clone()),
                     goal_manager: Some(context.goal_manager.clone()),
+                    subagent_manager: Some(context.subagent_manager.clone()),
+                    worktree_manager: Some(context.worktree_manager.clone()),
                     session_id: context.session_id.clone(),
                     active_goal_id: context.active_goal_id.clone(),
                     events: Some(context.events.clone()),
