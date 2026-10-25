@@ -72,6 +72,11 @@ pub trait ToolContextFactory: Send + Sync {
         None
     }
 
+    /// The background manager, on the same terms.
+    fn background_manager(&self) -> Option<crate::tool::SharedBackgroundManager> {
+        None
+    }
+
     /// The sink a tool's read-out goes to.
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
         None
@@ -179,6 +184,10 @@ impl ToolContextFactory for SharedToolContextFactory {
         Some(self.with_base(|base| base.memory_manager.clone()))
     }
 
+    fn background_manager(&self) -> Option<crate::tool::SharedBackgroundManager> {
+        Some(self.with_base(|base| base.background_manager.clone()))
+    }
+
     fn events(&self) -> Option<tact_protocol::UpdateSink> {
         Some(self.with_base(|base| base.events.clone()))
     }
@@ -280,6 +289,15 @@ impl KernelTool for ContextualToolAdapter {
                     }
                     super::DomainHandle::MemoryManager => {
                         handles.memory_manager = self.contexts.memory_manager();
+                    }
+                    super::DomainHandle::BackgroundManager => {
+                        handles.background_manager = self.contexts.background_manager();
+                    }
+                    super::DomainHandle::CancelFlag => {
+                        handles.cancel_flag = Some(ctx.cancel.shared_flag());
+                    }
+                    super::DomainHandle::ToolUseId => {
+                        handles.tool_use_id = Some(ctx.tool_use_id.clone());
                     }
                     super::DomainHandle::FromSubagent => {
                         handles.from_subagent = Some(matches!(ctx.origin, ToolOrigin::Subagent));

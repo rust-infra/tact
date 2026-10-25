@@ -9,14 +9,14 @@ use crate::{
         ToolPresentation,
     },
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use std::time::Duration;
 use tact_protocol::{AgentUpdate, ToolVisualKind};
 use tool_refactor_macros::tool;
 
-use crate::tool::ToolContext;
+use crate::tool::DomainHandles;
 
 /// Default and maximum blocking time for [`wait_background`], the call whose
 /// whole purpose is to block: five minutes, matching the `sleep` tool's cap so
@@ -92,7 +92,29 @@ pub const BACKGROUND_RUN_METADATA: ToolMetadata = ToolMetadata {
 ///
 /// Returns an error if the background manager fails to run the command
 /// (e.g., invalid command or internal error).
-pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Result<String> {
+pub async fn background_run(handles: DomainHandles, input: BackgroundRunInput) -> Result<String> {
+    let Some(backgrounds) = handles.background_manager.clone() else {
+        return Err(anyhow!(
+            "background tools are unavailable: this host has no background manager"
+        ));
+    };
+    let Some(events) = handles.events.clone() else {
+        return Err(anyhow!("background_run needs an update sink"));
+    };
+    let Some(workspace) = handles.workspace.clone() else {
+        return Err(anyhow!("background_run needs a workspace"));
+    };
+    let Some(cancel) = handles.cancel_flag.clone() else {
+        return Err(anyhow!("background_run needs the run's cancel flag"));
+    };
+    let session_id = handles.session_id.clone().unwrap_or_default();
+    let reporter = crate::tool::ToolProgressReporter::new(
+        handles
+            .tool_use_id
+            .clone()
+            .unwrap_or_else(|| "background_run".to_string()),
+        events.clone(),
+    );
     // Stream live output into the invocation's tool card while the task runs.
     // The sink inherits this invocation's reporter, so a background command
     // gets the same live-output redaction a foreground one does — it prints
@@ -101,16 +123,15 @@ pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Resu
     // The guard has already dealt with a sensitive *command* (it refused or
     // escalated before we got here); what redaction adds is output that carries
     // a secret without naming it, which is exactly the `python -c …` case.
-    let progress = BackgroundProgressSink::from_reporter(ctx.progress_reporter.clone());
+    let progress = BackgroundProgressSink::from_reporter(reporter.clone());
     let command = input.command;
-    let id = ctx
-        .background_manager
+    let id = backgrounds
         .start(
             command.clone(),
-            &ctx.work_dir,
-            ctx.session_id.clone().unwrap_or_default(),
+            workspace.root(),
+            session_id,
             Some(progress),
-            ctx.cancel_flag.clone(),
+            cancel.clone(),
         )
         .await?;
     let started = format!("Background task {id} started: {command}");
@@ -118,8 +139,8 @@ pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Resu
     // Surface the id on the live card. The invocation returns while the task
     // keeps running, so this meta row is the only place a user can read the id
     // to poll it (`/background <id>`), long before the result text is opened.
-    ctx.events.send(AgentUpdate::ToolMeta {
-        tool_id: ctx.progress_reporter.tool_id().to_string(),
+    events.send(AgentUpdate::ToolMeta {
+        tool_id: reporter.tool_id().to_string(),
         model: None,
         token_usage: None,
         context_window: None,
@@ -131,23 +152,17 @@ pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Resu
         return Ok(started);
     };
 
-    let outcome = ctx
-        .background_manager
-        .wait(
-            Some(&id),
-            "",
-            Duration::from_millis(wait_ms),
-            &ctx.cancel_flag,
-        )
+    let outcome = backgrounds
+        .wait(Some(&id), "", Duration::from_millis(wait_ms), &cancel)
         .await?;
 
     if outcome == WaitOutcome::Finished {
         // The task is done: report the result directly instead of the id.
-        return report_waited(&ctx, &id, WaitOutcome::Finished, None).await;
+        return report_waited(&handles, &id, WaitOutcome::Finished, None).await;
     }
     Ok(format!(
         "{started}\n{}",
-        report_waited(&ctx, &id, outcome, Some(wait_ms)).await?
+        report_waited(&handles, &id, outcome, Some(wait_ms)).await?
     ))
 }
 
@@ -190,9 +205,18 @@ pub const CHECK_BACKGROUND_METADATA: ToolMetadata = ToolMetadata {
 ///
 /// Returns an error if the provided task ID does not exist or the background
 /// manager encounters an internal error.
-pub async fn check_background(ctx: ToolContext, input: CheckBackgroundInput) -> Result<String> {
-    ctx.background_manager
-        .check(input.task_id.as_deref(), ctx.session_id.as_deref())
+pub async fn check_background(
+    handles: DomainHandles,
+    input: CheckBackgroundInput,
+) -> Result<String> {
+    let Some(backgrounds) = handles.background_manager.clone() else {
+        return Err(anyhow!(
+            "background tools are unavailable: this host has no background manager"
+        ));
+    };
+    let session_id = handles.session_id.clone().unwrap_or_default();
+    backgrounds
+        .check(input.task_id.as_deref(), Some(session_id.as_str()))
         .await
 }
 
@@ -243,20 +267,23 @@ pub const WAIT_BACKGROUND_METADATA: ToolMetadata = ToolMetadata {
 ///
 /// Returns an error if the given task id is unknown or the background manager
 /// cannot be read.
-pub async fn wait_background(ctx: ToolContext, input: WaitBackgroundInput) -> Result<String> {
+pub async fn wait_background(handles: DomainHandles, input: WaitBackgroundInput) -> Result<String> {
+    let Some(backgrounds) = handles.background_manager.clone() else {
+        return Err(anyhow!(
+            "background tools are unavailable: this host has no background manager"
+        ));
+    };
+    let Some(cancel) = handles.cancel_flag.clone() else {
+        return Err(anyhow!("wait_background needs the run's cancel flag"));
+    };
+    let session_id = handles.session_id.clone().unwrap_or_default();
     let timeout =
         Duration::from_millis(capped_wait_ms(input.timeout_ms.unwrap_or(DEFAULT_WAIT_MS)));
-    let outcome = ctx
-        .background_manager
-        .wait(
-            input.task_id.as_deref(),
-            &ctx.session_id.clone().unwrap_or_default(),
-            timeout,
-            &ctx.cancel_flag,
-        )
+    let outcome = backgrounds
+        .wait(input.task_id.as_deref(), &session_id, timeout, &cancel)
         .await?;
     report_waited(
-        &ctx,
+        &handles,
         input.task_id.as_deref().unwrap_or(""),
         outcome,
         Some(timeout.as_millis() as u64),
@@ -267,16 +294,21 @@ pub async fn wait_background(ctx: ToolContext, input: WaitBackgroundInput) -> Re
 /// Render the outcome of a wait: the finished task (with the tail of its
 /// output), or why the wait ended while it was still running.
 async fn report_waited(
-    ctx: &ToolContext,
+    handles: &DomainHandles,
     task_id: &str,
     outcome: WaitOutcome,
     waited_ms: Option<u64>,
 ) -> Result<String> {
     if task_id.is_empty() {
-        return session_report(ctx, outcome, waited_ms).await;
+        return session_report(handles, outcome, waited_ms).await;
     }
 
-    let record = ctx.background_manager.record(task_id).await?;
+    let Some(backgrounds) = handles.background_manager.as_ref() else {
+        return Err(anyhow!(
+            "background tools are unavailable: this host has no background manager"
+        ));
+    };
+    let record = backgrounds.record(task_id).await?;
     let status = record
         .as_ref()
         .map(|record| status_word(record.status))
@@ -314,13 +346,17 @@ async fn report_waited(
 
 /// Report for a wait that covered every task of the session.
 async fn session_report(
-    ctx: &ToolContext,
+    handles: &DomainHandles,
     outcome: WaitOutcome,
     waited_ms: Option<u64>,
 ) -> Result<String> {
-    let session_id = ctx.session_id.clone().unwrap_or_default();
-    let mut records: Vec<BackgroundTaskRecord> = ctx
-        .background_manager
+    let Some(backgrounds) = handles.background_manager.as_ref() else {
+        return Err(anyhow!(
+            "background tools are unavailable: this host has no background manager"
+        ));
+    };
+    let session_id = handles.session_id.clone().unwrap_or_default();
+    let mut records: Vec<BackgroundTaskRecord> = backgrounds
         .records()
         .await?
         .into_iter()
@@ -479,7 +515,7 @@ mod tests {
     }
 
     /// Starts a background command through the manager and returns its task id.
-    async fn start_task(context: &ToolContext, command: &str) -> String {
+    async fn start_task(context: &crate::tool::ToolContext, command: &str) -> String {
         context
             .background_manager
             .start(

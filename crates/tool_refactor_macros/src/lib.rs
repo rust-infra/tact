@@ -166,6 +166,12 @@ fn expand_domain_tool(
             "memory_manager",
             quote!(crate::tool::DomainHandle::MemoryManager),
         ),
+        (
+            "background_manager",
+            quote!(crate::tool::DomainHandle::BackgroundManager),
+        ),
+        ("cancel_flag", quote!(crate::tool::DomainHandle::CancelFlag)),
+        ("tool_use_id", quote!(crate::tool::DomainHandle::ToolUseId)),
     ] {
         if text.contains(&format!(".{field}")) {
             needs.push(variant);
@@ -219,6 +225,13 @@ fn expand_domain_tool(
                     ui_responder: Some(context.ui_responder.clone()),
                     from_subagent: Some(context.is_subagent),
                     memory_manager: Some(context.memory_manager.clone()),
+                    background_manager: Some(context.background_manager.clone()),
+                    cancel_flag: Some(context.cancel_flag.clone()),
+                    // The id is not a `ToolContext` field; the progress reporter is
+                    // the thing that already carries it, so the fallback reads it
+                    // from there rather than inventing an empty id that would make
+                    // every background run share one row.
+                    tool_use_id: Some(context.progress_reporter.tool_id().to_string()),
                     session_id: context.session_id.clone(),
                     active_goal_id: context.active_goal_id.clone(),
                     events: Some(context.events.clone()),

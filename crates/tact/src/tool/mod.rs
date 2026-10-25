@@ -262,6 +262,9 @@ pub enum DomainHandle {
     Workspace,
     UiResponder,
     MemoryManager,
+    BackgroundManager,
+    CancelFlag,
+    ToolUseId,
     FromSubagent,
     /// The run's session id, when this tool keys its rows by it.
     SessionId,
@@ -295,6 +298,11 @@ pub struct DomainHandles {
     /// The prompt/answer registry, for a tool that asks a human.
     pub ui_responder: Option<UiResponder>,
     pub memory_manager: Option<std::sync::Arc<std::sync::Mutex<crate::memory::MemoryManager>>>,
+    pub background_manager: Option<SharedBackgroundManager>,
+    /// The run's cooperative cancel flag.
+    pub cancel_flag: Option<std::sync::Arc<std::sync::atomic::AtomicBool>>,
+    /// This call's id, for a tool that keys progress or metadata rows by it.
+    pub tool_use_id: Option<String>,
     /// Whether the caller is a subagent, when a tool's wording depends on it.
     ///
     /// Carried from the kernel's `ToolOrigin` rather than re-derived: the origin
@@ -354,6 +362,15 @@ impl DomainHandles {
         }
         if self.memory_manager.is_some() {
             carried.push("memory_manager");
+        }
+        if self.background_manager.is_some() {
+            carried.push("background_manager");
+        }
+        if self.cancel_flag.is_some() {
+            carried.push("cancel_flag");
+        }
+        if self.tool_use_id.is_some() {
+            carried.push("tool_use_id");
         }
         if self.from_subagent.is_some() {
             carried.push("from_subagent");
@@ -1273,6 +1290,9 @@ mod domain_handle_guard_tests {
             (DomainHandle::Workspace, "workspace"),
             (DomainHandle::UiResponder, "ui_responder"),
             (DomainHandle::MemoryManager, "memory_manager"),
+            (DomainHandle::BackgroundManager, "background_manager"),
+            (DomainHandle::CancelFlag, "cancel_flag"),
+            (DomainHandle::ToolUseId, "tool_use_id"),
             (DomainHandle::FromSubagent, "from_subagent"),
             (DomainHandle::SessionId, "session_id"),
             (DomainHandle::ActiveGoalId, "active_goal_id"),
@@ -1306,13 +1326,16 @@ mod domain_handle_guard_tests {
                 DomainHandle::Workspace,
                 DomainHandle::UiResponder,
                 DomainHandle::MemoryManager,
+                DomainHandle::BackgroundManager,
+                DomainHandle::CancelFlag,
+                DomainHandle::ToolUseId,
                 DomainHandle::FromSubagent,
                 DomainHandle::SessionId,
                 DomainHandle::ActiveGoalId,
                 DomainHandle::Events,
             ]
             .len(),
-            13,
+            16,
             "update this list (and the macro's table) when adding a DomainHandle"
         );
     }
