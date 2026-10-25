@@ -521,7 +521,7 @@ impl Agent {
             contexts,
             tact_kernel::capability::CapabilityFilter::default(),
         )
-        .expect("the built-in family table is valid by construction")
+        .expect("the built-in family table is valid: ids are literals and names are unique")
         .0;
         let _ = context;
         let service = crate::permission::ManagerPermissionService::new(permission_manager.handle())

@@ -110,9 +110,11 @@ impl ManagerPermissionService {
         Self {
             manager,
             auto_approved: Arc::new(|_| false),
-            // Default to "a prompt can be shown": a caller that never wires a UI
-            // must opt into the headless ladder explicitly, so a missing wiring
-            // fails loudly at the prompt instead of silently auto-approving.
+            // Default to "a prompt can be shown", so a caller that wires no UI
+            // fails at the prompt instead of silently auto-approving. A host
+            // must supply the live answer through `with_ui_available`: the
+            // frontend is usually attached *after* construction, so a value
+            // captured here would report the wrong thing.
             ui_available: Arc::new(|| true),
         }
     }

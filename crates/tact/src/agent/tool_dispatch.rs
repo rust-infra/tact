@@ -734,30 +734,30 @@ impl Agent {
     async fn ask_permission(
         &self,
         prompt: &tact_kernel::tool::executor::PermissionPrompt,
-        tool_name: &str,
+        _tool_name: &str,
     ) -> Option<KernelPermissionAnswer> {
         let tx = self.runtime.events.ui()?;
-        let mut body = prompt.message.clone();
+        // Rendered the same way the kernel's own `ask` renders an option, so a
+        // `detail` added later cannot make the popup and the recorded answer
+        // describe different choices.
         let labels: Vec<String> = prompt
             .options
             .iter()
-            .map(|option| option.label.clone())
+            .map(|option| match &option.detail {
+                Some(detail) => format!("{} ({detail})", option.label),
+                None => option.label.clone(),
+            })
             .collect();
         let responder = self.tool_context.ui_responder.clone();
         let from_subagent = self.tool_context.is_subagent;
         let selection = responder
-            .request_select(tx, body.clone(), labels.clone(), false, from_subagent)
+            .request_select(tx, prompt.message.clone(), labels, false, from_subagent)
             .await
             .ok()
             .flatten();
-        let index = selection?;
-        let option = prompt.options.get(index)?;
-        if option.kind == tact_kernel::tool::executor::PermissionOptionKind::Deny {
-            return None;
-        }
-        // Keep the same label the legacy popup produced: it names the gesture,
-        // not the option's generic text, because "Always allow this tool" is
-        // what the toast has to say afterwards.
+        let option = prompt.options.get(selection?)?;
+        // The label names the gesture, not the option's generic text: it is what
+        // the toast says afterwards.
         let label = match option.kind {
             tact_kernel::tool::executor::PermissionOptionKind::AllowOnce => "Allow once",
             tact_kernel::tool::executor::PermissionOptionKind::AlwaysAllow => {
@@ -768,8 +768,6 @@ impl Agent {
             }
             tact_kernel::tool::executor::PermissionOptionKind::Deny => return None,
         };
-        body.clear();
-        let _ = tool_name;
         Some(KernelPermissionAnswer {
             label,
             answer: tact_kernel::tool::executor::PermissionAnswer {
@@ -782,8 +780,11 @@ impl Agent {
     /// The ladder for calls the kernel pipeline did not decide.
     ///
     /// Tact's own MCP resource/prompt tools carry their risk in `[mcp]` settings
-    /// rather than a descriptor, so they keep the hand-written order: PreToolUse
-    /// → sensitive guard → ladder → PermissionRequest hook → popup.
+    /// rather than a descriptor, so they keep the hand-written order:
+    /// PreToolUse → ladder → PermissionRequest hook → popup. There is no
+    /// sensitive-target guard on this path, and there never was: an MCP tool
+    /// has no path field of its own, so there is nothing for the classifier to
+    /// read. Their *results* are still redacted.
     #[allow(clippy::too_many_arguments)]
     async fn legacy_authorize(
         &mut self,
