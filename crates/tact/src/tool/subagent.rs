@@ -1,13 +1,14 @@
 use crate::tool::{
-    ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
-    PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
-    ToolPresentation,
+    ArgumentSummaryPolicy, DetailPolicy, DomainHandles, LiveOutputPolicy, OutputPolicy,
+    PermissionPolicy, PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain,
+    ToolMetadata, ToolPresentation,
 };
 use std::{
     path::{Path, PathBuf},
     sync::{Arc, atomic::Ordering},
 };
 
+use anyhow::anyhow;
 use anyhow::{Context, Result, bail};
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -901,8 +902,13 @@ pub const WAIT_SUBAGENT_METADATA: ToolMetadata = ToolMetadata::read_json(
 ///
 /// Returns an error if the provided child id does not exist or the subagent
 /// manager encounters an internal error.
-pub async fn check_subagent(ctx: ToolContext, input: CheckSubagentInput) -> Result<String> {
-    ctx.subagent_manager.check(input.child_id.as_deref()).await
+pub async fn check_subagent(handles: DomainHandles, input: CheckSubagentInput) -> Result<String> {
+    let Some(subagents) = handles.subagent_manager.clone() else {
+        return Err(anyhow!(
+            "subagent tools are unavailable: this host has no subagent manager"
+        ));
+    };
+    subagents.check(input.child_id.as_deref()).await
 }
 
 #[tool]
@@ -910,13 +916,23 @@ pub async fn check_subagent(ctx: ToolContext, input: CheckSubagentInput) -> Resu
 ///
 /// Returns an error when the requested child id has no live cancel handle
 /// (unknown or already finished).
-pub async fn cancel_subagent(ctx: ToolContext, input: CancelSubagentInput) -> Result<String> {
-    let cancelled = ctx.subagent_manager.request_cancel(input.child_id.as_str());
+pub async fn cancel_subagent(handles: DomainHandles, input: CancelSubagentInput) -> Result<String> {
+    let Some(subagents) = handles.subagent_manager.clone() else {
+        return Err(anyhow!(
+            "subagent tools are unavailable: this host has no subagent manager"
+        ));
+    };
+    let Some(events) = handles.events.clone() else {
+        return Err(anyhow!(
+            "subagent tools are unavailable: this host has no event sink"
+        ));
+    };
+    let cancelled = subagents.request_cancel(input.child_id.as_str());
     if cancelled {
         // Best-effort: mark the run record Cancelled now; the child's finish
         // path keeps it Cancelled when the flag is set.
-        let _ = ctx.subagent_manager.cancel(&input.child_id).await;
-        crate::subagent::emit_subagents_changed(&ctx.events, &ctx.subagent_manager).await;
+        let _ = subagents.cancel(&input.child_id).await;
+        crate::subagent::emit_subagents_changed(&events, &subagents).await;
         Ok(format!("cancel requested for subagent {}", input.child_id))
     } else {
         bail!(
@@ -933,9 +949,14 @@ pub async fn cancel_subagent(ctx: ToolContext, input: CancelSubagentInput) -> Re
 /// Returns an error if the child id is unknown or the subagent manager
 /// encounters an internal error. A timeout returns an `Ok` "still running"
 /// note rather than an error.
-pub async fn wait_subagent(ctx: ToolContext, input: WaitSubagentInput) -> Result<String> {
+pub async fn wait_subagent(handles: DomainHandles, input: WaitSubagentInput) -> Result<String> {
+    let Some(subagents) = handles.subagent_manager.clone() else {
+        return Err(anyhow!(
+            "subagent tools are unavailable: this host has no subagent manager"
+        ));
+    };
     let timeout_ms = input.timeout_ms.unwrap_or(60_000);
-    ctx.subagent_manager.wait(&input.child_id, timeout_ms).await
+    subagents.wait(&input.child_id, timeout_ms).await
 }
 
 #[cfg(test)]

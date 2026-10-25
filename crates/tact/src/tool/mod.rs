@@ -1227,9 +1227,14 @@ mod tests {
     }
     /// Only `spawn_subagent` may take a `ToolContext`.
     ///
-    /// The struct reached 25 fields because adding one was easier than asking
-    /// whether a tool should have one. Every other tool now declares the handles
-    /// it reads, so this guard keeps a new tool from quietly rejoining the list.
+    /// The struct reached 28 fields because adding one was easier than asking
+    /// whether a tool should have one. Every other tool declares the handles it
+    /// reads, so this guard keeps a new tool from quietly rejoining the list.
+    ///
+    /// Named per *function*, not per file: `subagent.rs` also holds
+    /// `check_subagent` and `cancel_subagent`, which need one handle and one
+    /// event sink. A file-level check would have let a new full-context handler
+    /// hide behind them.
     ///
     /// It is a second line of defence rather than the first: the `#[tool]` macro
     /// only accepts `ToolContext`, `Workspace` or `DomainHandles` as a handler's
@@ -1261,16 +1266,25 @@ mod tests {
                 continue;
             }
             let text = std::fs::read_to_string(&path).expect("a readable source file");
-            // A handler signature, not any mention: `compact`'s doc comment and a
-            // test's helper both name the type without taking it as a parameter.
-            if text.contains("ctx: ToolContext") || text.contains("context: ToolContext") {
-                offenders.push(name);
+            for line in text.lines() {
+                let line = line.trim();
+                let Some(rest) = line.strip_prefix("pub async fn ") else {
+                    continue;
+                };
+                let Some(open) = rest.find('(') else { continue };
+                let function = &rest[..open];
+                let signature = &rest[open..];
+                // A handler signature, not any mention: a doc comment and a test
+                // helper both name the type without taking it as a parameter.
+                if signature.contains(": ToolContext") {
+                    offenders.push(format!("{name}:{function}"));
+                }
             }
         }
         assert_eq!(
             offenders,
-            vec!["subagent.rs".to_string()],
-            "only the subagent tool may take the whole context"
+            vec!["subagent.rs:spawn_subagent".to_string()],
+            "only spawn_subagent may take the whole context"
         );
     }
 
