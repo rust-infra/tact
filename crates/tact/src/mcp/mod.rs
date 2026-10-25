@@ -2660,6 +2660,19 @@ impl MCPToolRouter {
     /// Resolve a tool name without connecting to servers.
     /// Returns `Ok(Some(ResolvedMcpTool))` for valid MCP-prefixed names,
     /// `Ok(None)` for non-MCP names, or an error for misformatted MCP names.
+    /// A cheap, immutable copy of this router.
+    ///
+    /// `McpClient` is `Clone` over `Arc`ed services and immutable data, so this
+    /// copies the *set*, not the connections: the snapshot's clients are the same
+    /// running services. A host that must keep using the tool set while it also
+    /// reloads the live router (a list/read of resources, say) takes one of
+    /// these instead of sharing the router behind a lock.
+    pub fn snapshot(&self) -> Self {
+        Self {
+            clients: self.clients.clone(),
+        }
+    }
+
     /// A dispatch handle for `server`, or `None` when it is not connected.
     pub fn call_handle(&self, server: &str) -> Option<McpCallHandle> {
         self.clients.get(server).map(|client| McpCallHandle {

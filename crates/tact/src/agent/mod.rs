@@ -697,19 +697,40 @@ impl Agent {
         } else {
             self.tools.tool_specs()
         };
-        self.cached_tool_specs = native_specs
+        // Re-register the MCP sources from a fresh snapshot. Doing it here, in the
+        // one place that rebuilds the advertised list, is what keeps "what the
+        // model sees" and "what the executor can resolve" the same set: a server
+        // that appeared or vanished moves both or neither.
+        let catalog = self.tool_executor.catalog();
+        catalog.clear_sources();
+        catalog.add_source(std::sync::Arc::new(crate::tool::McpToolSource::new(
+            "mcp",
+            std::sync::Arc::new(crate::tool::SnapshotMcpBackend::new(&self.mcp_router)),
+        )));
+        let control_backend = std::sync::Arc::new(crate::tool::SnapshotMcpControlBackend::new(
+            &self.mcp_router,
+        ));
+        catalog.add_source(std::sync::Arc::new(crate::tool::McpControlSource::new(
+            control_backend,
+        )));
+
+        // The advertised specs are built from the same descriptors the executor
+        // resolves, so a tool cannot be advertised without a handler or
+        // resolvable without being advertised. `source_descriptors` is sync
+        // because this function is neither async nor allowed to be.
+        let source_specs: Vec<ToolSpec> = catalog
+            .source_descriptors()
             .into_iter()
-            .chain(self.mcp_router.all_tools())
-            // `list_mcp_resources` / `read_mcp_resource` exist only while a server
-            // is connected: with an empty router they would be tools that can
-            // only ever answer "no MCP servers are connected".
-            .chain(self.mcp_router.resource_tool_specs())
-            // Same rule for the prompt pair.
-            .chain(self.mcp_router.prompt_tool_specs())
+            .map(|descriptor| ToolSpec {
+                name: descriptor.name,
+                description: Some(descriptor.description),
+                input_schema: descriptor.input_schema,
+            })
             .collect();
+        self.cached_tool_specs = native_specs.into_iter().chain(source_specs).collect();
         // Stamped together with the specs, because the two are one fact: these
         // are the tools, from this generation, that the model is about to see.
-        self.advertised_generation = self.tool_executor.catalog().generation();
+        self.advertised_generation = catalog.generation();
         self.runtime.cached_mcp_instructions = self.mcp_router.instructions_block();
     }
 
@@ -3441,6 +3462,84 @@ mod tests {
 
         let prompt = agent.build_system_prompt().unwrap();
         assert!(prompt.contains("## basic-memory"), "{prompt}");
+    }
+
+    /// Every advertised tool must be dispatchable, and every dispatchable one
+    /// advertised.
+    ///
+    /// The two lists used to have independent sources (the router for specs, the
+    /// catalog for handlers), so a server that appeared between them could be
+    /// offered to the model with nothing behind it — or resolvable but invisible.
+    /// This pins them to one set.
+    #[test]
+    fn the_advertised_tools_are_exactly_the_dispatchable_ones() {
+        ensure_config();
+        let mut mcp = crate::mcp::MCPToolRouter::new();
+        mcp.register_client(single_tool_mcp_client("demo"));
+        let mut agent = Agent::new(
+            LlmProvider::Mock(MockClient::new(vec![])),
+            test_context("advertised_matches_dispatchable"),
+            crate::tool::toolset(),
+            mcp,
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".into()),
+        );
+        agent.rebuild_cached_tool_specs();
+
+        let filter = tact_kernel::capability::CapabilityFilter::default();
+        let catalog = agent.tool_executor.catalog();
+        let advertised: std::collections::BTreeSet<String> = agent
+            .all_tool_specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .filter(|name| name.starts_with("mcp__"))
+            .collect();
+        assert!(
+            advertised.contains("mcp__demo__echo"),
+            "the server's tool must be advertised, got {advertised:?}"
+        );
+        for name in &advertised {
+            assert!(
+                catalog.can_dispatch(name, &filter),
+                "{name} is advertised but not dispatchable"
+            );
+        }
+        // The control tools are advertised only when a server is connected, so
+        // with one connected they must be dispatchable too.
+        for tool in crate::mcp::McpResourceTool::ALL {
+            assert!(
+                catalog.can_dispatch(tool.name(), &filter),
+                "{} is advertised but not dispatchable",
+                tool.name()
+            );
+        }
+    }
+
+    /// A client with exactly one tool, for the parity assertion above.
+    fn single_tool_mcp_client(server: &str) -> crate::mcp::McpClient {
+        use std::borrow::Cow;
+        use std::sync::Arc;
+
+        use rmcp::model::{CallToolResult, Content, JsonObject, Tool as McpTool};
+
+        let tool = McpTool {
+            name: Cow::Borrowed("echo"),
+            title: None,
+            description: Some(Cow::Borrowed("Echo the input back")),
+            input_schema: Arc::new(JsonObject::new()),
+            output_schema: None,
+            annotations: None,
+            execution: None,
+            icons: None,
+            meta: None,
+        };
+        let service = crate::mcp::MockMcpService::new(vec![tool.clone()], |_| {
+            Ok(CallToolResult::success(vec![Content::text("ok")]))
+        });
+        crate::mcp::McpClient::with_service(server, vec![tool], Arc::new(service))
     }
 
     #[test]

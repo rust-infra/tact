@@ -90,7 +90,7 @@ pub use legacy::{LegacyToolAdapter, SharedToolContextFactory, ToolContextFactory
 #[cfg(test)]
 use load_skill::LoadSkillTool;
 pub use mcp_control::{
-    McpControl, McpControlBackend, McpControlSource, McpControlTool, SharedMcpControlBackend,
+    McpControl, McpControlBackend, McpControlSource, McpControlTool, SnapshotMcpControlBackend,
 };
 pub use mcp_source::{McpTool, McpToolBackend, McpToolEntry, McpToolSource, SnapshotMcpBackend};
 #[cfg(test)]

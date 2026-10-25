@@ -83,23 +83,27 @@ pub trait McpControlBackend: Send + Sync {
     fn is_available(&self) -> bool;
 }
 
-/// A backend over a shared router.
-pub struct SharedMcpControlBackend {
-    router: tokio::sync::Mutex<MCPToolRouter>,
+/// A backend over an immutable snapshot of the router.
+///
+/// The snapshot owns cloned clients (cheap: the services are `Arc`ed), so no lock
+/// is taken and a reload of the live router cannot block or be blocked by a
+/// resource read. The host swaps a new snapshot in after every load.
+pub struct SnapshotMcpControlBackend {
+    router: MCPToolRouter,
 }
 
-impl SharedMcpControlBackend {
-    pub fn new(router: MCPToolRouter) -> Self {
+impl SnapshotMcpControlBackend {
+    pub fn new(router: &MCPToolRouter) -> Self {
         Self {
-            router: tokio::sync::Mutex::new(router),
+            router: router.snapshot(),
         }
     }
 }
 
 #[async_trait]
-impl McpControlBackend for SharedMcpControlBackend {
+impl McpControlBackend for SnapshotMcpControlBackend {
     async fn run(&self, control: McpControl, input: serde_json::Value) -> anyhow::Result<String> {
-        let router = self.router.lock().await;
+        let router = &self.router;
         let server = input.get("server").and_then(|value| value.as_str());
         match control {
             McpControl::Resource(McpResourceTool::List) => router.list_resources(server).await,
@@ -139,10 +143,8 @@ impl McpControlBackend for SharedMcpControlBackend {
     }
 
     fn is_available(&self) -> bool {
-        self.router
-            .try_lock()
-            .map(|router| !router.server_summaries().is_empty())
-            .unwrap_or(true)
+        // No lock, no fallback: the snapshot either has servers or it does not.
+        !self.router.server_summaries().is_empty()
     }
 }
 

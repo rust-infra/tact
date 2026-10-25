@@ -659,7 +659,7 @@ impl Agent {
     fn kernel_tool_context(
         &self,
         tool_use_id: &str,
-        metadata: &crate::tool::ToolMetadata,
+        metadata: Option<&crate::tool::ToolMetadata>,
         input: &serde_json::Value,
     ) -> tact_kernel::tool::context::ToolCallContext {
         use tact_kernel::tool::context::{
@@ -677,11 +677,19 @@ impl Agent {
         let cancel = CancelToken::from_shared(self.tool_context.cancel_flag.clone());
         let redaction = {
             let config = self.runtime.permission_manager.security_config().redaction;
-            let sensitive = metadata
-                .permission
-                .sensitive(input, &self.runtime.security)
-                .is_some();
-            let target = metadata.permission.target(input);
+            // A source-provided tool has no static metadata, so there is no
+            // declared target to classify: its results still get the configured
+            // level, they just cannot be escalated per call.
+            let (sensitive, target) = match metadata {
+                Some(metadata) => (
+                    metadata
+                        .permission
+                        .sensitive(input, &self.runtime.security)
+                        .is_some(),
+                    metadata.permission.target(input),
+                ),
+                None => (false, None),
+            };
             crate::security::redact::level_for_call(&config, sensitive, target.as_deref())
         };
         ToolCallContext {
@@ -1223,11 +1231,28 @@ impl Agent {
             // `[mcp]` settings that the descriptor does not carry yet.
             let mut permission_label: Option<String> = None;
             let mut preflight: Option<tact_kernel::tool::executor::ToolPreflight> = None;
-            let state = if let ResolvedTool::Native { metadata } = &resolved {
+            // Every family is a catalog entry now, so which resolver produced this
+            // call only decides the *label*; all of them go through the pipeline.
+            // `McpResource`/`McpPrompt` are kernel tools too (McpControlSource).
+            let catalog_name: Option<&str> = match &resolved {
+                ResolvedTool::Native { metadata } => Some(metadata.name),
+                ResolvedTool::McpResource { tool } => Some(tool.name()),
+                ResolvedTool::McpPrompt { tool } => Some(tool.name()),
+                _ => None,
+            };
+            let static_metadata = match &resolved {
+                ResolvedTool::Native { metadata } => Some(*metadata),
+                _ => None,
+            };
+            let state = if let Some(name) = catalog_name {
+                let metadata = static_metadata;
+                // The name the loop needs for labels and hooks. A source-provided
+                // tool has no static metadata, so it comes from the resolver.
+                let display_name = name;
                 let generation = self.advertised_generation();
                 let request = tact_kernel::tool::executor::ToolRequest {
                     call_id: tool_use.id.clone(),
-                    tool_name: metadata.name.to_string(),
+                    tool_name: name.to_string(),
                     input: tool_use.input.clone(),
                     snapshot_generation: generation,
                 };
@@ -1395,7 +1420,7 @@ impl Agent {
                                         // every prompt, as before the cutover.
                                         let notification = NotificationContext {
                                             notification_type: "permission_prompt".to_string(),
-                                            title: metadata.name.to_string(),
+                                            title: display_name.to_string(),
                                             message: prompt.message.clone(),
                                         };
                                         match invoke_hooks!(Notification, self, &notification) {
@@ -1412,12 +1437,12 @@ impl Agent {
                                             }
                                         }
                                         let answer =
-                                            self.ask_permission(&prompt, metadata.name).await;
+                                            self.ask_permission(&prompt, display_name).await;
                                         match answer {
                                             None => {
                                                 let msg = format!(
                                                     "Permission denied by user for {}",
-                                                    metadata.name
+                                                    display_name
                                                 );
                                                 self.emit_update(AgentUpdate::StepFailed {
                                                     idx: step_idx,

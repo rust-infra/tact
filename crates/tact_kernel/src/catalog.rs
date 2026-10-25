@@ -114,6 +114,32 @@ impl ToolCatalog {
         self.generation.load(Ordering::SeqCst)
     }
 
+    /// The source-contributed descriptors, synchronously.
+    ///
+    /// For a host that must rebuild its advertised list without awaiting: a
+    /// source's descriptors are a pure function of its own state, so this cannot
+    /// disagree with [`Self::descriptor_snapshot`].
+    pub fn source_descriptors(&self) -> Vec<ToolDescriptor> {
+        let sources: Vec<Arc<dyn ToolSource>> = self
+            .sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        sources
+            .iter()
+            .flat_map(|source| source.descriptors())
+            .collect()
+    }
+
+    /// Whether `name` resolves to a handler for `filter`-allowed tools.
+    ///
+    /// The advertised list is filtered by the same rule, so a spec the host emits
+    /// is always resolvable and vice versa.
+    pub fn can_dispatch(&self, name: &str, filter: &CapabilityFilter) -> bool {
+        let id = CapabilityId::new(CapabilityKind::Tool, name.to_string());
+        filter.allows(&id) && self.handler_for(name).is_some()
+    }
+
     pub async fn descriptor_snapshot(
         &self,
         filter: &CapabilityFilter,

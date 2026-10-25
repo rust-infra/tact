@@ -20,6 +20,18 @@ pub trait ToolSource: Send + Sync {
     async fn refresh(&self) -> anyhow::Result<bool>;
 
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
+
+    /// The descriptors this source contributes, without any async work.
+    ///
+    /// A host that must rebuild the advertised list synchronously (prompt
+    /// assembly and spec caching are not async) reads this; the async snapshot
+    /// path uses it too, so the two cannot disagree.
+    fn descriptors(&self) -> Vec<ToolDescriptor> {
+        self.tools()
+            .into_iter()
+            .map(|tool| tool.descriptor())
+            .collect()
+    }
 }
 
 /// What the Agent may send to the model: no handler references.
