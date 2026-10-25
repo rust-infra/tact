@@ -10,7 +10,7 @@ use tact_protocol::ToolVisualKind;
 use tokio::fs;
 use tool_refactor_macros::tool;
 
-use crate::tool::{ToolContext, safe_path};
+use crate::tool::safe_path;
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct EditFileInput {
@@ -56,8 +56,11 @@ pub const EDIT_FILE_METADATA: ToolMetadata = ToolMetadata {
 /// - `old_text` is empty.
 /// - `old_text` is not found in the file.
 /// - The modified file cannot be written.
-pub async fn edit_file(ctx: ToolContext, input: EditFileInput) -> Result<String> {
-    let path = safe_path(&ctx.work_dir, &input.path)?;
+pub async fn edit_file(
+    workspace: tact_kernel::tool::context::Workspace,
+    input: EditFileInput,
+) -> Result<String> {
+    let path = safe_path(workspace.root(), &input.path)?;
 
     let content = fs::read_to_string(&path)
         .await

@@ -5,7 +5,7 @@ use schemars::JsonSchema;
 use serde::Deserialize;
 use tool_refactor_macros::tool;
 
-use crate::tool::{ToolCallResult, ToolContext, ToolMetadata, safe_path};
+use crate::tool::{ToolCallResult, ToolMetadata, safe_path};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct ReadImageInput {
@@ -65,7 +65,10 @@ fn encode_jpeg(
 /// - The file path is invalid or outside the workspace.
 /// - The file does not exist or is not a supported image type.
 /// - The current model does not accept image input.
-pub async fn read_image(ctx: ToolContext, input: ReadImageInput) -> Result<ToolCallResult> {
+pub async fn read_image(
+    workspace: tact_kernel::tool::context::Workspace,
+    input: ReadImageInput,
+) -> Result<ToolCallResult> {
     // Align with DeepSeek Harness `read_image`: gate on the current model
     // declaring image support before doing any I/O; a text-only target cannot
     // consume the returned image block. `config` (not `tact_llm`) is the gate:
@@ -76,7 +79,7 @@ pub async fn read_image(ctx: ToolContext, input: ReadImageInput) -> Result<ToolC
         ));
     }
 
-    let path = safe_path(&ctx.work_dir, &input.file_path)?;
+    let path = safe_path(workspace.root(), &input.file_path)?;
     let ext = path
         .extension()
         .and_then(|e| e.to_str())

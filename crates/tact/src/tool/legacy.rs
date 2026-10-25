@@ -132,6 +132,16 @@ impl KernelTool for LegacyToolAdapter {
         ctx: ToolCallContext,
         input: serde_json::Value,
     ) -> anyhow::Result<ToolCallResult> {
+        // A tool that needs only the workspace says so, and then the adapter does
+        // not materialise a whole `ToolContext` to read one field. The check is
+        // on the tool, not on the caller: a tool that opts out always gets the
+        // full context, so this cannot hand anyone a partial one.
+        if let Some(future) = self
+            .inner
+            .call_in_workspace(ctx.workspace.clone(), input.clone())
+        {
+            return future.await;
+        }
         let context = self.contexts.build(&ctx);
         self.inner.call(context, input).await
     }
@@ -213,6 +223,99 @@ mod tests {
             cancel: token,
             redaction: tact_kernel::tool::context::RedactionPolicy::Basic,
         }
+    }
+
+    /// A tool that only needs the workspace must not make the adapter build a
+    /// whole `ToolContext`.
+    ///
+    /// The counter is the point: materialising the context clones several `Arc`s
+    /// and a `PathBuf` on every call, and the narrow path exists to skip that.
+    #[tokio::test]
+    async fn a_workspace_only_tool_skips_the_context_build() {
+        struct NeedsWorkspaceOnly {
+            builds: Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        #[async_trait::async_trait]
+        impl crate::tool::Tool for NeedsWorkspaceOnly {
+            fn metadata(&self) -> &'static crate::tool::ToolMetadata {
+                static META: crate::tool::ToolMetadata =
+                    crate::tool::ToolMetadata::read_json("saw_workspace", "Saw", "Saw");
+                &META
+            }
+
+            fn input_schema(&self) -> serde_json::Value {
+                json!({"type": "object"})
+            }
+
+            async fn call(
+                &self,
+                _context: crate::tool::ToolContext,
+                _input: serde_json::Value,
+            ) -> anyhow::Result<crate::tool::ToolCallResult> {
+                self.builds
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                Ok(crate::tool::ToolCallResult::text("full"))
+            }
+
+            fn call_in_workspace<'a>(
+                &'a self,
+                workspace: tact_kernel::tool::context::Workspace,
+                _input: serde_json::Value,
+            ) -> Option<
+                std::pin::Pin<
+                    Box<
+                        dyn std::future::Future<
+                                Output = anyhow::Result<crate::tool::ToolCallResult>,
+                            > + Send
+                            + 'a,
+                    >,
+                >,
+            > {
+                Some(Box::pin(async move {
+                    Ok(crate::tool::ToolCallResult::text(format!(
+                        "{}",
+                        workspace.root().display()
+                    )))
+                }))
+            }
+        }
+
+        struct CountingFactory {
+            builds: Arc<std::sync::atomic::AtomicUsize>,
+        }
+
+        impl ToolContextFactory for CountingFactory {
+            fn build(&self, _ctx: &ToolCallContext) -> ToolContext {
+                self.builds
+                    .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                test_context("workspace_only_factory")
+            }
+        }
+
+        let builds = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let tool = NeedsWorkspaceOnly {
+            builds: builds.clone(),
+        };
+        let adapter = LegacyToolAdapter::from_arc(
+            Arc::new(tool) as Arc<dyn crate::tool::Tool>,
+            Arc::new(CountingFactory {
+                builds: builds.clone(),
+            }),
+        );
+        let result = tact_kernel::capability::tool::Tool::call(
+            &adapter,
+            kernel_context(ToolOrigin::Main, false),
+            json!({}),
+        )
+        .await
+        .unwrap();
+        assert!(result.content.starts_with("/mapped"), "{}", result.content);
+        assert_eq!(
+            builds.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "the narrow path must not build a ToolContext"
+        );
     }
 
     #[tokio::test]

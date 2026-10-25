@@ -5,7 +5,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tool_refactor_macros::tool;
 
-use crate::tool::{ToolContext, ToolMetadata, safe_path};
+use crate::tool::{ToolMetadata, safe_path};
 use crate::utils::approx_token_count;
 
 const READ_FILE_MAX_OUTPUT_TOKENS: usize = 25_000;
@@ -44,8 +44,11 @@ pub const READ_FILE_METADATA: ToolMetadata =
 /// - The file does not exist or cannot be opened.
 /// - The file cannot be read (I/O error).
 /// - A single line or requested range exceeds `READ_FILE_MAX_OUTPUT_TOKENS` (~25,000 approx tokens).
-pub async fn read_file(ctx: ToolContext, input: ReadFileInput) -> Result<String> {
-    let path = safe_path(&ctx.work_dir, &input.path)?;
+pub async fn read_file(
+    workspace: tact_kernel::tool::context::Workspace,
+    input: ReadFileInput,
+) -> Result<String> {
+    let path = safe_path(workspace.root(), &input.path)?;
     let explicit_range = input.offset.is_some() || input.limit.is_some();
     let start_line = input.offset.map(|o| o.max(1) as usize).unwrap_or(1);
     let max_lines = input

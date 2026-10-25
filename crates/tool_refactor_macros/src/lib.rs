@@ -20,11 +20,30 @@ fn expand_tool(item_fn: ItemFn) -> syn::Result<proc_macro2::TokenStream> {
     let wrapper_ident = format_ident!("{}Tool", to_pascal_case(&fn_ident.to_string()));
     let output = output_handling(&item_fn)?;
 
-    if let Some(input_ty) = extract_stateful_handler_input_type(&item_fn)? {
-        expand_stateful_tool(item_fn, wrapper_ident, metadata_ident, input_ty, output)
+    if let Some((context, input_ty)) = extract_stateful_handler_input_type(&item_fn)? {
+        match context {
+            HandlerContext::Full => {
+                expand_stateful_tool(item_fn, wrapper_ident, metadata_ident, input_ty, output)
+            }
+            HandlerContext::Workspace => {
+                expand_workspace_tool(item_fn, wrapper_ident, metadata_ident, input_ty, output)
+            }
+        }
     } else {
         expand_pure_tool(item_fn, wrapper_ident, metadata_ident, output)
     }
+}
+
+/// Which context a stateful handler asks for.
+///
+/// Two shapes exist because most tools need nothing from the context but the
+/// workspace, and materialising a whole `ToolContext` to read one field is a
+/// cost paid on every call. The macro picks the narrower impl from the
+/// signature, so a tool cannot accidentally declare one and receive the other.
+#[derive(Clone, Copy)]
+enum HandlerContext {
+    Full,
+    Workspace,
 }
 
 struct OutputHandling {
@@ -69,6 +88,65 @@ fn is_result_type(ty: &Type) -> bool {
     };
 
     segment.ident == "Result"
+}
+
+/// A handler that takes `Workspace` instead of `ToolContext`.
+///
+/// Generates `call_in_workspace` and leaves `call` to the trait's default (which
+/// the adapter never reaches, because it asks the narrow method first). `call`
+/// still has to *do* something if something calls it, so it is implemented as a
+/// forwarded call using the workspace the context carries — the adapter never
+/// takes that path, but a direct caller would otherwise get a silent no-op.
+fn expand_workspace_tool(
+    item_fn: ItemFn,
+    wrapper_ident: Ident,
+    metadata_ident: Ident,
+    input_ty: Type,
+    output: OutputHandling,
+) -> syn::Result<proc_macro2::TokenStream> {
+    let fn_ident = &item_fn.sig.ident;
+    let await_expr = output.await_expr;
+
+    Ok(quote! {
+        #item_fn
+
+        pub struct #wrapper_ident;
+
+        #[async_trait::async_trait]
+        impl crate::tool::Tool for #wrapper_ident {
+            fn metadata(&self) -> &'static crate::tool::ToolMetadata {
+                &#metadata_ident
+            }
+
+            fn input_schema(&self) -> serde_json::Value {
+                crate::tool::input_schema::<#input_ty>()
+            }
+
+            async fn call(
+                &self,
+                context: crate::tool::ToolContext,
+                input: serde_json::Value,
+            ) -> anyhow::Result<crate::tool::ToolCallResult> {
+                let workspace =
+                    tact_kernel::tool::context::Workspace::new(context.work_dir.clone());
+                let input: #input_ty = serde_json::from_value(input)?;
+                let call_future = #fn_ident(workspace, input);
+                #await_expr
+            }
+
+            fn call_in_workspace<'a>(
+                &'a self,
+                workspace: tact_kernel::tool::context::Workspace,
+                input: serde_json::Value,
+            ) -> Option<std::pin::Pin<Box<dyn std::future::Future<Output = anyhow::Result<crate::tool::ToolCallResult>> + Send + 'a>>> {
+                Some(Box::pin(async move {
+                    let input: #input_ty = serde_json::from_value(input)?;
+                    let call_future = #fn_ident(workspace, input);
+                    #await_expr
+                }))
+            }
+        }
+    })
 }
 
 fn expand_stateful_tool(
@@ -201,7 +279,9 @@ fn extract_plain_arg(arg: &FnArg) -> syn::Result<PlainArg> {
     })
 }
 
-fn extract_stateful_handler_input_type(item_fn: &ItemFn) -> syn::Result<Option<Type>> {
+fn extract_stateful_handler_input_type(
+    item_fn: &ItemFn,
+) -> syn::Result<Option<(HandlerContext, Type)>> {
     let mut inputs = item_fn.sig.inputs.iter();
     let Some(context_arg) = inputs.next() else {
         return Ok(None);
@@ -214,12 +294,16 @@ fn extract_stateful_handler_input_type(item_fn: &ItemFn) -> syn::Result<Option<T
         return Ok(None);
     }
 
-    if !is_type_named(context_arg, "ToolContext") {
+    let context = if is_type_named(context_arg, "ToolContext") {
+        HandlerContext::Full
+    } else if is_type_named(context_arg, "Workspace") {
+        HandlerContext::Workspace
+    } else {
         return Ok(None);
-    }
+    };
     let input_ty = extract_arg_type(input_arg)?;
 
-    Ok(Some(input_ty))
+    Ok(Some((context, input_ty)))
 }
 
 fn clear_parameter_attrs(item_fn: &mut ItemFn) {

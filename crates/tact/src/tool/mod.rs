@@ -256,6 +256,27 @@ pub trait Tool: Send + Sync {
 
     async fn call(&self, context: ToolContext, input: Value) -> Result<ToolCallResult>;
 
+    /// Run this tool with only the workspace it operates in.
+    ///
+    /// A handful of tools need nothing else: `read_file`, `read_image`,
+    /// `edit_file` touch the workspace, and `sleep` needs nothing at all. Going
+    /// through [`Self::call`] for them means materialising the whole
+    /// `ToolContext` — several `Arc` clones and a `PathBuf` per call — to read
+    /// one field.
+    ///
+    /// Defaulted to `None`, which means "I need the full context". The adapter
+    /// asks this first and only builds a `ToolContext` when the answer is `None`,
+    /// so a tool that opts in cannot accidentally receive a partial context.
+    fn call_in_workspace<'a>(
+        &'a self,
+        _workspace: tact_kernel::tool::context::Workspace,
+        _input: Value,
+    ) -> Option<
+        std::pin::Pin<Box<dyn std::future::Future<Output = Result<ToolCallResult>> + Send + 'a>>,
+    > {
+        None
+    }
+
     fn tool_spec(&self) -> ToolSpec {
         let metadata = self.metadata();
         ToolSpec {
