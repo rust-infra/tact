@@ -5,7 +5,7 @@ Audit of the approved spec
 against the implemented state on `feat/plugin-first-architecture`.
 
 **Status: 6 of 11 checklist items met, 3 partially met, 2 not met.**
-Item 2 is now the largest gap and is measurable: 9 of the spec's 15 capability
+Item 2 is now the largest gap and is measurable: 10 of the spec's 15 capability
 domains have a plugin object.
 Phases 0, 1, and the view half of Phase 4 are done. The remaining gaps all trace
 to one undecided thing — the neutral message model — plus the deletions that wait
@@ -61,10 +61,13 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   `ChatService` owns the turn lifecycle (message assembly, Stop-hook
   continuation, completion) over the same agent slot, so a turn and a compaction
   serialise structurally rather than by convention.
-- Capability domains: **9 of 15**. `HooksPlugin`, `NotificationsPlugin`,
+- Capability domains: **10 of 15**. `HooksPlugin`, `NotificationsPlugin`,
   `BackgroundPlugin`, `MemoryPlugin`, `SkillsPlugin`, `WorktreePlugin`,
   `VoicePlugin`, `SubagentPlugin` and `McpPlugin` have plugin objects with a
-  lifecycle and a resolve-by-name port.
+  lifecycle and a resolve-by-name port. `Tools` was already done and this audit
+  had it wrong: `FamilyPlugin` is a `Plugin`, and `catalog_from_families` installs
+  all twelve `builtin.tools.*` families into a sealed `PluginHost` on the
+  production path — twelve granular plugins rather than one aggregate.
 
   `VoicePlugin` also settled the ownership question for live-resource domains: the
   worker moved from the view to the domain (`RuntimeVoiceService` owns it and shuts
@@ -78,10 +81,9 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   `Arc`ed services. The same slice removed a process-CWD read from the command
   path, which `resolve_current()` had been hiding.
 
-  The remaining six split two ways. One owns **live resources** (`Tools`), with the
-  Voice/Mcp precedent available. Three are **state machines** (`Goal`, `Task`,
-  `Team`) whose seam is a policy boundary rather than a handle. Two are **views**
-  (`Tui`, `Headless`), which item 6 covers.
+  The remaining five are three **state machines** (`Goal`, `Task`, `Team`) whose
+  seam is a policy boundary rather than a handle, and two **views** (`Tui`,
+  `Headless`), which item 6 covers. No live-resource domains remain.
 
   The shape is now stable: a named shared type, a `Plugin` impl that registers it,
   a resolver that errors by name when absent, and three tests (resolve, missing,
