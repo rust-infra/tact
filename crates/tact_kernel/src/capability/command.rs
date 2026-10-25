@@ -40,6 +40,13 @@ pub enum CommandOutcome {
     /// The command did not run because its arguments were unusable. The text
     /// names what was expected, so the host can show it verbatim.
     Usage(String),
+    /// The command ran and the thing it asked on its behalf failed.
+    ///
+    /// Distinct from [`Self::Message`] because the host renders it differently —
+    /// a failure is an error line, not a read-out popup — and distinct from
+    /// [`Self::Usage`] because the user's input was fine. Collapsing these was
+    /// how a manager error used to surface as a help message.
+    Failed(String),
 }
 
 /// One entry the popup offers.
@@ -56,6 +63,7 @@ pub struct CommandCandidate {
     pub incomplete: bool,
 }
 
+#[async_trait::async_trait]
 pub trait Command: Send + Sync {
     fn meta(&self) -> &CommandMeta;
 
@@ -68,6 +76,21 @@ pub trait Command: Send + Sync {
             "{} is not runnable yet ({} given)",
             invocation.name, invocation.args
         ))
+    }
+
+    /// Run this command when it has to await something.
+    ///
+    /// Defaulted to [`Self::run`], so a pure command implements one method. A
+    /// command that reads live state (`/background` asks a manager that owns
+    /// running processes; an MCP command asks a server) implements this instead,
+    /// because a blocking body would hold the host's loop for the length of a
+    /// network call.
+    ///
+    /// Both live on one trait on purpose: two registries — a sync one and an
+    /// async one — is exactly the drift the catalog exists to remove, and the
+    /// host has to know which to consult for a name it already has.
+    async fn run_async(&self, invocation: &CommandInvocation) -> CommandOutcome {
+        self.run(invocation)
     }
 
     /// The completions this command offers for `args`.

@@ -14,10 +14,14 @@
 
 use std::sync::Arc;
 
-use tact_kernel::capability::command::{Command, CommandMeta};
+use tact_kernel::capability::command::CommandMeta;
 
+pub use tact_kernel::capability::command::Command;
+
+pub mod background;
 pub mod stats;
 
+pub use background::BackgroundCommand;
 pub use stats::StatsCommand;
 
 pub use tact_kernel::capability::command::{CommandInvocation, CommandOutcome};

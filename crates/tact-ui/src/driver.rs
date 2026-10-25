@@ -12,7 +12,6 @@ use std::{
 
 use anyhow::Result;
 use chrono::Utc;
-use tact::background::SharedBackgroundManager;
 use tact::{
     Agent, extract_text,
     goal::{
@@ -371,16 +370,38 @@ pub async fn run_command_loop_with_account(
                 });
             }
             UserCommand::QueryBackground(task_id) => {
-                // `/background` and `/background <id>`. Answered here, from the
-                // shared manager, so the popup opens immediately even while a
-                // turn is running (the Agent is owned by that task).
-                query_background(
-                    &background_manager,
-                    background_session_id.as_deref(),
-                    task_id,
-                    &events,
-                )
-                .await;
+                // `/background` and `/background <id>`. Routed through the
+                // catalog command so its argument grammar and wording have one
+                // owner; answered from the shared manager, so the popup opens
+                // immediately even while a turn is running (the Agent is owned
+                // by that task).
+                let command = tact::command::BackgroundCommand::new(
+                    std::sync::Arc::new(background_manager.clone()),
+                    {
+                        let session = background_session_id.clone();
+                        std::sync::Arc::new(move || session.clone())
+                    },
+                );
+                let invocation = tact::command::CommandInvocation {
+                    name: "background".to_string(),
+                    args: task_id.clone().unwrap_or_default(),
+                };
+                match tact::command::Command::run_async(&command, &invocation).await {
+                    tact::command::CommandOutcome::Message(source) => {
+                        events.send(AgentUpdate::PopupMarkdown {
+                            title: "⚙️ Background Tasks".to_string(),
+                            source,
+                        });
+                    }
+                    tact::command::CommandOutcome::Done => {}
+                    // A failure and a usage error both reach the user as an
+                    // error line; they stay distinct in the outcome so a host
+                    // that wants to render them differently still can.
+                    tact::command::CommandOutcome::Failed(text)
+                    | tact::command::CommandOutcome::Usage(text) => {
+                        events.send(AgentUpdate::Error(AgentErrorKind::Other(text)));
+                    }
+                }
             }
             UserCommand::ListGoals { include_archived } => {
                 list_goals(
@@ -598,40 +619,6 @@ pub async fn run_command_loop_with_account(
     let _ = agent.dispatch_session_end_hooks().await;
     agent.shutdown_mcp().await;
     agent
-}
-
-/// Emit the `/background` read-out: the whole session's task listing
-/// (`task_id = None`) or one task's pretty JSON.
-///
-/// Takes the shared manager instead of the `Agent` so the command loop can
-/// answer while a turn owns the Agent — the same reason `QueryStats` is handled
-/// at the loop level.
-async fn query_background(
-    manager: &SharedBackgroundManager,
-    session_id: Option<&str>,
-    task_id: Option<String>,
-    events: &UpdateSink,
-) {
-    if events.is_empty() {
-        return;
-    }
-    match manager.check(task_id.as_deref(), session_id).await {
-        Ok(output) => {
-            // Fenced code block keeps the one-line-per-task listing (and the
-            // single-task pretty JSON) aligned and copyable. Shown in the popup
-            // rather than the log: this is a read-out, not part of the
-            // conversation.
-            events.send(AgentUpdate::PopupMarkdown {
-                title: "⚙️ Background Tasks".to_string(),
-                source: format!("```text\n{output}\n```"),
-            });
-        }
-        Err(err) => {
-            events.send(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                "Background check failed: {err}"
-            ))));
-        }
-    }
 }
 
 fn spawn_wakeup_task(
@@ -2111,14 +2098,36 @@ async fn handle_user_command_with_account(
         UserCommand::QueryBackground(task_id) => {
             // Handled at the loop level (answering from the shared manager, so
             // it never awaits the in-flight turn); reaching this arm means the
-            // caller bypassed the command loop. Answer anyway.
-            query_background(
-                &agent.tool_context.background_manager,
-                agent.runtime.session_id.as_deref(),
-                task_id,
-                &agent.runtime.events,
-            )
-            .await;
+            // caller bypassed the command loop. Answer anyway — through the same
+            // catalog command, so the two paths cannot word the answer
+            // differently.
+            let command = tact::command::BackgroundCommand::new(
+                std::sync::Arc::new(agent.tool_context.background_manager.clone()),
+                {
+                    let session = agent.runtime.session_id.clone();
+                    std::sync::Arc::new(move || session.clone())
+                },
+            );
+            let invocation = tact::command::CommandInvocation {
+                name: "background".to_string(),
+                args: task_id.unwrap_or_default(),
+            };
+            match tact::command::Command::run_async(&command, &invocation).await {
+                tact::command::CommandOutcome::Message(source) => {
+                    agent.runtime.events.send(AgentUpdate::PopupMarkdown {
+                        title: "⚙️ Background Tasks".to_string(),
+                        source,
+                    });
+                }
+                tact::command::CommandOutcome::Done => {}
+                tact::command::CommandOutcome::Failed(text)
+                | tact::command::CommandOutcome::Usage(text) => {
+                    agent
+                        .runtime
+                        .events
+                        .send(AgentUpdate::Error(AgentErrorKind::Other(text)));
+                }
+            }
         }
         UserCommand::SetPermissionMode(mode) => {
             let parsed = match mode.as_str() {

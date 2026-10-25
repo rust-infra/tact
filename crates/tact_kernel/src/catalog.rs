@@ -262,6 +262,18 @@ impl CommandCatalog {
         }
     }
 
+    /// Route an invocation that may have to await.
+    ///
+    /// One lookup, same as [`Self::run`]: a pure command answers through its
+    /// defaulted `run_async`, so the caller does not have to know which kind it
+    /// is calling.
+    pub async fn run_async(&self, invocation: &CommandInvocation) -> CommandOutcome {
+        match self.get(&invocation.name) {
+            Some(command) => command.run_async(invocation).await,
+            None => CommandOutcome::Usage(format!("unknown command: /{}", invocation.name)),
+        }
+    }
+
     /// Every command's categories plus their own completions for `args`.
     ///
     /// The first token decides the command; everything after it is the command's
@@ -869,5 +881,120 @@ mod command_tests {
         let candidates = catalog().complete("p ");
         assert_eq!(candidates.len(), 2);
         assert_eq!(candidates[0].path, "p list");
+    }
+}
+
+#[cfg(test)]
+mod async_command_tests {
+    use super::*;
+    use crate::capability::command::{
+        Command, CommandInvocation, CommandMeta, CommandOutcome, CommandScope,
+    };
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    /// A command whose answer can only be produced by awaiting.
+    struct Async {
+        meta: CommandMeta,
+        ran: Arc<AtomicBool>,
+    }
+
+    impl Async {
+        fn new(ran: Arc<AtomicBool>) -> Self {
+            Self {
+                meta: CommandMeta {
+                    name: "gated".into(),
+                    aliases: Vec::new(),
+                    summary: "needs to await".into(),
+                    usage: "/gated".into(),
+                    scope: CommandScope::Runtime,
+                    needs_args: false,
+                },
+                ran,
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl Command for Async {
+        fn meta(&self) -> &CommandMeta {
+            &self.meta
+        }
+
+        async fn run_async(&self, _invocation: &CommandInvocation) -> CommandOutcome {
+            self.ran.store(true, Ordering::SeqCst);
+            CommandOutcome::Message("awaited".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_command_can_answer_without_blocking_the_host() {
+        let ran = Arc::new(AtomicBool::new(false));
+        let mut catalog = CommandCatalog::default();
+        catalog.insert(Arc::new(Async::new(ran.clone()))).unwrap();
+        let outcome = catalog
+            .run_async(&CommandInvocation {
+                name: "gated".into(),
+                args: String::new(),
+            })
+            .await;
+        assert_eq!(outcome, CommandOutcome::Message("awaited".into()));
+        assert!(ran.load(Ordering::SeqCst), "the async body ran");
+    }
+
+    /// A command that implements only the sync half.
+    struct SyncOnly {
+        meta: CommandMeta,
+    }
+
+    impl Command for SyncOnly {
+        fn meta(&self) -> &CommandMeta {
+            &self.meta
+        }
+
+        fn run(&self, _invocation: &CommandInvocation) -> CommandOutcome {
+            CommandOutcome::Message("sync".into())
+        }
+    }
+
+    #[tokio::test]
+    async fn run_async_still_reaches_a_sync_command() {
+        // A pure command implements only `run`; the async route must not make
+        // the caller special-case it.
+        let mut catalog = CommandCatalog::default();
+        catalog
+            .insert(Arc::new(SyncOnly {
+                meta: CommandMeta {
+                    name: "plain".into(),
+                    aliases: Vec::new(),
+                    summary: String::new(),
+                    usage: "/plain".into(),
+                    scope: CommandScope::Runtime,
+                    needs_args: false,
+                },
+            }))
+            .unwrap();
+        let outcome = catalog
+            .run_async(&CommandInvocation {
+                name: "plain".into(),
+                args: String::new(),
+            })
+            .await;
+        assert!(
+            !matches!(outcome, CommandOutcome::Usage(_)),
+            "a sync command must answer through the async route too: {outcome:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_unknown_command_is_a_usage_error_on_the_async_route() {
+        let catalog = CommandCatalog::default();
+        let outcome = catalog
+            .run_async(&CommandInvocation {
+                name: "nope".into(),
+                args: String::new(),
+            })
+            .await;
+        assert!(matches!(outcome, CommandOutcome::Usage(_)), "{outcome:?}");
     }
 }
