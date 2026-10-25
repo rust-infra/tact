@@ -51,6 +51,7 @@ mod edit_file;
 pub mod goal;
 mod legacy;
 mod load_skill;
+mod mcp_control;
 mod mcp_source;
 mod memory;
 mod metadata;
@@ -83,6 +84,9 @@ use edit_file::EditFileTool;
 pub use legacy::{LegacyToolAdapter, SharedToolContextFactory, ToolContextFactory};
 #[cfg(test)]
 use load_skill::LoadSkillTool;
+pub use mcp_control::{
+    McpControl, McpControlBackend, McpControlSource, McpControlTool, SharedMcpControlBackend,
+};
 pub use mcp_source::{McpTool, McpToolBackend, McpToolEntry, McpToolSource, SharedMcpBackend};
 #[cfg(test)]
 use memory::SaveMemoryTool;
