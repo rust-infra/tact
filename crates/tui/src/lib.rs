@@ -308,8 +308,11 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     if model_thinking_budget > 0 {
         app.status_bar_mut().model_thinking_budget = Some(model_thinking_budget as u32);
     }
-    app.status_bar_mut().model_reasoning_effort = tact::config::try_settings()
-        .and_then(|s| s.agent.reasoning_effort)
+    // From the snapshot just handed to the app, not the process global: the
+    // status bar must describe the configuration this view was started with.
+    app.status_bar_mut().model_reasoning_effort = app
+        .config_snapshot()
+        .and_then(|config| config.agent.reasoning_effort)
         .map(|effort| effort.as_str().to_string());
     app.add_startup_banner();
 
