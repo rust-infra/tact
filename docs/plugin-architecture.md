@@ -83,6 +83,15 @@ the first implementation plan is
     through it. The Agent's `ToolExecutor` now resolves the policy pair from the
     registry, so a host that forgets a policy plugin gets a named error instead
     of a silently different permission policy.
+  - `crates/tact/src/host.rs` is the composition root: `assemble` installs the
+    policy plugins (and optionally hooks/storage) in dependency order and seals;
+    `executor_from_families` builds the catalog and resolves the ports. The
+    Agent's executor goes through it, so the production path is assembled the
+    same way the tests are.
+  - The installed bundle is owned by the Agent and shut down in
+    `dispatch_session_end_hooks`, not dropped at construction: a plugin that
+    owns a resource is released on the real exit path, and a second teardown is
+    a no-op.
   - The hook engine no longer takes `&Agent`. A neutral `HookHost` port carries
     exactly what a hook payload reads (session id, model, permission mode, turn
     count, session-start source) plus emit/status/queue-context/mcp-call, and
@@ -124,11 +133,11 @@ the first implementation plan is
 - Phase 4's view half is untouched: `tui` still depends on `tact` and `tact_llm`,
   and slash commands still dispatch through the `SlashCommand` enum rather than a
   catalog. That is the next large change.
-- Phase 3's remaining half: `StoragePlugin`, `ProvidersPlugin`,
-  `MarketplacePlugin`, `SessionPlugin`, `CompactionPlugin`, `AgentPlugin`,
-  `ChatPlugin`, and installing `PluginHost` in the production path with
-  `runtime.shutdown()`. Until that lands, the registry is used only where an
-  Agent is assembled.
+- Phase 3's remaining half: `ProvidersPlugin`, `MarketplacePlugin`,
+  `CompactionPlugin`, `AgentPlugin`, `ChatPlugin`. `StoragePlugin` and
+  `SessionStorePlugin` exist and are installable, but the production bootstrap
+  still opens the store itself and passes it to `Agent::with_session`, so
+  `HostOptions::storage` is exercised only by tests.
 - Domain families beyond tools and prompt sections: Goal/Task/Team/Worktree/
   Background/Subagent are tool families but not yet plugins with their own
   lifecycle. The remaining `agent/` → `mcp` edge is only the router's lifecycle
