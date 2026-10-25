@@ -228,8 +228,10 @@ mod tests {
     /// A tool that only needs the workspace must not make the adapter build a
     /// whole `ToolContext`.
     ///
-    /// The counter is the point: materialising the context clones several `Arc`s
-    /// and a `PathBuf` on every call, and the narrow path exists to skip that.
+    /// The counter is the observable: the adapter asks the tool first, and a
+    /// handler that opted into the narrow path never sees a context it cannot
+    /// use. (The saving is one `PathBuf` and one `String`; the point is the
+    /// dependency, not the allocation.)
     #[tokio::test]
     async fn a_workspace_only_tool_skips_the_context_build() {
         struct NeedsWorkspaceOnly {

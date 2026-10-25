@@ -258,11 +258,16 @@ pub trait Tool: Send + Sync {
 
     /// Run this tool with only the workspace it operates in.
     ///
-    /// A handful of tools need nothing else: `read_file`, `read_image`,
-    /// `edit_file` touch the workspace, and `sleep` needs nothing at all. Going
-    /// through [`Self::call`] for them means materialising the whole
-    /// `ToolContext` — several `Arc` clones and a `PathBuf` per call — to read
-    /// one field.
+    /// Four tools need nothing else: `read_file`, `read_image`, `edit_file` and
+    /// `apply_patch` touch the workspace, and `sleep` needs nothing at all.
+    ///
+    /// The reason is **not** mainly cost. Measured, `ToolContext` has 25 fields
+    /// and only two are deep copies (`work_dir`, and the `tool_id` inside
+    /// `progress_reporter`, which is rebuilt per call anyway); the rest are `Arc`
+    /// clones. The cost of a full build is one `PathBuf` and one `String`. The
+    /// reason is that a handler which reads `work_dir` and nothing else should
+    /// not be *handed* a session handoff, a permission snapshot and a sandbox it
+    /// can never consult — that is the thing that made `ToolContext` grow.
     ///
     /// Defaulted to `None`, which means "I need the full context". The adapter
     /// asks this first and only builds a `ToolContext` when the answer is `None`,

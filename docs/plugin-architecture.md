@@ -162,13 +162,23 @@ the first implementation plan is
 
 ## Not implemented yet
 
-- Phase 5 has a measurable first step: `Tool` gained a defaulted
-  `call_in_workspace(Workspace, Value)`. `read_file`, `read_image` and
-  `edit_file` only ever read `work_dir` and `sleep` reads nothing, yet each call
-  built a whole `ToolContext`; those three now skip it, and a test counts context
-  builds to prove it. The `#[tool]` macro chooses the narrower impl from the
-  handler's signature, so a tool cannot declare one shape and receive the other.
-  The remaining ~17 tools genuinely need the full context.
+- Phase 5 has a structural first step: `Tool` gained a defaulted
+  `call_in_workspace(Workspace, Value)`. `read_file`, `read_image`, `edit_file`
+  and `apply_patch` only ever read `work_dir` and `sleep` reads nothing; those
+  four now skip the full context, and a test counts context builds to prove it.
+  The `#[tool]` macro chooses the narrower impl from the handler's signature, so
+  a tool cannot declare one shape and receive the other.
+  - **Measuring changed the justification.** `ToolContext` has 25 fields and only
+    two are deep copies (`work_dir`, and the `tool_id` inside
+    `progress_reporter`, rebuilt per call anyway); the rest are `Arc` clones. So
+    the saving is one `PathBuf` and one `String` — the reason to do this is that
+    a handler reading `work_dir` should not be *handed* a session handoff, a
+    permission snapshot and a sandbox it can never consult, not the allocation.
+  - The remaining ~16 tools each need a *different* field (`write_file` →
+    `events` for progress, `load_skill` → `skill_registry`, `goal` →
+    `goal_manager` + `active_goal_id`). Adding one narrow method per field shape
+    would rebuild `ToolContext` one signature at a time, so the next step is
+    per-domain handles rather than more shapes of this method.
 - ~~MCP tools as kernel descriptors.~~ **Done.** Every MCP family — regular
   tools, resource tools and prompt tools — is a catalog source now, and all three
   run through the kernel pipeline. The legacy permission ladder is deleted.
