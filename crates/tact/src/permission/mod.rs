@@ -11,9 +11,11 @@
 //! - Loaded JSON permission settings (global and project) — see [`settings`].
 
 pub mod policy_ext;
+pub mod security_service;
 pub mod settings;
 
 pub use policy_ext::PermissionPolicyExt;
+pub use security_service::SensitivePathGuard;
 
 use std::fmt;
 
