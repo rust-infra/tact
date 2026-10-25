@@ -324,8 +324,13 @@ pub async fn run_command_loop_with_account(
     // empty until some later Goal command happens to emit a snapshot.
     emit_goals_changed(&goal_manager, &task_manager, limits, &events).await;
 
-    let mut agent = Some(agent);
-    let mut active: Option<JoinHandle<Agent>> = None;
+    // One owner for the whole loop: the agent lives in this slot and is never
+    // moved into a task. A task locks it for the duration of its work, which is
+    // what the single-owner model gave for free — and which the chat service
+    // already relies on, since it holds the same slot.
+    let agent_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
+        Arc::new(tokio::sync::Mutex::new(Some(agent)));
+    let mut active: Option<JoinHandle<()>> = None;
     // Whether the local in-flight task is a Goal activation, and which Goal.
     // `None` while a normal task runs; the id is unknown during CreateGoal
     // (the Goal is minted inside that task). Only a matching local run may be
@@ -346,13 +351,13 @@ pub async fn run_command_loop_with_account(
         let cmd = if active.is_some() {
             tokio::select! {
                 result = active.as_mut().expect("active task") => {
-                    agent = Some(result.expect("active task join panicked"));
+                    result.expect("active task join panicked");
                     active = None;
                     active_goal_run = false;
                     active_goal_id = None;
                     if pending_subagent_wakeup {
                         pending_subagent_wakeup = false;
-                        spawn_wakeup_task(&mut agent, &mut active, &image_work_dir);
+                        spawn_wakeup_task(&agent_slot, &mut active, &image_work_dir);
                         active_goal_run = false;
                         active_goal_id = None;
                     }
@@ -480,7 +485,7 @@ pub async fn run_command_loop_with_account(
                 // JoinHandle completes. Otherwise the notification could be
                 // lost in the gap between the final queue drain and turn exit.
                 if active.is_none() {
-                    spawn_wakeup_task(&mut agent, &mut active, &image_work_dir);
+                    spawn_wakeup_task(&agent_slot, &mut active, &image_work_dir);
                     active_goal_run = false;
                     active_goal_id = None;
                 } else {
@@ -500,34 +505,36 @@ pub async fn run_command_loop_with_account(
                     goal_awaiting_answer(&goal_manager).await
                 };
                 if let Some(handle) = active.take() {
-                    agent = Some(handle.await.expect("submit task join panicked"));
+                    handle.await.expect("task join panicked");
                 }
                 // The new user turn drains pending subagent results itself;
                 // do not add a redundant wake-up after it finishes.
                 pending_subagent_wakeup = false;
                 let work_dir = image_work_dir.clone();
-                let mut task_agent = agent.take().expect("agent available for submit");
+                let slot = agent_slot.clone();
                 if let Some(goal_id) = answer_for {
                     // The reply is the answer: record it and continue that
                     // Goal through the same entry `/goal resume` uses.
                     active_goal_run = true;
                     active_goal_id = Some(goal_id.clone());
                     active = Some(tokio::spawn(async move {
-                        answer_goal(&mut task_agent, &goal_id, &task).await;
+                        let mut guard = slot.lock().await;
+                        let Some(task_agent) = guard.as_mut() else {
+                            return;
+                        };
+                        answer_goal(task_agent, &goal_id, &task).await;
                         task_agent.emit_update(AgentUpdate::TaskIdle);
-                        task_agent
                     }));
                 } else {
                     active_goal_run = false;
                     active_goal_id = None;
                     active = Some(tokio::spawn(async move {
-                        handle_user_command(
-                            &mut task_agent,
-                            UserCommand::SubmitTask(task),
-                            &work_dir,
-                        )
-                        .await;
-                        task_agent
+                        let mut guard = slot.lock().await;
+                        let Some(task_agent) = guard.as_mut() else {
+                            return;
+                        };
+                        handle_user_command(task_agent, UserCommand::SubmitTask(task), &work_dir)
+                            .await;
                     }));
                 }
             }
@@ -540,64 +547,76 @@ pub async fn run_command_loop_with_account(
                 // activation, which must not block the loop that has to keep
                 // serving `Cancel` (same shape as `ResumeGoal` below).
                 if let Some(handle) = active.take() {
-                    agent = Some(handle.await.expect("create goal join panicked"));
+                    handle.await.expect("task join panicked");
                 }
-                let mut task_agent = agent.take().expect("agent available for goal creation");
+                let slot = agent_slot.clone();
                 active_goal_run = true;
                 active_goal_id = None;
                 active = Some(tokio::spawn(async move {
-                    if let Some(goal_id) =
-                        create_goal(&mut task_agent, title, objective, criteria).await
+                    let mut guard = slot.lock().await;
+                    let Some(task_agent) = guard.as_mut() else {
+                        return;
+                    };
+                    if let Some(goal_id) = create_goal(task_agent, title, objective, criteria).await
                     {
-                        resume_goal(&mut task_agent, &goal_id).await;
+                        resume_goal(task_agent, &goal_id).await;
                     }
                     // A Goal activation does not go through `SubmitTask`, so no
                     // TaskComplete/TaskCancelled clears the TUI's busy state.
                     task_agent.emit_update(AgentUpdate::TaskIdle);
-                    task_agent
                 }));
             }
             UserCommand::ResumeGoal { goal_id } => {
                 if let Some(handle) = active.take() {
-                    agent = Some(handle.await.expect("resume goal join panicked"));
+                    handle.await.expect("task join panicked");
                 }
-                let mut task_agent = agent.take().expect("agent available for goal resume");
+                let slot = agent_slot.clone();
                 active_goal_run = true;
                 active_goal_id = Some(goal_id.clone());
                 active = Some(tokio::spawn(async move {
-                    resume_goal(&mut task_agent, &goal_id).await;
+                    let mut guard = slot.lock().await;
+                    let Some(task_agent) = guard.as_mut() else {
+                        return;
+                    };
+                    resume_goal(task_agent, &goal_id).await;
                     task_agent.emit_update(AgentUpdate::TaskIdle);
-                    task_agent
                 }));
             }
             UserCommand::AcceptGoal { goal_id, text } => {
                 if let Some(handle) = active.take() {
-                    agent = Some(handle.await.expect("accept goal join panicked"));
+                    handle.await.expect("task join panicked");
                 }
-                let mut task_agent = agent.take().expect("agent available for goal acceptance");
+                let slot = agent_slot.clone();
                 active_goal_run = true;
                 active_goal_id = Some(goal_id.clone());
                 active = Some(tokio::spawn(async move {
-                    accept_goal(&mut task_agent, &goal_id, &text).await;
+                    let mut guard = slot.lock().await;
+                    let Some(task_agent) = guard.as_mut() else {
+                        return;
+                    };
+                    accept_goal(task_agent, &goal_id, &text).await;
                     task_agent.emit_update(AgentUpdate::TaskIdle);
-                    task_agent
                 }));
             }
             other => {
                 if let Some(handle) = active.take() {
-                    agent = Some(handle.await.expect("command join panicked"));
+                    handle.await.expect("task join panicked");
                 }
                 active_goal_run = false;
                 active_goal_id = None;
-                if let Some(mut a) = agent.take() {
-                    handle_user_command_with_account(
-                        &mut a,
-                        other,
-                        &image_work_dir,
-                        account_tx.as_ref(),
-                    )
-                    .await;
-                    agent = Some(a);
+                {
+                    // Locked for the duration of one command: the loop no longer
+                    // owns the agent, so this is the only way to reach it.
+                    let mut guard = agent_slot.lock().await;
+                    if let Some(a) = guard.as_mut() {
+                        handle_user_command_with_account(
+                            a,
+                            other,
+                            &image_work_dir,
+                            account_tx.as_ref(),
+                        )
+                        .await;
+                    }
                 }
             }
         }
@@ -616,10 +635,16 @@ pub async fn run_command_loop_with_account(
     }
 
     if let Some(handle) = active.take() {
-        agent = Some(handle.await.expect("final task join panicked"));
+        handle.await.expect("task join panicked");
     }
 
-    let mut agent = agent.expect("agent should be available after command loop");
+    // Take the agent back once, at exit: the slot was its home for the whole
+    // loop, and the caller wants it for teardown.
+    let mut agent = agent_slot
+        .lock()
+        .await
+        .take()
+        .expect("the agent is still in the slot after the loop");
     // SessionEnd hooks fire once at teardown, symmetrical with SessionStart.
     let _ = agent.dispatch_session_end_hooks().await;
     agent.shutdown_mcp().await;
@@ -627,8 +652,8 @@ pub async fn run_command_loop_with_account(
 }
 
 fn spawn_wakeup_task(
-    agent: &mut Option<Agent>,
-    active: &mut Option<JoinHandle<Agent>>,
+    agent: &Arc<tokio::sync::Mutex<Option<Agent>>>,
+    active: &mut Option<JoinHandle<()>>,
     image_work_dir: &Path,
 ) {
     if active.is_some() {
@@ -637,15 +662,19 @@ fn spawn_wakeup_task(
     // A wake-up turn only delivers queued results into the parent's context.
     // If a turn that just finished already drained the queue, the summary is
     // already in context and this turn would be empty — skip it entirely.
-    if !agent
-        .as_ref()
-        .is_some_and(Agent::has_pending_subagent_results)
-    {
+    // `try_lock` because this runs on the loop's own turn: a held lock means a
+    // task is already using the agent, and there is nothing to wake.
+    let has_results = agent
+        .try_lock()
+        .map(|slot| {
+            slot.as_ref()
+                .is_some_and(Agent::has_pending_subagent_results)
+        })
+        .unwrap_or(false);
+    if !has_results {
         return;
     }
-    let Some(mut task_agent) = agent.take() else {
-        return;
-    };
+    let slot = agent.clone();
     let work_dir = image_work_dir.to_path_buf();
     *active = Some(tokio::spawn(async move {
         // The queued result reaches the model during the drain below, so it
@@ -654,8 +683,11 @@ fn spawn_wakeup_task(
         let prompt = "A background subagent finished. Review its result below \
                       (or call check_subagent if none is shown)."
             .to_string();
-        handle_user_command(&mut task_agent, UserCommand::SubmitTask(prompt), &work_dir).await;
-        task_agent
+        let mut guard = slot.lock().await;
+        let Some(task_agent) = guard.as_mut() else {
+            return;
+        };
+        handle_user_command(task_agent, UserCommand::SubmitTask(prompt), &work_dir).await;
     }));
 }
 
