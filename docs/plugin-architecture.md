@@ -18,14 +18,19 @@ the first implementation plan is
 - `scripts/check-architecture.sh` rejects forbidden kernel dependencies.
 - `scripts/check-module-boundaries.sh` records the current Agent→Skills/Memory/
   MCP debt as an explicit Phase-0 allowlist; new edges fail immediately.
+- Phase 1a adds the kernel execution contracts and a fake-tested
+  `ToolExecutor`: `ToolCallContext`, `EventSink`/`InteractionBroker`,
+  `ToolSource` descriptor snapshots, and the preflight/execute pipeline with
+  one-use tickets. The production Agent is still on the old dispatch path.
 - `tui` still depends on `tact` for view services. The target has no such edge;
   Phase 4 removes it and its test/fixture dependencies.
 
 ## Not implemented yet
 
-- `ToolExecutor`, `HookService`, `InteractionBroker`, `AgentService`,
-  `ChatService`, `SessionService` and the execution methods on the capability
-  traits.
+- Production adapters for `PermissionService`, `SecurityService` and
+  `HookService`, `LegacyToolAdapter`/`McpToolSourceAdapter`, and the Agent
+  dispatch cutover (Phase 1b).
+- `AgentService`, `ChatService`, `SessionService` and view execution.
 - Domain plugin migration (Agent, Tools, MCP, Skills, Memory, Goal, Task, Team,
   Worktree, Background, Subagent, Voice).
 - TUI/headless views as plugins and command/view execution.

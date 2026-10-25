@@ -6,17 +6,36 @@
 //! contribution validates, so a failed plugin leaves no partial entries.
 
 use std::collections::BTreeMap;
-use std::sync::Arc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
 
 use crate::capability::command::{Command, CommandMeta};
 use crate::capability::prompt::PromptSection;
 use crate::capability::tool::Tool;
 use crate::capability::view::View;
-use crate::capability::{SkippedCapability, validate_name};
+use crate::capability::{
+    CapabilityFilter, CapabilityId, CapabilityKind, SkippedCapability, validate_name,
+};
+use crate::tool::descriptor::ToolDescriptor;
+use crate::tool::source::{ToolDescriptorSnapshot, ToolSource};
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct ToolCatalog {
     tools: BTreeMap<String, Arc<dyn Tool>>,
+    sources: Vec<Arc<dyn ToolSource>>,
+    generation: Arc<AtomicU64>,
+}
+
+impl Default for ToolCatalog {
+    fn default() -> Self {
+        Self {
+            tools: BTreeMap::new(),
+            sources: Vec::new(),
+            generation: Arc::new(AtomicU64::new(0)),
+        }
+    }
 }
 
 impl ToolCatalog {
@@ -27,7 +46,44 @@ impl ToolCatalog {
             anyhow::bail!("duplicate tool: {}", descriptor.name);
         }
         self.tools.insert(descriptor.name, tool);
+        self.generation.fetch_add(1, Ordering::SeqCst);
         Ok(())
+    }
+
+    pub fn add_source(&mut self, source: Arc<dyn ToolSource>) {
+        self.sources.push(source);
+        self.generation.fetch_add(1, Ordering::SeqCst);
+    }
+
+    pub async fn refresh_sources(&self) -> anyhow::Result<()> {
+        for source in &self.sources {
+            source.refresh().await?;
+        }
+        self.generation.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+
+    pub async fn descriptor_snapshot(
+        &self,
+        filter: &CapabilityFilter,
+    ) -> anyhow::Result<ToolDescriptorSnapshot> {
+        let mut tools: Vec<ToolDescriptor> =
+            self.tools.values().map(|tool| tool.descriptor()).collect();
+        for source in &self.sources {
+            for tool in source.tools() {
+                tools.push(tool.descriptor());
+            }
+        }
+        let mut seen = std::collections::BTreeSet::new();
+        tools.retain(|tool| {
+            let id = CapabilityId::new(CapabilityKind::Tool, tool.name.clone());
+            filter.allows(&id) && seen.insert(tool.name.clone())
+        });
+        tools.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(ToolDescriptorSnapshot {
+            generation: self.generation.load(Ordering::SeqCst),
+            tools,
+        })
     }
 
     pub fn get(&self, name: &str) -> Option<&Arc<dyn Tool>> {
@@ -286,5 +342,110 @@ mod prompt_tests {
             session_id: None,
         };
         assert_eq!(context.workspace, PathBuf::from("/repo"));
+    }
+}
+
+#[cfg(test)]
+mod snapshot_tests {
+    use super::*;
+    use crate::capability::CapabilityFilter;
+    use crate::capability::tool::Tool;
+    use crate::tool::context::ToolCallContext;
+    use crate::tool::descriptor::ToolDescriptor;
+    use crate::tool::source::ToolSource;
+    use crate::tool::{ToolCallResult, ToolMetadata};
+    use serde_json::json;
+
+    struct FixedTool(&'static str);
+
+    #[async_trait::async_trait]
+    impl Tool for FixedTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::from_native(
+                self.0,
+                self.0,
+                json!({"type": "object"}),
+                &ToolMetadata::read_json(self.0, self.0, self.0),
+            )
+        }
+
+        async fn call(
+            &self,
+            _ctx: ToolCallContext,
+            _input: serde_json::Value,
+        ) -> anyhow::Result<ToolCallResult> {
+            Ok(ToolCallResult::text(self.0))
+        }
+    }
+
+    struct FixedSource {
+        id: &'static str,
+        tools: Vec<Arc<dyn Tool>>,
+    }
+
+    #[async_trait::async_trait]
+    impl ToolSource for FixedSource {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        async fn refresh(&self) -> anyhow::Result<()> {
+            Ok(())
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            self.tools.clone()
+        }
+    }
+
+    fn source(id: &'static str, name: &'static str) -> Arc<dyn ToolSource> {
+        Arc::new(FixedSource {
+            id,
+            tools: vec![Arc::new(FixedTool(name))],
+        })
+    }
+
+    #[tokio::test]
+    async fn snapshot_merges_sources_and_bumps_generation() {
+        let mut catalog = ToolCatalog::default();
+        catalog.insert(Arc::new(FixedTool("native"))).unwrap();
+        catalog.add_source(source("one", "remote"));
+        let first = catalog
+            .descriptor_snapshot(&CapabilityFilter::default())
+            .await
+            .unwrap();
+        let names: Vec<_> = first.tools.iter().map(|tool| tool.name.as_str()).collect();
+        assert_eq!(names, vec!["native", "remote"]);
+
+        catalog.refresh_sources().await.unwrap();
+        let second = catalog
+            .descriptor_snapshot(&CapabilityFilter::default())
+            .await
+            .unwrap();
+        assert!(second.generation > first.generation);
+    }
+
+    #[tokio::test]
+    async fn disabled_source_tool_is_absent_from_snapshot() {
+        let mut catalog = ToolCatalog::default();
+        catalog.add_source(source("one", "remote"));
+        let disabled: crate::capability::CapabilityId = "tool:remote".parse().unwrap();
+        let snapshot = catalog
+            .descriptor_snapshot(&CapabilityFilter::new([disabled]))
+            .await
+            .unwrap();
+        assert!(snapshot.tools.iter().all(|tool| tool.name != "remote"));
+    }
+
+    #[tokio::test]
+    async fn duplicate_source_tool_keeps_the_first_source() {
+        let mut catalog = ToolCatalog::default();
+        catalog.add_source(source("one", "same"));
+        catalog.add_source(source("two", "same"));
+        let snapshot = catalog
+            .descriptor_snapshot(&CapabilityFilter::default())
+            .await
+            .unwrap();
+        assert_eq!(snapshot.tools.len(), 1);
     }
 }

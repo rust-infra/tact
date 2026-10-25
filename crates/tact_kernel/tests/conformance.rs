@@ -6,10 +6,13 @@ use tact_kernel::capability::tool::Tool;
 use tact_kernel::capability::view::View;
 use tact_kernel::capability::{CapabilityFilter, CapabilityId, CapabilityKind, SkippedCapability};
 use tact_kernel::plugin::{Plugin, PluginHost, PluginId, PluginKind, PluginManifest};
+use tact_kernel::tool::ToolCallResult;
 use tact_kernel::tool::ToolMetadata;
+use tact_kernel::tool::context::ToolCallContext;
 use tact_kernel::tool::descriptor::ToolDescriptor;
 
 struct EchoTool;
+#[async_trait::async_trait]
 impl Tool for EchoTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::from_native(
@@ -18,6 +21,14 @@ impl Tool for EchoTool {
             serde_json::json!({"type": "object"}),
             &ToolMetadata::read_json("echo", "echo", "Echo"),
         )
+    }
+
+    async fn call(
+        &self,
+        _ctx: ToolCallContext,
+        input: serde_json::Value,
+    ) -> anyhow::Result<ToolCallResult> {
+        Ok(ToolCallResult::text(input.to_string()))
     }
 }
 
@@ -212,6 +223,7 @@ async fn shutdown_is_reverse_order_and_idempotent() {
 }
 
 struct NamelessTool;
+#[async_trait::async_trait]
 impl Tool for NamelessTool {
     fn descriptor(&self) -> ToolDescriptor {
         ToolDescriptor::from_native(
@@ -220,6 +232,14 @@ impl Tool for NamelessTool {
             serde_json::json!({"type": "object"}),
             &ToolMetadata::read_json("", "no name", "No Name"),
         )
+    }
+
+    async fn call(
+        &self,
+        _ctx: ToolCallContext,
+        _input: serde_json::Value,
+    ) -> anyhow::Result<ToolCallResult> {
+        Ok(ToolCallResult::text(""))
     }
 }
 
