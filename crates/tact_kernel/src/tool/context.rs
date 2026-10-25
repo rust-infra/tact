@@ -50,6 +50,12 @@ impl CancelToken {
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::SeqCst)
     }
+
+    /// The shared flag, for a legacy adapter that still exposes an
+    /// `Arc<AtomicBool>` to old tools.
+    pub fn shared_flag(&self) -> Arc<AtomicBool> {
+        self.0.clone()
+    }
 }
 
 /// How much of a tool's live/final output to redact.

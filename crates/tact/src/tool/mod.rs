@@ -49,6 +49,7 @@ mod bash;
 mod compact;
 mod edit_file;
 pub mod goal;
+mod legacy;
 mod load_skill;
 mod memory;
 mod metadata;
@@ -78,6 +79,7 @@ use bash::BashTool;
 pub use bash::SANDBOXED_BASH_DESCRIPTION;
 #[cfg(test)]
 use edit_file::EditFileTool;
+pub use legacy::{LegacyToolAdapter, SharedToolContextFactory, ToolContextFactory};
 #[cfg(test)]
 use load_skill::LoadSkillTool;
 #[cfg(test)]
