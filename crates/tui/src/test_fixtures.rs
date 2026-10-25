@@ -13,8 +13,8 @@
 
 use std::path::PathBuf;
 
-use tact::plugin::{PluginEvent, PluginRequest};
 use tact_protocol::{AgentUpdate, StepResult, StepStatus, ToolPresentationInfo, UserCommand};
+use tact_protocol::{PluginEvent, PluginRequest};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::widgets::state::App;

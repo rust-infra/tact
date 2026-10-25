@@ -9,8 +9,8 @@ use serde::Deserialize;
 use uuid::Uuid;
 
 use super::{
-    MARKETPLACE_BACKUPS_DIRECTORY, MarketplaceRecord, MarketplaceSource, PluginStore,
-    validate_marketplace_name,
+    MARKETPLACE_BACKUPS_DIRECTORY, MarketplaceRecord, MarketplaceSource, MarketplaceSourceExt,
+    PluginStore, validate_marketplace_name,
 };
 use crate::consts::PluginHome;
 

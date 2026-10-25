@@ -1,4 +1,4 @@
-use tact::plugin::PluginRequest;
+use tact_protocol::PluginRequest;
 
 use super::CommandExecOutcome;
 use crate::widgets::state::App;
@@ -57,7 +57,7 @@ mod tests {
     use super::{handle_plugin_command, parse_plugin_command};
     use crate::i18n::Language;
     use crate::test_fixtures::TestApp;
-    use tact::plugin::PluginRequest;
+    use tact_protocol::PluginRequest;
 
     #[test]
     fn parses_only_exact_plugin_forms() {

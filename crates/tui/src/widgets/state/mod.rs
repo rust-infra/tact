@@ -3,8 +3,8 @@ use std::{
     path::PathBuf,
 };
 
-use tact::plugin::{PluginEvent, PluginRequest};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
+use tact_protocol::{PluginEvent, PluginRequest};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{i18n::Language, theme::Theme};

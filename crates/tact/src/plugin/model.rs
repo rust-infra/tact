@@ -1,6 +1,6 @@
 use std::{
     collections::BTreeMap,
-    path::{Component, Path, PathBuf},
+    path::{Component, Path},
 };
 
 use anyhow::{Context, Result, bail};
@@ -40,21 +40,21 @@ fn builtin_record(name: &str, url: &str) -> MarketplaceRecord {
     }
 }
 
-/// A marketplace location, either a Git repository or a catalog document.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum MarketplaceSource {
-    GitUrl(String),
-    CatalogUrl(String),
-    /// A Codex-style local marketplace root.
-    ///
-    /// The catalog lives at `<root>/.agents/plugins/marketplace.json`; local
-    /// plugin source paths in that catalog are resolved relative to `<root>`.
-    LocalPath(std::path::PathBuf),
+pub use tact_protocol::MarketplaceSource;
+
+/// Parsing a marketplace source, which needs URL validation.
+///
+/// An extension trait rather than an inherent method: the type lives in the
+/// protocol crate now, which carries no HTTP client, and the orphan rule forbids
+/// adding an inherent `impl` from here.
+pub trait MarketplaceSourceExt {
+    /// Parses a GitHub `owner/repository` shorthand or a complete source URL.
+    fn parse(value: &str) -> Result<MarketplaceSource>;
 }
 
-impl MarketplaceSource {
+impl MarketplaceSourceExt for MarketplaceSource {
     /// Parses a GitHub `owner/repository` shorthand or a complete source URL.
-    pub fn parse(value: &str) -> Result<Self> {
+    fn parse(value: &str) -> Result<MarketplaceSource> {
         let value = value.trim();
         if value.is_empty() {
             bail!("marketplace source cannot be empty");
@@ -67,9 +67,9 @@ impl MarketplaceSource {
                 bail!("unsupported marketplace source: {value}");
             }
             if matches!(url.scheme(), "http" | "https") && url.path().ends_with(".json") {
-                return Ok(Self::CatalogUrl(value.to_owned()));
+                return Ok(MarketplaceSource::CatalogUrl(value.to_owned()));
             }
-            return Ok(Self::GitUrl(value.to_owned()));
+            return Ok(MarketplaceSource::GitUrl(value.to_owned()));
         }
 
         if let Some(ssh_target) = value.strip_prefix("git@") {
@@ -79,7 +79,7 @@ impl MarketplaceSource {
             if host.is_empty() || path.is_empty() || path.contains('?') || path.contains('#') {
                 bail!("invalid marketplace source: {value}");
             }
-            return Ok(Self::GitUrl(value.to_owned()));
+            return Ok(MarketplaceSource::GitUrl(value.to_owned()));
         }
 
         let mut components = value.split('/');
@@ -93,59 +93,15 @@ impl MarketplaceSource {
             bail!("invalid marketplace source: {value}");
         }
 
-        Ok(Self::GitUrl(format!("https://github.com/{value}.git")))
-    }
-
-    /// Returns the source URL/path shown to users.
-    ///
-    /// A Codex-style local marketplace has no git URL. Its source path is the
-    /// resolution root, not the catalog location, so pointing at it alone reads
-    /// as "the wrong directory"; the catalog is appended to disambiguate.
-    #[must_use]
-    pub fn display_source(&self) -> String {
-        match self {
-            Self::GitUrl(url) | Self::CatalogUrl(url) => url.clone(),
-            Self::LocalPath(path) => format!(
-                "{} (catalog: {})",
-                path.display(),
-                marketplace_catalog_path(path).display()
-            ),
-        }
-    }
-
-    /// Backward-compatible name for display source; local paths are included.
-    #[must_use]
-    pub fn git_url(&self) -> String {
-        self.display_source()
+        Ok(MarketplaceSource::GitUrl(format!(
+            "https://github.com/{value}.git"
+        )))
     }
 }
 
-/// A named marketplace source persisted in the marketplace registry.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct MarketplaceRecord {
-    pub name: String,
-    pub source: MarketplaceSource,
-}
+pub use tact_protocol::MarketplaceRecord;
 
-/// The catalog document of a Codex-style local marketplace root.
-///
-/// Mirrors the candidate order used when reading a local marketplace: the
-/// personal `.agents/plugins/marketplace.json` first, then a repo-local
-/// `.codex-plugin/marketplace.json`, then a bare `marketplace.json`.
-#[must_use]
-pub fn marketplace_catalog_path(root: &Path) -> PathBuf {
-    const FILE: &str = "marketplace.json";
-    let agents = root.join(".agents").join("plugins").join(FILE);
-    if agents.exists() {
-        return agents;
-    }
-    let manifest = root.join(".codex-plugin").join(FILE);
-    if manifest.exists() {
-        manifest
-    } else {
-        root.join(FILE)
-    }
-}
+pub use tact_protocol::marketplace_catalog_path;
 
 /// The persisted marketplace registry.
 #[derive(Debug, Clone, Serialize, PartialEq, Eq)]
@@ -308,27 +264,7 @@ impl<'de> Deserialize<'de> for MarketplaceState {
     }
 }
 
-/// A plugin installed from a marketplace.
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub struct InstalledPlugin {
-    pub id: String,
-    pub marketplace: String,
-    #[serde(default)]
-    pub revision: String,
-    #[serde(default, alias = "path")]
-    pub cache_path: std::path::PathBuf,
-    #[serde(default)]
-    pub skill_count: usize,
-    /// Number of `commands/*.md` slash commands shipped by the plugin.
-    #[serde(default)]
-    pub command_count: usize,
-    /// Whether the plugin declares lifecycle hooks (plugin.json `hooks`).
-    #[serde(default)]
-    pub has_hooks: bool,
-    /// Whether the plugin ships MCP servers (`.mcp.json` or `mcpServers`).
-    #[serde(default)]
-    pub has_mcp: bool,
-}
+pub use tact_protocol::InstalledPlugin;
 
 /// The feature surface of one installed plugin, computed at install time.
 ///
@@ -372,7 +308,10 @@ pub struct InstalledState {
 mod tests {
     use std::path::Path;
 
-    use super::{MarketplaceSource, MarketplaceState, OFFICIAL_MARKETPLACE, OPENAI_MARKETPLACE};
+    use super::{
+        MarketplaceSource, MarketplaceSourceExt, MarketplaceState, OFFICIAL_MARKETPLACE,
+        OPENAI_MARKETPLACE,
+    };
     use crate::consts::PluginHome;
 
     #[test]

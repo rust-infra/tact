@@ -9,6 +9,7 @@
 pub mod agent;
 pub mod biz;
 pub mod events;
+pub mod marketplace;
 pub mod reasoning;
 pub mod subagent_transcript;
 pub mod tool_output;
@@ -25,6 +26,10 @@ pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,
 };
 pub use events::UpdateSink;
+pub use marketplace::{
+    InstalledPlugin, MarketplaceRecord, MarketplaceSource, PluginEvent, PluginOperation,
+    PluginRequest, PluginResult, marketplace_catalog_path,
+};
 pub use reasoning::ReasoningEffort;
 pub use subagent_transcript::{SubagentStep, SubagentStepStatus, SubagentTranscriptEntry};
 pub use tool_output::{
