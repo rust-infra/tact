@@ -224,6 +224,26 @@ pub struct TurnRequest {
     pub input: String,
     /// Images the user attached to this turn, if any.
     pub images: Vec<TurnImage>,
+    /// A message the caller already built, used instead of `input`/`images`.
+    ///
+    /// A host that expands `@file` references or resolves image paths has
+    /// already produced the message it wants; making it hand back the raw text
+    /// for the service to rebuild would either lose that work or duplicate the
+    /// expansion inside the service. `None` means "build it from the fields
+    /// above".
+    pub message: Option<Vec<TurnBlock>>,
+}
+
+/// One block of a caller-built message.
+///
+/// Neutral by construction: the kernel must not name `tact_llm`'s content types,
+/// so a caller that already built a message describes it in these terms.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TurnBlock {
+    /// A run of text.
+    Text(String),
+    /// An image, base64-encoded.
+    Image(TurnImage),
 }
 
 impl TurnRequest {
@@ -232,6 +252,7 @@ impl TurnRequest {
         Self {
             input: input.into(),
             images: Vec::new(),
+            message: None,
         }
     }
 
@@ -240,7 +261,9 @@ impl TurnRequest {
     /// An empty request is not a turn: submitting one would append an empty user
     /// message and spend a model call on it.
     pub fn is_empty(&self) -> bool {
-        self.input.trim().is_empty() && self.images.is_empty()
+        self.message.as_ref().is_none_or(|blocks| blocks.is_empty())
+            && self.input.trim().is_empty()
+            && self.images.is_empty()
     }
 }
 
@@ -399,6 +422,7 @@ mod turn_tests {
                 media_type: "image/png".to_string(),
                 data: "AAAA".to_string(),
             }],
+            message: None,
         };
         assert!(!request.is_empty());
     }
@@ -460,6 +484,31 @@ mod turn_tests {
             .expect("a cancelled turn is not an error");
         assert_eq!(outcome.stop, TurnStop::Cancelled);
         assert!(!outcome.is_finished());
+    }
+
+    /// A caller-built message is a turn even with no text or images.
+    ///
+    /// This is the `@file` expansion path: the host resolved the references into
+    /// blocks, so the request carries a message and nothing else.
+    #[test]
+    fn a_prebuilt_message_is_a_request() {
+        let request = TurnRequest {
+            input: String::new(),
+            images: Vec::new(),
+            message: Some(vec![TurnBlock::Text("expanded".to_string())]),
+        };
+        assert!(!request.is_empty());
+    }
+
+    /// An empty prebuilt message is still empty.
+    #[test]
+    fn an_empty_prebuilt_message_is_not_a_turn() {
+        let request = TurnRequest {
+            input: String::new(),
+            images: Vec::new(),
+            message: Some(Vec::new()),
+        };
+        assert!(request.is_empty());
     }
 
     /// `final_text` distinguishes "said nothing" from "said an empty thing".

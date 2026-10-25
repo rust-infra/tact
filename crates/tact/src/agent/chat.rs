@@ -50,7 +50,31 @@ impl RuntimeChatService {
 }
 
 /// The user message a request becomes.
-fn turn_message(request: &TurnRequest) -> Message {
+///
+/// Public so the agent service uses the same conversion: two builders would drift
+/// on how a prebuilt message is folded in.
+pub(crate) fn turn_message(request: &TurnRequest) -> Message {
+    // A caller that already built the message wins: it expanded `@file`
+    // references or resolved images, and rebuilding from the raw text would
+    // either lose that work or duplicate the expansion here.
+    if let Some(blocks) = &request.message {
+        let content = blocks
+            .iter()
+            .map(|block| match block {
+                tact_kernel::runtime::TurnBlock::Text(text) => {
+                    tact_llm::ContentBlock::Text { text: text.clone() }
+                }
+                tact_kernel::runtime::TurnBlock::Image(image) => tact_llm::ContentBlock::Image {
+                    source: tact_llm::ImageSource {
+                        type_: "base64".to_string(),
+                        media_type: image.media_type.clone(),
+                        data: image.data.clone(),
+                    },
+                },
+            })
+            .collect();
+        return Message::new_blocks(Role::User, content);
+    }
     if request.images.is_empty() {
         return Message::new_text(Role::User, request.input.clone());
     }
@@ -171,6 +195,7 @@ mod tests {
     fn an_image_request_carries_both_parts() {
         let request = TurnRequest {
             input: "what is this".to_string(),
+            message: None,
             images: vec![tact_kernel::runtime::TurnImage {
                 media_type: "image/png".to_string(),
                 data: "AAAA".to_string(),
@@ -190,6 +215,7 @@ mod tests {
     fn an_image_only_request_has_no_empty_text_block() {
         let request = TurnRequest {
             input: String::new(),
+            message: None,
             images: vec![tact_kernel::runtime::TurnImage {
                 media_type: "image/png".to_string(),
                 data: "AAAA".to_string(),
@@ -200,6 +226,34 @@ mod tests {
             panic!("expected blocks");
         };
         assert_eq!(content.len(), 1, "{content:?}");
+    }
+
+    /// A caller-built message is used verbatim.
+    ///
+    /// The `@file` path expands references in the host; the service must not
+    /// rebuild from the raw text, or the expansion is lost.
+    #[test]
+    fn a_prebuilt_message_is_used_verbatim() {
+        let request = TurnRequest {
+            input: "raw text with @file".to_string(),
+            images: Vec::new(),
+            message: Some(vec![
+                tact_kernel::runtime::TurnBlock::Text("expanded content".to_string()),
+                tact_kernel::runtime::TurnBlock::Image(tact_kernel::runtime::TurnImage {
+                    media_type: "image/png".to_string(),
+                    data: "AAAA".to_string(),
+                }),
+            ]),
+        };
+        let message = turn_message(&request);
+        let tact_llm::MessageContent::Blocks { content } = &message.content else {
+            panic!("a prebuilt message becomes blocks");
+        };
+        assert_eq!(content.len(), 2, "{content:?}");
+        assert!(
+            matches!(&content[0], tact_llm::ContentBlock::Text { text } if text == "expanded content"),
+            "the caller's text is what travels, not the raw input"
+        );
     }
 
     /// Submitting before an agent is installed fails by name.

@@ -13,7 +13,7 @@
 use std::sync::Arc;
 
 use tact_kernel::runtime::{AgentService, TurnOptions, TurnOutcome, TurnRequest, TurnStop};
-use tact_llm::{Message, MessageContent};
+use tact_llm::MessageContent;
 
 use crate::agent::{Agent, AgentLoopStop};
 
@@ -123,7 +123,7 @@ impl AgentService for RuntimeAgentService {
             anyhow::bail!("a turn needs text or an image");
         }
 
-        let message = turn_message(&request);
+        let message = crate::agent::chat::turn_message(&request);
         let mut guard = self.agent.lock().await;
         let agent = guard
             .as_mut()
@@ -172,29 +172,6 @@ impl AgentService for RuntimeAgentService {
     }
 }
 
-/// The user message a request becomes.
-fn turn_message(request: &TurnRequest) -> Message {
-    if request.images.is_empty() {
-        return Message::new_text(tact_llm::Role::User, request.input.clone());
-    }
-    let mut blocks: Vec<tact_llm::ContentBlock> = Vec::new();
-    if !request.input.is_empty() {
-        blocks.push(tact_llm::ContentBlock::Text {
-            text: request.input.clone(),
-        });
-    }
-    for image in &request.images {
-        blocks.push(tact_llm::ContentBlock::Image {
-            source: tact_llm::ImageSource {
-                type_: "base64".to_string(),
-                media_type: image.media_type.clone(),
-                data: image.data.clone(),
-            },
-        });
-    }
-    Message::new_blocks(tact_llm::Role::User, blocks)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -223,7 +200,7 @@ mod tests {
     /// A text-only request becomes one user message with that text.
     #[test]
     fn a_text_request_becomes_a_user_message() {
-        let message = turn_message(&TurnRequest::text("hello"));
+        let message = crate::agent::chat::turn_message(&TurnRequest::text("hello"));
         assert_eq!(message.role, tact_llm::Role::User);
         match &message.content {
             MessageContent::Text { content } => assert_eq!(content, "hello"),
@@ -238,12 +215,13 @@ mod tests {
     fn an_image_request_carries_both_parts() {
         let request = TurnRequest {
             input: "what is this".to_string(),
+            message: None,
             images: vec![tact_kernel::runtime::TurnImage {
                 media_type: "image/png".to_string(),
                 data: "AAAA".to_string(),
             }],
         };
-        let message = turn_message(&request);
+        let message = crate::agent::chat::turn_message(&request);
         let MessageContent::Blocks { content } = &message.content else {
             panic!("expected blocks");
         };
@@ -257,12 +235,13 @@ mod tests {
     fn an_image_only_request_has_no_empty_text_block() {
         let request = TurnRequest {
             input: String::new(),
+            message: None,
             images: vec![tact_kernel::runtime::TurnImage {
                 media_type: "image/png".to_string(),
                 data: "AAAA".to_string(),
             }],
         };
-        let message = turn_message(&request);
+        let message = crate::agent::chat::turn_message(&request);
         let MessageContent::Blocks { content } = &message.content else {
             panic!("expected blocks");
         };
