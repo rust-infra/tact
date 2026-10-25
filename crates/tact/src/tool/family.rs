@@ -7,6 +7,8 @@
 
 use anyhow::Result;
 
+use tact_kernel::plugin::Registrar;
+
 use super::{
     Tool, ToolRouter,
     ask_user::AskUserTool,
@@ -103,6 +105,17 @@ impl ToolFamily {
         }
     }
 
+    /// The names this family contributes, without constructing handlers.
+    ///
+    /// Used by the composition root to pull the *same* `Arc` handlers out of the
+    /// router it already has, so a tool does not exist twice.
+    pub fn tool_names(self, memory_enabled: bool) -> Vec<&'static str> {
+        self.handlers(memory_enabled)
+            .into_iter()
+            .map(|handler| handler.metadata().name)
+            .collect()
+    }
+
     /// Construct this family's handlers.
     ///
     /// `memory_enabled` mirrors `[agent].memory_enabled`: the memory family
@@ -184,6 +197,163 @@ impl ToolFamily {
 /// another subagent, cannot create tasks, and has no Goal tools (it would be
 /// asked to call `goal_checkpoint` for a Goal it does not own).
 pub const SUBAGENT_FAMILIES: [ToolFamily; 1] = [ToolFamily::SubagentBasics];
+
+/// One family presented to the plugin host.
+///
+/// `Registrar::tool` takes ownership, so a family is built for one installation
+/// and consumed by it. The handlers are the same ones the router would create.
+pub struct FamilyPlugin {
+    family: ToolFamily,
+    handlers: std::sync::Mutex<Option<Vec<Box<dyn Tool>>>>,
+    shared: Vec<std::sync::Arc<dyn Tool>>,
+    contexts: std::sync::Arc<dyn super::ToolContextFactory>,
+}
+
+impl FamilyPlugin {
+    pub fn new(family: ToolFamily, memory_enabled: bool, context: &super::ToolContext) -> Self {
+        Self {
+            family,
+            handlers: std::sync::Mutex::new(Some(family.handlers(memory_enabled))),
+            shared: Vec::new(),
+            contexts: std::sync::Arc::new(super::SharedToolContextFactory::new(context.clone())),
+        }
+    }
+
+    /// A family over handlers something else already owns.
+    ///
+    /// The composition root uses this so the router (which emits specs) and the
+    /// catalog (which dispatches) see one instance per tool.
+    pub fn from_shared(
+        family: ToolFamily,
+        handlers: Vec<std::sync::Arc<dyn Tool>>,
+        context: &super::ToolContext,
+    ) -> Self {
+        Self {
+            family,
+            handlers: std::sync::Mutex::new(None),
+            shared: handlers,
+            contexts: std::sync::Arc::new(super::SharedToolContextFactory::new(context.clone())),
+        }
+    }
+
+    pub fn family(&self) -> ToolFamily {
+        self.family
+    }
+
+    /// Whether this family contributed anything at all.
+    ///
+    /// The memory family contributes nothing when memory is disabled, so a host
+    /// installing it would create a plugin with no capabilities.
+    pub fn is_empty(&self) -> bool {
+        if !self.shared.is_empty() {
+            return false;
+        }
+        self.handlers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .as_ref()
+            .is_some_and(Vec::is_empty)
+    }
+}
+
+#[async_trait::async_trait]
+impl tact_kernel::plugin::Plugin for FamilyPlugin {
+    fn manifest(&self) -> tact_kernel::plugin::PluginManifest {
+        tact_kernel::plugin::PluginManifest::new(
+            tact_kernel::plugin::PluginId::new(self.family.id())
+                .expect("built-in family ids are valid"),
+            self.family.id(),
+            env!("CARGO_PKG_VERSION"),
+            tact_kernel::plugin::PluginKind::Capability,
+            "built-in tool family",
+        )
+    }
+
+    fn register(&self, registrar: &mut Registrar<'_>) -> anyhow::Result<()> {
+        for handler in &self.shared {
+            registrar.tool(super::LegacyToolAdapter::from_arc(
+                handler.clone(),
+                self.contexts.clone(),
+            ))?;
+        }
+        // `Registrar` is `&mut`, `Plugin::register` is `&self`: the owned
+        // handlers are moved out of a cell so a family registers exactly once.
+        let Some(mut taken) = self
+            .handlers
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .take()
+        else {
+            anyhow::ensure!(
+                !self.shared.is_empty(),
+                "tool family {} was registered twice",
+                self.family.id()
+            );
+            return Ok(());
+        };
+        for handler in taken.drain(..) {
+            registrar.tool(super::LegacyToolAdapter::from_boxed(
+                handler,
+                self.contexts.clone(),
+            ))?;
+        }
+        Ok(())
+    }
+}
+
+/// Install every family of `families` into `host`.
+///
+/// This is the composition root's tool wiring: the set of built-in tools is what
+/// these plugins contribute, and `host.skipped()` reports a capability the user
+/// disabled.
+pub async fn install_families(
+    host: &mut tact_kernel::plugin::PluginHost,
+    router: &ToolRouter,
+    families: &[ToolFamily],
+    memory_enabled: bool,
+    context: &super::ToolContext,
+) -> anyhow::Result<()> {
+    for family in families {
+        let shared = router.handlers_for(&family.tool_names(memory_enabled));
+        let plugin = FamilyPlugin::from_shared(*family, shared, context);
+        if plugin.is_empty() {
+            continue;
+        }
+        host.install(plugin).await?;
+    }
+    Ok(())
+}
+
+/// Assemble a catalog by installing every family into a fresh host.
+///
+/// The production composition root: the catalog is a consequence of the plugin
+/// set, and `skipped` reports any capability the caller's filter disabled.
+pub fn catalog_from_families(
+    router: &ToolRouter,
+    families: &[ToolFamily],
+    memory_enabled: bool,
+    context: &super::ToolContext,
+    filter: tact_kernel::capability::CapabilityFilter,
+) -> anyhow::Result<(tact_kernel::catalog::ToolCatalog, Vec<String>)> {
+    let mut host = tact_kernel::plugin::PluginHost::new(filter);
+    for family in families {
+        let shared = router.handlers_for(&family.tool_names(memory_enabled));
+        let plugin = FamilyPlugin::from_shared(*family, shared, context);
+        if plugin.is_empty() {
+            continue;
+        }
+        // Install without an async context: `Agent::new` is synchronous and may
+        // run on a current-thread runtime, where `block_in_place` panics.
+        host.install_sync(plugin)?;
+    }
+    let skipped = host
+        .skipped()
+        .iter()
+        .map(|skipped| skipped.capability.to_string())
+        .collect();
+    let runtime = host.seal_sync()?;
+    Ok((runtime.tools().clone(), skipped))
+}
 
 /// Assemble a router from a family list.
 pub fn router_from(families: &[ToolFamily], memory_enabled: bool) -> Result<ToolRouter> {
@@ -289,6 +459,75 @@ mod tests {
         let ids: Vec<&str> = ToolFamily::ALL.iter().map(|family| family.id()).collect();
         let unique: std::collections::BTreeSet<&str> = ids.iter().copied().collect();
         assert_eq!(ids.len(), unique.len());
+    }
+
+    #[tokio::test]
+    async fn the_plugin_host_installs_every_family() {
+        // The point of the host path: the catalog is whatever the plugins
+        // contributed, not a second hand-written list.
+        use tact_kernel::capability::CapabilityFilter;
+        use tact_kernel::plugin::PluginHost;
+
+        let context = crate::tool::test_support::test_context("family_host");
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        for family in ToolFamily::ALL {
+            host.install(FamilyPlugin::new(family, true, &context))
+                .await
+                .unwrap();
+        }
+        let runtime = host.seal().await.unwrap();
+        let names: Vec<String> = runtime
+            .tools()
+            .descriptor_snapshot(&CapabilityFilter::default())
+            .await
+            .unwrap()
+            .tools
+            .into_iter()
+            .map(|tool| tool.name)
+            .collect();
+        let mut expected = names_of(&ToolFamily::ALL, true);
+        let mut actual = names;
+        expected.sort();
+        actual.sort();
+        assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn a_disabled_capability_is_not_installed() {
+        use tact_kernel::capability::{CapabilityFilter, CapabilityId};
+        use tact_kernel::plugin::PluginHost;
+
+        let context = crate::tool::test_support::test_context("family_host_filter");
+        let disabled: CapabilityId = "tool:bash".parse().unwrap();
+        let mut host = PluginHost::new(CapabilityFilter::new([disabled]));
+        for family in ToolFamily::ALL {
+            host.install(FamilyPlugin::new(family, true, &context))
+                .await
+                .unwrap();
+        }
+        assert!(
+            host.skipped()
+                .iter()
+                .any(|skipped| skipped.capability.name == "bash")
+        );
+        let runtime = host.seal().await.unwrap();
+        let snapshot = runtime
+            .tools()
+            .descriptor_snapshot(&CapabilityFilter::default())
+            .await
+            .unwrap();
+        assert!(snapshot.tools.iter().all(|tool| tool.name != "bash"));
+    }
+
+    fn names_of(families: &[ToolFamily], memory_enabled: bool) -> Vec<String> {
+        let mut names: Vec<String> = router_from(families, memory_enabled)
+            .unwrap()
+            .tool_specs()
+            .into_iter()
+            .map(|spec| spec.name)
+            .collect();
+        names.sort();
+        names
     }
 
     #[test]

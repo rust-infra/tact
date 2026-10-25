@@ -82,7 +82,10 @@ use bash::BashTool;
 pub use bash::SANDBOXED_BASH_DESCRIPTION;
 #[cfg(test)]
 use edit_file::EditFileTool;
-pub use family::{SUBAGENT_FAMILIES, ToolFamily, router_from};
+pub use family::{
+    FamilyPlugin, SUBAGENT_FAMILIES, ToolFamily, catalog_from_families, install_families,
+    router_from,
+};
 pub use legacy::{LegacyToolAdapter, SharedToolContextFactory, ToolContextFactory};
 #[cfg(test)]
 use load_skill::LoadSkillTool;
@@ -308,6 +311,19 @@ impl ToolRouter {
             },
         );
         Ok(self)
+    }
+
+    /// The handlers for `names`, as shared references.
+    ///
+    /// A name the router does not have is skipped rather than an error: the
+    /// caller passes a family's declared names, and a family may legitimately
+    /// contribute fewer (memory when it is off).
+    pub fn handlers_for(&self, names: &[&str]) -> Vec<std::sync::Arc<dyn Tool>> {
+        names
+            .iter()
+            .filter_map(|name| self.tools.get(*name))
+            .map(|registered| registered.handler.clone())
+            .collect()
     }
 
     /// Build a kernel catalog over the same handlers this router holds.

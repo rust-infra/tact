@@ -494,12 +494,20 @@ impl Agent {
         tools: &crate::tool::ToolRouter,
         context: &crate::tool::ToolContext,
         permission_manager: &crate::permission::SharedPermissionManager,
+        memory_enabled: bool,
     ) -> std::sync::Arc<tact_kernel::tool::executor::ToolExecutor> {
-        let contexts =
-            std::sync::Arc::new(crate::tool::SharedToolContextFactory::new(context.clone()));
-        let catalog = tools
-            .kernel_catalog(contexts)
-            .expect("the router rejects duplicate names, so the catalog cannot either");
+        // Assembled by installing the built-in families as plugins, so the tool
+        // list is what the plugin set contributes rather than a second list that
+        // has to stay in step with `toolset()`.
+        let catalog = crate::tool::catalog_from_families(
+            tools,
+            &crate::tool::ToolFamily::ALL,
+            memory_enabled,
+            context,
+            tact_kernel::capability::CapabilityFilter::default(),
+        )
+        .expect("the built-in family table is valid by construction")
+        .0;
         let ui = context.events.clone();
         let service = crate::permission::ManagerPermissionService::new(permission_manager.handle())
             .with_ui_available(std::sync::Arc::new(move || ui.ui().is_some()));
@@ -563,7 +571,9 @@ impl Agent {
             crate::permission::SharedPermissionManager::new(permission_manager);
         // Built before either is moved into `Self`: the pipeline reads the
         // router (for handlers) and the context (for the legacy adapter).
-        let executor = Agent::build_tool_executor(&tools, &tool_context, &permission_manager);
+        let memory_enabled = crate::config::settings().agent.memory_enabled;
+        let executor =
+            Agent::build_tool_executor(&tools, &tool_context, &permission_manager, memory_enabled);
         let mut agent = Self {
             runtime: AgentRuntime {
                 interrupt_hooks_fired: false,

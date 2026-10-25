@@ -243,6 +243,69 @@ impl PluginHost {
         Ok(())
     }
 
+    /// Register one plugin without an async context.
+    ///
+    /// The same transaction as [`Self::install`], minus the awaited shutdown: a
+    /// plugin whose `register` fails is dropped rather than shut down. That is
+    /// the right trade for a built-in family, whose `shutdown` is the default
+    /// no-op, and it lets a host assemble its catalog from a synchronous
+    /// constructor (every `Agent::new` is synchronous).
+    pub fn install_sync(&mut self, plugin: impl Plugin + 'static) -> anyhow::Result<()> {
+        anyhow::ensure!(
+            !self.poisoned,
+            "plugin host is unusable after a failed install"
+        );
+        anyhow::ensure!(!self.sealed, "plugin host is already sealed");
+
+        let plugin: Box<dyn Plugin> = Box::new(plugin);
+        let manifest = plugin.manifest();
+        anyhow::ensure!(
+            !self
+                .plugins
+                .iter()
+                .any(|installed| installed.manifest().id == manifest.id),
+            "duplicate plugin id: {}",
+            manifest.id
+        );
+
+        let mut batch = ContributionBatch::default();
+        {
+            let mut registrar = Registrar::new(&manifest.id, &self.filter, &mut batch);
+            if let Err(error) = plugin.register(&mut registrar) {
+                self.poisoned = true;
+                anyhow::bail!("plugin {} failed to register: {error}", manifest.id);
+            }
+        }
+        if let Err(error) = self.catalogs.commit(&mut batch) {
+            anyhow::bail!("plugin {} failed to register: {error}", manifest.id);
+        }
+
+        self.skipped.append(&mut batch.skipped);
+        self.plugins.push(plugin);
+        Ok(())
+    }
+
+    /// [`Self::seal`] for a caller with no async context.
+    ///
+    /// A sealed runtime owns its plugins; nothing is awaited here, so this is
+    /// equivalent unless a plugin's `shutdown` is non-trivial — which is only
+    /// observable after the runtime is dropped, or on an explicit
+    /// [`Runtime::shutdown`].
+    pub fn seal_sync(&mut self) -> anyhow::Result<Runtime> {
+        anyhow::ensure!(
+            !self.poisoned,
+            "plugin host is unusable after a failed install"
+        );
+        anyhow::ensure!(!self.sealed, "plugin host is already sealed");
+        self.sealed = true;
+        Ok(Runtime {
+            catalogs: std::mem::take(&mut self.catalogs),
+            plugins: std::mem::take(&mut self.plugins),
+            skipped: std::mem::take(&mut self.skipped),
+            shut_down: false,
+        })
+    }
+
     /// Freeze registration and hand the catalogs to the runtime.
     pub async fn seal(&mut self) -> anyhow::Result<Runtime> {
         anyhow::ensure!(
