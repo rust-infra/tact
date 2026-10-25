@@ -5,7 +5,7 @@ Audit of the approved spec
 against the implemented state on `feat/plugin-first-architecture`.
 
 **Status: 6 of 11 checklist items met, 3 partially met, 2 not met.**
-Item 2 is now the largest gap and is measurable: 2 of the spec's 15 capability
+Item 2 is now the largest gap and is measurable: 4 of the spec's 15 capability
 domains have a plugin object.
 Phases 0, 1, and the view half of Phase 4 are done. The remaining gaps all trace
 to one undecided thing — the neutral message model — plus the deletions that wait
@@ -61,12 +61,17 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   `ChatService` owns the turn lifecycle (message assembly, Stop-hook
   continuation, completion) over the same agent slot, so a turn and a compaction
   serialise structurally rather than by convention.
-- Capability domains: **2 of 15**. `HooksPlugin` and `NotificationsPlugin` have
-  plugin objects with a lifecycle and a replaceable port. `ToolsPlugin`,
-  `McpPlugin`, `SkillsPlugin`, `MemoryPlugin`, `GoalPlugin`, `TaskPlugin`,
-  `TeamPlugin`, `WorktreePlugin`, `BackgroundPlugin`, `SubagentPlugin` and
-  `VoicePlugin` are still modules: they have tool families and prompt sections,
-  but no plugin object, so a host cannot replace one.
+- Capability domains: **4 of 15**. `HooksPlugin`, `NotificationsPlugin`,
+  `BackgroundPlugin` and `MemoryPlugin` have plugin objects with a lifecycle and a
+  resolve-by-name port. `ToolsPlugin`, `McpPlugin`, `SkillsPlugin`, `GoalPlugin`,
+  `TaskPlugin`, `TeamPlugin`, `WorktreePlugin`, `SubagentPlugin` and `VoicePlugin`
+  are still modules: they have tool families and prompt sections, but no plugin
+  object, so a host cannot replace one.
+
+  The shape is now stable: a named shared type, a `Plugin` impl that registers it,
+  a resolver that errors by name when absent, and three tests (resolve, missing,
+  manifest). What it buys is replacement — the code already existed, and the plugin
+  is what lets a host swap it.
 
   Thirteen plugins total exist (`builtin.*`). The remaining domains each need the
   same seam `NotificationsPlugin` just got — a trait for the replaceable part plus
