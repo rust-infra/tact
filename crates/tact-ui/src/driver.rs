@@ -1962,8 +1962,36 @@ async fn handle_user_command_with_account(
             }
         }
         UserCommand::QueryStats => {
-            // Handled at the loop level (immediate shared-stats snapshot);
-            // reaching this arm means the caller bypassed the command loop.
+            // Handled at the loop level (immediate shared-stats snapshot); this
+            // arm is the fallback for a caller that bypassed the command loop.
+            // It answers rather than ignoring the request — the sibling
+            // `QueryBackground` arm below does, and a command that silently does
+            // nothing on one path and answers on the other is a bug waiting to be
+            // reported as "the panel did not open".
+            let catalog = builtin_command_catalog(
+                &agent.runtime.stats,
+                &agent.tool_context.background_manager,
+                &agent.runtime.session_id,
+                &agent.tool_context.goal_manager,
+                &agent.tool_context.task_manager,
+                goal_limits(),
+            );
+            let invocation = tact::command::CommandInvocation {
+                name: "stats".to_string(),
+                args: String::new(),
+            };
+            // Shown in a popup, like the loop-level arm: a read-out is not
+            // conversation, so it must not become a log line just because this
+            // path was taken.
+            match catalog.run(&invocation) {
+                tact::command::CommandOutcome::Message(source) => {
+                    agent.runtime.events.send(AgentUpdate::PopupMarkdown {
+                        title: "Session Statistics".to_string(),
+                        source,
+                    });
+                }
+                other => forward_command_outcome(&other, &agent.runtime.events),
+            }
         }
         UserCommand::QueryBackground(task_id) => {
             // Handled at the loop level (answering from the shared manager, so
@@ -4291,18 +4319,57 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread")]
+    async fn the_stats_fallback_arm_answers_instead_of_ignoring() {
+        // The loop-level arm is the normal path; this covers a caller that hands
+        // the command straight to `handle_user_command`. It used to do nothing,
+        // so a `/stats` on that path silently opened no panel.
+        install_test_config();
+        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+
+        super::handle_user_command(&mut agent, UserCommand::QueryStats, &work_dir).await;
+
+        let mut saw_popup = false;
+        while let Ok(update) = agent_rx.try_recv() {
+            if let AgentUpdate::PopupMarkdown { title, source } = update {
+                assert!(title.contains("Statistics"), "{title}");
+                assert!(source.contains("Session Stats"), "{source}");
+                saw_popup = true;
+            }
+        }
+        assert!(
+            saw_popup,
+            "the fallback arm must open the stats panel, not ignore the request"
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread")]
     async fn query_stats_responds_immediately_while_task_runs() {
+        // The complete regression test is bounded so a future change that breaks
+        // either the in-flight command or cleanup cannot block the entire suite.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            query_stats_responds_immediately_while_task_runs_inner(),
+        )
+        .await
+        .expect("stats responsiveness test exceeded its 10s safety bound");
+    }
+
+    async fn query_stats_responds_immediately_while_task_runs_inner() {
         use std::time::Duration;
 
         install_test_config();
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
-        // The responder spins on an AtomicBool until the test releases it — a
-        // deterministic "long running LLM call". A serialized QueryStats
-        // (awaiting the task) would hang until the release fires.
+        // Deterministic "long running LLM call": the responder waits for the
+        // test to release it, but has a hard cap. Without the cap, a failed
+        // assertion before the cleanup below would strand a worker forever.
         let release = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let release_rx = release.clone();
         let mock = MockClient::with_responder(move |_request, _| {
-            while !release_rx.load(std::sync::atomic::Ordering::Relaxed) {
+            let deadline = std::time::Instant::now() + Duration::from_secs(2);
+            while !release_rx.load(std::sync::atomic::Ordering::Relaxed)
+                && std::time::Instant::now() < deadline
+            {
                 std::thread::sleep(Duration::from_millis(10));
             }
             Ok((vec![text_block("done")], Some(StopReason::EndTurn), None))
@@ -4320,33 +4387,41 @@ mod tests {
         let start = std::time::Instant::now();
         user_cmd_tx.send(UserCommand::QueryStats).unwrap();
 
-        // The stats snapshot must arrive while the task is still blocked.
-        let mut saw_stats = false;
-        loop {
-            match tokio::time::timeout(Duration::from_millis(300), agent_rx.recv()).await {
-                Ok(Some(AgentUpdate::PopupMarkdown { .. })) => {
-                    saw_stats = true;
-                    break;
+        // The stats snapshot must arrive while the task is still blocked. A
+        // single deadline bounds the whole receive loop: a stream of unrelated
+        // updates must not restart a short timeout forever.
+        let received = tokio::time::timeout(Duration::from_secs(2), async {
+            loop {
+                match agent_rx.recv().await {
+                    Some(AgentUpdate::PopupMarkdown { .. }) => return true,
+                    Some(_) => continue,
+                    None => return false,
                 }
-                Ok(Some(_)) => continue,
-                Ok(None) | Err(_) => break,
             }
-        }
-        assert!(
-            saw_stats,
-            "expected the stats popup while the task is still running"
-        );
-        assert!(
-            start.elapsed() < Duration::from_millis(450),
-            "QueryStats must NOT await the in-flight task"
-        );
+        })
+        .await;
+        let saw_stats = matches!(received, Ok(true));
+        let response_time = start.elapsed();
 
-        // Release the blocked task and let the loop drain.
+        // Always clean up before asserting. If the popup is missing, release the
+        // mock responder and give the loop a bounded chance to exit; a failed
+        // assertion must not strand a worker and make later tests appear hung.
         release.store(true, std::sync::atomic::Ordering::Relaxed);
         drop(user_cmd_tx);
-        let _ = tokio::time::timeout(Duration::from_secs(5), loop_handle)
-            .await
-            .expect("command loop must finish");
+        let loop_result = tokio::time::timeout(Duration::from_secs(5), loop_handle).await;
+
+        assert!(
+            loop_result.is_ok(),
+            "command loop must finish after release"
+        );
+        assert!(
+            saw_stats,
+            "expected the stats popup while the task is still running; receive result: {received:?}"
+        );
+        assert!(
+            response_time < Duration::from_millis(450),
+            "QueryStats must NOT await the in-flight task (took {response_time:?})"
+        );
     }
 
     /// `/background` is answered from the shared manager, so the popup opens
