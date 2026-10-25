@@ -180,7 +180,12 @@ async fn run_headless_locked(
             println!("{text}");
 
             let summary = text.chars().take(200).collect::<String>();
-            let _ = tact::notifications::notify_task_complete(&summary);
+            // From the agent's own bundle: a headless run whose configuration
+            // disabled notifications must not ask the process global.
+            let enabled = agent
+                .config()
+                .is_some_and(|config| config.agent.notifications_enabled);
+            let _ = tact::notifications::notify_task_complete(enabled, &summary);
         }
         None => eprintln!("[warn] the run produced no final message; stdout is empty"),
     }

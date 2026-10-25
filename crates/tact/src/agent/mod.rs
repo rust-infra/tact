@@ -631,9 +631,13 @@ impl Agent {
         let security = permission_manager.scanner();
         let permission_manager =
             crate::permission::SharedPermissionManager::new(permission_manager);
-        // Built before either is moved into `Self`: the pipeline reads the
-        // router (for handlers) and the context (for the legacy adapter).
-        let memory_enabled = crate::config::settings().agent.memory_enabled;
+        // One read of the process configuration, at construction: the agent's
+        // assembly and its settings snapshot both need it, and reading twice
+        // would let the two observe different values if the global were replaced
+        // between them. After construction everything goes through
+        // [`Self::config`], which answers from the bundle.
+        let construction_config = crate::config::settings();
+        let memory_enabled = construction_config.agent.memory_enabled;
         // One factory for every contributed tool, held by the Agent so
         // pre-flight can hand it the *current* context each turn.
         let contexts = std::sync::Arc::new(crate::tool::SharedToolContextFactory::new(
@@ -696,7 +700,7 @@ impl Agent {
             max_turns: None,
             turns_taken: 0,
             max_turns_reached: false,
-            agent_settings: crate::config::settings().agent.clone(),
+            agent_settings: construction_config.agent.clone(),
             provider_kind,
             cached_tool_specs: Vec::new(),
             advertised_generation: 0,
@@ -1142,16 +1146,26 @@ impl Agent {
     }
 
     pub fn emit_update(&self, update: AgentUpdate) {
-        // Desktop notifications for key lifecycle events
-        match &update {
-            AgentUpdate::TaskComplete(text) => {
-                let summary = text.chars().take(200).collect::<String>();
-                let _ = crate::notifications::notify_task_complete(&summary);
+        // Desktop notifications for key lifecycle events. Enabled comes from the
+        // bundle this agent was assembled with, so a session that disabled
+        // notifications does not depend on what the process global says now.
+        if matches!(
+            update,
+            AgentUpdate::TaskComplete(_) | AgentUpdate::StepFailed { .. }
+        ) {
+            let enabled = self
+                .config()
+                .is_some_and(|config| config.agent.notifications_enabled);
+            match &update {
+                AgentUpdate::TaskComplete(text) => {
+                    let summary = text.chars().take(200).collect::<String>();
+                    let _ = crate::notifications::notify_task_complete(enabled, &summary);
+                }
+                AgentUpdate::StepFailed { idx, error, .. } => {
+                    let _ = crate::notifications::notify_step_failed(enabled, *idx, error);
+                }
+                _ => {}
             }
-            AgentUpdate::StepFailed { idx, error, .. } => {
-                let _ = crate::notifications::notify_step_failed(*idx, error);
-            }
-            _ => {}
         }
 
         // The sink fans out: observers get a copy, the ui channel the original.

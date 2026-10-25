@@ -10,23 +10,22 @@
 
 use anyhow::Result;
 
-/// Returns `true` if desktop notifications are enabled.
-pub fn is_enabled() -> bool {
-    crate::config::settings().agent.notifications_enabled
-}
-
-/// Sends a desktop notification.
+/// Sends a desktop notification, if notifications are enabled.
+///
+/// `enabled` is a parameter rather than a global read: the caller already holds
+/// the configuration the run is using (`Agent::config`, or the host's snapshot),
+/// and asking the process instead would let a notification fire for a session
+/// whose own configuration disabled it.
 ///
 /// On macOS this runs `osascript` to display a native notification.
 /// On non-macOS platforms the notification is silently skipped.
-/// If notifications are disabled, this is a no-op.
 ///
 /// # Errors
 ///
 /// Returns an error only if `osascript` fails to execute on macOS.
 /// Other platforms always succeed.
-pub fn notify(title: &str, message: &str) -> Result<()> {
-    if !is_enabled() {
+pub fn notify(enabled: bool, title: &str, message: &str) -> Result<()> {
+    if !enabled {
         return Ok(());
     }
 
@@ -53,20 +52,20 @@ pub fn notify(title: &str, message: &str) -> Result<()> {
 }
 
 /// Sends a notification that a task has completed successfully.
-pub fn notify_task_complete(summary: &str) -> Result<()> {
-    notify("Tact — Task Complete", summary)
+pub fn notify_task_complete(enabled: bool, summary: &str) -> Result<()> {
+    notify(enabled, "Tact — Task Complete", summary)
 }
 
 /// Sends a notification that a step has failed.
-pub fn notify_step_failed(step_idx: usize, error: &str) -> Result<()> {
+pub fn notify_step_failed(enabled: bool, step_idx: usize, error: &str) -> Result<()> {
     let msg = format!(
         "Step {step_idx} failed: {}",
         error.chars().take(120).collect::<String>()
     );
-    notify("Tact — Step Failed", &msg)
+    notify(enabled, "Tact — Step Failed", &msg)
 }
 
 /// Sends a notification with a generic info message.
-pub fn notify_info(summary: &str) -> Result<()> {
-    notify("Tact — Info", summary)
+pub fn notify_info(enabled: bool, summary: &str) -> Result<()> {
+    notify(enabled, "Tact — Info", summary)
 }
