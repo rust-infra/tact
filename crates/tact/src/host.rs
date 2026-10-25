@@ -141,6 +141,12 @@ pub struct HostExtras {
     pub task: Option<crate::task::SharedTaskManager>,
     /// The already-opened teammate manager.
     pub team: Option<crate::team::SharedTeammateManager>,
+    /// The view this process draws.
+    ///
+    /// A boxed kernel `Plugin` rather than a concrete type: the view crate must not
+    /// be named here (it would invert the dependency the whole design is about), and
+    /// a host that attaches no view — a test fixture — simply passes nothing.
+    pub view: Option<Box<dyn tact_kernel::plugin::Plugin>>,
 }
 
 /// The assembled pieces, after sealing.
@@ -198,7 +204,7 @@ pub fn assemble(options: HostOptions<'_>) -> Result<AssembledRuntime> {
 /// marketplace of its own) reads as a two-argument call, while a host that owns
 /// infrastructure describes it once in a [`HostExtras`] instead of in five
 /// separate `Option` fields at the call site.
-pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<AssembledRuntime> {
+pub fn assemble_with(options: HostOptions<'_>, mut extras: HostExtras) -> Result<AssembledRuntime> {
     let mut host = PluginHost::new(options.filter);
     host.install_sync(policy::SecurityPlugin::new(
         options.permission_manager.scanner(),
@@ -287,6 +293,9 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
     }
     if let Some(manager) = extras.team.clone() {
         host.install_sync(crate::team::TeamPlugin::new(manager))?;
+    }
+    if let Some(view) = extras.view.take() {
+        host.install_sync(view)?;
     }
 
     let skipped = host

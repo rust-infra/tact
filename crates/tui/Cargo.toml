@@ -11,6 +11,8 @@ test-support = ["dep:tact", "dep:tact_llm"]
 [dependencies]
 agent_tui_kit = { path = "../agent_tui_kit" }
 tact_protocol = { path = "../protocol" }
+tact_kernel = { path = "../tact_kernel" }
+async-trait = { workspace = true }
 anyhow = { workspace = true }
 arboard = { workspace = true }
 base64 = { workspace = true }

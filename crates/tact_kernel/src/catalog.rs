@@ -369,6 +369,15 @@ impl ViewCatalog {
     pub fn get(&self, id: &str) -> Option<&Arc<dyn View>> {
         self.views.get(id)
     }
+
+    /// Every installed view id, in name order.
+    ///
+    /// Exposed so a composition root can assert exactly one view is attached: two
+    /// views in one process is a wiring mistake, not a feature — the same `App`
+    /// cannot be drawn twice.
+    pub fn ids(&self) -> Vec<&'static str> {
+        self.views.keys().copied().collect()
+    }
 }
 
 #[derive(Clone, Default)]

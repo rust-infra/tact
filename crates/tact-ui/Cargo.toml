@@ -16,8 +16,10 @@ path = "src/main.rs"
 tact = { path = "../tact", features = ["test-support"] }
 tact_llm = { path = "../tact_llm" }
 tact_protocol = { path = "../protocol" }
+tact_kernel = { path = "../tact_kernel" }
 tui = { path = "../tui", features = ["test-support"] }
 anyhow = { workspace = true }
+async-trait = { workspace = true }
 base64 = { workspace = true }
 chrono = { workspace = true }
 console-subscriber = { workspace = true }
@@ -28,7 +30,6 @@ tracing-subscriber = { workspace = true }
 uuid = { workspace = true }
 
 [dev-dependencies]
-async-trait = { workspace = true }
 clap = { workspace = true }
 rmcp = { workspace = true }
 tempfile = { workspace = true }

@@ -413,3 +413,29 @@ impl Runtime {
         }
     }
 }
+
+/// A boxed plugin is a plugin.
+///
+/// Needed because a composition root may carry "the plugin to install" without
+/// naming its concrete type — the view is the case: the crate that defines it must
+/// not be a dependency of the crate that installs it.
+#[async_trait::async_trait]
+impl Plugin for Box<dyn Plugin> {
+    fn manifest(&self) -> PluginManifest {
+        (**self).manifest()
+    }
+
+    fn register(&self, registrar: &mut Registrar<'_>) -> anyhow::Result<()> {
+        (**self).register(registrar)
+    }
+
+    /// Forwarded, not defaulted.
+    ///
+    /// Every method must be delegated here, `shutdown` included: a blanket impl that
+    /// only forwarded `manifest` and `register` would resolve `plugin.shutdown()` to
+    /// the trait's no-op default, so a boxed plugin would silently never tear down.
+    /// The conformance tests caught exactly that.
+    async fn shutdown(&self) -> anyhow::Result<()> {
+        (**self).shutdown().await
+    }
+}

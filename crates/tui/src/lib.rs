@@ -24,6 +24,8 @@ mod widgets;
 #[cfg(any(test, feature = "test-support"))]
 mod test_fixtures;
 
+pub mod plugin;
+
 #[cfg(feature = "test-support")]
 pub mod test_support;
 

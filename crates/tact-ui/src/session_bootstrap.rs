@@ -367,6 +367,15 @@ pub async fn bootstrap_session(
             subagent: Some(plugin_subagent),
             task: Some(plugin_task),
             team: Some(plugin_team),
+            // The view this process draws. `Interactive` means a terminal is
+            // attached, so the TUI plugin is the one; everything else observes.
+            view: Some(match frontend {
+                Frontend::Interactive(_) => {
+                    Box::new(tui::plugin::TuiPlugin::new()) as Box<dyn tact_kernel::plugin::Plugin>
+                }
+                Frontend::Observing(_) => Box::new(crate::view_plugin::HeadlessPlugin::new())
+                    as Box<dyn tact_kernel::plugin::Plugin>,
+            }),
             ..tact::host::HostExtras::default()
         },
     )
