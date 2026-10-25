@@ -29,12 +29,25 @@ pub(crate) fn handle_mcp_command(app: &mut App) -> CommandExecOutcome {
                 clear_input: true,
             }
         }
-        ["/mcp", "list"] => queue_when_idle(app, UserCommand::McpList),
-        ["/mcp", "prompts"] => queue_when_idle(app, UserCommand::McpPrompts { server: None }),
+        ["/mcp", "list"] => queue_when_idle(
+            app,
+            UserCommand::RunCommand {
+                name: "mcp".to_string(),
+                args: String::new(),
+            },
+        ),
+        ["/mcp", "prompts"] => queue_when_idle(
+            app,
+            UserCommand::RunCommand {
+                name: "mcp".to_string(),
+                args: "prompts".to_string(),
+            },
+        ),
         ["/mcp", "prompts", server] => queue_when_idle(
             app,
-            UserCommand::McpPrompts {
-                server: Some((*server).to_owned()),
+            UserCommand::RunCommand {
+                name: "mcp".to_string(),
+                args: format!("prompts {server}"),
             },
         ),
         // Bare `/mcp prompt` is the "I do not know the syntax yet" case, and it
@@ -187,7 +200,7 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::McpList
+            UserCommand::RunCommand { name, args } if name == "mcp" && args.is_empty()
         ));
     }
 
@@ -222,7 +235,8 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::McpPrompts { server: None }
+            UserCommand::RunCommand { name, args }
+                if name == "mcp" && args == "prompts"
         ));
     }
 
@@ -236,7 +250,8 @@ mod tests {
         assert!(outcome.handled);
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::McpPrompts { server: Some(server) } if server == "basic-memory"
+            UserCommand::RunCommand { name, args }
+                if name == "mcp" && args == "prompts basic-memory"
         ));
     }
 

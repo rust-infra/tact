@@ -97,12 +97,12 @@ impl TryFrom<UserCommand> for Command {
             // OAuth authorization for a remote MCP server is a Tact driver
             // flow (loopback callback + router reload), not a kit command.
             UserCommand::McpAuth { .. } => Err(()),
-            // Listing MCP servers reads the agent's live router, which only
-            // the Tact driver owns; not a kit command.
-            UserCommand::McpList => Err(()),
-            // Same for prompts: the listing and the fetch both read that router,
-            // and running one submits a Tact user turn.
-            UserCommand::McpPrompts { .. } | UserCommand::RunMcpPrompt { .. } => Err(()),
+            // Listing MCP servers reads the agent's live router, which only the
+            // Tact driver owns; not a kit command. `/mcp list` and `/mcp prompts`
+            // travel as `RunCommand { name: "mcp" }`, which the catch-all below
+            // already refuses. Running a prompt still needs this variant: it
+            // submits a Tact user turn.
+            UserCommand::RunMcpPrompt { .. } => Err(()),
             // Hook review reads Tact's hook sources and writes its review store
             // (`~/.tact/hooks-state.json`) — Tact-specific, and deliberately not a
             // generic kit command. It travels as `RunCommand { name: "hooks" }`,

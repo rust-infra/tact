@@ -2026,28 +2026,6 @@ async fn handle_user_command_with_account(
                 ))),
             }
         }
-        UserCommand::McpList => {
-            // Live view: describe what the agent's *current* router holds.
-            // Never reload here — a reconnect would drop live stdio children
-            // and duplicate remote dials just to print a table.
-            match tact::mcp::describe_servers(&agent.mcp_router.server_summaries()) {
-                Ok(views) => agent.emit_update(AgentUpdate::MdInfo(
-                    crate::mcp_cli::render_live_listing(&views),
-                )),
-                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
-                    format!("MCP list failed: {error:#}"),
-                ))),
-            }
-        }
-        UserCommand::McpPrompts { server } => {
-            // Live view, like `McpList`: the router the agent already holds.
-            match agent.mcp_router.list_prompts(server.as_deref()).await {
-                Ok(listing) => agent.emit_update(AgentUpdate::MdInfo(listing)),
-                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
-                    format!("MCP prompts failed: {error:#}"),
-                ))),
-            }
-        }
         UserCommand::RunMcpPrompt {
             server,
             name,
@@ -4079,19 +4057,28 @@ mod tests {
     #[tokio::test]
     async fn mcp_list_emits_the_live_listing_without_reconnecting() {
         install_test_config();
-        let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
-        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
+        let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
+        let (agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
 
-        super::handle_user_command(&mut agent, UserCommand::McpList, &work_dir).await;
-
-        let mut saw_md = false;
-        while let Ok(update) = agent_rx.try_recv() {
-            if let AgentUpdate::MdInfo(md) = update {
-                assert!(md.contains("MCP Servers"), "md: {md}");
-                saw_md = true;
-            }
-        }
-        assert!(saw_md, "McpList must emit MdInfo with the server listing");
+        // `/mcp list` is a catalog command now; drive it the way the loop does,
+        // with a view over this agent's router.
+        let slot: std::sync::Arc<tokio::sync::Mutex<Option<tact::Agent>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(Some(agent)));
+        let catalog = super::builtin_command_catalog(&slot, None, &work_dir);
+        let outcome = catalog
+            .run_async(&tact::command::CommandInvocation {
+                name: "mcp".to_string(),
+                args: "list".to_string(),
+            })
+            .await;
+        let md = match outcome {
+            tact::command::CommandOutcome::Emit(emitted) => match emitted.into_inner() {
+                AgentUpdate::MdInfo(md) => md,
+                other => panic!("expected MdInfo, got {other:?}"),
+            },
+            other => panic!("expected a listing, got {other:?}"),
+        };
+        assert!(md.contains("MCP Servers"), "md: {md}");
     }
 
     /// `/hooks list` reaches the loader and its listing is shown.

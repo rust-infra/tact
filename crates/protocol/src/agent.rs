@@ -697,14 +697,6 @@ pub enum UserCommand {
     /// (triggered by `/mcp auth <server>`). On success the driver reloads the
     /// MCP router so the server becomes usable without restarting.
     McpAuth { server: String },
-    /// List the configured MCP servers with their live status (triggered by
-    /// `/mcp list`). The driver renders it from the agent's **already-connected**
-    /// router, so it never reconnects and cannot disturb in-flight work.
-    McpList,
-    /// List the prompts connected servers publish (triggered by
-    /// `/mcp prompts [server]`). Read-only; the driver answers it from the
-    /// agent's **already-connected** router, like [`UserCommand::McpList`].
-    McpPrompts { server: Option<String> },
     /// Fetch one MCP prompt and run it (triggered by
     /// `/mcp prompt <server> <name> [key=value …]`). The driver owns the fetch
     /// because only it can see the router, and submits the rendered messages
