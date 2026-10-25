@@ -16,7 +16,7 @@ use tact::{
     goal::{
         Goal, GoalCreate, GoalCriterion, GoalEvent, GoalEventKind, GoalEventSource,
         GoalEvidenceUpdate, GoalStatus, GoalUpdate, GoalVerification, GoalVerificationKind,
-        GoalVerifier, SharedGoalManager, new_event_id,
+        SharedGoalManager, new_event_id,
     },
     store::goal_store::GoalStoreError,
     task::SharedTaskManager,
@@ -1610,7 +1610,10 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
     let runner = GoalRunner::new(
         agent.tool_context.goal_manager.clone(),
         agent_goal_limits(agent),
-    );
+    )
+    // The policy comes from the registry, so a host that gates completion
+    // differently is obeyed here rather than only in its own entry points.
+    .with_acceptance(acceptance_policy_for(agent));
     if let Err(error) = runner.run_once(agent, goal_id).await {
         emit_goal_error(
             &agent.runtime.events,
@@ -1766,7 +1769,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
         );
         return;
     }
-    let verification = GoalVerifier::verify(&candidate);
+    let verification = acceptance_policy_for(agent).verify(&candidate);
     let mut updates = vec![(
         first,
         goal_event(
@@ -1827,7 +1830,8 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
         }
         GoalVerification::Rejected { .. } => {
             clear_cancel_for_goal_activation(agent);
-            let runner = GoalRunner::new(manager.clone(), agent_goal_limits(agent));
+            let runner = GoalRunner::new(manager.clone(), agent_goal_limits(agent))
+                .with_acceptance(acceptance_policy_for(agent));
             if let Err(error) = runner.run_once(agent, goal_id).await {
                 emit_goal_error(
                     &agent.runtime.events,
@@ -2068,6 +2072,16 @@ async fn handle_user_command_with_account(
         },
         _ => {}
     }
+}
+
+/// The acceptance policy the agent's host installed.
+///
+/// Falls back to the built-in evidence policy when no `GoalPlugin` is registered,
+/// which only happens in a fixture: the host always installs one, and a run that
+/// silently had no policy would accept on no evidence.
+fn acceptance_policy_for(agent: &tact::Agent) -> std::sync::Arc<dyn tact::goal::AcceptancePolicy> {
+    tact::goal::acceptance_policy(agent.services())
+        .unwrap_or_else(|_| std::sync::Arc::new(tact::goal::EvidencePolicy))
 }
 
 /// Awaits `auth` while forwarding its progress lines to `emit` as they arrive.

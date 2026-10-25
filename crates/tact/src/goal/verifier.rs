@@ -252,3 +252,178 @@ mod tests {
         assert_eq!(GoalVerifier::verify(&goal), GoalVerification::Verified);
     }
 }
+
+/// The acceptance decision, as a replaceable policy.
+///
+/// `GoalVerifier::verify` is the built-in one and stays a pure function. The trait
+/// exists because *how* a Goal proves it is done is the domain's policy boundary: a
+/// host that gates completion on a linter, a test command or an external reviewer
+/// installs its own policy instead of forking the runner.
+pub trait AcceptancePolicy: Send + Sync {
+    /// Decide whether `goal` may be accepted.
+    fn verify(&self, goal: &Goal) -> GoalVerification;
+}
+
+/// The built-in evidence policy: the decision `GoalVerifier::verify` has always
+/// made.
+pub struct EvidencePolicy;
+
+impl AcceptancePolicy for EvidencePolicy {
+    fn verify(&self, goal: &Goal) -> GoalVerification {
+        GoalVerifier::verify(goal)
+    }
+}
+
+/// Goals, contributed as a plugin.
+///
+/// The store and the runner are not here: the store is already a trait chosen when
+/// the manager is opened, and the runner is the loop. What this replaces is the
+/// acceptance policy — the part a host legitimately disagrees about.
+pub struct GoalPlugin {
+    policy: std::sync::Arc<dyn AcceptancePolicy>,
+}
+
+impl GoalPlugin {
+    /// A plugin over the given acceptance policy.
+    pub fn new(policy: std::sync::Arc<dyn AcceptancePolicy>) -> Self {
+        Self { policy }
+    }
+
+    /// The built-in evidence policy, which is what a normal host wants.
+    pub fn evidence() -> Self {
+        Self::new(std::sync::Arc::new(EvidencePolicy))
+    }
+}
+
+#[async_trait::async_trait]
+impl tact_kernel::plugin::Plugin for GoalPlugin {
+    fn manifest(&self) -> tact_kernel::plugin::PluginManifest {
+        tact_kernel::plugin::PluginManifest::new(
+            tact_kernel::plugin::PluginId::new("builtin.goal").expect("a literal id"),
+            "Goals",
+            env!("CARGO_PKG_VERSION"),
+            tact_kernel::plugin::PluginKind::Capability,
+            "Durable Goals: criteria, evidence and the acceptance decision",
+        )
+    }
+
+    fn register(&self, registrar: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
+        registrar.service(std::sync::Arc::new(AcceptanceHandle(self.policy.clone())))
+    }
+}
+
+/// The policy a [`GoalPlugin`] provided.
+#[derive(Clone)]
+pub struct AcceptanceHandle(pub std::sync::Arc<dyn AcceptancePolicy>);
+
+impl std::ops::Deref for AcceptanceHandle {
+    type Target = dyn AcceptancePolicy;
+
+    fn deref(&self) -> &Self::Target {
+        self.0.as_ref()
+    }
+}
+
+/// The acceptance policy a host resolved from its registry.
+///
+/// # Errors
+///
+/// Returns an error when no `GoalPlugin` was installed. A caller about to accept a
+/// Goal must be told it has no policy rather than silently accepting on no
+/// evidence.
+pub fn acceptance_policy(
+    services: &tact_kernel::service::ServiceRegistry,
+) -> anyhow::Result<std::sync::Arc<dyn AcceptancePolicy>> {
+    services
+        .get::<AcceptanceHandle>()
+        .map(|handle| handle.0.clone())
+        .ok_or_else(|| anyhow::anyhow!("no acceptance policy installed; install GoalPlugin"))
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+    use tact_kernel::capability::CapabilityFilter;
+    use tact_kernel::plugin::PluginHost;
+
+    /// A policy that rejects everything, to prove replacement reaches the caller.
+    struct AlwaysRejects;
+
+    impl AcceptancePolicy for AlwaysRejects {
+        fn verify(&self, _goal: &Goal) -> GoalVerification {
+            GoalVerification::Rejected {
+                criteria: vec!["forced".to_string()],
+            }
+        }
+    }
+
+    fn goal() -> Goal {
+        Goal::new(crate::goal::GoalCreate {
+            title: "Plugin test goal".to_string(),
+            objective: "Exercise the policy port".to_string(),
+            criteria: Vec::new(),
+        })
+        .expect("valid goal")
+    }
+
+    /// The plugin registers a policy the host can resolve.
+    #[tokio::test]
+    async fn the_plugin_provides_a_resolvable_policy() {
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(GoalPlugin::evidence()).await.unwrap();
+        let runtime = host.seal().await.unwrap();
+        assert!(acceptance_policy(runtime.services()).is_ok());
+    }
+
+    /// A host with no plugin is told so by name.
+    #[test]
+    fn a_missing_plugin_is_an_error_that_names_it() {
+        let registry = tact_kernel::service::ServiceRegistry::default();
+        let error = match acceptance_policy(&registry) {
+            Ok(_) => panic!("no policy was installed, so this must fail"),
+            Err(error) => error,
+        };
+        assert!(format!("{error}").contains("GoalPlugin"), "{error}");
+    }
+
+    /// The built-in policy is the pure function.
+    ///
+    /// Nothing about the trait may change the default decision — that is the whole
+    /// point of keeping `GoalVerifier::verify` as the body.
+    #[test]
+    fn the_builtin_policy_agrees_with_the_pure_function() {
+        let goal = goal();
+        assert_eq!(
+            EvidencePolicy.verify(&goal),
+            GoalVerifier::verify(&goal),
+            "the default must not drift from the function it wraps"
+        );
+    }
+
+    /// A replacement policy is what the host gets.
+    #[tokio::test]
+    async fn a_replacement_policy_is_what_the_host_gets() {
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(GoalPlugin::new(std::sync::Arc::new(AlwaysRejects)))
+            .await
+            .unwrap();
+        let runtime = host.seal().await.unwrap();
+        let policy = acceptance_policy(runtime.services()).unwrap();
+        assert_eq!(
+            policy.verify(&goal()),
+            GoalVerification::Rejected {
+                criteria: vec!["forced".to_string()]
+            },
+            "the installed policy decides, not the built-in one"
+        );
+    }
+
+    /// The manifest says what it contributes.
+    #[test]
+    fn the_manifest_says_what_it_is() {
+        use tact_kernel::plugin::Plugin;
+        let manifest = GoalPlugin::evidence().manifest();
+        assert_eq!(manifest.id.as_str(), "builtin.goal");
+        assert_eq!(manifest.kind, tact_kernel::plugin::PluginKind::Capability);
+    }
+}

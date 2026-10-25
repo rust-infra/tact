@@ -28,8 +28,7 @@ use tact::agent::Agent;
 pub use tact::goal::GoalLimits;
 use tact::goal::{
     GOAL_CONTEXT_CLOSE_TAG, GOAL_CONTEXT_OPEN_TAG, Goal, GoalEvent, GoalEventKind, GoalRun,
-    GoalRunOutcome, GoalStatus, GoalUpdate, GoalVerification, GoalVerifier, SharedGoalManager,
-    new_event_id,
+    GoalRunOutcome, GoalStatus, GoalUpdate, GoalVerification, SharedGoalManager, new_event_id,
 };
 use tact::store::goal_store::{GoalStoreError, LeaseToken};
 use tact::task::TaskRecord;
@@ -377,6 +376,12 @@ pub struct GoalRunner {
     /// nothing said why. Every surface that has a UI sets this; a headless
     /// caller leaves it empty and stays silent.
     events: UpdateSink,
+    /// How a proposed completion is judged.
+    ///
+    /// Held rather than resolved per call: the registry is not reachable from the
+    /// runner, which is spawned as a task, and resolving once is what makes a
+    /// replacement visible for the whole run instead of midway.
+    acceptance: std::sync::Arc<dyn tact::goal::AcceptancePolicy>,
     /// Ceiling on activations per run. Only tests lower it; see
     /// [`MAX_ACTIVATION_CYCLES`] for why a ceiling exists at all.
     max_cycles: u32,
@@ -390,7 +395,22 @@ impl GoalRunner {
             owner: unique_owner(DEFAULT_OWNER),
             events: UpdateSink::default(),
             max_cycles: MAX_ACTIVATION_CYCLES,
+            acceptance: std::sync::Arc::new(tact::goal::EvidencePolicy),
         }
+    }
+
+    /// Install the acceptance policy the runner decides with.
+    ///
+    /// `new` uses the built-in evidence policy so an existing caller keeps its
+    /// behaviour; the composition root replaces it with whatever the registry
+    /// holds, which is how a host swaps *how* a Goal proves it is done.
+    #[must_use]
+    pub fn with_acceptance(
+        mut self,
+        policy: std::sync::Arc<dyn tact::goal::AcceptancePolicy>,
+    ) -> Self {
+        self.acceptance = policy;
+        self
     }
 
     /// Routes the runner's notices to a UI channel.
@@ -1312,7 +1332,7 @@ impl GoalRunner {
 
         // Verify a freshly loaded Goal: the activation may have changed it.
         let fresh = self.goal_manager.get(&goal.id).await?;
-        Ok(match GoalVerifier::verify(&fresh) {
+        Ok(match self.acceptance.verify(&fresh) {
             // Only a verifier decision reaches `succeed()`, and only through
             // `Running → Verifying → Succeeded`. A Goal with no required
             // criteria verifies vacuously; the finish path labels that

@@ -131,6 +131,12 @@ pub struct HostExtras {
     /// `None` uses the project's configuration files, which is what a normal host
     /// wants; a host that keeps them elsewhere installs its own `McpPlugin` instead.
     pub mcp_config: Option<std::sync::Arc<dyn crate::mcp::McpConfigSource>>,
+    /// How a Goal proves it is done.
+    ///
+    /// `None` uses the built-in evidence policy, which is what a normal host wants;
+    /// a host that gates completion on a command or an external reviewer installs
+    /// its own `GoalPlugin` instead.
+    pub acceptance: Option<std::sync::Arc<dyn crate::goal::AcceptancePolicy>>,
 }
 
 /// The assembled pieces, after sealing.
@@ -265,6 +271,12 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
     host.install_sync(match extras.mcp_config.clone() {
         Some(source) => crate::mcp::McpPlugin::new(source),
         None => crate::mcp::McpPlugin::project_files(),
+    })?;
+    // Goals always install, with the evidence policy as the default: the runner
+    // asks the registry, so a host with no plugin would have nothing to ask.
+    host.install_sync(match extras.acceptance.clone() {
+        Some(policy) => crate::goal::GoalPlugin::new(policy),
+        None => crate::goal::GoalPlugin::evidence(),
     })?;
 
     let skipped = host
@@ -480,6 +492,10 @@ mod tests {
                 // MCP always installs, with the project files as the default
                 // source, so `/mcp list` works on a host that never configured it.
                 "builtin.mcp",
+                // Goals always install, with the evidence policy as the default:
+                // the runner asks the registry, so a host with no plugin would
+                // have nothing to ask.
+                "builtin.goal",
             ]
         );
     }

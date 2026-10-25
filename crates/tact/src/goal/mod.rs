@@ -9,7 +9,10 @@ mod verifier;
 pub mod limits;
 pub mod snapshots;
 
-pub use verifier::{GoalVerification, GoalVerifier};
+pub use verifier::{
+    AcceptanceHandle, AcceptancePolicy, EvidencePolicy, GoalPlugin, GoalVerification, GoalVerifier,
+    acceptance_policy,
+};
 
 use std::fmt;
 
