@@ -307,22 +307,35 @@ fn set_skill_catalog_visibility(app: &mut App, name: &str, show: bool) -> Comman
     // Rebuild the whole set rather than applying a delta: this Vec is what gets
     // written to the config file, and a partial list would silently re-enable
     // everything left out of it.
+    let Some(skills) = app.skills.clone() else {
+        app.add_system_message(msgs.skill_catalog_session_only.to_string());
+        return CommandExecOutcome {
+            handled: true,
+            clear_input: true,
+        };
+    };
     let names = {
-        let mut reg = tact::skill::lock_skills(&app.skill_registry);
-        let mut names: Vec<String> = reg.disabled().iter().cloned().collect();
+        let mut names = skills.disabled();
         if show {
             names.retain(|disabled| disabled != name);
         } else if !names.iter().any(|disabled| disabled == name) {
             names.push(name.to_string());
         }
         names.sort();
-        reg.set_disabled(names.clone());
         names
     };
-
-    {
-        let reg = tact::skill::lock_skills(&app.skill_registry);
-        app.skills_data = super::skills_snapshot_from(&reg);
+    match skills.set_disabled(names.clone()) {
+        Ok(entries) => app.skills_data = entries,
+        Err(error) => {
+            app.add_system_message(
+                msgs.skill_reload_failed_tmpl
+                    .replace("{}", &error.to_string()),
+            );
+            return CommandExecOutcome {
+                handled: true,
+                clear_input: true,
+            };
+        }
     }
 
     let outcome = if !app.ui_config_available() {

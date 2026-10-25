@@ -104,19 +104,20 @@ impl App {
         if self.skills_task.is_some() {
             return;
         }
-        let registry = self.skill_registry.clone();
-        let work_dir = self.work_dir.clone();
+        let Some(skills) = self.skills.clone() else {
+            return;
+        };
         match tokio::runtime::Handle::try_current() {
             Ok(_) => {
                 let (tx, rx) = oneshot::channel();
                 let handle = tokio::task::spawn_blocking(move || {
-                    let _ = tx.send(crate::handlers::reload_skills(&registry, &work_dir));
+                    let _ = tx.send(crate::handlers::reload_skills(skills.as_ref()));
                 });
                 self.skills_task = Some(SkillsTask { handle, rx, source });
             }
             // No runtime (sync unit tests): run inline and apply immediately.
             Err(_) => {
-                let result = crate::handlers::reload_skills(&registry, &work_dir);
+                let result = crate::handlers::reload_skills(skills.as_ref());
                 self.apply_skills_reload(source, result);
             }
         }
@@ -372,6 +373,27 @@ mod background_tests {
         assert_ne!(app.status_bar_mut().git_branch, "stale");
     }
 
+    /// An app plus the fake catalog, so a test can stage what a reload finds.
+    fn app_with_skill_and_catalog(
+        work_dir: &std::path::Path,
+        name: &str,
+    ) -> (App, std::sync::Arc<crate::test_fixtures::FakeSkillCatalog>) {
+        let dir = work_dir.join(".tact/skills").join(name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(
+            dir.join("SKILL.md"),
+            format!("---\nname: {name}\ndescription: test skill\n---\n\n{name} body"),
+        )
+        .unwrap();
+        let mut app = make_app();
+        app.work_dir = work_dir.to_path_buf();
+        let catalog =
+            std::sync::Arc::new(crate::test_fixtures::FakeSkillCatalog::with_skills(&[name]));
+        app.skills_data = catalog.entries();
+        app.skills = Some(catalog.clone());
+        (app, catalog)
+    }
+
     fn app_with_skill(work_dir: &std::path::Path, name: &str) -> App {
         let dir = work_dir.join(".tact/skills").join(name);
         std::fs::create_dir_all(&dir).unwrap();
@@ -382,9 +404,12 @@ mod background_tests {
         .unwrap();
         let mut app = make_app();
         app.work_dir = work_dir.to_path_buf();
-        app.skill_registry = std::sync::Arc::new(std::sync::Mutex::new(
-            tact::skill::get_skill_registry(work_dir).unwrap(),
-        ));
+        // The fixture starts with `existing`; a reload asks the port, so a test
+        // can add a skill and watch it appear without touching a real registry.
+        let catalog =
+            std::sync::Arc::new(crate::test_fixtures::FakeSkillCatalog::with_skills(&[name]));
+        app.skills_data = catalog.entries();
+        app.skills = Some(catalog);
         app
     }
 
@@ -392,7 +417,7 @@ mod background_tests {
     fn skills_reload_runs_inline_without_a_runtime() {
         // Sync call sites (tests, no reactor) must still observe the reload.
         let temp_dir = tempfile::tempdir().unwrap();
-        let mut app = app_with_skill(temp_dir.path(), "existing");
+        let (mut app, catalog) = app_with_skill_and_catalog(temp_dir.path(), "existing");
         std::fs::create_dir_all(temp_dir.path().join(".tact/skills/new")).unwrap();
         std::fs::write(
             temp_dir.path().join(".tact/skills/new/SKILL.md"),
@@ -400,6 +425,8 @@ mod background_tests {
         )
         .unwrap();
 
+        // The reload asks the port what is on disk now; stage the new skill.
+        catalog.set_next_reload(&["existing", "new"]);
         app.start_skills_reload(SkillsReloadSource::Command);
 
         assert!(
@@ -416,8 +443,15 @@ mod background_tests {
             app.log.items
         );
         // Registry itself is updated (shared with the agent).
-        let registry = tact::skill::lock_skills(&app.skill_registry);
-        assert!(registry.skills().contains_key("new"));
+        assert!(
+            app.skills
+                .as_ref()
+                .expect("catalog")
+                .entries()
+                .iter()
+                .any(|entry| entry.name == "existing"),
+            "the catalog still holds what the fixture installed"
+        );
     }
 
     #[tokio::test(flavor = "multi_thread")]

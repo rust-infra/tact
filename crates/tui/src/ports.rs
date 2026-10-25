@@ -1,0 +1,142 @@
+//! The narrow ports this view needs from its host.
+//!
+//! `tui` used to reach into the extension crate for these: the skill registry,
+//! the session store, voice settings and the marketplace worker all arrived as
+//! `tact::*` types, which is why the view could not be compiled without the
+//! runtime. The traits here are the seam the approved design describes — they
+//! name what the *view* needs (list skills, load history, start recording) in
+//! terms the view already owns, and `tact-ui` implements them over extension
+//! services.
+//!
+//! They are deliberately small. A port that grows a method for every caller
+//! becomes the god object it replaced, so each one answers exactly the questions
+//! the view asks and nothing else.
+
+use agent_tui_kit::state::SkillEntry;
+
+/// What the view needs from the skill catalog.
+///
+/// Listing is the view's whole interest: `/skill list`, the palette, the slash
+/// picker and the disabled marker all read a snapshot, and `/skill reload` and
+/// `/skill enable|disable` ask for a fresh one. The registry's internals — file
+/// discovery, frontmatter parsing, the description budget — stay with the
+/// plugin that owns them.
+pub trait SkillCatalog: Send + Sync {
+    /// Every known skill, including the disabled ones.
+    ///
+    /// Disabled rows are *marked*, not hidden: a row that silently vanishes is
+    /// indistinguishable from a broken install.
+    fn entries(&self) -> Vec<SkillEntry>;
+
+    /// Re-read the catalog from disk and return the refreshed entries.
+    ///
+    /// Blocking on purpose: the caller runs it inside `spawn_blocking`, and
+    /// making the trait async would force every fake in a test to carry a
+    /// runtime.
+    fn reload(&self) -> anyhow::Result<Vec<SkillEntry>>;
+
+    /// The names currently disabled, sorted.
+    ///
+    /// The whole set, not a per-skill query: `/skill disable` rebuilds the list
+    /// it writes to config from this, and a partial list would silently
+    /// re-enable everything it left out.
+    fn disabled(&self) -> Vec<String>;
+
+    /// Replace the disabled set and return the refreshed entries.
+    fn set_disabled(&self, names: Vec<String>) -> anyhow::Result<Vec<SkillEntry>>;
+
+    /// The catalog rendered for the system prompt.
+    ///
+    /// Empty for a catalog that has nothing to say; the view shows it in the
+    /// prompt-inspection popup.
+    fn description(&self) -> String;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn entry(name: &str, disabled: bool) -> SkillEntry {
+        SkillEntry {
+            name: name.to_string(),
+            description: format!("{name} description"),
+            body: String::new(),
+            dir: format!("/skills/{name}"),
+            disabled,
+        }
+    }
+
+    /// The view's production code reaches skills only through this port.
+    ///
+    /// This is the property that lets `tui` be compiled without the extension
+    /// crate: the registry, its discovery rules and its frontmatter parsing stay
+    /// with the plugin that owns them. A `tact::skill` in the production region
+    /// would quietly restore the edge the port exists to remove.
+    #[test]
+    fn production_code_reaches_skills_only_through_the_port() {
+        let mut offenders = Vec::new();
+        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))
+            .expect("the source directory is readable")
+        {
+            let path = entry.expect("a directory entry").path();
+            if path.is_dir() {
+                continue;
+            }
+            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                continue;
+            }
+            let text = std::fs::read_to_string(&path).expect("a readable source file");
+            // The test modules may still use the real registry to build fixtures;
+            // what matters is that production code does not.
+            let production = text.split("#[cfg(test)]").next().unwrap_or_default();
+            if production.contains("tact::skill") {
+                offenders.push(
+                    path.file_name()
+                        .and_then(|name| name.to_str())
+                        .unwrap_or_default()
+                        .to_string(),
+                );
+            }
+        }
+        assert!(
+            offenders.is_empty(),
+            "these files reach into tact::skill from production code: {offenders:?}"
+        );
+    }
+
+    /// A catalog keeps the disabled rows and marks them.
+    ///
+    /// This is the contract `/skill list` depends on: hiding a disabled skill
+    /// would make a deliberate user choice look like a missing install.
+    #[test]
+    fn disabled_skills_are_listed_not_hidden() {
+        struct Catalog;
+        impl SkillCatalog for Catalog {
+            fn entries(&self) -> Vec<SkillEntry> {
+                vec![entry("enabled", false), entry("off", true)]
+            }
+            fn reload(&self) -> anyhow::Result<Vec<SkillEntry>> {
+                Ok(self.entries())
+            }
+            fn disabled(&self) -> Vec<String> {
+                vec!["off".to_string()]
+            }
+            fn set_disabled(&self, _names: Vec<String>) -> anyhow::Result<Vec<SkillEntry>> {
+                Ok(self.entries())
+            }
+            fn description(&self) -> String {
+                String::new()
+            }
+        }
+
+        let catalog = Catalog;
+        let entries = catalog.entries();
+        assert_eq!(entries.len(), 2, "both skills are listed");
+        assert!(
+            entries
+                .iter()
+                .any(|entry| entry.name == "off" && entry.disabled),
+            "the disabled one is present and marked"
+        );
+    }
+}

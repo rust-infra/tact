@@ -150,9 +150,9 @@ impl App {
             account: AccountState::default(),
             skills_description,
             skills_data,
-            skill_registry: std::sync::Arc::new(std::sync::Mutex::new(
-                tact::skill::SkillRegistry::new(std::iter::empty::<std::path::PathBuf>()),
-            )),
+            // No catalog until the host supplies one; every reader treats
+            // `None` as "no skills", which is what a bare fixture wants.
+            skills: None,
             session_store: None,
             spinner_frame: 0,
             loading_idx: None,

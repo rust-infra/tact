@@ -272,9 +272,25 @@ the first implementation plan is
     that no longer fits raises `max_tokens`), so the view re-reads after writing.
     That refresh is `App::refresh_config_snapshot`, named so the reason lives in
     one place instead of at each call site.
-- Still untouched on the view side: `tui` depends on `tact` and `tact_llm`, and
-  slash commands still dispatch through the `SlashCommand` enum rather than a
-  catalog. That is the next large change.
+  - Skills are behind a TUI-side port now. `crates/tui/src/ports.rs` declares
+    `SkillCatalog` (entries / reload / disabled / set_disabled / description),
+    `App` holds `Option<Arc<dyn SkillCatalog>>` instead of the extension crate's
+    `SharedSkillRegistry`, and `tact-ui`'s `view_ports::RuntimeSkillCatalog`
+    implements it over the *same* shared registry the agent's `ToolContext`
+    holds — so a reload or a disable reaches both sides at once. `tui` production
+    code went from 20 `tact::skill` references to 0, pinned by a source scan.
+  - The port is deliberately small. A method per caller would recreate the god
+    object it replaced, and `reload` stays synchronous because making it async
+    would force every test fake to carry a runtime. Two behaviours the tests pin:
+    a disabled skill stays listed and marked (hiding it makes a deliberate choice
+    look like a broken install), and `set_disabled` replaces the whole set rather
+    than appending (the list is what gets written to config, so a partial write
+    silently re-enables everything it left out).
+- Still untouched on the view side: `tui` still depends on `tact` for `voice`,
+  `goal`, `plugin`, `consts`, `hook`, `store` and `ui_responder`, and on
+  `tact_llm` for message/model types; slash commands still dispatch through the
+  `SlashCommand` enum rather than a catalog. Those are the remaining Phase 4
+  pieces.
 - Phase 3's remaining half: `CompactionPlugin`, `AgentPlugin`, `ChatPlugin`.
   Compaction cannot be extracted as it stands: the whole trigger/threshold/
   recovery path is methods on `Agent`, so a plugin would have to own the loop.

@@ -9,6 +9,7 @@ pub mod plugin_cli;
 pub mod session_lock;
 pub mod sessions;
 pub mod test_support;
+pub mod view_ports;
 
 mod account;
 mod headless;

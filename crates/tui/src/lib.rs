@@ -29,6 +29,7 @@ pub mod test_support;
 
 #[cfg(feature = "test-support")]
 mod headless_loop;
+pub mod ports;
 
 use std::{io, path::PathBuf, time::Duration};
 
@@ -208,7 +209,7 @@ pub struct TuiConfig {
     pub skills_data: Vec<SkillEntry>,
     /// Shared session store used to inspect persisted request payloads.
     pub session_store: tact::store::DynSessionStore,
-    pub skill_registry: tact::skill::SharedSkillRegistry,
+    pub skills: std::sync::Arc<dyn ports::SkillCatalog>,
     /// Authoritative in-process pending UI request broker. The TUI reconciles
     /// from `snapshot()` instead of trusting a single `RequestSelect` event.
     pub pending_ui: tact::ui_responder::UiResponder,
@@ -249,7 +250,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
         permission_mode,
         skills_description,
         skills_data,
-        skill_registry,
+        skills,
         session_store,
         pending_ui,
         voice,
@@ -296,7 +297,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.set_ui_config_path(ui_config_path);
     app.set_hook_output(hook_output);
     app.set_pending_ui(pending_ui);
-    app.skill_registry = skill_registry;
+    app.skills = Some(skills);
     app.session_store = Some(session_store);
     app.model_context_window = model_context_window;
     app.voice_parsed_keybind = voice_parsed_keybind;

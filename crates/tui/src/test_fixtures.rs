@@ -19,6 +19,128 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::widgets::state::App;
 
+/// An in-memory skill catalog for tests.
+///
+/// The view talks to a port now, so a fixture does not need the extension
+/// crate's registry (which would also scan the developer's global skill
+/// directory). Entries are whatever the test installs, and `reload` returns the
+/// same set unless the test replaces it.
+#[derive(Default, Clone)]
+pub struct FakeSkillCatalog {
+    current: std::sync::Arc<std::sync::Mutex<Vec<crate::SkillEntry>>>,
+    off: std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    /// What the next `reload` discovers.
+    ///
+    /// Separate from `current` so a test can say "the filesystem gained a
+    /// skill" without the catalog already showing it: a reload that returned
+    /// `current` would make every reload assertion vacuous.
+    next_reload: std::sync::Arc<std::sync::Mutex<Option<Vec<crate::SkillEntry>>>>,
+}
+
+impl FakeSkillCatalog {
+    /// A catalog holding `names`, none disabled.
+    pub fn with_skills(names: &[&str]) -> Self {
+        let catalog = Self::default();
+        let entries = names
+            .iter()
+            .map(|name| crate::SkillEntry {
+                name: (*name).to_string(),
+                description: format!("{name} description"),
+                body: String::new(),
+                dir: format!("/skills/{name}"),
+                disabled: false,
+            })
+            .collect();
+        *catalog.current.lock().expect("entries lock") = entries;
+        catalog
+    }
+
+    /// Replace the entries, marking the ones named in `disabled`.
+    pub fn set_skills(&self, names: &[&str], disabled: &[&str]) {
+        let entries = names
+            .iter()
+            .map(|name| crate::SkillEntry {
+                name: (*name).to_string(),
+                description: format!("{name} description"),
+                body: String::new(),
+                dir: format!("/skills/{name}"),
+                disabled: disabled.contains(name),
+            })
+            .collect();
+        *self.current.lock().expect("entries lock") = entries;
+        *self.off.lock().expect("disabled lock") =
+            disabled.iter().map(|name| (*name).to_string()).collect();
+    }
+
+    /// The entries this catalog currently holds.
+    ///
+    /// Inherent rather than trait-only so a test can read them without bringing
+    /// `SkillCatalog` into scope just to call a method.
+    pub fn entries(&self) -> Vec<crate::SkillEntry> {
+        self.current.lock().expect("entries lock").clone()
+    }
+
+    /// Make the next `reload` discover `names` (none disabled).
+    pub fn set_next_reload(&self, names: &[&str]) {
+        let entries = names
+            .iter()
+            .map(|name| crate::SkillEntry {
+                name: (*name).to_string(),
+                description: format!("{name} description"),
+                body: String::new(),
+                dir: format!("/skills/{name}"),
+                disabled: false,
+            })
+            .collect();
+        *self.next_reload.lock().expect("next reload lock") = Some(entries);
+    }
+
+    /// Whether `name` is currently marked disabled.
+    pub fn is_disabled(&self, name: &str) -> bool {
+        self.off
+            .lock()
+            .expect("disabled lock")
+            .iter()
+            .any(|disabled| disabled == name)
+    }
+}
+
+impl crate::ports::SkillCatalog for FakeSkillCatalog {
+    fn entries(&self) -> Vec<crate::SkillEntry> {
+        Self::entries(self)
+    }
+
+    fn reload(&self) -> anyhow::Result<Vec<crate::SkillEntry>> {
+        if let Some(entries) = self.next_reload.lock().expect("next reload lock").take() {
+            *self.current.lock().expect("entries lock") = entries;
+        }
+        Ok(self.entries())
+    }
+
+    fn disabled(&self) -> Vec<String> {
+        let mut names = self.off.lock().expect("disabled lock").clone();
+        names.sort();
+        names
+    }
+
+    fn set_disabled(&self, names: Vec<String>) -> anyhow::Result<Vec<crate::SkillEntry>> {
+        *self.off.lock().expect("disabled lock") = names.clone();
+        let mut entries = self.current.lock().expect("entries lock");
+        for entry in entries.iter_mut() {
+            entry.disabled = names.iter().any(|name| name == &entry.name);
+        }
+        Ok(entries.clone())
+    }
+
+    fn description(&self) -> String {
+        Self::entries(self)
+            .iter()
+            .map(|entry| format!("- {}: {}", entry.name, entry.description))
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+}
+
 /// An app under test, still holding the channels it talks through.
 pub struct TestApp {
     /// The app itself. Public so a render test can take it and drop the rest.

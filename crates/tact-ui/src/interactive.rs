@@ -85,6 +85,9 @@ async fn run_interactive_locked(
     // The agent built below also needs these after the TUI closure moves the
     // originals, so take clones now.
     let agent_skill_registry = skill_registry.clone();
+    // The catalog adapter rescans from this path, so it must be captured before
+    // `tact_path` moves into the agent build below.
+    let tui_skill_work_dir = tact_path.workdir().to_path_buf();
     let agent_session_id = session_id.clone();
     let agent_session_store = session_store.clone();
 
@@ -149,7 +152,7 @@ async fn run_interactive_locked(
                     })
                     .collect()
             },
-            skill_registry,
+            skills: crate::view_ports::skill_catalog(skill_registry, tui_skill_work_dir),
             voice: config_snapshot.voice.clone(),
             voice_parsed_keybind: config_snapshot
                 .voice

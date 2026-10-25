@@ -3,10 +3,7 @@ use std::{
     path::PathBuf,
 };
 
-use tact::{
-    plugin::{PluginEvent, PluginRequest},
-    skill::SharedSkillRegistry,
-};
+use tact::plugin::{PluginEvent, PluginRequest};
 use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -272,8 +269,12 @@ pub struct App {
     pub(crate) skills_description: String,
     /// Skills for `/name` slash + palette picker.
     pub(crate) skills_data: Vec<SkillEntry>,
-    /// Same mutex as agent `ToolContext.skill_registry` (interactive mode).
-    pub(crate) skill_registry: SharedSkillRegistry,
+    /// The host's skill catalog, when it supplied one.
+    ///
+    /// A port rather than the extension crate's registry: the view lists,
+    /// reloads and toggles skills, and none of that needs the discovery or
+    /// frontmatter machinery behind it.
+    pub(crate) skills: Option<std::sync::Arc<dyn crate::ports::SkillCatalog>>,
     /// Shared session store used to inspect persisted request payloads.
     pub(crate) session_store: Option<tact::store::DynSessionStore>,
     /// Animation tick, advanced once per painted frame in an active state.

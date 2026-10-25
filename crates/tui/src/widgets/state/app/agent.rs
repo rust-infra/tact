@@ -1207,14 +1207,43 @@ mod lifecycle_tests {
         .unwrap();
     }
 
+    /// An app whose skill port holds `existing` and can be reloaded.
+    ///
+    /// The fake catalog answers `reload` from a list the test controls, so a
+    /// plugin event's refresh is observable without touching the filesystem.
     fn app_with_registry(work_dir: &std::path::Path) -> App {
         write_skill(work_dir, "existing");
         let mut app = make_app();
         app.work_dir = work_dir.to_path_buf();
-        app.skill_registry = std::sync::Arc::new(std::sync::Mutex::new(
-            tact::skill::get_skill_registry(work_dir).unwrap(),
-        ));
+        let catalog = crate::test_fixtures::FakeSkillCatalog::with_skills(&["existing"]);
+        app.skills_data = catalog.entries();
+        app.skills = Some(std::sync::Arc::new(catalog));
         app
+    }
+
+    /// The same app, plus the fake catalog so a test can stage a reload.
+    fn app_with_catalog(
+        work_dir: &std::path::Path,
+    ) -> (App, std::sync::Arc<crate::test_fixtures::FakeSkillCatalog>) {
+        write_skill(work_dir, "existing");
+        let mut app = make_app();
+        app.work_dir = work_dir.to_path_buf();
+        let catalog = std::sync::Arc::new(crate::test_fixtures::FakeSkillCatalog::with_skills(&[
+            "existing",
+        ]));
+        app.skills_data = catalog.entries();
+        app.skills = Some(catalog.clone());
+        (app, catalog)
+    }
+
+    fn skill_names(app: &App) -> Vec<String> {
+        app.skills
+            .as_ref()
+            .expect("catalog")
+            .entries()
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect()
     }
 
     #[test]
@@ -1230,9 +1259,9 @@ mod lifecycle_tests {
             refresh_skills: false,
         });
 
-        let registry = tact::skill::lock_skills(&app.skill_registry);
-        assert!(registry.skills().contains_key("existing"));
-        assert!(!registry.skills().contains_key("new"));
+        let names = skill_names(&app);
+        assert!(names.iter().any(|name| name == "existing"));
+        assert!(!names.iter().any(|name| name == "new"));
     }
 
     #[test]
@@ -1249,16 +1278,18 @@ mod lifecycle_tests {
             detail: "technical detail".into(),
         });
 
-        let registry = tact::skill::lock_skills(&app.skill_registry);
-        assert!(registry.skills().contains_key("existing"));
-        assert!(!registry.skills().contains_key("new"));
+        let names = skill_names(&app);
+        assert!(names.iter().any(|name| name == "existing"));
+        assert!(!names.iter().any(|name| name == "new"));
     }
 
     #[test]
     fn refreshing_plugin_success_reloads_the_registry() {
         let temp_dir = tempfile::tempdir().unwrap();
-        let mut app = app_with_registry(temp_dir.path());
+        let (mut app, catalog) = app_with_catalog(temp_dir.path());
         write_skill(temp_dir.path(), "new");
+        // The port is what knows the disk changed: stage what the reload finds.
+        catalog.set_next_reload(&["existing", "new"]);
 
         app.handle_plugin_event(PluginEvent::Succeeded {
             result: PluginResult::Installed {
@@ -1268,9 +1299,9 @@ mod lifecycle_tests {
             refresh_skills: true,
         });
 
-        let registry = tact::skill::lock_skills(&app.skill_registry);
-        assert!(registry.skills().contains_key("existing"));
-        assert!(registry.skills().contains_key("new"));
+        let names = skill_names(&app);
+        assert!(names.iter().any(|name| name == "existing"));
+        assert!(names.iter().any(|name| name == "new"));
     }
 
     #[test]

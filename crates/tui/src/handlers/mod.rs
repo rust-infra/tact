@@ -761,37 +761,13 @@ fn skills_table_markdown(
 /// it inside `spawn_blocking` (see `App::start_skills_reload`). Kept synchronous
 /// and lock-scoped: no lock is ever held across an `.await`.
 pub(crate) fn reload_skills(
-    registry: &tact::skill::SharedSkillRegistry,
-    work_dir: &std::path::Path,
+    skills: &dyn crate::ports::SkillCatalog,
 ) -> Result<crate::widgets::state::app::background::SkillsSnapshot, String> {
     use crate::widgets::state::app::background::SkillsSnapshot;
 
-    let mut reg = tact::skill::lock_skills(registry);
-    // Keep search roots in sync with the current workdir (tests may set work_dir late).
-    *reg = tact::skill::get_skill_registry(work_dir).map_err(|e| e.to_string())?;
-    let description = reg.describe_available();
-    let data = skills_snapshot_from(&reg);
+    let data = skills.reload().map_err(|e| e.to_string())?;
+    let description = skills.description();
     Ok(SkillsSnapshot { description, data })
-}
-
-/// Project a registry into the TUI's `SkillEntry` list — no disk scan.
-///
-/// Shared by `/skill reload` (which rescans first) and `/skill disable` /
-/// `/skill enable` (which only flip the registry's disabled set), so the two
-/// cannot disagree about what the list shows or which rows are marked.
-pub(crate) fn skills_snapshot_from(
-    reg: &tact::skill::SkillRegistry,
-) -> Vec<crate::widgets::state::SkillEntry> {
-    reg.skills()
-        .values()
-        .map(|doc| crate::widgets::state::SkillEntry {
-            name: doc.manifest.name.clone(),
-            description: doc.manifest.description.clone(),
-            body: doc.body.clone(),
-            dir: doc.dir.display().to_string(),
-            disabled: reg.is_disabled(&doc.manifest.name),
-        })
-        .collect()
 }
 
 /// Open the `/theme` SelectPopup from the palette / slash command.
@@ -1336,6 +1312,11 @@ mod tests {
     #[test]
     fn skill_command_reload_reports_the_rescan() {
         let (mut app, _rx) = TestApp::new().into_commands();
+        // The port has to exist for a reload to report anything: without a
+        // catalog there is nothing to rescan.
+        app.skills = Some(std::sync::Arc::new(
+            crate::test_fixtures::FakeSkillCatalog::with_skills(&["demo"]),
+        ));
 
         let outcome = run_skill_command(&mut app, "reload");
 
@@ -1369,11 +1350,12 @@ mod tests {
         )
         .unwrap();
 
-        let mut registry = tact::skill::SkillRegistry::new([skills_root]);
-        registry.load_skills().unwrap();
-        *tact::skill::lock_skills(&app.skill_registry) = registry;
-        app.skills_data =
-            super::skills_snapshot_from(&tact::skill::lock_skills(&app.skill_registry));
+        // The view reads a port now; the fixture installs a fake catalog holding
+        // the skill it just wrote, so the test exercises the same path the host
+        // wires up without depending on the extension crate's registry.
+        let catalog = crate::test_fixtures::FakeSkillCatalog::with_skills(&[name]);
+        app.skills_data = catalog.entries();
+        app.skills = Some(std::sync::Arc::new(catalog));
     }
 
     /// `/skill disable` hides from the catalog and marks the row **in the same
@@ -1389,7 +1371,15 @@ mod tests {
 
         assert!(outcome.handled);
         assert!(outcome.clear_input, "the subcommand was consumed");
-        assert!(tact::skill::lock_skills(&app.skill_registry).is_disabled("demo"));
+        assert!(
+            app.skills
+                .as_ref()
+                .expect("catalog")
+                .disabled()
+                .iter()
+                .any(|n| n == "demo"),
+            "the port reports the disabled skill"
+        );
         assert!(
             app.skills_data
                 .iter()
@@ -1400,7 +1390,15 @@ mod tests {
 
         run_skill_command(&mut app, "enable demo");
 
-        assert!(!tact::skill::lock_skills(&app.skill_registry).is_disabled("demo"));
+        assert!(
+            !app.skills
+                .as_ref()
+                .expect("catalog")
+                .disabled()
+                .iter()
+                .any(|n| n == "demo"),
+            "re-enabling clears the flag"
+        );
         assert!(
             app.skills_data
                 .iter()
