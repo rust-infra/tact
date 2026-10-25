@@ -327,3 +327,78 @@ async fn seal_cannot_run_twice() {
         .is_err()
     );
 }
+
+/// A service a plugin provides, retrievable by type after sealing.
+struct OneTicker;
+
+impl OneTicker {
+    fn tick(&self) -> u32 {
+        1
+    }
+}
+
+struct ServicePlugin;
+#[async_trait::async_trait]
+impl Plugin for ServicePlugin {
+    fn manifest(&self) -> PluginManifest {
+        manifest("service.plugin")
+    }
+
+    fn register(&self, reg: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
+        reg.service(std::sync::Arc::new(OneTicker))
+    }
+}
+
+#[tokio::test]
+async fn a_plugin_can_provide_a_typed_service() {
+    let mut host = PluginHost::new(CapabilityFilter::default());
+    host.install(ServicePlugin).await.unwrap();
+    let runtime = host.seal().await.unwrap();
+    // The composition root pulls the *specific* handle it needs by type.
+    let ticker = runtime.services().get::<OneTicker>().expect("provided");
+    assert_eq!(ticker.tick(), 1);
+    assert_eq!(runtime.services().len(), 1);
+    assert!(
+        runtime
+            .services()
+            .provided()
+            .iter()
+            .any(|name| name.ends_with("OneTicker"))
+    );
+    assert_eq!(
+        runtime
+            .services()
+            .provider::<OneTicker>()
+            .map(|id| id.as_str()),
+        Some("service.plugin")
+    );
+}
+
+struct BrokenServicePlugin;
+#[async_trait::async_trait]
+impl Plugin for BrokenServicePlugin {
+    fn manifest(&self) -> PluginManifest {
+        manifest("broken.service")
+    }
+
+    fn register(&self, reg: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
+        reg.service(std::sync::Arc::new(OneTicker))?;
+        // A duplicate provider is a registration error, so nothing is committed.
+        reg.service(std::sync::Arc::new(OneTicker))
+    }
+}
+
+#[tokio::test]
+async fn a_failed_registration_provides_nothing() {
+    let mut host = PluginHost::new(CapabilityFilter::default());
+    let error = host.install(BrokenServicePlugin).await.unwrap_err();
+    assert!(error.to_string().contains("already provided"), "{error}");
+    // `commit` is transactional, so the host survives: no service leaked and the
+    // catalog is unchanged, which is what "nothing was provided" means. Only a
+    // failure inside the plugin's own `register` poisons the host.
+    let runtime = host.seal().await.unwrap();
+    assert!(
+        runtime.services().is_empty(),
+        "a failed commit provides nothing"
+    );
+}

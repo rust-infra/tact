@@ -346,6 +346,7 @@ impl ViewCatalog {
 
 #[derive(Clone, Default)]
 pub struct Catalogs {
+    pub services: crate::service::ServiceRegistry,
     pub tools: ToolCatalog,
     pub commands: CommandCatalog,
     pub prompts: PromptCatalog,
@@ -372,19 +373,40 @@ impl Catalogs {
         for view in batch.views.drain(..) {
             next.views.insert(view)?;
         }
+        for service in batch.services.drain(..) {
+            (service.0)(&mut next.services)?;
+        }
         *self = next;
         Ok(())
     }
 }
 
+/// What one plugin's `register` produced, staged until the commit succeeds.
 #[derive(Default)]
 pub struct ContributionBatch {
     pub tools: Vec<Arc<dyn Tool>>,
     pub commands: Vec<Arc<dyn Command>>,
     pub prompts: Vec<Arc<dyn PromptSection>>,
     pub views: Vec<Arc<dyn View>>,
+    /// Services this plugin provides, recorded at registration.
+    ///
+    /// Staged rather than applied directly so a plugin whose `register` fails
+    /// leaves no half-provided service behind — the same transaction the four
+    /// catalogs get.
+    pub services: Vec<StagedService>,
     pub skipped: Vec<SkippedCapability>,
 }
+
+/// Applies one staged service to the registry.
+///
+/// A closure because the registry is keyed by `T` and the batch cannot name it:
+/// `insert::<T>` is monomorphised at the call site, and this is what carries that
+/// monomorphisation to commit time.
+pub type ApplyService =
+    Box<dyn FnOnce(&mut crate::service::ServiceRegistry) -> anyhow::Result<()> + Send>;
+
+/// A service handle waiting to be committed.
+pub struct StagedService(pub ApplyService);
 
 #[cfg(test)]
 mod tests {

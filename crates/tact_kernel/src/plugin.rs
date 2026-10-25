@@ -145,6 +145,27 @@ impl<'a> Registrar<'a> {
         self.add(id, |batch| batch.prompts.push(Arc::new(section)))
     }
 
+    /// Provide a typed service to whoever installs after this plugin.
+    ///
+    /// Recorded, not published: the host commits it with the rest of the batch,
+    /// so a plugin that fails to register provides nothing. The recipient is
+    /// chosen by the composition root and passed in as a constructor argument —
+    /// this is not a locator that business logic reaches into.
+    pub fn service<T: Send + Sync + 'static>(
+        &mut self,
+        service: std::sync::Arc<T>,
+    ) -> anyhow::Result<()> {
+        let plugin = self.plugin.clone();
+        self.batch
+            .services
+            .push(crate::catalog::StagedService(Box::new(
+                move |registry: &mut crate::service::ServiceRegistry| {
+                    registry.insert(plugin, service)
+                },
+            )));
+        Ok(())
+    }
+
     pub fn view<T: View + 'static>(&mut self, view: T) -> anyhow::Result<()> {
         let id = CapabilityId::new(CapabilityKind::View, view.id());
         self.add(id, |batch| batch.views.push(Arc::new(view)))
@@ -332,6 +353,11 @@ pub struct Runtime {
 }
 
 impl Runtime {
+    /// The services the installed plugins provide.
+    pub fn services(&self) -> &crate::service::ServiceRegistry {
+        &self.catalogs.services
+    }
+
     pub fn tools(&self) -> &ToolCatalog {
         &self.catalogs.tools
     }
