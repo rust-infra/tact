@@ -21,6 +21,7 @@
 
 pub mod agent;
 pub mod background;
+pub mod command;
 pub mod compact;
 pub mod config;
 pub mod consts;

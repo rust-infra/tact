@@ -1,0 +1,119 @@
+//! Built-in slash commands as catalog contributions.
+//!
+//! A command used to live wherever its handler happened to be: `/stats` in the
+//! driver, `/model` in the TUI, each with its own match arm and its own idea of
+//! what the arguments mean. Here a command is one type that owns its metadata,
+//! its argument grammar and its answer, and the kernel's `CommandCatalog` routes
+//! it. The host still renders the answer — a `CommandOutcome::Message` is text,
+//! not a popup — so the command does not need to know which frontend called it.
+//!
+//! Only *host-side* commands live here (a snapshot of local state, a settings
+//! query). A command that needs to drive the agent loop stays on the driver's
+//! side until the loop itself is a plugin, because a command cannot own a
+//! `&mut Agent` through the catalog.
+
+use std::sync::Arc;
+
+use tact_kernel::capability::command::{Command, CommandMeta};
+
+pub mod stats;
+
+pub use stats::StatsCommand;
+
+pub use tact_kernel::capability::command::{CommandInvocation, CommandOutcome};
+
+/// A command whose metadata is fixed and whose body is a closure.
+///
+/// The built-ins are all of this shape: a name, an alias list, and one function
+/// over the arguments. Named `FnCommand` rather than `SimpleCommand` because
+/// what it is *is* a function.
+pub struct FnCommand {
+    meta: CommandMeta,
+    run: Arc<dyn Fn(&str) -> CommandOutcome + Send + Sync>,
+}
+
+impl FnCommand {
+    pub fn new(
+        meta: CommandMeta,
+        run: impl Fn(&str) -> CommandOutcome + Send + Sync + 'static,
+    ) -> Self {
+        Self {
+            meta,
+            run: Arc::new(run),
+        }
+    }
+}
+
+impl Command for FnCommand {
+    fn meta(&self) -> &CommandMeta {
+        &self.meta
+    }
+
+    fn run(&self, invocation: &CommandInvocation) -> CommandOutcome {
+        (self.run)(&invocation.args)
+    }
+}
+
+/// Every host-side command this crate contributes.
+///
+/// A function, not a static table: the commands take state (the stats handle),
+/// so they are built where that state is.
+pub fn builtin_commands(
+    stats: Arc<std::sync::RwLock<crate::stats::SessionStats>>,
+) -> Vec<Arc<dyn Command>> {
+    vec![Arc::new(StatsCommand::new(stats))]
+}
+
+/// A metadata literal with `Runtime` scope, for the built-ins.
+pub(crate) fn runtime_meta(name: &str, aliases: &[&str], summary: &str) -> CommandMeta {
+    CommandMeta {
+        name: name.to_string(),
+        aliases: aliases.iter().map(|alias| (*alias).to_string()).collect(),
+        summary: summary.to_string(),
+        usage: format!("/{name}"),
+        scope: tact_kernel::capability::command::CommandScope::Runtime,
+        needs_args: false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tact_kernel::catalog::CommandCatalog;
+
+    fn catalog() -> CommandCatalog {
+        let mut catalog = CommandCatalog::default();
+        for command in builtin_commands(Arc::new(std::sync::RwLock::new(
+            crate::stats::SessionStats::default(),
+        ))) {
+            catalog.insert(command).unwrap();
+        }
+        catalog
+    }
+
+    #[test]
+    fn every_builtin_command_is_routable_by_name() {
+        let catalog = catalog();
+        assert!(catalog.get("stats").is_some());
+    }
+
+    #[test]
+    fn an_unknown_command_says_so() {
+        let outcome = catalog().run(&CommandInvocation {
+            name: "no-such-command".into(),
+            args: String::new(),
+        });
+        assert!(matches!(outcome, CommandOutcome::Usage(_)), "{outcome:?}");
+    }
+
+    #[test]
+    fn a_routed_command_answers_not_routes_again() {
+        // The catalog's job is to hand the invocation to the owner and return
+        // its answer unchanged; a second dispatch layer is what this replaces.
+        let outcome = catalog().run(&CommandInvocation {
+            name: "stats".into(),
+            args: String::new(),
+        });
+        assert!(matches!(outcome, CommandOutcome::Message(_)), "{outcome:?}");
+    }
+}

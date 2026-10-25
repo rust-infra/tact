@@ -338,15 +338,36 @@ pub async fn run_command_loop_with_account(
                 }
             }
             UserCommand::QueryStats => {
-                // Immediate snapshot: does NOT wait for the running task —
+                // Immediate snapshot: does NOT wait for the running task — the
                 // stats live in an Arc<RwLock<SessionStats>> shared with the
                 // agent, so /stats responds instantly even mid-run. Shown in the
                 // read-out popup, like /background: a snapshot is not
                 // conversation.
-                let stats_text = stats.read_recover().summary();
+                //
+                // The answer comes from the catalog command rather than from a
+                // `summary()` call here, so the text has one owner and the
+                // catalog test covers it.
+                let commands = tact::command::builtin_commands(stats.clone());
+                let outcome = commands
+                    .iter()
+                    .find(|command| command.meta().name == "stats")
+                    .map(|command| {
+                        command.run(&tact::command::CommandInvocation {
+                            name: "stats".to_string(),
+                            args: String::new(),
+                        })
+                    });
+                let source = match outcome {
+                    Some(tact::command::CommandOutcome::Message(text)) => text,
+                    // A `Usage` answer here would mean the catalog lost the
+                    // command's own metadata; fall back to the summary rather
+                    // than showing an argument error the user did not cause.
+                    Some(other) => format!("{other:?}"),
+                    None => stats.read_recover().summary(),
+                };
                 events.send(AgentUpdate::PopupMarkdown {
                     title: "Session Statistics".to_string(),
-                    source: stats_text,
+                    source,
                 });
             }
             UserCommand::QueryBackground(task_id) => {
