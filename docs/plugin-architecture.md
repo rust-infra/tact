@@ -303,12 +303,30 @@ the first implementation plan is
     marketplace package DTOs, the in-band context markers, and the voice
     command/event pair. A view renders or recognizes these, so neither crate
     should own them.
+  - The reverse `UserCommand::UiResponse` path is gone. An answer reaches the
+    runtime only through `InteractionPort`: the variant, the driver's handling
+    arm and the view's fallback are all removed, and `headless_loop`'s
+    auto-confirm routes through the port too. Two fixture invariants came out of
+    it — a seeded port must hold the request its popup belongs to, and answering
+    must *remove* the entry, or the next reconcile reopens a popup the user just
+    answered.
 - Still untouched on the view side: slash commands dispatch through the
-  `SlashCommand` enum rather than a catalog, and the reverse
-  `UserCommand::UiResponse` path is still alive beside `InteractionPort`.
-  `tui`'s own unit tests still build fixtures through `tact`, which is what the
-  dev-dependency exemption is for.
+  `SlashCommand` enum rather than a catalog. `tui`'s own unit tests still build
+  fixtures through `tact`, which is what the dev-dependency exemption is for.
+- Phase 3 has its first runtime plugin and the contracts the rest will need.
+  `tact_kernel::runtime` declares `SessionService` (open / list / close) over a
+  `SessionId` newtype, a neutral `SessionSummary`, `SessionOpen` and an opaque
+  `SessionHandle`; `SessionPlugin` implements it over the durable store and its
+  lock and is installed by the composition root after `builtin.session_store`.
+  Two properties the tests pin: `open` takes the lock it resolved, and `close` is
+  idempotent because a host unwinding through an error path cannot know whether
+  the lock was already released.
 - Phase 3's remaining half: `CompactionPlugin`, `AgentPlugin`, `ChatPlugin`.
+  Their DTOs are the blocker, not the plugins: `AgentService::run` needs a
+  *neutral* message model (`TurnRequest` / `TurnOutcome`), and the spec leaves
+  its fields open while forbidding `tact_llm` types. Defining that model is the
+  next design step, not a mechanical extraction — compaction's triggers,
+  thresholds and recovery all reach through `&mut Agent` into the same state.
   Compaction cannot be extracted as it stands: the whole trigger/threshold/
   recovery path is methods on `Agent`, so a plugin would have to own the loop.
   `StoragePlugin` and `SessionStorePlugin` are installed by the production
