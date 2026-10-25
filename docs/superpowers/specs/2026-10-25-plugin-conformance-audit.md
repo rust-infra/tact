@@ -130,18 +130,29 @@ Catalog commands exist (`/stats`, `/background`, `/goal`) and are contributed by
 variants to 25 by replacing four read-only variants with `RunCommand { name, args }`.
 
 The view's palette now reads the runtime catalog through a `CommandDirectory`
-port, and `/stats` plus `/background` have left the local enum entirely — the
-catalog owns their names, descriptions and dispatch. `execute_palette_command`
+port, and five commands have left the transport entirely: `/stats`,
+`/background`, `/compact`, `/hooks` and `/mcp list|prompts`, plus `/permission`.
+The catalog owns their names, descriptions and dispatch; `execute_palette_command`
 routes local → catalog → skill, so a plugin-contributed command is both listed and
-runnable.
+runnable. `UserCommand` is down from 28 variants to 18.
 
 **Not met:** the spec's checklist line is "no central command enum survives".
-`UserCommand` still carries 25 variants, and the TUI still holds 21 local
-commands. Commands that drive the agent loop (`/goal`'s `create`/`pause`/
-`resume`/`cancel`, `/model`, `/compact`) cannot move until the loop is a
-plugin — the same blocker as item 2. The rest are genuinely view-local
-(`/theme`, `/quit`, `/help`, pickers), which the spec allows: they belong to
-`TuiPlugin`, and no such plugin exists yet (item 6).
+Eighteen variants remain, and they are not one kind:
+
+| Group | Count | Why it is still a transport variant |
+|---|---|---|
+| Goal lifecycle | 8 | Drive the agent loop; needs `GoalService` |
+| Agent reconfiguration | 3 | Setters take `&mut Agent` |
+| Turn control | 3 | `SubmitTask`, `Cancel`, `RunCommand` — the target transport |
+| Runtime control | 2 | `CancelSubagent`, `SubagentFinishedNotification` |
+| Needs the router / a turn | 2 | `McpAuth`, `RunMcpPrompt` |
+| Account | 1 | `QueryBalance` needs the account channel |
+
+Four of these are the spec's named target (`SubmitTask`, `Cancel`,
+`RunCommand`, plus interaction responses already removed). The rest are
+runtime operations a view legitimately issues, not command-line vocabulary —
+which is the distinction the spec draws when it says the transport reduces to
+"user text, cancel and interaction responses".
 
 Verified by: variant count in `crates/protocol/src/agent.rs`.
 
