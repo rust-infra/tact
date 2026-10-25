@@ -12,10 +12,12 @@
 
 pub mod policy_ext;
 pub mod security_service;
+pub mod service;
 pub mod settings;
 
 pub use policy_ext::PermissionPolicyExt;
 pub use security_service::SensitivePathGuard;
+pub use service::ManagerPermissionService;
 
 use std::fmt;
 
@@ -431,11 +433,11 @@ impl PermissionManager {
     fn apply_user_choice(&mut self, choice: UserPermissionChoice, tool_name: &str) -> bool {
         match choice {
             UserPermissionChoice::AllowOnce => {
-                self.consecutive_denials = 0;
+                self.record_allow_once();
                 true
             }
             UserPermissionChoice::Deny => {
-                self.consecutive_denials += 1;
+                self.record_denial(tool_name);
                 false
             }
             UserPermissionChoice::AlwaysAllow => {
@@ -444,6 +446,16 @@ impl PermissionManager {
                 true
             }
         }
+    }
+
+    /// Clear the denial streak after the user approved this call once.
+    pub fn record_allow_once(&mut self) {
+        self.consecutive_denials = 0;
+    }
+
+    /// Count a refusal, so the plan-mode suggestion stays honest.
+    pub fn record_denial(&mut self, _tool_name: &str) {
+        self.consecutive_denials += 1;
     }
 
     pub fn allow_tool(&mut self, tool_name: &str) {
