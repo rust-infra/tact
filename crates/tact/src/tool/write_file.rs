@@ -5,7 +5,7 @@ use crate::tool::{
     PermissionPromptPolicy, PopupPolicy, ResourcePolicy, ToolDomain, ToolMetadata,
     ToolPresentation,
 };
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tact_protocol::ToolVisualKind;
@@ -13,7 +13,7 @@ use tact_protocol::{AgentUpdate, format_bytes};
 use tokio::{fs, io::AsyncWriteExt};
 use tool_refactor_macros::tool;
 
-use crate::tool::{ToolContext, safe_path_allow_missing};
+use crate::tool::{DomainHandles, safe_path_allow_missing};
 
 #[derive(Debug, Deserialize, JsonSchema)]
 pub struct WriteFileInput {
@@ -59,8 +59,16 @@ pub const WRITE_FILE_METADATA: ToolMetadata = ToolMetadata {
 /// - The file path is invalid or escapes the workspace.
 /// - The parent directories cannot be created.
 /// - The file cannot be written or flushed (I/O error).
-pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<String> {
-    let path = safe_path_allow_missing(&ctx.work_dir, &input.path)?;
+pub async fn write_file(handles: DomainHandles, input: WriteFileInput) -> Result<String> {
+    let Some(workspace) = handles.workspace else {
+        return Err(anyhow!("write_file needs a workspace"));
+    };
+    let Some(events) = handles.events else {
+        return Err(anyhow!(
+            "write_file needs an update sink to report progress"
+        ));
+    };
+    let path = safe_path_allow_missing(workspace.root(), &input.path)?;
 
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -99,7 +107,7 @@ pub async fn write_file(ctx: ToolContext, input: WriteFileInput) -> Result<Strin
 
                 if milestone_reached || time_elapsed {
                     let pct = (written * 100 / total) as u64;
-                    ctx.events.send(AgentUpdate::Info(format!(
+                    events.send(AgentUpdate::Info(format!(
                         "Writing {}... {}% ({} / {})",
                         path.display(),
                         pct,

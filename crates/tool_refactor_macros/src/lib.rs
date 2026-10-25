@@ -153,6 +153,7 @@ fn expand_domain_tool(
             "worktree_manager",
             quote!(crate::tool::DomainHandle::WorktreeManager),
         ),
+        ("workspace", quote!(crate::tool::DomainHandle::Workspace)),
     ] {
         if text.contains(&format!(".{field}")) {
             needs.push(variant);
@@ -200,6 +201,9 @@ fn expand_domain_tool(
                     goal_manager: Some(context.goal_manager.clone()),
                     subagent_manager: Some(context.subagent_manager.clone()),
                     worktree_manager: Some(context.worktree_manager.clone()),
+                    workspace: Some(tact_kernel::tool::context::Workspace::new(
+                        context.work_dir.clone(),
+                    )),
                     session_id: context.session_id.clone(),
                     active_goal_id: context.active_goal_id.clone(),
                     events: Some(context.events.clone()),

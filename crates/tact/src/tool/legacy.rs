@@ -236,6 +236,9 @@ impl KernelTool for LegacyToolAdapter {
                     super::DomainHandle::WorktreeManager => {
                         handles.worktree_manager = self.contexts.worktree_manager();
                     }
+                    super::DomainHandle::Workspace => {
+                        handles.workspace = Some(ctx.workspace.clone());
+                    }
                     super::DomainHandle::SessionId => {
                         handles.session_id = ctx.session_id.clone();
                     }
