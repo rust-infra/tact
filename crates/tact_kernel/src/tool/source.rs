@@ -11,7 +11,14 @@ use crate::tool::descriptor::ToolDescriptor;
 #[async_trait]
 pub trait ToolSource: Send + Sync {
     fn id(&self) -> &str;
-    async fn refresh(&self) -> anyhow::Result<()>;
+
+    /// Re-read the source, reporting whether the tool set changed.
+    ///
+    /// The boolean is what keeps the generation honest: a source that re-lists
+    /// nothing new must not bump it, or every call would look "current" because
+    /// the snapshot it compares against was rebuilt on the spot.
+    async fn refresh(&self) -> anyhow::Result<bool>;
+
     fn tools(&self) -> Vec<Arc<dyn Tool>>;
 }
 

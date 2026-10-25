@@ -462,6 +462,12 @@ pub struct Agent {
     /// resources/prompts still use the legacy ladder until their risk is carried
     /// on a descriptor.
     pub tool_executor: std::sync::Arc<tact_kernel::tool::executor::ToolExecutor>,
+    /// The factory every contributed tool maps its context through.
+    ///
+    /// Held so pre-flight can hand it the Agent's *current* `ToolContext`:
+    /// `with_ui_channel` and the per-turn permission/subagent stamps all happen
+    /// after construction.
+    pub tool_contexts: std::sync::Arc<crate::tool::SharedToolContextFactory>,
     pub system_prompt: AgentSystemPrompt,
     pub tool_use_counter: usize,
     /// Optional cap on nested agent-loop turns (set by `spawn_subagent`'s
@@ -484,6 +490,12 @@ pub struct Agent {
     /// provider" — see [`Self::provider_kind`].
     provider_kind: Option<ProviderKind>,
     cached_tool_specs: Vec<ToolSpec>,
+    /// The catalog generation those specs were built from.
+    ///
+    /// Recorded so pre-flight can refuse a call against a tool set the model was
+    /// never shown. Comparing against a freshly rebuilt snapshot would always
+    /// pass, which is what made the guard vacuous.
+    advertised_generation: u64,
 }
 
 impl Agent {
@@ -496,6 +508,8 @@ impl Agent {
         context: &crate::tool::ToolContext,
         permission_manager: &crate::permission::SharedPermissionManager,
         memory_enabled: bool,
+        contexts: std::sync::Arc<crate::tool::SharedToolContextFactory>,
+        ui_available: std::sync::Arc<dyn Fn() -> bool + Send + Sync>,
     ) -> std::sync::Arc<tact_kernel::tool::executor::ToolExecutor> {
         // Assembled by installing the built-in families as plugins, so the tool
         // list is what the plugin set contributes rather than a second list that
@@ -504,14 +518,14 @@ impl Agent {
             tools,
             &crate::tool::ToolFamily::ALL,
             memory_enabled,
-            context,
+            contexts,
             tact_kernel::capability::CapabilityFilter::default(),
         )
         .expect("the built-in family table is valid by construction")
         .0;
-        let ui = context.events.clone();
+        let _ = context;
         let service = crate::permission::ManagerPermissionService::new(permission_manager.handle())
-            .with_ui_available(std::sync::Arc::new(move || ui.ui().is_some()));
+            .with_ui_available(ui_available);
         std::sync::Arc::new(tact_kernel::tool::executor::ToolExecutor::new(
             std::sync::Arc::new(catalog),
             tact_kernel::capability::CapabilityFilter::default(),
@@ -573,8 +587,26 @@ impl Agent {
         // Built before either is moved into `Self`: the pipeline reads the
         // router (for handlers) and the context (for the legacy adapter).
         let memory_enabled = crate::config::settings().agent.memory_enabled;
-        let executor =
-            Agent::build_tool_executor(&tools, &tool_context, &permission_manager, memory_enabled);
+        // One factory for every contributed tool, held by the Agent so
+        // pre-flight can hand it the *current* context each turn.
+        let contexts = std::sync::Arc::new(crate::tool::SharedToolContextFactory::new(
+            tool_context.clone(),
+        ));
+        // Asked live, not snapshotted: `with_ui_channel` attaches the frontend
+        // after construction, and a frozen `false` would route every permission
+        // prompt through the headless ladder instead of showing it.
+        let ui_available: std::sync::Arc<dyn Fn() -> bool + Send + Sync> = {
+            let factory = contexts.clone();
+            std::sync::Arc::new(move || factory.with_base(|base| base.events.ui().is_some()))
+        };
+        let executor = Agent::build_tool_executor(
+            &tools,
+            &tool_context,
+            &permission_manager,
+            memory_enabled,
+            contexts.clone(),
+            ui_available,
+        );
         let mut agent = Self {
             runtime: AgentRuntime {
                 interrupt_hooks_fired: false,
@@ -609,6 +641,7 @@ impl Agent {
             mcp_router,
             hooks: Vec::new(),
             tool_executor: executor,
+            tool_contexts: contexts,
             system_prompt,
             tool_use_counter: 0,
             max_turns: None,
@@ -617,6 +650,7 @@ impl Agent {
             agent_settings: crate::config::settings().agent.clone(),
             provider_kind,
             cached_tool_specs: Vec::new(),
+            advertised_generation: 0,
         };
         agent.rebuild_cached_tool_specs();
         agent
@@ -664,6 +698,9 @@ impl Agent {
             // Same rule for the prompt pair.
             .chain(self.mcp_router.prompt_tool_specs())
             .collect();
+        // Stamped together with the specs, because the two are one fact: these
+        // are the tools, from this generation, that the model is about to see.
+        self.advertised_generation = self.tool_executor.catalog().generation();
     }
 
     /// Picks up any MCP server that announced a tool-list change.
@@ -2870,17 +2907,13 @@ impl Agent {
                 "You are a coding agent operating in {}.",
                 workdir.display()
             )),
-            crate::agent::prompt_sections::PromptFragment::Skills({
-                let reg = crate::skill::lock_skills(&self.tool_context.skill_registry);
-                if self.agent_settings.skill_body_auto_inject {
-                    reg.describe_available_with_body()
-                } else {
-                    reg.describe_available_bounded(
-                        crate::skill::catalog_budget_chars(self.model_context_window()),
-                        self.agent_settings.skill_description_cap,
-                    )
-                }
-            }),
+            crate::agent::prompt_sections::PromptFragment::Skills(
+                self.tool_context.describe_skills_for_prompt(
+                    self.model_context_window(),
+                    self.agent_settings.skill_body_auto_inject,
+                    self.agent_settings.skill_description_cap,
+                ),
+            ),
             crate::agent::prompt_sections::PromptFragment::Guidelines(vec![
                 "Try to understand how to complete the task well before completing it.".to_string(),
             ]),
@@ -2935,11 +2968,7 @@ impl Agent {
     /// Only the index is injected; topic bodies are fetched on demand with the
     /// `load_memory` tool. See `crate::memory` for why.
     fn load_memory_prompt(&self) -> Result<String> {
-        self.tool_context
-            .memory_manager
-            .lock()
-            .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))
-            .map(|manager| manager.load_memory_index_prompt())
+        self.tool_context.memory_index_prompt()
     }
 }
 

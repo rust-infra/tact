@@ -222,17 +222,18 @@ impl FamilyPlugin {
     /// A family over handlers something else already owns.
     ///
     /// The composition root uses this so the router (which emits specs) and the
-    /// catalog (which dispatches) see one instance per tool.
+    /// catalog (which dispatches) see one instance per tool — and so every
+    /// family shares the *one* context factory the Agent can refresh.
     pub fn from_shared(
         family: ToolFamily,
         handlers: Vec<std::sync::Arc<dyn Tool>>,
-        context: &super::ToolContext,
+        contexts: std::sync::Arc<dyn super::ToolContextFactory>,
     ) -> Self {
         Self {
             family,
             handlers: std::sync::Mutex::new(None),
             shared: handlers,
-            contexts: std::sync::Arc::new(super::SharedToolContextFactory::new(context.clone())),
+            contexts,
         }
     }
 
@@ -311,11 +312,11 @@ pub async fn install_families(
     router: &ToolRouter,
     families: &[ToolFamily],
     memory_enabled: bool,
-    context: &super::ToolContext,
+    contexts: std::sync::Arc<dyn super::ToolContextFactory>,
 ) -> anyhow::Result<()> {
     for family in families {
         let shared = router.handlers_for(&family.tool_names(memory_enabled));
-        let plugin = FamilyPlugin::from_shared(*family, shared, context);
+        let plugin = FamilyPlugin::from_shared(*family, shared, contexts.clone());
         if plugin.is_empty() {
             continue;
         }
@@ -332,13 +333,13 @@ pub fn catalog_from_families(
     router: &ToolRouter,
     families: &[ToolFamily],
     memory_enabled: bool,
-    context: &super::ToolContext,
+    contexts: std::sync::Arc<dyn super::ToolContextFactory>,
     filter: tact_kernel::capability::CapabilityFilter,
 ) -> anyhow::Result<(tact_kernel::catalog::ToolCatalog, Vec<String>)> {
     let mut host = tact_kernel::plugin::PluginHost::new(filter);
     for family in families {
         let shared = router.handlers_for(&family.tool_names(memory_enabled));
-        let plugin = FamilyPlugin::from_shared(*family, shared, context);
+        let plugin = FamilyPlugin::from_shared(*family, shared, contexts.clone());
         if plugin.is_empty() {
             continue;
         }

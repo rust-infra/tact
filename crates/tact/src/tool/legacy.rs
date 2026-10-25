@@ -22,16 +22,41 @@ pub trait ToolContextFactory: Send + Sync {
 /// A factory over a base context, mapping the run-scoped fields.
 ///
 /// Domain handles (task/goal/team/worktree/background/memory/skill/session)
-/// and the event sink stay from `base`; the adapter only overwrites what the
-/// kernel call context actually knows.
+/// come from `base`; the adapter overwrites what the kernel call context knows.
+///
+/// The base is behind a lock because the Agent keeps changing its
+/// `ToolContext` *after* this factory exists: `with_ui_channel` swaps the event
+/// sink, and each turn stamps `permission_snapshot` and `subagent_results` so a
+/// spawned child inherits the parent's mode and can report back in the
+/// background. A frozen clone would hand every kernel-dispatched tool the
+/// construction-time values — a child would silently lose its parent's
+/// permissions, and `run_in_background` would fail with "requires a parent
+/// agent runtime". [`Self::refresh`] is called once per turn, before any call.
 #[derive(Clone)]
 pub struct SharedToolContextFactory {
-    base: ToolContext,
+    base: std::sync::Arc<std::sync::Mutex<ToolContext>>,
 }
 
 impl SharedToolContextFactory {
     pub fn new(base: ToolContext) -> Self {
-        Self { base }
+        Self {
+            base: std::sync::Arc::new(std::sync::Mutex::new(base)),
+        }
+    }
+
+    /// Replace the base with the Agent's current context.
+    ///
+    /// Called once per turn from pre-flight, after the Agent stamps the
+    /// permission snapshot and the subagent-results queue.
+    pub fn refresh(&self, live: &ToolContext) {
+        let mut base = self.base.lock().unwrap_or_else(|error| error.into_inner());
+        *base = live.clone();
+    }
+
+    /// Run `f` against the current base.
+    pub fn with_base<T>(&self, f: impl FnOnce(&ToolContext) -> T) -> T {
+        let base = self.base.lock().unwrap_or_else(|error| error.into_inner());
+        f(&base)
     }
 }
 
@@ -51,9 +76,8 @@ impl ToolContextFactory for SharedToolContextFactory {
                 crate::security::RedactionLevel::Credential
             }
         };
-        let mut context = self
-            .base
-            .for_invocation_with_redaction(&ctx.tool_use_id, level);
+        let mut context =
+            self.with_base(|base| base.for_invocation_with_redaction(&ctx.tool_use_id, level));
         context.work_dir = ctx.workspace.root().to_path_buf();
         context.session_id = ctx.session_id.clone();
         context.active_goal_id = ctx.active_goal_id.clone();
@@ -216,6 +240,46 @@ mod tests {
         assert!(snapshot.is_subagent);
         assert!(snapshot.cancelled);
         assert_eq!(snapshot.input, json!({"text": "hi"}));
+    }
+
+    #[test]
+    fn refreshing_the_factory_reaches_later_calls() {
+        // The Agent stamps `permission_snapshot` and `subagent_results` after
+        // construction; a frozen base would give every kernel-dispatched tool
+        // the construction-time values, so a spawned child would lose its
+        // parent's permissions and a background spawn would fail outright.
+        let base = test_context("legacy_refresh");
+        let factory = SharedToolContextFactory::new(base.clone());
+        assert!(factory.with_base(|live| live.session_id.clone()).is_none());
+
+        let mut live = base;
+        live.session_id = Some("stamped-later".into());
+        factory.refresh(&live);
+
+        assert_eq!(
+            factory.with_base(|live| live.session_id.clone()).as_deref(),
+            Some("stamped-later")
+        );
+    }
+
+    #[test]
+    fn a_clone_of_the_factory_sees_the_same_refresh() {
+        // The executor holds one clone and the Agent another; the refresh must
+        // not be visible to only one of them.
+        let base = test_context("legacy_refresh_clone");
+        let factory = SharedToolContextFactory::new(base.clone());
+        let executor_side = factory.clone();
+
+        let mut live = base;
+        live.session_id = Some("shared".into());
+        factory.refresh(&live);
+
+        assert_eq!(
+            executor_side
+                .with_base(|live| live.session_id.clone())
+                .as_deref(),
+            Some("shared")
+        );
     }
 
     #[test]

@@ -190,6 +190,39 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
+    /// The skills catalog as the system prompt shows it.
+    ///
+    /// A method rather than a `crate::skill` call at the prompt site: the Agent
+    /// composes a prompt, it does not own skill rendering, and the module guard
+    /// is what keeps that distinction enforceable.
+    pub fn describe_skills_for_prompt(
+        &self,
+        context_window: usize,
+        body_auto_inject: bool,
+        description_cap: usize,
+    ) -> String {
+        let registry = crate::skill::lock_skills(&self.skill_registry);
+        if body_auto_inject {
+            registry.describe_available_with_body()
+        } else {
+            registry.describe_available_bounded(
+                crate::skill::catalog_budget_chars(context_window),
+                description_cap,
+            )
+        }
+    }
+
+    /// The `MEMORY.md` index the prompt injects, if memory is on.
+    ///
+    /// Topic bodies are fetched on demand by the `load_memory` tool; only the
+    /// index belongs in a prompt that must stay cacheable.
+    pub fn memory_index_prompt(&self) -> anyhow::Result<String> {
+        self.memory_manager
+            .lock()
+            .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))
+            .map(|manager| manager.load_memory_index_prompt())
+    }
+
     pub fn for_invocation(&self, tool_id: &str) -> Self {
         self.for_invocation_with_redaction(tool_id, crate::security::RedactionLevel::Off)
     }

@@ -94,11 +94,22 @@ impl ToolCatalog {
             .lock()
             .unwrap_or_else(|error| error.into_inner())
             .clone();
+        let mut changed = false;
         for source in &sources {
-            source.refresh().await?;
+            changed |= source.refresh().await?;
         }
-        self.generation.fetch_add(1, Ordering::SeqCst);
+        if changed {
+            self.generation.fetch_add(1, Ordering::SeqCst);
+        }
         Ok(())
+    }
+
+    /// The current generation, without rebuilding anything.
+    ///
+    /// What a host compares against the generation it advertised, so a check
+    /// cannot pass merely because it refreshed and then read the refreshed value.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(Ordering::SeqCst)
     }
 
     pub async fn descriptor_snapshot(
@@ -445,6 +456,24 @@ mod snapshot_tests {
         }
     }
 
+    /// A source whose `refresh` reports a real change.
+    struct ChangingSource;
+
+    #[async_trait::async_trait]
+    impl ToolSource for ChangingSource {
+        fn id(&self) -> &str {
+            "changing"
+        }
+
+        async fn refresh(&self) -> anyhow::Result<bool> {
+            Ok(true)
+        }
+
+        fn tools(&self) -> Vec<Arc<dyn Tool>> {
+            Vec::new()
+        }
+    }
+
     struct FixedSource {
         id: &'static str,
         tools: Vec<Arc<dyn Tool>>,
@@ -456,8 +485,8 @@ mod snapshot_tests {
             self.id
         }
 
-        async fn refresh(&self) -> anyhow::Result<()> {
-            Ok(())
+        async fn refresh(&self) -> anyhow::Result<bool> {
+            Ok(false)
         }
 
         fn tools(&self) -> Vec<Arc<dyn Tool>> {
@@ -473,23 +502,43 @@ mod snapshot_tests {
     }
 
     #[tokio::test]
-    async fn snapshot_merges_sources_and_bumps_generation() {
+    async fn snapshot_merges_sources_and_registration_bumps_generation() {
         let mut catalog = ToolCatalog::default();
         catalog.insert(Arc::new(FixedTool("native"))).unwrap();
+        let before = catalog.generation();
         catalog.add_source(source("one", "remote"));
-        let first = catalog
-            .descriptor_snapshot(&CapabilityFilter::default())
-            .await
-            .unwrap();
-        let names: Vec<_> = first.tools.iter().map(|tool| tool.name.as_str()).collect();
-        assert_eq!(names, vec!["native", "remote"]);
+        assert!(catalog.generation() > before, "a new source is a change");
 
-        catalog.refresh_sources().await.unwrap();
-        let second = catalog
+        let snapshot = catalog
             .descriptor_snapshot(&CapabilityFilter::default())
             .await
             .unwrap();
-        assert!(second.generation > first.generation);
+        let names: Vec<_> = snapshot
+            .tools
+            .iter()
+            .map(|tool| tool.name.as_str())
+            .collect();
+        assert_eq!(names, vec!["native", "remote"]);
+        assert_eq!(snapshot.generation, catalog.generation());
+    }
+
+    #[tokio::test]
+    async fn a_quiet_refresh_does_not_bump_the_generation() {
+        // The generation is what a host compares against the tool list the model
+        // holds. Bumping it unconditionally would make that check vacuous: every
+        // call would look stale, or (worse) every fresh snapshot would look
+        // current because it was rebuilt on the spot.
+        let catalog = ToolCatalog::default();
+        catalog.add_source(source("one", "remote"));
+        let before = catalog.generation();
+        catalog.refresh_sources().await.unwrap();
+        assert_eq!(catalog.generation(), before);
+
+        // A source that does report a change still bumps it.
+        catalog.add_source(Arc::new(ChangingSource));
+        let before = catalog.generation();
+        catalog.refresh_sources().await.unwrap();
+        assert!(catalog.generation() > before);
     }
 
     #[tokio::test]

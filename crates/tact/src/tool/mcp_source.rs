@@ -29,8 +29,9 @@ pub trait McpToolBackend: Send + Sync {
     async fn call(&self, full_name: &str, input: serde_json::Value) -> anyhow::Result<String>;
     fn risk(&self, full_name: &str) -> CapabilityRisk;
     fn is_auto_approved(&self, full_name: &str) -> bool;
-    /// Re-list servers that announced `notifications/tools/list_changed`.
-    async fn refresh(&self) -> anyhow::Result<()>;
+    /// Re-list servers that announced `notifications/tools/list_changed`,
+    /// reporting whether the visible set changed.
+    async fn refresh(&self) -> anyhow::Result<bool>;
 }
 
 /// One discovered MCP tool, already namespaced as `mcp__server__tool`.
@@ -111,7 +112,7 @@ impl McpToolBackend for SharedMcpBackend {
             .unwrap_or(false)
     }
 
-    async fn refresh(&self) -> anyhow::Result<()> {
+    async fn refresh(&self) -> anyhow::Result<bool> {
         let mut router = self.router.lock().await;
         let report = router.refresh_changed().await;
         anyhow::ensure!(
@@ -119,7 +120,9 @@ impl McpToolBackend for SharedMcpBackend {
             "MCP tool refresh failed: {:?}",
             report.failed
         );
-        Ok(())
+        // The router only re-lists servers that announced a change, so a
+        // non-empty report is exactly "the visible tool set moved".
+        Ok(!report.changed.is_empty())
     }
 }
 
@@ -206,7 +209,7 @@ impl ToolSource for McpToolSource {
         &self.id
     }
 
-    async fn refresh(&self) -> anyhow::Result<()> {
+    async fn refresh(&self) -> anyhow::Result<bool> {
         self.backend.refresh().await
     }
 

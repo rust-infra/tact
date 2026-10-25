@@ -12,7 +12,7 @@ use tact_protocol::{AgentUpdate, StepResult, StepStatus, ToolPresentationInfo};
 use super::Agent;
 use crate::{
     compact::{persist_large_output, persist_large_output_over_tokens},
-    hook::{HookControl, ToolResult, ToolUse},
+    hook::{HookControl, NotificationContext, ToolResult, ToolUse},
     invoke_hooks,
     mcp::MCPToolRouter,
     permission::{
@@ -642,8 +642,13 @@ impl Agent {
     /// The kernel compares it before touching a handler, so a tool appearing or
     /// disappearing between the request and the call is a refusal instead of a
     /// dispatch to something the model never saw.
-    async fn tool_catalog_generation(&self) -> Result<u64> {
-        Ok(self.tool_executor.descriptor_snapshot().await?.generation)
+    /// The generation the tool list the model is holding came from.
+    ///
+    /// Read from the cache stamp, not from a fresh snapshot: a snapshot rebuilt
+    /// here would report the *current* generation, so the comparison in
+    /// `resolve` could never fail.
+    fn advertised_generation(&self) -> u64 {
+        self.advertised_generation
     }
 
     /// The run-scoped context the kernel pipeline hands a tool.
@@ -1070,6 +1075,19 @@ impl Agent {
     /// before the next call is resolved, and an "always allow" granted here has
     /// to apply to the calls that follow in the same turn.
     async fn preflight_tool_calls(&mut self, content: &[ContentBlock]) -> Result<Preflight> {
+        // Stamp the permission snapshot and the subagent-results queue *before*
+        // any tool runs: a `spawn_subagent` in this turn must inherit the
+        // parent's current mode / allow-list / settings — including an "always
+        // allow" granted earlier in this same turn — and a background child must
+        // be able to push its summary back for re-injection.
+        self.tool_context.permission_snapshot = Some(self.runtime.permission_manager.snapshot());
+        self.tool_context.subagent_results = Some(self.runtime.pending_subagent_results.clone());
+        // Hand the live context to every contributed tool. The factory is built
+        // at construction, but `with_ui_channel` and the two stamps above all
+        // happen after it — a frozen base would give a kernel-dispatched
+        // `spawn_subagent` the construction-time values.
+        self.tool_contexts.refresh(&self.tool_context);
+
         let mut prepared: Vec<PreparedTool> = Vec::new();
         for block in content {
             let ContentBlock::ToolUse { id, name, input } = block else {
@@ -1220,7 +1238,7 @@ impl Agent {
             let mut permission_label: Option<String> = None;
             let mut preflight: Option<tact_kernel::tool::executor::ToolPreflight> = None;
             let state = if let ResolvedTool::Native { metadata } = &resolved {
-                let generation = self.tool_catalog_generation().await?;
+                let generation = self.advertised_generation();
                 let request = tact_kernel::tool::executor::ToolRequest {
                     call_id: tool_use.id.clone(),
                     tool_name: metadata.name.to_string(),
@@ -1380,6 +1398,28 @@ impl Agent {
                                         PreparedState::Resolved(msg)
                                     }
                                     HookControl::Continue => {
+                                        // Observational: a plugin plugs in here
+                                        // to be told a prompt is about to appear,
+                                        // it cannot decide anything. Fired before
+                                        // every prompt, as before the cutover.
+                                        let notification = NotificationContext {
+                                            notification_type: "permission_prompt".to_string(),
+                                            title: metadata.name.to_string(),
+                                            message: prompt.message.clone(),
+                                        };
+                                        match invoke_hooks!(Notification, self, &notification) {
+                                            Ok(HookControl::Continue | HookControl::Allow) => {}
+                                            Ok(HookControl::Block(reason)) => {
+                                                self.emit_update(AgentUpdate::Info(format!(
+                                                    "[Notification hook blocked] {reason}"
+                                                )));
+                                            }
+                                            Err(error) => {
+                                                self.emit_update(AgentUpdate::Info(format!(
+                                                    "[Notification hook failed] {error}"
+                                                )));
+                                            }
+                                        }
                                         let answer =
                                             self.ask_permission(&prompt, metadata.name).await;
                                         match answer {
@@ -1460,17 +1500,6 @@ impl Agent {
                 kernel: preflight,
             });
         }
-
-        // Phase-1 pre-flight is complete. Stamp the permission snapshot now so
-        // a `spawn_subagent` spawned in this turn inherits the parent's
-        // *current* mode / allow-list / settings — including any "always allow"
-        // granted earlier in this same turn. This must happen before the wave
-        // loop borrows `self.tool_context` below (the borrow checker rejects a
-        // later mutable access).
-        self.tool_context.permission_snapshot = Some(self.runtime.permission_manager.snapshot());
-        // Stamp the pending-results queue handle so a detached async subagent
-        // task can push its summary back for re-injection.
-        self.tool_context.subagent_results = Some(self.runtime.pending_subagent_results.clone());
 
         Ok(Preflight {
             prepared,
@@ -2099,6 +2128,125 @@ mod tests {
             })
             .next()
             .unwrap_or_else(|| "none".to_string())
+    }
+
+    /// A kernel-dispatched tool must see the context the Agent has *now*, not
+    /// the one it had at construction.
+    ///
+    /// The two fields asserted here are stamped per turn, after `Agent::new`:
+    /// a frozen snapshot would give a spawned child `PermissionMode::Default`
+    /// instead of the parent's mode, and a background child no queue to report
+    /// into. Both were silently broken by the cutover and no test caught it.
+    #[test]
+    fn preflight_hands_every_tool_the_current_context() {
+        let mut agent = agent_with("fresh_context", crate::permission::PermissionMode::Plan);
+        // Cancel before the walk so pre-flight returns without executing: this
+        // asserts what the factory holds, not what a tool did.
+        block_on(agent.preflight_tool_calls(&tool_use(
+            "read_file",
+            serde_json::json!({"path": "src/main.rs"}),
+        )))
+        .unwrap();
+
+        let snapshot = agent
+            .tool_contexts
+            .with_base(|base| base.permission_snapshot.clone())
+            .expect("pre-flight stamps the permission snapshot");
+        assert_eq!(snapshot.mode, crate::permission::PermissionMode::Plan);
+        assert!(
+            agent
+                .tool_contexts
+                .with_base(|base| base.subagent_results.is_some()),
+            "a background child needs the parent's results queue"
+        );
+    }
+
+    /// A frontend attached *after* construction must still get a popup.
+    ///
+    /// `with_ui_channel` is the documented attach point and is called after
+    /// `Agent::new` everywhere, including `session_bootstrap`. A `ui_available`
+    /// captured at construction therefore reported "nobody can answer" and sent
+    /// every `Ask` through the headless ladder — a write was silently allowed
+    /// once and a high-risk call silently refused, with no prompt either way.
+    #[test]
+    fn a_late_ui_channel_still_produces_a_permission_prompt() {
+        let mut agent = agent_with("late_ui", crate::permission::PermissionMode::Default);
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        agent = agent.with_ui_channel(tx);
+
+        // A write in Default mode is an `Ask`; answer it as "deny" so pre-flight
+        // returns instead of waiting for a popup nobody will click.
+        let responder = agent.tool_context.ui_responder.clone();
+        let answer = std::thread::spawn(move || {
+            // Bounded: without a deadline a regression makes this thread wait
+            // forever for a popup that never appears, turning a red test into a
+            // hung one.
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+            let pending = loop {
+                if let Some(pending) = responder.snapshot().into_iter().next() {
+                    break Some(pending.request_id);
+                }
+                if std::time::Instant::now() >= deadline {
+                    break None;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(5));
+            };
+            if let Some(request_id) = pending {
+                responder.respond(tact_protocol::UiResponse::Select {
+                    request_id,
+                    choice: Some(1),
+                });
+            }
+        });
+        let outcome = block_on(agent.preflight_tool_calls(&tool_use(
+            "write_file",
+            serde_json::json!({"path": "x.txt", "content": "y"}),
+        )))
+        .unwrap();
+        answer.join().unwrap();
+
+        let message = outcome
+            .prepared
+            .into_iter()
+            .map(|p| match p.state {
+                PreparedState::Run => "run".to_string(),
+                PreparedState::Resolved(msg) => msg,
+            })
+            .next()
+            .unwrap();
+        assert!(
+            message.contains("Permission denied by user"),
+            "a late UI must be asked, got: {message}"
+        );
+        // The popup really was emitted, not just answered from a queue.
+        let mut prompts = 0;
+        while let Ok(update) = rx.try_recv() {
+            if matches!(update, AgentUpdate::RequestSelect { .. }) {
+                prompts += 1;
+            }
+        }
+        assert_eq!(prompts, 1, "exactly one popup");
+    }
+
+    /// A call against a stale tool list is refused, not dispatched.
+    ///
+    /// The generation has to come from what the model was shown. Reading a fresh
+    /// snapshot made the guard vacuous — it compared the current generation with
+    /// itself, so a tool that appeared after the request would still dispatch.
+    #[test]
+    fn a_stale_generation_is_refused() {
+        let mut agent = agent_with("stale_generation", crate::permission::PermissionMode::Auto);
+        // Pretend the model is holding a list from a different generation.
+        agent.advertised_generation = agent.tool_executor.catalog().generation() + 1;
+        let outcome = outcome(
+            &mut agent,
+            "read_file",
+            serde_json::json!({"path": "src/main.rs"}),
+        );
+        assert!(
+            outcome.contains("stale tool descriptor snapshot"),
+            "expected a stale-generation refusal, got: {outcome}"
+        );
     }
 
     /// The refusal text, when pre-flight refused rather than denied.

@@ -221,10 +221,10 @@ impl ToolSource for McpControlSource {
         "mcp-control"
     }
 
-    async fn refresh(&self) -> anyhow::Result<()> {
+    async fn refresh(&self) -> anyhow::Result<bool> {
         // The control tools never change shape; only their availability does,
-        // and that is read in `tools()`.
-        Ok(())
+        // and that is read in `tools()`, which the snapshot already calls.
+        Ok(false)
     }
 
     fn tools(&self) -> Vec<Arc<dyn KernelTool>> {
