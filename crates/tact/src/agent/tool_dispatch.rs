@@ -21,7 +21,7 @@ use crate::{
     },
     tool::{
         ArgumentSummaryPolicy, DetailPolicy, GoalYieldReason, OutputPolicy, PermissionPromptPolicy,
-        TaskOperation, ToolDomain, ToolEffect, ToolRouter,
+        TaskOperation, ToolDomain, ToolEffect,
     },
     utils::RwLockExt,
 };
@@ -306,53 +306,6 @@ struct ExecResult {
     status: StepStatus,
     image: Option<ToolImage>,
     effects: Vec<ToolEffect>,
-}
-
-async fn run_native_tool(
-    tools: &ToolRouter,
-    ctx: &crate::tool::ToolContext,
-    tool_use_id: &str,
-    name: &str,
-    input: &serde_json::Value,
-    output_policy: OutputPolicy,
-    stream_redaction: crate::security::RedactionLevel,
-) -> ExecResult {
-    let call_ctx = ctx.for_invocation_with_redaction(tool_use_id, stream_redaction);
-    match tools.call_result(&call_ctx, name, input.clone()).await {
-        Ok(result) => {
-            let tact_path = crate::consts::TactPath::new(&ctx.work_dir);
-            match output_policy {
-                OutputPolicy::PersistLargeOutput => {
-                    match persist_large_output(&tact_path, tool_use_id, &result.content).await {
-                        Ok(content) => ExecResult {
-                            content,
-                            status: StepStatus::Success,
-                            image: result.image,
-                            effects: result.effects,
-                        },
-                        Err(error) => ExecResult {
-                            content: format!("Error persisting large output: {error}"),
-                            status: StepStatus::Failed,
-                            image: None,
-                            effects: Vec::new(),
-                        },
-                    }
-                }
-                OutputPolicy::KeepInline => ExecResult {
-                    content: result.content,
-                    status: StepStatus::Success,
-                    image: result.image,
-                    effects: result.effects,
-                },
-            }
-        }
-        Err(e) => ExecResult {
-            content: format!("Error invoking tool {}: {}", name, e),
-            status: StepStatus::Failed,
-            image: None,
-            effects: Vec::new(),
-        },
-    }
 }
 
 /// Run a kernel-authorized native call and shape its result for the transcript.
@@ -1572,7 +1525,6 @@ impl Agent {
             let mut futures = FuturesUnordered::new();
             for &pos in &wave {
                 let pi = run_indices[pos];
-                let tools = &self.tools;
                 let mcp = &self.mcp_router;
                 let ctx = &self.tool_context;
                 let prep = &prepared[pi];
@@ -1597,27 +1549,6 @@ impl Agent {
                     ResolvedTool::Native { metadata } => metadata.output,
                     _ => OutputPolicy::PersistLargeOutput,
                 };
-                // Live-output redaction is decided per call, the same way the
-                // final result's level is: a sensitive target gets the full
-                // treatment, everything else keeps the high-confidence rules.
-                let stream_redaction = {
-                    let redaction = self.runtime.permission_manager.security_config().redaction;
-                    let (sensitive, target) = match &prep.resolved {
-                        ResolvedTool::Native { metadata } => (
-                            metadata
-                                .permission
-                                .sensitive(&prep.input, &self.runtime.security)
-                                .is_some(),
-                            metadata.permission.target(&prep.input),
-                        ),
-                        _ => (false, None),
-                    };
-                    crate::security::redact::level_for_call(
-                        &redaction,
-                        sensitive,
-                        target.as_deref(),
-                    )
-                };
                 futures.push(async move {
                     let start = std::time::Instant::now();
                     let exec = if let Some(tool) = resource_tool {
@@ -1636,18 +1567,18 @@ impl Agent {
                         )
                         .await
                     } else {
-                        // No ticket: the call never went through the pipeline
-                        // (a legacy MCP-family tool keeps its own path above).
-                        run_native_tool(
-                            tools,
-                            ctx,
-                            &prep.id,
-                            &prep.name,
-                            &prep.input,
-                            output_policy,
-                            stream_redaction,
-                        )
-                        .await
+                        // A native tool that reached `Run` without a ticket would
+                        // be a bug in preflight, not a call to make: dispatching
+                        // it here is exactly what the ticket exists to prevent.
+                        ExecResult {
+                            content: format!(
+                                "Error invoking tool {}: it was not authorized",
+                                prep.name
+                            ),
+                            status: StepStatus::Failed,
+                            image: None,
+                            effects: Vec::new(),
+                        }
                     };
                     (pi, exec, start.elapsed().as_micros() as u64)
                 });
