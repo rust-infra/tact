@@ -5,6 +5,8 @@ Audit of the approved spec
 against the implemented state on `feat/plugin-first-architecture`.
 
 **Status: 6 of 11 checklist items met, 3 partially met, 2 not met.**
+Item 2 is now the largest gap and is measurable: 2 of the spec's 15 capability
+domains have a plugin object.
 Phases 0, 1, and the view half of Phase 4 are done. The remaining gaps all trace
 to one undecided thing — the neutral message model — plus the deletions that wait
 behind it.
@@ -59,10 +61,16 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   `ChatService` owns the turn lifecycle (message assembly, Stop-hook
   continuation, completion) over the same agent slot, so a turn and a compaction
   serialise structurally rather than by convention.
-- Capability domains: tools exist as `ToolFamily` plugins (`FamilyPlugin`), but
-  Skills, Memory, Goal, Task, Team, Worktree, Background, Subagent, Voice and
-  Notifications have **no plugin object of their own** — they are modules with
-  tool families and prompt sections, not plugins with a lifecycle.
+- Capability domains: **2 of 15**. `HooksPlugin` and `NotificationsPlugin` have
+  plugin objects with a lifecycle and a replaceable port. `ToolsPlugin`,
+  `McpPlugin`, `SkillsPlugin`, `MemoryPlugin`, `GoalPlugin`, `TaskPlugin`,
+  `TeamPlugin`, `WorktreePlugin`, `BackgroundPlugin`, `SubagentPlugin` and
+  `VoicePlugin` are still modules: they have tool families and prompt sections,
+  but no plugin object, so a host cannot replace one.
+
+  Thirteen plugins total exist (`builtin.*`). The remaining domains each need the
+  same seam `NotificationsPlugin` just got — a trait for the replaceable part plus
+  a registration — and several are much larger than notifications.
 
 Verified by: `grep -l 'impl Plugin for' crates/tact/src/**/*.rs` and the
 inventory above.
