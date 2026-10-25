@@ -66,12 +66,26 @@ Modify:
 
 ### Task 1: Share the MCP router
 
-- [ ] Add `Arc<tokio::sync::Mutex<MCPToolRouter>>` as the Agent's field type; add
-      synchronous accessors for the read-only queries the prompt and specs need
-      (`instructions_block`, `all_tools`, `resource_tool_specs`,
-      `prompt_tool_specs`, `risk_for`, `is_auto_approved`, `output_token_limit`).
-- [ ] Keep async call sites (`call`, `list_resources`, `get_prompt`,
-      `refresh_changed`, `disconnect_all`, `read_resource`) taking the lock.
+Rejected approaches, recorded so they are not retried:
+
+- `#[derive(Clone)]` on `MCPToolRouter` — needs `McpClient: Clone`, and a cloned
+  client would `shutdown` a service it shares with the original
+  (`McpClient::shutdown` consumes `self`).
+- `Arc<HashMap<..>>` for `clients` — breaks the three mutating methods
+  (`register_client`, `refresh_changed`, `disconnect_all`).
+
+Chosen: an `Arc<tokio::sync::Mutex<MCPToolRouter>>` owned by the Agent, with
+**synchronous** read-only accessors added for the queries the prompt and specs
+need (`instructions_block`, `all_tools`, `resource_tool_specs`,
+`prompt_tool_specs`, `risk_for`, `is_auto_approved`, `output_token_limit`,
+`server_summaries`) that `block_on` nothing and instead take the lock with
+`try_lock`, falling back to "no servers" for the one prompt-building caller that
+cannot await. Verify: the spec list and the prompt block must be identical before
+and after, or the KV-cache prefix changes and every turn is slower.
+
+- [ ] Add the `Arc<Mutex<..>>` field and the accessors; keep async call sites
+      (`call`, `list_resources`, `get_prompt`, `refresh_changed`,
+      `disconnect_all`, `read_resource`) taking the lock.
 - [ ] Gate: `cargo test -p tact --lib mcp::` and `-p tact-ui` must pass unchanged.
 - [ ] Commit.
 
