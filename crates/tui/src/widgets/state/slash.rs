@@ -72,12 +72,8 @@ pub(crate) enum SlashCommand {
     Balance,
     #[strum(serialize = "lang")]
     Lang,
-    #[strum(serialize = "stats")]
-    Stats,
     #[strum(serialize = "tasks-dag")]
     TasksDag,
-    #[strum(serialize = "background")]
-    Background,
     #[strum(serialize = "goal")]
     Goal,
 }
@@ -109,9 +105,7 @@ impl SlashCommand {
         Self::HookOutput,
         Self::Balance,
         Self::Lang,
-        Self::Stats,
         Self::TasksDag,
-        Self::Background,
         Self::Goal,
     ];
 
@@ -199,9 +193,7 @@ impl SlashCommand {
             Self::HookOutput => msgs.cmd_hook_output,
             Self::Balance => msgs.cmd_balance,
             Self::Lang => msgs.cmd_lang,
-            Self::Stats => msgs.cmd_stats,
             Self::TasksDag => msgs.cmd_tasks_dag,
-            Self::Background => msgs.cmd_background,
             Self::Goal => msgs.cmd_goal,
         }
     }

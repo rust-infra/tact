@@ -531,33 +531,8 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             let _ = app.user_cmd_tx.send(UserCommand::QueryBalance);
             CommandExecOutcome::handled()
         }
-        C::Stats => {
-            // A catalog command: the transport carries the name, the runtime's
-            // catalog owns the answer.
-            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
-                name: "stats".to_string(),
-                args: String::new(),
-            });
-            CommandExecOutcome::handled()
-        }
         C::TasksDag => {
             app.open_task_dag_popup();
-            CommandExecOutcome::handled()
-        }
-        C::Background => {
-            // `/background` lists all background tasks; `/background <id>`
-            // shows one task (pretty JSON). The optional id comes from the
-            // remaining input after the command token.
-            let task_id = app
-                .input
-                .split_whitespace()
-                .nth(1)
-                .map(str::to_string)
-                .unwrap_or_default();
-            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
-                name: "background".to_string(),
-                args: task_id,
-            });
             CommandExecOutcome::handled()
         }
         C::Goal => run_goal_command(app),
@@ -1760,12 +1735,15 @@ mod tests {
     #[test]
     fn background_command_dispatches_list_all() {
         let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        // `/background` is a catalog command now: the view forwards it rather
+        // than owning the name, so the test supplies the catalog entry the
+        // runtime would install.
+        app.commands = directory_of(&["background"]);
         app.input = "/background".into();
         let outcome = execute_palette_command(&mut app, "background");
         assert!(outcome.handled);
-        assert!(outcome.clear_input);
         assert!(matches!(
-            user_cmd_rx.try_recv().expect("expected QueryBackground"),
+            user_cmd_rx.try_recv().expect("expected a RunCommand"),
             UserCommand::RunCommand { name, args }
                 if name == "background" && args.is_empty()
         ));
@@ -1774,12 +1752,12 @@ mod tests {
     #[test]
     fn background_command_forwards_task_id() {
         let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
+        app.commands = directory_of(&["background"]);
         app.input = "/background 018f3a2c".into();
         let outcome = execute_palette_command(&mut app, "background");
         assert!(outcome.handled);
-        assert!(outcome.clear_input);
         assert!(matches!(
-            user_cmd_rx.try_recv().expect("expected QueryBackground"),
+            user_cmd_rx.try_recv().expect("expected a RunCommand"),
             UserCommand::RunCommand { name, args }
                 if name == "background" && args == "018f3a2c"
         ));

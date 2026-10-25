@@ -479,6 +479,35 @@ mod tests {
         );
     }
 
+    /// A command that moved to the catalog is offered by the catalog.
+    ///
+    /// `/stats` and `/background` used to be local variants. Removing them must
+    /// not remove them from the palette: they are runtime commands now, and the
+    /// catalog is what knows their names and descriptions.
+    #[test]
+    fn a_moved_command_is_still_offered_by_the_catalog() {
+        let mut app = make_app();
+        assert!(
+            !app.palette_commands()
+                .iter()
+                .any(|(name, _)| name == "stats" || name == "background"),
+            "they are no longer local commands"
+        );
+
+        app.set_command_directory(filled(std::sync::Arc::new(FixedDirectory(vec![
+            entry("stats", "Show session statistics"),
+            entry("background", "List background tasks"),
+        ]))));
+
+        let listed = app.palette_commands();
+        for name in ["stats", "background"] {
+            assert!(
+                listed.iter().any(|(listed_name, _)| listed_name == name),
+                "/{name} is still offered: {listed:?}"
+            );
+        }
+    }
+
     /// Without a catalog the palette is exactly the local commands.
     #[test]
     fn no_catalog_means_local_commands_only() {

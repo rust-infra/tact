@@ -339,8 +339,6 @@ pub struct Messages {
     pub cmd_hooks: &'static str,
     pub cmd_hook_output: &'static str,
     pub cmd_tasks_dag: &'static str,
-    pub cmd_stats: &'static str,
-    pub cmd_background: &'static str,
     /// `/goal` — durable supervised Goal lifecycle.
     pub cmd_goal: &'static str,
 
@@ -728,8 +726,6 @@ impl Messages {
             cmd_hooks: "Review command hooks (usage: /hooks list | /hooks trust --all | /hooks forget --all)",
             cmd_hook_output: "Show or hide hook output in the log",
             cmd_tasks_dag: "Show task dependency DAG",
-            cmd_stats: "Show session statistics",
-            cmd_background: "Check background task status",
             cmd_goal: "Create, inspect, and control durable Goals",
             permission_select_prompt: "Permission mode",
             permission_option_default: "Default — ask for writes",
@@ -1062,8 +1058,6 @@ impl Messages {
             cmd_hooks: "审阅 command hook（用法：/hooks list | /hooks trust --all | /hooks forget --all）",
             cmd_hook_output: "显示或隐藏日志里的 hook 输出",
             cmd_tasks_dag: "显示任务依赖 DAG",
-            cmd_stats: "显示会话统计",
-            cmd_background: "查看后台任务状态",
             cmd_goal: "创建、查看和控制持久 Goal",
             permission_select_prompt: "权限模式",
             permission_option_default: "默认 — 写入需确认",
