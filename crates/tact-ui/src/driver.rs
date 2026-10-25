@@ -1866,7 +1866,9 @@ async fn handle_user_command_with_account(
             // `tact::config::supports_vision` honours a per-model override on top
             // of the endpoint heuristic.
             if task_message.has_images() && !tact::config::supports_vision() {
-                let model = tact_llm::get_provider().model;
+                // From the agent's own snapshot, not the process global: a
+                // consumer that already has an agent should not have to re-ask.
+                let model = agent.provider().map(|info| info.model).unwrap_or_default();
                 agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
                     "Image attachments are not supported by {model}. \
                      The current model does not accept image input."

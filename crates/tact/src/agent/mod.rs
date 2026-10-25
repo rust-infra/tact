@@ -536,6 +536,10 @@ impl Agent {
             ui_available,
             hooks: None,
             storage: None,
+            // Read once here and held by the registry: the provider is a
+            // process-wide snapshot, and a consumer that resolved it should not
+            // silently read a different global later.
+            provider: tact_llm::try_get_provider(),
             filter: tact_kernel::capability::CapabilityFilter::default(),
         })
         .expect("the built-in plugin set is valid: ids are literals and names are unique");
@@ -948,6 +952,16 @@ impl Agent {
 
     /// The model this agent is currently calling.
     ///
+    /// The provider snapshot this agent was assembled with.
+    ///
+    /// Held by the plugin bundle rather than read from the global, so a consumer
+    /// that already has an agent does not have to re-ask the process. `None` when
+    /// nothing was installed at assembly (a unit test, a subagent before login).
+    #[must_use]
+    pub fn provider(&self) -> Option<tact_llm::ProviderInfo> {
+        crate::plugin::provider(self.plugins.services()).ok()
+    }
+
     /// Configured at construction and rewritten by [`Self::set_model`], so it is
     /// the value a `SessionStart` hook payload should carry as `model`.
     #[must_use]
@@ -3478,6 +3492,30 @@ mod tests {
     /// catalog for handlers), so a server that appeared between them could be
     /// offered to the model with nothing behind it — or resolvable but invisible.
     /// This pins them to one set.
+    /// The agent holds its provider snapshot, so a consumer with an agent does
+    /// not re-read the process global.
+    ///
+    /// Asserts the shape rather than a value: whether one is installed is
+    /// process-wide, and a test that never called `init_provider` must still be
+    /// able to build an agent.
+    #[test]
+    fn the_agent_carries_the_provider_snapshot_it_was_assembled_with() {
+        ensure_config();
+        let agent = chat_completions_test_agent("agent_provider_snapshot");
+        // The invariant is that the agent's answer and the process agree: it
+        // either carried the installed snapshot or carried nothing, never a
+        // third state. The default test config installs an empty-URL snapshot,
+        // so asserting on the URL would test the fixture, not this.
+        match agent.provider() {
+            Some(info) => assert_eq!(
+                tact_llm::try_get_provider().map(|global| global.model),
+                Some(info.model),
+                "the agent carries the installed snapshot, not a different one"
+            ),
+            None => assert!(tact_llm::try_get_provider().is_none()),
+        }
+    }
+
     #[test]
     fn the_advertised_tools_are_exactly_the_dispatchable_ones() {
         ensure_config();

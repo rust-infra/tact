@@ -39,6 +39,11 @@ pub struct HostOptions<'a> {
     pub hooks: Option<HookOptions>,
     /// The opened store, if this host persists sessions.
     pub storage: Option<StorageOptions>,
+    /// The provider snapshot, when one was installed.
+    ///
+    /// `Option` because a test may build an agent before any provider exists;
+    /// recording `None` is what lets `providers` be a fact rather than a panic.
+    pub provider: Option<tact_llm::ProviderInfo>,
     /// Which capabilities the user disabled.
     pub filter: CapabilityFilter,
 }
@@ -108,6 +113,9 @@ pub fn assemble(options: HostOptions<'_>) -> Result<AssembledRuntime> {
             hooks.work_dir,
             hooks.notices,
         ))?;
+    }
+    if let Some(info) = options.provider {
+        host.install_sync(crate::plugin::ProvidersPlugin::new(info))?;
     }
     if let Some(storage) = options.storage {
         host.install_sync(crate::store::plugin::StoragePlugin::new(&storage.path))?;
@@ -211,6 +219,7 @@ mod tests {
             ui_available: Arc::new(|| false),
             hooks: None,
             storage: None,
+            provider: None,
             filter: CapabilityFilter::default(),
         })
         .unwrap();
@@ -238,6 +247,7 @@ mod tests {
             ui_available: Arc::new(|| false),
             hooks: None,
             storage: None,
+            provider: None,
             filter: CapabilityFilter::new([disabled]),
         })
         .unwrap();
@@ -272,6 +282,7 @@ mod tests {
                 notices: Arc::new(|_| {}),
             }),
             storage: None,
+            provider: None,
             filter: CapabilityFilter::default(),
         })
         .unwrap();

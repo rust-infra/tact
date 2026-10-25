@@ -361,6 +361,15 @@ pub(crate) fn try_active_credential_provider() -> Option<Arc<dyn CredentialProvi
     CREDENTIALS.read_recover().clone()
 }
 
+/// The active provider snapshot, or `None` when none was installed.
+///
+/// The non-panicking form of [`get_provider`]: a host assembling an agent has to
+/// be able to ask "is there a provider?" without the question itself aborting
+/// the process. Library code that *requires* one still calls `get_provider`.
+pub fn try_get_provider() -> Option<ProviderInfo> {
+    PROVIDER.read_recover().clone()
+}
+
 /// Returns a snapshot of the active LLM provider configuration.
 pub fn get_provider() -> ProviderInfo {
     PROVIDER

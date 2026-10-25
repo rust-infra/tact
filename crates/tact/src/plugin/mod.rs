@@ -3,6 +3,7 @@ mod hooks;
 mod install;
 mod marketplace;
 mod model;
+mod providers;
 mod store;
 
 use anyhow::{Context, Result};
@@ -11,6 +12,7 @@ pub use hooks::*;
 pub use install::*;
 pub use marketplace::*;
 pub use model::*;
+pub use providers::*;
 pub use store::*;
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},

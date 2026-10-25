@@ -60,7 +60,7 @@ pub use provider::{
     init_provider_with_credentials, is_account_query_supported, is_deepseek,
     is_deepseek_balance_supported, is_kimi, is_kimi_balance_supported, is_kimi_coding, is_kimi_k2x,
     is_kimi_k3, is_kimi_k27, is_kimi_usage_supported, model_uses_effort, read_provider,
-    supports_vision,
+    supports_vision, try_get_provider,
 };
 pub use provider_state::{
     ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,
