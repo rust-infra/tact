@@ -1037,4 +1037,58 @@ mod tests {
         assert!(updated.contains("\"status\": \"in_progress\""));
         assert!(updated.contains("\"owner\": \"alice\""));
     }
+    /// Every `ToolContext` field must have a reader outside this file.
+    ///
+    /// The struct grew to 25 fields, and the way it grew was a field being added
+    /// for one caller and never removed. This is not a style rule: a field with no
+    /// reader is one a handler is handed for nothing, and it is what makes the
+    /// struct look like the place to put the next thing. Reading the source is
+    /// crude but it is the only check that sees every field without a getter for
+    /// each.
+    #[test]
+    fn every_context_field_has_a_reader() {
+        let own = include_str!("mod.rs");
+        let body = own
+            .split_once("pub struct ToolContext {")
+            .expect("the struct is declared here")
+            .1;
+        let body = body.split_once("\n}\n").expect("and closed here").0;
+        let mut unread = Vec::new();
+        for line in body.lines() {
+            let Some(rest) = line.trim().strip_prefix("pub ") else {
+                continue;
+            };
+            let Some((name, _)) = rest.split_once(':') else {
+                continue;
+            };
+            let name = name.trim();
+            // `include_str!` only sees this file, so the readers are found by
+            // scanning the crate the same way; that is why this test lives here
+            // rather than in a helper.
+            let mut read = false;
+            for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src/tool"))
+                .expect("the tool directory is readable")
+            {
+                let path = entry.expect("a directory entry").path();
+                if path.extension().and_then(|e| e.to_str()) != Some("rs") {
+                    continue;
+                }
+                if path.file_name().and_then(|n| n.to_str()) == Some("mod.rs") {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("a readable source file");
+                if text.contains(&format!(".{name}")) {
+                    read = true;
+                    break;
+                }
+            }
+            if !read {
+                unread.push(name.to_string());
+            }
+        }
+        assert!(
+            unread.is_empty(),
+            "these ToolContext fields have no reader outside tool/mod.rs: {unread:?}"
+        );
+    }
 }
