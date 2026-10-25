@@ -994,6 +994,18 @@ impl Agent {
         crate::plugin::provider(self.plugins.services()).ok()
     }
 
+    /// The resolved configuration this agent was assembled with.
+    ///
+    /// `None` when nothing was installed at assembly (a unit test that never
+    /// called `config::init`). A consumer that already holds an agent should read
+    /// this instead of `config::settings()`: the bundle records the snapshot the
+    /// agent actually runs under, which is the one whose budgets and modes its
+    /// behaviour follows — and, unlike the global, the type system can see it.
+    #[must_use]
+    pub fn config(&self) -> Option<crate::config::ResolvedConfig> {
+        crate::plugin::config(self.plugins.services()).ok()
+    }
+
     /// Configured at construction and rewritten by [`Self::set_model`], so it is
     /// the value a `SessionStart` hook payload should carry as `model`.
     #[must_use]

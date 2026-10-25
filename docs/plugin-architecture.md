@@ -95,6 +95,14 @@ the first implementation plan is
     assembled with. The Agent's `ToolExecutor` now resolves the policy pair from the
     registry, so a host that forgets a policy plugin gets a named error instead
     of a silently different permission policy.
+  - `Agent::config()` exposes that snapshot, so a consumer that already holds an
+    agent reads the configuration the agent actually runs under instead of
+    re-asking the process. The command driver uses it for the `[goal]` budgets:
+    `goal_limits()` now takes a snapshot and `agent_goal_limits(&Agent)` supplies
+    the agent's, which removed the last global read from `driver.rs` (a
+    source-level test fails if one comes back). `tact-ui`'s permission mode split
+    the same way — `permission_mode_of(&ResolvedConfig)` is the function, and
+    `bootstrap_session` reads its snapshot once instead of six times.
   - `crates/tact/src/host.rs` is the composition root: `assemble` installs the
     policy plugins (and optionally hooks/storage) in dependency order and seals;
     `executor_from_families` builds the catalog and resolves the ports. The

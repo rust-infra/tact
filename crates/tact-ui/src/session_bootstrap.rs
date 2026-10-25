@@ -42,7 +42,7 @@ use tact_protocol::{AgentUpdate, UpdateSink};
 use tokio::sync::mpsc::UnboundedSender;
 
 use crate::{
-    permission::permission_mode_from_config,
+    permission::permission_mode_of,
     session_lock::{SessionLockGuard, SessionLockRegistry},
 };
 
@@ -208,8 +208,13 @@ pub async fn bootstrap_session(
     frontend: Frontend,
     notices: Notices,
 ) -> anyhow::Result<Agent> {
+    // Read the configuration once and let every later step take it from here.
+    // Six separate `settings()` calls in this function meant the bootstrap could
+    // not be handed a snapshot at all — there was nowhere to put it — which is
+    // the shape that kept `tui` bound to this crate's global.
+    let config = tact::config::settings();
     let client = get_llm_client().await?;
-    let mode = permission_mode_from_config();
+    let mode = permission_mode_of(&config);
     let settings = PermissionSettings::load(tact_path);
     let permission_manager = PermissionManager::try_new_with_settings(mode, settings)?;
     notices.permission_mode(mode);
@@ -255,15 +260,14 @@ pub async fn bootstrap_session(
         notices.notice("mcp", &line);
     }
 
-    let mut tools = toolset_with_memory(tact::config::settings().agent.memory_enabled);
+    let mut tools = toolset_with_memory(config.agent.memory_enabled);
     // Annotate `spawn_subagent` with the current subagent skill-card catalog
     // so the main agent can discover valid `skill:` names.
     tact::tool::annotate_spawn_subagent_skill_catalog(&mut tools);
     // Opt-in sandbox, resolved once: it is constant for the session lifetime, so
     // the bash description below can state the sandbox semantics truthfully. A
     // switch that cannot be honoured degrades to unsandboxed and is announced.
-    let (sandbox, sandbox_degraded) =
-        tact::sandbox::resolve(tact::config::settings().tools.sandbox, &work_dir);
+    let (sandbox, sandbox_degraded) = tact::sandbox::resolve(config.tools.sandbox, &work_dir);
     if let Some(degraded) = &sandbox_degraded {
         notices.notice("sandbox", &degraded.reason);
     }
@@ -289,8 +293,8 @@ pub async fn bootstrap_session(
         ui_responder,
         progress_reporter: tact::tool::ToolProgressReporter::default(),
         cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
-        bash_timeout_secs: tact::config::settings().tools.bash_timeout_secs,
-        bash_nice: tact::config::settings().tools.bash_nice,
+        bash_timeout_secs: config.tools.bash_timeout_secs,
+        bash_nice: config.tools.bash_nice,
         sandbox,
         sandbox_degraded,
         session_id: None,

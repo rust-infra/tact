@@ -23,7 +23,12 @@ fn unique_workspace_name(prefix: &str) -> String {
     format!("{prefix}-{n}")
 }
 
-fn default_test_config() -> tact::config::ResolvedConfig {
+/// A resolved configuration a test can tweak one field of.
+///
+/// `pub(crate)` rather than private so a test in another module can start from
+/// a valid snapshot instead of spelling out ten nested structs — the shape that
+/// made `ResolvedConfig` literals expensive to keep in sync.
+pub(crate) fn default_test_config() -> tact::config::ResolvedConfig {
     tact::config::ResolvedConfig {
         llm: tact::config::LlmSettings {
             provider: ProviderKind::OpenAi,

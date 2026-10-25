@@ -37,12 +37,23 @@ use crate::{
     user_message::build_user_message,
 };
 
-/// Resolved `[goal]` budgets, falling back to the built-in defaults when
-/// settings are not installed (unit tests and the non-LLM subcommand paths).
-fn goal_limits() -> GoalLimits {
-    tact::config::try_settings()
-        .map(|settings| GoalLimits::from_settings(&settings.goal))
+/// Resolved `[goal]` budgets for one configuration snapshot.
+///
+/// Takes the snapshot rather than reading the global: every caller already holds
+/// an `Agent`, whose bundle records the configuration it was assembled with, so
+/// the budgets the loop enforces are the ones that agent actually runs under.
+/// `None` (no configuration installed) keeps the built-in defaults, which is the
+/// shape a unit test and the non-LLM subcommand paths rely on.
+fn goal_limits(config: Option<&tact::config::ResolvedConfig>) -> GoalLimits {
+    config
+        .map(|config| GoalLimits::from_settings(&config.goal))
         .unwrap_or_default()
+}
+
+/// The budgets the agent's own bundle recorded.
+fn agent_goal_limits(agent: &Agent) -> GoalLimits {
+    let config = agent.config();
+    goal_limits(config.as_ref())
 }
 
 /// How often the command loop re-checks whether a Goal run lost its holder.
@@ -81,7 +92,7 @@ fn session_goal_runner(
 async fn recover_interrupted_goals(agent: &Agent) {
     let runner = session_goal_runner(
         &agent.tool_context.goal_manager,
-        goal_limits(),
+        agent_goal_limits(agent),
         agent.runtime.session_id.as_deref(),
         &agent.runtime.events,
     );
@@ -278,7 +289,7 @@ pub async fn run_command_loop_with_account(
     let background_session_id = agent.runtime.session_id.clone();
     let goal_manager = agent.tool_context.goal_manager.clone();
     let task_manager = agent.tool_context.task_manager.clone();
-    let limits = goal_limits();
+    let limits = agent_goal_limits(&agent);
     // The host-side commands, built once: a command answers from shared state,
     // so the loop does not rebuild one per invocation, and a name that is not
     // here is not a command at all.
@@ -506,6 +517,7 @@ pub async fn run_command_loop_with_account(
                     &goal_manager,
                     &task_manager,
                     &events,
+                    limits,
                     goal_id.as_deref(),
                     &text,
                 )
@@ -841,7 +853,7 @@ async fn create_goal(
             emit_goals_changed(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
-                goal_limits(),
+                agent_goal_limits(agent),
                 &agent.runtime.events,
             )
             .await;
@@ -981,6 +993,7 @@ async fn steer_goal(
     goal_manager: &SharedGoalManager,
     task_manager: &SharedTaskManager,
     events: &UpdateSink,
+    limits: GoalLimits,
     requested: Option<&str>,
     text: &str,
 ) {
@@ -1059,7 +1072,7 @@ async fn steer_goal(
         .await
     {
         Ok(_) => {
-            emit_goals_changed(goal_manager, task_manager, goal_limits(), events).await;
+            emit_goals_changed(goal_manager, task_manager, limits, events).await;
         }
         Err(error) => emit_goal_error(
             events,
@@ -1145,7 +1158,7 @@ async fn update_goal_status(
             emit_goals_changed(
                 manager,
                 &agent.tool_context.task_manager,
-                goal_limits(),
+                agent_goal_limits(agent),
                 &agent.runtime.events,
             )
             .await;
@@ -1503,7 +1516,10 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
         return;
     }
     clear_cancel_for_goal_activation(agent);
-    let runner = GoalRunner::new(agent.tool_context.goal_manager.clone(), goal_limits());
+    let runner = GoalRunner::new(
+        agent.tool_context.goal_manager.clone(),
+        agent_goal_limits(agent),
+    );
     if let Err(error) = runner.run_once(agent, goal_id).await {
         emit_goal_error(
             &agent.runtime.events,
@@ -1551,7 +1567,7 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
     emit_goals_changed(
         &agent.tool_context.goal_manager,
         &agent.tool_context.task_manager,
-        goal_limits(),
+        agent_goal_limits(agent),
         &agent.runtime.events,
     )
     .await;
@@ -1720,7 +1736,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
         }
         GoalVerification::Rejected { .. } => {
             clear_cancel_for_goal_activation(agent);
-            let runner = GoalRunner::new(manager.clone(), goal_limits());
+            let runner = GoalRunner::new(manager.clone(), agent_goal_limits(agent));
             if let Err(error) = runner.run_once(agent, goal_id).await {
                 emit_goal_error(
                     &agent.runtime.events,
@@ -1738,7 +1754,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
     emit_goals_changed(
         &manager,
         &agent.tool_context.task_manager,
-        goal_limits(),
+        agent_goal_limits(agent),
         &agent.runtime.events,
     )
     .await;
@@ -1775,7 +1791,7 @@ async fn handle_user_command_with_account(
                 &agent.runtime.session_id,
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
-                goal_limits(),
+                agent_goal_limits(agent),
             );
             let invocation = tact::command::CommandInvocation {
                 name: "goal".to_string(),
@@ -1794,7 +1810,7 @@ async fn handle_user_command_with_account(
                 &agent.runtime.session_id,
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
-                goal_limits(),
+                agent_goal_limits(agent),
             );
             // Panel first, then the detail: same order as the loop-level arm.
             let refresh = tact::command::CommandInvocation {
@@ -1813,6 +1829,7 @@ async fn handle_user_command_with_account(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
                 &agent.runtime.events,
+                agent_goal_limits(agent),
                 goal_id.as_deref(),
                 &text,
             )
@@ -1822,7 +1839,7 @@ async fn handle_user_command_with_account(
             request_goal_pause(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
-                goal_limits(),
+                agent_goal_limits(agent),
                 &agent.runtime.events,
                 &agent.runtime.cancel_flag,
                 &goal_id,
@@ -1835,7 +1852,7 @@ async fn handle_user_command_with_account(
             request_goal_cancel(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
-                goal_limits(),
+                agent_goal_limits(agent),
                 &agent.runtime.events,
                 &agent.runtime.cancel_flag,
                 &goal_id,
@@ -1848,7 +1865,7 @@ async fn handle_user_command_with_account(
             set_goal_archived(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
-                goal_limits(),
+                agent_goal_limits(agent),
                 &agent.runtime.events,
                 &goal_id,
                 archived,
@@ -1974,7 +1991,7 @@ async fn handle_user_command_with_account(
                 &agent.runtime.session_id,
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
-                goal_limits(),
+                agent_goal_limits(agent),
             );
             let invocation = tact::command::CommandInvocation {
                 name: "stats".to_string(),
@@ -2005,7 +2022,7 @@ async fn handle_user_command_with_account(
                 &agent.runtime.session_id,
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
-                goal_limits(),
+                agent_goal_limits(agent),
             );
             let invocation = tact::command::CommandInvocation {
                 name: "background".to_string(),
@@ -2224,6 +2241,77 @@ mod tests {
         }
     }
 
+    /// `[goal]` settings map onto the runner budget.
+    ///
+    /// The mapping is asserted against a snapshot handed in directly: the value
+    /// is the one the loop enforces, so a wrong field (or the wrong unit for
+    /// `max_elapsed_secs`) would silently shorten or extend every Goal run.
+    #[test]
+    fn goal_budgets_come_from_the_given_snapshot() {
+        let mut config = crate::test_support::default_test_config();
+        config.goal.max_turns = 7;
+        config.goal.max_elapsed_secs = 11;
+
+        let limits = super::goal_limits(Some(&config));
+        assert_eq!(limits.max_turns, 7);
+        assert_eq!(
+            limits.max_elapsed.as_secs(),
+            11,
+            "max_elapsed_secs is seconds, not millis"
+        );
+    }
+
+    /// The agent's budgets are the ones its own bundle recorded.
+    ///
+    /// Deliberately not asserting a literal: `Agent::new` snapshots whatever
+    /// configuration was installed when it ran, and tests run in parallel, so a
+    /// literal would pin the test fixture rather than the behaviour. What must
+    /// hold is the relationship — the number the loop uses is the number in the
+    /// agent's own snapshot.
+    #[test]
+    fn goal_budgets_follow_the_agents_own_snapshot() {
+        let (agent, _dir) = build_test_agent(MockClient::new(Vec::new()), None);
+        let from_bundle = super::agent_goal_limits(&agent);
+        let expected = super::goal_limits(agent.config().as_ref());
+        assert_eq!(from_bundle.max_turns, expected.max_turns);
+        assert_eq!(from_bundle.max_elapsed, expected.max_elapsed);
+    }
+
+    /// Nothing in the driver reads the configuration global.
+    ///
+    /// This is the property that lets the frontend be decoupled: every budget
+    /// the loop enforces has to arrive from the agent's snapshot, so a new
+    /// `config::try_settings()` here would be a second source of truth. Reading
+    /// the source is crude, but it is the only check that sees the whole
+    /// production region without standing up a session.
+    #[test]
+    fn the_driver_reads_configuration_from_the_agent_not_the_global() {
+        let source = include_str!("driver.rs");
+        let body = source
+            .split_once("#[cfg(test)]")
+            .expect("the test module is declared here")
+            .0;
+        for forbidden in ["config::try_settings()", "config::settings()"] {
+            assert!(
+                !body.contains(forbidden),
+                "the driver must take its configuration from the agent, found {forbidden}"
+            );
+        }
+    }
+
+    /// A snapshot that never existed keeps the built-in defaults.
+    ///
+    /// The non-LLM subcommand paths and unit tests have no installed
+    /// configuration; they must keep working rather than panicking on the
+    /// missing snapshot.
+    #[test]
+    fn a_missing_snapshot_falls_back_to_the_built_in_budgets() {
+        let limits = super::goal_limits(None);
+        let defaults = tact::goal::GoalLimits::default();
+        assert_eq!(limits.max_turns, defaults.max_turns);
+        assert_eq!(limits.max_elapsed, defaults.max_elapsed);
+    }
+
     fn goal_in_status(id: &str, status: tact::goal::GoalStatus) -> tact::goal::Goal {
         let mut goal = tact::goal::Goal::new(tact::goal::GoalCreate {
             title: format!("goal {id}"),
@@ -2272,7 +2360,7 @@ mod tests {
         super::reconcile_goal_runs(
             &manager,
             &task_manager,
-            super::goal_limits(),
+            super::goal_limits(None),
             &UpdateSink::for_ui(events),
             Some("test-session"),
             &reported,
@@ -2348,7 +2436,7 @@ mod tests {
         super::reconcile_goal_runs(
             &manager,
             &task_manager,
-            super::goal_limits(),
+            super::goal_limits(None),
             &UpdateSink::for_ui(events),
             Some("test-session"),
             &reported,
@@ -3545,7 +3633,7 @@ mod tests {
             .await
             .unwrap();
 
-        let goals = super::goal_snapshots(&manager, &task_manager, super::goal_limits())
+        let goals = super::goal_snapshots(&manager, &task_manager, super::goal_limits(None))
             .await
             .unwrap();
         let snapshot = goals
