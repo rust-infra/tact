@@ -1057,6 +1057,12 @@ impl Agent {
             // position, so an empty vec would panic on it. Every entry is
             // answered as cancelled, which is what the wave-boundary cancel
             // already writes for a call it approved but never started.
+            // Nothing will run, so release every ticket this turn minted.
+            for prepared_tool in &preflight.prepared {
+                if let Some(ticket) = prepared_tool.kernel.as_ref() {
+                    self.tool_executor.release(ticket.clone_for_host());
+                }
+            }
             let outputs = (0..preflight.prepared.len()).map(|_| None).collect();
             return Ok((
                 build_tool_results(preflight.prepared, outputs),
@@ -1202,27 +1208,6 @@ impl Agent {
                 name: name.clone(),
                 input: input.clone(),
             };
-            let _permission_label: Option<String> = None;
-            let _stable_name = match &resolved {
-                ResolvedTool::Native { metadata } => metadata.name,
-                ResolvedTool::Mcp { full_name, .. } => full_name.as_str(),
-                ResolvedTool::McpResource { tool } => tool.name(),
-                ResolvedTool::McpPrompt { tool } => tool.name(),
-                ResolvedTool::Unknown { name } => name.as_str(),
-            };
-            let _risk = match &resolved {
-                ResolvedTool::Native { metadata } => metadata.permission.resolve(&tool_use.input),
-                // The entry declares a tier through `tools.<name>.risk` or
-                // `default_tool_risk`; a silent entry keeps High.
-                ResolvedTool::Mcp { server, tool, .. } => self.mcp_router.risk_for(server, tool),
-                // Tact's own resource tools: no server entry can declare their
-                // risk, so `[mcp]`'s two keys do, and both default to High.
-                ResolvedTool::McpResource { tool } => crate::mcp::resource_tool_risk(*tool),
-                // Tact's own prompt tools: same rule, `[mcp]`'s prompt keys.
-                ResolvedTool::McpPrompt { tool } => crate::mcp::prompt_tool_risk(*tool),
-                ResolvedTool::Unknown { .. } => CapabilityRisk::High,
-            };
-
             // ── Authorization ──────────────────────────────────────────────
             //
             // The kernel pipeline owns this order: sensitive-path guard →
@@ -1249,6 +1234,11 @@ impl Agent {
                 match self.tool_executor.resolve(&request).await {
                     Err(error) => {
                         let msg = format!("{error}");
+                        // A guard refusal names what it refused; every other
+                        // resolve failure has no label to show.
+                        permission_label = error
+                            .downcast_ref::<tact_kernel::tool::executor::LabeledRefusal>()
+                            .map(|refusal| refusal.label.clone());
                         self.emit_update(AgentUpdate::StepFailed {
                             idx: step_idx,
                             tool_id: id.clone(),
@@ -2246,6 +2236,73 @@ mod tests {
         assert!(
             outcome.contains("stale tool descriptor snapshot"),
             "expected a stale-generation refusal, got: {outcome}"
+        );
+    }
+
+    /// The legacy popup's indices must stay index-identical to the kernel's.
+    ///
+    /// Two lists now exist: the kernel's `OPTIONS` (native tools) and this one
+    /// (MCP resource/prompt tools). The three muscle-memory positions — allow
+    /// once, deny, always allow this tool — are what a user's hands know, so a
+    /// reordering in either list is a bug even though each is internally
+    /// consistent.
+    #[test]
+    fn the_legacy_popup_matches_the_kernel_index_mapping() {
+        assert_eq!(
+            legacy_permission_options(true),
+            vec![
+                "Allow once",
+                "Deny",
+                "Always allow this tool",
+                "Always allow this pattern",
+            ]
+        );
+        assert_eq!(legacy_permission_options(false).len(), 3);
+        assert_eq!(
+            legacy_permission_choice_for(Some(0)),
+            LegacyPermissionChoice::AllowOnce
+        );
+        assert_eq!(
+            legacy_permission_choice_for(Some(1)),
+            LegacyPermissionChoice::Deny
+        );
+        assert_eq!(
+            legacy_permission_choice_for(Some(2)),
+            LegacyPermissionChoice::AlwaysAllow
+        );
+        assert_eq!(
+            legacy_permission_choice_for(Some(3)),
+            LegacyPermissionChoice::AlwaysAllowProgram
+        );
+        // Cancelled (`None`) and out-of-range both deny.
+        assert_eq!(
+            legacy_permission_choice_for(None),
+            LegacyPermissionChoice::Deny
+        );
+        assert_eq!(
+            legacy_permission_choice_for(Some(99)),
+            LegacyPermissionChoice::Deny
+        );
+    }
+
+    /// A credential refusal still names what it refused.
+    ///
+    /// The cell's label line is the only place a reader learns the *kind* of
+    /// material; the cutover dropped it because `resolve` returned a bare error
+    /// string. `LabeledRefusal` carries it back.
+    #[test]
+    fn a_credential_refusal_keeps_its_label() {
+        let mut agent = agent_with("refusal_label", crate::permission::PermissionMode::Auto);
+        let preflight = block_on(agent.preflight_tool_calls(&tool_use(
+            "read_file",
+            serde_json::json!({"path": ".ssh/id_ed25519"}),
+        )))
+        .unwrap();
+        let prepared = preflight.prepared.into_iter().next().unwrap();
+        assert!(matches!(prepared.state, PreparedState::Resolved(_)));
+        assert_eq!(
+            prepared.permission_label.as_deref(),
+            Some("Refused: private-key")
         );
     }
 

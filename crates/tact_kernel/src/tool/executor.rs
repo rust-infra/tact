@@ -53,6 +53,25 @@ pub struct PermissionAnswer {
     pub kind: PermissionOptionKind,
 }
 
+/// A refusal the host must show with a label, not just a message.
+///
+/// The sensitive-target guard is the only producer today: the cell's label line
+/// is the one place a reader learns *what kind* of material was refused, and a
+/// bare error string would lose it.
+#[derive(Debug)]
+pub struct LabeledRefusal {
+    pub label: String,
+    pub message: String,
+}
+
+impl std::fmt::Display for LabeledRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for LabeledRefusal {}
+
 /// A port that classifies a concrete input's risk.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PermissionDecision {
@@ -589,6 +608,20 @@ impl ToolExecutor {
             option_id: option.id.clone(),
             kind: option.kind,
         })
+    }
+
+    /// Drop a ticket that will never be redeemed.
+    ///
+    /// A host can authorize more calls than it runs: a cancel between pre-flight
+    /// and the execution wave, or a Goal-yield that skips the rest of the turn,
+    /// leaves a ticket live forever. Releasing it keeps the invariant honest —
+    /// every ticket is either redeemed or released — so any future audit or
+    /// expiry on this set starts from a true statement.
+    pub fn release(&self, prepared: ToolPreflight) {
+        self.tickets
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .remove(&prepared.ticket);
     }
 
     /// The hook port, for a host that must run its own hook callbacks.
@@ -2197,6 +2230,144 @@ mod host_seam_tests {
             .err()
             .expect("a deny answer must fail");
         assert!(error.to_string().contains("Permission denied by user"));
+        assert_eq!(calls.load(Ordering::SeqCst), 0);
+    }
+}
+
+#[cfg(test)]
+mod release_tests {
+    use super::*;
+    use crate::capability::tool::Tool;
+    use crate::tool::context::{
+        CancelToken, EventSink, InteractionBroker, InteractionRequest, InteractionResponse,
+        RedactionPolicy, ToolCallContext, ToolEvent, ToolOrigin, Workspace,
+    };
+    use crate::tool::descriptor::ToolDescriptor;
+    use crate::tool::{ToolCallResult, ToolMetadata};
+    use serde_json::json;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct NoopTool(Arc<AtomicUsize>);
+
+    #[async_trait]
+    impl Tool for NoopTool {
+        fn descriptor(&self) -> ToolDescriptor {
+            ToolDescriptor::from_native(
+                "bash",
+                "bash",
+                json!({"type": "object"}),
+                &ToolMetadata::read_json("bash", "bash", "Bash"),
+            )
+        }
+
+        async fn call(
+            &self,
+            _ctx: ToolCallContext,
+            _input: serde_json::Value,
+        ) -> anyhow::Result<ToolCallResult> {
+            self.0.fetch_add(1, Ordering::SeqCst);
+            Ok(ToolCallResult::text("ran"))
+        }
+    }
+
+    struct Allow;
+    #[async_trait]
+    impl PermissionService for Allow {
+        async fn decide(&self, _request: PermissionRequest) -> anyhow::Result<PermissionDecision> {
+            Ok(PermissionDecision::Allow)
+        }
+    }
+
+    struct NoHooks;
+    #[async_trait]
+    impl HookService for NoHooks {
+        async fn pre_tool_use(&self, _event: &mut PreToolUseEvent) -> anyhow::Result<HookControl> {
+            Ok(HookControl::Continue)
+        }
+
+        async fn post_tool_use(
+            &self,
+            _event: &mut PostToolUseEvent,
+        ) -> anyhow::Result<HookControl> {
+            Ok(HookControl::Continue)
+        }
+    }
+
+    struct NoGuard;
+    impl SecurityService for NoGuard {
+        fn guard(
+            &self,
+            _descriptor: &ToolDescriptor,
+            _input: &serde_json::Value,
+        ) -> anyhow::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct NoEvents;
+    impl EventSink for NoEvents {
+        fn emit(&self, _event: ToolEvent) {}
+    }
+
+    struct NoInteractions;
+    #[async_trait]
+    impl InteractionBroker for NoInteractions {
+        async fn request(
+            &self,
+            _request: InteractionRequest,
+        ) -> anyhow::Result<InteractionResponse> {
+            Ok(InteractionResponse::Cancelled)
+        }
+    }
+
+    fn ctx() -> ToolCallContext {
+        ToolCallContext {
+            run_id: "run".into(),
+            tool_use_id: "call".into(),
+            session_id: None,
+            active_goal_id: None,
+            origin: ToolOrigin::Main,
+            workspace: Workspace::new("/repo"),
+            events: Arc::new(NoEvents),
+            interaction: Arc::new(NoInteractions),
+            cancel: CancelToken::new(),
+            redaction: RedactionPolicy::Off,
+        }
+    }
+
+    #[tokio::test]
+    async fn releasing_an_unredeemed_ticket_makes_it_unusable() {
+        // A host can authorize a call it never runs (a cancel between preflight
+        // and the wave). Releasing keeps "every ticket is redeemed or released"
+        // true instead of leaking the id for the life of the session.
+        let calls = Arc::new(AtomicUsize::new(0));
+        let mut catalog = ToolCatalog::default();
+        catalog.insert(Arc::new(NoopTool(calls.clone()))).unwrap();
+        let executor = ToolExecutor::new(
+            Arc::new(catalog),
+            CapabilityFilter::default(),
+            Arc::new(NoGuard),
+            Arc::new(Allow),
+            Arc::new(NoHooks),
+        );
+        let generation = executor.descriptor_snapshot().await.unwrap().generation;
+        let prepared = executor
+            .preflight(
+                ToolRequest {
+                    call_id: "call".into(),
+                    tool_name: "bash".into(),
+                    input: json!({"command": "ls"}),
+                    snapshot_generation: generation,
+                },
+                ctx(),
+            )
+            .await
+            .unwrap();
+        executor.release(prepared.clone_for_host());
+        let Err(error) = executor.execute(prepared).await else {
+            panic!("a released ticket must not run the tool");
+        };
+        assert!(error.to_string().contains("ticket"), "{error}");
         assert_eq!(calls.load(Ordering::SeqCst), 0);
     }
 }

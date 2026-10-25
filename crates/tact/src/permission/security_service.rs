@@ -38,7 +38,13 @@ impl SecurityService for SensitivePathGuard {
             return Ok(());
         };
         if hit.tier == Tier::Credential {
-            anyhow::bail!("{}", refusal_text(&hit));
+            // Labeled, not a bare string: the UI's label line is the only place
+            // a reader learns which kind of material was refused.
+            return Err(tact_kernel::tool::executor::LabeledRefusal {
+                label: format!("Refused: {}", hit.kind.label()),
+                message: refusal_text(&hit),
+            }
+            .into());
         }
         Ok(())
     }
