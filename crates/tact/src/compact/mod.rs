@@ -9,6 +9,9 @@
 //! - [`compacted_context`]: legacy single-summary replacement context.
 //! - Codex-style rebuild: [`collect_user_messages`] + [`build_compacted_history`].
 
+pub mod plugin;
+pub mod service;
+
 use std::{
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},

@@ -194,6 +194,11 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
         host.install_sync(crate::agent::plugin::AgentPlugin::new(service))?;
     }
 
+    // Compaction is not optional — an uncompacted context eventually exceeds the
+    // model's window — so the built-in policy is always installed. A host that
+    // wants a different one registers its own plugin instead.
+    host.install_sync(crate::compact::plugin::CompactionPlugin::builtin())?;
+
     let skipped = host
         .skipped()
         .iter()
@@ -397,6 +402,10 @@ mod tests {
                 "builtin.permission",
                 "builtin.hooks",
                 "builtin.marketplace",
+                // Compaction last: it depends on nothing else here, and being
+                // last is what makes "every host gets a policy" true even when
+                // the earlier plugins are filtered out.
+                "builtin.compaction_service",
             ]
         );
     }
@@ -475,6 +484,39 @@ mod tests {
         assert!(
             service_at > store_at,
             "the service is installed after the store it reads: {ids:?}"
+        );
+    }
+
+    /// Every host gets a compaction policy, storage or not.
+    ///
+    /// Compaction is not optional: an uncompacted context eventually exceeds the
+    /// model's window, so a host that never installed a policy would fail on a
+    /// long session rather than at assembly.
+    #[tokio::test]
+    async fn every_host_gets_a_compaction_service() {
+        crate::config::test_support::install_default();
+        let manager = manager();
+        let assembled = assemble_with(
+            HostOptions {
+                permission_manager: &manager,
+                ui_available: Arc::new(|| false),
+                config: None,
+                provider: None,
+                filter: CapabilityFilter::default(),
+            },
+            HostExtras::default(),
+        )
+        .unwrap();
+
+        let service = crate::compact::plugin::compaction_service(assembled.services())
+            .expect("a host always gets a compaction policy");
+        assert!(service.estimate_tokens(&[]) < 100);
+        assert!(
+            assembled
+                .plugin_ids()
+                .iter()
+                .any(|id| id == "builtin.compaction_service"),
+            "the plugin is installed, not just the value"
         );
     }
 
