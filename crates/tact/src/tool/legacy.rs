@@ -31,6 +31,16 @@ pub trait ToolContextFactory: Send + Sync {
     fn teammate_manager(&self) -> Option<crate::tool::SharedTeammateManager> {
         None
     }
+
+    /// The task manager, on the same terms.
+    fn task_manager(&self) -> Option<crate::tool::SharedTaskManager> {
+        None
+    }
+
+    /// The sink a tool's read-out goes to.
+    fn events(&self) -> Option<tact_protocol::UpdateSink> {
+        None
+    }
 }
 
 /// A factory over a base context, mapping the run-scoped fields.
@@ -107,6 +117,14 @@ impl ToolContextFactory for SharedToolContextFactory {
     fn teammate_manager(&self) -> Option<crate::tool::SharedTeammateManager> {
         Some(self.with_base(|base| base.teammate_manager.clone()))
     }
+
+    fn task_manager(&self) -> Option<crate::tool::SharedTaskManager> {
+        Some(self.with_base(|base| base.task_manager.clone()))
+    }
+
+    fn events(&self) -> Option<tact_protocol::UpdateSink> {
+        Some(self.with_base(|base| base.events.clone()))
+    }
 }
 
 /// A legacy handler exposed as a kernel [`KernelTool`].
@@ -170,16 +188,29 @@ impl KernelTool for LegacyToolAdapter {
         // arrives as `None`.
         let needs = self.inner.domain_needs();
         if !needs.is_empty() {
-            let handles = super::DomainHandles {
-                skill_registry: needs
-                    .contains(&super::DomainHandle::SkillRegistry)
-                    .then(|| self.contexts.skill_registry())
-                    .flatten(),
-                teammate_manager: needs
-                    .contains(&super::DomainHandle::TeammateManager)
-                    .then(|| self.contexts.teammate_manager())
-                    .flatten(),
-            };
+            let mut handles = super::DomainHandles::none();
+            for need in needs {
+                match need {
+                    super::DomainHandle::SkillRegistry => {
+                        handles.skill_registry = self.contexts.skill_registry();
+                    }
+                    super::DomainHandle::TeammateManager => {
+                        handles.teammate_manager = self.contexts.teammate_manager();
+                    }
+                    super::DomainHandle::TaskManager => {
+                        handles.task_manager = self.contexts.task_manager();
+                    }
+                    super::DomainHandle::SessionId => {
+                        handles.session_id = ctx.session_id.clone();
+                    }
+                    super::DomainHandle::ActiveGoalId => {
+                        handles.active_goal_id = ctx.active_goal_id.clone();
+                    }
+                    super::DomainHandle::Events => {
+                        handles.events = self.contexts.events();
+                    }
+                }
+            }
             if let Some(future) = self.inner.call_in_domain(handles, input.clone()) {
                 return future.await;
             }

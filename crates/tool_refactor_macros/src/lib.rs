@@ -112,7 +112,15 @@ fn expand_domain_tool(
     // Which handle does the body read? Derived from the parameter name the
     // handler used, so a handler that switches fields cannot forget to update a
     // separate declaration.
-    let text = quote!(#item_fn).to_string();
+    // Normalised: `quote!` renders `handles.task_manager` as
+    // `handles . task_manager` (spaces around the dot), so all whitespace is
+    // stripped before looking for the field. Removing whitespace cannot merge two
+    // distinct identifiers — a space is only a token separator, and no field name
+    // here spans one.
+    let text = quote!(#item_fn)
+        .to_string()
+        .split_whitespace()
+        .collect::<String>();
     let mut needs = Vec::new();
     for (field, variant) in [
         (
@@ -123,8 +131,18 @@ fn expand_domain_tool(
             "teammate_manager",
             quote!(crate::tool::DomainHandle::TeammateManager),
         ),
+        (
+            "task_manager",
+            quote!(crate::tool::DomainHandle::TaskManager),
+        ),
+        ("session_id", quote!(crate::tool::DomainHandle::SessionId)),
+        (
+            "active_goal_id",
+            quote!(crate::tool::DomainHandle::ActiveGoalId),
+        ),
+        ("events", quote!(crate::tool::DomainHandle::Events)),
     ] {
-        if text.contains(&format!(". {field}")) || text.contains(&format!(".{field}")) {
+        if text.contains(&format!(".{field}")) {
             needs.push(variant);
         }
     }
@@ -159,9 +177,17 @@ fn expand_domain_tool(
                 context: crate::tool::ToolContext,
                 input: serde_json::Value,
             ) -> anyhow::Result<crate::tool::ToolCallResult> {
+                // `call` is the full-context fallback for a domain tool: every
+                // handle is available, so a direct caller (a test) never sees a
+                // missing one. The adapter uses `call_in_domain` instead, which
+                // fills only what was declared.
                 let handles = crate::tool::DomainHandles {
                     skill_registry: Some(context.skill_registry.clone()),
                     teammate_manager: Some(context.teammate_manager.clone()),
+                    task_manager: Some(context.task_manager.clone()),
+                    session_id: context.session_id.clone(),
+                    active_goal_id: context.active_goal_id.clone(),
+                    events: Some(context.events.clone()),
                 };
                 let input: #input_ty = serde_json::from_value(input)?;
                 let call_future = #fn_ident(handles, input);

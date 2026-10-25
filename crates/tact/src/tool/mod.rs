@@ -253,6 +253,13 @@ impl ToolContext {
 pub enum DomainHandle {
     SkillRegistry,
     TeammateManager,
+    TaskManager,
+    /// The run's session id, when this tool keys its rows by it.
+    SessionId,
+    /// The Goal a call runs inside, when the caller is a Goal activation.
+    ActiveGoalId,
+    /// The sink a read-out goes to.
+    Events,
 }
 
 /// The per-domain handles a tool may ask the adapter for.
@@ -262,12 +269,34 @@ pub enum DomainHandle {
 /// leaves the rest `None`. A tool that reads a handle it did not declare gets
 /// `None` and must say so — that is the invariant, and it is what stops this from
 /// becoming `ToolContext` with a different name.
+#[derive(Default, Clone)]
 pub struct DomainHandles {
     pub skill_registry: Option<crate::skill::SharedSkillRegistry>,
     pub teammate_manager: Option<SharedTeammateManager>,
+    pub task_manager: Option<SharedTaskManager>,
+    /// The session the call belongs to, for a tool that keys rows by it.
+    pub session_id: Option<String>,
+    /// The Goal a call is running inside, when the caller is a Goal activation.
+    pub active_goal_id: Option<String>,
+    /// Where a tool's read-out goes.
+    ///
+    /// An `UpdateSink`, not a `ToolContext.events`: the sink is the whole of what
+    /// a tool needs to announce that a collection changed, and it is already
+    /// cheap to clone.
+    pub events: Option<UpdateSink>,
 }
 
 impl DomainHandles {
+    /// A set with nothing filled.
+    ///
+    /// `Default` rather than a literal at each construction site: a new handle
+    /// must not force every existing caller to edit an initializer, which is how
+    /// a flat struct of options starts to feel like a required context.
+    #[must_use]
+    pub fn none() -> Self {
+        Self::default()
+    }
+
     /// Which handles this set carries, for a diagnostic and for the tests.
     #[must_use]
     pub fn carried(&self) -> Vec<&'static str> {
@@ -277,6 +306,18 @@ impl DomainHandles {
         }
         if self.teammate_manager.is_some() {
             carried.push("teammate_manager");
+        }
+        if self.task_manager.is_some() {
+            carried.push("task_manager");
+        }
+        if self.session_id.is_some() {
+            carried.push("session_id");
+        }
+        if self.active_goal_id.is_some() {
+            carried.push("active_goal_id");
+        }
+        if self.events.is_some() {
+            carried.push("events");
         }
         carried
     }

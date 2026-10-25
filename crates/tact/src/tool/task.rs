@@ -1,14 +1,14 @@
 use std::str::FromStr;
 
 use crate::tool::{TaskOperation, ToolMetadata};
-use anyhow::Result;
+use anyhow::{Result, anyhow};
 use schemars::JsonSchema;
 use serde::Deserialize;
 use tool_refactor_macros::tool;
 
 use crate::{
     task::{TaskStatus, TaskUpdate, emit_tasks_changed, render_task_json, render_task_list},
-    tool::ToolContext,
+    tool::DomainHandles,
 };
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -31,33 +31,37 @@ pub const TASK_CREATE_METADATA: ToolMetadata = ToolMetadata::task_write(
 ///
 /// Returns an error if the task manager fails to create the task
 /// (e.g., storage error).
-pub async fn task_create(ctx: ToolContext, input: TaskCreateInput) -> Result<String> {
+pub async fn task_create(handles: DomainHandles, input: TaskCreateInput) -> Result<String> {
+    let Some(tasks) = handles.task_manager else {
+        return Err(anyhow!(
+            "task tools are unavailable: this host has no task manager"
+        ));
+    };
+    let Some(events) = handles.events else {
+        return Err(anyhow!(
+            "task tools need an update sink to announce the change"
+        ));
+    };
+    let session_id = handles.session_id.clone().unwrap_or_default();
+    let active_goal_id = handles.active_goal_id.clone();
     let description = input
         .description
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty());
-    let session_id = ctx.session_id.clone().unwrap_or_default();
-    let task = match ctx.active_goal_id.clone() {
+    let session_id = session_id.clone();
+    let task = match active_goal_id.clone() {
         // A Goal activation's tasks belong to that Goal: the runner reads
         // `list_for_goal` for context and the panel, and the binding is the
         // only Goal identity the model can be trusted to use.
         Some(goal_id) => {
-            ctx.task_manager
+            tasks
                 .create_for_goal(input.subject, description, session_id, goal_id)
                 .await?
         }
-        None => {
-            ctx.task_manager
-                .create(input.subject, description, session_id)
-                .await?
-        }
+        None => tasks.create(input.subject, description, session_id).await?,
     };
-    let listed = ctx.task_manager.list().await.unwrap_or_default();
-    emit_tasks_changed(
-        &ctx.events,
-        listed,
-        tact_protocol::TasksChangeReason::Created,
-    );
+    let listed = tasks.list().await.unwrap_or_default();
+    emit_tasks_changed(&events, listed, tact_protocol::TasksChangeReason::Created);
     render_task_json(&task)
 }
 
@@ -78,8 +82,13 @@ pub const TASK_GET_METADATA: ToolMetadata = ToolMetadata::task_read(
 /// # Errors
 ///
 /// Returns an error if the task ID does not exist.
-pub async fn task_get(ctx: ToolContext, input: TaskGetInput) -> Result<String> {
-    let task = ctx.task_manager.get(input.task_id).await?;
+pub async fn task_get(handles: DomainHandles, input: TaskGetInput) -> Result<String> {
+    let Some(tasks) = handles.task_manager else {
+        return Err(anyhow!(
+            "task tools are unavailable: this host has no task manager"
+        ));
+    };
+    let task = tasks.get(input.task_id).await?;
     render_task_json(&task)
 }
 
@@ -97,8 +106,13 @@ pub const TASK_LIST_METADATA: ToolMetadata = ToolMetadata::task_read(
 /// # Errors
 ///
 /// Returns an error if the task manager fails to retrieve the task list.
-pub async fn task_list(ctx: ToolContext, _input: TaskListInput) -> Result<String> {
-    Ok(render_task_list(ctx.task_manager.list().await?))
+pub async fn task_list(handles: DomainHandles, _input: TaskListInput) -> Result<String> {
+    let Some(tasks) = handles.task_manager else {
+        return Err(anyhow!(
+            "task tools are unavailable: this host has no task manager"
+        ));
+    };
+    Ok(render_task_list(tasks.list().await?))
 }
 
 #[derive(Debug, Deserialize, JsonSchema)]
@@ -131,7 +145,17 @@ pub const TASK_UPDATE_METADATA: ToolMetadata = ToolMetadata::task_write(
 /// - The status string is invalid (must be one of: pending, in_progress, completed, or deleted).
 /// - The task ID does not exist.
 /// - The task manager fails to update the task.
-pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<String> {
+pub async fn task_update(handles: DomainHandles, input: TaskUpdateInput) -> Result<String> {
+    let Some(tasks) = handles.task_manager else {
+        return Err(anyhow!(
+            "task tools are unavailable: this host has no task manager"
+        ));
+    };
+    let Some(events) = handles.events else {
+        return Err(anyhow!(
+            "task tools need an update sink to announce the change"
+        ));
+    };
     let status = input
         .status
         .as_deref()
@@ -141,8 +165,7 @@ pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<Str
             anyhow::anyhow!("Invalid status. Use pending, in_progress, completed, or deleted")
         })?;
 
-    let task = ctx
-        .task_manager
+    let task = tasks
         .update(
             input.task_id,
             TaskUpdate {
@@ -153,12 +176,8 @@ pub async fn task_update(ctx: ToolContext, input: TaskUpdateInput) -> Result<Str
             },
         )
         .await?;
-    let listed = ctx.task_manager.list().await.unwrap_or_default();
-    emit_tasks_changed(
-        &ctx.events,
-        listed,
-        tact_protocol::TasksChangeReason::Updated,
-    );
+    let listed = tasks.list().await.unwrap_or_default();
+    emit_tasks_changed(&events, listed, tact_protocol::TasksChangeReason::Updated);
     render_task_json(&task)
 }
 
