@@ -113,10 +113,49 @@ pub enum InteractionResponse {
     Selected(Vec<String>),
 }
 
+/// A request that is waiting for a human, as a view sees it.
+///
+/// Views reconcile from a snapshot rather than trusting one event: an event can
+/// be missed (a view attaching late), and a waiter that was dropped must not
+/// leave a ghost prompt on screen. The ID is what pairs an answer with its
+/// waiter.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingInteraction {
+    pub request_id: u64,
+    pub request: InteractionRequest,
+    /// The request came from a `spawn_subagent` child rather than the main run.
+    ///
+    /// A view titles the popup from this; the prompt itself stays clean, because
+    /// the model wrote it and the user should read what the model said.
+    pub from_subagent: bool,
+}
+
 /// The client-neutral interaction port.
+///
+/// `request` is the only required method: a broker with no view attached simply
+/// answers (or refuses) without ever showing anything. Snapshot and withdraw are
+/// defaulted because a broker that only answers inline — a headless run, a test
+/// fake — has no pending set to expose, and forcing it to invent one would make
+/// every fake carry state it never reads.
 #[async_trait]
 pub trait InteractionBroker: Send + Sync {
     async fn request(&self, request: InteractionRequest) -> anyhow::Result<InteractionResponse>;
+
+    /// The requests waiting for an answer, in registration order.
+    ///
+    /// A view calls this on every event and on a timer: the set is the truth,
+    /// and a prompt that is no longer in it must be closed.
+    fn pending(&self) -> Vec<PendingInteraction> {
+        Vec::new()
+    }
+
+    /// Abandon one request, if it is still waiting.
+    ///
+    /// Returns whether anything was withdrawn. The waiter sees a cancellation
+    /// rather than waiting forever, which is what makes a closed popup safe.
+    fn withdraw(&self, _request_id: u64) -> bool {
+        false
+    }
 }
 
 /// Everything a tool call is allowed to know about its run.
@@ -182,6 +221,80 @@ mod tests {
         assert_eq!(context.origin, ToolOrigin::Subagent);
         assert_eq!(context.workspace.root(), Path::new("/repo"));
         assert_eq!(context.redaction, RedactionPolicy::Basic);
+    }
+
+    /// A broker with no view exposes no pending set, and that is not a failure.
+    ///
+    /// Headless runs and inline fakes answer without ever showing a prompt, so
+    /// the defaults have to be the honest empty answer rather than an error the
+    /// caller must special-case.
+    #[test]
+    fn a_broker_without_a_view_has_nothing_pending() {
+        let broker = RejectAll;
+        assert!(broker.pending().is_empty());
+        assert!(
+            !broker.withdraw(1),
+            "there was nothing to withdraw, and saying so is the contract"
+        );
+    }
+
+    /// A broker that does hold requests reports them, and withdrawing removes one.
+    ///
+    /// This is the shape a view depends on: the snapshot is the truth, so an
+    /// entry that left it must not keep a popup on screen.
+    #[tokio::test]
+    async fn pending_requests_round_trip_through_the_snapshot() {
+        struct Holding(std::sync::Mutex<Vec<PendingInteraction>>);
+
+        #[async_trait]
+        impl InteractionBroker for Holding {
+            async fn request(
+                &self,
+                request: InteractionRequest,
+            ) -> anyhow::Result<InteractionResponse> {
+                self.0.lock().expect("lock").push(PendingInteraction {
+                    request_id: 7,
+                    request,
+                    from_subagent: true,
+                });
+                Ok(InteractionResponse::Cancelled)
+            }
+
+            fn pending(&self) -> Vec<PendingInteraction> {
+                self.0.lock().expect("lock").clone()
+            }
+
+            fn withdraw(&self, request_id: u64) -> bool {
+                let mut pending = self.0.lock().expect("lock");
+                let before = pending.len();
+                pending.retain(|entry| entry.request_id != request_id);
+                pending.len() != before
+            }
+        }
+
+        let broker = Holding(std::sync::Mutex::new(Vec::new()));
+        let pending = broker.pending();
+        assert!(pending.is_empty());
+
+        // Register through the same path a tool would take.
+        broker
+            .request(InteractionRequest::Confirm {
+                prompt: "run?".into(),
+            })
+            .await
+            .expect("request");
+
+        let pending = broker.pending();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request_id, 7);
+        assert!(
+            pending[0].from_subagent,
+            "a child's prompt is labelled so the popup can say so"
+        );
+
+        assert!(broker.withdraw(7), "withdrawing an existing request works");
+        assert!(broker.pending().is_empty(), "and it leaves the snapshot");
+        assert!(!broker.withdraw(7), "a second withdraw is a no-op");
     }
 
     #[test]
