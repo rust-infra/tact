@@ -85,21 +85,32 @@ the first implementation plan is
 
 ## Not implemented yet
 
-- MCP tools as kernel descriptors: `McpToolSource` and `McpControlSource` adapt
-  them *and* `McpToolEntry` already carries the `[mcp]` risk, output budget and
-  auto-approve bit, but the Agent does not register either source yet — sharing
-  the router needs an ownership change whose two obvious designs are recorded as
-  rejected in
-  [`docs/superpowers/plans/2026-10-25-mcp-through-executor.md`](superpowers/plans/2026-10-25-mcp-through-executor.md).
-  MCP calls therefore still keep their own ladder: the last legacy permission
-  path.
+- ~~MCP tools as kernel descriptors.~~ **Done.** Every MCP family — regular
+  tools, resource tools and prompt tools — is a catalog source now, and all three
+  run through the kernel pipeline. The legacy permission ladder is deleted.
+  - Sharing the router was solved without a lock: `McpClient` is `Clone` over
+    `Arc`ed services and immutable data (and `shutdown` consumes `self`, so a
+    clone cannot tear a connection down), so `MCPToolRouter::call_handles()`
+    yields lock-free `McpCallHandle`s. `SnapshotMcpBackend` snapshots those plus
+    the `[mcp]` policy; `SnapshotMcpControlBackend` snapshots the router. A call
+    in flight keeps working when the host swaps a new snapshot in, and a reload
+    can neither block nor be blocked by a descriptor read.
+  - The advertised tool list is now built from
+    `ToolCatalog::source_descriptors()`, so "what the model sees" and "what the
+    executor can resolve" are one set by construction, pinned by a test.
+  - Two MCP behaviours were silently dropped by the first version of the cutover
+    and are restored: `approval_mode: auto` (carried as
+    `ToolPolicy::auto_approved`, consulted *after* plan mode so it cannot unlock
+    it) and `tools.<name>.output_token_limit` (carried as
+    `ToolPolicy::output_token_limit`).
 - Phase 4's view half is untouched: `tui` still depends on `tact` and `tact_llm`,
   and slash commands still dispatch through the `SlashCommand` enum rather than a
   catalog. That is the next large change.
 - Domain families beyond tools and prompt sections: Goal/Task/Team/Worktree/
   Background/Subagent are tool families but not yet plugins with their own
-  lifecycle, and Skills/Memory/MCP still reach into `agent/` directly (the module
-  guard's allowlist is still 2 entries).
+  lifecycle. The remaining `agent/` → `mcp` edge is only the router's lifecycle
+  (load/reload, the prompt/spec queries, and the name-resolver predicates), which
+  Phase 3's `McpPlugin` owns; skill and memory no longer have an edge.
 - `AgentService`, `ChatService`, `SessionService` and view execution.
 - `ToolEvent`s: the kernel emits them, but nothing consumes them yet — the TUI
   still renders from the legacy `AgentUpdate`s.
