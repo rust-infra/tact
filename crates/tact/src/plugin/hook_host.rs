@@ -338,3 +338,103 @@ mod tests {
         close_status(None, None);
     }
 }
+
+/// The hook engine as a plugin.
+///
+/// Provides a [`KernelHookService`](crate::plugin::KernelHookService) — the
+/// kernel's tool-level hook port — for a host whose hooks do not need an agent.
+/// The Agent runs its hooks itself (a callback needs the loop it is part of), so
+/// it does not install this; a host assembling a `ToolExecutor` without an
+/// Agent does, which is why the port exists at all.
+pub struct HooksPlugin {
+    source: crate::plugin::HookSource,
+    work_dir: std::path::PathBuf,
+    notices: std::sync::Arc<dyn Fn(&str) + Send + Sync>,
+}
+
+impl HooksPlugin {
+    pub fn new(
+        source: crate::plugin::HookSource,
+        work_dir: std::path::PathBuf,
+        notices: std::sync::Arc<dyn Fn(&str) + Send + Sync>,
+    ) -> Self {
+        Self {
+            source,
+            work_dir,
+            notices,
+        }
+    }
+}
+
+#[async_trait::async_trait]
+impl tact_kernel::plugin::Plugin for HooksPlugin {
+    fn manifest(&self) -> tact_kernel::plugin::PluginManifest {
+        tact_kernel::plugin::PluginManifest::new(
+            tact_kernel::plugin::PluginId::new("builtin.hooks").expect("a literal id"),
+            "Hook engine",
+            env!("CARGO_PKG_VERSION"),
+            tact_kernel::plugin::PluginKind::Policy,
+            "PreToolUse / PostToolUse over the user's hook declarations",
+        )
+    }
+
+    fn register(&self, registrar: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
+        let service = crate::plugin::KernelHookService::new(
+            self.source.clone(),
+            self.work_dir.clone(),
+            self.notices.clone(),
+        );
+        registrar.service(std::sync::Arc::new(service))
+    }
+}
+
+/// Pull the hook port a [`HooksPlugin`] provided.
+pub fn hook_service(
+    services: &tact_kernel::service::ServiceRegistry,
+) -> anyhow::Result<std::sync::Arc<crate::plugin::KernelHookService>> {
+    services
+        .get::<crate::plugin::KernelHookService>()
+        .ok_or_else(|| anyhow::anyhow!("no hook service installed: is builtin.hooks installed?"))
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+    use tact_kernel::capability::CapabilityFilter;
+    use tact_kernel::plugin::PluginHost;
+
+    fn source() -> crate::plugin::HookSource {
+        crate::plugin::HookSource {
+            label: "test".into(),
+            origin: crate::plugin::HookOrigin::ProjectFile,
+            dirs: crate::consts::PluginDirs::root_only("/tmp"),
+            hooks: crate::plugin::HooksFile::default(),
+        }
+    }
+
+    #[tokio::test]
+    async fn the_plugin_provides_the_hook_port() {
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(HooksPlugin::new(
+            source(),
+            std::path::PathBuf::from("/tmp"),
+            std::sync::Arc::new(|_| {}),
+        ))
+        .await
+        .unwrap();
+        let runtime = host.seal().await.unwrap();
+        assert!(hook_service(runtime.services()).is_ok());
+    }
+
+    #[tokio::test]
+    async fn a_host_without_the_plugin_is_told_which_one_is_missing() {
+        let runtime = PluginHost::new(CapabilityFilter::default())
+            .seal()
+            .await
+            .unwrap();
+        let Err(error) = hook_service(runtime.services()) else {
+            panic!("no hook plugin means no hook port");
+        };
+        assert!(error.to_string().contains("builtin.hooks"), "{error}");
+    }
+}

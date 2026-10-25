@@ -1280,6 +1280,7 @@ pub enum HookOrigin {
 }
 
 /// One hooks file to register, whichever origin it came from.
+#[derive(Clone)]
 pub struct HookSource {
     /// Human-readable origin, also half of every hook's identity hash.
     pub label: String,
