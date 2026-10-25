@@ -777,3 +777,130 @@ mod tests {
         );
     }
 }
+
+/// Subagents, contributed as a plugin.
+///
+/// The manager already exists and is shared behind an `Arc`; this is the lifecycle
+/// seam. What it buys is replacement: a host that runs children some other way
+/// installs its own plugin instead of replacing what every caller writes against.
+pub struct SubagentPlugin {
+    manager: SharedSubagentManager,
+}
+
+impl SubagentPlugin {
+    /// A plugin over an already-opened manager.
+    ///
+    /// Opening is async and repairs orphans, so it happens before assembly: like
+    /// every store-backed plugin, `register` cannot await.
+    pub fn new(manager: SharedSubagentManager) -> Self {
+        Self { manager }
+    }
+}
+
+#[async_trait::async_trait]
+impl tact_kernel::plugin::Plugin for SubagentPlugin {
+    fn manifest(&self) -> tact_kernel::plugin::PluginManifest {
+        tact_kernel::plugin::PluginManifest::new(
+            tact_kernel::plugin::PluginId::new("builtin.subagent").expect("a literal id"),
+            "Subagents",
+            env!("CARGO_PKG_VERSION"),
+            tact_kernel::plugin::PluginKind::Capability,
+            "Child agent runs: start, finish, cancel and report",
+        )
+    }
+
+    fn register(&self, registrar: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
+        registrar.service(std::sync::Arc::new(SubagentHandle(self.manager.clone())))
+    }
+}
+
+/// The manager a [`SubagentPlugin`] provided.
+#[derive(Clone)]
+pub struct SubagentHandle(pub SharedSubagentManager);
+
+impl std::ops::Deref for SubagentHandle {
+    type Target = SharedSubagentManager;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+/// The subagent manager a host resolved from its registry.
+///
+/// # Errors
+///
+/// Returns an error when no `SubagentPlugin` was installed. The subagent tools
+/// report that they cannot run rather than spawning nothing and saying so.
+pub fn subagent_manager(
+    services: &tact_kernel::service::ServiceRegistry,
+) -> anyhow::Result<SharedSubagentManager> {
+    services
+        .get::<SubagentHandle>()
+        .map(|handle| handle.0.clone())
+        .ok_or_else(|| anyhow::anyhow!("no subagent manager installed; install SubagentPlugin"))
+}
+
+#[cfg(test)]
+mod plugin_tests {
+    use super::*;
+    use tact_kernel::capability::CapabilityFilter;
+    use tact_kernel::plugin::PluginHost;
+
+    async fn manager() -> SharedSubagentManager {
+        let dir = std::env::temp_dir().join(format!("tact-sa-plugin-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let manager = SubagentManager::new(&dir.join("sa.db")).await.unwrap();
+        SharedSubagentManager::new(manager)
+    }
+
+    /// The plugin registers a manager the host can resolve.
+    #[tokio::test]
+    async fn the_plugin_provides_a_resolvable_manager() {
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(SubagentPlugin::new(manager().await))
+            .await
+            .unwrap();
+        let runtime = host.seal().await.unwrap();
+        assert!(subagent_manager(runtime.services()).is_ok());
+    }
+
+    /// A host with no plugin is told so by name.
+    #[test]
+    fn a_missing_plugin_is_an_error_that_names_it() {
+        let registry = tact_kernel::service::ServiceRegistry::default();
+        let error = match subagent_manager(&registry) {
+            Ok(_) => panic!("no manager was installed, so this must fail"),
+            Err(error) => error,
+        };
+        assert!(format!("{error}").contains("SubagentPlugin"), "{error}");
+    }
+
+    /// Cancelling through the resolved manager reaches the live child.
+    ///
+    /// This is the property the plugin has to preserve: a child registered with a
+    /// cancel flag is cancellable by whoever holds the manager, not only by the
+    /// tool that spawned it.
+    #[tokio::test]
+    async fn cancelling_reaches_the_live_child_through_the_registry() {
+        let manager = manager().await;
+        let flag = Arc::new(AtomicBool::new(false));
+        manager.register_cancel_handle("child-1", flag.clone());
+
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(SubagentPlugin::new(manager)).await.unwrap();
+        let runtime = host.seal().await.unwrap();
+        let resolved = subagent_manager(runtime.services()).unwrap();
+        assert!(resolved.request_cancel("child-1"));
+        assert!(flag.load(std::sync::atomic::Ordering::SeqCst));
+    }
+
+    /// The manifest says what it contributes.
+    #[tokio::test]
+    async fn the_manifest_says_what_it_is() {
+        use tact_kernel::plugin::Plugin;
+        let manifest = SubagentPlugin::new(manager().await).manifest();
+        assert_eq!(manifest.id.as_str(), "builtin.subagent");
+        assert_eq!(manifest.kind, tact_kernel::plugin::PluginKind::Capability);
+    }
+}

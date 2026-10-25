@@ -124,6 +124,8 @@ pub struct HostExtras {
     /// Spawning needs a Tokio runtime, so the host does it and installs the result.
     /// `None` is the common case: voice is off by default.
     pub voice: Option<std::sync::Arc<dyn crate::voice::VoiceService>>,
+    /// The already-opened subagent manager.
+    pub subagent: Option<crate::subagent::SharedSubagentManager>,
 }
 
 /// The assembled pieces, after sealing.
@@ -249,6 +251,9 @@ pub fn assemble_with(options: HostOptions<'_>, extras: HostExtras) -> Result<Ass
     }
     if let Some(service) = extras.voice.clone() {
         host.install_sync(crate::voice::VoicePlugin::new(service))?;
+    }
+    if let Some(manager) = extras.subagent.clone() {
+        host.install_sync(crate::subagent::SubagentPlugin::new(manager))?;
     }
 
     let skipped = host
