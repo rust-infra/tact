@@ -30,7 +30,7 @@ verified. "Verified by" names a command or test, not an opinion.
 | 4 | Agent/Chat/Session ports in the kernel; implementations in extensions | **Met** |
 | 5 | Plugins shut down in reverse install order, releasing resources | **Met** |
 | 6 | TUI/headless are views; the host holds only composition and adapters | **Met** |
-| 7 | Commands distributed; no central command enum survives | **Partial** (12 → see below) |
+| 7 | Commands distributed; no central command enum survives | **Partial** (12; see below) |
 | 8 | Migration phases independently shippable and testable | **Met** |
 | 9 | Configuration ownership unambiguous; TOML keys preserved | **Met** |
 | 10 | Dynamic MCP/ToolSource items obey the same capability filter | **Met** |
@@ -182,12 +182,21 @@ Eighteen variants remain, and they are not one kind:
 
 | Group | Count | Why it is still a transport variant |
 |---|---|---|
+| Turn control | 3 | `SubmitTask`, `Cancel`, `RunCommand` — the spec's named target |
 | Goal lifecycle | 1 | `ResumeGoal` — needs the cancel flag and the runner |
-| Agent reconfiguration | 3 | Setters take `&mut Agent` |
-| Turn control | 3 | `SubmitTask`, `Cancel`, `RunCommand` — the target transport |
-| Runtime control | 2 | `CancelSubagent`, `SubagentFinishedNotification` |
+| Picker results | 3 | `SetThinkingBudget`, `SetReasoningEffort`, `SetModel` |
+| Runtime control | 2 | `CancelSubagent` (a button), `SubagentFinishedNotification` (a wake-up) |
 | Needs the router / a turn | 2 | `McpAuth`, `RunMcpPrompt` |
 | Account | 1 | `QueryBalance` needs the account channel |
+
+**Twelve is the floor without inventing user-facing features.** The three picker
+results are the clearest case: every call site is in `select.rs`, and they carry a
+*value the user picked from a list* — a model id, a token budget, an effort level.
+None of them is typed as a slash command today. Turning them into
+`/model <id>` / `/thinking <n>` / `/effort <x>` would be adding a feature and
+calling it a refactor. The `/permission` migration looked identical and was not:
+"plan" is a word a user types, and `/permission plan` already existed as a local
+command.
 
 Four of these are the spec's named target (`SubmitTask`, `Cancel`,
 `RunCommand`, plus interaction responses already removed). The rest are

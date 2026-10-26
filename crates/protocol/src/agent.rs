@@ -479,10 +479,12 @@ pub enum AgentUpdate {
     /// Request user to choose **one** option; returns option index (None = cancelled).
     /// Used by permission prompts and single-choice `ask_user`.
     ///
-    /// The request carries a unique `request_id`; the TUI answers over the
-    /// reverse [`UserCommand::UiResponse`] channel rather than an in-message
-    /// oneshot sender, so [`AgentUpdate`] no longer carries a transport handle
-    /// (pure data, transport-agnostic).
+    /// The request carries a unique `request_id`, and the answer comes back
+    /// through the runtime's interaction broker rather than through an
+    /// in-message oneshot sender — so [`AgentUpdate`] carries no transport handle
+    /// and stays pure data. There is no reverse `UserCommand` variant for the
+    /// answer: the broker holds the waiter, and the view's
+    /// `InteractionPort::respond` reaches it directly.
     RequestSelect {
         request_id: u64,
         prompt: String,
@@ -593,8 +595,11 @@ pub enum ThinkingChunk {
     Finished,
 }
 
-/// Response to a UI request, sent from the TUI back to the agent runtime over
-/// the reverse channel ([`UserCommand::UiResponse`]).
+/// Response to a UI request, produced by the TUI and routed to the waiting caller
+/// by the runtime's interaction broker.
+///
+/// Not a [`UserCommand`] variant: the broker holds the waiter, so there is no
+/// reverse-command wiring and nothing for the transport to carry.
 ///
 /// Carries the [`AgentUpdate::RequestSelect`] / [`AgentUpdate::RequestMultiSelect`]
 /// `request_id` so the runtime can route it to the waiting caller. Keeping this
@@ -742,6 +747,56 @@ impl PlanStep {
 
 #[cfg(test)]
 mod tests {
+
+    /// The transport has no reverse-command variant for an interaction answer.
+    ///
+    /// The spec replaced that wiring with the kernel's `InteractionBroker`: the
+    /// broker holds the waiter, and the view answers through
+    /// `InteractionPort::respond`. A `UiResponse` variant here would be a second
+    /// path to the same waiter, and the two could disagree about which one
+    /// answered. Guarded by name rather than by absence of a field, because the
+    /// mistake would be re-adding the variant.
+    #[test]
+    fn the_transport_carries_no_interaction_answer() {
+        // Compile-time proof: every variant is listed, so a new one forces this
+        // match to be revisited.
+        fn name(command: &super::UserCommand) -> &'static str {
+            use super::UserCommand::*;
+            match command {
+                SubmitTask(..) => "SubmitTask",
+                Cancel => "Cancel",
+                QueryBalance => "QueryBalance",
+                ResumeGoal { .. } => "ResumeGoal",
+                SetThinkingBudget(..) => "SetThinkingBudget",
+                SetReasoningEffort(..) => "SetReasoningEffort",
+                SetModel(..) => "SetModel",
+                SubagentFinishedNotification { .. } => "SubagentFinishedNotification",
+                CancelSubagent { .. } => "CancelSubagent",
+                McpAuth { .. } => "McpAuth",
+                RunMcpPrompt { .. } => "RunMcpPrompt",
+                RunCommand { .. } => "RunCommand",
+            }
+        }
+        let _ = name;
+        // The declaration itself is what matters: the match above fails to compile
+        // if a variant is added, which is the review point.
+        let source = include_str!("agent.rs");
+        let after = source
+            .split("pub enum UserCommand {")
+            .nth(1)
+            .expect("the enum is declared here");
+        // Bounded at the enum's own closing brace: the rest of the file declares
+        // `UiResponse` itself, which is a legitimately separate type.
+        let declaration = after
+            .split("\n}\n")
+            .next()
+            .expect("an enum body ends somewhere");
+        assert!(
+            !declaration.contains("UiResponse"),
+            "an interaction answer must go through the InteractionBroker, not the transport"
+        );
+    }
+
     use super::{
         AgentUpdate, GoalAcceptanceSnapshot, GoalCriterionSnapshot, GoalCriterionStatusSnapshot,
         GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot, GoalStatusSnapshot, TaskSnapshot,
