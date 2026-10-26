@@ -88,7 +88,7 @@ methods and only two have both a production producer and a production consumer:
 | `command` | `PermissionPlugin` — owns the manager `/permission` writes through | the driver merges `Agent::commands()` into its catalog | delivered |
 | `prompt_section` | `install_fragments` — every `builtin.prompt.*` fragment becomes a section | `build_system_prompt` reads them back through the catalog | delivered |
 
-No contribution claim is undelivered now, and one named contract has no producer:
+No contribution claim is undelivered and every named contract has a producer:
 
 - The prompt sections are contributed: `build_system_prompt` builds the fragments and
   passes them through `install_fragments`, so each becomes a `builtin.prompt.*` section
@@ -98,8 +98,13 @@ No contribution claim is undelivered now, and one named contract has no producer
   plugin-owned is the *content* of the three domain fragments: a `PromptFragment`
   carries a `String`, so skills and memory are computed by the agent and handed over
   rather than rendered by the plugin that owns the registry.
-- `CommandSource` now exists and is tested but has no producer: `/mcp prompts` is still
-  a hand-written command.
+- `CommandSource` has a producer, though not the MCP one: marketplace packages ship
+  `commands/<name>.md`, which are now discovered by `plugin::commands` and run as
+  commands whose body becomes the turn. Those files were installed and counted
+  (`InstalledPlugin::command_count`) but never read, so an installed command was inert.
+  The MCP half is still a hand-written `/mcp prompts`, because turning each prompt into
+  a slash command needs a structured prompt port (the current one returns rendered
+  text) and is a visible UX change.
 
 None of this makes the capability missing — a user still gets skills in the prompt and
 `/mcp prompts` still works. It makes the *mechanism* different from the design, and it
@@ -431,7 +436,7 @@ objects:
 | Design names | In the tree | Consequence |
 |---|---|---|
 | `ToolSource` (MCP) | implemented (`McpToolSource`, `McpControlSource`) and registered | none — this row was wrong in the first draft |
-| `CommandSource` (MCP) | trait + `CommandCatalog` source support, tested; **no producer yet** | MCP prompts are still hand-written `/mcp prompts` |
+| `CommandSource` (MCP) | trait + catalog support, and a producer in `plugin::commands` | MCP prompts still travel as `/mcp prompts`; marketplace commands now arrive through the source |
 | `AgentFactory` (Agent) | `crate::agent::factory` — `AgentPlugin` contributes it | none: `spawn_subagent` refuses by name when it is absent |
 | `ModelService` (Providers) | `ProviderInfo` snapshot | same role, different name — a rename, not a gap |
 | `DatabaseHandle` (Storage) | `StorageLocation` | same role, different name — a rename, not a gap |

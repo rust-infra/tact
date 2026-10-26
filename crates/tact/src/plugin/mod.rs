@@ -1,3 +1,4 @@
+pub mod commands;
 mod config_plugin;
 mod hook_host;
 mod hooks;

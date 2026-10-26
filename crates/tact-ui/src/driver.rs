@@ -246,6 +246,7 @@ fn builtin_command_catalog(
     tact::command::CommandCatalog,
     tokio::sync::mpsc::UnboundedReceiver<String>,
     tokio::sync::mpsc::UnboundedReceiver<tact::agent::settings_service::SettingsChange>,
+    tokio::sync::mpsc::UnboundedReceiver<String>,
     tact_kernel::capability::CapabilityFilter,
 ) {
     // The loop holds the slot, so this lock is uncontended here.
@@ -268,6 +269,7 @@ fn build_command_catalog(
     tact::command::CommandCatalog,
     tokio::sync::mpsc::UnboundedReceiver<String>,
     tokio::sync::mpsc::UnboundedReceiver<tact::agent::settings_service::SettingsChange>,
+    tokio::sync::mpsc::UnboundedReceiver<String>,
     tact_kernel::capability::CapabilityFilter,
 ) {
     // Running a Goal activation needs `&mut Agent`, which the caller holds while
@@ -353,13 +355,34 @@ fn build_command_catalog(
     catalog
         .extend_from(&builtins)
         .expect("plugin and built-in command names never collide");
+    // Commands shipped by installed marketplace packages. Their body is a prompt,
+    // so running one queues a turn instead of answering with text; the driver
+    // drains this once its borrow on the agent is free.
+    let (plugin_prompt_tx, plugin_prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    if let Some(home) = tact::consts::PluginHome::from_environment() {
+        let store = tact::plugin::PluginStore::new(home);
+        catalog.add_source(std::sync::Arc::new(
+            tact::plugin::commands::PluginCommandSource::discover(
+                &store,
+                std::sync::Arc::new(move |body: String| {
+                    let _ = plugin_prompt_tx.send(body);
+                }),
+            ),
+        ));
+    }
     // The filter travels with the catalog so dispatch applies the same rule the
     // listing does: a command the host disabled must not run when typed.
     let filter = agent.map_or_else(
         tact_kernel::capability::CapabilityFilter::default,
         |agent| agent.capability_filter().clone(),
     );
-    (catalog, activation_rx, settings_rx, filter)
+    (
+        catalog,
+        activation_rx,
+        settings_rx,
+        plugin_prompt_rx,
+        filter,
+    )
 }
 
 /// An MCP view for a host that has no router in scope.
@@ -517,7 +540,7 @@ pub async fn run_command_loop_with_account(
     // time `auth` reloaded it.
     let agent_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
         Arc::new(tokio::sync::Mutex::new(Some(agent)));
-    let (commands, mut goal_activations, mut settings_changes, command_filter) =
+    let (commands, mut goal_activations, mut settings_changes, mut plugin_prompts, command_filter) =
         builtin_command_catalog(
             &agent_slot,
             chat.as_ref()
@@ -640,11 +663,20 @@ pub async fn run_command_loop_with_account(
                 while let Ok(change) = settings_changes.try_recv() {
                     changes.push(change);
                 }
-                if !remaining.is_empty() || !changes.is_empty() {
+                // A marketplace command queued its body: the body *is* a prompt, so
+                // it becomes the next turn. Collected here and run inside the task
+                // that owns the agent, the same way a Goal activation is.
+                let mut prompts: Vec<String> = Vec::new();
+                while let Ok(body) = plugin_prompts.try_recv() {
+                    prompts.push(body);
+                }
+                if !remaining.is_empty() || !changes.is_empty() || !prompts.is_empty() {
                     if let Some(handle) = active.take() {
                         handle.await.expect("task join panicked");
                     }
                     let slot = agent_slot.clone();
+                    let prompt_work_dir = image_work_dir.clone();
+                    let prompt_accounts = account_tx.clone();
                     active = Some(tokio::spawn(async move {
                         let mut guard = slot.lock().await;
                         let Some(task_agent) = guard.as_mut() else {
@@ -658,6 +690,17 @@ pub async fn run_command_loop_with_account(
                         for id in remaining {
                             clear_cancel_for_goal_activation(task_agent);
                             resume_goal(task_agent, &id).await;
+                        }
+                        for body in prompts {
+                            // The ordinary turn path, so a command-expanded prompt
+                            // is indistinguishable from a typed one downstream.
+                            Box::pin(handle_user_command_with_account(
+                                task_agent,
+                                DriverMessage::SubmitTask(body),
+                                &prompt_work_dir,
+                                prompt_accounts.as_ref(),
+                            ))
+                            .await;
                         }
                         task_agent.emit_update(AgentUpdate::TaskIdle);
                     }));
@@ -1105,14 +1148,15 @@ async fn handle_user_command_with_account(
             // and `/background`.
             let local_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
                 Arc::new(tokio::sync::Mutex::new(None));
-            let (catalog, mut activations, mut settings, command_filter) = build_command_catalog(
-                Some(agent),
-                &local_slot,
-                // The agent service path has no chat handle in scope here; the
-                // loop-level arm is where `/compact` runs, and it passes one.
-                None,
-                image_work_dir,
-            );
+            let (catalog, mut activations, mut settings, mut plugin_prompts, command_filter) =
+                build_command_catalog(
+                    Some(agent),
+                    &local_slot,
+                    // The agent service path has no chat handle in scope here; the
+                    // loop-level arm is where `/compact` runs, and it passes one.
+                    None,
+                    image_work_dir,
+                );
             // `goal show` answers with the detail popup only; the panel refresh
             // is a separate `list`, because one command outcome carries one
             // update. Doing it here keeps the order the loop-level path had:
@@ -1153,6 +1197,17 @@ async fn handle_user_command_with_account(
                 clear_cancel_for_goal_activation(agent);
                 resume_goal(agent, &goal_id).await;
                 agent.emit_update(AgentUpdate::TaskIdle);
+            }
+            // A marketplace command queued its body: the body *is* a prompt, so it
+            // becomes the next turn through the ordinary submit path.
+            while let Ok(body) = plugin_prompts.try_recv() {
+                Box::pin(handle_user_command_with_account(
+                    agent,
+                    DriverMessage::SubmitTask(body),
+                    image_work_dir,
+                    account_tx,
+                ))
+                .await;
             }
         }
         DriverMessage::ResumeGoal { goal_id } => resume_goal(agent, &goal_id).await,
@@ -1780,7 +1835,7 @@ mod tests {
         // log line, so this test covers both halves.
         let slot: std::sync::Arc<tokio::sync::Mutex<Option<tact::Agent>>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(Some(agent)));
-        let (catalog, _activations, _settings, _filter) =
+        let (catalog, _activations, _settings, _prompts, _filter) =
             super::builtin_command_catalog(&slot, None, std::path::Path::new("/tmp"));
         let outcome = catalog
             .run_async(&tact::command::CommandInvocation {
@@ -3401,7 +3456,7 @@ mod tests {
         // with a view over this agent's router.
         let slot: std::sync::Arc<tokio::sync::Mutex<Option<tact::Agent>>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(Some(agent)));
-        let (catalog, _activations, _settings, _filter) =
+        let (catalog, _activations, _settings, _prompts, _filter) =
             super::builtin_command_catalog(&slot, None, &work_dir);
         let outcome = catalog
             .run_async(&tact::command::CommandInvocation {
