@@ -289,18 +289,23 @@ pub async fn bootstrap_session(
 
     let (events, ui_responder) = frontend_wiring(&frontend);
     let tool_context = ToolContext {
-        skill_registry: Some(skill_registry.clone()),
+        // The seven domain handles are deliberately NOT set here. Each is owned by
+        // the plugin installed below, and `ToolContext::rebind_from` fills it from
+        // the registry during Agent assembly. Supplying them here as well is what
+        // made the plugins decorative: a host could omit one and every tool would
+        // keep reading this copy.
+        skill_registry: None,
         subagent_start_hooks: tact::plugin::plugin_subagent_start_hooks(tact_path.workdir())?,
         subagent_stop_hooks: tact::plugin::plugin_subagent_stop_hooks(tact_path.workdir())?,
-        memory_manager: Some(memory_manager),
+        memory_manager: None,
         work_dir,
-        task_manager: Some(task_manager),
+        task_manager: None,
         goal_manager,
         active_goal_id: None,
-        background_manager: Some(background_manager),
-        teammate_manager: Some(teammate_manager),
-        worktree_manager: Some(worktree_manager),
-        subagent_manager: Some(subagent_manager),
+        background_manager: None,
+        teammate_manager: None,
+        worktree_manager: None,
+        subagent_manager: None,
         events,
         ui_responder,
         progress_reporter: tact::tool::ToolProgressReporter::default(),

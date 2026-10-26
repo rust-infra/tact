@@ -226,6 +226,39 @@ pub struct ToolContext {
 }
 
 impl ToolContext {
+    /// Re-point the domain handles at what the plugin registry holds.
+    ///
+    /// The composition root no longer supplies these: it installs the plugins that
+    /// own them and this method is the only thing that fills the fields. That is
+    /// what makes omitting a plugin remove its capability instead of falling back
+    /// to a handle the caller kept.
+    ///
+    /// A missing plugin leaves the field `None` rather than an error, because a
+    /// host without `TaskPlugin` is a valid host — it just has no tasks.
+    pub fn rebind_from(&mut self, services: &tact_kernel::service::ServiceRegistry) {
+        if let Ok(manager) = crate::skill::skills_from(services) {
+            self.skill_registry = Some(manager);
+        }
+        if let Ok(manager) = crate::memory::memory_from(services) {
+            self.memory_manager = Some(manager);
+        }
+        if let Ok(manager) = crate::task::task_manager(services) {
+            self.task_manager = Some(manager);
+        }
+        if let Ok(manager) = crate::background::background_manager(services) {
+            self.background_manager = Some(manager);
+        }
+        if let Ok(manager) = crate::team::team_manager(services) {
+            self.teammate_manager = Some(manager);
+        }
+        if let Ok(manager) = crate::worktree::worktree_manager(services) {
+            self.worktree_manager = Some(manager);
+        }
+        if let Ok(manager) = crate::subagent::subagent_manager(services) {
+            self.subagent_manager = Some(manager);
+        }
+    }
+
     /// The skills catalog as the system prompt shows it.
     ///
     /// A method rather than a `crate::skill` call at the prompt site: the Agent
@@ -1085,6 +1118,55 @@ mod tests {
         assert!(memory_file.exists());
         let saved = std::fs::read_to_string(memory_file).unwrap();
         assert!(saved.contains("Use tabs by default."));
+    }
+
+    /// The registry is the only source: installed plugins fill their fields, and
+    /// an omitted one stays empty.
+    ///
+    /// This is the property the whole refactor is for. Before it, the composition
+    /// root handed the same `Arc` to both the context and the plugin, so a host
+    /// that installed nothing still had working tools — the plugin was a parallel
+    /// wire with no authority.
+    #[tokio::test]
+    async fn rebinding_fills_only_what_the_host_installed() {
+        let db = std::env::temp_dir().join(format!(
+            "tact-rebind-exclusive-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&db).unwrap();
+
+        let mut context = test_context("rebind_exclusive");
+        // Start from nothing, the way a bootstrap that trusts the registry would.
+        context.task_manager = None;
+        context.teammate_manager = None;
+
+        let mut host = tact_kernel::plugin::PluginHost::new(
+            tact_kernel::capability::CapabilityFilter::default(),
+        );
+        host.install_sync(crate::task::TaskPlugin::new(
+            crate::task::SharedTaskManager::new(
+                crate::task::TaskManager::new(&db.join("tasks.db"))
+                    .await
+                    .unwrap(),
+            ),
+        ))
+        .unwrap();
+        let runtime = host.seal_sync().unwrap();
+
+        context.rebind_from(runtime.services());
+
+        assert!(
+            context.task_manager.is_some(),
+            "the installed TaskPlugin must fill the field"
+        );
+        assert!(
+            context.teammate_manager.is_none(),
+            "a host without TeamPlugin must have no teammate manager"
+        );
     }
 
     /// Omitting `SkillsPlugin` removes the catalog from the prompt.

@@ -673,6 +673,13 @@ impl Agent {
             Some(construction_config.clone()),
             extras,
         );
+        // The context is built before the plugins exist, so the fields that come
+        // from a plugin are still `None` here. Filling them now — on the context
+        // the Agent keeps, not only on the factory's copy — matters because
+        // `SharedToolContextFactory::refresh` replaces its base with this context
+        // once per turn: a rebound factory over a blank context would lose the
+        // handles on the first turn.
+        tool_context.rebind_from(plugins.services());
         let mut agent = Self {
             runtime: AgentRuntime {
                 interrupt_hooks_fired: false,

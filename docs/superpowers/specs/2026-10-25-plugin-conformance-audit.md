@@ -27,38 +27,45 @@ verified. "Verified by" names a command or test, not an opinion.
 
 ---
 
-## Why the plugins were decoration, and what exclusivity would cost
+## Why the plugins were decoration — and the fix
 
-The root cause is worth stating on its own, because it is the answer to "many things
-are not done well" and it is not a missing feature:
+This is the answer to "many things are not done well", and it was not a missing
+plugin. `session_bootstrap` created each domain manager and wired the *same* `Arc`
+twice: once into `ToolContext` (where every tool read it) and once into `HostExtras`
+(where the plugin registered it). A plugin could be installed, replaced or omitted and
+the tools would keep reading the copy the caller passed. That is why counting plugin
+objects looked complete while `TeamPlugin` was a parallel wire.
 
-`session_bootstrap` creates each domain manager and then wires the *same* `Arc` twice —
-once into `ToolContext` (where every tool reads it) and once into `HostExtras` (where
-the plugin registers it). `rebind_from` guarantees the registry wins, so a **replaced**
-plugin now changes behaviour. But in the shipped configuration it writes back the very
-value that was already there: the plugin is *authoritative*, yet not *exclusive*.
-Omitting `TeamPlugin` does not remove team tools, because the context kept the handle
-the caller passed.
+The fix has two halves, both landed:
 
-That is why an audit that counted plugin objects could look complete while
-`TeamPlugin` was, in practice, a parallel wire.
+1. **`ToolContext`'s seven domain handles are `Option`.** A non-`Option` field forces
+   the composition root to hand over a fallback, which is exactly the duplicate wire.
+2. **The registry is the only thing that fills them.** `ToolContext::rebind_from`
+   resolves each from the service the owning plugin registered; the bootstrap now
+   passes `None` for all seven, and `Agent` assembly rebinds both the factory and the
+   context the Agent keeps (the latter matters because
+   `SharedToolContextFactory::refresh` replaces its base with the Agent's context once
+   per turn — a rebound factory over a blank context would lose the handles on the
+   first turn).
 
-Exclusivity needs the plugin to be the only source, which is two changes:
+Consequences, each covered by a test:
 
-1. Each domain plugin constructs its own manager from what it owns (a database path, a
-   directory) instead of receiving one. That is what the design's "Owns" column says.
-2. `ToolContext`'s seven domain handles become `Option`, filled only by `rebind_from`.
+- Installing `TaskPlugin` and nothing else leaves `task_manager` filled and
+  `teammate_manager` empty (`rebinding_fills_only_what_the_host_installed`).
+- Replacing a plugin changes what the tools see
+  (`rebinding_points_the_context_at_the_registry`).
+- A host without `SkillsPlugin` renders no skills catalog in the prompt, and one
+  without `MemoryPlugin` injects no memory index.
+- `spawn_subagent` refuses by name when `SubagentPlugin` or `WorktreePlugin` is
+  missing, because a child that cannot be cancelled or recorded is worse than a clear
+  refusal.
 
-Measured cost of (2) alone: 137 references across `task_manager`, `teammate_manager`,
-`worktree_manager`, `subagent_manager`, `background_manager`, `memory_manager` and
-`skill_registry`, plus 9 `ToolContext` literals. The `Option` is not new information —
-`ToolContextFactory::teammate_manager()` already returns `Option`, and the tools already
-answer a missing one with "this host has no teammate manager".
-
-This is recorded rather than done: it is a large, behaviour-preserving-on-the-happy-path
-refactor, and the benefit today is theoretical because no host omits a plugin. The
-honest statement of the current state is "authoritative but not exclusive", and that
-sentence belongs in the audit instead of a "met" verdict that implies more.
+What is still not exclusive: the *construction* of each manager still lives in
+`session_bootstrap`, which hands it to the plugin through `HostExtras`. The plugin owns
+the registration and is now the only source the tools read, but a plugin cannot yet
+create its own store. Closing that means each plugin takes a path instead of a manager
+(async constructors run before install), which is a further refactor with no user-facing
+effect today.
 
 ---
 

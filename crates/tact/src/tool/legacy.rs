@@ -139,27 +139,7 @@ impl SharedToolContextFactory {
     /// plugins keeps working; the host installs all of these on every real path.
     pub fn rebind_from(&self, services: &tact_kernel::service::ServiceRegistry) {
         let mut base = self.base.lock().unwrap_or_else(|error| error.into_inner());
-        if let Ok(manager) = crate::skill::skills_from(services) {
-            base.skill_registry = Some(manager);
-        }
-        if let Ok(manager) = crate::memory::memory_from(services) {
-            base.memory_manager = Some(manager);
-        }
-        if let Ok(manager) = crate::task::task_manager(services) {
-            base.task_manager = Some(manager);
-        }
-        if let Ok(manager) = crate::background::background_manager(services) {
-            base.background_manager = Some(manager);
-        }
-        if let Ok(manager) = crate::team::team_manager(services) {
-            base.teammate_manager = Some(manager);
-        }
-        if let Ok(manager) = crate::worktree::worktree_manager(services) {
-            base.worktree_manager = Some(manager);
-        }
-        if let Ok(manager) = crate::subagent::subagent_manager(services) {
-            base.subagent_manager = Some(manager);
-        }
+        base.rebind_from(services);
     }
 
     /// Run `f` against the current base.
