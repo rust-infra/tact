@@ -427,27 +427,28 @@ Each of these is a place where the implementation does something the spec does
 not describe. They are listed so a reviewer can accept or reject them
 individually.
 
-### D0. Contracts the design names that have no implementation
+### D0. Contracts the design names, and where each one lives now
 
-The design's *Plugin inventory* table names a contract for every plugin. Four of
-those names do not appear in the tree at all, and one appears under a different name.
-This is the list I should have produced the first time instead of counting plugin
-objects:
+The design's *Plugin inventory* table names a contract for every plugin. This table
+says where each one ended up, because two of them were missing when this audit first
+counted plugin objects instead of reading the call graph:
 
 | Design names | In the tree | Consequence |
 |---|---|---|
 | `ToolSource` (MCP) | implemented (`McpToolSource`, `McpControlSource`) and registered | none — this row was wrong in the first draft |
-| `CommandSource` (MCP) | trait + catalog support, and a producer in `plugin::commands` | MCP prompts still travel as `/mcp prompts`; marketplace commands now arrive through the source |
+| `CommandSource` (MCP) | trait + catalog support, with producers for marketplace commands (`plugin::commands`) and MCP prompts (`command::mcp_prompts`) | none |
 | `AgentFactory` (Agent) | `crate::agent::factory` — `AgentPlugin` contributes it | none: `spawn_subagent` refuses by name when it is absent |
 | `ModelService` (Providers) | `ProviderInfo` snapshot | same role, different name — a rename, not a gap |
 | `DatabaseHandle` (Storage) | `StorageLocation` | same role, different name — a rename, not a gap |
 
 The two renames are fine: the design says "extension-level", which is what these are,
-and an extension-level type is free to be called what it does. Of the two absences,
-`CommandSource` is a real gap (MCP contributes tools dynamically but not commands) and
-`AgentFactory` is a design element that was never built — `spawn_subagent` assembles
-the child directly. Neither is a checklist item, so neither changes the verdict; both
-are recorded so a reviewer can decide whether they matter.
+and an extension-level type is free to be called what it does.
+
+The first draft of this table said `ToolSource` had no implementor (a truncated `grep`
+hid the two MCP ones), and a later version said `CommandSource` and `AgentFactory` had
+never been built. Both are now implemented with a producer each, which is worth
+recording plainly: the gap was real when it was found, and the honest table is the one
+that keeps being corrected rather than the one that was right once.
 
 ### D1. `HostOptions` split into `HostOptions` + `HostExtras`
 
