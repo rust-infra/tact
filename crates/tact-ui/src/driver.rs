@@ -268,7 +268,11 @@ pub(super) struct CommandSurface {
     /// Prompt bodies from installed packages.
     pub plugin_prompts: tokio::sync::mpsc::UnboundedReceiver<String>,
     /// `(server, prompt)` pairs an MCP prompt command queued.
-    pub mcp_prompts: tokio::sync::mpsc::UnboundedReceiver<(String, String)>,
+    pub mcp_prompts: tokio::sync::mpsc::UnboundedReceiver<(
+        String,
+        String,
+        std::collections::BTreeMap<String, String>,
+    )>,
     /// Kept so the caller can refresh the prompt snapshot off the serving path.
     pub mcp_prompt_source: std::sync::Arc<tact::command::mcp_prompts::McpPromptSource>,
     pub filter: tact_kernel::capability::CapabilityFilter,
@@ -384,7 +388,11 @@ fn build_command_catalog(
     // drains this once its borrow on the agent is free.
     // MCP prompts become commands. The backend reads client handles, not the agent,
     // so refreshing never touches the slot this loop holds while a command runs.
-    let (mcp_prompt_tx, mcp_prompt_rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+    let (mcp_prompt_tx, mcp_prompt_rx) = tokio::sync::mpsc::unbounded_channel::<(
+        String,
+        String,
+        std::collections::BTreeMap<String, String>,
+    )>();
     // The agent owns the source, so every catalog built from it sees the same
     // prompts — including the palette's, which outlives this catalog — and a reload
     // reaches all of them. Built here instead, it would be a fresh empty source per
@@ -396,9 +404,13 @@ fn build_command_catalog(
                 let source = agent.mcp_prompt_source().clone();
                 // Set once: a second queue would have no drainer, so the prompt
                 // would vanish instead of running.
-                source.set_submit(std::sync::Arc::new(move |server: String, name: String| {
-                    let _ = mcp_prompt_tx.send((server, name));
-                }));
+                source.set_submit(std::sync::Arc::new(
+                    move |server: String,
+                          name: String,
+                          arguments: std::collections::BTreeMap<String, String>| {
+                        let _ = mcp_prompt_tx.send((server, name, arguments));
+                    },
+                ));
                 source
             }
             // No agent (a catalog built for descriptors): the source exists so the
@@ -735,7 +747,11 @@ pub async fn run_command_loop_with_account(
                 while let Ok(body) = plugin_prompts.try_recv() {
                     prompts.push(body);
                 }
-                let mut mcp_prompt_runs: Vec<(String, String)> = Vec::new();
+                let mut mcp_prompt_runs: Vec<(
+                    String,
+                    String,
+                    std::collections::BTreeMap<String, String>,
+                )> = Vec::new();
                 while let Ok(pair) = mcp_prompts.try_recv() {
                     mcp_prompt_runs.push(pair);
                 }
@@ -775,13 +791,13 @@ pub async fn run_command_loop_with_account(
                             ))
                             .await;
                         }
-                        for (server, name) in mcp_prompt_runs {
+                        for (server, name, arguments) in mcp_prompt_runs {
                             Box::pin(handle_user_command_with_account(
                                 task_agent,
                                 DriverMessage::RunMcpPrompt {
                                     server,
                                     name,
-                                    arguments: std::collections::BTreeMap::new(),
+                                    arguments,
                                 },
                                 &prompt_work_dir,
                                 prompt_accounts.as_ref(),
@@ -1309,13 +1325,13 @@ async fn handle_user_command_with_account(
             // An MCP prompt command queued a `(server, prompt)` pair. Run it through
             // the same path `/mcp prompts` uses, so a prompt reached by name and one
             // reached from the listing cannot diverge.
-            while let Ok((server, name)) = mcp_prompts.try_recv() {
+            while let Ok((server, name, arguments)) = mcp_prompts.try_recv() {
                 Box::pin(handle_user_command_with_account(
                     agent,
                     DriverMessage::RunMcpPrompt {
                         server,
                         name,
-                        arguments: std::collections::BTreeMap::new(),
+                        arguments,
                     },
                     image_work_dir,
                     account_tx,

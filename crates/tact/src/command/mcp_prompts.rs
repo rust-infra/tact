@@ -19,6 +19,20 @@ use tact_kernel::capability::command::{
     Command, CommandInvocation, CommandMeta, CommandOutcome, CommandScope, CommandSource,
 };
 
+/// What running a prompt needs: which one, and its arguments.
+///
+/// A trait alias rather than a bare `Fn` so the signature the driver implements and
+/// the source calls cannot drift: adding an argument here is a compile error at both
+/// ends instead of at one.
+pub trait McpPromptSubmit:
+    Fn(String, String, std::collections::BTreeMap<String, String>) + Send + Sync
+{
+}
+impl<T> McpPromptSubmit for T where
+    T: Fn(String, String, std::collections::BTreeMap<String, String>) + Send + Sync
+{
+}
+
 /// One prompt a server advertises.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct McpPromptEntry {
@@ -93,7 +107,7 @@ pub struct McpPromptCommand {
     prompt: String,
     /// `None` when nothing is serving commands, which the run reports rather than
     /// dropping the request silently.
-    submit: Option<Arc<dyn Fn(String, String) + Send + Sync>>,
+    submit: Option<Arc<dyn McpPromptSubmit>>,
 }
 
 impl Command for McpPromptCommand {
@@ -101,16 +115,33 @@ impl Command for McpPromptCommand {
         &self.meta
     }
 
-    fn run(&self, _invocation: &CommandInvocation) -> CommandOutcome {
+    fn run(&self, invocation: &CommandInvocation) -> CommandOutcome {
         // A prompt is a *starting message*: it has to be fetched and rendered
         // against the live router, which a command cannot reach. Queue it and let
-        // the driver run the same path `/mcp prompts` uses.
+        // the driver run the same path `/mcp prompt` uses.
         let Some(submit) = &self.submit else {
             return CommandOutcome::Failed(
                 "no catalog is serving commands, so this prompt cannot be run".to_string(),
             );
         };
-        submit(self.server.clone(), self.prompt.clone());
+        // Prompts take arguments, and dropping them would run the prompt with the
+        // placeholders unfilled — worse than refusing, because it looks like it
+        // worked. The grammar is the one `/mcp prompt` already uses.
+        let mut arguments = std::collections::BTreeMap::new();
+        for token in invocation.args.split_whitespace() {
+            match token.split_once('=') {
+                Some((key, value)) if !key.is_empty() => {
+                    arguments.insert(key.to_string(), value.to_string());
+                }
+                _ => {
+                    return CommandOutcome::Usage(format!(
+                        "/{} takes key=value arguments; `{token}` is not one",
+                        self.meta.name
+                    ));
+                }
+            }
+        }
+        submit(self.server.clone(), self.prompt.clone(), arguments);
         CommandOutcome::Message(format!(
             "running prompt {} from {}",
             self.prompt, self.server
@@ -127,7 +158,7 @@ impl Command for McpPromptCommand {
 pub struct McpPromptSource {
     entries: std::sync::RwLock<Vec<McpPromptEntry>>,
     backend: std::sync::RwLock<Arc<dyn McpPromptBackend>>,
-    submit: std::sync::OnceLock<Arc<dyn Fn(String, String) + Send + Sync>>,
+    submit: std::sync::OnceLock<Arc<dyn McpPromptSubmit>>,
 }
 
 impl McpPromptSource {
@@ -156,7 +187,7 @@ impl McpPromptSource {
     /// Set once, by whichever catalog serves commands first (the loop). A later
     /// caller cannot replace it, because a second queue would be a receiver nobody
     /// drains — the prompt would vanish.
-    pub fn set_submit(&self, submit: Arc<dyn Fn(String, String) + Send + Sync>) {
+    pub fn set_submit(&self, submit: Arc<dyn McpPromptSubmit>) {
         let _ = self.submit.set(submit);
     }
 
@@ -308,11 +339,15 @@ mod tests {
 
     #[tokio::test]
     async fn running_a_prompt_queues_it_rather_than_answering_inline() {
-        let sent = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let sent = Arc::new(std::sync::Mutex::new(Vec::<(
+            String,
+            String,
+            std::collections::BTreeMap<String, String>,
+        )>::new()));
         let sink = sent.clone();
         let source = McpPromptSource::new(Arc::new(FixedBackend(vec![entry("docs", "summarise")])));
-        source.set_submit(Arc::new(move |server, prompt| {
-            sink.lock().unwrap().push((server, prompt));
+        source.set_submit(Arc::new(move |server, prompt, arguments| {
+            sink.lock().unwrap().push((server, prompt, arguments));
         }));
         source.refresh().await.unwrap();
         let commands = source.commands();
@@ -322,10 +357,13 @@ mod tests {
         });
         assert!(matches!(outcome, CommandOutcome::Message(_)));
         assert_eq!(
-            sent.lock().unwrap().as_slice(),
-            [("docs".to_string(), "summarise".to_string())],
-            "the driver needs the pair to fetch the prompt"
+            sent.lock().unwrap().len(),
+            1,
+            "the driver needs the triple to fetch the prompt"
         );
+        let (server, prompt, arguments) = &sent.lock().unwrap()[0];
+        assert_eq!((server.as_str(), prompt.as_str()), ("docs", "summarise"));
+        assert!(arguments.is_empty());
     }
 
     /// A reload swaps the handles inside the same source.
@@ -354,23 +392,76 @@ mod tests {
         assert_eq!(names, vec!["mcp__new__live".to_string()]);
     }
 
+    /// Arguments reach the driver, because a prompt that takes them cannot be run
+    /// without them.
+    ///
+    /// Dropping them would fetch the prompt with its placeholders unfilled: the run
+    /// would look successful and produce the wrong message, which is worse than
+    /// refusing.
+    #[tokio::test]
+    async fn arguments_are_passed_through() {
+        let sent = Arc::new(std::sync::Mutex::new(Vec::<(
+            String,
+            String,
+            std::collections::BTreeMap<String, String>,
+        )>::new()));
+        let sink = sent.clone();
+
+        let source = McpPromptSource::new(Arc::new(FixedBackend(vec![entry("docs", "search")])));
+        source.set_submit(Arc::new(move |server, prompt, arguments| {
+            sink.lock().unwrap().push((server, prompt, arguments));
+        }));
+        source.refresh().await.unwrap();
+
+        let outcome = source.commands()[0].run(&CommandInvocation {
+            name: "mcp__docs__search".to_string(),
+            args: "query=notes depth=2".to_string(),
+        });
+        assert!(matches!(outcome, CommandOutcome::Message(_)));
+        let (_, _, arguments) = &sent.lock().unwrap()[0];
+        assert_eq!(arguments.get("query").map(String::as_str), Some("notes"));
+        assert_eq!(arguments.get("depth").map(String::as_str), Some("2"));
+    }
+
+    /// A token that is not `key=value` is refused by name rather than ignored.
+    #[tokio::test]
+    async fn a_malformed_argument_names_itself() {
+        let source = McpPromptSource::new(Arc::new(FixedBackend(vec![entry("docs", "search")])));
+        source.set_submit(Arc::new(|_, _, _| {}));
+        source.refresh().await.unwrap();
+
+        let outcome = source.commands()[0].run(&CommandInvocation {
+            name: "mcp__docs__search".to_string(),
+            args: "query=notes depth".to_string(),
+        });
+        match outcome {
+            CommandOutcome::Usage(message) => {
+                assert!(
+                    message.contains("depth") && message.contains("key=value"),
+                    "the line must name the token and the expected form, got: {message}"
+                );
+            }
+            other => panic!("expected a usage line, got {other:?}"),
+        }
+    }
+
     /// The first `set_submit` wins.
     ///
     /// A second queue would have no drainer, so the prompt would be accepted by a
     /// receiver nobody reads — the same as losing it, only harder to see.
     #[tokio::test]
     async fn a_second_submit_is_ignored() {
-        let first = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
-        let second = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let first = Arc::new(std::sync::Mutex::new(0usize));
+        let second = Arc::new(std::sync::Mutex::new(0usize));
 
         let source = McpPromptSource::new(Arc::new(FixedBackend(vec![entry("docs", "one")])));
         let sink = first.clone();
-        source.set_submit(Arc::new(move |server, name| {
-            sink.lock().unwrap().push((server, name));
+        source.set_submit(Arc::new(move |_, _, _| {
+            *sink.lock().unwrap() += 1;
         }));
         let other = second.clone();
-        source.set_submit(Arc::new(move |server, name| {
-            other.lock().unwrap().push((server, name));
+        source.set_submit(Arc::new(move |_, _, _| {
+            *other.lock().unwrap() += 1;
         }));
         source.refresh().await.unwrap();
 
@@ -378,9 +469,10 @@ mod tests {
             name: "mcp__docs__one".to_string(),
             args: String::new(),
         });
-        assert_eq!(first.lock().unwrap().len(), 1, "the first queue gets it");
-        assert!(
-            second.lock().unwrap().is_empty(),
+        assert_eq!(*first.lock().unwrap(), 1, "the first queue gets it");
+        assert_eq!(
+            *second.lock().unwrap(),
+            0,
             "the second queue must not receive a prompt nothing drains"
         );
     }
