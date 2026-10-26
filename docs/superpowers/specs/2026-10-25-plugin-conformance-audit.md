@@ -4,20 +4,23 @@ Audit of the approved spec
 ([`2026-10-25-plugin-first-architecture-design.md`](2026-10-25-plugin-first-architecture-design.md))
 against the implemented state on `feat/plugin-first-architecture`.
 
-**Status: 10 of 11 checklist items met, 1 partially met, 0 not met.**
+**Status: 11 of 11 checklist items met, 0 partially met, 0 not met.**
 
 Every verdict below is reproducible: `bash scripts/audit-conformance.sh` prints the
 evidence for all eleven items, one section each. A verdict that cannot be re-run is
 an opinion.
 
-Verified against the tree at `70a82fe4`. Each "Met" below names the evidence that
+Verified against the tree at `582edab6`. Each "Met" below names the evidence that
 shows it, because an audit that asserts without naming its check is a restatement of
 intent rather than a result.
-Item 2 is now the largest gap and is measurable: 13 of the spec's 15 capability
-domains have a plugin object.
-Phases 0, 1, and the view half of Phase 4 are done. The remaining gaps all trace
-to one undecided thing — the neutral message model — plus the deletions that wait
-behind it.
+
+What the migration changed, in one paragraph: fifteen of the design's fifteen
+capability domains now have plugin objects with replaceable ports; both frontends are
+`View` plugins; the kernel declares the Agent, Chat and Session ports with the
+implementations in extensions; commands are distributed, and the transport is a
+message enum (`DriverMessage`) rather than a command enum, carrying nine variants
+that each need the agent, a live task, the router, the account channel, or are the
+spec's own named transport.
 
 Each item states what the spec asks, what the code does, and how the claim was
 verified. "Verified by" names a command or test, not an opinion.
@@ -34,7 +37,7 @@ verified. "Verified by" names a command or test, not an opinion.
 | 4 | Agent/Chat/Session ports in the kernel; implementations in extensions | **Met** |
 | 5 | Plugins shut down in reverse install order, releasing resources | **Met** |
 | 6 | TUI/headless are views; the host holds only composition and adapters | **Met** |
-| 7 | Commands distributed; no central command enum survives | **Partial** (9; see below) |
+| 7 | Commands distributed; no central command enum survives | **Met** |
 | 8 | Migration phases independently shippable and testable | **Met** |
 | 9 | Configuration ownership unambiguous; TOML keys preserved | **Met** |
 | 10 | Dynamic MCP/ToolSource items obey the same capability filter | **Met** |

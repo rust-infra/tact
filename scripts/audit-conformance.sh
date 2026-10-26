@@ -33,11 +33,11 @@ echo "=== 6. Both frontends are views ==="
 grep -rn 'PluginKind::View' crates/tui/src/plugin.rs crates/tact-ui/src/view_plugin.rs | sed 's/^/  /'
 
 echo
-echo "=== 7. Command transport size ==="
+echo "=== 7. Commands distributed; the transport is a message enum ==="
 python3 - <<'PY'
 import re, pathlib
 s = pathlib.Path('crates/protocol/src/agent.rs').read_text()
-m = re.search(r'pub enum UserCommand \{', s)
+m = re.search(r'pub enum DriverMessage \{', s)
 end = s.index("\n}\n", m.start())
 names = re.findall(r'^    ([A-Z]\w*)', s[m.start():end], re.M)
 print(f"  {len(names)} variants: {' '.join(names)}")
