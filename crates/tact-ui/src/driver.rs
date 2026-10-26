@@ -246,6 +246,7 @@ fn builtin_command_catalog(
     tact::command::CommandCatalog,
     tokio::sync::mpsc::UnboundedReceiver<String>,
     tokio::sync::mpsc::UnboundedReceiver<tact::agent::settings_service::SettingsChange>,
+    tact_kernel::capability::CapabilityFilter,
 ) {
     // The loop holds the slot, so this lock is uncontended here.
     let guard = slot.try_lock().expect("the loop owns the slot here");
@@ -267,6 +268,7 @@ fn build_command_catalog(
     tact::command::CommandCatalog,
     tokio::sync::mpsc::UnboundedReceiver<String>,
     tokio::sync::mpsc::UnboundedReceiver<tact::agent::settings_service::SettingsChange>,
+    tact_kernel::capability::CapabilityFilter,
 ) {
     // Running a Goal activation needs `&mut Agent`, which the caller holds while
     // the command runs. The command queues the request instead of reaching for the
@@ -342,7 +344,13 @@ fn build_command_catalog(
             )),
         },
     );
-    (catalog, activation_rx, settings_rx)
+    // The filter travels with the catalog so dispatch applies the same rule the
+    // listing does: a command the host disabled must not run when typed.
+    let filter = agent.map_or_else(
+        tact_kernel::capability::CapabilityFilter::default,
+        |agent| agent.capability_filter().clone(),
+    );
+    (catalog, activation_rx, settings_rx, filter)
 }
 
 /// An MCP view for a host that has no router in scope.
@@ -500,12 +508,13 @@ pub async fn run_command_loop_with_account(
     // time `auth` reloaded it.
     let agent_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
         Arc::new(tokio::sync::Mutex::new(Some(agent)));
-    let (commands, mut goal_activations, mut settings_changes) = builtin_command_catalog(
-        &agent_slot,
-        chat.as_ref()
-            .map(|chat| chat.clone() as std::sync::Arc<dyn tact::command::ChatService>),
-        &image_work_dir,
-    );
+    let (commands, mut goal_activations, mut settings_changes, command_filter) =
+        builtin_command_catalog(
+            &agent_slot,
+            chat.as_ref()
+                .map(|chat| chat.clone() as std::sync::Arc<dyn tact::command::ChatService>),
+            &image_work_dir,
+        );
 
     // One owner for the whole loop: the agent lives in this slot and is never
     // moved into a task. A task locks it for the duration of its work, which is
@@ -598,7 +607,16 @@ pub async fn run_command_loop_with_account(
                 // dedicated variant per command was a second definition of the
                 // same grammar.
                 let invocation = tact::command::CommandInvocation { name, args };
-                forward_command_outcome(&commands.run_async(&invocation).await, &events);
+                // A command the host disabled must not run when typed, not just be
+                // hidden from the palette: the two would otherwise disagree. A name
+                // the catalog never had is a different case and stays with
+                // `run_async`, whose "unknown command" line is the honest answer.
+                match refusal_for(&commands, &command_filter, &invocation.name) {
+                    Some(refusal) => events.send(AgentUpdate::Info(refusal)),
+                    None => {
+                        forward_command_outcome(&commands.run_async(&invocation).await, &events);
+                    }
+                }
                 // A `/goal create` or a rejected `/goal accept` queued an
                 // activation: the command could not run it, because running one
                 // needs the agent and the command has none. Hand it to a task the
@@ -1078,7 +1096,7 @@ async fn handle_user_command_with_account(
             // and `/background`.
             let local_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
                 Arc::new(tokio::sync::Mutex::new(None));
-            let (catalog, mut activations, mut settings) = build_command_catalog(
+            let (catalog, mut activations, mut settings, command_filter) = build_command_catalog(
                 Some(agent),
                 &local_slot,
                 // The agent service path has no chat handle in scope here; the
@@ -1090,15 +1108,28 @@ async fn handle_user_command_with_account(
             // is a separate `list`, because one command outcome carries one
             // update. Doing it here keeps the order the loop-level path had:
             // panel first, then the detail.
-            if name == "goal" && args.starts_with("show ") {
-                let refresh = tact::command::CommandInvocation {
-                    name: name.clone(),
-                    args: "list".to_string(),
-                };
-                forward_command_outcome(&catalog.run_async(&refresh).await, &agent.runtime.events);
+            // The same refusal rule as the loop-level arm: this borrow can run a
+            // command, but the host may still have disabled it.
+            match refusal_for(&catalog, &command_filter, &name) {
+                Some(refusal) => agent.emit_update(AgentUpdate::Info(refusal)),
+                None => {
+                    if name == "goal" && args.starts_with("show ") {
+                        let refresh = tact::command::CommandInvocation {
+                            name: name.clone(),
+                            args: "list".to_string(),
+                        };
+                        forward_command_outcome(
+                            &catalog.run_async(&refresh).await,
+                            &agent.runtime.events,
+                        );
+                    }
+                    let invocation = tact::command::CommandInvocation { name, args };
+                    forward_command_outcome(
+                        &catalog.run_async(&invocation).await,
+                        &agent.runtime.events,
+                    );
+                }
             }
-            let invocation = tact::command::CommandInvocation { name, args };
-            forward_command_outcome(&catalog.run_async(&invocation).await, &agent.runtime.events);
             // `/model`, `/thinking` and `/effort` queued a change: their setters
             // take `&mut Agent`, which the command does not have and this borrow
             // does. Applied before activations so a Goal activation reads the
@@ -1223,6 +1254,23 @@ async fn handle_user_command_with_account(
 ///
 /// The queues exist because the setters take `&mut Agent` and a command has none;
 /// this is the half that runs where the borrow does exist.
+/// Whether a typed command must be refused before it runs.
+///
+/// Separate from the dispatch site so the rule is testable without building an
+/// Agent with a non-default filter, and so "unknown" and "disabled" stay distinct:
+/// an unknown name keeps `run_async`'s "unknown command" line, which tells the
+/// user what they mistyped, while a disabled one says so by name.
+fn refusal_for(
+    commands: &tact::command::CommandCatalog,
+    filter: &tact_kernel::capability::CapabilityFilter,
+    name: &str,
+) -> Option<String> {
+    if commands.get(name).is_some() && !commands.can_dispatch(name, filter) {
+        return Some(format!("/{name} is disabled by this host"));
+    }
+    None
+}
+
 fn apply_settings_change(agent: &mut Agent, change: tact::agent::settings_service::SettingsChange) {
     use tact::agent::settings_service::SettingsChange;
     match change {
@@ -1723,7 +1771,7 @@ mod tests {
         // log line, so this test covers both halves.
         let slot: std::sync::Arc<tokio::sync::Mutex<Option<tact::Agent>>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(Some(agent)));
-        let (catalog, _activations, _settings) =
+        let (catalog, _activations, _settings, _filter) =
             super::builtin_command_catalog(&slot, None, std::path::Path::new("/tmp"));
         let outcome = catalog
             .run_async(&tact::command::CommandInvocation {
@@ -3167,6 +3215,42 @@ mod tests {
         .await;
     }
 
+    /// A disabled command is refused by name; an unknown one is not covered here.
+    #[test]
+    fn a_disabled_command_is_refused_and_an_unknown_one_is_left_alone() {
+        let mut catalog = tact::command::CommandCatalog::default();
+        catalog
+            .insert(std::sync::Arc::new(tact::command::StatsCommand::new(
+                std::sync::Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
+            )))
+            .unwrap();
+        let filter = tact_kernel::capability::CapabilityFilter::new([
+            tact_kernel::capability::CapabilityId::new(
+                tact_kernel::capability::CapabilityKind::Command,
+                "stats".to_string(),
+            ),
+        ]);
+
+        assert_eq!(
+            super::refusal_for(&catalog, &filter, "stats").as_deref(),
+            Some("/stats is disabled by this host")
+        );
+        assert_eq!(
+            super::refusal_for(
+                &catalog,
+                &tact_kernel::capability::CapabilityFilter::default(),
+                "stats"
+            ),
+            None,
+            "an enabled command runs"
+        );
+        assert_eq!(
+            super::refusal_for(&catalog, &filter, "no-such-command"),
+            None,
+            "an unknown name is not this function's business"
+        );
+    }
+
     #[tokio::test]
     async fn set_thinking_budget_emits_model_info_for_status_bar() {
         install_test_config();
@@ -3308,7 +3392,7 @@ mod tests {
         // with a view over this agent's router.
         let slot: std::sync::Arc<tokio::sync::Mutex<Option<tact::Agent>>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(Some(agent)));
-        let (catalog, _activations, _settings) =
+        let (catalog, _activations, _settings, _filter) =
             super::builtin_command_catalog(&slot, None, &work_dir);
         let outcome = catalog
             .run_async(&tact::command::CommandInvocation {

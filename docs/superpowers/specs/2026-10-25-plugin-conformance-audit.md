@@ -372,10 +372,22 @@ The checklist line is about `ToolSource`, and that half is implemented and wired
 - `refresh_sources` bumps the generation only when a source reports a change, so a
   host comparing generations cannot be fooled by a rebuild that changed nothing.
 
-What is **not** implemented is `CommandSource`, which the design's inventory table
-lists as an MCP contribution: `grep -r 'CommandSource' crates` is empty. MCP
-contributes tools dynamically but not commands; `/mcp prompts` reads the router
-through a command that was written by hand rather than contributed by the plugin.
+The command half is now implemented at the contract level: `CommandSource` exists in
+`tact_kernel::capability::command`, `CommandCatalog::add_source` serves it, and
+`descriptors_filtered`/`can_dispatch`/`refresh_sources` apply the same per-command
+filter and generation rule `ToolCatalog` uses. Sources take `&self` to register, so a
+host can add one after sealing — which is the only moment an MCP prompt set is known.
+
+What has no producer yet is the MCP side: `/mcp prompts` is still a hand-written
+command, so `CommandSource` is a tested contract with nothing contributing through it.
+Writing that producer means one slash command per MCP prompt plus a queue for the turn
+a prompt submits, which is a visible UX change and belongs to a product decision rather
+than to this audit.
+
+Commands are filtered in all three places the design names: listing
+(`descriptors_filtered`, used by the palette), resolution (`can_dispatch`, used by the
+palette's `resolve`), and dispatch (`refusal_for`, used by both driver arms). A disabled
+command is refused by name when typed instead of merely hidden.
 
 A note on how this section was written, because it changed three times. It first said
 "met" while describing code I had not opened. I then changed it to "not met" after
@@ -416,7 +428,7 @@ objects:
 | Design names | In the tree | Consequence |
 |---|---|---|
 | `ToolSource` (MCP) | implemented (`McpToolSource`, `McpControlSource`) and registered | none — this row was wrong in the first draft |
-| `CommandSource` (MCP) | nothing | MCP cannot contribute commands dynamically |
+| `CommandSource` (MCP) | trait + `CommandCatalog` source support, tested; **no producer yet** | MCP prompts are still hand-written `/mcp prompts` |
 | `AgentFactory` (Agent) | nothing | `spawn_subagent` builds the child directly instead of through a factory port |
 | `ModelService` (Providers) | `ProviderInfo` snapshot | same role, different name — a rename, not a gap |
 | `DatabaseHandle` (Storage) | `StorageLocation` | same role, different name — a rename, not a gap |

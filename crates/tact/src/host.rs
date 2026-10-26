@@ -152,9 +152,20 @@ pub struct AssembledRuntime {
     services: ServiceRegistry,
     skipped: Vec<String>,
     runtime: tact_kernel::plugin::Runtime,
+    filter: CapabilityFilter,
 }
 
 impl AssembledRuntime {
+    /// The filter this runtime was assembled with.
+    ///
+    /// Carried so a consumer that lists capabilities — the command palette, a
+    /// status line — applies the same rule the catalogs applied at registration.
+    /// Without it a disabled capability would vanish from dispatch but stay
+    /// listed, which is the drift the filter exists to prevent.
+    pub fn filter(&self) -> &CapabilityFilter {
+        &self.filter
+    }
+
     pub fn services(&self) -> &ServiceRegistry {
         &self.services
     }
@@ -200,6 +211,9 @@ pub fn assemble(options: HostOptions<'_>) -> Result<AssembledRuntime> {
 /// infrastructure describes it once in a [`HostExtras`] instead of in five
 /// separate `Option` fields at the call site.
 pub fn assemble_with(options: HostOptions<'_>, mut extras: HostExtras) -> Result<AssembledRuntime> {
+    // Kept so the assembled runtime can answer `filter()`: the host consumes the
+    // original, and a consumer listing capabilities needs the same rule.
+    let filter = options.filter.clone();
     let mut host = PluginHost::new(options.filter);
     host.install_sync(policy::SecurityPlugin::new(
         options.permission_manager.scanner(),
@@ -302,6 +316,7 @@ pub fn assemble_with(options: HostOptions<'_>, mut extras: HostExtras) -> Result
         services,
         skipped,
         runtime,
+        filter,
     })
 }
 

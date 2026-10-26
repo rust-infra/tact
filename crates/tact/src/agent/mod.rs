@@ -1052,6 +1052,14 @@ impl Agent {
         self.plugins.services()
     }
 
+    /// The capability filter this Agent was assembled with.
+    ///
+    /// A consumer that lists capabilities (the palette) must apply this, or a
+    /// disabled command would disappear from dispatch while staying listed.
+    pub fn capability_filter(&self) -> &tact_kernel::capability::CapabilityFilter {
+        self.plugins.filter()
+    }
+
     /// Configured at construction and rewritten by [`Self::set_model`], so it is
     /// the value a `SessionStart` hook payload should carry as `model`.
     #[must_use]

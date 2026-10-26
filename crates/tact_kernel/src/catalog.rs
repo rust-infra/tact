@@ -12,7 +12,7 @@ use std::sync::{
 };
 
 use crate::capability::command::{
-    Command, CommandCandidate, CommandInvocation, CommandMeta, CommandOutcome,
+    Command, CommandCandidate, CommandInvocation, CommandMeta, CommandOutcome, CommandSource,
 };
 use crate::capability::prompt::PromptSection;
 use crate::capability::tool::Tool;
@@ -209,6 +209,11 @@ impl ToolCatalog {
 pub struct CommandCatalog {
     commands: BTreeMap<String, Arc<dyn Command>>,
     aliases: BTreeMap<String, String>,
+    /// Commands discovered at runtime (MCP prompts). Behind a lock and an `Arc`
+    /// so a host can add one through a shared catalog without rebuilding it and
+    /// invalidating every name a caller already resolved.
+    sources: Arc<std::sync::Mutex<Vec<Arc<dyn CommandSource>>>>,
+    generation: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl CommandCatalog {
@@ -234,12 +239,92 @@ impl CommandCatalog {
             self.aliases.insert(alias.clone(), meta.name.clone());
         }
         self.commands.insert(meta.name.clone(), command);
+        self.bump();
         Ok(())
     }
 
-    pub fn get(&self, name: &str) -> Option<&Arc<dyn Command>> {
+    /// Resolve a command, native first.
+    ///
+    /// A native command shadows a source command of the same name, matching
+    /// [`Self::descriptors`] so the advertised row and the dispatched handler can
+    /// never disagree — and so an MCP prompt cannot shadow `/stats`.
+    ///
+    /// Returns an owned handle rather than a reference because a source command
+    /// does not live in a map this catalog can borrow from.
+    pub fn get(&self, name: &str) -> Option<Arc<dyn Command>> {
         let name = self.aliases.get(name).map_or(name, String::as_str);
-        self.commands.get(name)
+        if let Some(command) = self.commands.get(name) {
+            return Some(command.clone());
+        }
+        self.source_commands()
+            .into_iter()
+            .find(|command| command.meta().name == name)
+    }
+
+    /// Register a dynamic source.
+    ///
+    /// Takes `&self` so a host can add one after assembly, through the shared
+    /// catalog the driver already holds: MCP prompts are only known once a server
+    /// has listed them, which is long after the host sealed.
+    pub fn add_source(&self, source: Arc<dyn CommandSource>) {
+        let mut sources = self
+            .sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner());
+        sources.push(source);
+        self.bump();
+    }
+
+    /// Drop every dynamic source. Used when a host replaces its MCP router.
+    pub fn clear_sources(&self) {
+        self.sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clear();
+        self.bump();
+    }
+
+    /// Re-read every source, reporting whether any of them changed.
+    ///
+    /// The boolean is what keeps the generation honest: a source that re-lists
+    /// nothing new must not bump it, or every caller would look "current" because
+    /// the snapshot it compares against was rebuilt on the spot.
+    pub async fn refresh_sources(&self) -> anyhow::Result<bool> {
+        let sources = self.snapshot_sources();
+        let mut changed = false;
+        for source in &sources {
+            changed |= source.refresh().await?;
+        }
+        if changed {
+            self.bump();
+        }
+        Ok(changed)
+    }
+
+    /// The current generation, without rebuilding anything.
+    pub fn generation(&self) -> u64 {
+        self.generation.load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    fn bump(&self) {
+        self.generation
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    /// Cloned out of the lock, because `refresh` is async and may re-enter.
+    fn snapshot_sources(&self) -> Vec<Arc<dyn CommandSource>> {
+        self.sources
+            .lock()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone()
+    }
+
+    /// Every source-contributed command, without deduplicating against natives.
+    fn source_commands(&self) -> Vec<Arc<dyn Command>> {
+        self.snapshot_sources()
+            .iter()
+            .flat_map(|source| source.commands())
+            .collect()
     }
 
     /// Every command's metadata, sorted by name.
@@ -248,21 +333,54 @@ impl CommandCatalog {
     /// runs: a palette that reshuffles when a plugin loads makes the same
     /// keystrokes land on a different command.
     pub fn descriptors(&self) -> Vec<CommandMeta> {
-        let mut metas: Vec<CommandMeta> = self
-            .commands
-            .values()
-            .map(|command| command.meta().clone())
-            .collect();
-        metas.sort_by(|left, right| left.name.cmp(&right.name));
-        metas
+        self.descriptors_filtered(&CapabilityFilter::default())
+    }
+
+    /// The same listing, minus the commands the filter denies.
+    ///
+    /// The filter is applied here rather than at registration, because a source's
+    /// set changes at runtime: a prompt that appears after the host sealed must
+    /// still be filtered on every listing.
+    pub fn descriptors_filtered(&self, filter: &CapabilityFilter) -> Vec<CommandMeta> {
+        let mut by_name: BTreeMap<String, CommandMeta> = BTreeMap::new();
+        for command in self.commands.values() {
+            by_name.insert(command.meta().name.clone(), command.meta().clone());
+        }
+        // Sources never shadow a native: `get` prefers the map, so the listing
+        // must too, or a palette would offer a row that dispatches elsewhere.
+        for command in self.source_commands() {
+            by_name
+                .entry(command.meta().name.clone())
+                .or_insert_with(|| command.meta().clone());
+        }
+        by_name
+            .into_values()
+            .filter(|meta| {
+                filter.allows(&CapabilityId::new(
+                    CapabilityKind::Command,
+                    meta.name.clone(),
+                ))
+            })
+            .collect()
+    }
+
+    /// Whether `name` resolves to a command the filter allows.
+    ///
+    /// The listing is filtered by exactly this rule, so an advertised row is
+    /// always dispatchable and vice versa.
+    pub fn can_dispatch(&self, name: &str, filter: &CapabilityFilter) -> bool {
+        filter.allows(&CapabilityId::new(
+            CapabilityKind::Command,
+            name.to_string(),
+        )) && self.get(name).is_some()
     }
 
     pub fn len(&self) -> usize {
-        self.commands.len()
+        self.descriptors().len()
     }
 
     pub fn is_empty(&self) -> bool {
-        self.commands.is_empty()
+        self.len() == 0
     }
 
     /// Run a command by name, resolving an alias.
@@ -472,6 +590,112 @@ mod tests {
         fn meta(&self) -> &CommandMeta {
             &self.meta
         }
+    }
+
+    /// A source that contributes one command and reports no change on refresh.
+    struct OneCommandSource {
+        id: &'static str,
+        command: Arc<dyn Command>,
+    }
+
+    #[async_trait::async_trait]
+    impl CommandSource for OneCommandSource {
+        fn id(&self) -> &str {
+            self.id
+        }
+
+        async fn refresh(&self) -> anyhow::Result<bool> {
+            Ok(false)
+        }
+
+        fn commands(&self) -> Vec<Arc<dyn Command>> {
+            vec![self.command.clone()]
+        }
+    }
+
+    #[test]
+    fn a_source_contributed_command_is_listed_and_resolves() {
+        let mut catalog = CommandCatalog::default();
+        catalog
+            .insert(Arc::new(FixedCommand::new("native", &[])))
+            .unwrap();
+        catalog.add_source(Arc::new(OneCommandSource {
+            id: "mcp",
+            command: Arc::new(FixedCommand::new("remote", &[])),
+        }));
+
+        // Named resolution reaches through the source, not just the native map.
+        assert!(
+            catalog.get("remote").is_some(),
+            "a source command must resolve by name"
+        );
+        // The listing carries both, so a palette shows what can actually run.
+        let names: Vec<String> = catalog.descriptors().into_iter().map(|m| m.name).collect();
+        assert_eq!(names, vec!["native".to_string(), "remote".to_string()]);
+    }
+
+    #[test]
+    fn a_native_command_wins_over_a_source_of_the_same_name() {
+        // Same rule as `ToolCatalog::handler_for`: a server must not shadow a
+        // built-in, and the listing must agree with what dispatch would pick.
+        let mut catalog = CommandCatalog::default();
+        catalog
+            .insert(Arc::new(FixedCommand::new("stats", &[])))
+            .unwrap();
+        catalog.add_source(Arc::new(OneCommandSource {
+            id: "mcp",
+            command: Arc::new(FixedCommand::new("stats", &[])),
+        }));
+
+        let listed: Vec<String> = catalog.descriptors().into_iter().map(|m| m.name).collect();
+        assert_eq!(listed, vec!["stats".to_string()], "no duplicate row");
+        assert_eq!(
+            catalog.get("stats").expect("native wins").meta().scope,
+            CommandScope::Runtime
+        );
+    }
+
+    #[test]
+    fn a_filtered_listing_excludes_a_source_command() {
+        // No `mut`: `add_source` takes `&self`, which is what lets a host add a
+        // source after it sealed.
+        let catalog = CommandCatalog::default();
+        catalog.add_source(Arc::new(OneCommandSource {
+            id: "mcp",
+            command: Arc::new(FixedCommand::new("remote", &[])),
+        }));
+
+        let filter = CapabilityFilter::new([CapabilityId::new(
+            CapabilityKind::Command,
+            "remote".to_string(),
+        )]);
+        assert!(
+            catalog.descriptors_filtered(&filter).is_empty(),
+            "a disabled command must not be advertised"
+        );
+        assert!(
+            !catalog.can_dispatch("remote", &filter),
+            "and it must not dispatch either"
+        );
+    }
+
+    #[tokio::test]
+    async fn refreshing_sources_reports_whether_anything_changed() {
+        let catalog = CommandCatalog::default();
+        catalog.add_source(Arc::new(OneCommandSource {
+            id: "mcp",
+            command: Arc::new(FixedCommand::new("remote", &[])),
+        }));
+        let before = catalog.generation();
+        // This source reports `false`, so the generation must not move: a host
+        // comparing generations would otherwise think a stale list was current.
+        assert!(
+            !catalog
+                .refresh_sources()
+                .await
+                .expect("refresh is infallible here")
+        );
+        assert_eq!(catalog.generation(), before);
     }
 
     #[test]

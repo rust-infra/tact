@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 /// Where a command is available.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandScope {
@@ -97,6 +99,26 @@ pub struct CommandCandidate {
     pub detail: String,
     /// More input is expected: Enter completes instead of running.
     pub incomplete: bool,
+}
+
+/// A plugin-provided set of commands discovered at runtime (MCP prompts today).
+///
+/// The counterpart of [`ToolSource`](crate::tool::source::ToolSource), and
+/// deliberately the same shape: a host that can refresh one can refresh the other,
+/// and a name that resolves must not depend on which kind of catalog it came from.
+///
+/// `refresh` reports whether the command set changed rather than a bare `()`. The
+/// spec writes `Result<()>`, and this deviates on purpose: a source that re-lists
+/// nothing must not bump the generation, or a host comparing generations would
+/// believe a stale snapshot had just been rebuilt. `ToolSource` makes the same
+/// choice for the same reason, so the two stay symmetric.
+#[async_trait::async_trait]
+pub trait CommandSource: Send + Sync {
+    fn id(&self) -> &str;
+
+    async fn refresh(&self) -> anyhow::Result<bool>;
+
+    fn commands(&self) -> Vec<Arc<dyn Command>>;
 }
 
 #[async_trait::async_trait]

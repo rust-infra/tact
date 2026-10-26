@@ -159,11 +159,15 @@ impl Default for RuntimeModelCatalog {
 /// map of every contributed command.
 pub struct RuntimeCommandDirectory {
     catalog: tact::command::CommandCatalog,
+    filter: tact_kernel::capability::CapabilityFilter,
 }
 
 impl RuntimeCommandDirectory {
-    pub fn new(catalog: tact::command::CommandCatalog) -> Self {
-        Self { catalog }
+    pub fn new(
+        catalog: tact::command::CommandCatalog,
+        filter: tact_kernel::capability::CapabilityFilter,
+    ) -> Self {
+        Self { catalog, filter }
     }
 
     /// Install this directory into a view slot.
@@ -250,13 +254,13 @@ pub fn install_command_directory(
             )),
         },
     );
-    RuntimeCommandDirectory::new(catalog).install(slot);
+    RuntimeCommandDirectory::new(catalog, agent.capability_filter().clone()).install(slot);
 }
 
 impl tui::ports::CommandDirectory for RuntimeCommandDirectory {
     fn commands(&self) -> Vec<tui::ports::CommandEntry> {
         self.catalog
-            .descriptors()
+            .descriptors_filtered(&self.filter)
             .into_iter()
             .map(|meta| tui::ports::CommandEntry {
                 name: meta.name,
@@ -267,6 +271,12 @@ impl tui::ports::CommandDirectory for RuntimeCommandDirectory {
     }
 
     fn resolve(&self, name: &str) -> Option<tui::ports::CommandEntry> {
+        // The catalog answers "is this a command"; the filter answers "may this
+        // host run it". `can_dispatch` is that conjunction, and the driver uses the
+        // same method, so a listed command and a runnable one cannot disagree.
+        if !self.catalog.can_dispatch(name, &self.filter) {
+            return None;
+        }
         let command = self.catalog.get(name)?;
         let meta = command.meta();
         Some(tui::ports::CommandEntry {
@@ -663,12 +673,47 @@ mod tests {
             .collect();
         assert!(!expected.is_empty(), "the built-ins contribute something");
 
-        let directory = RuntimeCommandDirectory::new(catalog);
+        let directory = RuntimeCommandDirectory::new(
+            catalog,
+            tact_kernel::capability::CapabilityFilter::default(),
+        );
         let listed: Vec<String> = tui::ports::CommandDirectory::commands(&directory)
             .into_iter()
             .map(|entry| entry.name)
             .collect();
         assert_eq!(listed, expected);
+    }
+
+    /// A capability the filter disabled is not offered.
+    ///
+    /// The catalog filters at registration and on every listing; the palette is a
+    /// listing, so it must apply the same rule. Otherwise a disabled command would
+    /// vanish from dispatch yet stay visible and selectable.
+    #[test]
+    fn a_disabled_command_is_not_offered() {
+        let catalog = tact::command::builtin_catalog(
+            Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
+            tact::command::CatalogWirings::default(),
+        );
+        let filter = tact_kernel::capability::CapabilityFilter::new([
+            tact_kernel::capability::CapabilityId::new(
+                tact_kernel::capability::CapabilityKind::Command,
+                "stats".to_string(),
+            ),
+        ]);
+        let directory = RuntimeCommandDirectory::new(catalog, filter);
+        let listed: Vec<String> = tui::ports::CommandDirectory::commands(&directory)
+            .into_iter()
+            .map(|entry| entry.name)
+            .collect();
+        assert!(
+            listed.is_empty(),
+            "`stats` is the only command the default wirings contribute, so              disabling it must leave nothing; got {listed:?}"
+        );
+        assert!(
+            tui::ports::CommandDirectory::resolve(&directory, "stats").is_none(),
+            "and it must not resolve either"
+        );
     }
 
     /// Resolving by name answers with the command the catalog routes to.
@@ -681,7 +726,10 @@ mod tests {
             Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
             tact::command::CatalogWirings::default(),
         );
-        let directory = RuntimeCommandDirectory::new(catalog);
+        let directory = RuntimeCommandDirectory::new(
+            catalog,
+            tact_kernel::capability::CapabilityFilter::default(),
+        );
         let stats = tui::ports::CommandDirectory::resolve(&directory, "stats")
             .expect("stats is a built-in");
         assert_eq!(stats.name, "stats");
@@ -701,7 +749,11 @@ mod tests {
             Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
             tact::command::CatalogWirings::default(),
         );
-        RuntimeCommandDirectory::new(catalog).install(&slot);
+        RuntimeCommandDirectory::new(
+            catalog,
+            tact_kernel::capability::CapabilityFilter::default(),
+        )
+        .install(&slot);
 
         let installed = slot.lock().unwrap().clone().expect("the slot is filled");
         assert!(!installed.commands().is_empty());
