@@ -276,13 +276,39 @@ everywhere else. `host.rs`, `driver.rs`, `config_plugin.rs` and `tui/select.rs` 
 match only inside tests — `select.rs`'s 19 matches are the strings in a guard that
 asserts the production region contains none.
 
-## 10. Dynamic sources filtered — met
+## 10. Dynamic sources filtered — met, with one named contract missing
 
-`CapabilityFilter` applies at static registration and at every `ToolSource` /
-`CommandSource` snapshot and resolve, so an MCP refresh cannot re-enable a
-disabled item.
+The checklist line is about `ToolSource`, and that half is implemented and wired:
 
-Verified by: catalog filter tests in `tact_kernel` and the MCP source tests.
+- `McpToolSource` and `McpControlSource` implement `ToolSource`
+  (`crates/tact/src/tool/mcp_source.rs:204`, `mcp_control.rs:223`).
+- Both are registered on the production path in `Agent` assembly
+  (`crates/tact/src/agent/mod.rs:765` and `:772`), through
+  `ToolCatalog::add_source`.
+- The filter is applied where the descriptors are produced, not where they are
+  registered: `ToolCatalog::descriptor_snapshot(filter)` builds the list from every
+  source's `tools()` and then `retain`s on `filter.allows(&id)`, and
+  `can_dispatch(name, filter)` applies the same rule. So a source cannot advertise a
+  tool the filter denies, and the advertised list and the dispatchable set cannot
+  disagree.
+- `refresh_sources` bumps the generation only when a source reports a change, so a
+  host comparing generations cannot be fooled by a rebuild that changed nothing.
+
+What is **not** implemented is `CommandSource`, which the design's inventory table
+lists as an MCP contribution: `grep -r 'CommandSource' crates` is empty. MCP
+contributes tools dynamically but not commands; `/mcp prompts` reads the router
+through a command that was written by hand rather than contributed by the plugin.
+
+A note on how this section was written, because it changed three times. It first said
+"met" while describing code I had not opened. I then changed it to "not met" after
+`grep -rn 'impl ToolSource for' crates --include=*.rs | head -6` returned only kernel
+test sources — the `head` had truncated the two MCP implementations below it. The
+verdict is "met" on the strength of the file and line references above, which is what
+the first version should have cited.
+
+Verified by: `grep -rn 'impl ToolSource for' crates --include=*.rs` (4, two of them
+MCP), `grep -n 'add_source' crates/tact/src/agent/mod.rs` (2 production call sites),
+and `descriptor_snapshot`'s `retain` in `crates/tact_kernel/src/catalog.rs`.
 
 ## 11. Marketplace behavior unchanged — met
 
@@ -301,6 +327,28 @@ Verified by: `crates/tact/src/plugin/` tests (183 passing) and
 Each of these is a place where the implementation does something the spec does
 not describe. They are listed so a reviewer can accept or reject them
 individually.
+
+### D0. Contracts the design names that have no implementation
+
+The design's *Plugin inventory* table names a contract for every plugin. Four of
+those names do not appear in the tree at all, and one appears under a different name.
+This is the list I should have produced the first time instead of counting plugin
+objects:
+
+| Design names | In the tree | Consequence |
+|---|---|---|
+| `ToolSource` (MCP) | implemented (`McpToolSource`, `McpControlSource`) and registered | none — this row was wrong in the first draft |
+| `CommandSource` (MCP) | nothing | MCP cannot contribute commands dynamically |
+| `AgentFactory` (Agent) | nothing | `spawn_subagent` builds the child directly instead of through a factory port |
+| `ModelService` (Providers) | `ProviderInfo` snapshot | same role, different name — a rename, not a gap |
+| `DatabaseHandle` (Storage) | `StorageLocation` | same role, different name — a rename, not a gap |
+
+The two renames are fine: the design says "extension-level", which is what these are,
+and an extension-level type is free to be called what it does. Of the two absences,
+`CommandSource` is a real gap (MCP contributes tools dynamically but not commands) and
+`AgentFactory` is a design element that was never built — `spawn_subagent` assembles
+the child directly. Neither is a checklist item, so neither changes the verdict; both
+are recorded so a reviewer can decide whether they matter.
 
 ### D1. `HostOptions` split into `HostOptions` + `HostExtras`
 

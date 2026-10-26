@@ -76,7 +76,11 @@ PY
 
 echo
 echo "=== 10. Dynamic sources filtered ==="
-printf '  %s\n' "$(grep -c 'a_disabled_capability_is_not_installed' crates/tact/src/tool/family.rs) test(s) that a filtered capability is not installed"
+# Implementors, production registration sites, and the retain that applies the filter.
+grep -rn 'impl ToolSource for' crates --include=*.rs | sed 's/^/  /'
+grep -n 'add_source' crates/tact/src/agent/mod.rs | sed 's/^/  production: /'
+grep -n 'filter.allows(&id)' crates/tact_kernel/src/catalog.rs | sed 's/^/  filter at: /'
+printf '  CommandSource (design names it, no implementation): %s\n' "$(grep -r 'CommandSource' crates --include=*.rs 2>/dev/null | wc -l | tr -d ' ')"
 
 echo
 echo "=== 11. Marketplace behaviour unchanged ==="
