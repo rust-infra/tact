@@ -471,11 +471,31 @@ mod tests {
         let store = crate::store::open_sqlite_session_store(&db).await.unwrap();
         let manager = manager();
 
+        let slot: std::sync::Arc<tokio::sync::Mutex<Option<crate::Agent>>> =
+            std::sync::Arc::new(tokio::sync::Mutex::new(None));
+        let cancel_flag = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
         let extras = HostExtras {
             storage: Some(StorageOptions {
                 store,
                 path: db.clone(),
             }),
+            hooks: Some(HookOptions {
+                source: crate::plugin::HookSource {
+                    label: "test hooks".to_string(),
+                    origin: crate::plugin::HookOrigin::UserFile,
+                    dirs: crate::consts::PluginDirs::root_only(&dir),
+                    hooks: crate::plugin::HooksFile::default(),
+                },
+                work_dir: dir.clone(),
+                notices: Arc::new(|_| {}),
+            }),
+            marketplace: Some(crate::consts::PluginHome::from_home(&dir)),
+            agent_service: Some(std::sync::Arc::new(
+                crate::agent::service::RuntimeAgentService::pending(cancel_flag.clone()),
+            )),
+            chat_service: Some(std::sync::Arc::new(
+                crate::agent::chat::RuntimeChatService::new(slot.clone(), cancel_flag),
+            )),
             background: Some(crate::background::SharedBackgroundManager::new(
                 crate::background::BackgroundManager::new(&db)
                     .await
@@ -536,6 +556,10 @@ mod tests {
             "builtin.permission",
             "builtin.security",
             "builtin.compaction_service",
+            "builtin.agent_service",
+            "builtin.chat_service",
+            "builtin.hooks",
+            "builtin.marketplace",
         ] {
             assert!(
                 ids.iter().any(|id| id == expected),
