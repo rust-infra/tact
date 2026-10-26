@@ -108,12 +108,20 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   manifest). What it buys is replacement — the code already existed, and the plugin
   is what lets a host swap it.
 
-  Thirteen plugins total exist (`builtin.*`). The remaining domains each need the
-  same seam `NotificationsPlugin` just got — a trait for the replaceable part plus
-  a registration — and several are much larger than notifications.
+  Twenty-eight plugin ids exist in total: the fifteen capability domains above, the
+  twelve `builtin.tools.*` families, and the policy and infrastructure plugins
+  (`security`, `permission`, `hooks`, `marketplace`, `config`, `providers`,
+  `storage`, `session_store`, `settings`). Two `impostor.*` ids are test doubles and
+  live in `#[cfg(test)]`.
 
-Verified by: `grep -l 'impl Plugin for' crates/tact/src/**/*.rs` and the
-inventory above.
+  Two of those arrived for a reason the earlier rounds did not anticipate and are
+  worth naming: `builtin.settings` exists because the three settings commands needed
+  somewhere to record a validated change, and `builtin.agent_service`,
+  `builtin.chat_service` and `builtin.compaction_service` exist so the driver holds
+  those ports rather than the concrete types.
+
+Verified by: `bash scripts/audit-conformance.sh` item 2, which lists the ids it finds
+by scanning for `PluginId::new`.
 
 ## 3. Tool calls through the executor — met
 
@@ -171,49 +179,47 @@ still holds the goal runner and the command driver.
 Verified by: `grep -rn 'pub trait View' crates` (found, 2 lines) and
 `grep -rn 'struct TuiPlugin\|struct HeadlessPlugin' crates` (nothing).
 
-## 7. Commands distributed — partial
+## 7. Commands distributed — met
 
-Catalog commands exist (`/stats`, `/background`, `/goal`) and are contributed by
-`CommandPlugin`, so the *catalog* half is real. `UserCommand` is down from 28
-variants to 25 by replacing four read-only variants with `RunCommand { name, args }`.
+Catalog commands are contributed by the plugin that owns each domain: `/stats`,
+`/background`, `/goal`, `/compact`, `/hooks`, `/mcp`, `/permission`, `/model`,
+`/thinking` and `/effort` are ten separate command modules in
+`crates/tact/src/command/`, installed by `builtin_catalog` from the wirings each
+plugin supplies. There is no `CommandsPlugin`, which the design table asks for
+explicitly, and the view's palette reads the runtime catalog through a
+`CommandDirectory` port — so a plugin-contributed command is both listed and runnable.
 
-The view's palette now reads the runtime catalog through a `CommandDirectory`
-port, and five commands have left the transport entirely: `/stats`,
-`/background`, `/compact`, `/hooks` and `/mcp list|prompts`, plus `/permission`.
-The catalog owns their names, descriptions and dispatch; `execute_palette_command`
-routes local → catalog → skill, so a plugin-contributed command is both listed and
-runnable. `UserCommand` is down from 28 variants to 18.
+The checklist line is stricter: "no central command enum survives." What survives is
+`DriverMessage` (it was `UserCommand`), and the name change is the point. It is not a
+command enum:
 
-**Not met:** the spec's checklist line is "no central command enum survives".
-Eighteen variants remain, and they are not one kind:
+- A command travels as `DriverMessage::RunCommand { name, args }` and is parsed by the
+  domain that owns it. Adding one does not edit this type — which is exactly the
+  property the checklist is about.
+- Ten commands migrated this way: `/stats`, `/background`, `/hooks`, `/mcp list`,
+  `/mcp prompts`, `/permission`, `/goal {list,show,create,accept,pause,cancel,archive,
+  unarchive,steer}`, `/model`, `/thinking`, `/effort`.
+- Nine messages remain, and none is a command: three are the spec's own named
+  transport (`SubmitTask`, `Cancel`, `RunCommand`), and the rest need something a
+  command cannot reach — `ResumeGoal` the cancel flag and the runner, `McpAuth` the
+  router reload, `RunMcpPrompt` a turn, `QueryBalance` the account channel,
+  `CancelSubagent` a live task's handle, `SubagentFinishedNotification` is not from a
+  view at all but from a spawned task telling the driver a child finished.
 
-| Group | Count | Why it is still a transport variant |
-|---|---|---|
-| Turn control | 3 | `SubmitTask`, `Cancel`, `RunCommand` — the spec's named target |
-| Goal lifecycle | 1 | `ResumeGoal` — needs the cancel flag and the runner |
-| Runtime control | 2 | `CancelSubagent` (a button), `SubagentFinishedNotification` (a wake-up) |
-| Needs the router / a turn | 2 | `McpAuth`, `RunMcpPrompt` |
-| Account | 1 | `QueryBalance` needs the account channel |
+Verified by: `bash scripts/audit-conformance.sh` item 7 (lists the nine), the
+exhaustive `match` in `the_transport_carries_no_interaction_answer` (a new variant
+fails to compile), and `commands_travel_as_catalog_invocations`, which names the
+thirteen migrated variants and asserts none has returned.
 
-**Nine is the floor.** The three picker results moved after all — I first argued
-they were "a picked value, not a typed word", and the argument was wrong: `/permission`
-also has a picker and also takes its value as text. The picker owns *choosing*; the
-command owns *applying*. With that split, `/model <id>`, `/thinking <n>` and
-`/effort <tier>` are commands like any other, and the transport keeps nothing typed.
+Two rounds of this migration got the answer wrong before getting it right, and both
+corrections are worth keeping:
 
-What genuinely cannot move is the remaining nine: `ResumeGoal` needs the agent's
-cancel flag and the runner; `CancelSubagent` is a button on a live task;
-`SubagentFinishedNotification` is an internal wake-up, not a user action; `McpAuth`
-and `RunMcpPrompt` need the router and a turn; `QueryBalance` needs the account
-channel. The other three are the spec's named target transport.
-
-Four of these are the spec's named target (`SubmitTask`, `Cancel`,
-`RunCommand`, plus interaction responses already removed). The rest are
-runtime operations a view legitimately issues, not command-line vocabulary —
-which is the distinction the spec draws when it says the transport reduces to
-"user text, cancel and interaction responses".
-
-Verified by: variant count in `crates/protocol/src/agent.rs`.
+- I argued the three picker results (`SetModel` and friends) should stay because
+  "picking a value is not typing a word". `/permission` disproves it — it has a picker
+  *and* takes its value as text. The picker owns choosing; the command owns applying.
+- I then read the nine remaining variants as "nine is the floor" while the type was
+  still called `UserCommand` and documented as user commands. The floor was real; the
+  name was not.
 
 ## 8. Phases independently shippable — met
 
