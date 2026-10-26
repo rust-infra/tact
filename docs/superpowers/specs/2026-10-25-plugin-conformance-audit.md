@@ -107,6 +107,15 @@ No contribution claim is undelivered and every named contract has a producer:
   catalog and the palette's, because registering in one and not the other is how a
   command becomes runnable but invisible.
 
+  The MCP source is owned by the `Agent`, not built per catalog: the driver builds a
+  catalog per command dispatch, so a per-catalog source would be empty after the first
+  one and would list every server on every command. It mutates in place
+  (`set_backend` after a reload, `set_submit` once) because the palette's catalog
+  outlives the driver's, so a replacement instance would leave the palette frozen.
+  `CommandCatalog::complete` reads `descriptors()` rather than the native map for the
+  same reason: listing, resolution, dispatch and completion must agree, or the one
+  gesture a user tries first is the one that cannot find the command.
+
 None of this makes the capability missing — a user still gets skills in the prompt and
 `/mcp prompts` still works. It makes the *mechanism* different from the design, and it
 means a plugin cannot add a prompt section by registering one. That is a design decision
