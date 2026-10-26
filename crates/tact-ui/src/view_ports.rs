@@ -253,6 +253,14 @@ pub fn install_command_directory(
             )),
         },
     );
+    // Commands shipped by installed packages, listed here as well as in the driver:
+    // the palette is built from this catalog before the driver runs, and a command
+    // that resolves by name but never appears in the palette is a command the user
+    // has to know exists. The submit closure is a no-op because this catalog only
+    // produces descriptors — the driver owns the one that runs them.
+    if let Some(home) = tact::consts::PluginHome::from_environment() {
+        tact::plugin::commands::attach(&catalog, &home, std::sync::Arc::new(|_body: String| {}));
+    }
     RuntimeCommandDirectory::new(catalog, agent.capability_filter().clone()).install(slot);
 }
 

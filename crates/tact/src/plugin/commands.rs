@@ -167,6 +167,26 @@ impl CommandSource for PluginCommandSource {
     }
 }
 
+/// Register the installed packages' commands on `catalog`.
+///
+/// One implementation because there are two catalogs: the driver's (which runs
+/// commands) and the palette's (which only lists them). Registering in one place
+/// and forgetting the other is how a command becomes runnable but invisible.
+///
+/// Returns whether any command was attached, which a caller can use to decide
+/// whether to mention the feature at all.
+pub fn attach(
+    catalog: &tact_kernel::catalog::CommandCatalog,
+    home: &crate::consts::PluginHome,
+    submit: Arc<dyn Fn(String) + Send + Sync>,
+) -> bool {
+    let source =
+        PluginCommandSource::discover(&crate::plugin::PluginStore::new(home.clone()), submit);
+    let has_any = !source.files.is_empty();
+    catalog.add_source(Arc::new(source));
+    has_any
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -221,6 +241,52 @@ mod tests {
         write(dir.path(), "notes.txt", "not a command");
         let names: Vec<String> = discover(dir.path()).into_iter().map(|f| f.name).collect();
         assert_eq!(names, vec!["alpha".to_string(), "zeta".to_string()]);
+    }
+
+    /// Registering is what makes an installed command exist at all.
+    ///
+    /// The layout here is the real one — `<home>/.tact/plugins/state/installed.json`
+    /// plus a cached package — because the bug this guards against was not in the
+    /// parser but in nothing calling it.
+    #[test]
+    fn attach_registers_installed_commands_on_the_catalog() {
+        let dir = tempfile::tempdir().unwrap();
+        let home = crate::consts::PluginHome::from_home(dir.path());
+        let cache = home.cache.join("mp").join("pkg").join("rev");
+        std::fs::create_dir_all(cache.join("commands")).unwrap();
+        std::fs::write(
+            cache.join("commands/deploy.md"),
+            "---\ndescription: Deploy the app\n---\nDeploy it.",
+        )
+        .unwrap();
+        std::fs::create_dir_all(&home.state).unwrap();
+        std::fs::write(
+            home.state.join("installed.json"),
+            serde_json::json!({
+                "plugins": {
+                    "mp/pkg": {
+                        "id": "pkg",
+                        "marketplace": "mp",
+                        "revision": "rev",
+                        "cache_path": cache,
+                    }
+                }
+            })
+            .to_string(),
+        )
+        .unwrap();
+
+        let catalog = tact_kernel::catalog::CommandCatalog::default();
+        assert!(
+            attach(&catalog, &home, Arc::new(|_| {})),
+            "attach must report that it found something"
+        );
+        let listed: Vec<String> = catalog.descriptors().into_iter().map(|m| m.name).collect();
+        assert_eq!(
+            listed,
+            vec!["deploy".to_string()],
+            "an installed command must be listed, not merely runnable"
+        );
     }
 
     #[tokio::test]

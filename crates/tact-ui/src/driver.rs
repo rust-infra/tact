@@ -360,15 +360,13 @@ fn build_command_catalog(
     // drains this once its borrow on the agent is free.
     let (plugin_prompt_tx, plugin_prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     if let Some(home) = tact::consts::PluginHome::from_environment() {
-        let store = tact::plugin::PluginStore::new(home);
-        catalog.add_source(std::sync::Arc::new(
-            tact::plugin::commands::PluginCommandSource::discover(
-                &store,
-                std::sync::Arc::new(move |body: String| {
-                    let _ = plugin_prompt_tx.send(body);
-                }),
-            ),
-        ));
+        tact::plugin::commands::attach(
+            &catalog,
+            &home,
+            std::sync::Arc::new(move |body: String| {
+                let _ = plugin_prompt_tx.send(body);
+            }),
+        );
     }
     // The filter travels with the catalog so dispatch applies the same rule the
     // listing does: a command the host disabled must not run when typed.
