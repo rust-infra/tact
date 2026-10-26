@@ -119,7 +119,7 @@ to accept or to close, not a bug to fix silently.
 | # | Item | Status |
 |---|---|---|
 | 1 | Kernel boundary small enough to build without extensions | **Met** |
-| 2 | Every capability has an owning plugin and a contribution or contract | **Met** (15/15) |
+| 2 | Every capability has an owning plugin and a contribution or contract | **Met** (14/15; `VoicePlugin` removed, see §2) |
 | 3 | Every Agent-issued tool call routed through the kernel executor | **Met** |
 | 4 | Agent/Chat/Session ports in the kernel; implementations in extensions | **Met** |
 | 5 | Plugins shut down in reverse install order, releasing resources | **Met** |
@@ -208,16 +208,19 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   is a seam owned by whoever creates it, handed over through a wiring struct or a view
   port, and a plugin object for it is decoration.
 
-  Twenty-five plugin ids exist in total: fourteen capability domains, the twelve
-  `builtin.tools.*` families, and the policy and infrastructure plugins (`security`,
-  `permission`, `hooks`, `marketplace`, `config`, `providers`, `storage`,
-  `session_store`). Two `impostor.*` ids are test doubles in `#[cfg(test)]`.
+  Counting them exactly, because "how many plugins" is the number most likely to be
+  repeated without being checked: `grep -rho 'PluginId::new("[a-z._]*"'` then `sort -u`
+  finds **26 ids**, two of which are test doubles inside `#[cfg(test)]`
+  (`impostor.permission` and `test.agent_factory`), leaving **24 production ids**. The
+  tool families are not in that count because their ids are built from the family
+  (`PluginId::new(self.family.id())`): **12 more** — the 11 in `ToolFamily::ALL` plus
+  `SubagentBasics`, which the main agent's set deliberately excludes. So 36 plugin
+  objects on a production path.
 
-  Two of those arrived for a reason the earlier rounds did not anticipate and are
-  worth naming: `builtin.settings` exists because the three settings commands needed
-  somewhere to record a validated change, and `builtin.agent_service`,
-  `builtin.chat_service` and `builtin.compaction_service` exist so the driver holds
-  those ports rather than the concrete types.
+  Three of the 24 exist for reasons the earlier rounds did not anticipate and are worth
+  naming: `builtin.agent_service`, `builtin.chat_service` and
+  `builtin.compaction_service` exist so the driver holds those ports rather than the
+  concrete types.
 
 Verified by: `bash scripts/audit-conformance.sh` item 2, which lists the ids it finds
 by scanning for `PluginId::new`.
