@@ -261,6 +261,23 @@ pub fn install_command_directory(
     if let Some(home) = tact::consts::PluginHome::from_environment() {
         tact::plugin::commands::attach(&catalog, &home, std::sync::Arc::new(|_body: String| {}));
     }
+    // MCP prompts as commands, listed here as well as in the driver. The palette's
+    // submit closure is a no-op for the same reason the package one is: this catalog
+    // only produces descriptors.
+    let mcp_prompts = tact::command::mcp_prompts::attach(
+        &catalog,
+        std::sync::Arc::new(tact::command::mcp_prompts::McpPromptSource::new(
+            std::sync::Arc::new(tact::command::mcp_prompts::SnapshotPromptBackend::new(
+                agent.mcp_router.call_handles(),
+            )),
+            std::sync::Arc::new(|_server: String, _name: String| {}),
+        )),
+    );
+    if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+        runtime.spawn(async move {
+            let _ = tact_kernel::capability::command::CommandSource::refresh(&*mcp_prompts).await;
+        });
+    }
     RuntimeCommandDirectory::new(catalog, agent.capability_filter().clone()).install(slot);
 }
 

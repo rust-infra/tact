@@ -2732,6 +2732,26 @@ impl McpCallHandle {
         self.client.call_tool(tool, arguments).await
     }
 
+    /// The prompts this server advertises, as `(name, description)`.
+    ///
+    /// Structured rather than rendered, because a prompt is exposed as its own
+    /// command: `/mcp prompts` renders a table, but a command needs the name and
+    /// the description separately.
+    pub async fn prompts(&self) -> Result<Vec<(String, String)>> {
+        Ok(self
+            .client
+            .list_prompts()
+            .await?
+            .into_iter()
+            .map(|prompt| {
+                (
+                    prompt.name,
+                    prompt.description.unwrap_or_default().trim().to_string(),
+                )
+            })
+            .collect())
+    }
+
     /// The per-tool result budget this entry declares.
     pub fn output_token_limit(&self, tool: &str) -> Option<usize> {
         self.client.policy().output_token_limit(tool)

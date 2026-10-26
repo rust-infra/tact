@@ -238,17 +238,47 @@ fn forward_command_outcome(outcome: &tact::command::CommandOutcome, events: &Upd
 /// handle (the stats snapshot, the background manager). A command that needs the
 /// agent loop itself is not here: it cannot own a `&mut Agent` through a
 /// catalog, so it keeps its arm on the driver's side.
+/// List the connected servers' prompts without blocking the loop.
+///
+/// The snapshot lands in the source behind the catalog, so the commands appear on
+/// the next palette open. A failure is logged and leaves the previous snapshot in
+/// place: stale commands still work, an empty list would silently withdraw them.
+fn spawn_mcp_prompt_refresh(source: std::sync::Arc<tact::command::mcp_prompts::McpPromptSource>) {
+    tokio::spawn(async move {
+        // A failed listing is not reported: the servers may simply not be up yet,
+        // and the previous snapshot (usually empty) is still the truth as far as
+        // the commands are concerned. `/mcp prompts` is where an error belongs,
+        // because there the user asked.
+        let _ = tact_kernel::capability::command::CommandSource::refresh(&*source).await;
+    });
+}
+
+/// Everything the command loop needs from the catalog it serves.
+///
+/// A struct rather than the tuple this used to be: it grew one field per queued
+/// side effect (Goal activations, settings changes, package prompts, MCP prompts)
+/// and seven positional returns is a call site nobody can read.
+pub(super) struct CommandSurface {
+    pub catalog: tact::command::CommandCatalog,
+    /// Goal ids `/goal` could not run itself.
+    pub activations: tokio::sync::mpsc::UnboundedReceiver<String>,
+    /// Settings changes the setters could not apply themselves.
+    pub settings:
+        tokio::sync::mpsc::UnboundedReceiver<tact::agent::settings_service::SettingsChange>,
+    /// Prompt bodies from installed packages.
+    pub plugin_prompts: tokio::sync::mpsc::UnboundedReceiver<String>,
+    /// `(server, prompt)` pairs an MCP prompt command queued.
+    pub mcp_prompts: tokio::sync::mpsc::UnboundedReceiver<(String, String)>,
+    /// Kept so the caller can refresh the prompt snapshot off the serving path.
+    pub mcp_prompt_source: std::sync::Arc<tact::command::mcp_prompts::McpPromptSource>,
+    pub filter: tact_kernel::capability::CapabilityFilter,
+}
+
 fn builtin_command_catalog(
     slot: &Arc<tokio::sync::Mutex<Option<Agent>>>,
     chat: Option<std::sync::Arc<dyn tact::command::ChatService>>,
     work_dir: &std::path::Path,
-) -> (
-    tact::command::CommandCatalog,
-    tokio::sync::mpsc::UnboundedReceiver<String>,
-    tokio::sync::mpsc::UnboundedReceiver<tact::agent::settings_service::SettingsChange>,
-    tokio::sync::mpsc::UnboundedReceiver<String>,
-    tact_kernel::capability::CapabilityFilter,
-) {
+) -> CommandSurface {
     // The loop holds the slot, so this lock is uncontended here.
     let guard = slot.try_lock().expect("the loop owns the slot here");
     build_command_catalog(guard.as_ref(), slot, chat, work_dir)
@@ -265,13 +295,7 @@ fn build_command_catalog(
     slot: &Arc<tokio::sync::Mutex<Option<Agent>>>,
     chat: Option<std::sync::Arc<dyn tact::command::ChatService>>,
     work_dir: &std::path::Path,
-) -> (
-    tact::command::CommandCatalog,
-    tokio::sync::mpsc::UnboundedReceiver<String>,
-    tokio::sync::mpsc::UnboundedReceiver<tact::agent::settings_service::SettingsChange>,
-    tokio::sync::mpsc::UnboundedReceiver<String>,
-    tact_kernel::capability::CapabilityFilter,
-) {
+) -> CommandSurface {
     // Running a Goal activation needs `&mut Agent`, which the caller holds while
     // the command runs. The command queues the request instead of reaching for the
     // agent, and the caller drains this receiver once its borrow is free — an
@@ -358,6 +382,25 @@ fn build_command_catalog(
     // Commands shipped by installed marketplace packages. Their body is a prompt,
     // so running one queues a turn instead of answering with text; the driver
     // drains this once its borrow on the agent is free.
+    // MCP prompts become commands. The backend reads client handles, not the agent,
+    // so refreshing never touches the slot this loop holds while a command runs.
+    let (mcp_prompt_tx, mcp_prompt_rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+    let mcp_prompt_source = tact::command::mcp_prompts::attach(
+        &catalog,
+        std::sync::Arc::new(tact::command::mcp_prompts::McpPromptSource::new(
+            std::sync::Arc::new(tact::command::mcp_prompts::SnapshotPromptBackend::new(
+                agent
+                    .map(|agent| agent.mcp_router.call_handles())
+                    .unwrap_or_default(),
+            )),
+            std::sync::Arc::new(move |server: String, name: String| {
+                let _ = mcp_prompt_tx.send((server, name));
+            }),
+        )),
+    );
+    // Populated off the serving path: listing prompts is a network call per server,
+    // and a startup that waited on it would delay the first frame for a feature the
+    // user may never open. Until it lands the source simply contributes nothing.
     let (plugin_prompt_tx, plugin_prompt_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     if let Some(home) = tact::consts::PluginHome::from_environment() {
         tact::plugin::commands::attach(
@@ -374,13 +417,15 @@ fn build_command_catalog(
         tact_kernel::capability::CapabilityFilter::default,
         |agent| agent.capability_filter().clone(),
     );
-    (
+    CommandSurface {
         catalog,
-        activation_rx,
-        settings_rx,
-        plugin_prompt_rx,
+        activations: activation_rx,
+        settings: settings_rx,
+        plugin_prompts: plugin_prompt_rx,
+        mcp_prompts: mcp_prompt_rx,
+        mcp_prompt_source,
         filter,
-    )
+    }
 }
 
 /// An MCP view for a host that has no router in scope.
@@ -538,13 +583,23 @@ pub async fn run_command_loop_with_account(
     // time `auth` reloaded it.
     let agent_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
         Arc::new(tokio::sync::Mutex::new(Some(agent)));
-    let (commands, mut goal_activations, mut settings_changes, mut plugin_prompts, command_filter) =
-        builtin_command_catalog(
-            &agent_slot,
-            chat.as_ref()
-                .map(|chat| chat.clone() as std::sync::Arc<dyn tact::command::ChatService>),
-            &image_work_dir,
-        );
+    let CommandSurface {
+        catalog: commands,
+        activations: mut goal_activations,
+        settings: mut settings_changes,
+        mut plugin_prompts,
+        mut mcp_prompts,
+        mcp_prompt_source,
+        filter: command_filter,
+    } = builtin_command_catalog(
+        &agent_slot,
+        chat.as_ref()
+            .map(|chat| chat.clone() as std::sync::Arc<dyn tact::command::ChatService>),
+        &image_work_dir,
+    );
+    // Listing prompts is a network call per server; do it off the serving path so
+    // the first frame is not delayed for a feature the user may never open.
+    spawn_mcp_prompt_refresh(mcp_prompt_source);
 
     // One owner for the whole loop: the agent lives in this slot and is never
     // moved into a task. A task locks it for the duration of its work, which is
@@ -668,7 +723,15 @@ pub async fn run_command_loop_with_account(
                 while let Ok(body) = plugin_prompts.try_recv() {
                     prompts.push(body);
                 }
-                if !remaining.is_empty() || !changes.is_empty() || !prompts.is_empty() {
+                let mut mcp_prompt_runs: Vec<(String, String)> = Vec::new();
+                while let Ok(pair) = mcp_prompts.try_recv() {
+                    mcp_prompt_runs.push(pair);
+                }
+                if !remaining.is_empty()
+                    || !changes.is_empty()
+                    || !prompts.is_empty()
+                    || !mcp_prompt_runs.is_empty()
+                {
                     if let Some(handle) = active.take() {
                         handle.await.expect("task join panicked");
                     }
@@ -695,6 +758,19 @@ pub async fn run_command_loop_with_account(
                             Box::pin(handle_user_command_with_account(
                                 task_agent,
                                 DriverMessage::SubmitTask(body),
+                                &prompt_work_dir,
+                                prompt_accounts.as_ref(),
+                            ))
+                            .await;
+                        }
+                        for (server, name) in mcp_prompt_runs {
+                            Box::pin(handle_user_command_with_account(
+                                task_agent,
+                                DriverMessage::RunMcpPrompt {
+                                    server,
+                                    name,
+                                    arguments: std::collections::BTreeMap::new(),
+                                },
                                 &prompt_work_dir,
                                 prompt_accounts.as_ref(),
                             ))
@@ -1146,15 +1222,24 @@ async fn handle_user_command_with_account(
             // and `/background`.
             let local_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
                 Arc::new(tokio::sync::Mutex::new(None));
-            let (catalog, mut activations, mut settings, mut plugin_prompts, command_filter) =
-                build_command_catalog(
-                    Some(agent),
-                    &local_slot,
-                    // The agent service path has no chat handle in scope here; the
-                    // loop-level arm is where `/compact` runs, and it passes one.
-                    None,
-                    image_work_dir,
-                );
+            let CommandSurface {
+                catalog,
+                mut activations,
+                mut settings,
+                mut plugin_prompts,
+                mut mcp_prompts,
+                mcp_prompt_source,
+                filter: command_filter,
+            } = build_command_catalog(
+                Some(agent),
+                &local_slot,
+                // The agent service path has no chat handle in scope here; the
+                // loop-level arm is where `/compact` runs, and it passes one.
+                None,
+                image_work_dir,
+            );
+            // Same off-path refresh as the loop: this arm builds its own surface.
+            spawn_mcp_prompt_refresh(mcp_prompt_source);
             // `goal show` answers with the detail popup only; the panel refresh
             // is a separate `list`, because one command outcome carries one
             // update. Doing it here keeps the order the loop-level path had:
@@ -1202,6 +1287,22 @@ async fn handle_user_command_with_account(
                 Box::pin(handle_user_command_with_account(
                     agent,
                     DriverMessage::SubmitTask(body),
+                    image_work_dir,
+                    account_tx,
+                ))
+                .await;
+            }
+            // An MCP prompt command queued a `(server, prompt)` pair. Run it through
+            // the same path `/mcp prompts` uses, so a prompt reached by name and one
+            // reached from the listing cannot diverge.
+            while let Ok((server, name)) = mcp_prompts.try_recv() {
+                Box::pin(handle_user_command_with_account(
+                    agent,
+                    DriverMessage::RunMcpPrompt {
+                        server,
+                        name,
+                        arguments: std::collections::BTreeMap::new(),
+                    },
                     image_work_dir,
                     account_tx,
                 ))
@@ -1833,8 +1934,8 @@ mod tests {
         // log line, so this test covers both halves.
         let slot: std::sync::Arc<tokio::sync::Mutex<Option<tact::Agent>>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(Some(agent)));
-        let (catalog, _activations, _settings, _prompts, _filter) =
-            super::builtin_command_catalog(&slot, None, std::path::Path::new("/tmp"));
+        let surface = super::builtin_command_catalog(&slot, None, std::path::Path::new("/tmp"));
+        let catalog = surface.catalog;
         let outcome = catalog
             .run_async(&tact::command::CommandInvocation {
                 name: "goal".into(),
@@ -3454,8 +3555,8 @@ mod tests {
         // with a view over this agent's router.
         let slot: std::sync::Arc<tokio::sync::Mutex<Option<tact::Agent>>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(Some(agent)));
-        let (catalog, _activations, _settings, _prompts, _filter) =
-            super::builtin_command_catalog(&slot, None, &work_dir);
+        let surface = super::builtin_command_catalog(&slot, None, &work_dir);
+        let catalog = surface.catalog;
         let outcome = catalog
             .run_async(&tact::command::CommandInvocation {
                 name: "mcp".to_string(),

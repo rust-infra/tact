@@ -98,13 +98,14 @@ No contribution claim is undelivered and every named contract has a producer:
   plugin-owned is the *content* of the three domain fragments: a `PromptFragment`
   carries a `String`, so skills and memory are computed by the agent and handed over
   rather than rendered by the plugin that owns the registry.
-- `CommandSource` has a producer, though not the MCP one: marketplace packages ship
-  `commands/<name>.md`, which are now discovered by `plugin::commands` and run as
-  commands whose body becomes the turn. Those files were installed and counted
-  (`InstalledPlugin::command_count`) but never read, so an installed command was inert.
-  The MCP half is still a hand-written `/mcp prompts`, because turning each prompt into
-  a slash command needs a structured prompt port (the current one returns rendered
-  text) and is a visible UX change.
+- `CommandSource` has both producers the design implies. Marketplace packages ship
+  `commands/<name>.md`, discovered by `plugin::commands`: those files were installed and
+  counted (`InstalledPlugin::command_count`) but never read, so an installed command
+  was inert. MCP prompts are discovered by `command::mcp_prompts` and listed as
+  `mcp__<server>__<prompt>` — the same shape an MCP tool has, so a prompt cannot shadow
+  a built-in. Both are attached by one helper per producer, and in both the driver's
+  catalog and the palette's, because registering in one and not the other is how a
+  command becomes runnable but invisible.
 
 None of this makes the capability missing — a user still gets skills in the prompt and
 `/mcp prompts` still works. It makes the *mechanism* different from the design, and it

@@ -23,6 +23,7 @@ pub mod compact;
 pub mod goal;
 pub mod hooks;
 pub mod mcp;
+pub mod mcp_prompts;
 pub mod permission;
 pub mod plugin;
 pub mod settings;
