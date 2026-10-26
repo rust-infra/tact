@@ -6,6 +6,10 @@ against the implemented state on `feat/plugin-first-architecture`.
 
 **Status: 10 of 11 checklist items met, 1 partially met, 0 not met.**
 
+Every verdict below is reproducible: `bash scripts/audit-conformance.sh` prints the
+evidence for all eleven items, one section each. A verdict that cannot be re-run is
+an opinion.
+
 Verified against the tree at `70a82fe4`. Each "Met" below names the evidence that
 shows it, because an audit that asserts without naming its check is a restatement of
 intent rather than a result.
