@@ -385,18 +385,30 @@ fn build_command_catalog(
     // MCP prompts become commands. The backend reads client handles, not the agent,
     // so refreshing never touches the slot this loop holds while a command runs.
     let (mcp_prompt_tx, mcp_prompt_rx) = tokio::sync::mpsc::unbounded_channel::<(String, String)>();
+    // The agent owns the source, so every catalog built from it sees the same
+    // prompts — including the palette's, which outlives this catalog — and a reload
+    // reaches all of them. Built here instead, it would be a fresh empty source per
+    // dispatch: `mcp__…` names would stop resolving after the first one.
     let mcp_prompt_source = tact::command::mcp_prompts::attach(
         &catalog,
-        std::sync::Arc::new(tact::command::mcp_prompts::McpPromptSource::new(
-            std::sync::Arc::new(tact::command::mcp_prompts::SnapshotPromptBackend::new(
-                agent
-                    .map(|agent| agent.mcp_router.call_handles())
-                    .unwrap_or_default(),
+        match agent {
+            Some(agent) => {
+                let source = agent.mcp_prompt_source().clone();
+                // Set once: a second queue would have no drainer, so the prompt
+                // would vanish instead of running.
+                source.set_submit(std::sync::Arc::new(move |server: String, name: String| {
+                    let _ = mcp_prompt_tx.send((server, name));
+                }));
+                source
+            }
+            // No agent (a catalog built for descriptors): the source exists so the
+            // catalog is shaped the same, and contributes nothing.
+            None => std::sync::Arc::new(tact::command::mcp_prompts::McpPromptSource::new(
+                std::sync::Arc::new(tact::command::mcp_prompts::SnapshotPromptBackend::new(
+                    Vec::new(),
+                )),
             )),
-            std::sync::Arc::new(move |server: String, name: String| {
-                let _ = mcp_prompt_tx.send((server, name));
-            }),
-        )),
+        },
     );
     // Populated off the serving path: listing prompts is a network call per server,
     // and a startup that waited on it would delay the first frame for a feature the
@@ -1238,8 +1250,10 @@ async fn handle_user_command_with_account(
                 None,
                 image_work_dir,
             );
-            // Same off-path refresh as the loop: this arm builds its own surface.
-            spawn_mcp_prompt_refresh(mcp_prompt_source);
+            // No refresh here: this arm shares the agent's source, which the loop
+            // refreshed once. Spawning per command would list every server on every
+            // keystroke-level action for a set that has not changed.
+            let _ = &mcp_prompt_source;
             // `goal show` answers with the detail popup only; the panel refresh
             // is a separate `list`, because one command outcome carries one
             // update. Doing it here keeps the order the loop-level path had:
@@ -1375,6 +1389,9 @@ async fn handle_user_command_with_account(
                         "Authorized MCP server {server}; reloading MCP servers..."
                     )));
                     let report = agent.reload_mcp_router().await;
+                    // The reload rebound the source's handles; list the new set off
+                    // the serving path so the commands match the connections.
+                    spawn_mcp_prompt_refresh(agent.mcp_prompt_source().clone());
                     for line in report.notice_lines() {
                         agent.emit_update(AgentUpdate::Info(line));
                     }

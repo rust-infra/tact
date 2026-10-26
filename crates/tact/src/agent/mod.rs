@@ -470,6 +470,14 @@ pub struct Agent {
     pub tool_context: ToolContext,
     pub tools: ToolRouter,
     pub mcp_router: MCPToolRouter,
+    /// The MCP prompts as commands, derived from `mcp_router`.
+    ///
+    /// Owned here rather than built per catalog: the driver builds a catalog per
+    /// command dispatch, so a per-catalog source would be a fresh empty one each
+    /// time — `mcp__…` names would never resolve past the first dispatch — and each
+    /// build would fire a network listing. One source, refreshed once and again
+    /// after a reload, is both cheaper and correct.
+    mcp_prompt_source: std::sync::Arc<crate::command::mcp_prompts::McpPromptSource>,
     pub hooks: Vec<Hook>,
     /// The kernel-owned tool pipeline. Native tools dispatch through it; MCP
     /// resources/prompts still use the legacy ladder until their risk is carried
@@ -713,6 +721,7 @@ impl Agent {
             },
             tool_context,
             tools,
+            mcp_prompt_source: crate::command::mcp_prompts::shared_source(&mcp_router),
             mcp_router,
             hooks: Vec::new(),
             tool_executor: executor,
@@ -845,6 +854,10 @@ impl Agent {
             crate::mcp::lifecycle::Reloaded::Loaded(router, report) => {
                 self.mcp_router = router;
                 self.rebuild_cached_tool_specs();
+                // Same reason as the tool sources just above: the prompt backend
+                // holds the handles it was built with, so a reconnected server's
+                // prompts would otherwise never appear.
+                crate::command::mcp_prompts::rebind(&self.mcp_prompt_source, &self.mcp_router);
                 report
             }
             // The router already in place is kept: a failed reload must not
@@ -1060,6 +1073,13 @@ impl Agent {
     /// would give it a second, possibly different, manager to write through.
     pub fn commands(&self) -> &tact_kernel::catalog::CommandCatalog {
         self.plugins.commands()
+    }
+
+    /// The MCP prompts as commands, shared by every catalog built from this agent.
+    pub fn mcp_prompt_source(
+        &self,
+    ) -> &std::sync::Arc<crate::command::mcp_prompts::McpPromptSource> {
+        &self.mcp_prompt_source
     }
 
     /// The capability filter this Agent was assembled with.

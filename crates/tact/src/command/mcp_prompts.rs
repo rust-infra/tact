@@ -91,7 +91,9 @@ pub struct McpPromptCommand {
     meta: CommandMeta,
     server: String,
     prompt: String,
-    submit: Arc<dyn Fn(String, String) + Send + Sync>,
+    /// `None` when nothing is serving commands, which the run reports rather than
+    /// dropping the request silently.
+    submit: Option<Arc<dyn Fn(String, String) + Send + Sync>>,
 }
 
 impl Command for McpPromptCommand {
@@ -103,7 +105,12 @@ impl Command for McpPromptCommand {
         // A prompt is a *starting message*: it has to be fetched and rendered
         // against the live router, which a command cannot reach. Queue it and let
         // the driver run the same path `/mcp prompts` uses.
-        (self.submit)(self.server.clone(), self.prompt.clone());
+        let Some(submit) = &self.submit else {
+            return CommandOutcome::Failed(
+                "no catalog is serving commands, so this prompt cannot be run".to_string(),
+            );
+        };
+        submit(self.server.clone(), self.prompt.clone());
         CommandOutcome::Message(format!(
             "running prompt {} from {}",
             self.prompt, self.server
@@ -112,22 +119,45 @@ impl Command for McpPromptCommand {
 }
 
 /// Every prompt the connected servers advertise.
+///
+/// One instance per agent, mutated in place: `set_backend` after an MCP reload and
+/// `set_submit` once by whoever serves commands. Replacing the instance instead
+/// would leave every catalog already holding the old one frozen at the prompt set
+/// it was built with.
 pub struct McpPromptSource {
     entries: std::sync::RwLock<Vec<McpPromptEntry>>,
-    backend: Arc<dyn McpPromptBackend>,
-    submit: Arc<dyn Fn(String, String) + Send + Sync>,
+    backend: std::sync::RwLock<Arc<dyn McpPromptBackend>>,
+    submit: std::sync::OnceLock<Arc<dyn Fn(String, String) + Send + Sync>>,
 }
 
 impl McpPromptSource {
-    pub fn new(
-        backend: Arc<dyn McpPromptBackend>,
-        submit: Arc<dyn Fn(String, String) + Send + Sync>,
-    ) -> Self {
+    pub fn new(backend: Arc<dyn McpPromptBackend>) -> Self {
         Self {
             entries: std::sync::RwLock::new(Vec::new()),
-            backend,
-            submit,
+            backend: std::sync::RwLock::new(backend),
+            submit: std::sync::OnceLock::new(),
         }
+    }
+
+    /// Point the source at a fresh snapshot of client handles.
+    ///
+    /// Called after an MCP reload: a snapshot backend holds the handles it was
+    /// built with, so without this a reconnected server's prompts would never
+    /// appear.
+    pub fn set_backend(&self, backend: Arc<dyn McpPromptBackend>) {
+        *self
+            .backend
+            .write()
+            .unwrap_or_else(|error| error.into_inner()) = backend;
+    }
+
+    /// Wire the queue a running command hands its prompt to.
+    ///
+    /// Set once, by whichever catalog serves commands first (the loop). A later
+    /// caller cannot replace it, because a second queue would be a receiver nobody
+    /// drains — the prompt would vanish.
+    pub fn set_submit(&self, submit: Arc<dyn Fn(String, String) + Send + Sync>) {
+        let _ = self.submit.set(submit);
     }
 
     /// The prompts currently known, for a caller that wants to report a count.
@@ -152,7 +182,13 @@ impl CommandSource for McpPromptSource {
     }
 
     async fn refresh(&self) -> anyhow::Result<bool> {
-        let entries = self.backend.list().await?;
+        // Cloned out of the lock: `list` is async and a reload may swap it.
+        let backend = self
+            .backend
+            .read()
+            .unwrap_or_else(|error| error.into_inner())
+            .clone();
+        let entries = backend.list().await?;
         let mut held = self
             .entries
             .write()
@@ -186,11 +222,23 @@ impl CommandSource for McpPromptSource {
                     },
                     server: entry.server,
                     prompt: entry.name,
-                    submit: self.submit.clone(),
+                    submit: self.submit.get().cloned(),
                 }) as Arc<dyn Command>
             })
             .collect()
     }
+}
+
+/// The shared source for one router.
+pub fn shared_source(router: &crate::mcp::MCPToolRouter) -> Arc<McpPromptSource> {
+    Arc::new(McpPromptSource::new(Arc::new(SnapshotPromptBackend::new(
+        router.call_handles(),
+    ))))
+}
+
+/// Point an existing source at `router`'s current connections.
+pub fn rebind(source: &McpPromptSource, router: &crate::mcp::MCPToolRouter) {
+    source.set_backend(Arc::new(SnapshotPromptBackend::new(router.call_handles())));
 }
 
 /// Add `source` to `catalog` and return it, so the caller can refresh and report.
@@ -233,10 +281,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_prompt_becomes_a_command_after_a_refresh() {
-        let source = McpPromptSource::new(
-            Arc::new(FixedBackend(vec![entry("docs", "summarise")])),
-            Arc::new(|_, _| {}),
-        );
+        let source = McpPromptSource::new(Arc::new(FixedBackend(vec![entry("docs", "summarise")])));
         assert!(
             source.commands().is_empty(),
             "nothing is known before the first refresh"
@@ -254,10 +299,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_refresh_that_lists_the_same_prompts_reports_no_change() {
-        let source = McpPromptSource::new(
-            Arc::new(FixedBackend(vec![entry("docs", "summarise")])),
-            Arc::new(|_, _| {}),
-        );
+        let source = McpPromptSource::new(Arc::new(FixedBackend(vec![entry("docs", "summarise")])));
         assert!(source.refresh().await.unwrap());
         // The generation must not move for an unchanged set, or a host comparing
         // generations would believe a stale list had just been rebuilt.
@@ -268,12 +310,10 @@ mod tests {
     async fn running_a_prompt_queues_it_rather_than_answering_inline() {
         let sent = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
         let sink = sent.clone();
-        let source = McpPromptSource::new(
-            Arc::new(FixedBackend(vec![entry("docs", "summarise")])),
-            Arc::new(move |server, prompt| {
-                sink.lock().unwrap().push((server, prompt));
-            }),
-        );
+        let source = McpPromptSource::new(Arc::new(FixedBackend(vec![entry("docs", "summarise")])));
+        source.set_submit(Arc::new(move |server, prompt| {
+            sink.lock().unwrap().push((server, prompt));
+        }));
         source.refresh().await.unwrap();
         let commands = source.commands();
         let outcome = commands[0].run(&CommandInvocation {
@@ -285,6 +325,78 @@ mod tests {
             sent.lock().unwrap().as_slice(),
             [("docs".to_string(), "summarise".to_string())],
             "the driver needs the pair to fetch the prompt"
+        );
+    }
+
+    /// A reload swaps the handles inside the same source.
+    ///
+    /// Replacing the instance instead would leave every catalog that already holds
+    /// it — the palette outlives the driver's — frozen at the old prompt set.
+    #[tokio::test]
+    async fn rebinding_the_backend_changes_what_the_source_offers() {
+        let source = McpPromptSource::new(Arc::new(FixedBackend(vec![entry("old", "gone")])));
+        assert!(source.refresh().await.unwrap());
+        assert_eq!(source.commands()[0].meta().name, "mcp__old__gone");
+
+        source.set_backend(Arc::new(FixedBackend(vec![entry("new", "live")])));
+        // The entries are still the old ones until something lists them again.
+        assert_eq!(source.commands()[0].meta().name, "mcp__old__gone");
+
+        assert!(
+            source.refresh().await.unwrap(),
+            "a different set is a change"
+        );
+        let names: Vec<String> = source
+            .commands()
+            .into_iter()
+            .map(|command| command.meta().name.clone())
+            .collect();
+        assert_eq!(names, vec!["mcp__new__live".to_string()]);
+    }
+
+    /// The first `set_submit` wins.
+    ///
+    /// A second queue would have no drainer, so the prompt would be accepted by a
+    /// receiver nobody reads — the same as losing it, only harder to see.
+    #[tokio::test]
+    async fn a_second_submit_is_ignored() {
+        let first = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+        let second = Arc::new(std::sync::Mutex::new(Vec::<(String, String)>::new()));
+
+        let source = McpPromptSource::new(Arc::new(FixedBackend(vec![entry("docs", "one")])));
+        let sink = first.clone();
+        source.set_submit(Arc::new(move |server, name| {
+            sink.lock().unwrap().push((server, name));
+        }));
+        let other = second.clone();
+        source.set_submit(Arc::new(move |server, name| {
+            other.lock().unwrap().push((server, name));
+        }));
+        source.refresh().await.unwrap();
+
+        source.commands()[0].run(&CommandInvocation {
+            name: "mcp__docs__one".to_string(),
+            args: String::new(),
+        });
+        assert_eq!(first.lock().unwrap().len(), 1, "the first queue gets it");
+        assert!(
+            second.lock().unwrap().is_empty(),
+            "the second queue must not receive a prompt nothing drains"
+        );
+    }
+
+    /// A command with no serving catalog reports instead of doing nothing.
+    #[tokio::test]
+    async fn a_command_with_no_queue_fails_loudly() {
+        let source = McpPromptSource::new(Arc::new(FixedBackend(vec![entry("docs", "one")])));
+        source.refresh().await.unwrap();
+        let outcome = source.commands()[0].run(&CommandInvocation {
+            name: "mcp__docs__one".to_string(),
+            args: String::new(),
+        });
+        assert!(
+            matches!(outcome, CommandOutcome::Failed(_)),
+            "silently dropping the request is the failure mode being avoided"
         );
     }
 
