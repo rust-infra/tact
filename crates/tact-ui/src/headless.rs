@@ -195,6 +195,8 @@ async fn run_headless_locked(
     agent
         .tool_context
         .subagent_manager
+        .as_ref()
+        .expect("the host installs SubagentPlugin")
         .cancel_all_and_persist()
         .await;
 

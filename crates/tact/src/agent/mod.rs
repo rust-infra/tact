@@ -4013,6 +4013,8 @@ mod tests {
         let context = crate::tool::test_support::test_context("memory_index_in_prompt");
         context
             .memory_manager
+            .as_ref()
+            .expect("the fixture installs a memory manager")
             .lock()
             .unwrap()
             .save_memory(

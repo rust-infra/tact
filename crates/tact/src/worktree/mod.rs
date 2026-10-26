@@ -407,12 +407,16 @@ mod tests {
         init_git_repo(&context.work_dir).await;
         context
             .worktree_manager
+            .as_ref()
+            .expect("the fixture installs worktree_manager")
             .create("lane".into(), None, "HEAD".into(), "sess".into())
             .await
             .unwrap();
 
         let err = context
             .worktree_manager
+            .as_ref()
+            .expect("the fixture installs worktree_manager")
             .run("lane", "sudo rm -rf /")
             .await
             .expect_err("dangerous command must be blocked");
@@ -428,17 +432,27 @@ mod tests {
         init_git_repo(&context.work_dir).await;
         context
             .worktree_manager
+            .as_ref()
+            .expect("the fixture installs worktree_manager")
             .create("lane".into(), None, "HEAD".into(), "sess".into())
             .await
             .unwrap();
 
         context
             .worktree_manager
+            .as_ref()
+            .expect("the fixture installs worktree_manager")
             .run("lane", "echo audit-me")
             .await
             .unwrap();
 
-        let events = context.worktree_manager.events(10).await.unwrap();
+        let events = context
+            .worktree_manager
+            .as_ref()
+            .expect("the fixture installs worktree_manager")
+            .events(10)
+            .await
+            .unwrap();
         assert!(
             events.contains("worktree.run lane echo audit-me"),
             "run must be audit-logged: {events}"
@@ -451,12 +465,16 @@ mod tests {
         init_git_repo(&context.work_dir).await;
         context
             .worktree_manager
+            .as_ref()
+            .expect("the fixture installs worktree_manager")
             .create("lane".into(), None, "HEAD".into(), "sess".into())
             .await
             .unwrap();
         assert!(
             !context
                 .worktree_manager
+                .as_ref()
+                .expect("the fixture installs worktree_manager")
                 .list()
                 .await
                 .unwrap()
@@ -465,7 +483,13 @@ mod tests {
 
         // Simulate a manual `git worktree remove` outside Tact: the lane dir
         // disappears but the DB record survives.
-        let record = context.worktree_manager.get("lane").await.unwrap();
+        let record = context
+            .worktree_manager
+            .as_ref()
+            .expect("the fixture installs worktree_manager")
+            .get("lane")
+            .await
+            .unwrap();
         std::fs::remove_dir_all(&record.path).unwrap();
 
         // Rebuilding the manager repairs the stale record.
@@ -494,15 +518,25 @@ mod tests {
         init_git_repo(&context.work_dir).await;
         context
             .worktree_manager
+            .as_ref()
+            .expect("the fixture installs worktree_manager")
             .create("merged-lane".into(), None, "HEAD".into(), "sess".into())
             .await
             .unwrap();
-        let _merged = context.worktree_manager.get("merged-lane").await.unwrap();
+        let _merged = context
+            .worktree_manager
+            .as_ref()
+            .expect("the fixture installs worktree_manager")
+            .get("merged-lane")
+            .await
+            .unwrap();
 
         // Merged: the lane branch points at HEAD (the main branch has all its
         // commits), so `git branch -d` succeeds and the branch is removed.
         let out = context
             .worktree_manager
+            .as_ref()
+            .expect("the fixture installs worktree_manager")
             .remove("merged-lane")
             .await
             .unwrap();
@@ -524,10 +558,18 @@ mod tests {
         // Unmerged: commit on the lane, then remove — the branch is kept.
         context
             .worktree_manager
+            .as_ref()
+            .expect("the fixture installs worktree_manager")
             .create("unmerged-lane".into(), None, "HEAD".into(), "sess".into())
             .await
             .unwrap();
-        let unmerged = context.worktree_manager.get("unmerged-lane").await.unwrap();
+        let unmerged = context
+            .worktree_manager
+            .as_ref()
+            .expect("the fixture installs worktree_manager")
+            .get("unmerged-lane")
+            .await
+            .unwrap();
         git_run(
             Path::new(&unmerged.path),
             &[
@@ -544,6 +586,8 @@ mod tests {
         .await;
         let out = context
             .worktree_manager
+            .as_ref()
+            .expect("the fixture installs worktree_manager")
             .remove("unmerged-lane")
             .await
             .unwrap();

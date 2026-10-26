@@ -140,25 +140,25 @@ impl SharedToolContextFactory {
     pub fn rebind_from(&self, services: &tact_kernel::service::ServiceRegistry) {
         let mut base = self.base.lock().unwrap_or_else(|error| error.into_inner());
         if let Ok(manager) = crate::skill::skills_from(services) {
-            base.skill_registry = manager;
+            base.skill_registry = Some(manager);
         }
         if let Ok(manager) = crate::memory::memory_from(services) {
-            base.memory_manager = manager;
+            base.memory_manager = Some(manager);
         }
         if let Ok(manager) = crate::task::task_manager(services) {
-            base.task_manager = manager;
+            base.task_manager = Some(manager);
         }
         if let Ok(manager) = crate::background::background_manager(services) {
-            base.background_manager = manager;
+            base.background_manager = Some(manager);
         }
         if let Ok(manager) = crate::team::team_manager(services) {
-            base.teammate_manager = manager;
+            base.teammate_manager = Some(manager);
         }
         if let Ok(manager) = crate::worktree::worktree_manager(services) {
-            base.worktree_manager = manager;
+            base.worktree_manager = Some(manager);
         }
         if let Ok(manager) = crate::subagent::subagent_manager(services) {
-            base.subagent_manager = manager;
+            base.subagent_manager = Some(manager);
         }
     }
 
@@ -196,15 +196,15 @@ impl ToolContextFactory for SharedToolContextFactory {
     }
 
     fn skill_registry(&self) -> Option<crate::skill::SharedSkillRegistry> {
-        Some(self.with_base(|base| base.skill_registry.clone()))
+        self.with_base(|base| base.skill_registry.clone())
     }
 
     fn teammate_manager(&self) -> Option<crate::tool::SharedTeammateManager> {
-        Some(self.with_base(|base| base.teammate_manager.clone()))
+        self.with_base(|base| base.teammate_manager.clone())
     }
 
     fn task_manager(&self) -> Option<crate::tool::SharedTaskManager> {
-        Some(self.with_base(|base| base.task_manager.clone()))
+        self.with_base(|base| base.task_manager.clone())
     }
 
     fn goal_manager(&self) -> Option<crate::tool::SharedGoalManager> {
@@ -212,11 +212,11 @@ impl ToolContextFactory for SharedToolContextFactory {
     }
 
     fn subagent_manager(&self) -> Option<crate::subagent::SharedSubagentManager> {
-        Some(self.with_base(|base| base.subagent_manager.clone()))
+        self.with_base(|base| base.subagent_manager.clone())
     }
 
     fn worktree_manager(&self) -> Option<crate::tool::SharedWorktreeManager> {
-        Some(self.with_base(|base| base.worktree_manager.clone()))
+        self.with_base(|base| base.worktree_manager.clone())
     }
 
     fn ui_responder(&self) -> Option<crate::ui_responder::UiResponder> {
@@ -226,11 +226,11 @@ impl ToolContextFactory for SharedToolContextFactory {
     fn memory_manager(
         &self,
     ) -> Option<std::sync::Arc<std::sync::Mutex<crate::memory::MemoryManager>>> {
-        Some(self.with_base(|base| base.memory_manager.clone()))
+        self.with_base(|base| base.memory_manager.clone())
     }
 
     fn background_manager(&self) -> Option<crate::tool::SharedBackgroundManager> {
-        Some(self.with_base(|base| base.background_manager.clone()))
+        self.with_base(|base| base.background_manager.clone())
     }
 
     fn shell_policy(&self) -> Option<crate::tool::ShellPolicy> {
@@ -419,7 +419,7 @@ mod tests {
                 .unwrap(),
         );
         let mut context = crate::tool::test_support::test_context("rebind");
-        context.task_manager = original.clone();
+        context.task_manager = Some(original.clone());
         let factory = SharedToolContextFactory::new(context);
 
         // …and the host installs a plugin over a different one.
@@ -440,7 +440,9 @@ mod tests {
         // exposes and see which store it lands in. A pointer comparison would need
         // an accessor the wrapper does not have, and behaviour is what a tool
         // actually depends on.
-        let seen = factory.with_base(|base| base.task_manager.clone());
+        let seen = factory
+            .with_base(|base| base.task_manager.clone())
+            .expect("the plugin's manager is rebound");
         let created = seen
             .create("rebind probe".to_string(), None, "session".to_string())
             .await
@@ -598,11 +600,11 @@ mod tests {
             }
 
             fn skill_registry(&self) -> Option<crate::skill::SharedSkillRegistry> {
-                Some(self.context.skill_registry.clone())
+                self.context.skill_registry.clone()
             }
 
             fn teammate_manager(&self) -> Option<crate::tool::SharedTeammateManager> {
-                Some(self.context.teammate_manager.clone())
+                self.context.teammate_manager.clone()
             }
         }
 

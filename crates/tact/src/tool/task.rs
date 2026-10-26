@@ -238,11 +238,19 @@ mod tests {
             .as_u64()
             .unwrap();
 
-        let task = context.task_manager.get(id).await.unwrap();
+        let task = context
+            .task_manager
+            .as_ref()
+            .expect("the fixture installs task_manager")
+            .get(id)
+            .await
+            .unwrap();
         assert_eq!(task.goal_id.as_deref(), Some(goal.id.as_str()));
         assert_eq!(
             context
                 .task_manager
+                .as_ref()
+                .expect("the fixture installs task_manager")
                 .list_for_goal(&goal.id)
                 .await
                 .unwrap()

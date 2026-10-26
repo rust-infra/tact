@@ -136,9 +136,15 @@ use write_file::WriteFileTool;
 /// list — declare a handle instead.
 #[derive(Clone)]
 pub struct ToolContext {
+    // The seven domain handles below are filled by the plugin registry, not by the
+    // caller: `rebind_from` overwrites each from the service the owning plugin
+    // registered. They are `Option` so that omitting a plugin removes the
+    // capability — a non-`Option` field would force the composition root to hand
+    // over a fallback, which is what made the plugins decorative in the first
+    // place.
     /// Shared with the TUI in interactive mode so `/skill reload` updates
     /// `load_skill` / system-prompt skill summaries without restarting.
-    pub skill_registry: crate::skill::SharedSkillRegistry,
+    pub skill_registry: Option<crate::skill::SharedSkillRegistry>,
     /// Claude Code plugin `SubagentStart` command hooks, stamped at dispatch
     /// time so `spawn_subagent` can inject context into the child system
     /// prompt without needing a parent [`Agent`](crate::Agent) handle.
@@ -147,15 +153,15 @@ pub struct ToolContext {
     /// time so `spawn_subagent` can observe (and rewrite) the child's summary
     /// when it finishes.
     pub subagent_stop_hooks: Vec<Arc<dyn crate::hook::SubagentStopFn>>,
-    pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
+    pub memory_manager: Option<Arc<std::sync::Mutex<MemoryManager>>>,
     pub work_dir: PathBuf,
-    pub task_manager: SharedTaskManager,
+    pub task_manager: Option<SharedTaskManager>,
     pub goal_manager: SharedGoalManager,
     pub active_goal_id: Option<String>,
-    pub background_manager: SharedBackgroundManager,
-    pub teammate_manager: SharedTeammateManager,
-    pub worktree_manager: SharedWorktreeManager,
-    pub subagent_manager: crate::subagent::SharedSubagentManager,
+    pub background_manager: Option<SharedBackgroundManager>,
+    pub teammate_manager: Option<SharedTeammateManager>,
+    pub worktree_manager: Option<SharedWorktreeManager>,
+    pub subagent_manager: Option<crate::subagent::SharedSubagentManager>,
     /// Where this invocation's updates go.
     ///
     /// Tool output is progress, not a question, so it goes to every attached
@@ -231,7 +237,13 @@ impl ToolContext {
         body_auto_inject: bool,
         description_cap: usize,
     ) -> String {
-        let registry = crate::skill::lock_skills(&self.skill_registry);
+        // No `SkillsPlugin` means no skills catalog in the prompt: the capability
+        // belongs to the plugin, so omitting it removes the section rather than
+        // falling back to a catalog the composition root happened to keep.
+        let Some(skill_registry) = self.skill_registry.as_ref() else {
+            return String::new();
+        };
+        let registry = crate::skill::lock_skills(skill_registry);
         if body_auto_inject {
             registry.describe_available_with_body()
         } else {
@@ -247,7 +259,11 @@ impl ToolContext {
     /// Topic bodies are fetched on demand by the `load_memory` tool; only the
     /// index belongs in a prompt that must stay cacheable.
     pub fn memory_index_prompt(&self) -> anyhow::Result<String> {
-        self.memory_manager
+        let Some(memory) = self.memory_manager.as_ref() else {
+            // No `MemoryPlugin`: memory is off, so the prompt carries no index.
+            return Ok(String::new());
+        };
+        memory
             .lock()
             .map_err(|_| anyhow::anyhow!("memory manager lock poisoned"))
             .map(|manager| manager.load_memory_index_prompt())
@@ -1071,10 +1087,43 @@ mod tests {
         assert!(saved.contains("Use tabs by default."));
     }
 
+    /// Omitting `SkillsPlugin` removes the catalog from the prompt.
+    ///
+    /// This is what the optional handle buys: the composition root cannot hand a
+    /// fallback catalog over, so "no plugin" and "no skills section" are the same
+    /// fact. A `Some(...)`-always field made the plugin decorative — installing or
+    /// omitting it changed nothing.
+    #[test]
+    fn a_context_without_skills_renders_no_catalog() {
+        let mut context = test_context("no_skills_plugin");
+        context.skill_registry = None;
+        assert_eq!(
+            context.describe_skills_for_prompt(200_000, false, 80),
+            "",
+            "a host without SkillsPlugin must not advertise skills it never loaded"
+        );
+    }
+
+    /// Likewise for memory: no manager means no index in the prompt, not an error.
+    #[test]
+    fn a_context_without_memory_has_no_index_prompt() {
+        let mut context = test_context("no_memory_plugin");
+        context.memory_manager = None;
+        assert_eq!(
+            context.memory_index_prompt().unwrap(),
+            "",
+            "a host without MemoryPlugin must not inject a memory index"
+        );
+    }
+
     #[tokio::test]
     async fn load_skill_returns_skill_body() {
         let mut context = test_context("load_skill_returns_skill_body");
-        context.skill_registry = install_skill(&context.work_dir, "demo", "Skill body content.");
+        context.skill_registry = Some(install_skill(
+            &context.work_dir,
+            "demo",
+            "Skill body content.",
+        ));
         let router = ToolRouter::new().route(LoadSkillTool).unwrap();
 
         let output = router

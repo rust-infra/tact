@@ -72,30 +72,32 @@ pub fn test_context(name: &str) -> ToolContext {
     let db_path = root_dir.join(".tact").join("tact.db");
 
     ToolContext {
-        skill_registry: Arc::new(Mutex::new(SkillRegistry::new([
+        skill_registry: Some(Arc::new(Mutex::new(SkillRegistry::new([
             root_dir.join(".tact/skills")
-        ]))),
+        ])))),
         subagent_start_hooks: Vec::new(),
         subagent_stop_hooks: Vec::new(),
-        memory_manager: Arc::new(std::sync::Mutex::new(MemoryManager::new(
+        memory_manager: Some(Arc::new(std::sync::Mutex::new(MemoryManager::new(
             root_dir.join(".tact/memory"),
-        ))),
+        )))),
         work_dir: root_dir.clone(),
-        task_manager: SharedTaskManager::new(block_on(TaskManager::new(&db_path)).unwrap()),
+        task_manager: Some(SharedTaskManager::new(
+            block_on(TaskManager::new(&db_path)).unwrap(),
+        )),
         goal_manager: SharedGoalManager::new(block_on(GoalManager::new(&db_path)).unwrap()),
         active_goal_id: None,
-        background_manager: SharedBackgroundManager::new(
+        background_manager: Some(SharedBackgroundManager::new(
             block_on(BackgroundManager::new(&db_path)).unwrap(),
-        ),
-        teammate_manager: SharedTeammateManager::new(
+        )),
+        teammate_manager: Some(SharedTeammateManager::new(
             block_on(TeammateManager::new(&db_path)).unwrap(),
-        ),
-        worktree_manager: SharedWorktreeManager::new(
+        )),
+        worktree_manager: Some(SharedWorktreeManager::new(
             block_on(WorktreeManager::new(&db_path, root_dir)).unwrap(),
-        ),
-        subagent_manager: SharedSubagentManager::new(
+        )),
+        subagent_manager: Some(SharedSubagentManager::new(
             block_on(SubagentManager::new(&db_path)).unwrap(),
-        ),
+        )),
         events: UpdateSink::default(),
         ui_responder: crate::ui_responder::UiResponder::new(),
         progress_reporter: super::ToolProgressReporter::default(),

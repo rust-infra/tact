@@ -92,15 +92,21 @@ async fn ensure_subagent_worktree(
     resume: bool,
 ) -> Result<Option<WorktreeRecord>> {
     let name = format!("{SUBAGENT_WORKTREE_PREFIX}-{child_id}");
+    let Some(worktrees) = ctx.worktree_manager.as_ref() else {
+        anyhow::bail!(
+            "worktree isolation is unavailable: this host has no worktree manager \
+             (install WorktreePlugin)"
+        );
+    };
     if resume {
         // Reuse the lane from the original run when it exists; otherwise fall
         // through and create one (the original run may not have used
         // isolation).
-        if let Ok(record) = ctx.worktree_manager.get(&name).await {
+        if let Ok(record) = worktrees.get(&name).await {
             return Ok(Some(record));
         }
     }
-    ctx.worktree_manager
+    worktrees
         .create(name.clone(), None, "HEAD".to_string(), child_id.to_string())
         .await
         .with_context(|| {
@@ -110,7 +116,7 @@ async fn ensure_subagent_worktree(
                 ctx.work_dir.display()
             )
         })?;
-    ctx.worktree_manager
+    worktrees
         .get(&name)
         .await
         .context("failed to read created worktree")
@@ -450,6 +456,15 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // subagent overrides travel with it for the same reason — they name the
     // provider and model children use, which is a property of this session's
     // configuration.
+    // Cancellation, the transcript record and the sticky overview all go through
+    // this manager. A host that omits `SubagentPlugin` cannot run a child it can
+    // also cancel, so it is required rather than defaulted.
+    let Some(subagent_manager) = ctx.subagent_manager.clone() else {
+        anyhow::bail!(
+            "spawn_subagent is unavailable: this host has no subagent manager \
+             (install SubagentPlugin)"
+        );
+    };
     let agent_settings = ctx.agent_settings.clone();
     let subagent_config = agent_settings.subagent.clone();
 
@@ -499,7 +514,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // silently mint a fresh child instead of a follow-up; resuming a session
     // older than `RESUME_EXPIRY_HOURS` would feed stale context to the model.
     if resume {
-        match ctx.subagent_manager.get(&child_id).await? {
+        match subagent_manager.get(&child_id).await? {
             Some(record) if record.status == SubagentStatus::Running => {
                 bail!(
                     "cannot resume subagent {child_id}: it is still running; \
@@ -632,8 +647,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // `/subagent_cancel` / the TUI button can request cancellation. The
     // handle is unregistered when the child finishes.
     let cancel_flag = subagent.runtime.cancel_flag.clone();
-    ctx.subagent_manager
-        .register_cancel_handle(&child_id, cancel_flag.clone());
+    subagent_manager.register_cancel_handle(&child_id, cancel_flag.clone());
 
     // Tag UI traffic so the TUI routes stream/steps into the parent tool-card
     // via ToolProgress. RequestSelect* still passes through for permission popups.
@@ -672,11 +686,11 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // child can also be cancelled via `/subagent_cancel` or parent exit). On
     // `resume` this resets the prior terminal record to Running for the
     // follow-up run.
-    ctx.subagent_manager.start(child_id.clone()).await?;
+    subagent_manager.start(child_id.clone()).await?;
     // The sticky overview only shows children started by this process;
     // register now and broadcast the snapshot (no-op without a sink).
-    ctx.subagent_manager.note_started(&child_id);
-    crate::subagent::emit_subagents_changed(&ctx.events, &ctx.subagent_manager).await;
+    subagent_manager.note_started(&child_id);
+    crate::subagent::emit_subagents_changed(&ctx.events, &subagent_manager).await;
 
     // The id is minted here, not by the child: put it on the parent card's meta
     // row now (sync and background alike) so the card identifies the run from
@@ -708,7 +722,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             .subagent_results
             .clone()
             .ok_or_else(|| anyhow::anyhow!("run_in_background requires a parent agent runtime"))?;
-        let manager = ctx.subagent_manager.clone();
+        let manager = subagent_manager.clone();
         let events = ctx.events.clone();
         let tool_id = ctx.progress_reporter.tool_id().to_string();
         let prompt = input.prompt;
@@ -813,18 +827,18 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         if let Some(forwarder) = forwarder {
             let _ = forwarder.await;
         }
-        ctx.subagent_manager.unregister_cancel_handle(&child_id);
+        subagent_manager.unregister_cancel_handle(&child_id);
         // Persist the terminal state so a cancelled / failed sync child is
         // visible to `check_subagent` (it previously left no `subagent_runs`
         // row at all).
         let _ = if cancelled {
-            ctx.subagent_manager.cancel(&child_id).await
+            subagent_manager.cancel(&child_id).await
         } else {
-            ctx.subagent_manager
+            subagent_manager
                 .finish(&child_id, success, summary.clone())
                 .await
         };
-        crate::subagent::emit_subagents_changed(&ctx.events, &ctx.subagent_manager).await;
+        crate::subagent::emit_subagents_changed(&ctx.events, &subagent_manager).await;
         if let Some(lock) = lock {
             lock.release().await?;
         }
@@ -1071,16 +1085,22 @@ mod tests {
         // (the guard compares now - finished_at against RESUME_EXPIRY_HOURS).
         context
             .subagent_manager
+            .as_ref()
+            .expect("the fixture installs subagent_manager")
             .start("child-done".to_string())
             .await
             .unwrap();
         context
             .subagent_manager
+            .as_ref()
+            .expect("the fixture installs subagent_manager")
             .finish("child-done", true, "done".to_string())
             .await
             .unwrap();
         let record = context
             .subagent_manager
+            .as_ref()
+            .expect("the fixture installs subagent_manager")
             .get("child-done")
             .await
             .unwrap()

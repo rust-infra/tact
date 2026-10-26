@@ -195,17 +195,34 @@ pub fn install_command_directory(
         agent.runtime.stats.clone(),
         tact::command::CatalogWirings {
             background: Some(tact::command::BackgroundWiring {
-                manager: std::sync::Arc::new(agent.tool_context.background_manager.clone()),
+                manager: std::sync::Arc::new(
+                    agent
+                        .tool_context
+                        .background_manager
+                        .as_ref()
+                        .expect("the host installs the background_manager plugin")
+                        .clone(),
+                ),
                 session: std::sync::Arc::new(move || session.clone()),
             }),
             goals: Some(tact::command::GoalWiring {
                 goal_manager: agent.tool_context.goal_manager.clone(),
-                task_manager: agent.tool_context.task_manager.clone(),
+                task_manager: agent
+                    .tool_context
+                    .task_manager
+                    .as_ref()
+                    .expect("the host installs the task_manager plugin")
+                    .clone(),
                 limits: crate::driver::agent_goal_limits(agent),
                 events: agent.runtime.events.clone(),
                 service: std::sync::Arc::new(tact::goal::service::RuntimeGoalService::new(
                     agent.tool_context.goal_manager.clone(),
-                    agent.tool_context.task_manager.clone(),
+                    agent
+                        .tool_context
+                        .task_manager
+                        .as_ref()
+                        .expect("the host installs the task_manager plugin")
+                        .clone(),
                     crate::driver::agent_goal_limits(agent),
                     agent.runtime.events.clone(),
                     crate::driver::acceptance_policy_for(agent),

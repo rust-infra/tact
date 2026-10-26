@@ -475,6 +475,8 @@ mod tests {
         // A task started by a different session in the same store.
         context
             .background_manager
+            .as_ref()
+            .expect("the fixture installs a background manager")
             .start(
                 "sleep 30".to_string(),
                 &context.work_dir,
@@ -518,6 +520,8 @@ mod tests {
     async fn start_task(context: &crate::tool::ToolContext, command: &str) -> String {
         context
             .background_manager
+            .as_ref()
+            .expect("start_task is only called with a background manager")
             .start(
                 command.to_string(),
                 &context.work_dir,

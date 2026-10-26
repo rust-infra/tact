@@ -198,21 +198,23 @@ fn arg_pair(
 /// The task a Task-domain call reads back through `task_id` (used for both the
 /// pre-call snapshot and the post-call one).
 async fn task_by_id(
-    manager: &crate::task::SharedTaskManager,
+    // `None` is a host without `TaskPlugin`: the before/after title rendering is
+    // decoration, so an absent manager yields no title rather than an error.
+    manager: Option<&crate::task::SharedTaskManager>,
     input: &serde_json::Value,
 ) -> Option<crate::task::TaskRecord> {
     let id = input.get("task_id").and_then(|v| v.as_u64())?;
-    manager.get(id).await.ok()
+    manager?.get(id).await.ok()
 }
 
 /// The record a `TaskOperation::Create` call just created, identified by
 /// subject because the store assigns the id.
 async fn task_created(
-    manager: &crate::task::SharedTaskManager,
+    manager: Option<&crate::task::SharedTaskManager>,
     input: &serde_json::Value,
 ) -> Option<crate::task::TaskRecord> {
     let subject = str_field(input, "subject");
-    manager.list().await.ok().and_then(|list| {
+    manager?.list().await.ok().and_then(|list| {
         list.into_iter()
             .filter(|t| t.subject == subject)
             .max_by_key(|t| t.id)
@@ -1114,7 +1116,7 @@ impl Agent {
             let task_before = match &resolved {
                 ResolvedTool::Native { metadata } => match metadata.domain {
                     ToolDomain::Task(TaskOperation::Update | TaskOperation::Get) => {
-                        task_by_id(&self.tool_context.task_manager, input).await
+                        task_by_id(self.tool_context.task_manager.as_ref(), input).await
                     }
                     _ => None,
                 },
@@ -1347,10 +1349,10 @@ impl Agent {
                 let task_after = match &prep.resolved {
                     ResolvedTool::Native { metadata } => match metadata.domain {
                         ToolDomain::Task(TaskOperation::Create) => {
-                            task_created(&self.tool_context.task_manager, &prep_input).await
+                            task_created(self.tool_context.task_manager.as_ref(), &prep_input).await
                         }
                         ToolDomain::Task(TaskOperation::Update | TaskOperation::Get) => {
-                            task_by_id(&self.tool_context.task_manager, &prep_input).await
+                            task_by_id(self.tool_context.task_manager.as_ref(), &prep_input).await
                         }
                         _ => None,
                     },

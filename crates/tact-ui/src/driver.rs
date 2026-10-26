@@ -278,14 +278,26 @@ fn build_command_catalog(
         tokio::sync::mpsc::unbounded_channel::<tact::agent::settings_service::SettingsChange>();
     let session = agent.and_then(|agent| agent.runtime.session_id.clone());
     let background = agent.map(|agent| tact::command::BackgroundWiring {
-        manager: std::sync::Arc::new(agent.tool_context.background_manager.clone()),
+        manager: std::sync::Arc::new(
+            agent
+                .tool_context
+                .background_manager
+                .as_ref()
+                .expect("the host installs the background_manager plugin")
+                .clone(),
+        ),
         session: std::sync::Arc::new(move || session.clone()),
     });
     let goals = agent.map(|agent| {
         let policy = acceptance_policy_for(agent);
         tact::command::GoalWiring {
             goal_manager: agent.tool_context.goal_manager.clone(),
-            task_manager: agent.tool_context.task_manager.clone(),
+            task_manager: agent
+                .tool_context
+                .task_manager
+                .as_ref()
+                .expect("the host installs the task_manager plugin")
+                .clone(),
             limits: agent_goal_limits(agent),
             events: agent.runtime.events.clone(),
             // Built here, not resolved from a registry: the activator needs the
@@ -293,7 +305,12 @@ fn build_command_catalog(
             // at assembly time. It reaches the command through this wiring instead.
             service: std::sync::Arc::new(tact::goal::service::RuntimeGoalService::new(
                 agent.tool_context.goal_manager.clone(),
-                agent.tool_context.task_manager.clone(),
+                agent
+                    .tool_context
+                    .task_manager
+                    .as_ref()
+                    .expect("the host installs the task_manager plugin")
+                    .clone(),
                 agent_goal_limits(agent),
                 agent.runtime.events.clone(),
                 policy,
@@ -435,7 +452,12 @@ pub async fn run_command_loop_with_account(
     let ui_responder = agent.tool_context.ui_responder.clone();
     // Shared subagent manager: lets CancelSubagent flip a running child's
     // cooperative cancel flag without owning the parent Agent.
-    let subagent_manager = agent.tool_context.subagent_manager.clone();
+    let subagent_manager = agent
+        .tool_context
+        .subagent_manager
+        .as_ref()
+        .expect("the host installs the subagent_manager plugin")
+        .clone();
     // Shared background manager + session id: `/background` answers from the
     // manager directly instead of waiting for the in-flight turn to hand the
     // Agent back, so a listing opens the moment it is asked for.
@@ -445,7 +467,12 @@ pub async fn run_command_loop_with_account(
     // Read again for the loop's own use: the catalog takes the agent now, but the
     // reconciliation and the goal panel still need these handles directly.
     let goal_manager = agent.tool_context.goal_manager.clone();
-    let task_manager = agent.tool_context.task_manager.clone();
+    let task_manager = agent
+        .tool_context
+        .task_manager
+        .as_ref()
+        .expect("the host installs the task_manager plugin")
+        .clone();
     let background_session_id = agent.runtime.session_id.clone();
     let limits = agent_goal_limits(&agent);
     // Reconcile durable Goal state once, before serving commands: a crashed
@@ -855,7 +882,11 @@ async fn update_goal_status(
         Ok(_) => {
             emit_goals_changed(
                 manager,
-                &agent.tool_context.task_manager,
+                agent
+                    .tool_context
+                    .task_manager
+                    .as_ref()
+                    .expect("the host installs TaskPlugin"),
                 agent_goal_limits(agent),
                 &agent.runtime.events,
             )
@@ -1014,7 +1045,11 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
     }
     emit_goals_changed(
         &agent.tool_context.goal_manager,
-        &agent.tool_context.task_manager,
+        agent
+            .tool_context
+            .task_manager
+            .as_ref()
+            .expect("the host installs TaskPlugin"),
         agent_goal_limits(agent),
         &agent.runtime.events,
     )
@@ -1347,7 +1382,12 @@ mod tests {
         let mock = MockClient::new(vec![]);
         let (agent, _work_dir) = build_test_agent(mock, Some(events.clone()));
         let manager = agent.tool_context.goal_manager.clone();
-        let task_manager = agent.tool_context.task_manager.clone();
+        let task_manager = agent
+            .tool_context
+            .task_manager
+            .as_ref()
+            .expect("the host installs the task_manager plugin")
+            .clone();
         let goal = manager
             .create(tact::goal::GoalCreate {
                 title: "idle goal".into(),
@@ -1398,7 +1438,12 @@ mod tests {
         let mock = MockClient::new(vec![]);
         let (agent, _work_dir) = build_test_agent(mock, Some(events.clone()));
         let manager = agent.tool_context.goal_manager.clone();
-        let task_manager = agent.tool_context.task_manager.clone();
+        let task_manager = agent
+            .tool_context
+            .task_manager
+            .as_ref()
+            .expect("the host installs the task_manager plugin")
+            .clone();
         let goal = manager
             .create(tact::goal::GoalCreate {
                 title: "crashed goal".into(),
@@ -2601,7 +2646,12 @@ mod tests {
         let (agent_tx, _agent_rx) = tokio::sync::mpsc::unbounded_channel();
         let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
         let manager = agent.tool_context.goal_manager.clone();
-        let task_manager = agent.tool_context.task_manager.clone();
+        let task_manager = agent
+            .tool_context
+            .task_manager
+            .as_ref()
+            .expect("the host installs the task_manager plugin")
+            .clone();
         let mut goal = manager
             .create(tact::goal::GoalCreate {
                 title: "ask a question".into(),

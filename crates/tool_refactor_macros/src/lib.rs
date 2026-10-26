@@ -215,19 +215,19 @@ fn expand_domain_tool(
                 // missing one. The adapter uses `call_in_domain` instead, which
                 // fills only what was declared.
                 let handles = crate::tool::DomainHandles {
-                    skill_registry: Some(context.skill_registry.clone()),
-                    teammate_manager: Some(context.teammate_manager.clone()),
-                    task_manager: Some(context.task_manager.clone()),
+                    skill_registry: context.skill_registry.clone(),
+                    teammate_manager: context.teammate_manager.clone(),
+                    task_manager: context.task_manager.clone(),
                     goal_manager: Some(context.goal_manager.clone()),
-                    subagent_manager: Some(context.subagent_manager.clone()),
-                    worktree_manager: Some(context.worktree_manager.clone()),
+                    subagent_manager: context.subagent_manager.clone(),
+                    worktree_manager: context.worktree_manager.clone(),
                     workspace: Some(tact_kernel::tool::context::Workspace::new(
                         context.work_dir.clone(),
                     )),
                     ui_responder: Some(context.ui_responder.clone()),
                     from_subagent: Some(context.is_subagent),
-                    memory_manager: Some(context.memory_manager.clone()),
-                    background_manager: Some(context.background_manager.clone()),
+                    memory_manager: context.memory_manager.clone(),
+                    background_manager: context.background_manager.clone(),
                     cancel_flag: Some(context.cancel_flag.clone()),
                     // The id is not a `ToolContext` field; the progress reporter is
                     // the thing that already carries it, so the fallback reads it

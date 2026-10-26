@@ -246,6 +246,8 @@ mod tests {
         // Seed a running subagent run so its `subagent-<id>` lane is protected.
         context
             .subagent_manager
+            .as_ref()
+            .expect("the fixture installs subagent_manager")
             .start("child-1".to_string())
             .await
             .unwrap();

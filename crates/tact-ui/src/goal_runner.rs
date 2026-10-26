@@ -720,7 +720,11 @@ impl GoalRunner {
         if !agent.runtime.events.is_empty() {
             crate::driver::emit_goals_changed(
                 &self.goal_manager,
-                &agent.tool_context.task_manager,
+                agent
+                    .tool_context
+                    .task_manager
+                    .as_ref()
+                    .expect("the host installs TaskPlugin"),
                 self.limits,
                 &agent.runtime.events,
             )
@@ -1105,6 +1109,8 @@ impl GoalRunner {
             let (linked_tasks, tasks_unavailable) = match agent
                 .tool_context
                 .task_manager
+                .as_ref()
+                .expect("the host installs TaskPlugin")
                 .list_for_goal(&goal.id)
                 .await
             {
