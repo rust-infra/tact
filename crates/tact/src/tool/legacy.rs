@@ -127,6 +127,41 @@ impl SharedToolContextFactory {
         *base = live.clone();
     }
 
+    /// Re-point the domain handles at what the plugin registry holds.
+    ///
+    /// The context is built before the plugins are installed, so the handles it
+    /// carries are the ones the caller happened to have. That made the domain
+    /// plugins decorative: they registered a service, and every tool read a field
+    /// nobody had re-pointed. Rebinding here is what makes a plugin load-bearing —
+    /// install a different `TaskPlugin` and the task tools see its manager.
+    ///
+    /// A missing plugin leaves the existing handle in place, so a fixture without
+    /// plugins keeps working; the host installs all of these on every real path.
+    pub fn rebind_from(&self, services: &tact_kernel::service::ServiceRegistry) {
+        let mut base = self.base.lock().unwrap_or_else(|error| error.into_inner());
+        if let Ok(manager) = crate::skill::skills_from(services) {
+            base.skill_registry = manager;
+        }
+        if let Ok(manager) = crate::memory::memory_from(services) {
+            base.memory_manager = manager;
+        }
+        if let Ok(manager) = crate::task::task_manager(services) {
+            base.task_manager = manager;
+        }
+        if let Ok(manager) = crate::background::background_manager(services) {
+            base.background_manager = manager;
+        }
+        if let Ok(manager) = crate::team::team_manager(services) {
+            base.teammate_manager = manager;
+        }
+        if let Ok(manager) = crate::worktree::worktree_manager(services) {
+            base.worktree_manager = manager;
+        }
+        if let Ok(manager) = crate::subagent::subagent_manager(services) {
+            base.subagent_manager = manager;
+        }
+    }
+
     /// Run `f` against the current base.
     pub fn with_base<T>(&self, f: impl FnOnce(&ToolContext) -> T) -> T {
         let base = self.base.lock().unwrap_or_else(|error| error.into_inner());
@@ -353,6 +388,73 @@ impl KernelTool for ContextualToolAdapter {
 
 #[cfg(test)]
 mod tests {
+
+    /// A replaced plugin is what the tools see.
+    ///
+    /// This is the property that makes a domain plugin load-bearing rather than
+    /// decorative: the context is built before the plugins are installed, so
+    /// without `rebind_from` a plugin would register a service and every tool
+    /// would keep reading the handle the caller happened to pass. The assertion is
+    /// on identity — a second manager for a second database — because "a manager
+    /// exists" would pass even when nothing was rebound.
+    #[tokio::test]
+    async fn rebinding_points_the_context_at_the_registry() {
+        use tact_kernel::capability::CapabilityFilter;
+        use tact_kernel::plugin::PluginHost;
+
+        let dir = std::env::temp_dir().join(format!(
+            "tact-rebind-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+
+        // The context is built from one task manager…
+        let original = crate::task::SharedTaskManager::new(
+            crate::task::TaskManager::new(&dir.join("original.db"))
+                .await
+                .unwrap(),
+        );
+        let mut context = crate::tool::test_support::test_context("rebind");
+        context.task_manager = original.clone();
+        let factory = SharedToolContextFactory::new(context);
+
+        // …and the host installs a plugin over a different one.
+        let replacement = crate::task::SharedTaskManager::new(
+            crate::task::TaskManager::new(&dir.join("replacement.db"))
+                .await
+                .unwrap(),
+        );
+        let mut host = PluginHost::new(CapabilityFilter::default());
+        host.install(crate::task::TaskPlugin::new(replacement.clone()))
+            .await
+            .unwrap();
+        let runtime = host.seal().await.unwrap();
+
+        factory.rebind_from(runtime.services());
+
+        // Behaviour, not identity: write through the manager the factory now
+        // exposes and see which store it lands in. A pointer comparison would need
+        // an accessor the wrapper does not have, and behaviour is what a tool
+        // actually depends on.
+        let seen = factory.with_base(|base| base.task_manager.clone());
+        let created = seen
+            .create("rebind probe".to_string(), None, "session".to_string())
+            .await
+            .unwrap();
+        assert!(
+            replacement.get(created.id).await.is_ok(),
+            "the tool must see the manager the plugin registered"
+        );
+        assert!(
+            original.get(created.id).await.is_err(),
+            "the caller's manager must no longer be the one tools read"
+        );
+    }
+
     use super::*;
     use crate::tool::ToolMetadata;
     use crate::tool::test_support::test_context;

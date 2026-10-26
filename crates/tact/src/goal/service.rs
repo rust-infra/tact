@@ -361,23 +361,3 @@ impl GoalActivator for QueueingActivator {
         })
     }
 }
-
-/// The Goal service a host resolved from its registry.
-///
-/// # Errors
-///
-/// Returns an error when no `GoalPlugin` was installed. A caller about to create or
-/// accept a Goal must be told it has nowhere to record it rather than silently
-/// dropping the decision.
-pub fn service(
-    services: &tact_kernel::service::ServiceRegistry,
-) -> anyhow::Result<Arc<dyn GoalService>> {
-    services
-        .get::<GoalServiceHandle>()
-        .map(|handle| handle.0.clone())
-        .ok_or_else(|| anyhow::anyhow!("no goal service installed; install GoalPlugin"))
-}
-
-/// The service a [`crate::goal::GoalPlugin`] provided.
-#[derive(Clone)]
-pub struct GoalServiceHandle(pub Arc<dyn GoalService>);

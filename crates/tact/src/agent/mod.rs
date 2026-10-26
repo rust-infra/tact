@@ -557,6 +557,10 @@ impl Agent {
         )
         .expect("the built-in plugin set is valid: ids are literals and names are unique");
         let services = assembled.services().clone();
+        // The registry is the source of truth for the domain handles: the context
+        // was built before these plugins were installed, and without this the
+        // plugins would register services nobody reads.
+        contexts.rebind_from(&services);
         crate::host::executor_from_families(
             tools,
             contexts,

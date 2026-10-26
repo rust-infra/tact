@@ -288,6 +288,9 @@ fn build_command_catalog(
             task_manager: agent.tool_context.task_manager.clone(),
             limits: agent_goal_limits(agent),
             events: agent.runtime.events.clone(),
+            // Built here, not resolved from a registry: the activator needs the
+            // agent slot, which only the driver holds, so this service cannot exist
+            // at assembly time. It reaches the command through this wiring instead.
             service: std::sync::Arc::new(tact::goal::service::RuntimeGoalService::new(
                 agent.tool_context.goal_manager.clone(),
                 agent.tool_context.task_manager.clone(),

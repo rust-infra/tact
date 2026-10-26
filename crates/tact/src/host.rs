@@ -119,11 +119,6 @@ pub struct HostExtras {
     pub skills: Option<crate::skill::SharedSkillRegistry>,
     /// The already-built worktree manager.
     pub worktree: Option<crate::worktree::SharedWorktreeManager>,
-    /// The already-spawned voice service.
-    ///
-    /// Spawning needs a Tokio runtime, so the host does it and installs the result.
-    /// `None` is the common case: voice is off by default.
-    pub voice: Option<std::sync::Arc<dyn crate::voice::VoiceService>>,
     /// The already-opened subagent manager.
     pub subagent: Option<crate::subagent::SharedSubagentManager>,
     /// Where the MCP server declarations come from.
@@ -137,8 +132,6 @@ pub struct HostExtras {
     /// a host that gates completion on a command or an external reviewer installs
     /// its own `GoalPlugin` instead.
     pub acceptance: Option<std::sync::Arc<dyn crate::goal::AcceptancePolicy>>,
-    /// The Goal service a command reaches.
-    pub goal_service: Option<std::sync::Arc<dyn crate::goal::service::GoalService>>,
     /// The already-opened task manager.
     pub task: Option<crate::task::SharedTaskManager>,
     /// The already-opened teammate manager.
@@ -272,9 +265,6 @@ pub fn assemble_with(options: HostOptions<'_>, mut extras: HostExtras) -> Result
     if let Some(manager) = extras.worktree.clone() {
         host.install_sync(crate::worktree::WorktreePlugin::new(manager))?;
     }
-    if let Some(service) = extras.voice.clone() {
-        host.install_sync(crate::voice::VoicePlugin::new(service))?;
-    }
     if let Some(manager) = extras.subagent.clone() {
         host.install_sync(crate::subagent::SubagentPlugin::new(manager))?;
     }
@@ -290,10 +280,7 @@ pub fn assemble_with(options: HostOptions<'_>, mut extras: HostExtras) -> Result
         Some(policy) => crate::goal::GoalPlugin::new(policy),
         None => crate::goal::GoalPlugin::evidence(),
     };
-    host.install_sync(match extras.goal_service.clone() {
-        Some(service) => goal_plugin.with_service(service),
-        None => goal_plugin,
-    })?;
+    host.install_sync(goal_plugin)?;
     if let Some(manager) = extras.task.clone() {
         host.install_sync(crate::task::TaskPlugin::new(manager))?;
     }
@@ -465,6 +452,96 @@ mod tests {
             resolved.tools.bash_timeout_secs,
             crate::config::settings().tools.bash_timeout_secs
         );
+    }
+
+    /// Every capability domain a real bootstrap supplies is installed.
+    ///
+    /// The audit that preceded this test counted plugin *types in the source*, and
+    /// that turned out to be the wrong measurement twice over: a plugin can exist
+    /// and never be installed (`SettingsPlugin` did exactly that), and a resolver
+    /// can exist while nothing calls it. This asserts on `plugin_ids()`, which is
+    /// what the runtime actually holds.
+    #[tokio::test]
+    async fn every_domain_a_bootstrap_supplies_is_installed() {
+        crate::config::test_support::install_default();
+        let dir = std::env::temp_dir().join(format!("tact-host-domains-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let db = dir.join("tact.db");
+        let store = crate::store::open_sqlite_session_store(&db).await.unwrap();
+        let manager = manager();
+
+        let extras = HostExtras {
+            storage: Some(StorageOptions {
+                store,
+                path: db.clone(),
+            }),
+            background: Some(crate::background::SharedBackgroundManager::new(
+                crate::background::BackgroundManager::new(&db)
+                    .await
+                    .unwrap(),
+            )),
+            memory: Some(crate::memory::shared_memory_manager(
+                crate::memory::MemoryManager::new(dir.clone()),
+            )),
+            skills: Some(crate::skill::shared_skill_registry(&dir).unwrap()),
+            worktree: Some(crate::worktree::SharedWorktreeManager::new(
+                crate::worktree::WorktreeManager::new(&db, dir.clone())
+                    .await
+                    .unwrap(),
+            )),
+            subagent: Some(crate::subagent::SharedSubagentManager::new(
+                crate::subagent::SubagentManager::new(&db).await.unwrap(),
+            )),
+            task: Some(crate::task::SharedTaskManager::new(
+                crate::task::TaskManager::new(&db).await.unwrap(),
+            )),
+            team: Some(crate::team::SharedTeammateManager::new(
+                crate::team::TeammateManager::new(&db).await.unwrap(),
+            )),
+            ..HostExtras::default()
+        };
+
+        let assembled = assemble_with(
+            HostOptions {
+                permission_manager: &manager,
+                ui_available: Arc::new(|| false),
+                config: None,
+                provider: None,
+                filter: CapabilityFilter::default(),
+            },
+            extras,
+        )
+        .unwrap();
+
+        // `builtin.providers` and the two service plugins (`agent_service`,
+        // `chat_service`) are not expected here: each needs a snapshot or a slot
+        // this test does not build, and `assembly_installs_in_dependency_order`
+        // covers their position.
+        let ids = assembled.plugin_ids();
+        for expected in [
+            "builtin.storage",
+            "builtin.session_store",
+            "builtin.session_service",
+            "builtin.background",
+            "builtin.memory",
+            "builtin.skills",
+            "builtin.worktree",
+            "builtin.subagent",
+            "builtin.task",
+            "builtin.team",
+            "builtin.goal",
+            "builtin.mcp",
+            "builtin.notifications",
+            "builtin.permission",
+            "builtin.security",
+            "builtin.compaction_service",
+        ] {
+            assert!(
+                ids.iter().any(|id| id == expected),
+                "{expected} is not installed; runtime holds {ids:?}"
+            );
+        }
     }
 
     #[test]
