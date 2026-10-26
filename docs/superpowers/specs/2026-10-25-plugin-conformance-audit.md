@@ -27,6 +27,41 @@ verified. "Verified by" names a command or test, not an opinion.
 
 ---
 
+## Why the plugins were decoration, and what exclusivity would cost
+
+The root cause is worth stating on its own, because it is the answer to "many things
+are not done well" and it is not a missing feature:
+
+`session_bootstrap` creates each domain manager and then wires the *same* `Arc` twice —
+once into `ToolContext` (where every tool reads it) and once into `HostExtras` (where
+the plugin registers it). `rebind_from` guarantees the registry wins, so a **replaced**
+plugin now changes behaviour. But in the shipped configuration it writes back the very
+value that was already there: the plugin is *authoritative*, yet not *exclusive*.
+Omitting `TeamPlugin` does not remove team tools, because the context kept the handle
+the caller passed.
+
+That is why an audit that counted plugin objects could look complete while
+`TeamPlugin` was, in practice, a parallel wire.
+
+Exclusivity needs the plugin to be the only source, which is two changes:
+
+1. Each domain plugin constructs its own manager from what it owns (a database path, a
+   directory) instead of receiving one. That is what the design's "Owns" column says.
+2. `ToolContext`'s seven domain handles become `Option`, filled only by `rebind_from`.
+
+Measured cost of (2) alone: 137 references across `task_manager`, `teammate_manager`,
+`worktree_manager`, `subagent_manager`, `background_manager`, `memory_manager` and
+`skill_registry`, plus 9 `ToolContext` literals. The `Option` is not new information —
+`ToolContextFactory::teammate_manager()` already returns `Option`, and the tools already
+answer a missing one with "this host has no teammate manager".
+
+This is recorded rather than done: it is a large, behaviour-preserving-on-the-happy-path
+refactor, and the benefit today is theoretical because no host omits a plugin. The
+honest statement of the current state is "authoritative but not exclusive", and that
+sentence belongs in the audit instead of a "met" verdict that implies more.
+
+---
+
 ## The contribution layer: what the plugin mechanism actually delivers
 
 The service layer is real and load-bearing: 24 `registrar.service` sites, and the
