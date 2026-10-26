@@ -32,6 +32,14 @@ enum GoalVerb {
     Cancel { id: String },
     /// `/goal archive <id>` or `/goal unarchive <id>`.
     Archive { id: String, archived: bool },
+    /// `/goal create <objective> [-- <criterion>; ...]` — mint a Goal and start its run.
+    Create {
+        title: String,
+        objective: String,
+        criteria: Vec<String>,
+    },
+    /// `/goal accept <id> <text>` — record a human acceptance.
+    Accept { id: String, text: String },
     /// `/goal steer [<id>] <text>` — redirect an active Goal.
     ///
     /// No id field: a leading id in the text is resolved by [`steer`], which can
@@ -46,6 +54,8 @@ pub struct GoalCommand {
     limits: GoalLimits,
     /// Where a pause or cancel reports itself.
     events: tact_protocol::events::UpdateSink,
+    /// Creating and accepting a Goal need the domain service.
+    service: std::sync::Arc<dyn crate::goal::service::GoalService>,
     meta: CommandMeta,
 }
 
@@ -55,19 +65,24 @@ impl GoalCommand {
         task_manager: SharedTaskManager,
         limits: GoalLimits,
         events: tact_protocol::events::UpdateSink,
+        service: std::sync::Arc<dyn crate::goal::service::GoalService>,
     ) -> Self {
         Self {
             goal_manager,
             task_manager,
             limits,
             events,
+            service,
             meta: CommandMeta {
                 name: "goal".to_string(),
                 aliases: Vec::new(),
-                summary: "List, show, pause, cancel, archive or steer a Goal".to_string(),
-                usage: "/goal [list [--all] | show <id> | pause <id> | cancel <id> | \
-                     archive <id> | unarchive <id> | steer [<id>] <text>]"
+                summary: "Create, accept, list, show, pause, cancel, archive or steer a Goal"
                     .to_string(),
+                usage:
+                    "/goal [list [--all] | show <id> | create <objective> [-- <criterion>; ...] | \
+                     accept <id> <text> | pause <id> | cancel <id> | archive <id> | \
+                     unarchive <id> | steer [<id>] <text>]"
+                        .to_string(),
                 scope: CommandScope::Runtime,
                 // Verbs follow, so Enter completes instead of running.
                 needs_args: true,
@@ -80,6 +95,13 @@ impl GoalCommand {
     /// The grammar is the command's own — the kernel routes and never parses —
     /// so an unknown verb is answered with the usage this command declares.
     fn parse(&self, args: &str) -> Result<GoalVerb, String> {
+        // The remainder with its original spacing, for verbs whose grammar is
+        // free text: `create`'s `-- ` separator only means anything if the space
+        // before it survived, and re-joining tokens would collapse it.
+        let trimmed = args.trim_start();
+        let raw_rest = trimmed
+            .find(char::is_whitespace)
+            .map_or("", |index| trimmed[index..].trim_start());
         let mut words = args.split_whitespace();
         match words.next() {
             None | Some("list") => {
@@ -125,6 +147,54 @@ impl GoalCommand {
                     Err(format!("`/goal {verb}` takes one id (got extra `{extra}`)"))
                 }
             },
+            Some("create") => {
+                // `<objective> [-- <criterion>; <criterion> ...]`, the grammar the
+                // view already had. Criteria are the user's own acceptance gate:
+                // without them the Goal finishes on the model's completion proposal
+                // (self-attested); the `--` separator keeps ordinary prose —
+                // including hyphenated words — in the objective.
+                let (objective, criteria) = match raw_rest.split_once(" -- ") {
+                    Some((objective, criteria)) => (
+                        objective.trim(),
+                        criteria
+                            .split(';')
+                            .map(str::trim)
+                            .filter(|criterion| !criterion.is_empty())
+                            .map(str::to_string)
+                            .collect::<Vec<_>>(),
+                    ),
+                    None => (raw_rest.trim(), Vec::new()),
+                };
+                if objective.is_empty() {
+                    return Err("`/goal create` needs an objective".to_string());
+                }
+                Ok(GoalVerb::Create {
+                    // The title is the objective's first 80 characters, which is
+                    // what the panel row can show; the objective keeps the whole
+                    // text.
+                    title: objective.chars().take(80).collect(),
+                    objective: objective.to_string(),
+                    criteria,
+                })
+            }
+            Some("accept") => {
+                // The id is one token; everything after it is the acceptance note,
+                // which is prose and may contain anything.
+                match words.next() {
+                    Some(id) => {
+                        let text = words.collect::<Vec<_>>().join(" ");
+                        if text.is_empty() {
+                            Err("`/goal accept` needs an acceptance note".to_string())
+                        } else {
+                            Ok(GoalVerb::Accept {
+                                id: id.to_string(),
+                                text,
+                            })
+                        }
+                    }
+                    None => Err("`/goal accept` needs an id and a note".to_string()),
+                }
+            }
             Some("steer") => {
                 // Whole-line text, with no id split here: `steer` accepts a leading
                 // id/prefix in the text and the store is authoritative about whether
@@ -248,6 +318,27 @@ impl Command for GoalCommand {
                 .await;
                 CommandOutcome::Done
             }
+            GoalVerb::Create {
+                title,
+                objective,
+                criteria,
+            } => {
+                if self
+                    .service
+                    .create(title, objective, criteria)
+                    .await
+                    .is_some()
+                {
+                    CommandOutcome::Done
+                } else {
+                    // The service already said why; a second line would repeat it.
+                    CommandOutcome::Failed("Goal creation refused".to_string())
+                }
+            }
+            GoalVerb::Accept { id, text } => {
+                self.service.accept(&id, &text).await;
+                CommandOutcome::Done
+            }
             GoalVerb::Steer { text } => {
                 crate::goal::lifecycle::steer(
                     &self.goal_manager,
@@ -319,6 +410,108 @@ pub type SharedGoalCommand = Arc<GoalCommand>;
 mod tests {
     use super::*;
 
+    /// A service that does nothing, for tests that only exercise the read verbs.
+    struct NoopService;
+
+    #[async_trait::async_trait]
+    impl crate::goal::service::GoalService for NoopService {
+        async fn create(
+            &self,
+            _title: String,
+            _objective: String,
+            _criteria: Vec<String>,
+        ) -> Option<String> {
+            None
+        }
+
+        async fn accept(&self, _goal_id: &str, _text: &str) {}
+    }
+
+    /// `/goal create` keeps the objective whole and splits criteria on `;` after
+    /// `--`. These assertions used to live in the view, which was where the grammar
+    /// was; the grammar moved here with the verb, so the tests did too.
+    #[tokio::test]
+    async fn create_splits_criteria_after_the_separator() {
+        let command = command().await;
+        let verb = command
+            .parse(
+                "create Ship the release -- the full test suite passes; the changelog is written",
+            )
+            .unwrap();
+        match verb {
+            GoalVerb::Create {
+                title,
+                objective,
+                criteria,
+            } => {
+                assert_eq!(title, "Ship the release");
+                assert_eq!(objective, "Ship the release");
+                assert_eq!(
+                    criteria,
+                    vec![
+                        "the full test suite passes".to_string(),
+                        "the changelog is written".to_string(),
+                    ]
+                );
+            }
+            other => panic!("expected create, got {other:?}"),
+        }
+    }
+
+    /// Without `--`, a dash in the objective is just a dash.
+    #[tokio::test]
+    async fn create_without_a_separator_keeps_dashes() {
+        let command = command().await;
+        match command
+            .parse("create Upgrade to rust-2024 edition")
+            .unwrap()
+        {
+            GoalVerb::Create {
+                objective,
+                criteria,
+                ..
+            } => {
+                assert_eq!(objective, "Upgrade to rust-2024 edition");
+                assert!(criteria.is_empty());
+            }
+            other => panic!("expected create, got {other:?}"),
+        }
+    }
+
+    /// A create with no objective is a usage error, not an empty Goal.
+    #[tokio::test]
+    async fn create_needs_an_objective() {
+        let command = command().await;
+        assert!(command.parse("create").is_err());
+        assert!(command.parse("create    ").is_err());
+        // A leading `--` with no space before it is prose, not a separator: the
+        // grammar needs `" -- "`, so this is an objective that happens to start
+        // with dashes. The view behaves the same way, which is why the assertion
+        // is here rather than a refusal.
+        assert!(command.parse("create -- only criteria").is_ok());
+    }
+
+    /// Accept needs an id and a note; the note may contain spaces.
+    #[tokio::test]
+    async fn accept_takes_an_id_and_a_free_text_note() {
+        let command = command().await;
+        match command
+            .parse("accept goal-1 accepted after a long manual review")
+            .unwrap()
+        {
+            GoalVerb::Accept { id, text } => {
+                assert_eq!(id, "goal-1");
+                assert_eq!(text, "accepted after a long manual review");
+            }
+            other => panic!("expected accept, got {other:?}"),
+        }
+        assert!(
+            command.parse("accept goal-1").is_err(),
+            "the note is required"
+        );
+        assert!(command.parse("accept").is_err());
+    }
+
     /// A command over two empty, throwaway stores.
     async fn command() -> GoalCommand {
         let dir = tempfile::tempdir().unwrap();
@@ -336,6 +529,7 @@ mod tests {
             task_manager,
             GoalLimits::default(),
             tact_protocol::events::UpdateSink::default(),
+            std::sync::Arc::new(NoopService),
         )
     }
 

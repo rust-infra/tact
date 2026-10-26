@@ -8,6 +8,7 @@ mod verifier;
 
 pub mod lifecycle;
 pub mod limits;
+pub mod service;
 pub mod snapshots;
 
 pub use verifier::{

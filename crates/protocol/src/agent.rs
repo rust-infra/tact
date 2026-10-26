@@ -636,21 +636,12 @@ pub enum UserCommand {
     Cancel,
     /// Query account balance (DeepSeek/Kimi)
     QueryBalance,
-    /// Create a durable Goal. Empty `criteria` lets the driver install its
-    /// default human-acceptance criterion for interactive use.
-    CreateGoal {
-        title: String,
-        objective: String,
-        criteria: Vec<String>,
-    },
     /// List every durable Goal as a full replacement snapshot.
     ///
     /// Persist user steering text in the Goal event stream.
     ///
     /// Resume a paused/waiting Goal and start one bounded activation.
     ResumeGoal { goal_id: String },
-    /// Record explicit human acceptance and resume one bounded activation.
-    AcceptGoal { goal_id: String, text: String },
     /// Set the active session's thinking budget for subsequent LLM requests.
     /// The TUI sends this after `/model` budget confirmation; config persistence
     /// is a separate optional local flow.
@@ -853,14 +844,13 @@ mod tests {
     #[test]
     fn goal_commands_keep_ids_and_user_text_typed() {
         let commands = [
-            UserCommand::CreateGoal {
-                title: "Ship it".into(),
-                objective: "Finish the feature".into(),
-                criteria: vec!["Tests pass".into()],
+            // Everything the Goal command owns travels as a catalog invocation:
+            // the command parses its own grammar, so the transport carries the
+            // name and the raw arguments rather than a second definition of it.
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: "create Finish the feature -- Tests pass".into(),
             },
-            // Read-only goal commands travel as catalog invocations: the goal
-            // command owns the `list --all` / `show <id>` grammar, so the
-            // transport carries the name and the raw arguments.
             UserCommand::RunCommand {
                 name: "goal".into(),
                 args: "list".into(),
@@ -875,24 +865,19 @@ mod tests {
             },
             UserCommand::RunCommand {
                 name: "goal".into(),
-                args: "pause goal-1".into(),
+                args: "accept goal-1 Accepted after manual review".into(),
             },
+            // Resume still needs the agent's cancel flag and the runner, so it
+            // keeps a typed id.
             UserCommand::ResumeGoal {
                 goal_id: "goal-1".into(),
-            },
-            UserCommand::RunCommand {
-                name: "goal".into(),
-                args: "cancel goal-1".into(),
-            },
-            UserCommand::AcceptGoal {
-                goal_id: "goal-1".into(),
-                text: "Accepted after manual review".into(),
             },
         ];
 
         assert!(matches!(
-            &commands[1],
-            UserCommand::RunCommand { name, args } if name == "goal" && args == "list"
+            &commands[0],
+            UserCommand::RunCommand { name, args }
+                if name == "goal" && args == "create Finish the feature -- Tests pass"
         ));
         assert!(matches!(
             &commands[3],
@@ -900,9 +885,13 @@ mod tests {
                 if name == "goal" && args == "steer goal-1 Prefer the smaller design"
         ));
         assert!(matches!(
-            &commands[7],
-            UserCommand::AcceptGoal { goal_id, text }
-                if goal_id == "goal-1" && text == "Accepted after manual review"
+            &commands[4],
+            UserCommand::RunCommand { name, args }
+                if name == "goal" && args == "accept goal-1 Accepted after manual review"
+        ));
+        assert!(matches!(
+            &commands[5],
+            UserCommand::ResumeGoal { goal_id } if goal_id == "goal-1"
         ));
     }
 

@@ -186,6 +186,7 @@ pub fn builtin_catalog(
                 wiring.task_manager,
                 wiring.limits,
                 wiring.events,
+                wiring.service,
             )))
             .expect("built-in command names are unique");
     }
@@ -222,6 +223,8 @@ pub struct GoalWiring {
     /// the driver uses — otherwise `/goal pause` would be the one Goal operation
     /// that says nothing.
     pub events: tact_protocol::events::UpdateSink,
+    /// The Goal domain service: creating and accepting a Goal go through it.
+    pub service: std::sync::Arc<dyn crate::goal::service::GoalService>,
 }
 
 /// A metadata literal with `Runtime` scope, for the built-ins.

@@ -12,10 +12,7 @@ use std::{
 use anyhow::Result;
 use tact::{
     Agent,
-    goal::{
-        GoalCreate, GoalCriterion, GoalEventKind, GoalEventSource, GoalEvidenceUpdate, GoalStatus,
-        GoalUpdate, GoalVerification, GoalVerificationKind, SharedGoalManager,
-    },
+    goal::{GoalEventKind, GoalEventSource, GoalStatus, GoalUpdate, SharedGoalManager},
     task::SharedTaskManager,
 };
 use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, UpdateSink, UserCommand};
@@ -245,7 +242,10 @@ fn builtin_command_catalog(
     slot: &Arc<tokio::sync::Mutex<Option<Agent>>>,
     chat: Option<std::sync::Arc<dyn tact::command::ChatService>>,
     work_dir: &std::path::Path,
-) -> tact::command::CommandCatalog {
+) -> (
+    tact::command::CommandCatalog,
+    tokio::sync::mpsc::UnboundedReceiver<String>,
+) {
     // The loop holds the slot, so this lock is uncontended here.
     let guard = slot.try_lock().expect("the loop owns the slot here");
     build_command_catalog(guard.as_ref(), slot, chat, work_dir)
@@ -262,23 +262,42 @@ fn build_command_catalog(
     slot: &Arc<tokio::sync::Mutex<Option<Agent>>>,
     chat: Option<std::sync::Arc<dyn tact::command::ChatService>>,
     work_dir: &std::path::Path,
-) -> tact::command::CommandCatalog {
+) -> (
+    tact::command::CommandCatalog,
+    tokio::sync::mpsc::UnboundedReceiver<String>,
+) {
+    // Running a Goal activation needs `&mut Agent`, which the caller holds while
+    // the command runs. The command queues the request instead of reaching for the
+    // agent, and the caller drains this receiver once its borrow is free — an
+    // activator that locked the agent here would deadlock on its own lock.
+    let (activation_tx, activation_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
     let session = agent.and_then(|agent| agent.runtime.session_id.clone());
     let background = agent.map(|agent| tact::command::BackgroundWiring {
         manager: std::sync::Arc::new(agent.tool_context.background_manager.clone()),
         session: std::sync::Arc::new(move || session.clone()),
     });
-    let goals = agent.map(|agent| tact::command::GoalWiring {
-        goal_manager: agent.tool_context.goal_manager.clone(),
-        task_manager: agent.tool_context.task_manager.clone(),
-        limits: agent_goal_limits(agent),
-        events: agent.runtime.events.clone(),
+    let goals = agent.map(|agent| {
+        let policy = acceptance_policy_for(agent);
+        tact::command::GoalWiring {
+            goal_manager: agent.tool_context.goal_manager.clone(),
+            task_manager: agent.tool_context.task_manager.clone(),
+            limits: agent_goal_limits(agent),
+            events: agent.runtime.events.clone(),
+            service: std::sync::Arc::new(tact::goal::service::RuntimeGoalService::new(
+                agent.tool_context.goal_manager.clone(),
+                agent.tool_context.task_manager.clone(),
+                agent_goal_limits(agent),
+                agent.runtime.events.clone(),
+                policy,
+                std::sync::Arc::new(tact::goal::service::QueueingActivator::new(activation_tx)),
+            )),
+        }
     });
     let stats = agent.map_or_else(
         || std::sync::Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
         |agent| agent.runtime.stats.clone(),
     );
-    tact::command::builtin_catalog(
+    let catalog = tact::command::builtin_catalog(
         stats,
         background,
         goals,
@@ -292,7 +311,8 @@ fn build_command_catalog(
             render: std::sync::Arc::new(crate::mcp_cli::render_live_listing),
         }),
         agent.map(|agent| agent.runtime.permission_manager.clone()),
-    )
+    );
+    (catalog, activation_rx)
 }
 
 /// An MCP view for a host that has no router in scope.
@@ -440,7 +460,7 @@ pub async fn run_command_loop_with_account(
     // time `auth` reloaded it.
     let agent_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
         Arc::new(tokio::sync::Mutex::new(Some(agent)));
-    let commands = builtin_command_catalog(
+    let (commands, mut goal_activations) = builtin_command_catalog(
         &agent_slot,
         chat.as_ref()
             .map(|chat| chat.clone() as std::sync::Arc<dyn tact::command::ChatService>),
@@ -539,6 +559,33 @@ pub async fn run_command_loop_with_account(
                 // same grammar.
                 let invocation = tact::command::CommandInvocation { name, args };
                 forward_command_outcome(&commands.run_async(&invocation).await, &events);
+                // A `/goal create` or a rejected `/goal accept` queued an
+                // activation: the command could not run it, because running one
+                // needs the agent and the command has none. Hand it to a task the
+                // way a resumed Goal already is.
+                // Collected before acting: peeking with `try_recv().is_ok()`
+                // would consume the first id and drop it.
+                let mut remaining: Vec<String> = Vec::new();
+                while let Ok(id) = goal_activations.try_recv() {
+                    remaining.push(id);
+                }
+                if !remaining.is_empty() {
+                    if let Some(handle) = active.take() {
+                        handle.await.expect("task join panicked");
+                    }
+                    let slot = agent_slot.clone();
+                    active = Some(tokio::spawn(async move {
+                        let mut guard = slot.lock().await;
+                        let Some(task_agent) = guard.as_mut() else {
+                            return;
+                        };
+                        for id in remaining {
+                            clear_cancel_for_goal_activation(task_agent);
+                            resume_goal(task_agent, &id).await;
+                        }
+                        task_agent.emit_update(AgentUpdate::TaskIdle);
+                    }));
+                }
             }
             // These three are safe to serve while the Agent is owned by an
             // in-flight Goal run: they only touch the shared managers (and the
@@ -616,32 +663,6 @@ pub async fn run_command_loop_with_account(
                     }));
                 }
             }
-            UserCommand::CreateGoal {
-                title,
-                objective,
-                criteria,
-            } => {
-                // Spawned, not awaited: creating a Goal now runs its first
-                // activation, which must not block the loop that has to keep
-                // serving `Cancel` (same shape as `ResumeGoal` below).
-                if let Some(handle) = active.take() {
-                    handle.await.expect("task join panicked");
-                }
-                let slot = agent_slot.clone();
-                active = Some(tokio::spawn(async move {
-                    let mut guard = slot.lock().await;
-                    let Some(task_agent) = guard.as_mut() else {
-                        return;
-                    };
-                    if let Some(goal_id) = create_goal(task_agent, title, objective, criteria).await
-                    {
-                        resume_goal(task_agent, &goal_id).await;
-                    }
-                    // A Goal activation does not go through `SubmitTask`, so no
-                    // TaskComplete/TaskCancelled clears the TUI's busy state.
-                    task_agent.emit_update(AgentUpdate::TaskIdle);
-                }));
-            }
             UserCommand::ResumeGoal { goal_id } => {
                 if let Some(handle) = active.take() {
                     handle.await.expect("task join panicked");
@@ -653,20 +674,6 @@ pub async fn run_command_loop_with_account(
                         return;
                     };
                     resume_goal(task_agent, &goal_id).await;
-                    task_agent.emit_update(AgentUpdate::TaskIdle);
-                }));
-            }
-            UserCommand::AcceptGoal { goal_id, text } => {
-                if let Some(handle) = active.take() {
-                    handle.await.expect("task join panicked");
-                }
-                let slot = agent_slot.clone();
-                active = Some(tokio::spawn(async move {
-                    let mut guard = slot.lock().await;
-                    let Some(task_agent) = guard.as_mut() else {
-                        return;
-                    };
-                    accept_goal(task_agent, &goal_id, &text).await;
                     task_agent.emit_update(AgentUpdate::TaskIdle);
                 }));
             }
@@ -791,71 +798,6 @@ async fn render_mcp_prompt(
         )
         .await
         .map_err(|error| format!("MCP prompt {server}/{name} failed: {error:#}"))
-}
-
-/// Create a Goal from the command surface, announce it, and return its id.
-///
-/// The interactive surface has no separate confirm step, so creation *is* the
-/// authorization to run: a `draft` Goal that nobody activates is a dead end
-/// (the store keeps it, the Runner never picks it up). The caller starts the
-/// first activation with [`resume_goal`], which drives `Draft → Queued →
-/// Running`.
-///
-/// The snapshot goes out before the announcement: the log line names the id, and
-/// the panel row does not show it.
-async fn create_goal(
-    agent: &mut Agent,
-    title: String,
-    objective: String,
-    criteria: Vec<String>,
-) -> Option<String> {
-    // Criteria are optional on purpose. Injecting a required human criterion
-    // here used to make every Goal end in `waiting_user` + `/goal accept`,
-    // which turned the user's acceptance into a rubber stamp for work they had
-    // not verified. A Goal with no criteria finishes on the model's proposal
-    // and the runner records that as self-attested; declare criteria (API
-    // callers can) when the result really needs a gate.
-    let criteria = criteria
-        .into_iter()
-        .map(|description| GoalCriterion::new(description, true, GoalVerificationKind::Human))
-        .collect::<Vec<_>>();
-    match agent
-        .tool_context
-        .goal_manager
-        .create(GoalCreate {
-            title,
-            objective,
-            criteria,
-        })
-        .await
-    {
-        Ok(goal) => {
-            let criteria_note = if goal.has_required_criteria() {
-                ""
-            } else {
-                " - no acceptance criteria: completion will be self-attested"
-            };
-            emit_goals_changed(
-                &agent.tool_context.goal_manager,
-                &agent.tool_context.task_manager,
-                agent_goal_limits(agent),
-                &agent.runtime.events,
-            )
-            .await;
-            agent.runtime.events.send(AgentUpdate::Info(format!(
-                "🎯 Goal {} created ({}) - starting run{criteria_note}",
-                goal.id, goal.title,
-            )));
-            Some(goal.id)
-        }
-        Err(error) => {
-            emit_goal_error(
-                &agent.runtime.events,
-                format!("Goal creation failed: {error:#}"),
-            );
-            None
-        }
-    }
 }
 
 async fn update_goal_status(
@@ -1057,194 +999,6 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
     .await;
 }
 
-async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
-    let text = text.trim();
-    if text.is_empty() {
-        emit_goal_error(
-            &agent.runtime.events,
-            format!("Goal {goal_id} acceptance text must not be empty"),
-        );
-        return;
-    }
-    let manager = agent.tool_context.goal_manager.clone();
-    let goal = match manager.get(goal_id).await {
-        Ok(goal) => goal,
-        Err(error) => {
-            emit_goal_error(
-                &agent.runtime.events,
-                format!("Goal {goal_id} not found: {error:#}"),
-            );
-            return;
-        }
-    };
-    // Acceptance is a human decision, not a race with the runner. A message
-    // sent while the Goal was `waiting_user` can wake the runner and leave it
-    // `running` after a no-op activation, which used to make the hinted
-    // `/goal accept` fail. Accept the stranded `running` state too, but only
-    // when no activation is actually in flight.
-    let active_run = match manager.list_running_runs().await {
-        Ok(runs) => runs.iter().any(|run| run.goal_id == goal.id),
-        Err(error) => {
-            emit_goal_error(
-                &agent.runtime.events,
-                format!("Goal {goal_id} acceptance failed: {error:#}"),
-            );
-            return;
-        }
-    };
-    // `paused` is equally acceptable: recovery (`Running` with no active run)
-    // parks a Goal there, and a paused Goal is still a human decision away from
-    // done. Only an actual activation in flight blocks acceptance.
-    let acceptable = matches!(goal.status, GoalStatus::WaitingUser | GoalStatus::Paused)
-        || (goal.status == GoalStatus::Running && !active_run);
-    if !acceptable {
-        let suffix = if active_run {
-            " (an activation is in flight)"
-        } else {
-            ""
-        };
-        emit_goal_error(
-            &agent.runtime.events,
-            format!(
-                "Goal {goal_id} is {:?}{suffix}; acceptance requires waiting_user, paused, or an idle running Goal",
-                goal.status
-            ),
-        );
-        return;
-    }
-    let evidence: Vec<_> = goal
-        .criteria
-        .iter()
-        .filter(|criterion| {
-            // Automatic criteria are reserved (creation is refused by
-            // `GoalManager::create`), but legacy rows can still exist. An
-            // explicit human acceptance is the only supported way to close
-            // them, so it covers every pending required criterion.
-            criterion.required && !criterion.has_valid_evidence(goal.criteria_version)
-        })
-        .map(|criterion| GoalEvidenceUpdate {
-            criterion_id: criterion.id.clone(),
-            value: text.to_string(),
-        })
-        .collect();
-    if evidence.is_empty() {
-        let hint = if goal.has_required_criteria() {
-            "already accepted, or none pending"
-        } else {
-            "a Goal without acceptance criteria completes on its own"
-        };
-        emit_goal_error(
-            &agent.runtime.events,
-            format!("Goal {goal_id} has no pending required criterion ({hint})"),
-        );
-        return;
-    }
-    let first = GoalUpdate {
-        evidence,
-        // `waiting_user` / `paused` re-enter `running`; a stranded `running`
-        // Goal stays there (Running -> Running is not a transition).
-        status: matches!(goal.status, GoalStatus::WaitingUser | GoalStatus::Paused)
-            .then_some(GoalStatus::Running),
-        ..GoalUpdate::default()
-    };
-    // Verify a candidate before the transaction so the update chain can be
-    // computed up front: evidence + Running + Verifying + Succeeded must be
-    // one durable commit, otherwise a failure between the last two leaves the
-    // Goal stranded in `verifying`.
-    let mut candidate = goal.clone();
-    if let Err(error) = candidate.update(first.clone()) {
-        emit_goal_error(
-            &agent.runtime.events,
-            format!("Goal {goal_id} acceptance failed: {error:#}"),
-        );
-        return;
-    }
-    let verification = acceptance_policy_for(agent).verify(&candidate);
-    let mut updates = vec![(
-        first,
-        goal_event(
-            &goal,
-            GoalEventKind::UserAccepted,
-            Some(GoalStatus::Running),
-            text.to_string(),
-            GoalEventSource::User,
-        ),
-    )];
-    if verification == GoalVerification::Verified {
-        updates.push((
-            GoalUpdate {
-                status: Some(GoalStatus::Verifying),
-                ..GoalUpdate::default()
-            },
-            goal_event(
-                &candidate,
-                GoalEventKind::StatusChanged,
-                Some(GoalStatus::Verifying),
-                "human acceptance verified".into(),
-                tact::goal::GoalEventSource::Runner,
-            ),
-        ));
-        updates.push((
-            GoalUpdate {
-                status: Some(GoalStatus::Succeeded),
-                ..GoalUpdate::default()
-            },
-            goal_event(
-                &candidate,
-                GoalEventKind::StatusChanged,
-                Some(GoalStatus::Succeeded),
-                "accepted by user".into(),
-                tact::goal::GoalEventSource::Runner,
-            ),
-        ));
-    }
-    if let Err(error) = manager
-        .update_chain(goal_id, goal.version, updates, None)
-        .await
-    {
-        emit_goal_error(
-            &agent.runtime.events,
-            format!("Goal {goal_id} acceptance failed: {error:#}"),
-        );
-        return;
-    }
-
-    match verification {
-        GoalVerification::Verified => {
-            // The acceptance is durable now; say so in the log. Without this
-            // line the last visible message is still the "run /goal accept"
-            // instruction, which reads as if acceptance were still pending.
-            agent.emit_update(AgentUpdate::Info(format!(
-                "🎯 Goal {goal_id} accepted — succeeded"
-            )));
-        }
-        GoalVerification::Rejected { .. } => {
-            clear_cancel_for_goal_activation(agent);
-            let runner = GoalRunner::new(manager.clone(), agent_goal_limits(agent))
-                .with_acceptance(acceptance_policy_for(agent));
-            if let Err(error) = runner.run_once(agent, goal_id).await {
-                emit_goal_error(
-                    &agent.runtime.events,
-                    format!("Goal {goal_id} continuation failed: {error:#}"),
-                );
-            }
-        }
-        GoalVerification::NeedsUser { .. } => {
-            emit_goal_error(
-                &agent.runtime.events,
-                format!("Goal {goal_id} still needs additional human acceptance"),
-            );
-        }
-    }
-    emit_goals_changed(
-        &manager,
-        &agent.tool_context.task_manager,
-        agent_goal_limits(agent),
-        &agent.runtime.events,
-    )
-    .await;
-}
-
 pub async fn handle_user_command(agent: &mut Agent, cmd: UserCommand, image_work_dir: &Path) {
     handle_user_command_with_account(agent, cmd, image_work_dir, None).await;
 }
@@ -1256,17 +1010,6 @@ async fn handle_user_command_with_account(
     account_tx: Option<&UnboundedSender<AccountUpdate>>,
 ) {
     match cmd {
-        UserCommand::CreateGoal {
-            title,
-            objective,
-            criteria,
-        } => {
-            // Creation is also the start: `/goal create` must not leave a Goal
-            // that never runs (see `create_goal`).
-            if let Some(goal_id) = create_goal(agent, title, objective, criteria).await {
-                resume_goal(agent, &goal_id).await;
-            }
-        }
         UserCommand::RunCommand { name, args } => {
             // Same catalog the loop-level arm uses, so the two cannot answer
             // differently.
@@ -1278,7 +1021,7 @@ async fn handle_user_command_with_account(
             // and `/background`.
             let local_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
                 Arc::new(tokio::sync::Mutex::new(None));
-            let catalog = build_command_catalog(
+            let (catalog, mut activations) = build_command_catalog(
                 Some(agent),
                 &local_slot,
                 // The agent service path has no chat handle in scope here; the
@@ -1299,9 +1042,16 @@ async fn handle_user_command_with_account(
             }
             let invocation = tact::command::CommandInvocation { name, args };
             forward_command_outcome(&catalog.run_async(&invocation).await, &agent.runtime.events);
+            // A `/goal create` or a rejected `/goal accept` queued an activation;
+            // the command could not run it because this borrow owns the agent. Now
+            // that the catalog is done, the borrow is free to run it.
+            while let Ok(goal_id) = activations.try_recv() {
+                clear_cancel_for_goal_activation(agent);
+                resume_goal(agent, &goal_id).await;
+                agent.emit_update(AgentUpdate::TaskIdle);
+            }
         }
         UserCommand::ResumeGoal { goal_id } => resume_goal(agent, &goal_id).await,
-        UserCommand::AcceptGoal { goal_id, text } => accept_goal(agent, &goal_id, &text).await,
         UserCommand::SubmitTask(task) => {
             agent.tool_use_counter = 0;
             agent.runtime.cancel_flag.store(false, Ordering::Relaxed);
@@ -1423,7 +1173,9 @@ async fn handle_user_command_with_account(
 /// Falls back to the built-in evidence policy when no `GoalPlugin` is registered,
 /// which only happens in a fixture: the host always installs one, and a run that
 /// silently had no policy would accept on no evidence.
-fn acceptance_policy_for(agent: &tact::Agent) -> std::sync::Arc<dyn tact::goal::AcceptancePolicy> {
+pub(crate) fn acceptance_policy_for(
+    agent: &tact::Agent,
+) -> std::sync::Arc<dyn tact::goal::AcceptancePolicy> {
     tact::goal::acceptance_policy(agent.services())
         .unwrap_or_else(|_| std::sync::Arc::new(tact::goal::EvidencePolicy))
 }
@@ -1833,10 +1585,9 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::CreateGoal {
-                title: "Ship Goal UI".into(),
-                objective: "Expose supervised goal execution".into(),
-                criteria: vec!["User accepts the result".into()],
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: "create Expose supervised goal execution -- User accepts the result".into(),
             },
             &work_dir,
         )
@@ -1844,7 +1595,11 @@ mod tests {
 
         let goals = manager.list().await.unwrap();
         assert_eq!(goals.len(), 1);
-        assert_eq!(goals[0].title, "Ship Goal UI");
+        // `/goal create` takes an objective, not a title: the title is its first
+        // 80 characters, which is what the panel row can show. A typed title would
+        // be a second field the grammar has no room for.
+        assert_eq!(goals[0].title, "Expose supervised goal execution");
+        assert_eq!(goals[0].objective, "Expose supervised goal execution");
         assert_eq!(goals[0].criteria.len(), 1);
         assert!(matches!(
             goals[0].criteria[0].verification_kind,
@@ -1861,7 +1616,8 @@ mod tests {
         assert!(matches!(
             update,
             AgentUpdate::GoalsChanged { goals }
-                if goals.len() == 1 && goals[0].title == "Ship Goal UI"
+                if goals.len() == 1
+                    && goals[0].title == "Expose supervised goal execution"
         ));
 
         // The announcement carries the id: the panel row does not show it, and
@@ -1893,7 +1649,8 @@ mod tests {
         // log line, so this test covers both halves.
         let slot: std::sync::Arc<tokio::sync::Mutex<Option<tact::Agent>>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(Some(agent)));
-        let catalog = super::builtin_command_catalog(&slot, None, std::path::Path::new("/tmp"));
+        let (catalog, _activations) =
+            super::builtin_command_catalog(&slot, None, std::path::Path::new("/tmp"));
         let outcome = catalog
             .run_async(&tact::command::CommandInvocation {
                 name: "goal".into(),
@@ -1952,10 +1709,9 @@ mod tests {
         let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
 
         user_cmd_tx
-            .send(UserCommand::CreateGoal {
-                title: "Create starts".into(),
-                objective: "Start the first activation at creation time".into(),
-                criteria: Vec::new(),
+            .send(UserCommand::RunCommand {
+                name: "goal".into(),
+                args: "create Start the first activation at creation time".into(),
             })
             .unwrap();
 
@@ -2404,9 +2160,9 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::AcceptGoal {
-                goal_id: goal.id.clone(),
-                text: "Accepted after manual review".into(),
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: format!("accept {} Accepted after manual review", goal.id),
             },
             &work_dir,
         )
@@ -2676,9 +2432,9 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::AcceptGoal {
-                goal_id: goal.id.clone(),
-                text: "Accepted after the commit".into(),
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: format!("accept {} Accepted after the commit", goal.id),
             },
             &work_dir,
         )
@@ -2731,9 +2487,9 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::AcceptGoal {
-                goal_id: goal.id.clone(),
-                text: "Accepted after recovery".into(),
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: format!("accept {} Accepted after recovery", goal.id),
             },
             &work_dir,
         )
@@ -2792,9 +2548,9 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::AcceptGoal {
-                goal_id: goal.id.clone(),
-                text: "Too early".into(),
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: format!("accept {} Too early", goal.id),
             },
             &work_dir,
         )
@@ -3248,9 +3004,9 @@ mod tests {
         agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
         super::handle_user_command(
             &mut agent,
-            UserCommand::AcceptGoal {
-                goal_id: created.id.clone(),
-                text: "looks good".into(),
+            UserCommand::RunCommand {
+                name: "goal".into(),
+                args: format!("accept {} looks good", created.id),
             },
             &work_dir,
         )
@@ -3457,7 +3213,7 @@ mod tests {
         // with a view over this agent's router.
         let slot: std::sync::Arc<tokio::sync::Mutex<Option<tact::Agent>>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(Some(agent)));
-        let catalog = super::builtin_command_catalog(&slot, None, &work_dir);
+        let (catalog, _activations) = super::builtin_command_catalog(&slot, None, &work_dir);
         let outcome = catalog
             .run_async(&tact::command::CommandInvocation {
                 name: "mcp".to_string(),

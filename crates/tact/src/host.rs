@@ -137,6 +137,8 @@ pub struct HostExtras {
     /// a host that gates completion on a command or an external reviewer installs
     /// its own `GoalPlugin` instead.
     pub acceptance: Option<std::sync::Arc<dyn crate::goal::AcceptancePolicy>>,
+    /// The Goal service a command reaches.
+    pub goal_service: Option<std::sync::Arc<dyn crate::goal::service::GoalService>>,
     /// The already-opened task manager.
     pub task: Option<crate::task::SharedTaskManager>,
     /// The already-opened teammate manager.
@@ -284,9 +286,13 @@ pub fn assemble_with(options: HostOptions<'_>, mut extras: HostExtras) -> Result
     })?;
     // Goals always install, with the evidence policy as the default: the runner
     // asks the registry, so a host with no plugin would have nothing to ask.
-    host.install_sync(match extras.acceptance.clone() {
+    let goal_plugin = match extras.acceptance.clone() {
         Some(policy) => crate::goal::GoalPlugin::new(policy),
         None => crate::goal::GoalPlugin::evidence(),
+    };
+    host.install_sync(match extras.goal_service.clone() {
+        Some(service) => goal_plugin.with_service(service),
+        None => goal_plugin,
     })?;
     if let Some(manager) = extras.task.clone() {
         host.install_sync(crate::task::TaskPlugin::new(manager))?;

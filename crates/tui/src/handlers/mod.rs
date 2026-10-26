@@ -554,27 +554,14 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
 
 /// `/goal create <objective> [-- <criterion>; <criterion> ...]`.
 ///
-/// Criteria are the user's own acceptance gate: without them the Goal finishes
-/// on the model's completion proposal (self-attested, like Codex). The `--`
-/// separator keeps ordinary prose — including hyphenated words — in the
-/// objective; everything after it is split on `;`.
+/// The grammar lives in the command now: the view forwards the raw text and
+/// `/goal create` parses it, so the two cannot disagree about where the objective
+/// ends. That is the whole point of the transport carrying a name and arguments
+/// instead of a typed payload.
 fn create_goal_command(args: &str) -> UserCommand {
-    let (objective, criteria) = match args.split_once(" -- ") {
-        Some((objective, criteria)) => (
-            objective.trim(),
-            criteria
-                .split(';')
-                .map(str::trim)
-                .filter(|criterion| !criterion.is_empty())
-                .map(str::to_string)
-                .collect::<Vec<_>>(),
-        ),
-        None => (args.trim(), Vec::new()),
-    };
-    UserCommand::CreateGoal {
-        title: objective.chars().take(80).collect(),
-        objective: objective.to_string(),
-        criteria,
+    UserCommand::RunCommand {
+        name: "goal".to_string(),
+        args: format!("create {}", args.trim()),
     }
 }
 
@@ -631,9 +618,9 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
             if goal_id.is_empty() || text.is_empty() {
                 None
             } else {
-                Some(UserCommand::AcceptGoal {
-                    goal_id: goal_id.to_string(),
-                    text: text.to_string(),
+                Some(UserCommand::RunCommand {
+                    name: "goal".to_string(),
+                    args: format!("accept {goal_id} {text}"),
                 })
             }
         }
@@ -1846,9 +1833,9 @@ mod tests {
             ),
             (
                 "/goal accept goal-1 accepted after review",
-                UserCommand::AcceptGoal {
-                    goal_id: "goal-1".into(),
-                    text: "accepted after review".into(),
+                UserCommand::RunCommand {
+                    name: "goal".into(),
+                    args: "accept goal-1 accepted after review".into(),
                 },
             ),
         ];
@@ -1874,10 +1861,9 @@ mod tests {
         assert!(outcome.handled);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected CreateGoal"),
-            UserCommand::CreateGoal { title, objective, criteria }
-                if title == "Ship Goal UI with durable lifecycle"
-                    && objective == "Ship Goal UI with durable lifecycle"
-                    && criteria.is_empty()
+            UserCommand::RunCommand { name, args }
+                if name == "goal"
+                    && args == "create Ship Goal UI with durable lifecycle"
         ));
     }
 
@@ -1895,14 +1881,10 @@ mod tests {
         assert!(outcome.handled);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected CreateGoal"),
-            UserCommand::CreateGoal { title, objective, criteria }
-                if title == "Ship the release"
-                    && objective == "Ship the release"
-                    && criteria
-                        == vec![
-                            "the full test suite passes".to_string(),
-                            "the changelog is written".to_string(),
-                        ]
+            UserCommand::RunCommand { name, args }
+                if name == "goal"
+                    && args
+                        == "create Ship the release -- the full test suite passes; the changelog is written"
         ));
     }
 
@@ -1917,8 +1899,8 @@ mod tests {
         assert!(outcome.handled);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected CreateGoal"),
-            UserCommand::CreateGoal { objective, criteria, .. }
-                if objective == "Upgrade to rust-2024 edition" && criteria.is_empty()
+            UserCommand::RunCommand { name, args }
+                if name == "goal" && args == "create Upgrade to rust-2024 edition"
         ));
     }
 

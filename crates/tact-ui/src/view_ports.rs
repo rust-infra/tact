@@ -184,6 +184,11 @@ pub fn install_command_directory(
     slot: &tui::ports::SharedCommandDirectory,
 ) {
     let session = agent.runtime.session_id.clone();
+    // The palette only lists commands; dispatch goes through the driver, which
+    // owns the real activation queue. This channel exists so the command object can
+    // be built at all, and its receiver is dropped immediately: a catalog built for
+    // its descriptors never runs a command.
+    let (activation_tx, _unused_activations) = tokio::sync::mpsc::unbounded_channel::<String>();
     let catalog = tact::command::builtin_catalog(
         agent.runtime.stats.clone(),
         Some(tact::command::BackgroundWiring {
@@ -195,6 +200,14 @@ pub fn install_command_directory(
             task_manager: agent.tool_context.task_manager.clone(),
             limits: crate::driver::agent_goal_limits(agent),
             events: agent.runtime.events.clone(),
+            service: std::sync::Arc::new(tact::goal::service::RuntimeGoalService::new(
+                agent.tool_context.goal_manager.clone(),
+                agent.tool_context.task_manager.clone(),
+                crate::driver::agent_goal_limits(agent),
+                agent.runtime.events.clone(),
+                crate::driver::acceptance_policy_for(agent),
+                std::sync::Arc::new(tact::goal::service::QueueingActivator::new(activation_tx)),
+            )),
         }),
         // The palette offers `/compact` only when the runtime can run it.
         agent

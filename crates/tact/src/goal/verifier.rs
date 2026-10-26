@@ -281,12 +281,31 @@ impl AcceptancePolicy for EvidencePolicy {
 /// acceptance policy — the part a host legitimately disagrees about.
 pub struct GoalPlugin {
     policy: std::sync::Arc<dyn AcceptancePolicy>,
+    /// The service a command reaches, when the host built one.
+    ///
+    /// `None` in a fixture: the plugin then contributes only the policy, and
+    /// `/goal create` reports that there is no service rather than silently doing
+    /// nothing.
+    service: Option<std::sync::Arc<dyn crate::goal::service::GoalService>>,
 }
 
 impl GoalPlugin {
     /// A plugin over the given acceptance policy.
     pub fn new(policy: std::sync::Arc<dyn AcceptancePolicy>) -> Self {
-        Self { policy }
+        Self {
+            policy,
+            service: None,
+        }
+    }
+
+    /// Attach the Goal service a command reaches.
+    #[must_use]
+    pub fn with_service(
+        mut self,
+        service: std::sync::Arc<dyn crate::goal::service::GoalService>,
+    ) -> Self {
+        self.service = Some(service);
+        self
     }
 
     /// The built-in evidence policy, which is what a normal host wants.
@@ -308,7 +327,13 @@ impl tact_kernel::plugin::Plugin for GoalPlugin {
     }
 
     fn register(&self, registrar: &mut tact_kernel::plugin::Registrar<'_>) -> anyhow::Result<()> {
-        registrar.service(std::sync::Arc::new(AcceptanceHandle(self.policy.clone())))
+        registrar.service(std::sync::Arc::new(AcceptanceHandle(self.policy.clone())))?;
+        if let Some(service) = self.service.clone() {
+            registrar.service(std::sync::Arc::new(
+                crate::goal::service::GoalServiceHandle(service),
+            ))?;
+        }
+        Ok(())
     }
 }
 
