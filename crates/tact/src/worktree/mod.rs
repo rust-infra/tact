@@ -623,6 +623,16 @@ impl WorktreePlugin {
     pub fn new(manager: SharedWorktreeManager) -> Self {
         Self { manager }
     }
+
+    /// Open the plugin's own store.
+    ///
+    /// Worktrees need both a database (for lane records) and the repository the
+    /// lanes are cut from.
+    pub async fn open(db: &std::path::Path, repo: &std::path::Path) -> anyhow::Result<Self> {
+        Ok(Self::new(SharedWorktreeManager::new(
+            WorktreeManager::new(db, repo.to_path_buf()).await?,
+        )))
+    }
 }
 
 #[async_trait::async_trait]

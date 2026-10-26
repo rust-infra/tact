@@ -1638,6 +1638,13 @@ impl BackgroundPlugin {
     pub fn new(manager: SharedBackgroundManager) -> Self {
         Self { manager }
     }
+
+    /// Open the plugin's own store.
+    pub async fn open(db: &std::path::Path) -> anyhow::Result<Self> {
+        Ok(Self::new(SharedBackgroundManager::new(
+            BackgroundManager::new(db).await?,
+        )))
+    }
 }
 
 #[async_trait::async_trait]

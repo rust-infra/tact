@@ -179,6 +179,13 @@ impl TeamPlugin {
     pub fn new(manager: SharedTeammateManager) -> Self {
         Self { manager }
     }
+
+    /// Open the plugin's own store.
+    pub async fn open(db: &std::path::Path) -> anyhow::Result<Self> {
+        Ok(Self::new(SharedTeammateManager::new(
+            TeammateManager::new(db).await?,
+        )))
+    }
 }
 
 #[async_trait::async_trait]

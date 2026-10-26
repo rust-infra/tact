@@ -20,22 +20,20 @@ use std::sync::Arc;
 use anyhow::Context;
 
 use tact::{
-    Agent, AgentSystemPrompt,
-    background::{BackgroundManager, SharedBackgroundManager},
+    Agent,
+    AgentSystemPrompt,
     config::CliArgs,
     consts::TactPath,
+    // No domain manager types: each plugin opens its own, so the bootstrap never
+    // names one. That is what makes it impossible to hand a tool a handle the
+    // registry does not know about.
     goal::{GoalManager, SharedGoalManager},
     mcp::load_mcp_router_with_report,
-    memory::memory_manager,
     permission::{PermissionManager, PermissionMode, settings::PermissionSettings},
     skill::SharedSkillRegistry,
     store::DynSessionStore,
-    subagent::{SharedSubagentManager, SubagentManager},
-    task::{SharedTaskManager, TaskManager},
-    team::{SharedTeammateManager, TeammateManager},
     tool::{ToolContext, toolset_with_memory},
     ui_responder::UiResponder,
-    worktree::{SharedWorktreeManager, WorktreeManager},
 };
 use tact_llm::get_llm_client;
 use tact_protocol::{AgentUpdate, UpdateSink};
@@ -220,23 +218,17 @@ pub async fn bootstrap_session(
     notices.permission_mode(mode);
 
     let db_path = tact_path.session_db_path();
-    let task_manager = SharedTaskManager::new(TaskManager::new(&db_path).await?);
-    // One clone each for the plugin bundle: the tool context takes the originals.
-    let plugin_task = task_manager.clone();
+    // Each domain plugin opens its own store. This is deliberate: the plugin owns
+    // its domain, so it owns the construction, and the composition root never holds
+    // a handle it could hand to a tool behind the registry's back — which is what
+    // made the plugins decorative before.
+    let plugin_task = Box::new(tact::task::TaskPlugin::open(&db_path).await?);
     let goal_manager = SharedGoalManager::new(GoalManager::new(&db_path).await?);
-    let background_manager = SharedBackgroundManager::new(BackgroundManager::new(&db_path).await?);
-    // One clone for the plugin bundle: the tool context takes the original below,
-    // and the registry is what a replacement plugin would read.
-    let plugin_background = background_manager.clone();
-    let teammate_manager = SharedTeammateManager::new(TeammateManager::new(&db_path).await?);
-    let plugin_team = teammate_manager.clone();
-    let worktree_manager =
-        SharedWorktreeManager::new(WorktreeManager::new(&db_path, work_dir.clone()).await?);
-    // One clone for the plugin bundle: the tool context takes the original.
-    let plugin_worktree = worktree_manager.clone();
-    let subagent_manager = SharedSubagentManager::new(SubagentManager::new(&db_path).await?);
-    // One clone for the plugin bundle: the tool context takes the original.
-    let plugin_subagent = subagent_manager.clone();
+    let plugin_background = Box::new(tact::background::BackgroundPlugin::open(&db_path).await?);
+    let plugin_team = Box::new(tact::team::TeamPlugin::open(&db_path).await?);
+    let plugin_worktree =
+        Box::new(tact::worktree::WorktreePlugin::open(&db_path, &work_dir).await?);
+    let plugin_subagent = Box::new(tact::subagent::SubagentPlugin::open(&db_path).await?);
     // Memory is scoped to the git **repository** (`~/.tact/projects/<slug>/memory`),
     // so a project fact stays inside the project that produced it. Worktrees of
     // one repository share a directory because the slug comes from the common
@@ -261,9 +253,7 @@ pub async fn bootstrap_session(
             Err(error) => notices.notice("memory", &format!("memory migration skipped: {error}")),
         }
     }
-    let memory_manager = Arc::new(std::sync::Mutex::new(memory_manager(memory_dir)?));
-    // One clone for the plugin bundle: the tool context takes the original.
-    let plugin_memory = memory_manager.clone();
+    let plugin_memory = Box::new(tact::memory::MemoryPlugin::open(&memory_dir));
     let (mcp_router, mcp_report) = load_mcp_router_with_report().await?;
     // MCP problems are collected, never fatal (one broken server must not stop
     // startup), so they have to be surfaced here — otherwise a typo'd command
@@ -367,7 +357,11 @@ pub async fn bootstrap_session(
             chat_service: Some(chat_service.clone()),
             background: Some(plugin_background),
             memory: Some(plugin_memory),
-            skills: Some(skill_registry.clone()),
+            // The skill registry is still shared with the TUI, which reloads it
+            // through `/skill reload`; the plugin registers the same handle.
+            skills: Some(Box::new(tact::skill::SkillsPlugin::new(
+                skill_registry.clone(),
+            ))),
             worktree: Some(plugin_worktree),
             subagent: Some(plugin_subagent),
             task: Some(plugin_task),

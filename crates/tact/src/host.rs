@@ -106,21 +106,21 @@ pub struct HostExtras {
     /// Opening is async and happens before the agent exists, like the session
     /// store: the host opens it and installs it here, and the registry is the
     /// single handoff.
-    pub background: Option<crate::background::SharedBackgroundManager>,
+    pub background: Option<Box<dyn tact_kernel::plugin::Plugin>>,
     /// The already-loaded memory manager.
     ///
     /// Loading reads the memory directory, so it happens before assembly for the
     /// same reason the session store does.
-    pub memory: Option<crate::memory::SharedMemoryManager>,
+    pub memory: Option<Box<dyn tact_kernel::plugin::Plugin>>,
     /// The already-scanned skill registry.
     ///
     /// Scanning reads the working directory, so it happens before assembly for the
     /// same reason the session store does.
-    pub skills: Option<crate::skill::SharedSkillRegistry>,
+    pub skills: Option<Box<dyn tact_kernel::plugin::Plugin>>,
     /// The already-built worktree manager.
-    pub worktree: Option<crate::worktree::SharedWorktreeManager>,
+    pub worktree: Option<Box<dyn tact_kernel::plugin::Plugin>>,
     /// The already-opened subagent manager.
-    pub subagent: Option<crate::subagent::SharedSubagentManager>,
+    pub subagent: Option<Box<dyn tact_kernel::plugin::Plugin>>,
     /// Where the MCP server declarations come from.
     ///
     /// `None` uses the project's configuration files, which is what a normal host
@@ -133,9 +133,9 @@ pub struct HostExtras {
     /// its own `GoalPlugin` instead.
     pub acceptance: Option<std::sync::Arc<dyn crate::goal::AcceptancePolicy>>,
     /// The already-opened task manager.
-    pub task: Option<crate::task::SharedTaskManager>,
+    pub task: Option<Box<dyn tact_kernel::plugin::Plugin>>,
     /// The already-opened teammate manager.
-    pub team: Option<crate::team::SharedTeammateManager>,
+    pub team: Option<Box<dyn tact_kernel::plugin::Plugin>>,
     /// The view this process draws.
     ///
     /// A boxed kernel `Plugin` rather than a concrete type: the view crate must not
@@ -253,20 +253,20 @@ pub fn assemble_with(options: HostOptions<'_>, mut extras: HostExtras) -> Result
     // and a host that renders them elsewhere installs its own sink instead.
     host.install_sync(crate::notifications::NotificationsPlugin::platform())?;
 
-    if let Some(manager) = extras.background.clone() {
-        host.install_sync(crate::background::BackgroundPlugin::new(manager))?;
+    if let Some(plugin) = extras.background.take() {
+        host.install_sync(plugin)?;
     }
-    if let Some(manager) = extras.memory.clone() {
-        host.install_sync(crate::memory::MemoryPlugin::new(manager))?;
+    if let Some(plugin) = extras.memory.take() {
+        host.install_sync(plugin)?;
     }
-    if let Some(registry) = extras.skills.clone() {
-        host.install_sync(crate::skill::SkillsPlugin::new(registry))?;
+    if let Some(plugin) = extras.skills.take() {
+        host.install_sync(plugin)?;
     }
-    if let Some(manager) = extras.worktree.clone() {
-        host.install_sync(crate::worktree::WorktreePlugin::new(manager))?;
+    if let Some(plugin) = extras.worktree.take() {
+        host.install_sync(plugin)?;
     }
-    if let Some(manager) = extras.subagent.clone() {
-        host.install_sync(crate::subagent::SubagentPlugin::new(manager))?;
+    if let Some(plugin) = extras.subagent.take() {
+        host.install_sync(plugin)?;
     }
     // MCP always installs: the project files are the default, so a host that does
     // not care still gets a working `/mcp list`.
@@ -281,11 +281,11 @@ pub fn assemble_with(options: HostOptions<'_>, mut extras: HostExtras) -> Result
         None => crate::goal::GoalPlugin::evidence(),
     };
     host.install_sync(goal_plugin)?;
-    if let Some(manager) = extras.task.clone() {
-        host.install_sync(crate::task::TaskPlugin::new(manager))?;
+    if let Some(plugin) = extras.task.take() {
+        host.install_sync(plugin)?;
     }
-    if let Some(manager) = extras.team.clone() {
-        host.install_sync(crate::team::TeamPlugin::new(manager))?;
+    if let Some(plugin) = extras.team.take() {
+        host.install_sync(plugin)?;
     }
     if let Some(view) = extras.view.take() {
         host.install_sync(view)?;
@@ -496,29 +496,25 @@ mod tests {
             chat_service: Some(std::sync::Arc::new(
                 crate::agent::chat::RuntimeChatService::new(slot.clone(), cancel_flag),
             )),
-            background: Some(crate::background::SharedBackgroundManager::new(
-                crate::background::BackgroundManager::new(&db)
+            // Built through each plugin's own `open`: the plugin owns its store,
+            // which is the property this test exists to demonstrate.
+            background: Some(Box::new(
+                crate::background::BackgroundPlugin::open(&db)
                     .await
                     .unwrap(),
             )),
-            memory: Some(crate::memory::shared_memory_manager(
-                crate::memory::MemoryManager::new(dir.clone()),
-            )),
-            skills: Some(crate::skill::shared_skill_registry(&dir).unwrap()),
-            worktree: Some(crate::worktree::SharedWorktreeManager::new(
-                crate::worktree::WorktreeManager::new(&db, dir.clone())
+            memory: Some(Box::new(crate::memory::MemoryPlugin::open(&dir))),
+            skills: Some(Box::new(crate::skill::SkillsPlugin::open(&dir).unwrap())),
+            worktree: Some(Box::new(
+                crate::worktree::WorktreePlugin::open(&db, &dir)
                     .await
                     .unwrap(),
             )),
-            subagent: Some(crate::subagent::SharedSubagentManager::new(
-                crate::subagent::SubagentManager::new(&db).await.unwrap(),
+            subagent: Some(Box::new(
+                crate::subagent::SubagentPlugin::open(&db).await.unwrap(),
             )),
-            task: Some(crate::task::SharedTaskManager::new(
-                crate::task::TaskManager::new(&db).await.unwrap(),
-            )),
-            team: Some(crate::team::SharedTeammateManager::new(
-                crate::team::TeammateManager::new(&db).await.unwrap(),
-            )),
+            task: Some(Box::new(crate::task::TaskPlugin::open(&db).await.unwrap())),
+            team: Some(Box::new(crate::team::TeamPlugin::open(&db).await.unwrap())),
             ..HostExtras::default()
         };
 

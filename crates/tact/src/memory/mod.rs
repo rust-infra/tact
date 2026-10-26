@@ -1193,6 +1193,11 @@ impl MemoryPlugin {
     pub fn new(manager: SharedMemoryManager) -> Self {
         Self { manager }
     }
+
+    /// Open the plugin's own repository-scoped store.
+    pub fn open(dir: &std::path::Path) -> Self {
+        Self::new(shared_memory_manager(MemoryManager::new(dir.to_path_buf())))
+    }
 }
 
 #[async_trait::async_trait]

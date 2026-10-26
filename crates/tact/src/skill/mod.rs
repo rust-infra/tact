@@ -1165,6 +1165,11 @@ impl SkillsPlugin {
     pub fn new(registry: SharedSkillRegistry) -> Self {
         Self { registry }
     }
+
+    /// Discover the plugin's own skill catalog.
+    pub fn open(dir: &std::path::Path) -> anyhow::Result<Self> {
+        Ok(Self::new(shared_skill_registry(dir)?))
+    }
 }
 
 #[async_trait::async_trait]

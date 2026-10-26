@@ -795,6 +795,13 @@ impl SubagentPlugin {
     pub fn new(manager: SharedSubagentManager) -> Self {
         Self { manager }
     }
+
+    /// Open the plugin's own store.
+    pub async fn open(db: &std::path::Path) -> anyhow::Result<Self> {
+        Ok(Self::new(SharedSubagentManager::new(
+            SubagentManager::new(db).await?,
+        )))
+    }
 }
 
 #[async_trait::async_trait]

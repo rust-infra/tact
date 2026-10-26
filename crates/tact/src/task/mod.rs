@@ -713,6 +713,16 @@ impl TaskPlugin {
     pub fn new(manager: SharedTaskManager) -> Self {
         Self { manager }
     }
+
+    /// Open the plugin's own store.
+    ///
+    /// The plugin owns its domain, so it owns the construction: a caller that has a
+    /// database path should not also have to know that a task manager exists.
+    pub async fn open(db: &std::path::Path) -> anyhow::Result<Self> {
+        Ok(Self::new(SharedTaskManager::new(
+            TaskManager::new(db).await?,
+        )))
+    }
 }
 
 #[async_trait::async_trait]

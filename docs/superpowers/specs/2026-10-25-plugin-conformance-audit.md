@@ -60,12 +60,14 @@ Consequences, each covered by a test:
   missing, because a child that cannot be cancelled or recorded is worse than a clear
   refusal.
 
-What is still not exclusive: the *construction* of each manager still lives in
-`session_bootstrap`, which hands it to the plugin through `HostExtras`. The plugin owns
-the registration and is now the only source the tools read, but a plugin cannot yet
-create its own store. Closing that means each plugin takes a path instead of a manager
-(async constructors run before install), which is a further refactor with no user-facing
-effect today.
+3. **Each plugin constructs what it owns.** `TaskPlugin::open(db)`,
+   `TeamPlugin::open(db)`, `BackgroundPlugin::open(db)`, `SubagentPlugin::open(db)`,
+   `WorktreePlugin::open(db, repo)`, `MemoryPlugin::open(dir)` and
+   `SkillsPlugin::open(dir)` own their store, and `HostExtras` carries plugin objects
+   rather than managers. The design's "Owns" column is now literally true, and the
+   bootstrap cannot hand a tool a handle the registry does not know about — it no
+   longer names a single domain manager type, which the compiler enforces by warning
+   on the imports.
 
 ---
 
