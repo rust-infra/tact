@@ -98,6 +98,19 @@ impl TryFrom<DriverMessage> for Command {
             DriverMessage::RunCommand { name, args } if name == "permission" => {
                 Ok(Self::SetPermissionMode(args))
             }
+            // `/stats` takes no argument, so an argument means this is not the
+            // built-in the kit drives.
+            DriverMessage::RunCommand { name, args } if name == "stats" && args.is_empty() => {
+                Ok(Self::QueryStats)
+            }
+            // `/background` with no argument lists; with one it selects that id.
+            DriverMessage::RunCommand { name, args } if name == "background" => {
+                Ok(Self::QueryBackground(if args.is_empty() {
+                    None
+                } else {
+                    Some(args)
+                }))
+            }
             DriverMessage::RunCommand { name, args } if name == "thinking" => {
                 args.parse().map(Self::SetThinkingBudget).map_err(|_| ())
             }

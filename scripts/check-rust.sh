@@ -29,8 +29,12 @@ cargo clippy --all-targets -- -D warnings
 # which matters because this script's stdout is read by humans *and* pasted into
 # agent transcripts. libtest still prints the full failure block and the
 # `test result:` summary in quiet mode, so a red run stays diagnosable.
-echo "==> cargo test -p tact-ui -p tui -p tact -p tact_llm -p tact_kernel"
-cargo test -p tact-ui -p tui -p tact -p tact_llm -p tact_kernel --quiet
+# Every workspace member is tested. `agent_tui_kit` and `protocol` used to be
+# compiled as dependencies but never tested here, which is how a broken
+# `Command` <-> `DriverMessage` round-trip survived a green gate.
+echo "==> cargo test for every workspace member"
+cargo test -p tact-ui -p tui -p tact -p tact_llm -p tact_kernel \
+  -p agent_tui_kit -p tact_protocol -p tool_refactor_macros --quiet
 cargo test -p tact --test plugin_contracts --quiet
 cargo test -p tact --test execution_parity --quiet
 
