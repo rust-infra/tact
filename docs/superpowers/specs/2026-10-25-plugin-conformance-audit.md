@@ -86,17 +86,18 @@ methods and only two have both a production producer and a production consumer:
 | `view` | `TuiPlugin`, `HeadlessPlugin` | `view_plugin::attached` | delivered |
 | `tool` | `FamilyPlugin` (12 families) | `runtime.tools()` → `ToolCatalog` → executor | delivered |
 | `command` | `PermissionPlugin` — owns the manager `/permission` writes through | the driver merges `Agent::commands()` into its catalog | delivered |
-| `prompt_section` | `SectionPlugin` — **installed only in its own test** | production renders a Tera template (`crate::prompt`) | bypassed |
+| `prompt_section` | `install_fragments` — every `builtin.prompt.*` fragment becomes a section | `build_system_prompt` reads them back through the catalog | delivered |
 
-One contribution claim remains undelivered, and one named contract has no producer:
+No contribution claim is undelivered now, and one named contract has no producer:
 
-- `SkillsPlugin` → "skills prompt section", `MemoryPlugin` → "memory prompt section",
-  `McpPlugin` → "MCP instructions prompt section": all three are rendered by the Tera
-  template from live context, so `PromptCatalog` is never read on the production path.
-  `PromptContext` carries only `workspace` and `session_id`, so a section cannot see the
-  skills registry or the memory index it would have to render — wiring this properly
-  means either extending that context or letting each section render from its own
-  plugin's state, and then moving the template's three sections into plugins.
+- The prompt sections are contributed: `build_system_prompt` builds the fragments and
+  passes them through `install_fragments`, so each becomes a `builtin.prompt.*` section
+  and the catalog decides which survive the capability filter before `apply` writes
+  them into the template. The comment in that function claimed this had always been
+  true; it had not, and the list went straight to `apply`. What is still not
+  plugin-owned is the *content* of the three domain fragments: a `PromptFragment`
+  carries a `String`, so skills and memory are computed by the agent and handed over
+  rather than rendered by the plugin that owns the registry.
 - `CommandSource` now exists and is tested but has no producer: `/mcp prompts` is still
   a hand-written command.
 

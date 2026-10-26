@@ -3158,6 +3158,15 @@ impl Agent {
                 advisory,
             )),
         ];
+        // Through the catalog, not straight to the builder: each fragment is a
+        // `builtin.prompt.*` section, so the capability filter decides which ones
+        // this host serves and a replacement plugin can drop or reorder one. The
+        // comment above claimed this was already true; it was not, and the list
+        // went to `apply` unchanged.
+        let fragments = crate::agent::prompt_sections::install_fragments(
+            fragments,
+            self.capability_filter().clone(),
+        )?;
         let prompt = crate::agent::prompt_sections::apply(prompt_builder, &fragments)?;
 
         prompt
