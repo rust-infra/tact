@@ -441,14 +441,24 @@ impl CommandCatalog {
                     incomplete: candidate.incomplete,
                 })
                 .collect(),
+            // Through `descriptors`, not the native map: a source-contributed
+            // command is listed and dispatchable, so a prefix that cannot complete
+            // it would be the one place it is invisible. Completion is discovery,
+            // so it offers everything the catalog knows; dispatch still applies the
+            // filter when the user presses Enter.
+            // Through `descriptors`, not the native map: a source-contributed
+            // command is listed and dispatchable, so a prefix that cannot complete
+            // it would be the one place it is invisible. Completion is discovery,
+            // so it offers everything the catalog knows; dispatch still applies the
+            // filter when the user presses Enter.
             _ => self
-                .commands
-                .values()
-                .filter(|command| command.meta().name.starts_with(name))
-                .map(|command| CommandCandidate {
-                    path: command.meta().name.clone(),
-                    detail: command.meta().summary.clone(),
-                    incomplete: command.meta().needs_args,
+                .descriptors()
+                .into_iter()
+                .filter(|meta| meta.name.starts_with(name))
+                .map(|meta| CommandCandidate {
+                    path: meta.name,
+                    detail: meta.summary,
+                    incomplete: meta.needs_args,
                 })
                 .collect(),
         }
@@ -646,6 +656,24 @@ mod tests {
         // The listing carries both, so a palette shows what can actually run.
         let names: Vec<String> = catalog.descriptors().into_iter().map(|m| m.name).collect();
         assert_eq!(names, vec!["native".to_string(), "remote".to_string()]);
+    }
+
+    #[test]
+    fn a_source_command_completes_by_prefix() {
+        // Listing and dispatch both reach the source; if completion did not, the
+        // one gesture a user tries first (`/` then a prefix) would be the one that
+        // cannot find an installed command.
+        let catalog = CommandCatalog::default();
+        catalog.add_source(Arc::new(OneCommandSource {
+            id: "mcp",
+            command: Arc::new(FixedCommand::new("mcp__docs__summarise", &[])),
+        }));
+        let completed: Vec<String> = catalog
+            .complete("mcp__do")
+            .into_iter()
+            .map(|candidate| candidate.path)
+            .collect();
+        assert_eq!(completed, vec!["mcp__docs__summarise".to_string()]);
     }
 
     #[test]
