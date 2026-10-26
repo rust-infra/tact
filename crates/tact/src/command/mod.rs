@@ -25,13 +25,11 @@ pub mod hooks;
 pub mod mcp;
 pub mod mcp_prompts;
 pub mod permission;
-pub mod plugin;
 pub mod settings;
 pub mod stats;
 
 pub use background::BackgroundCommand;
 pub use goal::GoalCommand;
-pub use plugin::CommandPlugin;
 pub use stats::StatsCommand;
 
 pub use tact_kernel::capability::command::{CommandInvocation, CommandOutcome, Emitted};

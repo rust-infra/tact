@@ -98,12 +98,13 @@ fi
 echo
 echo "=== 12. Contribution kinds: producer and consumer ==="
 # A contribution kind that no plugin produces, or that production never reads, is
-# kernel API that the migration did not use. Each row states both halves.
+# kernel API the migration did not use. Each row names both halves.
 for m in service tool command prompt_section view; do
   producers=$(grep -rn "registrar\.$m(" crates --include=*.rs | grep -v 'tact_kernel/src' | wc -l | tr -d ' ')
   printf '  %-16s producers: %s\n' "$m" "$producers"
 done
-printf '  %-16s %s\n' "CommandPlugin" "$(grep -rn 'CommandPlugin' crates --include=*.rs | grep -v 'command/plugin.rs' | grep -v 'pub use plugin' | wc -l | tr -d ' ') install site(s) outside its own module"
-printf '  %-16s %s\n' "SectionPlugin" "$(grep -rn 'SectionPlugin' crates --include=*.rs | grep 'install_sync' | wc -l | tr -d ' ') install site(s) (both inside its own test module)"
-# Exact accessor, so the count cannot be inflated by an unrelated `.prompts()`.
+# Prompt sections are produced per prompt build, not at assembly: the fragments carry
+# per-turn content, so `install_fragments` installs them and reads the surviving ones
+# back out of the catalog.
+grep -n 'install_fragments(' crates/tact/src/agent/mod.rs | sed 's/^/  production caller: /'
 grep -rn '\.sections()' crates --include=*.rs | sed 's/^/  sections() consumer: /'
