@@ -166,6 +166,11 @@ impl AssembledRuntime {
         &self.filter
     }
 
+    /// The commands the installed plugins contributed.
+    pub fn commands(&self) -> &tact_kernel::catalog::CommandCatalog {
+        self.runtime.commands()
+    }
+
     pub fn services(&self) -> &ServiceRegistry {
         &self.services
     }
@@ -549,6 +554,14 @@ mod tests {
         // `chat_service`) are not expected here: each needs a snapshot or a slot
         // this test does not build, and `assembly_installs_in_dependency_order`
         // covers their position.
+        // A command its domain owns travels through the plugin, not a catalog the
+        // driver assembles: `/permission` writes through the manager this plugin
+        // holds, so a host with a different manager must get a different command.
+        assert!(
+            assembled.commands().get("permission").is_some(),
+            "PermissionPlugin must contribute /permission"
+        );
+
         let ids = assembled.plugin_ids();
         for expected in [
             "builtin.storage",

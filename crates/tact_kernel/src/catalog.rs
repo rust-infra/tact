@@ -243,6 +243,20 @@ impl CommandCatalog {
         Ok(())
     }
 
+    /// Merge another catalog's native commands into this one.
+    ///
+    /// Used by a host that composes a catalog from two sources: the plugins'
+    /// contributions (already sealed into a `CommandCatalog`) and the commands
+    /// assembled from live runtime state. Duplicate names are an error rather
+    /// than a silent shadow, because a shadowed `/permission` is a bug nobody
+    /// would see.
+    pub fn extend_from(&mut self, other: &Self) -> anyhow::Result<()> {
+        for command in other.commands.values() {
+            self.insert(command.clone())?;
+        }
+        Ok(())
+    }
+
     /// Resolve a command, native first.
     ///
     /// A native command shadows a source command of the same name, matching

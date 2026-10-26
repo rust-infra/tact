@@ -57,6 +57,12 @@ impl Plugin for PermissionPlugin {
     fn register(&self, registrar: &mut Registrar<'_>) -> Result<()> {
         let service = ManagerPermissionService::new(self.manager.handle())
             .with_ui_available(self.ui_available.clone());
+        // The command lives with the domain that owns it, not in a catalog the
+        // driver assembles: `/permission` writes through this manager, so a host
+        // that installs a different manager must get a different command.
+        registrar.command(crate::command::permission::PermissionCommand::new(
+            self.manager.clone(),
+        ))?;
         registrar.service(Arc::new(service))
     }
 }

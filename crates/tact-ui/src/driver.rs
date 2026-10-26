@@ -324,7 +324,7 @@ fn build_command_catalog(
         || std::sync::Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
         |agent| agent.runtime.stats.clone(),
     );
-    let catalog = tact::command::builtin_catalog(
+    let builtins = tact::command::builtin_catalog(
         stats,
         tact::command::CatalogWirings {
             background,
@@ -338,12 +338,21 @@ fn build_command_catalog(
                 catalog: std::sync::Arc::new(RuntimeMcpCatalog { slot: slot.clone() }),
                 render: std::sync::Arc::new(crate::mcp_cli::render_live_listing),
             }),
-            permission: agent.map(|agent| agent.runtime.permission_manager.clone()),
             settings: Some(std::sync::Arc::new(
                 tact::agent::settings_service::QueueingSettings::new(settings_tx),
             )),
         },
     );
+    // Start from what the plugins contributed and add the commands assembled from
+    // live runtime state. A domain that owns its command (`/permission`) puts it in
+    // the registry, so a host with a different manager gets a different command
+    // rather than a second one pointing at the old manager.
+    let mut catalog = agent.map_or_else(tact::command::CommandCatalog::default, |agent| {
+        agent.commands().clone()
+    });
+    catalog
+        .extend_from(&builtins)
+        .expect("plugin and built-in command names never collide");
     // The filter travels with the catalog so dispatch applies the same rule the
     // listing does: a command the host disabled must not run when typed.
     let filter = agent.map_or_else(

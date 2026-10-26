@@ -156,8 +156,6 @@ pub struct CatalogWirings {
     pub hooks: Option<HooksWiring>,
     /// `/mcp list` and `/mcp prompts` read the router; the host supplies the view.
     pub mcp: Option<McpWiring>,
-    /// `/permission` writes through the manager the whole runtime shares.
-    pub permission: Option<crate::permission::SharedPermissionManager>,
     /// `/model`, `/thinking` and `/effort` record a change for the host to apply.
     pub settings: Option<Arc<dyn crate::agent::settings_service::SettingsService>>,
 }
@@ -172,7 +170,6 @@ pub fn builtin_catalog(
         chat,
         hooks,
         mcp,
-        permission,
         settings,
     } = wirings;
     let mut catalog = tact_kernel::catalog::CommandCatalog::default();
@@ -199,11 +196,6 @@ pub fn builtin_catalog(
                 )))
                 .expect("built-in command names are unique");
         }
-    }
-    if let Some(permission) = permission {
-        catalog
-            .insert(permission::wiring(permission))
-            .expect("built-in command names are unique");
     }
     if let Some(mcp) = mcp {
         catalog

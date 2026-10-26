@@ -248,7 +248,6 @@ pub fn install_command_directory(
                 catalog: std::sync::Arc::new(crate::driver::EmptyMcpCatalog),
                 render: std::sync::Arc::new(crate::mcp_cli::render_live_listing),
             }),
-            permission: Some(agent.runtime.permission_manager.clone()),
             settings: Some(std::sync::Arc::new(
                 tact::agent::settings_service::QueueingSettings::new(settings_tx),
             )),

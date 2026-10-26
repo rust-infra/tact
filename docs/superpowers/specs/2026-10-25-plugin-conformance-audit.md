@@ -85,23 +85,26 @@ methods and only two have both a production producer and a production consumer:
 | `service` | 24 sites | `rebind_from`, `policy::resolve`, command wirings | delivered |
 | `view` | `TuiPlugin`, `HeadlessPlugin` | `view_plugin::attached` | delivered |
 | `tool` | `FamilyPlugin` (12 families) | `runtime.tools()` → `ToolCatalog` → executor | delivered |
-| `command` | `CommandPlugin` — **never installed** | the driver builds its catalog from `CatalogWirings` instead | bypassed |
+| `command` | `PermissionPlugin` — owns the manager `/permission` writes through | the driver merges `Agent::commands()` into its catalog | delivered |
 | `prompt_section` | `SectionPlugin` — **installed only in its own test** | production renders a Tera template (`crate::prompt`) | bypassed |
 
-So three of the design's per-plugin contribution claims are not delivered by the plugin
-mechanism:
+Two contribution claims remain undelivered, plus one named contract with no producer:
 
 - `SkillsPlugin` → "skills prompt section", `MemoryPlugin` → "memory prompt section",
   `McpPlugin` → "MCP instructions prompt section": all three are rendered by the Tera
   template from live context, so `PromptCatalog` is never read on the production path.
-- `McpPlugin` → `CommandSource`: never built; `/mcp prompts` is a hand-written command.
-- `AgentPlugin` → `AgentFactory`: never built; `spawn_subagent` assembles the child.
+  `PromptContext` carries only `workspace` and `session_id`, so a section cannot see the
+  skills registry or the memory index it would have to render — wiring this properly
+  means either extending that context or letting each section render from its own
+  plugin's state, and then moving the template's three sections into plugins.
+- `AgentFactory`: never built; `spawn_subagent` assembles the child directly.
+- `CommandSource` now exists and is tested but has no producer: `/mcp prompts` is still
+  a hand-written command.
 
-This does not make the capability missing — a user still gets skills in the prompt and
+None of this makes the capability missing — a user still gets skills in the prompt and
 `/mcp prompts` still works. It makes the *mechanism* different from the design, and it
-means a plugin cannot add a prompt section or a command by registering one. That is the
-real answer to "many things are not done well", and it is a design decision to accept
-or to close, not a bug to fix silently.
+means a plugin cannot add a prompt section by registering one. That is a design decision
+to accept or to close, not a bug to fix silently.
 
 ---
 

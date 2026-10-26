@@ -1052,6 +1052,15 @@ impl Agent {
         self.plugins.services()
     }
 
+    /// The commands the installed plugins contributed.
+    ///
+    /// A domain that owns a command puts it here, so a host composing its own
+    /// catalog merges this rather than rebuilding the command itself — which
+    /// would give it a second, possibly different, manager to write through.
+    pub fn commands(&self) -> &tact_kernel::catalog::CommandCatalog {
+        self.plugins.commands()
+    }
+
     /// The capability filter this Agent was assembled with.
     ///
     /// A consumer that lists capabilities (the palette) must apply this, or a
