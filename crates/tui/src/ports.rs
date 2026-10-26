@@ -384,76 +384,80 @@ mod tests {
         }
     }
 
-    /// The view's production code reaches skills only through this port.
+    /// The view's production code names no extension type at all.
     ///
-    /// This is the property that lets `tui` be compiled without the extension
-    /// crate: the registry, its discovery rules and its frontmatter parsing stay
-    /// with the plugin that owns them. A `tact::skill` in the production region
-    /// would quietly restore the edge the port exists to remove.
+    /// This is the property that lets `tui` compile without `tact` and `tact_llm`:
+    /// the registries, discovery rules and frontmatter parsing stay with the plugins
+    /// that own them, and the view reaches every one of them through a port in
+    /// `crate::ports`. A `tact::` in the production region would quietly restore the
+    /// edge the ports exist to remove.
+    ///
+    /// Stronger than the two prefix checks it replaces, in two ways that mattered:
+    /// those scanned only the top-level `src/*.rs` and skipped `handlers/` and
+    /// `widgets/`, where most of the view lives; and they named `tact::skill` and
+    /// `tact::ui_responder` individually, so any other `tact::` path was invisible.
     #[test]
-    fn production_code_reaches_skills_only_through_the_port() {
-        let mut offenders = Vec::new();
-        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))
-            .expect("the source directory is readable")
-        {
-            let path = entry.expect("a directory entry").path();
-            if path.is_dir() {
-                continue;
-            }
-            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).expect("a readable source file");
-            // The test modules may still use the real registry to build fixtures;
-            // what matters is that production code does not.
-            let production = text.split("#[cfg(test)]").next().unwrap_or_default();
-            if production.contains("tact::skill") {
-                offenders.push(
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                );
-            }
-        }
-        assert!(
-            offenders.is_empty(),
-            "these files reach into tact::skill from production code: {offenders:?}"
-        );
-    }
+    fn production_code_names_no_extension_type() {
+        let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
 
-    /// The view's production code reaches interaction only through this port.
-    ///
-    /// The runtime's responder is one implementation; a view that named it
-    /// directly could not be driven by anything else, and the reverse
-    /// `DriverMessage::UiResponse` path would have to stay alive beside it.
-    #[test]
-    fn production_code_reaches_interaction_only_through_the_port() {
-        let mut offenders = Vec::new();
-        for entry in std::fs::read_dir(concat!(env!("CARGO_MANIFEST_DIR"), "/src"))
-            .expect("the source directory is readable")
-        {
-            let path = entry.expect("a directory entry").path();
-            if path.is_dir() {
+        // A `#[cfg(..)] mod name;` in `lib.rs` means that file is not production:
+        // `test_fixtures` is the one that matters, and it is gated rather than
+        // marked with `#[cfg(test)]` inside the file.
+        let lib = std::fs::read_to_string(root.join("lib.rs")).expect("lib.rs is readable");
+        let mut gated = std::collections::BTreeSet::new();
+        let mut previous_was_cfg = false;
+        for line in lib.lines() {
+            let line = line.trim();
+            if line.starts_with("#[cfg(") {
+                previous_was_cfg = true;
                 continue;
             }
-            if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
-                continue;
-            }
-            let text = std::fs::read_to_string(&path).expect("a readable source file");
-            let production = text.split("#[cfg(test)]").next().unwrap_or_default();
-            if production.contains("tact::ui_responder") {
-                offenders.push(
-                    path.file_name()
-                        .and_then(|name| name.to_str())
-                        .unwrap_or_default()
+            if previous_was_cfg && line.starts_with("mod ") {
+                gated.insert(
+                    line.trim_start_matches("mod ")
+                        .trim_end_matches(';')
                         .to_string(),
                 );
+            }
+            previous_was_cfg = false;
+        }
+
+        let mut offenders = Vec::new();
+        let mut stack = vec![root];
+        while let Some(dir) = stack.pop() {
+            for entry in std::fs::read_dir(&dir).expect("a readable directory") {
+                let path = entry.expect("a directory entry").path();
+                if path.is_dir() {
+                    stack.push(path);
+                    continue;
+                }
+                if path.extension().and_then(|ext| ext.to_str()) != Some("rs") {
+                    continue;
+                }
+                let stem = path
+                    .file_stem()
+                    .and_then(|name| name.to_str())
+                    .unwrap_or_default();
+                if gated.contains(stem) {
+                    continue;
+                }
+                let text = std::fs::read_to_string(&path).expect("a readable source file");
+                // The test modules inside a production file may use the real types
+                // to build fixtures; what matters is that production code does not.
+                let production = text.split("#[cfg(test)]").next().unwrap_or_default();
+                for (index, line) in production.lines().enumerate() {
+                    if line.trim_start().starts_with("//") {
+                        continue;
+                    }
+                    if line.contains("tact::") {
+                        offenders.push(format!("{}:{}", path.display(), index + 1));
+                    }
+                }
             }
         }
         assert!(
             offenders.is_empty(),
-            "these files reach into tact::ui_responder from production code: {offenders:?}"
+            "these lines reach an extension type from production code: {offenders:#?}"
         );
     }
 
