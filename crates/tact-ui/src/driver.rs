@@ -245,6 +245,7 @@ fn builtin_command_catalog(
 ) -> (
     tact::command::CommandCatalog,
     tokio::sync::mpsc::UnboundedReceiver<String>,
+    tokio::sync::mpsc::UnboundedReceiver<tact::agent::settings_service::SettingsChange>,
 ) {
     // The loop holds the slot, so this lock is uncontended here.
     let guard = slot.try_lock().expect("the loop owns the slot here");
@@ -265,12 +266,16 @@ fn build_command_catalog(
 ) -> (
     tact::command::CommandCatalog,
     tokio::sync::mpsc::UnboundedReceiver<String>,
+    tokio::sync::mpsc::UnboundedReceiver<tact::agent::settings_service::SettingsChange>,
 ) {
     // Running a Goal activation needs `&mut Agent`, which the caller holds while
     // the command runs. The command queues the request instead of reaching for the
     // agent, and the caller drains this receiver once its borrow is free — an
     // activator that locked the agent here would deadlock on its own lock.
     let (activation_tx, activation_rx) = tokio::sync::mpsc::unbounded_channel::<String>();
+    // Same shape for a settings change: the setters take `&mut Agent`.
+    let (settings_tx, settings_rx) =
+        tokio::sync::mpsc::unbounded_channel::<tact::agent::settings_service::SettingsChange>();
     let session = agent.and_then(|agent| agent.runtime.session_id.clone());
     let background = agent.map(|agent| tact::command::BackgroundWiring {
         manager: std::sync::Arc::new(agent.tool_context.background_manager.clone()),
@@ -299,20 +304,25 @@ fn build_command_catalog(
     );
     let catalog = tact::command::builtin_catalog(
         stats,
-        background,
-        goals,
-        chat,
-        Some(tact::command::HooksWiring {
-            work_dir: work_dir.to_path_buf(),
-            render: std::sync::Arc::new(crate::hooks_cli::render_hooks_listing),
-        }),
-        Some(tact::command::McpWiring {
-            catalog: std::sync::Arc::new(RuntimeMcpCatalog { slot: slot.clone() }),
-            render: std::sync::Arc::new(crate::mcp_cli::render_live_listing),
-        }),
-        agent.map(|agent| agent.runtime.permission_manager.clone()),
+        tact::command::CatalogWirings {
+            background,
+            goals,
+            chat,
+            hooks: Some(tact::command::HooksWiring {
+                work_dir: work_dir.to_path_buf(),
+                render: std::sync::Arc::new(crate::hooks_cli::render_hooks_listing),
+            }),
+            mcp: Some(tact::command::McpWiring {
+                catalog: std::sync::Arc::new(RuntimeMcpCatalog { slot: slot.clone() }),
+                render: std::sync::Arc::new(crate::mcp_cli::render_live_listing),
+            }),
+            permission: agent.map(|agent| agent.runtime.permission_manager.clone()),
+            settings: Some(std::sync::Arc::new(
+                tact::agent::settings_service::QueueingSettings::new(settings_tx),
+            )),
+        },
     );
-    (catalog, activation_rx)
+    (catalog, activation_rx, settings_rx)
 }
 
 /// An MCP view for a host that has no router in scope.
@@ -460,7 +470,7 @@ pub async fn run_command_loop_with_account(
     // time `auth` reloaded it.
     let agent_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
         Arc::new(tokio::sync::Mutex::new(Some(agent)));
-    let (commands, mut goal_activations) = builtin_command_catalog(
+    let (commands, mut goal_activations, mut settings_changes) = builtin_command_catalog(
         &agent_slot,
         chat.as_ref()
             .map(|chat| chat.clone() as std::sync::Arc<dyn tact::command::ChatService>),
@@ -569,7 +579,11 @@ pub async fn run_command_loop_with_account(
                 while let Ok(id) = goal_activations.try_recv() {
                     remaining.push(id);
                 }
-                if !remaining.is_empty() {
+                let mut changes: Vec<tact::agent::settings_service::SettingsChange> = Vec::new();
+                while let Ok(change) = settings_changes.try_recv() {
+                    changes.push(change);
+                }
+                if !remaining.is_empty() || !changes.is_empty() {
                     if let Some(handle) = active.take() {
                         handle.await.expect("task join panicked");
                     }
@@ -579,6 +593,11 @@ pub async fn run_command_loop_with_account(
                         let Some(task_agent) = guard.as_mut() else {
                             return;
                         };
+                        // Settings first: an activation should read the values the
+                        // user just chose.
+                        for change in changes {
+                            apply_settings_change(task_agent, change);
+                        }
                         for id in remaining {
                             clear_cancel_for_goal_activation(task_agent);
                             resume_goal(task_agent, &id).await;
@@ -1021,7 +1040,7 @@ async fn handle_user_command_with_account(
             // and `/background`.
             let local_slot: Arc<tokio::sync::Mutex<Option<Agent>>> =
                 Arc::new(tokio::sync::Mutex::new(None));
-            let (catalog, mut activations) = build_command_catalog(
+            let (catalog, mut activations, mut settings) = build_command_catalog(
                 Some(agent),
                 &local_slot,
                 // The agent service path has no chat handle in scope here; the
@@ -1042,6 +1061,13 @@ async fn handle_user_command_with_account(
             }
             let invocation = tact::command::CommandInvocation { name, args };
             forward_command_outcome(&catalog.run_async(&invocation).await, &agent.runtime.events);
+            // `/model`, `/thinking` and `/effort` queued a change: their setters
+            // take `&mut Agent`, which the command does not have and this borrow
+            // does. Applied before activations so a Goal activation reads the
+            // settings the user just chose.
+            while let Ok(change) = settings.try_recv() {
+                apply_settings_change(agent, change);
+            }
             // A `/goal create` or a rejected `/goal accept` queued an activation;
             // the command could not run it because this borrow owns the agent. Now
             // that the catalog is done, the borrow is free to run it.
@@ -1093,19 +1119,6 @@ async fn handle_user_command_with_account(
                     let _ = account_tx.send(AccountUpdate::Error(err));
                 }
             }
-        }
-        UserCommand::SetThinkingBudget(budget) => {
-            agent.set_thinking_budget(budget);
-        }
-        UserCommand::SetReasoningEffort(effort) => {
-            let parsed = effort.as_deref().and_then(|raw| raw.parse().ok());
-            if effort.is_some() && parsed.is_none() {
-                eprintln!("[driver] ignoring unparseable reasoning effort: {effort:?}");
-            }
-            agent.set_reasoning_effort(parsed);
-        }
-        UserCommand::SetModel(model) => {
-            agent.set_model(model);
         }
         UserCommand::McpAuth { server } => {
             // Stream progress lines instead of buffering them: the URL is
@@ -1165,6 +1178,19 @@ async fn handle_user_command_with_account(
             }
         },
         _ => {}
+    }
+}
+
+/// Apply one queued settings change to the agent.
+///
+/// The queues exist because the setters take `&mut Agent` and a command has none;
+/// this is the half that runs where the borrow does exist.
+fn apply_settings_change(agent: &mut Agent, change: tact::agent::settings_service::SettingsChange) {
+    use tact::agent::settings_service::SettingsChange;
+    match change {
+        SettingsChange::Model(model) => agent.set_model(model),
+        SettingsChange::ThinkingBudget(budget) => agent.set_thinking_budget(budget),
+        SettingsChange::ReasoningEffort(effort) => agent.set_reasoning_effort(effort),
     }
 }
 
@@ -1649,7 +1675,7 @@ mod tests {
         // log line, so this test covers both halves.
         let slot: std::sync::Arc<tokio::sync::Mutex<Option<tact::Agent>>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(Some(agent)));
-        let (catalog, _activations) =
+        let (catalog, _activations, _settings) =
             super::builtin_command_catalog(&slot, None, std::path::Path::new("/tmp"));
         let outcome = catalog
             .run_async(&tact::command::CommandInvocation {
@@ -3069,7 +3095,10 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::SetThinkingBudget(64_000),
+            UserCommand::RunCommand {
+                name: "thinking".into(),
+                args: "64000".into(),
+            },
             &work_dir,
         )
         .await;
@@ -3089,7 +3118,10 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::SetThinkingBudget(32_000),
+            UserCommand::RunCommand {
+                name: "thinking".into(),
+                args: "32000".into(),
+            },
             &work_dir,
         )
         .await;
@@ -3119,13 +3151,19 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::SetThinkingBudget(32_000),
+            UserCommand::RunCommand {
+                name: "thinking".into(),
+                args: "32000".into(),
+            },
             &work_dir,
         )
         .await;
         super::handle_user_command(
             &mut agent,
-            UserCommand::SetReasoningEffort(Some("high".to_string())),
+            UserCommand::RunCommand {
+                name: "effort".into(),
+                args: "high".into(),
+            },
             &work_dir,
         )
         .await;
@@ -3213,7 +3251,8 @@ mod tests {
         // with a view over this agent's router.
         let slot: std::sync::Arc<tokio::sync::Mutex<Option<tact::Agent>>> =
             std::sync::Arc::new(tokio::sync::Mutex::new(Some(agent)));
-        let (catalog, _activations) = super::builtin_command_catalog(&slot, None, &work_dir);
+        let (catalog, _activations, _settings) =
+            super::builtin_command_catalog(&slot, None, &work_dir);
         let outcome = catalog
             .run_async(&tact::command::CommandInvocation {
                 name: "mcp".to_string(),

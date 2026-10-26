@@ -25,6 +25,7 @@ pub mod hooks;
 pub mod mcp;
 pub mod permission;
 pub mod plugin;
+pub mod settings;
 pub mod stats;
 
 pub use background::BackgroundCommand;
@@ -136,20 +137,44 @@ pub struct HooksWiring {
     pub render: hooks::HooksRenderer,
 }
 
+/// The optional capabilities a host may supply to the built-in catalog.
+///
+/// One struct rather than eight positional parameters: every field is an `Option`
+/// of a different type, so a caller that swapped two of them would still compile
+/// and silently offer the wrong commands. Defaulting the whole set is also what
+/// makes "which commands does a bare host get" answerable at a glance.
+#[derive(Default)]
+pub struct CatalogWirings {
+    /// `/background`
+    pub background: Option<BackgroundWiring>,
+    /// `/goal`
+    pub goals: Option<GoalWiring>,
+    /// `/compact` needs the turn lifecycle, so a host that has one gets the
+    /// command and a host without one does not offer a command it cannot run.
+    pub chat: Option<Arc<dyn tact_kernel::runtime::ChatService>>,
+    /// `/hooks` needs a directory and a renderer, both of which the host owns.
+    pub hooks: Option<HooksWiring>,
+    /// `/mcp list` and `/mcp prompts` read the router; the host supplies the view.
+    pub mcp: Option<McpWiring>,
+    /// `/permission` writes through the manager the whole runtime shares.
+    pub permission: Option<crate::permission::SharedPermissionManager>,
+    /// `/model`, `/thinking` and `/effort` record a change for the host to apply.
+    pub settings: Option<Arc<dyn crate::agent::settings_service::SettingsService>>,
+}
+
 pub fn builtin_catalog(
     stats: Arc<std::sync::RwLock<crate::stats::SessionStats>>,
-    background: Option<BackgroundWiring>,
-    goals: Option<GoalWiring>,
-    // `/compact` needs the turn lifecycle, so a host that has one gets the
-    // command and a host without one does not offer a command it cannot run.
-    chat: Option<Arc<dyn tact_kernel::runtime::ChatService>>,
-    // `/hooks` needs a directory and a renderer, both of which the host owns.
-    hooks: Option<HooksWiring>,
-    // `/mcp list` and `/mcp prompts` read the router; the host supplies the view.
-    mcp: Option<McpWiring>,
-    // `/permission` writes through the manager the whole runtime shares.
-    permission: Option<crate::permission::SharedPermissionManager>,
+    wirings: CatalogWirings,
 ) -> tact_kernel::catalog::CommandCatalog {
+    let CatalogWirings {
+        background,
+        goals,
+        chat,
+        hooks,
+        mcp,
+        permission,
+        settings,
+    } = wirings;
     let mut catalog = tact_kernel::catalog::CommandCatalog::default();
     for command in builtin_commands(stats) {
         catalog
@@ -160,6 +185,20 @@ pub fn builtin_catalog(
         catalog
             .insert(Arc::new(compact::CompactCommand::new(chat)))
             .expect("built-in command names are unique");
+    }
+    if let Some(settings) = settings {
+        for verb in [
+            settings::SettingsVerb::Model,
+            settings::SettingsVerb::Thinking,
+            settings::SettingsVerb::Effort,
+        ] {
+            catalog
+                .insert(Arc::new(settings::SettingsCommand::new(
+                    verb,
+                    settings.clone(),
+                )))
+                .expect("built-in command names are unique");
+        }
     }
     if let Some(permission) = permission {
         catalog
@@ -275,12 +314,7 @@ mod tests {
         // unreachable even though it exists.
         let catalog = builtin_catalog(
             Arc::new(std::sync::RwLock::new(crate::stats::SessionStats::default())),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            crate::command::CatalogWirings::default(),
         );
         assert!(catalog.get("stats").is_some());
         assert!(

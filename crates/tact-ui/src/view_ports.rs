@@ -189,42 +189,49 @@ pub fn install_command_directory(
     // be built at all, and its receiver is dropped immediately: a catalog built for
     // its descriptors never runs a command.
     let (activation_tx, _unused_activations) = tokio::sync::mpsc::unbounded_channel::<String>();
+    let (settings_tx, _unused_settings) =
+        tokio::sync::mpsc::unbounded_channel::<tact::agent::settings_service::SettingsChange>();
     let catalog = tact::command::builtin_catalog(
         agent.runtime.stats.clone(),
-        Some(tact::command::BackgroundWiring {
-            manager: std::sync::Arc::new(agent.tool_context.background_manager.clone()),
-            session: std::sync::Arc::new(move || session.clone()),
-        }),
-        Some(tact::command::GoalWiring {
-            goal_manager: agent.tool_context.goal_manager.clone(),
-            task_manager: agent.tool_context.task_manager.clone(),
-            limits: crate::driver::agent_goal_limits(agent),
-            events: agent.runtime.events.clone(),
-            service: std::sync::Arc::new(tact::goal::service::RuntimeGoalService::new(
-                agent.tool_context.goal_manager.clone(),
-                agent.tool_context.task_manager.clone(),
-                crate::driver::agent_goal_limits(agent),
-                agent.runtime.events.clone(),
-                crate::driver::acceptance_policy_for(agent),
-                std::sync::Arc::new(tact::goal::service::QueueingActivator::new(activation_tx)),
+        tact::command::CatalogWirings {
+            background: Some(tact::command::BackgroundWiring {
+                manager: std::sync::Arc::new(agent.tool_context.background_manager.clone()),
+                session: std::sync::Arc::new(move || session.clone()),
+            }),
+            goals: Some(tact::command::GoalWiring {
+                goal_manager: agent.tool_context.goal_manager.clone(),
+                task_manager: agent.tool_context.task_manager.clone(),
+                limits: crate::driver::agent_goal_limits(agent),
+                events: agent.runtime.events.clone(),
+                service: std::sync::Arc::new(tact::goal::service::RuntimeGoalService::new(
+                    agent.tool_context.goal_manager.clone(),
+                    agent.tool_context.task_manager.clone(),
+                    crate::driver::agent_goal_limits(agent),
+                    agent.runtime.events.clone(),
+                    crate::driver::acceptance_policy_for(agent),
+                    std::sync::Arc::new(tact::goal::service::QueueingActivator::new(activation_tx)),
+                )),
+            }),
+            // The palette offers `/compact` only when the runtime can run it.
+            chat: agent
+                .chat_service()
+                .map(|chat| chat as std::sync::Arc<dyn tact::command::ChatService>),
+            hooks: Some(tact::command::HooksWiring {
+                work_dir: agent.tool_context.work_dir.clone(),
+                render: std::sync::Arc::new(crate::hooks_cli::render_hooks_listing),
+            }),
+            // The palette lists `/mcp`. The listing itself runs in the command
+            // loop, which holds the live router; here the catalog only needs to
+            // exist so the command is offered.
+            mcp: Some(tact::command::McpWiring {
+                catalog: std::sync::Arc::new(crate::driver::EmptyMcpCatalog),
+                render: std::sync::Arc::new(crate::mcp_cli::render_live_listing),
+            }),
+            permission: Some(agent.runtime.permission_manager.clone()),
+            settings: Some(std::sync::Arc::new(
+                tact::agent::settings_service::QueueingSettings::new(settings_tx),
             )),
-        }),
-        // The palette offers `/compact` only when the runtime can run it.
-        agent
-            .chat_service()
-            .map(|chat| chat as std::sync::Arc<dyn tact::command::ChatService>),
-        Some(tact::command::HooksWiring {
-            work_dir: agent.tool_context.work_dir.clone(),
-            render: std::sync::Arc::new(crate::hooks_cli::render_hooks_listing),
-        }),
-        // The palette lists `/mcp`. The listing itself runs in the command loop,
-        // which holds the live router; here the catalog only needs to exist so
-        // the command is offered.
-        Some(tact::command::McpWiring {
-            catalog: std::sync::Arc::new(crate::driver::EmptyMcpCatalog),
-            render: std::sync::Arc::new(crate::mcp_cli::render_live_listing),
-        }),
-        Some(agent.runtime.permission_manager.clone()),
+        },
     );
     RuntimeCommandDirectory::new(catalog).install(slot);
 }
@@ -630,12 +637,7 @@ mod tests {
     fn the_directory_lists_the_catalogs_commands() {
         let catalog = tact::command::builtin_catalog(
             Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            tact::command::CatalogWirings::default(),
         );
         let expected: Vec<String> = catalog
             .descriptors()
@@ -660,12 +662,7 @@ mod tests {
     fn resolve_answers_with_the_routed_command() {
         let catalog = tact::command::builtin_catalog(
             Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            tact::command::CatalogWirings::default(),
         );
         let directory = RuntimeCommandDirectory::new(catalog);
         let stats = tui::ports::CommandDirectory::resolve(&directory, "stats")
@@ -685,12 +682,7 @@ mod tests {
 
         let catalog = tact::command::builtin_catalog(
             Arc::new(std::sync::RwLock::new(tact::stats::SessionStats::default())),
-            None,
-            None,
-            None,
-            None,
-            None,
-            None,
+            tact::command::CatalogWirings::default(),
         );
         RuntimeCommandDirectory::new(catalog).install(&slot);
 

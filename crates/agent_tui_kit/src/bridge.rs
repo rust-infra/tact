@@ -63,9 +63,20 @@ impl From<Command> for UserCommand {
                 name: "permission".to_string(),
                 args: mode,
             },
-            Command::SetThinkingBudget(budget) => UserCommand::SetThinkingBudget(budget),
-            Command::SetReasoningEffort(effort) => UserCommand::SetReasoningEffort(effort),
-            Command::SetModel(model) => UserCommand::SetModel(model),
+            Command::SetThinkingBudget(budget) => UserCommand::RunCommand {
+                name: "thinking".to_string(),
+                args: budget.to_string(),
+            },
+            Command::SetReasoningEffort(effort) => UserCommand::RunCommand {
+                name: "effort".to_string(),
+                args: effort
+                    .map(|e| e.as_str().to_string())
+                    .unwrap_or_else(|| "none".to_string()),
+            },
+            Command::SetModel(model) => UserCommand::RunCommand {
+                name: "model".to_string(),
+                args: model,
+            },
         }
     }
 }
@@ -87,11 +98,22 @@ impl TryFrom<UserCommand> for Command {
             UserCommand::RunCommand { name, args } if name == "permission" => {
                 Ok(Self::SetPermissionMode(args))
             }
+            UserCommand::RunCommand { name, args } if name == "thinking" => {
+                args.parse().map(Self::SetThinkingBudget).map_err(|_| ())
+            }
+            UserCommand::RunCommand { name, args } if name == "effort" => {
+                if args == "none" {
+                    Ok(Self::SetReasoningEffort(None))
+                } else {
+                    args.parse()
+                        .map(|effort| Self::SetReasoningEffort(Some(effort)))
+                        .map_err(|_| ())
+                }
+            }
+            UserCommand::RunCommand { name, args } if name == "model" => Ok(Self::SetModel(args)),
+            // Every other name is one this kit does not know and cannot drive.
             UserCommand::RunCommand { .. } => Err(()),
             UserCommand::Cancel => Ok(Self::Cancel),
-            UserCommand::SetThinkingBudget(budget) => Ok(Self::SetThinkingBudget(budget)),
-            UserCommand::SetReasoningEffort(effort) => Ok(Self::SetReasoningEffort(effort)),
-            UserCommand::SetModel(model) => Ok(Self::SetModel(model)),
             UserCommand::QueryBalance => Err(()),
             // A wake-up signal routed from the TUI to the driver when a
             // background subagent finishes; not a host command for the kit.

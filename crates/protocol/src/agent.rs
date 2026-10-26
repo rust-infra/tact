@@ -647,18 +647,6 @@ pub enum UserCommand {
     ///
     /// Resume a paused/waiting Goal and start one bounded activation.
     ResumeGoal { goal_id: String },
-    /// Set the active session's thinking budget for subsequent LLM requests.
-    /// The TUI sends this after `/model` budget confirmation; config persistence
-    /// is a separate optional local flow.
-    SetThinkingBudget(usize),
-    /// Set the active agent session's reasoning effort (openai / deepseek / kimi k3).
-    /// `Some("low"|"medium"|...)` sets it; `None` clears (wire omits effort).
-    /// The TUI sends this after `/model` effort confirmation; config persistence
-    /// is a separate optional local flow.
-    SetReasoningEffort(Option<String>),
-    /// Set the active agent session's model (per-agent, not global).
-    /// The TUI sends this after `/model` model confirmation.
-    SetModel(String),
     /// A background subagent finished while the parent may be idle. The driver
     /// decides whether to drop it (parent is mid-turn — the result is already
     /// in `pending_subagent_results`) or submit a synthetic wake-up turn.
@@ -767,9 +755,6 @@ mod tests {
                 Cancel => "Cancel",
                 QueryBalance => "QueryBalance",
                 ResumeGoal { .. } => "ResumeGoal",
-                SetThinkingBudget(..) => "SetThinkingBudget",
-                SetReasoningEffort(..) => "SetReasoningEffort",
-                SetModel(..) => "SetModel",
                 SubagentFinishedNotification { .. } => "SubagentFinishedNotification",
                 CancelSubagent { .. } => "CancelSubagent",
                 McpAuth { .. } => "McpAuth",

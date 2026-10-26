@@ -5,6 +5,7 @@ mod outcome;
 pub mod plugin;
 pub mod prompt_sections;
 pub mod service;
+pub mod settings_service;
 mod tool_dispatch;
 pub(crate) mod tool_schedule;
 

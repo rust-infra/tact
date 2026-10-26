@@ -555,7 +555,10 @@ fn apply_model_and_budget_pick(
 
     match target {
         ModelTarget::Main => {
-            let _ = app.user_cmd_tx.send(UserCommand::SetModel(model.clone()));
+            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                name: "model".to_string(),
+                args: model.clone(),
+            });
             if let Some(writer) = settings_writer(app) {
                 let _ = writer.apply_model_choice(
                     crate::ports::ModelTarget::Main,
@@ -583,9 +586,10 @@ fn apply_model_and_budget_pick(
                 &model,
                 &budget_label,
             ));
-            let _ = app
-                .user_cmd_tx
-                .send(UserCommand::SetThinkingBudget(thinking_budget));
+            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                name: "thinking".to_string(),
+                args: thinking_budget.to_string(),
+            });
         }
         ModelTarget::Subagent => {
             let applied = match settings_writer(app) {
@@ -665,7 +669,10 @@ fn apply_model_and_effort_pick(
     let msgs = app.msgs();
     match target {
         ModelTarget::Main => {
-            let _ = app.user_cmd_tx.send(UserCommand::SetModel(model.clone()));
+            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                name: "model".to_string(),
+                args: model.clone(),
+            });
             if let Some(writer) = settings_writer(app) {
                 let _ = writer.apply_model_choice(
                     crate::ports::ModelTarget::Main,
@@ -682,9 +689,10 @@ fn apply_model_and_effort_pick(
             }
             app.status_bar_mut().model_reasoning_effort = Some(effort.as_str().to_string());
             app.status_bar_mut().model_thinking_budget = None; // effort semantics: budget not shown
-            let _ = app.user_cmd_tx.send(UserCommand::SetReasoningEffort(Some(
-                effort.as_str().to_string(),
-            )));
+            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                name: "effort".to_string(),
+                args: effort.as_str().to_string(),
+            });
         }
         ModelTarget::Subagent => {
             // The writer applies the model and the effort together: doing it in
