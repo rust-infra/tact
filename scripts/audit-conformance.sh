@@ -94,3 +94,16 @@ if printf '%s' "$diff" | grep -qvE '^[+-](\s*(MARKETPLACE_|Marketplace|PluginSto
 else
   echo "  marketplace.rs: import-only change (D2 extension trait); no parser or UX diff"
 fi
+
+echo
+echo "=== 12. Contribution kinds: producer and consumer ==="
+# A contribution kind that no plugin produces, or that production never reads, is
+# kernel API that the migration did not use. Each row states both halves.
+for m in service tool command prompt_section view; do
+  producers=$(grep -rn "registrar\.$m(" crates --include=*.rs | grep -v 'tact_kernel/src' | wc -l | tr -d ' ')
+  printf '  %-16s producers: %s\n' "$m" "$producers"
+done
+printf '  %-16s %s\n' "CommandPlugin" "$(grep -rn 'CommandPlugin' crates --include=*.rs | grep -v 'command/plugin.rs' | grep -v 'pub use plugin' | wc -l | tr -d ' ') install site(s) outside its own module"
+printf '  %-16s %s\n' "SectionPlugin" "$(grep -rn 'SectionPlugin' crates --include=*.rs | grep 'install_sync' | wc -l | tr -d ' ') install site(s) (both inside its own test module)"
+# Exact accessor, so the count cannot be inflated by an unrelated `.prompts()`.
+grep -rn '\.sections()' crates --include=*.rs | sed 's/^/  sections() consumer: /'
