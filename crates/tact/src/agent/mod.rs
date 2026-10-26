@@ -1,6 +1,7 @@
 //! Agent runtime: conversation loop, tool dispatch, and session state.
 
 pub mod chat;
+pub mod factory;
 mod outcome;
 pub mod plugin;
 pub mod prompt_sections;

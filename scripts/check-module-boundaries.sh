@@ -22,6 +22,17 @@ PHASE0_ALLOWLIST = {
     # edge has to be declared rather than merely appear.
 }
 
+# Edges that are not debt and are not expected to go away, kept in their own map
+# so "how much Phase-0 debt is left" stays answerable by reading one of them.
+DECLARED_EDGES = {
+    # `Agent::new` takes an `MCPToolRouter`, so the port that assembles a child
+    # cannot avoid naming the type. The *policy* stays with the caller: the spec
+    # carries the router, and `spawn_subagent` decides that a child gets an empty
+    # one. Declared rather than laundered through a re-export, because the edge is
+    # real and a renamed path would only hide it.
+    "crates/tact/src/agent/factory.rs": {"mcp"},
+}
+
 MODULES = ("skill", "memory", "mcp")
 root = Path("crates/tact/src/agent")
 if not root.is_dir():
@@ -53,7 +64,7 @@ FACADES = {
 failures = []
 for path in sorted(root.rglob("*.rs")):
     text = production_text(path.read_text())
-    allowed = PHASE0_ALLOWLIST.get(str(path), set())
+    allowed = PHASE0_ALLOWLIST.get(str(path), set()) | DECLARED_EDGES.get(str(path), set())
     for module in MODULES:
         if f"crate::{module}" not in text or module in allowed:
             continue

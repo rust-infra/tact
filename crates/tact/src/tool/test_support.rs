@@ -84,6 +84,9 @@ pub fn test_context(name: &str) -> ToolContext {
         task_manager: Some(SharedTaskManager::new(
             block_on(TaskManager::new(&db_path)).unwrap(),
         )),
+        agent_factory: Some(std::sync::Arc::new(
+            crate::agent::factory::BuiltinAgentFactory,
+        )),
         goal_manager: SharedGoalManager::new(block_on(GoalManager::new(&db_path)).unwrap()),
         active_goal_id: None,
         background_manager: Some(SharedBackgroundManager::new(

@@ -18,7 +18,10 @@ use tool_refactor_macros::tool;
 use tracing::warn;
 
 use crate::{
-    Agent, AgentSystemPrompt,
+    Agent,
+    // No `AgentSystemPrompt`: assembling the child moved to the agent factory. The
+    // router stays here because choosing an empty one for a child is the caller's
+    // policy, and `factory` may not name `crate::mcp` (module-boundary guard).
     consts::TactPath,
     extract_text,
     mcp::MCPToolRouter,
@@ -456,6 +459,16 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // subagent overrides travel with it for the same reason — they name the
     // provider and model children use, which is a property of this session's
     // configuration.
+    // How a child is built. Required rather than defaulted: a host that omitted the
+    // agent plugin has no factory, and quietly assembling one here would give it a
+    // child nobody can replace — the thing this port exists to prevent. Checked
+    // before any IO so the refusal costs nothing.
+    let Some(agent_factory) = ctx.agent_factory.clone() else {
+        anyhow::bail!(
+            "spawn_subagent is unavailable: this host has no agent factory \
+             (install AgentPlugin)"
+        );
+    };
     // Cancellation, the transcript record and the sticky overview all go through
     // this manager. A host that omits `SubagentPlugin` cannot run a child it can
     // also cancel, so it is required rather than defaulted.
@@ -631,17 +644,21 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // read-only at best; do not let a child believe it owns the parent's Goal.
     child_ctx.active_goal_id = None;
 
-    let mut subagent = Agent::new(
+    let mut subagent = agent_factory.build(crate::agent::factory::SubagentSpec {
         client,
-        child_ctx,
-        subagent_tools,
-        MCPToolRouter::new(),
-        pm,
-        AgentSystemPrompt::Static(system_prompt),
-    )
-    .with_agent_settings(agent_overrides)
-    .with_max_turns(input.max_turns)
-    .with_session(child_id.clone(), store.clone());
+        context: child_ctx,
+        tools: subagent_tools,
+        // A child gets no MCP router: its toolset is bash/read/write/edit, and
+        // handing it the parent's live connections would let it call servers the
+        // parent never enabled.
+        mcp_router: MCPToolRouter::new(),
+        permission_manager: pm,
+        system_prompt,
+        settings: agent_overrides,
+        max_turns: input.max_turns,
+        session_id: child_id.clone(),
+        store: store.clone(),
+    });
 
     // Expose the child's cooperative cancel flag so `cancel_subagent` /
     // `/subagent_cancel` / the TUI button can request cancellation. The
@@ -982,6 +999,35 @@ pub async fn wait_subagent(handles: DomainHandles, input: WaitSubagentInput) -> 
 
 #[cfg(test)]
 mod tests {
+
+    /// A host without the agent plugin cannot spawn a child, and says why.
+    ///
+    /// The check runs before any IO, so this costs nothing and proves the port is
+    /// required rather than defaulted — a default would assemble a child nobody can
+    /// replace, which is the failure the port exists to prevent.
+    #[tokio::test]
+    async fn spawning_without_an_agent_factory_is_refused_by_name() {
+        let mut context = crate::tool::test_support::test_context("no_agent_factory");
+        context.agent_factory = None;
+        let error = spawn_subagent(
+            context,
+            SubagentInput {
+                prompt: "do the thing".to_string(),
+                description: None,
+                run_in_background: None,
+                max_turns: None,
+                resume: None,
+                worktree: None,
+                skill: None,
+            },
+        )
+        .await
+        .expect_err("a host with no agent factory must refuse");
+        assert!(
+            error.to_string().contains("install AgentPlugin"),
+            "the error must name the missing plugin, got: {error}"
+        );
+    }
     use super::*;
     use crate::tool::test_support::test_context;
     use tempfile::TempDir;

@@ -156,6 +156,12 @@ pub struct ToolContext {
     pub memory_manager: Option<Arc<std::sync::Mutex<MemoryManager>>>,
     pub work_dir: PathBuf,
     pub task_manager: Option<SharedTaskManager>,
+    /// How a subagent is assembled.
+    ///
+    /// A port rather than a direct `Agent::new` call in `spawn_subagent`: the
+    /// design lists it as what the agent plugin contributes, and a host that wants
+    /// a different child should not have to fork the tool.
+    pub agent_factory: Option<Arc<dyn crate::agent::factory::AgentFactory>>,
     pub goal_manager: SharedGoalManager,
     pub active_goal_id: Option<String>,
     pub background_manager: Option<SharedBackgroundManager>,
@@ -256,6 +262,9 @@ impl ToolContext {
         }
         if let Ok(manager) = crate::subagent::subagent_manager(services) {
             self.subagent_manager = Some(manager);
+        }
+        if let Ok(factory) = crate::agent::factory::agent_factory(services) {
+            self.agent_factory = Some(factory);
         }
     }
 
@@ -1140,9 +1149,12 @@ mod tests {
         std::fs::create_dir_all(&db).unwrap();
 
         let mut context = test_context("rebind_exclusive");
-        // Start from nothing, the way a bootstrap that trusts the registry would.
+        // Start from nothing, the way a bootstrap that trusts the registry would:
+        // the fixture fills what a tool needs, and only an installed plugin may put
+        // anything back.
         context.task_manager = None;
         context.teammate_manager = None;
+        context.agent_factory = None;
 
         let mut host = tact_kernel::plugin::PluginHost::new(
             tact_kernel::capability::CapabilityFilter::default(),
@@ -1166,6 +1178,10 @@ mod tests {
         assert!(
             context.teammate_manager.is_none(),
             "a host without TeamPlugin must have no teammate manager"
+        );
+        assert!(
+            context.agent_factory.is_none(),
+            "a host without AgentPlugin must have no agent factory"
         );
     }
 

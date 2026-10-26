@@ -285,6 +285,9 @@ pub async fn bootstrap_session(
         // made the plugins decorative: a host could omit one and every tool would
         // keep reading this copy.
         skill_registry: None,
+        // Filled by the plugin registry during Agent assembly, like the seven
+        // domain handles above.
+        agent_factory: None,
         subagent_start_hooks: tact::plugin::plugin_subagent_start_hooks(tact_path.workdir())?,
         subagent_stop_hooks: tact::plugin::plugin_subagent_stop_hooks(tact_path.workdir())?,
         memory_manager: None,

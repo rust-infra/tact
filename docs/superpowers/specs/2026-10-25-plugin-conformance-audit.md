@@ -88,7 +88,7 @@ methods and only two have both a production producer and a production consumer:
 | `command` | `PermissionPlugin` — owns the manager `/permission` writes through | the driver merges `Agent::commands()` into its catalog | delivered |
 | `prompt_section` | `SectionPlugin` — **installed only in its own test** | production renders a Tera template (`crate::prompt`) | bypassed |
 
-Two contribution claims remain undelivered, plus one named contract with no producer:
+One contribution claim remains undelivered, and one named contract has no producer:
 
 - `SkillsPlugin` → "skills prompt section", `MemoryPlugin` → "memory prompt section",
   `McpPlugin` → "MCP instructions prompt section": all three are rendered by the Tera
@@ -97,7 +97,6 @@ Two contribution claims remain undelivered, plus one named contract with no prod
   skills registry or the memory index it would have to render — wiring this properly
   means either extending that context or letting each section render from its own
   plugin's state, and then moving the template's three sections into plugins.
-- `AgentFactory`: never built; `spawn_subagent` assembles the child directly.
 - `CommandSource` now exists and is tested but has no producer: `/mcp prompts` is still
   a hand-written command.
 
@@ -432,7 +431,7 @@ objects:
 |---|---|---|
 | `ToolSource` (MCP) | implemented (`McpToolSource`, `McpControlSource`) and registered | none — this row was wrong in the first draft |
 | `CommandSource` (MCP) | trait + `CommandCatalog` source support, tested; **no producer yet** | MCP prompts are still hand-written `/mcp prompts` |
-| `AgentFactory` (Agent) | nothing | `spawn_subagent` builds the child directly instead of through a factory port |
+| `AgentFactory` (Agent) | `crate::agent::factory` — `AgentPlugin` contributes it | none: `spawn_subagent` refuses by name when it is absent |
 | `ModelService` (Providers) | `ProviderInfo` snapshot | same role, different name — a rename, not a gap |
 | `DatabaseHandle` (Storage) | `StorageLocation` | same role, different name — a rename, not a gap |
 

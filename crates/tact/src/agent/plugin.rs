@@ -46,7 +46,13 @@ impl Plugin for AgentPlugin {
         // A concrete newtype, not `Arc<RuntimeAgentService>`: a `TypeId` keys the
         // registry, and `Arc<T>` is a different type from `T`, so providing the
         // `Arc` would make the handle unretrievable as the service it implements.
-        registrar.service(Arc::new(AgentServiceHandle(self.service.clone())))
+        registrar.service(Arc::new(AgentServiceHandle(self.service.clone())))?;
+        // The child-construction port travels with the loop it builds: a host that
+        // replaces the agent plugin replaces how subagents are assembled too, so
+        // `spawn_subagent` never has to know which one it is talking to.
+        registrar.service(Arc::new(crate::agent::factory::AgentFactoryHandle(
+            Arc::new(crate::agent::factory::BuiltinAgentFactory),
+        )))
     }
 }
 
