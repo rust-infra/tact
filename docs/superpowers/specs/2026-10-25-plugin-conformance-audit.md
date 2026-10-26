@@ -487,13 +487,26 @@ the dependency graph.
 
 ---
 
-## What remains, in dependency order
+## Status, in dependency order
 
-1. **Decide the neutral message model** (`TurnRequest` / `TurnOutcome` /
-   `UserMessage`). Nothing in Phase 3's remaining half can start before this;
-   item 2, 4 and 7 all name the same blocker.
-2. `AgentPlugin` / `ChatPlugin` / `CompactionPlugin` on top of that model.
-3. `View` trait + `TuiPlugin` / `HeadlessPlugin` (item 6).
-4. Move the loop-driving commands to the catalog and delete the surviving
-   `UserCommand` variants (item 7).
-5. Remove the remaining `config::settings()` readers (item 9).
+The section that was here listed five steps and said the first blocked the rest. All
+five are done, so it is replaced by what each one became — a plan that keeps describing
+finished work is the same failure as a verdict that keeps describing code nobody opened.
+
+1. **The neutral message model exists.** `tact_kernel::runtime::{TurnRequest,
+   TurnOutcome}` carries one turn, and `DriverMessage` carries what a view sends the
+   driver. The design's `UserMessage` was not built under that name; `TurnRequest`
+   holds the same content, and `chat.submit(TurnRequest::text(..))` is the path the
+   driver already uses.
+2. `AgentPlugin` / `ChatPlugin` / `CompactionPlugin` contribute `AgentService`,
+   `ChatService` and `CompactionService` as `builtin.*` ids.
+3. The `View` trait plus `TuiPlugin` and `HeadlessPlugin`, with
+   `view_plugin::attached` enforcing one view per process.
+4. Commands moved to the catalog: ten command modules, `DriverMessage` down to nine
+   runtime messages, and `PermissionPlugin` contributing `/permission` itself.
+5. `config::settings()` production readers are down to four, each a boundary read.
+
+What is left is one documented deviation rather than a step: the three domain prompt
+fragments carry a `String` the agent computes, so a plugin owns its section but not the
+content of it. That is the note at the end of §10, and it is the only place the plugin
+mechanism stops short of the design.
