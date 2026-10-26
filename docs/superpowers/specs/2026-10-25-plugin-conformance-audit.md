@@ -72,7 +72,7 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   `ChatService` owns the turn lifecycle (message assembly, Stop-hook
   continuation, completion) over the same agent slot, so a turn and a compaction
   serialise structurally rather than by convention.
-- Capability domains: **15 of 15**. `HooksPlugin`, `NotificationsPlugin`,
+- Capability domains: **14 of 15**. `HooksPlugin`, `NotificationsPlugin`,
   `BackgroundPlugin`, `MemoryPlugin`, `SkillsPlugin`, `WorktreePlugin`,
   `VoicePlugin`, `SubagentPlugin` and `McpPlugin` have plugin objects with a
   lifecycle and a resolve-by-name port. `Tools` was already done and this audit
@@ -108,11 +108,23 @@ runtime and 13 capability-domain plugins. Implemented as plugins today:
   manifest). What it buys is replacement — the code already existed, and the plugin
   is what lets a host swap it.
 
-  Twenty-eight plugin ids exist in total: the fifteen capability domains above, the
-  twelve `builtin.tools.*` families, and the policy and infrastructure plugins
-  (`security`, `permission`, `hooks`, `marketplace`, `config`, `providers`,
-  `storage`, `session_store`, `settings`). Two `impostor.*` ids are test doubles and
-  live in `#[cfg(test)]`.
+  **`VoicePlugin` was removed, and that is the honest count.** It registered a
+  service nothing resolved: the worker is spawned by the view (it owns the event
+  stream, which is single-consumer) and the plugin could not be given one at assembly
+  time. `RuntimeVoiceService` remains as the view-side implementation behind
+  `VoiceService`; what is gone is the plugin object that pretended to contribute it.
+  The same reasoning removed `SettingsPlugin` (its receiver lives in the driver) and
+  `GoalPlugin`'s service half (its activator holds the agent slot).
+
+  The rule this settles: **a plugin can only provide what exists at assembly time.**
+  A service whose state is created later — a driver-owned queue, a view-owned worker —
+  is a seam owned by whoever creates it, handed over through a wiring struct or a view
+  port, and a plugin object for it is decoration.
+
+  Twenty-five plugin ids exist in total: fourteen capability domains, the twelve
+  `builtin.tools.*` families, and the policy and infrastructure plugins (`security`,
+  `permission`, `hooks`, `marketplace`, `config`, `providers`, `storage`,
+  `session_store`). Two `impostor.*` ids are test doubles in `#[cfg(test)]`.
 
   Two of those arrived for a reason the earlier rounds did not anticipate and are
   worth naming: `builtin.settings` exists because the three settings commands needed

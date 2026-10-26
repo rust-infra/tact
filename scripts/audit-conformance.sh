@@ -11,10 +11,15 @@ bash scripts/check-architecture.sh 2>&1 | sed 's/^/  /'
 
 echo
 echo "=== 2. Capability domains have plugin objects ==="
+# Two views matter, and the source is the wrong one: a plugin can exist and never be
+# installed. The runtime inventory is asserted by
+# `every_domain_a_bootstrap_supplies_is_installed`; this lists the ids the source
+# declares, for orientation.
 ids=$(grep -rho 'PluginId::new("[a-z._]*"' crates/tact/src crates/tui/src crates/tact-ui/src --include=*.rs \
   | sed 's/PluginId::new("//;s/"//' | sort -u)
-printf 'plugins (%d):\n' "$(printf '%s\n' "$ids" | wc -l | tr -d ' ')"
+printf 'declared in source (%d):\n' "$(printf '%s\n' "$ids" | wc -l | tr -d ' ')"
 printf '%s\n' "$ids" | sed 's/^/  /'
+printf '  runtime inventory: see every_domain_a_bootstrap_supplies_is_installed\n'
 
 echo
 echo "=== 3. Tool calls route through the kernel executor ==="
