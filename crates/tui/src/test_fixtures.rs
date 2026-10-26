@@ -13,7 +13,7 @@
 
 use std::path::PathBuf;
 
-use tact_protocol::{AgentUpdate, StepResult, StepStatus, ToolPresentationInfo, UserCommand};
+use tact_protocol::{AgentUpdate, DriverMessage, StepResult, StepStatus, ToolPresentationInfo};
 use tact_protocol::{PluginEvent, PluginRequest};
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -553,7 +553,7 @@ pub struct TestApp {
     /// The app itself. Public so a render test can take it and drop the rest.
     pub app: App,
     /// What the app asked the agent to do (`/mcp`, `/hooks`, `/skill`, …).
-    user_cmds: UnboundedReceiver<UserCommand>,
+    user_cmds: UnboundedReceiver<DriverMessage>,
     /// What the app asked the plugin host to do (`/plugin reload`, …).
     plugin_requests: UnboundedReceiver<PluginRequest>,
 }
@@ -576,7 +576,7 @@ impl TestApp {
         // and a fixture that kept an agent channel alive would let a test hang
         // waiting on a stream nothing can close.
         let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
-        let (user_cmd_tx, user_cmds) = unbounded_channel::<UserCommand>();
+        let (user_cmd_tx, user_cmds) = unbounded_channel::<DriverMessage>();
         let (plugin_tx, plugin_requests) = unbounded_channel::<PluginRequest>();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel::<PluginEvent>();
         let (history_tx, _history_rx) = unbounded_channel::<(String, String)>();
@@ -621,7 +621,7 @@ impl TestApp {
     }
 
     /// Split into the app and the receiver of the commands it emitted.
-    pub fn into_commands(self) -> (App, UnboundedReceiver<UserCommand>) {
+    pub fn into_commands(self) -> (App, UnboundedReceiver<DriverMessage>) {
         (self.app, self.user_cmds)
     }
 

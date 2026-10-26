@@ -280,7 +280,7 @@ impl HeadlessApp {
         self.inner.tools().popup.is_some()
     }
 
-    pub fn user_cmd_tx(&self) -> UnboundedSender<tact_protocol::UserCommand> {
+    pub fn user_cmd_tx(&self) -> UnboundedSender<tact_protocol::DriverMessage> {
         self.inner.user_cmd_tx.clone()
     }
 

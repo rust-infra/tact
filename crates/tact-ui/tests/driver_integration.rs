@@ -4,7 +4,7 @@ use std::time::Duration;
 
 use tact::tool::test_support::write_workspace_file;
 use tact_llm::{ContentBlock, MockClient, StopReason};
-use tact_protocol::{AgentUpdate, StepStatus, UserCommand};
+use tact_protocol::{AgentUpdate, DriverMessage, StepStatus};
 use tact_ui::{
     driver::run_command_loop,
     test_support::{
@@ -59,7 +59,7 @@ async fn submit_task_emits_task_complete() {
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
     user_cmd_tx
-        .send(UserCommand::SubmitTask("Say hello".into()))
+        .send(DriverMessage::SubmitTask("Say hello".into()))
         .unwrap();
     drop(user_cmd_tx);
 
@@ -94,7 +94,7 @@ async fn submit_task_clears_stale_cancel_flag() {
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
     user_cmd_tx
-        .send(UserCommand::SubmitTask("Try again".into()))
+        .send(DriverMessage::SubmitTask("Try again".into()))
         .unwrap();
     drop(user_cmd_tx);
 
@@ -132,7 +132,7 @@ async fn submit_task_runs_read_file_tool() {
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
 
     user_cmd_tx
-        .send(UserCommand::SubmitTask("Read hello.txt".into()))
+        .send(DriverMessage::SubmitTask("Read hello.txt".into()))
         .unwrap();
     drop(user_cmd_tx);
 
@@ -176,10 +176,10 @@ async fn cancel_during_task_does_not_emit_task_complete() {
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
     user_cmd_tx
-        .send(UserCommand::SubmitTask("run sleep".into()))
+        .send(DriverMessage::SubmitTask("run sleep".into()))
         .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
-    user_cmd_tx.send(UserCommand::Cancel).unwrap();
+    user_cmd_tx.send(DriverMessage::Cancel).unwrap();
     drop(user_cmd_tx);
 
     tokio::time::timeout(Duration::from_secs(2), driver)
@@ -225,7 +225,7 @@ async fn submit_task_persists_messages_to_session_store() {
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
     user_cmd_tx
-        .send(UserCommand::SubmitTask("persist".into()))
+        .send(DriverMessage::SubmitTask("persist".into()))
         .unwrap();
     drop(user_cmd_tx);
 
@@ -265,10 +265,10 @@ async fn sequential_submit_tasks_both_complete() {
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
     user_cmd_tx
-        .send(UserCommand::SubmitTask("first".into()))
+        .send(DriverMessage::SubmitTask("first".into()))
         .unwrap();
     user_cmd_tx
-        .send(UserCommand::SubmitTask("second".into()))
+        .send(DriverMessage::SubmitTask("second".into()))
         .unwrap();
     drop(user_cmd_tx);
 
@@ -313,7 +313,7 @@ async fn submit_task_runs_write_file_tool() {
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
 
     user_cmd_tx
-        .send(UserCommand::SubmitTask("write out.txt".into()))
+        .send(DriverMessage::SubmitTask("write out.txt".into()))
         .unwrap();
     drop(user_cmd_tx);
 
@@ -359,7 +359,7 @@ async fn read_missing_file_emits_failed_step() {
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
     user_cmd_tx
-        .send(UserCommand::SubmitTask("read missing".into()))
+        .send(DriverMessage::SubmitTask("read missing".into()))
         .unwrap();
     drop(user_cmd_tx);
 
@@ -404,10 +404,10 @@ async fn cancel_emits_cancelled_by_user_info() {
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
 
     user_cmd_tx
-        .send(UserCommand::SubmitTask("slow".into()))
+        .send(DriverMessage::SubmitTask("slow".into()))
         .unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
-    user_cmd_tx.send(UserCommand::Cancel).unwrap();
+    user_cmd_tx.send(DriverMessage::Cancel).unwrap();
     drop(user_cmd_tx);
 
     tokio::time::timeout(Duration::from_secs(5), driver)

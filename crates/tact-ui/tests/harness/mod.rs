@@ -8,7 +8,7 @@ use std::sync::{
 
 use tact::permission::PermissionMode;
 use tact_llm::{ContentBlock, MockClient, StopReason};
-use tact_protocol::{AgentUpdate, TokenUsageInfo, UiResponse, UserCommand};
+use tact_protocol::{AgentUpdate, DriverMessage, TokenUsageInfo, UiResponse};
 use tact_ui::{
     driver::run_command_loop,
     test_support::{
@@ -143,7 +143,7 @@ pub async fn run_single_task_with_permission_choice(
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
 
     user_cmd_tx
-        .send(UserCommand::SubmitTask(task.into()))
+        .send(DriverMessage::SubmitTask(task.into()))
         .unwrap();
     drop(user_cmd_tx);
 
@@ -171,7 +171,7 @@ pub async fn run_single_task_with_mcp(
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
 
     user_cmd_tx
-        .send(UserCommand::SubmitTask(task.into()))
+        .send(DriverMessage::SubmitTask(task.into()))
         .unwrap();
     drop(user_cmd_tx);
 
@@ -199,7 +199,7 @@ pub async fn run_single_task_with_config(
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir.clone()));
 
     user_cmd_tx
-        .send(UserCommand::SubmitTask(task.into()))
+        .send(DriverMessage::SubmitTask(task.into()))
         .unwrap();
     drop(user_cmd_tx);
 
@@ -215,7 +215,7 @@ pub async fn run_commands<F>(
     send_cmds: F,
 ) -> (Vec<AgentUpdate>, std::path::PathBuf)
 where
-    F: FnOnce(UnboundedSender<UserCommand>) -> JoinHandle<()>,
+    F: FnOnce(UnboundedSender<DriverMessage>) -> JoinHandle<()>,
 {
     run_commands_with_permission_choice(mock, permission_mode, None, send_cmds).await
 }
@@ -228,7 +228,7 @@ pub async fn run_commands_with_permission_choice<F>(
     send_cmds: F,
 ) -> (Vec<AgentUpdate>, std::path::PathBuf)
 where
-    F: FnOnce(UnboundedSender<UserCommand>) -> JoinHandle<()>,
+    F: FnOnce(UnboundedSender<DriverMessage>) -> JoinHandle<()>,
 {
     install_test_config();
     let (agent_tx, agent_rx) = unbounded_channel();

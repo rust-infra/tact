@@ -7,7 +7,7 @@ use std::{
 
 use tact::permission::PermissionMode;
 use tact_llm::MockClient;
-use tact_protocol::UserCommand;
+use tact_protocol::DriverMessage;
 use tokio::{sync::mpsc::UnboundedSender, task::JoinHandle};
 use tui::test_support::{HeadlessApp, HeadlessSnapshots};
 
@@ -33,7 +33,7 @@ pub async fn run_headless_session<F>(
     drive: F,
 ) -> HeadlessSessionResult
 where
-    F: FnOnce(UnboundedSender<UserCommand>) -> JoinHandle<()>,
+    F: FnOnce(UnboundedSender<DriverMessage>) -> JoinHandle<()>,
 {
     run_headless_session_with_options(
         mock,
@@ -56,7 +56,7 @@ pub async fn run_headless_session_with_options<F>(
     drive: F,
 ) -> HeadlessSessionResult
 where
-    F: FnOnce(UnboundedSender<UserCommand>) -> JoinHandle<()>,
+    F: FnOnce(UnboundedSender<DriverMessage>) -> JoinHandle<()>,
 {
     install_test_config();
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();

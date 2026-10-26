@@ -253,7 +253,7 @@ fn vision_override(
 }
 
 /// Update the in-memory active model (keeps status/help in sync; the running
-/// agent is updated via `UserCommand::SetModel`).
+/// agent is updated via `DriverMessage::SetModel`).
 pub fn update_llm_model(model: String) {
     let mut guard = SETTINGS.write_recover();
     if let Some(cfg) = guard.as_mut() {

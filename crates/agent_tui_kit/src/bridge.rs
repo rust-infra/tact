@@ -1,6 +1,6 @@
 //! The in/out contract between the kit and the host project.
 
-use tact_protocol::UserCommand;
+use tact_protocol::DriverMessage;
 
 /// A user/agent command the kit sends to the host.
 ///
@@ -42,38 +42,38 @@ pub enum ExtensionCommand {
     QueryBalance,
 }
 
-impl From<Command> for UserCommand {
+impl From<Command> for DriverMessage {
     fn from(cmd: Command) -> Self {
         match cmd {
-            Command::SubmitTask(task) => UserCommand::SubmitTask(task),
-            Command::Cancel => UserCommand::Cancel,
-            Command::Compact => UserCommand::RunCommand {
+            Command::SubmitTask(task) => DriverMessage::SubmitTask(task),
+            Command::Cancel => DriverMessage::Cancel,
+            Command::Compact => DriverMessage::RunCommand {
                 name: "compact".to_string(),
                 args: String::new(),
             },
-            Command::QueryStats => UserCommand::RunCommand {
+            Command::QueryStats => DriverMessage::RunCommand {
                 name: "stats".to_string(),
                 args: String::new(),
             },
-            Command::QueryBackground(id) => UserCommand::RunCommand {
+            Command::QueryBackground(id) => DriverMessage::RunCommand {
                 name: "background".to_string(),
                 args: id.unwrap_or_default(),
             },
-            Command::SetPermissionMode(mode) => UserCommand::RunCommand {
+            Command::SetPermissionMode(mode) => DriverMessage::RunCommand {
                 name: "permission".to_string(),
                 args: mode,
             },
-            Command::SetThinkingBudget(budget) => UserCommand::RunCommand {
+            Command::SetThinkingBudget(budget) => DriverMessage::RunCommand {
                 name: "thinking".to_string(),
                 args: budget.to_string(),
             },
-            Command::SetReasoningEffort(effort) => UserCommand::RunCommand {
+            Command::SetReasoningEffort(effort) => DriverMessage::RunCommand {
                 name: "effort".to_string(),
                 args: effort
                     .map(|e| e.as_str().to_string())
                     .unwrap_or_else(|| "none".to_string()),
             },
-            Command::SetModel(model) => UserCommand::RunCommand {
+            Command::SetModel(model) => DriverMessage::RunCommand {
                 name: "model".to_string(),
                 args: model,
             },
@@ -81,27 +81,27 @@ impl From<Command> for UserCommand {
     }
 }
 
-impl TryFrom<UserCommand> for Command {
+impl TryFrom<DriverMessage> for Command {
     type Error = ();
 
-    /// Maps the generic protocol commands; [`UserCommand::QueryBalance`] is
+    /// Maps the generic protocol commands; [`DriverMessage::QueryBalance`] is
     /// extension-only and fails the conversion (route via [`ExtensionCommand`]).
-    fn try_from(cmd: UserCommand) -> Result<Self, Self::Error> {
+    fn try_from(cmd: DriverMessage) -> Result<Self, Self::Error> {
         match cmd {
-            UserCommand::SubmitTask(task) => Ok(Self::SubmitTask(task)),
+            DriverMessage::SubmitTask(task) => Ok(Self::SubmitTask(task)),
             // The kit names the commands it can drive. `/compact` is one of
             // them, so it maps back to the closed variant; anything else is a
             // name this kit does not know and cannot drive.
-            UserCommand::RunCommand { name, args } if name == "compact" && args.is_empty() => {
+            DriverMessage::RunCommand { name, args } if name == "compact" && args.is_empty() => {
                 Ok(Self::Compact)
             }
-            UserCommand::RunCommand { name, args } if name == "permission" => {
+            DriverMessage::RunCommand { name, args } if name == "permission" => {
                 Ok(Self::SetPermissionMode(args))
             }
-            UserCommand::RunCommand { name, args } if name == "thinking" => {
+            DriverMessage::RunCommand { name, args } if name == "thinking" => {
                 args.parse().map(Self::SetThinkingBudget).map_err(|_| ())
             }
-            UserCommand::RunCommand { name, args } if name == "effort" => {
+            DriverMessage::RunCommand { name, args } if name == "effort" => {
                 if args == "none" {
                     Ok(Self::SetReasoningEffort(None))
                 } else {
@@ -110,33 +110,33 @@ impl TryFrom<UserCommand> for Command {
                         .map_err(|_| ())
                 }
             }
-            UserCommand::RunCommand { name, args } if name == "model" => Ok(Self::SetModel(args)),
+            DriverMessage::RunCommand { name, args } if name == "model" => Ok(Self::SetModel(args)),
             // Every other name is one this kit does not know and cannot drive.
-            UserCommand::RunCommand { .. } => Err(()),
-            UserCommand::Cancel => Ok(Self::Cancel),
-            UserCommand::QueryBalance => Err(()),
+            DriverMessage::RunCommand { .. } => Err(()),
+            DriverMessage::Cancel => Ok(Self::Cancel),
+            DriverMessage::QueryBalance => Err(()),
             // A wake-up signal routed from the TUI to the driver when a
             // background subagent finishes; not a host command for the kit.
-            UserCommand::SubagentFinishedNotification { .. } => Err(()),
+            DriverMessage::SubagentFinishedNotification { .. } => Err(()),
             // Cancellation is handled by the driver (it owns the manager's
             // cancel handles), not a host command for the kit.
-            UserCommand::CancelSubagent { .. } => Err(()),
+            DriverMessage::CancelSubagent { .. } => Err(()),
             // OAuth authorization for a remote MCP server is a Tact driver
             // flow (loopback callback + router reload), not a kit command.
-            UserCommand::McpAuth { .. } => Err(()),
+            DriverMessage::McpAuth { .. } => Err(()),
             // Listing MCP servers reads the agent's live router, which only the
             // Tact driver owns; not a kit command. `/mcp list` and `/mcp prompts`
             // travel as `RunCommand { name: "mcp" }`, which the catch-all below
             // already refuses. Running a prompt still needs this variant: it
             // submits a Tact user turn.
-            UserCommand::RunMcpPrompt { .. } => Err(()),
+            DriverMessage::RunMcpPrompt { .. } => Err(()),
             // Hook review reads Tact's hook sources and writes its review store
             // (`~/.tact/hooks-state.json`) — Tact-specific, and deliberately not a
             // generic kit command. It travels as `RunCommand { name: "hooks" }`,
             // which the catch-all below already refuses.
             // Durable Goal lifecycle is a Tact host capability backed by its
             // SQLite stores and bounded runner, not a generic kit command.
-            UserCommand::ResumeGoal { .. } => Err(()),
+            DriverMessage::ResumeGoal { .. } => Err(()),
         }
     }
 }
@@ -204,13 +204,13 @@ mod tests {
             Command::SetModel("gpt-4o".into()),
         ];
         for cmd in cases {
-            let protocol: UserCommand = cmd.clone().into();
+            let protocol: DriverMessage = cmd.clone().into();
             assert_eq!(Command::try_from(protocol).unwrap(), cmd);
         }
     }
 
     #[test]
     fn query_balance_is_extension_only() {
-        assert!(Command::try_from(UserCommand::QueryBalance).is_err());
+        assert!(Command::try_from(DriverMessage::QueryBalance).is_err());
     }
 }

@@ -13,7 +13,7 @@
 //! turn reads as unrelated to the command; `trust` and `forget` are state
 //! changes that take effect next session, so they are allowed to queue.
 
-use tact_protocol::UserCommand;
+use tact_protocol::DriverMessage;
 
 use super::CommandExecOutcome;
 use crate::widgets::state::{App, Status};
@@ -38,7 +38,7 @@ pub(crate) fn handle_hooks_command(app: &mut App) -> CommandExecOutcome {
                 let msg = app.msgs().input_busy_msg.to_string();
                 app.flash_msg = Some((msg, std::time::Instant::now()));
             } else {
-                let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                let _ = app.user_cmd_tx.send(DriverMessage::RunCommand {
                     name: "hooks".to_string(),
                     args: String::new(),
                 });
@@ -52,7 +52,7 @@ pub(crate) fn handle_hooks_command(app: &mut App) -> CommandExecOutcome {
         // as the CLI requires. A bare `/hooks trust` reaches the usage hint
         // instead of approving everything.
         "trust --all" => {
-            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+            let _ = app.user_cmd_tx.send(DriverMessage::RunCommand {
                 name: "hooks".to_string(),
                 args: "trust --all".to_string(),
             });
@@ -71,7 +71,7 @@ pub(crate) fn handle_hooks_command(app: &mut App) -> CommandExecOutcome {
             else {
                 return usage(app);
             };
-            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+            let _ = app.user_cmd_tx.send(DriverMessage::RunCommand {
                 name: "hooks".to_string(),
                 args: format!("trust {source}"),
             });
@@ -81,7 +81,7 @@ pub(crate) fn handle_hooks_command(app: &mut App) -> CommandExecOutcome {
             }
         }
         "forget --all" => {
-            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+            let _ = app.user_cmd_tx.send(DriverMessage::RunCommand {
                 name: "hooks".to_string(),
                 args: "forget --all".to_string(),
             });
@@ -111,7 +111,7 @@ mod tests {
     use super::handle_hooks_command;
     use crate::test_fixtures::TestApp;
     use crate::widgets::state::Status;
-    use tact_protocol::UserCommand;
+    use tact_protocol::DriverMessage;
 
     #[test]
     fn bare_hooks_lists_when_idle() {
@@ -124,7 +124,7 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::RunCommand { name, args } if name == "hooks" && args.is_empty()
+            DriverMessage::RunCommand { name, args } if name == "hooks" && args.is_empty()
         ));
     }
 
@@ -157,7 +157,7 @@ mod tests {
 
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "hooks" && args == "trust --all"
         ));
     }
@@ -171,7 +171,7 @@ mod tests {
 
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "hooks" && args == "trust plugin ponytail"
         ));
     }
@@ -207,7 +207,7 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "hooks" && args == "forget --all"
         ));
     }

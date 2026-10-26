@@ -6,7 +6,7 @@ use std::{
     path::PathBuf,
 };
 
-use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, AgentUpdate, DriverMessage};
 use tact_protocol::{PluginEvent, PluginRequest};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -34,7 +34,7 @@ impl App {
         account_rx: Option<UnboundedReceiver<AccountUpdate>>,
         plugin_rx: UnboundedReceiver<PluginEvent>,
         plugin_tx: UnboundedSender<PluginRequest>,
-        user_cmd_tx: UnboundedSender<UserCommand>,
+        user_cmd_tx: UnboundedSender<DriverMessage>,
         work_dir: PathBuf,
         input_history_entries: Vec<String>,
         session_id: String,

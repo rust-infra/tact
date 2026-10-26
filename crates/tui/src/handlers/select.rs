@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tact_protocol::{UiResponse, UserCommand};
+use tact_protocol::{DriverMessage, UiResponse};
 
 use crate::i18n::Language;
 use crate::widgets::state::app::config::theme_label;
@@ -239,7 +239,7 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                     app.add_system_message(msgs.permission_set_tmpl.replace("{}", display_label));
                     // A catalog command now: the view says "run `/permission`",
                     // which is what it says for every other command.
-                    let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                    let _ = app.user_cmd_tx.send(DriverMessage::RunCommand {
                         name: "permission".to_string(),
                         args: mode_str.to_string(),
                     });
@@ -534,7 +534,7 @@ fn open_budget_picker(app: &mut App, target: ModelTarget, model: String, budgets
 /// Budget-semantic apply (model + thinking budget), parameterized by target.
 ///
 /// Main agent: updates the LLM provider config + status bar and informs the
-/// agent through `UserCommand`s. Subagent: updates only the subagent config.
+/// agent through `DriverMessage`s. Subagent: updates only the subagent config.
 /// Both then share the same "persist to config?" tail.
 fn apply_model_and_budget_pick(
     app: &mut App,
@@ -555,7 +555,7 @@ fn apply_model_and_budget_pick(
 
     match target {
         ModelTarget::Main => {
-            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+            let _ = app.user_cmd_tx.send(DriverMessage::RunCommand {
                 name: "model".to_string(),
                 args: model.clone(),
             });
@@ -586,7 +586,7 @@ fn apply_model_and_budget_pick(
                 &model,
                 &budget_label,
             ));
-            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+            let _ = app.user_cmd_tx.send(DriverMessage::RunCommand {
                 name: "thinking".to_string(),
                 args: thinking_budget.to_string(),
             });
@@ -669,7 +669,7 @@ fn apply_model_and_effort_pick(
     let msgs = app.msgs();
     match target {
         ModelTarget::Main => {
-            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+            let _ = app.user_cmd_tx.send(DriverMessage::RunCommand {
                 name: "model".to_string(),
                 args: model.clone(),
             });
@@ -689,7 +689,7 @@ fn apply_model_and_effort_pick(
             }
             app.status_bar_mut().model_reasoning_effort = Some(effort.as_str().to_string());
             app.status_bar_mut().model_thinking_budget = None; // effort semantics: budget not shown
-            let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+            let _ = app.user_cmd_tx.send(DriverMessage::RunCommand {
                 name: "effort".to_string(),
                 args: effort.as_str().to_string(),
             });
@@ -1689,7 +1689,7 @@ thinking_budget = {thinking_budget}
         }
         assert!(
             user_rx.try_recv().is_err(),
-            "port mode must not fall back to UserCommand::UiResponse"
+            "port mode must not fall back to DriverMessage::UiResponse"
         );
     }
 
@@ -1721,8 +1721,8 @@ thinking_budget = {thinking_budget}
             other => panic!("expected a cancelled Select through the port, got {other:?}"),
         }
         match user_rx.try_recv() {
-            Ok(UserCommand::Cancel) => {}
-            other => panic!("expected UserCommand::Cancel, got {other:?}"),
+            Ok(DriverMessage::Cancel) => {}
+            other => panic!("expected DriverMessage::Cancel, got {other:?}"),
         }
     }
 

@@ -185,7 +185,7 @@ async fn parallel_background_runs_each_get_a_sticky_row() {
 async fn background_rows_accumulate_across_turns() {
     use harness::{background_run_tool_use, run_commands};
     use std::time::Duration;
-    use tact_protocol::UserCommand;
+    use tact_protocol::DriverMessage;
 
     let mock = MockClient::new(vec![
         mock_turn(
@@ -207,9 +207,9 @@ async fn background_rows_accumulate_across_turns() {
 
     let (updates, work_dir) = run_commands(mock, PermissionMode::Auto, |tx| {
         tokio::spawn(async move {
-            tx.send(UserCommand::SubmitTask("one".into())).unwrap();
+            tx.send(DriverMessage::SubmitTask("one".into())).unwrap();
             tokio::time::sleep(Duration::from_millis(300)).await;
-            tx.send(UserCommand::SubmitTask("four".into())).unwrap();
+            tx.send(DriverMessage::SubmitTask("four".into())).unwrap();
             drop(tx);
         })
     })

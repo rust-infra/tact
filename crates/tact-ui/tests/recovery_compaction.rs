@@ -473,7 +473,7 @@ async fn max_tokens_with_large_pending_tool_result_compacts_before_continuation(
 
 // ── Native Responses `/compact` through the command loop ──────────────
 //
-// `UserCommand::Compact` stays provider-agnostic: the driver calls
+// `DriverMessage::Compact` stays provider-agnostic: the driver calls
 // `agent.compact_history(None)` and the Responses agent dispatches to the
 // native `/responses/compact` endpoint. These tests drive the real command
 // loop against a local wiremock server.

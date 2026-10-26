@@ -8,7 +8,7 @@
 //! [`submit_user_task`] matches a normal Insert Enter submit (Planning / log /
 //! history).
 
-use tact_protocol::UserCommand;
+use tact_protocol::DriverMessage;
 
 use super::CommandExecOutcome;
 use crate::widgets::state::{App, SkillEntry, Status};
@@ -178,7 +178,7 @@ fn dispatch_user_task(app: &mut App, display_text: String, agent_task: String) -
     app.status_bar_mut().turn_user += 1;
     app.status_bar_mut().turn_llm = 0;
     app.status_bar_mut().turn_llm_cap = None;
-    let _ = app.user_cmd_tx.send(UserCommand::SubmitTask(agent_task));
+    let _ = app.user_cmd_tx.send(DriverMessage::SubmitTask(agent_task));
     true
 }
 
@@ -513,7 +513,7 @@ mod tests {
         assert!(outcome.handled);
         assert!(app.input.is_empty(), "an invoked skill clears the input");
         match user_cmd_rx.try_recv().expect("skill must submit a task") {
-            tact_protocol::UserCommand::SubmitTask(task) => {
+            tact_protocol::DriverMessage::SubmitTask(task) => {
                 assert!(task.contains("<skill name=\"demo\""), "{task}");
                 assert!(task.contains("Follow the checklist."), "{task}");
                 assert!(task.contains("ARGUMENTS: fix auth"), "{task}");
@@ -682,7 +682,7 @@ mod tests {
         assert!(app.pending_messages.is_empty());
         assert!(matches!(app.status, Status::Planning));
         match user_cmd_rx.try_recv().expect("SubmitTask") {
-            UserCommand::SubmitTask(task) => assert_eq!(task, "go"),
+            DriverMessage::SubmitTask(task) => assert_eq!(task, "go"),
             other => panic!("expected SubmitTask, got {other:?}"),
         }
     }
@@ -756,7 +756,7 @@ mod tests {
         assert!(app.pending_messages.is_empty(), "queue drained by flush");
         let mut tasks = Vec::new();
         while let Ok(cmd) = user_cmd_rx.try_recv() {
-            if let UserCommand::SubmitTask(task) = cmd {
+            if let DriverMessage::SubmitTask(task) = cmd {
                 tasks.push(task);
             }
         }
@@ -778,7 +778,7 @@ mod tests {
         assert!(app.pending_messages.is_empty());
         assert!(matches!(
             user_cmd_rx.try_recv(),
-            Ok(UserCommand::SubmitTask(_))
+            Ok(DriverMessage::SubmitTask(_))
         ));
     }
 }

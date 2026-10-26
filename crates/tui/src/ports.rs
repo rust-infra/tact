@@ -426,7 +426,7 @@ mod tests {
     ///
     /// The runtime's responder is one implementation; a view that named it
     /// directly could not be driven by anything else, and the reverse
-    /// `UserCommand::UiResponse` path would have to stay alive beside it.
+    /// `DriverMessage::UiResponse` path would have to stay alive beside it.
     #[test]
     fn production_code_reaches_interaction_only_through_the_port() {
         let mut offenders = Vec::new();

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use serde_json::json;
 use tact_llm::MockClient;
-use tact_protocol::{AgentUpdate, UserCommand};
+use tact_protocol::{AgentUpdate, DriverMessage};
 use tact_ui::{
     driver::handle_user_command,
     test_support::{build_test_agent, install_test_config},
@@ -91,7 +91,7 @@ async fn oauth_url_reaches_the_ui_before_the_callback_arrives() {
 
     let command = handle_user_command(
         &mut agent,
-        UserCommand::McpAuth {
+        DriverMessage::McpAuth {
             server: "hosted".to_string(),
         },
         &workdir,

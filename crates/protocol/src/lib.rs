@@ -1,6 +1,6 @@
 //! Shared protocol types between the agent runtime and the TUI.
 //!
-//! [`agent`] defines the runtime messages ([`AgentUpdate`] / [`UserCommand`])
+//! [`agent`] defines the runtime messages ([`AgentUpdate`] / [`DriverMessage`])
 //! exchanged over channels; [`biz`] defines account / quota structures carried
 //! inside those messages.
 //!
@@ -36,12 +36,12 @@ pub mod subagent_transcript;
 pub mod tool_output;
 
 pub use agent::{
-    AgentErrorKind, AgentUpdate, GoalAcceptanceSnapshot, GoalCriterionSnapshot,
+    AgentErrorKind, AgentUpdate, DriverMessage, GoalAcceptanceSnapshot, GoalCriterionSnapshot,
     GoalCriterionStatusSnapshot, GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot,
     GoalStatusSnapshot, ModelCallParams, PlanStep, StepResult, StepStatus, SubagentRunSnapshot,
     SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ThinkingChunk,
     TokenUsageInfo, ToolDetailKind, ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
-    UiResponse, UserCommand,
+    UiResponse,
 };
 pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,

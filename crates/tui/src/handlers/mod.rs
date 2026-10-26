@@ -21,7 +21,7 @@ pub(crate) use overlay::handle_overlay_key;
 pub(crate) use palette::handle_palette_mode;
 pub(crate) use select::handle_select_mode;
 pub(crate) use skills::flush_pending_when_idle;
-use tact_protocol::UserCommand;
+use tact_protocol::DriverMessage;
 
 use crate::widgets::state::{App, InputMode, SelectKind, SlashCommand, Status};
 
@@ -381,7 +381,7 @@ fn run_catalog_command(app: &mut App, cmd: &str) -> bool {
         .split_once(char::is_whitespace)
         .map(|(_, rest)| rest.trim().to_string())
         .unwrap_or_default();
-    let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+    let _ = app.user_cmd_tx.send(DriverMessage::RunCommand {
         name: cmd.to_string(),
         args,
     });
@@ -508,7 +508,7 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
                     .to_string();
                 let _ = app
                     .user_cmd_tx
-                    .send(UserCommand::CancelSubagent { child_id });
+                    .send(DriverMessage::CancelSubagent { child_id });
             }
             CommandExecOutcome::handled()
         }
@@ -522,7 +522,7 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             } else {
                 // A catalog command: the view forwards the name and the runtime's
                 // catalog owns the work, so the transport keeps no variant for it.
-                let _ = app.user_cmd_tx.send(UserCommand::RunCommand {
+                let _ = app.user_cmd_tx.send(DriverMessage::RunCommand {
                     name: "compact".to_string(),
                     args: String::new(),
                 });
@@ -533,7 +533,7 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
             if app.account_rx.is_none() {
                 return CommandExecOutcome::handled();
             }
-            let _ = app.user_cmd_tx.send(UserCommand::QueryBalance);
+            let _ = app.user_cmd_tx.send(DriverMessage::QueryBalance);
             CommandExecOutcome::handled()
         }
         C::TasksDag => {
@@ -558,8 +558,8 @@ fn run_command(app: &mut App, command: SlashCommand) -> CommandExecOutcome {
 /// `/goal create` parses it, so the two cannot disagree about where the objective
 /// ends. That is the whole point of the transport carrying a name and arguments
 /// instead of a typed payload.
-fn create_goal_command(args: &str) -> UserCommand {
-    UserCommand::RunCommand {
+fn create_goal_command(args: &str) -> DriverMessage {
+    DriverMessage::RunCommand {
         name: "goal".to_string(),
         args: format!("create {}", args.trim()),
     }
@@ -576,7 +576,7 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
         // rather than a one-way door.
         // Read-only verbs travel as catalog invocations: the goal command owns
         // this grammar, so the view forwards it rather than re-deriving it.
-        "list" if args.is_empty() || args == "--all" => Some(UserCommand::RunCommand {
+        "list" if args.is_empty() || args == "--all" => Some(DriverMessage::RunCommand {
             name: "goal".to_string(),
             args: format!("list {args}").trim_end().to_string(),
         }),
@@ -589,20 +589,20 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
                 None
             } else {
                 Some(match verb {
-                    "show" => UserCommand::RunCommand {
+                    "show" => DriverMessage::RunCommand {
                         name: "goal".to_string(),
                         args: format!("show {goal_id}"),
                     },
-                    "pause" => UserCommand::RunCommand {
+                    "pause" => DriverMessage::RunCommand {
                         name: "goal".to_string(),
                         args: format!("pause {goal_id}"),
                     },
-                    "resume" => UserCommand::ResumeGoal { goal_id },
-                    "cancel" => UserCommand::RunCommand {
+                    "resume" => DriverMessage::ResumeGoal { goal_id },
+                    "cancel" => DriverMessage::RunCommand {
                         name: "goal".to_string(),
                         args: format!("cancel {goal_id}"),
                     },
-                    "archive" | "unarchive" => UserCommand::RunCommand {
+                    "archive" | "unarchive" => DriverMessage::RunCommand {
                         name: "goal".to_string(),
                         args: format!("{verb} {goal_id}"),
                     },
@@ -618,7 +618,7 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
             if goal_id.is_empty() || text.is_empty() {
                 None
             } else {
-                Some(UserCommand::RunCommand {
+                Some(DriverMessage::RunCommand {
                     name: "goal".to_string(),
                     args: format!("accept {goal_id} {text}"),
                 })
@@ -644,7 +644,7 @@ fn run_goal_command(app: &mut App) -> CommandExecOutcome {
 /// target against the store. That keeps a stale or empty snapshot from turning
 /// the instruction into a fake id (and makes the store authoritative for the
 /// running Goal).
-fn steer_request(app: &App, args: &str) -> Option<UserCommand> {
+fn steer_request(app: &App, args: &str) -> Option<DriverMessage> {
     let args = args.trim();
     if args.is_empty() {
         return None;
@@ -666,7 +666,7 @@ fn steer_request(app: &App, args: &str) -> Option<UserCommand> {
     } else {
         args.to_string()
     };
-    Some(UserCommand::RunCommand {
+    Some(DriverMessage::RunCommand {
         name: "goal".to_string(),
         args: match goal_id {
             Some(id) => format!("steer {id} {text}"),
@@ -868,7 +868,7 @@ mod tests {
     use crate::test_fixtures::TestApp;
     use crate::widgets::state::{App, InputMode, SlashCommand, Status, Subcommand};
     use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use tact_protocol::UserCommand;
+    use tact_protocol::DriverMessage;
 
     /// A directory holding exactly the names it was built with.
     struct FixedDirectory(Vec<crate::ports::CommandEntry>);
@@ -911,7 +911,7 @@ mod tests {
 
         assert!(outcome.handled, "the catalog claimed the name");
         match rx.try_recv() {
-            Ok(UserCommand::RunCommand { name, args }) => {
+            Ok(DriverMessage::RunCommand { name, args }) => {
                 assert_eq!(name, "deploy");
                 assert_eq!(args, "production", "the command owns its grammar");
             }
@@ -1130,7 +1130,7 @@ mod tests {
         );
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected Cancel"),
-            UserCommand::Cancel
+            DriverMessage::Cancel
         ));
     }
 
@@ -1159,7 +1159,7 @@ mod tests {
             .try_recv()
             .expect("queued message should submit")
         {
-            UserCommand::SubmitTask(task) => assert_eq!(task, "next"),
+            DriverMessage::SubmitTask(task) => assert_eq!(task, "next"),
             other => panic!("unexpected command: {other:?}"),
         }
     }
@@ -1216,7 +1216,7 @@ mod tests {
         assert!(app.flash_msg.is_none());
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected CancelSubagent"),
-            UserCommand::CancelSubagent { ref child_id } if child_id == "child-123"
+            DriverMessage::CancelSubagent { ref child_id } if child_id == "child-123"
         ));
     }
 
@@ -1744,7 +1744,7 @@ mod tests {
         assert!(outcome.handled);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected a RunCommand"),
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "background" && args.is_empty()
         ));
     }
@@ -1758,7 +1758,7 @@ mod tests {
         assert!(outcome.handled);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected a RunCommand"),
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "background" && args == "018f3a2c"
         ));
     }
@@ -1768,35 +1768,35 @@ mod tests {
         let cases = [
             (
                 "/goal list",
-                UserCommand::RunCommand {
+                DriverMessage::RunCommand {
                     name: "goal".into(),
                     args: "list".into(),
                 },
             ),
             (
                 "/goal list --all",
-                UserCommand::RunCommand {
+                DriverMessage::RunCommand {
                     name: "goal".into(),
                     args: "list --all".into(),
                 },
             ),
             (
                 "/goal archive goal-1",
-                UserCommand::RunCommand {
+                DriverMessage::RunCommand {
                     name: "goal".into(),
                     args: "archive goal-1".into(),
                 },
             ),
             (
                 "/goal unarchive goal-1",
-                UserCommand::RunCommand {
+                DriverMessage::RunCommand {
                     name: "goal".into(),
                     args: "unarchive goal-1".into(),
                 },
             ),
             (
                 "/goal show goal-1",
-                UserCommand::RunCommand {
+                DriverMessage::RunCommand {
                     name: "goal".to_string(),
                     args: "show goal-1".to_string(),
                 },
@@ -1806,34 +1806,34 @@ mod tests {
                 // snapshot; with no snapshot yet the raw text goes to the
                 // driver, which resolves the leading id against the store.
                 "/goal steer goal-1 prefer the smaller design",
-                UserCommand::RunCommand {
+                DriverMessage::RunCommand {
                     name: "goal".into(),
                     args: "steer goal-1 prefer the smaller design".into(),
                 },
             ),
             (
                 "/goal pause goal-1",
-                UserCommand::RunCommand {
+                DriverMessage::RunCommand {
                     name: "goal".into(),
                     args: "pause goal-1".into(),
                 },
             ),
             (
                 "/goal resume goal-1",
-                UserCommand::ResumeGoal {
+                DriverMessage::ResumeGoal {
                     goal_id: "goal-1".into(),
                 },
             ),
             (
                 "/goal cancel goal-1",
-                UserCommand::RunCommand {
+                DriverMessage::RunCommand {
                     name: "goal".into(),
                     args: "cancel goal-1".into(),
                 },
             ),
             (
                 "/goal accept goal-1 accepted after review",
-                UserCommand::RunCommand {
+                DriverMessage::RunCommand {
                     name: "goal".into(),
                     args: "accept goal-1 accepted after review".into(),
                 },
@@ -1861,7 +1861,7 @@ mod tests {
         assert!(outcome.handled);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected CreateGoal"),
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "goal"
                     && args == "create Ship Goal UI with durable lifecycle"
         ));
@@ -1881,7 +1881,7 @@ mod tests {
         assert!(outcome.handled);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected CreateGoal"),
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "goal"
                     && args
                         == "create Ship the release -- the full test suite passes; the changelog is written"
@@ -1899,7 +1899,7 @@ mod tests {
         assert!(outcome.handled);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected CreateGoal"),
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "goal" && args == "create Upgrade to rust-2024 edition"
         ));
     }
@@ -1931,7 +1931,7 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected SteerGoal"),
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "goal" && args == "steer focus on the parser first"
         ));
     }
@@ -1955,7 +1955,7 @@ mod tests {
 
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected SteerGoal"),
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "goal" && args == "steer keep the diff small"
         ));
     }
@@ -1985,7 +1985,7 @@ mod tests {
 
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected SteerGoal"),
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "goal" && args == "steer goal-1 prefer the smaller design"
         ));
     }
@@ -2016,7 +2016,7 @@ mod tests {
         assert!(
             matches!(
                 user_cmd_rx.try_recv().expect("expected SteerGoal"),
-                UserCommand::RunCommand { name, args }
+                DriverMessage::RunCommand { name, args }
                 if name == "goal" && args == "steer hurry up"
             ),
             "the TUI must forward the raw instruction, not guess a target"
@@ -2035,7 +2035,7 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected Cancel"),
-            UserCommand::Cancel
+            DriverMessage::Cancel
         ));
     }
 
@@ -2163,7 +2163,7 @@ mod tests {
         assert!(outcome.handled);
         assert!(matches!(
             user_cmd_rx.try_recv().expect("Cancel"),
-            UserCommand::Cancel
+            DriverMessage::Cancel
         ));
         assert!(
             user_cmd_rx.try_recv().is_err(),

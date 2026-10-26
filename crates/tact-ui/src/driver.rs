@@ -1,4 +1,4 @@
-//! Interactive-mode command driver: bridges `UserCommand` from the TUI to `Agent`.
+//! Interactive-mode command driver: bridges `DriverMessage` from the TUI to `Agent`.
 
 use std::{
     path::Path,
@@ -15,7 +15,7 @@ use tact::{
     goal::{GoalEventKind, GoalEventSource, GoalStatus, GoalUpdate, SharedGoalManager},
     task::SharedTaskManager,
 };
-use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, UpdateSink, UserCommand};
+use tact_protocol::{AccountUpdate, AgentErrorKind, AgentUpdate, DriverMessage, UpdateSink};
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
     task::JoinHandle,
@@ -186,7 +186,7 @@ fn spawn_goal_reconcile(
     });
 }
 
-/// Process `UserCommand`s until the channel closes, then shut down MCP.
+/// Process `DriverMessage`s until the channel closes, then shut down MCP.
 ///
 /// `SubmitTask` runs in a background task so `Cancel` can set `cancel_flag`
 /// while `agent_loop` is in progress. Integration tests drive this with a fake TUI.
@@ -197,7 +197,7 @@ fn spawn_goal_reconcile(
 /// [`AccountUpdate`] messages.
 pub async fn run_command_loop(
     agent: Agent,
-    user_cmd_rx: UnboundedReceiver<UserCommand>,
+    user_cmd_rx: UnboundedReceiver<DriverMessage>,
     image_work_dir: impl AsRef<Path>,
 ) -> Agent {
     run_command_loop_with_account(agent, user_cmd_rx, image_work_dir, None).await
@@ -414,7 +414,7 @@ impl tact::command::McpCatalog for RuntimeMcpCatalog {
 /// provided account-update channel instead of mixing them into agent updates.
 pub async fn run_command_loop_with_account(
     agent: Agent,
-    mut user_cmd_rx: UnboundedReceiver<UserCommand>,
+    mut user_cmd_rx: UnboundedReceiver<DriverMessage>,
     image_work_dir: impl AsRef<Path>,
     account_tx: Option<UnboundedSender<AccountUpdate>>,
 ) -> Agent {
@@ -540,7 +540,7 @@ pub async fn run_command_loop_with_account(
         let Some(cmd) = cmd else { break };
 
         match cmd {
-            UserCommand::Cancel => {
+            DriverMessage::Cancel => {
                 // Through the service when there is one: it is the component that
                 // owns the turn, and its cancel is the same lock-free flag write.
                 match &chat {
@@ -549,7 +549,7 @@ pub async fn run_command_loop_with_account(
                 }
                 events.send(AgentUpdate::Info("Cancelling...".into()));
             }
-            UserCommand::CancelSubagent { child_id } => {
+            DriverMessage::CancelSubagent { child_id } => {
                 if subagent_manager.request_cancel(&child_id) {
                     let _ = subagent_manager.cancel(&child_id).await;
                     tact::subagent::emit_subagents_changed(&events, &subagent_manager).await;
@@ -562,7 +562,7 @@ pub async fn run_command_loop_with_account(
                     )));
                 }
             }
-            UserCommand::RunCommand { name, args } => {
+            DriverMessage::RunCommand { name, args } => {
                 // One transport for every catalog command: the view forwards the
                 // name and the raw arguments, and the catalog parses them. A
                 // dedicated variant per command was a second definition of the
@@ -609,7 +609,7 @@ pub async fn run_command_loop_with_account(
             // These three are safe to serve while the Agent is owned by an
             // in-flight Goal run: they only touch the shared managers (and the
             // cancel flag), so they must not await the run handle.
-            UserCommand::SubagentFinishedNotification { .. } => {
+            DriverMessage::SubagentFinishedNotification { .. } => {
                 // If a turn is active, retain the wake-up until that turn's
                 // JoinHandle completes. Otherwise the notification could be
                 // lost in the gap between the final queue drain and turn exit.
@@ -619,7 +619,7 @@ pub async fn run_command_loop_with_account(
                     pending_subagent_wakeup = true;
                 }
             }
-            UserCommand::SubmitTask(task) => {
+            DriverMessage::SubmitTask(task) => {
                 // A Goal that asked a question is waiting for exactly this
                 // text. Only the *user* path routes here: agent-originated
                 // submits (subagent wake-ups) go straight to
@@ -673,7 +673,7 @@ pub async fn run_command_loop_with_account(
                                 };
                                 handle_user_command(
                                     task_agent,
-                                    UserCommand::SubmitTask(task),
+                                    DriverMessage::SubmitTask(task),
                                     &work_dir,
                                 )
                                 .await;
@@ -682,7 +682,7 @@ pub async fn run_command_loop_with_account(
                     }));
                 }
             }
-            UserCommand::ResumeGoal { goal_id } => {
+            DriverMessage::ResumeGoal { goal_id } => {
                 if let Some(handle) = active.take() {
                     handle.await.expect("task join panicked");
                 }
@@ -783,7 +783,7 @@ fn spawn_wakeup_task(
         let Some(task_agent) = guard.as_mut() else {
             return;
         };
-        handle_user_command(task_agent, UserCommand::SubmitTask(prompt), &work_dir).await;
+        handle_user_command(task_agent, DriverMessage::SubmitTask(prompt), &work_dir).await;
     }));
 }
 
@@ -1018,18 +1018,18 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
     .await;
 }
 
-pub async fn handle_user_command(agent: &mut Agent, cmd: UserCommand, image_work_dir: &Path) {
+pub async fn handle_user_command(agent: &mut Agent, cmd: DriverMessage, image_work_dir: &Path) {
     handle_user_command_with_account(agent, cmd, image_work_dir, None).await;
 }
 
 async fn handle_user_command_with_account(
     agent: &mut Agent,
-    cmd: UserCommand,
+    cmd: DriverMessage,
     image_work_dir: &Path,
     account_tx: Option<&UnboundedSender<AccountUpdate>>,
 ) {
     match cmd {
-        UserCommand::RunCommand { name, args } => {
+        DriverMessage::RunCommand { name, args } => {
             // Same catalog the loop-level arm uses, so the two cannot answer
             // differently.
             // The agent-side path has no slot here (it holds `&mut Agent`
@@ -1077,8 +1077,8 @@ async fn handle_user_command_with_account(
                 agent.emit_update(AgentUpdate::TaskIdle);
             }
         }
-        UserCommand::ResumeGoal { goal_id } => resume_goal(agent, &goal_id).await,
-        UserCommand::SubmitTask(task) => {
+        DriverMessage::ResumeGoal { goal_id } => resume_goal(agent, &goal_id).await,
+        DriverMessage::SubmitTask(task) => {
             agent.tool_use_counter = 0;
             agent.runtime.cancel_flag.store(false, Ordering::Relaxed);
 
@@ -1104,7 +1104,7 @@ async fn handle_user_command_with_account(
             // command path and the service path cannot drift.
             tact::agent::chat::run_turn(agent, task_message).await;
         }
-        UserCommand::QueryBalance => {
+        DriverMessage::QueryBalance => {
             let Some(account_tx) = account_tx else {
                 return;
             };
@@ -1120,7 +1120,7 @@ async fn handle_user_command_with_account(
                 }
             }
         }
-        UserCommand::McpAuth { server } => {
+        DriverMessage::McpAuth { server } => {
             // Stream progress lines instead of buffering them: the URL is
             // reported *before* the flow blocks on the browser redirect, so
             // buffering would hide it for the whole round-trip — and forever,
@@ -1156,7 +1156,7 @@ async fn handle_user_command_with_account(
                 ))),
             }
         }
-        UserCommand::RunMcpPrompt {
+        DriverMessage::RunMcpPrompt {
             server,
             name,
             arguments,
@@ -1167,7 +1167,7 @@ async fn handle_user_command_with_account(
             Ok(messages) => {
                 Box::pin(handle_user_command_with_account(
                     agent,
-                    UserCommand::SubmitTask(messages),
+                    DriverMessage::SubmitTask(messages),
                     image_work_dir,
                     account_tx,
                 ))
@@ -1242,7 +1242,7 @@ mod tests {
 
     use tact::goal::GoalEventKind;
     use tact_llm::{ContentBlock, MockClient, StopReason};
-    use tact_protocol::{AgentUpdate, UpdateSink, UserCommand};
+    use tact_protocol::{AgentUpdate, DriverMessage, UpdateSink};
 
     use crate::test_support::{build_test_agent, install_test_config};
 
@@ -1572,7 +1572,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("steer {} this must not land", goal.id),
             },
@@ -1611,7 +1611,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: "create Expose supervised goal execution -- User accepts the result".into(),
             },
@@ -1735,7 +1735,7 @@ mod tests {
         let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
 
         user_cmd_tx
-            .send(UserCommand::RunCommand {
+            .send(DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: "create Start the first activation at creation time".into(),
             })
@@ -1760,7 +1760,7 @@ mod tests {
         tokio::time::sleep(Duration::from_millis(100)).await;
         let start = std::time::Instant::now();
         user_cmd_tx
-            .send(UserCommand::RunCommand {
+            .send(DriverMessage::RunCommand {
                 name: "goal".to_string(),
                 args: "list".to_string(),
             })
@@ -1849,7 +1849,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("steer {} Prefer a focused diff", created.id),
             },
@@ -1870,7 +1870,7 @@ mod tests {
         // may not have caught up).
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: "steer Keep the diff focused".into(),
             },
@@ -1893,7 +1893,7 @@ mod tests {
         let text = format!("{} Prefer fewer files", created.id);
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("steer {text}"),
             },
@@ -1921,7 +1921,7 @@ mod tests {
             .count();
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("steer {}", created.id),
             },
@@ -1947,7 +1947,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("pause {}", created.id),
             },
@@ -1961,7 +1961,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("cancel {}", created.id),
             },
@@ -2022,7 +2022,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("archive {}", created.id),
             },
@@ -2063,7 +2063,7 @@ mod tests {
         // and marked as archived.
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".to_string(),
                 args: "list --all".to_string(),
             },
@@ -2084,7 +2084,7 @@ mod tests {
         // ... and `show` says so, instead of pretending the Goal is live.
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".to_string(),
                 args: format!("show {}", created.id),
             },
@@ -2123,7 +2123,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("archive {}", created.id),
             },
@@ -2186,7 +2186,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("accept {} Accepted after manual review", goal.id),
             },
@@ -2397,7 +2397,7 @@ mod tests {
         // What the command loop does for a non-answer message: a normal turn.
         super::handle_user_command(
             &mut agent,
-            UserCommand::SubmitTask("hello".into()),
+            DriverMessage::SubmitTask("hello".into()),
             &work_dir,
         )
         .await;
@@ -2458,7 +2458,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("accept {} Accepted after the commit", goal.id),
             },
@@ -2513,7 +2513,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("accept {} Accepted after recovery", goal.id),
             },
@@ -2574,7 +2574,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("accept {} Too early", goal.id),
             },
@@ -2682,7 +2682,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: "pause missing-goal".into(),
             },
@@ -2754,14 +2754,14 @@ mod tests {
         let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
 
         user_cmd_tx
-            .send(UserCommand::ResumeGoal {
+            .send(DriverMessage::ResumeGoal {
                 goal_id: goal_id.clone(),
             })
             .unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         let start = std::time::Instant::now();
         user_cmd_tx
-            .send(UserCommand::RunCommand {
+            .send(DriverMessage::RunCommand {
                 name: "goal".to_string(),
                 args: "list".to_string(),
             })
@@ -2790,7 +2790,7 @@ mod tests {
         );
 
         user_cmd_tx
-            .send(UserCommand::RunCommand {
+            .send(DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("pause {goal_id}"),
             })
@@ -2849,8 +2849,12 @@ mod tests {
         let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
 
         agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
-        super::handle_user_command(&mut agent, UserCommand::SubmitTask("go".into()), &work_dir)
-            .await;
+        super::handle_user_command(
+            &mut agent,
+            DriverMessage::SubmitTask("go".into()),
+            &work_dir,
+        )
+        .await;
 
         assert!(!agent.runtime.cancel_flag.load(Ordering::Relaxed));
         let mut saw_complete = false;
@@ -2916,7 +2920,7 @@ mod tests {
         agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
         super::handle_user_command(
             &mut agent,
-            UserCommand::ResumeGoal {
+            DriverMessage::ResumeGoal {
                 goal_id: goal_id.clone(),
             },
             &work_dir,
@@ -2948,7 +2952,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::ResumeGoal {
+            DriverMessage::ResumeGoal {
                 goal_id: goal_id.clone(),
             },
             &work_dir,
@@ -3030,7 +3034,7 @@ mod tests {
         agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: format!("accept {} looks good", created.id),
             },
@@ -3095,7 +3099,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "thinking".into(),
                 args: "64000".into(),
             },
@@ -3104,7 +3108,7 @@ mod tests {
         .await;
         super::handle_user_command(
             &mut agent,
-            UserCommand::SubmitTask("use the new budget".into()),
+            DriverMessage::SubmitTask("use the new budget".into()),
             &work_dir,
         )
         .await;
@@ -3118,7 +3122,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "thinking".into(),
                 args: "32000".into(),
             },
@@ -3151,7 +3155,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "thinking".into(),
                 args: "32000".into(),
             },
@@ -3160,7 +3164,7 @@ mod tests {
         .await;
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "effort".into(),
                 args: "high".into(),
             },
@@ -3190,7 +3194,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "background".to_string(),
                 args: String::new(),
             },
@@ -3220,7 +3224,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "background".to_string(),
                 args: "deadbeef".to_string(),
             },
@@ -3363,7 +3367,7 @@ mod tests {
         let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
 
         user_cmd_tx
-            .send(UserCommand::SubmitTask("parent task".into()))
+            .send(DriverMessage::SubmitTask("parent task".into()))
             .unwrap();
         tokio::time::timeout(Duration::from_secs(1), async {
             while calls.load(Ordering::Relaxed) == 0 {
@@ -3385,7 +3389,7 @@ mod tests {
             });
         // The notification arrives while the parent turn is still running.
         user_cmd_tx
-            .send(UserCommand::SubagentFinishedNotification {
+            .send(DriverMessage::SubagentFinishedNotification {
                 child_id: "child-1".into(),
                 summary: "finished".into(),
                 success: true,
@@ -3439,7 +3443,7 @@ mod tests {
         let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
 
         user_cmd_tx
-            .send(UserCommand::SubmitTask("parent task".into()))
+            .send(DriverMessage::SubmitTask("parent task".into()))
             .unwrap();
         tokio::time::timeout(Duration::from_secs(1), async {
             while calls.load(Ordering::Relaxed) == 0 {
@@ -3452,7 +3456,7 @@ mod tests {
         // The queue is deliberately left empty: this models a turn that already
         // drained and injected the summary.
         user_cmd_tx
-            .send(UserCommand::SubagentFinishedNotification {
+            .send(DriverMessage::SubagentFinishedNotification {
                 child_id: "child-1".into(),
                 summary: "already delivered".into(),
                 success: true,
@@ -3490,7 +3494,7 @@ mod tests {
 
         super::handle_user_command(
             &mut agent,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "stats".to_string(),
                 args: String::new(),
             },
@@ -3550,12 +3554,12 @@ mod tests {
 
         // Start a task that is now stuck in the responder, then ask for stats.
         user_cmd_tx
-            .send(UserCommand::SubmitTask("long task".into()))
+            .send(DriverMessage::SubmitTask("long task".into()))
             .unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         let start = std::time::Instant::now();
         user_cmd_tx
-            .send(UserCommand::RunCommand {
+            .send(DriverMessage::RunCommand {
                 name: "stats".to_string(),
                 args: String::new(),
             })
@@ -3627,12 +3631,12 @@ mod tests {
         let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
 
         user_cmd_tx
-            .send(UserCommand::SubmitTask("long task".into()))
+            .send(DriverMessage::SubmitTask("long task".into()))
             .unwrap();
         tokio::time::sleep(Duration::from_millis(100)).await;
         let start = std::time::Instant::now();
         user_cmd_tx
-            .send(UserCommand::RunCommand {
+            .send(DriverMessage::RunCommand {
                 name: "background".to_string(),
                 args: String::new(),
             })

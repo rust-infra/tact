@@ -10,7 +10,7 @@ use harness::{
 };
 use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{MockClient, StopReason};
-use tact_protocol::UserCommand;
+use tact_protocol::DriverMessage;
 use tact_ui::headless_session::run_headless_session;
 
 #[tokio::test]
@@ -27,7 +27,7 @@ async fn headless_session_simple_task_reaches_done() {
         |_| {},
         |tx| {
             tokio::spawn(async move {
-                tx.send(UserCommand::SubmitTask("hello".into())).unwrap();
+                tx.send(DriverMessage::SubmitTask("hello".into())).unwrap();
                 drop(tx);
             })
         },
@@ -64,7 +64,7 @@ async fn headless_session_read_file_shows_executing_snapshot() {
         },
         |tx| {
             tokio::spawn(async move {
-                tx.send(UserCommand::SubmitTask("read data".into()))
+                tx.send(DriverMessage::SubmitTask("read data".into()))
                     .unwrap();
                 drop(tx);
             })
@@ -97,7 +97,7 @@ async fn headless_session_default_permission_shows_select_popup() {
         |dir| write_workspace_file(dir, "main.rs", "old code"),
         |tx| {
             tokio::spawn(async move {
-                tx.send(UserCommand::SubmitTask("edit main".into()))
+                tx.send(DriverMessage::SubmitTask("edit main".into()))
                     .unwrap();
                 drop(tx);
             })
@@ -141,9 +141,9 @@ async fn headless_session_cancel_mid_task_no_done() {
         |_| {},
         |tx| {
             tokio::spawn(async move {
-                tx.send(UserCommand::SubmitTask("sleep".into())).unwrap();
+                tx.send(DriverMessage::SubmitTask("sleep".into())).unwrap();
                 tokio::time::sleep(Duration::from_millis(120)).await;
-                tx.send(UserCommand::Cancel).unwrap();
+                tx.send(DriverMessage::Cancel).unwrap();
                 drop(tx);
             })
         },
@@ -175,8 +175,8 @@ async fn headless_session_sequential_tasks_both_complete() {
         |_| {},
         |tx| {
             tokio::spawn(async move {
-                tx.send(UserCommand::SubmitTask("first".into())).unwrap();
-                tx.send(UserCommand::SubmitTask("second".into())).unwrap();
+                tx.send(DriverMessage::SubmitTask("first".into())).unwrap();
+                tx.send(DriverMessage::SubmitTask("second".into())).unwrap();
                 drop(tx);
             })
         },
@@ -207,7 +207,7 @@ async fn headless_session_write_read_chain_renders_tools() {
         |_| {},
         |tx| {
             tokio::spawn(async move {
-                tx.send(UserCommand::SubmitTask("write then read".into()))
+                tx.send(DriverMessage::SubmitTask("write then read".into()))
                     .unwrap();
                 drop(tx);
             })

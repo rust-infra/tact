@@ -11,7 +11,7 @@ use harness::{
 };
 use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{LlmError, MockClient, StopReason};
-use tact_protocol::{AgentUpdate, UserCommand};
+use tact_protocol::{AgentUpdate, DriverMessage};
 
 #[tokio::test]
 async fn dynamic_mock_inspects_request_and_branches() {
@@ -234,7 +234,7 @@ async fn run_single_task_with_permission_choice_and_choices(
     ));
 
     user_cmd_tx
-        .send(UserCommand::SubmitTask(task.into()))
+        .send(DriverMessage::SubmitTask(task.into()))
         .unwrap();
     drop(user_cmd_tx);
 

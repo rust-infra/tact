@@ -267,8 +267,8 @@ pub async fn build_test_agent_with_session(
 
 /// `(sender, receiver)` pair for driving `run_command_loop` in tests.
 pub fn user_command_channels() -> (
-    UnboundedSender<tact_protocol::UserCommand>,
-    UnboundedReceiver<tact_protocol::UserCommand>,
+    UnboundedSender<tact_protocol::DriverMessage>,
+    UnboundedReceiver<tact_protocol::DriverMessage>,
 ) {
     unbounded_channel()
 }

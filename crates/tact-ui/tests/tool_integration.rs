@@ -11,7 +11,7 @@ use harness::{
 };
 use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
 use tact_llm::{MockClient, StopReason};
-use tact_protocol::{AgentUpdate, StepStatus, UserCommand};
+use tact_protocol::{AgentUpdate, DriverMessage, StepStatus};
 
 #[tokio::test]
 async fn parallel_read_files_both_succeed() {
@@ -318,12 +318,12 @@ async fn cancel_then_submit_completes_fresh_task() {
     let (updates, _work_dir) = run_commands(mock, PermissionMode::Auto, |user_cmd_tx| {
         tokio::spawn(async move {
             user_cmd_tx
-                .send(UserCommand::SubmitTask("slow task".into()))
+                .send(DriverMessage::SubmitTask("slow task".into()))
                 .unwrap();
             tokio::time::sleep(Duration::from_millis(100)).await;
-            user_cmd_tx.send(UserCommand::Cancel).unwrap();
+            user_cmd_tx.send(DriverMessage::Cancel).unwrap();
             user_cmd_tx
-                .send(UserCommand::SubmitTask("fast recovery".into()))
+                .send(DriverMessage::SubmitTask("fast recovery".into()))
                 .unwrap();
             drop(user_cmd_tx);
         })
@@ -393,7 +393,7 @@ async fn tool_turn_persists_to_session_store() {
         work_dir,
     ));
     user_cmd_tx
-        .send(UserCommand::SubmitTask("read and persist".into()))
+        .send(DriverMessage::SubmitTask("read and persist".into()))
         .unwrap();
     drop(user_cmd_tx);
     driver.await.unwrap();

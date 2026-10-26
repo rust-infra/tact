@@ -1,7 +1,7 @@
 //! Mouse handling extracted from the main event loop for testability.
 
 use crossterm::event::{MouseButton, MouseEvent, MouseEventKind};
-use tact_protocol::UserCommand;
+use tact_protocol::DriverMessage;
 
 use super::{scroll_active_sticky, sticky_scrollable};
 use crate::widgets::state::{
@@ -200,7 +200,7 @@ fn handle_mouse_down(app: &mut App, mouse: MouseEvent, hit: MousePanelHit) {
         let child_id = child_id.clone();
         let _ = app
             .user_cmd_tx
-            .send(UserCommand::CancelSubagent { child_id });
+            .send(DriverMessage::CancelSubagent { child_id });
         return;
     }
     if app.close_overlay_on_outside_click(mouse.column, mouse.row) {
@@ -1169,11 +1169,11 @@ mod tests {
 
     #[test]
     fn pending_cancel_button_drops_queue_without_touching_task() {
-        use tact_protocol::UserCommand;
+        use tact_protocol::DriverMessage;
         use tokio::sync::mpsc::unbounded_channel;
 
         let (_agent_tx, agent_rx) = unbounded_channel::<tact_protocol::AgentUpdate>();
-        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<DriverMessage>();
         let (plugin_tx, _plugin_request_rx) = unbounded_channel();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel();
@@ -1220,7 +1220,7 @@ mod tests {
         use tokio::sync::mpsc::unbounded_channel;
 
         let (_agent_tx, agent_rx) = unbounded_channel::<tact_protocol::AgentUpdate>();
-        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<DriverMessage>();
         let (plugin_tx, _plugin_request_rx) = unbounded_channel();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel();
@@ -1246,7 +1246,7 @@ mod tests {
 
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected CancelSubagent"),
-            UserCommand::CancelSubagent { ref child_id } if child_id == "child-123"
+            DriverMessage::CancelSubagent { ref child_id } if child_id == "child-123"
         ));
     }
 

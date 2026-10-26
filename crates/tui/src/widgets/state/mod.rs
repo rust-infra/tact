@@ -3,7 +3,7 @@ use std::{
     path::PathBuf,
 };
 
-use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, AgentUpdate, DriverMessage};
 use tact_protocol::{PluginEvent, PluginRequest};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
@@ -162,7 +162,7 @@ pub struct App {
     pub(crate) account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     pub(crate) plugin_rx: UnboundedReceiver<PluginEvent>,
     pub(crate) plugin_tx: UnboundedSender<PluginRequest>,
-    pub(crate) user_cmd_tx: UnboundedSender<UserCommand>,
+    pub(crate) user_cmd_tx: UnboundedSender<DriverMessage>,
     pub(crate) task_history: Vec<HistoryEntry>,
     pub(crate) theme: Theme,
     // Scroll

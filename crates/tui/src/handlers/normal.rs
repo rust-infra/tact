@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent};
-use tact_protocol::UserCommand;
+use tact_protocol::DriverMessage;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::{scroll_active_sticky, sticky_scrollable};
@@ -8,7 +8,7 @@ use crate::widgets::state::{App, InputMode, Status};
 pub(crate) fn handle_normal_mode(
     app: &mut App,
     key: KeyEvent,
-    _user_cmd_tx: &UnboundedSender<UserCommand>,
+    _user_cmd_tx: &UnboundedSender<DriverMessage>,
 ) {
     // Subagent view mode: j/k/G/g/y/Esc scroll / copy / close the view, and
     // Enter raises the cap on the tool blocks.
@@ -300,12 +300,12 @@ mod tests {
     fn s_is_unbound_noop_key() {
         use std::path::PathBuf;
 
-        use tact_protocol::{AgentUpdate, UserCommand};
+        use tact_protocol::{AgentUpdate, DriverMessage};
 
         use crate::widgets::state::Status;
 
         let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
-        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<DriverMessage>();
         let (plugin_tx, _plugin_request_rx) = unbounded_channel();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel();
@@ -343,12 +343,12 @@ mod tests {
     fn c_cancels_while_executing() {
         use std::path::PathBuf;
 
-        use tact_protocol::{AgentUpdate, UserCommand};
+        use tact_protocol::{AgentUpdate, DriverMessage};
 
         use crate::widgets::state::Status;
 
         let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
-        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<DriverMessage>();
         let (plugin_tx, _plugin_request_rx) = unbounded_channel();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel();
@@ -376,7 +376,7 @@ mod tests {
 
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected Cancel"),
-            UserCommand::Cancel
+            DriverMessage::Cancel
         ));
         assert_eq!(
             app.pending_messages.len(),
@@ -389,12 +389,12 @@ mod tests {
     fn c_noop_while_done() {
         use std::path::PathBuf;
 
-        use tact_protocol::{AgentUpdate, UserCommand};
+        use tact_protocol::{AgentUpdate, DriverMessage};
 
         use crate::widgets::state::Status;
 
         let (_agent_tx, agent_rx) = unbounded_channel::<AgentUpdate>();
-        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<UserCommand>();
+        let (user_cmd_tx, mut user_cmd_rx) = unbounded_channel::<DriverMessage>();
         let (plugin_tx, _plugin_request_rx) = unbounded_channel();
         let (_plugin_event_tx, plugin_rx) = unbounded_channel();
         let (history_tx, _history_rx) = unbounded_channel();

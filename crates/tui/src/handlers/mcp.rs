@@ -9,7 +9,7 @@
 
 use std::collections::BTreeMap;
 
-use tact_protocol::UserCommand;
+use tact_protocol::DriverMessage;
 
 use super::CommandExecOutcome;
 use crate::widgets::state::{App, Status};
@@ -23,7 +23,7 @@ pub(crate) fn handle_mcp_command(app: &mut App) -> CommandExecOutcome {
             let server = (*server).to_owned();
             let started = app.msgs().mcp_auth_started_tmpl.replace("{}", &server);
             app.add_system_message(started);
-            let _ = app.user_cmd_tx.send(UserCommand::McpAuth { server });
+            let _ = app.user_cmd_tx.send(DriverMessage::McpAuth { server });
             CommandExecOutcome {
                 handled: true,
                 clear_input: true,
@@ -31,21 +31,21 @@ pub(crate) fn handle_mcp_command(app: &mut App) -> CommandExecOutcome {
         }
         ["/mcp", "list"] => queue_when_idle(
             app,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "mcp".to_string(),
                 args: String::new(),
             },
         ),
         ["/mcp", "prompts"] => queue_when_idle(
             app,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "mcp".to_string(),
                 args: "prompts".to_string(),
             },
         ),
         ["/mcp", "prompts", server] => queue_when_idle(
             app,
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "mcp".to_string(),
                 args: format!("prompts {server}"),
             },
@@ -59,7 +59,7 @@ pub(crate) fn handle_mcp_command(app: &mut App) -> CommandExecOutcome {
         ["/mcp", "prompt", rest @ ..] => match parse_prompt_args(rest) {
             Ok((server, name, arguments)) => queue_when_idle(
                 app,
-                UserCommand::RunMcpPrompt {
+                DriverMessage::RunMcpPrompt {
                     server,
                     name,
                     arguments,
@@ -83,7 +83,7 @@ pub(crate) fn handle_mcp_command(app: &mut App) -> CommandExecOutcome {
 /// The driver serializes non-fast commands behind an in-flight turn, so a busy
 /// agent would show the answer only after the turn finished — the hint beats a
 /// late answer. `/compact` and `/mcp list` behave the same way.
-fn queue_when_idle(app: &mut App, cmd: UserCommand) -> CommandExecOutcome {
+fn queue_when_idle(app: &mut App, cmd: DriverMessage) -> CommandExecOutcome {
     if matches!(app.status, Status::Planning | Status::Executing { .. }) {
         let msg = app.msgs().input_busy_msg.to_string();
         app.flash_msg = Some((msg, std::time::Instant::now()));
@@ -144,7 +144,7 @@ mod tests {
     use super::handle_mcp_command;
     use crate::test_fixtures::TestApp;
     use crate::widgets::state::Status;
-    use tact_protocol::UserCommand;
+    use tact_protocol::DriverMessage;
 
     #[test]
     fn mcp_auth_queues_an_authorization_request() {
@@ -157,7 +157,7 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::McpAuth { server } if server == "hosted"
+            DriverMessage::McpAuth { server } if server == "hosted"
         ));
     }
 
@@ -172,7 +172,7 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::McpAuth { server } if server == "hosted"
+            DriverMessage::McpAuth { server } if server == "hosted"
         ));
     }
 
@@ -200,7 +200,7 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::RunCommand { name, args } if name == "mcp" && args.is_empty()
+            DriverMessage::RunCommand { name, args } if name == "mcp" && args.is_empty()
         ));
     }
 
@@ -235,7 +235,7 @@ mod tests {
         assert!(outcome.clear_input);
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "mcp" && args == "prompts"
         ));
     }
@@ -250,7 +250,7 @@ mod tests {
         assert!(outcome.handled);
         assert!(matches!(
             rx.try_recv().expect("command sent"),
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "mcp" && args == "prompts basic-memory"
         ));
     }
@@ -282,7 +282,7 @@ mod tests {
         assert!(outcome.handled);
         assert!(outcome.clear_input);
         match rx.try_recv().expect("command sent") {
-            UserCommand::RunMcpPrompt {
+            DriverMessage::RunMcpPrompt {
                 server,
                 name,
                 arguments,
@@ -305,7 +305,7 @@ mod tests {
         let _ = handle_mcp_command(&mut app);
 
         match rx.try_recv().expect("command sent") {
-            UserCommand::RunMcpPrompt { arguments, .. } => {
+            DriverMessage::RunMcpPrompt { arguments, .. } => {
                 assert_eq!(arguments.get("topic").map(String::as_str), Some("a=b"));
             }
             other => panic!("expected a prompt run, got {other:?}"),
@@ -345,7 +345,7 @@ mod tests {
         assert!(outcome.handled);
         assert!(outcome.clear_input);
         match rx.try_recv().expect("command sent") {
-            UserCommand::RunMcpPrompt { server, name, .. } => {
+            DriverMessage::RunMcpPrompt { server, name, .. } => {
                 assert_eq!(server, "sample");
                 assert!(name.is_empty());
             }

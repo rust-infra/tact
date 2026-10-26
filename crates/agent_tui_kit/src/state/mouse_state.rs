@@ -286,7 +286,7 @@ pub struct MouseState {
     pub dragging_log: bool,
     /// Cancel buttons for live async-subagent tool cards: `(child_id, rect)`.
     /// Refreshed every frame by the log renderer; a click sends
-    /// `UserCommand::CancelSubagent { child_id }`.
+    /// `DriverMessage::CancelSubagent { child_id }`.
     pub subagent_cancel_btn_areas: Vec<(String, Rect)>,
     /// Rendered `[Open]` actions for Thinking, subagent and collapsed tools.
     pub open_actions: Vec<crate::render::log::OpenAction>,

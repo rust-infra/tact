@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent};
-use tact_protocol::UserCommand;
+use tact_protocol::DriverMessage;
 use tokio::sync::mpsc::UnboundedSender;
 
 use super::{
@@ -92,7 +92,11 @@ fn execute_selected_slash_command(app: &mut App) -> bool {
     true
 }
 
-fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSender<UserCommand>) {
+fn handle_enter_submit(
+    app: &mut App,
+    key: &KeyEvent,
+    _user_cmd_tx: &UnboundedSender<DriverMessage>,
+) {
     // Deactivate slash command on submit.
     app.slash_command.active = false;
 
@@ -151,7 +155,7 @@ fn handle_enter_submit(app: &mut App, key: &KeyEvent, _user_cmd_tx: &UnboundedSe
 pub(crate) fn handle_insert_mode(
     app: &mut App,
     key: KeyEvent,
-    user_cmd_tx: &UnboundedSender<UserCommand>,
+    user_cmd_tx: &UnboundedSender<DriverMessage>,
 ) {
     match key.code {
         // --- Slash command popup shortcuts (only when active) ---
@@ -591,7 +595,7 @@ mod tests {
     use super::{handle_insert_mode, insert_transcript};
     use crate::test_fixtures::TestApp;
     use crate::widgets::state::{App, InputMode, Status};
-    use tact_protocol::UserCommand;
+    use tact_protocol::DriverMessage;
 
     #[test]
     fn an_unbound_ctrl_key_types_nothing() {
@@ -684,8 +688,8 @@ mod tests {
         );
         let cmd = user_cmd_rx
             .try_recv()
-            .expect("expected /cancel to dispatch UserCommand::Cancel");
-        assert!(matches!(cmd, UserCommand::Cancel));
+            .expect("expected /cancel to dispatch DriverMessage::Cancel");
+        assert!(matches!(cmd, DriverMessage::Cancel));
         assert!(
             user_cmd_rx.try_recv().is_err(),
             "expected /cancel not to dispatch SubmitTask"
@@ -739,7 +743,7 @@ mod tests {
 
         assert!(matches!(
             user_cmd_rx.try_recv().expect("expected Cancel"),
-            UserCommand::Cancel
+            DriverMessage::Cancel
         ));
         assert!(app.input.is_empty());
         assert!(!app.slash_command.active);
@@ -765,7 +769,7 @@ mod tests {
             .try_recv()
             .expect("expected no-match slash Enter to submit task");
         match cmd {
-            UserCommand::SubmitTask(task) => assert_eq!(task, "/zzzzzz"),
+            DriverMessage::SubmitTask(task) => assert_eq!(task, "/zzzzzz"),
             other => panic!("expected SubmitTask, got {:?}", other),
         }
         assert!(!app.slash_command.active);
@@ -789,7 +793,7 @@ mod tests {
         assert!(app.flash_msg.is_some());
         assert!(
             user_cmd_rx.try_recv().is_err(),
-            "expected idle /cancel not to dispatch UserCommand"
+            "expected idle /cancel not to dispatch DriverMessage"
         );
     }
 
@@ -811,7 +815,7 @@ mod tests {
         assert!(app.flash_msg.is_some());
         assert!(
             user_cmd_rx.try_recv().is_err(),
-            "expected Done /cancel not to dispatch UserCommand::Cancel"
+            "expected Done /cancel not to dispatch DriverMessage::Cancel"
         );
     }
 
@@ -834,7 +838,7 @@ mod tests {
             .try_recv()
             .expect("expected short input to submit even when model_context_window is tiny");
         match cmd {
-            UserCommand::SubmitTask(task) => assert_eq!(task, "hello world"),
+            DriverMessage::SubmitTask(task) => assert_eq!(task, "hello world"),
             other => panic!("expected SubmitTask, got {:?}", other),
         }
     }
@@ -856,7 +860,7 @@ mod tests {
 
         assert!(
             user_cmd_rx.try_recv().is_err(),
-            "expected oversize input not to dispatch UserCommand"
+            "expected oversize input not to dispatch DriverMessage"
         );
         assert!(
             app.log
@@ -1039,7 +1043,7 @@ mod tests {
     #[test]
     fn slash_popup_enter_on_skill_runs_immediately() {
         use crate::widgets::state::SkillEntry;
-        use tact_protocol::UserCommand;
+        use tact_protocol::DriverMessage;
 
         let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
@@ -1069,7 +1073,7 @@ mod tests {
             .try_recv()
             .expect("popup Enter on skill should SubmitTask");
         match cmd {
-            UserCommand::SubmitTask(task) => {
+            DriverMessage::SubmitTask(task) => {
                 assert!(
                     task.contains("<skill name=\"demo\""),
                     "expected skill wrapper, got: {task}"
@@ -1264,7 +1268,7 @@ mod tests {
         assert!(
             matches!(
                 user_cmd_rx.try_recv(),
-                Ok(UserCommand::RunCommand { name, args })
+                Ok(DriverMessage::RunCommand { name, args })
                     if name == "goal" && args == "show 216ae6be"
             ),
             "the completed id must be what the command carries"
@@ -1284,7 +1288,7 @@ mod tests {
         assert!(
             matches!(
                 user_cmd_rx.try_recv(),
-                Ok(UserCommand::RunCommand { name, args })
+                Ok(DriverMessage::RunCommand { name, args })
                     if name == "goal" && args == "show 216ae6be"
             ),
             "Enter on a complete row runs it"
@@ -1415,7 +1419,7 @@ mod tests {
         assert!(matches!(app.status, Status::Planning));
         assert!(app.input.is_empty());
         match user_cmd_rx.try_recv().expect("SubmitTask") {
-            UserCommand::SubmitTask(task) => {
+            DriverMessage::SubmitTask(task) => {
                 assert!(task.contains("<skill name=\"demo\""));
                 assert!(task.contains("Follow the checklist."));
                 assert!(!task.contains("ARGUMENTS:"));
@@ -1453,7 +1457,7 @@ mod tests {
 
         assert!(matches!(app.status, Status::Planning));
         match user_cmd_rx.try_recv().expect("SubmitTask") {
-            UserCommand::SubmitTask(task) => {
+            DriverMessage::SubmitTask(task) => {
                 assert!(task.contains("ARGUMENTS: fix auth"));
             }
             other => panic!("expected SubmitTask, got {other:?}"),

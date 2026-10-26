@@ -987,7 +987,7 @@ impl Agent {
     /// Update this agent's session model (per-agent; never the global provider).
     ///
     /// Same queue semantics as [`set_thinking_budget`]: the TUI sends
-    /// `UserCommand::SetModel` behind an in-flight task; the resulting
+    /// `DriverMessage::SetModel` behind an in-flight task; the resulting
     /// `ModelInfo` resyncs the status bar.
     pub fn set_model(&mut self, model: String) {
         if model.trim().is_empty() {

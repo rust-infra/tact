@@ -290,7 +290,7 @@ pub struct GoalSnapshot {
     pub acceptance: GoalAcceptanceSnapshot,
     pub run_budget: Option<GoalRunBudgetSnapshot>,
     /// Filed out of the default list / sticky panel (see
-    /// [`UserCommand::SetGoalArchived`]). The status is unchanged, so a surface
+    /// [`DriverMessage::SetGoalArchived`]). The status is unchanged, so a surface
     /// that does show an archived Goal still reports how it finished.
     #[serde(default)]
     pub archived: bool,
@@ -482,7 +482,7 @@ pub enum AgentUpdate {
     /// The request carries a unique `request_id`, and the answer comes back
     /// through the runtime's interaction broker rather than through an
     /// in-message oneshot sender — so [`AgentUpdate`] carries no transport handle
-    /// and stays pure data. There is no reverse `UserCommand` variant for the
+    /// and stays pure data. There is no reverse `DriverMessage` variant for the
     /// answer: the broker holds the waiter, and the view's
     /// `InteractionPort::respond` reaches it directly.
     RequestSelect {
@@ -598,7 +598,7 @@ pub enum ThinkingChunk {
 /// Response to a UI request, produced by the TUI and routed to the waiting caller
 /// by the runtime's interaction broker.
 ///
-/// Not a [`UserCommand`] variant: the broker holds the waiter, so there is no
+/// Not a [`DriverMessage`] variant: the broker holds the waiter, so there is no
 /// reverse-command wiring and nothing for the transport to carry.
 ///
 /// Carries the [`AgentUpdate::RequestSelect`] / [`AgentUpdate::RequestMultiSelect`]
@@ -629,9 +629,17 @@ impl UiResponse {
     }
 }
 
-/// User commands sent from the TUI to the Agent.
+/// A message to the runtime's driver.
+///
+/// Most come from the view; a spawned task sends one too, when a subagent
+/// finishes. It is deliberately **not** a command enum: a catalog command travels
+/// as [`DriverMessage::RunCommand`] and is parsed by the domain that owns it, so
+/// adding a command does not edit this type. What is left here is what a driver can
+/// only do itself — run a turn, cancel one, reload the router, read the account —
+/// because each needs the agent, a live task or a channel that a command has no way
+/// to reach.
 #[derive(Debug)]
-pub enum UserCommand {
+pub enum DriverMessage {
     /// Submit a new natural-language task
     SubmitTask(String),
     /// Cancel the current in-flight task by setting `cancel_flag`.
@@ -736,6 +744,42 @@ impl PlanStep {
 #[cfg(test)]
 mod tests {
 
+    /// The driver's inbound channel is a message enum, not a command enum.
+    ///
+    /// A regression here would look like "add a variant for the new command", which
+    /// is exactly what the migration removed: a catalog command travels as
+    /// `RunCommand` and the owning domain parses it.
+    #[test]
+    fn commands_travel_as_catalog_invocations() {
+        let source = include_str!("agent.rs");
+        let after = source
+            .split("pub enum DriverMessage {")
+            .nth(1)
+            .expect("the enum is declared here");
+        let declaration = after.split("\n}\n").next().expect("an enum body ends");
+        for name in [
+            "CreateGoal",
+            "AcceptGoal",
+            "PauseGoal",
+            "CancelGoal",
+            "SteerGoal",
+            "SetGoalArchived",
+            "SetModel",
+            "SetThinkingBudget",
+            "SetReasoningEffort",
+            "HooksList",
+            "McpList",
+            "McpPrompts",
+            "Compact",
+        ] {
+            assert!(
+                !declaration.contains(name),
+                "{name} migrated to a catalog command; a variant here is a second \
+                 definition of its grammar"
+            );
+        }
+    }
+
     /// The transport has no reverse-command variant for an interaction answer.
     ///
     /// The spec replaced that wiring with the kernel's `InteractionBroker`: the
@@ -748,8 +792,8 @@ mod tests {
     fn the_transport_carries_no_interaction_answer() {
         // Compile-time proof: every variant is listed, so a new one forces this
         // match to be revisited.
-        fn name(command: &super::UserCommand) -> &'static str {
-            use super::UserCommand::*;
+        fn name(command: &super::DriverMessage) -> &'static str {
+            use super::DriverMessage::*;
             match command {
                 SubmitTask(..) => "SubmitTask",
                 Cancel => "Cancel",
@@ -767,7 +811,7 @@ mod tests {
         // if a variant is added, which is the review point.
         let source = include_str!("agent.rs");
         let after = source
-            .split("pub enum UserCommand {")
+            .split("pub enum DriverMessage {")
             .nth(1)
             .expect("the enum is declared here");
         // Bounded at the enum's own closing brace: the rest of the file declares
@@ -783,10 +827,10 @@ mod tests {
     }
 
     use super::{
-        AgentUpdate, GoalAcceptanceSnapshot, GoalCriterionSnapshot, GoalCriterionStatusSnapshot,
-        GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot, GoalStatusSnapshot, TaskSnapshot,
-        TaskStatusSnapshot, TasksChangeReason, ToolDetailKind, ToolPopupKind, ToolPresentationInfo,
-        ToolVisualKind, UserCommand,
+        AgentUpdate, DriverMessage, GoalAcceptanceSnapshot, GoalCriterionSnapshot,
+        GoalCriterionStatusSnapshot, GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot,
+        GoalStatusSnapshot, TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ToolDetailKind,
+        ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
     };
 
     #[test]
@@ -887,51 +931,51 @@ mod tests {
             // Everything the Goal command owns travels as a catalog invocation:
             // the command parses its own grammar, so the transport carries the
             // name and the raw arguments rather than a second definition of it.
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: "create Finish the feature -- Tests pass".into(),
             },
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: "list".into(),
             },
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: "show goal-1".into(),
             },
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: "steer goal-1 Prefer the smaller design".into(),
             },
-            UserCommand::RunCommand {
+            DriverMessage::RunCommand {
                 name: "goal".into(),
                 args: "accept goal-1 Accepted after manual review".into(),
             },
             // Resume still needs the agent's cancel flag and the runner, so it
             // keeps a typed id.
-            UserCommand::ResumeGoal {
+            DriverMessage::ResumeGoal {
                 goal_id: "goal-1".into(),
             },
         ];
 
         assert!(matches!(
             &commands[0],
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "goal" && args == "create Finish the feature -- Tests pass"
         ));
         assert!(matches!(
             &commands[3],
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "goal" && args == "steer goal-1 Prefer the smaller design"
         ));
         assert!(matches!(
             &commands[4],
-            UserCommand::RunCommand { name, args }
+            DriverMessage::RunCommand { name, args }
                 if name == "goal" && args == "accept goal-1 Accepted after manual review"
         ));
         assert!(matches!(
             &commands[5],
-            UserCommand::ResumeGoal { goal_id } if goal_id == "goal-1"
+            DriverMessage::ResumeGoal { goal_id } if goal_id == "goal-1"
         ));
     }
 

@@ -51,7 +51,7 @@ use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
     widgets::ScrollbarState,
 };
-use tact_protocol::{AccountUpdate, AgentUpdate, PluginEvent, PluginRequest, UserCommand};
+use tact_protocol::{AccountUpdate, AgentUpdate, DriverMessage, PluginEvent, PluginRequest};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::StreamExt;
 
@@ -182,7 +182,7 @@ pub struct TuiConfig {
     pub account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     pub plugin_rx: UnboundedReceiver<PluginEvent>,
     pub plugin_tx: UnboundedSender<PluginRequest>,
-    pub user_cmd_tx: UnboundedSender<UserCommand>,
+    pub user_cmd_tx: UnboundedSender<DriverMessage>,
     pub work_dir: PathBuf,
     pub input_history_entries: Vec<String>,
     pub session_id: String,

@@ -4,8 +4,8 @@ use ratatui::{
     widgets::ScrollbarState,
 };
 use tact_protocol::{
-    AgentErrorKind, AgentUpdate, PlanStep, StepResult, TaskSnapshot, TasksChangeReason,
-    ThinkingChunk, UiResponse, UserCommand,
+    AgentErrorKind, AgentUpdate, DriverMessage, PlanStep, StepResult, TaskSnapshot,
+    TasksChangeReason, ThinkingChunk, UiResponse,
 };
 
 use agent_tui_kit::{Ctx, PendingQueue, components::tool::ToolEvent, state::StreamEvent};
@@ -220,7 +220,7 @@ impl App {
             };
             self.respond_ui(response);
         }
-        let _ = self.user_cmd_tx.send(UserCommand::Cancel);
+        let _ = self.user_cmd_tx.send(DriverMessage::Cancel);
         // Broker mode: the response above removed the pending entry; reconcile
         // now so the popup disappears immediately instead of on the next tick.
         self.reconcile_pending_ui();
@@ -758,7 +758,7 @@ impl App {
         }
         let _ = self
             .user_cmd_tx
-            .send(UserCommand::SubagentFinishedNotification {
+            .send(DriverMessage::SubagentFinishedNotification {
                 child_id: child_id.to_string(),
                 summary: summary.to_string(),
                 success,

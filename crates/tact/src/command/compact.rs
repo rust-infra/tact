@@ -1,6 +1,6 @@
 //! `/compact` as a catalog command.
 //!
-//! It used to be a `UserCommand` variant, which meant the view had to know the
+//! It used to be a `DriverMessage` variant, which meant the view had to know the
 //! command existed and the driver had to know how to run it. As a catalog command
 //! it is listed, completed and dispatched like every other one, and the transport
 //! loses a variant.
