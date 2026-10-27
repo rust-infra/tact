@@ -137,7 +137,7 @@ pub struct ToolContext {
     /// Cloned into subagents so request ids stay globally unique.
     pub ui_responder: UiResponder,
     pub progress_reporter: ToolProgressReporter,
-    pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub cancel_flag: std::sync::Arc<crate::cancel::CancelController>,
     pub bash_timeout_secs: u64,
     /// Nice increment applied to the bash sub-process group (macOS/Linux only).
     /// Default 10 so TUI stays responsive during heavy commands like `cargo test`.

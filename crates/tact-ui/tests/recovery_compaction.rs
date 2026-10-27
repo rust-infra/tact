@@ -68,7 +68,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
         voice: tact::config::VoiceSettings::disabled_defaults(),
         mcp: tact::config::McpSettings::default(),
         goal: tact::config::GoalSettings::default(),
-        permission_mode: None,
+        permission_mode: tact::permission::PermissionMode::Default,
         tokio_console: false,
         config_path: None,
     }
@@ -595,14 +595,8 @@ async fn command_compact_native_responses_success() {
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
     let (mut agent, work_dir) = build_responses_test_agent(&server.uri(), Some(agent_tx));
-    agent
-        .runtime
-        .context
-        .push(Message::new_text(Role::User, "first turn"));
-    agent
-        .runtime
-        .context
-        .push(Message::new_text(Role::Assistant, "second turn"));
+    agent.push_context_for_test(Message::new_text(Role::User, "first turn"));
+    agent.push_context_for_test(Message::new_text(Role::Assistant, "second turn"));
 
     let (agent, updates) = drive_compact_command(agent, work_dir, agent_rx).await;
 
@@ -663,7 +657,7 @@ async fn command_compact_native_responses_success() {
     assert!(state.is_compacted);
     assert_eq!(state.input_items.len(), 2);
     assert_eq!(
-        agent.runtime.context.len(),
+        agent.context().len(),
         2,
         "native compaction keeps the logical context unchanged"
     );
@@ -699,7 +693,7 @@ async fn command_compact_native_responses_failure_keeps_context() {
         Message::new_text(Role::User, "first turn"),
         Message::new_text(Role::Assistant, "second turn"),
     ];
-    agent.runtime.context = original.clone();
+    agent.replace_context_for_test(original.clone());
 
     let (agent, updates) = drive_compact_command(agent, work_dir, agent_rx).await;
 
@@ -717,7 +711,7 @@ async fn command_compact_native_responses_failure_keeps_context() {
         "no success info after failure, got: {updates:?}"
     );
     assert_eq!(
-        messages_json(&agent.runtime.context),
+        messages_json(agent.context()),
         messages_json(&original),
         "failed compaction must leave the logical context unchanged"
     );
@@ -853,7 +847,7 @@ async fn restart_round_trip_preserves_compaction_and_unknown_items() {
     let (agent, _) = build_responses_test_agent(&server.uri(), None);
     let mut agent = agent.with_session(session_id.to_string(), store);
     agent.ensure_session().await.unwrap();
-    assert_eq!(agent.runtime.context.len(), 2);
+    assert_eq!(agent.context().len(), 2);
     agent
         .agent_loop(Some(Message::new_text(Role::User, "third turn")))
         .await
@@ -938,7 +932,7 @@ async fn native_compact_failure_rolls_back_runtime_and_database() {
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
     let (mut agent, work_dir) = build_responses_test_agent(&server.uri(), Some(agent_tx));
     agent = agent.with_session("rollback-session".to_string(), Arc::new(store));
-    agent.runtime.context = old_messages.clone();
+    agent.replace_context_for_test(old_messages.clone());
     agent.runtime.provider_state = Some(old_state.clone());
 
     let (agent, updates) = drive_compact_command(agent, work_dir, agent_rx).await;
@@ -953,7 +947,7 @@ async fn native_compact_failure_rolls_back_runtime_and_database() {
 
     // Runtime state rolled back: context and provider state are untouched.
     assert_eq!(
-        messages_json(&agent.runtime.context),
+        messages_json(agent.context()),
         messages_json(&old_messages),
         "runtime context must equal the old committed context"
     );

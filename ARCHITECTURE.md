@@ -83,9 +83,11 @@ flowchart TB
     subgraph facade["tact — composition root + compatibility facade"]
         A["Agent + AgentRuntime<br/>public facade/state authority"]
         FS["FacadeStateGuard<br/>activation transfer/restore"]
-        C["TactKernelComposition<br/>compose_tact_kernel()"]
+        C["TactKernelComposition<br/>TactKernelComposition::new()"]
+        CC["CancelController<br/>session token + ActivationCancel"]
         V["TactActivationView<br/>read-only LoopState"]
         A --> FS
+        A --> CC
         FS --> C
         C --> K
         C --> V
@@ -191,6 +193,9 @@ flowchart TB
 translation into `AgentUpdate`. The `tact-ui` driver owns `TaskComplete`.
 Injected context and hosted provider activity stay on their typed non-user
 channels and are never fabricated as a user turn or client tool call.
+`tact_protocol::update_channel` separates bounded advisory progress from
+reliable ordered terminal updates; the raw unbounded sender remains a
+compatibility path for small embedders and tests.
 
 ---
 

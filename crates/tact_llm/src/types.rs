@@ -7,6 +7,7 @@
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
+use tact_agent_api::ReasoningEffort;
 
 use crate::Message;
 
@@ -123,6 +124,34 @@ impl From<OpenAiReasoningEffort> for async_openai_responses::types::responses::R
             OpenAiReasoningEffort::High => Self::High,
             OpenAiReasoningEffort::Xhigh => Self::Xhigh,
             OpenAiReasoningEffort::Max => Self::Max,
+        }
+    }
+}
+
+impl From<OpenAiReasoningEffort> for ReasoningEffort {
+    fn from(effort: OpenAiReasoningEffort) -> Self {
+        match effort {
+            OpenAiReasoningEffort::None => Self::None,
+            OpenAiReasoningEffort::Minimal => Self::Minimal,
+            OpenAiReasoningEffort::Low => Self::Low,
+            OpenAiReasoningEffort::Medium => Self::Medium,
+            OpenAiReasoningEffort::High => Self::High,
+            OpenAiReasoningEffort::Xhigh => Self::Xhigh,
+            OpenAiReasoningEffort::Max => Self::Max,
+        }
+    }
+}
+
+impl From<ReasoningEffort> for OpenAiReasoningEffort {
+    fn from(effort: ReasoningEffort) -> Self {
+        match effort {
+            ReasoningEffort::None => Self::None,
+            ReasoningEffort::Minimal => Self::Minimal,
+            ReasoningEffort::Low => Self::Low,
+            ReasoningEffort::Medium => Self::Medium,
+            ReasoningEffort::High => Self::High,
+            ReasoningEffort::Xhigh => Self::Xhigh,
+            ReasoningEffort::Max => Self::Max,
         }
     }
 }

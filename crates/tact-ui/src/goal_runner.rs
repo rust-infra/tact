@@ -33,8 +33,7 @@ use tact::goal::{
 use tact::store::goal_store::{GoalStoreError, LeaseToken};
 use tact::task::TaskRecord;
 use tact_llm::{Message, MessageKind, Role};
-use tact_protocol::{AgentUpdate, UpdateSink};
-use tokio::sync::mpsc::UnboundedSender;
+use tact_protocol::{AgentUpdate, UpdateSender, UpdateSink};
 
 /// Cap on the injected Goal context, in characters.
 pub const MAX_GOAL_CONTEXT_CHARS: usize = 4000;
@@ -442,8 +441,8 @@ impl GoalRunner {
     ///
     /// A runner's notices are informational (`⚠ …`), never prompts, so an
     /// optional channel is enough: `None` means nobody is watching.
-    pub fn with_ui(mut self, ui_tx: Option<UnboundedSender<AgentUpdate>>) -> Self {
-        self.events = UpdateSink::from_ui(ui_tx);
+    pub fn with_ui(mut self, ui_tx: Option<impl Into<UpdateSender>>) -> Self {
+        self.events = UpdateSink::from_ui_sender(ui_tx.map(Into::into));
         self
     }
 
@@ -462,6 +461,7 @@ impl GoalRunner {
 
     /// One bounded activation. See `book/28_chapter_goal_zh.html` §5.
     pub async fn run_once(&self, agent: &mut Agent, goal_id: &str) -> Result<GoalRunOutcome> {
+        agent.begin_user_turn();
         let previous_binding = agent.tool_context.active_goal_id.clone();
         let result = self.activate(agent, goal_id).await;
         // Single restore site: no exit path may leave the agent silently bound
@@ -742,12 +742,12 @@ impl GoalRunner {
                 "⚠ Goal run progress could not be persisted: {error:#}"
             )));
         }
-        if !agent.runtime.events.is_empty() {
+        if !agent.events().is_empty() {
             crate::driver::emit_goals_changed(
                 &self.goal_manager,
                 &agent.tool_context.task_manager,
                 self.limits,
-                &agent.runtime.events,
+                agent.events(),
             )
             .await;
         }
@@ -1813,8 +1813,7 @@ mod tests {
         runner.run_once(&mut agent, &goal.id).await.unwrap();
 
         let injected = agent
-            .runtime
-            .context
+            .context()
             .iter()
             .find(|message| message.is_goal_context())
             .expect("the activation context is in the conversation");
@@ -1827,7 +1826,7 @@ mod tests {
             "the marker text is what a reload has to work from: {text}"
         );
         assert!(
-            !tact::compact::collect_user_messages(&agent.runtime.context)
+            !tact::compact::collect_user_messages(agent.context())
                 .iter()
                 .any(|message| message.is_goal_context()),
             "the injected context must not survive a compaction rebuild as a user turn"
@@ -2374,12 +2373,12 @@ mod tests {
         // A one-turn run budget: the single model call spends it exactly, and
         // the cancel flag is set while that response is still streaming — the
         // same mid-response press the loop's final arm must honour.
-        let flag_slot: Arc<std::sync::Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>> =
+        let flag_slot: Arc<std::sync::Mutex<Option<Arc<tact::CancelController>>>> =
             Arc::new(std::sync::Mutex::new(None));
         let slot = flag_slot.clone();
         let mock = MockClient::with_responder(move |_request, _idx| {
             if let Some(flag) = slot.lock().unwrap().as_ref() {
-                flag.store(true, Ordering::SeqCst);
+                flag.cancel();
             }
             Ok((vec![text_block("done")], Some(StopReason::EndTurn), None))
         });
@@ -3466,9 +3465,17 @@ mod tests {
     #[tokio::test]
     async fn run_once_esc_pauses_the_goal() {
         install_test_config();
-        let mock = MockClient::new(vec![]);
+        let flag_slot: Arc<std::sync::Mutex<Option<Arc<tact::CancelController>>>> =
+            Arc::new(std::sync::Mutex::new(None));
+        let slot = flag_slot.clone();
+        let mock = MockClient::with_responder(move |_request, _idx| {
+            if let Some(flag) = slot.lock().unwrap().as_ref() {
+                flag.cancel();
+            }
+            Ok((vec![text_block("done")], Some(StopReason::EndTurn), None))
+        });
         let (mut agent, _work_dir) = build_test_agent(mock, None);
-        agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
+        *flag_slot.lock().unwrap() = Some(agent.tool_context.cancel_flag.clone());
         let manager = agent.tool_context.goal_manager.clone();
         let goal = create_goal(
             &manager,

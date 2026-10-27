@@ -1,6 +1,6 @@
 //! Provider-neutral streaming progress.
 
-use tact_agent_api::ProviderActivity;
+use tact_agent_api::{ProviderActivity, ReasoningEffort};
 
 /// Token usage reported by a provider.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -32,7 +32,7 @@ pub struct ModelCallParams {
     pub model: String,
     pub max_tokens: u32,
     pub thinking_budget: Option<u32>,
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub extra_body: Option<String>,
 }
 

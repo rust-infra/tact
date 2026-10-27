@@ -1,44 +1,23 @@
 //! Tact adapters between the product and kernel contracts.
 
-// These adapters are staged before composition cutover. Remove the module-level
-// allowance as each adapter gains its production caller.
-#[allow(dead_code)]
 pub(crate) mod activation_view;
 #[cfg(test)]
 mod baseline;
-#[allow(dead_code)]
-pub(crate) mod cancel_bridge;
-#[allow(dead_code)]
 pub(crate) mod compaction_adapter;
-#[allow(dead_code)]
 pub(crate) mod composition;
-#[allow(dead_code)]
 pub(crate) mod context_adapter;
-#[allow(dead_code)]
 pub(crate) mod event_adapter;
-#[allow(dead_code)]
 pub(crate) mod facade_state;
-#[allow(dead_code)]
 pub(crate) mod gate_adapter;
-#[allow(dead_code)]
 pub(crate) mod hook_adapter;
-#[allow(dead_code)]
 pub(crate) mod model_adapter;
-#[allow(dead_code)]
 pub(crate) mod noop_transcript;
-#[allow(dead_code)]
 pub(crate) mod permission_authority;
-#[allow(dead_code)]
 pub(crate) mod prompt_adapter;
-#[allow(dead_code)]
 pub(crate) mod services;
-#[allow(dead_code)]
 pub(crate) mod store_adapter;
-#[allow(dead_code)]
 pub(crate) mod tool_adapter;
-#[allow(dead_code)]
 pub(crate) mod tool_presentation;
-#[allow(dead_code)]
 pub(crate) mod usage_adapter;
 
 use tact_protocol::TokenUsageInfo;
@@ -82,7 +61,6 @@ mod tests {
         for (name, source) in [
             ("hook_adapter.rs", include_str!("hook_adapter.rs")),
             ("services.rs", include_str!("services.rs")),
-            ("cancel_bridge.rs", include_str!("cancel_bridge.rs")),
             (
                 "compaction_adapter.rs",
                 include_str!("compaction_adapter.rs"),

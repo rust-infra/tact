@@ -1,5 +1,5 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use tact_protocol::{UiResponse, UserCommand};
+use tact_protocol::{PermissionMode, UiResponse, UserCommand};
 
 use crate::i18n::Language;
 use crate::widgets::state::app::config::theme_label;
@@ -225,16 +225,14 @@ pub(crate) fn handle_select_mode(app: &mut App, key: KeyEvent) {
                 }
                 SelectKind::PermissionModePick => {
                     let msgs = app.msgs();
-                    let (mode_str, display_label) = match idx {
-                        0 => ("default", msgs.permission_option_default),
-                        1 => ("plan", msgs.permission_option_plan),
-                        _ => ("auto", msgs.permission_option_auto),
+                    let (mode, display_label) = match idx {
+                        0 => (PermissionMode::Default, msgs.permission_option_default),
+                        1 => (PermissionMode::Plan, msgs.permission_option_plan),
+                        _ => (PermissionMode::Auto, msgs.permission_option_auto),
                     };
-                    app.status_bar_mut().permission_mode = mode_str.to_string();
+                    app.status_bar_mut().permission_mode = mode;
                     app.add_system_message(msgs.permission_set_tmpl.replace("{}", display_label));
-                    let _ = app
-                        .user_cmd_tx
-                        .send(UserCommand::SetPermissionMode(mode_str.to_string()));
+                    let _ = app.user_cmd_tx.send(UserCommand::SetPermissionMode(mode));
                     app.input_mode = InputMode::Normal;
                 }
                 SelectKind::ThemePick => {
@@ -612,11 +610,11 @@ fn apply_model_and_effort_pick(
             if let Some(settings) = tact::config::try_settings() {
                 app.status_bar_mut().model_max_tokens = settings.agent.max_tokens;
             }
-            app.status_bar_mut().model_reasoning_effort = Some(effort.as_str().to_string());
+            app.status_bar_mut().model_reasoning_effort = Some(effort.into());
             app.status_bar_mut().model_thinking_budget = None; // effort semantics: budget not shown
-            let _ = app.user_cmd_tx.send(UserCommand::SetReasoningEffort(Some(
-                effort.as_str().to_string(),
-            )));
+            let _ = app
+                .user_cmd_tx
+                .send(UserCommand::SetReasoningEffort(Some(effort.into())));
         }
         ModelTarget::Subagent => {
             let current_budget = tact::config::try_settings()
@@ -1227,7 +1225,7 @@ mod tests {
             voice: tact::config::VoiceSettings::disabled_defaults(),
             mcp: tact::config::McpSettings::default(),
             goal: tact::config::GoalSettings::default(),
-            permission_mode: None,
+            permission_mode: PermissionMode::Default,
             tokio_console: false,
             config_path: None,
         });
@@ -1949,7 +1947,7 @@ thinking_budget = {thinking_budget}
         assert_eq!(app.status_bar_mut().model_thinking_budget, None);
         assert_eq!(
             app.status_bar_mut().model_reasoning_effort,
-            Some("low".to_string())
+            Some(tact_protocol::ReasoningEffort::Low)
         );
     }
 

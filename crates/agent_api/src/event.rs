@@ -4,12 +4,12 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentMessage, AgentRole, CompactionKind, MessageDelta, MessageId, MessageRange, ModelCallKind,
-    ProviderActivity, RunId, RunOutcome, RuntimeErrorInfo, TokenUsage, ToolCall, ToolDescriptor,
-    ToolExecutionResult, ToolOutputChunk,
+    ModelCallOptions, ProviderActivity, RunId, RunOutcome, RuntimeErrorInfo, TokenUsage, ToolCall,
+    ToolDescriptor, ToolExecutionResult, ToolOutputChunk,
 };
 
 /// Ordered kernel event with no presentation-specific fields.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum AgentEvent {
     RunStarted {
@@ -26,7 +26,7 @@ pub enum AgentEvent {
         kind: ModelCallKind,
         model: String,
         max_output_tokens: u32,
-        metadata: serde_json::Value,
+        options: ModelCallOptions,
     },
     MessageStarted {
         message_id: MessageId,
@@ -61,7 +61,6 @@ pub enum AgentEvent {
         call_id: String,
         kind: ModelCallKind,
         usage: Option<TokenUsage>,
-        request_body: Option<Vec<u8>>,
         message_range: Option<MessageRange>,
     },
     ContextCompacted {
@@ -80,6 +79,40 @@ pub enum AgentEvent {
     RunFailed {
         error: RuntimeErrorInfo,
     },
+}
+
+/// Delivery policy for one kernel event.
+///
+/// Progress is advisory and may be coalesced or dropped by a host that cannot
+/// keep up. Terminal delivery is reliable and ordered; a host must not silently
+/// lose lifecycle, result, usage, or failure events.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventDelivery {
+    Progress,
+    Terminal,
+}
+
+impl AgentEvent {
+    /// Classify an event by the delivery guarantee it needs.
+    pub fn delivery(&self) -> EventDelivery {
+        match self {
+            Self::MessageDelta { .. } | Self::ToolProgress { .. } => EventDelivery::Progress,
+            Self::RunStarted { .. }
+            | Self::TurnStarted { .. }
+            | Self::ModelCallStarted { .. }
+            | Self::MessageStarted { .. }
+            | Self::MessageFinished { .. }
+            | Self::ProviderActivity { .. }
+            | Self::ToolStarted { .. }
+            | Self::ToolFinished { .. }
+            | Self::Usage { .. }
+            | Self::ContextCompacted { .. }
+            | Self::Notice { .. }
+            | Self::TurnFinished { .. }
+            | Self::RunFinished { .. }
+            | Self::RunFailed { .. } => EventDelivery::Terminal,
+        }
+    }
 }
 
 /// Product-neutral informational event.

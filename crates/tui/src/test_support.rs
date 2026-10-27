@@ -3,8 +3,8 @@
 use std::{path::PathBuf, time::Duration};
 
 use ratatui::style::Color;
-use tact_protocol::AgentUpdate;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use tact_protocol::{AgentUpdate, UpdateReceiver};
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
@@ -215,7 +215,7 @@ pub struct HeadlessApp {
 }
 
 impl HeadlessApp {
-    pub fn new(agent_rx: UnboundedReceiver<AgentUpdate>, work_dir: PathBuf) -> Self {
+    pub fn new(agent_rx: impl Into<UpdateReceiver>, work_dir: PathBuf) -> Self {
         Self {
             inner: make_headless_app(agent_rx, work_dir),
             auto_select: None,

@@ -436,7 +436,7 @@
 </tr>
 <tr>
 <td>工具执行</td>
-<td><code>execute_tool_call</code></td>
+<td><code>AgentKernel::execute_tool_calls</code></td>
 <td><a href="./09_chapter_hook_zh.html">第 9–11 章 Hooks / Permission /
 Scheduling</a></td>
 </tr>
@@ -476,7 +476,7 @@ href="./12_chapter_subagent_zh.html">第 12 章 Subagents</a>。</p>
 <h2 id="3-一次迭代llm-turn">3. 一次迭代（LLM Turn）</h2>
 <pre class="mermaid">graph TD
     a_prompt[build_system_prompt 每个 task 一次] --&gt; b_start[循环顶]
-    b_start --&gt; c_cancel{cancel_flag?}
+    b_start --&gt; c_cancel{is_cancelled()?}
     c_cancel --&gt;|yes| d_exit[return Ok]
     c_cancel --&gt;|no| e_micro[micro_compact]
     e_micro --&gt; f_limit{context &gt; limit?}
@@ -489,7 +489,7 @@ href="./12_chapter_subagent_zh.html">第 12 章 Subagents</a>。</p>
     k_max --&gt;|yes| l_cont[continue recovery 路径]
     k_max --&gt;|no| m_end{stop ≠ ToolUse?}
     m_end --&gt;|yes| n_exit[return Ok]
-    m_end --&gt;|no| o_tools[execute_tool_call]
+    m_end --&gt;|no| o_tools[execute_tool_calls]
     o_tools --&gt; p_persist[persist tool results]</pre>
 <blockquote>
 <p><code>recovery 分支</code>、<code>continue recovery 路径</code> 与
@@ -545,8 +545,9 @@ thinking budget。</li>
 <p>Stats（<code>SessionStats</code>）累积 prompt/response/thinking
 大小和 LLM 调用时长。在 <code>persist_llm_call</code> 之前，agent 快照
 <code>llm_call_last_message_id = last_message_db_id</code>（<strong>发送</strong>
-给模型的最后一条消息）。Token 用量与之后的
-<code>record_tool_schedule</code> 都 keyed 于该 id。</p>
+给模型的最后一条消息）。Token 用量 keyed 于该 id。旧的
+<code>tool_schedule</code> 列和 <code>record_tool_schedule</code> API
+仍保留兼容，但当前 kernel activation 不再写入 schedule summary。</p>
 <hr />
 <h2 id="4-停止原因与循环退出">4. 停止原因与循环退出</h2>
 <p>成功流式后，assistant 消息追加到 <code>runtime.context</code>
@@ -561,7 +562,7 @@ thinking budget。</li>
 <tbody>
 <tr>
 <td><strong><code>ToolUse</code></strong></td>
-<td>运行 <code>execute_tool_call</code>，追加 tool
+<td>运行 <code>execute_tool_calls</code>，追加 tool
 结果，<strong>再次循环</strong></td>
 </tr>
 <tr>
@@ -602,12 +603,13 @@ Anthropic SDK。适配器通过 <code>StopReason::from_anthropic</code> /
 enum；<code>model_context_window_exceeded</code> 映射到
 <code>MaxTokens</code>。</p>
 <p><strong>取消：</strong> 每次迭代顶部以及工具执行前检查
-<code>cancel_flag</code>。同一个 <code>Arc&lt;AtomicBool&gt;</code>
-也传入 <code>ToolContext</code>，因此执行中的 <code>bash</code>
-会观察到取消，在 Unix 终止 child process group，并在 agent loop 返回前
-flush 已读输出。Driver 仅在该返回之后发出
-<code>TaskCancelled</code>。新的 <code>SubmitTask</code> 在再次调用
-<code>agent_loop</code> 前清除 <code>cancel_flag</code>。</p>
+<code>CancelToken</code>。Host 侧的 <code>CancelController</code> 持有
+session token；每次 activation 通过 <code>begin_activation()</code> 取一个
+child token，guard 在结束时回到 idle。异步等待者通过 token 被唤醒，
+执行中的 <code>bash</code> 等同步消费者只读观察同一 token。Driver 仅在该
+activation 返回之后发出 <code>TaskCancelled</code>。新的
+<code>SubmitTask</code> 在再次调用 <code>agent_loop</code> 前调用
+<code>begin_user_turn()</code>，只在 idle 且已取消时轮换 session token。</p>
 <hr />
 <h2 id="5-agentupdate-与通知">5. <code>AgentUpdate</code> 与通知</h2>
 <p><code>emit_update</code> 把事件交给 <code>UpdateSink</code>：回答方通道（TUI）拿到原件，只读 observer（headless 日志）各拿一份克隆；同时为以下触发桌面通知：</p>
@@ -616,9 +618,11 @@ flush 已读输出。Driver 仅在该返回之后发出
 href="./17_chapter_notify_zh.html">第 17 章</a>）</li>
 <li><code>StepFailed</code> → <code>notify_step_failed</code></li>
 </ul>
-<p>大多数生命周期事件（<code>StepAdded</code>、<code>StepStarted</code>、<code>StepFinished</code>、
-<code>RequestSelect</code> 等）来自 <code>tool_dispatch.rs</code> 中的
-<code>execute_tool_call</code>。执行中的工具 可在
+<p>大多数生命周期事件（<code>StepAdded</code>、<code>StepStarted</code>、<code>StepFinished</code>
+等）由 <code>runtime/event_adapter.rs</code> 从 kernel
+<code>AgentEvent</code> 翻译；<code>RequestSelect</code> 由
+<code>runtime/gate_adapter.rs</code> 通过 <code>UiResponder</code>
+发出。执行中的工具 可在
 <code>StepStarted</code> 与终态 <code>StepFinished</code> /
 <code>StepFailed</code> 之间发出信息性的
 <code>ToolProgress</code>；它本身不表示完成。</p>
@@ -651,19 +655,20 @@ activation，原本会在下一轮被 <code>MaxTurns</code>
 
 pub struct AgentRuntime {
     pub client: LlmProvider,
-    pub context: Vec&lt;Message&gt;,
     pub compact_state: CompactState,
     pub recovery_state: RecoveryState,
-    pub permission_manager: PermissionManager,
-    pub stats: SessionStats,
-    pub events: UpdateSink,                      // 回答方通道 + 只读 observers
-    pub cancel_flag: Arc&lt;AtomicBool&gt;,
+    pub security: Scanner,
     pub session_store: Option&lt;DynSessionStore&gt;,
-    pub session_id: Option&lt;String&gt;,
     pub first_message_db_id: i64,
     pub last_message_db_id: i64,
     /// `persist_llm_call` 运行时的 `last_message_db_id`（assistant 行之前）。
     pub llm_call_last_message_id: i64,
+    pub(crate) context: Vec&lt;Message&gt;,
+    pub(crate) permission_manager: PermissionAuthority,
+    pub(crate) stats: Arc&lt;RwLock&lt;SessionStats&gt;&gt;,
+    pub(crate) events: UpdateSink,              // 回答方通道 + 只读 observers
+    pub(crate) cancel_flag: Arc&lt;CancelController&gt;,
+    pub(crate) session_id: Option&lt;String&gt;,
     // … cached_dir_snapshot, cached_agents_md
 }</code></pre>
 <p>构造辅助：<code>Agent::new</code>、<code>with_ui_channel</code>、<code>with_session</code>。Hook
@@ -671,16 +676,16 @@ pub struct AgentRuntime {
 <hr />
 <h2 id="7-tui-集成">7. TUI 集成</h2>
 <p>在
-<code>crates/tact-ui/src/interactive.rs</code>（<code>UserCommand::SubmitTask</code>
+<code>crates/tact-ui/src/driver.rs</code>（<code>UserCommand::SubmitTask</code>
 处理器）：</p>
 <pre class="rust"><code>UserCommand::SubmitTask(task) =&gt; {
     agent.tool_use_counter = 0;
-    agent.runtime.cancel_flag.store(false, Ordering::Relaxed);
+    agent.begin_user_turn();
 
     match agent.agent_loop(Some(task_message)).await {
-        Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) =&gt; {
-            if let Some(last) = agent.runtime.context.last() {
-                agent.emit_update(AgentUpdate::TaskComplete(extract_text(&amp;last.content)));
+        Ok(()) if !agent.is_cancelled() =&gt; {
+            if let Some(last) = agent.context().last() {
+                agent.events().send(AgentUpdate::TaskComplete(extract_text(&amp;last.content)));
             }
         }
                 Ok(()) =&gt; {
@@ -691,7 +696,7 @@ pub struct AgentRuntime {
     }
 }
 UserCommand::Cancel =&gt; {
-    agent.runtime.cancel_flag.store(true, ...);
+    agent.cancel();
 }</code></pre>
 <p><strong><code>TaskComplete</code></strong> 仅在
 <code>agent_loop</code> 返回 <code>Ok(())</code> <strong>且</strong>
@@ -717,8 +722,12 @@ UserCommand::Cancel =&gt; {
 辅助</td>
 </tr>
 <tr>
-<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
-<td><code>execute_tool_call</code>、三阶段流水线</td>
+<td><code>crates/agent_core/src/kernel.rs</code></td>
+<td><code>execute_tool_calls</code>、三阶段流水线与 wave 执行</td>
+</tr>
+<tr>
+<td><code>crates/tact/src/runtime/event_adapter.rs</code></td>
+<td><code>AgentEvent</code> → <code>AgentUpdate</code>，包括 Step 生命周期</td>
 </tr>
 <tr>
 <td><code>crates/tact-ui/src/interactive.rs</code></td>

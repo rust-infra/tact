@@ -567,7 +567,7 @@ pub(crate) mod test_support {
             voice: super::types::VoiceSettings::disabled_defaults(),
             mcp: super::types::McpSettings::default(),
             goal: super::types::GoalSettings::default(),
-            permission_mode: None,
+            permission_mode: crate::permission::PermissionMode::Default,
             tokio_console: false,
             config_path: None,
         }

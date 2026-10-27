@@ -69,7 +69,7 @@ impl Component for StatusBarComponent {
                 self.state.model_name = params.model.clone();
                 self.state.model_max_tokens = params.max_tokens;
                 self.state.model_thinking_budget = params.thinking_budget;
-                self.state.model_reasoning_effort = params.reasoning_effort.clone();
+                self.state.model_reasoning_effort = params.reasoning_effort;
                 true
             }
             _ => false,
@@ -190,7 +190,7 @@ mod tests {
             model: "mock-model".into(),
             max_tokens: 128_000,
             thinking_budget: Some(32_000),
-            reasoning_effort: Some("high".into()),
+            reasoning_effort: Some(tact_protocol::ReasoningEffort::High),
             extra_body: None,
         };
         comp.on_update(
@@ -198,7 +198,10 @@ mod tests {
             &mut ctx(&mut log, &mut pending, &mut events, &mut Vec::new()),
         );
         assert_eq!(comp.state().model_name, "mock-model");
-        assert_eq!(comp.state().model_reasoning_effort.as_deref(), Some("high"));
+        assert_eq!(
+            comp.state().model_reasoning_effort,
+            Some(tact_protocol::ReasoningEffort::High)
+        );
     }
 
     #[test]

@@ -110,7 +110,7 @@ The useful pattern is not the number of packages. It is that:
 | D14 | Preserve the current absolute turn cap and completion-yield semantics through `AgentState.total_turns`, `RunInput.max_total_turns`, and typed tool directives. |
 | D15 | Persist `MessageOrigin` for new sessions and migrate legacy rows from role/content plus existing marker detection. |
 | D16 | `ContextPolicy` returns typed `Continue`, `Compact`, or `Block` preparation decisions. The kernel alone executes compaction, persists its replacement atomically, and repeats preparation only after a successful replacement. |
-| D17 | Keep `AgentRuntime.cancel_flag` as Tact's public cancellation authority and bridge it into one activation-scoped `CancelToken`; the token is downstream-only inside the kernel. |
+| D17 | Use a host-owned `CancelController` as Tact's session cancellation authority. `Agent::begin_user_turn` retires a cancelled idle token, each activation receives a child `CancelToken`, and adapters only observe that token. |
 | D18 | Redact tool output at the Tact adapter boundary before progress or final results enter the kernel, and redact again after hook rewrites before visible output or persistence. |
 | D19 | Reconcile interrupted assistant tool calls at load time and persist deterministic grouped results before any resumed model request. |
 | D20 | Count only dispatched main-loop request attempts as turns; compaction calls and transport retries do not consume turns. |
@@ -131,7 +131,7 @@ requires the named production evidence. All rows below meet both conditions.
 |---|---|---|---|
 | R1 | Hook rewrites must rerun the complete security and permission classification. | [ToolGate](#toolgate) | Closed. The production gate re-resolves and reclassifies after both hook stages, with credential-rewrite, permission-rewrite, post-tool, and source-guard tests. |
 | R2 | Compaction needs typed requests, replacement, skip/veto, and atomic persistence. | [ContextPolicy](#contextpolicy) | Closed. `TactContextPolicy` and `TactCompactor` deliver typed auto/manual/recovery/command/micro decisions, native cursor-only replacement, skip/veto, and post-persistence bookkeeping. |
-| R3 | The public `cancel_flag` must drive the activation token. | [Cancellation Contract](#cancellation-contract) | Closed. `CancelBridge`, the public-facade cancellation matrix, and the nested-subagent ownership rule are implemented. |
+| R3 | The host cancellation authority must drive the activation token. | [Cancellation Contract](#cancellation-contract) | Closed. `CancelController`/`ActivationCancel`, the public-facade cancellation matrix, and the nested-subagent ownership rule are implemented. |
 | R4 | Facade state transfer must include every mutable field and the correct receiver. | [Compatibility Facade](#compatibility-facade) | Closed. `FacadeActivationState`, `FacadeSidecar`, receipt ranges, guard restore, and exhaustive transfer tests are implemented. |
 | R5 | Resumed sessions must load before constructing `initialized = true`. | [Compatibility Facade](#compatibility-facade) | Closed. The common bootstrap calls `ensure_session` before path selection and preserves non-empty direct context mutations. |
 | R6 | `CompleteRun` may complete a Goal only on its final permitted turn. | [Goal and Host Yield Semantics](#goal-and-host-yield-semantics) | Closed. `TactContextPolicy` injects the reminder only on the final permitted turn; final completion, non-final continuation, truncated-final refusal, Goal-origin preservation, and `goal_request_input` yield all have product evidence. |
@@ -186,10 +186,8 @@ Current finding evidence is:
   `TactContextPolicy`; production composition wires that policy into the
   kernel activation.
 - F3: the `cancellation_*` matrix and
-  `repeated_cancellation_has_one_terminal_event_and_bounded_drain`; the Tact
-  bridge test
-  `public_cancel_flag_keeps_one_terminal_event_and_committed_state` verifies
-  the bridge. The public-facade matrix is also green:
+  `repeated_cancellation_has_one_terminal_event_and_bounded_drain` verify the
+  kernel contract. The public-facade matrix is also green:
   `agent_loop_detailed_reports_cancelled_when_the_flag_arrives_mid_response`,
   `cancel_before_tool_execution_pairs_every_tool_use`,
   `cancel_mid_preflight_answers_every_tool_use_once`,
@@ -197,9 +195,10 @@ Current finding evidence is:
   `facade_cancel_while_bash_is_in_flight_drains_and_pairs_the_result`,
   `facade_cancel_while_another_tool_is_in_flight_drains_without_another_turn`,
   and `facade_cancel_between_waves_suppresses_later_side_effects_and_pairs_calls`.
-  Together they cover direct `AgentRuntime.cancel_flag` writes during
-  streaming, permission approval, bash, another in-flight tool, and between
-  waves, including terminal-event cardinality and durable pairing.
+  Together with `begin_user_turn_retires_a_cancelled_idle_token`, they cover
+  cancellation during streaming, permission approval, bash, another in-flight
+  tool, and between waves, including terminal-event cardinality, durable
+  pairing, and retirement of a cancelled idle token.
 - F4: `denied_tool_never_executes_but_gets_a_result`,
   `cancellation_during_gate_approval_never_executes_the_tool`, and
   `capability_adapters_do_not_hold_kernel_state_or_persistence_authority`
@@ -1665,12 +1664,26 @@ verify the explicit origins survive a reopen.
 ### EventPort
 
 ```rust
+#[derive(Clone, Copy)]
+pub enum EventDelivery {
+    Progress,
+    Terminal,
+}
+
 pub trait EventPort: Send + Sync {
     fn emit(&self, event: AgentEvent);
+
+    fn emit_with_delivery(&self, event: AgentEvent, delivery: EventDelivery) {
+        self.emit(event);
+    }
 }
 
 pub trait EventObserver: Send + Sync {
     fn observe(&self, event: &AgentEvent);
+
+    fn observe_with_delivery(&self, event: &AgentEvent, delivery: EventDelivery) {
+        self.observe(event);
+    }
 }
 ```
 
@@ -1679,16 +1692,24 @@ multiplexes it to the TUI, headless JSON output, RPC subscribers, and audit
 observers. Event delivery is a control-plane concern; a slow host must not
 pause the model stream or tool wave.
 
+`Progress` events are advisory and may be dropped when a host falls behind.
+`Terminal` events carry lifecycle, result, usage, and failure transitions and
+must remain reliable and ordered. The production `tact_protocol::update_channel`
+uses a bounded progress lane plus an unbounded terminal lane, merging both in
+send order; the raw unbounded sender remains only as a compatibility path for
+small embedders and tests.
+
 For each event, the kernel calls `EventPort::emit` first and then every
 `EventObserver` in registered order. Both paths must return without waiting on
 host I/O.
 
 The signature cannot enforce this property. `emit` implementations must enqueue
-without waiting for a consumer (the default runtime uses an unbounded
-host-owned channel); they must not await I/O, hold a lock across delivery, or
-synchronously call arbitrary extension code. `EventObserver` implementations
-follow the same rule. The recording test port validates order, not wall-clock
-behavior.
+without waiting for a consumer; they must not await I/O, hold a lock across
+delivery, or synchronously call arbitrary extension code. `EventObserver`
+implementations follow the same rule. The recording test port validates order,
+not wall-clock behavior. A host that stops draining the terminal lane can
+accumulate updates, but silently dropping those updates is not an allowed
+backpressure strategy.
 
 `EventObserver` is read-only: it receives every event once, in registration
 order, after `EventPort`, and returns no replacement or decision. It cannot
@@ -1962,12 +1983,11 @@ Running -> cancellation requested -> draining current work -> terminal
 ```
 
 `CancelToken::cancel` is idempotent. Once cancelled, a token cannot be reset or
-uncancelled; repeated writes and repeated calls are harmless. Phase 1 does not
-create independent session, turn, gate, or tool cancellation authorities.
-Session switching and queued user input remain host concerns. The single
-activation token covers its model, gate, and tool scopes, and is passed by clone
-only so adapters can observe it. Nested subagents each get a separate activation
-token bridged from their own public flag.
+uncancelled; repeated calls are harmless. Phase 1 does not create independent
+session, turn, gate, or tool cancellation authorities. Session switching and
+queued user input remain host concerns. The single activation token covers its
+model, gate, and tool scopes, and is passed by clone only so adapters can observe
+it. Nested subagents each own a separate `CancelController`.
 
 Cancellation never rolls back committed transcript, cursor, or usage state.
 Uncommitted stream text is discarded. If an assistant tool-use message was
@@ -1979,24 +1999,26 @@ exactly one terminal `RunFinished` or `RunFailed`. A mandatory usage flush or
 result-persistence failure takes terminal precedence over `RunStop::Cancelled`.
 No kernel events follow that terminal event.
 
-`AgentRuntime.cancel_flag: Arc<AtomicBool>` remains Tact's sole public
-cancellation authority. At activation entry the facade creates one
-`CancelToken`, cancels it immediately if the flag is already true, and starts a
-scoped watcher that mirrors subsequent flag writes into the token. The watcher
-is tied to the activation guard and stops when the activation exits. The token
-is downstream-only inside Tact: `ModelPort`, `ToolGate`, and `ToolPort` observe
-it and must not independently cancel it. Each nested subagent activation gets
-the same bridge for its own flag. Host code remains responsible for clearing a
-stale flag before starting a new activation.
+`CancelController` is Tact's session cancellation authority. It owns one
+generation-scoped session token, and `begin_activation()` returns an
+`ActivationCancel` guard whose token is a child of that session token. `cancel()`
+invalidates the current session token and every child; dropping the guard only
+marks the activation idle and never revives a token. `Agent::cancel`,
+`Agent::cancel_handle`, `Agent::is_cancelled`, and `Agent::cancel_controller`
+are the facade surface. `Agent::begin_user_turn` retires a cancelled session
+token only while no activation is running, so a late command cannot revive a
+cancelled run. The token is downstream-only inside Tact: `ModelPort`,
+`ToolGate`, and `ToolPort` observe it and must not independently cancel it.
+Subagents own their own controller and activation guard.
 
 The cancellation tests assert the stop outcome and, whenever an assistant
 tool-use message was persisted, durable assistant/tool pairing. They cover
 before streaming, during streaming with and without a complete response, after
 streaming but before commit, during gate approval, during an in-flight tool, and
-between waves. The bridge is constructed inside
+between waves. The activation guard is constructed inside
 `Agent::run_kernel_activation`. The public-facade matrix now covers streaming,
-approval, bash, another in-flight tool, and between-wave writes to
-`AgentRuntime.cancel_flag`, with one terminal event and committed state. Every
+approval, bash, another in-flight tool, and between-wave cancellation through
+the facade, with one terminal event and committed state. Every
 channel-waiting cancellation test has a bounded timeout; repeated cancellation,
 one-terminal-event, no-post-terminal-event, and retained-session cases are
 explicit assertions rather than timing assumptions.
@@ -2317,10 +2339,10 @@ then guard restore. Required adapters are constructor-injected, so a missing
 permission, transcript, usage, or MCP service is not a runtime "optional slot";
 sessionless hosts explicitly choose the no-op transcript and usage adapters.
 
-Each kernel activation mirrors the public `AgentRuntime.cancel_flag` into one
-activation-scoped `CancelToken` and stops the watcher when the state guard
-exits. The guard restores the facade state on success, cancellation, error, and
-unwind.
+Each kernel activation registers an `ActivationCancel` guard and passes its
+child `CancelToken` to the kernel. The guard restores the facade state on
+success, cancellation, error, and unwind, and dropping it returns the session
+controller to idle without reviving the token.
 
 As of 2026-10-27, `Agent::agent_loop_detailed` calls `ensure_session` and
 constructs a real `TactKernelComposition` for every activation.
@@ -2583,8 +2605,10 @@ The detailed task order and gates are in
   dispatch does not consume one.
 - `MaxTokens + ToolUse` preserves paired results and launches structurally valid
   continuation requests; truncated final turns cannot newly complete a Goal.
-- Direct writes to `AgentRuntime.cancel_flag` reach an activation-scoped token,
-  and the facade runs `ensure_session` before constructing `AgentState`.
+- `Agent::cancel` reaches the current activation token, while
+  `Agent::begin_user_turn` retires a cancelled idle token only when no
+  activation is active; the facade runs `ensure_session` before constructing
+  `AgentState`.
 - Cancellation is idempotent, drains already-running work, preserves committed
   session state, and emits exactly one terminal run event before the activation
   returns.

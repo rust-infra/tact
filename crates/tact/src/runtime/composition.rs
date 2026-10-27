@@ -3,7 +3,7 @@
 use std::sync::Arc;
 
 use tact_agent_api::{
-    EventPort, ModelCapabilities, ModelPort, ToolPort, TranscriptStore, UsageSink,
+    EventPort, ModelCallOptions, ModelCapabilities, ModelPort, ToolPort, TranscriptStore, UsageSink,
 };
 use tact_agent_core::{AgentKernel, KernelDeps};
 use tact_llm::LlmProvider;
@@ -14,7 +14,7 @@ use super::{
     compaction_adapter::TactCompactor,
     context_adapter::TactContextPolicy,
     event_adapter::TactEventBridge,
-    facade_state::{FacadeReceiptTracker, FacadeReceipts},
+    facade_state::FacadeReceiptTracker,
     gate_adapter::TactToolGate,
     model_adapter::TactModelPort,
     noop_transcript::NoopTranscriptStore,
@@ -34,11 +34,10 @@ use crate::{
 
 pub(crate) struct TactKernelConfig {
     pub provider: LlmProvider,
-    pub cancel_flag: Arc<std::sync::atomic::AtomicBool>,
     pub capabilities: ModelCapabilities,
     pub prompt: Arc<SystemPromptAssembler>,
     pub compactor: Arc<TactCompactor>,
-    pub model_metadata: serde_json::Value,
+    pub model_options: ModelCallOptions,
     pub model: ModelIdentity,
     pub session_id: String,
     pub initial_session_context: Vec<crate::hook::HookContextChunk>,
@@ -62,18 +61,16 @@ pub(crate) struct TactKernelComposition {
     context: Arc<TactContextPolicy>,
     prompt: Arc<SystemPromptAssembler>,
     compactor: Arc<TactCompactor>,
-    receipts: Arc<FacadeReceiptTracker>,
 }
 
 impl TactKernelComposition {
     pub(crate) fn new(config: TactKernelConfig) -> Self {
-        let receipts = config.receipts.clone();
         let goal_active = config.tool_context.active_goal_id.is_some();
         let events: Arc<dyn EventPort> = Arc::new(TactEventBridge::new(config.updates.clone()));
-        let model: Arc<dyn ModelPort> = Arc::new(
-            TactModelPort::from_provider(config.provider, config.capabilities)
-                .with_cancel_flag(config.cancel_flag.clone()),
-        );
+        let model: Arc<dyn ModelPort> = Arc::new(TactModelPort::from_provider(
+            config.provider,
+            config.capabilities,
+        ));
         let tools: Arc<dyn ToolPort> = Arc::new(TactToolPort::new(
             config.tools,
             config.mcp,
@@ -99,7 +96,7 @@ impl TactKernelComposition {
             config.model,
             config.initial_session_context,
             &config.hooks,
-            config.model_metadata,
+            config.model_options,
             goal_active,
         ));
         let transcript: Arc<dyn TranscriptStore> = match config.store.clone() {
@@ -127,7 +124,6 @@ impl TactKernelComposition {
             context,
             prompt: config.prompt,
             compactor: config.compactor,
-            receipts,
         }
     }
 
@@ -154,10 +150,6 @@ impl TactKernelComposition {
     pub(crate) fn prompt_caches(&self) -> PromptCaches {
         self.prompt.caches()
     }
-
-    pub(crate) fn receipts(&self) -> FacadeReceipts {
-        self.receipts.snapshot()
-    }
 }
 
 #[cfg(test)]
@@ -165,7 +157,7 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     use tact_agent_api::{
-        AgentMessage, AgentRole, AgentState, CancelToken, MessageOrigin, RunInput, RunStop,
+        AgentMessage, AgentRole, AgentState, CancelToken, MessageOrigin, RunId, RunInput, RunStop,
         SessionRef,
     };
     use tact_llm::{ContentBlock, LlmProvider, MockClient, ProviderKind, StopReason};
@@ -174,6 +166,7 @@ mod tests {
     use crate::{
         mcp::{MCPToolRouter, McpCatalogHandle},
         permission::{PermissionManager, PermissionMode},
+        runtime::facade_state::FacadeReceipts,
         runtime::permission_authority::PermissionAuthority,
         stats::SessionStats,
         tool::{ToolContext, ToolRouter},
@@ -220,7 +213,6 @@ mod tests {
                 }],
                 Some(StopReason::EndTurn),
             )])),
-            cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
             capabilities: ModelCapabilities {
                 model: "mock".into(),
                 context_window: 1_000,
@@ -230,7 +222,7 @@ mod tests {
             },
             prompt,
             compactor,
-            model_metadata: serde_json::json!({}),
+            model_options: ModelCallOptions::default(),
             model: ModelIdentity {
                 name: "mock".into(),
             },
@@ -263,6 +255,7 @@ mod tests {
             .run(
                 &mut state,
                 RunInput {
+                    run_id: RunId::new("sessionless"),
                     session: SessionRef::new("sessionless"),
                     inputs: vec![AgentMessage::text(
                         AgentRole::User,

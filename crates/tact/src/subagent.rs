@@ -18,10 +18,7 @@
 use std::{
     collections::{HashMap, HashSet},
     path::Path,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
+    sync::Arc,
     time::Duration,
 };
 
@@ -30,7 +27,10 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tact_protocol::UpdateSink;
 
-use crate::store::subagent_store::{SqliteSubagentStore, SubagentStore};
+use crate::{
+    cancel::CancelController,
+    store::subagent_store::{SqliteSubagentStore, SubagentStore},
+};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -88,10 +88,10 @@ pub struct SubagentResult {
 
 pub struct SubagentManager {
     records: Arc<dyn SubagentStore>,
-    /// Live cancel handles for running children, keyed by child session id.
-    /// Registered by `spawn_subagent` so a `cancel_subagent` tool / slash
-    /// command / TUI button can flip the child's cooperative cancel flag.
-    cancel_handles: std::sync::Mutex<HashMap<String, Arc<AtomicBool>>>,
+    /// Live cancellation authorities for running children, keyed by child
+    /// session id. Registered by `spawn_subagent` so a `cancel_subagent` tool
+    /// / slash command / TUI button can request cooperative cancellation.
+    cancel_handles: std::sync::Mutex<HashMap<String, Arc<CancelController>>>,
     /// Child ids started by **this process** (registered by `spawn_subagent`
     /// right after the run row is recorded). This is the sticky-overview
     /// source: `subagent_runs` itself accumulates across sessions and picks up
@@ -175,10 +175,10 @@ impl SubagentManager {
         self.records.upsert(&record).await
     }
 
-    /// Registers the cooperative cancel flag for a running child so external
-    /// entry points (tool / slash command / TUI button) can request its
-    /// cancellation. Replaces any previous handle for the same id.
-    pub fn register_cancel_handle(&self, child_id: &str, flag: Arc<AtomicBool>) {
+    /// Registers the cooperative cancellation authority for a running child so
+    /// external entry points (tool / slash command / TUI button) can request
+    /// its cancellation. Replaces any previous handle for the same id.
+    pub fn register_cancel_handle(&self, child_id: &str, flag: Arc<CancelController>) {
         self.cancel_handles
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -193,9 +193,10 @@ impl SubagentManager {
             .remove(child_id);
     }
 
-    /// Requests cancellation of a running child by flipping its cooperative
-    /// flag. Returns `false` when no live handle exists (already finished,
-    /// unknown id, or a synchronous child that never registered a handle).
+    /// Requests cancellation of a running child through its cooperative
+    /// authority. Returns `false` when no live handle exists (already
+    /// finished, unknown id, or a synchronous child that never registered a
+    /// handle).
     pub fn request_cancel(&self, child_id: &str) -> bool {
         let flag = self
             .cancel_handles
@@ -205,7 +206,7 @@ impl SubagentManager {
             .cloned();
         match flag {
             Some(flag) => {
-                flag.store(true, Ordering::Relaxed);
+                flag.cancel();
                 true
             }
             None => false,
@@ -216,7 +217,7 @@ impl SubagentManager {
     /// the parent agent exits, so background subagents stop instead of
     /// becoming orphans). Returns the number of live handles flipped.
     pub fn cancel_all(&self) -> usize {
-        let handles: Vec<Arc<AtomicBool>> = self
+        let handles: Vec<Arc<CancelController>> = self
             .cancel_handles
             .lock()
             .unwrap_or_else(|e| e.into_inner())
@@ -224,7 +225,7 @@ impl SubagentManager {
             .cloned()
             .collect();
         for flag in &handles {
-            flag.store(true, Ordering::Relaxed);
+            flag.cancel();
         }
         handles.len()
     }
@@ -239,7 +240,7 @@ impl SubagentManager {
                 .lock()
                 .unwrap_or_else(|e| e.into_inner());
             for flag in handles.values() {
-                flag.store(true, Ordering::Relaxed);
+                flag.cancel();
             }
             handles.keys().cloned().collect()
         };
@@ -435,7 +436,7 @@ impl SharedSubagentManager {
         self.inner.cancel(child_id).await
     }
 
-    pub fn register_cancel_handle(&self, child_id: &str, flag: Arc<AtomicBool>) {
+    pub fn register_cancel_handle(&self, child_id: &str, flag: Arc<CancelController>) {
         self.inner.register_cancel_handle(child_id, flag);
     }
 
@@ -597,10 +598,10 @@ mod tests {
         assert!(!manager.request_cancel("ghost"));
 
         // Registered handle is flipped by request_cancel.
-        let flag = Arc::new(AtomicBool::new(false));
+        let flag = Arc::new(CancelController::new());
         manager.register_cancel_handle("child-1", flag.clone());
         assert!(manager.request_cancel("child-1"));
-        assert!(flag.load(Ordering::Relaxed), "flag must be set");
+        assert!(flag.is_cancelled(), "flag must be set");
 
         // Unregister removes the handle; a second request fails.
         manager.unregister_cancel_handle("child-1");
@@ -614,16 +615,16 @@ mod tests {
         manager.start("child-1".to_string()).await.unwrap();
         manager.start("child-2".to_string()).await.unwrap();
 
-        let f1 = Arc::new(AtomicBool::new(false));
-        let f2 = Arc::new(AtomicBool::new(false));
+        let f1 = Arc::new(CancelController::new());
+        let f2 = Arc::new(CancelController::new());
         manager.register_cancel_handle("child-1", f1.clone());
         manager.register_cancel_handle("child-2", f2.clone());
 
         let count = manager.cancel_all_and_persist().await;
 
         assert_eq!(count, 2);
-        assert!(f1.load(Ordering::Relaxed));
-        assert!(f2.load(Ordering::Relaxed));
+        assert!(f1.is_cancelled());
+        assert!(f2.is_cancelled());
         assert!(
             manager
                 .check(Some("child-1"))
@@ -649,16 +650,16 @@ mod tests {
                 .block_on(SubagentManager::new(&db))
                 .unwrap(),
         );
-        let f1 = Arc::new(AtomicBool::new(false));
-        let f2 = Arc::new(AtomicBool::new(false));
+        let f1 = Arc::new(CancelController::new());
+        let f2 = Arc::new(CancelController::new());
         manager.register_cancel_handle("child-1", f1.clone());
         manager.register_cancel_handle("child-2", f2.clone());
 
         let count = manager.cancel_all();
 
         assert_eq!(count, 2, "both live handles must be flipped");
-        assert!(f1.load(Ordering::Relaxed));
-        assert!(f2.load(Ordering::Relaxed));
+        assert!(f1.is_cancelled());
+        assert!(f2.is_cancelled());
 
         // A second cancel_all has nothing left (handles still registered but
         // already true — cancel_all re-flips; count stays 2). Unregister then

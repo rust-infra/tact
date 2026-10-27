@@ -2,18 +2,18 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentMessage, CancelToken, CursorUpdate, ModelCapabilities, ModelCursor, ModelMessage,
-    ModelPort, RunInput, RunStop, SessionRef,
+    AgentMessage, CancelToken, CursorUpdate, ModelCallOptions, ModelCapabilities, ModelCursor,
+    ModelMessage, ModelPort, RunInput, RunStop, SessionRef,
 };
 
 /// Provider-neutral request assembled by product context policy before the
 /// kernel attaches the current tool snapshot.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PreparedRequest {
     pub system: String,
     pub messages: Vec<ModelMessage>,
     pub cursor: Option<ModelCursor>,
-    pub metadata: serde_json::Value,
+    pub options: ModelCallOptions,
 }
 
 /// Read-only state exposed to context policy.
@@ -54,7 +54,7 @@ pub struct ContextPreparation {
 }
 
 /// Request plus context that must be persisted before dispatch.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RequestPlan {
     pub request: PreparedRequest,
     pub appended_messages: Vec<AgentMessage>,
@@ -250,7 +250,7 @@ mod tests {
                 system: "system".into(),
                 messages: Vec::new(),
                 cursor: None,
-                metadata: serde_json::json!({}),
+                options: ModelCallOptions::default(),
             },
             appended_messages: Vec::new(),
         };

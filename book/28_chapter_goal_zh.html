@@ -474,8 +474,9 @@ activation（<code>Draft → Queued → Running</code>），不需要额外的�
 创建一次有预算的 Run，并让 Agent 检查现状、规划和维护关联 Task DAG。该
 activation 在命令循环之外的可取消任务里运行，因此运行期间
 <code>Cancel</code>、<code>/goal list</code>、<code>/goal pause</code>、<code>/goal steer</code>
-与 <code>/goal cancel</code> 仍然可响应：暂停/取消先写入请求事件并触发
-<code>cancel_flag</code>，Runner 在下一个安全点停下；steer 在下一次
+与 <code>/goal cancel</code> 仍然可响应：暂停/取消先写入请求事件，再调用
+当前 Agent 的 <code>CancelController::cancel()</code> 中断 activation；Runner
+在下一个安全点停下；steer 在下一次
 activation 注入。</li>
 <li>如果仍有可执行工作、没有用户阻塞且预算充足，Runner
 可以启动下一执行周期；单次 <code>agent_loop</code>
@@ -503,7 +504,7 @@ self-attested。自动验证尚未实现，Automatic
 /goal steer [&lt;id&gt;] &lt;text&gt; 立即补充方向或说明并写入事件（省略 id 时作用于当前运行中的 Goal；无运行中 Goal 时取唯一的非终态 Goal，多个候选则要求显式 id）；下一次 activation 的 context 会看到它，不阻塞当前 Run
 /goal pause &lt;id&gt;      暂停执行；Run 活跃时写 pause_requested 并中断当前模型/工具波次，Runner 落到 paused
 /goal resume &lt;id&gt;     恢复执行
-/goal cancel &lt;id&gt;     取消 Goal；Run 活跃时写 cancel_requested 并触发 cancel_flag，终态为 cancelled
+/goal cancel &lt;id&gt;     取消 Goal；Run 活跃时写 cancel_requested 并调用 CancelController::cancel()，终态为 cancelled
 /goal accept &lt;id&gt;     接受人工验收项 / 完成提议
 /goal archive &lt;id&gt;    把已结束的 Goal 归档（移出面板与默认列表，记录不删）
 /goal unarchive &lt;id&gt;  取消归档，重新出现在面板里</code></pre>
@@ -616,7 +617,7 @@ activation。首跑在任何显式 resume 之前发生，但状态转换本身�
 <li><strong>运行中的控制不排队等 Run
 结束</strong>：<code>/goal pause</code>、<code>/goal cancel</code>、<code>/goal steer</code>
 与 Esc 都直接作用于 <code>SharedGoalManager</code> /
-<code>cancel_flag</code>——前两者先写 <code>pause_requested</code> /
+<code>CancelController</code>——前两者先写 <code>pause_requested</code> /
 <code>cancel_requested</code> 事件再中断当前 activation，steer
 只追加事件、在下一个 activation 的 context 里可见。</li>
 <li><strong>一次 Run 结束后状态由 stop
@@ -1160,8 +1161,8 @@ session。因此定时路径说一句「本轮对账收回了 N 个中断的 Run
 为依据，不依赖进程内 future、channel 或 pending queue。</li>
 <li>只有完成幂等性检查后才重试可能已执行但结果未落库的操作；外部副作用不得因为恢复而盲目重放。</li>
 <li>暂停/取消先持久化 <code>pause_requested</code> /
-<code>cancel_requested</code> 事件，再触发当前 Agent 的
-<code>cancel_flag</code>；Runner 在 activation 结束或下一个 cycle
+<code>cancel_requested</code> 事件，再调用当前 Agent 的
+<code>CancelController::cancel()</code>；Runner 在 activation 结束或下一个 cycle
 前读取事件，记录 Run outcome 并释放 lease。暂停落到
 <code>paused</code>（可 resume），取消落到终态
 <code>cancelled</code>。</li>
@@ -1344,7 +1345,7 @@ Goal。面板标 <code>running (idle)</code>，Run 的结束行同样追加
 <code>/goal cancel</code> 不再串行等待 Run 结束：命令循环直接写 shared
 store / cancel flag。跨进程暂停在模型调用进行中无法立即打断，Runner
 会在该 activation 返回或下一个 cycle 前观察到请求；同进程的
-<code>cancel_flag</code> 可以更早中断当前波次。</li>
+<code>CancelController</code> 可以更早中断当前波次。</li>
 <li>Goal 激活期间由 <code>task_create</code> 创建的 Task 自动关联到当前
 Goal（<code>goal_id</code>）；Goal context 的 <code>linked-tasks</code>
 与面板 task 计数因此能看到它们。</li>

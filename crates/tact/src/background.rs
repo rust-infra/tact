@@ -27,7 +27,7 @@ use std::{
     path::Path,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -35,6 +35,7 @@ use std::{
 use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
+use tact_agent_api::CancelToken;
 use tact_protocol::{AgentUpdate, ToolOutputChunk, ToolOutputStream, UpdateSink};
 use tokio::{
     io::AsyncWriteExt,
@@ -218,7 +219,7 @@ impl BackgroundManager {
         work_dir: &Path,
         session_id: String,
         progress: Option<BackgroundProgressSink>,
-        cancel: Arc<AtomicBool>,
+        cancel: CancelToken,
     ) -> Result<String> {
         crate::shell::validate_shell_command(&command)?;
 
@@ -285,7 +286,7 @@ impl BackgroundManager {
         work_dir: &Path,
         session_id: String,
         progress: Option<BackgroundProgressSink>,
-        cancel: Arc<AtomicBool>,
+        cancel: CancelToken,
     ) -> Result<String> {
         let id = self
             .start(command.clone(), work_dir, session_id, progress, cancel)
@@ -313,7 +314,7 @@ impl BackgroundManager {
         task_id: Option<&str>,
         session_id: &str,
         timeout: Duration,
-        cancel: &AtomicBool,
+        cancel: &CancelToken,
     ) -> Result<WaitOutcome> {
         if let Some(task_id) = task_id {
             self.records
@@ -324,7 +325,7 @@ impl BackgroundManager {
 
         let deadline = Instant::now() + timeout;
         loop {
-            if cancel.load(Ordering::Relaxed) {
+            if cancel.is_cancelled() {
                 return Ok(WaitOutcome::Cancelled);
             }
             if !self.has_running(task_id, session_id).await? {
@@ -436,7 +437,7 @@ impl SharedBackgroundManager {
         work_dir: &Path,
         session_id: String,
         progress: Option<BackgroundProgressSink>,
-        cancel: Arc<AtomicBool>,
+        cancel: CancelToken,
     ) -> Result<String> {
         self.inner
             .run(command, work_dir, session_id, progress, cancel)
@@ -449,7 +450,7 @@ impl SharedBackgroundManager {
         work_dir: &Path,
         session_id: String,
         progress: Option<BackgroundProgressSink>,
-        cancel: Arc<AtomicBool>,
+        cancel: CancelToken,
     ) -> Result<String> {
         self.inner
             .start(command, work_dir, session_id, progress, cancel)
@@ -465,7 +466,7 @@ impl SharedBackgroundManager {
         task_id: Option<&str>,
         session_id: &str,
         timeout: Duration,
-        cancel: &AtomicBool,
+        cancel: &CancelToken,
     ) -> Result<WaitOutcome> {
         self.inner.wait(task_id, session_id, timeout, cancel).await
     }
@@ -665,7 +666,7 @@ async fn run_background_process(
     work_dir: &Path,
     progress: &Option<BackgroundProgressSink>,
     log_path: Option<&Path>,
-    cancel: Arc<AtomicBool>,
+    cancel: CancelToken,
 ) -> (BackgroundTaskStatus, String) {
     let mut log_file = match log_path {
         Some(path) => open_log_file(path).await,
@@ -768,7 +769,7 @@ async fn run_background_process(
                 // Cancellation is the only way a running task ends early: the
                 // session's flag is the one kill switch, and it is checked on
                 // the tick we already have (no extra timer).
-                if cancel.load(Ordering::Relaxed) && failure_reason.is_none() {
+                if cancel.is_cancelled() && failure_reason.is_none() {
                     failure_reason = Some("Cancelled by the user".to_string());
                     terminate_tree(&mut child, process_group_id).await;
                     stdout_task.abort();
@@ -825,8 +826,14 @@ mod tests {
     use crate::store::background_store::SqliteBackgroundStore;
 
     /// A cancellation flag that is never set: the task runs to completion.
-    fn no_cancel() -> Arc<AtomicBool> {
-        Arc::new(AtomicBool::new(false))
+    fn no_cancel() -> CancelToken {
+        CancelToken::new()
+    }
+
+    fn cancelled() -> CancelToken {
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        cancel
     }
 
     /// Live `sleep` processes whose command line mentions `needle`, as
@@ -1056,7 +1063,7 @@ mod tests {
                 Some(&id),
                 "sess-1",
                 Duration::from_secs(10),
-                &AtomicBool::new(false),
+                &CancelToken::new(),
             ),
         )
         .await
@@ -1096,7 +1103,7 @@ mod tests {
                 Some(&id),
                 "sess-1",
                 Duration::from_secs(30),
-                &AtomicBool::new(false),
+                &CancelToken::new(),
             )
             .await
             .unwrap();
@@ -1119,7 +1126,7 @@ mod tests {
                 Some(&id),
                 "sess-1",
                 Duration::from_millis(300),
-                &AtomicBool::new(false),
+                &CancelToken::new(),
             ),
         )
         .await
@@ -1133,7 +1140,7 @@ mod tests {
     async fn wait_is_interrupted_by_the_cancel_flag() {
         let (manager, tmp) = temp_manager("wait_cancelled");
         let id = start_task(&manager, tmp.path(), "sleep 30", "sess-1").await;
-        let cancel = AtomicBool::new(true);
+        let cancel = cancelled();
 
         let started = Instant::now();
         let outcome = tokio::time::timeout(
@@ -1156,7 +1163,7 @@ mod tests {
         // is a child of the shell, and a kill aimed at the shell alone would
         // leave it running (measured before `terminate_tree`).
         let (manager, tmp) = temp_manager("cancel_terminates");
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = CancelToken::new();
         // A marker unique to this test: parallel tests match their own.
         let id = manager
             .start(
@@ -1179,7 +1186,7 @@ mod tests {
             "the task never started"
         );
 
-        cancel.store(true, Ordering::Relaxed);
+        cancel.cancel();
 
         let outcome = tokio::time::timeout(
             Duration::from_secs(10),
@@ -1187,7 +1194,7 @@ mod tests {
                 Some(&id),
                 "sess-1",
                 Duration::from_secs(10),
-                &AtomicBool::new(false),
+                &CancelToken::new(),
             ),
         )
         .await
@@ -1231,7 +1238,7 @@ mod tests {
                     .status();
             }
         }
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = CancelToken::new();
         // A marker unique to this test: parallel tests match their own.
         let id = manager
             .start(
@@ -1263,7 +1270,7 @@ mod tests {
             "the leader had not exited, so the leader-reaped path was not exercised"
         );
 
-        cancel.store(true, Ordering::Relaxed);
+        cancel.cancel();
 
         let outcome = tokio::time::timeout(
             Duration::from_secs(10),
@@ -1271,7 +1278,7 @@ mod tests {
                 Some(&id),
                 "sess-1",
                 Duration::from_secs(10),
-                &AtomicBool::new(false),
+                &CancelToken::new(),
             ),
         )
         .await
@@ -1297,7 +1304,7 @@ mod tests {
                 Some("nope"),
                 "sess-1",
                 Duration::from_millis(50),
-                &AtomicBool::new(false),
+                &CancelToken::new(),
             )
             .await
             .unwrap_err()
@@ -1312,12 +1319,7 @@ mod tests {
 
         let outcome = tokio::time::timeout(
             Duration::from_secs(5),
-            manager.wait(
-                None,
-                "sess-b",
-                Duration::from_secs(30),
-                &AtomicBool::new(false),
-            ),
+            manager.wait(None, "sess-b", Duration::from_secs(30), &CancelToken::new()),
         )
         .await
         .expect("a foreign session's task must not block the wait")
@@ -1330,7 +1332,7 @@ mod tests {
                 None,
                 "sess-a",
                 Duration::from_millis(200),
-                &AtomicBool::new(false),
+                &CancelToken::new(),
             )
             .await
             .unwrap();

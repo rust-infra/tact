@@ -466,8 +466,8 @@ Runner）与可选的 <code>image</code>（<code>read_image</code>）。handler
 <td><code>spawn_subagent</code> 子 agent 的受限列表</td>
 </tr>
 <tr>
-<td><code>tool_dispatch.rs</code></td>
-<td>Agent 侧路由：原生 vs MCP、hooks、权限</td>
+<td><code>runtime/tool_adapter.rs</code> + <code>agent_core/src/kernel.rs</code></td>
+<td>Agent 侧路由：原生 vs MCP、hooks、权限与 kernel 调度</td>
 </tr>
 </tbody>
 </table>
@@ -508,7 +508,7 @@ Runner）与可选的 <code>image</code>（<code>read_image</code>）。handler
     pub events: UpdateSink,                      // 回答方 ui 通道 + 只读 observers
     pub ui_responder: UiResponder,               // ask_user / 权限选择 的请求-应答注册表
     pub progress_reporter: ToolProgressReporter,
-    pub cancel_flag: Arc&lt;AtomicBool&gt;,
+    pub cancel_flag: Arc&lt;CancelController&gt;,       // session 级取消权威；activation 取 child token
     pub bash_timeout_secs: u64,
     pub bash_nice: i32,                          // 默认 10；0 关闭
     pub sandbox: Option&lt;Arc&lt;dyn Sandbox&gt;&gt;,       // 启动时解析一次
@@ -525,8 +525,10 @@ Runner）与可选的 <code>image</code>（<code>read_image</code>）。handler
 为本次调用绑定新的
 <code>ToolProgressReporter</code>；<code>for_invocation_with_redaction</code>
 额外设置实时输出脱敏级别（流式与最终结果分开处理）。
-<code>cancel_flag</code> 与 agent runtime
-共享，<code>bash_timeout_secs</code> 携带 resolved 墙钟时限。 当
+<code>cancel_flag</code> 是 session 级
+<code>CancelController</code>，与 agent runtime 共享；每次 activation 通过
+<code>begin_activation()</code> 取得 child <code>CancelToken</code>，同步工具只读观察同一
+token。<code>bash_timeout_secs</code> 携带 resolved 墙钟时限。 当
 没有任何接收方（<code>events.is_empty()</code>）或接收端已关闭时，reporter 为
 no-op；<code>ui_responder</code> 为空时 <code>ask_user</code>
 干净失败而不是挂在一个没人应答的提示上。</p>
@@ -868,8 +870,8 @@ href="./15_chapter_worktree_zh.html">Worktree</a>）。</p>
 href="./27_chapter_sandbox_zh.html">Bash 沙箱</a>。</p>
 <hr />
 <h2 id="8-从-agent-分发">8. 从 Agent 分发</h2>
-<p><code>tool_dispatch.rs</code> 的 Phase 2（<code>run_tool_waves</code>
-里每个 wave 的每个调用）：</p>
+<p><code>agent_core/src/kernel.rs</code> 的 Phase 2（每个 wave
+的每个调用）：</p>
 <pre class="rust"><code>let exec = if is_mcp {
     run_mcp_tool(mcp, ctx, &amp;prep.id, &amp;prep.name, &amp;prep.input).await
 } else {
@@ -925,9 +927,8 @@ href="./09_chapter_hook_zh.html">Agent 生命周期钩子</a>。</p>
 wave，以及哪些调用被排除在并行之外。回合编排的整体叙述（三阶段、UI
 事件、持久化）在 <a
 href="./11_chapter_task_zh.html">任务与工具调度</a>；这里聚焦算法与数据。</p>
-<p>代码落在 <code>crates/tact/src/agent/tool_schedule.rs</code>（380
-行，含 19 个单测）与 <code>tool_dispatch.rs</code> 的
-<code>run_tool_waves</code>。</p>
+<p>代码落在 <code>crates/agent_core/src/scheduling.rs</code> 的 wave
+调度器，以及 <code>crates/tact/src/runtime/tool_adapter.rs</code> 的产品资源映射。</p>
 <hr />
 <h3 id="91-为什么同一回合内可以并行">9.1 为什么同一回合内可以并行</h3>
 <p>LLM 一次响应里发出的所有 <code>ToolUse</code>
@@ -947,10 +948,10 @@ read/write 或 write/write。其余一切都可以重叠。</p>
     Note over M,L: 数据依赖只能落在回合边界上</pre>
 <hr />
 <h3 id="92-只有执行阶段是并行的">9.2 只有执行阶段是并行的</h3>
-<p><code>Agent::execute_tool_call</code>（<code>tool_dispatch.rs</code>）是三个调用：</p>
+<p><code>AgentKernel::execute_tool_calls</code>（<code>agent_core/src/kernel.rs</code>）分为三个阶段：</p>
 <pre class="mermaid">graph LR
-    a["preflight_tool_calls&lt;br/&gt;串行 · &amp;amp;mut self"] --&gt; b["run_tool_waves&lt;br/&gt;按 wave 并行 · 共享借用"]
-    b --&gt; c["build_tool_results&lt;br/&gt;串行 · 模型顺序重组"]</pre>
+    a["gate.before + resolve&lt;br/&gt;串行预检"] --&gt; b["execute_tool_calls&lt;br/&gt;按 wave 并行"]
+    b --&gt; c["persist_tool_results&lt;br/&gt;模型顺序重组"]</pre>
 <table>
 <thead>
 <tr>
@@ -961,19 +962,19 @@ read/write 或 write/write。其余一切都可以重叠。</p>
 </thead>
 <tbody>
 <tr>
-<td><code>preflight_tool_calls</code></td>
+<td><code>gate.before</code> + resolve</td>
 <td>解析 native/MCP、<code>PreToolUse</code>
 hook、权限判定；被拒者就地写占位结果</td>
 <td>权限提示是交互式的，hook 需要 <code>&amp;mut self</code></td>
 </tr>
 <tr>
-<td><code>run_tool_waves</code></td>
+<td><code>execute_tool_calls</code></td>
 <td>调度 + 并发执行 + <code>PostToolUse</code> hook +
 <code>StepFinished</code> + stats</td>
 <td><strong>这里才是并行的那一段</strong></td>
 </tr>
 <tr>
-<td><code>build_tool_results</code></td>
+<td><code>persist_tool_results</code></td>
 <td>按模型顺序把输出拼回 <code>ToolResult</code> 块</td>
 <td>顺序本身就是契约——provider 校验 <code>tool_use</code> /
 <code>tool_result</code> 的配对与次序</td>
@@ -988,7 +989,7 @@ I/O）全在中间一段，所以并行收益正好落在该落的地方。中�
 <h3 id="93-资源声明每个工具自己说碰什么">9.3
 资源声明：每个工具自己说碰什么</h3>
 <p>调度器<strong>没有工具名表</strong>。资源来自工具自己的元数据
-<code>ToolMetadata.resources</code>（<code>ResourcePolicy</code>，<code>crates/tact/src/tool/metadata.rs</code>）。<code>tool_resources_for</code>
+<code>ToolMetadata.resources</code>（<code>ResourcePolicy</code>，<code>crates/tact/src/tool/metadata.rs</code>）。<code>TactToolPort::access</code>
 调 <code>ResourcePolicy::resolve(input, work_dir)</code>，把「策略 +
 本次输入」解析成具体的 <code>ToolResources</code>：</p>
 <pre class="rust"><code>pub struct ToolResources {
@@ -1057,8 +1058,9 @@ equal / ancestor 判定。</p>
 <code>Arc&lt;Mutex&lt;_&gt;&gt;</code> 串起来。<code>load_memory</code>
 同为 <code>Independent</code>（只读，走同一把锁）。</li>
 <li><code>cancel_subagent</code> 是 <code>Independent</code>（权限却是
-<code>High</code>）——它只翻子会话的 <code>AtomicBool</code>
-取消标志，没有需要保序的工作区效果。</li>
+<code>High</code>）——它只调用子会话自己的
+<code>CancelController::cancel()</code>，让子会话的 token 及其 activation
+token 进入取消状态，没有需要保序的工作区效果。</li>
 <li><code>task_get</code> / <code>task_list</code> 是
 <code>Independent</code>，只有 <code>task_create</code> /
 <code>task_update</code> 走
@@ -1319,7 +1321,7 @@ server；<code>list_mcp_resources</code> / <code>list_mcp_prompts</code>
 / templates 是<strong>列表</strong>，可能触及每台 server，所以是
 barrier。</p>
 <p><strong>唯一"看输入"的资源判定</strong>在
-<code>tool_resources_for</code>：<code>spawn_subagent</code> 带
+<code>TactToolPort::access</code>：<code>spawn_subagent</code> 带
 <code>worktree: true</code> → <code>Independent</code>（子 agent
 有自己的 worktree 泳道，文件影响被限定在泳道内，可以同波扇出），否则
 <code>Barrier</code>。这是 2026-08-26 异步子 agent 设计里点名的
@@ -1327,48 +1329,26 @@ barrier。</p>
 <hr />
 <h3 id="98-取消与顺序">9.8 取消与顺序</h3>
 <ul>
-<li><strong>取消只在 wave 边界生效</strong>——<code>run_tool_waves</code>
-每波开头查
-<code>cancel_requested()</code>。在飞的工具跑完：中断一个已开始的写比多等几百毫秒更糟。剩余未执行的调用在
-<code>build_tool_results</code> 里落成 <code>TOOL_CANCELLED_MSG</code>
+<li><strong>取消只在 wave 边界生效</strong>——<code>execute_tool_calls</code>
+每波开头和预检循环检查 <code>CancelToken</code>。在飞的工具跑完：中断一个已开始的写比多等几百毫秒更糟。剩余未执行的调用在
+<code>persist_tool_results</code> 里落成 <code>TOOL_CANCELLED_MSG</code>
 占位结果。</li>
 <li><strong>波内完成顺序 = <code>FuturesUnordered</code> 的 yield
 顺序</strong>，不是模型顺序。每完成一个就立刻跑 <code>PostToolUse</code>
 / <code>PostToolUseFailure</code>、发 <code>StepFinished</code>（带
 <code>step_idx</code>，UI 靠它归位）、记 stats 与 recent files。</li>
-<li><strong>发给模型的顺序永远是模型顺序</strong>：<code>build_tool_results</code>
-走 <code>prepared</code> 数组，与并行无关。</li>
-<li>Phase 1 被拒 / 未识别的调用根本不进调度——它们已有
-<code>PreparedState::Resolved</code> 占位结果，<code>run_indices</code>
-只收 <code>PreparedState::Run</code>。</li>
+<li><strong>发给模型的顺序永远是模型顺序</strong>：<code>persist_tool_results</code>
+按 slot 顺序拼接，与并行无关。</li>
+<li>Phase 1 被拒 / 未识别的调用根本不进调度——它们已有失败占位结果，后续只执行已批准的 slot。</li>
 </ul>
 <hr />
 <h3 id="99-可观测性">9.9 可观测性</h3>
-<p><code>run_tool_waves</code> 在<strong>执行之前</strong>就把
-<code>ToolScheduleSummary</code> 写进该次 LLM 调用那一行
-<code>token_usages</code>（<code>persist_tool_schedule</code> →
-<code>record_tool_schedule</code>，按 <code>last_message_id</code>
-定位那次调用）。以上面例 1 为例：</p>
-<pre class="json"><code>{
-  &quot;total_tools&quot;: 6,
-  &quot;wave_count&quot;: 4,
-  &quot;max_parallelism&quot;: 3,
-  &quot;waves&quot;: [
-    { &quot;tools&quot;: [&quot;read_file&quot;, &quot;read_file&quot;, &quot;read_file&quot;], &quot;barrier&quot;: false },
-    { &quot;tools&quot;: [&quot;edit_file&quot;],                           &quot;barrier&quot;: false },
-    { &quot;tools&quot;: [&quot;read_file&quot;],                           &quot;barrier&quot;: false },
-    { &quot;tools&quot;: [&quot;bash&quot;],                                &quot;barrier&quot;: true  }
-  ]
-}</code></pre>
-<ul>
-<li><code>total_tools</code>
-只数<strong>放行执行</strong>的工具（<code>PreparedState::Run</code>），被拒
-/ 阻塞的不算。</li>
-<li><code>max_parallelism</code> = 最大一波的大小；<code>1</code>
-意味着整回合串行。</li>
-<li>与 token 成本落在同一行 → 调度策略可以和成本关联分析。列定义见 <a
-href="../docs/token_usage_schema.md#tool_schedule-column">token_usage_schema.md</a>。</li>
-</ul>
+<p>旧版在 <code>run_tool_waves</code> 执行前把
+<code>ToolScheduleSummary</code> 写入
+<code>token_usages.tool_schedule</code>。kernel migration 后这条写入路径已移除：
+<code>record_tool_schedule</code> 仅保留为数据库兼容 API，当前 activation
+不会生成 summary。调度结果目前通过 <code>scheduling.rs</code>
+的单元测试和 <code>StepFinished</code> 的到达时序观察。</p>
 <hr />
 <h3 id="910-让新工具安全并行">9.10 让新工具安全并行</h3>
 <ol type="1">
@@ -1470,14 +1450,7 @@ barrier</td>
 <tr>
 <td>无 UI 呈现</td>
 <td>日志不显示 wave 分组，并行只体现在 <code>StepFinished</code>
-的到达时序与 DB 里的 summary</td>
-</tr>
-<tr>
-<td><code>normalize()</code> 是死代码</td>
-<td><code>tool_schedule.rs</code> 里的 <code>normalize</code> 带
-<code>#[allow(dead_code)]</code>；实际解析走
-<code>ResourcePolicy::resolve</code> 的
-<code>work_dir.join()</code></td>
+的到达时序</td>
 </tr>
 </tbody>
 </table>
@@ -1602,21 +1575,21 @@ toolset 级测试</td>
 <td>各工具实现</td>
 </tr>
 <tr>
-<td><code>crates/tact/src/agent/tool_schedule.rs</code></td>
-<td><code>ToolResources</code>、<code>conflicts</code> /
-<code>overlap</code>、<code>schedule_waves</code> /
-<code>waves_grouped</code>、<code>mcp_server_resources</code>、<code>ToolScheduleSummary</code></td>
+<td><code>crates/agent_core/src/scheduling.rs</code></td>
+<td><code>conflicts</code> / <code>overlap</code>、<code>schedule_waves</code> /
+<code>waves_grouped</code></td>
 </tr>
 <tr>
-<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
-<td><code>preflight_tool_calls</code> / <code>run_tool_waves</code> /
-<code>build_tool_results</code>、<code>tool_resources_for</code>、native/MCP
-分发</td>
+<td><code>crates/tact/src/agent/tool_schedule.rs</code></td>
+<td><code>ToolResources</code>、<code>mcp_server_resources</code> 与产品资源辅助</td>
+</tr>
+<tr>
+<td><code>crates/agent_core/src/kernel.rs</code> + <code>crates/tact/src/runtime/tool_adapter.rs</code></td>
+<td>工具预检、wave 执行、结果组装；native/MCP 分发与资源映射</td>
 </tr>
 <tr>
 <td><code>crates/tact/src/agent/mod.rs</code></td>
-<td><code>all_tool_specs</code>、agent
-构造、<code>persist_tool_schedule</code></td>
+<td><code>all_tool_specs</code>、agent 构造、facade 状态</td>
 </tr>
 <tr>
 <td><code>crates/tool_refactor_macros/</code></td>
@@ -1690,8 +1663,7 @@ system prompt 得知当前没有 Goal</td>
 <h2 id="related-docs">Related Docs</h2>
 <ul>
 <li><a href="./11_chapter_task_zh.html">任务与工具调度</a> —
-三阶段流水线、权限 / hook 位置、<code>ToolScheduleSummary</code>
-落库</li>
+三阶段流水线、权限 / hook 位置与 wave 调度</li>
 <li><a href="./10_chapter_permission_zh.html">权限模型</a> —
 <code>call</code> 之前的预检门</li>
 <li><a href="./09_chapter_hook_zh.html">Agent 生命周期钩子</a> —

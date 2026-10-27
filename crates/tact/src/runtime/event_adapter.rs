@@ -6,8 +6,8 @@ use std::{
 };
 
 use tact_agent_api::{
-    AgentEvent, AgentNotice, EventPort, MessageDelta, ModelCallKind, ProviderActivity,
-    ProviderActivityKind, ProviderActivityPhase, ThinkingDelta, ToolDescriptor,
+    AgentEvent, AgentNotice, EventDelivery, EventPort, MessageDelta, ModelCallKind,
+    ProviderActivity, ProviderActivityKind, ProviderActivityPhase, ThinkingDelta, ToolDescriptor,
     ToolExecutionResult, ToolExecutionStatus, ToolOutputChunk,
 };
 use tact_protocol::{
@@ -159,6 +159,12 @@ impl TactEventBridge {
 
 impl EventPort for TactEventBridge {
     fn emit(&self, event: AgentEvent) {
+        let delivery = event.delivery();
+        self.emit_with_delivery(event, delivery);
+    }
+
+    fn emit_with_delivery(&self, event: AgentEvent, delivery: EventDelivery) {
+        let _ = delivery;
         let mut state = self
             .state
             .lock()
@@ -189,38 +195,35 @@ impl TactEventBridge {
                 kind: ModelCallKind::Stream | ModelCallKind::Complete,
                 model,
                 max_output_tokens,
-                metadata,
+                options,
                 ..
             } => {
                 self.events.send(AgentUpdate::ModelInfo(ModelCallParams {
                     model,
                     max_tokens: max_output_tokens,
-                    thinking_budget: metadata
-                        .get("thinking_budget")
-                        .and_then(serde_json::Value::as_u64)
-                        .and_then(|value| u32::try_from(value).ok()),
-                    reasoning_effort: metadata
-                        .get("reasoning_effort")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_string),
-                    extra_body: metadata
-                        .get("extra_body")
-                        .and_then(serde_json::Value::as_str)
-                        .map(str::to_string),
+                    thinking_budget: options.thinking_budget,
+                    reasoning_effort: options.reasoning_effort,
+                    extra_body: options.extra_value("extra_body").map(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_string)
+                            .unwrap_or_else(|| value.to_string())
+                    }),
                 }));
             }
             AgentEvent::ModelCallStarted { .. } => {}
             AgentEvent::MessageStarted { .. } => {}
             AgentEvent::MessageDelta { delta, .. } => match delta {
                 MessageDelta::Text { delta } => {
-                    self.events.send(AgentUpdate::StreamChunk(delta));
+                    self.events.send_progress(AgentUpdate::StreamChunk(delta));
                 }
                 MessageDelta::Thinking { phase } => {
-                    self.events.send(AgentUpdate::ThinkingChunk(match phase {
-                        ThinkingDelta::Started => ThinkingChunk::Started,
-                        ThinkingDelta::Delta { delta } => ThinkingChunk::Delta(delta),
-                        ThinkingDelta::Finished => ThinkingChunk::Finished,
-                    }));
+                    self.events
+                        .send_progress(AgentUpdate::ThinkingChunk(match phase {
+                            ThinkingDelta::Started => ThinkingChunk::Started,
+                            ThinkingDelta::Delta { delta } => ThinkingChunk::Delta(delta),
+                            ThinkingDelta::Finished => ThinkingChunk::Finished,
+                        }));
                 }
             },
             AgentEvent::ProviderActivity { activity } => {
@@ -236,7 +239,7 @@ impl TactEventBridge {
                 );
             }
             AgentEvent::ToolProgress { call_id, chunks } => {
-                self.events.send(AgentUpdate::ToolProgress {
+                self.events.send_progress(AgentUpdate::ToolProgress {
                     tool_id: call_id,
                     chunks: chunks.into_iter().map(host_chunk).collect(),
                 });
@@ -470,7 +473,7 @@ mod tests {
     fn maps_turn_model_deltas_usage_and_notices() {
         let (bridge, mut rx) = bridge();
         bridge.emit(AgentEvent::TurnStarted {
-            run_id: tact_agent_api::RunId::new(1),
+            run_id: tact_agent_api::RunId::new("run-1"),
             turn: 2,
             activation_turn: 1,
             max_total_turns: Some(4),
@@ -480,7 +483,10 @@ mod tests {
             kind: ModelCallKind::Stream,
             model: "mock".into(),
             max_output_tokens: 100,
-            metadata: serde_json::json!({"thinking_budget": 8}),
+            options: tact_agent_api::ModelCallOptions {
+                thinking_budget: Some(8),
+                ..Default::default()
+            },
         });
         bridge.emit(AgentEvent::MessageDelta {
             message_id: MessageId::new("m1"),
@@ -505,7 +511,6 @@ mod tests {
                 total_tokens: 5,
                 ..TokenUsage::default()
             }),
-            request_body: None,
             message_range: None,
         });
         bridge.emit(AgentEvent::Notice {
@@ -771,6 +776,7 @@ mod tests {
             .run(
                 &mut state,
                 tact_agent_api::RunInput {
+                    run_id: tact_agent_api::RunId::new("injection-activity"),
                     session: tact_agent_api::SessionRef::new("injection-activity"),
                     inputs: vec![AgentMessage::text(
                         AgentRole::User,
@@ -844,7 +850,7 @@ mod tests {
             elapsed_ms: None,
         });
         bridge.emit(AgentEvent::TurnStarted {
-            run_id: tact_agent_api::RunId::new(1),
+            run_id: tact_agent_api::RunId::new("run-1"),
             turn: 1,
             activation_turn: 1,
             max_total_turns: None,

@@ -2,8 +2,7 @@
 
 use std::time::Duration;
 
-use tact_protocol::{AgentUpdate, UiResponse, UserCommand};
-use tokio::sync::mpsc::UnboundedReceiver;
+use tact_protocol::{UiResponse, UpdateReceiver, UserCommand};
 
 use crate::widgets::state::{App, InputMode, SelectKind};
 
@@ -75,10 +74,7 @@ where
 }
 
 /// Build an `App` wired to the given agent channel (no startup logo/messages).
-pub fn make_headless_app(
-    agent_rx: UnboundedReceiver<AgentUpdate>,
-    work_dir: std::path::PathBuf,
-) -> App {
+pub fn make_headless_app(agent_rx: impl Into<UpdateReceiver>, work_dir: std::path::PathBuf) -> App {
     use tokio::sync::mpsc::unbounded_channel;
     let (user_cmd_tx, _user_cmd_rx) = unbounded_channel();
     let (plugin_tx, _plugin_request_rx) = unbounded_channel();

@@ -87,8 +87,24 @@ def package_graph(metadata: dict[str, Any]) -> tuple[dict[str, str], dict[str, l
             dependency["pkg"]
             for dependency in node.get("deps", [])
             if dependency.get("pkg") in names
+            and (
+                not dependency.get("dep_kinds")
+                or any(
+                    dep_kind.get("kind") != "dev"
+                    for dep_kind in dependency["dep_kinds"]
+                )
+            )
         ]
     return names, graph
+
+
+def production_dependency_names(package: dict[str, Any]) -> set[str]:
+    """Return direct dependencies that participate in non-dev builds."""
+    return {
+        dependency["name"]
+        for dependency in package.get("dependencies", [])
+        if dependency.get("kind") != "dev"
+    }
 
 
 def shortest_path(
@@ -122,7 +138,7 @@ def validate(metadata: dict[str, Any], requested: list[str], *, emit: bool = Tru
             failed = True
             continue
 
-        direct = {dependency["name"] for dependency in package.get("dependencies", [])}
+        direct = production_dependency_names(package)
         forbidden = FORBIDDEN.get(name, set())
         direct_violations = sorted(direct & forbidden)
         for violation in direct_violations:
@@ -200,6 +216,44 @@ def self_test() -> bool:
         )
         return False
     print("ok: forbidden-transitive self-test")
+
+    dev_only_metadata = {
+        "packages": [
+            {
+                "id": "root",
+                "name": "tact_agent_api",
+                "dependencies": [
+                    {"name": "tact_protocol", "kind": "dev"},
+                ],
+            },
+            {
+                "id": "protocol",
+                "name": "tact_protocol",
+                "dependencies": [],
+            },
+        ],
+        "resolve": {
+            "nodes": [
+                {
+                    "id": "root",
+                    "deps": [
+                        {
+                            "pkg": "protocol",
+                            "dep_kinds": [{"kind": "dev", "target": None}],
+                        }
+                    ],
+                },
+                {"id": "protocol", "deps": []},
+            ]
+        },
+    }
+    if not validate(dev_only_metadata, ["tact_agent_api"], emit=False):
+        print(
+            "error: dev-only dependency self-test rejected a valid fixture",
+            file=sys.stderr,
+        )
+        return False
+    print("ok: dev-only dependency self-test")
     return True
 
 

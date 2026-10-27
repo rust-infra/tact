@@ -466,25 +466,35 @@ snapshot；TUI 从该 snapshot reconcile
 headless/tests 仍以该事件为权威。</p>
 <h3 id="updatesink-分发口">1.1 <code>UpdateSink</code>：一个分发口，两种前端</h3>
 <p>agent 内部不再持有可空的 <code>ui_tx</code>，而是
-<code>tact_protocol::UpdateSink</code>：</p>
+<code>tact_protocol::UpdateSink</code>。它把「能回答提问的前端」和
+「只读 observer」分开，同时让两者共享同一种可靠/可丢投递策略：</p>
 <pre class="rust"><code>pub struct UpdateSink {
-    ui: Option&lt;UnboundedSender&lt;AgentUpdate&gt;&gt;,          // 能回答提问的前端
-    observers: Vec&lt;UnboundedSender&lt;AgentUpdate&gt;&gt;,     // 只读镜像
+    ui: Option&lt;UpdateSender&gt;,          // 能回答提问的前端
+    observers: Vec&lt;UpdateSender&gt;,     // 只读镜像
 }
 
 impl UpdateSink {
-    pub fn for_ui(tx: UnboundedSender&lt;AgentUpdate&gt;) -&gt; Self;
-    pub fn observing(tx: UnboundedSender&lt;AgentUpdate&gt;) -&gt; Self;
+    pub fn for_ui(tx: impl Into&lt;UpdateSender&gt;) -&gt; Self;
+    pub fn observing(tx: impl Into&lt;UpdateSender&gt;) -&gt; Self;
     pub fn from_ui(tx: Option&lt;UnboundedSender&lt;AgentUpdate&gt;&gt;) -&gt; Self;
-    pub fn with_observer(self, tx: UnboundedSender&lt;AgentUpdate&gt;) -&gt; Self;
+    pub fn from_ui_sender(tx: Option&lt;UpdateSender&gt;) -&gt; Self;
+    pub fn with_observer(self, tx: impl Into&lt;UpdateSender&gt;) -&gt; Self;
     pub fn observers_only(&amp;self) -&gt; Self;
-    pub fn ui(&amp;self) -&gt; Option&lt;&amp;UnboundedSender&lt;AgentUpdate&gt;&gt;;
+    pub fn ui(&amp;self) -&gt; Option&lt;&amp;UpdateSender&gt;;
     pub fn has_ui(&amp;self) -&gt; bool;    // 有回答方
     pub fn is_empty(&amp;self) -&gt; bool;  // 一个接收方都没有
     pub fn send(&amp;self, update: AgentUpdate);
+    pub fn send_progress(&amp;self, update: AgentUpdate);
 }
 
-impl From&lt;Option&lt;UnboundedSender&lt;AgentUpdate&gt;&gt;&gt; for UpdateSink { /* = from_ui */ }</code></pre>
+pub fn update_channel(progress_capacity: usize)
+    -&gt; (UpdateSender, UpdateReceiver);
+
+impl UpdateSender {
+    pub fn send(&amp;self, update: AgentUpdate) -&gt; Result&lt;(), UpdateSendError&gt;;
+    pub fn send_progress(&amp;self, update: AgentUpdate)
+        -&gt; Result&lt;(), UpdateSendError&gt;;
+}</code></pre>
 <table>
 <thead>
 <tr>
@@ -509,6 +519,11 @@ impl From&lt;Option&lt;UnboundedSender&lt;AgentUpdate&gt;&gt;&gt; for UpdateSink
 </tr>
 </tbody>
 </table>
+<p><code>send</code> 是终态投递：生命周期、结果、usage 与失败事件必须可靠且
+有序；<code>send_progress</code> 是建议性投递：文本/thinking delta 与工具
+输出在慢前端上可以丢弃，但不能拖住模型流。<code>update_channel</code>
+用有界 progress lane 加无界 terminal lane，接收端按发送顺序合并；
+旧式 <code>UnboundedSender</code> 仅作为小型 embedder / 测试兼容路径。</p>
 <p>区分是<strong>可执行的</strong>而不是约定：<code>send</code> 给每个
 observer 一份克隆、把原件交给 <code>ui</code>；提问只能走
 <code>ui()</code>，所以 observer-only 的前端拿不到「我会应答」的身份。
@@ -577,15 +592,24 @@ stream 顺序。 <code>ToolProgress</code>
 <pre class="rust"><code>pub enum UserCommand {
     SubmitTask(String),
     Cancel,
+    Compact,
+    QueryBalance,
+    QueryStats,
     CreateGoal { title: String, objective: String, criteria: Vec&lt;String&gt; },
-    ListGoals,
+    ListGoals { include_archived: bool },
     ShowGoal { goal_id: String },
-    SteerGoal { goal_id: String, text: String },
+    SteerGoal { goal_id: Option&lt;String&gt;, text: String },
     PauseGoal { goal_id: String },
     ResumeGoal { goal_id: String },
     CancelGoal { goal_id: String },
     AcceptGoal { goal_id: String, text: String },
-    QueryBalance,
+    SetGoalArchived { goal_id: String, archived: bool },
+    SetPermissionMode(PermissionMode),
+    SetThinkingBudget(usize),
+    SetReasoningEffort(Option&lt;ReasoningEffort&gt;),
+    SetModel(String),
+    CancelSubagent { child_id: String },
+    // … MCP / hooks / background queries
     UiResponse(UiResponse), // 回答 RequestSelect / RequestMultiSelect
 }</code></pre>
 <h3 id="uiresponse"><code>UiResponse</code></h3>
@@ -741,8 +765,8 @@ prompt。</p>
 <li><code>Planning</code>：<code>UserCommand::SubmitTask</code>
 已发送。<code>StreamChunk</code> / <code>ThinkingChunk</code> 可能在首个
 <code>StepAdded</code> 之前到达。</li>
-<li><code>Executing</code>：<code>UserCommand::Cancel</code> 设置
-<code>cancel_flag</code> 并发出 <code>Info</code> —— Status 仍为
+<li><code>Executing</code>：<code>UserCommand::Cancel</code> 调用
+<code>Agent::cancel()</code> 并发出 <code>Info</code> —— Status 仍为
 busy，直到 <code>TaskCancelled</code> 回到 <code>Idle</code>。</li>
 </ul>
 </blockquote>
@@ -805,14 +829,14 @@ busy，直到 <code>TaskCancelled</code> 回到 <code>Idle</code>。</li>
 <td><em>（不变）</em></td>
 <td><em>（不变）</em></td>
 <td><code>UserCommand::Cancel</code></td>
-<td><code>Info("Cancelling…")</code> + 设 <code>cancel_flag</code>；随后
+<td><code>Info("Cancelling…")</code> + <code>Agent::cancel()</code>；随后
 <code>TaskCancelled</code></td>
 </tr>
 </tbody>
 </table>
 <p><code>TaskComplete</code> 由
 <code>crates/tact-ui/src/driver.rs</code> 在 <code>agent_loop</code>
-返回 <code>Ok(())</code> 且 <code>cancel_flag</code> 为 false 时发送（<a
+返回 <code>Ok(())</code> 且 <code>agent.is_cancelled()</code> 为 false 时发送（<a
 href="./18_chapter_agent_loop_zh.html#7-tui-集成">Ch 18
 §7</a>）。取消路径改为发送 <code>TaskCancelled</code>。</p>
 <h3 id="42-agentupdate--status-映射">4.2 <code>AgentUpdate</code> →
@@ -979,16 +1003,16 @@ hint。Legacy/headless：经共享 <code>UiResponder</code>（反向
 <pre class="mermaid">graph TD
     a_st[SubmitTask] --&gt; b_al[agent_loop]
     b_al --&gt;|Ok 且未取消| c_tc[emit TaskComplete]
-    b_al --&gt;|cancel_flag| d_xc[emit TaskCancelled]
-    e_cn[Cancel] --&gt; f_cf[set cancel_flag + Info]
+    b_al --&gt;|已取消| d_xc[emit TaskCancelled]
+    e_cn[Cancel] --&gt; f_cf[Agent::cancel() + Info]
     g_qb[QueryBalance] --&gt; h_qo[query_once]
     h_qo --&gt; i_au[AccountUpdate → TUI]</pre>
 <p>两处跨图连线：<code>Planning</code> 由 <code>SubmitTask</code>
 触发（图 1 的 <code>Planning</code> ← 图 2 的
-<code>SubmitTask</code>）；<code>Cancel</code> 设置的
-<code>cancel_flag</code> 让 <code>Executing</code> 收到
+<code>SubmitTask</code>）；<code>Cancel</code> 调用
+<code>Agent::cancel()</code>，让 <code>Executing</code> 收到
 <code>TaskCancelled</code> 而回到 <code>Idle</code>（图 2 的
-<code>set cancel_flag</code> → 图 1 的 <code>Executing</code>）。</p>
+<code>Agent::cancel()</code> → 图 1 的 <code>Executing</code>）。</p>
 <table>
 <thead>
 <tr>
@@ -1007,7 +1031,7 @@ hint。Legacy/headless：经共享 <code>UiResponder</code>（反向
 <td><code>Cancel</code></td>
 <td><code>/cancel</code> 或 Planning/Executing 时 Normal 模式
 <code>c</code></td>
-<td>设置 <code>cancel_flag</code>；循环退出后 driver 发
+<td>调用 <code>Agent::cancel()</code>；循环退出后 driver 发
 <code>TaskCancelled</code> → <code>Idle</code></td>
 </tr>
 <tr>

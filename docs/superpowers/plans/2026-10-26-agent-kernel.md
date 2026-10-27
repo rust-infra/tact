@@ -86,8 +86,9 @@ The implemented boundary stops at `tact_agent_api`, `tact_agent_core`, and
 - The facade calls `ensure_session`, then transfers `AgentState` and the
   complete behavioral sidecar from `&mut Agent`. Restore them through one guard
   on success, cancellation, error, and unwind.
-- `AgentRuntime.cancel_flag` remains the only public cancellation authority.
-  Mirror it into one activation-scoped `CancelToken`; adapters only observe the
+- `CancelController` is the only session cancellation authority. Each
+  activation gets a child `CancelToken` through `ActivationCancel`; adapters
+  only observe the token, and `Agent::begin_user_turn` retires a cancelled idle
   token.
 - Cancellation is monotonic and idempotent for one activation. It drains current
   work, retains committed session state, and emits exactly one terminal event.
@@ -177,7 +178,7 @@ contract with unfinished product cutover stays open.
 |---|---|---|---|
 | R1 | Hook rewrites bypassed final security classification. | Task 4 gate work; [ToolGate spec](../specs/2026-10-26-agent-kernel-design.md#toolgate) | Closed. Shared production gate re-resolves and reclassifies both hook stages; adapter and legacy cases are checked in Task 4. |
 | R2 | Compaction could not express auto/manual/recovery/native, no-op, or cursor replacement. | Task 4 context ownership; Task 6 compaction cutover | Closed. `TactContextPolicy`/`TactCompactor` cover every typed kind, native cursor-only replacement, veto/skip, kernel-owned persistence, and post-commit bookkeeping. |
-| R3 | The activation `CancelToken` was not bridged from `AgentRuntime.cancel_flag`. | Task 4 `cancel_bridge`; Task 5 cancellation gate | Closed. The public-facade matrix covers stream, approval, bash, other in-flight tools, and wave boundaries. |
+| R3 | The activation `CancelToken` was not derived from the session cancellation authority. | Task 4 `CancelController`; Task 5 cancellation gate | Closed. The public-facade matrix covers stream, approval, bash, other in-flight tools, wave boundaries, and cancelled-idle-token retirement. |
 | R4 | Facade transfer had the wrong receiver and omitted mutable sidecar state. | Task 5 facade-state transfer | Closed. The typed envelope, receipt ranges, sidecar restore, and exhaustive transfer tests are checked. |
 | R5 | `initialized = true` could skip SQLite history for resumed TUI sessions. | Task 5 common bootstrap | Closed. `ensure_session` runs before path selection; empty-context resume and direct mutation parity are checked. |
 | R6 | `CompleteRun` would change non-final Goal behavior. | Task 6 Goal work | Closed. `TactContextPolicy` adds the final-turn reminder only at `remaining_turns == Some(1)`, and the product matrix proves final completion, non-final continuation, truncated-final refusal, Goal-origin preservation, and host yield after `MaxTokens + ToolUse`. |
@@ -226,23 +227,24 @@ is fully closed only after its named implementation gate is green;
   and `TactKernelComposition` injects the policy into the kernel.
 - [x] **F3 contract and public-facade bridge** Define monotonic activation-scoped
   cancellation, current-wave draining, committed-state retention, and one
-  terminal event. The `cancellation_*` matrix,
-  `repeated_cancellation_has_one_terminal_event_and_bounded_drain`, and
-  `public_cancel_flag_keeps_one_terminal_event_and_committed_state` pass.
-- [x] **F3 facade wiring** `Agent::run_kernel_activation` creates and drops one
-  `CancelBridge` around the real kernel activation and retains committed state.
-- [x] **F3 closure** Prove direct `AgentRuntime.cancel_flag` writes through the
-  public facade during streaming, approval, bash, other in-flight tools, and
-  between waves. **Evidence:**
+  terminal event. The `cancellation_*` matrix and
+  `repeated_cancellation_has_one_terminal_event_and_bounded_drain` pass.
+- [x] **F3 facade wiring** `Agent::run_kernel_activation` registers one
+  `ActivationCancel` guard, passes its child token to the kernel, and retains
+  committed state.
+- [x] **F3 closure** Prove facade cancellation through `Agent::cancel` during
+  streaming, approval, bash, other in-flight tools, and between waves, plus
+  cancelled-idle-token retirement through `Agent::begin_user_turn`. **Evidence:**
   `agent_loop_detailed_reports_cancelled_when_the_flag_arrives_mid_response`,
   `cancel_before_tool_execution_pairs_every_tool_use`,
   `cancel_mid_preflight_answers_every_tool_use_once`,
   `cancel_mid_preflight_answers_an_approved_but_unrun_call`,
   `facade_cancel_while_bash_is_in_flight_drains_and_pairs_the_result`,
   `facade_cancel_while_another_tool_is_in_flight_drains_without_another_turn`,
-  and `facade_cancel_between_waves_suppresses_later_side_effects_and_pairs_calls`
-  pass. They cover the public flag, terminal-event cardinality, drained work,
-  suppressed later waves, and durable tool pairing.
+  `facade_cancel_between_waves_suppresses_later_side_effects_and_pairs_calls`,
+  and `begin_user_turn_retires_a_cancelled_idle_token` pass. They cover the
+  facade authority, terminal-event cardinality, drained work, suppressed later
+  waves, durable tool pairing, and cancelled-idle-token retirement.
 - [x] **F4 kernel contract** Make kernel authority explicit: adapters cannot
   write kernel-managed transcript/cursor/usage state or emit kernel events on
   the kernel's behalf. The kernel authority tests pass.
@@ -331,10 +333,10 @@ is fully closed only after its named implementation gate is green;
 - `crates/tact/src/runtime/composition.rs`
 - `crates/tact/src/runtime/mod.rs`
 - `crates/tact/src/runtime/model_adapter.rs`
-- `crates/tact/src/runtime/tool_adapter.rs`
-- `crates/tact/src/runtime/gate_adapter.rs`
-- `crates/tact/src/runtime/context_adapter.rs`
-- `crates/tact/src/runtime/compaction_adapter.rs`
+- `crates/tact/src/runtime/tool_adapter/`
+- `crates/tact/src/runtime/gate_adapter/`
+- `crates/tact/src/runtime/context_adapter/`
+- `crates/tact/src/runtime/compaction_adapter/`
 - `crates/tact/src/runtime/prompt_adapter.rs`
 - `crates/tact/src/runtime/store_adapter.rs`
 - `crates/tact/src/runtime/services.rs`
@@ -345,7 +347,7 @@ is fully closed only after its named implementation gate is green;
 - `crates/tact/src/runtime/event_adapter.rs`
 - `crates/tact/src/runtime/tool_presentation.rs`
 - `crates/tact/src/runtime/facade_state.rs`
-- `crates/tact/src/runtime/cancel_bridge.rs`
+- `crates/tact/src/cancel.rs`
 - `crates/tact/src/runtime/usage_adapter.rs`
 - `crates/tact/src/runtime/baseline.rs`
 - `crates/tact/src/mcp/catalog.rs`
@@ -869,9 +871,9 @@ has no forbidden dependency.
 - Modify: `crates/agent_core/src/test_support/mod.rs`
 - Create: `crates/tact/src/runtime/composition.rs`
 - Create: `crates/tact/src/runtime/model_adapter.rs`
-- Create: `crates/tact/src/runtime/tool_adapter.rs`
-- Create: `crates/tact/src/runtime/gate_adapter.rs`
-- Create: `crates/tact/src/runtime/context_adapter.rs`
+- Create: `crates/tact/src/runtime/tool_adapter/`
+- Create: `crates/tact/src/runtime/gate_adapter/`
+- Create: `crates/tact/src/runtime/context_adapter/`
 - Create: `crates/tact/src/runtime/store_adapter.rs`
 - Create: `crates/tact/src/runtime/services.rs`
 - Create: `crates/tact/src/runtime/activation_view.rs`
@@ -880,7 +882,7 @@ has no forbidden dependency.
 - Create: `crates/tact/src/runtime/noop_transcript.rs`
 - Create: `crates/tact/src/runtime/event_adapter.rs`
 - Create: `crates/tact/src/runtime/tool_presentation.rs`
-- Create: `crates/tact/src/runtime/cancel_bridge.rs`
+- Create: `crates/tact/src/cancel.rs`
 - Create: `crates/tact/src/runtime/usage_adapter.rs`
 - Create: `crates/tact/src/mcp/catalog.rs`
 - Create: `crates/tact/testdata/agent_kernel/legacy_baseline.json`
@@ -938,12 +940,11 @@ has no forbidden dependency.
   exposing the model `ToolPort` or a general tool executor to the gate.
 - The adapters implement their capability traits directly; no `*Plugin`
   wrapper or registry entry is introduced.
-- `compose_tact_kernel()` constructs fresh `KernelDeps`, adds the ordered observer
-  list supported by the first slice, reuses shared handles from `Agent`, and
-  creates the kernel.
-- `cancel_bridge` creates the activation token from
-  `AgentRuntime.cancel_flag`; no adapter creates or cancels an independent
-  token.
+- `TactKernelComposition::new` constructs fresh `KernelDeps`, adds the ordered
+  observer list supported by the first slice, reuses shared handles from
+  `Agent`, and creates the kernel.
+- `CancelController::begin_activation` creates the activation token; no adapter
+  creates or cancels an independent token.
 
 **Work:**
 
@@ -970,8 +971,8 @@ has no forbidden dependency.
 - [x] Add cancellation race tests with bounded timeouts: repeated cancellation,
   cancellation during stream/gate/wave, current-wave drain, no new work after
   cancellation, exactly one terminal event, no post-terminal events, and
-  retained committed transcript/cursor/usage state. Both the public-flag bridge
-  and direct `AgentRuntime.cancel_flag` facade writes have coverage.
+  retained committed transcript/cursor/usage state. Both facade cancellation
+  and cancelled-idle-token retirement have coverage.
 - [x] Add injection/activity golden tests proving injected context keeps a
   non-`User` origin and hosted provider activity emits no user/tool transcript
   message and no client tool execution.
@@ -1150,7 +1151,7 @@ pre-migration databases;
 - Modify: `crates/tact/src/lib.rs`
 - Modify: `crates/tact/src/runtime/composition.rs`
 - Create: `crates/tact/src/runtime/facade_state.rs`
-- Modify: `crates/tact/src/runtime/cancel_bridge.rs`
+- Create: `crates/tact/src/cancel.rs`
 - Modify: `crates/tact-ui/src/session_bootstrap.rs`
 - Modify: `crates/tact-ui/src/interactive.rs`
 - Modify: `crates/tact-ui/src/headless.rs`
@@ -1177,9 +1178,9 @@ pre-migration databases;
 - Shared services, permission authority, MCP catalog, update sink, stats, and
   queues stay outside the envelope. `LoopState` exposes only the read-only
   projection; the kernel and gate never hold `Agent`.
-- `cancel_bridge` creates one `CancelToken` from `AgentRuntime.cancel_flag`,
-  mirrors direct flag writes while the activation guard is alive, and stops the
-  watcher on exit.
+- `CancelController::begin_activation` creates one child `CancelToken`;
+  `ActivationCancel` returns the controller to idle on drop without reviving a
+  cancelled token.
 - `agent_loop` remains `Result<()>`.
 - `agent_loop_detailed` remains the typed bounded-activation entry point.
 - The existing `AgentUpdate` stream remains the observable frontend contract.
@@ -1240,14 +1241,14 @@ pre-migration databases;
   moved field on success, cancellation, error, and unwind, including row ranges,
   compaction/recovery state, Goal yield, max-turn flag, tool counter, hook
   flags/source, pending SessionStart context, and prompt caches. Verify shared
-  queues, stats, cancel flag, and hook status sequence keep one authority.
+  queues, stats, cancellation controller, and hook status sequence keep one
+  authority.
   **Evidence:** `facade_state_guard_restores_every_owned_sidecar_field`,
   `facade_state_guard_restores_on_unwind_and_keeps_persisted_ranges`, and the
   receipt tests in `runtime::facade_state` pass.
-- [x] Add direct `AgentRuntime.cancel_flag` writes during streaming, approval,
-  bash, other in-flight tools, and between waves; each must reach the kernel
-  token and preserve tool pairing. The F3 closure evidence above covers every
-  case.
+- [x] Add `Agent::cancel` calls during streaming, approval, bash, other
+  in-flight tools, and between waves; each must reach the kernel token and
+  preserve tool pairing. The F3 closure evidence above covers every case.
 - [x] Add parity tests for model info, thinking, text streaming, tool progress,
   cancellation, and whole-activation path selection.
 - [x] Add a kernel-only matrix covering active Goal and hook cases, asserting
@@ -1255,12 +1256,12 @@ pre-migration databases;
 
 **Gate:** focused agent tests, `tact-ui` driver tests, and headless tests pass;
 simple no-tool and single-tool activations run through the production facade
-kernel path; the production cancel bridge, readiness matrix, permission
-authority, readonly hook projection, `cargo check -p tact`, and the dependency
-guard pass; no test expectation is weakened.
+kernel path; the production cancellation controller, readiness matrix,
+permission authority, readonly hook projection, `cargo check -p tact`, and the
+dependency guard pass; no test expectation is weakened.
 
 **Current gate state (2026-10-27):** dependency composition, bootstrap ordering,
-direct kernel activation, public-flag bridge wiring, the complete facade sidecar
+direct kernel activation, facade cancellation wiring, the complete facade sidecar
 guard, store-receipt transfer, turn transfer, hook projection, driver-owned
 `TaskComplete`, the full public-cancellation matrix, the facade/gate/subagent
 permission visibility cases, direct public-state mutation, empty-context SQLite
@@ -1511,7 +1512,7 @@ activations had already moved to the kernel exclusively.
 - Delete: `crates/tact/src/agent/tool_dispatch.rs`
 - Delete: `crates/tact/src/runtime/activation.rs`
 - Delete: `crates/tact/src/runtime/legacy_model_bridge.rs`
-- Keep the kernel helper: `crates/tact/src/runtime/compaction_adapter.rs`
+- Keep the kernel helper: `crates/tact/src/runtime/compaction_adapter/`
 - Modify: `crates/tact/src/lib.rs`
 - Modify: `ARCHITECTURE.md`
 - Modify: any re-export/test support references
@@ -1554,7 +1555,7 @@ activations had already moved to the kernel exclusively.
 - [x] Audit `crates/tact/src/agent/tool_schedule.rs` and remove only legacy
   scheduling helpers. Do not delete the module: `ToolResources` remains the
   product resource-scope contract used by `tool/metadata.rs` and
-  `runtime/tool_adapter.rs`.
+  `runtime/tool_adapter/`.
 - [x] Remove any remaining legacy `LoopState = Agent` adapter, facade-state
   compatibility shim, or transcript-write shim. `LoopState` remains the
   read-only projection and no production hook path receives `Agent`.
@@ -1660,9 +1661,9 @@ existing tests must remain green.
 - The facade calls `ensure_session` and selects a path before state transfer; a
   resumed session with an empty runtime context therefore cannot skip SQLite
   history.
-- Direct writes to `AgentRuntime.cancel_flag` reach one activation-scoped token,
-  whose watcher stops with the guard; nested subagents use the same bridge for
-  their own flags.
+- `Agent::cancel` reaches the current activation token, and
+  `Agent::begin_user_turn` retires a cancelled idle token only when no
+  activation is active; nested subagents own separate controllers.
 - Every model call, including local and native compaction, has exactly one
   terminal `ModelResponse` with complete message, stop reason, usage,
   diagnostics, and cursor update.

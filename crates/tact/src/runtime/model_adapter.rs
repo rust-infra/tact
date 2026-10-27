@@ -1,73 +1,22 @@
 //! Tact's `ModelPort` adapter.
 
-use std::{
-    pin::Pin,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-    },
-    task::{Context, Poll},
-};
-
 use async_trait::async_trait;
-use futures_util::Stream;
 use tact_agent_api::{
-    CancelToken, ModelCapabilities, ModelCursor, ModelError, ModelErrorKind, ModelEvent, ModelPort,
-    ModelRequest, ModelResponse, ModelStream,
+    CancelToken, ModelCapabilities, ModelCursor, ModelError, ModelPort, ModelRequest,
+    ModelResponse, ModelStream,
 };
 use tact_llm::{LlmProvider, ProviderModel};
 
 /// Product wrapper around the provider-neutral `tact_llm` model implementation.
 pub(crate) struct TactModelPort {
     inner: ProviderModel,
-    cancel_flag: Option<Arc<AtomicBool>>,
-}
-
-struct CancelAwareStream {
-    inner: ModelStream,
-    cancel_flag: Arc<AtomicBool>,
-    cancel: CancelToken,
-    emitted_cancel: bool,
-}
-
-impl Stream for CancelAwareStream {
-    type Item = Result<ModelEvent, ModelError>;
-
-    fn poll_next(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
-        if self.emitted_cancel {
-            return Poll::Ready(None);
-        }
-        let this = self.get_mut();
-        let polled = Pin::new(&mut this.inner).poll_next(cx);
-        let cancelled = this.cancel_flag.load(Ordering::SeqCst);
-        if cancelled {
-            this.cancel.cancel();
-        }
-        if !polled.is_pending() {
-            return polled;
-        }
-        if cancelled {
-            this.emitted_cancel = true;
-            return Poll::Ready(Some(Err(ModelError::new(
-                ModelErrorKind::Cancelled,
-                "model call cancelled",
-            ))));
-        }
-        polled
-    }
 }
 
 impl TactModelPort {
     pub(crate) fn from_provider(provider: LlmProvider, capabilities: ModelCapabilities) -> Self {
         Self {
             inner: ProviderModel::from_provider(provider, capabilities),
-            cancel_flag: None,
         }
-    }
-
-    pub(crate) fn with_cancel_flag(mut self, cancel_flag: Arc<AtomicBool>) -> Self {
-        self.cancel_flag = Some(cancel_flag);
-        self
     }
 }
 
@@ -83,16 +32,7 @@ impl ModelPort for TactModelPort {
         cursor: Option<&ModelCursor>,
         cancel: CancelToken,
     ) -> Result<ModelStream, ModelError> {
-        let stream = self.inner.stream(request, cursor, cancel.clone()).await?;
-        Ok(match &self.cancel_flag {
-            Some(flag) => Box::pin(CancelAwareStream {
-                inner: stream,
-                cancel_flag: flag.clone(),
-                cancel,
-                emitted_cancel: false,
-            }),
-            None => stream,
-        })
+        self.inner.stream(request, cursor, cancel).await
     }
 
     async fn complete(
@@ -101,18 +41,7 @@ impl ModelPort for TactModelPort {
         cursor: Option<&ModelCursor>,
         cancel: CancelToken,
     ) -> Result<ModelResponse, ModelError> {
-        let response = self.inner.complete(request, cursor, cancel).await?;
-        if self
-            .cancel_flag
-            .as_ref()
-            .is_some_and(|flag| flag.load(Ordering::SeqCst))
-        {
-            return Err(ModelError::new(
-                ModelErrorKind::Cancelled,
-                "model call cancelled",
-            ));
-        }
-        Ok(response)
+        self.inner.complete(request, cursor, cancel).await
     }
 
     async fn compact(
@@ -121,18 +50,7 @@ impl ModelPort for TactModelPort {
         cursor: Option<&ModelCursor>,
         cancel: CancelToken,
     ) -> Result<ModelResponse, ModelError> {
-        let response = self.inner.compact(request, cursor, cancel).await?;
-        if self
-            .cancel_flag
-            .as_ref()
-            .is_some_and(|flag| flag.load(Ordering::SeqCst))
-        {
-            return Err(ModelError::new(
-                ModelErrorKind::Cancelled,
-                "model call cancelled",
-            ));
-        }
-        Ok(response)
+        self.inner.compact(request, cursor, cancel).await
     }
 }
 

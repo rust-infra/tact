@@ -5,7 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use tact_protocol::BalanceEntry;
+use tact_protocol::{BalanceEntry, PermissionMode};
 
 use crate::{
     state::{FocusedPanel, InputMode, Status},
@@ -275,13 +275,13 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
     let mut row1_groups: Vec<DropGroup> = vec![
         // Permission mode (never dropped — security-critical indicator)
         {
-            let (perm_label, perm_style) = match ctx.status_bar.permission_mode.as_str() {
-                "plan" => (
+            let (perm_label, perm_style) = match ctx.status_bar.permission_mode {
+                PermissionMode::Plan => (
                     msgs.bottom_permission_plan,
                     Style::default().fg(theme.warning),
                 ),
-                "default" => (msgs.bottom_permission_default, secondary),
-                _ => (
+                PermissionMode::Default => (msgs.bottom_permission_default, secondary),
+                PermissionMode::Auto => (
                     msgs.bottom_permission_auto,
                     Style::default().fg(theme.success),
                 ),
@@ -338,7 +338,10 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
     let out = format_max_out_tokens(msgs.bottom_out, ctx.status_bar.model_max_tokens);
     let think = format_think_segment(
         msgs.bottom_think,
-        ctx.status_bar.model_reasoning_effort.as_deref(),
+        ctx.status_bar
+            .model_reasoning_effort
+            .as_ref()
+            .map(|effort| effort.as_str()),
         ctx.status_bar.model_thinking_budget,
     );
     let meter = format_context_meter(

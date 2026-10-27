@@ -3,7 +3,7 @@
 use tact_agent_api::AgentMessage;
 use tact_llm::{Message, Role};
 
-use super::{permission_authority::PermissionAuthority, services::TactSharedServices};
+use super::services::TactSharedServices;
 use crate::hook::SessionStartSource;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -30,11 +30,11 @@ enum TranscriptView<'a> {
 pub struct TactActivationView<'a> {
     services: &'a TactSharedServices,
     transcript: Option<TranscriptView<'a>>,
-    pub session: SessionIdentity,
-    pub model: ModelIdentity,
-    pub turns_taken: u32,
-    pub remaining_turns: Option<u32>,
-    pub session_start_source: SessionStartSource,
+    session: SessionIdentity,
+    model: ModelIdentity,
+    turns_taken: u32,
+    remaining_turns: Option<u32>,
+    session_start_source: SessionStartSource,
 }
 
 impl<'a> TactActivationView<'a> {
@@ -86,28 +86,32 @@ impl<'a> TactActivationView<'a> {
         &self.model.name
     }
 
+    pub fn turns_taken(&self) -> u32 {
+        self.turns_taken
+    }
+
+    pub fn remaining_turns(&self) -> Option<u32> {
+        self.remaining_turns
+    }
+
+    pub fn session_start_source(&self) -> SessionStartSource {
+        self.session_start_source
+    }
+
     pub fn permission_mode(&self) -> crate::permission::PermissionMode {
         self.services.permissions.mode()
     }
 
-    pub fn permissions(&self) -> &PermissionAuthority {
-        &self.services.permissions
-    }
-
-    pub fn stats(&self) -> &std::sync::Arc<std::sync::RwLock<crate::stats::SessionStats>> {
-        &self.services.stats
-    }
-
-    pub fn pending_subagent_results(
-        &self,
-    ) -> &std::sync::Arc<
-        std::sync::Mutex<std::collections::VecDeque<crate::subagent::SubagentResult>>,
-    > {
-        &self.services.pending_subagent_results
-    }
-
     pub fn next_hook_status_id(&self) -> u64 {
         self.services.next_hook_status_id()
+    }
+
+    pub fn record_rtk(&self, succeeded: bool, input_chars: u64, saved_chars: u64, elapsed_ms: u64) {
+        self.services
+            .stats
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .record_rtk(succeeded, input_chars, saved_chars, elapsed_ms);
     }
 
     pub fn emit_update(&self, update: tact_protocol::AgentUpdate) {
@@ -201,8 +205,8 @@ mod tests {
         assert_eq!(view.session_id(), Some("session"));
         assert_eq!(view.model(), "model");
         assert_eq!(view.permission_mode(), PermissionMode::Plan);
-        assert_eq!(view.turns_taken, 3);
-        assert_eq!(view.remaining_turns, Some(1));
+        assert_eq!(view.turns_taken(), 3);
+        assert_eq!(view.remaining_turns(), Some(1));
         assert_eq!(view.last_assistant_message().as_deref(), Some("assistant"));
     }
 

@@ -545,7 +545,7 @@ items 发送。</p>
     l_stream --&gt;|transient| n_backoff[sleep + retry]
     l_stream --&gt;|prompt too long| o_rec[Recovery · compact]
     m_assist --&gt; p_tools{有 tool_use?}
-    p_tools --&gt;|yes| q_exec[execute_tool_call]
+    p_tools --&gt;|yes| q_exec[execute_tool_calls]
     p_tools --&gt;|no| r_done[stop / continue?]
     q_exec --&gt; s_persist[push tool_result user message]
     s_persist --&gt; t_man{manual_compact?}
@@ -1308,12 +1308,12 @@ context 重写 <code>messages</code>
     autonumber
     participant Model
     participant AgentLoop as agent_loop
-    participant Dispatch as execute_tool_call
+    participant Dispatch as execute_tool_calls
     participant Tool as compact tool fn
     participant CH as compact_history
 
     Model-&gt;&gt;AgentLoop: assistant message 含 tool_use name=compact
-    AgentLoop-&gt;&gt;Dispatch: execute_tool_call
+    AgentLoop-&gt;&gt;Dispatch: execute_tool_calls
     Dispatch-&gt;&gt;Tool: call compact(focus?)
     Tool--&gt;&gt;Dispatch: "Compacting conversation…"
     Note over Dispatch: 仅在工具成功时 set manual_compact
@@ -1523,10 +1523,11 @@ provider 仍保持经典 <code>min(窗口 × 20%, 2,000)</code> 文本上限</td
 <code>compact_history_legacy</code>；<code>remember_recent_file</code>；<code>replace_persisted_context</code></td>
 </tr>
 <tr>
-<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
+<td><code>crates/tact/src/runtime/tool_adapter.rs</code> +
+<code>crates/tact/src/runtime/context_adapter.rs</code></td>
 <td>原生/MCP 结果的
-<code>persist_large_output</code>；<code>manual_compact</code>
-flag；近期文件追踪</td>
+<code>persist_large_output</code>；<code>RequestCompaction</code>
+directive；近期文件追踪</td>
 </tr>
 <tr>
 <td><code>crates/tact/src/tool/compact.rs</code></td>
@@ -1548,7 +1549,7 @@ flag；近期文件追踪</td>
 </table>
 <pre class="mermaid">flowchart LR
     Loop[agent/mod.rs loop] --&gt; Compact[compact/mod.rs]
-    Loop --&gt; Dispatch[tool_dispatch.rs]
+    Loop --&gt; Dispatch[agent_core/kernel.rs]
     Dispatch --&gt; Compact
     Dispatch --&gt; CompactTool[tool/compact.rs]
     Loop --&gt; Recovery[recovery.rs]

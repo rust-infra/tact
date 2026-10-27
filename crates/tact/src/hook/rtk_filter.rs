@@ -119,11 +119,7 @@ pub fn create_rtk_post_tool_hook() -> impl PostToolUseFn + 'static {
             let raw_chars = raw.chars().count() as u64;
             let (filtered, succeeded, elapsed_ms) = pipe_through_rtk(raw);
             let saved = saved_chars(raw_chars, &filtered, succeeded);
-            agent
-                .stats()
-                .write()
-                .unwrap()
-                .record_rtk(succeeded, raw_chars, saved, elapsed_ms);
+            agent.record_rtk(succeeded, raw_chars, saved, elapsed_ms);
             tool_result.content = filtered;
             Ok(HookControl::Continue)
         })

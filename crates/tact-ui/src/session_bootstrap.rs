@@ -36,8 +36,7 @@ use tact::{
     worktree::{SharedWorktreeManager, WorktreeManager},
 };
 use tact_llm::get_llm_client;
-use tact_protocol::{AgentUpdate, UpdateSink};
-use tokio::sync::mpsc::UnboundedSender;
+use tact_protocol::{AgentUpdate, UpdateSender, UpdateSink};
 
 use crate::{
     permission::permission_mode_from_config,
@@ -61,7 +60,7 @@ pub enum Notices {
     ///
     /// The TUI owns the alternate screen by the time it starts building the
     /// agent, so a stray `eprintln!` would land in the middle of a frame.
-    Ui(UnboundedSender<AgentUpdate>),
+    Ui(UpdateSender),
 }
 
 impl Notices {
@@ -109,7 +108,7 @@ fn stderr_line(tag: &str, message: &str) -> String {
 /// and `ask_user` unanswered, and a responder with no channel would never see
 /// the prompts it is meant to answer.
 pub struct UiWiring {
-    pub tx: UnboundedSender<AgentUpdate>,
+    pub tx: UpdateSender,
     pub responder: UiResponder,
 }
 
@@ -124,7 +123,7 @@ pub enum Frontend {
     Interactive(UiWiring),
     /// A frontend that only watches: it receives a copy of every event and
     /// answers nothing. Used by headless, which has no one to ask.
-    Observing(UnboundedSender<AgentUpdate>),
+    Observing(UpdateSender),
 }
 
 /// Resolve (or start) this run's session, and take its lock.
@@ -286,7 +285,7 @@ pub async fn bootstrap_session(
         events,
         ui_responder,
         progress_reporter: tact::tool::ToolProgressReporter::default(),
-        cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        cancel_flag: Arc::new(tact::CancelController::new()),
         bash_timeout_secs: tact::config::settings().tools.bash_timeout_secs,
         bash_nice: tact::config::settings().tools.bash_nice,
         sandbox,
@@ -359,7 +358,7 @@ mod tests {
     #[tokio::test]
     async fn an_observing_frontend_cannot_answer_prompts() {
         let (tx, _rx) = unbounded_channel();
-        let (events, responder) = frontend_wiring(&Frontend::Observing(tx));
+        let (events, responder) = frontend_wiring(&Frontend::Observing(tx.into()));
 
         assert!(!events.has_ui(), "an observer is not an answering frontend");
         assert!(events.ui().is_none());
@@ -375,7 +374,7 @@ mod tests {
         let (tx, mut rx) = unbounded_channel();
         let responder = UiResponder::new();
         let wiring = UiWiring {
-            tx: tx.clone(),
+            tx: tx.clone().into(),
             responder: responder.clone(),
         };
         let (events, got_responder) = frontend_wiring(&Frontend::Interactive(wiring));
@@ -403,7 +402,7 @@ mod tests {
     #[tokio::test]
     async fn ui_notices_arrive_as_an_info_row_without_the_tag() {
         let (tx, mut rx) = unbounded_channel();
-        Notices::Ui(tx).notice("mcp", "server demo did not answer");
+        Notices::Ui(tx.into()).notice("mcp", "server demo did not answer");
 
         let update = rx.try_recv().expect("a notice");
         assert!(
@@ -421,7 +420,7 @@ mod tests {
     #[tokio::test]
     async fn the_permission_mode_is_reported_only_where_nothing_else_shows_it() {
         let (tx, mut rx) = unbounded_channel();
-        Notices::Ui(tx).permission_mode(PermissionMode::Plan);
+        Notices::Ui(tx.into()).permission_mode(PermissionMode::Plan);
         assert!(
             rx.try_recv().is_err(),
             "the UI path must not repeat what its status bar already shows"

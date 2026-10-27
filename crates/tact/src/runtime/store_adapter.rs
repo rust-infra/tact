@@ -15,6 +15,7 @@ pub(crate) struct SqliteTranscriptStore {
 }
 
 impl SqliteTranscriptStore {
+    #[cfg(test)]
     pub(crate) fn new(store: DynSessionStore) -> Self {
         Self {
             store,

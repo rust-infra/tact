@@ -2536,15 +2536,15 @@ mod lifecycle_tests {
             model: "mock-model".into(),
             max_tokens: 4096,
             thinking_budget: Some(32_000),
-            reasoning_effort: Some("high".into()),
+            reasoning_effort: Some(tact_protocol::ReasoningEffort::High),
             extra_body: None,
         }));
         assert_eq!(app.status_bar_mut().model_name, "mock-model");
         assert_eq!(app.status_bar_mut().model_max_tokens, 4096);
         assert_eq!(app.status_bar_mut().model_thinking_budget, Some(32_000));
         assert_eq!(
-            app.status_bar_mut().model_reasoning_effort.as_deref(),
-            Some("high")
+            app.status_bar_mut().model_reasoning_effort,
+            Some(tact_protocol::ReasoningEffort::High)
         );
     }
 

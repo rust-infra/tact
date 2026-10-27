@@ -6,4 +6,8 @@ edition = "2024"
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-tokio = { workspace = true, features = ["sync"] }
+tact_agent_api = { path = "../agent_api" }
+tokio = { workspace = true, features = ["macros", "sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread", "time"] }

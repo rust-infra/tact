@@ -35,6 +35,7 @@ impl PermissionAuthority {
     ///
     /// This creates a fresh live manager: later changes in the child do not
     /// mutate the parent, and denial counters start clean.
+    #[cfg(test)]
     pub(crate) fn from_snapshot(snapshot: PermissionSnapshot) -> Self {
         Self::new(PermissionManager::from_snapshot(snapshot))
     }
@@ -47,16 +48,13 @@ impl PermissionAuthority {
         self.manager.lock_recover().set_mode(mode);
     }
 
+    #[cfg(test)]
     pub(crate) fn rules(&self) -> Vec<String> {
         self.manager.lock_recover().rules().to_vec()
     }
 
     pub(crate) fn snapshot(&self) -> PermissionSnapshot {
         self.manager.lock_recover().snapshot()
-    }
-
-    pub(crate) fn scanner(&self) -> crate::security::sensitive::Scanner {
-        self.manager.lock_recover().scanner()
     }
 
     pub(crate) fn security_config(&self) -> crate::security::SecurityConfig {

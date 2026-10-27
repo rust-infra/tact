@@ -15,16 +15,19 @@ pub mod tool_output;
 pub use agent::{
     AgentErrorKind, AgentUpdate, GoalAcceptanceSnapshot, GoalCriterionSnapshot,
     GoalCriterionStatusSnapshot, GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot,
-    GoalStatusSnapshot, ModelCallParams, PlanStep, StepResult, StepStatus, SubagentRunSnapshot,
-    SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot, TasksChangeReason, ThinkingChunk,
-    TokenUsageInfo, ToolDetailKind, ToolPopupKind, ToolPresentationInfo, ToolVisualKind,
-    UiResponse, UserCommand,
+    GoalStatusSnapshot, ModelCallParams, PermissionMode, PlanStep, StepResult, StepStatus,
+    SubagentRunSnapshot, SubagentStatusSnapshot, TaskSnapshot, TaskStatusSnapshot,
+    TasksChangeReason, ThinkingChunk, TokenUsageInfo, ToolDetailKind, ToolPopupKind,
+    ToolPresentationInfo, ToolVisualKind, UiResponse, UserCommand,
 };
 pub use biz::{
     AccountError, AccountUpdate, BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow,
 };
-pub use events::UpdateSink;
+pub use events::{
+    UpdateDispatch, UpdateReceiver, UpdateSendError, UpdateSender, UpdateSink, update_channel,
+};
 pub use subagent_transcript::{SubagentStep, SubagentStepStatus, SubagentTranscriptEntry};
+pub use tact_agent_api::ReasoningEffort;
 pub use tool_output::{
     ToolOutputBuffer, ToolOutputChunk, ToolOutputLine, ToolOutputSpan, ToolOutputStream,
 };

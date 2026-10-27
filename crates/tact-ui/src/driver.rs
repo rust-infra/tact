@@ -87,8 +87,8 @@ async fn recover_interrupted_goals(agent: &Agent) {
     let runner = session_goal_runner(
         &agent.tool_context.goal_manager,
         goal_limits(),
-        agent.runtime.session_id.as_deref(),
-        &agent.runtime.events,
+        agent.session_id(),
+        agent.events(),
     );
     match runner.recover_interrupted().await {
         Ok(recovered) => {
@@ -183,7 +183,7 @@ fn spawn_goal_reconcile(
 
 /// Process `UserCommand`s until the channel closes, then shut down MCP.
 ///
-/// `SubmitTask` runs in a background task so `Cancel` can set `cancel_flag`
+/// `SubmitTask` runs in a background task so `Cancel` can request cancellation
 /// while `agent_loop` is in progress. Integration tests drive this with a fake TUI.
 ///
 /// This convenience wrapper does **not** wire an account-update channel; balance
@@ -207,11 +207,11 @@ pub async fn run_command_loop_with_account(
     account_tx: Option<UnboundedSender<AccountUpdate>>,
 ) -> Agent {
     let image_work_dir = image_work_dir.as_ref().to_path_buf();
-    let cancel_flag = agent.runtime.cancel_flag.clone();
-    let events = agent.runtime.events.clone();
+    let cancel_flag = agent.cancel_handle();
+    let events = agent.events().clone();
     // Shared stats snapshot: QueryStats can read it without awaiting the
     // in-flight task (the Agent itself is exclusively owned by that task).
-    let stats = agent.runtime.stats.clone();
+    let stats = agent.stats();
     // Shared UI responder: routes TUI select responses to the waiter (parent
     // or subagent) even while the Agent is owned by the in-flight task.
     let ui_responder = agent.tool_context.ui_responder.clone();
@@ -222,7 +222,7 @@ pub async fn run_command_loop_with_account(
     // manager directly instead of waiting for the in-flight turn to hand the
     // Agent back, so a listing opens the moment it is asked for.
     let background_manager = agent.tool_context.background_manager.clone();
-    let background_session_id = agent.runtime.session_id.clone();
+    let background_session_id = agent.session_id().map(str::to_string);
     let goal_manager = agent.tool_context.goal_manager.clone();
     let task_manager = agent.tool_context.task_manager.clone();
     let limits = goal_limits();
@@ -321,7 +321,7 @@ pub async fn run_command_loop_with_account(
                 ui_responder.respond(response);
             }
             UserCommand::Cancel => {
-                cancel_flag.store(true, Ordering::Relaxed);
+                cancel_flag.cancel();
                 events.send(AgentUpdate::Info("Cancelling...".into()));
             }
             UserCommand::CancelSubagent { child_id } => {
@@ -922,20 +922,17 @@ async fn create_goal(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
                 goal_limits(),
-                &agent.runtime.events,
+                agent.events(),
             )
             .await;
-            agent.runtime.events.send(AgentUpdate::Info(format!(
+            agent.events().send(AgentUpdate::Info(format!(
                 "🎯 Goal {} created ({}) - starting run{criteria_note}",
                 goal.id, goal.title,
             )));
             Some(goal.id)
         }
         Err(error) => {
-            emit_goal_error(
-                &agent.runtime.events,
-                format!("Goal creation failed: {error:#}"),
-            );
+            emit_goal_error(agent.events(), format!("Goal creation failed: {error:#}"));
             None
         }
     }
@@ -1292,14 +1289,14 @@ async fn update_goal_status(
                 manager,
                 &agent.tool_context.task_manager,
                 goal_limits(),
-                &agent.runtime.events,
+                agent.events(),
             )
             .await;
             true
         }
         Err(error) => {
             emit_goal_error(
-                &agent.runtime.events,
+                agent.events(),
                 format!("Goal {goal_id} status update failed: {error:#}"),
             );
             false
@@ -1327,7 +1324,7 @@ async fn request_goal_pause(
     task_manager: &SharedTaskManager,
     limits: GoalLimits,
     events: &UpdateSink,
-    cancel_flag: &Arc<AtomicBool>,
+    cancel_flag: &Arc<tact::CancelController>,
     goal_id: &str,
     interrupt_local: bool,
 ) {
@@ -1382,7 +1379,7 @@ async fn request_goal_pause(
             return;
         }
         if interrupt_local {
-            cancel_flag.store(true, Ordering::Relaxed);
+            cancel_flag.cancel();
         }
         events.send(AgentUpdate::Info(format!(
             "🎯 Goal {goal_id} pause requested; stopping the current run at the next safe point"
@@ -1430,7 +1427,7 @@ async fn request_goal_pause(
                     return;
                 }
                 if interrupt_local {
-                    cancel_flag.store(true, Ordering::Relaxed);
+                    cancel_flag.cancel();
                 }
                 events.send(AgentUpdate::Info(format!(
                     "🎯 Goal {goal_id} pause requested; stopping the current run at the next safe point"
@@ -1454,7 +1451,7 @@ async fn request_goal_cancel(
     task_manager: &SharedTaskManager,
     limits: GoalLimits,
     events: &UpdateSink,
-    cancel_flag: &Arc<AtomicBool>,
+    cancel_flag: &Arc<tact::CancelController>,
     goal_id: &str,
     interrupt_local: bool,
 ) {
@@ -1500,7 +1497,7 @@ async fn request_goal_cancel(
             return;
         }
         if interrupt_local {
-            cancel_flag.store(true, Ordering::Relaxed);
+            cancel_flag.cancel();
         }
         events.send(AgentUpdate::Info(format!(
             "🎯 Goal {goal_id} cancel requested; stopping the current run"
@@ -1546,7 +1543,7 @@ async fn request_goal_cancel(
                     return;
                 }
                 if interrupt_local {
-                    cancel_flag.store(true, Ordering::Relaxed);
+                    cancel_flag.cancel();
                 }
                 events.send(AgentUpdate::Info(format!(
                     "🎯 Goal {goal_id} cancel requested; stopping the current run"
@@ -1567,7 +1564,7 @@ async fn request_goal_cancel(
 /// would hit the activation's first loop check, map to `AgentLoopStop::Cancelled`,
 /// and drive the Goal into the terminal `cancelled` state having done zero work.
 fn clear_cancel_for_goal_activation(agent: &Agent) {
-    agent.runtime.cancel_flag.store(false, Ordering::Relaxed);
+    agent.begin_user_turn();
 }
 
 /// The one Goal whose pending question this message answers, if there is one.
@@ -1623,7 +1620,7 @@ async fn answer_goal(agent: &mut Agent, goal_id: &str, text: &str) {
             ))
             .await;
     }
-    agent.runtime.events.send(AgentUpdate::Info(format!(
+    agent.events().send(AgentUpdate::Info(format!(
         "🎯 Goal {goal_id} was waiting for input — recorded your reply as the answer and resuming"
     )));
     resume_goal(agent, goal_id).await;
@@ -1634,7 +1631,7 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
         Ok(goal) => goal,
         Err(error) => {
             emit_goal_error(
-                &agent.runtime.events,
+                agent.events(),
                 format!("Goal {goal_id} not found: {error:#}"),
             );
             return;
@@ -1652,7 +1649,7 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
     let runner = GoalRunner::new(agent.tool_context.goal_manager.clone(), goal_limits());
     if let Err(error) = runner.run_once(agent, goal_id).await {
         emit_goal_error(
-            &agent.runtime.events,
+            agent.events(),
             format!("Goal {goal_id} activation failed: {error:#}"),
         );
         // The resume transition above may have committed a `Running` status
@@ -1698,7 +1695,7 @@ async fn resume_goal(agent: &mut Agent, goal_id: &str) {
         &agent.tool_context.goal_manager,
         &agent.tool_context.task_manager,
         goal_limits(),
-        &agent.runtime.events,
+        agent.events(),
     )
     .await;
 }
@@ -1707,7 +1704,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
     let text = text.trim();
     if text.is_empty() {
         emit_goal_error(
-            &agent.runtime.events,
+            agent.events(),
             format!("Goal {goal_id} acceptance text must not be empty"),
         );
         return;
@@ -1717,7 +1714,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
         Ok(goal) => goal,
         Err(error) => {
             emit_goal_error(
-                &agent.runtime.events,
+                agent.events(),
                 format!("Goal {goal_id} not found: {error:#}"),
             );
             return;
@@ -1732,7 +1729,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
         Ok(runs) => runs.iter().any(|run| run.goal_id == goal.id),
         Err(error) => {
             emit_goal_error(
-                &agent.runtime.events,
+                agent.events(),
                 format!("Goal {goal_id} acceptance failed: {error:#}"),
             );
             return;
@@ -1750,7 +1747,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
             ""
         };
         emit_goal_error(
-            &agent.runtime.events,
+            agent.events(),
             format!(
                 "Goal {goal_id} is {:?}{suffix}; acceptance requires waiting_user, paused, or an idle running Goal",
                 goal.status
@@ -1780,7 +1777,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
             "a Goal without acceptance criteria completes on its own"
         };
         emit_goal_error(
-            &agent.runtime.events,
+            agent.events(),
             format!("Goal {goal_id} has no pending required criterion ({hint})"),
         );
         return;
@@ -1800,7 +1797,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
     let mut candidate = goal.clone();
     if let Err(error) = candidate.update(first.clone()) {
         emit_goal_error(
-            &agent.runtime.events,
+            agent.events(),
             format!("Goal {goal_id} acceptance failed: {error:#}"),
         );
         return;
@@ -1849,7 +1846,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
         .await
     {
         emit_goal_error(
-            &agent.runtime.events,
+            agent.events(),
             format!("Goal {goal_id} acceptance failed: {error:#}"),
         );
         return;
@@ -1869,14 +1866,14 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
             let runner = GoalRunner::new(manager.clone(), goal_limits());
             if let Err(error) = runner.run_once(agent, goal_id).await {
                 emit_goal_error(
-                    &agent.runtime.events,
+                    agent.events(),
                     format!("Goal {goal_id} continuation failed: {error:#}"),
                 );
             }
         }
         GoalVerification::NeedsUser { .. } => {
             emit_goal_error(
-                &agent.runtime.events,
+                agent.events(),
                 format!("Goal {goal_id} still needs additional human acceptance"),
             );
         }
@@ -1885,7 +1882,7 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
         &manager,
         &agent.tool_context.task_manager,
         goal_limits(),
-        &agent.runtime.events,
+        agent.events(),
     )
     .await;
 }
@@ -1917,7 +1914,7 @@ async fn handle_user_command_with_account(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
                 goal_limits(),
-                &agent.runtime.events,
+                agent.events(),
                 include_archived,
             )
             .await;
@@ -1928,7 +1925,7 @@ async fn handle_user_command_with_account(
                 &agent.tool_context.task_manager,
                 goal_limits(),
                 &goal_id,
-                &agent.runtime.events,
+                agent.events(),
             )
             .await;
         }
@@ -1936,7 +1933,7 @@ async fn handle_user_command_with_account(
             steer_goal(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
-                &agent.runtime.events,
+                agent.events(),
                 goal_id.as_deref(),
                 &text,
             )
@@ -1947,8 +1944,8 @@ async fn handle_user_command_with_account(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
                 goal_limits(),
-                &agent.runtime.events,
-                &agent.runtime.cancel_flag,
+                agent.events(),
+                agent.cancel_controller(),
                 &goal_id,
                 false,
             )
@@ -1960,8 +1957,8 @@ async fn handle_user_command_with_account(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
                 goal_limits(),
-                &agent.runtime.events,
-                &agent.runtime.cancel_flag,
+                agent.events(),
+                agent.cancel_controller(),
                 &goal_id,
                 false,
             )
@@ -1973,7 +1970,7 @@ async fn handle_user_command_with_account(
                 &agent.tool_context.goal_manager,
                 &agent.tool_context.task_manager,
                 goal_limits(),
-                &agent.runtime.events,
+                agent.events(),
                 &goal_id,
                 archived,
             )
@@ -1981,7 +1978,7 @@ async fn handle_user_command_with_account(
         }
         UserCommand::SubmitTask(task) => {
             agent.tool_use_counter = 0;
-            agent.runtime.cancel_flag.store(false, Ordering::Relaxed);
+            agent.begin_user_turn();
 
             let task_message = build_user_message(&task, image_work_dir).await;
 
@@ -2007,7 +2004,7 @@ async fn handle_user_command_with_account(
             let mut stop_continuations = 0u32;
             loop {
                 match agent.agent_loop(task_message.take()).await {
-                    Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) => {
+                    Ok(()) if !agent.is_cancelled() => {
                         // Turn completed normally: run Stop hooks to decide
                         // whether to keep going.
                         match agent.dispatch_stop_hooks().await {
@@ -2030,7 +2027,7 @@ async fn handle_user_command_with_account(
                             // to add", the same as `continue`.
                             Ok(HookControl::Continue | HookControl::Allow) | Err(_) => {}
                         }
-                        if let Some(last) = agent.runtime.context.last() {
+                        if let Some(last) = agent.context().last() {
                             let text = extract_text(&last.content);
                             agent.emit_update(AgentUpdate::TaskComplete(text));
                         }
@@ -2093,30 +2090,21 @@ async fn handle_user_command_with_account(
             // caller bypassed the command loop. Answer anyway.
             query_background(
                 &agent.tool_context.background_manager,
-                agent.runtime.session_id.as_deref(),
+                agent.session_id(),
                 task_id,
-                &agent.runtime.events,
+                agent.events(),
             )
             .await;
         }
         UserCommand::SetPermissionMode(mode) => {
-            let parsed = match mode.as_str() {
-                "plan" => tact::permission::PermissionMode::Plan,
-                "default" => tact::permission::PermissionMode::Default,
-                _ => tact::permission::PermissionMode::Auto,
-            };
             // TUI already shows the localized confirmation; do not emit Info here.
-            agent.runtime.permission_manager.set_mode(parsed);
+            agent.set_permission_mode(mode);
         }
         UserCommand::SetThinkingBudget(budget) => {
             agent.set_thinking_budget(budget);
         }
         UserCommand::SetReasoningEffort(effort) => {
-            let parsed = effort.as_deref().and_then(|raw| raw.parse().ok());
-            if effort.is_some() && parsed.is_none() {
-                eprintln!("[driver] ignoring unparseable reasoning effort: {effort:?}");
-            }
-            agent.set_reasoning_effort(parsed);
+            agent.set_reasoning_effort(effort);
         }
         UserCommand::SetModel(model) => {
             agent.set_model(model);
@@ -2627,7 +2615,7 @@ mod tests {
         install_test_config();
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
         let (agent, _work_dir) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
-        let events = agent.runtime.events.clone();
+        let events = agent.events().clone();
 
         super::list_goals(
             &agent.tool_context.goal_manager,
@@ -3774,10 +3762,10 @@ mod tests {
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
         let (agent, _) = build_test_agent(MockClient::new(vec![]), Some(agent_tx));
 
-        agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
+        agent.cancel();
         agent.emit_update(AgentUpdate::Info("Cancelling...".into()));
 
-        assert!(agent.runtime.cancel_flag.load(Ordering::Relaxed));
+        assert!(agent.is_cancelled());
         let update = agent_rx.try_recv().expect("expected Cancelling info");
         assert!(matches!(update, AgentUpdate::Info(msg) if msg.contains("Cancelling")));
     }
@@ -3789,11 +3777,11 @@ mod tests {
         let (agent_tx, mut agent_rx) = tokio::sync::mpsc::unbounded_channel();
         let (mut agent, work_dir) = build_test_agent(mock, Some(agent_tx));
 
-        agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
+        agent.cancel();
         super::handle_user_command(&mut agent, UserCommand::SubmitTask("go".into()), &work_dir)
             .await;
 
-        assert!(!agent.runtime.cancel_flag.load(Ordering::Relaxed));
+        assert!(!agent.is_cancelled());
         let mut saw_complete = false;
         while let Ok(update) = agent_rx.try_recv() {
             if matches!(update, AgentUpdate::TaskComplete(_)) {
@@ -3854,7 +3842,7 @@ mod tests {
         let manager = agent.tool_context.goal_manager.clone();
         let goal_id = paused_goal_with_one_required_criterion(&mut agent).await;
 
-        agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
+        agent.cancel();
         super::handle_user_command(
             &mut agent,
             UserCommand::ResumeGoal {
@@ -3865,7 +3853,7 @@ mod tests {
         .await;
 
         assert!(
-            !agent.runtime.cancel_flag.load(Ordering::Relaxed),
+            !agent.is_cancelled(),
             "resuming a Goal must clear a stale cancel flag"
         );
         assert_ne!(
@@ -3968,7 +3956,7 @@ mod tests {
             .await
             .unwrap();
 
-        agent.runtime.cancel_flag.store(true, Ordering::Relaxed);
+        agent.cancel();
         super::handle_user_command(
             &mut agent,
             UserCommand::AcceptGoal {
@@ -4092,7 +4080,7 @@ mod tests {
         .await;
         super::handle_user_command(
             &mut agent,
-            UserCommand::SetReasoningEffort(Some("high".to_string())),
+            UserCommand::SetReasoningEffort(Some(tact_protocol::ReasoningEffort::High)),
             &work_dir,
         )
         .await;
@@ -4104,7 +4092,10 @@ mod tests {
             }
         }
         let last = last.expect("SetReasoningEffort must emit ModelInfo so the TUI bar resyncs");
-        assert_eq!(last.reasoning_effort, Some("high".to_string()));
+        assert_eq!(
+            last.reasoning_effort,
+            Some(tact_protocol::ReasoningEffort::High)
+        );
         assert_eq!(
             last.thinking_budget, None,
             "effort pick must clear stale thinking budget"
@@ -4256,7 +4247,7 @@ mod tests {
         let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
         // Share the parent's result queue so the test can enqueue the child's
         // summary exactly as the real async child does.
-        let pending = agent.runtime.pending_subagent_results.clone();
+        let pending = agent.pending_subagent_results();
         let (user_cmd_tx, user_cmd_rx) = tokio::sync::mpsc::unbounded_channel();
         let loop_handle = tokio::spawn(super::run_command_loop(agent, user_cmd_rx, work_dir));
 

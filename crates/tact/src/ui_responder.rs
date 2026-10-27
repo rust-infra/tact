@@ -30,8 +30,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::utils::LockExt;
-use tact_protocol::{AgentUpdate, UiResponse};
-use tokio::sync::{mpsc::UnboundedSender, oneshot};
+use tact_protocol::{AgentUpdate, UiResponse, UpdateDispatch};
+use tokio::sync::oneshot;
 
 /// Why a UI select request failed to complete.
 ///
@@ -204,7 +204,7 @@ impl UiResponder {
     /// the wrong response kind.
     pub async fn request_select(
         &self,
-        ui_tx: &UnboundedSender<AgentUpdate>,
+        ui_tx: &impl UpdateDispatch,
         prompt: String,
         options: Vec<String>,
         log_confirm: bool,
@@ -217,7 +217,7 @@ impl UiResponder {
             request_id,
         };
         if ui_tx
-            .send(AgentUpdate::RequestSelect {
+            .send_update(AgentUpdate::RequestSelect {
                 request_id,
                 prompt,
                 options,
@@ -245,7 +245,7 @@ impl UiResponder {
     /// the wrong response kind.
     pub async fn request_multi(
         &self,
-        ui_tx: &UnboundedSender<AgentUpdate>,
+        ui_tx: &impl UpdateDispatch,
         prompt: String,
         options: Vec<String>,
         from_subagent: bool,
@@ -256,7 +256,7 @@ impl UiResponder {
             request_id,
         };
         if ui_tx
-            .send(AgentUpdate::RequestMultiSelect {
+            .send_update(AgentUpdate::RequestMultiSelect {
                 request_id,
                 prompt,
                 options,

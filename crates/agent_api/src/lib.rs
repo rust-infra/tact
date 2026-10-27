@@ -4,13 +4,13 @@
 //! filesystem implementation. Product crates implement these capability traits
 //! and inject them into the kernel.
 
-pub mod event;
-pub mod extension;
-pub mod message;
-pub mod model;
-pub mod state;
-pub mod tool;
-pub mod usage;
+mod event;
+mod extension;
+mod message;
+mod model;
+mod state;
+mod tool;
+mod usage;
 
 mod context;
 mod store;
@@ -23,16 +23,16 @@ pub use context::{
     ContextPreparation, ContextReplacement, ContextView, PreparationDecision, PreparedRequest,
     RequestPlan,
 };
-pub use event::{AgentEvent, AgentNotice};
+pub use event::{AgentEvent, AgentNotice, EventDelivery};
 pub use extension::{EventObserver, EventPort};
 pub use message::{
     AgentContentBlock, AgentImageSource, AgentMessage, AgentRole, MessageId, MessageOrigin,
 };
 pub use model::{
-    MessageDelta, ModelCallKind, ModelCapabilities, ModelCursor, ModelError, ModelErrorKind,
-    ModelEvent, ModelMessage, ModelPort, ModelRequest, ModelResponse, ModelStream,
-    ProviderActivity, ProviderActivityKind, ProviderActivityPhase, StopReason, ThinkingDelta,
-    TokenUsage,
+    MessageDelta, ModelCallKind, ModelCallOptions, ModelCapabilities, ModelCursor, ModelError,
+    ModelErrorKind, ModelEvent, ModelMessage, ModelPort, ModelRequest, ModelResponse, ModelStream,
+    ProviderActivity, ProviderActivityKind, ProviderActivityPhase, ReasoningEffort, StopReason,
+    ThinkingDelta, TokenUsage,
 };
 pub use state::{
     AgentState, CancelToken, HostYieldReason, MessageRange, RecoveryStats, RunId, RunInput,

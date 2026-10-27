@@ -341,7 +341,7 @@ mod tests {
         AgentContentBlock, AgentImageSource, AgentMessage, AgentRole, AgentState, CancelToken,
         CursorUpdate, MessageDelta, MessageId, MessageOrigin, ModelError, ModelErrorKind,
         ModelEvent, ProviderActivity, ProviderActivityKind, ProviderActivityPhase, ResourceAccess,
-        RunInput, RunOutcome, SessionRef, StopReason, TokenUsage, ToolExecutionError,
+        RunId, RunInput, RunOutcome, SessionRef, StopReason, TokenUsage, ToolExecutionError,
         ToolExecutionErrorKind, ToolExecutionResult, ToolOutcome, TranscriptStore,
     };
     use tact_agent_core::test_support::{
@@ -420,6 +420,7 @@ mod tests {
 
     fn input(session: &str, text: &str) -> RunInput {
         RunInput {
+            run_id: RunId::new(format!("{session}:fixture")),
             session: SessionRef::new(session),
             inputs: vec![AgentMessage::text(
                 AgentRole::User,

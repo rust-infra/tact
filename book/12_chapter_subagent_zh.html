@@ -621,7 +621,7 @@ href="./21_chapter_config_zh.html">配置</a>。</li>
         Sub-&gt;&gt;LLM: stream_message + 5 tool specs
         LLM--&gt;&gt;Sub: assistant blocks
         alt ToolUse
-            Sub-&gt;&gt;Tools: execute_tool_call (hooks empty, 继承权限)
+            Sub-&gt;&gt;Tools: AgentKernel::execute_tool_calls (hooks empty, 继承权限)
             Tools--&gt;&gt;Sub: ToolResult → context
         else end_turn
             Sub--&gt;&gt;Task: loop exits
@@ -736,10 +736,10 @@ Ask，即使 allowlist，因其将完整 shell 与文件系统访问委托给嵌
 agent。（风险来自元数据，不是按工具名匹配的分类器——见 <a
 href="./10_chapter_permission_zh.html">权限模型</a> §2。）</p>
 <p><strong>权限继承（Claude 风格）：</strong>
-<code>execute_tool_call</code> 在 wave 运行前将
-<code>PermissionSnapshot</code>（mode + 会话内 always-allowed 列表 +
-已加载 settings）stamp 到 <code>ToolContext</code>
-上，<code>spawn_subagent</code> 用
+<code>TactToolPort::execution_context</code> 在 wave 运行前从父
+<code>ToolContext</code> 复制 <code>PermissionSnapshot</code>（mode +
+会话内 always-allowed 列表 + 已加载 settings），
+<code>spawn_subagent</code> 再用
 <code>PermissionManager::from_snapshot(...)</code> 构建子级
 manager。父级 <code>Default</code> → 子
 <code>Default</code>，<code>Plan</code> → 子
@@ -787,9 +787,9 @@ href="./11_chapter_task_zh.html">任务与工具调度</a>。该场景的后台�
 <code>tokio::spawn</code>（<code>run_in_background</code>），而非放宽
 wave 调度。</p>
 <p><strong>worktree 隔离的 spawn 是例外。</strong>
-<code>execute_tool_call</code>
-按调用解析资源（<code>crates/tact/src/agent/tool_dispatch.rs</code> 的
-<code>tool_resources_for</code>）：<code>worktree: true</code> 的
+<code>AgentKernel::execute_tool_calls</code>
+按调用解析资源（<code>crates/tact/src/runtime/tool_adapter.rs</code> 的
+<code>TactToolPort::access</code>）：<code>worktree: true</code> 的
 <code>spawn_subagent</code> 映射为
 <code>ToolResources::independent()</code> ——
 其文件影响被限定在泳道内，因此可与同一 wave 中其他工具（包括其他隔离子
@@ -928,9 +928,10 @@ spawn、同步/异步循环、summary 提取、resume、max_turns</td>
 max_turns）、<code>ensure_session</code>、<code>pending_subagent_results</code></td>
 </tr>
 <tr>
-<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
-<td>stamp <code>permission_snapshot</code> +
-<code>subagent_results</code>；输入感知 <code>keep_live</code></td>
+<td><code>crates/tact/src/runtime/tool_adapter.rs</code></td>
+<td>工具执行上下文、<code>permission_snapshot</code> /
+<code>subagent_results</code> 的调用期快照，以及输入感知
+<code>keep_live</code> 呈现</td>
 </tr>
 <tr>
 <td><code>crates/tact/src/permission/mod.rs</code></td>

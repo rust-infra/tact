@@ -246,21 +246,6 @@ fn popup_tag(popup: ToolPopupKind) -> &'static str {
     }
 }
 
-/// Detail text for a completed step.
-pub(crate) fn step_detail(
-    metadata: &ToolMetadata,
-    input: &serde_json::Value,
-    output: &str,
-    status: StepStatus,
-) -> Option<String> {
-    let detail = match metadata.presentation.detail {
-        DetailPolicy::None => ToolDetailKind::None,
-        DetailPolicy::Result => ToolDetailKind::Result,
-        DetailPolicy::InputField(field) => ToolDetailKind::InputField(field.to_string()),
-    };
-    step_detail_for_presentation(&detail, input, output, status)
-}
-
 /// Detail text for a host-facing presentation policy.
 pub(crate) fn step_detail_for_presentation(
     detail: &ToolDetailKind,

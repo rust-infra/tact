@@ -727,7 +727,7 @@ fn build_payload(input: &HookRunInput, agent: Option<&crate::LoopState<'_>>) -> 
     if let Some(agent) = agent {
         payload["model"] = json!(agent.model());
         payload["permission_mode"] = json!(agent.permission_mode().hook_name());
-        payload["turn_id"] = json!(agent.turns_taken.to_string());
+        payload["turn_id"] = json!(agent.turns_taken().to_string());
     }
     if let Some(object) = input.event.as_object() {
         for (key, value) in object {
@@ -1867,7 +1867,7 @@ fn apply_hook_sources(
                         // (startup|resume|clear|compact); Tact reports the real
                         // one, so a plugin's `startup|resume|compact` pattern
                         // fires for the case it meant.
-                        let source = agent.session_start_source.as_str();
+                        let source = agent.session_start_source().as_str();
                         if !matcher_matches(matcher.as_deref(), source) {
                             return Ok(HookControl::Continue);
                         }

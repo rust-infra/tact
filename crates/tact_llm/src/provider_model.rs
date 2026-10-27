@@ -17,7 +17,7 @@ use crate::{
 };
 
 struct ProgressSink {
-    tx: mpsc::UnboundedSender<Result<ModelEvent, ModelError>>,
+    tx: mpsc::Sender<Result<ModelEvent, ModelError>>,
     message_id: MessageId,
     cancel: CancelToken,
 }
@@ -25,7 +25,10 @@ struct ProgressSink {
 impl ProgressSink {
     fn send_event(&self, event: ModelEvent) {
         if !self.cancel.is_cancelled() {
-            let _ = self.tx.send(Ok(event));
+            // Progress is advisory and may be dropped when the consumer falls
+            // behind. The terminal response is sent with `send().await`, so a
+            // slow stream cannot turn into unbounded memory growth.
+            let _ = self.tx.try_send(Ok(event));
         }
     }
 }
@@ -101,7 +104,7 @@ impl ProviderModel {
         }
         let client = self.client.clone();
         let message_id = self.next_message_id();
-        let (tx, rx) = mpsc::unbounded_channel();
+        let (tx, rx) = mpsc::channel(256);
         let stream_message_id = message_id.clone();
         let task_cancel = cancel.clone();
         tokio::spawn(async move {
@@ -110,6 +113,7 @@ impl ProviderModel {
                     message_id: stream_message_id.clone(),
                     role: tact_agent_api::AgentRole::Assistant,
                 }))
+                .await
                 .is_err()
             {
                 return;
@@ -132,10 +136,10 @@ impl ProviderModel {
             match result {
                 Ok(response) => {
                     let terminal = model_response(response, stream_message_id);
-                    let _ = tx.send(Ok(ModelEvent::Finished(terminal)));
+                    let _ = tx.send(Ok(ModelEvent::Finished(terminal))).await;
                 }
                 Err(error) => {
-                    let _ = tx.send(Err(error));
+                    let _ = tx.send(Err(error)).await;
                 }
             }
         });
@@ -278,7 +282,7 @@ mod tests {
             }],
             tools: Vec::new(),
             max_output_tokens: 100,
-            metadata: serde_json::json!({}),
+            options: tact_agent_api::ModelCallOptions::default(),
         }
     }
 

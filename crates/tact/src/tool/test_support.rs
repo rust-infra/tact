@@ -99,7 +99,7 @@ pub fn test_context(name: &str) -> ToolContext {
         events: UpdateSink::default(),
         ui_responder: crate::ui_responder::UiResponder::new(),
         progress_reporter: super::ToolProgressReporter::default(),
-        cancel_flag: Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        cancel_flag: Arc::new(crate::cancel::CancelController::new()),
         bash_timeout_secs: crate::config::ToolSettings::DEFAULT_BASH_TIMEOUT_SECS,
         bash_nice: 0,
         sandbox: None,

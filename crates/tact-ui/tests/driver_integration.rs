@@ -85,10 +85,7 @@ async fn submit_task_clears_stale_cancel_flag() {
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
     let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
-    agent
-        .runtime
-        .cancel_flag
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    agent.cancel();
 
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));

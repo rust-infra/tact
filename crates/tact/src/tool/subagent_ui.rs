@@ -15,9 +15,8 @@ use std::collections::HashMap;
 
 use tact_protocol::{
     AgentUpdate, SubagentStep, SubagentStepStatus, SubagentTranscriptEntry, ToolOutputChunk,
-    ToolPresentationInfo,
+    ToolPresentationInfo, UpdateSender,
 };
-use tokio::sync::mpsc::UnboundedSender;
 
 use crate::tool::ToolProgressReporter;
 
@@ -106,7 +105,7 @@ fn redacted_entry(
 }
 
 fn emit_transcript(
-    inner: &UnboundedSender<AgentUpdate>,
+    inner: &UpdateSender,
     progress: &ToolProgressReporter,
     entry: SubagentTranscriptEntry,
 ) {
@@ -134,7 +133,7 @@ fn flush_assistant(
     buf: &mut String,
     committed_lines: &mut usize,
     total_lines: &mut usize,
-    inner: &UnboundedSender<AgentUpdate>,
+    inner: &UpdateSender,
     progress: &ToolProgressReporter,
 ) {
     // The turn is over either way, so the next one starts a fresh stream.
@@ -162,10 +161,11 @@ fn flush_assistant(
 /// that has already been finalized, so the ctx meter lost the child's last
 /// usage report.
 pub fn tagged_ui_channel_with_progress(
-    inner: UnboundedSender<AgentUpdate>,
+    inner: impl Into<UpdateSender>,
     progress: ToolProgressReporter,
     context_window: usize,
-) -> (UnboundedSender<AgentUpdate>, tokio::task::JoinHandle<()>) {
+) -> (UpdateSender, tokio::task::JoinHandle<()>) {
+    let inner = inner.into();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
     let forwarder = tokio::spawn(async move {
         let mut thinking_buf = String::new();
@@ -489,7 +489,7 @@ pub fn tagged_ui_channel_with_progress(
             &progress,
         );
     });
-    (tx, forwarder)
+    (tx.into(), forwarder)
 }
 
 #[cfg(test)]

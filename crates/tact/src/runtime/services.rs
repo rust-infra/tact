@@ -8,7 +8,7 @@ use std::{
     },
 };
 
-use tact_protocol::{AgentUpdate, UpdateSink};
+use tact_protocol::{AgentUpdate, UpdateSender, UpdateSink};
 
 use super::{hook_adapter::HookMcpHandle, permission_authority::PermissionAuthority};
 use crate::{
@@ -68,7 +68,7 @@ impl TactSharedServices {
         self.updates.send(update);
     }
 
-    pub(crate) fn ui_sender(&self) -> Option<&tokio::sync::mpsc::UnboundedSender<AgentUpdate>> {
+    pub(crate) fn ui_sender(&self) -> Option<&UpdateSender> {
         self.updates.ui()
     }
 

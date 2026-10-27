@@ -1,7 +1,4 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
 use tact_agent_api::{
     AgentEvent, ContextPolicy, EventObserver, EventPort, ModelPort, RunPhase, RuntimeErrorInfo,
@@ -39,9 +36,10 @@ impl EventBus {
     }
 
     pub(crate) fn emit(&self, event: AgentEvent) {
-        self.port.emit(event.clone());
+        let delivery = event.delivery();
+        self.port.emit_with_delivery(event.clone(), delivery);
         for observer in &self.observers {
-            observer.observe(&event);
+            observer.observe_with_delivery(&event, delivery);
         }
     }
 }
@@ -50,7 +48,6 @@ impl EventBus {
 pub struct AgentKernel {
     pub(crate) deps: KernelDeps,
     pub(crate) events: EventBus,
-    next_run_id: AtomicU64,
 }
 
 impl AgentKernel {
@@ -60,15 +57,7 @@ impl AgentKernel {
 
     pub fn with_extensions(deps: KernelDeps, extensions: KernelExtensions) -> Self {
         let events = EventBus::new(deps.events.clone(), extensions.observers);
-        Self {
-            deps,
-            events,
-            next_run_id: AtomicU64::new(1),
-        }
-    }
-
-    pub(crate) fn next_run_id(&self) -> u64 {
-        self.next_run_id.fetch_add(1, Ordering::Relaxed)
+        Self { deps, events }
     }
 }
 

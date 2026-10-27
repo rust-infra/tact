@@ -1,34 +1,19 @@
 //! Conversions between Tact's provider wire types and the neutral agent API.
 
-use std::str::FromStr;
-
 use tact_agent_api::{
     AgentContentBlock, AgentImageSource, AgentMessage, AgentRole, CursorUpdate, MessageId,
-    MessageOrigin, ModelCursor, ModelError, ModelErrorKind, ModelMessage, ModelRequest,
-    ModelResponse, StopReason as NeutralStopReason, TokenUsage,
+    MessageOrigin, ModelCallOptions, ModelCursor, ModelError, ModelErrorKind, ModelMessage,
+    ModelRequest, ModelResponse, ReasoningEffort, StopReason as NeutralStopReason, TokenUsage,
 };
 
 use crate::{
     ContentBlock, CreateMessageParams, ImageSource, LlmError, LlmResponse, Message, MessageContent,
     MessageKind, ModelCallParams, OpenAiReasoningEffort, ProviderConversationState,
     ProviderStateUpdate, Role, StopReason, Thinking, ThinkingType, TokenUsageInfo, Tool,
-    ToolChoice,
 };
 
 const CURSOR_PROVIDER: &str = "tact_llm";
 const CURSOR_VERSION: u32 = 1;
-
-#[derive(Debug, Default, serde::Deserialize)]
-struct RequestMetadata {
-    reasoning_effort: Option<String>,
-    thinking_budget: Option<usize>,
-    temperature: Option<f32>,
-    stop_sequences: Option<Vec<String>>,
-    top_k: Option<u32>,
-    top_p: Option<f32>,
-    tool_choice: Option<ToolChoice>,
-    responses_options: Option<crate::openai::responses::ResponsesRequestOptions>,
-}
 
 pub fn agent_content_block(block: &ContentBlock) -> AgentContentBlock {
     match block {
@@ -349,13 +334,24 @@ pub fn model_error(error: LlmError) -> ModelError {
 }
 
 pub fn model_request(request: &CreateMessageParams) -> ModelRequest {
-    let reasoning_effort = request
-        .reasoning_effort
-        .map(|effort| effort.as_str().to_string());
-    let extra_body = request
+    let mut extra = serde_json::Map::new();
+    if let Some(tool_choice) = request.tool_choice.as_ref()
+        && let Ok(value) = serde_json::to_value(tool_choice)
+    {
+        extra.insert("tool_choice".into(), value);
+    }
+    if let Some(responses_options) = request.responses_options.as_ref()
+        && let Ok(value) = serde_json::to_value(responses_options)
+    {
+        extra.insert("responses_options".into(), value);
+    }
+    if let Some(extra_body) = request
         .thinking
         .as_ref()
-        .and_then(|thinking| serde_json::to_value(thinking).ok());
+        .and_then(|thinking| serde_json::to_value(thinking).ok())
+    {
+        extra.insert("extra_body".into(), extra_body);
+    }
     ModelRequest {
         model: request.model.clone(),
         system: request.system.clone().unwrap_or_default(),
@@ -366,39 +362,24 @@ pub fn model_request(request: &CreateMessageParams) -> ModelRequest {
             .map(|tools| tools.iter().map(neutral_tool).collect())
             .unwrap_or_default(),
         max_output_tokens: request.max_tokens,
-        metadata: serde_json::json!({
-            "reasoning_effort": reasoning_effort,
-            "thinking_budget": request.thinking.as_ref().map(|thinking| thinking.budget_tokens),
-            "temperature": request.temperature,
-            "stop_sequences": request.stop_sequences,
-            "top_k": request.top_k,
-            "top_p": request.top_p,
-            "tool_choice": request.tool_choice,
-            "responses_options": request.responses_options,
-            "extra_body": extra_body,
-        }),
+        options: ModelCallOptions {
+            reasoning_effort: request.reasoning_effort.map(ReasoningEffort::from),
+            thinking_budget: request
+                .thinking
+                .as_ref()
+                .and_then(|thinking| u32::try_from(thinking.budget_tokens).ok()),
+            temperature: request.temperature,
+            stop_sequences: request.stop_sequences.clone(),
+            top_k: request.top_k,
+            top_p: request.top_p,
+            extra,
+        },
     }
 }
 
 pub fn create_message_params(request: &ModelRequest) -> Result<CreateMessageParams, ModelError> {
-    let metadata: RequestMetadata =
-        serde_json::from_value(request.metadata.clone()).map_err(|error| {
-            ModelError::new(
-                ModelErrorKind::Permanent,
-                format!("invalid model request metadata: {error}"),
-            )
-        })?;
-    let reasoning_effort = metadata
-        .reasoning_effort
-        .map(|effort| {
-            OpenAiReasoningEffort::from_str(&effort).map_err(|_| {
-                ModelError::new(
-                    ModelErrorKind::Permanent,
-                    format!("unknown reasoning effort {effort:?}"),
-                )
-            })
-        })
-        .transpose()?;
+    let options = &request.options;
+    let reasoning_effort = options.reasoning_effort.map(OpenAiReasoningEffort::from);
     let mut request_out = CreateMessageParams::new(crate::RequiredMessageParams {
         model: request.model.clone(),
         messages: request
@@ -420,15 +401,35 @@ pub fn create_message_params(request: &ModelRequest) -> Result<CreateMessagePara
         request_out = request_out.with_tools(request.tools.iter().map(llm_tool).collect());
     }
     request_out.reasoning_effort = reasoning_effort;
-    request_out.temperature = metadata.temperature;
-    request_out.stop_sequences = metadata.stop_sequences;
-    request_out.top_k = metadata.top_k;
-    request_out.top_p = metadata.top_p;
-    request_out.tool_choice = metadata.tool_choice;
-    request_out.responses_options = metadata.responses_options;
-    if let Some(budget_tokens) = metadata.thinking_budget {
+    request_out.temperature = options.temperature;
+    request_out.stop_sequences = options.stop_sequences.clone();
+    request_out.top_k = options.top_k;
+    request_out.top_p = options.top_p;
+    request_out.tool_choice = options
+        .extra_value("tool_choice")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| {
+            ModelError::new(
+                ModelErrorKind::Permanent,
+                format!("invalid tool_choice option: {error}"),
+            )
+        })?;
+    request_out.responses_options = options
+        .extra_value("responses_options")
+        .cloned()
+        .map(serde_json::from_value)
+        .transpose()
+        .map_err(|error| {
+            ModelError::new(
+                ModelErrorKind::Permanent,
+                format!("invalid responses_options option: {error}"),
+            )
+        })?;
+    if let Some(budget_tokens) = options.thinking_budget {
         request_out.thinking = Some(Thinking {
-            budget_tokens,
+            budget_tokens: budget_tokens as usize,
             type_: ThinkingType::Enabled,
         });
     }
@@ -443,9 +444,7 @@ pub fn model_call_params(request: &CreateMessageParams) -> ModelCallParams {
             .thinking
             .as_ref()
             .map(|thinking| thinking.budget_tokens as u32),
-        reasoning_effort: request
-            .reasoning_effort
-            .map(|effort| effort.as_str().to_string()),
+        reasoning_effort: request.reasoning_effort.map(ReasoningEffort::from),
         extra_body: request
             .thinking
             .as_ref()

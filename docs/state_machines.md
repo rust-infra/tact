@@ -14,7 +14,7 @@ Covers `AgentUpdate` / `UserCommand` / `AccountUpdate` channels, plan step lifec
 
 Interactive TUI mode adds a pull side-channel: the shared `UiResponder` exposes an ordered pending snapshot, and `App::reconcile_pending_ui()` derives `InputMode::Select` from it. `RequestSelect` remains a wake-up hint; the legacy event-driven path is used when no broker is attached.
 
-Files: `crates/protocol/src/agent.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tact/src/agent/tool_dispatch.rs`
+Files: `crates/protocol/src/agent.rs`, `crates/tui/src/widgets/state/app/agent.rs`, `crates/tact/src/runtime/event_adapter.rs`, `crates/tact/src/runtime/gate_adapter.rs`
 
 ---
 
@@ -57,9 +57,9 @@ Idle       ──user quits──▶ end
 | `Idle` | `Planning` | User presses `Enter` in Insert mode with non-empty input. | Old approval (if any) is rejected; `app.plan.steps` is cleared. |
 | `Planning` | `Executing` | `AgentUpdate::StepAdded` (first step). | `ensure_executing_status` sets `total` from plan length. |
 | `Executing` | `Executing` | `AgentUpdate::StepStarted { idx, tool_id, … }`. | `current_step` updated; TUI pushes `ActiveToolBlock` (supports concurrent tools). |
-| `Executing` | `Done` | `AgentUpdate::TaskComplete`. | `task_done_time` is recorded for the 2s highlight. Emitted by `interactive.rs` only when `agent_loop` returns `Ok(())` and `cancel_flag` is false. |
+| `Executing` | `Done` | `AgentUpdate::TaskComplete`. | `task_done_time` is recorded for the 2s highlight. Emitted by the driver only when `agent_loop` returns `Ok(())` and `agent.is_cancelled()` is false. |
 | `Executing` | `Idle` | `AgentUpdate::StepFailed` or fatal `AgentUpdate::Error(Other)`. | Cost timer frozen; `task_start_time` cleared into `last_prompt_elapsed_secs`. |
-| *(unchanged)* | *(unchanged)* | `UserCommand::Cancel`. | Sets `cancel_flag`; emits `Info("Cancelling…")`; loop returns `Ok(())` without `TaskComplete`. |
+| *(unchanged)* | *(unchanged)* | `UserCommand::Cancel`. | Calls `Agent::cancel()`; emits `Info("Cancelling…")`; loop returns `Ok(())` without `TaskComplete`. |
 | `Done` | `Idle` | 2-second auto-timeout elapses. | Implemented in the main TUI loop. Cost timer is frozen via `last_prompt_elapsed_secs` and kept until the next prompt. |
 
 ---

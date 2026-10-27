@@ -28,7 +28,10 @@ cargo clippy --all-targets -- -D warnings
 # which matters because this script's stdout is read by humans *and* pasted into
 # agent transcripts. libtest still prints the full failure block and the
 # `test result:` summary in quiet mode, so a red run stays diagnosable.
-echo "==> cargo test -p tact-ui -p tui -p tact -p tact_llm"
-cargo test -p tact-ui -p tui -p tact -p tact_llm --quiet
+echo "==> cargo test --workspace"
+cargo test --workspace --quiet
+
+echo "==> book checks"
+python3 scripts/book-check.py book
 
 echo "Rust checks passed."

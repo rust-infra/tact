@@ -5,7 +5,7 @@ use crate::tool::{
 };
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, atomic::Ordering},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, bail};
@@ -773,7 +773,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             // A cancellation request flips the child flag; the agent loop
             // exits cooperatively at its next check point. Mark the run as
             // Cancelled instead of Completed so the record tells the truth.
-            let cancelled = cancel_flag.load(Ordering::Relaxed);
+            let cancelled = cancel_flag.is_cancelled();
             let succeeded = terminal_success(success, cancelled);
             let summary = if cancelled {
                 format!("(cancelled by user)\n{summary}")
@@ -831,7 +831,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             .agent_loop(Some(Message::new_text(Role::User, input.prompt)))
             .await;
         let success = result.is_ok();
-        let cancelled = cancel_flag.load(Ordering::Relaxed);
+        let cancelled = cancel_flag.is_cancelled();
         let summary = extract_summary(&subagent);
         // Drain the child's forwarder before returning: the dispatcher emits
         // this call's `StepFinished` — which finalizes the card — the moment we

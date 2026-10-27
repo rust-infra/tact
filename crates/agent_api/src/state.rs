@@ -1,25 +1,28 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::fmt;
 
 use serde::{Deserialize, Serialize};
 use tokio_util::sync::CancellationToken;
 
-use crate::{AgentContentBlock, AgentMessage, AgentRole, MessageId, MessageOrigin, ModelCursor};
+use crate::{AgentMessage, ModelCursor};
 
 /// Identity for one bounded kernel activation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub struct RunId(u64);
+pub struct RunId(String);
 
 impl RunId {
-    pub const fn new(id: u64) -> Self {
-        Self(id)
+    pub fn new(id: impl Into<String>) -> Self {
+        Self(id.into())
     }
 
-    pub const fn get(self) -> u64 {
-        self.0
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for RunId {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
     }
 }
 
@@ -42,7 +45,6 @@ impl SessionRef {
 #[derive(Debug, Clone, Default)]
 pub struct CancelToken {
     token: CancellationToken,
-    source: Option<Arc<AtomicBool>>,
 }
 
 impl CancelToken {
@@ -50,18 +52,8 @@ impl CancelToken {
         Self::default()
     }
 
-    /// Follow an existing public flag synchronously. The token only observes
-    /// the flag; cancelling the token never writes back to it. The activation
-    /// bridge is responsible for waking async waiters when the flag changes.
-    pub fn from_flag(flag: Arc<AtomicBool>) -> Self {
-        let token = CancellationToken::new();
-        if flag.load(Ordering::Relaxed) {
-            token.cancel();
-        }
-        Self {
-            token,
-            source: Some(flag),
-        }
+    pub fn from_token(token: CancellationToken) -> Self {
+        Self { token }
     }
 
     pub fn cancel(&self) {
@@ -70,10 +62,6 @@ impl CancelToken {
 
     pub fn is_cancelled(&self) -> bool {
         self.token.is_cancelled()
-            || self
-                .source
-                .as_ref()
-                .is_some_and(|flag| flag.load(Ordering::Relaxed))
     }
 
     pub async fn cancelled(&self) {
@@ -86,7 +74,6 @@ impl CancelToken {
     pub fn child_token(&self) -> Self {
         Self {
             token: self.token.child_token(),
-            source: self.source.clone(),
         }
     }
 }
@@ -112,14 +99,18 @@ pub struct AgentState {
 /// New input for one activation.
 #[derive(Debug, Clone)]
 pub struct RunInput {
+    /// Host-owned identity for this activation. It must remain unique across
+    /// retries, resumed sessions, and process restarts.
+    pub run_id: RunId,
     pub session: SessionRef,
     pub inputs: Vec<AgentMessage>,
     pub max_total_turns: Option<u32>,
 }
 
 impl RunInput {
-    pub fn new(session: SessionRef) -> Self {
+    pub fn new(run_id: RunId, session: SessionRef) -> Self {
         Self {
+            run_id,
             session,
             inputs: Vec::new(),
             max_total_turns: None,
@@ -200,45 +191,28 @@ impl RuntimeErrorInfo {
     }
 }
 
-/// Convenience constructor for a grouped tool-result message.
-pub fn grouped_tool_results(results: Vec<(String, String)>) -> AgentMessage {
-    AgentMessage::new(
-        AgentRole::User,
-        MessageOrigin::ToolResult,
-        results
-            .into_iter()
-            .map(|(tool_use_id, content)| AgentContentBlock::ToolResult {
-                tool_use_id,
-                content,
-            })
-            .collect(),
-    )
-}
-
-/// Convenience constructor for one assistant response.
-pub fn assistant_message(
-    message_id: impl Into<String>,
-    content: Vec<AgentContentBlock>,
-) -> (MessageId, AgentMessage) {
-    (
-        MessageId::new(message_id),
-        AgentMessage::new(AgentRole::Assistant, MessageOrigin::Assistant, content),
-    )
-}
-
-/// Shared cancellation handle retained for adapters that need cheap clones.
-pub type SharedCancelToken = Arc<CancelToken>;
-
 #[cfg(test)]
 mod tests {
+    use crate::{AgentContentBlock, AgentRole, MessageOrigin};
+
     use super::*;
 
     #[test]
     fn grouped_tool_results_are_one_ordered_message() {
-        let message = grouped_tool_results(vec![
-            ("call_1".into(), "first".into()),
-            ("call_2".into(), "second".into()),
-        ]);
+        let message = AgentMessage::new(
+            AgentRole::User,
+            MessageOrigin::ToolResult,
+            vec![
+                AgentContentBlock::ToolResult {
+                    tool_use_id: "call_1".into(),
+                    content: "first".into(),
+                },
+                AgentContentBlock::ToolResult {
+                    tool_use_id: "call_2".into(),
+                    content: "second".into(),
+                },
+            ],
+        );
         assert_eq!(message.role, AgentRole::User);
         assert_eq!(message.origin, MessageOrigin::ToolResult);
         assert_eq!(

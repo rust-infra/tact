@@ -603,16 +603,16 @@ activation；写操作则在 driver 中与活动 Runner 串行化。</p>
 <td>Insert 模式 Enter、slash 命令、<code>@</code> 文件选择器提交 ——
 <strong>Planning/Executing 期间 Enter 改为排队</strong>（Codex
 风格"当前任务结束后提交"，见 §6.6）</td>
-<td>重置 <code>tool_use_counter</code>、清除
-<code>cancel_flag</code>、<code>build_user_message</code>、<code>agent_loop</code>；仅
+<td>重置 <code>tool_use_counter</code>、调用
+<code>begin_user_turn()</code> 轮换已取消 token、<code>build_user_message</code>、<code>agent_loop</code>；仅
 loop 成功且未取消时发出 <code>TaskComplete</code></td>
 </tr>
 <tr>
 <td><strong><code>Cancel</code></strong></td>
 <td><code>/cancel</code>，或 Planning/Executing 时 Normal 模式
 <code>c</code></td>
-<td>设置 <code>cancel_flag</code>；循环在下次检查时退出；下次
-<code>SubmitTask</code> 清除 flag（<a
+<td>调用 <code>Agent::cancel()</code>；循环在下次检查时退出；下次
+<code>SubmitTask</code> 通过 <code>begin_user_turn()</code> 轮换 token（<a
 href="./18_chapter_agent_loop_zh.html">Ch 18</a>）</td>
 </tr>
 <tr>
@@ -809,12 +809,13 @@ channel（<code>crates/tact-ui/src/account.rs</code>），非
 <code>AgentUpdate</code>。</p>
 <p><strong>重要：</strong> <code>Agent::agent_loop</code>
 <strong>不</strong>发出
-<code>TaskComplete</code>。<code>interactive.rs</code>
+<code>TaskComplete</code>。<code>driver.rs</code>
 仅在成功、未取消的 loop 返回后发送：</p>
-<pre class="rust"><code>match agent.agent_loop(Some(task_message)).await {
-    Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) =&gt; {
-        if let Some(last) = agent.runtime.context.last() {
-            agent.emit_update(AgentUpdate::TaskComplete(extract_text(&amp;last.content)));
+<pre class="rust"><code>agent.begin_user_turn();
+match agent.agent_loop(Some(task_message)).await {
+    Ok(()) if !agent.is_cancelled() =&gt; {
+        if let Some(last) = agent.context().last() {
+            agent.events().send(AgentUpdate::TaskComplete(extract_text(&amp;last.content)));
         }
     }
     Ok(()) =&gt; {}

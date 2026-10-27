@@ -21,6 +21,7 @@
 
 pub mod agent;
 pub mod background;
+pub mod cancel;
 pub mod compact;
 pub mod config;
 pub mod consts;
@@ -52,6 +53,7 @@ pub mod voice;
 pub mod worktree;
 
 pub use agent::{Agent, AgentLoopOutcome, AgentLoopStop, AgentRuntime, AgentSystemPrompt};
+pub use cancel::{ActivationCancel, CancelController};
 pub use tact_llm::Tool as ToolSpec;
 use tact_llm::{ContentBlock, LlmProvider, MessageContent};
 

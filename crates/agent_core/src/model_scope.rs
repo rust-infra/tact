@@ -6,8 +6,8 @@ use std::sync::{
 use async_trait::async_trait;
 use futures_util::StreamExt;
 use tact_agent_api::{
-    AgentEvent, CancelToken, ModelCallKind, ModelCapabilities, ModelCursor, ModelError, ModelEvent,
-    ModelPort, ModelRequest, ModelResponse, ModelStream,
+    AgentEvent, CancelToken, ModelCallKind, ModelCallOptions, ModelCapabilities, ModelCursor,
+    ModelError, ModelEvent, ModelPort, ModelRequest, ModelResponse, ModelStream, RunId,
 };
 
 use crate::deps::EventBus;
@@ -20,6 +20,7 @@ pub(crate) struct ObservedCall {
 }
 
 struct ObservedState {
+    run_id: RunId,
     next_call: AtomicU64,
     call_kind: AtomicU8,
     calls: Mutex<Vec<ObservedCall>>,
@@ -34,11 +35,12 @@ pub(crate) struct ObservedModelPort {
 }
 
 impl ObservedModelPort {
-    pub(crate) fn new(inner: Arc<dyn ModelPort>, events: EventBus) -> Self {
+    pub(crate) fn new(inner: Arc<dyn ModelPort>, events: EventBus, run_id: RunId) -> Self {
         Self {
             inner,
             events,
             state: Arc::new(ObservedState {
+                run_id,
                 next_call: AtomicU64::new(1),
                 call_kind: AtomicU8::new(kind_code(ModelCallKind::Complete)),
                 calls: Mutex::new(Vec::new()),
@@ -64,16 +66,16 @@ impl ObservedModelPort {
         std::mem::take(&mut *self.state.calls.lock().expect("observed model calls lock"))
     }
 
-    fn start(&self, kind: ModelCallKind, metadata: &serde_json::Value) -> String {
+    fn start(&self, kind: ModelCallKind, options: &ModelCallOptions) -> String {
         let id = self.state.next_call.fetch_add(1, Ordering::SeqCst);
-        let call_id = format!("model-call-{id}");
+        let call_id = format!("{}:model-call-{id}", self.state.run_id);
         let capabilities = self.inner.capabilities();
         self.events.emit(AgentEvent::ModelCallStarted {
             call_id: call_id.clone(),
             kind,
             model: capabilities.model,
             max_output_tokens: capabilities.max_output_tokens,
-            metadata: metadata.clone(),
+            options: options.clone(),
         });
         call_id
     }
@@ -104,7 +106,7 @@ impl ModelPort for ObservedModelPort {
         cancel: CancelToken,
     ) -> Result<ModelStream, ModelError> {
         let kind = ModelCallKind::Stream;
-        let call_id = self.start(kind, &request.metadata);
+        let call_id = self.start(kind, &request.options);
         let stream = self.inner.stream(request, cursor, cancel).await?;
         let state = self.state.clone();
         let observed = stream.inspect(move |item| {
@@ -130,7 +132,7 @@ impl ModelPort for ObservedModelPort {
         cancel: CancelToken,
     ) -> Result<ModelResponse, ModelError> {
         let kind = kind_from_code(self.state.call_kind.load(Ordering::SeqCst));
-        let call_id = self.start(kind, &request.metadata);
+        let call_id = self.start(kind, &request.options);
         let response = self.inner.complete(request, cursor, cancel).await?;
         self.record(call_id, kind, response.clone());
         Ok(response)
@@ -143,7 +145,7 @@ impl ModelPort for ObservedModelPort {
         cancel: CancelToken,
     ) -> Result<ModelResponse, ModelError> {
         let kind = ModelCallKind::NativeCompact;
-        let call_id = self.start(kind, &request.metadata);
+        let call_id = self.start(kind, &request.options);
         let response = self.inner.compact(request, cursor, cancel).await?;
         self.record(call_id, kind, response.clone());
         Ok(response)

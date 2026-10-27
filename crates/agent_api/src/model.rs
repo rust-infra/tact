@@ -1,4 +1,4 @@
-use std::{pin::Pin, time::Duration};
+use std::{fmt, pin::Pin, str::FromStr, time::Duration};
 
 use async_trait::async_trait;
 use futures_core::Stream;
@@ -27,15 +27,100 @@ impl From<&AgentMessage> for ModelMessage {
     }
 }
 
+/// Provider-neutral options attached to one model call.
+///
+/// Common request knobs stay typed. Provider-specific fields that do not
+/// belong in the kernel contract live in `extra` and are interpreted by the
+/// concrete model adapter.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct ModelCallOptions {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reasoning_effort: Option<ReasoningEffort>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub thinking_budget: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub temperature: Option<f32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stop_sequences: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_k: Option<u32>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub top_p: Option<f32>,
+    #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Provider-neutral reasoning effort.
+///
+/// Providers that do not expose effort ignore this value in their adapter.
+/// Keeping the closed set here prevents host and protocol layers from carrying
+/// arbitrary strings into the kernel.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    Xhigh,
+    Max,
+}
+
+impl ReasoningEffort {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::Xhigh => "xhigh",
+            Self::Max => "max",
+        }
+    }
+}
+
+impl FromStr for ReasoningEffort {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "none" => Ok(Self::None),
+            "minimal" => Ok(Self::Minimal),
+            "low" => Ok(Self::Low),
+            "medium" => Ok(Self::Medium),
+            "high" => Ok(Self::High),
+            "xhigh" => Ok(Self::Xhigh),
+            "max" => Ok(Self::Max),
+            other => Err(format!(
+                "unknown reasoning effort {other:?}; expected none|minimal|low|medium|high|xhigh|max"
+            )),
+        }
+    }
+}
+
+impl fmt::Display for ReasoningEffort {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
+impl ModelCallOptions {
+    pub fn extra_value(&self, key: &str) -> Option<&serde_json::Value> {
+        self.extra.get(key)
+    }
+}
+
 /// Complete request passed to a model port.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ModelRequest {
     pub model: String,
     pub system: String,
     pub messages: Vec<ModelMessage>,
     pub tools: Vec<ToolSpec>,
     pub max_output_tokens: u32,
-    pub metadata: serde_json::Value,
+    pub options: ModelCallOptions,
 }
 
 /// Opaque, versioned provider conversation cursor.
@@ -317,5 +402,27 @@ mod tests {
             let json = serde_json::to_string(&value).unwrap();
             assert_eq!(serde_json::from_str::<MessageDelta>(&json).unwrap(), value);
         }
+    }
+
+    #[test]
+    fn reasoning_effort_is_a_closed_round_tripping_set() {
+        let values = [
+            ReasoningEffort::None,
+            ReasoningEffort::Minimal,
+            ReasoningEffort::Low,
+            ReasoningEffort::Medium,
+            ReasoningEffort::High,
+            ReasoningEffort::Xhigh,
+            ReasoningEffort::Max,
+        ];
+        for value in values {
+            assert_eq!(value.as_str().parse(), Ok(value));
+            let json = serde_json::to_string(&value).unwrap();
+            assert_eq!(
+                serde_json::from_str::<ReasoningEffort>(&json).unwrap(),
+                value
+            );
+        }
+        assert!("extreme".parse::<ReasoningEffort>().is_err());
     }
 }

@@ -68,6 +68,15 @@ struct KernelProgressSink {
     events: crate::deps::EventBus,
 }
 
+struct RunPreparationContext<'a> {
+    session: &'a SessionRef,
+    raw_inputs: &'a [AgentMessage],
+    max_total_turns: Option<u32>,
+    run_id: &'a tact_agent_api::RunId,
+    model: &'a ObservedModelPort,
+    cancel: &'a CancelToken,
+}
+
 impl ToolProgressSink for KernelProgressSink {
     fn emit(&self, chunks: Vec<ToolOutputChunk>) {
         if !chunks.is_empty() {
@@ -86,8 +95,10 @@ impl AgentKernel {
         input: RunInput,
         cancel: CancelToken,
     ) -> Result<RunOutcome, KernelError> {
-        let run_id = tact_agent_api::RunId::new(self.next_run_id());
-        self.events.emit(AgentEvent::RunStarted { run_id });
+        let run_id = input.run_id.clone();
+        self.events.emit(AgentEvent::RunStarted {
+            run_id: run_id.clone(),
+        });
         let result = self.run_inner(state, input, cancel, run_id).await;
         match result {
             Ok(outcome) => {
@@ -118,10 +129,11 @@ impl AgentKernel {
         &self,
         state: &mut AgentState,
         session: &SessionRef,
+        run_id: tact_agent_api::RunId,
         request: CompactionRequest,
         cancel: CancelToken,
     ) -> Result<CompactionOutcome, KernelError> {
-        let observed = ObservedModelPort::new(self.deps.model.clone(), self.events.clone());
+        let observed = ObservedModelPort::new(self.deps.model.clone(), self.events.clone(), run_id);
         let outcome = self
             .compact_state(state, session, request, cancel, &observed)
             .await?;
@@ -159,7 +171,8 @@ impl AgentKernel {
             return Ok(self.outcome(state, 0, 0, RunStop::Cancelled, &RecoveryStats::default()));
         }
 
-        let model = ObservedModelPort::new(self.deps.model.clone(), self.events.clone());
+        let model =
+            ObservedModelPort::new(self.deps.model.clone(), self.events.clone(), run_id.clone());
         let mut activation_turns = 0;
         let mut tool_calls = 0;
         let mut recovery = RecoveryStats::default();
@@ -177,16 +190,15 @@ impl AgentKernel {
             }
 
             let preparation = {
-                let decision = self
-                    .prepare_run_loop(
-                        state,
-                        &input.session,
-                        &raw_inputs,
-                        input.max_total_turns,
-                        &model,
-                        &cancel,
-                    )
-                    .await?;
+                let context = RunPreparationContext {
+                    session: &input.session,
+                    raw_inputs: &raw_inputs,
+                    max_total_turns: input.max_total_turns,
+                    run_id: &run_id,
+                    model: &model,
+                    cancel: &cancel,
+                };
+                let decision = self.prepare_run_loop(state, &context).await?;
                 self.record_context_model_calls(&model).await?;
                 decision
             };
@@ -293,7 +305,7 @@ impl AgentKernel {
             state.total_turns = state.total_turns.saturating_add(1);
             activation_turns = activation_turns.saturating_add(1);
             self.events.emit(AgentEvent::TurnStarted {
-                run_id,
+                run_id: run_id.clone(),
                 turn: state.total_turns,
                 activation_turn: activation_turns,
                 max_total_turns: input.max_total_turns,
@@ -508,26 +520,24 @@ impl AgentKernel {
     async fn prepare_run_loop(
         &self,
         state: &mut AgentState,
-        session: &SessionRef,
-        raw_inputs: &[AgentMessage],
-        max_total_turns: Option<u32>,
-        model: &ObservedModelPort,
-        cancel: &CancelToken,
+        context: &RunPreparationContext<'_>,
     ) -> Result<PreparationDecision<ContextPreparation>, KernelError> {
         let capabilities = self.deps.model.capabilities();
         loop {
-            if cancel.is_cancelled() {
+            if context.cancel.is_cancelled() {
                 return Ok(PreparationDecision::Block(RunStop::Cancelled));
             }
-            let remaining_turns = max_total_turns.map(|max| max.saturating_sub(state.total_turns));
+            let remaining_turns = context
+                .max_total_turns
+                .map(|max| max.saturating_sub(state.total_turns));
             let view = ContextView {
-                session,
+                session: context.session,
                 transcript: &state.transcript,
                 cursor: state.cursor.as_ref(),
                 total_turns: state.total_turns,
-                max_total_turns,
+                max_total_turns: context.max_total_turns,
                 last_token_total: state.last_token_total,
-                pending_inputs: raw_inputs,
+                pending_inputs: context.raw_inputs,
                 capabilities: &capabilities,
                 remaining_turns,
             };
@@ -536,13 +546,14 @@ impl AgentKernel {
                 .context
                 .prepare_run(
                     &RunInput {
-                        session: session.clone(),
-                        inputs: raw_inputs.to_vec(),
-                        max_total_turns,
+                        run_id: context.run_id.clone(),
+                        session: context.session.clone(),
+                        inputs: context.raw_inputs.to_vec(),
+                        max_total_turns: context.max_total_turns,
                     },
                     &view,
-                    model,
-                    cancel.clone(),
+                    context.model,
+                    context.cancel.clone(),
                 )
                 .await
                 .map_err(context_error)?;
@@ -551,7 +562,13 @@ impl AgentKernel {
                     request,
                     if_skipped,
                 } => match self
-                    .compact_state(state, session, request, cancel.clone(), model)
+                    .compact_state(
+                        state,
+                        context.session,
+                        request,
+                        context.cancel.clone(),
+                        context.model,
+                    )
                     .await?
                 {
                     CompactionOutcome::Replaced(_) => continue,
@@ -664,7 +681,7 @@ impl AgentKernel {
             messages: request.request.messages.clone(),
             tools: tools.specs.clone(),
             max_output_tokens: capabilities.max_output_tokens,
-            metadata: request.request.metadata.clone(),
+            options: request.request.options.clone(),
         }
     }
 
@@ -946,7 +963,6 @@ impl AgentKernel {
             call_id: call.call_id,
             kind: call.kind,
             usage: response.usage,
-            request_body: response.request_body.clone(),
             message_range,
         });
         Ok(())

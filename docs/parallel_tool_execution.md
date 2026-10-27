@@ -162,5 +162,6 @@ JSON shape and example queries.
 | File | Role |
 |------|------|
 | `crates/tact/src/agent/tool_schedule.rs` | Resource model, conflict detection, wave scheduler, `ToolScheduleSummary`. |
-| `crates/tact/src/agent/tool_dispatch.rs` | `Agent::execute_tool_call` (three phases), native/MCP dispatch, `persist_tool_schedule`. |
+| `crates/agent_core/src/kernel.rs` | `AgentKernel::execute_tool_calls` (three phases), wave execution, result assembly. |
+| `crates/tact/src/runtime/tool_adapter.rs` | Native/MCP dispatch and product resource mapping. |
 | `crates/tact/src/store/session_store/` | `record_tool_schedule` — UPDATE the call's `token_usages` row. |

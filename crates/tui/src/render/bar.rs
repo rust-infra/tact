@@ -153,7 +153,7 @@ mod render_tests {
         app.status_bar_mut().model_name = "mock-model".into();
         app.status_bar_mut().model_max_tokens = 128_000;
         app.status_bar_mut().model_thinking_budget = Some(32_000);
-        app.status_bar_mut().model_reasoning_effort = Some("high".into());
+        app.status_bar_mut().model_reasoning_effort = Some(tact_protocol::ReasoningEffort::High);
         let backend = TestBackend::new(120, 2);
         let mut terminal = Terminal::new(backend).expect("terminal");
 
@@ -198,7 +198,11 @@ mod render_tests {
             let mut app = make_app();
             app.status_bar_mut().model_name = "mock-model".into();
             app.status_bar_mut().model_max_tokens = 128_000;
-            app.status_bar_mut().model_reasoning_effort = effort.map(str::to_string);
+            app.status_bar_mut().model_reasoning_effort = effort.map(|effort| {
+                effort
+                    .parse()
+                    .expect("test effort must be a valid reasoning effort")
+            });
             let backend = TestBackend::new(120, 2);
             let mut terminal = Terminal::new(backend).expect("terminal");
             terminal
@@ -229,7 +233,7 @@ mod render_tests {
         app.status_bar_mut().model_name = "mock-model".into();
         app.status_bar_mut().model_max_tokens = 8_000;
         app.status_bar_mut().model_thinking_budget = Some(32_000);
-        app.status_bar_mut().model_reasoning_effort = Some("high".into());
+        app.status_bar_mut().model_reasoning_effort = Some(tact_protocol::ReasoningEffort::High);
         app.status_bar_mut().token_total = 100;
         app.status_bar_mut().token_cache_hit = 50;
         app.status_bar_mut().token_cache_miss = 50;
@@ -269,7 +273,7 @@ mod render_tests {
         let mut app = make_app();
         app.status_bar_mut().model_name = "deepseek-v4".into();
         app.status_bar_mut().model_max_tokens = 128_000;
-        app.status_bar_mut().model_reasoning_effort = Some("high".into());
+        app.status_bar_mut().model_reasoning_effort = Some(tact_protocol::ReasoningEffort::High);
         app.status_bar_mut().token_total = 45_000;
         app.status_bar_mut().token_cache_hit = 30;
         app.status_bar_mut().token_cache_miss = 70;

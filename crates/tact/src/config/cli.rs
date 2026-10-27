@@ -2,6 +2,8 @@ use std::path::PathBuf;
 
 use clap::{Parser, Subcommand};
 
+use crate::permission::PermissionMode;
+
 /// tact — terminal-first AI coding agent
 #[derive(Parser, Debug)]
 #[command(version, about, long_about = None)]
@@ -39,7 +41,7 @@ pub struct CliArgs {
 
     /// Permission mode: "default", "plan", or "auto"
     #[arg(short = 'm', long)]
-    pub permission_mode: Option<String>,
+    pub permission_mode: Option<PermissionMode>,
 
     /// Resume a specific session by ID
     #[arg(long = "session")]

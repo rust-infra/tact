@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
@@ -313,12 +312,6 @@ pub trait ToolGate: Send + Sync {
         cancel: CancelToken,
     ) -> Result<ToolExecutionResult, ToolGateError>;
 }
-
-/// One ordered progress record.
-pub type ProgressBatch = Vec<ToolOutputChunk>;
-
-/// Duration type used by hosts when rendering completed calls.
-pub type ToolDuration = Duration;
 
 #[cfg(test)]
 mod tests {

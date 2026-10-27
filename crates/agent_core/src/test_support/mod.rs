@@ -380,7 +380,7 @@ impl ScriptedContext {
     fn request_plan(
         state: &ContextView<'_>,
         appended: Vec<AgentMessage>,
-        metadata: serde_json::Value,
+        options: tact_agent_api::ModelCallOptions,
     ) -> RequestPlan {
         let mut messages = state
             .transcript
@@ -394,7 +394,7 @@ impl ScriptedContext {
                 system: "fake system".into(),
                 messages,
                 cursor: state.cursor.cloned(),
-                metadata,
+                options,
             },
             appended_messages: appended,
         }
@@ -462,15 +462,19 @@ impl ContextPolicy for ScriptedContext {
                 if_skipped,
             }) => PreparationDecision::Compact {
                 request,
-                if_skipped: Self::request_plan(state, if_skipped, serde_json::json!({})),
+                if_skipped: Self::request_plan(
+                    state,
+                    if_skipped,
+                    tact_agent_api::ModelCallOptions::default(),
+                ),
             },
             Some(RequestPreparation::Continue { appended }) => PreparationDecision::Continue(
-                Self::request_plan(state, appended, serde_json::json!({})),
+                Self::request_plan(state, appended, tact_agent_api::ModelCallOptions::default()),
             ),
             None => PreparationDecision::Continue(Self::request_plan(
                 state,
                 Vec::new(),
-                serde_json::json!({}),
+                tact_agent_api::ModelCallOptions::default(),
             )),
         })
     }
@@ -506,7 +510,13 @@ impl ContextPolicy for ScriptedContext {
                         messages,
                         tools: Vec::new(),
                         max_output_tokens: capabilities.max_output_tokens,
-                        metadata: serde_json::json!({"compaction": true}),
+                        options: tact_agent_api::ModelCallOptions {
+                            extra: serde_json::Map::from_iter([(
+                                "compaction".into(),
+                                serde_json::Value::Bool(true),
+                            )]),
+                            ..Default::default()
+                        },
                     },
                     state.cursor,
                     cancel.clone(),
@@ -534,7 +544,13 @@ impl ContextPolicy for ScriptedContext {
                         messages,
                         tools: Vec::new(),
                         max_output_tokens: capabilities.max_output_tokens,
-                        metadata: serde_json::json!({"native_compaction": true}),
+                        options: tact_agent_api::ModelCallOptions {
+                            extra: serde_json::Map::from_iter([(
+                                "native_compaction".into(),
+                                serde_json::Value::Bool(true),
+                            )]),
+                            ..Default::default()
+                        },
                     },
                     state.cursor,
                     cancel.clone(),

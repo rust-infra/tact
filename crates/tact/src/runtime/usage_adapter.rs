@@ -18,6 +18,7 @@ pub(crate) struct NoopUsageSink {
 }
 
 impl NoopUsageSink {
+    #[cfg(test)]
     pub(crate) fn records(&self) -> u64 {
         self.records.load(std::sync::atomic::Ordering::Relaxed)
     }

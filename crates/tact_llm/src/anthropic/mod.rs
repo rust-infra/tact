@@ -266,9 +266,7 @@ impl LlmClient for AnthropicAdapter {
                                     .thinking
                                     .as_ref()
                                     .map(|t| clamp_token_count(t.budget_tokens as u64)),
-                                reasoning_effort: request
-                                    .reasoning_effort
-                                    .map(|effort| effort.as_str().to_string()),
+                                reasoning_effort: request.reasoning_effort.map(Into::into),
                                 extra_body: request
                                     .thinking
                                     .as_ref()
