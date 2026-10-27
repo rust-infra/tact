@@ -660,6 +660,84 @@ mod tests {
     }
 
     #[test]
+    fn mixed_tool_results_keep_the_image_between_its_companions_outputs() {
+        let request = CreateMessageParams::new(RequiredMessageParams {
+            model: "gpt-5".to_string(),
+            messages: vec![
+                Message::new_text(Role::User, "inspect both"),
+                Message::new_blocks(
+                    Role::Assistant,
+                    vec![
+                        ContentBlock::ToolUse {
+                            id: "call-image".to_string(),
+                            name: "screenshot".to_string(),
+                            input: serde_json::json!({}),
+                        },
+                        ContentBlock::ToolUse {
+                            id: "call-text".to_string(),
+                            name: "lookup".to_string(),
+                            input: serde_json::json!({}),
+                        },
+                    ],
+                ),
+                Message::new_blocks(
+                    Role::User,
+                    vec![
+                        ContentBlock::ToolResult {
+                            tool_use_id: "call-image".to_string(),
+                            content: "preview".to_string(),
+                        },
+                        ContentBlock::Image {
+                            source: ImageSource {
+                                type_: "base64".to_string(),
+                                media_type: "image/png".to_string(),
+                                data: "QkJCQg==".to_string(),
+                            },
+                        },
+                        ContentBlock::ToolResult {
+                            tool_use_id: "call-text".to_string(),
+                            content: "lookup result".to_string(),
+                        },
+                    ],
+                ),
+            ],
+            max_tokens: 4096,
+        });
+
+        let (body, _) = create_response(&request, None, None, false).unwrap();
+        let input = body["input"].as_array().unwrap();
+        let image_output = input
+            .iter()
+            .position(|item| {
+                item["type"] == "function_call_output" && item["call_id"] == "call-image"
+            })
+            .expect("first tool output");
+        let image_message = input
+            .iter()
+            .position(|item| {
+                item["role"] == "user"
+                    && item["content"].as_array().is_some_and(|content| {
+                        content.iter().any(|part| part["type"] == "input_image")
+                    })
+            })
+            .expect("image companion");
+        let text_output = input
+            .iter()
+            .position(|item| {
+                item["type"] == "function_call_output" && item["call_id"] == "call-text"
+            })
+            .expect("second tool output");
+        assert!(
+            image_output < image_message && image_message < text_output,
+            "image companion moved out of its tool-result position: {input:#?}"
+        );
+        assert_eq!(
+            input[image_message]["content"][0]["image_url"],
+            "data:image/png;base64,QkJCQg=="
+        );
+    }
+
+    #[test]
     fn omits_unscoped_signature_from_another_provider() {
         let (body, _) = create_response(&request_with_history(), None, None, false).unwrap();
 

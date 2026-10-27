@@ -104,7 +104,7 @@ fn should_filter(name: &str, status: tact_protocol::StepStatus, content: &str) -
 /// passed through **unfiltered**: error output must stay byte-exact for the
 /// LLM to debug, and is not counted in RTK stats.
 pub fn create_rtk_post_tool_hook() -> impl PostToolUseFn + 'static {
-    |agent: &crate::LoopState,
+    |agent: &crate::LoopState<'_>,
      tool_use: &super::ToolUse,
      tool_result: &mut super::ToolResult,
      status: tact_protocol::StepStatus| {
@@ -120,8 +120,7 @@ pub fn create_rtk_post_tool_hook() -> impl PostToolUseFn + 'static {
             let (filtered, succeeded, elapsed_ms) = pipe_through_rtk(raw);
             let saved = saved_chars(raw_chars, &filtered, succeeded);
             agent
-                .runtime
-                .stats
+                .stats()
                 .write()
                 .unwrap()
                 .record_rtk(succeeded, raw_chars, saved, elapsed_ms);

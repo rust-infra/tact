@@ -3,6 +3,8 @@ members = [
     "crates/protocol",
     "crates/agent_tui_kit",
     "crates/tui",
+    "crates/agent_api",
+    "crates/agent_core",
     "crates/tact",
     "crates/tact-ui",
     "crates/tact_llm",

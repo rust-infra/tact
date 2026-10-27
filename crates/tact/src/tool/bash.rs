@@ -713,8 +713,13 @@ mod sandbox_tests {
         // reach is reachable from inside as well; the variables are forwarded
         // verbatim rather than dropped.
         for variable in ["http_proxy", "https_proxy", "all_proxy", "no_proxy"] {
-            let expected = std::env::var(variable).unwrap_or_else(|_| "unset".to_string());
-            let probe = format!("printf %s \"${{{variable}:-unset}}\"");
+            let expected = std::env::var(variable)
+                .map(|value| format!("set:{value}"))
+                .unwrap_or_else(|_| "unset".to_string());
+            let probe = format!(
+                "if [ \"${{{variable}+x}}\" = x ]; then \
+                 printf 'set:%s' \"${{{variable}}}\"; else printf unset; fi"
+            );
             assert_eq!(
                 run(&context, &probe).await.unwrap(),
                 expected,

@@ -17,6 +17,12 @@ pub mod multi_model;
 
 use std::{collections::HashMap, sync::Arc};
 
+use crate::LlmError;
+use crate::{
+    ApiKeyProvider, ContentBlock, CredentialProvider, LlmResponse, ProviderConversationState,
+    ProviderProgress, ProviderProgressSink, ProviderStateUpdate, SharedHttpClient, StopReason,
+    ThinkingChunk, TokenUsageInfo,
+};
 use async_openai::{
     config::Config,
     types::{
@@ -33,13 +39,6 @@ pub use multi_model::ChatCompletionsAdapter;
 use reqwest13::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
-use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo, UpdateSink};
-
-use crate::LlmError;
-use crate::{
-    ApiKeyProvider, ContentBlock, CredentialProvider, LlmResponse, ProviderConversationState,
-    ProviderStateUpdate, SharedHttpClient, StopReason,
-};
 
 /// Build UI events for one OpenAI-compatible stream delta.
 ///
@@ -49,33 +48,33 @@ fn openai_delta_ui_events(
     thinking_open: &mut bool,
     reasoning: Option<&str>,
     content: Option<&str>,
-) -> Vec<AgentUpdate> {
+) -> Vec<ProviderProgress> {
     let mut events = Vec::new();
     if let Some(reasoning) = reasoning.filter(|s| !s.is_empty()) {
         if !*thinking_open {
             *thinking_open = true;
-            events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+            events.push(ProviderProgress::Thinking(ThinkingChunk::Started));
         }
-        events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        events.push(ProviderProgress::Thinking(ThinkingChunk::Delta(
             reasoning.to_string(),
         )));
     }
     if let Some(content) = content.filter(|s| !s.is_empty()) {
         if *thinking_open {
             *thinking_open = false;
-            events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+            events.push(ProviderProgress::Thinking(ThinkingChunk::Finished));
         }
-        events.push(AgentUpdate::StreamChunk(content.to_string()));
+        events.push(ProviderProgress::TextDelta(content.to_string()));
     }
     events
 }
 
-fn finish_thinking_event(thinking_open: &mut bool) -> Option<AgentUpdate> {
+fn finish_thinking_event(thinking_open: &mut bool) -> Option<ProviderProgress> {
     if !*thinking_open {
         return None;
     }
     *thinking_open = false;
-    Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+    Some(ProviderProgress::Thinking(ThinkingChunk::Finished))
 }
 
 /// Convert a `u64` token count to `u32`, saturating rather than truncating.
@@ -464,7 +463,7 @@ impl OpenAiAdapter {
         &self,
         body: &serde_json::Value,
         _provider_state: Option<&ProviderConversationState>,
-        events: &UpdateSink,
+        events: &dyn ProviderProgressSink,
     ) -> Result<LlmResponse, LlmError> {
         let json_body = serde_json::to_vec(body)?;
 
@@ -553,10 +552,10 @@ impl OpenAiAdapter {
                             delta.content.as_deref(),
                         ) {
                             match &event {
-                                AgentUpdate::StreamChunk(content) => {
+                                ProviderProgress::TextDelta(content) => {
                                     text_buffer.push_str(content);
                                 }
-                                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(reasoning)) => {
+                                ProviderProgress::Thinking(ThinkingChunk::Delta(reasoning)) => {
                                     reasoning_buffer.push_str(reasoning);
                                 }
                                 _ => {}
@@ -619,7 +618,7 @@ impl OpenAiAdapter {
                                 prompt_cache_miss_tokens: cache_miss,
                                 reasoning_tokens: reasoning,
                             };
-                            events.send(AgentUpdate::TokenUsage(info.clone()));
+                            events.send(ProviderProgress::Usage(info.clone()));
                             token_usage = Some(info);
                         }
                     }
@@ -823,10 +822,10 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(r)),
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
-                AgentUpdate::StreamChunk(c),
+                ProviderProgress::Thinking(ThinkingChunk::Started),
+                ProviderProgress::Thinking(ThinkingChunk::Delta(r)),
+                ProviderProgress::Thinking(ThinkingChunk::Finished),
+                ProviderProgress::TextDelta(c),
             ] if r == "reason" && c == "answer"
         ));
         assert!(!open);
@@ -839,15 +838,15 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(r)),
+                ProviderProgress::Thinking(ThinkingChunk::Started),
+                ProviderProgress::Thinking(ThinkingChunk::Delta(r)),
             ] if r == "think"
         ));
         assert!(open);
         let finished = finish_thinking_event(&mut open);
         assert!(matches!(
             finished,
-            Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+            Some(ProviderProgress::Thinking(ThinkingChunk::Finished))
         ));
         assert!(!open);
         assert!(finish_thinking_event(&mut open).is_none());
@@ -860,8 +859,8 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
-                AgentUpdate::StreamChunk(c),
+                ProviderProgress::Thinking(ThinkingChunk::Finished),
+                ProviderProgress::TextDelta(c),
             ] if c == "done"
         ));
         assert!(!open);

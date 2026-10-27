@@ -6,11 +6,11 @@
 //! the long-lived client.
 
 use super::OpenAiAdapter;
+use crate::ProviderProgressSink;
 use crate::{
     CreateMessageParams, LlmClient, LlmError, LlmResponse, ProviderConversationState,
     ProviderProfile, hook_select::hook_for_dialect,
 };
-use tact_protocol::UpdateSink;
 
 use super::{
     body::assemble_chat_completion_body,
@@ -67,7 +67,7 @@ impl LlmClient for ChatCompletionsAdapter {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        events: &UpdateSink,
+        events: &dyn ProviderProgressSink,
     ) -> Result<LlmResponse, LlmError> {
         stream_assembled(&self.adapter, request, provider_state, events, |r, s| {
             self.assemble_body(r, s)

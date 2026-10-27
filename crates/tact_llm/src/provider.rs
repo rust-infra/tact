@@ -499,19 +499,34 @@ pub fn is_kimi_k3(model: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use futures_util::future::BoxFuture;
-    use secrecy::SecretString;
-    use tact_protocol::{AgentUpdate, TokenUsageInfo, UpdateSink};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
     use crate::{
-        ApiKeyProvider, LlmError,
+        ApiKeyProvider, LlmError, ProviderProgress, ProviderProgressSink, TokenUsageInfo,
         client::{LlmClient, LlmProvider},
         mock::MockClient,
         types::{CreateMessageParams, RequiredMessageParams, StopReason},
     };
+    use futures_util::future::BoxFuture;
+    use secrecy::SecretString;
+
+    #[derive(Default)]
+    struct RecordingProgress {
+        events: Mutex<Vec<ProviderProgress>>,
+    }
+
+    impl ProviderProgressSink for RecordingProgress {
+        fn send(&self, progress: ProviderProgress) {
+            self.events
+                .lock()
+                .expect("progress events lock")
+                .push(progress);
+        }
+    }
 
     #[derive(Debug, Clone)]
     struct CountingCredential {
@@ -935,8 +950,6 @@ mod tests {
 
     #[tokio::test]
     async fn mock_stream_emits_token_usage_when_configured() {
-        use tokio::sync::mpsc::unbounded_channel;
-
         use crate::ContentBlock;
 
         let usage = TokenUsageInfo {
@@ -955,7 +968,7 @@ mod tests {
             usage.clone(),
         )]);
 
-        let (tx, mut rx) = unbounded_channel();
+        let progress = RecordingProgress::default();
         let response = client
             .stream_message(
                 &CreateMessageParams::new(RequiredMessageParams {
@@ -964,7 +977,7 @@ mod tests {
                     max_tokens: 100,
                 }),
                 None,
-                &UpdateSink::for_ui(tx),
+                &progress,
             )
             .await
             .expect("stream");
@@ -974,10 +987,16 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         assert_eq!(returned.as_ref().map(|u| u.total), Some(15));
 
-        let update = rx.try_recv().expect("TokenUsage event");
+        let update = progress
+            .events
+            .lock()
+            .expect("progress events lock")
+            .first()
+            .cloned()
+            .expect("TokenUsage event");
         assert!(matches!(
             update,
-            AgentUpdate::TokenUsage(u) if u.total == usage.total
+            ProviderProgress::Usage(u) if u.total == usage.total
         ));
     }
 

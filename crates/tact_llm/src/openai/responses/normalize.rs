@@ -1,14 +1,12 @@
 use std::collections::BTreeMap;
 
-use async_openai_responses::types::responses::{
-    OutputItem, OutputMessageContent, OutputStatus, Response, Status, SummaryPart,
-};
-use tact_protocol::TokenUsageInfo;
-
 use super::history;
 use crate::{
     ContentBlock, LlmError, Message, ProviderConversationState, ProviderStateUpdate,
-    ResponsesConversationState, Role, StopReason, context_hash,
+    ResponsesConversationState, Role, StopReason, TokenUsageInfo, context_hash,
+};
+use async_openai_responses::types::responses::{
+    OutputItem, OutputMessageContent, OutputStatus, Response, Status, SummaryPart,
 };
 
 #[derive(Debug)]

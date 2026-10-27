@@ -1,0 +1,17 @@
+[package]
+name = "tact_agent_api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+async-trait = { workspace = true }
+futures-core = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "2"
+tokio-util = { workspace = true }
+
+[features]
+default = []
+test-support = []

@@ -3,6 +3,7 @@ use std::{path::Path, sync::Arc};
 use anyhow::Result;
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use tact_agent_api::AgentMessage;
 use tact_llm::{Message, MessageContent, ProviderConversationState, Role};
 use tact_protocol::TokenUsageInfo;
 
@@ -68,11 +69,38 @@ pub trait SessionStore: Send + Sync {
         ordinal: i64,
     ) -> Result<i64>;
 
+    /// Append one logical message with its explicit origin.
+    async fn append_agent_message(
+        &self,
+        session_id: &str,
+        message: &AgentMessage,
+        ordinal: i64,
+    ) -> Result<i64>;
+
+    /// Atomically append a logical message and optionally replace or clear the
+    /// provider cursor. `None` means retain the current cursor.
+    async fn append_agent_message_and_provider_state(
+        &self,
+        session_id: &str,
+        message: &AgentMessage,
+        ordinal: i64,
+        provider_state: Option<Option<&ProviderConversationState>>,
+    ) -> Result<i64>;
+
     /// Replace all persisted messages for a session (used after compaction).
     async fn replace_session_messages(
         &self,
         session_id: &str,
         messages: &[Message],
+    ) -> Result<(i64, i64)>;
+
+    /// Atomically replace (or retain) the logical transcript and optionally
+    /// replace or clear the provider cursor.
+    async fn replace_agent_session_state(
+        &self,
+        session_id: &str,
+        messages: Option<&[AgentMessage]>,
+        provider_state: Option<Option<&ProviderConversationState>>,
     ) -> Result<(i64, i64)>;
 
     /// Load the durable provider conversation state (Responses input-item
@@ -93,6 +121,9 @@ pub trait SessionStore: Send + Sync {
     ) -> Result<(i64, i64)>;
 
     async fn load_session(&self, session_id: &str) -> Result<Vec<Message>>;
+
+    /// Load logical messages with explicit or strictly inferred origins.
+    async fn load_agent_session(&self, session_id: &str) -> Result<Vec<AgentMessage>>;
 
     async fn list_sessions(&self, root_dir: Option<&str>) -> Result<Vec<SessionSummary>>;
 
@@ -121,6 +152,20 @@ pub trait SessionStore: Send + Sync {
     async fn record_token_usage(
         &self,
         session_id: &str,
+        call_type: &str,
+        usage: Option<&TokenUsageInfo>,
+        first_message_id: i64,
+        last_message_id: i64,
+        request_body: Option<&[u8]>,
+    ) -> Result<()>;
+
+    /// Record usage idempotently when `call_id` is present, while retaining the
+    /// legacy nullable path for pre-kernel callers.
+    #[allow(clippy::too_many_arguments)]
+    async fn record_token_usage_with_call_id(
+        &self,
+        session_id: &str,
+        call_id: Option<&str>,
         call_type: &str,
         usage: Option<&TokenUsageInfo>,
         first_message_id: i64,

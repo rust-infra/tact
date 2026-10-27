@@ -4793,6 +4793,8 @@ dependencies = [
  "sqlx",
  "strum 0.27.2",
  "strum_macros 0.27.2",
+ "tact_agent_api",
+ "tact_agent_core",
  "tact_llm",
  "tact_protocol",
  "tar",
@@ -4834,12 +4836,38 @@ dependencies = [
 ]
 
 [[package]]
+name = "tact_agent_api"
+version = "1.1.42"
+dependencies = [
+ "async-trait",
+ "futures-core",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.19",
+ "tokio-util",
+]
+
+[[package]]
+name = "tact_agent_core"
+version = "1.1.42"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "serde",
+ "serde_json",
+ "tact_agent_api",
+ "thiserror 2.0.19",
+ "tokio",
+]
+
+[[package]]
 name = "tact_llm"
 version = "1.1.42"
 dependencies = [
  "anyhow",
  "async-openai",
  "async-openai-local",
+ "async-trait",
  "dotenvy",
  "eventsource-stream",
  "futures-util",
@@ -4851,7 +4879,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
- "tact_protocol",
+ "tact_agent_api",
  "thiserror 2.0.19",
  "tokio",
  "tracing",

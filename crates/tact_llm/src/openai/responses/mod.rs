@@ -11,6 +11,16 @@ pub use request_options::ResponsesRequestOptions;
 
 use std::sync::Arc;
 
+use self::{
+    normalize::{NormalizedResponse, parse_compact_resource},
+    stream::ResponsesStreamState,
+    wire::parse_response_envelope,
+};
+use crate::{
+    ApiKeyProvider, CreateMessageParams, CredentialProvider, LlmClient, LlmError, LlmRequestBody,
+    LlmResponse, ProviderConversationState, ProviderProgress, ProviderProgressSink,
+    ProviderStateUpdate, ResponsesConversationState, SharedHttpClient, context_hash,
+};
 use async_openai_responses::{
     Client, config::Config, error::OpenAIError, types::responses::ResponseStreamEvent,
 };
@@ -19,18 +29,6 @@ use reqwest13::header::{AUTHORIZATION, HeaderMap};
 use secrecy::ExposeSecret as LegacyExposeSecret;
 use secrecy10::{ExposeSecret, SecretString};
 use serde_json::Value;
-use tact_protocol::{AgentUpdate, UpdateSink};
-
-use self::{
-    normalize::{NormalizedResponse, parse_compact_resource},
-    stream::ResponsesStreamState,
-    wire::parse_response_envelope,
-};
-use crate::{
-    ApiKeyProvider, CreateMessageParams, CredentialProvider, LlmClient, LlmError, LlmRequestBody,
-    LlmResponse, ProviderConversationState, ProviderStateUpdate, ResponsesConversationState,
-    SharedHttpClient, context_hash,
-};
 
 /// Custom async-openai config for the Responses protocol.
 ///
@@ -587,7 +585,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        events: &UpdateSink,
+        events: &dyn ProviderProgressSink,
     ) -> Result<LlmResponse, LlmError> {
         if let Some(ProviderConversationState::OpenAiResponses(state)) = provider_state {
             self.validate_state_binding(state)?;
@@ -635,7 +633,7 @@ impl LlmClient for OpenAiResponsesAdapter {
         }
         let normalized = state.finish()?;
         if let Some(usage) = &normalized.usage {
-            events.send(AgentUpdate::TokenUsage(usage.clone()));
+            events.send(ProviderProgress::Usage(usage.clone()));
         }
         let state_update = self.state_update(&normalized, request, input_items)?;
         Ok(Self::into_result(normalized, request_body, state_update))
@@ -778,12 +776,12 @@ mod tests {
     use super::stream::ResponsesStreamState;
     use super::{normalize_stream_event_json, parse_stream_event, parse_stream_event_with_raw};
     use crate::LlmError;
+    use crate::NoopProgressSink;
     use crate::{
         ContentBlock, CreateMessageParams, LlmClient, Message, RequiredMessageParams, Role,
         StopReason, Thinking, ThinkingType, Tool,
     };
     use async_openai_responses::types::responses::{OutputItem, ResponseStreamEvent};
-    use tact_protocol::UpdateSink;
 
     #[test]
     fn opencode_config_headers_carry_the_session_id() {
@@ -1588,7 +1586,7 @@ mod tests {
         let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None);
 
         let response = adapter
-            .stream_message(&request, None, &UpdateSink::default())
+            .stream_message(&request, None, &NoopProgressSink)
             .await
             .expect("Responses stream request should succeed");
         let blocks = response.blocks;
@@ -1622,7 +1620,7 @@ mod tests {
             max_tokens: 128,
         });
         let response = adapter
-            .stream_message(&follow_up, None, &UpdateSink::default())
+            .stream_message(&follow_up, None, &NoopProgressSink)
             .await
             .expect("second Responses stream request should succeed");
         let follow_up_blocks = response.blocks;
@@ -1670,7 +1668,7 @@ mod tests {
         let adapter = super::OpenAiResponsesAdapter::new(api_key, base_url, None);
 
         let response = adapter
-            .stream_message(&request, None, &UpdateSink::default())
+            .stream_message(&request, None, &NoopProgressSink)
             .await
             .expect("Responses stream request with a tool should succeed");
         let blocks = response.blocks;
@@ -1714,7 +1712,7 @@ mod tests {
         .with_tools(tools);
 
         let response = adapter
-            .stream_message(&follow_up, None, &UpdateSink::default())
+            .stream_message(&follow_up, None, &NoopProgressSink)
             .await
             .expect("Responses follow-up after a tool result should succeed");
         let follow_up_blocks = response.blocks;
@@ -1931,7 +1929,7 @@ mod tests {
             panic!("expected OpenAiResponses adapter");
         };
         adapter
-            .stream_message(&simple_request(), None, &UpdateSink::default())
+            .stream_message(&simple_request(), None, &NoopProgressSink)
             .await
             .expect("streamed Responses request should succeed");
 
@@ -1958,7 +1956,7 @@ mod tests {
             .await;
         let adapter = super::OpenAiResponsesAdapter::new("test-key", server.uri(), None);
         let response = adapter
-            .stream_message(&simple_request(), None, &UpdateSink::default())
+            .stream_message(&simple_request(), None, &NoopProgressSink)
             .await
             .expect("unknown stream event must not abort response");
         assert!(response.blocks.iter().any(|block| {
@@ -1996,7 +1994,7 @@ mod tests {
             .await;
         let adapter = super::OpenAiResponsesAdapter::new("test-key", server.uri(), None);
         let response = adapter
-            .stream_message(&simple_request(), None, &UpdateSink::default())
+            .stream_message(&simple_request(), None, &NoopProgressSink)
             .await
             .expect("a text-less reasoning summary part must not abort the stream");
         assert!(
@@ -2034,7 +2032,7 @@ mod tests {
             .await;
         let adapter = super::OpenAiResponsesAdapter::new("test-key", server.uri(), None);
         let response = adapter
-            .stream_message(&simple_request(), None, &UpdateSink::default())
+            .stream_message(&simple_request(), None, &NoopProgressSink)
             .await
             .expect("a function_call announced without arguments must not abort the stream");
         assert_eq!(
@@ -2079,7 +2077,7 @@ mod tests {
             .await;
         let adapter = super::OpenAiResponsesAdapter::new("test-key", server.uri(), None);
         let error = adapter
-            .stream_message(&simple_request(), None, &UpdateSink::default())
+            .stream_message(&simple_request(), None, &NoopProgressSink)
             .await
             .expect_err("a 400 must fail the turn");
         let message = error.to_string();

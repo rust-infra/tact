@@ -1,76 +1,73 @@
 //! Agent runtime: conversation loop, tool dispatch, and session state.
 
 mod outcome;
-mod tool_dispatch;
 pub(crate) mod tool_schedule;
 
 pub use outcome::{AgentLoopOutcome, AgentLoopStop};
 
 use std::{
-    borrow::Cow,
     collections::VecDeque,
+    panic::AssertUnwindSafe,
     path::Path,
     sync::{Arc, Mutex, RwLock},
 };
 
 use anyhow::{Context, Result};
 use chrono::Utc;
+use futures_util::FutureExt;
+use tact_agent_api::{AgentState, MessageOrigin, ModelCapabilities, RunInput, RunStop, SessionRef};
+use tact_agent_core::KernelError;
 use tact_llm::{
-    ContentBlock, CreateMessageParams, LlmClient, LlmProvider, Message, MessageContent,
-    MessageKind, OpenAiReasoningEffort, ProviderConversationState, ProviderKind,
-    ProviderStateUpdate, RequiredMessageParams, Role, StopReason, Thinking, ThinkingType,
+    LlmProvider, Message, MessageKind, OpenAiReasoningEffort, ProviderConversationState,
+    ProviderKind, Role,
 };
-use tact_protocol::{AgentUpdate, TokenUsageInfo, UpdateSink};
+use tact_protocol::{AgentUpdate, UpdateSink};
 
 use crate::{
     ToolSpec,
-    compact::{
-        CompactState, CompactTrigger, approx_text_tokens, build_compacted_history,
-        collect_user_messages, compact_rebuild_headroom_tokens, compacted_context,
-        estimate_context_tokens, estimate_message_tokens, micro_compact,
-        recent_messages_for_summary, retained_user_message_token_budget, should_auto_compact,
-        write_transcript,
-    },
+    compact::{CompactState, CompactTrigger, approx_text_tokens},
     config::{self, AgentSettings},
     hook::{
         Hook, HookContextChunk, HookControl, HookTypes, InterruptFn, NotificationFn,
         PermissionRequestFn, PostCompactFn, PostToolUseFailureFn, PostToolUseFn, PreCompactFn,
         PreToolUseFn, SessionEndFn, SessionStartContext, SessionStartFn, SessionStartSource,
-        StopFn, TaskCompletedFn, UserPromptSubmitFn, frame_hook_context,
+        StopFn, TaskCompletedFn, UserPromptSubmitFn,
     },
     invoke_hooks,
-    mcp::{MCPToolRouter, McpLoadReport},
-    memory::MEMORY_GUIDANCE,
+    mcp::{MCPToolRouter, McpCatalogHandle, McpLoadReport},
     permission::PermissionManager,
-    prompt::{SystemPrompt, responses_prompt_template},
-    recovery::{
-        FailureKind, MAX_COMPACT_ATTEMPTS, MAX_COMPACT_SUMMARY_ATTEMPTS,
-        MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS, MAX_CONTINUATION_ATTEMPTS, MAX_TRANSPORT_ATTEMPTS,
-        RecoveryState, backoff_delay, classify_error, classify_llm_error, continuation_message,
-        error_summary,
+    recovery::RecoveryState,
+    runtime::{
+        activation_view::{ModelIdentity, SessionIdentity, TactActivationView},
+        cancel_bridge::CancelBridge,
+        compaction_adapter::TactCompactor,
+        composition::{TactKernelComposition, TactKernelConfig},
+        facade_state::{
+            FacadeActivationState, FacadeReceiptTracker, FacadeReceipts, FacadeSidecar,
+        },
+        permission_authority::PermissionAuthority,
+        prompt_adapter::{PromptCaches, SystemPromptAssembler},
+        services::TactSharedServices,
     },
     stats::SessionStats,
     store::DynSessionStore,
     subagent::SubagentResult,
     tool::{GoalYieldReason, ToolContext, ToolRouter},
-    utils::{LockExt, RwLockExt, truncate::truncate_middle_with_token_budget},
 };
 
-enum CompactRebuildMode {
-    /// Retain recent real user messages + handoff summary (Codex-style).
-    CodexStyle,
-    /// Replace the entire context with a single summary user message.
-    LegacySingleSummary,
-}
+#[cfg(test)]
+use crate::{
+    compact::{estimate_context_tokens, should_auto_compact},
+    memory::MEMORY_GUIDANCE,
+    prompt::{SystemPrompt, responses_prompt_template},
+};
 
-const COMPACT_SUMMARY_MAX_TOKENS: u32 = 2_000;
-const COMPACT_SUMMARY_OUTPUT_PERCENT: usize = 20;
-const COMPACT_SUMMARY_HEADROOM_PERCENT: usize = 10;
-/// Auto-compact threshold percentage used for the Responses usage-only
-/// trigger. Must stay in sync with `crate::compact::should_auto_compact`
-/// (its threshold constant is private to that module).
+pub(crate) const COMPACT_SUMMARY_MAX_TOKENS: u32 = 2_000;
+pub(crate) const COMPACT_SUMMARY_OUTPUT_PERCENT: usize = 20;
+pub(crate) const COMPACT_SUMMARY_HEADROOM_PERCENT: usize = 10;
+#[cfg(test)]
 const RESPONSES_AUTO_COMPACT_THRESHOLD_PERCENT: usize = 80;
-const COMPACT_SUMMARY_INSTRUCTIONS: &str = "Summarize this coding-agent conversation so another agent can continue the work.\n\
+pub(crate) const COMPACT_SUMMARY_INSTRUCTIONS: &str = "Summarize this coding-agent conversation so another agent can continue the work.\n\
 The conversation appears below as a JSON array of messages; tool results and attachments may be elided or truncated. Ground the summary only in that content and do not invent details.\n\
 Preserve:\n\
 1. The current goal and what has been accomplished\n\
@@ -89,7 +86,7 @@ Output a compact, structured handoff. Keep exact file paths, function names, typ
 /// summary request that omits effort still needs the high bucket as headroom.
 /// Every other provider defaults to no thinking at the level this client
 /// models, so it needs none.
-fn compact_summary_server_default_effort(
+pub(crate) fn compact_summary_server_default_effort(
     provider_kind: &ProviderKind,
 ) -> Option<OpenAiReasoningEffort> {
     match provider_kind {
@@ -103,7 +100,7 @@ fn compact_summary_server_default_effort(
 /// The envelope may never eat the room the fixed instructions need, so a small
 /// window still yields a constructible summary request instead of a hard
 /// "window too small" bail.
-fn compact_summary_envelope_ceiling(model_context_window: usize) -> u32 {
+pub(crate) fn compact_summary_envelope_ceiling(model_context_window: usize) -> u32 {
     if model_context_window == 0 {
         return u32::MAX;
     }
@@ -118,58 +115,6 @@ fn compact_summary_envelope_ceiling(model_context_window: usize) -> u32 {
     .unwrap_or(u32::MAX)
 }
 
-/// One-line response summary for a compaction-summary attempt.
-///
-/// The compact notices are the only place a user sees what a summary call
-/// actually cost, so they report the provider's numbers instead of the derived
-/// `Debug` of the usage struct (`stop=Some(MaxTokens)
-/// usage=Some(TokenUsageInfo { … })` is not a sentence). Stop reasons use the
-/// same snake_case vocabulary as the rest of the agent's messages
-/// (`stop_reason=refusal`), so a reader can grep for one spelling.
-fn compact_response_note(
-    stop_reason: Option<&StopReason>,
-    usage: Option<&TokenUsageInfo>,
-) -> String {
-    let stop = match stop_reason {
-        None => "none".to_string(),
-        Some(StopReason::EndTurn) => "end_turn".to_string(),
-        Some(StopReason::MaxTokens) => "max_tokens".to_string(),
-        Some(StopReason::StopSequence) => "stop_sequence".to_string(),
-        Some(StopReason::ToolUse) => "tool_use".to_string(),
-        Some(StopReason::Refusal) => "refusal".to_string(),
-        Some(StopReason::PauseTurn) => "pause_turn".to_string(),
-        Some(StopReason::Unknown(raw)) => format!("unknown({raw})"),
-    };
-    match usage {
-        Some(usage) => format!(
-            "stop={stop}, prompt {}, completion {} (reasoning {}), cache {}/{}",
-            usage.prompt,
-            usage.completion,
-            usage.reasoning_tokens,
-            usage.prompt_cache_hit_tokens,
-            usage.prompt_cache_miss_tokens,
-        ),
-        None => format!("stop={stop}, no usage reported"),
-    }
-}
-
-/// Why a summary attempt was truncated, in both units that matter.
-///
-/// `think_block_bytes` is a byte length (`thinking.len() + signature.len()`),
-/// never a token count — the two used to be printed interchangeably, which
-/// invited reading bytes against the token budget. The tokens a provider
-/// actually billed are `reasoning_tokens`, printed first when it reported them;
-/// without usage the byte weight is still worth naming, so the note never
-/// claims a spend it cannot see.
-fn compact_truncation_note(reasoning_tokens: Option<u32>, think_block_bytes: usize) -> String {
-    match reasoning_tokens {
-        Some(tokens) => {
-            format!("{tokens} reasoning tokens, thinking block {think_block_bytes} bytes")
-        }
-        None => format!("thinking block {think_block_bytes} bytes"),
-    }
-}
-
 /// The effort a provider really runs at when it is handed `effort`.
 ///
 /// Only DeepSeek documents a compatibility fold
@@ -180,7 +125,7 @@ fn compact_truncation_note(reasoning_tokens: Option<u32>, think_block_bytes: usi
 /// otherwise `reasoning_effort = "medium"` on DeepSeek reserves the medium
 /// bucket while the model reasons at high, and the envelope starves. Kimi's
 /// table (`low`/`high`/`max`) needs no fold; no other kind documents one.
-fn effort_after_provider_fold(
+pub(crate) fn effort_after_provider_fold(
     provider_kind: &ProviderKind,
     effort: OpenAiReasoningEffort,
 ) -> OpenAiReasoningEffort {
@@ -203,7 +148,7 @@ fn effort_after_provider_fold(
 /// percentage would scale the reasoning headroom down with it even though an
 /// effort tier names an absolute thinking allowance, not a fraction of the
 /// output.
-fn compact_effort_reserve_tokens(effort: OpenAiReasoningEffort) -> u32 {
+pub(crate) fn compact_effort_reserve_tokens(effort: OpenAiReasoningEffort) -> u32 {
     match effort {
         OpenAiReasoningEffort::None => 0,
         OpenAiReasoningEffort::Minimal | OpenAiReasoningEffort::Low => 2_000,
@@ -227,7 +172,7 @@ fn compact_effort_reserve_tokens(effort: OpenAiReasoningEffort) -> u32 {
 /// produced inside that thinking, and the continuation stage only has to finish
 /// a draft (measured: 649 reasoning + ~465 text tokens of a 2,000-token
 /// envelope).
-fn compact_summary_effort(
+pub(crate) fn compact_summary_effort(
     provider_kind: &ProviderKind,
     session_effort: Option<OpenAiReasoningEffort>,
     stage: u32,
@@ -254,7 +199,7 @@ fn compact_summary_effort(
 ///   current room is doubled instead;
 /// - cap: at most double the current room (the caller additionally caps by the
 ///   context window).
-fn next_compaction_reserve(
+pub(crate) fn next_compaction_reserve(
     effort_implied: u32,
     text_budget: u32,
     prev_reserve: u32,
@@ -271,58 +216,63 @@ fn next_compaction_reserve(
     target.clamp(floor, cap)
 }
 
-/// Token ceiling for one hook-context chunk reaching the model.
-///
-/// Codex's `DEFAULT_HOOK_OUTPUT_TOKEN_LIMIT`: an oversized chunk is written out
-/// and replaced with a preview plus its path, so a talkative hook cannot fill
-/// the context window.
-const HOOK_CONTEXT_TOKEN_LIMIT: usize = 2_500;
-
-/// Keeps one hook-context chunk inside the model-visible budget.
-///
-/// Mirrors Codex's `HookOutputSpiller`: the full text goes under
-/// `<temp_dir>/hook_outputs/<session>/`, and the model sees a head/tail preview
-/// plus the path back to it. Falls back to plain truncation when the file
-/// cannot be written, because losing the tail of a briefing beats failing the
-/// turn.
-fn spill_hook_context(text: &str, session_id: &str) -> String {
-    if approx_text_tokens(text) <= HOOK_CONTEXT_TOKEN_LIMIT {
-        return text.to_string();
-    }
-
-    let path = hook_output_path(session_id);
-    let footer = format!("\n\nFull hook output saved to: {}", path.display());
-    // Budget the footer before truncating, so the recovery path does not eat
-    // into the preview it complements.
-    let budget = HOOK_CONTEXT_TOKEN_LIMIT.saturating_sub(approx_text_tokens(&footer));
-
-    let saved = path
-        .parent()
-        .map(std::fs::create_dir_all)
-        .unwrap_or(Ok(()))
-        .and_then(|()| std::fs::write(&path, text));
-    if let Err(error) = saved {
-        tracing::warn!(
-            path = %path.display(),
-            "failed to save an oversized hook output: {error}"
-        );
-        return truncate_middle_with_token_budget(text, HOOK_CONTEXT_TOKEN_LIMIT).0;
-    }
-
-    let (preview, _) = truncate_middle_with_token_budget(text, budget);
-    format!("{preview}{footer}")
+struct FacadeStateGuard<'a> {
+    agent: &'a mut Agent,
+    activation: Option<FacadeActivationState>,
+    receipts: Arc<FacadeReceiptTracker>,
 }
 
-/// Where an oversized hook chunk is preserved, one file per spill.
-fn hook_output_path(session_id: &str) -> std::path::PathBuf {
-    let stamp = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|elapsed| elapsed.as_nanos())
-        .unwrap_or(0);
-    std::env::temp_dir()
-        .join("hook_outputs")
-        .join(session_id)
-        .join(format!("{}-{stamp}.txt", std::process::id()))
+impl<'a> FacadeStateGuard<'a> {
+    fn take(agent: &'a mut Agent, receipts: Arc<FacadeReceiptTracker>) -> Self {
+        let activation = agent.take_facade_state();
+        Self {
+            agent,
+            activation: Some(activation),
+            receipts,
+        }
+    }
+
+    fn state_mut(&mut self) -> &mut AgentState {
+        &mut self
+            .activation
+            .as_mut()
+            .expect("facade activation state is present until restore")
+            .state
+    }
+
+    fn finish_activation(
+        &mut self,
+        session_start_pending: bool,
+        session_start_source: SessionStartSource,
+        pending_session_context: Vec<HookContextChunk>,
+        compact_state: crate::compact::CompactState,
+        prompt_caches: PromptCaches,
+    ) {
+        let activation = self
+            .activation
+            .as_mut()
+            .expect("facade activation state is present until restore");
+        activation.sidecar.session_start_hooks_pending = session_start_pending;
+        activation.sidecar.session_start_source = session_start_source;
+        activation.sidecar.pending_session_context = pending_session_context;
+        activation.sidecar.compact_state = compact_state;
+        activation.sidecar.cached_dir_snapshot = prompt_caches.directory_snapshot;
+        activation.sidecar.cached_agents_md = prompt_caches.agents_md;
+        activation.sidecar.apply_receipts(self.receipts.snapshot());
+    }
+
+    fn restore(&mut self) {
+        if let Some(mut activation) = self.activation.take() {
+            activation.sidecar.apply_receipts(self.receipts.snapshot());
+            self.agent.restore_facade_state(activation);
+        }
+    }
+}
+
+impl Drop for FacadeStateGuard<'_> {
+    fn drop(&mut self) {
+        self.restore();
+    }
 }
 
 /// Prompt text appended (to the system prompt, for this request only) on the
@@ -332,7 +282,7 @@ fn hook_output_path(session_id: &str) -> std::path::PathBuf {
 /// model's last chance to persist what it learned. The reminder is advisory —
 /// the cap still decides the stop — but without it the activation routinely
 /// ended mid-thought with nothing written for the next run.
-fn goal_final_turn_reminder(turn: u32) -> String {
+pub(crate) fn goal_final_turn_reminder(turn: u32) -> String {
     format!(
         "<goal-budget-reminder>\n\
          This is the final model call of this Goal run (turn {turn}).\n\
@@ -353,7 +303,7 @@ pub struct AgentRuntime {
     pub context: Vec<Message>,
     pub compact_state: CompactState,
     pub recovery_state: RecoveryState,
-    pub permission_manager: PermissionManager,
+    pub permission_manager: PermissionAuthority,
     /// The sensitive-path guard, derived from the permission settings at
     /// construction and inherited by subagents through the same snapshot that
     /// carries the permission context. Evaluated **before** modes, hooks and
@@ -435,7 +385,7 @@ pub struct AgentRuntime {
     /// ever sees `&Agent`; a plain counter would need a lock to be shared, and
     /// the ids have to be unique across those parallel runs or one hook's
     /// "finished" would rewrite another's line.
-    pub hook_status_seq: std::sync::atomic::AtomicU64,
+    pub hook_status_seq: Arc<std::sync::atomic::AtomicU64>,
 }
 
 /// How the agent builds its system prompt.
@@ -455,7 +405,7 @@ pub struct Agent {
     pub runtime: AgentRuntime,
     pub tool_context: ToolContext,
     pub tools: ToolRouter,
-    pub mcp_router: MCPToolRouter,
+    pub mcp_router: McpCatalogHandle,
     pub hooks: Vec<Hook>,
     pub system_prompt: AgentSystemPrompt,
     pub tool_use_counter: usize,
@@ -472,6 +422,9 @@ pub struct Agent {
     /// explain *why* a child stopped cannot disagree with the loop about
     /// whether it did.
     pub max_turns_reached: bool,
+    shared_services: TactSharedServices,
+    #[cfg(any(test, feature = "test-support"))]
+    kernel_activations: u32,
     /// Snapshot of agent settings at construction; avoids parallel tests racing on global config.
     agent_settings: AgentSettings,
     /// Compaction-routing provider kind, when set explicitly via
@@ -499,6 +452,12 @@ impl Agent {
             .unwrap_or(true)
     }
 
+    /// Number of bounded kernel activations started by this agent.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn kernel_activations_for_test(&self) -> u32 {
+        self.kernel_activations
+    }
+
     pub fn new(
         client: LlmProvider,
         mut tool_context: ToolContext,
@@ -524,6 +483,22 @@ impl Agent {
         // TUI, headless, and a subagent built from a permission snapshot —
         // inherits the same guard without a second parameter to thread.
         let security = permission_manager.scanner();
+        let permission_manager = PermissionAuthority::new(permission_manager);
+        let stats = Arc::new(RwLock::new(SessionStats::default()));
+        let events = UpdateSink::default();
+        let pending_subagent_results = Arc::new(Mutex::new(VecDeque::new()));
+        let pending_hook_context = Arc::new(Mutex::new(VecDeque::new()));
+        let hook_status_seq = Arc::new(std::sync::atomic::AtomicU64::new(1));
+        let mcp_router = McpCatalogHandle::new(mcp_router);
+        let shared_services = TactSharedServices::new(
+            events.clone(),
+            stats.clone(),
+            permission_manager.clone(),
+            pending_subagent_results.clone(),
+            pending_hook_context.clone(),
+            hook_status_seq.clone(),
+            mcp_router.clone(),
+        );
         let mut agent = Self {
             runtime: AgentRuntime {
                 interrupt_hooks_fired: false,
@@ -533,8 +508,8 @@ impl Agent {
                 recovery_state: RecoveryState::default(),
                 permission_manager,
                 security,
-                stats: Arc::new(RwLock::new(SessionStats::default())),
-                events: UpdateSink::default(),
+                stats,
+                events,
                 cancel_flag,
                 session_store: None,
                 session_id: None,
@@ -546,12 +521,12 @@ impl Agent {
                 last_token_total: 0,
                 provider_state: None,
                 goal_yield_reason: None,
-                pending_subagent_results: Arc::new(Mutex::new(VecDeque::new())),
+                pending_subagent_results,
                 pending_session_context: Vec::new(),
                 session_start_hooks_pending: true,
                 session_start_source: SessionStartSource::Startup,
-                pending_hook_context: Arc::new(Mutex::new(VecDeque::new())),
-                hook_status_seq: std::sync::atomic::AtomicU64::new(1),
+                pending_hook_context,
+                hook_status_seq,
             },
             tool_context,
             tools,
@@ -562,6 +537,9 @@ impl Agent {
             max_turns: None,
             turns_taken: 0,
             max_turns_reached: false,
+            shared_services,
+            #[cfg(any(test, feature = "test-support"))]
+            kernel_activations: 0,
             agent_settings: crate::config::settings().agent.clone(),
             provider_kind,
             cached_tool_specs: Vec::new(),
@@ -624,6 +602,7 @@ impl Agent {
     /// A change is reported rather than applied in silence — a tool quietly
     /// appearing or disappearing is exactly the kind of thing the model's
     /// behaviour is blamed for afterwards.
+    #[cfg(test)]
     async fn refresh_mcp_tools(&mut self) {
         let report = self.mcp_router.refresh_changed().await;
         if report.is_empty() {
@@ -653,7 +632,9 @@ impl Agent {
         self.mcp_router.disconnect_all().await;
         match crate::mcp::load_mcp_router_with_report().await {
             Ok((router, report)) => {
-                self.mcp_router = router;
+                self.mcp_router = McpCatalogHandle::new(router);
+                self.shared_services
+                    .replace_mcp_catalog(self.mcp_router.clone());
                 self.rebuild_cached_tool_specs();
                 report
             }
@@ -691,6 +672,7 @@ impl Agent {
     /// serialized-context estimate before the first response of a session.
     /// Returns 0 when neither is available, which callers must read as
     /// "unknown" rather than "empty".
+    #[cfg(test)]
     fn current_context_tokens(&self) -> usize {
         if self.runtime.last_token_total > 0 {
             return self.runtime.last_token_total as usize;
@@ -713,6 +695,7 @@ impl Agent {
     /// the model to distrust the prompt. Today the main toolset always registers
     /// it; the guard is here so a future gate (a restricted toolset, a config
     /// switch) cannot leave the two out of step.
+    #[cfg(test)]
     fn context_advisory(&self) -> Option<String> {
         if !self.has_tool("spawn_subagent") {
             return None;
@@ -737,6 +720,7 @@ impl Agent {
     /// must never drive client-side auto compaction (it would re-fire on an
     /// already-compacted context forever). Other providers keep the existing
     /// estimate-based trigger.
+    #[cfg(test)]
     fn auto_compact_due(&self, incoming_tokens: usize) -> bool {
         if self.is_openai_responses() {
             // Usage-only trigger: no usage yet means there is nothing to
@@ -867,13 +851,6 @@ impl Agent {
         self.agent_settings.thinking_budget
     }
 
-    fn thinking_config(&self) -> Thinking {
-        Thinking {
-            budget_tokens: self.thinking_budget(),
-            type_: ThinkingType::Enabled,
-        }
-    }
-
     /// Attaches a TUI update channel so the agent can stream events
     /// (token usage, thinking blocks, tool results) to the terminal.
     ///
@@ -882,6 +859,8 @@ impl Agent {
     /// [`Self::with_event_observer`] instead.
     pub fn with_ui_channel(mut self, tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>) -> Self {
         self.runtime.events = UpdateSink::for_ui(tx.clone());
+        self.shared_services
+            .set_updates(self.runtime.events.clone());
         // Keep tool_context in sync so ToolProgress / tool helpers use the same
         // sink (critical for tagged subagent traffic).
         self.tool_context.events = self.runtime.events.clone();
@@ -900,6 +879,8 @@ impl Agent {
         tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>,
     ) -> Self {
         self.runtime.events = UpdateSink::observing(tx);
+        self.shared_services
+            .set_updates(self.runtime.events.clone());
         self.tool_context.events = self.runtime.events.clone();
         self
     }
@@ -910,6 +891,8 @@ impl Agent {
     /// without handing it the parent's permission-prompt claim.
     pub fn with_observed_events(mut self, events: UpdateSink) -> Self {
         self.runtime.events = events.observers_only();
+        self.shared_services
+            .set_updates(self.runtime.events.clone());
         self.tool_context.events = self.runtime.events.clone();
         self
     }
@@ -925,6 +908,8 @@ impl Agent {
             Some(tx) => UpdateSink::for_ui(tx),
             None => UpdateSink::default(),
         };
+        self.shared_services
+            .set_updates(self.runtime.events.clone());
         self.tool_context.events = self.runtime.events.clone();
     }
 
@@ -947,20 +932,28 @@ impl Agent {
     }
 
     pub fn emit_update(&self, update: AgentUpdate) {
-        // Desktop notifications for key lifecycle events
-        match &update {
-            AgentUpdate::TaskComplete(text) => {
-                let summary = text.chars().take(200).collect::<String>();
-                let _ = crate::notifications::notify_task_complete(&summary);
-            }
-            AgentUpdate::StepFailed { idx, error, .. } => {
-                let _ = crate::notifications::notify_step_failed(*idx, error);
-            }
-            _ => {}
-        }
+        self.shared_services.emit_update(update);
+    }
 
-        // The sink fans out: observers get a copy, the ui channel the original.
-        self.runtime.events.send(update);
+    pub(crate) fn activation_view(&self) -> TactActivationView<'_> {
+        let session = SessionIdentity {
+            id: self.runtime.session_id.clone(),
+        };
+        let model = ModelIdentity {
+            name: self.agent_settings.model.clone(),
+        };
+        let remaining_turns = self
+            .max_turns
+            .map(|max| max.saturating_sub(self.turns_taken));
+        TactActivationView::new(
+            &self.shared_services,
+            Some(&self.runtime.context),
+            session,
+            model,
+            self.turns_taken,
+            remaining_turns,
+            self.runtime.session_start_source,
+        )
     }
 
     /// Load persisted history into an empty context.
@@ -1038,198 +1031,389 @@ impl Agent {
         matches!(self.runtime.client, LlmProvider::OpenAiResponses(_))
     }
 
-    async fn push_message(&mut self, message: Message) -> Result<()> {
-        let blocks = message.content.clone();
-        let role = message.role;
-        self.runtime.context.push(message);
-        if self.is_openai_responses() {
-            // Persist messages and the (unchanged) provider state atomically
-            // so a crash never leaves a state anchor ahead of the messages.
-            let provider_state = self.runtime.provider_state.clone();
-            if let Err(error) = self
-                .replace_persisted_context_and_state(provider_state.as_ref())
-                .await
-            {
-                self.runtime.context.pop();
-                return Err(error);
-            }
-            Ok(())
+    fn kernel_model_metadata(&self) -> serde_json::Value {
+        serde_json::json!({
+            "reasoning_effort": self
+                .agent_settings
+                .reasoning_effort
+                .map(|effort| effort.as_str().to_string()),
+            "thinking_budget": (self.thinking_budget() > 0)
+                .then_some(self.thinking_budget()),
+        })
+    }
+
+    fn facade_receipts(&self) -> FacadeReceipts {
+        FacadeReceipts {
+            first_message_db_id: self.runtime.first_message_db_id,
+            last_message_db_id: self.runtime.last_message_db_id,
+            llm_call_last_message_id: self.runtime.llm_call_last_message_id,
+        }
+    }
+
+    fn take_facade_state(&mut self) -> FacadeActivationState {
+        let original_context = self.runtime.context.clone();
+        let state = AgentState {
+            transcript: self
+                .runtime
+                .context
+                .drain(..)
+                .map(|message| tact_llm::neutral::agent_message(&message))
+                .collect(),
+            cursor: self
+                .runtime
+                .provider_state
+                .take()
+                .as_ref()
+                .map(tact_llm::neutral::model_cursor),
+            total_turns: std::mem::take(&mut self.turns_taken),
+            last_token_total: Some(std::mem::take(&mut self.runtime.last_token_total)),
+            initialized: true,
+        };
+        let sidecar = FacadeSidecar {
+            first_message_db_id: std::mem::take(&mut self.runtime.first_message_db_id),
+            last_message_db_id: std::mem::take(&mut self.runtime.last_message_db_id),
+            llm_call_last_message_id: std::mem::take(&mut self.runtime.llm_call_last_message_id),
+            compact_state: std::mem::take(&mut self.runtime.compact_state),
+            recovery_state: std::mem::take(&mut self.runtime.recovery_state),
+            goal_yield_reason: self.runtime.goal_yield_reason.take(),
+            max_turns_reached: std::mem::take(&mut self.max_turns_reached),
+            tool_use_counter: std::mem::take(&mut self.tool_use_counter),
+            interrupt_hooks_fired: std::mem::take(&mut self.runtime.interrupt_hooks_fired),
+            session_start_hooks_pending: std::mem::take(
+                &mut self.runtime.session_start_hooks_pending,
+            ),
+            session_start_source: self.runtime.session_start_source,
+            pending_session_context: std::mem::take(&mut self.runtime.pending_session_context),
+            cached_dir_snapshot: self.runtime.cached_dir_snapshot.take(),
+            cached_agents_md: self.runtime.cached_agents_md.take(),
+        };
+        FacadeActivationState {
+            state,
+            sidecar,
+            original_context,
+        }
+    }
+
+    fn restore_facade_state(&mut self, activation: FacadeActivationState) {
+        let FacadeActivationState {
+            state,
+            sidecar,
+            original_context,
+        } = activation;
+        let transcript_unchanged = state.transcript.len() == original_context.len()
+            && state
+                .transcript
+                .iter()
+                .zip(&original_context)
+                .all(|(current, original)| current == &tact_llm::neutral::agent_message(original));
+        let context = if transcript_unchanged {
+            original_context
         } else {
-            self.persist_message(role, &blocks).await
-        }
+            let mut context = Vec::with_capacity(state.transcript.len());
+            for message in &state.transcript {
+                let mut restored = tact_llm::neutral::llm_message(message);
+                restored.kind = match &message.origin {
+                    MessageOrigin::CompactionSummary => MessageKind::Summary,
+                    MessageOrigin::InjectedContext { .. } => MessageKind::HookContext,
+                    MessageOrigin::GoalContext => MessageKind::GoalContext,
+                    MessageOrigin::User
+                    | MessageOrigin::Assistant
+                    | MessageOrigin::ToolResult
+                    | MessageOrigin::SubagentResult
+                    | MessageOrigin::Continuation => MessageKind::Normal,
+                };
+                context.push(restored);
+            }
+            context
+        };
+        let provider_state = state
+            .cursor
+            .as_ref()
+            .map(tact_llm::neutral::provider_state)
+            .transpose()
+            .unwrap_or_else(|error| {
+                panic!("kernel returned a provider cursor Tact cannot restore: {error}")
+            });
+
+        self.runtime.context = context;
+        self.runtime.provider_state = provider_state;
+        self.turns_taken = state.total_turns;
+        self.runtime.last_token_total = state.last_token_total.unwrap_or(0);
+        self.runtime.first_message_db_id = sidecar.first_message_db_id;
+        self.runtime.last_message_db_id = sidecar.last_message_db_id;
+        self.runtime.llm_call_last_message_id = sidecar.llm_call_last_message_id;
+        self.runtime.compact_state = sidecar.compact_state;
+        self.runtime.recovery_state = sidecar.recovery_state;
+        self.runtime.goal_yield_reason = sidecar.goal_yield_reason;
+        self.max_turns_reached = sidecar.max_turns_reached;
+        self.tool_use_counter = sidecar.tool_use_counter;
+        self.runtime.interrupt_hooks_fired = sidecar.interrupt_hooks_fired;
+        self.runtime.session_start_hooks_pending = sidecar.session_start_hooks_pending;
+        self.runtime.session_start_source = sidecar.session_start_source;
+        self.runtime.pending_session_context = sidecar.pending_session_context;
+        self.runtime.cached_dir_snapshot = sidecar.cached_dir_snapshot;
+        self.runtime.cached_agents_md = sidecar.cached_agents_md;
     }
 
-    /// Persist a matching `ToolResult` for every `ToolUse` in `content`, then
-    /// return.
+    /// Preserve the caller's message shorthand across the neutral kernel round-trip.
     ///
-    /// Called on every path that leaves a turn without executing its tools. The
-    /// assistant message is already durable by then (and, for Responses, so is
-    /// the provider-state commit that covers it), so leaving it unanswered would
-    /// store a `ToolUse` with no `ToolResult`. Providers that enforce pairing
-    /// reject that on the next request — Anthropic serializes the request body
-    /// verbatim and answers `tool_use ids were found without tool_result
-    /// blocks`, and a Responses baseline keeps a `function_call` with no output
-    /// — and because the shape is persisted it outlives the process, so a resume
-    /// inherits it. The wire-level repair in `tact_llm::convert` covers chat
-    /// completions only, which is why this is fixed at the source.
-    ///
-    /// `reason` is written into each result, so a later reader can tell a user
-    /// cancel from a refusal / an unrecognized stop reason / a truncated
-    /// response. No-op when the turn contains no tool call.
-    async fn abandon_pending_tools(
-        &mut self,
-        content: &[ContentBlock],
-        reason: &str,
-    ) -> Result<()> {
-        let unexecuted = self.unexecuted_tool_results(content, reason);
-        if unexecuted.is_empty() {
-            return Ok(());
+    /// `AgentMessage` intentionally has no `Text`/`Blocks` shape flag, so a
+    /// newly appended input comes back canonically as one text block. Restore
+    /// the exact input shape after reconciliation; persisted user turns and
+    /// injected context otherwise change wire/JSON shape just by being run.
+    fn restore_input_shape(&mut self, input: &Message) {
+        let neutral_input = tact_llm::neutral::agent_message(input);
+        if let Some(restored) = self
+            .runtime
+            .context
+            .iter_mut()
+            .rev()
+            .find(|message| tact_llm::neutral::agent_message(message) == neutral_input)
+        {
+            restored.content = input.content.clone();
+            restored.kind = input.kind;
         }
-        self.push_message(Message::new_blocks(Role::User, unexecuted))
-            .await
     }
 
-    async fn persist_message(&mut self, role: Role, content: &MessageContent) -> Result<()> {
-        let Some(store) = self.runtime.session_store.as_ref() else {
-            return Ok(());
+    fn kernel_prompt_assembler(&self) -> SystemPromptAssembler {
+        let static_prompt = match &self.system_prompt {
+            AgentSystemPrompt::Static(prompt) => Some(prompt.clone()),
+            AgentSystemPrompt::Dynamic => None,
         };
-        let Some(session_id) = self.runtime.session_id.as_ref() else {
-            return Ok(());
-        };
-        let ordinal = self.runtime.context.len() as i64;
-        let db_id = store
-            .append_message(session_id, role, content, ordinal)
-            .await?;
-        if self.runtime.first_message_db_id == 0 {
-            self.runtime.first_message_db_id = db_id;
-        }
-        self.runtime.last_message_db_id = db_id;
-        Ok(())
+        SystemPromptAssembler::new(
+            static_prompt,
+            self.is_openai_responses(),
+            self.tool_context.work_dir.clone(),
+            self.agent_settings.clone(),
+            self.tool_context.skill_registry.clone(),
+            self.tool_context.memory_manager.clone(),
+            self.mcp_router.clone(),
+            &self.cached_tool_specs,
+            PromptCaches {
+                directory_snapshot: self.runtime.cached_dir_snapshot.clone(),
+                agents_md: self.runtime.cached_agents_md.clone(),
+            },
+        )
     }
 
-    async fn replace_persisted_context(&mut self) -> Result<()> {
-        let Some(store) = self.runtime.session_store.as_ref() else {
-            return Ok(());
-        };
-        let Some(session_id) = self.runtime.session_id.as_ref() else {
-            return Ok(());
-        };
-
-        let (first_id, last_id) = store
-            .replace_session_messages(session_id, &self.runtime.context)
-            .await?;
-        self.runtime.first_message_db_id = first_id;
-        self.runtime.last_message_db_id = last_id;
-        Ok(())
-    }
-
-    /// Atomically replace the persisted messages and provider state in one
-    /// transaction. Used by Responses paths so the logical context and the
-    /// protocol baseline can never diverge on disk.
-    async fn replace_persisted_context_and_state(
-        &mut self,
-        provider_state: Option<&ProviderConversationState>,
-    ) -> Result<()> {
-        let Some(store) = self.runtime.session_store.as_ref() else {
-            return Ok(());
-        };
-        let Some(session_id) = self.runtime.session_id.as_ref() else {
-            return Ok(());
-        };
-
-        let (first_id, last_id) = store
-            .replace_session_messages_and_provider_state(
-                session_id,
-                &self.runtime.context,
-                provider_state,
-            )
-            .await?;
-        self.runtime.first_message_db_id = first_id;
-        self.runtime.last_message_db_id = last_id;
-        Ok(())
-    }
-
-    /// Persist token usage and/or request body for an LLM call.
-    /// Links to the message range that was sent ([first_message_db_id .. last_message_db_id]).
-    async fn persist_llm_call(
+    fn kernel_compactor(
         &self,
-        call_type: &str,
-        usage: Option<&TokenUsageInfo>,
-        request_body: Option<&[u8]>,
+        services: Arc<TactSharedServices>,
+        prompt: Arc<SystemPromptAssembler>,
+    ) -> TactCompactor {
+        let native_compaction =
+            self.is_openai_responses() && self.provider_kind() != ProviderKind::DeepSeek;
+        TactCompactor::new(
+            services,
+            prompt,
+            self.runtime.session_id.clone().unwrap_or_default(),
+            ModelIdentity {
+                name: self.agent_settings.model.clone(),
+            },
+            self.tool_context.work_dir.clone(),
+            self.agent_settings.clone(),
+            self.cached_tool_specs.clone(),
+            self.provider_kind(),
+            native_compaction,
+            self.runtime.session_start_hooks_pending,
+            self.runtime.session_start_source,
+            self.runtime.compact_state.clone(),
+            &self.hooks,
+        )
+    }
+
+    fn native_compaction_available(&self) -> bool {
+        self.is_openai_responses() && self.provider_kind() != ProviderKind::DeepSeek
+    }
+
+    fn kernel_composition(&self) -> (TactKernelComposition, String, Arc<FacadeReceiptTracker>) {
+        let model_name = self.agent_settings.model.clone();
+        let session_id = self.runtime.session_id.clone().unwrap_or_default();
+        let updates = self.runtime.events.clone();
+        let services = Arc::new(self.shared_services.clone());
+        let prompt = Arc::new(self.kernel_prompt_assembler());
+        let compactor = Arc::new(self.kernel_compactor(services.clone(), prompt.clone()));
+        let mut tool_context = self.tool_context.clone();
+        tool_context.events = updates.clone();
+        tool_context.cancel_flag = self.runtime.cancel_flag.clone();
+        tool_context.session_id = self.runtime.session_id.clone();
+        tool_context.session_store = self.runtime.session_store.clone();
+        tool_context.permission_snapshot = Some(self.runtime.permission_manager.snapshot());
+        let receipts = FacadeReceiptTracker::new(self.facade_receipts());
+
+        let composition = TactKernelComposition::new(TactKernelConfig {
+            provider: self.runtime.client.clone(),
+            cancel_flag: self.runtime.cancel_flag.clone(),
+            capabilities: ModelCapabilities {
+                model: model_name.clone(),
+                context_window: self.model_context_window(),
+                max_output_tokens: self.max_tokens(),
+                supports_streaming: true,
+                supports_native_compaction: self.native_compaction_available(),
+            },
+            prompt,
+            compactor,
+            model_metadata: self.kernel_model_metadata(),
+            model: ModelIdentity { name: model_name },
+            session_id: session_id.clone(),
+            initial_session_context: self.runtime.pending_session_context.clone(),
+            services,
+            hooks: self.hooks.clone(),
+            ui: tool_context.ui_responder.clone(),
+            is_subagent: tool_context.is_subagent,
+            tools: self.tools.clone(),
+            mcp: self.mcp_router.clone(),
+            tool_context,
+            security: self.runtime.permission_manager.security_config(),
+            scanner: self.runtime.security.clone(),
+            hide_compact: self.is_openai_responses(),
+            store: self.runtime.session_store.clone(),
+            receipts: receipts.clone(),
+            updates,
+        });
+        (composition, session_id, receipts)
+    }
+
+    async fn compact_with_kernel(
+        &mut self,
+        request: tact_agent_api::CompactionRequest,
     ) -> Result<()> {
-        if usage.is_none() && request_body.is_none() {
-            return Ok(());
+        let native_compaction = self.native_compaction_available();
+        self.ensure_session().await?;
+        let (composition, session_id, receipts) = self.kernel_composition();
+        let bridge = CancelBridge::new(self.runtime.cancel_flag.clone());
+        let cancel = bridge.token();
+        let mut guard = FacadeStateGuard::take(self, receipts);
+        let unwound = AssertUnwindSafe(async {
+            composition
+                .kernel()
+                .compact(
+                    guard.state_mut(),
+                    &SessionRef::new(session_id),
+                    request,
+                    cancel,
+                )
+                .await
+        })
+        .catch_unwind()
+        .await;
+        guard.finish_activation(
+            composition.session_start_pending(),
+            composition.session_start_source(),
+            composition.pending_session_context(),
+            composition.compact_state(),
+            composition.prompt_caches(),
+        );
+        guard.restore();
+        drop(guard);
+
+        match unwound {
+            Ok(result) => result.map(|_| ()).map_err(|error| match error {
+                KernelError::Usage(message) if native_compaction => {
+                    anyhow::anyhow!("failed to persist Responses compact usage: {message}")
+                }
+                error => anyhow::anyhow!(error),
+            }),
+            Err(payload) => std::panic::resume_unwind(payload),
         }
-        let Some(store) = self.runtime.session_store.as_ref() else {
-            return Ok(());
-        };
-        let Some(session_id) = self.runtime.session_id.as_ref() else {
-            return Ok(());
-        };
-        store
-            .record_token_usage(
-                session_id,
-                call_type,
-                usage,
-                self.runtime.first_message_db_id,
-                self.runtime.last_message_db_id,
-                request_body,
-            )
-            .await?;
-        Ok(())
     }
 
-    /// Persist the tool-schedule summary for the current turn, attaching it to
-    /// the token-usage row of the LLM call that produced these tool calls
-    /// (keyed by the assistant message id). Best-effort: failures are ignored.
-    async fn persist_tool_schedule(&self, summary: &tool_schedule::ToolScheduleSummary) {
-        let Some(store) = self.runtime.session_store.as_ref() else {
-            return;
+    async fn run_kernel_activation(
+        &mut self,
+        user_turn_message: Option<Message>,
+    ) -> Result<AgentLoopOutcome> {
+        let (composition, session_id, receipts) = self.kernel_composition();
+
+        let inputs = user_turn_message
+            .as_ref()
+            .map(tact_llm::neutral::agent_message)
+            .into_iter()
+            .collect();
+        let cancel_flag = self.runtime.cancel_flag.clone();
+        let bridge = CancelBridge::new(cancel_flag);
+        let cancel = bridge.token();
+        let input = RunInput {
+            session: SessionRef::new(session_id),
+            inputs,
+            max_total_turns: self.max_turns,
         };
-        let Some(session_id) = self.runtime.session_id.as_ref() else {
-            return;
+        let mut guard = FacadeStateGuard::take(self, receipts);
+        let unwound = AssertUnwindSafe(async {
+            composition
+                .kernel()
+                .run(guard.state_mut(), input, cancel)
+                .await
+        })
+        .catch_unwind()
+        .await;
+        guard.finish_activation(
+            composition.session_start_pending(),
+            composition.session_start_source(),
+            composition.pending_session_context(),
+            composition.compact_state(),
+            composition.prompt_caches(),
+        );
+        guard.restore();
+        drop(guard);
+        if let Some(input) = user_turn_message.as_ref() {
+            self.restore_input_shape(input);
+        }
+
+        let kernel_result = match unwound {
+            Ok(result) => result,
+            Err(payload) => std::panic::resume_unwind(payload),
         };
-        if let Ok(json) = serde_json::to_string(summary) {
-            let anchor = self.runtime.llm_call_last_message_id;
-            if anchor > 0 {
-                let _ = store.record_tool_schedule(session_id, anchor, &json).await;
+        let outcome = match kernel_result {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                let message = error.to_string();
+                if message.contains("refused") {
+                    self.emit_update(AgentUpdate::Info(
+                        "Model refused this request (stop_reason=refusal). Try rephrasing, \
+                         or switch to another model with different safety filters."
+                            .to_string(),
+                    ));
+                }
+                return Err(anyhow::anyhow!(error));
             }
-        }
-    }
+        };
+        self.runtime.recovery_state = RecoveryState {
+            continuation_attempts: outcome.recovery.continuation_attempts,
+            compact_attempts: outcome.recovery.compact_attempts,
+            transport_attempts: outcome.recovery.transport_attempts,
+        };
 
-    fn next_step_idx(&mut self) -> usize {
-        let idx = self.tool_use_counter;
-        self.tool_use_counter += 1;
-        idx
-    }
-
-    /// Whether the user asked the run to stop.
-    ///
-    /// Checked at turn and wave boundaries; a tool call already in flight is
-    /// deliberately not interrupted.
-    fn cancel_requested(&self) -> bool {
-        self.runtime
-            .cancel_flag
-            .load(std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Records one tool result into the session stats.
-    ///
-    /// All four counters live behind the same lock, so they are updated in one
-    /// acquisition instead of one per counter.
-    fn record_tool_stats(&self, name: &str, succeeded: bool, duration_us: u64) {
-        let key = name.to_string();
-        let mut stats = self.runtime.stats.write_recover();
-        if succeeded {
-            *stats.tool_success_counts.entry(key.clone()).or_insert(0) += 1;
-        } else {
-            *stats.tool_failure_counts.entry(key.clone()).or_insert(0) += 1;
-        }
-        *stats
-            .tool_total_durations_ms
-            .entry(key.clone())
-            .or_insert(0) += duration_us / 1000;
-        *stats.tool_timing_counts.entry(key).or_insert(0) += 1;
+        let stop = match outcome.stop {
+            RunStop::Completed => AgentLoopStop::Completed,
+            RunStop::YieldToHost { .. } => {
+                self.runtime.goal_yield_reason = Some(GoalYieldReason::NeedsUser);
+                AgentLoopStop::GoalYield(GoalYieldReason::NeedsUser)
+            }
+            RunStop::MaxTurns => {
+                self.max_turns_reached = true;
+                AgentLoopStop::MaxTurns
+            }
+            RunStop::MaxTokens => AgentLoopStop::MaxTokens,
+            RunStop::Cancelled => {
+                self.dispatch_interrupt_hooks().await?;
+                self.runtime.interrupt_hooks_fired = true;
+                AgentLoopStop::Cancelled
+            }
+            RunStop::Blocked { reason, .. } => {
+                self.emit_update(AgentUpdate::Info(format!(
+                    "[hook stopped the turn] {reason}"
+                )));
+                AgentLoopStop::BlockedByHook
+            }
+        };
+        self.tool_use_counter = self
+            .tool_use_counter
+            .saturating_add(usize::try_from(outcome.tool_calls).unwrap_or(usize::MAX));
+        Ok(AgentLoopOutcome {
+            stop,
+            turns: outcome.turns,
+            tool_calls: outcome.tool_calls,
+        })
     }
 
     /// The main agent conversation loop.
@@ -1271,591 +1455,25 @@ impl Agent {
     ) -> Result<AgentLoopOutcome> {
         // `turns` is a delta over *this* activation, measured against the
         // process-lifetime counter carried on `Agent::turns_taken`.
-        let turns_before = self.turns_taken;
-        // Accumulates the executed-tool-call count from every dispatch this
-        // activation performs.
-        let mut tool_calls: u64 = 0;
-        // `turns_before` is captured by value; `turns_taken` and `tool_calls`
-        // are passed in at each exit so this closure never borrows the `self`
-        // that the loop mutably re-borrows.
-        let finish =
-            move |stop: AgentLoopStop, turns_taken: u32, tool_calls: u64| AgentLoopOutcome {
-                stop,
-                turns: turns_taken - turns_before,
-                tool_calls,
-            };
-
         self.runtime.recovery_state = RecoveryState::default();
         self.runtime.interrupt_hooks_fired = false;
         self.runtime.goal_yield_reason = None;
 
-        // Restore history if the startup path left context empty.
         self.ensure_session().await?;
-
-        // Startup used to run these before the first frame, which meant waiting
-        // for a plugin subprocess (`basic-memory`'s hook needs ~8s warm) on
-        // every launch. The first turn is the earliest point where the result
-        // is still ahead of this turn's user message.
-        if self.runtime.session_start_hooks_pending {
-            // Codex's `continue: false` on `SessionStart`: the turn does not run
-            // at all, rather than running with a notice in the log.
-            if let HookControl::Block(reason) = self.dispatch_session_start_hooks().await? {
-                self.emit_update(AgentUpdate::Info(format!(
-                    "[SessionStart hook stopped the turn] {reason}"
-                )));
-                return Ok(finish(
-                    AgentLoopStop::BlockedByHook,
-                    self.turns_taken,
-                    tool_calls,
-                ));
-            }
+        #[cfg(any(test, feature = "test-support"))]
+        {
+            self.kernel_activations = self.kernel_activations.saturating_add(1);
         }
-
-        // Codex-style pre-turn: compact *old* history before appending this
-        // turn's user message, reserving space for the incoming prompt so we
-        // do not overflow immediately after push.
-        let incoming_tokens = user_turn_message
-            .as_ref()
-            .map(estimate_message_tokens)
-            .unwrap_or(0);
-        if self.auto_compact_due(incoming_tokens) {
-            self.emit_update(AgentUpdate::Info("[auto compact]".into()));
-            self.compact_history(None).await?;
-        }
-
-        // SessionStart hook context is recorded after that compaction and
-        // before this turn's user message. After, because
-        // `build_compacted_history` keeps only real user turns and would drop
-        // it — Codex runs its start hooks after `run_pre_sampling_compact` for
-        // the same reason. Before the turn's message, so it frames the turn
-        // instead of being buried in history.
-        self.inject_pending_session_context().await?;
-        if let Some(mut message) = user_turn_message {
-            // UserPromptSubmit hooks may append context to the user prompt
-            // (Claude Code `additionalContext`). Runs before the message is
-            // pushed so hooks see the raw prompt; a Block drops the turn.
-            match apply_user_prompt_hooks(self, &mut message).await? {
-                HookControl::Continue | HookControl::Allow => {}
-                HookControl::Block(reason) => {
-                    self.emit_update(AgentUpdate::Info(format!(
-                        "[User prompt blocked by hook] {reason}"
-                    )));
-                    return Ok(finish(
-                        AgentLoopStop::BlockedByHook,
-                        self.turns_taken,
-                        tool_calls,
-                    ));
-                }
-            }
-            self.push_message(message).await?;
-        }
-
-        // Build the system prompt once per task. Memory saved mid-task takes
-        // effect on the next task; stable sections stay before DYNAMIC_BOUNDARY
-        // so the prefix KV-cache holds across turns and tasks.
-        let system_prompt = self.build_system_prompt()?;
-        loop {
-            // Turn cap: bounds a runaway subagent. A turn is one loop
-            // iteration that actually calls the model, so the cap is checked
-            // *before* the counter advances and the probe that stops the loop
-            // is not reported as a spent turn.
-            if let Some(max) = self.max_turns
-                && self.turns_taken >= max
-            {
-                self.max_turns_reached = true;
-                self.emit_update(AgentUpdate::Info(format!("max_turns ({max}) reached")));
-                return Ok(finish(
-                    AgentLoopStop::MaxTurns,
-                    self.turns_taken,
-                    tool_calls,
-                ));
-            }
-            self.turns_taken += 1;
-            self.emit_update(AgentUpdate::TurnStats {
-                turns_taken: self.turns_taken,
-                max_turns: self.max_turns,
-            });
-            if self.cancel_requested() {
-                self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
-                self.dispatch_interrupt_hooks().await?;
-                return Ok(finish(
-                    AgentLoopStop::Cancelled,
-                    self.turns_taken,
-                    tool_calls,
-                ));
-            }
-            // The last permitted model call of a Goal run is the only one that
-            // can still persist a checkpoint. Subagents also run with a turn
-            // cap, but they have no active Goal bound, so the reminder is
-            // scoped to Goal activations.
-            let goal_final_turn = self.tool_context.active_goal_id.is_some()
-                && self.max_turns == Some(self.turns_taken);
-            // Micro-compaction truncates old tool results in the logical
-            // context. For Responses the provider state anchors the logical
-            // prefix by hash, so mutating covered messages would invalidate
-            // the baseline; the wire-level input is already incremental, so
-            // there is nothing to shrink client-side.
-            if !self.is_openai_responses() {
-                micro_compact(
-                    &mut self.runtime.context,
-                    self.agent_settings.micro_compact_enabled,
-                );
-            }
-            // Turn already in context — no incoming reservation.
-            if self.auto_compact_due(0) {
-                self.emit_update(AgentUpdate::Info("[auto compact]".into()));
-                self.compact_history(None).await?;
-            }
-
-            // Defense-in-depth: if max_tokens <= thinking_budget (e.g. after a runtime
-            // /model pick), auto-expand max_tokens and warn once.
-            let thinking_budget = self.thinking_budget();
-            if let Some(msg) = Self::ensure_max_tokens_gt_thinking_budget(
-                &mut self.agent_settings.max_tokens,
-                thinking_budget,
-            ) {
-                self.emit_update(AgentUpdate::Info(msg));
-            }
-
-            // Re-inject any background subagent results that finished while we
-            // were mid-turn. Drain before building the next request so the
-            // parent LLM sees the summary in this very turn. `push_message`
-            // (not `runtime.context.push()`) persists the synthetic message so
-            // the on-disk transcript stays consistent.
-            let pending: Vec<SubagentResult> = {
-                let mut queue = self.runtime.pending_subagent_results.lock_recover();
-                queue.drain(..).collect()
-            };
-            for result in pending {
-                let text = format!(
-                    "<subagent-finished id=\"{}\" success=\"{}\">\n{}\n</subagent-finished>",
-                    result.child_id, result.success, result.summary
-                );
-                self.push_message(Message::new_text(Role::User, text))
-                    .await?;
-            }
-
-            // And for whatever the tool hooks collected while the last wave ran.
-            self.inject_pending_hook_context().await?;
-
-            // An MCP server may announce a new or removed tool at any time —
-            // typically right after it finishes an authorization or indexing
-            // pass. Re-list the ones that said so *here*, immediately before the
-            // request is built, because the tool list is sent per request: a
-            // change that lands mid-turn must reach the model on this call, not
-            // on the next user turn.
-            self.refresh_mcp_tools().await;
-
-            // Snapshot the complete conversation after micro/auto compaction.
-            // Includes the current user turn plus history, or retained users +
-            // summary when compact_history ran above.
-            let conversation_messages = self.runtime.context.clone();
-            let model_name = self.agent_settings.model.clone();
-            // On the final Goal turn the reminder rides in the system prompt of
-            // this request only. Keeping it out of the conversation means it
-            // cannot outlive the activation or appear as a user message in the
-            // transcript; appending at the end also preserves the cached prefix
-            // of the system prompt.
-            let request_system: Cow<'_, str> = if goal_final_turn {
-                Cow::Owned(format!(
-                    "{system_prompt}\n\n{}",
-                    goal_final_turn_reminder(self.turns_taken)
-                ))
-            } else {
-                Cow::Borrowed(system_prompt.as_str())
-            };
-            let request = CreateMessageParams::new(RequiredMessageParams {
-                model: model_name.clone(),
-                messages: conversation_messages,
-                max_tokens: self.max_tokens(),
-            })
-            .with_system(request_system)
-            .with_tools(self.all_tool_specs())
-            .with_stream(true)
-            .with_thinking(self.thinking_config())
-            .with_reasoning_effort(self.agent_settings.reasoning_effort);
-
-            self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
-                model: model_name,
-                max_tokens: request.max_tokens,
-                thinking_budget: request.thinking.as_ref().map(|t| t.budget_tokens as u32),
-                reasoning_effort: self
-                    .agent_settings
-                    .reasoning_effort
-                    .map(|effort| effort.as_str().to_string()),
-                extra_body: request
-                    .thinking
-                    .as_ref()
-                    .map(|t| serde_json::json!({"thinking": t}).to_string()),
-            }));
-
-            // ── Stats: before LLM call ──
-            let prompt_chars = serde_json::to_string(&request)
-                .map(|s| s.chars().count() as u64)
-                .unwrap_or(0);
-            {
-                let mut stats = self.runtime.stats.write_recover();
-                stats.prompt_count += 1;
-                stats.total_prompt_chars += prompt_chars;
-            }
-            let llm_call_start = std::time::Instant::now();
-
-            let (content, stop_reason, token_usage, request_body, state_update) =
-                match self.stream_message(&request).await {
-                    Ok(result) => {
-                        self.runtime.recovery_state.transport_attempts = 0;
-                        result
-                    }
-                    Err(error) => {
-                        match classify_error(&error) {
-                            FailureKind::PromptTooLong
-                                if self.runtime.recovery_state.compact_attempts
-                                    < MAX_COMPACT_ATTEMPTS =>
-                            {
-                                self.runtime.recovery_state.compact_attempts += 1;
-                                self.emit_update(AgentUpdate::Info(format!(
-                                    "[Recovery] compact ({}/{}): context too large",
-                                    self.runtime.recovery_state.compact_attempts,
-                                    MAX_COMPACT_ATTEMPTS
-                                )));
-                                self.compact_history_with_trigger(CompactTrigger::Recovery, None)
-                                    .await?;
-                                continue;
-                            }
-                            FailureKind::Transient
-                                if self.runtime.recovery_state.transport_attempts
-                                    < MAX_TRANSPORT_ATTEMPTS =>
-                            {
-                                let delay =
-                                    backoff_delay(self.runtime.recovery_state.transport_attempts);
-                                self.runtime.recovery_state.transport_attempts += 1;
-                                let summary = error_summary(
-                                    &error
-                                        .chain()
-                                        .map(|cause| cause.to_string())
-                                        .collect::<Vec<_>>()
-                                        .join(": "),
-                                );
-                                self.emit_update(AgentUpdate::Info(format!(
-                                    "[Recovery] backoff ({}/{}): retrying in {:.1}s — {summary}",
-                                    self.runtime.recovery_state.transport_attempts,
-                                    MAX_TRANSPORT_ATTEMPTS,
-                                    delay.as_secs_f64()
-                                )));
-                                tokio::time::sleep(delay).await;
-                                continue;
-                            }
-                            _ => {}
-                        }
-
-                        // Propagate the original error: `anyhow!(error)` would
-                        // re-wrap it as a Display string, dropping both the
-                        // typed cause and the chain for callers up the stack.
-                        return Err(error);
-                    }
-                };
-
-            // ── Stats: after LLM call ──
-            let response_chars = serde_json::to_string(&content)
-                .map(|s| s.chars().count() as u64)
-                .unwrap_or(0);
-            {
-                let mut stats = self.runtime.stats.write_recover();
-                stats.llm_call_durations.push(llm_call_start.elapsed());
-                stats.total_response_chars += response_chars;
-                for block in &content {
-                    if let ContentBlock::Thinking { thinking, .. } = block {
-                        stats.thinking_blocks += 1;
-                        stats.total_thinking_chars += thinking.chars().count() as u64;
-                    }
-                }
-            }
-
-            if let Some(ref usage) = token_usage {
-                self.runtime.stats.write_recover().record_token_usage(usage);
-                self.runtime.last_token_total = usage.total;
-            }
-            self.runtime.llm_call_last_message_id = self.runtime.last_message_db_id;
-            let _ = self
-                .persist_llm_call("stream", token_usage.as_ref(), request_body.as_deref())
-                .await;
-
-            // REVIEW: Persisting a truncated assistant message can leave an empty
-            // OpenAI assistant message on the next turn (e.g. only a thinking block
-            // that convert.rs drops, or an orphaned tool-call that gets stripped).
-            // sanitize_assistant_messages in tact_llm::convert currently patches this,
-            // but a cleaner fix might be to avoid adding a purely-empty assistant
-            // message to the context here in the first place.
-            self.runtime
-                .context
-                .push(Message::new_blocks(Role::Assistant, content.clone()));
-
-            // Check whether the truncated response contains pending tool calls.
-            // OpenAI requires every assistant message with tool_calls to be
-            // immediately followed by tool-result messages for each id.
-            let has_pending_tools = content
-                .iter()
-                .any(|b| matches!(b, ContentBlock::ToolUse { .. }));
-
-            if self.is_openai_responses() {
-                // Commit the assistant message together with the provider
-                // state baseline in one transaction before any further LLM
-                // call or tool execution. On failure the loop stops and the
-                // tool is not executed; in-memory context is rolled back so
-                // the old committed state stays intact.
-                let candidate_state = match state_update {
-                    ProviderStateUpdate::Replace(state) => Some(state),
-                    ProviderStateUpdate::Unchanged => self.runtime.provider_state.clone(),
-                };
-                if let Err(error) = self
-                    .replace_persisted_context_and_state(candidate_state.as_ref())
-                    .await
-                {
-                    self.runtime.context.pop();
-                    return Err(error);
-                }
-                self.runtime.provider_state = candidate_state;
-            } else {
-                self.persist_message(
-                    Role::Assistant,
-                    &MessageContent::Blocks {
-                        content: content.clone(),
-                    },
-                )
-                .await?;
-            }
-
-            if matches!(stop_reason, Some(StopReason::MaxTokens))
-                && self.runtime.recovery_state.continuation_attempts < MAX_CONTINUATION_ATTEMPTS
-            {
-                // Execute any tool calls that arrived before the token limit
-                // was hit, so the context remains valid for the API.
-                if has_pending_tools {
-                    let (tool_result, outcome) = self.execute_tool_call(&content).await?;
-                    self.push_message(Message::new_blocks(Role::User, tool_result.clone()))
-                        .await?;
-                    tool_calls += outcome.executed_tool_calls;
-                    self.runtime.goal_yield_reason = outcome.goal_yield;
-                    if self.runtime.goal_yield_reason == Some(GoalYieldReason::NeedsUser) {
-                        self.emit_update(AgentUpdate::Info("🎯 waiting for user input".into()));
-                        return Ok(finish(
-                            AgentLoopStop::GoalYield(GoalYieldReason::NeedsUser),
-                            self.turns_taken,
-                            tool_calls,
-                        ));
-                    }
-                    if let Some(focus) = outcome.manual_compact {
-                        self.emit_update(AgentUpdate::Info("[manual compact]".into()));
-                        self.compact_history_with_trigger(
-                            CompactTrigger::Manual,
-                            Some(focus.as_str()),
-                        )
-                        .await?;
-                    }
-                }
-
-                self.runtime.recovery_state.continuation_attempts += 1;
-                self.emit_update(AgentUpdate::Info(format!(
-                    "[Recovery] continue ({}/{}): output truncated",
-                    self.runtime.recovery_state.continuation_attempts, MAX_CONTINUATION_ATTEMPTS
-                )));
-                let continuation_message =
-                    continuation_message(self.runtime.recovery_state.continuation_attempts);
-                self.push_message(Message::new_text(Role::User, continuation_message))
-                    .await?;
-                continue;
-            }
-            self.runtime.recovery_state.continuation_attempts = 0;
-
-            // A cancel that arrived while this response was streaming still
-            // wins: every arm below would otherwise book the response — and a
-            // Goal completion proposal with it — against a Goal the user just
-            // cancelled. The loop-top check ran before the model call, so a
-            // press mid-stream is only visible here (2026-10-16).
-            if self.cancel_requested() {
-                self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
-                self.abandon_pending_tools(&content, tool_dispatch::TOOL_CANCELLED_MSG)
-                    .await?;
-                return Ok(finish(
-                    AgentLoopStop::Cancelled,
-                    self.turns_taken,
-                    tool_calls,
-                ));
-            }
-            // Stop-reason handling follows Anthropic guidance:
-            // https://platform.claude.com/docs/en/build-with-claude/handling-stop-reasons
-            // - end_turn / stop_sequence → finish
-            // - max_tokens → continuation path above (or finish if attempts exhausted)
-            // - tool_use → execute tools and loop
-            // - refusal → surface clearly (HTTP 200, not a transport error); no auto
-            //   model fallback yet — see refusals-and-fallback docs
-            // - pause_turn → mapped to EndTurn in tact_llm (no Anthropic server tools)
-            match &stop_reason {
-                Some(StopReason::ToolUse) => {}
-                Some(StopReason::Refusal) => {
-                    let info_msg =
-                        "Model refused this request (stop_reason=refusal). Try rephrasing, \
-                         or switch to another model with different safety filters."
-                            .to_string();
-                    self.emit_update(AgentUpdate::Info(info_msg));
-                    self.abandon_pending_tools(&content, tool_dispatch::TOOL_REFUSED_MSG)
-                        .await?;
-                    return Err(anyhow::anyhow!(
-                        "model refused to process this request (stop_reason=refusal)"
-                    ));
-                }
-                Some(StopReason::Unknown(raw)) => {
-                    self.emit_update(AgentUpdate::Info(format!(
-                        "Unrecognized stop_reason={raw:?}; treating as end of turn"
-                    )));
-                    self.abandon_pending_tools(&content, tool_dispatch::TOOL_UNKNOWN_STOP_MSG)
-                        .await?;
-                    return Ok(finish(
-                        AgentLoopStop::Completed,
-                        self.turns_taken,
-                        tool_calls,
-                    ));
-                }
-                // The recovery branch above returns early while continuation
-                // attempts remain, so reaching here with `MaxTokens` means the
-                // response was truncated and we are giving up: any tool call in
-                // it stays unexecuted.
-                Some(StopReason::MaxTokens) => {
-                    self.abandon_pending_tools(&content, tool_dispatch::TOOL_TRUNCATED_MSG)
-                        .await?;
-                    return Ok(finish(
-                        AgentLoopStop::MaxTokens,
-                        self.turns_taken,
-                        tool_calls,
-                    ));
-                }
-                // PauseTurn: Tact does not use Anthropic server tools; finish like EndTurn.
-                Some(StopReason::EndTurn | StopReason::StopSequence | StopReason::PauseTurn)
-                | None => {
-                    // No `tool_use` stop reason means no tool is executed from
-                    // this turn; a provider that sent calls anyway still gets
-                    // them answered.
-                    self.abandon_pending_tools(&content, tool_dispatch::TOOL_TURN_ENDED_MSG)
-                        .await?;
-                    return Ok(finish(
-                        AgentLoopStop::Completed,
-                        self.turns_taken,
-                        tool_calls,
-                    ));
-                }
-            }
-
-            if self.cancel_requested() {
-                self.emit_update(AgentUpdate::Info("Cancelled by user".into()));
-                self.abandon_pending_tools(&content, tool_dispatch::TOOL_CANCELLED_MSG)
-                    .await?;
-                return Ok(finish(
-                    AgentLoopStop::Cancelled,
-                    self.turns_taken,
-                    tool_calls,
-                ));
-            }
-            let (tool_result, outcome) = self.execute_tool_call(&content).await?;
-
-            self.push_message(Message::new_blocks(Role::User, tool_result.clone()))
-                .await?;
-            tool_calls += outcome.executed_tool_calls;
-            self.runtime.goal_yield_reason = outcome.goal_yield;
-            if self.runtime.goal_yield_reason == Some(GoalYieldReason::NeedsUser) {
-                self.emit_update(AgentUpdate::Info("🎯 waiting for user input".into()));
-                return Ok(finish(
-                    AgentLoopStop::GoalYield(GoalYieldReason::NeedsUser),
-                    self.turns_taken,
-                    tool_calls,
-                ));
-            }
-
-            if let Some(focus) = outcome.manual_compact {
-                self.emit_update(AgentUpdate::Info("[manual compact]".into()));
-                self.compact_history_with_trigger(CompactTrigger::Manual, Some(focus.as_str()))
-                    .await?;
-            }
-
-            // The cap is checked at the top of the loop, *before* a model call,
-            // so an activation that spends its last turn proposing completion
-            // used to be stopped on the next iteration as `MaxTurns` — a budget
-            // verdict for a turn that had already delivered its verdict. The
-            // proposal is durable by now (`goal_propose_completion` appends it),
-            // so the run ends here as a completed activation and the Runner sees
-            // the outcome it can verify, instead of `BudgetExhausted` next to a
-            // Goal the verifier rejected (2026-10-20).
-            if self.max_turns == Some(self.turns_taken)
-                && self.tool_context.active_goal_id.is_some()
-                && self.runtime.goal_yield_reason.is_none()
-                && self.completion_proposed_this_turn(&content)
-                && !self.cancel_requested()
-            {
-                return Ok(finish(
-                    AgentLoopStop::Completed,
-                    self.turns_taken,
-                    tool_calls,
-                ));
-            }
-        }
-    }
-
-    /// Whether this turn's dispatched tool calls proposed Goal completion.
-    ///
-    /// Read from the assistant turn rather than from the store: the call has
-    /// just been executed, and asking the store would turn a scheduling
-    /// decision into another round trip.
-    fn completion_proposed_this_turn(&self, content: &[ContentBlock]) -> bool {
-        content.iter().any(|block| {
-            matches!(
-                block,
-                ContentBlock::ToolUse { name, .. } if name == "goal_propose_completion"
-            )
-        })
-    }
-
-    async fn stream_message(
-        &mut self,
-        request: &CreateMessageParams,
-    ) -> Result<
-        (
-            Vec<ContentBlock>,
-            Option<StopReason>,
-            Option<TokenUsageInfo>,
-            Option<tact_llm::LlmRequestBody>,
-            ProviderStateUpdate,
-        ),
-        anyhow::Error,
-    > {
-        // Provider deltas are progress, not a question: they go to every
-        // attached destination, which is what lets a headless run show that a
-        // slow model call is still alive.
-        let events = self.runtime.events.clone();
-        let response = self
-            .runtime
-            .client
-            .stream_message(request, self.runtime.provider_state.as_ref(), &events)
-            .await
-            // Keep the typed `LlmError` as the root cause: the recovery loop
-            // classifies retries on `LlmError::HttpError.status`, and
-            // stringifying here would erase it (and the error chain) before
-            // the retry decision is made.
-            .map_err(anyhow::Error::from)?;
-        Ok((
-            response.blocks,
-            response.stop_reason,
-            response.usage,
-            response.request_body,
-            response.state_update,
-        ))
+        self.run_kernel_activation(user_turn_message).await
     }
 
     pub fn with_session_start(mut self, hook: impl SessionStartFn + 'static) -> Self {
-        self.hooks.push(Hook::SessionStart(Box::new(hook)));
+        self.hooks.push(Hook::SessionStart(Arc::new(hook)));
         self
     }
 
     pub fn with_user_prompt_submit(mut self, hook: impl UserPromptSubmitFn + 'static) -> Self {
-        self.hooks.push(Hook::UserPromptSubmit(Box::new(hook)));
+        self.hooks.push(Hook::UserPromptSubmit(Arc::new(hook)));
         self
     }
 
@@ -1864,66 +1482,66 @@ impl Agent {
         if !config::settings().tools.rtk_filter {
             return self;
         }
-        self.hooks.push(Hook::PostToolUse(Box::new(hook)));
+        self.hooks.push(Hook::PostToolUse(Arc::new(hook)));
         self
     }
 
     /// Registers a `PostToolUse` hook unconditionally (used for plugin
     /// command hooks; [`Self::with_post_tool`] is gated by `rtk_filter`).
     pub fn with_post_tool_hook(mut self, hook: impl PostToolUseFn + 'static) -> Self {
-        self.hooks.push(Hook::PostToolUse(Box::new(hook)));
+        self.hooks.push(Hook::PostToolUse(Arc::new(hook)));
         self
     }
 
     pub fn with_pre_tool(mut self, hook: impl PreToolUseFn + 'static) -> Self {
-        self.hooks.push(Hook::PreToolUse(Box::new(hook)));
+        self.hooks.push(Hook::PreToolUse(Arc::new(hook)));
         self
     }
 
     /// Registers a hook that answers the approval prompt.
     pub fn with_permission_request(mut self, hook: impl PermissionRequestFn + 'static) -> Self {
-        self.hooks.push(Hook::PermissionRequest(Box::new(hook)));
+        self.hooks.push(Hook::PermissionRequest(Arc::new(hook)));
         self
     }
 
     /// Registers a hook that observes a user interrupt.
     pub fn with_interrupt(mut self, hook: impl InterruptFn + 'static) -> Self {
-        self.hooks.push(Hook::Interrupt(Box::new(hook)));
+        self.hooks.push(Hook::Interrupt(Arc::new(hook)));
         self
     }
 
     pub fn with_stop(mut self, hook: impl StopFn + 'static) -> Self {
-        self.hooks.push(Hook::Stop(Box::new(hook)));
+        self.hooks.push(Hook::Stop(Arc::new(hook)));
         self
     }
 
     pub fn with_session_end(mut self, hook: impl SessionEndFn + 'static) -> Self {
-        self.hooks.push(Hook::SessionEnd(Box::new(hook)));
+        self.hooks.push(Hook::SessionEnd(Arc::new(hook)));
         self
     }
 
     pub fn with_pre_compact(mut self, hook: impl PreCompactFn + 'static) -> Self {
-        self.hooks.push(Hook::PreCompact(Box::new(hook)));
+        self.hooks.push(Hook::PreCompact(Arc::new(hook)));
         self
     }
 
     pub fn with_post_compact(mut self, hook: impl PostCompactFn + 'static) -> Self {
-        self.hooks.push(Hook::PostCompact(Box::new(hook)));
+        self.hooks.push(Hook::PostCompact(Arc::new(hook)));
         self
     }
 
     pub fn with_post_tool_failure(mut self, hook: impl PostToolUseFailureFn + 'static) -> Self {
-        self.hooks.push(Hook::PostToolUseFailure(Box::new(hook)));
+        self.hooks.push(Hook::PostToolUseFailure(Arc::new(hook)));
         self
     }
 
     pub fn with_notification(mut self, hook: impl NotificationFn + 'static) -> Self {
-        self.hooks.push(Hook::Notification(Box::new(hook)));
+        self.hooks.push(Hook::Notification(Arc::new(hook)));
         self
     }
 
     pub fn with_task_completed(mut self, hook: impl TaskCompletedFn + 'static) -> Self {
-        self.hooks.push(Hook::TaskCompleted(Box::new(hook)));
+        self.hooks.push(Hook::TaskCompleted(Arc::new(hook)));
         self
     }
 
@@ -1946,18 +1564,21 @@ impl Agent {
         self.runtime.session_start_hooks_pending = false;
 
         let collected = {
-            let agent: &Agent = self;
-            let runs = agent
+            let view = self.activation_view();
+            let runs = self
                 .hooks_by_type(HookTypes::SessionStart)
                 .into_iter()
                 .filter_map(|hook| match hook {
                     Hook::SessionStart(run) => Some(run),
                     _ => None,
                 })
-                .map(|run| async move {
-                    let mut context = SessionStartContext::default();
-                    let control = run(agent, &mut context).await?;
-                    Ok::<_, anyhow::Error>((control, context.additional_contexts))
+                .map(|run| {
+                    let view = &view;
+                    async move {
+                        let mut context = SessionStartContext::default();
+                        let control = run(view, &mut context).await?;
+                        Ok::<_, anyhow::Error>((control, context.additional_contexts))
+                    }
                 });
             futures_util::future::join_all(runs).await
         };
@@ -1980,68 +1601,13 @@ impl Agent {
         })
     }
 
-    /// Records the context [`Self::dispatch_session_start_hooks`] collected as
-    /// conversation messages, one per chunk.
-    ///
-    /// Each chunk is framed with `<hook-context>` markers (Codex records the
-    /// same text as a `developer` role message) so the model does not read it
-    /// as something the user typed; the TUI shows the unframed text as a system
-    /// notice. No-op without pending context, which is the common case.
-    async fn inject_pending_session_context(&mut self) -> Result<()> {
-        let chunks = std::mem::take(&mut self.runtime.pending_session_context);
-        for chunk in chunks {
-            self.record_hook_context(&chunk).await?;
-        }
-        Ok(())
-    }
-
-    /// Drains the context `PreToolUse` / `PostToolUse` hooks collected.
-    ///
-    /// Runs before every request inside the turn loop: those hooks fire while
-    /// the turn is already in flight, so their context belongs with the tool
-    /// call it annotates (Codex records it the same way, right after the hook
-    /// returns).
-    async fn inject_pending_hook_context(&mut self) -> Result<()> {
-        let chunks: Vec<HookContextChunk> = {
-            let mut queue = self.runtime.pending_hook_context.lock_recover();
-            queue.drain(..).collect()
-        };
-        for chunk in chunks {
-            self.record_hook_context(&chunk).await?;
-        }
-        Ok(())
-    }
-
     /// Reserves the id for one hook's progress line.
     ///
     /// The caller emits [`AgentUpdate::HookStatus`] twice with the same id —
     /// once when the hook starts, once when it returns — and the TUI rewrites
     /// that one row instead of leaving a stale "Loading…" behind.
     pub fn next_hook_status_id(&self) -> u64 {
-        self.runtime
-            .hook_status_seq
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    }
-
-    /// Records one hook-context chunk as its own synthetic user message.
-    ///
-    /// The reader gets the hook's full text; only the model's copy is budgeted
-    /// (Codex shows the whole hook output in its run summary). The source is
-    /// framed onto the message as well, so a session that reloads from disk can
-    /// still say which hook spoke.
-    async fn record_hook_context(&mut self, chunk: &HookContextChunk) -> Result<()> {
-        let session_id = self.runtime.session_id.clone().unwrap_or_default();
-        let body = spill_hook_context(&chunk.text, &session_id);
-        let framed = frame_hook_context(chunk.source.as_deref(), &body);
-        self.push_message(
-            Message::new_text(Role::User, framed).with_kind(MessageKind::HookContext),
-        )
-        .await?;
-        self.emit_update(AgentUpdate::HookContext {
-            source: chunk.source.clone(),
-            text: chunk.text.clone(),
-        });
-        Ok(())
+        self.shared_services.next_hook_status_id()
     }
 
     /// Runs [`Hook::Stop`] hooks once at the outer turn boundary and returns
@@ -2130,6 +1696,7 @@ impl Agent {
     ///
     /// Reads the same cache the request is built from, so guidance that names a
     /// tool cannot outlive the tool itself.
+    #[cfg(test)]
     fn has_tool(&self, name: &str) -> bool {
         self.cached_tool_specs.iter().any(|spec| spec.name == name)
     }
@@ -2150,641 +1717,17 @@ impl Agent {
         trigger: CompactTrigger,
         focus: Option<&str>,
     ) -> Result<()> {
-        // PreCompact hooks may veto the compaction (Codex `should_stop`).
-        match invoke_hooks!(PreCompact, self, trigger)? {
-            HookControl::Continue | HookControl::Allow => {}
-            HookControl::Block(reason) => {
-                self.emit_update(AgentUpdate::Info(format!(
-                    "[PreCompact hook vetoed compaction] {reason}"
-                )));
-                return Ok(());
-            }
-        }
-
-        let result = if self.is_openai_responses() && self.provider_kind() != ProviderKind::DeepSeek
-        {
-            self.compact_responses_native().await
-        } else {
-            self.compact_history_local(focus).await
+        let focus = focus.map(str::to_string);
+        let request = match trigger {
+            CompactTrigger::Auto => tact_agent_api::CompactionRequest::Auto { focus },
+            CompactTrigger::Manual => tact_agent_api::CompactionRequest::Manual { focus },
+            CompactTrigger::Recovery => tact_agent_api::CompactionRequest::Recovery { focus },
+            CompactTrigger::Command => tact_agent_api::CompactionRequest::Command { focus },
         };
-
-        // Re-queue the `SessionStart` hooks with `source: "compact"`: Codex does
-        // the same, and it is how a plugin re-orients after its context was
-        // summarized away (the reference `basic-memory` plugin asks for an
-        // authored checkpoint this way). The next turn dispatches them.
-        if result.is_ok() {
-            self.runtime.session_start_source = SessionStartSource::Compact;
-            self.runtime.session_start_hooks_pending = true;
-        }
-
-        // PostCompact hooks run once, only after a successful compaction.
-        if result.is_ok() {
-            match invoke_hooks!(PostCompact, self, trigger)? {
-                HookControl::Continue | HookControl::Allow => {}
-                HookControl::Block(reason) => {
-                    self.emit_update(AgentUpdate::Info(format!(
-                        "[PostCompact hook blocked] {reason}"
-                    )));
-                }
-            }
-        }
-        result
+        self.compact_with_kernel(request).await
     }
 
-    /// Native OpenAI Responses compaction via `POST /responses/compact`.
-    ///
-    /// Sends the current protocol baseline plus any logical messages not yet
-    /// represented in it. A valid compact resource replaces the wire
-    /// baseline; the logical context stays unchanged (the state baseline now
-    /// covers it). Messages and provider state are persisted atomically, and
-    /// only then are the runtime fields/counters committed. `focus` is
-    /// ignored: the native endpoint has no summary-focus semantics. Errors
-    /// leave the old committed state intact; transient transport errors are
-    /// retried with bounded backoff, protocol errors are not.
-    async fn compact_responses_native(&mut self) -> Result<()> {
-        let model_name = self.agent_settings.model.clone();
-        // The native compact request only carries `{model, input}` — no
-        // reasoning/thinking is forwarded to the server-side compaction.
-        let request = CreateMessageParams::new(RequiredMessageParams {
-            model: model_name,
-            messages: self.runtime.context.clone(),
-            max_tokens: self.max_tokens(),
-        });
-        self.emit_update(AgentUpdate::Info("[native compact]".into()));
-
-        let mut retry_attempt = 0;
-        let response = loop {
-            match self
-                .runtime
-                .client
-                .compact(&request, self.runtime.provider_state.as_ref())
-                .await
-            {
-                Ok(response) => break response,
-                Err(error) => {
-                    if !self.retry_compaction_call(&error, &mut retry_attempt).await {
-                        return Err(anyhow::Error::from(error));
-                    }
-                }
-            }
-        };
-
-        self.persist_llm_call(
-            "responses_compact",
-            response.usage.as_ref(),
-            response.request_body.as_deref(),
-        )
-        .await
-        .context("failed to persist Responses compact usage")?;
-
-        let ProviderStateUpdate::Replace(ProviderConversationState::OpenAiResponses(
-            candidate_state,
-        )) = response.state_update
-        else {
-            anyhow::bail!("native Responses compaction returned no replacement provider state");
-        };
-
-        // The replacement baseline covers the entire logical context, so the
-        // candidate logical context is the current one.
-        let candidate_context = self.runtime.context.clone();
-        self.replace_persisted_context_and_state(Some(
-            &ProviderConversationState::OpenAiResponses(candidate_state.clone()),
-        ))
-        .await?;
-        // Context and persistence now agree; commit runtime fields/counters.
-        self.runtime.context = candidate_context;
-        self.runtime.provider_state = Some(ProviderConversationState::OpenAiResponses(
-            candidate_state.clone(),
-        ));
-        self.finish_compaction(None);
-
-        // Informational status only: item count and a bounded compaction id
-        // prefix. Never expose the opaque encrypted content, and never echo
-        // the full compaction id into user-facing diagnostics; the complete
-        // id is retained inside the provider state and SQLite metadata.
-        let item_count = candidate_state.input_items.len();
-        let compaction_id = candidate_state.compaction_id.unwrap_or_default();
-        self.emit_update(AgentUpdate::Info(format!(
-            "[responses compacted: items={item_count}, id={}]",
-            compact_id_display(&compaction_id)
-        )));
-        Ok(())
-    }
-
-    /// Previous single-summary compaction (entire history → one user message).
-    /// Kept for reference / rollback; production call sites use [`Self::compact_history`].
-    #[allow(dead_code)]
-    pub async fn compact_history_legacy(&mut self, focus: Option<&str>) -> Result<()> {
-        self.compact_history_local_with_mode(focus, CompactRebuildMode::LegacySingleSummary)
-            .await
-    }
-
-    async fn compact_history_local(&mut self, focus: Option<&str>) -> Result<()> {
-        self.compact_history_local_with_mode(focus, CompactRebuildMode::CodexStyle)
-            .await
-    }
-
-    async fn compact_history_local_with_mode(
-        &mut self,
-        focus: Option<&str>,
-        mode: CompactRebuildMode,
-    ) -> Result<()> {
-        let tact_path = crate::consts::TactPath::new(&self.tool_context.work_dir);
-        let transcript_path = write_transcript(&tact_path, &self.runtime.context).await?;
-        self.emit_update(AgentUpdate::Info(format!(
-            "[transcript saved: {}]",
-            transcript_path.display()
-        )));
-
-        let model_context_window = self.model_context_window();
-        let provider_kind = self.provider_kind();
-        let session_effort = self.agent_settings.reasoning_effort;
-        // Text portion of the summarizer output budget keeps the classic
-        // 20%-of-window (capped) formula. Reasoning-effort providers count
-        // reasoning tokens inside the same `max_tokens` envelope, so reserve
-        // a reasoning share ON TOP of the text budget; otherwise high/max
-        // effort starves the summary text and forces truncation continuations.
-        let summary_text_max_tokens = if model_context_window == 0 {
-            COMPACT_SUMMARY_MAX_TOKENS
-        } else {
-            u32::try_from(
-                model_context_window
-                    .saturating_mul(COMPACT_SUMMARY_OUTPUT_PERCENT)
-                    .div_ceil(100)
-                    .min(COMPACT_SUMMARY_MAX_TOKENS as usize)
-                    .max(1),
-            )
-            .context("summary output token budget does not fit u32")?
-        };
-        // The reserve is the absolute token bucket of the effective effort:
-        // the session's effort when configured, otherwise the effort a provider
-        // reasons at by server default (DeepSeek / Kimi K3 = high). The bucket
-        // is keyed on the effort the provider will *actually* run at, so a
-        // compatibility fold (`medium` → `high` on DeepSeek) sizes the reserve
-        // instead of under-reserving.
-        let effective_effort =
-            session_effort.or_else(|| compact_summary_server_default_effort(&provider_kind));
-        let reasoning_reserve = effective_effort
-            .map(|effort| {
-                compact_effort_reserve_tokens(effort_after_provider_fold(&provider_kind, effort))
-            })
-            .unwrap_or(0);
-        // Wire `max_tokens`: text plus the reasoning reserve. The text portion
-        // keeps its classic budget; the reserve only covers providers that
-        // reason by server default (DeepSeek / Kimi K3) — the summary call
-        // never enables thinking itself (no Claude-style budget, no explicit
-        // reasoning effort), so OpenAI / Anthropic get the full text budget.
-        //
-        // The envelope is additionally floored by the configured output budget
-        // (`[agent] max_tokens`), but only where the request can spend that
-        // envelope on reasoning: a provider with no separate thinking budget
-        // counts reasoning *inside* `max_tokens`, so a small envelope can be
-        // spent entirely on thinking and leave no room for the summary at all
-        // (measured on a DeepSeek gateway: `max_tokens = 4000` came back with
-        // `reasoning_tokens = 4000` and zero summary text, while DeepSeek's own
-        // thinking-mode default is 64K). Budget-semantic providers (Anthropic)
-        // never receive a thinking budget here, so their summary text keeps the
-        // classic cap. The text/reserve split above stays as the ladder's
-        // accounting, not as a promise about the wire shape; the floor is capped
-        // by the window so a tight window still compacts.
-        let envelope_floor = if effective_effort.is_some() {
-            self.max_tokens()
-                .min(compact_summary_envelope_ceiling(model_context_window))
-        } else {
-            0
-        };
-        let summary_max_tokens = summary_text_max_tokens
-            .saturating_add(reasoning_reserve)
-            .max(envelope_floor);
-        let summary_input_limit = if model_context_window == 0 {
-            crate::compact::KEEP_USER_MESSAGE_TOKENS
-        } else {
-            let headroom = model_context_window
-                .saturating_mul(COMPACT_SUMMARY_HEADROOM_PERCENT)
-                .div_ceil(100);
-            model_context_window
-                .saturating_sub(summary_max_tokens as usize)
-                .saturating_sub(headroom)
-        };
-        let mut prompt = COMPACT_SUMMARY_INSTRUCTIONS.to_string();
-        if approx_text_tokens(&prompt) > summary_input_limit {
-            anyhow::bail!(
-                "model context window {model_context_window} is too small for the compaction summary request"
-            );
-        }
-        if let Some(focus) = focus.filter(|value| !value.trim().is_empty()) {
-            let addition = format!("\n\nFocus to preserve next: {focus}");
-            let available = summary_input_limit.saturating_sub(approx_text_tokens(&prompt));
-            if approx_text_tokens(&addition) <= available {
-                prompt.push_str(&addition);
-            } else {
-                tracing::warn!(
-                    focus_chars = focus.len(),
-                    available_tokens = available,
-                    needed_tokens = approx_text_tokens(&addition),
-                    "focus too large for compact summary prompt, dropping"
-                );
-            }
-        }
-        let mut heading_added = false;
-        for path in &self.runtime.compact_state.recent_files {
-            let addition = if heading_added {
-                format!("\n- {path}")
-            } else {
-                format!("\n\nRecent files to reopen if needed:\n- {path}")
-            };
-            if approx_text_tokens(&prompt).saturating_add(approx_text_tokens(&addition))
-                > summary_input_limit
-            {
-                tracing::warn!(
-                    prompt_tokens = approx_text_tokens(&prompt),
-                    needed_tokens = approx_text_tokens(&addition),
-                    "compact summary prompt too large, dropping recent files"
-                );
-                break;
-            }
-            prompt.push_str(&addition);
-            heading_added = true;
-        }
-        let history_budget = summary_input_limit
-            .saturating_sub(approx_text_tokens(&prompt))
-            .saturating_sub(1)
-            .min(crate::compact::KEEP_USER_MESSAGE_TOKENS);
-        let recent_messages = recent_messages_for_summary(&self.runtime.context, history_budget)?;
-        if recent_messages != "[]" {
-            prompt.push_str("\n\n");
-            prompt.push_str(&recent_messages);
-        }
-        debug_assert!(
-            model_context_window == 0 || approx_text_tokens(&prompt) <= summary_input_limit
-        );
-
-        let model_name = self.agent_settings.model.clone();
-        // The summarizer runs a staged ladder. Stage 0 inherits the session's
-        // live reasoning effort; it never enables a Claude-style thinking budget
-        // (thinking adds little value to a handoff summary and consumes output
-        // tokens). Later stages minimize thinking and then size the reasoning
-        // reserve from the observed `reasoning_tokens`, because DeepSeek / Kimi K3
-        // count reasoning inside the same `max_tokens` envelope and would starve
-        // the summary text otherwise.
-        self.emit_update(AgentUpdate::ModelInfo(tact_protocol::ModelCallParams {
-            model: model_name.clone(),
-            max_tokens: summary_max_tokens,
-            thinking_budget: None,
-            reasoning_effort: compact_summary_effort(&provider_kind, session_effort, 0)
-                .map(|effort| effort.as_str().to_string()),
-            extra_body: None,
-        }));
-        // ── Stats: before compaction LLM call ──
-        self.runtime.stats.write_recover().prompt_count += 1;
-        let compact_prompt_chars =
-            serde_json::to_string(&CreateMessageParams::new(RequiredMessageParams {
-                model: model_name.clone(),
-                messages: vec![Message::new_text(Role::User, prompt.clone())],
-                max_tokens: summary_max_tokens,
-            }))
-            .map(|s| s.chars().count() as u64)
-            .unwrap_or(0);
-        self.runtime.stats.write_recover().total_prompt_chars += compact_prompt_chars;
-        let compact_start = std::time::Instant::now();
-
-        // Envelope growth is bounded so the initial prompt plus `max_tokens`
-        // plus headroom still fits the window. Continuation messages add input on
-        // later attempts, so this bound is deliberately conservative.
-        let max_reserve_for_window = if model_context_window == 0 {
-            u32::MAX
-        } else {
-            let headroom = model_context_window
-                .saturating_mul(COMPACT_SUMMARY_HEADROOM_PERCENT)
-                .div_ceil(100);
-            u32::try_from(
-                model_context_window
-                    .saturating_sub(approx_text_tokens(&prompt))
-                    .saturating_sub(headroom)
-                    .saturating_sub(summary_text_max_tokens as usize),
-            )
-            .unwrap_or(u32::MAX)
-        };
-
-        // Summarization call with two independent recovery axes:
-        // - transient transport errors → bounded backoff retry (`retry_attempt`);
-        // - `MaxTokens` truncation → escalate the effort/reserve ladder, carrying
-        //   the partial summary forward as an assistant message plus a
-        //   continuation prompt (`continuation_attempt`).
-        // When the ladder is exhausted, the partial summary is accepted as
-        // best-effort (the Codex-style rebuild keeps recent real user messages
-        // anyway) instead of failing the whole compaction.
-        let mut retry_attempt = 0;
-        let mut continuation_attempt = 0u32;
-        let mut attempt_max_tokens = summary_max_tokens;
-        let mut attempt_reserve = reasoning_reserve;
-        let mut messages = vec![Message::new_text(Role::User, prompt.clone())];
-        let mut blocks_all: Vec<ContentBlock> = Vec::new();
-        let (stop_reason, token_usage, request_body) = loop {
-            let stage = continuation_attempt.saturating_add(1);
-            let total_stages = MAX_COMPACT_SUMMARY_ATTEMPTS.saturating_add(1);
-            let attempt_effort =
-                compact_summary_effort(&provider_kind, session_effort, continuation_attempt);
-            let request = CreateMessageParams::new(RequiredMessageParams {
-                model: model_name.clone(),
-                messages: messages.clone(),
-                max_tokens: attempt_max_tokens,
-            })
-            .with_reasoning_effort(attempt_effort);
-            let request_chars = serde_json::to_string(&request)
-                .map(|body| body.chars().count())
-                .unwrap_or(0);
-            // Every attempt announces its exact request envelope: the printed
-            // `max_tokens` is verbatim what the provider receives, split into the
-            // summary text budget and the reasoning reserve.
-            self.emit_update(AgentUpdate::Info(format!(
-                "[compact summary {stage}/{total_stages}] request model={model_name} max_tokens={attempt_max_tokens} (text {summary_text_max_tokens} + reasoning {attempt_reserve}), reasoning_effort={}, input {request_chars} chars",
-                attempt_effort.map_or("provider-default", OpenAiReasoningEffort::as_str),
-            )));
-            match self.runtime.client.create_message(&request, None).await {
-                Ok(response) => {
-                    let truncated = matches!(response.stop_reason, Some(StopReason::MaxTokens));
-                    self.emit_update(AgentUpdate::Info(format!(
-                        "[compact summary {stage}/{total_stages}] response {}",
-                        compact_response_note(
-                            response.stop_reason.as_ref(),
-                            response.usage.as_ref(),
-                        ),
-                    )));
-                    if truncated && continuation_attempt < MAX_COMPACT_SUMMARY_ATTEMPTS {
-                        let usage = response.usage.clone();
-                        // Byte weight only (`thinking.len() + signature.len()`);
-                        // the tokens actually spent are `observed_think` below,
-                        // which is also what sizes the next reserve.
-                        let think_block_bytes = response.blocks.iter().fold(0, |acc, block| {
-                            if let ContentBlock::Thinking {
-                                thinking,
-                                signature,
-                            } = block
-                            {
-                                acc + thinking.len() + signature.len()
-                            } else {
-                                acc
-                            }
-                        });
-                        continuation_attempt = continuation_attempt.saturating_add(1);
-                        blocks_all.extend(response.blocks.clone());
-                        messages.push(Message::new_blocks(Role::Assistant, response.blocks));
-                        messages.push(Message::new_text(
-                            Role::User,
-                            continuation_message(continuation_attempt).to_string(),
-                        ));
-                        // Escalate: the first continuation turns thinking down
-                        // (reserve 0); later ones size the reserve from the
-                        // reasoning tokens the model actually spent.
-                        let observed_think = usage
-                            .as_ref()
-                            .map_or(0usize, |u| u.reasoning_tokens as usize);
-                        attempt_reserve = if continuation_attempt <= 1 {
-                            0
-                        } else {
-                            next_compaction_reserve(
-                                reasoning_reserve,
-                                summary_text_max_tokens,
-                                attempt_reserve,
-                                observed_think,
-                            )
-                            .min(max_reserve_for_window)
-                        };
-                        attempt_max_tokens =
-                            summary_text_max_tokens.saturating_add(attempt_reserve);
-                        self.emit_update(AgentUpdate::Info(format!(
-                            "[compact continue {continuation_attempt}/{MAX_COMPACT_SUMMARY_ATTEMPTS}] summary truncated ({}), next attempt max_tokens={attempt_max_tokens}",
-                            compact_truncation_note(
-                                usage.as_ref().map(|usage| usage.reasoning_tokens),
-                                think_block_bytes,
-                            ),
-                        )));
-                        continue;
-                    }
-                    blocks_all.extend(response.blocks);
-                    if truncated {
-                        self.emit_update(AgentUpdate::Info(format!(
-                            "[compact fallback] summary still truncated at stage {stage}/{total_stages}; using the best-effort partial summary"
-                        )));
-                    }
-                    break (response.stop_reason, response.usage, response.request_body);
-                }
-                Err(error) => {
-                    if !self.retry_compaction_call(&error, &mut retry_attempt).await {
-                        return Err(anyhow::Error::from(error));
-                    }
-                }
-            }
-        };
-        let blocks = blocks_all;
-
-        // ── Stats: after compaction LLM call ──
-        let compact_response_chars = serde_json::to_string(&blocks)
-            .map(|s| s.chars().count() as u64)
-            .unwrap_or(0);
-        {
-            let mut stats = self.runtime.stats.write_recover();
-            stats.llm_call_durations.push(compact_start.elapsed());
-            stats.total_response_chars += compact_response_chars;
-            for block in &blocks {
-                if let ContentBlock::Thinking { thinking, .. } = block {
-                    stats.thinking_blocks += 1;
-                    stats.total_thinking_chars += thinking.chars().count() as u64;
-                }
-            }
-        }
-        if let Some(ref usage) = token_usage {
-            self.runtime.stats.write_recover().record_token_usage(usage);
-            // Do NOT assign usage.total to last_token_total: that figure is for
-            // the summarization request (large history prompt), not the size of
-            // the replacement context below.
-        }
-        let _ = self
-            .persist_llm_call("compact", token_usage.as_ref(), request_body.as_deref())
-            .await;
-        match stop_reason {
-            // `MaxTokens` is accepted when continuation attempts are exhausted:
-            // the partial summary is still usable (Codex-style rebuild keeps
-            // recent real user messages; a one-shot summary that ran out of
-            // output budget is a best-effort loss, not a fatal error).
-            None | Some(StopReason::EndTurn) | Some(StopReason::MaxTokens) => {}
-            Some(reason) => {
-                anyhow::bail!("compaction summary ended with invalid stop reason: {reason:?}")
-            }
-        }
-        let summary = blocks
-            .iter()
-            .filter_map(|block| match block {
-                ContentBlock::Text { text } => Some(text.as_str()),
-                _ => None,
-            })
-            .collect::<Vec<_>>()
-            .join("\n");
-        let summary = summary.trim().to_string();
-        if summary.is_empty() {
-            anyhow::bail!("compaction summary response contained no text")
-        }
-
-        // Inject recently accessed file list into summary, helping the agent recover context after amnesia
-        let mut full_summary = summary.clone();
-        if !self.runtime.compact_state.recent_files.is_empty() {
-            full_summary
-                .push_str("\n\nRecently accessed files (re-read if you need their contents):\n");
-            for path in &self.runtime.compact_state.recent_files {
-                full_summary.push_str(&format!("- {path}\n"));
-            }
-        }
-
-        let rebuilt_context = match mode {
-            CompactRebuildMode::CodexStyle => {
-                // Rebuild: keep recent real user messages verbatim from the
-                // tail, then append a single summary message. Budget is
-                // model_context_window minus system prompt, tool specs,
-                // summary, max output, and headroom. Shrink the budget in a
-                // loop until the rebuilt context fits, or bail if it can't.
-                let retained = collect_user_messages(&self.runtime.context);
-                let system_prompt_tokens = approx_text_tokens(&self.build_system_prompt()?);
-                let tool_specs_tokens = approx_text_tokens(
-                    &serde_json::to_string(&self.all_tool_specs())
-                        .context("failed to serialize tool specs for compact budget")?,
-                );
-                let summary_only = compacted_context(full_summary.clone());
-                let non_retained_input_tokens = system_prompt_tokens
-                    .saturating_add(tool_specs_tokens)
-                    .saturating_add(estimate_context_tokens(&summary_only));
-                let mut retained_tokens = retained_user_message_token_budget(
-                    self.model_context_window(),
-                    self.max_tokens() as usize,
-                    non_retained_input_tokens,
-                );
-                let mut rebuilt = build_compacted_history(
-                    &retained,
-                    full_summary.clone(),
-                    retained_tokens,
-                    Some(transcript_path.as_path()),
-                );
-                if model_context_window > 0 {
-                    let headroom = compact_rebuild_headroom_tokens(model_context_window);
-                    loop {
-                        let total = system_prompt_tokens
-                            .saturating_add(tool_specs_tokens)
-                            .saturating_add(estimate_context_tokens(&rebuilt))
-                            .saturating_add(self.max_tokens() as usize)
-                            .saturating_add(headroom);
-                        if total <= model_context_window {
-                            break;
-                        }
-                        if retained_tokens == 0 {
-                            anyhow::bail!(
-                                "compacted request cannot fit model context window {model_context_window}"
-                            );
-                        }
-                        tracing::warn!(
-                            "rebuild over window, shrinking retained token budget: total={total} window={model_context_window} retained={retained_tokens}"
-                        );
-                        retained_tokens = retained_tokens
-                            .saturating_sub(total.saturating_sub(model_context_window).max(1));
-                        rebuilt = build_compacted_history(
-                            &retained,
-                            full_summary.clone(),
-                            retained_tokens,
-                            Some(transcript_path.as_path()),
-                        );
-                    }
-                }
-                rebuilt
-            }
-            CompactRebuildMode::LegacySingleSummary => compacted_context(full_summary),
-        };
-        let previous_context = std::mem::replace(&mut self.runtime.context, rebuilt_context);
-        if self.is_openai_responses() {
-            // The rebuilt logical history invalidates the old Responses
-            // baseline (e.g. DeepSeek + Responses, whose endpoint lacks
-            // `/responses/compact` and compacts locally). Clear it in both the
-            // runtime and persistence so the next request rebuilds from the
-            // compacted context instead of failing the stale-hash check.
-            self.runtime.provider_state = None;
-            if let Err(error) = self.replace_persisted_context_and_state(None).await {
-                self.runtime.context = previous_context;
-                return Err(error);
-            }
-        } else if let Err(error) = self.replace_persisted_context().await {
-            self.runtime.context = previous_context;
-            return Err(error);
-        }
-        // Context and persistence now agree, so future messages start a new
-        // message-id window and compaction state can be committed.
-        self.finish_compaction(Some(summary));
-        Ok(())
-    }
-
-    /// Commits the runtime bookkeeping shared by every compaction path.
-    ///
-    /// The message-id window is reset because the persisted history now starts
-    /// over, and `last_token_total` is zeroed so the next `should_auto_compact`
-    /// check sees the *new* small context rather than the pre-compact or
-    /// summarizer-prompt totals.
-    ///
-    /// `summary` is the Codex-style handoff summary, remembered for the next
-    /// user turn. `None` leaves the previous one in place — the Responses path
-    /// keeps its own opaque compaction state instead.
-    fn finish_compaction(&mut self, summary: Option<String>) {
-        self.runtime.first_message_db_id = 0;
-        self.runtime.last_message_db_id = 0;
-        self.runtime.llm_call_last_message_id = 0;
-        self.runtime.last_token_total = 0;
-        self.runtime.compact_state.has_compacted = true;
-        if summary.is_some() {
-            self.runtime.compact_state.last_summary = summary;
-        }
-        self.runtime.stats.write_recover().compactions += 1;
-    }
-
-    /// Retry policy shared by both compaction summarizer call paths.
-    ///
-    /// Returns `false` when the caller must surface the error — the attempt
-    /// budget is exhausted, or the failure is not retryable. Otherwise it
-    /// bumps `attempt`, sleeps the back-off and emits the retry notice.
-    ///
-    /// Classification goes through [`classify_llm_error`], so a permanent
-    /// (400/401/403/404) failure is never retried.
-    async fn retry_compaction_call(
-        &mut self,
-        error: &tact_llm::LlmError,
-        attempt: &mut u32,
-    ) -> bool {
-        if *attempt >= MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS
-            || classify_llm_error(error) != FailureKind::Transient
-        {
-            return false;
-        }
-        *attempt += 1;
-        let delay = backoff_delay(attempt.saturating_sub(1));
-        let summary = error_summary(&error.to_string());
-        self.emit_update(AgentUpdate::Info(format!(
-            "[compact retry {attempt}/{MAX_COMPACT_SUMMARY_RETRY_ATTEMPTS}] retrying in {:.1}s — {summary}",
-            delay.as_secs_f64()
-        )));
-        tokio::time::sleep(delay).await;
-        true
-    }
-
-    fn remember_recent_file(&mut self, path: &str) {
-        self.runtime
-            .compact_state
-            .recent_files
-            .retain(|existing| existing != path);
-        self.runtime
-            .compact_state
-            .recent_files
-            .push(path.to_string());
-        if self.runtime.compact_state.recent_files.len() > 5 {
-            let overflow = self.runtime.compact_state.recent_files.len() - 5;
-            self.runtime.compact_state.recent_files.drain(0..overflow);
-        }
-    }
-
+    #[cfg(test)]
     fn build_system_prompt(&mut self) -> Result<String> {
         if let AgentSystemPrompt::Static(system_prompt) = &self.system_prompt {
             return Ok(system_prompt.clone());
@@ -2865,6 +1808,7 @@ impl Agent {
     ///
     /// Only the index is injected; topic bodies are fetched on demand with the
     /// `load_memory` tool. See `crate::memory` for why.
+    #[cfg(test)]
     fn load_memory_prompt(&self) -> Result<String> {
         self.tool_context
             .memory_manager
@@ -2874,44 +1818,12 @@ impl Agent {
     }
 }
 
-/// Extracts a mutable text target from a user message for prompt hooks.
-///
-/// Text-only mutation: `Text` content targets the whole string; `Blocks`
-/// content targets the first text block (non-text blocks are preserved). A
-/// message with no text block yields `None` and hooks are skipped.
-fn user_text_target(message: &mut Message) -> Option<&mut String> {
-    match &mut message.content {
-        MessageContent::Text { content } => Some(content),
-        MessageContent::Blocks { content } => content.iter_mut().find_map(|block| {
-            if let ContentBlock::Text { text } = block {
-                Some(text)
-            } else {
-                None
-            }
-        }),
-    }
-}
-
-/// Runs [`Hook::UserPromptSubmit`] hooks on the incoming user message.
-///
-/// Returns `HookControl::Block(reason)` when a hook vetoes the prompt — the
-/// caller must drop the message (Claude Code semantics: a blocked prompt is
-/// not sent). Hooks append `additionalContext` to the prompt text on
-/// `Continue`.
-async fn apply_user_prompt_hooks(agent: &mut Agent, message: &mut Message) -> Result<HookControl> {
-    let Some(text) = user_text_target(message) else {
-        return Ok(HookControl::Continue);
-    };
-    let control = invoke_hooks!(UserPromptSubmit, agent, text)?;
-    Ok(control)
-}
-
 /// Build the dynamic-context block that appears after `=== DYNAMIC_BOUNDARY ===`.
 ///
 /// The directory snapshot is expensive to compute and its output must be
 /// byte-for-byte identical across requests so that DeepSeek's prefix KV-cache
 /// can hit.  We compute it once per session and reuse the cached string.
-fn load_dynamic_context(
+pub(crate) fn load_dynamic_context(
     workdir: &Path,
     cached_snapshot: &mut Option<String>,
     snapshot_limit: usize,
@@ -2948,14 +1860,6 @@ fn load_dynamic_context(
     }
 
     lines.join("\n")
-}
-
-/// Bounded display for a compaction id in user-facing diagnostics: only a
-/// short prefix is shown. The full id is retained inside the provider state
-/// and SQLite metadata; it is never echoed into Info lines.
-fn compact_id_display(id: &str) -> String {
-    const MAX_ID_CHARS: usize = 12;
-    id.chars().take(MAX_ID_CHARS).collect()
 }
 
 /// Directory-only workspace snapshot for the system prompt.
@@ -3066,7 +1970,10 @@ fn snapshot_dir(root: &Path, max_items: usize) -> Option<String> {
 /// Return a session-cached markdown section, computing it once on first use.
 ///
 /// Empty string is still cached so missing files do not re-stat every turn.
-fn cached_md_section(cached: &mut Option<String>, compute: impl FnOnce() -> String) -> String {
+pub(crate) fn cached_md_section(
+    cached: &mut Option<String>,
+    compute: impl FnOnce() -> String,
+) -> String {
     if let Some(hit) = cached.as_ref() {
         return hit.clone();
     }
@@ -3075,7 +1982,7 @@ fn cached_md_section(cached: &mut Option<String>, compute: impl FnOnce() -> Stri
     value
 }
 
-fn assemble_agents_md_prompt(
+pub(crate) fn assemble_agents_md_prompt(
     workdir: &Path,
     sources: &crate::config::InstructionSources,
 ) -> String {
@@ -3122,18 +2029,17 @@ fn assemble_agents_md_prompt(
 #[cfg(test)]
 mod tests {
     use sqlx::Row;
+    use tact_agent_api::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin};
     use tact_llm::{
-        ContentBlock, LlmProvider, Message, MessageContent, MessageKind, MockClient,
-        ProviderConversationState, ProviderKind, Role, StopReason,
+        ContentBlock, CreateMessageParams, LlmError, LlmProvider, Message, MessageContent,
+        MessageKind, MockClient, ProviderConversationState, ProviderKind, Role, StopReason,
     };
     use wiremock::matchers::{method, path};
     use wiremock::{Mock, MockServer, ResponseTemplate};
 
     use super::*;
-    use crate::extract_text;
     use crate::store::SessionStore;
     use crate::tool::test_support::test_context;
-    use serde_json::Value;
 
     fn ensure_config() {
         crate::config::test_support::install_default();
@@ -3143,6 +2049,16 @@ mod tests {
         ContentBlock::Text {
             text: content.to_string(),
         }
+    }
+
+    /// Hash the canonical message shape the kernel sends to the provider.
+    fn wire_context_hash(messages: &[Message]) -> String {
+        let canonical = messages
+            .iter()
+            .map(tact_llm::neutral::agent_message)
+            .map(|message| tact_llm::neutral::llm_message(&message))
+            .collect::<Vec<_>>();
+        tact_llm::context_hash(&canonical).unwrap()
     }
 
     /// Blocks of a message (`MessageContent::Text` carries none).
@@ -3325,6 +2241,131 @@ mod tests {
         );
     }
 
+    fn assert_kernel_prompt_matches_legacy(agent: &mut Agent) -> String {
+        let legacy = agent.build_system_prompt().unwrap();
+        let assembler = agent.kernel_prompt_assembler();
+        let transcript = agent
+            .runtime
+            .context
+            .iter()
+            .map(tact_llm::neutral::agent_message)
+            .collect::<Vec<_>>();
+        let capabilities = tact_agent_api::ModelCapabilities {
+            model: agent.agent_settings.model.clone(),
+            context_window: agent.model_context_window(),
+            max_output_tokens: agent.max_tokens(),
+            supports_streaming: true,
+            supports_native_compaction: agent.native_compaction_available(),
+        };
+        let session = tact_agent_api::SessionRef::new("prompt-parity");
+        let state = tact_agent_api::ContextView {
+            session: &session,
+            transcript: &transcript,
+            cursor: None,
+            total_turns: 0,
+            max_total_turns: None,
+            last_token_total: Some(agent.runtime.last_token_total),
+            pending_inputs: &[],
+            capabilities: &capabilities,
+            remaining_turns: None,
+        };
+        let kernel = assembler.build(&state).unwrap();
+        assert_eq!(kernel, legacy);
+        kernel
+    }
+
+    #[test]
+    fn kernel_prompt_assembler_matches_legacy_chat_completions_prompt() {
+        ensure_config();
+        let mut agent = chat_completions_test_agent("kernel_prompt_chat_parity");
+        agent.system_prompt = AgentSystemPrompt::Dynamic;
+        agent.agent_settings.model_context_window = 200_000;
+        agent.runtime.last_token_total = 130_000;
+
+        let prompt = assert_kernel_prompt_matches_legacy(&mut agent);
+        assert!(prompt.contains("spawn_subagent"), "{prompt}");
+        assert!(
+            !prompt.contains("Skill loading policy for this Responses request."),
+            "{prompt}"
+        );
+    }
+
+    #[test]
+    fn kernel_prompt_assembler_keeps_responses_template_without_native_compaction() {
+        ensure_config();
+        let agent = responses_test_agent(
+            "kernel_prompt_responses_parity",
+            "https://example.invalid/v1",
+        )
+        .with_provider_kind(ProviderKind::DeepSeek);
+        let mut agent = agent;
+        agent.system_prompt = AgentSystemPrompt::Dynamic;
+
+        let prompt = assert_kernel_prompt_matches_legacy(&mut agent);
+        assert!(
+            prompt.contains("Skill loading policy for this Responses request."),
+            "{prompt}"
+        );
+        assert!(!agent.native_compaction_available());
+    }
+
+    #[tokio::test]
+    async fn command_compaction_uses_kernel_owned_replacement_and_events() {
+        ensure_config();
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("kernel command summary")],
+            Some(StopReason::EndTurn),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("kernel_command_compaction"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".into()),
+        )
+        .with_ui_channel(tx);
+        agent.runtime.context = vec![
+            Message::new_text(Role::User, "task"),
+            Message::new_text(Role::Assistant, "result"),
+        ];
+
+        agent
+            .compact_history_with_trigger(CompactTrigger::Command, None)
+            .await
+            .unwrap();
+
+        assert!(agent.runtime.compact_state.has_compacted);
+        assert_eq!(
+            agent.runtime.session_start_source,
+            SessionStartSource::Compact
+        );
+        assert!(agent.runtime.session_start_hooks_pending);
+        assert!(
+            agent
+                .runtime
+                .context
+                .iter()
+                .any(|message| message.kind == MessageKind::Summary),
+            "{:?}",
+            agent.runtime.context
+        );
+        let mut updates = Vec::new();
+        while let Ok(update) = rx.try_recv() {
+            updates.push(update);
+        }
+        assert!(
+            updates
+                .iter()
+                .any(|update| matches!(update, AgentUpdate::Info(text) if text.contains("Compaction complete (Command)."))),
+            "{updates:?}"
+        );
+    }
+
     #[tokio::test]
     async fn a_server_that_grows_its_tool_list_reaches_the_next_request() {
         // The agent sends a *cached* snapshot, so a refresh has to do both
@@ -3400,6 +2441,104 @@ mod tests {
         assert!(names(&agent).contains(&"mcp__bm__recall".to_string()));
     }
 
+    #[tokio::test]
+    async fn kernel_refreshes_a_mid_turn_mcp_catalog_before_the_next_request() {
+        ensure_config();
+        use std::borrow::Cow;
+        use std::sync::{
+            Arc,
+            atomic::{AtomicBool, Ordering},
+        };
+
+        use rmcp::model::{Content, JsonObject, Tool as McpTool};
+
+        let tool = |name: &'static str| McpTool {
+            name: Cow::Borrowed(name),
+            title: None,
+            description: None,
+            input_schema: Arc::new(JsonObject::new()),
+            output_schema: None,
+            annotations: None,
+            execution: None,
+            icons: None,
+            meta: None,
+        };
+        let service = Arc::new(crate::mcp::MockMcpService::new(
+            vec![tool("search")],
+            |_| {
+                Ok(rmcp::model::CallToolResult::success(vec![Content::text(
+                    "ok",
+                )]))
+            },
+        ));
+        let mut mcp = crate::mcp::MCPToolRouter::new();
+        mcp.register_client(crate::mcp::McpClient::with_service(
+            "bm",
+            vec![tool("search")],
+            service.clone(),
+        ));
+
+        let first_saw_recall = Arc::new(AtomicBool::new(false));
+        let first_saw_recall_for_mock = first_saw_recall.clone();
+        let service_for_mock = service.clone();
+        let mock = MockClient::with_responder(move |request, idx| {
+            let names = request
+                .tools
+                .as_ref()
+                .into_iter()
+                .flatten()
+                .map(|tool| tool.name.as_str())
+                .collect::<Vec<_>>();
+            match idx {
+                0 => {
+                    first_saw_recall_for_mock
+                        .store(names.contains(&"mcp__bm__recall"), Ordering::SeqCst);
+                    service_for_mock.set_tools(vec![tool("search"), tool("recall")]);
+                    service_for_mock.announce_tools_changed();
+                    Ok((
+                        vec![ContentBlock::ToolUse {
+                            id: "mcp-search".into(),
+                            name: "mcp__bm__search".into(),
+                            input: serde_json::json!({}),
+                        }],
+                        Some(StopReason::ToolUse),
+                        None,
+                    ))
+                }
+                1 => {
+                    assert!(
+                        names.contains(&"mcp__bm__recall"),
+                        "the catalog change must reach the very next request: {names:?}"
+                    );
+                    Ok((
+                        vec![make_text_block("refreshed")],
+                        Some(StopReason::EndTurn),
+                        None,
+                    ))
+                }
+                other => panic!("unexpected request {other}"),
+            }
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("kernel_mcp_tool_list_changed"),
+            crate::tool::toolset(),
+            mcp,
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "search")))
+            .await
+            .expect("kernel activation");
+
+        assert_eq!(outcome.stop, AgentLoopStop::Completed);
+        assert!(agent.kernel_activations_for_test() >= 1);
+        assert!(!first_saw_recall.load(Ordering::SeqCst));
+    }
+
     #[test]
     fn the_resource_tools_are_offered_only_with_a_connected_server() {
         let mut mcp = crate::mcp::MCPToolRouter::new();
@@ -3439,7 +2578,7 @@ mod tests {
 
         // No servers: the names must disappear, or the model gets a tool whose
         // only possible answer is "no MCP servers are connected".
-        agent.mcp_router = crate::mcp::MCPToolRouter::new();
+        agent.mcp_router = McpCatalogHandle::new(crate::mcp::MCPToolRouter::new());
         agent.rebuild_cached_tool_specs();
         let names: Vec<String> = agent
             .all_tool_specs()
@@ -3584,6 +2723,147 @@ mod tests {
 
     fn chat_completions_test_agent(context_name: &str) -> Agent {
         chat_completions_test_agent_for(context_name, test_context(context_name))
+    }
+
+    #[test]
+    fn facade_state_guard_restores_every_owned_sidecar_field() {
+        ensure_config();
+        let mut agent = chat_completions_test_agent("facade_state_guard");
+        agent.runtime.context = vec![Message::new_text(Role::User, "before")];
+        agent.turns_taken = 3;
+        agent.runtime.last_token_total = 7;
+        agent.runtime.first_message_db_id = 11;
+        agent.runtime.last_message_db_id = 20;
+        agent.runtime.llm_call_last_message_id = 19;
+        agent.runtime.compact_state.has_compacted = true;
+        agent.runtime.compact_state.last_summary = Some("summary".into());
+        agent.runtime.compact_state.recent_files = vec!["src/lib.rs".into()];
+        agent.runtime.recovery_state.transport_attempts = 2;
+        agent.runtime.recovery_state.compact_attempts = 1;
+        agent.runtime.recovery_state.continuation_attempts = 3;
+        agent.runtime.goal_yield_reason = Some(GoalYieldReason::NeedsUser);
+        agent.max_turns_reached = true;
+        agent.tool_use_counter = 9;
+        agent.runtime.interrupt_hooks_fired = true;
+        agent.runtime.session_start_hooks_pending = true;
+        agent.runtime.session_start_source = SessionStartSource::Resume;
+        agent.runtime.pending_session_context =
+            vec![HookContextChunk::new(Some("startup"), "initial")];
+        agent.runtime.cached_dir_snapshot = Some("dirs".into());
+        agent.runtime.cached_agents_md = Some("agents".into());
+
+        let expected_compact_state = agent.runtime.compact_state.clone();
+        let receipts = FacadeReceiptTracker::new(agent.facade_receipts());
+        let mut guard = FacadeStateGuard::take(&mut agent, receipts.clone());
+        {
+            let state = guard.state_mut();
+            state.total_turns = 4;
+            state.last_token_total = Some(42);
+            state
+                .transcript
+                .push(tact_llm::neutral::agent_message(&Message::new_text(
+                    Role::Assistant,
+                    "after",
+                )));
+        }
+        receipts.record_append(
+            &tact_llm::neutral::agent_message(&Message::new_text(Role::Assistant, "after")),
+            tact_agent_api::MessageRange { start: 21, end: 21 },
+        );
+        guard.finish_activation(
+            false,
+            SessionStartSource::Compact,
+            vec![HookContextChunk::new(Some("request"), "remaining")],
+            expected_compact_state,
+            PromptCaches {
+                directory_snapshot: Some("dirs-next".into()),
+                agents_md: Some("agents-next".into()),
+            },
+        );
+        guard.restore();
+        drop(guard);
+
+        assert_eq!(agent.turns_taken, 4);
+        assert_eq!(agent.runtime.last_token_total, 42);
+        assert_eq!(agent.runtime.context.len(), 2);
+        assert_eq!(agent.runtime.first_message_db_id, 11);
+        assert_eq!(agent.runtime.last_message_db_id, 21);
+        assert_eq!(agent.runtime.llm_call_last_message_id, 20);
+        assert!(agent.runtime.compact_state.has_compacted);
+        assert_eq!(
+            agent.runtime.compact_state.last_summary.as_deref(),
+            Some("summary")
+        );
+        assert_eq!(
+            agent.runtime.compact_state.recent_files,
+            ["src/lib.rs".to_string()]
+        );
+        assert_eq!(agent.runtime.recovery_state.transport_attempts, 2);
+        assert_eq!(agent.runtime.recovery_state.compact_attempts, 1);
+        assert_eq!(agent.runtime.recovery_state.continuation_attempts, 3);
+        assert_eq!(
+            agent.runtime.goal_yield_reason,
+            Some(GoalYieldReason::NeedsUser)
+        );
+        assert!(agent.max_turns_reached);
+        assert_eq!(agent.tool_use_counter, 9);
+        assert!(agent.runtime.interrupt_hooks_fired);
+        assert!(!agent.runtime.session_start_hooks_pending);
+        // `finish_activation` carries the compactor's post-run source back to
+        // the facade; a successful replacement intentionally moves it to
+        // Compact instead of restoring the pre-activation Resume value.
+        assert_eq!(
+            agent.runtime.session_start_source,
+            SessionStartSource::Compact
+        );
+        assert_eq!(
+            agent.runtime.pending_session_context,
+            [HookContextChunk::new(Some("request"), "remaining")]
+        );
+        assert_eq!(
+            agent.runtime.cached_dir_snapshot.as_deref(),
+            Some("dirs-next")
+        );
+        assert_eq!(
+            agent.runtime.cached_agents_md.as_deref(),
+            Some("agents-next")
+        );
+    }
+
+    #[test]
+    fn facade_state_guard_restores_on_unwind_and_keeps_persisted_ranges() {
+        ensure_config();
+        let mut agent = chat_completions_test_agent("facade_state_unwind");
+        agent.runtime.context = vec![Message::new_text(Role::User, "before")];
+        agent.turns_taken = 2;
+        agent.runtime.first_message_db_id = 3;
+        agent.runtime.last_message_db_id = 4;
+        agent.runtime.llm_call_last_message_id = 4;
+        agent.tool_use_counter = 5;
+
+        let receipts = FacadeReceiptTracker::new(agent.facade_receipts());
+        let mut guard = FacadeStateGuard::take(&mut agent, receipts.clone());
+        guard.state_mut().transcript.push(AgentMessage::text(
+            AgentRole::Assistant,
+            MessageOrigin::Assistant,
+            "persisted before panic",
+        ));
+        receipts.record_append(
+            &AgentMessage::text(
+                AgentRole::Assistant,
+                MessageOrigin::Assistant,
+                "persisted before panic",
+            ),
+            tact_agent_api::MessageRange { start: 5, end: 5 },
+        );
+        drop(guard);
+
+        assert_eq!(agent.runtime.context.len(), 2);
+        assert_eq!(agent.turns_taken, 2);
+        assert_eq!(agent.tool_use_counter, 5);
+        assert_eq!(agent.runtime.first_message_db_id, 3);
+        assert_eq!(agent.runtime.last_message_db_id, 5);
+        assert_eq!(agent.runtime.llm_call_last_message_id, 4);
     }
 
     /// The same agent, but built over a caller-supplied context so a test can
@@ -4291,49 +3571,6 @@ mod tests {
     }
 
     #[test]
-    fn compact_response_note_renders_the_providers_numbers() {
-        let usage = TokenUsageInfo {
-            prompt: 23_470,
-            completion: 4_000,
-            total: 27_470,
-            prompt_cache_hit_tokens: 0,
-            prompt_cache_miss_tokens: 23_470,
-            reasoning_tokens: 4_000,
-        };
-        assert_eq!(
-            compact_response_note(Some(&StopReason::MaxTokens), Some(&usage)),
-            "stop=max_tokens, prompt 23470, completion 4000 (reasoning 4000), cache 0/23470"
-        );
-        // No usage is named, never invented.
-        assert_eq!(
-            compact_response_note(Some(&StopReason::EndTurn), None),
-            "stop=end_turn, no usage reported"
-        );
-        assert_eq!(
-            compact_response_note(None, None),
-            "stop=none, no usage reported"
-        );
-        // An unrecognized provider value keeps its raw spelling.
-        assert_eq!(
-            compact_response_note(Some(&StopReason::Unknown("paused".into())), None),
-            "stop=unknown(paused), no usage reported"
-        );
-    }
-
-    #[test]
-    fn compact_truncation_note_labels_both_units() {
-        assert_eq!(
-            compact_truncation_note(Some(4_000), 15_314),
-            "4000 reasoning tokens, thinking block 15314 bytes"
-        );
-        // Without usage the note names only what it can see.
-        assert_eq!(
-            compact_truncation_note(None, 15_314),
-            "thinking block 15314 bytes"
-        );
-    }
-
-    #[test]
     fn compact_summary_envelope_ceiling_leaves_room_for_the_instructions() {
         // No window → no ceiling.
         assert_eq!(compact_summary_envelope_ceiling(0), u32::MAX);
@@ -4705,6 +3942,15 @@ mod tests {
             Message::new_text(Role::User, "old user turn"),
             Message::new_text(Role::Assistant, "old assistant turn"),
         ];
+        // Provider state hashes the neutral message representation that the
+        // kernel sends. A Message::new_text round-trips as one text block, so
+        // hashing the original Text shorthand would make this fixture stale
+        // before the usage-failure path is reached.
+        let old_wire_messages = old_messages
+            .iter()
+            .map(tact_llm::neutral::agent_message)
+            .map(|message| tact_llm::neutral::llm_message(&message))
+            .collect::<Vec<_>>();
         let old_state =
             ProviderConversationState::OpenAiResponses(tact_llm::ResponsesConversationState {
                 version: 1,
@@ -4715,7 +3961,7 @@ mod tests {
                 compaction_id: Some("cmp_old".to_string()),
                 is_compacted: true,
                 logical_message_count: 2,
-                logical_context_hash: tact_llm::context_hash(&old_messages).unwrap(),
+                logical_context_hash: tact_llm::context_hash(&old_wire_messages).unwrap(),
             });
         sqlite
             .replace_session_messages_and_provider_state(
@@ -4951,41 +4197,6 @@ mod tests {
         assert!(!agent.auto_compact_due(0));
     }
 
-    /// A hook that prints more than the budget gets its output preserved on
-    /// disk and previewed in context (Codex's `HookOutputSpiller`), so one
-    /// talkative plugin cannot fill the context window.
-    #[test]
-    fn an_oversized_hook_briefing_is_spilled_and_previewed() {
-        let session = "spill-test";
-        assert_eq!(spill_hook_context("brief", session), "brief");
-
-        let big = "graph node ".repeat(4 * HOOK_CONTEXT_TOKEN_LIMIT);
-        let text = spill_hook_context(&big, session);
-
-        assert!(
-            text.starts_with("graph node "),
-            "the head survives: {:?}",
-            &text[..24]
-        );
-        assert!(text.contains("Full hook output saved to: "));
-        assert!(
-            approx_text_tokens(&text) <= HOOK_CONTEXT_TOKEN_LIMIT + 32,
-            "the preview stays inside the budget: {} tokens",
-            approx_text_tokens(&text)
-        );
-
-        let path = text
-            .split("Full hook output saved to: ")
-            .nth(1)
-            .expect("path footer")
-            .trim();
-        assert_eq!(
-            std::fs::read_to_string(path).expect("the full text is on disk"),
-            big
-        );
-        std::fs::remove_file(path).ok();
-    }
-
     #[tokio::test]
     async fn responses_agent_loop_passes_and_commits_provider_state() {
         ensure_config();
@@ -5053,7 +4264,7 @@ mod tests {
         assert_eq!(state.logical_message_count, 2);
         assert_eq!(
             state.logical_context_hash,
-            tact_llm::context_hash(&agent.runtime.context).unwrap(),
+            wire_context_hash(&agent.runtime.context),
             "committed anchor must cover the post-assistant logical context"
         );
         assert!(!state.is_compacted);
@@ -5079,6 +4290,196 @@ mod tests {
             "one user message converted for the first request"
         );
         assert_eq!(input[0]["role"], "user");
+    }
+
+    #[tokio::test]
+    async fn kernel_activation_uses_direct_facade_provider_state_mutations() {
+        ensure_config();
+        let server = MockServer::start().await;
+        let completed = serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 1,
+            "response": {
+                "id": "resp_direct_state",
+                "object": "response",
+                "created_at": 1,
+                "completed_at": 2,
+                "status": "completed",
+                "model": "gpt-5",
+                "output": [{
+                    "type": "message",
+                    "id": "msg_direct_state",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{
+                        "type": "output_text",
+                        "annotations": [],
+                        "logprobs": null,
+                        "text": "done"
+                    }]
+                }],
+                "usage": {
+                    "input_tokens": 2,
+                    "input_tokens_details": { "cached_tokens": 0 },
+                    "output_tokens": 1,
+                    "output_tokens_details": { "reasoning_tokens": 0 },
+                    "total_tokens": 3
+                }
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(format!("data: {completed}\n\n")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let mut agent = responses_test_agent("direct_provider_state", &server.uri());
+        agent.runtime.provider_state = Some(ProviderConversationState::OpenAiResponses(
+            tact_llm::ResponsesConversationState {
+                version: 1,
+                provider: "openai_responses".to_string(),
+                base_url: server.uri(),
+                model: agent.agent_settings.model.clone(),
+                input_items: vec![serde_json::json!({
+                    "type": "message",
+                    "role": "user",
+                    "content": [{
+                        "type": "input_text",
+                        "text": "DIRECT PROVIDER STATE"
+                    }]
+                })],
+                compaction_id: None,
+                is_compacted: false,
+                logical_message_count: 0,
+                logical_context_hash: tact_llm::context_hash(&[]).unwrap(),
+            },
+        ));
+
+        agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "new turn")))
+            .await
+            .expect("kernel activation with direct provider state completes");
+        assert!(agent.kernel_activations_for_test() >= 1);
+
+        let requests = server.received_requests().await.expect("received requests");
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests[0].body).expect("request body is JSON");
+        assert!(
+            body["input"]
+                .as_array()
+                .is_some_and(|items| items.iter().any(|item| {
+                    item["content"].as_array().is_some_and(|content| {
+                        content
+                            .iter()
+                            .any(|part| part["text"].as_str() == Some("DIRECT PROVIDER STATE"))
+                    })
+                })),
+            "the directly mutated provider baseline must be sent: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn cancellation_restores_direct_facade_context_and_provider_state() {
+        ensure_config();
+        const DIRECT_CONTEXT: &str = "DIRECT CANCEL CONTEXT";
+        let mut agent = chat_completions_test_agent("cancel_restores_facade_state");
+        let provider_state =
+            ProviderConversationState::OpenAiResponses(tact_llm::ResponsesConversationState {
+                version: 1,
+                provider: "openai_responses".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                model: "mock-model".to_string(),
+                input_items: vec![serde_json::json!({"type": "message", "id": "cancel"})],
+                compaction_id: Some("cancel-state".to_string()),
+                is_compacted: true,
+                logical_message_count: 0,
+                logical_context_hash: tact_llm::context_hash(&[]).unwrap(),
+            });
+        agent.runtime.context = vec![Message::new_text(Role::User, DIRECT_CONTEXT)];
+        agent.runtime.provider_state = Some(provider_state);
+        agent
+            .runtime
+            .cancel_flag
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "cancel me")))
+            .await
+            .expect("kernel cancellation returns Ok");
+
+        assert_eq!(outcome.stop, AgentLoopStop::Cancelled);
+        assert!(agent.kernel_activations_for_test() >= 1);
+        assert!(
+            agent
+                .runtime
+                .context
+                .iter()
+                .any(|message| crate::extract_text(&message.content) == DIRECT_CONTEXT)
+        );
+        let Some(ProviderConversationState::OpenAiResponses(state)) = &agent.runtime.provider_state
+        else {
+            panic!("direct provider state must survive cancellation");
+        };
+        assert_eq!(state.compaction_id.as_deref(), Some("cancel-state"));
+    }
+
+    #[tokio::test]
+    async fn kernel_error_restores_direct_facade_state_without_mid_run_fallback() {
+        ensure_config();
+        const DIRECT_CONTEXT: &str = "DIRECT ERROR CONTEXT";
+        let mock = MockClient::with_responder(|_request, _idx| {
+            Err(tact_llm::LlmError::Mock("forced kernel failure".into()))
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("error_restores_facade_state"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+        let provider_state =
+            ProviderConversationState::OpenAiResponses(tact_llm::ResponsesConversationState {
+                version: 1,
+                provider: "openai_responses".to_string(),
+                base_url: "https://api.openai.com/v1".to_string(),
+                model: "mock-model".to_string(),
+                input_items: vec![serde_json::json!({"type": "message", "id": "error"})],
+                compaction_id: Some("error-state".to_string()),
+                is_compacted: true,
+                logical_message_count: 0,
+                logical_context_hash: tact_llm::context_hash(&[]).unwrap(),
+            });
+        agent.runtime.context = vec![Message::new_text(Role::User, DIRECT_CONTEXT)];
+        agent.runtime.provider_state = Some(provider_state);
+
+        let error = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "fail")))
+            .await
+            .expect_err("kernel errors must surface");
+        assert!(format!("{error:#}").contains("forced kernel failure"));
+        assert!(agent.kernel_activations_for_test() >= 1);
+        assert!(
+            agent
+                .runtime
+                .context
+                .iter()
+                .any(|message| crate::extract_text(&message.content) == DIRECT_CONTEXT)
+        );
+        let Some(ProviderConversationState::OpenAiResponses(state)) = &agent.runtime.provider_state
+        else {
+            panic!("direct provider state must survive the error");
+        };
+        assert_eq!(state.compaction_id.as_deref(), Some("error-state"));
     }
 
     #[tokio::test]
@@ -5230,7 +4631,7 @@ mod tests {
         );
         assert_eq!(
             state.logical_context_hash,
-            tact_llm::context_hash(&agent.runtime.context).unwrap()
+            wire_context_hash(&agent.runtime.context)
         );
         assert_eq!(
             state.input_items.len(),
@@ -5499,6 +4900,195 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn kernel_activation_uses_direct_facade_context_mutations() {
+        ensure_config();
+        const DIRECT: &str = "DIRECT FACADE CONTEXT";
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen_for_responder = seen.clone();
+        let mock = MockClient::with_responder(move |request, _idx| {
+            *seen_for_responder.lock().unwrap() = request
+                .messages
+                .iter()
+                .map(|message| crate::extract_text(&message.content))
+                .collect();
+            Ok((
+                vec![make_text_block("done")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("direct_context_mutation"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+        agent.runtime.context = vec![Message::new_text(Role::User, DIRECT)];
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "next turn")))
+            .await
+            .expect("kernel activation completes");
+        assert!(agent.kernel_activations_for_test() >= 1);
+        assert_eq!(outcome.turns, 1);
+
+        let seen = seen.lock().unwrap();
+        assert_eq!(seen.first().map(String::as_str), Some(DIRECT));
+        assert!(seen.iter().any(|message| message == "next turn"));
+        drop(seen);
+        assert!(
+            agent
+                .runtime
+                .context
+                .iter()
+                .any(|message| crate::extract_text(&message.content) == DIRECT),
+            "the facade context must survive activation restore"
+        );
+    }
+
+    #[tokio::test]
+    async fn kernel_composition_uses_current_facade_model_and_sink_each_activation() {
+        ensure_config();
+        let first_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let first_calls_for_responder = first_calls.clone();
+        let first = MockClient::with_responder(move |_request, _idx| {
+            first_calls_for_responder.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok((
+                vec![make_text_block("first model")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+        let second_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let second_calls_for_responder = second_calls.clone();
+        let second = MockClient::with_responder(move |_request, _idx| {
+            second_calls_for_responder.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok((
+                vec![make_text_block("second model")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+
+        let (first_tx, mut first_rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut agent = Agent::new(
+            LlmProvider::Mock(first),
+            test_context("current_composition"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(first_tx);
+        agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "one")))
+            .await
+            .expect("first activation");
+        assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert!(matches!(
+            first_rx.try_recv(),
+            Ok(AgentUpdate::TurnStats { .. })
+        ));
+
+        let (second_tx, mut second_rx) = tokio::sync::mpsc::unbounded_channel();
+        agent.runtime.client = LlmProvider::Mock(second);
+        agent = agent.with_ui_channel(second_tx);
+        agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "two")))
+            .await
+            .expect("second activation");
+
+        assert_eq!(
+            second_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the next activation must use the replacement facade model"
+        );
+        assert!(
+            agent
+                .runtime
+                .context
+                .iter()
+                .any(|message| crate::extract_text(&message.content) == "second model")
+        );
+        assert!(matches!(
+            second_rx.try_recv(),
+            Ok(AgentUpdate::TurnStats { .. })
+        ));
+        assert!(
+            agent.runtime.events.has_ui(),
+            "the replacement answering sink must remain available"
+        );
+    }
+
+    #[tokio::test]
+    async fn empty_facade_context_loads_sqlite_history_before_kernel_transfer() {
+        ensure_config();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
+            .await
+            .unwrap();
+        store
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+        let history = vec![
+            Message::new_text(Role::User, "PERSISTED USER"),
+            Message::new_text(Role::Assistant, "PERSISTED ASSISTANT"),
+        ];
+        store
+            .replace_session_messages("session-1", &history)
+            .await
+            .unwrap();
+
+        let seen = std::sync::Arc::new(std::sync::Mutex::new(Vec::<String>::new()));
+        let seen_for_responder = seen.clone();
+        let mock = MockClient::with_responder(move |request, _idx| {
+            *seen_for_responder.lock().unwrap() = request
+                .messages
+                .iter()
+                .map(|message| crate::extract_text(&message.content))
+                .collect();
+            Ok((
+                vec![make_text_block("done")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("resume_before_transfer"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_session("session-1".to_string(), store);
+        assert!(agent.runtime.context.is_empty());
+
+        agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "new turn")))
+            .await
+            .expect("resumed kernel activation completes");
+        assert!(agent.kernel_activations_for_test() >= 1);
+
+        let seen = seen.lock().unwrap();
+        assert!(seen.iter().any(|message| message == "PERSISTED USER"));
+        assert!(seen.iter().any(|message| message == "PERSISTED ASSISTANT"));
+        assert!(seen.iter().any(|message| message == "new turn"));
+    }
+
+    #[tokio::test]
     async fn agent_loop_goal_request_input_yields_without_second_model_call() {
         ensure_config();
         use std::sync::{
@@ -5550,11 +5140,16 @@ mod tests {
             AgentSystemPrompt::Static("test".to_string()),
         );
 
-        agent
-            .agent_loop(Some(Message::new_text(Role::User, "continue the goal")))
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "continue the goal")))
             .await
-            .expect("agent_loop should yield cleanly for user input");
+            .expect("agent_loop_detailed should yield cleanly for user input");
 
+        assert!(agent.kernel_activations_for_test() >= 1);
+        assert_eq!(
+            outcome.stop,
+            AgentLoopStop::GoalYield(GoalYieldReason::NeedsUser)
+        );
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
         assert_eq!(
             agent.runtime.goal_yield_reason,
@@ -5651,6 +5246,7 @@ mod tests {
             .await
             .expect("agent_loop should finish");
 
+        assert!(agent.kernel_activations_for_test() >= 1);
         let systems = systems.lock().unwrap();
         assert_eq!(systems.len(), 2, "expected exactly two model calls");
         let first = systems[0].as_deref().unwrap_or_default();
@@ -5729,6 +5325,7 @@ mod tests {
             .await
             .expect("agent_loop should yield cleanly for user input");
 
+        assert!(agent.kernel_activations_for_test() >= 1);
         assert_eq!(request_count.load(Ordering::SeqCst), 1);
         assert_eq!(
             agent.runtime.goal_yield_reason,
@@ -5738,6 +5335,335 @@ mod tests {
             tool_result_for(&agent.runtime.context, "goal-max-1").as_deref(),
             Some("User input requested; yield to Runner.")
         );
+    }
+
+    #[tokio::test]
+    async fn max_tokens_yield_suppresses_later_tool_waves_before_continuation() {
+        ensure_config();
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let mut context = test_context("agent_loop_max_tokens_goal_yield_waves");
+        let goal = context
+            .goal_manager
+            .create(crate::goal::GoalCreate {
+                title: "Need user input".to_string(),
+                objective: "Pause for a user answer".to_string(),
+                criteria: vec![crate::goal::GoalCriterion::required_with_id(
+                    "criterion-1",
+                    "answer received",
+                )],
+            })
+            .await
+            .unwrap();
+        context.active_goal_id = Some(goal.id);
+        let marker = context.work_dir.join("later-wave-marker");
+        let marker_for_response = marker.clone();
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let requests_for_mock = requests.clone();
+        let mock = MockClient::with_responder(move |_request, idx| {
+            requests_for_mock.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(idx, 0, "a host yield must not buy a continuation request");
+            Ok((
+                vec![
+                    ContentBlock::ToolUse {
+                        id: "goal-yield".to_string(),
+                        name: "goal_request_input".to_string(),
+                        input: serde_json::json!({"question": "Which path?"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "later-wave".to_string(),
+                        name: "bash".to_string(),
+                        input: serde_json::json!({
+                            "command": format!(
+                                "printf should-not-run > {}",
+                                marker_for_response.display()
+                            )
+                        }),
+                    },
+                ],
+                Some(StopReason::MaxTokens),
+                None,
+            ))
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "continue the goal")))
+            .await
+            .expect("the truncated response should yield before continuing");
+
+        assert_eq!(
+            outcome.stop,
+            AgentLoopStop::GoalYield(GoalYieldReason::NeedsUser)
+        );
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+        assert!(
+            !marker.exists(),
+            "a call from a later wave must not execute after YieldToHost"
+        );
+        assert_eq!(
+            tool_result_for(&agent.runtime.context, "later-wave").as_deref(),
+            Some("Not executed: the run yielded to the host")
+        );
+    }
+
+    #[tokio::test]
+    async fn goal_completion_on_the_final_turn_returns_completed() {
+        ensure_config();
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let mut context = test_context("kernel_goal_final_completion");
+        let goal = context
+            .goal_manager
+            .create(crate::goal::GoalCreate {
+                title: "Finish".to_string(),
+                objective: "Finish on the final permitted turn".to_string(),
+                criteria: vec![crate::goal::GoalCriterion::required_with_id(
+                    "criterion-1",
+                    "complete",
+                )],
+            })
+            .await
+            .unwrap();
+        context.active_goal_id = Some(goal.id);
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let requests_for_mock = requests.clone();
+        let mock = MockClient::with_responder(move |_request, idx| {
+            requests_for_mock.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(idx, 0, "final completion must not buy another turn");
+            Ok((
+                vec![ContentBlock::ToolUse {
+                    id: "completion-1".to_string(),
+                    name: "goal_propose_completion".to_string(),
+                    input: serde_json::json!({
+                        "summary": "done",
+                        "claims": [{"criterion_id": "criterion-1", "claim": "complete"}]
+                    }),
+                }],
+                Some(StopReason::ToolUse),
+                None,
+            ))
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_max_turns(Some(1));
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "finish the goal")))
+            .await
+            .expect("final Goal completion should complete the activation");
+
+        assert!(agent.kernel_activations_for_test() >= 1);
+        assert_eq!(outcome.stop, AgentLoopStop::Completed);
+        assert_eq!(outcome.turns, 1);
+        assert_eq!(outcome.tool_calls, 1);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn non_final_goal_completion_continues_the_activation() {
+        ensure_config();
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let mut context = test_context("kernel_goal_non_final_completion");
+        let goal = context
+            .goal_manager
+            .create(crate::goal::GoalCreate {
+                title: "Keep going".to_string(),
+                objective: "Propose completion before the final turn".to_string(),
+                criteria: vec![crate::goal::GoalCriterion::required_with_id(
+                    "criterion-1",
+                    "complete",
+                )],
+            })
+            .await
+            .unwrap();
+        context.active_goal_id = Some(goal.id);
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let requests_for_mock = requests.clone();
+        let mock = MockClient::with_responder(move |_request, idx| {
+            requests_for_mock.fetch_add(1, Ordering::SeqCst);
+            if idx == 0 {
+                Ok((
+                    vec![ContentBlock::ToolUse {
+                        id: "completion-early".to_string(),
+                        name: "goal_propose_completion".to_string(),
+                        input: serde_json::json!({
+                            "summary": "proposed early",
+                            "claims": [{"criterion_id": "criterion-1", "claim": "complete"}]
+                        }),
+                    }],
+                    Some(StopReason::ToolUse),
+                    None,
+                ))
+            } else {
+                Ok((
+                    vec![make_text_block("continued")],
+                    Some(StopReason::EndTurn),
+                    None,
+                ))
+            }
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_max_turns(Some(2));
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "work the goal")))
+            .await
+            .expect("a non-final proposal should continue");
+
+        assert!(agent.kernel_activations_for_test() >= 1);
+        assert_eq!(outcome.stop, AgentLoopStop::Completed);
+        assert_eq!(outcome.turns, 2);
+        assert_eq!(requests.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn truncated_final_goal_turn_cannot_complete_the_goal() {
+        ensure_config();
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let mut context = test_context("kernel_goal_truncated_completion");
+        let goal = context
+            .goal_manager
+            .create(crate::goal::GoalCreate {
+                title: "Truncated".to_string(),
+                objective: "Do not complete from a truncated response".to_string(),
+                criteria: vec![crate::goal::GoalCriterion::required_with_id(
+                    "criterion-1",
+                    "complete",
+                )],
+            })
+            .await
+            .unwrap();
+        context.active_goal_id = Some(goal.id);
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let requests_for_mock = requests.clone();
+        let mock = MockClient::with_responder(move |_request, idx| {
+            requests_for_mock.fetch_add(1, Ordering::SeqCst);
+            assert_eq!(idx, 0, "the turn cap must stop after the truncated call");
+            Ok((
+                vec![ContentBlock::ToolUse {
+                    id: "completion-truncated".to_string(),
+                    name: "goal_propose_completion".to_string(),
+                    input: serde_json::json!({
+                        "summary": "truncated proposal",
+                        "claims": [{"criterion_id": "criterion-1", "claim": "complete"}]
+                    }),
+                }],
+                Some(StopReason::MaxTokens),
+                None,
+            ))
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_max_turns(Some(1));
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "finish the goal")))
+            .await
+            .expect("a truncated final Goal turn returns a bounded stop");
+
+        assert!(agent.kernel_activations_for_test() >= 1);
+        assert_eq!(outcome.stop, AgentLoopStop::MaxTurns);
+        assert_ne!(outcome.stop, AgentLoopStop::Completed);
+        assert_eq!(requests.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn goal_context_input_keeps_its_non_user_origin_on_the_kernel_path() {
+        ensure_config();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
+            .await
+            .unwrap();
+        store
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+        let mock = MockClient::new(vec![(
+            vec![make_text_block("done")],
+            Some(StopReason::EndTurn),
+        )]);
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("kernel_goal_context_origin"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_session("session-1".to_string(), store.clone());
+
+        agent
+            .agent_loop_detailed(Some(
+                Message::new_text(Role::User, "<goal-context>work</goal-context>")
+                    .with_kind(MessageKind::GoalContext),
+            ))
+            .await
+            .expect("Goal context activation completes");
+
+        let messages = store.load_agent_session("session-1").await.unwrap();
+        let goal = messages
+            .iter()
+            .find(|message| {
+                message.content.iter().any(|block| {
+                    matches!(
+                        block,
+                        AgentContentBlock::Text { text }
+                            if text.contains("<goal-context>work</goal-context>")
+                    )
+                })
+            })
+            .expect("Goal context was persisted");
+        assert_eq!(goal.origin, MessageOrigin::GoalContext);
     }
 
     #[tokio::test]
@@ -6205,6 +6131,12 @@ mod tests {
             .unwrap(),
             AgentSystemPrompt::Static("test".to_string()),
         );
+        let interrupt_calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let interrupt_calls_for_hook = interrupt_calls.clone();
+        agent = agent.with_interrupt(move |_agent| {
+            interrupt_calls_for_hook.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Box::pin(async { Ok(HookControl::Continue) })
+        });
         *flag_slot.lock().unwrap() = Some(agent.tool_context.cancel_flag.clone());
 
         let outcome = agent
@@ -6216,6 +6148,12 @@ mod tests {
             outcome.stop,
             AgentLoopStop::Cancelled,
             "a cancel that lands mid-stream must beat the EndTurn classification"
+        );
+        assert!(agent.kernel_activations_for_test() >= 1);
+        assert_eq!(
+            interrupt_calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the kernel cancellation outcome must dispatch Interrupt hooks once"
         );
     }
 
@@ -6249,6 +6187,143 @@ mod tests {
 
         assert_eq!(outcome.stop, AgentLoopStop::MaxTokens);
         assert_eq!(outcome.tool_calls, 0);
+        assert_eq!(agent.runtime.recovery_state.continuation_attempts, 3);
+    }
+
+    #[tokio::test]
+    async fn kernel_recovery_counts_are_visible_on_the_facade_after_success() {
+        ensure_config();
+        let context = test_context("kernel_recovery_success");
+        let mock = MockClient::with_responder(|_request, idx| match idx {
+            0 => Err(LlmError::Request("temporary connection failure".into())),
+            _ => Ok((
+                vec![make_text_block("recovered")],
+                Some(StopReason::EndTurn),
+                None,
+            )),
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .expect("the transient failure recovers");
+
+        assert_eq!(outcome.stop, AgentLoopStop::Completed);
+        assert_eq!(agent.runtime.recovery_state.transport_attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn kernel_recovery_counts_are_visible_on_the_facade_after_cancellation() {
+        ensure_config();
+        let context = test_context("kernel_recovery_cancellation");
+        let mock =
+            MockClient::with_responder(|_request, _idx| Err(LlmError::Request("retry".into())));
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        );
+        let cancel_flag = agent.runtime.cancel_flag.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            cancel_flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        });
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "hi")))
+            .await
+            .expect("cancellation still returns a typed outcome");
+
+        assert_eq!(outcome.stop, AgentLoopStop::Cancelled);
+        assert_eq!(agent.runtime.recovery_state.transport_attempts, 1);
+    }
+
+    #[tokio::test]
+    async fn max_tokens_tool_use_runs_manual_compaction_then_continues() {
+        ensure_config();
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+
+        let requests = Arc::new(AtomicUsize::new(0));
+        let requests_for_mock = requests.clone();
+        let mock = MockClient::with_responder(move |_request, idx| {
+            requests_for_mock.fetch_add(1, Ordering::SeqCst);
+            match idx {
+                0 => Ok((
+                    vec![ContentBlock::ToolUse {
+                        id: "compact-1".to_string(),
+                        name: "compact".to_string(),
+                        input: serde_json::json!({"focus": "keep the manual compaction"}),
+                    }],
+                    Some(StopReason::MaxTokens),
+                    None,
+                )),
+                1 => Ok((
+                    vec![make_text_block("compacted summary")],
+                    Some(StopReason::EndTurn),
+                    None,
+                )),
+                2 => Ok((
+                    vec![make_text_block("continued after compaction")],
+                    Some(StopReason::EndTurn),
+                    None,
+                )),
+                other => panic!("unexpected model request {other}"),
+            }
+        });
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("kernel_max_tokens_manual_compact"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx);
+
+        let outcome = agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "compact and continue")))
+            .await
+            .expect("manual compaction should precede continuation");
+
+        assert!(agent.kernel_activations_for_test() >= 1);
+        assert_eq!(outcome.stop, AgentLoopStop::Completed);
+        assert_eq!(outcome.tool_calls, 1);
+        assert_eq!(requests.load(Ordering::SeqCst), 3);
+        let mut saw_manual_compaction = false;
+        while let Ok(update) = rx.try_recv() {
+            if matches!(
+                update,
+                AgentUpdate::Info(message) if message.contains("Compaction complete (Manual)")
+            ) {
+                saw_manual_compaction = true;
+            }
+        }
+        assert!(
+            saw_manual_compaction,
+            "the kernel bridge must report the manual compaction"
+        );
     }
 
     #[tokio::test]
@@ -6536,7 +6611,7 @@ mod tests {
         )
         .with_session_start(move |agent, context| {
             let recorder = recorder.clone();
-            let source = agent.runtime.session_start_source;
+            let source = agent.session_start_source;
             context.push_additional_context(
                 Some("plugin demo"),
                 &format!("brief:{}", source.as_str()),
@@ -6802,30 +6877,6 @@ mod tests {
                 .any(|u| matches!(u, AgentUpdate::Info(msg) if msg.contains("refused"))),
             "expected Info about refusal, got: {updates:?}"
         );
-    }
-
-    #[test]
-    fn next_step_idx_increments() {
-        let context = test_context("next_step_idx");
-        let router = crate::tool::toolset();
-        let mcp = crate::mcp::MCPToolRouter::new();
-        let perm = crate::permission::PermissionManager::try_new(
-            crate::permission::PermissionMode::Default,
-        )
-        .unwrap();
-
-        let mut agent = Agent::new(
-            LlmProvider::Mock(MockClient::new(vec![])),
-            context,
-            router,
-            mcp,
-            perm,
-            AgentSystemPrompt::Static("test".to_string()),
-        );
-
-        assert_eq!(agent.next_step_idx(), 0);
-        assert_eq!(agent.next_step_idx(), 1);
-        assert_eq!(agent.next_step_idx(), 2);
     }
 
     #[test]
@@ -7145,6 +7196,15 @@ mod tests {
                 .any(|u| matches!(u, AgentUpdate::StepFinished { .. })),
             "a cancelled-before-execution tool must not report a finished step"
         );
+        assert!(agent.kernel_activations_for_test() >= 1);
+        assert_eq!(
+            updates
+                .iter()
+                .filter(|update| matches!(update, AgentUpdate::Info(text) if text == "Cancelled by user"))
+                .count(),
+            1,
+            "facade cancellation must emit one terminal notice"
+        );
 
         // Every persisted `ToolUse` has a matching `ToolResult`, carrying the
         // cancel reason.
@@ -7249,6 +7309,7 @@ mod tests {
             .await
             .expect("a cancelled loop returns Ok");
 
+        assert!(agent.kernel_activations_for_test() >= 1);
         let messages = store.load_session("session-1").await.unwrap();
         let (uses, results) = tool_pairing(&messages);
         assert_eq!(uses, vec!["t1".to_string(), "t2".to_string()]);
@@ -7339,6 +7400,7 @@ mod tests {
             .await
             .expect("a cancelled loop returns Ok");
 
+        assert!(agent.kernel_activations_for_test() >= 1);
         let messages = store.load_session("session-1").await.unwrap();
         let (uses, results) = tool_pairing(&messages);
         assert_eq!(uses, vec!["t1".to_string(), "t2".to_string()]);
@@ -7347,6 +7409,355 @@ mod tests {
             tool_result_for(&messages, "t1").as_deref(),
             Some("Cancelled by user"),
             "an approved call the cancel caught before execution is answered, not run"
+        );
+    }
+
+    #[tokio::test]
+    async fn facade_cancel_while_bash_is_in_flight_drains_and_pairs_the_result() {
+        ensure_config();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
+            .await
+            .unwrap();
+        store
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = test_context("cancel_during_bash");
+        tool_context.events = UpdateSink::for_ui(tx.clone());
+        let mock = MockClient::with_responder(|_request, idx| {
+            if idx > 0 {
+                return Ok((
+                    vec![make_text_block("done")],
+                    Some(StopReason::EndTurn),
+                    None,
+                ));
+            }
+            Ok((
+                vec![ContentBlock::ToolUse {
+                    id: "bash-1".into(),
+                    name: "bash".into(),
+                    input: serde_json::json!({
+                        "command": "printf started; sleep 0.2; printf finished"
+                    }),
+                }],
+                Some(StopReason::ToolUse),
+                None,
+            ))
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx)
+        .with_session("session-1".to_string(), store.clone());
+
+        let flag = agent.tool_context.cancel_flag.clone();
+        let listener = tokio::spawn(async move {
+            let mut updates = Vec::new();
+            while let Some(update) = rx.recv().await {
+                let cancelling = matches!(
+                    &update,
+                    AgentUpdate::Info(text) if text == "Cancelled by user"
+                );
+                if matches!(
+                    &update,
+                    AgentUpdate::ToolProgress { tool_id, .. } if tool_id == "bash-1"
+                ) {
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                updates.push(update);
+                if cancelling {
+                    break;
+                }
+            }
+            updates
+        });
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            agent.agent_loop_detailed(Some(Message::new_text(Role::User, "run it"))),
+        )
+        .await
+        .expect("in-flight bash cancellation must be bounded")
+        .expect("cancelled loop returns Ok");
+        assert_eq!(outcome.stop, AgentLoopStop::Cancelled);
+        assert!(agent.kernel_activations_for_test() >= 1);
+
+        let updates = tokio::time::timeout(std::time::Duration::from_secs(1), listener)
+            .await
+            .expect("cancellation notice must close the bounded update listener")
+            .expect("update listener");
+        assert_eq!(
+            updates
+                .iter()
+                .filter(|update| matches!(update, AgentUpdate::Info(text) if text == "Cancelled by user"))
+                .count(),
+            1
+        );
+        assert!(
+            updates.iter().any(|update| matches!(
+                update,
+                AgentUpdate::StepFinished { tool_id, .. } if tool_id == "bash-1"
+            )),
+            "the drained bash wave must produce a terminal tool event"
+        );
+
+        let messages = store.load_session("session-1").await.unwrap();
+        assert_eq!(
+            tool_pairing(&messages),
+            (vec!["bash-1".to_string()], vec!["bash-1".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn facade_cancel_while_another_tool_is_in_flight_drains_without_another_turn() {
+        ensure_config();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
+            .await
+            .unwrap();
+        store
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = test_context("cancel_during_sleep");
+        tool_context.events = UpdateSink::for_ui(tx.clone());
+        let mock = MockClient::with_responder(|_request, idx| {
+            if idx > 0 {
+                return Ok((
+                    vec![make_text_block("must not run")],
+                    Some(StopReason::EndTurn),
+                    None,
+                ));
+            }
+            Ok((
+                vec![ContentBlock::ToolUse {
+                    id: "sleep-1".into(),
+                    name: "sleep".into(),
+                    input: serde_json::json!({"ms": 200}),
+                }],
+                Some(StopReason::ToolUse),
+                None,
+            ))
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx)
+        .with_session("session-1".to_string(), store.clone());
+
+        let flag = agent.tool_context.cancel_flag.clone();
+        let listener = tokio::spawn(async move {
+            let mut updates = Vec::new();
+            while let Some(update) = rx.recv().await {
+                if matches!(
+                    &update,
+                    AgentUpdate::StepStarted { tool_id, .. } if tool_id == "sleep-1"
+                ) {
+                    tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                let cancelling = matches!(
+                    &update,
+                    AgentUpdate::Info(text) if text == "Cancelled by user"
+                );
+                updates.push(update);
+                if cancelling {
+                    break;
+                }
+            }
+            updates
+        });
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            agent.agent_loop_detailed(Some(Message::new_text(Role::User, "wait"))),
+        )
+        .await
+        .expect("in-flight sleep cancellation must be bounded")
+        .expect("cancelled loop returns Ok");
+        assert_eq!(outcome.stop, AgentLoopStop::Cancelled);
+        assert_eq!(
+            outcome.turns, 1,
+            "cancellation must not dispatch another turn"
+        );
+        assert!(agent.kernel_activations_for_test() >= 1);
+
+        let updates = tokio::time::timeout(std::time::Duration::from_secs(1), listener)
+            .await
+            .expect("cancellation notice must close the bounded update listener")
+            .expect("update listener");
+        assert!(
+            updates.iter().any(|update| matches!(
+                update,
+                AgentUpdate::StepFinished { .. } | AgentUpdate::StepFailed { .. }
+            )),
+            "the in-flight sleep must drain to a terminal tool event"
+        );
+
+        let messages = store.load_session("session-1").await.unwrap();
+        assert_eq!(
+            tool_pairing(&messages),
+            (vec!["sleep-1".to_string()], vec!["sleep-1".to_string()])
+        );
+    }
+
+    #[tokio::test]
+    async fn facade_cancel_between_waves_suppresses_later_side_effects_and_pairs_calls() {
+        ensure_config();
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
+            .await
+            .unwrap();
+        store
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let mut tool_context = test_context("cancel_between_waves");
+        tool_context.events = UpdateSink::for_ui(tx.clone());
+        let work_dir = tool_context.work_dir.clone();
+        let flag_slot: Arc<Mutex<Option<Arc<std::sync::atomic::AtomicBool>>>> =
+            Arc::new(Mutex::new(None));
+        let hook_flag = flag_slot.clone();
+        let mock = MockClient::with_responder(|_request, idx| {
+            if idx > 0 {
+                return Ok((
+                    vec![make_text_block("done")],
+                    Some(StopReason::EndTurn),
+                    None,
+                ));
+            }
+            Ok((
+                vec![
+                    ContentBlock::ToolUse {
+                        id: "w1".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({"command": "printf first > wave1.txt"}),
+                    },
+                    ContentBlock::ToolUse {
+                        id: "w2".into(),
+                        name: "bash".into(),
+                        input: serde_json::json!({"command": "printf second > wave2.txt"}),
+                    },
+                ],
+                Some(StopReason::ToolUse),
+                None,
+            ))
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            tool_context,
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(crate::permission::PermissionMode::Auto)
+                .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_ui_channel(tx)
+        .with_session("session-1".to_string(), store.clone())
+        .with_post_tool_hook(move |_view, tool, _result, _status| {
+            let flag_slot = hook_flag.clone();
+            Box::pin(async move {
+                if tool.id == "w1"
+                    && let Some(flag) = flag_slot.lock().unwrap().as_ref()
+                {
+                    flag.store(true, std::sync::atomic::Ordering::SeqCst);
+                }
+                Ok(HookControl::Continue)
+            })
+        });
+        *flag_slot.lock().unwrap() = Some(agent.tool_context.cancel_flag.clone());
+
+        let listener = tokio::spawn(async move {
+            let mut updates = Vec::new();
+            while let Some(update) = rx.recv().await {
+                let cancelling = matches!(
+                    &update,
+                    AgentUpdate::Info(text) if text == "Cancelled by user"
+                );
+                updates.push(update);
+                if cancelling {
+                    break;
+                }
+            }
+            updates
+        });
+
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(3),
+            agent.agent_loop_detailed(Some(Message::new_text(Role::User, "write twice"))),
+        )
+        .await
+        .expect("between-wave cancellation must be bounded")
+        .expect("cancelled loop returns Ok");
+        assert_eq!(outcome.stop, AgentLoopStop::Cancelled);
+        assert!(agent.kernel_activations_for_test() >= 1);
+
+        let updates = tokio::time::timeout(std::time::Duration::from_secs(1), listener)
+            .await
+            .expect("cancellation notice must close the bounded update listener")
+            .expect("update listener");
+        assert_eq!(
+            updates
+                .iter()
+                .filter(|update| matches!(
+                    update,
+                    AgentUpdate::StepFinished { tool_id, .. } if tool_id == "w1"
+                ))
+                .count(),
+            1
+        );
+        assert!(
+            !updates.iter().any(|update| matches!(
+                update,
+                AgentUpdate::StepFinished { tool_id, .. } if tool_id == "w2"
+            )),
+            "the later wave must not execute after cancellation"
+        );
+        assert!(
+            updates.iter().any(|update| matches!(
+                update,
+                AgentUpdate::StepFailed { tool_id, .. } if tool_id == "w2"
+            )),
+            "the suppressed call still needs one paired terminal result"
+        );
+
+        let messages = store.load_session("session-1").await.unwrap();
+        let (uses, results) = tool_pairing(&messages);
+        assert_eq!(uses, vec!["w1".to_string(), "w2".to_string()]);
+        assert_eq!(results, uses);
+        assert_eq!(
+            tool_result_for(&messages, "w2").as_deref(),
+            Some("Cancelled by user")
+        );
+        assert_eq!(
+            std::fs::read_to_string(work_dir.join("wave1.txt")).unwrap(),
+            "first"
+        );
+        assert!(
+            !work_dir.join("wave2.txt").exists(),
+            "the later wave must not reach the shell"
         );
     }
 
@@ -7566,7 +7977,7 @@ mod tests {
         let mock = MockClient::with_usage(vec![(
             vec![make_text_block("ok")],
             Some(StopReason::EndTurn),
-            usage.clone(),
+            crate::runtime::provider_token_usage(&usage),
         )]);
 
         let mut agent = Agent::new(
@@ -7807,6 +8218,211 @@ mod tests {
         assert!(saw_model_info, "set_thinking_budget must emit ModelInfo");
     }
 
+    async fn seed_unmatched_assistant_tool_calls(
+        store: &crate::store::DynSessionStore,
+        session_id: &str,
+        call_ids: &[&str],
+    ) {
+        let assistant = AgentMessage::new(
+            AgentRole::Assistant,
+            MessageOrigin::Assistant,
+            call_ids
+                .iter()
+                .map(|call_id| AgentContentBlock::ToolUse {
+                    id: (*call_id).to_string(),
+                    name: "read_file".to_string(),
+                    input: serde_json::json!({"path": "missing.txt"}),
+                })
+                .collect(),
+        );
+        store
+            .append_agent_message(session_id, &assistant, 0)
+            .await
+            .unwrap();
+    }
+
+    async fn assert_one_grouped_interrupted_result(
+        store: &crate::store::DynSessionStore,
+        session_id: &str,
+        expected_ids: &[&str],
+    ) {
+        let messages = store.load_agent_session(session_id).await.unwrap();
+        let grouped = messages
+            .iter()
+            .filter(|message| message.origin == MessageOrigin::ToolResult)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            grouped.len(),
+            1,
+            "crash reconciliation must persist one grouped result: {messages:?}"
+        );
+        assert_eq!(
+            grouped[0].tool_result_ids().collect::<Vec<_>>(),
+            expected_ids
+        );
+        assert!(
+            grouped[0].content.iter().all(|block| matches!(
+                block,
+                AgentContentBlock::ToolResult { content, .. }
+                    if content.contains("interrupted before result commit")
+            )),
+            "every missing call must carry the interrupted reason: {:?}",
+            grouped[0].content
+        );
+    }
+
+    #[tokio::test]
+    async fn local_session_reconciles_a_durable_unmatched_tool_call_before_the_request() {
+        ensure_config();
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
+            .await
+            .unwrap();
+        store
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+        seed_unmatched_assistant_tool_calls(&store, "session-1", &["orphan-1", "orphan-2"]).await;
+
+        let requests = std::sync::Arc::new(std::sync::Mutex::new(Vec::<Vec<Message>>::new()));
+        let captured = requests.clone();
+        let mock = MockClient::with_responder(move |request, _idx| {
+            captured
+                .lock()
+                .expect("request capture")
+                .push(request.messages.clone());
+            Ok((
+                vec![make_text_block("resumed")],
+                Some(StopReason::EndTurn),
+                None,
+            ))
+        });
+        let mut agent = Agent::new(
+            LlmProvider::Mock(mock),
+            test_context("local_crash_recovery"),
+            crate::tool::toolset(),
+            crate::mcp::MCPToolRouter::new(),
+            crate::permission::PermissionManager::try_new(
+                crate::permission::PermissionMode::Default,
+            )
+            .unwrap(),
+            AgentSystemPrompt::Static("test".to_string()),
+        )
+        .with_session("session-1".to_string(), store.clone());
+
+        agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "resume")))
+            .await
+            .expect("resumed local activation completes");
+
+        let first_request = requests
+            .lock()
+            .expect("request capture")
+            .first()
+            .cloned()
+            .expect("resumed request");
+        let (uses, results) = tool_pairing(&first_request);
+        assert_eq!(uses, ["orphan-1", "orphan-2"]);
+        assert_eq!(results, ["orphan-1", "orphan-2"]);
+        assert_eq!(
+            tool_pairing(&store.load_session("session-1").await.unwrap()),
+            (
+                vec!["orphan-1".to_string(), "orphan-2".to_string()],
+                vec!["orphan-1".to_string(), "orphan-2".to_string()]
+            )
+        );
+        assert_one_grouped_interrupted_result(&store, "session-1", &["orphan-1", "orphan-2"]).await;
+    }
+
+    #[tokio::test]
+    async fn responses_session_reconciles_a_durable_unmatched_tool_call_before_the_request() {
+        ensure_config();
+        let server = MockServer::start().await;
+        let completed = serde_json::json!({
+            "type": "response.completed",
+            "sequence_number": 1,
+            "response": {
+                "id": "resp_resume",
+                "object": "response",
+                "created_at": 1,
+                "completed_at": 2,
+                "status": "completed",
+                "model": "gpt-5",
+                "output": [{
+                    "type": "message",
+                    "id": "msg_resume",
+                    "role": "assistant",
+                    "status": "completed",
+                    "content": [{
+                        "type": "output_text",
+                        "annotations": [],
+                        "logprobs": null,
+                        "text": "resumed"
+                    }]
+                }],
+                "usage": {
+                    "input_tokens": 4,
+                    "input_tokens_details": { "cached_tokens": 0 },
+                    "output_tokens": 1,
+                    "output_tokens_details": { "reasoning_tokens": 0 },
+                    "total_tokens": 5
+                }
+            }
+        });
+        Mock::given(method("POST"))
+            .and(path("/responses"))
+            .respond_with(
+                ResponseTemplate::new(200)
+                    .insert_header("content-type", "text/event-stream")
+                    .set_body_string(format!("data: {completed}\n\n")),
+            )
+            .expect(1)
+            .mount(&server)
+            .await;
+
+        let dir = tempfile::tempdir().unwrap();
+        let store = crate::store::open_sqlite_session_store(&dir.path().join("session.db"))
+            .await
+            .unwrap();
+        store
+            .create_session("session-1", dir.path().to_str().unwrap(), "")
+            .await
+            .unwrap();
+        seed_unmatched_assistant_tool_calls(&store, "session-1", &["orphan-r1", "orphan-r2"]).await;
+
+        let mut agent = responses_test_agent("responses_crash_recovery", &server.uri())
+            .with_session("session-1".to_string(), store.clone());
+        agent
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "resume")))
+            .await
+            .expect("resumed Responses activation completes");
+
+        let requests = server.received_requests().await.expect("received requests");
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value =
+            serde_json::from_slice(&requests[0].body).expect("request body is JSON");
+        let outputs = body["input"]
+            .as_array()
+            .expect("Responses input")
+            .iter()
+            .filter(|item| item["type"] == "function_call_output")
+            .collect::<Vec<_>>();
+        assert_eq!(outputs.len(), 2, "both missing calls need outputs: {body}");
+        for call_id in ["orphan-r1", "orphan-r2"] {
+            assert!(
+                outputs.iter().any(|item| {
+                    item["call_id"] == call_id
+                        && item["output"].as_str().is_some_and(|output| {
+                            output.contains("interrupted before result commit")
+                        })
+                }),
+                "missing interrupted output for {call_id}: {body}"
+            );
+        }
+        assert_one_grouped_interrupted_result(&store, "session-1", &["orphan-r1", "orphan-r2"])
+            .await;
+    }
+
     #[tokio::test]
     async fn ensure_session_restores_matching_provider_state() {
         ensure_config();
@@ -7893,72 +8509,6 @@ mod tests {
             agent.runtime.provider_state.is_none(),
             "mismatched state must not be adopted"
         );
-    }
-
-    #[test]
-    fn user_text_target_mutates_text_and_first_text_block() {
-        let mut plain = Message::new_text(Role::User, "hello");
-        {
-            let target = user_text_target(&mut plain).expect("text target");
-            target.push_str(" world");
-        }
-        assert_eq!(extract_text(&plain.content), "hello world");
-
-        let mut blocks = Message {
-            role: Role::User,
-            content: MessageContent::Blocks {
-                content: vec![
-                    ContentBlock::Text {
-                        text: "first".into(),
-                    },
-                    ContentBlock::ToolUse {
-                        id: "t1".into(),
-                        name: "read_file".into(),
-                        input: Value::Null,
-                    },
-                    ContentBlock::Text {
-                        text: "second".into(),
-                    },
-                ],
-            },
-            kind: MessageKind::Normal,
-        };
-        {
-            let target = user_text_target(&mut blocks).expect("first text block");
-            target.push_str("-edited");
-        }
-        match &blocks.content {
-            MessageContent::Blocks { content } => {
-                assert_eq!(
-                    content
-                        .iter()
-                        .filter_map(|b| match b {
-                            ContentBlock::Text { text } => Some(text.clone()),
-                            _ => None,
-                        })
-                        .collect::<Vec<_>>(),
-                    vec!["first-edited".to_string(), "second".to_string()],
-                    "non-text blocks preserved, first text block edited"
-                );
-            }
-            _ => panic!("blocks content expected"),
-        }
-    }
-
-    #[test]
-    fn user_text_target_returns_none_without_text() {
-        let mut message = Message {
-            role: Role::User,
-            content: MessageContent::Blocks {
-                content: vec![ContentBlock::ToolUse {
-                    id: "t1".into(),
-                    name: "bash".into(),
-                    input: Value::Null,
-                }],
-            },
-            kind: MessageKind::Normal,
-        };
-        assert!(user_text_target(&mut message).is_none());
     }
 
     // ——— lifecycle hook wiring (Stop / SessionEnd / PreCompact / PostCompact) ———

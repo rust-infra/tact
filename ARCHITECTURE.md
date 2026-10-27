@@ -12,12 +12,15 @@ This project is a Cargo Workspace containing the following crates:
 
 | Directory | Package | Version | Responsibility |
 |---|---|---|---|
-| `crates/protocol` | `tact_protocol` | `0.1.0` (local) | Shared wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Also contains a legacy `Agent` implementation that is no longer used by the runtime. |
+| `crates/protocol` | `tact_protocol` | `0.1.0` (local) | Host/TUI wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Its `Agent` module is legacy and is not part of the runtime path. |
+| `crates/agent_api` | `tact_agent_api` | `1.1.42` (workspace) | Provider-neutral contracts for state, model streams, context, tools, gates, transcript/usage persistence, and events. No product or infrastructure implementation lives here. |
+| `crates/agent_core` | `tact_agent_core` | `1.1.42` (workspace) | Bounded, provider-neutral agent kernel. `AgentKernel::run` owns one activation over injected `KernelDeps`; it has no SQLite, MCP transport, provider SDK, or TUI dependency. |
 | `crates/tui` | `tui` | `0.1.0` (local) | Terminal UI built with `ratatui`. |
-| `crates/tact` | `tact` | `0.19.0` (workspace) | Agent runtime, tool router, MCP client, hooks, permissions, context compaction (library). |
-| `crates/tact-ui` | `tact-ui` | `0.19.0` (workspace) | CLI binary: interactive TUI and `headless` subcommand; wires `tact` + `tui`. |
-| `crates/tact_llm` | `tact_llm` | `0.19.0` (workspace) | Shared LLM provider layer (Anthropic/OpenAI/DeepSeek/Kimi adapters, request conversion, provider/env resolution). |
-| `crates/tool_refactor_macros` | `tool_refactor_macros` | `0.19.0` (workspace) | Proc-macro `#[tool(name = "...", description = "...")]` that generates `Tool` trait implementations from async functions. |
+| `crates/agent_tui_kit` | `agent_tui_kit` | `0.1.0` (local) | Reusable host-protocol rendering kit for thinking/tool/log/popup widgets. |
+| `crates/tact` | `tact` | `1.1.42` (workspace) | Product composition root and compatibility facade: tool router, MCP client, hooks, permissions, prompt/compaction policy, persistence adapters, and kernel wiring. |
+| `crates/tact-ui` | `tact-ui` | `1.1.42` (workspace) | CLI/driver: interactive TUI and `headless` subcommand. It owns `TaskComplete`, Goal Runner, session bootstrapping, and host command routing. |
+| `crates/tact_llm` | `tact_llm` | `1.1.42` (workspace) | LLM provider layer and `tact_agent_api::ModelPort` implementation (Anthropic/OpenAI/DeepSeek/Kimi adapters, request conversion, provider/env resolution). |
+| `crates/tool_refactor_macros` | `tool_refactor_macros` | `1.1.42` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions. |
 
 Dependency graph:
 
@@ -25,12 +28,28 @@ Dependency graph:
 flowchart TB
     tact_ui["tact-ui"] --> tact
     tact_ui --> tui
-    tact --> tact_protocol
-    tact --> tact_llm
-    tact --> tool_refactor_macros
-    tact_llm --> tact_protocol
+    tact_ui --> tact_llm
+    tact_ui --> tact_protocol
+    tui --> agent_tui_kit
+    tui --> tact
+    tui --> tact_llm
     tui --> tact_protocol
+    agent_tui_kit --> tact_protocol
+    tact --> tact_agent_api["tact_agent_api"]
+    tact --> tact_agent_core["tact_agent_core"]
+    tact --> tact_llm
+    tact --> tact_protocol
+    tact --> tool_refactor_macros
+    tact_agent_core --> tact_agent_api
+    tact_llm --> tact_agent_api
 ```
+
+`tact_agent_api` defines ports; `tact_agent_core` runs the control loop; `tact`
+implements the ports with product adapters and constructs `KernelDeps`.
+"Plugin style" here means **constructor injection and static composition**:
+capabilities implement traits and are wired once at the composition root. It
+does **not** mean a runtime plugin trait, registry, plugin id, install lifecycle,
+or dynamic loader.
 
 Binaries produced by `crates/tact-ui`:
 
@@ -48,38 +67,47 @@ Binaries produced by `crates/tact-ui`:
 flowchart TB
     subgraph bins["Binary entry points"]
         B1["tact-ui<br/>crates/tact-ui/"]
+        DRV["driver.rs<br/>command routing + TaskComplete"]
     end
 
-    subgraph tact_agent["tact/src/agent/ — Agent Runtime"]
-        A["Agent struct"]
-        AR["AgentRuntime"]
-        AL["agent_loop()<br/>streaming conversation loop"]
-        TD["tool_dispatch.rs"]
-        TS["tool_schedule.rs"]
-        ETC["execute_tool_call()<br/>dispatch + permission + hooks"]
-        EX["execute()<br/>native tool or MCP tool"]
-        SP["build_system_prompt()<br/>Tera template + skills/memory"]
-        CH["compact_history()<br/>context compaction"]
-
-        A --> AR
-        A --> AL
-        A --> TD
-        TD --> ETC
-        AL --> ETC
-        ETC --> EX
-        A --> SP
-        A --> CH
+    subgraph kernel_contracts["tact_agent_api — neutral contracts"]
+        API["AgentState / RunInput<br/>ModelPort / ToolPort / ToolGate<br/>ContextPolicy / TranscriptStore<br/>UsageSink / EventPort"]
     end
 
-    subgraph submods["tact/src/ — supporting modules"]
+    subgraph kernel["tact_agent_core — bounded runtime"]
+        K["AgentKernel::run / compact"]
+        KD["KernelDeps<br/>required ports + ordered observers"]
+        K --> KD
+    end
+
+    subgraph facade["tact — composition root + compatibility facade"]
+        A["Agent + AgentRuntime<br/>public facade/state authority"]
+        FS["FacadeStateGuard<br/>activation transfer/restore"]
+        C["TactKernelComposition<br/>compose_tact_kernel()"]
+        V["TactActivationView<br/>read-only LoopState"]
+        A --> FS
+        FS --> C
+        C --> K
+        C --> V
+    end
+
+    subgraph adapters["tact/src/runtime — capability adapters"]
+        MA["TactModelPort"]
+        TA["TactToolPort"]
+        GA["TactToolGate"]
+        CA["TactContextPolicy + TactCompactor"]
+        SA["SqliteTranscriptStore<br/>SqliteUsageSink<br/>Noop variants"]
+        EB["TactEventBridge<br/>AgentEvent → AgentUpdate"]
+    end
+
+    subgraph submods["tact/src/ — product services"]
         TOOL["tool/<br/>Tool trait, ToolRouter, registry.rs, 40+ tools"]
         PERM["permission/<br/>CapabilityRisk, PermissionManager"]
-        HOOK["hook/<br/>Pre/Post/SessionStart hooks"]
-        MCP["mcp/<br/>PluginLoader, McpClient, MCPToolRouter"]
+        HOOK["hook/<br/>lifecycle hooks + shared queues"]
+        MCP["mcp/<br/>PluginLoader, McpClient, McpCatalogHandle"]
         LSP["lsp/<br/>LspClient, LspManager"]
-        COMP["compact/mod.rs<br/>micro_compact, transcript persistence"]
+        COMP["compact/<br/>compaction policy + state"]
         STORE["store/<br/>StoreRoot, Store, CollectionStore"]
-        LLM["tact_llm crate<br/>Anthropic / OpenAI / DeepSeek / Kimi adapters"]
         TASK["task/<br/>persistent task manager"]
         TEAM["team.rs<br/>teammate roster + inbox"]
         BG["background.rs<br/>async shell tasks"]
@@ -92,7 +120,11 @@ flowchart TB
         PROMPT["prompt/<br/>system prompt templates"]
     end
 
-    subgraph core["tact_protocol — shared types"]
+    subgraph llm["tact_llm — provider implementation"]
+        L["Anthropic / OpenAI / DeepSeek / Kimi<br/>ModelEvent streams"]
+    end
+
+    subgraph protocol["tact_protocol — host protocol"]
         UPD["AgentUpdate enum"]
         CMD["UserCommand enum"]
         STEP["PlanStep / StepResult"]
@@ -108,17 +140,32 @@ flowchart TB
         TW["widgets/<br/>history, select popups"]
     end
 
-    B1 --> A
-    B1 --> T
-    T -- UnboundedSender<UserCommand> --> A
-    A -- UnboundedSender<AgentUpdate> --> T
+    B1 --> DRV
+    DRV --> A
+    DRV --> T
+    T -- UserCommand --> DRV
+    EB -- AgentUpdate --> UPD
+    UPD -- update channel --> T
 
-    A --> TOOL
-    A --> MCP
-    A --> HOOK
-    AR --> PERM
-    AR --> LLM
-    A --> COMP
+    API -. contracts .-> KD
+    KD --> MA
+    KD --> TA
+    KD --> GA
+    KD --> CA
+    KD --> SA
+    KD --> EB
+
+    MA --> L
+    L --> API
+    TA --> TOOL
+    TA --> MCP
+    GA --> PERM
+    GA --> HOOK
+    CA --> COMP
+    CA --> PROMPT
+    SA --> STORE
+    V --> HOOK
+    V --> PERM
 
     TOOL --> TASK
     TOOL --> TEAM
@@ -139,69 +186,97 @@ flowchart TB
     TS --> TW
 ```
 
+`AgentUpdate` is the host/TUI protocol, not a kernel type. Providers emit
+`ModelEvent`; the kernel emits `AgentEvent`; `TactEventBridge` is the only
+translation into `AgentUpdate`. The `tact-ui` driver owns `TaskComplete`.
+Injected context and hosted provider activity stay on their typed non-user
+channels and are never fabricated as a user turn or client tool call.
+
 ---
 
 ## 2. Agent Task Execution Flow
 
-The runtime no longer pre-generates a fixed JSON plan. Instead it runs a streaming conversation loop that sends tool specifications to the LLM and executes `ToolUse` blocks as they arrive.
+The runtime no longer pre-generates a fixed JSON plan. `tact::Agent` is the
+compatibility facade; each bounded activation enters the provider-neutral
+kernel, which owns the streaming/tool loop over injected ports.
 
 ```mermaid
 sequenceDiagram
     actor U as User
     participant TUI as TUI Module
-    participant Main as tact-ui main()
-    participant Agent as Agent::agent_loop()
-    participant LLM as LLM API
-    participant Perm as PermissionManager
-    participant Hook as Hook Engine
-    participant TR as ToolRouter / MCP Router
-    participant PATH as tool/path.rs
+    participant Driver as tact-ui driver
+    participant Facade as tact::Agent facade
+    participant Compose as TactKernelComposition
+    participant Kernel as AgentKernel
+    participant Model as TactModelPort → LLM
+    participant Gate as TactToolGate
+    participant Tools as TactToolPort → native/MCP
+    participant Bridge as TactEventBridge
 
     U ->> TUI: Enter task and press Enter
-    TUI ->> Main: UserCommand::SubmitTask
-    Main ->> Agent: push user message, call agent_loop()
-    Agent ->> Agent: build_system_prompt()<br/>skills + memory + dynamic context
+    TUI ->> Driver: UserCommand::SubmitTask
+    Driver ->> Facade: push user message + agent_loop_detailed()
+    Facade ->> Facade: ensure_session()<br/>load persisted history/cursor if needed
+    Facade ->> Compose: construct adapters from current facade/shared state
+    Compose -->> Facade: AgentKernel + shared context/compactor
+    Facade ->> Facade: FacadeStateGuard::take()<br/>transfer transcript/cursor/sidecar
 
     loop Streaming conversation
-        Agent ->> Agent: micro_compact() / compact_history()
-        Agent ->> LLM: stream_message(request + tool specs)
-        LLM -->> Agent: ContentBlock stream<br/>(Text, Thinking, ToolUse)
-        Agent ->> TUI: StreamChunk / ThinkingChunk
+        Kernel ->> Kernel: prepare context + refresh tools
+        Kernel ->> Model: stream(ModelRequest)
+        Model -->> Kernel: ModelEvent stream<br/>(Text, Thinking, ProviderActivity, Finished)
+        Kernel ->> Bridge: AgentEvent
+        Bridge -->> TUI: AgentUpdate<br/>(StreamChunk / ThinkingChunk / ModelInfo / …)
 
         alt StopReason is ToolUse
-            Agent ->> Agent: execute_tool_call(content)
             loop For each ToolUse block
-                Agent ->> TUI: StepAdded + StepStarted
-                Agent ->> Hook: PreToolUse hook
-                alt Hook blocks
-                    Agent ->> TUI: StepFailed
-                else Hook continues
-                    Agent ->> Perm: check(tool_name, input)
-                    alt PermissionBehavior::Deny
-                        Agent ->> TUI: StepFailed
-                    else PermissionBehavior::Ask
-                        Agent ->> TUI: RequestSelect
-                        TUI -->> Agent: user choice
-                    end
-                    Agent ->> TR: call native or MCP tool
-                    opt Native tool reports progress (bash first)
-                        TR -->> TUI: ToolProgress { tool_id, chunks } *
-                    end
-                    TR ->> PATH: resolve_safe_path (file tools)
-                    TR -->> Agent: output
-                    Agent ->> Hook: PostToolUse hook
-                    Agent ->> TUI: StepFinished
-                end
+                Kernel ->> Gate: before(raw call, &dyn ToolResolver)
+                Note over Gate: sensitive scan → hooks → re-resolve → reclassify<br/>permission/approval → final Allow
+                Gate -->> Kernel: allowed resolved call
+                Kernel ->> Tools: execute(final allowed call)
+                Tools -->> Kernel: typed result + redacted progress
+                Kernel ->> Gate: after(result)
+                Kernel ->> Bridge: ToolStarted / ToolProgress / ToolFinished
+                Bridge -->> TUI: StepAdded / StepStarted / ToolProgress / StepFinished
+                Note over Kernel,Tools: denied or cancelled calls never reach ToolPort::execute
+                Kernel ->> Kernel: group results in assistant source order
+                Kernel ->> Kernel: commit assistant + grouped tool results
             end
-            Agent ->> Agent: push ToolResult messages
+        else Terminal stop
+            Kernel ->> Kernel: finalize RunOutcome
+            opt Goal final turn
+                Kernel ->> Kernel: CompleteRun only when remaining_turns == Some(1)
+            end
+            opt Stream cancel
+                Kernel ->> Kernel: emit one terminal cancellation outcome
+            end
+            opt Recovery
+                Kernel ->> Kernel: bounded retry / compact / continuation
+            end
+            opt MCP changed
+                Kernel ->> Tools: refresh before next model request
+            end
+            opt Background/subagent result
+                Kernel ->> Kernel: append as non-user context at request boundary
+            end
+            opt Host yield / ask-user
+                Kernel ->> Kernel: finish current wave, suppress later side effects
+                Kernel ->> Bridge: RequestSelect / Info / terminal outcome
+            end
         end
     end
 
-    Agent ->> TUI: Step* / StreamChunk / … (during loop)
-    Note over Agent,TUI: TaskComplete is sent by interactive.rs after agent_loop Ok (not cancelled)
-    TUI ->> Agent: (loop already finished)
+    Kernel -->> Facade: RunOutcome
+    Facade ->> Facade: restore complete facade state + map outcome
+    Facade -->> Driver: AgentLoopOutcome
+    Driver ->> Bridge: TaskComplete / TaskCancelled host update
+    Bridge -->> TUI: terminal host update
     TUI ->> U: Show completion / statistics
 ```
+
+The provider emits `ModelEvent`, the kernel emits `AgentEvent`, and only the
+product-owned `TactEventBridge` emits `AgentUpdate`. `TaskComplete` remains
+driver-owned.
 
 Key `AgentUpdate` variants used today:
 
@@ -276,15 +351,20 @@ Special cases:
 - Simple read-only bash commands (`ls`, `cat`, `git status`, etc.) are classified as `Read` — **unless** the command names a credential path, which is checked first. The safelist proves the program cannot write, not that its output is safe to publish: `cat ~/.ssh/id_ed25519` is provably read-only and reads a private key.
 - Read tools whose **target** is sensitive escalate: `.env` is not `src/main.rs`. `PermissionPolicy::{ReadPath, WritePath, PatchPaths}` carry that, so the target — not just the verb — decides the risk.
 
-Result text is redacted before anything reads it (one choke point in
-`run_tool_waves`, plus a streaming pass for live command output). See
+Live and final result text is redacted in `TactToolPort`; hook-rewritten visible
+output is redacted again in `TactToolGate` before it can reach the transcript or
+host. The kernel never receives an unredacted hook rewrite. See
 [Ch 10 §12](book/10_chapter_permission_zh.html#12-敏感路径与密钥脱敏).
 
 ---
 
 ## 4. Hook Engine
 
-Hooks are registered on the `Agent` and run from the agent loop; Tact maps fifteen lifecycle events (the full table is in [Ch 9](book/09_chapter_hook_zh.html)). The mutable ones:
+Hooks are registered on the `Agent`, but a kernel activation invokes them
+through product-owned adapters with a borrowed, read-only
+`TactActivationView` (`LoopState`), never `&mut Agent` or a writable transcript.
+Tact maps fifteen lifecycle events; the full table is in
+[Ch 9](book/09_chapter_hook_zh.html). The mutable ones:
 
 | Hook type | When | Can mutate | Can veto |
 |---|---|---|---|
@@ -306,14 +386,20 @@ flowchart LR
     Scan --> Connect["McpClient.connect()<br/>stdio transport via rmcp"]
     Connect --> Fetch["fetch_tools()"]
     Fetch --> Register["MCPToolRouter.register_client()"]
-    Register --> Agent["Agent.all_tool_specs()"]
+    Register --> Catalog["McpCatalogHandle<br/>one shared catalog authority"]
 
-    Call["Agent.execute()<br/>mcp__<server>__<tool>"] --> Parse["McpToolName::try_from"]
+    Kernel["AgentKernel"] --> Refresh["TactToolPort.refresh()<br/>before every model request"]
+    Refresh --> Catalog
+    Refresh --> Snapshot["ToolSnapshot<br/>specs + generation"]
+
+    Call["Kernel invokes ToolPort::execute<br/>mcp__<server>__<tool>"] --> Parse["TactToolPort validates + resolves"]
     Parse --> Route["MCPToolRouter.call()"]
     Route --> Client["McpClient.call_tool()"]
 ```
 
 MCP tool naming convention: `mcp__<server_name>__<tool_name>`. Example: `mcp__filesystem__read_file`.
+`ToolGate` sees only `&dyn ToolResolver`; approval cannot execute an MCP tool.
+The kernel is the sole caller of `ToolPort::execute`.
 
 ---
 
@@ -353,22 +439,26 @@ For a curated map without scanning, prefer keeping `AGENTS.md` up to date — th
 
 ## 6. Context Compaction
 
-When the conversation approaches the model context window (`agent.model_context_window`, default **200_000 tokens**), the agent compacts history:
+When the conversation approaches the model context window (`agent.model_context_window`, default **200_000 tokens**), `TactContextPolicy` proposes a typed compaction and the kernel owns the commit barrier:
 
-1. `micro_compact()` replaces old tool-result blocks longer than 120 chars with a stub, keeping the 12 most recent results intact.
-2. If `should_auto_compact` fires at 80% of the model window, `compact_history()` atomically writes a unique transcript, summarizes a window-aware recent slice with bounded retries and response validation, rebuilds context as retained real-user turns plus a handoff summary, validates the complete rebuilt request, and **`replace_session_messages`** syncs SQLite. ASCII is estimated at roughly four characters per token and non-ASCII at one character per token. Retained users are capped at 20k estimated tokens and reduced to reserve max output, system/tool/summary input, and 20% window headroom; oversized images become text omission markers rather than truncated base64.
-3. For OpenAI `protocol = "responses"` providers this local summary path is **not** used: ordinary requests carry `context_management` with the resolved compact threshold, and `compact_history()` calls the native `POST /responses/compact` endpoint, replacing the opaque protocol baseline (never the logical context). Endpoints without native compaction are unsupported — no local-summary fallback. See [Ch 5](./book/05_chapter_compact_zh.html).
+1. Micro compaction replaces old tool-result blocks longer than 120 chars with a stub, keeping the 12 most recent results intact.
+2. If auto compaction fires at 80% of the model window, the product policy summarizes a window-aware recent slice with bounded retries and response validation, rebuilds context as retained real-user turns plus a handoff summary, and validates the complete rebuilt request. The kernel persists the returned replacement through `TranscriptStore`; there is no adapter-side transcript write. ASCII is estimated at roughly four characters per token and non-ASCII at one character per token. Retained users are capped at 20k estimated tokens and reduced to reserve max output, system/tool/summary input, and 20% window headroom; oversized images become text omission markers rather than truncated base64.
+3. For OpenAI `protocol = "responses"` providers this local summary path is **not** used: ordinary requests carry `context_management` with the resolved compact threshold, and `TactCompactor`/`TactModelPort` call the native `POST /responses/compact` endpoint, replacing the opaque protocol cursor (never the logical transcript). Endpoints without native compaction are unsupported — no local-summary fallback. See [Ch 5](./book/05_chapter_compact_zh.html).
 4. Large successful native and MCP outputs are persisted to `<workdir>/.tact/tool-results/<tool_use_id>.txt` instead of being kept verbatim in context. Transcript and tool-result directories each retain the 100 newest files.
 
 The TUI bottom-bar row 2 shows the same window as a usage meter (`used / model_context_window`).
 
-Recovery mechanisms inside `agent_loop()`:
+Recovery mechanisms inside `AgentKernel::run_inner`:
 
 | Failure | Action |
 |---|---|
-| Prompt too long | Retry after `compact_history()` (up to `MAX_RECOVERY_ATTEMPTS`). |
+| Prompt too long | Retry after a typed overflow compaction (up to `MAX_RECOVERY_ATTEMPTS`). |
 | Transient transport error | Exponential backoff retry. |
 | `max_tokens` truncation with pending tools | Execute pending tools, then continue with a continuation prompt. |
+
+Recovery counters are carried in `RunOutcome.recovery`; the facade copies them
+into `AgentRuntime.recovery_state` before returning. Compaction calls and
+transport retries do not consume main-loop turns; a context-overflow retry does.
 
 ---
 
@@ -540,21 +630,27 @@ flowchart LR
         RX2["cmd_rx<br/>(UnboundedReceiver&lt;UserCommand&gt;)"]
     end
 
-    subgraph AgentTask["Agent async task"]
-        A["Agent"]
+    subgraph RuntimeTask["Driver/runtime task"]
+        D["tact-ui driver"]
+        A["Agent facade activation"]
+        K["AgentKernel"]
+        B["TactEventBridge"]
+        D --> A
+        A --> K
+        K --> B
     end
 
     subgraph MainThread["TUI task"]
         TUI["App event loop"]
     end
 
-    A -- "Send status updates" --> TX1
+    B -- "Send AgentUpdate" --> TX1
     TX1 -- "AgentUpdate" --> RX1
     RX1 --> TUI
 
     TUI -- "Send user commands" --> TX2
     TX2 -- "UserCommand" --> RX2
-    RX2 --> A
+    RX2 --> D
 
     style TX1 fill:#bf616a,color:#eceff4
     style RX1 fill:#bf616a,color:#eceff4
@@ -628,10 +724,10 @@ LLM provider selection (set in `[llm]` or via CLI):
 
 ## 13. `#[tool]` Proc Macro & Self-Described Native Tools
 
-The `tool_refactor_macros` crate provides the `#[tool]` attribute macro. Starting from Task 5 of the 
-tool-metadata-refactor, the macro uses the bare form (no `name`/`description` arguments). 
+The `tool_refactor_macros` crate provides the `#[tool]` attribute macro. Starting from Task 5 of the
+tool-metadata-refactor, the macro uses the bare form (no `name`/`description` arguments).
 
-Each native tool handler declares a sibling `UPPER_SNAKE_HANDLER_METADATA` constant of type 
+Each native tool handler declares a sibling `UPPER_SNAKE_HANDLER_METADATA` constant of type
 `ToolMetadata`, which the proc macro references via `&#metadata_ident` in the generated `Tool` impl.
 
 ### Metadata flow
@@ -642,7 +738,7 @@ LLM name → ToolRouter::resolve → RegisteredTool(handler + ToolMetadata)
           → ToolCallResult(content + typed effects)
 ```
 
-- **External names** remain stable strings used for LLM-facing tool specs and 
+- **External names** remain stable strings used for LLM-facing tool specs and
   `always_allowed_tools` entries. Rust enum variant names are never serialized.
 - **Permission** is derived from `PermissionPolicy` (Read/Write/High/ShellCommand).
 - **Resources** come from `ResourcePolicy` (ReadPath/WritePath/Barrier/SharedState/PatchFiles).
@@ -650,7 +746,7 @@ LLM name → ToolRouter::resolve → RegisteredTool(handler + ToolMetadata)
 - **Output policy** (`PersistLargeOutput` / `KeepInline`) controls post-execution persistence.
 - **Argument summaries** use `ArgumentSummaryPolicy` for tool-card formatting.
 - **Tool effects** are typed (`ToolEffect::CompactHistory { focus }`) and applied only on success.
-- **MCP tools** are parsed at the adapter boundary (`mcp__{server}__{tool}`) and receive 
+- **MCP tools** are parsed at the adapter boundary (`mcp__{server}__{tool}`) and receive
   conservative generic defaults for presentation, resources, and permission.
 - **Unknown tools** fail closed before execution — no native privileges leak through.
 
@@ -665,7 +761,9 @@ Handlers can be either:
 
 If you are reading older branches or notes, the following major evolutions have happened:
 
-- The plan-then-execute model (`generate_plan()` → sequential `execute_step()`) was replaced by a streaming agent loop (`agent_loop()`).
+- The plan-then-execute model (`generate_plan()` → sequential `execute_step()`) was first replaced by a streaming facade loop, then by the bounded `tact_agent_core::AgentKernel`; `tact::Agent` remains the compatibility facade.
+- Neutral contracts live in `tact_agent_api`; provider adapters implement `ModelPort`; product adapters in `crates/tact/src/runtime/` implement tool, gate, context, transcript, usage, and event ports.
+- The activation selector, `agent/tool_dispatch.rs`, legacy stream/compaction helpers, and `LegacyModelBridge` were deleted after parity. `tool_schedule.rs` retains only the product `ToolResources` contract and `LoopState` is a read-only activation view.
 - Business tools live in `crates/tact/src/tool/`; the legacy `crates/tools` Sandbox crate was removed.
 - The runtime gained native support for MCP, hooks, permissions, context compaction, recovery, sub-agents, teammates, worktrees, memory, and skills.
 - `tact_protocol::Agent` is legacy code and is no longer used by the main binaries.

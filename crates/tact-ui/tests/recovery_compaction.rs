@@ -6,8 +6,10 @@ use harness::{
     bash_tool_use, read_file_tool_use, run_single_task_with_config, task_completed_with, text_block,
 };
 use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
-use tact_llm::{ContentBlock, LlmError, MessageContent, MockClient, ProviderKind, StopReason};
-use tact_protocol::{AgentUpdate, TokenUsageInfo};
+use tact_llm::{
+    ContentBlock, LlmError, MessageContent, MockClient, ProviderKind, StopReason, TokenUsageInfo,
+};
+use tact_protocol::AgentUpdate;
 
 fn error_contains(updates: &[AgentUpdate], needle: &str) -> bool {
     updates.iter().any(
@@ -212,7 +214,10 @@ async fn failed_compact_tool_does_not_trigger_manual_compaction() {
 async fn prompt_too_long_recovery_compacts_and_retries() {
     let mock = MockClient::with_responder(move |request, idx| {
         match idx {
-            0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
+            0 => Err(LlmError::HttpError {
+                status: 400,
+                body: "prompt is too long".to_string(),
+            }),
             // compact_history's create_message consumes this turn.
             1 => Ok((
                 vec![text_block("Compacted summary.")],
@@ -259,10 +264,14 @@ async fn prompt_too_long_recovery_compacts_and_retries() {
 #[tokio::test]
 async fn compact_summary_retries_transient_transport_error() {
     let mock = MockClient::with_responder(|_request, idx| match idx {
-        0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
-        1 => Err(LlmError::Unsupported(
-            "service temporarily unavailable".to_string(),
-        )),
+        0 => Err(LlmError::HttpError {
+            status: 400,
+            body: "prompt is too long".to_string(),
+        }),
+        1 => Err(LlmError::HttpError {
+            status: 503,
+            body: "service temporarily unavailable".to_string(),
+        }),
         2 => Ok((
             vec![text_block("Summary after retry.")],
             Some(StopReason::EndTurn),
@@ -291,7 +300,10 @@ async fn compact_summary_retries_transient_transport_error() {
 #[tokio::test]
 async fn compact_summary_rejects_empty_text_response() {
     let mock = MockClient::with_responder(|_request, idx| match idx {
-        0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
+        0 => Err(LlmError::HttpError {
+            status: 400,
+            body: "prompt is too long".to_string(),
+        }),
         _ => Ok((Vec::new(), Some(StopReason::EndTurn), None)),
     });
     let mut config = tiny_context_config();
@@ -316,7 +328,10 @@ async fn compact_summary_continues_truncated_response() {
     // when continuations are exhausted the partial summary is accepted as
     // best-effort instead of failing the whole compaction.
     let mock = MockClient::with_responder(|_request, idx| match idx {
-        0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
+        0 => Err(LlmError::HttpError {
+            status: 400,
+            body: "prompt is too long".to_string(),
+        }),
         // Summary call plus five continuation calls all hit the output budget.
         1..=6 => Ok((
             vec![text_block("partial summary")],
@@ -355,7 +370,10 @@ async fn compact_summary_continues_truncated_response() {
 async fn compact_summary_request_is_window_aware_for_oversized_turn() {
     let task = "x".repeat(100_000);
     let mock = MockClient::with_responder(|request, idx| match idx {
-        0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
+        0 => Err(LlmError::HttpError {
+            status: 400,
+            body: "prompt is too long".to_string(),
+        }),
         1 => {
             let prompt = serde_json::to_string(&request.messages).unwrap();
             assert_eq!(request.max_tokens, 2_000);
@@ -521,6 +539,15 @@ fn compact_resource_fixture() -> serde_json::Value {
 
 fn messages_json(messages: &[tact_llm::Message]) -> serde_json::Value {
     serde_json::to_value(messages).unwrap()
+}
+
+fn wire_context_hash(messages: &[Message]) -> String {
+    let canonical = messages
+        .iter()
+        .map(tact_llm::neutral::agent_message)
+        .map(|message| tact_llm::neutral::llm_message(&message))
+        .collect::<Vec<_>>();
+    tact_llm::context_hash(&canonical).unwrap()
 }
 
 fn info_messages(updates: &[AgentUpdate]) -> Vec<String> {
@@ -781,7 +808,7 @@ async fn restart_round_trip_preserves_compaction_and_unknown_items() {
         compaction_id: Some("cmp_restart_1".to_string()),
         is_compacted: true,
         logical_message_count: 2,
-        logical_context_hash: tact_llm::context_hash(&messages).unwrap(),
+        logical_context_hash: wire_context_hash(&messages),
     });
     {
         let store = tact::store::open_sqlite_session_store(&db_path)
@@ -893,7 +920,7 @@ async fn native_compact_failure_rolls_back_runtime_and_database() {
         compaction_id: Some("cmp_old".to_string()),
         is_compacted: true,
         logical_message_count: 2,
-        logical_context_hash: tact_llm::context_hash(&old_messages).unwrap(),
+        logical_context_hash: wire_context_hash(&old_messages),
     });
     store
         .replace_session_messages_and_provider_state(
@@ -904,9 +931,9 @@ async fn native_compact_failure_rolls_back_runtime_and_database() {
         .await
         .unwrap();
 
-    // Force a database insertion failure mid-replacement: the transaction
-    // aborts after deleting old messages and inserting the first new one.
-    store.inject_message_insert_failure().await.unwrap();
+    // Native compaction replaces the provider cursor, not the message list.
+    // Abort the provider-state insert so the transaction has to roll back.
+    store.inject_provider_state_insert_failure().await.unwrap();
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
     let (mut agent, work_dir) = build_responses_test_agent(&server.uri(), Some(agent_tx));

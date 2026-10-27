@@ -132,7 +132,7 @@ impl CompactTrigger {
 ///
 /// Tracks whether compaction has occurred, the last summary produced,
 /// and which files have been touched recently.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct CompactState {
     pub has_compacted: bool,
     pub last_summary: Option<String>,

@@ -25,7 +25,7 @@
 
 pub mod rtk_filter;
 
-use std::pin::Pin;
+use std::{pin::Pin, sync::Arc};
 
 use anyhow::Result;
 
@@ -236,7 +236,7 @@ impl SessionStartContext {
 
 pub trait SessionStartFn:
     for<'a> Fn(
-        &'a LoopState,
+        &'a LoopState<'a>,
         &'a mut SessionStartContext,
     ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
@@ -251,7 +251,7 @@ pub trait SessionStartFn:
 /// nothing on calls that need no approval.
 pub trait PermissionRequestFn:
     for<'a> Fn(
-        &'a LoopState,
+        &'a LoopState<'a>,
         &'a mut ToolUse,
     ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
@@ -261,7 +261,7 @@ pub trait PermissionRequestFn:
 
 pub trait PreToolUseFn:
     for<'a> Fn(
-        &'a LoopState,
+        &'a LoopState<'a>,
         &'a mut ToolUse,
     ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
@@ -271,7 +271,7 @@ pub trait PreToolUseFn:
 
 pub trait PostToolUseFn:
     for<'tool> Fn(
-        &'tool LoopState,
+        &'tool LoopState<'tool>,
         &'tool ToolUse,
         &'tool mut ToolResult,
         tact_protocol::StepStatus,
@@ -286,7 +286,7 @@ pub trait PostToolUseFn:
 /// `UserPromptSubmit.additionalContext`).
 pub trait UserPromptSubmitFn:
     for<'a> Fn(
-        &'a LoopState,
+        &'a LoopState<'a>,
         &'a mut String,
     ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
@@ -333,14 +333,14 @@ pub trait SubagentStopFn:
 /// Observational, like Codex's `Interrupt`: the cancellation has already been
 /// decided, so there is nothing to veto — a plugin uses it to log or to flush.
 pub trait InterruptFn:
-    for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    for<'a> Fn(&'a LoopState<'a>) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
     + Sync
 {
 }
 
 pub trait StopFn:
-    for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    for<'a> Fn(&'a LoopState<'a>) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
     + Sync
 {
@@ -350,7 +350,7 @@ pub trait StopFn:
 /// [`SessionStart`](Hook::SessionStart) (Codex `SessionEnd`). Observational;
 /// a `Block` is log-only because the session is ending.
 pub trait SessionEndFn:
-    for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    for<'a> Fn(&'a LoopState<'a>) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
     + Sync
 {
@@ -361,7 +361,7 @@ pub trait SessionEndFn:
 /// compaction.
 pub trait PreCompactFn:
     for<'a> Fn(
-        &'a LoopState,
+        &'a LoopState<'a>,
         CompactTrigger,
     ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
@@ -373,7 +373,7 @@ pub trait PreCompactFn:
 /// Read-only [`LoopState`] + [`CompactTrigger`]; a `Block` is log-only.
 pub trait PostCompactFn:
     for<'a> Fn(
-        &'a LoopState,
+        &'a LoopState<'a>,
         CompactTrigger,
     ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
@@ -386,7 +386,7 @@ pub trait PostCompactFn:
 /// message; a `Block` is log-only because the tool already failed.
 pub trait PostToolUseFailureFn:
     for<'a> Fn(
-        &'a LoopState,
+        &'a LoopState<'a>,
         &'a ToolUse,
         &'a str,
     ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
@@ -412,7 +412,7 @@ pub struct NotificationContext {
 /// [`NotificationContext`]; a `Block` is log-only (observational).
 pub trait NotificationFn:
     for<'a> Fn(
-        &'a LoopState,
+        &'a LoopState<'a>,
         &'a NotificationContext,
     ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
@@ -423,7 +423,7 @@ pub trait NotificationFn:
 /// Task-completed hook: runs once per completed user task (Claude Code
 /// `TaskCompleted`). Read-only [`LoopState`]; a `Block` is log-only.
 pub trait TaskCompletedFn:
-    for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    for<'a> Fn(&'a LoopState<'a>) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
     + Send
     + Sync
 {
@@ -431,7 +431,7 @@ pub trait TaskCompletedFn:
 
 impl<F> SessionStartFn for F where
     F: for<'a> Fn(
-            &'a LoopState,
+            &'a LoopState<'a>,
             &'a mut SessionStartContext,
         ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
         + Send
@@ -441,7 +441,7 @@ impl<F> SessionStartFn for F where
 
 impl<F> PermissionRequestFn for F where
     F: for<'tool> Fn(
-            &'tool LoopState,
+            &'tool LoopState<'tool>,
             &'tool mut ToolUse,
         ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'tool>>
         + Send
@@ -451,7 +451,7 @@ impl<F> PermissionRequestFn for F where
 
 impl<F> PreToolUseFn for F where
     F: for<'tool> Fn(
-            &'tool LoopState,
+            &'tool LoopState<'tool>,
             &'tool mut ToolUse,
         ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'tool>>
         + Send
@@ -461,7 +461,7 @@ impl<F> PreToolUseFn for F where
 
 impl<F> PostToolUseFn for F where
     F: for<'tool> Fn(
-            &'tool LoopState,
+            &'tool LoopState<'tool>,
             &'tool ToolUse,
             &'tool mut ToolResult,
             tact_protocol::StepStatus,
@@ -473,7 +473,7 @@ impl<F> PostToolUseFn for F where
 
 impl<F> UserPromptSubmitFn for F where
     F: for<'a> Fn(
-            &'a LoopState,
+            &'a LoopState<'a>,
             &'a mut String,
         ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
         + Send
@@ -500,21 +500,27 @@ impl<F> SubagentStopFn for F where
 }
 
 impl<F> InterruptFn for F where
-    F: for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    F: for<'a> Fn(
+            &'a LoopState<'a>,
+        ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
         + Send
         + Sync
 {
 }
 
 impl<F> StopFn for F where
-    F: for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    F: for<'a> Fn(
+            &'a LoopState<'a>,
+        ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
         + Send
         + Sync
 {
 }
 
 impl<F> SessionEndFn for F where
-    F: for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    F: for<'a> Fn(
+            &'a LoopState<'a>,
+        ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
         + Send
         + Sync
 {
@@ -522,7 +528,7 @@ impl<F> SessionEndFn for F where
 
 impl<F> PreCompactFn for F where
     F: for<'a> Fn(
-            &'a LoopState,
+            &'a LoopState<'a>,
             CompactTrigger,
         ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
         + Send
@@ -532,7 +538,7 @@ impl<F> PreCompactFn for F where
 
 impl<F> PostCompactFn for F where
     F: for<'a> Fn(
-            &'a LoopState,
+            &'a LoopState<'a>,
             CompactTrigger,
         ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
         + Send
@@ -542,7 +548,7 @@ impl<F> PostCompactFn for F where
 
 impl<F> PostToolUseFailureFn for F where
     F: for<'a> Fn(
-            &'a LoopState,
+            &'a LoopState<'a>,
             &'a ToolUse,
             &'a str,
         ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
@@ -553,7 +559,7 @@ impl<F> PostToolUseFailureFn for F where
 
 impl<F> NotificationFn for F where
     F: for<'a> Fn(
-            &'a LoopState,
+            &'a LoopState<'a>,
             &'a NotificationContext,
         ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
         + Send
@@ -562,38 +568,41 @@ impl<F> NotificationFn for F where
 }
 
 impl<F> TaskCompletedFn for F where
-    F: for<'a> Fn(&'a LoopState) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
+    F: for<'a> Fn(
+            &'a LoopState<'a>,
+        ) -> Pin<Box<dyn Future<Output = Result<HookControl>> + Send + 'a>>
         + Send
         + Sync
 {
 }
 
-#[derive(strum_macros::EnumDiscriminants, strum_macros::Display)]
+#[derive(Clone, strum_macros::EnumDiscriminants, strum_macros::Display)]
 #[strum_discriminants(name(HookTypes), derive(strum_macros::Display))]
 pub enum Hook {
-    SessionStart(Box<dyn SessionStartFn>),
-    UserPromptSubmit(Box<dyn UserPromptSubmitFn>),
-    PreToolUse(Box<dyn PreToolUseFn>),
-    PermissionRequest(Box<dyn PermissionRequestFn>),
-    PostToolUse(Box<dyn PostToolUseFn>),
-    Interrupt(Box<dyn InterruptFn>),
-    Stop(Box<dyn StopFn>),
-    SessionEnd(Box<dyn SessionEndFn>),
-    PreCompact(Box<dyn PreCompactFn>),
-    PostCompact(Box<dyn PostCompactFn>),
-    PostToolUseFailure(Box<dyn PostToolUseFailureFn>),
-    Notification(Box<dyn NotificationFn>),
-    TaskCompleted(Box<dyn TaskCompletedFn>),
+    SessionStart(Arc<dyn SessionStartFn>),
+    UserPromptSubmit(Arc<dyn UserPromptSubmitFn>),
+    PreToolUse(Arc<dyn PreToolUseFn>),
+    PermissionRequest(Arc<dyn PermissionRequestFn>),
+    PostToolUse(Arc<dyn PostToolUseFn>),
+    Interrupt(Arc<dyn InterruptFn>),
+    Stop(Arc<dyn StopFn>),
+    SessionEnd(Arc<dyn SessionEndFn>),
+    PreCompact(Arc<dyn PreCompactFn>),
+    PostCompact(Arc<dyn PostCompactFn>),
+    PostToolUseFailure(Arc<dyn PostToolUseFailureFn>),
+    Notification(Arc<dyn NotificationFn>),
+    TaskCompleted(Arc<dyn TaskCompletedFn>),
 }
 
 #[macro_export]
 macro_rules! invoke_hooks {
     ($hook_type:ident, $self_expr:expr $(, $arg:expr)* ) => {{
         let mut control = $crate::hook::HookControl::Continue;
+        let view = $self_expr.activation_view();
 
         for hook in $self_expr.hooks_by_type($crate::hook::HookTypes::$hook_type) {
             if let $crate::hook::Hook::$hook_type(hook_fn) = hook {
-                match hook_fn($self_expr $(, $arg)*).await? {
+                match hook_fn(&view $(, $arg)*).await? {
                     $crate::hook::HookControl::Continue => {}
                     // Keep scanning: a later hook may still block, and a block
                     // always outranks an allow.

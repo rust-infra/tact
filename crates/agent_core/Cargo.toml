@@ -1,0 +1,21 @@
+[package]
+name = "tact_agent_core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+tact_agent_api = { path = "../agent_api" }
+async-trait = { workspace = true }
+futures-util = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "2"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+
+[features]
+default = []
+test-support = ["tact_agent_api/test-support"]
+
+[dev-dependencies]
+tact_agent_api = { path = "../agent_api", features = ["test-support"] }

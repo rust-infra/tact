@@ -13,6 +13,8 @@ use std::{
 };
 
 use tact_llm::{
+    BalanceEntry as LlmBalanceEntry, BalanceInfo as LlmBalanceInfo,
+    UsageQuotaInfo as LlmUsageQuota, UsageQuotaWindow as LlmUsageQuotaWindow,
     is_account_query_supported, is_deepseek_balance_supported, is_kimi_balance_supported,
     is_kimi_usage_supported, query_deepseek_balance, query_kimi_balance, query_kimi_code_usage,
 };
@@ -35,6 +37,47 @@ pub enum AccountQueryResult {
     UsageQuota(UsageQuotaInfo),
 }
 
+fn balance_from_llm(balance: LlmBalanceInfo) -> BalanceInfo {
+    BalanceInfo {
+        is_available: balance.is_available,
+        balance_infos: balance
+            .balance_infos
+            .into_iter()
+            .map(balance_entry_from_llm)
+            .collect(),
+    }
+}
+
+fn balance_entry_from_llm(entry: LlmBalanceEntry) -> tact_protocol::biz::BalanceEntry {
+    tact_protocol::biz::BalanceEntry {
+        currency: entry.currency,
+        total_balance: entry.total_balance,
+        granted_balance: entry.granted_balance,
+        topped_up_balance: entry.topped_up_balance,
+    }
+}
+
+fn usage_quota_from_llm(quota: LlmUsageQuota) -> UsageQuotaInfo {
+    UsageQuotaInfo {
+        is_available: quota.is_available,
+        windows: quota
+            .windows
+            .into_iter()
+            .map(usage_window_from_llm)
+            .collect(),
+        membership_level: quota.membership_level,
+    }
+}
+
+fn usage_window_from_llm(window: LlmUsageQuotaWindow) -> tact_protocol::biz::UsageQuotaWindow {
+    tact_protocol::biz::UsageQuotaWindow {
+        label: window.label,
+        limit: window.limit,
+        remaining: window.remaining,
+        reset_time: window.reset_time,
+    }
+}
+
 /// Query the provider once and return a typed result.
 pub async fn query_once() -> Result<AccountQueryResult, AccountError> {
     if !is_supported() {
@@ -44,16 +87,19 @@ pub async fn query_once() -> Result<AccountQueryResult, AccountError> {
     if is_deepseek_balance_supported() {
         query_deepseek_balance()
             .await
+            .map(balance_from_llm)
             .map(AccountQueryResult::Balance)
             .map_err(|e| AccountError::QueryFailed(e.to_string()))
     } else if is_kimi_balance_supported() {
         query_kimi_balance()
             .await
+            .map(balance_from_llm)
             .map(AccountQueryResult::Balance)
             .map_err(|e| AccountError::QueryFailed(e.to_string()))
     } else if is_kimi_usage_supported() {
         query_kimi_code_usage()
             .await
+            .map(usage_quota_from_llm)
             .map(AccountQueryResult::UsageQuota)
             .map_err(|e| AccountError::QueryFailed(e.to_string()))
     } else {
@@ -171,6 +217,37 @@ mod tests {
         // Extremely unlikely that two consecutive calls collide
         // (1-in-11 chance), but assert they're different for docs
         assert_ne!(a, b, "consecutive jitter calls should differ");
+    }
+
+    #[test]
+    fn provider_neutral_account_dtos_map_to_host_protocol() {
+        let balance = balance_from_llm(LlmBalanceInfo {
+            is_available: true,
+            balance_infos: vec![LlmBalanceEntry {
+                currency: "CNY".into(),
+                total_balance: 10.0,
+                granted_balance: 4.0,
+                topped_up_balance: 6.0,
+            }],
+        });
+        assert_eq!(balance.balance_infos[0].total_balance, 10.0);
+
+        let quota = usage_quota_from_llm(LlmUsageQuota {
+            is_available: false,
+            windows: vec![LlmUsageQuotaWindow {
+                label: "5h".into(),
+                limit: Some(100.0),
+                remaining: Some(0.0),
+                reset_time: Some("2026-10-26T00:00:00Z".into()),
+            }],
+            membership_level: Some("LEVEL_INTERMEDIATE".into()),
+        });
+        assert!(!quota.is_available);
+        assert_eq!(quota.windows[0].label, "5h");
+        assert_eq!(
+            quota.membership_level.as_deref(),
+            Some("LEVEL_INTERMEDIATE")
+        );
     }
 
     #[test]

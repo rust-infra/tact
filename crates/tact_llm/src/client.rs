@@ -1,10 +1,8 @@
 //! [`LlmClient`] trait and [`LlmProvider`] enum.
 
-use tact_protocol::{TokenUsageInfo, UpdateSink};
-
 use crate::{
-    ContentBlock, CreateMessageParams, LlmError, ProviderConversationState, ProviderStateUpdate,
-    StopReason, anthropic, mock::MockClient, openai,
+    ContentBlock, CreateMessageParams, LlmError, ProviderConversationState, ProviderProgressSink,
+    ProviderStateUpdate, StopReason, TokenUsageInfo, anthropic, mock::MockClient, openai,
 };
 
 /// Serialized JSON request body actually sent to the LLM API (for session debugging).
@@ -32,7 +30,7 @@ pub struct LlmResponse {
 /// Abstract interface for streaming and non-streaming LLM calls.
 #[allow(async_fn_in_trait)]
 pub trait LlmClient: Send + Sync {
-    /// Stream a message request, emitting real-time updates through `events`.
+    /// Stream a message request, emitting neutral progress through `events`.
     ///
     /// The sink is what lets a headless run show a slow model call: deltas go
     /// to every attached destination, while the *answering* channel stays out
@@ -46,7 +44,7 @@ pub trait LlmClient: Send + Sync {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        events: &UpdateSink,
+        events: &dyn ProviderProgressSink,
     ) -> Result<LlmResponse, LlmError>;
 
     /// Non-streaming message request (used for context compaction).
@@ -90,7 +88,7 @@ impl LlmClient for LlmProvider {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        events: &UpdateSink,
+        events: &dyn ProviderProgressSink,
     ) -> Result<LlmResponse, LlmError> {
         match self {
             LlmProvider::Anthropic(a) => a.stream_message(request, provider_state, events).await,

@@ -48,13 +48,14 @@ use crate::{
     compact::CompactTrigger,
     consts::{PluginDirs, PluginHome},
     hook::{
-        HookContextChunk, HookControl, NotificationContext, SessionStartContext,
-        SubagentStartContext, SubagentStartFn, SubagentStopContext, SubagentStopFn, ToolResult,
-        ToolUse,
+        HookControl, NotificationContext, SessionStartContext, SubagentStartContext,
+        SubagentStartFn, SubagentStopContext, SubagentStopFn, ToolResult, ToolUse,
     },
     plugin::PluginStore,
-    utils::LockExt,
 };
+
+#[cfg(test)]
+use crate::hook::HookContextChunk;
 
 /// A Claude Code hook event that Tact maps to a loop point.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -327,7 +328,7 @@ pub async fn run_hook(
     command: &HookCommand,
     dirs: impl Into<PluginDirs>,
     input: &HookRunInput,
-    agent: Option<&crate::Agent>,
+    agent: Option<&crate::LoopState<'_>>,
 ) -> HookOutput {
     let dirs = dirs.into();
     match command.kind() {
@@ -361,7 +362,7 @@ async fn run_mcp_tool_hook(
     server: &str,
     tool: &str,
     input: &HookRunInput,
-    agent: Option<&crate::Agent>,
+    agent: Option<&crate::LoopState<'_>>,
 ) -> HookOutput {
     if let Some(message) = command.status_message.as_deref() {
         tracing::debug!("plugin hook status: {message}");
@@ -380,7 +381,7 @@ async fn run_mcp_tool_hook(
     let status = open_hook_status(command, Some(agent));
     // The hook's own budget, not the server's `tool_timeout_sec`: this timeout
     // belongs to the definition the user reviewed.
-    let call = agent.mcp_router.call(&name, arguments);
+    let call = agent.call_hook_mcp(&name, arguments);
     let outcome = match resolve_timeout(command.timeout) {
         Some(secs) => match tokio::time::timeout(Duration::from_secs(secs), call).await {
             Ok(result) => result,
@@ -412,7 +413,7 @@ pub async fn run_command_hook(
     command: &HookCommand,
     dirs: impl Into<PluginDirs>,
     input: &HookRunInput,
-    agent: Option<&crate::Agent>,
+    agent: Option<&crate::LoopState<'_>>,
 ) -> HookOutput {
     let dirs = dirs.into();
     let Some(raw) = command.command.as_deref() else {
@@ -497,7 +498,7 @@ pub async fn run_command_hook(
 /// *not* opened for `async` hooks — see `run_command_hook`.
 fn open_hook_status(
     command: &HookCommand,
-    agent: Option<&crate::Agent>,
+    agent: Option<&crate::LoopState<'_>>,
 ) -> Option<(u64, std::time::Instant)> {
     let agent = agent?;
     let message = command.status_message.as_deref()?;
@@ -519,7 +520,7 @@ fn open_hook_status(
 /// loading. Failure closes the row too: the line is a trace, not a verdict.
 fn close_hook_status(
     command: &HookCommand,
-    agent: Option<&crate::Agent>,
+    agent: Option<&crate::LoopState<'_>>,
     opened: Option<(u64, std::time::Instant)>,
 ) {
     let (Some(agent), Some((id, started_at))) = (agent, opened) else {
@@ -540,7 +541,7 @@ fn close_hook_status(
 fn finish_hook_output(
     output: &mut HookOutput,
     command: &HookCommand,
-    agent: Option<&crate::Agent>,
+    agent: Option<&crate::LoopState<'_>>,
 ) {
     // A per-hook budget, applied where the context is produced: the hook's
     // author declared how much of it should reach the model. A let-chain, not a
@@ -572,7 +573,7 @@ fn finish_hook_output(
 /// The warning alone only reaches a log file, and `tact-ui` installs no
 /// subscriber unless `RUST_LOG` is set. A hook that failed is otherwise
 /// indistinguishable from one that had nothing to say.
-fn report_hook_failure(input: &HookRunInput, agent: Option<&crate::Agent>, detail: &str) {
+fn report_hook_failure(input: &HookRunInput, agent: Option<&crate::LoopState<'_>>, detail: &str) {
     warn!("plugin hook command failed (continuing): {detail}");
     if let Some(agent) = agent {
         agent.emit_update(AgentUpdate::Info(format!(
@@ -712,12 +713,12 @@ fn resolve_timeout(timeout: Option<u64>) -> Option<u64> {
 /// name (Codex points at its rollout file). Reporting the transcripts
 /// *directory* here — as this did — was worse than null, because a plugin opens
 /// what it is given.
-fn build_payload(input: &HookRunInput, agent: Option<&crate::Agent>) -> Value {
+fn build_payload(input: &HookRunInput, agent: Option<&crate::LoopState<'_>>) -> Value {
     let mut payload = json!({
         // Callers historically passed `String::new()`; the live session id is
         // the one a plugin can use to correlate runs.
         "session_id": agent
-            .and_then(|agent| agent.runtime.session_id.clone())
+            .and_then(|agent| agent.session_id().map(str::to_string))
             .unwrap_or_else(|| input.session_id.clone()),
         "transcript_path": Value::Null,
         "cwd": input.work_dir,
@@ -725,7 +726,7 @@ fn build_payload(input: &HookRunInput, agent: Option<&crate::Agent>) -> Value {
     });
     if let Some(agent) = agent {
         payload["model"] = json!(agent.model());
-        payload["permission_mode"] = json!(agent.runtime.permission_manager.mode().hook_name());
+        payload["permission_mode"] = json!(agent.permission_mode().hook_name());
         payload["turn_id"] = json!(agent.turns_taken.to_string());
     }
     if let Some(object) = input.event.as_object() {
@@ -1855,7 +1856,7 @@ fn apply_hook_sources(
             let hook_source = source.label.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_session_start(
-                move |agent: &crate::Agent, context: &mut SessionStartContext| {
+                move |agent: &crate::LoopState<'_>, context: &mut SessionStartContext| {
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let dirs = dirs.clone();
@@ -1866,7 +1867,7 @@ fn apply_hook_sources(
                         // (startup|resume|clear|compact); Tact reports the real
                         // one, so a plugin's `startup|resume|compact` pattern
                         // fires for the case it meant.
-                        let source = agent.runtime.session_start_source.as_str();
+                        let source = agent.session_start_source.as_str();
                         if !matcher_matches(matcher.as_deref(), source) {
                             return Ok(HookControl::Continue);
                         }
@@ -1910,8 +1911,8 @@ fn apply_hook_sources(
             let command = command.clone();
             let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
-            agent =
-                agent.with_user_prompt_submit(move |agent: &crate::Agent, prompt: &mut String| {
+            agent = agent.with_user_prompt_submit(
+                move |agent: &crate::LoopState<'_>, prompt: &mut String| {
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let dirs = dirs.clone();
@@ -1938,7 +1939,8 @@ fn apply_hook_sources(
                         }
                         Ok(output.control)
                     })
-                });
+                },
+            );
         }
 
         for (matcher, command) in hooks.commands_for(HookEventKind::PreToolUse) {
@@ -1947,51 +1949,49 @@ fn apply_hook_sources(
             let dirs = source.dirs.clone();
             let label = source.label.clone();
             let work_dir = work_dir.clone();
-            agent = agent.with_pre_tool(move |agent: &crate::Agent, tool_use: &mut ToolUse| {
-                let matcher = matcher.clone();
-                let command = command.clone();
-                let dirs = dirs.clone();
-                let label = label.clone();
-                let work_dir = work_dir.clone();
-                let tool_name = tool_use.name.clone();
-                let tool_input = tool_use.input.clone();
-                let tool_use_id = tool_use.id.clone();
-                Box::pin(async move {
-                    if !matcher_matches(matcher.as_deref(), &tool_name) {
-                        return Ok(HookControl::Continue);
-                    }
-                    let output = run_hook(
-                        &command,
-                        &dirs,
-                        &HookRunInput {
-                            session_id: String::new(),
-                            work_dir,
-                            hook_event_name: "PreToolUse",
-                            event: json!({
-                                "tool_name": tool_name,
-                                "tool_input": tool_input,
-                                "tool_use_id": tool_use_id,
-                            }),
-                        },
-                        Some(agent),
-                    )
-                    .await;
-                    if let Some(extra) = output.additional_context {
-                        // Injected as conversation context before the next
-                        // request, the way Codex records it. The old
-                        // `tool_use.input["_hook_context"]` key was written but
-                        // never read, so the context was lost — and it left an
-                        // extra field in the arguments the permission check and
-                        // the tool itself see.
-                        agent
-                            .runtime
-                            .pending_hook_context
-                            .lock_recover()
-                            .push_back(HookContextChunk::new(Some(&label), &extra));
-                    }
-                    Ok(output.control)
-                })
-            });
+            agent = agent.with_pre_tool(
+                move |agent: &crate::LoopState<'_>, tool_use: &mut ToolUse| {
+                    let matcher = matcher.clone();
+                    let command = command.clone();
+                    let dirs = dirs.clone();
+                    let label = label.clone();
+                    let work_dir = work_dir.clone();
+                    let tool_name = tool_use.name.clone();
+                    let tool_input = tool_use.input.clone();
+                    let tool_use_id = tool_use.id.clone();
+                    Box::pin(async move {
+                        if !matcher_matches(matcher.as_deref(), &tool_name) {
+                            return Ok(HookControl::Continue);
+                        }
+                        let output = run_hook(
+                            &command,
+                            &dirs,
+                            &HookRunInput {
+                                session_id: String::new(),
+                                work_dir,
+                                hook_event_name: "PreToolUse",
+                                event: json!({
+                                    "tool_name": tool_name,
+                                    "tool_input": tool_input,
+                                    "tool_use_id": tool_use_id,
+                                }),
+                            },
+                            Some(agent),
+                        )
+                        .await;
+                        if let Some(extra) = output.additional_context {
+                            // Injected as conversation context before the next
+                            // request, the way Codex records it. The old
+                            // `tool_use.input["_hook_context"]` key was written but
+                            // never read, so the context was lost — and it left an
+                            // extra field in the arguments the permission check and
+                            // the tool itself see.
+                            agent.queue_hook_context(Some(&label), &extra);
+                        }
+                        Ok(output.control)
+                    })
+                },
+            );
         }
 
         for (matcher, command) in hooks.commands_for(HookEventKind::PermissionRequest) {
@@ -2000,7 +2000,7 @@ fn apply_hook_sources(
             let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_permission_request(
-                move |agent: &crate::Agent, tool_use: &mut ToolUse| {
+                move |agent: &crate::LoopState<'_>, tool_use: &mut ToolUse| {
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let dirs = dirs.clone();
@@ -2039,7 +2039,7 @@ fn apply_hook_sources(
             let label = source.label.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_post_tool_hook(
-                move |agent: &crate::Agent,
+                move |agent: &crate::LoopState<'_>,
                       tool_use: &ToolUse,
                       result: &mut ToolResult,
                       _status| {
@@ -2079,11 +2079,7 @@ fn apply_hook_sources(
                         if let Some(extra) = output.additional_context {
                             // Same route as `PreToolUse`: collected here, turned
                             // into conversation context before the next request.
-                            agent
-                                .runtime
-                                .pending_hook_context
-                                .lock_recover()
-                                .push_back(HookContextChunk::new(Some(&label), &extra));
+                            agent.queue_hook_context(Some(&label), &extra);
                         }
                         Ok(output.control)
                     })
@@ -2097,7 +2093,7 @@ fn apply_hook_sources(
             let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
             agent = agent.with_post_tool_failure(
-                move |agent: &crate::Agent, tool_use: &ToolUse, error: &str| {
+                move |agent: &crate::LoopState<'_>, tool_use: &ToolUse, error: &str| {
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let dirs = dirs.clone();
@@ -2141,8 +2137,8 @@ fn apply_hook_sources(
             let command = command.clone();
             let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
-            agent =
-                agent.with_notification(move |agent: &crate::Agent, ctx: &NotificationContext| {
+            agent = agent.with_notification(
+                move |agent: &crate::LoopState<'_>, ctx: &NotificationContext| {
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let dirs = dirs.clone();
@@ -2176,7 +2172,8 @@ fn apply_hook_sources(
                         let _ = output;
                         Ok(HookControl::Continue)
                     })
-                });
+                },
+            );
         }
 
         for (matcher, command) in hooks.commands_for(HookEventKind::TaskCompleted) {
@@ -2184,7 +2181,7 @@ fn apply_hook_sources(
             let command = command.clone();
             let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
-            agent = agent.with_task_completed(move |agent: &crate::Agent| {
+            agent = agent.with_task_completed(move |agent: &crate::LoopState<'_>| {
                 let matcher = matcher.clone();
                 let command = command.clone();
                 let dirs = dirs.clone();
@@ -2222,7 +2219,7 @@ fn apply_hook_sources(
             let command = command.clone();
             let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
-            agent = agent.with_interrupt(move |agent: &crate::Agent| {
+            agent = agent.with_interrupt(move |agent: &crate::LoopState<'_>| {
                 let matcher = matcher.clone();
                 let command = command.clone();
                 let dirs = dirs.clone();
@@ -2256,7 +2253,7 @@ fn apply_hook_sources(
             let command = command.clone();
             let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
-            agent = agent.with_stop(move |agent: &crate::Agent| {
+            agent = agent.with_stop(move |agent: &crate::LoopState<'_>| {
                 let matcher = matcher.clone();
                 let command = command.clone();
                 let dirs = dirs.clone();
@@ -2295,7 +2292,7 @@ fn apply_hook_sources(
             let command = command.clone();
             let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
-            agent = agent.with_session_end(move |agent: &crate::Agent| {
+            agent = agent.with_session_end(move |agent: &crate::LoopState<'_>| {
                 let matcher = matcher.clone();
                 let command = command.clone();
                 let dirs = dirs.clone();
@@ -2329,31 +2326,33 @@ fn apply_hook_sources(
             let command = command.clone();
             let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
-            agent = agent.with_pre_compact(move |agent: &crate::Agent, trigger: CompactTrigger| {
-                let matcher = matcher.clone();
-                let command = command.clone();
-                let dirs = dirs.clone();
-                let work_dir = work_dir.clone();
-                Box::pin(async move {
-                    if !matcher_matches(matcher.as_deref(), trigger.as_str()) {
-                        return Ok(HookControl::Continue);
-                    }
-                    let output = run_hook(
-                        &command,
-                        &dirs,
-                        &HookRunInput {
-                            session_id: String::new(),
-                            work_dir,
-                            hook_event_name: "PreCompact",
-                            event: json!({ "trigger": trigger.as_str() }),
-                        },
-                        Some(agent),
-                    )
-                    .await;
-                    // `block` vetoes the compaction (Codex `should_stop`).
-                    Ok(output.control)
-                })
-            });
+            agent = agent.with_pre_compact(
+                move |agent: &crate::LoopState<'_>, trigger: CompactTrigger| {
+                    let matcher = matcher.clone();
+                    let command = command.clone();
+                    let dirs = dirs.clone();
+                    let work_dir = work_dir.clone();
+                    Box::pin(async move {
+                        if !matcher_matches(matcher.as_deref(), trigger.as_str()) {
+                            return Ok(HookControl::Continue);
+                        }
+                        let output = run_hook(
+                            &command,
+                            &dirs,
+                            &HookRunInput {
+                                session_id: String::new(),
+                                work_dir,
+                                hook_event_name: "PreCompact",
+                                event: json!({ "trigger": trigger.as_str() }),
+                            },
+                            Some(agent),
+                        )
+                        .await;
+                        // `block` vetoes the compaction (Codex `should_stop`).
+                        Ok(output.control)
+                    })
+                },
+            );
         }
 
         for (matcher, command) in hooks.commands_for(HookEventKind::PostCompact) {
@@ -2361,8 +2360,8 @@ fn apply_hook_sources(
             let command = command.clone();
             let dirs = source.dirs.clone();
             let work_dir = work_dir.clone();
-            agent =
-                agent.with_post_compact(move |agent: &crate::Agent, trigger: CompactTrigger| {
+            agent = agent.with_post_compact(
+                move |agent: &crate::LoopState<'_>, trigger: CompactTrigger| {
                     let matcher = matcher.clone();
                     let command = command.clone();
                     let dirs = dirs.clone();
@@ -2387,7 +2386,8 @@ fn apply_hook_sources(
                         let _ = output;
                         Ok(HookControl::Continue)
                     })
-                });
+                },
+            );
         }
     }
 
@@ -2711,6 +2711,7 @@ mod tests {
             source: Some("plugin demo".into()),
             ..Default::default()
         };
+        let view = agent.activation_view();
         run_command_hook(
             &command,
             dir.path(),
@@ -2720,7 +2721,7 @@ mod tests {
                 hook_event_name: "PreCompact",
                 event: json!({ "trigger": "auto" }),
             },
-            Some(&agent),
+            Some(&view),
         )
         .await;
 
@@ -2947,6 +2948,7 @@ mod tests {
             crate::AgentSystemPrompt::Static("test".to_string()),
         )
         .with_ui_channel(tx);
+        let view = agent.activation_view();
 
         let output = run_command_hook(
             &command,
@@ -2957,7 +2959,7 @@ mod tests {
                 hook_event_name: "SessionStart",
                 event: json!({ "source": "startup" }),
             },
-            Some(&agent),
+            Some(&view),
         )
         .await;
 
@@ -4309,6 +4311,7 @@ mod tests {
         let crate::hook::Hook::PermissionRequest(hook) = hooks[0] else {
             panic!("registered under the wrong event")
         };
+        let view = agent.activation_view();
 
         // The matcher is not `bash`, so the hook stays out of the way.
         let mut other = ToolUse {
@@ -4317,7 +4320,7 @@ mod tests {
             input: json!({ "path": "a" }),
         };
         assert_eq!(
-            hook(&agent, &mut other).await.unwrap(),
+            hook(&view, &mut other).await.unwrap(),
             HookControl::Continue
         );
 
@@ -4327,7 +4330,7 @@ mod tests {
             name: "bash".into(),
             input: json!({ "command": "ls" }),
         };
-        assert_eq!(hook(&agent, &mut bash).await.unwrap(), HookControl::Allow);
+        assert_eq!(hook(&view, &mut bash).await.unwrap(), HookControl::Allow);
     }
 
     /// An `Interrupt` hook runs once per turn, and its message is surfaced.
@@ -4487,12 +4490,13 @@ mod tests {
         );
         let mut command = mcp_tool_hook("policy", "gate");
         command.arguments = Some(json!({ "path": "secret.txt" }));
+        let view = agent.activation_view();
 
         let output = run_hook(
             &command,
             PluginDirs::root_only(dir.path()),
             &hook_input(dir.path(), "PreToolUse"),
-            Some(&agent),
+            Some(&view),
         )
         .await;
 
@@ -4522,12 +4526,13 @@ mod tests {
             }),
         );
         let command = mcp_tool_hook("policy", "brief");
+        let view = agent.activation_view();
 
         let output = run_hook(
             &command,
             PluginDirs::root_only(dir.path()),
             &hook_input(dir.path(), "UserPromptSubmit"),
-            Some(&agent),
+            Some(&view),
         )
         .await;
 
@@ -4554,12 +4559,13 @@ mod tests {
         );
         let mut command = mcp_tool_hook("policy", "brief");
         command.additional_context_limit = Some(10);
+        let view = agent.activation_view();
 
         let output = run_hook(
             &command,
             PluginDirs::root_only(dir.path()),
             &hook_input(dir.path(), "UserPromptSubmit"),
-            Some(&agent),
+            Some(&view),
         )
         .await;
 
@@ -4577,12 +4583,13 @@ mod tests {
         let dir = tempdir().unwrap();
         let agent = agent_with_a_broken_mcp_tool("mcp_tool_hook_broken");
         let command = mcp_tool_hook("policy", "gate");
+        let view = agent.activation_view();
 
         let output = run_hook(
             &command,
             PluginDirs::root_only(dir.path()),
             &hook_input(dir.path(), "PreToolUse"),
-            Some(&agent),
+            Some(&view),
         )
         .await;
 
@@ -4596,6 +4603,7 @@ mod tests {
         // and approved must not be silently inert.
         let dir = tempdir().unwrap();
         let agent = agent_with_a_broken_mcp_tool("mcp_tool_hook_invalid");
+        let view = agent.activation_view();
 
         for command in [
             HookCommand {
@@ -4613,7 +4621,7 @@ mod tests {
                 &command,
                 PluginDirs::root_only(dir.path()),
                 &hook_input(dir.path(), "PreToolUse"),
-                Some(&agent),
+                Some(&view),
             )
             .await;
             assert_eq!(output.control, HookControl::Continue);

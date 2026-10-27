@@ -211,6 +211,11 @@ impl PermissionManager {
         self.mode
     }
 
+    #[cfg(test)]
+    pub(crate) fn consecutive_denials(&self) -> usize {
+        self.consecutive_denials
+    }
+
     /// The sensitive-path guard this manager's settings describe.
     ///
     /// With no settings store the guard is still **on**, built from the

@@ -1,0 +1,459 @@
+{
+  "schema_version": 1,
+  "captured_from": {
+    "path": "legacy",
+    "commit": "d675b61e5f93b9084e6f560b2ee7984491093b9c",
+    "date": "2026-10-26"
+  },
+  "normalization": {
+    "ids": "<scenario>:<kind>:<ordinal>",
+    "durations": "<duration>",
+    "timestamps": "<timestamp>",
+    "paths": "<path>",
+    "image_data": "<redacted-image-data>"
+  },
+  "scenarios": [
+    {
+      "id": "simple_text",
+      "legacy_tests": [
+        "agent::tests::agent_loop_completes_with_end_turn_response",
+        "agent::tests::agent_loop_emits_token_usage_from_mock"
+      ],
+      "updates": [
+        "kernel:turn_stats:turn-1",
+        "kernel:model_info:stream",
+        "kernel:stream_chunk:hello",
+        "kernel:token_usage:total-7",
+        "driver:task_complete:hello"
+      ],
+      "transcript": [
+        {
+          "role": "user",
+          "origin": "user",
+          "blocks": [
+            "text:hello"
+          ]
+        },
+        {
+          "role": "assistant",
+          "origin": "assistant",
+          "blocks": [
+            "text:hello"
+          ]
+        }
+      ],
+      "cursor": "unchanged",
+      "usage": [
+        "stream:total-7"
+      ],
+      "terminal": "completed",
+      "invariants": [
+        "one user input and one assistant response",
+        "usage.total drives the displayed total"
+      ]
+    },
+    {
+      "id": "tool_use_image_companion",
+      "legacy_tests": [
+        "agent::tests::agent_loop_runs_parallel_read_tools",
+        "agent::tool_dispatch::tests::image_tool_result_keeps_companion_block_after_result"
+      ],
+      "updates": [
+        "kernel:turn_stats:turn-1",
+        "kernel:model_info:stream",
+        "kernel:token_usage:total-8",
+        "kernel:tool_added:read_image",
+        "kernel:tool_started:read_image",
+        "kernel:tool_finished:read_image:succeeded",
+        "kernel:turn_stats:turn-2",
+        "kernel:model_info:stream",
+        "kernel:stream_chunk:captured",
+        "kernel:token_usage:total-21",
+        "driver:task_complete:captured"
+      ],
+      "transcript": [
+        {
+          "role": "user",
+          "origin": "user",
+          "blocks": [
+            "text:capture the image"
+          ]
+        },
+        {
+          "role": "assistant",
+          "origin": "assistant",
+          "blocks": [
+            "tool_use:read_image"
+          ]
+        },
+        {
+          "role": "user",
+          "origin": "tool_result",
+          "blocks": [
+            "tool_result:read_image:image preview",
+            "image:image/png:<redacted-image-data>"
+          ]
+        },
+        {
+          "role": "assistant",
+          "origin": "assistant",
+          "blocks": [
+            "text:captured"
+          ]
+        }
+      ],
+      "cursor": "unchanged",
+      "usage": [
+        "stream:total-8",
+        "stream:total-21"
+      ],
+      "terminal": "completed",
+      "invariants": [
+        "the grouped tool result remains one user-role tool_result message",
+        "the image remains immediately after the result that produced it",
+        "image content is never flattened to placeholder text"
+      ]
+    },
+    {
+      "id": "permission_denial",
+      "legacy_tests": [
+        "agent::tests::agent_loop_plan_mode_denies_write",
+        "permission_integration::default_mode_deny_blocks_edit_file"
+      ],
+      "updates": [
+        "kernel:turn_stats:turn-1",
+        "kernel:model_info:stream",
+        "kernel:token_usage:total-9",
+        "kernel:tool_added:write_file",
+        "kernel:tool_started:write_file",
+        "kernel:tool_failed:write_file:denied",
+        "kernel:turn_stats:turn-2",
+        "kernel:model_info:stream",
+        "kernel:stream_chunk:Edit denied",
+        "kernel:token_usage:total-12",
+        "driver:task_complete:Edit denied"
+      ],
+      "transcript": [
+        {
+          "role": "user",
+          "origin": "user",
+          "blocks": [
+            "text:edit the file"
+          ]
+        },
+        {
+          "role": "assistant",
+          "origin": "assistant",
+          "blocks": [
+            "tool_use:write_file"
+          ]
+        },
+        {
+          "role": "user",
+          "origin": "tool_result",
+          "blocks": [
+            "tool_result:write_file:denied"
+          ]
+        },
+        {
+          "role": "assistant",
+          "origin": "assistant",
+          "blocks": [
+            "text:Edit denied"
+          ]
+        }
+      ],
+      "cursor": "unchanged",
+      "usage": [
+        "stream:total-9",
+        "stream:total-12"
+      ],
+      "terminal": "completed",
+      "invariants": [
+        "denied calls never reach execution",
+        "denial is returned as a paired tool result"
+      ]
+    },
+    {
+      "id": "transient_retry",
+      "legacy_tests": [
+        "harness_advanced::mock_timeout_retries_then_succeeds"
+      ],
+      "updates": [
+        "kernel:turn_stats:turn-1",
+        "kernel:model_info:stream",
+        "kernel:info:retry-1",
+        "kernel:model_info:stream",
+        "kernel:stream_chunk:recovered",
+        "kernel:token_usage:total-5",
+        "driver:task_complete:recovered"
+      ],
+      "transcript": [
+        {
+          "role": "user",
+          "origin": "user",
+          "blocks": [
+            "text:retry the request"
+          ]
+        },
+        {
+          "role": "assistant",
+          "origin": "assistant",
+          "blocks": [
+            "text:recovered"
+          ]
+        }
+      ],
+      "cursor": "unchanged",
+      "usage": [
+        "stream:total-5"
+      ],
+      "terminal": "completed",
+      "invariants": [
+        "transport retries do not consume an additional turn",
+        "failed attempts produce no assistant transcript message"
+      ]
+    },
+    {
+      "id": "cancellation_during_stream",
+      "legacy_tests": [
+        "agent::tests::agent_loop_detailed_reports_cancelled_when_the_flag_arrives_mid_response",
+        "driver_integration::cancel_during_task_does_not_emit_task_complete"
+      ],
+      "updates": [
+        "kernel:turn_stats:turn-1",
+        "kernel:model_info:stream",
+        "kernel:stream_chunk:partial",
+        "kernel:info:cancelling",
+        "driver:task_cancelled"
+      ],
+      "transcript": [
+        {
+          "role": "user",
+          "origin": "user",
+          "blocks": [
+            "text:long task"
+          ]
+        }
+      ],
+      "cursor": "unchanged",
+      "usage": [],
+      "terminal": "cancelled",
+      "invariants": [
+        "an incomplete stream commits no assistant message",
+        "TaskComplete is not emitted",
+        "the driver emits TaskCancelled exactly once"
+      ]
+    },
+    {
+      "id": "cancellation_during_tool_wave",
+      "legacy_tests": [
+        "agent::tests::cancel_before_tool_execution_pairs_every_tool_use",
+        "agent::tests::cancel_mid_preflight_answers_every_tool_use_once",
+        "agent::tests::cancel_mid_preflight_answers_an_approved_but_unrun_call"
+      ],
+      "updates": [
+        "kernel:turn_stats:turn-1",
+        "kernel:model_info:stream",
+        "kernel:token_usage:total-6",
+        "kernel:tool_added:bash",
+        "kernel:tool_started:bash",
+        "kernel:tool_finished:bash:cancelled",
+        "kernel:info:cancelling",
+        "driver:task_cancelled"
+      ],
+      "transcript": [
+        {
+          "role": "user",
+          "origin": "user",
+          "blocks": [
+            "text:run a command"
+          ]
+        },
+        {
+          "role": "assistant",
+          "origin": "assistant",
+          "blocks": [
+            "tool_use:bash"
+          ]
+        },
+        {
+          "role": "user",
+          "origin": "tool_result",
+          "blocks": [
+            "tool_result:bash:Cancelled by user"
+          ]
+        }
+      ],
+      "cursor": "unchanged",
+      "usage": [
+        "stream:total-6"
+      ],
+      "terminal": "cancelled",
+      "invariants": [
+        "the active wave drains",
+        "every persisted tool use receives exactly one result",
+        "no second wave starts"
+      ]
+    },
+    {
+      "id": "injected_context",
+      "legacy_tests": [
+        "agent::tests::agent_loop_injects_session_start_context_as_its_own_message",
+        "agent::tests::agent_loop_records_tool_hook_context"
+      ],
+      "updates": [
+        "adapter:hook_status:running",
+        "adapter:hook_context:plugin",
+        "kernel:turn_stats:turn-1",
+        "kernel:model_info:stream",
+        "kernel:stream_chunk:ready",
+        "kernel:token_usage:total-4",
+        "driver:task_complete:ready"
+      ],
+      "transcript": [
+        {
+          "role": "user",
+          "origin": "injected_context:hook",
+          "blocks": [
+            "text:hook briefing"
+          ]
+        },
+        {
+          "role": "user",
+          "origin": "user",
+          "blocks": [
+            "text:continue"
+          ]
+        },
+        {
+          "role": "assistant",
+          "origin": "assistant",
+          "blocks": [
+            "text:ready"
+          ]
+        }
+      ],
+      "cursor": "unchanged",
+      "usage": [
+        "stream:total-4"
+      ],
+      "terminal": "completed",
+      "invariants": [
+        "injected context has a non-user origin",
+        "injected context does not increment the user-turn counter",
+        "hook status and hook context are adapter-owned updates"
+      ]
+    },
+    {
+      "id": "hosted_web_search",
+      "legacy_tests": [
+        "runtime::baseline::tests::hosted_web_search_kernel_run_matches_frozen_legacy_baseline"
+      ],
+      "updates": [
+        "kernel:turn_stats:turn-1",
+        "kernel:model_info:stream",
+        "kernel:web_search_started:search-1",
+        "kernel:web_search_finished:search-1",
+        "kernel:stream_chunk:answer",
+        "kernel:token_usage:total-15",
+        "driver:task_complete:answer"
+      ],
+      "transcript": [
+        {
+          "role": "user",
+          "origin": "user",
+          "blocks": [
+            "text:search"
+          ]
+        },
+        {
+          "role": "assistant",
+          "origin": "assistant",
+          "blocks": [
+            "text:answer"
+          ]
+        }
+      ],
+      "cursor": "replaced-provider-state",
+      "usage": [
+        "stream:total-15"
+      ],
+      "terminal": "completed",
+      "invariants": [
+        "hosted web search emits no client ToolUse",
+        "hosted web search emits no transcript tool-result message",
+        "started and terminal provider activities are ordered once"
+      ]
+    },
+    {
+      "id": "resumed_sqlite_history",
+      "legacy_tests": [
+        "agent::tests::ensure_session_restores_matching_provider_state",
+        "session_bootstrap::tests::open_session_resolves_the_id_the_args_ask_for"
+      ],
+      "updates": [
+        "kernel:turn_stats:turn-1",
+        "kernel:model_info:stream",
+        "kernel:stream_chunk:continued",
+        "kernel:token_usage:total-11",
+        "driver:task_complete:continued"
+      ],
+      "transcript": [
+        {
+          "role": "user",
+          "origin": "user",
+          "blocks": [
+            "text:earlier question"
+          ]
+        },
+        {
+          "role": "assistant",
+          "origin": "assistant",
+          "blocks": [
+            "text:earlier answer"
+          ]
+        },
+        {
+          "role": "user",
+          "origin": "user",
+          "blocks": [
+            "text:continue"
+          ]
+        },
+        {
+          "role": "assistant",
+          "origin": "assistant",
+          "blocks": [
+            "text:continued"
+          ]
+        }
+      ],
+      "cursor": "retained-provider-state",
+      "usage": [
+        "stream:total-11"
+      ],
+      "terminal": "completed",
+      "invariants": [
+        "empty runtime context loads durable history before model work",
+        "matching provider state is retained across resume",
+        "legacy history is not duplicated"
+      ]
+    },
+    {
+      "id": "tui_full_area_blank_background",
+      "legacy_tests": [
+        "tui::render::render_gap_tests::mermaid_popup_paints_theme_bg_across_its_area"
+      ],
+      "updates": [],
+      "transcript": [],
+      "cursor": "unchanged",
+      "usage": [],
+      "terminal": "render-only",
+      "invariants": [
+        "every cell in a painted TUI area carries the theme background, including blanks",
+        "this invariant stays an exact assertion in the existing TUI test rather than a screenshot"
+      ]
+    }
+  ]
+}

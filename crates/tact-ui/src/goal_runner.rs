@@ -2572,7 +2572,7 @@ mod tests {
         let placeholder = MockClient::new(vec![]);
         let (agent, _work_dir) = build_test_agent(placeholder, None);
         let mut agent =
-            agent.with_user_prompt_submit(|_agent: &tact::Agent, _prompt: &mut String| {
+            agent.with_user_prompt_submit(|_state: &tact::LoopState<'_>, _prompt: &mut String| {
                 Box::pin(async { anyhow::bail!("synthetic hook failure") })
             });
         let manager = agent.tool_context.goal_manager.clone();
@@ -2901,7 +2901,7 @@ mod tests {
         // A prompt hook parks the activation after the lease is claimed, so the
         // test can drop the future mid-flight instead of racing a fast finish.
         let mut agent =
-            agent.with_user_prompt_submit(|_agent: &tact::Agent, _prompt: &mut String| {
+            agent.with_user_prompt_submit(|_state: &tact::LoopState<'_>, _prompt: &mut String| {
                 Box::pin(async {
                     std::future::pending::<()>().await;
                     Ok(HookControl::Continue)
@@ -3025,7 +3025,7 @@ mod tests {
         let mock = MockClient::new(vec![]);
         let (agent, _work_dir) = build_test_agent(mock, None);
         let mut agent =
-            agent.with_user_prompt_submit(|_agent: &tact::Agent, _prompt: &mut String| {
+            agent.with_user_prompt_submit(|_state: &tact::LoopState<'_>, _prompt: &mut String| {
                 Box::pin(async { Ok(HookControl::Block("goal runs are disabled".to_string())) })
             });
         let manager = agent.tool_context.goal_manager.clone();
@@ -3631,7 +3631,7 @@ mod tests {
         let mock = MockClient::new(vec![]);
         let (agent, _work_dir) = build_test_agent(mock, None);
         let mut agent =
-            agent.with_user_prompt_submit(|_agent: &tact::Agent, _prompt: &mut String| {
+            agent.with_user_prompt_submit(|_state: &tact::LoopState<'_>, _prompt: &mut String| {
                 Box::pin(async { Ok(HookControl::Block("goal runs are disabled".to_string())) })
             });
         let manager = agent.tool_context.goal_manager.clone();

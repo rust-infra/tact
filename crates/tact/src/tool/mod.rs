@@ -85,7 +85,7 @@ use memory::SaveMemoryTool;
 #[cfg(test)]
 use read_file::ReadFileTool;
 pub use registry::{subagent_toolset, toolset, toolset_with_memory};
-// Re-exported so `crate::agent::tool_dispatch` can do per-invocation resource
+// Re-exported so `runtime::tool_adapter` can do per-invocation resource
 // resolution for worktree-isolated `spawn_subagent` calls without naming the
 // private `subagent` module.
 #[cfg(test)]
@@ -218,8 +218,9 @@ pub trait Tool: Send + Sync {
 }
 
 /// A registered tool: handler + its static metadata.
+#[derive(Clone)]
 struct RegisteredTool {
-    handler: Box<dyn Tool>,
+    handler: Arc<dyn Tool>,
     metadata: &'static ToolMetadata,
 }
 
@@ -244,6 +245,7 @@ impl ResolvedNativeTool<'_> {
 /// Tools are stored as `Box<dyn Tool>` and dispatched by name on every
 /// [`call`](ToolRouter::call).  The router can also emit the full list of
 /// [`ToolSpec`] values for inclusion in the LLM API request.
+#[derive(Clone)]
 pub struct ToolRouter {
     tools: HashMap<String, RegisteredTool>,
     cached_specs: OnceLock<Vec<ToolSpec>>,
@@ -290,7 +292,7 @@ impl ToolRouter {
         self.tools.insert(
             name,
             RegisteredTool {
-                handler: Box::new(tool),
+                handler: Arc::new(tool),
                 metadata,
             },
         );

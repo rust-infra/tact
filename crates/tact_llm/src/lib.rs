@@ -15,10 +15,13 @@ pub mod inject;
 pub mod lock;
 pub mod mock;
 pub mod models;
+pub mod neutral;
 pub mod openai;
 pub mod opencode;
 pub mod profile;
+pub mod progress;
 pub mod provider;
+pub mod provider_model;
 pub mod provider_state;
 pub mod transport;
 pub mod types;
@@ -36,8 +39,9 @@ mod test_openai;
 
 // Re-export account query APIs at the crate root (existing public surface).
 pub use account::{
-    query_deepseek_balance, query_deepseek_balance_for, query_kimi_balance, query_kimi_balance_for,
-    query_kimi_code_usage, query_kimi_code_usage_for,
+    BalanceEntry, BalanceInfo, UsageQuotaInfo, UsageQuotaWindow, query_deepseek_balance,
+    query_deepseek_balance_for, query_kimi_balance, query_kimi_balance_for, query_kimi_code_usage,
+    query_kimi_code_usage_for,
 };
 pub use auth::{ApiKeyProvider, Credential, CredentialProvider};
 pub use client::{LlmClient, LlmProvider, LlmRequestBody, LlmResponse};
@@ -55,6 +59,10 @@ pub use models::{
 };
 pub use openai::compatible::body::OpenAiBodyHook;
 pub use profile::ProviderProfile;
+pub use progress::{
+    ModelCallParams, NoopProgressSink, ProviderProgress, ProviderProgressSink, ThinkingChunk,
+    TokenUsageInfo,
+};
 pub use provider::{
     Client, ProviderInfo, current_provider_kind, get_llm_client, get_provider, init_provider,
     init_provider_with_credentials, is_account_query_supported, is_deepseek,
@@ -62,6 +70,7 @@ pub use provider::{
     is_kimi_k3, is_kimi_k27, is_kimi_usage_supported, model_uses_effort, read_provider,
     supports_vision,
 };
+pub use provider_model::ProviderModel;
 pub use provider_state::{
     ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,
 };

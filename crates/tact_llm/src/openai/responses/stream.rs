@@ -4,10 +4,10 @@ use std::time::Instant;
 use async_openai_responses::types::responses::{
     OutputItem, Response, ResponseStreamEvent, WebSearchToolCall, WebSearchToolCallStatus,
 };
-use tact_protocol::{AgentUpdate, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo};
+use tact_agent_api::{ProviderActivity, ProviderActivityKind, ProviderActivityPhase};
 
 use super::normalize::{NormalizedResponse, normalize_response};
-use crate::LlmError;
+use crate::{LlmError, ProviderProgress, ThinkingChunk};
 
 /// Extracts the search query from a `WebSearchToolCall` (empty when the
 /// provider has not populated the action yet — `output_item.added` events
@@ -45,66 +45,87 @@ fn web_search_failure_detail(call: &WebSearchToolCall, query: &str) -> String {
 }
 
 /// Builds the `StepStarted` update for an in-progress web search call.
-fn web_search_started(index: u32, call: &WebSearchToolCall) -> AgentUpdate {
-    AgentUpdate::StepStarted {
-        idx: index as usize,
-        tool_id: call.id.clone(),
-        tool_name: "web_search".to_string(),
-        arg_summary: web_search_query(call),
-        arg_full: web_search_query(call),
-        presentation: ToolPresentationInfo::generic("web_search"),
+fn web_search_activity_id(output_index: u32, call: &WebSearchToolCall) -> String {
+    if call.id.is_empty() {
+        format!("web-search-{output_index}")
+    } else {
+        call.id.clone()
     }
 }
 
-/// Builds the terminal update for a completed or failed web search call.
+fn web_search_activity(
+    output_index: u32,
+    index: u32,
+    call: &WebSearchToolCall,
+    phase: ProviderActivityPhase,
+    failure: Option<String>,
+    duration_us: Option<u64>,
+) -> ProviderProgress {
+    let query = web_search_query(call);
+    ProviderProgress::Activity(ProviderActivity {
+        id: web_search_activity_id(output_index, call),
+        step: index,
+        kind: ProviderActivityKind::WebSearch {
+            phase,
+            query: (!query.is_empty()).then_some(query),
+            failure,
+            duration: duration_us.map(std::time::Duration::from_micros),
+        },
+    })
+}
+
+fn web_search_started(output_index: u32, index: u32, call: &WebSearchToolCall) -> ProviderProgress {
+    web_search_activity(
+        output_index,
+        index,
+        call,
+        ProviderActivityPhase::Started,
+        None,
+        None,
+    )
+}
+
+/// Builds the terminal progress for a completed or failed web search call.
 fn web_search_finished(
+    output_index: u32,
     index: u32,
     call: &WebSearchToolCall,
     duration_us: Option<u64>,
-) -> AgentUpdate {
+) -> ProviderProgress {
     let query = web_search_query(call);
-    let presentation = ToolPresentationInfo::generic("web_search");
-    let (idx, tool_id) = (index as usize, call.id.clone());
     match call.status {
-        WebSearchToolCallStatus::Failed => AgentUpdate::StepFailed {
-            idx,
-            tool_id,
-            arg_summary: web_search_query(call),
-            error: format!(
+        WebSearchToolCallStatus::Failed => web_search_activity(
+            output_index,
+            index,
+            call,
+            ProviderActivityPhase::Failed,
+            Some(format!(
                 "web search failed ({})",
                 web_search_failure_detail(call, &query)
-            ),
-        },
-        // `output_item.done` normally carries a terminal status. If a
-        // compatible endpoint reports `in_progress` / `searching` here, the
-        // item ended without a terminal status: surface it as a failure
-        // rather than silently claiming success.
+            )),
+            duration_us,
+        ),
         WebSearchToolCallStatus::InProgress | WebSearchToolCallStatus::Searching => {
-            AgentUpdate::StepFailed {
-                idx,
-                tool_id,
-                arg_summary: web_search_query(call),
-                error: format!(
+            web_search_activity(
+                output_index,
+                index,
+                call,
+                ProviderActivityPhase::Failed,
+                Some(format!(
                     "web search ended without terminal status ({})",
                     web_search_failure_detail(call, &query)
-                ),
-            }
-        }
-        WebSearchToolCallStatus::Completed => AgentUpdate::StepFinished {
-            idx,
-            tool_id,
-            result: StepResult {
-                tool: "web_search".to_string(),
-                arg_summary: query,
-                arg_full: None,
-                status: StepStatus::Success,
-                message: "web search completed".to_string(),
-                detail: None,
+                )),
                 duration_us,
-                permission_label: None,
-                presentation,
-            },
-        },
+            )
+        }
+        WebSearchToolCallStatus::Completed => web_search_activity(
+            output_index,
+            index,
+            call,
+            ProviderActivityPhase::Completed,
+            None,
+            duration_us,
+        ),
     }
 }
 
@@ -141,19 +162,20 @@ pub(crate) struct ResponsesStreamState {
     /// so it must not be rendered as the tool step number.
     web_search_step_indices: BTreeMap<u32, usize>,
     web_search_started_at: BTreeMap<u32, Instant>,
+    web_search_announced: BTreeSet<u32>,
 }
 
 impl ResponsesStreamState {
-    pub(crate) fn close_thinking(&mut self) -> Option<AgentUpdate> {
+    pub(crate) fn close_thinking(&mut self) -> Option<ProviderProgress> {
         if self.thinking_open {
             self.thinking_open = false;
-            Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+            Some(ProviderProgress::Thinking(ThinkingChunk::Finished))
         } else {
             None
         }
     }
 
-    fn thinking_delta(&mut self, delta: String) -> Vec<AgentUpdate> {
+    fn thinking_delta(&mut self, delta: String) -> Vec<ProviderProgress> {
         if delta.is_empty() {
             return Vec::new();
         }
@@ -163,13 +185,13 @@ impl ResponsesStreamState {
         let mut updates = Vec::with_capacity(2);
         if !self.thinking_open {
             self.thinking_open = true;
-            updates.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+            updates.push(ProviderProgress::Thinking(ThinkingChunk::Started));
         }
-        updates.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(delta)));
+        updates.push(ProviderProgress::Thinking(ThinkingChunk::Delta(delta)));
         updates
     }
 
-    fn visible_delta(&mut self, delta: String) -> Vec<AgentUpdate> {
+    fn visible_delta(&mut self, delta: String) -> Vec<ProviderProgress> {
         if delta.is_empty() {
             return Vec::new();
         }
@@ -177,13 +199,13 @@ impl ResponsesStreamState {
         let mut updates = Vec::with_capacity(2);
         if self.thinking_open {
             self.thinking_open = false;
-            updates.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+            updates.push(ProviderProgress::Thinking(ThinkingChunk::Finished));
         }
-        updates.push(AgentUpdate::StreamChunk(delta));
+        updates.push(ProviderProgress::TextDelta(delta));
         updates
     }
 
-    fn set_terminal(&mut self, response: Response) -> Result<Vec<AgentUpdate>, LlmError> {
+    fn set_terminal(&mut self, response: Response) -> Result<Vec<ProviderProgress>, LlmError> {
         if self.terminal.is_some() {
             return Err(LlmError::Unsupported(
                 "multiple terminal events".to_string(),
@@ -197,7 +219,7 @@ impl ResponsesStreamState {
     pub(crate) fn apply(
         &mut self,
         event: ResponseStreamEvent,
-    ) -> Result<Vec<AgentUpdate>, LlmError> {
+    ) -> Result<Vec<ProviderProgress>, LlmError> {
         self.apply_with_raw(event, None)
     }
 
@@ -205,7 +227,7 @@ impl ResponsesStreamState {
         &mut self,
         event: ResponseStreamEvent,
         raw_output_items: Option<Vec<serde_json::Value>>,
-    ) -> Result<Vec<AgentUpdate>, LlmError> {
+    ) -> Result<Vec<ProviderProgress>, LlmError> {
         if raw_output_items.is_some() {
             self.raw_terminal_output = raw_output_items;
         }
@@ -255,7 +277,13 @@ impl ResponsesStreamState {
                             .web_search_step_indices
                             .entry(event.output_index)
                             .or_insert(next_idx);
-                        return Ok(vec![web_search_started(step_idx as u32, call)]);
+                        if self.web_search_announced.insert(event.output_index) {
+                            return Ok(vec![web_search_started(
+                                event.output_index,
+                                step_idx as u32,
+                                call,
+                            )]);
+                        }
                     }
                 }
                 Vec::new()
@@ -282,12 +310,21 @@ impl ResponsesStreamState {
                         .web_search_started_at
                         .remove(&event.output_index)
                         .map(|started| started.elapsed().as_micros() as u64);
-                    // Terminal status for the web search tool card.
-                    return Ok(vec![web_search_finished(
+                    let mut progress = Vec::with_capacity(2);
+                    if self.web_search_announced.insert(event.output_index) {
+                        progress.push(web_search_started(
+                            event.output_index,
+                            step_idx as u32,
+                            call,
+                        ));
+                    }
+                    progress.push(web_search_finished(
+                        event.output_index,
                         step_idx as u32,
                         call,
                         duration_us,
-                    )]);
+                    ));
+                    return Ok(progress);
                 }
                 Vec::new()
             }
@@ -446,10 +483,10 @@ impl ResponsesStreamState {
 #[cfg(test)]
 mod tests {
     use async_openai_responses::types::responses::ResponseStreamEvent;
-    use tact_protocol::{AgentUpdate, StepStatus, ThinkingChunk};
+    use tact_agent_api::{ProviderActivityKind, ProviderActivityPhase};
 
     use super::ResponsesStreamState;
-    use crate::ContentBlock;
+    use crate::{ContentBlock, ProviderProgress, ThinkingChunk};
 
     fn event(value: serde_json::Value) -> ResponseStreamEvent {
         serde_json::from_value(value).unwrap()
@@ -482,8 +519,8 @@ mod tests {
         assert!(matches!(
             thinking.as_slice(),
             [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(delta))
+                ProviderProgress::Thinking(ThinkingChunk::Started),
+                ProviderProgress::Thinking(ThinkingChunk::Delta(delta))
             ] if delta == "plan"
         ));
 
@@ -501,8 +538,8 @@ mod tests {
         assert!(matches!(
             text.as_slice(),
             [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
-                AgentUpdate::StreamChunk(delta)
+                ProviderProgress::Thinking(ThinkingChunk::Finished),
+                ProviderProgress::TextDelta(delta)
             ] if delta == "answer"
         ));
 
@@ -607,7 +644,7 @@ mod tests {
             .unwrap();
         assert!(delta.iter().any(|update| matches!(
             update,
-            AgentUpdate::StreamChunk(text) if text == "answer"
+            ProviderProgress::TextDelta(text) if text == "answer"
         )));
 
         let done = state
@@ -646,7 +683,7 @@ mod tests {
             .unwrap();
         assert!(matches!(
             updates.as_slice(),
-            [AgentUpdate::ThinkingChunk(ThinkingChunk::Finished)]
+            [ProviderProgress::Thinking(ThinkingChunk::Finished)]
         ));
         assert!(state.finish().is_ok());
     }
@@ -1294,6 +1331,27 @@ mod tests {
         })
     }
 
+    fn web_search_activity(
+        progress: &ProviderProgress,
+    ) -> (&str, u32, ProviderActivityPhase, Option<&str>, Option<&str>) {
+        let ProviderProgress::Activity(activity) = progress else {
+            panic!("expected provider activity, got {progress:?}");
+        };
+        let ProviderActivityKind::WebSearch {
+            phase,
+            query,
+            failure,
+            ..
+        } = &activity.kind;
+        (
+            activity.id.as_str(),
+            activity.step,
+            *phase,
+            query.as_deref(),
+            failure.as_deref(),
+        )
+    }
+
     #[test]
     fn web_search_added_uses_tool_ordinal_not_output_index() {
         let mut state = super::ResponsesStreamState::default();
@@ -1304,12 +1362,9 @@ mod tests {
             ))
             .unwrap();
 
-        match &updates[0] {
-            AgentUpdate::StepStarted { idx, .. } => {
-                assert_eq!(*idx, 0, "the first hosted tool must render as step 1")
-            }
-            other => panic!("expected StepStarted, got {other:?}"),
-        }
+        let (_, step, phase, _, _) = web_search_activity(&updates[0]);
+        assert_eq!(step, 0, "the first hosted tool must render as step 1");
+        assert_eq!(phase, ProviderActivityPhase::Started);
     }
 
     #[test]
@@ -1328,18 +1383,10 @@ mod tests {
             ))
             .unwrap();
 
-        match (&first[0], &second[0]) {
-            (
-                AgentUpdate::StepStarted { idx: first_idx, .. },
-                AgentUpdate::StepStarted {
-                    idx: second_idx, ..
-                },
-            ) => {
-                assert_eq!(*first_idx, 0);
-                assert_eq!(*second_idx, 1);
-            }
-            other => panic!("expected two StepStarted updates, got {other:?}"),
-        }
+        let (_, first_step, _, _, _) = web_search_activity(&first[0]);
+        let (_, second_step, _, _, _) = web_search_activity(&second[0]);
+        assert_eq!(first_step, 0);
+        assert_eq!(second_step, 1);
     }
 
     #[test]
@@ -1359,18 +1406,10 @@ mod tests {
             ))
             .unwrap();
 
-        match (&first[0], &second[0]) {
-            (
-                AgentUpdate::StepStarted { idx: first_idx, .. },
-                AgentUpdate::StepStarted {
-                    idx: second_idx, ..
-                },
-            ) => {
-                assert_eq!(*first_idx, 0);
-                assert_eq!(*second_idx, 0);
-            }
-            other => panic!("expected two StepStarted updates, got {other:?}"),
-        }
+        let (_, first_step, _, _, _) = web_search_activity(&first[0]);
+        let (_, second_step, _, _, _) = web_search_activity(&second[0]);
+        assert_eq!(first_step, 0);
+        assert_eq!(second_step, 0);
     }
 
     #[test]
@@ -1385,21 +1424,11 @@ mod tests {
             .unwrap();
 
         assert_eq!(updates.len(), 1);
-        match &updates[0] {
-            AgentUpdate::StepStarted {
-                idx,
-                tool_id,
-                tool_name,
-                arg_summary,
-                ..
-            } => {
-                assert_eq!(*idx, 0);
-                assert_eq!(tool_id, "ws_1");
-                assert_eq!(tool_name, "web_search");
-                assert!(arg_summary.is_empty(), "no action yet → empty query");
-            }
-            other => panic!("expected StepStarted, got {other:?}"),
-        }
+        let (id, step, phase, query, _) = web_search_activity(&updates[0]);
+        assert_eq!(step, 0);
+        assert_eq!(id, "ws_1");
+        assert_eq!(phase, ProviderActivityPhase::Started);
+        assert_eq!(query, None, "no action yet means no query");
     }
 
     #[test]
@@ -1418,21 +1447,47 @@ mod tests {
             ))
             .unwrap();
 
-        assert!(matches!(&started[0], AgentUpdate::StepStarted { .. }));
+        assert_eq!(
+            web_search_activity(&started[0]).2,
+            ProviderActivityPhase::Started
+        );
         assert_eq!(finished.len(), 1);
-        match &finished[0] {
-            AgentUpdate::StepFinished {
-                tool_id, result, ..
-            } => {
-                assert_eq!(tool_id, "ws_1");
-                assert_eq!(result.tool, "web_search");
-                assert_eq!(result.arg_summary, "Rust async");
-                assert_eq!(result.status, StepStatus::Success);
-                assert!(result.duration_us.is_some());
-                assert!(result.detail.is_none(), "web search output is hidden");
-            }
-            other => panic!("expected StepFinished, got {other:?}"),
-        }
+        let (id, _, phase, query, failure) = web_search_activity(&finished[0]);
+        assert_eq!(id, "ws_1");
+        assert_eq!(phase, ProviderActivityPhase::Completed);
+        assert_eq!(query, Some("Rust async"));
+        assert_eq!(failure, None);
+        let ProviderProgress::Activity(activity) = &finished[0] else {
+            unreachable!("checked above");
+        };
+        let ProviderActivityKind::WebSearch { duration, .. } = activity.kind;
+        assert!(duration.is_some());
+    }
+
+    #[test]
+    fn web_search_done_without_added_synthesizes_started_before_terminal() {
+        let mut state = super::ResponsesStreamState::default();
+        let updates = state
+            .apply(output_item_done(
+                0,
+                web_search_call_json("completed", Some("Rust async")),
+            ))
+            .unwrap();
+
+        assert_eq!(updates.len(), 2);
+        let (start_id, start_step, start_phase, start_query, _) = web_search_activity(&updates[0]);
+        assert_eq!(start_id, "ws_1");
+        assert_eq!(start_step, 0);
+        assert_eq!(start_phase, ProviderActivityPhase::Started);
+        assert_eq!(start_query, Some("Rust async"));
+
+        let (done_id, done_step, done_phase, done_query, failure) =
+            web_search_activity(&updates[1]);
+        assert_eq!(done_id, "ws_1");
+        assert_eq!(done_step, 0);
+        assert_eq!(done_phase, ProviderActivityPhase::Completed);
+        assert_eq!(done_query, Some("Rust async"));
+        assert_eq!(failure, None);
     }
 
     #[test]
@@ -1451,12 +1506,10 @@ mod tests {
             ))
             .unwrap();
 
-        match &updates[0] {
-            AgentUpdate::StepFinished { result, .. } => {
-                assert!(result.detail.is_none(), "web search output is hidden");
-            }
-            other => panic!("expected StepFinished, got {other:?}"),
-        }
+        let (_, _, phase, query, failure) = web_search_activity(&updates[0]);
+        assert_eq!(phase, ProviderActivityPhase::Completed);
+        assert_eq!(query, Some("S&P 500"));
+        assert_eq!(failure, None, "successful web search has no failure detail");
     }
 
     #[test]
@@ -1476,34 +1529,24 @@ mod tests {
             .unwrap();
 
         assert_eq!(failed.len(), 1);
-        match &failed[0] {
-            AgentUpdate::StepFailed {
-                tool_id,
-                arg_summary,
-                error,
-                ..
-            } => {
-                assert_eq!(tool_id, "ws_1");
-                assert_eq!(
-                    arg_summary, "Rust async",
-                    "failed card keeps the query in its title"
-                );
-                assert!(error.contains("web search failed"));
-                assert!(
-                    error.contains("status: Failed"),
-                    "failure must report the provider status, got: {error}"
-                );
-                assert!(
-                    error.contains("query: \"Rust async\""),
-                    "failure must report the query, got: {error}"
-                );
-                assert!(
-                    error.contains("action:"),
-                    "failure must include the provider's action detail, got: {error}"
-                );
-            }
-            other => panic!("expected StepFailed, got {other:?}"),
-        }
+        let (id, _, phase, query, error) = web_search_activity(&failed[0]);
+        assert_eq!(id, "ws_1");
+        assert_eq!(phase, ProviderActivityPhase::Failed);
+        assert_eq!(query, Some("Rust async"));
+        let error = error.expect("failed web search carries failure detail");
+        assert!(error.contains("web search failed"));
+        assert!(
+            error.contains("status: Failed"),
+            "failure must report the provider status, got: {error}"
+        );
+        assert!(
+            error.contains("query: \"Rust async\""),
+            "failure must report the query, got: {error}"
+        );
+        assert!(
+            error.contains("action:"),
+            "failure must include the provider's action detail, got: {error}"
+        );
     }
 
     #[test]
@@ -1521,16 +1564,15 @@ mod tests {
                 .unwrap();
 
             assert_eq!(updates.len(), 1);
-            match &updates[0] {
-                AgentUpdate::StepFailed { tool_id, error, .. } => {
-                    assert_eq!(tool_id, "ws_1");
-                    assert!(
-                        error.contains("without terminal status"),
-                        "expected non-terminal-status failure, got: {error}"
-                    );
-                }
-                other => panic!("expected StepFailed for {status}, got {other:?}"),
-            }
+            let (id, _, phase, _, error) = web_search_activity(&updates[0]);
+            assert_eq!(id, "ws_1");
+            assert_eq!(phase, ProviderActivityPhase::Failed);
+            assert!(
+                error
+                    .expect("non-terminal completion carries failure detail")
+                    .contains("without terminal status"),
+                "expected non-terminal-status failure"
+            );
         }
     }
 
@@ -1565,7 +1607,10 @@ mod tests {
             ))
             .unwrap();
         assert_eq!(first.len(), 1);
-        assert!(matches!(&first[0], AgentUpdate::StepFinished { .. }));
+        assert_eq!(
+            web_search_activity(&first[0]).2,
+            ProviderActivityPhase::Completed
+        );
 
         let duplicate = state
             .apply(output_item_done(
@@ -1575,7 +1620,7 @@ mod tests {
             .unwrap();
         assert!(
             duplicate.is_empty(),
-            "duplicate done must not re-emit StepFinished, got: {duplicate:?}"
+            "duplicate done must not re-emit a terminal activity, got: {duplicate:?}"
         );
     }
 }

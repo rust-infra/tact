@@ -10,6 +10,14 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  kernel-deps:
+    name: Kernel dependency boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: scripts/check-agent-kernel-deps.sh tact_agent_api tact_agent_core tact_llm
+
   fmt:
     name: Format check
     runs-on: ubuntu-latest

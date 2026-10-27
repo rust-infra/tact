@@ -7,6 +7,8 @@ license.workspace = true
 [dependencies]
 tact_protocol = { path = "../protocol" }
 tact_llm = { path = "../tact_llm" }
+tact_agent_api = { path = "../agent_api" }
+tact_agent_core = { path = "../agent_core" }
 tool_refactor_macros = { path = "../tool_refactor_macros" }
 anyhow = { workspace = true }
 async-openai = { workspace = true }
@@ -55,6 +57,7 @@ walkdir = { workspace = true }
 test-support = []
 
 [dev-dependencies]
+tact_agent_core = { path = "../agent_core", features = ["test-support"] }
 wiremock = "0.6"
 proptest = "1"
 rmcp = { workspace = true, features = ["server"] }

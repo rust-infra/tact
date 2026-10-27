@@ -406,7 +406,7 @@ Protocol）</h1>
 如何在两侧驱动状态转换。</p>
 <p>实现：<code>crates/protocol/src/agent.rs</code>、<code>crates/protocol/src/biz.rs</code>。TUI
 消费者：<code>crates/tui/src/widgets/state/app/agent.rs</code>。Agent
-发出者：<code>crates/tact/src/agent/tool_dispatch.rs</code>、<code>crates/tact_llm</code>（流式）。</p>
+发出者：<code>crates/tact/src/runtime/event_adapter.rs</code>、<code>crates/tact_llm</code>（流式）。</p>
 <p>相关章节：<a href="./18_chapter_agent_loop_zh.html">Ch 18 Agent
 Loop</a>、<a href="./23_chapter_tui_zh.html">Ch 23
 TUI</a>。其他状态机（输入模式、权限、任务）见 <a
@@ -617,8 +617,9 @@ provider 特定账户状态泄漏进 <code>AgentUpdate</code>。见
 <code>crates/tact-ui/src/account.rs</code>。</p>
 <hr />
 <h2 id="3-plan-step-生命周期">3. Plan Step 生命周期</h2>
-<p>assistant turn 中每次工具调用遵循 <code>tool_dispatch.rs</code>
-固定的三阶段发出序列：</p>
+<p>assistant turn 中每次工具调用由
+<code>AgentKernel::execute_tool_calls</code> 执行，并经
+<code>TactEventBridge</code> 按固定的三阶段发出序列：</p>
 <pre class="mermaid">graph TD
     a_planned[Planned] --&gt;|StepStarted| b_running[Running]
     b_running --&gt;|StepFinished| c_succeeded[Succeeded]
@@ -1146,8 +1147,8 @@ href="../crates/protocol/src/agent.rs">crates/protocol/src/agent.rs</a></li>
 href="../crates/protocol/src/biz.rs">crates/protocol/src/biz.rs</a></li>
 <li>TUI handler：<a
 href="../crates/tui/src/widgets/state/app/agent.rs">crates/tui/src/widgets/state/app/agent.rs</a></li>
-<li>Tool dispatch 发出者：<a
-href="../crates/tact/src/agent/tool_dispatch.rs">crates/tact/src/agent/tool_dispatch.rs</a></li>
+<li>Tool 事件发出者：<a
+href="../crates/tact/src/runtime/event_adapter.rs">crates/tact/src/runtime/event_adapter.rs</a></li>
 <li>其他状态机：<a
 href="../docs/state_machines.md">docs/state_machines.md</a></li>
 </ul>

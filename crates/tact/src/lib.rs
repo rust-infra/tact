@@ -34,6 +34,7 @@ pub(crate) mod pipe_stream;
 pub mod plugin;
 pub mod prompt;
 pub mod recovery;
+pub mod runtime;
 pub mod sandbox;
 pub(crate) mod security;
 pub(crate) mod shell;
@@ -59,7 +60,10 @@ pub async fn get_llm_client() -> anyhow::Result<LlmProvider> {
     tact_llm::get_llm_client().await
 }
 
-pub type LoopState = Agent;
+pub use runtime::activation_view::TactActivationView;
+
+/// Read-only hook projection for one activation.
+pub type LoopState<'a> = TactActivationView<'a>;
 
 /// Extracts plain text from a [`MessageContent`] block.
 ///

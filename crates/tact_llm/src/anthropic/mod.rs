@@ -6,15 +6,15 @@
 
 use std::{error::Error, time::Duration};
 
+use super::{
+    ContentBlock, ContentBlockDelta, CreateMessageParams, LlmClient, LlmError, LlmResponse,
+    MessageError, ModelCallParams, ProviderConversationState, ProviderProgress,
+    ProviderProgressSink, ProviderStateUpdate, StopReason, StreamUsage, ThinkingChunk,
+    TokenUsageInfo,
+};
 use futures_util::StreamExt;
 use reqwest_eventsource::{Event, RequestBuilderExt};
 use serde::Deserialize;
-use tact_protocol::{AgentUpdate, ModelCallParams, ThinkingChunk, TokenUsageInfo, UpdateSink};
-
-use super::{
-    ContentBlock, ContentBlockDelta, CreateMessageParams, LlmClient, LlmError, LlmResponse,
-    MessageError, ProviderConversationState, ProviderStateUpdate, StopReason, StreamUsage,
-};
 
 /// Events emitted when an Anthropic thinking content block starts.
 fn thinking_start_events(initial_thinking: &str) -> Vec<ThinkingChunk> {
@@ -204,7 +204,7 @@ impl LlmClient for AnthropicAdapter {
         &self,
         request: &CreateMessageParams,
         _provider_state: Option<&ProviderConversationState>,
-        events: &UpdateSink,
+        events: &dyn ProviderProgressSink,
     ) -> Result<LlmResponse, LlmError> {
         let mut response_blocks: Vec<ContentBlock> = Vec::new();
         let mut tool_input_buffers: Vec<String> = Vec::new();
@@ -259,7 +259,7 @@ impl LlmClient for AnthropicAdapter {
                                         "Failed to parse message_start: {e}"
                                     )))
                                 })?;
-                            events.send(AgentUpdate::ModelInfo(ModelCallParams {
+                            events.send(ProviderProgress::ModelInfo(ModelCallParams {
                                 model: start.message.model,
                                 max_tokens: request.max_tokens,
                                 thinking_budget: request
@@ -296,13 +296,13 @@ impl LlmClient for AnthropicAdapter {
                                 ContentBlock::Text { text } => {
                                     tool_input_buffers[index].clear();
                                     if !text.is_empty() {
-                                        events.send(AgentUpdate::StreamChunk(text.clone()));
+                                        events.send(ProviderProgress::TextDelta(text.clone()));
                                     }
                                 }
                                 ContentBlock::Thinking { thinking, .. } => {
                                     tool_input_buffers[index].clear();
                                     for chunk in thinking_start_events(thinking) {
-                                        events.send(AgentUpdate::ThinkingChunk(chunk));
+                                        events.send(ProviderProgress::Thinking(chunk));
                                     }
                                 }
                                 ContentBlock::ToolUse { .. } => {
@@ -326,7 +326,7 @@ impl LlmClient for AnthropicAdapter {
                                         response_blocks.get_mut(index)
                                     {
                                         existing.push_str(&text);
-                                        events.send(AgentUpdate::StreamChunk(text));
+                                        events.send(ProviderProgress::TextDelta(text));
                                     }
                                 }
                                 ContentBlockDelta::ThinkingDelta { thinking } => {
@@ -336,7 +336,7 @@ impl LlmClient for AnthropicAdapter {
                                     {
                                         existing.push_str(&thinking);
                                     }
-                                    events.send(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+                                    events.send(ProviderProgress::Thinking(ThinkingChunk::Delta(
                                         thinking,
                                     )));
                                 }
@@ -364,7 +364,7 @@ impl LlmClient for AnthropicAdapter {
                                     )))
                                 })?;
                             if is_thinking_content_block(response_blocks.get(stop.index)) {
-                                events.send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+                                events.send(ProviderProgress::Thinking(ThinkingChunk::Finished));
                             }
                             if let Some(ContentBlock::ToolUse {
                                 input: existing, ..
@@ -403,7 +403,7 @@ impl LlmClient for AnthropicAdapter {
                                     ),
                                     reasoning_tokens: usage_reasoning_tokens(usage_json),
                                 };
-                                events.send(AgentUpdate::TokenUsage(info.clone()));
+                                events.send(ProviderProgress::Usage(info.clone()));
                                 token_usage = Some(info);
                             }
                         }

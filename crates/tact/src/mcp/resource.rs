@@ -19,7 +19,7 @@
 //! read. Tact reports the template; the model performs the substitution, which
 //! keeps the read path byte-exact.
 //!
-//! These three names are resolved in `agent::tool_dispatch` against the live MCP
+//! These three names are resolved in `runtime::tool_adapter` against the live MCP
 //! router, exactly like `mcp__…` names. They only exist while a server is
 //! connected: with an empty router the tools are not advertised at all, so the
 //! model is never handed a tool that cannot do anything.
