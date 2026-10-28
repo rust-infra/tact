@@ -16,7 +16,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - run: scripts/check-agent-kernel-deps.sh tact_agent_api tact_agent_core tact_llm
+      - run: scripts/check-agent-kernel-deps.sh tact_agent_api tact_agent_core tact_llm tact_agent_sdk
 
   fmt:
     name: Format check

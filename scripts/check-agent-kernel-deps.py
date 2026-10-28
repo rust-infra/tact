@@ -50,6 +50,28 @@ FORBIDDEN = {
         "tact-ui",
         "tui",
     },
+    "tact_agent_sdk": {
+        "tact",
+        "tact_llm",
+        "tact_agent_sdk",
+        "tact_protocol",
+        "tact-ui",
+        "tui",
+        "agent_tui_kit",
+        "sqlx",
+        "rmcp",
+        "git2",
+        "reqwest",
+        "ratatui",
+        "crossterm",
+        "ratatui-markdown",
+        "syntect",
+        "cpal",
+        "tera",
+        "image",
+        "async-openai",
+        "async-openai-local",
+    },
 }
 
 ALLOWLIST = {
@@ -70,6 +92,16 @@ ALLOWLIST = {
         "thiserror",
         "tokio",
         "tokio-util",
+        "tracing",
+    },
+    "tact_agent_sdk": {
+        "tact_agent_api",
+        "tact_agent_core",
+        "async-trait",
+        "futures-util",
+        "serde_json",
+        "thiserror",
+        "uuid",
         "tracing",
     },
 }
@@ -254,6 +286,114 @@ def self_test() -> bool:
         )
         return False
     print("ok: dev-only dependency self-test")
+
+    sdk_llm_metadata = {
+        "packages": [
+            {
+                "id": "sdk",
+                "name": "tact_agent_sdk",
+                "dependencies": [{"name": "tact_llm"}],
+            },
+            {
+                "id": "llm",
+                "name": "tact_llm",
+                "dependencies": [],
+            },
+        ],
+        "resolve": {
+            "nodes": [
+                {"id": "sdk", "deps": [{"pkg": "llm"}]},
+                {"id": "llm", "deps": []},
+            ]
+        },
+    }
+    if validate(sdk_llm_metadata, ["tact_agent_sdk"], emit=False):
+        print(
+            "error: SDK self-test accepted a direct tact_llm dependency",
+            file=sys.stderr,
+        )
+        return False
+    print("ok: SDK tact_llm self-test")
+
+    sdk_transitive_llm_metadata = {
+        "packages": [
+            {
+                "id": "sdk",
+                "name": "tact_agent_sdk",
+                "dependencies": [{"name": "tact_agent_api"}],
+            },
+            {
+                "id": "api",
+                "name": "tact_agent_api",
+                "dependencies": [{"name": "bridge"}],
+            },
+            {
+                "id": "bridge",
+                "name": "bridge",
+                "dependencies": [{"name": "tact_llm"}],
+            },
+            {
+                "id": "llm",
+                "name": "tact_llm",
+                "dependencies": [],
+            },
+        ],
+        "resolve": {
+            "nodes": [
+                {"id": "sdk", "deps": [{"pkg": "api"}]},
+                {"id": "api", "deps": [{"pkg": "bridge"}]},
+                {"id": "bridge", "deps": [{"pkg": "llm"}]},
+                {"id": "llm", "deps": []},
+            ]
+        },
+    }
+    if validate(sdk_transitive_llm_metadata, ["tact_agent_sdk"], emit=False):
+        print(
+            "error: SDK self-test accepted a transitive tact_llm dependency",
+            file=sys.stderr,
+        )
+        return False
+    print("ok: SDK transitive tact_llm self-test")
+
+    sdk_transitive_ui_metadata = {
+        "packages": [
+            {
+                "id": "sdk",
+                "name": "tact_agent_sdk",
+                "dependencies": [{"name": "tact_agent_api"}],
+            },
+            {
+                "id": "api",
+                "name": "tact_agent_api",
+                "dependencies": [{"name": "bridge"}],
+            },
+            {
+                "id": "bridge",
+                "name": "bridge",
+                "dependencies": [{"name": "agent_tui_kit"}],
+            },
+            {
+                "id": "ui",
+                "name": "agent_tui_kit",
+                "dependencies": [],
+            },
+        ],
+        "resolve": {
+            "nodes": [
+                {"id": "sdk", "deps": [{"pkg": "api"}]},
+                {"id": "api", "deps": [{"pkg": "bridge"}]},
+                {"id": "bridge", "deps": [{"pkg": "ui"}]},
+                {"id": "ui", "deps": []},
+            ]
+        },
+    }
+    if validate(sdk_transitive_ui_metadata, ["tact_agent_sdk"], emit=False):
+        print(
+            "error: SDK self-test accepted a transitive UI dependency",
+            file=sys.stderr,
+        )
+        return False
+    print("ok: SDK transitive UI self-test")
     return True
 
 

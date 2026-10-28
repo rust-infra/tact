@@ -15,6 +15,7 @@ This project is a Cargo Workspace containing the following crates:
 | `crates/protocol` | `tact_protocol` | `0.1.0` (local) | Host/TUI wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Its `Agent` module is legacy and is not part of the runtime path. |
 | `crates/agent_api` | `tact_agent_api` | `1.1.42` (workspace) | Provider-neutral contracts for state, model streams, context, tools, gates, transcript/usage persistence, and events. No product or infrastructure implementation lives here. |
 | `crates/agent_core` | `tact_agent_core` | `1.1.42` (workspace) | Bounded, provider-neutral agent kernel. `AgentKernel::run` owns one activation over injected `KernelDeps`; it has no SQLite, MCP transport, provider SDK, or TUI dependency. |
+| `crates/agent_sdk` | `tact_agent_sdk` | `1.1.42` (workspace) | Ergonomic SDK facade over the neutral API and kernel: safe defaults, static tool composition, session state ownership, cancellation, and optional tracing telemetry. It has no product, provider HTTP, MCP, storage, or UI dependency. |
 | `crates/tui` | `tui` | `0.1.0` (local) | Terminal UI built with `ratatui`. |
 | `crates/agent_tui_kit` | `agent_tui_kit` | `0.1.0` (local) | Reusable host-protocol rendering kit for thinking/tool/log/popup widgets. |
 | `crates/tact` | `tact` | `1.1.42` (workspace) | Product composition root and compatibility facade: tool router, MCP client, hooks, permissions, prompt/compaction policy, persistence adapters, and kernel wiring. |
@@ -40,16 +41,26 @@ flowchart TB
     tact --> tact_llm
     tact --> tact_protocol
     tact --> tool_refactor_macros
+    tact_agent_sdk["tact_agent_sdk"] --> tact_agent_api["tact_agent_api"]
+    tact_agent_sdk --> tact_agent_core["tact_agent_core"]
     tact_agent_core --> tact_agent_api
     tact_llm --> tact_agent_api
 ```
 
 `tact_agent_api` defines ports; `tact_agent_core` runs the control loop; `tact`
 implements the ports with product adapters and constructs `KernelDeps`.
+`tact_agent_sdk` is an optional embedder-facing facade; the product does not
+depend on it, so it cannot drag product or provider code into an SDK host.
 "Plugin style" here means **constructor injection and static composition**:
 capabilities implement traits and are wired once at the composition root. It
 does **not** mean a runtime plugin trait, registry, plugin id, install lifecycle,
 or dynamic loader.
+
+SDK hosts provide a model adapter (for example by adding `tact_llm` to their own
+crate), then compose optional tools and policies through `AgentBuilder`.
+`AgentSession` owns one `AgentState`; the kernel stays stateless across
+activations. The default transcript and usage sinks retain no durable rows;
+hosts inject persistence when needed.
 
 Binaries produced by `crates/tact-ui`:
 
@@ -80,6 +91,14 @@ flowchart TB
         K --> KD
     end
 
+    subgraph sdk["tact_agent_sdk — embedder facade"]
+        S["AgentBuilder / Agent / AgentSession"]
+        TS["ToolSet\nstatic ToolHandler composition"]
+        TE["optional tracing wrappers"]
+        S --> TS
+        S --> TE
+    end
+
     subgraph facade["tact — composition root + compatibility facade"]
         A["Agent + AgentRuntime<br/>public facade/state authority"]
         FS["FacadeStateGuard<br/>activation transfer/restore"]
@@ -91,6 +110,8 @@ flowchart TB
         FS --> C
         C --> K
         C --> V
+    S --> K
+    TE -. no global subscriber .-> S
     end
 
     subgraph adapters["tact/src/runtime — capability adapters"]

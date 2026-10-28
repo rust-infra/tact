@@ -4861,6 +4861,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "tact_agent_sdk"
+version = "1.1.42"
+dependencies = [
+ "async-trait",
+ "futures-util",
+ "serde_json",
+ "tact_agent_api",
+ "tact_agent_core",
+ "thiserror 2.0.19",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
 name = "tact_llm"
 version = "1.1.42"
 dependencies = [

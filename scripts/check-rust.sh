@@ -15,7 +15,7 @@ if ! command -v cargo >/dev/null 2>&1; then
 fi
 
 echo "==> agent kernel dependency boundaries"
-scripts/check-agent-kernel-deps.sh tact_agent_api tact_agent_core tact_llm
+scripts/check-agent-kernel-deps.sh tact_agent_api tact_agent_core tact_llm tact_agent_sdk
 
 echo "==> cargo fmt -- --check"
 cargo fmt -- --check

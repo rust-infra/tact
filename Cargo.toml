@@ -5,6 +5,7 @@ members = [
     "crates/tui",
     "crates/agent_api",
     "crates/agent_core",
+    "crates/agent_sdk",
     "crates/tact",
     "crates/tact-ui",
     "crates/tact_llm",
