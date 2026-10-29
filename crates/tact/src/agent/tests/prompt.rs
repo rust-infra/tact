@@ -11,7 +11,7 @@ fn assert_kernel_prompt_matches_legacy(agent: &mut Agent) -> String {
         .collect::<Vec<_>>();
     let capabilities = tact_agent_api::ModelCapabilities {
         model: agent.agent_settings.model.clone(),
-        context_window: agent.model_context_window(),
+        context_window: (agent.model_context_window() != 0).then_some(agent.model_context_window()),
         max_output_tokens: agent.max_tokens(),
         supports_streaming: true,
         supports_native_compaction: agent.native_compaction_available(),

@@ -4,7 +4,10 @@ use crate::ProviderProgressSink;
 use serde_json::Value;
 
 use super::OpenAiAdapter;
-use crate::{CreateMessageParams, LlmError, LlmResponse, ProviderConversationState};
+use crate::CreateMessageParams;
+use crate::client::LlmResponse;
+use crate::error::LlmError;
+use crate::provider_state::ProviderConversationState;
 
 pub(crate) async fn stream_assembled(
     adapter: &OpenAiAdapter,

@@ -16,7 +16,7 @@ use super::{
     event_adapter::TactEventBridge,
     facade_state::FacadeReceiptTracker,
     gate_adapter::TactToolGate,
-    model_adapter::TactModelPort,
+    model_adapter::{ActiveModelSnapshot, TactModelPort},
     noop_transcript::NoopTranscriptStore,
     prompt_adapter::{PromptCaches, SystemPromptAssembler},
     services::TactSharedServices,
@@ -35,6 +35,7 @@ use crate::{
 pub(crate) struct TactKernelConfig {
     pub provider: LlmProvider,
     pub capabilities: ModelCapabilities,
+    pub model_snapshot: Option<ActiveModelSnapshot>,
     pub prompt: Arc<SystemPromptAssembler>,
     pub compactor: Arc<TactCompactor>,
     pub model_options: ModelCallOptions,
@@ -67,10 +68,15 @@ impl TactKernelComposition {
     pub(crate) fn new(config: TactKernelConfig) -> Self {
         let goal_active = config.tool_context.active_goal_id.is_some();
         let events: Arc<dyn EventPort> = Arc::new(TactEventBridge::new(config.updates.clone()));
-        let model: Arc<dyn ModelPort> = Arc::new(TactModelPort::from_provider(
-            config.provider,
-            config.capabilities,
-        ));
+        let model: Arc<dyn ModelPort> = config
+            .model_snapshot
+            .map(|snapshot| snapshot.model)
+            .unwrap_or_else(|| {
+                Arc::new(TactModelPort::from_provider(
+                    config.provider,
+                    config.capabilities,
+                ))
+            });
         let tools: Arc<dyn ToolPort> = Arc::new(TactToolPort::new(
             config.tools,
             config.mcp,
@@ -215,11 +221,12 @@ mod tests {
             )])),
             capabilities: ModelCapabilities {
                 model: "mock".into(),
-                context_window: 1_000,
+                context_window: Some(1_000),
                 max_output_tokens: 100,
                 supports_streaming: true,
                 supports_native_compaction: false,
             },
+            model_snapshot: None,
             prompt,
             compactor,
             model_options: ModelCallOptions::default(),

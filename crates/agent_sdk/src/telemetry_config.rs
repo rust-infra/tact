@@ -58,7 +58,7 @@ mod tests {
         fn capabilities(&self) -> ModelCapabilities {
             ModelCapabilities {
                 model: "noop".into(),
-                context_window: 1,
+                context_window: Some(1),
                 max_output_tokens: 1,
                 supports_streaming: true,
                 supports_native_compaction: false,

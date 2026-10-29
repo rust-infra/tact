@@ -289,7 +289,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.set_pending_ui(pending_ui);
     app.skill_registry = skill_registry;
     app.session_store = Some(session_store);
-    app.model_context_window = model_context_window;
+    app.model_context_window = (model_context_window != 0).then_some(model_context_window);
     app.voice_parsed_keybind = voice_parsed_keybind;
     // Seed the bottom bar from config so model/token info renders at startup;
     // the first ModelInfo/TokenUsage updates will overwrite these.

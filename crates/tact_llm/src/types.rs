@@ -7,9 +7,11 @@
 use std::{fmt, str::FromStr};
 
 use serde::{Deserialize, Serialize};
+use serde_json::{Map, Value};
 use tact_agent_api::ReasoningEffort;
 
 use crate::Message;
+use crate::error::LlmError;
 
 /// Typed LLM provider identity (config / CLI / runtime).
 ///
@@ -41,13 +43,16 @@ pub enum OpenAiProtocol {
 ///
 /// DeepSeek and Kimi are not separate providers: they share the
 /// OpenAI-compatible transport and only differ in the body fields injected by
-/// their [`crate::OpenAiBodyHook`] implementations.
+/// their `OpenAiBodyHook` implementations.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ChatCompletionsDialect {
     Standard,
     DeepSeek,
     Kimi,
 }
+
+/// Stable name for the Chat Completions dialect selector.
+pub type ChatDialect = ChatCompletionsDialect;
 
 impl ChatCompletionsDialect {
     /// Whether this dialect injects a top-level `user_id` for KV-cache
@@ -114,6 +119,7 @@ impl fmt::Display for OpenAiReasoningEffort {
 /// adapter can build the request with the typed builder instead of injecting
 /// `reasoning.effort` through JSON. The vendor adds `Max` so every variant
 /// maps one-to-one; the wire strings match `as_str()`.
+#[cfg(feature = "openai-responses")]
 impl From<OpenAiReasoningEffort> for async_openai_responses::types::responses::ReasoningEffort {
     fn from(effort: OpenAiReasoningEffort) -> Self {
         match effort {
@@ -125,6 +131,75 @@ impl From<OpenAiReasoningEffort> for async_openai_responses::types::responses::R
             OpenAiReasoningEffort::Xhigh => Self::Xhigh,
             OpenAiReasoningEffort::Max => Self::Max,
         }
+    }
+}
+
+/// Responses-only request fields that do not belong in the shared
+/// Anthropic/Chat Completions-shaped request model.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct ResponsesRequestOptions {
+    pub parallel_tool_calls: Option<bool>,
+    pub truncation: Option<String>,
+    pub metadata: Option<Map<String, Value>>,
+    pub user: Option<String>,
+    pub prompt_cache_key: Option<String>,
+    pub text: Option<Value>,
+    pub extra: Map<String, Value>,
+}
+
+impl ResponsesRequestOptions {
+    pub(crate) fn apply_to(&self, body: &mut Value) -> Result<(), LlmError> {
+        let object = body.as_object_mut().ok_or_else(|| {
+            LlmError::Unsupported("Responses request body must be a JSON object".to_string())
+        })?;
+        if let Some(value) = self.parallel_tool_calls {
+            object.insert("parallel_tool_calls".to_string(), Value::Bool(value));
+        }
+        if let Some(value) = &self.truncation {
+            object.insert("truncation".to_string(), Value::String(value.clone()));
+        }
+        if let Some(value) = &self.metadata {
+            object.insert("metadata".to_string(), Value::Object(value.clone()));
+        }
+        if let Some(value) = &self.user {
+            object.insert("user".to_string(), Value::String(value.clone()));
+        }
+        if let Some(value) = &self.prompt_cache_key {
+            object.insert("prompt_cache_key".to_string(), Value::String(value.clone()));
+        }
+        if let Some(value) = &self.text {
+            object.insert("text".to_string(), value.clone());
+        }
+        const RESERVED: &[&str] = &[
+            "parallel_tool_calls",
+            "truncation",
+            "metadata",
+            "user",
+            "prompt_cache_key",
+            "text",
+            "model",
+            "input",
+            "instructions",
+            "tools",
+            "tool_choice",
+            "reasoning",
+            "include",
+            "max_output_tokens",
+            "temperature",
+            "top_p",
+            "store",
+            "context_management",
+            "stream",
+        ];
+        for (key, value) in &self.extra {
+            if RESERVED.contains(&key.as_str()) || object.contains_key(key) {
+                return Err(LlmError::Unsupported(format!(
+                    "Responses request option '{key}' conflicts with an existing field"
+                )));
+            }
+            object.insert(key.clone(), value.clone());
+        }
+        Ok(())
     }
 }
 
@@ -197,15 +272,7 @@ impl ProviderKind {
     }
 
     pub fn default_base_url(&self) -> Option<&'static str> {
-        match self {
-            Self::Anthropic => None,
-            Self::OpenAi => Some("https://api.openai.com/v1"),
-            Self::DeepSeek => Some("https://api.deepseek.com"),
-            Self::Kimi => Some("https://api.moonshot.cn/v1"),
-            // Custom providers are arbitrary OpenAI-compatible endpoints; the
-            // user must configure `base_url` explicitly.
-            Self::Custom(_) => None,
-        }
+        crate::policy::legacy_default_base_url(self)
     }
 
     pub fn is_openai_compatible(&self) -> bool {
@@ -218,7 +285,7 @@ impl ProviderKind {
     /// Anthropic Claude 3+, OpenAI GPT-4o/V, and Kimi K2.x all support vision.
     /// Custom OpenAI-compatible providers default to vision support.
     pub fn supports_vision(&self) -> bool {
-        !matches!(self, Self::DeepSeek)
+        crate::policy::supports_vision(self, "", "")
     }
 }
 
@@ -295,7 +362,7 @@ pub struct CreateMessageParams {
     pub reasoning_effort: Option<OpenAiReasoningEffort>,
     /// Responses-only request fields; ignored by non-Responses adapters.
     #[serde(skip)]
-    pub responses_options: Option<crate::openai::responses::ResponsesRequestOptions>,
+    pub responses_options: Option<ResponsesRequestOptions>,
 }
 
 impl From<RequiredMessageParams> for CreateMessageParams {
@@ -366,10 +433,7 @@ impl CreateMessageParams {
     }
 
     /// Set Responses-only request options. Other adapters ignore this field.
-    pub fn with_responses_options(
-        mut self,
-        options: crate::openai::responses::ResponsesRequestOptions,
-    ) -> Self {
+    pub fn with_responses_options(mut self, options: ResponsesRequestOptions) -> Self {
         self.responses_options = Some(options);
         self
     }

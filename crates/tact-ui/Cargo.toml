@@ -14,7 +14,7 @@ path = "src/main.rs"
 
 [dependencies]
 tact = { path = "../tact", features = ["test-support"] }
-tact_llm = { path = "../tact_llm" }
+tact_llm = { path = "../tact_llm", default-features = false, features = ["legacy-tact", "account"] }
 tact_protocol = { path = "../protocol" }
 tui = { path = "../tui", features = ["test-support"] }
 anyhow = { workspace = true }

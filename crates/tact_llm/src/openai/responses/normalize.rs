@@ -1,10 +1,11 @@
 use std::collections::BTreeMap;
 
 use super::history;
-use crate::{
-    ContentBlock, LlmError, Message, ProviderConversationState, ProviderStateUpdate,
-    ResponsesConversationState, Role, StopReason, TokenUsageInfo, context_hash,
+use crate::error::LlmError;
+use crate::provider_state::{
+    ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,
 };
+use crate::{ContentBlock, Message, Role, StopReason, TokenUsageInfo};
 use async_openai_responses::types::responses::{
     OutputItem, OutputMessageContent, OutputStatus, Response, Status, SummaryPart,
 };
@@ -795,9 +796,9 @@ pub(crate) mod tests {
             )
             .unwrap();
 
-        let crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
-            state,
-        )) = update
+        let crate::provider_state::ProviderStateUpdate::Replace(
+            crate::provider_state::ProviderConversationState::OpenAiResponses(state),
+        ) = update
         else {
             panic!("expected a replacement state");
         };
@@ -817,7 +818,7 @@ pub(crate) mod tests {
         assert_eq!(state.logical_message_count, 2);
         assert_eq!(
             state.logical_context_hash,
-            crate::context_hash(&expected_post_assistant).unwrap()
+            crate::provider_state::context_hash(&expected_post_assistant).unwrap()
         );
     }
 
@@ -848,9 +849,9 @@ pub(crate) mod tests {
                 &messages,
             )
             .unwrap();
-        let crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
-            state,
-        )) = update
+        let crate::provider_state::ProviderStateUpdate::Replace(
+            crate::provider_state::ProviderConversationState::OpenAiResponses(state),
+        ) = update
         else {
             panic!("expected a replacement state");
         };
@@ -858,7 +859,7 @@ pub(crate) mod tests {
         assert_eq!(state.logical_message_count, 1);
         assert_eq!(
             state.logical_context_hash,
-            crate::context_hash(&messages).unwrap()
+            crate::provider_state::context_hash(&messages).unwrap()
         );
     }
 
@@ -915,9 +916,9 @@ pub(crate) mod tests {
                 ],
             )
             .unwrap();
-        let crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
-            state,
-        )) = update
+        let crate::provider_state::ProviderStateUpdate::Replace(
+            crate::provider_state::ProviderConversationState::OpenAiResponses(state),
+        ) = update
         else {
             panic!("expected a replacement state");
         };
@@ -942,7 +943,7 @@ pub(crate) mod tests {
         assert_eq!(state.logical_message_count, 4);
         assert_eq!(
             state.logical_context_hash,
-            crate::context_hash(&expected_post_assistant).unwrap()
+            crate::provider_state::context_hash(&expected_post_assistant).unwrap()
         );
     }
 

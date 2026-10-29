@@ -3,27 +3,71 @@ name = "tact_llm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "Provider-neutral LLM adapters for Tact and third-party agent hosts"
+repository = "https://github.com/rg/tact"
+readme = "README.md"
+keywords = ["llm", "agent", "openai", "anthropic"]
+categories = ["api-bindings", "asynchronous"]
 
 [dependencies]
 tact_agent_api = { path = "../agent_api" }
 async-trait = { workspace = true }
-anyhow = { workspace = true }
+anyhow = { workspace = true, optional = true }
 thiserror = "2"
-async-openai = { workspace = true }
-async-openai-responses = { workspace = true }
+async-openai = { workspace = true, optional = true }
+async-openai-responses = { workspace = true, optional = true }
 futures-util = { workspace = true }
-reqwest = { workspace = true }
-reqwest13 = { workspace = true }
-eventsource-stream = { workspace = true }
-reqwest-eventsource = { workspace = true }
+httpdate = { workspace = true, optional = true }
+reqwest = { workspace = true, optional = true }
+reqwest13 = { workspace = true, optional = true }
+eventsource-stream = { workspace = true, optional = true }
+reqwest-eventsource = { workspace = true, optional = true }
 secrecy = { workspace = true }
-secrecy10 = { workspace = true }
+secrecy10 = { workspace = true, optional = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 sha2 = { workspace = true }
 tokio = { workspace = true, features = ["sync", "time", "macros", "rt-multi-thread"] }
-tracing = { workspace = true }
+tracing = { workspace = true, optional = true }
+url = { workspace = true }
+
+[features]
+default = ["core"]
+core = []
+anthropic = ["core", "dep:reqwest", "dep:reqwest13", "dep:reqwest-eventsource", "dep:httpdate"]
+openai-chat = ["core", "dep:reqwest13", "reqwest13/stream", "dep:eventsource-stream", "dep:async-openai", "dep:httpdate"]
+openai-responses = ["core", "dep:reqwest13", "reqwest13/stream", "dep:eventsource-stream", "dep:async-openai-responses", "dep:secrecy10", "dep:httpdate"]
+openai = ["openai-chat", "openai-responses"]
+telemetry = ["core", "dep:tracing"]
+test-support = []
+legacy-tact = ["anthropic", "openai", "telemetry", "dep:anyhow"]
+product-runtime = ["legacy-tact"]
+account = ["legacy-tact"]
+model-discovery = ["legacy-tact"]
 
 [dev-dependencies]
 dotenvy = { workspace = true }
+tact_agent_sdk = { path = "../agent_sdk" }
 wiremock = "0.6"
+tracing-subscriber = { workspace = true, features = ["fmt"] }
+trybuild = "1"
+
+[[example]]
+name = "direct_stream"
+required-features = ["openai-responses"]
+
+[[example]]
+name = "agent_sdk"
+required-features = ["openai-responses"]
+
+[[example]]
+name = "refreshable_auth"
+required-features = ["openai-responses"]
+
+[[example]]
+name = "custom_endpoint"
+required-features = ["openai-chat"]
+
+[[example]]
+name = "tracing"
+required-features = ["telemetry", "openai-responses"]

@@ -161,6 +161,7 @@ impl Message {
 /// Incremental update inside a Messages API `content_block_delta` SSE event.
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(tag = "type")]
+#[allow(clippy::enum_variant_names)]
 pub enum ContentBlockDelta {
     #[serde(rename = "text_delta")]
     TextDelta { text: String },

@@ -46,13 +46,7 @@ pub fn merge_model_candidates(config: &[String], api: &[String]) -> Vec<String> 
 }
 
 fn provider_supports_models_query(provider: &ProviderKind) -> bool {
-    matches!(
-        provider,
-        ProviderKind::OpenAi
-            | ProviderKind::DeepSeek
-            | ProviderKind::Kimi
-            | ProviderKind::Custom(_)
-    )
+    crate::policy::supports_models_query(provider)
 }
 
 pub fn is_models_query_supported() -> bool {
@@ -95,31 +89,31 @@ pub async fn ensure_api_model_ids_for(
     if !provider_supports_models_query(&profile.provider) {
         return Vec::new();
     }
-    let Ok(secret) = credentials.resolve().await else {
+    let Some(api_key) = credentials.static_api_key() else {
         return Vec::new();
     };
-    ensure_api_model_ids_for_credentials(&profile.base_url, &secret, http).await
+    ensure_api_model_ids_for_credentials(&profile.base_url, api_key, http).await
 }
 
 async fn ensure_api_model_ids_for_credentials(
     base_url: &str,
-    secret: &SecretString,
+    api_key: &str,
     http: &SharedHttpClient,
 ) -> Vec<String> {
     {
         let guard = CACHE.lock_recover();
         if let Some(c) = guard.as_ref()
             && c.base_url == base_url
-            && c.api_key.expose_secret().as_str() == secret.expose_secret().as_str()
+            && c.api_key.expose_secret().as_str() == api_key
         {
             return c.ids.clone();
         }
     }
-    let ids = fetch_model_ids(base_url, secret.expose_secret(), http).await;
+    let ids = fetch_model_ids(base_url, api_key, http).await;
     let mut guard = CACHE.lock_recover();
     *guard = Some(ModelsCache {
         base_url: base_url.to_string(),
-        api_key: secret.clone(),
+        api_key: SecretString::from(api_key.to_string()),
         ids: ids.clone(),
     });
     ids
@@ -211,6 +205,10 @@ mod tests {
             let key = self.key.clone();
             Box::pin(async move { Ok((*key).clone()) })
         }
+
+        fn static_api_key(&self) -> Option<&str> {
+            Some(self.key.expose_secret())
+        }
     }
 
     #[derive(Debug)]
@@ -219,6 +217,10 @@ mod tests {
     impl CredentialProvider for FailingCredential {
         fn resolve(&self) -> BoxFuture<'_, Result<SecretString, LlmError>> {
             Box::pin(async { Err(LlmError::Auth("test credential unavailable".to_string())) })
+        }
+
+        fn static_api_key(&self) -> Option<&str> {
+            Some("sk-failing")
         }
     }
 
@@ -395,7 +397,7 @@ mod tests {
 
     #[tokio::test]
     #[allow(clippy::await_holding_lock)] // test mutex serializes provider+cache only
-    async fn explicit_credentials_resolve_per_request_and_hit_cache() {
+    async fn explicit_static_credentials_use_the_key_without_resolving() {
         let _guard = lock_provider_for_tests();
         clear_models_cache_for_tests();
         let credentials = CountingCredential::new("sk-cache-hit");
@@ -410,12 +412,12 @@ mod tests {
             ensure_api_model_ids_for(&profile, &credentials, &SharedHttpClient::default()).await,
             vec!["cached-model".to_string()]
         );
-        assert_eq!(credentials.calls(), 1);
+        assert_eq!(credentials.calls(), 0);
         assert_eq!(
             ensure_api_model_ids_for(&profile, &credentials, &SharedHttpClient::default()).await,
             vec!["cached-model".to_string()]
         );
-        assert_eq!(credentials.calls(), 2);
+        assert_eq!(credentials.calls(), 0);
     }
 
     #[tokio::test]

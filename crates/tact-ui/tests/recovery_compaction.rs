@@ -216,7 +216,8 @@ async fn prompt_too_long_recovery_compacts_and_retries() {
         match idx {
             0 => Err(LlmError::HttpError {
                 status: 400,
-                body: "prompt is too long".to_string(),
+                class: tact_llm::HttpErrorClass::ContextOverflow,
+                retry_after: None,
             }),
             // compact_history's create_message consumes this turn.
             1 => Ok((
@@ -266,11 +267,13 @@ async fn compact_summary_retries_transient_transport_error() {
     let mock = MockClient::with_responder(|_request, idx| match idx {
         0 => Err(LlmError::HttpError {
             status: 400,
-            body: "prompt is too long".to_string(),
+            class: tact_llm::HttpErrorClass::ContextOverflow,
+            retry_after: None,
         }),
         1 => Err(LlmError::HttpError {
             status: 503,
-            body: "service temporarily unavailable".to_string(),
+            class: tact_llm::HttpErrorClass::Transient,
+            retry_after: None,
         }),
         2 => Ok((
             vec![text_block("Summary after retry.")],
@@ -302,7 +305,8 @@ async fn compact_summary_rejects_empty_text_response() {
     let mock = MockClient::with_responder(|_request, idx| match idx {
         0 => Err(LlmError::HttpError {
             status: 400,
-            body: "prompt is too long".to_string(),
+            class: tact_llm::HttpErrorClass::ContextOverflow,
+            retry_after: None,
         }),
         _ => Ok((Vec::new(), Some(StopReason::EndTurn), None)),
     });
@@ -330,7 +334,8 @@ async fn compact_summary_continues_truncated_response() {
     let mock = MockClient::with_responder(|_request, idx| match idx {
         0 => Err(LlmError::HttpError {
             status: 400,
-            body: "prompt is too long".to_string(),
+            class: tact_llm::HttpErrorClass::ContextOverflow,
+            retry_after: None,
         }),
         // Summary call plus five continuation calls all hit the output budget.
         1..=6 => Ok((
@@ -372,7 +377,8 @@ async fn compact_summary_request_is_window_aware_for_oversized_turn() {
     let mock = MockClient::with_responder(|request, idx| match idx {
         0 => Err(LlmError::HttpError {
             status: 400,
-            body: "prompt is too long".to_string(),
+            class: tact_llm::HttpErrorClass::ContextOverflow,
+            retry_after: None,
         }),
         1 => {
             let prompt = serde_json::to_string(&request.messages).unwrap();

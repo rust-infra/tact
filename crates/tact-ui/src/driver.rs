@@ -2102,12 +2102,25 @@ async fn handle_user_command_with_account(
         }
         UserCommand::SetThinkingBudget(budget) => {
             agent.set_thinking_budget(budget);
+            tact::config::update_llm_model_and_thinking_budget(agent.model().to_string(), budget);
         }
         UserCommand::SetReasoningEffort(effort) => {
             agent.set_reasoning_effort(effort);
+            tact::config::update_llm_model_and_reasoning_effort(
+                agent.model().to_string(),
+                effort.map(Into::into),
+            );
         }
         UserCommand::SetModel(model) => {
-            agent.set_model(model);
+            let provider_info = tact::config::preview_llm_provider_info(&model);
+            match agent.try_set_model_with_provider_info(model.clone(), provider_info) {
+                Ok(()) => tact::config::update_llm_model(model),
+                Err(error) => {
+                    agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
+                        "model switch failed: {error}"
+                    ))));
+                }
+            }
         }
         UserCommand::McpAuth { server } => {
             // Stream progress lines instead of buffering them: the URL is
@@ -4028,6 +4041,11 @@ mod tests {
             &work_dir,
         )
         .await;
+        assert_eq!(
+            tact::config::settings().agent.thinking_budget,
+            64_000,
+            "the driver must publish the committed budget"
+        );
         super::handle_user_command(
             &mut agent,
             UserCommand::SubmitTask("use the new budget".into()),
@@ -4084,6 +4102,12 @@ mod tests {
             &work_dir,
         )
         .await;
+        let settings = tact::config::settings();
+        assert_eq!(
+            settings.agent.reasoning_effort,
+            Some(tact_llm::OpenAiReasoningEffort::High)
+        );
+        assert_eq!(settings.agent.thinking_budget, 0);
 
         let mut last: Option<tact_protocol::ModelCallParams> = None;
         while let Ok(update) = agent_rx.try_recv() {
@@ -4100,6 +4124,23 @@ mod tests {
             last.thinking_budget, None,
             "effort pick must clear stale thinking budget"
         );
+    }
+
+    #[tokio::test]
+    async fn set_model_publishes_config_after_the_agent_commit() {
+        install_test_config();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), None);
+
+        super::handle_user_command(
+            &mut agent,
+            UserCommand::SetModel("mock-next".into()),
+            &work_dir,
+        )
+        .await;
+
+        assert_eq!(agent.model(), "mock-next");
+        assert_eq!(tact::config::settings().llm.model, "mock-next");
+        assert_eq!(tact::config::settings().agent.model, "mock-next");
     }
 
     #[tokio::test]

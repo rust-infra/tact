@@ -2,7 +2,7 @@ use async_openai_responses::types::responses::{OutputItem, Response};
 use serde_json::Value;
 
 use super::fill_missing_wire_fields;
-use crate::LlmError;
+use crate::error::LlmError;
 
 pub(crate) struct RawResponseEnvelope {
     pub(crate) value: Value,

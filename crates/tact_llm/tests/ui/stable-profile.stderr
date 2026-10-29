@@ -1,0 +1,15 @@
+error[E0603]: struct `ProviderProfile` is private
+ --> tests/ui/stable-profile.rs:1:15
+  |
+1 | use tact_llm::ProviderProfile;
+  |               ^^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `ProviderProfile` is defined here
+ --> src/lib.rs
+  |
+  | pub(crate) use profile::ProviderProfile;
+  |                ^^^^^^^^^^^^^^^^^^^^^^^^
+help: import `ProviderProfile` directly
+  |
+1 | use tact_llm::profile::ProviderProfile;
+  |               +++++++++

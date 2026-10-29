@@ -81,6 +81,7 @@ pub fn test_context(name: &str) -> ToolContext {
             root_dir.join(".tact/memory"),
         ))),
         work_dir: root_dir.clone(),
+        vision: true,
         task_manager: SharedTaskManager::new(block_on(TaskManager::new(&db_path)).unwrap()),
         goal_manager: SharedGoalManager::new(block_on(GoalManager::new(&db_path)).unwrap()),
         active_goal_id: None,

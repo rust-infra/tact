@@ -34,7 +34,7 @@ impl ScriptedModel {
         Self {
             capabilities: ModelCapabilities {
                 model: "mock".into(),
-                context_window: 200_000,
+                context_window: Some(200_000),
                 max_output_tokens: 2_000,
                 supports_streaming: true,
                 supports_native_compaction: native,

@@ -1,0 +1,15 @@
+error[E0603]: struct `CreateMessageParams` is private
+ --> tests/ui/stable-wire-type.rs:1:15
+  |
+1 | use tact_llm::CreateMessageParams;
+  |               ^^^^^^^^^^^^^^^^^^^ private struct
+  |
+note: the struct `CreateMessageParams` is defined here
+ --> src/lib.rs
+  |
+  |     CreateMessageParams, OpenAiProtocol, OpenAiReasoningEffort, RequiredMessageParams, StopReason,
+  |     ^^^^^^^^^^^^^^^^^^^
+help: import `CreateMessageParams` directly
+  |
+1 | use tact_llm::types::CreateMessageParams;
+  |               +++++++

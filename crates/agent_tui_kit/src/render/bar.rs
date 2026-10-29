@@ -158,7 +158,10 @@ fn format_cache_pct(hit: u64, miss: u64) -> String {
 /// answer "how close am I to auto-compact"; the percentage answers it directly,
 /// and the gauge only restated that same percentage as glyphs. The absolute
 /// `used/window` stays — a ratio cannot replace the two counts it came from.
-fn format_context_meter(label: &str, used: u32, window: usize) -> String {
+fn format_context_meter(label: &str, used: u32, window: Option<usize>) -> String {
+    let Some(window) = window.filter(|window| *window > 0) else {
+        return format!("{label} -- {}/--", format_tokens_compact(used as u64));
+    };
     let pct = context_usage_pct(used, window);
     format!(
         "{label} {pct}% {}/{}",
@@ -704,7 +707,7 @@ mod render_tests {
 
     #[test]
     fn format_context_meter_leads_with_the_percentage() {
-        let s = super::format_context_meter("ctx", 0, 1_000_000);
+        let s = super::format_context_meter("ctx", 0, Some(1_000_000));
         assert!(s.starts_with("ctx 0%"), "got {s}");
         assert!(s.contains("0/1M"), "got {s}");
         assert!(
@@ -719,8 +722,20 @@ mod render_tests {
 
     #[test]
     fn context_meter_reports_percentage_before_used_and_window() {
-        let s = super::format_context_meter("ctx", 45_000, 1_000_000);
+        let s = super::format_context_meter("ctx", 45_000, Some(1_000_000));
         assert_eq!(s, "ctx 4% 45K/1M");
+    }
+
+    #[test]
+    fn unknown_context_window_is_not_rendered_as_zero_percent() {
+        assert_eq!(
+            super::format_context_meter("ctx", 45_000, None),
+            "ctx -- 45K/--"
+        );
+        assert_eq!(
+            super::format_context_meter("ctx", 45_000, Some(0)),
+            "ctx -- 45K/--"
+        );
     }
 
     #[test]

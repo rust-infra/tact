@@ -19,7 +19,7 @@ impl ModelPort for ToolModel {
     fn capabilities(&self) -> ModelCapabilities {
         ModelCapabilities {
             model: "tool-demo".into(),
-            context_window: 8_192,
+            context_window: Some(8_192),
             max_output_tokens: 512,
             supports_streaming: true,
             supports_native_compaction: false,

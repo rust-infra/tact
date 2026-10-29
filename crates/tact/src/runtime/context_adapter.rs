@@ -308,15 +308,14 @@ impl TactContextPolicy {
 
     fn auto_compact_due(&self, state: &ContextView<'_>, incoming_tokens: usize) -> bool {
         let last_token_total = state.last_token_total.unwrap_or(0);
+        let Some(context_window) = state.capabilities.known_context_window() else {
+            return false;
+        };
         if state.capabilities.supports_native_compaction {
-            if state.capabilities.context_window == 0 || last_token_total == 0 {
+            if last_token_total == 0 {
                 return false;
             }
-            let threshold = state
-                .capabilities
-                .context_window
-                .saturating_mul(80)
-                .div_ceil(100);
+            let threshold = context_window.saturating_mul(80).div_ceil(100);
             let projected = (last_token_total as usize)
                 .saturating_add(incoming_tokens)
                 .saturating_add(state.capabilities.max_output_tokens as usize);
@@ -324,7 +323,7 @@ impl TactContextPolicy {
         }
         should_auto_compact(
             last_token_total,
-            state.capabilities.context_window,
+            context_window,
             estimate_agent_context_tokens(state.transcript),
             incoming_tokens,
             state.capabilities.max_output_tokens as usize,

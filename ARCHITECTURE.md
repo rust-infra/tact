@@ -20,7 +20,7 @@ This project is a Cargo Workspace containing the following crates:
 | `crates/agent_tui_kit` | `agent_tui_kit` | `0.1.0` (local) | Reusable host-protocol rendering kit for thinking/tool/log/popup widgets. |
 | `crates/tact` | `tact` | `1.1.42` (workspace) | Product composition root and compatibility facade: tool router, MCP client, hooks, permissions, prompt/compaction policy, persistence adapters, and kernel wiring. |
 | `crates/tact-ui` | `tact-ui` | `1.1.42` (workspace) | CLI/driver: interactive TUI and `headless` subcommand. It owns `TaskComplete`, Goal Runner, session bootstrapping, and host command routing. |
-| `crates/tact_llm` | `tact_llm` | `1.1.42` (workspace) | LLM provider layer and `tact_agent_api::ModelPort` implementation (Anthropic/OpenAI/DeepSeek/Kimi adapters, request conversion, provider/env resolution). |
+| `crates/tact_llm` | `tact_llm` | `1.1.42` (workspace) | Stable provider SDK and `tact_agent_api::ModelPort` implementation. `core` exposes the facade, builder, endpoint/limit/auth types, and a lazy stream; protocol adapters are feature-isolated behind `anthropic`, `openai-chat`, and `openai-responses`. |
 | `crates/tool_refactor_macros` | `tool_refactor_macros` | `1.1.42` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions. |
 
 Dependency graph:
@@ -61,6 +61,14 @@ crate), then compose optional tools and policies through `AgentBuilder`.
 `AgentSession` owns one `AgentState`; the kernel stays stateless across
 activations. The default transcript and usage sinks retain no durable rows;
 hosts inject persistence when needed.
+
+The provider SDK's stable path is `provider constructor -> ProviderBuilder ->
+Provider: ModelPort`. Built-in constructors have endpoint defaults; an
+explicit `base_url` changes the endpoint without changing policy. `build` is
+synchronous and does not resolve refreshable credentials or perform network IO.
+Streaming is lazy, cancellation-first, and single-terminal. Product turns keep
+one immutable activation snapshot and use `Provider::with_session_id` for
+subagents so a child never inherits the parent's session header.
 
 Binaries produced by `crates/tact-ui`:
 

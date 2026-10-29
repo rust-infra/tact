@@ -5,8 +5,10 @@
 
 use serde_json::Value;
 
+use crate::error::LlmError;
+use crate::profile::ProviderProfile;
 use crate::{
-    CreateMessageParams, LlmError, ProviderProfile,
+    CreateMessageParams,
     convert::build_openai_request,
     inject::{
         inject_reasoning_content, inject_reasoning_content_backfill, inject_user_id,
@@ -102,7 +104,7 @@ fn inject_kimi_thinking(
 ) {
     let model = request.model.as_str();
     // K3 / K3-256k: effort-driven.
-    if crate::is_kimi_k3(model) {
+    if crate::policy::is_kimi_k3(model) {
         if let Some(effort) = request.reasoning_effort {
             body["thinking"] = serde_json::json!({ "type": "enabled" });
             body["reasoning_effort"] = Value::String(effort.as_str().to_owned());

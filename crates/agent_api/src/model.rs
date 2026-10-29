@@ -240,7 +240,7 @@ pub enum ModelEvent {
 
 /// One complete model response. This is the authoritative source for the
 /// assistant message, stop reason, usage, diagnostics, and cursor update.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelResponse {
     pub message_id: MessageId,
     pub message: AgentMessage,
@@ -250,14 +250,95 @@ pub struct ModelResponse {
     pub cursor: CursorUpdate,
 }
 
+impl std::fmt::Debug for ModelResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ModelResponse")
+            .field("message_id", &self.message_id)
+            .field("message", &self.message)
+            .field("stop_reason", &self.stop_reason)
+            .field("usage", &self.usage)
+            .field(
+                "request_body",
+                &self.request_body.as_ref().map(|_| "<redacted>"),
+            )
+            .field("cursor", &self.cursor)
+            .finish()
+    }
+}
+
 /// Static provider capabilities the kernel needs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ModelCapabilities {
     pub model: String,
-    pub context_window: usize,
+    #[serde(
+        serialize_with = "serialize_context_window",
+        deserialize_with = "deserialize_context_window"
+    )]
+    pub context_window: Option<usize>,
     pub max_output_tokens: u32,
     pub supports_streaming: bool,
     pub supports_native_compaction: bool,
+}
+
+/// Invalid static model capability values.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum ModelCapabilitiesError {
+    #[error("context window must be positive when known")]
+    ZeroContextWindow,
+    #[error("max output tokens must be positive")]
+    ZeroOutputTokens,
+    #[error("max output tokens must be smaller than the known context window")]
+    OutputExceedsContext,
+}
+
+impl ModelCapabilities {
+    /// Build capabilities while enforcing the invariants the kernel relies on.
+    pub fn new(
+        model: impl Into<String>,
+        context_window: Option<usize>,
+        max_output_tokens: u32,
+        supports_streaming: bool,
+        supports_native_compaction: bool,
+    ) -> Result<Self, ModelCapabilitiesError> {
+        if context_window == Some(0) {
+            return Err(ModelCapabilitiesError::ZeroContextWindow);
+        }
+        if max_output_tokens == 0 {
+            return Err(ModelCapabilitiesError::ZeroOutputTokens);
+        }
+        if context_window.is_some_and(|window| max_output_tokens as usize >= window) {
+            return Err(ModelCapabilitiesError::OutputExceedsContext);
+        }
+        Ok(Self {
+            model: model.into(),
+            context_window,
+            max_output_tokens,
+            supports_streaming,
+            supports_native_compaction,
+        })
+    }
+
+    /// Return a usable context window, treating a directly constructed
+    /// `Some(0)` as unknown rather than as a known zero-token window.
+    pub fn known_context_window(&self) -> Option<usize> {
+        self.context_window.filter(|window| *window > 0)
+    }
+}
+
+fn serialize_context_window<S>(value: &Option<usize>, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_u64(value.unwrap_or(0) as u64)
+}
+
+fn deserialize_context_window<'de, D>(deserializer: D) -> Result<Option<usize>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = Option::<usize>::deserialize(deserializer)?;
+    Ok(value.filter(|window| *window > 0))
 }
 
 /// Closed model error classes used for recovery decisions.
@@ -330,6 +411,7 @@ pub trait ModelPort: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::MessageOrigin;
 
     #[test]
     fn model_contracts_round_trip() {
@@ -424,5 +506,57 @@ mod tests {
             );
         }
         assert!("extreme".parse::<ReasoningEffort>().is_err());
+    }
+
+    #[test]
+    fn model_capabilities_round_trip_legacy_unknown_windows() {
+        let none: ModelCapabilities = serde_json::from_str(
+            r#"{"model":"m","context_window":0,"max_output_tokens":1,"supports_streaming":true,"supports_native_compaction":false}"#,
+        )
+        .unwrap();
+        assert_eq!(none.context_window, None);
+        assert_eq!(serde_json::to_value(&none).unwrap()["context_window"], 0);
+
+        let null: ModelCapabilities = serde_json::from_str(
+            r#"{"model":"m","context_window":null,"max_output_tokens":1,"supports_streaming":true,"supports_native_compaction":false}"#,
+        )
+        .unwrap();
+        assert_eq!(null.context_window, None);
+        assert_eq!(null.known_context_window(), None);
+    }
+
+    #[test]
+    fn model_capabilities_constructor_rejects_invalid_limits() {
+        assert!(matches!(
+            ModelCapabilities::new("m", Some(0), 1, true, false),
+            Err(ModelCapabilitiesError::ZeroContextWindow)
+        ));
+        assert!(matches!(
+            ModelCapabilities::new("m", None, 0, true, false),
+            Err(ModelCapabilitiesError::ZeroOutputTokens)
+        ));
+        assert!(matches!(
+            ModelCapabilities::new("m", Some(10), 10, true, false),
+            Err(ModelCapabilitiesError::OutputExceedsContext)
+        ));
+    }
+
+    #[test]
+    fn model_response_debug_redacts_request_body() {
+        let response = ModelResponse {
+            message_id: MessageId::new("message"),
+            message: AgentMessage::new(
+                AgentRole::Assistant,
+                MessageOrigin::Assistant,
+                vec![AgentContentBlock::Text { text: "ok".into() }],
+            ),
+            stop_reason: StopReason::EndTurn,
+            usage: None,
+            request_body: Some(b"SECRET-BODY".to_vec()),
+            cursor: CursorUpdate::Unchanged,
+        };
+        let debug = format!("{response:?}");
+        assert!(!debug.contains("SECRET-BODY"));
+        assert!(debug.contains("redacted"));
     }
 }

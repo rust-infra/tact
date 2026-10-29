@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use async_openai_responses::types::responses::ReasoningItem;
 use serde::{Deserialize, Serialize};
 
-use crate::LlmError;
+use crate::error::LlmError;
 
 const PREFIX: &str = "openai-responses-v1:";
 

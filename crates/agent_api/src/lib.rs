@@ -29,10 +29,10 @@ pub use message::{
     AgentContentBlock, AgentImageSource, AgentMessage, AgentRole, MessageId, MessageOrigin,
 };
 pub use model::{
-    MessageDelta, ModelCallKind, ModelCallOptions, ModelCapabilities, ModelCursor, ModelError,
-    ModelErrorKind, ModelEvent, ModelMessage, ModelPort, ModelRequest, ModelResponse, ModelStream,
-    ProviderActivity, ProviderActivityKind, ProviderActivityPhase, ReasoningEffort, StopReason,
-    ThinkingDelta, TokenUsage,
+    MessageDelta, ModelCallKind, ModelCallOptions, ModelCapabilities, ModelCapabilitiesError,
+    ModelCursor, ModelError, ModelErrorKind, ModelEvent, ModelMessage, ModelPort, ModelRequest,
+    ModelResponse, ModelStream, ProviderActivity, ProviderActivityKind, ProviderActivityPhase,
+    ReasoningEffort, StopReason, ThinkingDelta, TokenUsage,
 };
 pub use state::{
     AgentState, CancelToken, HostYieldReason, MessageRange, RecoveryStats, RunId, RunInput,

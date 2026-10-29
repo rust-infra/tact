@@ -1,0 +1,15 @@
+error[E0432]: unresolved import `tact_llm::SharedHttpClient`
+ --> tests/ui/stable-transport.rs:1:5
+  |
+1 | use tact_llm::SharedHttpClient;
+  |     ^^^^^^^^^^----------------
+  |               |
+  |               no `SharedHttpClient` in the root
+  |
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "legacy-tact")]
+  |       ----------------------- the item is gated behind the `legacy-tact` feature
+  | pub use transport::SharedHttpClient;
+  |                    ^^^^^^^^^^^^^^^^

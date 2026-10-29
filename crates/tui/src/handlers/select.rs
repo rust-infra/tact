@@ -518,16 +518,6 @@ fn apply_model_and_budget_pick(
     match target {
         ModelTarget::Main => {
             let _ = app.user_cmd_tx.send(UserCommand::SetModel(model.clone()));
-            tact::config::update_llm_model_and_thinking_budget(model.clone(), thinking_budget);
-            app.status_bar_mut().model_name = model.clone();
-            if let Some(settings) = tact::config::try_settings() {
-                // Keep out/think in sync immediately; agent may still be busy so
-                // SetModel / SetThinkingBudget (and their ModelInfo) can arrive later.
-                app.status_bar_mut().model_max_tokens = settings.agent.max_tokens;
-            }
-            app.status_bar_mut().model_thinking_budget =
-                (thinking_budget > 0).then_some(thinking_budget as u32);
-            app.status_bar_mut().model_reasoning_effort = None; // budget semantics: no derived effort
             app.add_system_message(format_model_and_budget(
                 msgs.model_switched_with_budget_tmpl,
                 &model,
@@ -605,13 +595,6 @@ fn apply_model_and_effort_pick(
     match target {
         ModelTarget::Main => {
             let _ = app.user_cmd_tx.send(UserCommand::SetModel(model.clone()));
-            tact::config::update_llm_model_and_reasoning_effort(model.clone(), Some(effort));
-            app.status_bar_mut().model_name = model.clone();
-            if let Some(settings) = tact::config::try_settings() {
-                app.status_bar_mut().model_max_tokens = settings.agent.max_tokens;
-            }
-            app.status_bar_mut().model_reasoning_effort = Some(effort.into());
-            app.status_bar_mut().model_thinking_budget = None; // effort semantics: budget not shown
             let _ = app
                 .user_cmd_tx
                 .send(UserCommand::SetReasoningEffort(Some(effort.into())));
@@ -1602,9 +1585,10 @@ thinking_budget = {thinking_budget}
         handle_select_mode(&mut app, key(KeyCode::Enter));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
-        assert_eq!(tact::config::settings().llm.model, "kimi-for-coding");
-        assert_eq!(tact::config::settings().agent.model, "kimi-for-coding");
-        assert_eq!(app.status_bar_mut().model_name, "kimi-for-coding");
+        // The picker only queues the switch. The driver publishes config and
+        // status after the replacement provider has been prepared.
+        assert_eq!(tact::config::settings().llm.model, "kimi-k2.5");
+        assert_eq!(tact::config::settings().agent.model, "kimi-k2.5");
         // No config_path → skip persist popup, return to Normal.
         assert!(matches!(app.input_mode, InputMode::Normal));
     }
@@ -1886,10 +1870,7 @@ thinking_budget = {thinking_budget}
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn applying_effort_pick_updates_config_level_effort() {
-        // Regression: apply_model_and_effort_pick must keep config-level
-        // agent.reasoning_effort in sync so re-opening the picker (and
-        // subagent inheritance) sees the new value.
+    async fn effort_pick_queues_the_switch_without_publishing_config() {
         let _lock = MODELS_TEST_LOCK.lock().await;
         tact_llm::clear_models_cache_for_tests();
         install_models_config(vec!["k3"], "k3");
@@ -1910,18 +1891,12 @@ thinking_budget = {thinking_budget}
 
         // No config path → session-only, back to normal mode.
         assert!(matches!(app.input_mode, InputMode::Normal));
-        assert_eq!(
-            tact::config::settings().agent.reasoning_effort,
-            Some(tact_llm::OpenAiReasoningEffort::Low)
-        );
+        assert_eq!(tact::config::settings().agent.reasoning_effort, None);
         assert_eq!(tact::config::settings().llm.model, "k3");
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn applying_effort_pick_clears_stale_thinking_budget() {
-        // Regression: an effort pick for an effort-semantic model (k3) must
-        // clear a stale thinking_budget left over from a budget-semantic model
-        // (kimi-for-coding) — otherwise the bottom bar renders `think high(32K)`.
+    async fn effort_pick_waits_for_driver_before_clearing_budget() {
         let _lock = MODELS_TEST_LOCK.lock().await;
         tact_llm::clear_models_cache_for_tests();
         install_models_config_with_budget(vec!["k3"], "k3", 32_000);
@@ -1935,19 +1910,11 @@ thinking_budget = {thinking_budget}
         handle_select_mode(&mut app, key(KeyCode::Enter)); // k3 (single model)
         handle_select_mode(&mut app, key(KeyCode::Enter)); // first effort (Low)
 
-        assert_eq!(
-            tact::config::settings().agent.reasoning_effort,
-            Some(tact_llm::OpenAiReasoningEffort::Low)
-        );
+        assert_eq!(tact::config::settings().agent.reasoning_effort, None);
         assert_eq!(
             tact::config::settings().agent.thinking_budget,
-            0,
-            "effort pick must clear stale thinking budget"
-        );
-        assert_eq!(app.status_bar_mut().model_thinking_budget, None);
-        assert_eq!(
-            app.status_bar_mut().model_reasoning_effort,
-            Some(tact_protocol::ReasoningEffort::Low)
+            32_000,
+            "the picker must not publish the driver's commit"
         );
     }
 
@@ -1966,13 +1933,9 @@ thinking_budget = {thinking_budget}
         handle_select_mode(&mut app, key(KeyCode::Down));
         handle_select_mode(&mut app, key(KeyCode::Enter));
 
-        assert_eq!(tact::config::settings().llm.model, "kimi-for-coding");
-        assert_eq!(tact::config::settings().agent.model, "kimi-for-coding");
-        assert_eq!(tact::config::settings().agent.thinking_budget, 64_000);
-        assert!(tact::config::settings().agent.max_tokens > 64_000);
-        assert_eq!(app.status_bar_mut().model_name, "kimi-for-coding");
-        assert_eq!(app.status_bar_mut().model_thinking_budget, Some(64_000));
-        assert!(app.status_bar_mut().model_max_tokens > 64_000);
+        assert_eq!(tact::config::settings().llm.model, "kimi-k2.5");
+        assert_eq!(tact::config::settings().agent.model, "kimi-k2.5");
+        assert_eq!(tact::config::settings().agent.thinking_budget, 32_000);
         assert!(matches!(app.input_mode, InputMode::Normal));
     }
 
@@ -2107,7 +2070,7 @@ thinking_budget = {thinking_budget}
     }
 
     #[tokio::test(flavor = "multi_thread")]
-    async fn escape_from_persist_keeps_applied_values_without_writing_config() {
+    async fn escape_from_persist_does_not_publish_or_write_config() {
         let _lock = MODELS_TEST_LOCK.lock().await;
         let (_temp_dir, path) = install_models_config_with_path(
             vec!["kimi-k2.5", "kimi-for-coding"],
@@ -2128,9 +2091,9 @@ thinking_budget = {thinking_budget}
 
         handle_select_mode(&mut app, key(KeyCode::Esc));
 
-        assert_eq!(tact::config::settings().llm.model, "kimi-for-coding");
-        assert_eq!(tact::config::settings().agent.model, "kimi-for-coding");
-        assert_eq!(tact::config::settings().agent.thinking_budget, 64_000);
+        assert_eq!(tact::config::settings().llm.model, "kimi-k2.5");
+        assert_eq!(tact::config::settings().agent.model, "kimi-k2.5");
+        assert_eq!(tact::config::settings().agent.thinking_budget, 32_000);
         assert_eq!(std::fs::read_to_string(&path).unwrap(), original);
         assert!(app.log.items.iter().any(|message| {
             message.raw.contains(

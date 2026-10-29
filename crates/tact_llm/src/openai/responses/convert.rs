@@ -7,10 +7,9 @@ use async_openai_responses::types::responses::{
 };
 
 use super::{history, wire};
-use crate::{
-    ContentBlock, CreateMessageParams, LlmError, Message, MessageContent,
-    ProviderConversationState, ResponsesConversationState, Role, ToolChoice, context_hash,
-};
+use crate::error::LlmError;
+use crate::provider_state::{ProviderConversationState, ResponsesConversationState, context_hash};
+use crate::{ContentBlock, CreateMessageParams, Message, MessageContent, Role, ToolChoice};
 
 fn responses_role(role: Role) -> ResponsesRole {
     match role {
@@ -315,7 +314,7 @@ pub(crate) fn create_response_with_policy(
         }
     };
     if model_changed {
-        let shape = if request.model.to_ascii_lowercase().contains("deepseek") {
+        let shape = if crate::policy::web_search_uses_queries_shape(&request.model) {
             wire::WebSearchQueryShape::Queries
         } else {
             wire::WebSearchQueryShape::Query
@@ -434,15 +433,15 @@ pub(crate) fn create_response_with_policy(
 
 #[cfg(test)]
 mod tests {
-    use super::super::ResponsesRequestOptions;
     use super::super::normalize::parse_compact_resource;
     use super::{
         ResponsesRequestPolicy, create_response, message_to_input, validate_conversion_state,
     };
+    use crate::provider_state::{ResponsesConversationState, context_hash};
+    use crate::types::ResponsesRequestOptions;
     use crate::{
         ContentBlock, CreateMessageParams, ImageSource, Message, OpenAiReasoningEffort,
-        RequiredMessageParams, ResponsesConversationState, Role, Thinking, ThinkingType, Tool,
-        ToolChoice, context_hash,
+        RequiredMessageParams, Role, Thinking, ThinkingType, Tool, ToolChoice,
     };
 
     fn state_covering_first_message(request: &CreateMessageParams) -> ResponsesConversationState {
@@ -835,7 +834,7 @@ mod tests {
         );
         let (body, _) = super::create_response_with_policy(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             no_replay_policy(false),
         )
@@ -948,9 +947,7 @@ mod tests {
         let state = state_covering_first_message(&request);
         let (body, sent_items) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(
-                state.clone(),
-            )),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state.clone())),
             Some(160_000),
             false,
         )
@@ -994,7 +991,7 @@ mod tests {
         request.model = "deepseek-chat".to_string();
         let (body, _) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -1020,7 +1017,7 @@ mod tests {
         request.model = "gpt-5".to_string();
         let (body, _) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -1043,9 +1040,7 @@ mod tests {
 
         let (body, _) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(
-                state.clone(),
-            )),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state.clone())),
             None,
             false,
         )
@@ -1156,7 +1151,7 @@ mod tests {
         state.model = "other-model".to_string();
         create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -1178,7 +1173,7 @@ mod tests {
 
         let (body, _) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -1205,7 +1200,7 @@ mod tests {
 
         let (body, _) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -1230,7 +1225,7 @@ mod tests {
 
         let (body, _) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -1250,7 +1245,7 @@ mod tests {
         state.logical_context_hash = "deadbeef".repeat(8);
         let error = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -1267,7 +1262,7 @@ mod tests {
         assert!(
             create_response(
                 &request,
-                Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+                Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
                 None,
                 false
             )
@@ -1283,7 +1278,7 @@ mod tests {
         assert!(
             create_response(
                 &request,
-                Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+                Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
                 None,
                 false
             )
@@ -1299,7 +1294,7 @@ mod tests {
         assert!(
             create_response(
                 &request,
-                Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+                Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
                 None,
                 false,
             )

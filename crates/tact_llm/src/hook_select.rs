@@ -3,11 +3,13 @@
 use std::sync::Arc;
 
 use crate::{
-    ChatCompletionsDialect, LlmError, ProviderInfo, ProviderKind,
+    ChatCompletionsDialect,
     openai::compatible::body::{
         DeepSeekBodyHook, KimiBodyHook, OpenAiBodyHook, StandardOpenAiBodyHook,
     },
 };
+#[cfg(feature = "legacy-tact")]
+use crate::{LlmError, ProviderInfo};
 
 /// Pick the body hook for a resolved Chat Completions dialect.
 ///
@@ -33,35 +35,17 @@ pub fn hook_for_dialect(
 /// `user_id` is only applied when the selected hook is DeepSeek. `model` is
 /// the per-request model id so the hook follows `/model` picks (wire shape
 /// matches what is actually requested).
+#[cfg(feature = "legacy-tact")]
 pub fn body_hook_for(
     info: &ProviderInfo,
     model: &str,
     user_id: Option<&str>,
 ) -> Result<Arc<dyn OpenAiBodyHook>, LlmError> {
-    let deepseek = || DeepSeekBodyHook::new(user_id.map(str::to_owned));
-    match &info.provider {
-        ProviderKind::DeepSeek => Ok(Arc::new(deepseek())),
-        ProviderKind::Kimi => Ok(Arc::new(KimiBodyHook)),
-        ProviderKind::OpenAi | ProviderKind::Custom(_) => {
-            // `provider = openai` may still point at a Moonshot/DeepSeek-compatible
-            // base URL or model id — follow endpoint heuristics. Custom
-            // providers reuse the same OpenAI-compatible heuristics.
-            if info.is_kimi_with(model) {
-                Ok(Arc::new(KimiBodyHook))
-            } else if info.base_url.contains("deepseek") || model.contains("deepseek") {
-                Ok(Arc::new(deepseek()))
-            } else {
-                Ok(Arc::new(StandardOpenAiBodyHook))
-            }
-        }
-        // Anthropic uses Messages API (`build_anthropic`), never this path.
-        ProviderKind::Anthropic => Err(LlmError::UnsupportedHook(
-            "cannot use anthropic provider with openai-compatible body hooks".to_owned(),
-        )),
-    }
+    let dialect = info.to_profile().dialect_for(model)?;
+    Ok(hook_for_dialect(dialect, user_id))
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "legacy-tact"))]
 mod tests {
     use super::*;
     use crate::{

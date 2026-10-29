@@ -185,7 +185,7 @@ async fn response_from_script(
 pub fn default_capabilities() -> ModelCapabilities {
     ModelCapabilities {
         model: "fake".into(),
-        context_window: 100_000,
+        context_window: Some(100_000),
         max_output_tokens: 4096,
         supports_streaming: true,
         supports_native_compaction: false,

@@ -93,7 +93,7 @@ impl App {
             pending_cancel_btn_area: ratatui::layout::Rect::default(),
             scroll_back_area: ratatui::layout::Rect::default(),
             cmd_line: String::new(),
-            model_context_window: 200_000,
+            model_context_window: Some(200_000),
             log: LogCoordinator::default(),
             status: Status::Idle,
             agent_rx: agent_rx.into(),

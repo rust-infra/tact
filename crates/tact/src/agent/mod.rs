@@ -22,7 +22,7 @@ use tact_agent_api::{
 use tact_agent_core::KernelError;
 use tact_llm::{
     LlmProvider, Message, MessageKind, OpenAiReasoningEffort, ProviderConversationState,
-    ProviderKind, Role,
+    ProviderInfo, ProviderKind, Role,
 };
 use tact_protocol::{AgentUpdate, UpdateSender, UpdateSink};
 
@@ -48,6 +48,7 @@ use crate::{
         facade_state::{
             FacadeActivationState, FacadeReceiptTracker, FacadeReceipts, FacadeSidecar,
         },
+        model_adapter::ActiveModelSnapshot,
         permission_authority::PermissionAuthority,
         prompt_adapter::{PromptCaches, SystemPromptAssembler},
         services::TactSharedServices,
@@ -438,6 +439,8 @@ pub struct Agent {
     /// [`Self::with_provider_kind`]. `None` means "inherit from the live
     /// provider" — see [`Self::provider_kind`].
     provider_kind: Option<ProviderKind>,
+    model_provider_info: Option<ProviderInfo>,
+    stable_provider_enabled: bool,
     cached_tool_specs: Vec<ToolSpec>,
 }
 
@@ -549,6 +552,8 @@ impl Agent {
             kernel_activations: 0,
             agent_settings: crate::config::settings().agent.clone(),
             provider_kind,
+            model_provider_info: None,
+            stable_provider_enabled: false,
             cached_tool_specs: Vec::new(),
         };
         agent.rebuild_cached_tool_specs();
@@ -560,6 +565,17 @@ impl Agent {
     /// fallback because its endpoint lacks the endpoint).
     pub fn with_provider_kind(mut self, provider_kind: ProviderKind) -> Self {
         self.provider_kind = Some(provider_kind);
+        self
+    }
+
+    pub(crate) fn with_provider_info(mut self, provider_info: ProviderInfo) -> Self {
+        self.model_provider_info = Some(provider_info);
+        self
+    }
+
+    /// Enable the stable provider snapshot for a production agent.
+    pub fn with_stable_provider(mut self) -> Self {
+        self.stable_provider_enabled = true;
         self
     }
 
@@ -807,11 +823,40 @@ impl Agent {
     /// `UserCommand::SetModel` behind an in-flight task; the resulting
     /// `ModelInfo` resyncs the status bar.
     pub fn set_model(&mut self, model: String) {
+        let _ = self.try_set_model(model);
+    }
+
+    /// Prepare and commit a model switch. The previous model remains active
+    /// when the replacement provider cannot be built.
+    pub fn try_set_model(&mut self, model: String) -> Result<()> {
+        self.try_set_model_with_provider_info(model, None)
+    }
+
+    /// Prepare and commit a model switch with the provider snapshot resolved
+    /// from the candidate config, without publishing that config first.
+    pub fn try_set_model_with_provider_info(
+        &mut self,
+        model: String,
+        provider_info: Option<ProviderInfo>,
+    ) -> Result<()> {
         if model.trim().is_empty() {
-            return;
+            return Ok(());
         }
+        let previous_model = self.agent_settings.model.clone();
+        let previous_provider_info = self.model_provider_info.clone();
         self.agent_settings.model = model;
+        if provider_info.is_some() {
+            self.model_provider_info = provider_info;
+        }
+        if !matches!(self.runtime.client, LlmProvider::Mock(_))
+            && self.active_model_snapshot().is_none()
+        {
+            self.agent_settings.model = previous_model;
+            self.model_provider_info = previous_provider_info;
+            anyhow::bail!("replacement provider could not be built for the selected model");
+        }
         self.emit_model_status();
+        Ok(())
     }
 
     /// The model this agent is currently calling.
@@ -1081,6 +1126,27 @@ impl Agent {
     /// opaque state at request time.
     fn validate_provider_state_binding(&self, state: &ProviderConversationState) -> Result<()> {
         let ProviderConversationState::OpenAiResponses(inner) = state;
+        if self.stable_provider_enabled {
+            let snapshot = self
+                .active_model_snapshot()
+                .context("active provider snapshot is unavailable")?;
+            if snapshot.metadata.protocol() != tact_llm::WireProtocol::OpenAiResponses {
+                anyhow::bail!(
+                    "provider state is stored for provider '{}', but the active provider is not Responses",
+                    inner.provider
+                );
+            }
+            if inner.provider != "openai_responses" {
+                anyhow::bail!(
+                    "provider state is bound to provider '{}', expected 'openai_responses'",
+                    inner.provider
+                );
+            }
+            if !snapshot.metadata.endpoint().matches(&inner.base_url) {
+                anyhow::bail!("provider state is bound to a different canonical endpoint");
+            }
+            return Ok(());
+        }
         let LlmProvider::OpenAiResponses(adapter) = &self.runtime.client else {
             anyhow::bail!(
                 "provider state is stored for provider '{}', but the active client is not OpenAI Responses",
@@ -1104,6 +1170,11 @@ impl Agent {
     }
 
     fn is_openai_responses(&self) -> bool {
+        if self.stable_provider_enabled
+            && let Some(snapshot) = self.active_model_snapshot()
+        {
+            return snapshot.metadata.protocol() == tact_llm::WireProtocol::OpenAiResponses;
+        }
         matches!(self.runtime.client, LlmProvider::OpenAiResponses(_))
     }
 
@@ -1299,6 +1370,80 @@ impl Agent {
         self.is_openai_responses() && self.provider_kind() != ProviderKind::DeepSeek
     }
 
+    fn active_model_snapshot(&self) -> Option<ActiveModelSnapshot> {
+        if !self.stable_provider_enabled || matches!(self.runtime.client, LlmProvider::Mock(_)) {
+            return None;
+        }
+        let info = self
+            .model_provider_info
+            .clone()
+            .or_else(tact_llm::try_get_provider)?;
+        let limits = tact_llm::ModelLimits::new(
+            (self.model_context_window() != 0).then_some(self.model_context_window()),
+            self.max_tokens(),
+        )
+        .ok()?;
+        let auth = if info.api_key.is_empty() {
+            tact_llm::try_active_credential_provider()
+                .map(tact_llm::legacy_credential_source)
+                .map(tact_llm::Authentication::Refreshable)
+                .unwrap_or(tact_llm::Authentication::None)
+        } else {
+            tact_llm::Authentication::Static(tact_llm::Credential::api_key(&info.api_key).ok()?)
+        };
+        let builder = match (info.provider.clone(), info.protocol) {
+            (ProviderKind::Anthropic, _) => tact_llm::anthropic(self.agent_settings.model.clone()),
+            (ProviderKind::DeepSeek, tact_llm::OpenAiProtocol::ChatCompletions) => {
+                tact_llm::deepseek_chat(self.agent_settings.model.clone())
+            }
+            (ProviderKind::DeepSeek, tact_llm::OpenAiProtocol::Responses) => {
+                tact_llm::deepseek_responses(self.agent_settings.model.clone())
+            }
+            (ProviderKind::Kimi, tact_llm::OpenAiProtocol::ChatCompletions) => {
+                tact_llm::kimi_chat(self.agent_settings.model.clone())
+            }
+            (ProviderKind::Kimi, tact_llm::OpenAiProtocol::Responses) => {
+                tact_llm::kimi_responses(self.agent_settings.model.clone())
+            }
+            (ProviderKind::OpenAi, tact_llm::OpenAiProtocol::ChatCompletions) => {
+                tact_llm::openai_chat(self.agent_settings.model.clone())
+            }
+            (ProviderKind::OpenAi, tact_llm::OpenAiProtocol::Responses) => {
+                tact_llm::openai_responses(self.agent_settings.model.clone())
+            }
+            (ProviderKind::Custom(name), tact_llm::OpenAiProtocol::ChatCompletions) => {
+                tact_llm::custom_chat(
+                    name,
+                    self.agent_settings.model.clone(),
+                    info.base_url.clone(),
+                )
+            }
+            (ProviderKind::Custom(name), tact_llm::OpenAiProtocol::Responses) => {
+                tact_llm::custom_responses(
+                    name,
+                    self.agent_settings.model.clone(),
+                    info.base_url.clone(),
+                )
+            }
+        };
+        let mut builder = builder.authentication(auth).limits(limits);
+        if !info.base_url.is_empty() {
+            builder = builder.base_url(info.base_url.clone());
+        }
+        if let Some(threshold) = info.responses_compact_threshold {
+            builder = builder.responses_compact_threshold(threshold);
+        }
+        if let Some(session_id) = self.runtime.session_id.as_deref() {
+            builder = builder.session_id(tact_llm::SessionId::new(session_id).ok()?);
+        }
+        let provider = builder.build_product().ok()?;
+        let metadata = provider.metadata().clone();
+        Some(ActiveModelSnapshot {
+            model: Arc::new(provider),
+            metadata,
+        })
+    }
+
     fn kernel_composition(&self) -> (TactKernelComposition, String, Arc<FacadeReceiptTracker>) {
         let model_name = self.agent_settings.model.clone();
         let session_id = self.runtime.session_id.clone().unwrap_or_default();
@@ -1313,16 +1458,26 @@ impl Agent {
         tool_context.session_store = self.runtime.session_store.clone();
         tool_context.permission_snapshot = Some(self.runtime.permission_manager.snapshot());
         let receipts = FacadeReceiptTracker::new(self.facade_receipts());
-
-        let composition = TactKernelComposition::new(TactKernelConfig {
-            provider: self.runtime.client.clone(),
-            capabilities: ModelCapabilities {
+        let model_snapshot = self.active_model_snapshot();
+        if let Some(snapshot) = &model_snapshot {
+            tool_context.vision = snapshot.metadata.supports_vision();
+        }
+        let capabilities = model_snapshot
+            .as_ref()
+            .map(|snapshot| snapshot.metadata.capabilities().clone())
+            .unwrap_or_else(|| ModelCapabilities {
                 model: model_name.clone(),
-                context_window: self.model_context_window(),
+                context_window: (self.model_context_window() != 0)
+                    .then_some(self.model_context_window()),
                 max_output_tokens: self.max_tokens(),
                 supports_streaming: true,
                 supports_native_compaction: self.native_compaction_available(),
-            },
+            });
+
+        let composition = TactKernelComposition::new(TactKernelConfig {
+            provider: self.runtime.client.clone(),
+            capabilities,
+            model_snapshot,
             prompt,
             compactor,
             model_options: self.kernel_model_options(),

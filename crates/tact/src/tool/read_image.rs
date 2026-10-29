@@ -70,7 +70,7 @@ pub async fn read_image(ctx: ToolContext, input: ReadImageInput) -> Result<ToolC
     // declaring image support before doing any I/O; a text-only target cannot
     // consume the returned image block. `config` (not `tact_llm`) is the gate:
     // a per-model `supports_vision` override outranks the endpoint heuristic.
-    if !crate::config::supports_vision() {
+    if !ctx.vision {
         return Err(anyhow!(
             "read_image: the current model does not accept image input; switch to an image-capable model to read images"
         ));

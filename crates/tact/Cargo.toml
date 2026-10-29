@@ -6,7 +6,7 @@ license.workspace = true
 
 [dependencies]
 tact_protocol = { path = "../protocol" }
-tact_llm = { path = "../tact_llm" }
+tact_llm = { path = "../tact_llm", default-features = false, features = ["legacy-tact", "account", "model-discovery", "product-runtime"] }
 tact_agent_api = { path = "../agent_api" }
 tact_agent_core = { path = "../agent_core" }
 tool_refactor_macros = { path = "../tool_refactor_macros" }

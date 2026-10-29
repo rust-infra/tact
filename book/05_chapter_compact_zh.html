@@ -644,7 +644,9 @@ relevant tool (e.g., <code>read_file</code>)</p>
 <p>共享阈值是 <strong><code>agent.model_context_window</code></strong> —
 模型上下文窗口，单位为 <strong>tokens</strong>（默认
 <strong>200,000</strong>）。同一数值同时驱动自动压缩与 TUI
-底栏用量条。</p>
+底栏用量条。<code>0</code> 表示宿主没有已知窗口，窗口触发的自动压缩
+关闭；稳定的 <code>ModelCapabilities</code> 边界用 <code>None</code>
+表示未知，绝不把 <code>0</code> 当作已知窗口。</p>
 <h3 id="判定or">判定（OR）</h3>
 <p><code>should_auto_compact</code>
 在以下<strong>任一</strong>条件成立时触发（可预留尚未入 context 的本轮

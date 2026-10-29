@@ -72,7 +72,7 @@ mod render_tests {
     #[test]
     fn bottom_bar_shows_context_usage_meter_on_row_2() {
         let mut app = make_app();
-        app.model_context_window = 200_000;
+        app.model_context_window = Some(200_000);
         app.status_bar_mut().model_name = "mock-model".into();
         app.status_bar_mut().token_total = 590;
         app.status_bar_mut().token_prompt = 400;
@@ -237,7 +237,7 @@ mod render_tests {
         app.status_bar_mut().token_total = 100;
         app.status_bar_mut().token_cache_hit = 50;
         app.status_bar_mut().token_cache_miss = 50;
-        app.model_context_window = 200_000;
+        app.model_context_window = Some(200_000);
 
         let backend = TestBackend::new(40, 2);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -282,7 +282,7 @@ mod render_tests {
         app.status_bar_mut().turn_last_secs = Some(125);
         app.status_bar_mut().turn_done = 2;
         app.status_bar_mut().turn_total_secs = 210;
-        app.model_context_window = 1_000_000;
+        app.model_context_window = Some(1_000_000);
 
         let backend = TestBackend::new(100, 2);
         let mut terminal = Terminal::new(backend).expect("terminal");
@@ -364,7 +364,7 @@ mod render_tests {
         app.status_bar_mut().turn_last_secs = Some(125);
         app.status_bar_mut().turn_done = 2;
         app.status_bar_mut().turn_total_secs = 210;
-        app.model_context_window = 1_000_000;
+        app.model_context_window = Some(1_000_000);
 
         let backend = TestBackend::new(200, 2);
         let mut terminal = Terminal::new(backend).expect("terminal");

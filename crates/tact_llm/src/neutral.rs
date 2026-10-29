@@ -6,10 +6,13 @@ use tact_agent_api::{
     ModelRequest, ModelResponse, ReasoningEffort, StopReason as NeutralStopReason, TokenUsage,
 };
 
+use crate::client::LlmResponse;
+use crate::error::{HttpErrorClass, LlmError};
+use crate::provider_state::{ProviderConversationState, ProviderStateUpdate};
 use crate::{
-    ContentBlock, CreateMessageParams, ImageSource, LlmError, LlmResponse, Message, MessageContent,
-    MessageKind, ModelCallParams, OpenAiReasoningEffort, ProviderConversationState,
-    ProviderStateUpdate, Role, StopReason, Thinking, ThinkingType, TokenUsageInfo, Tool,
+    ContentBlock, CreateMessageParams, ImageSource, Message, MessageContent, MessageKind,
+    ModelCallParams, OpenAiReasoningEffort, Role, StopReason, Thinking, ThinkingType,
+    TokenUsageInfo, Tool,
 };
 
 const CURSOR_PROVIDER: &str = "tact_llm";
@@ -303,34 +306,28 @@ pub fn llm_response(response: ModelResponse) -> Result<LlmResponse, ModelError> 
 
 pub fn model_error(error: LlmError) -> ModelError {
     let message = error.to_string();
-    let lowered = message.to_ascii_lowercase();
+    let retry_after = match &error {
+        LlmError::HttpError { retry_after, .. } => *retry_after,
+        _ => None,
+    };
     let kind = match &error {
         LlmError::Unsupported(_) | LlmError::UnsupportedHook(_) => ModelErrorKind::Unsupported,
-        LlmError::HttpError { status, .. }
-            if *status == 408 || *status == 429 || *status >= 500 =>
-        {
-            ModelErrorKind::Transient
-        }
-        _ if lowered.contains("context length")
-            || lowered.contains("context window")
-            || lowered.contains("prompt") && lowered.contains("long")
-            || lowered.contains("too many tokens")
-            || lowered.contains("overlong_prompt") =>
-        {
-            ModelErrorKind::ContextOverflow
-        }
+        LlmError::HttpError {
+            class: HttpErrorClass::ContextOverflow,
+            ..
+        } => ModelErrorKind::ContextOverflow,
+        LlmError::HttpError {
+            class: HttpErrorClass::Transient,
+            ..
+        } => ModelErrorKind::Transient,
         LlmError::Request(_) => ModelErrorKind::Transient,
-        _ if lowered.contains("timed out")
-            || lowered.contains("rate limit")
-            || lowered.contains("too many requests")
-            || lowered.contains("connection")
-            || lowered.contains("temporarily") =>
-        {
-            ModelErrorKind::Transient
-        }
         _ => ModelErrorKind::Permanent,
     };
-    ModelError::new(kind, message)
+    ModelError {
+        kind,
+        message,
+        retry_after,
+    }
 }
 
 pub fn model_request(request: &CreateMessageParams) -> ModelRequest {
@@ -501,17 +498,19 @@ mod tests {
 
     #[test]
     fn provider_cursor_preserves_the_conversation_state() {
-        let state = ProviderConversationState::OpenAiResponses(crate::ResponsesConversationState {
-            version: 1,
-            provider: "openai".into(),
-            base_url: "https://api.openai.com/v1".into(),
-            model: "gpt".into(),
-            input_items: vec![serde_json::json!({"type": "message"})],
-            compaction_id: None,
-            is_compacted: false,
-            logical_message_count: 1,
-            logical_context_hash: "hash".into(),
-        });
+        let state = ProviderConversationState::OpenAiResponses(
+            crate::provider_state::ResponsesConversationState {
+                version: 1,
+                provider: "openai".into(),
+                base_url: "https://api.openai.com/v1".into(),
+                model: "gpt".into(),
+                input_items: vec![serde_json::json!({"type": "message"})],
+                compaction_id: None,
+                is_compacted: false,
+                logical_message_count: 1,
+                logical_context_hash: "hash".into(),
+            },
+        );
         let cursor = model_cursor(&state);
         assert_eq!(provider_state(&cursor).unwrap(), state);
     }

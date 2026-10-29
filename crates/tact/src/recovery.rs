@@ -152,15 +152,13 @@ fn classify_text(error_text: &str) -> FailureKind {
 /// 400/401/403/404 fails fast instead of burning the user's quota. Other
 /// variants carry no status and fall back to message matching.
 pub fn classify_llm_error(error: &tact_llm::LlmError) -> FailureKind {
-    if let tact_llm::LlmError::HttpError { status, .. } = error {
-        if is_transient_http_status(*status) {
-            return FailureKind::Transient;
-        }
-        // A non-transient status can still be recoverable: an over-long prompt
-        // is usually reported as a 400.
-        return match classify_text(&error.to_string()) {
-            FailureKind::PromptTooLong => FailureKind::PromptTooLong,
-            _ => FailureKind::Permanent,
+    if let tact_llm::LlmError::HttpError { class, .. } = error {
+        return match class {
+            tact_llm::HttpErrorClass::ContextOverflow => FailureKind::PromptTooLong,
+            tact_llm::HttpErrorClass::Transient => FailureKind::Transient,
+            tact_llm::HttpErrorClass::Authentication | tact_llm::HttpErrorClass::Permanent => {
+                FailureKind::Permanent
+            }
         };
     }
     classify_text(&error.to_string())
@@ -224,9 +222,19 @@ mod tests {
     use super::*;
 
     fn http_error(status: u16, body: &str) -> tact_llm::LlmError {
+        let class = if body.contains("context length") || body.contains("prompt is too long") {
+            tact_llm::HttpErrorClass::ContextOverflow
+        } else if status == 401 || status == 403 {
+            tact_llm::HttpErrorClass::Authentication
+        } else if is_transient_http_status(status) {
+            tact_llm::HttpErrorClass::Transient
+        } else {
+            tact_llm::HttpErrorClass::Permanent
+        };
         tact_llm::LlmError::HttpError {
             status,
-            body: body.to_string(),
+            class,
+            retry_after: None,
         }
     }
 

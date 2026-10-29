@@ -17,11 +17,13 @@ pub mod multi_model;
 
 use std::{collections::HashMap, sync::Arc};
 
-use crate::LlmError;
+use crate::auth::{ApiKeyProvider, CredentialProvider, LegacyCredential};
+use crate::client::LlmResponse;
+use crate::error::LlmError;
+use crate::provider_state::{ProviderConversationState, ProviderStateUpdate};
+use crate::transport::SharedHttpClient;
 use crate::{
-    ApiKeyProvider, ContentBlock, CredentialProvider, LlmResponse, ProviderConversationState,
-    ProviderProgress, ProviderProgressSink, ProviderStateUpdate, SharedHttpClient, StopReason,
-    ThinkingChunk, TokenUsageInfo,
+    ContentBlock, ProviderProgress, ProviderProgressSink, StopReason, ThinkingChunk, TokenUsageInfo,
 };
 use async_openai::{
     config::Config,
@@ -287,11 +289,11 @@ fn tool_use_block_from_parts(
         Err(error) => {
             // A malformed arguments payload should not kill the whole
             // stream, but silently swallowing it hides provider bugs.
+            #[cfg(feature = "telemetry")]
             tracing::debug!(
                 error = %error,
                 tool = %name,
-                args = %args,
-                "tool call arguments are not valid JSON; using empty object"
+                "tool call arguments are not valid JSON; using an empty object"
             );
             serde_json::Value::Object(Default::default())
         }
@@ -357,7 +359,7 @@ impl Config for CompatibleConfig {
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}{}", self.api_base, path)
+        format!("{}{}", self.api_base.trim_end_matches('/'), path)
     }
 
     fn query(&self) -> Vec<(&str, &str)> {
@@ -432,9 +434,11 @@ impl OpenAiAdapter {
     }
 
     async fn request_headers(&self) -> Result<HeaderMap, LlmError> {
-        let secret = self.credentials.resolve().await?;
+        let credential = self.credentials.resolve_with_kind().await?;
         let mut headers = self.config.headers();
-        if !secret.expose_secret().is_empty() {
+        if let LegacyCredential::ApiKey(secret) | LegacyCredential::Bearer(secret) = credential
+            && !secret.expose_secret().is_empty()
+        {
             headers.insert(
                 AUTHORIZATION,
                 format!("Bearer {}", secret.expose_secret())
@@ -482,23 +486,16 @@ impl OpenAiAdapter {
             .await
             .map_err(|e| LlmError::Request(format!("HTTP request failed: {e}")))?;
 
-        // Read the full response body on non-2xx so the actual API error
-        // message is surfaced, not just the HTTP status code.
+        // Read only enough of a non-2xx body to classify it, then discard it.
         if !response.status().is_success() {
             let status = response.status();
-            let resp_body = response
-                .text()
-                .await
-                .unwrap_or_else(|e| format!("<failed to read response body: {e}>"));
-            tracing::debug!(
-                status = %status,
-                response_body = %resp_body,
-                request_body = %String::from_utf8_lossy(&json_body),
-                "LLM HTTP request failed"
-            );
+            let retry_after = crate::transport::retry_after_13(response.headers());
+            let resp_body = crate::transport::read_bounded_error_body_13(response).await;
+            let class = crate::transport::classify_http_error(status.as_u16(), &resp_body);
             return Err(LlmError::HttpError {
                 status: status.as_u16(),
-                body: resp_body,
+                class,
+                retry_after,
             });
         }
 
@@ -517,13 +514,8 @@ impl OpenAiAdapter {
 
         while let Some(event) = event_stream.next().await {
             match event {
-                Err(e) => {
-                    tracing::debug!(
-                        error = %e,
-                        request_body = %String::from_utf8_lossy(&json_body),
-                        "SSE stream failed; logging request body for diagnostics"
-                    );
-                    return Err(LlmError::StreamParse(format!("SSE error: {e}")));
+                Err(_) => {
+                    return Err(LlmError::StreamParse("SSE stream error".to_string()));
                 }
                 Ok(msg) => {
                     if msg.data == "[DONE]" {
@@ -533,11 +525,6 @@ impl OpenAiAdapter {
                     let chunk: StreamChunk = match serde_json::from_str(&msg.data) {
                         Ok(chunk) => chunk,
                         Err(error) => {
-                            tracing::debug!(
-                                error = %error,
-                                data = %msg.data,
-                                "OpenAI-compatible SSE chunk failed to deserialize; logging the raw chunk for diagnostics"
-                            );
                             return Err(error.into());
                         }
                     };
@@ -682,10 +669,13 @@ impl OpenAiAdapter {
 
         if !response.status().is_success() {
             let status = response.status();
-            let resp_body = response.text().await.unwrap_or_default();
+            let retry_after = crate::transport::retry_after_13(response.headers());
+            let resp_body = crate::transport::read_bounded_error_body_13(response).await;
+            let class = crate::transport::classify_http_error(status.as_u16(), &resp_body);
             return Err(LlmError::HttpError {
                 status: status.as_u16(),
-                body: resp_body,
+                class,
+                retry_after,
             });
         }
 

@@ -269,7 +269,7 @@ impl MockShell {
                     focused_panel: FocusedPanel::Log,
                     language: Language::English,
                     workspace_dir: "/tmp/mock-ws",
-                    model_context_window: 200_000,
+                    model_context_window: Some(200_000),
                     process_start_time: &chrono::Local::now(),
                     task_start_time: None,
                     copy_flash: false,

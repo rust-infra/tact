@@ -1,0 +1,11 @@
+error[E0603]: module `openai` is private
+ --> tests/ui/stable-wire-module.rs:1:15
+  |
+1 | use tact_llm::openai;
+  |               ^^^^^^ private module
+  |
+note: the module `openai` is defined here
+ --> src/lib.rs
+  |
+  | mod openai;
+  | ^^^^^^^^^^

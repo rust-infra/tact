@@ -9,9 +9,12 @@
 //! Public items are re-exported here so callers can keep using
 //! `tact_llm::openai::…` paths.
 
+#[cfg(feature = "openai-chat")]
 pub mod compatible;
+#[cfg(feature = "openai-responses")]
 pub mod responses;
 
+#[cfg(feature = "openai-chat")]
 pub use compatible::{
     ChatCompletionsAdapter, CompatibleConfig, CreateChatCompletionRequest, OpenAiAdapter,
     body::{BodyHookCtx, DeepSeekBodyHook, KimiBodyHook, OpenAiBodyHook, StandardOpenAiBodyHook},

@@ -476,6 +476,7 @@ fn assemble_subagent_agent(
     .with_agent_settings(settings)
     .with_max_turns(max_turns)
     .with_session(child_id, store)
+    .with_stable_provider()
 }
 
 #[tool]
@@ -489,6 +490,11 @@ fn assemble_subagent_agent(
 /// - The subagent agent loop encounters an error.
 pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Result<String> {
     let settings = crate::config::settings();
+    let subagent_provider_info = settings
+        .agent
+        .subagent
+        .as_ref()
+        .map(|subagent| subagent.provider.clone());
 
     let (client, agent_overrides) = if let Some(sa) = &settings.agent.subagent {
         let client = Client::new(
@@ -655,6 +661,9 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
         child_id.clone(),
         store.clone(),
     );
+    if let Some(provider_info) = subagent_provider_info {
+        subagent = subagent.with_provider_info(provider_info);
+    }
 
     // Expose the child's cooperative cancel flag so `cancel_subagent` /
     // `/subagent_cancel` / the TUI button can request cancellation. The

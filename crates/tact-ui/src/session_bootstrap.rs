@@ -142,16 +142,17 @@ pub async fn open_session(
 ) -> anyhow::Result<(String, Arc<SessionLockGuard>)> {
     let root_dir = tact_path.workdir().display().to_string();
     let session_id = if let Some(ref id) = args.session {
-        id.clone()
+        validate_session_id(id)?
     } else if args.resume_last {
         let sessions = session_store.list_sessions(Some(&root_dir)).await?;
-        sessions
+        let id = sessions
             .into_iter()
             .next()
             .map(|s| s.id)
-            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        validate_session_id(&id)?
     } else {
-        uuid::Uuid::new_v4().to_string()
+        validate_session_id(&uuid::Uuid::new_v4().to_string())?
     };
 
     session_store
@@ -161,6 +162,12 @@ pub async fn open_session(
     lock_registry.register(session_lock.clone()).await;
     session_store.touch_session(&session_id, &root_dir).await?;
     Ok((session_id, session_lock))
+}
+
+fn validate_session_id(value: &str) -> anyhow::Result<String> {
+    tact_llm::SessionId::new(value)
+        .map(|id| id.as_str().to_string())
+        .map_err(|error| anyhow::anyhow!("invalid session id: {error}"))
 }
 
 /// The event sink and prompt responder a frontend gets.
@@ -275,6 +282,7 @@ pub async fn bootstrap_session(
         subagent_stop_hooks: tact::plugin::plugin_subagent_stop_hooks(tact_path.workdir())?,
         memory_manager,
         work_dir,
+        vision: tact::config::supports_vision(),
         task_manager,
         goal_manager,
         active_goal_id: None,
@@ -313,6 +321,7 @@ pub async fn bootstrap_session(
         permission_manager,
         AgentSystemPrompt::Dynamic,
     )
+    .with_stable_provider()
     .with_session(session_id, session_store)
     .with_provider_kind(provider_kind);
     agent = match frontend {
@@ -497,6 +506,21 @@ mod session_open_tests {
             assert_eq!(resumed, fresh, "{label}: --resume-last must find it");
             lock.release().await.expect("release");
         }
+    }
+
+    #[tokio::test]
+    async fn open_session_rejects_a_header_unsafe_explicit_id() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let tact_path = TactPath::new(tmp.path());
+        let store = tact::store::open_sqlite_session_store(&tact_path.session_db_path())
+            .await
+            .expect("session store");
+        let registry = SessionLockRegistry::new();
+        let args = cli_args(&["--session", "bad\nsession"]);
+        let Err(error) = open_session(&args, &tact_path, &store, &registry).await else {
+            panic!("unsafe session id must fail");
+        };
+        assert!(error.to_string().contains("invalid session id"));
     }
 
     /// Top-level flags precede the subcommand: they are declared on `CliArgs`

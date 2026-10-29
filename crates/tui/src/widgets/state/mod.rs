@@ -152,7 +152,7 @@ pub struct App {
     pub(crate) scroll_back_area: ratatui::layout::Rect,
     pub(crate) cmd_line: String,
     /// Model context window in tokens (from agent config `model_context_window`).
-    pub(crate) model_context_window: usize,
+    pub(crate) model_context_window: Option<usize>,
     pub(crate) log: LogCoordinator,
     pub(crate) status: Status,
     /// Component registry (whole-App switch, plan step 9): owns the plan,

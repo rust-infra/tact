@@ -193,8 +193,11 @@ impl SystemPromptAssembler {
             .flatten()
             .filter(|tokens| *tokens > 0)
             .unwrap_or_else(|| estimate_agent_context_tokens(state.transcript));
-        context_pressure_advisory(context_tokens, state.capabilities.context_window)
-            .then(crate::compact::subagent_advisory)
+        context_pressure_advisory(
+            context_tokens,
+            state.capabilities.known_context_window().unwrap_or(0),
+        )
+        .then(crate::compact::subagent_advisory)
     }
 
     fn load_memory_prompt(&self) -> Result<String> {

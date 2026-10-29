@@ -4,10 +4,10 @@
 //! Secrets are resolved separately through [`crate::CredentialProvider`], so a
 //! profile can be cloned, cached, and compared without leaking credentials.
 
-use crate::{
-    ChatCompletionsDialect, LlmError, OpenAiProtocol, ProviderKind,
-    openai::responses::ResponsesCapabilities,
-};
+use crate::error::LlmError;
+#[cfg(feature = "openai-responses")]
+use crate::openai::responses::ResponsesCapabilities;
+use crate::{ChatCompletionsDialect, OpenAiProtocol, ProviderKind};
 
 /// Configuration snapshot for one LLM provider, without credentials.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -24,6 +24,7 @@ pub struct ProviderProfile {
 
 impl ProviderProfile {
     /// Returns the conservative capabilities for the configured Responses endpoint.
+    #[cfg(feature = "openai-responses")]
     pub fn responses_capabilities(&self) -> Option<ResponsesCapabilities> {
         if self.protocol != OpenAiProtocol::Responses {
             return None;
@@ -39,7 +40,7 @@ impl ProviderProfile {
 
     /// Returns the provider's default base URL when one is built in.
     pub fn default_base_url(&self) -> Option<&'static str> {
-        self.provider.default_base_url()
+        crate::policy::legacy_default_base_url(&self.provider)
     }
 
     /// True when the configured provider/target is Kimi/Moonshot.
@@ -49,10 +50,7 @@ impl ProviderProfile {
 
     /// Kimi endpoint check for an arbitrary model id (per-request wire shape).
     pub fn is_kimi_with(&self, model: &str) -> bool {
-        self.provider == ProviderKind::Kimi
-            || self.base_url.contains("moonshot")
-            || self.base_url.contains("kimi")
-            || model.contains("kimi")
+        crate::policy::is_kimi(&self.provider, &self.base_url, model)
     }
 
     /// Returns true for the Kimi K2.x family (K2.5, K2.6, K2.7-code, ...).
@@ -62,13 +60,7 @@ impl ProviderProfile {
     /// the latest K2.x coding model. `model` is the per-request model id so
     /// wire shape follows `/model` picks.
     pub fn is_kimi_k2x(&self, model: &str) -> bool {
-        if !self.is_kimi_with(model) {
-            return false;
-        }
-        if model == "kimi-for-coding" || self.base_url.contains("kimi.com/coding") {
-            return true;
-        }
-        model.contains("kimi-k2") || model.contains("k2.") || model.contains("k2-")
+        crate::policy::is_kimi_k2x(&self.provider, &self.base_url, model)
     }
 
     /// Returns true specifically for K2.7-code and the Kimi Code stable model.
@@ -76,13 +68,7 @@ impl ProviderProfile {
     /// `kimi-for-coding` and the `api.kimi.com/coding` endpoint currently map
     /// to the latest K2.7-code model. `model` is the per-request model id.
     pub fn is_kimi_k27(&self, model: &str) -> bool {
-        if !self.is_kimi_with(model) {
-            return false;
-        }
-        if model == "kimi-for-coding" || self.base_url.contains("kimi.com/coding") {
-            return true;
-        }
-        model.contains("k2.7") || model.contains("k2-7")
+        crate::policy::is_kimi_k27(&self.provider, &self.base_url, model)
     }
 
     /// Returns true for the Kimi Code platform, which has no balance API.
@@ -91,21 +77,12 @@ impl ProviderProfile {
     /// stable `kimi-for-coding` model ID served through a custom proxy.
     /// `model` is the per-request model id.
     pub fn is_kimi_coding(&self, model: &str) -> bool {
-        self.base_url.contains("kimi.com/coding") || model == "kimi-for-coding"
+        crate::policy::is_kimi_coding(&self.base_url, model)
     }
 
     /// Returns true when Kimi balance queries are supported for the configured endpoint.
     pub fn is_kimi_balance_supported(&self) -> bool {
-        if !self.is_kimi() || self.is_kimi_coding(&self.model) {
-            return false;
-        }
-        if self.base_url.is_empty() {
-            return self.provider == ProviderKind::Kimi;
-        }
-        reqwest::Url::parse(&self.base_url).is_ok_and(|url| {
-            url.scheme() == "https"
-                && matches!(url.host_str(), Some("api.moonshot.cn" | "api.moonshot.ai"))
-        })
+        crate::policy::is_kimi_balance_supported(&self.provider, &self.base_url, &self.model)
     }
 
     /// Returns true when Kimi Code usage quota queries are supported.
@@ -114,14 +91,7 @@ impl ProviderProfile {
     /// (`https://api.kimi.com/coding`); custom proxies / gateways are treated
     /// as unsupported so their API keys are never sent to `api.kimi.com`.
     pub fn is_kimi_usage_supported(&self) -> bool {
-        if !self.is_kimi_coding(&self.model) {
-            return false;
-        }
-        reqwest::Url::parse(&self.base_url).is_ok_and(|url| {
-            url.scheme() == "https"
-                && url.host_str() == Some("api.kimi.com")
-                && url.path().contains("coding")
-        })
+        crate::policy::is_kimi_usage_supported(&self.base_url, &self.model)
     }
 
     /// Returns true when DeepSeek balance queries are supported for the configured endpoint.
@@ -130,24 +100,12 @@ impl ProviderProfile {
     /// custom proxies / gateways are treated as unsupported so their API keys
     /// are never sent to `api.deepseek.com`.
     pub fn is_deepseek_balance_supported(&self) -> bool {
-        let is_deepseekish = self.provider == ProviderKind::DeepSeek
-            || self.base_url.contains("deepseek")
-            || self.model.contains("deepseek");
-        if !is_deepseekish {
-            return false;
-        }
-        if self.base_url.is_empty() {
-            return self.provider == ProviderKind::DeepSeek;
-        }
-        reqwest::Url::parse(&self.base_url)
-            .is_ok_and(|url| url.scheme() == "https" && url.host_str() == Some("api.deepseek.com"))
+        crate::policy::is_deepseek_balance_supported(&self.provider, &self.base_url, &self.model)
     }
 
     /// Returns true when account balance or usage quota queries are supported.
     pub fn is_account_query_supported(&self) -> bool {
-        self.is_deepseek_balance_supported()
-            || self.is_kimi_balance_supported()
-            || self.is_kimi_usage_supported()
+        crate::policy::is_account_query_supported(&self.provider, &self.base_url, &self.model)
     }
 
     /// Whether this provider+model supports image (vision) input.
@@ -155,62 +113,34 @@ impl ProviderProfile {
     /// Delegates to [`ProviderKind::supports_vision`]. We also check for
     /// DeepSeek-like endpoints routed through the OpenAI provider.
     pub fn supports_vision(&self) -> bool {
-        let deepseekish = self.provider == ProviderKind::DeepSeek
-            || self.base_url.contains("deepseek")
-            || self.model.contains("deepseek");
-        if deepseekish {
-            return crate::types::is_deepseek_vision_model(&self.model);
-        }
-        self.provider.supports_vision()
+        crate::policy::supports_vision(&self.provider, &self.base_url, &self.model)
     }
 
     /// Whether the given model id uses reasoning-effort semantics (vs thinking
     /// budget), following the same heuristics as the wire body hooks.
     pub fn model_uses_effort(&self, model: &str) -> bool {
-        match &self.provider {
-            ProviderKind::DeepSeek => true,
-            ProviderKind::Anthropic => false,
-            ProviderKind::Kimi => is_kimi_k3(model),
-            ProviderKind::OpenAi | ProviderKind::Custom(_) => {
-                if self.is_kimi_with(model) {
-                    is_kimi_k3(model)
-                } else {
-                    true
-                }
-            }
-        }
+        crate::policy::model_uses_effort(&self.provider, &self.base_url, model)
     }
 
     /// Returns the Chat Completions dialect for a request-level model.
     ///
     /// # Errors
     ///
-    /// Returns [`LlmError::UnsupportedHook`] for providers that never speak
+    /// Returns `LlmError::UnsupportedHook` for providers that never speak
     /// Chat Completions (Anthropic).
     pub fn dialect_for(&self, model: &str) -> Result<ChatCompletionsDialect, LlmError> {
-        match &self.provider {
-            ProviderKind::DeepSeek => Ok(ChatCompletionsDialect::DeepSeek),
-            ProviderKind::Kimi => Ok(ChatCompletionsDialect::Kimi),
-            ProviderKind::OpenAi | ProviderKind::Custom(_) => {
-                if self.is_kimi_with(model) {
-                    Ok(ChatCompletionsDialect::Kimi)
-                } else if self.base_url.contains("deepseek") || model.contains("deepseek") {
-                    Ok(ChatCompletionsDialect::DeepSeek)
-                } else {
-                    Ok(ChatCompletionsDialect::Standard)
-                }
-            }
-            ProviderKind::Anthropic => Err(LlmError::UnsupportedHook(
+        crate::policy::dialect_for(&self.provider, &self.base_url, model).ok_or_else(|| {
+            LlmError::UnsupportedHook(
                 "cannot use anthropic provider with openai-compatible body hooks".to_owned(),
-            )),
-        }
+            )
+        })
     }
 }
 
 /// True for the Kimi K3 family (`k3`, `k3-256k`) which exposes
 /// `reasoning_effort: low/high/max` (default high).
 pub fn is_kimi_k3(model: &str) -> bool {
-    model == "k3" || model == "k3-256k"
+    crate::policy::is_kimi_k3(model)
 }
 
 #[cfg(test)]
@@ -312,6 +242,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "openai-responses")]
     #[test]
     fn responses_capabilities_follow_protocol_and_provider() {
         let mut responses = profile(

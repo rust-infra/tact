@@ -119,6 +119,10 @@ pub struct ToolContext {
     pub subagent_stop_hooks: Vec<Arc<dyn crate::hook::SubagentStopFn>>,
     pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
     pub work_dir: PathBuf,
+    /// Whether the active model accepts image input. Stamped from the
+    /// activation snapshot so a running turn is not affected by later global
+    /// configuration changes.
+    pub vision: bool,
     pub task_manager: SharedTaskManager,
     pub goal_manager: SharedGoalManager,
     pub active_goal_id: Option<String>,

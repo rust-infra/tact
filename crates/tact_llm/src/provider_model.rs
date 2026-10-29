@@ -1,18 +1,27 @@
 //! `ModelPort` implementation over the existing provider adapters.
 
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::{
+    pin::Pin,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+    },
+    task::{Context, Poll},
+};
 
 use async_trait::async_trait;
+use futures_util::Stream;
 use tact_agent_api::{
     CancelToken, MessageDelta, MessageId, ModelCapabilities, ModelCursor, ModelError,
     ModelErrorKind, ModelEvent, ModelPort, ModelRequest, ModelResponse, ModelStream, ThinkingDelta,
     TokenUsage,
 };
-use tokio::sync::mpsc;
+use tokio::{sync::mpsc, task::JoinHandle};
 
+use crate::client::{LlmClient, LlmProvider};
+use crate::provider_state::ProviderConversationState;
 use crate::{
-    CreateMessageParams, LlmClient, LlmProvider, ModelCallParams, ProviderConversationState,
-    ProviderProgress, ProviderProgressSink, ThinkingChunk,
+    CreateMessageParams, ModelCallParams, ProviderProgress, ProviderProgressSink, ThinkingChunk,
     neutral::{create_message_params, model_error, model_response, provider_state},
 };
 
@@ -20,11 +29,22 @@ struct ProgressSink {
     tx: mpsc::Sender<Result<ModelEvent, ModelError>>,
     message_id: MessageId,
     cancel: CancelToken,
+    started: Arc<AtomicBool>,
 }
 
 impl ProgressSink {
+    fn ensure_started(&self) {
+        if !self.started.swap(true, Ordering::AcqRel) {
+            let _ = self.tx.try_send(Ok(ModelEvent::MessageStarted {
+                message_id: self.message_id.clone(),
+                role: tact_agent_api::AgentRole::Assistant,
+            }));
+        }
+    }
+
     fn send_event(&self, event: ModelEvent) {
         if !self.cancel.is_cancelled() {
+            self.ensure_started();
             // Progress is advisory and may be dropped when the consumer falls
             // behind. The terminal response is sent with `send().await`, so a
             // slow stream cannot turn into unbounded memory growth.
@@ -36,7 +56,7 @@ impl ProgressSink {
 impl ProviderProgressSink for ProgressSink {
     fn send(&self, progress: ProviderProgress) {
         match progress {
-            ProviderProgress::ModelInfo(ModelCallParams { .. }) => {}
+            ProviderProgress::ModelInfo(ModelCallParams { .. }) => self.ensure_started(),
             ProviderProgress::TextDelta(delta) => self.send_event(ModelEvent::MessageDelta {
                 message_id: self.message_id.clone(),
                 delta: MessageDelta::Text { delta },
@@ -59,6 +79,118 @@ impl ProviderProgressSink for ProgressSink {
             ProviderProgress::Activity(activity) => {
                 self.send_event(ModelEvent::ProviderActivity { activity });
             }
+        }
+    }
+}
+
+struct LazyModelStream {
+    client: LlmProvider,
+    request: CreateMessageParams,
+    provider_state: Option<ProviderConversationState>,
+    cancel: CancelToken,
+    message_id: MessageId,
+    rx: Option<mpsc::Receiver<Result<ModelEvent, ModelError>>>,
+    producer: Option<JoinHandle<()>>,
+    started: bool,
+    finished: bool,
+}
+
+impl LazyModelStream {
+    fn start(&mut self) {
+        self.started = true;
+        if self.cancel.is_cancelled() {
+            self.finished = true;
+            return;
+        }
+        let (tx, rx) = mpsc::channel(256);
+        let client = self.client.clone();
+        let request = self.request.clone();
+        let provider_state = self.provider_state.clone();
+        let cancel = self.cancel.clone();
+        let message_id = self.message_id.clone();
+        let started = Arc::new(AtomicBool::new(false));
+        let started_by_sink = started.clone();
+        self.rx = Some(rx);
+        self.producer = Some(tokio::spawn(async move {
+            let sink = ProgressSink {
+                tx: tx.clone(),
+                message_id: message_id.clone(),
+                cancel: cancel.clone(),
+                started: started_by_sink,
+            };
+            let result = tokio::select! {
+                biased;
+                result = client.stream_message(&request, provider_state.as_ref(), &sink) => {
+                    result.map_err(model_error)
+                }
+                _ = cancel.cancelled() => Err(ModelError::new(
+                    ModelErrorKind::Cancelled,
+                    "model call cancelled",
+                )),
+            };
+            match result {
+                Ok(response) => {
+                    if !started.load(Ordering::Acquire) {
+                        let _ = tx
+                            .send(Ok(ModelEvent::MessageStarted {
+                                message_id: message_id.clone(),
+                                role: tact_agent_api::AgentRole::Assistant,
+                            }))
+                            .await;
+                    }
+                    let terminal = model_response(response, message_id);
+                    let _ = tx.send(Ok(ModelEvent::Finished(terminal))).await;
+                }
+                Err(error) => {
+                    let _ = tx.send(Err(error)).await;
+                }
+            }
+        }));
+    }
+}
+
+impl Stream for LazyModelStream {
+    type Item = Result<ModelEvent, ModelError>;
+
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.finished {
+            return Poll::Ready(None);
+        }
+        if !self.started {
+            self.start();
+            if self.finished {
+                return Poll::Ready(Some(Err(ModelError::new(
+                    ModelErrorKind::Cancelled,
+                    "model call cancelled before dispatch",
+                ))));
+            }
+        }
+        let Some(rx) = self.rx.as_mut() else {
+            self.finished = true;
+            return Poll::Ready(None);
+        };
+        match rx.poll_recv(context) {
+            Poll::Ready(Some(item)) => {
+                if matches!(&item, Ok(ModelEvent::Finished(_)) | Err(_)) {
+                    self.finished = true;
+                    self.producer.take();
+                }
+                Poll::Ready(Some(item))
+            }
+            Poll::Ready(None) => {
+                self.finished = true;
+                self.producer.take();
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
+
+impl Drop for LazyModelStream {
+    fn drop(&mut self) {
+        if let Some(producer) = self.producer.take() {
+            producer.abort();
         }
     }
 }
@@ -96,57 +228,26 @@ impl ProviderModel {
         provider_state: Option<ProviderConversationState>,
         cancel: CancelToken,
     ) -> Result<ModelStream, ModelError> {
-        if cancel.is_cancelled() {
-            return Err(ModelError::new(
-                ModelErrorKind::Cancelled,
-                "model call cancelled before dispatch",
-            ));
-        }
-        let client = self.client.clone();
-        let message_id = self.next_message_id();
-        let (tx, rx) = mpsc::channel(256);
-        let stream_message_id = message_id.clone();
-        let task_cancel = cancel.clone();
-        tokio::spawn(async move {
-            if tx
-                .send(Ok(ModelEvent::MessageStarted {
-                    message_id: stream_message_id.clone(),
-                    role: tact_agent_api::AgentRole::Assistant,
-                }))
-                .await
-                .is_err()
-            {
-                return;
-            }
-            let sink = ProgressSink {
-                tx: tx.clone(),
-                message_id: stream_message_id.clone(),
-                cancel: task_cancel.clone(),
-            };
-            let result = tokio::select! {
-                biased;
-                result = client.stream_message(&request, provider_state.as_ref(), &sink) => {
-                    result.map_err(model_error)
-                }
-                _ = task_cancel.cancelled() => Err(ModelError::new(
-                    ModelErrorKind::Cancelled,
-                    "model call cancelled",
-                )),
-            };
-            match result {
-                Ok(response) => {
-                    let terminal = model_response(response, stream_message_id);
-                    let _ = tx.send(Ok(ModelEvent::Finished(terminal))).await;
-                }
-                Err(error) => {
-                    let _ = tx.send(Err(error)).await;
-                }
-            }
-        });
-        Ok(Box::pin(futures_util::stream::unfold(
-            rx,
-            |mut rx| async move { rx.recv().await.map(|item| (item, rx)) },
-        )))
+        self.stream_lazy(request, provider_state, cancel).await
+    }
+
+    pub(crate) async fn stream_lazy(
+        &self,
+        request: CreateMessageParams,
+        provider_state: Option<ProviderConversationState>,
+        cancel: CancelToken,
+    ) -> Result<ModelStream, ModelError> {
+        Ok(Box::pin(LazyModelStream {
+            client: self.client.clone(),
+            request,
+            provider_state,
+            cancel,
+            message_id: self.next_message_id(),
+            rx: None,
+            producer: None,
+            started: false,
+            finished: false,
+        }))
     }
 
     pub async fn complete_params(
@@ -262,7 +363,7 @@ mod tests {
             LlmProvider::Mock(client),
             ModelCapabilities {
                 model: "mock".into(),
-                context_window: 1_000,
+                context_window: Some(1_000),
                 max_output_tokens: 100,
                 supports_streaming: true,
                 supports_native_compaction: true,
@@ -340,6 +441,17 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn cancellation_before_first_poll_yields_one_terminal_error() {
+        let model = model();
+        let cancel = CancelToken::new();
+        cancel.cancel();
+        let mut stream = model.stream(request(), None, cancel).await.unwrap();
+        let first = stream.next().await.unwrap().unwrap_err();
+        assert_eq!(first.kind, ModelErrorKind::Cancelled);
+        assert!(stream.next().await.is_none());
+    }
+
+    #[tokio::test]
     async fn complete_preserves_usage_and_stop_reason() {
         let usage = crate::TokenUsageInfo {
             prompt: 7,
@@ -359,7 +471,7 @@ mod tests {
             )])),
             ModelCapabilities {
                 model: "mock".into(),
-                context_window: 1_000,
+                context_window: Some(1_000),
                 max_output_tokens: 100,
                 supports_streaming: true,
                 supports_native_compaction: true,
@@ -394,7 +506,7 @@ mod tests {
             )])),
             ModelCapabilities {
                 model: "mock".into(),
-                context_window: 1_000,
+                context_window: Some(1_000),
                 max_output_tokens: 100,
                 supports_streaming: true,
                 supports_native_compaction: true,
@@ -415,6 +527,7 @@ mod tests {
         );
     }
 
+    #[cfg(feature = "anthropic")]
     #[tokio::test]
     async fn unsupported_native_compaction_stays_typed() {
         let model = ProviderModel::new(
@@ -424,7 +537,7 @@ mod tests {
             )),
             ModelCapabilities {
                 model: "claude".into(),
-                context_window: 1_000,
+                context_window: Some(1_000),
                 max_output_tokens: 100,
                 supports_streaming: true,
                 supports_native_compaction: false,

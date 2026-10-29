@@ -1,7 +1,7 @@
 # Tact LLM SDK Architecture
 
 > Date: 2026-10-28
-> Status: proposed, synthesized from three architecture candidates
+> Status: delivered; full repository gate green (2026-10-29)
 > Related: `crates/tact_llm/`, `crates/agent_api/`, `crates/agent_sdk/`,
 > `ARCHITECTURE.md`
 > Plan: `docs/superpowers/plans/2026-10-28-tact-llm-sdk.md`
@@ -21,6 +21,11 @@ Provider: tact_agent_api::ModelPort
 `ProviderBuilder::build` is synchronous. It validates local configuration and
 constructs transport; it does not resolve refreshable credentials or perform a
 network request. Credentials are resolved once per dispatched model call.
+
+Each built-in constructor has a default endpoint and an explicit
+`ProviderBuilder::base_url` override. An override changes only the endpoint;
+the constructor still fixes provider policy, so a custom hostname cannot
+silently change protocol semantics.
 
 The crate remains one package in this phase. A curated crate root hides private
 policy, transport, wire, SSE, normalization, and compatibility modules. Feature
@@ -267,6 +272,17 @@ pub fn custom_responses(
 Constructors capture the provider family, protocol, built-in endpoint defaults,
 auth requirement class, and policy defaults. They do not perform IO.
 
+Built-in endpoint defaults are:
+
+| Constructor | Default endpoint |
+| --- | --- |
+| `anthropic` | `https://api.anthropic.com` |
+| `openai_chat`, `openai_responses` | `https://api.openai.com/v1` |
+| `deepseek_chat`, `deepseek_responses` | `https://api.deepseek.com` |
+| `kimi_chat`, `kimi_responses` | `https://api.moonshot.cn/v1` |
+
+`custom_chat` and `custom_responses` require their caller-supplied endpoint.
+
 ### Builder
 
 ```rust
@@ -279,11 +295,13 @@ impl ProviderBuilder {
     pub fn refreshable(self, source: Arc<dyn CredentialSource>) -> Self;
     pub fn anonymous(self) -> Self;
 
+    pub fn base_url(self, value: impl Into<String>) -> Self;
     pub fn session_id(self, session_id: SessionId) -> Self;
     pub fn limits(self, limits: ModelLimits) -> Self;
 
     pub fn chat_dialect(self, dialect: ChatDialect) -> Self;
     pub fn native_compaction(self, enabled: bool) -> Self;
+    pub fn responses_compact_threshold(self, tokens: u32) -> Self;
     pub fn supports_vision(self, enabled: bool) -> Self;
     pub fn replay_prior_reasoning(self, enabled: bool) -> Self;
 
@@ -318,6 +336,7 @@ pub struct Provider { /* Arc-backed immutable state */ }
 impl Provider {
     pub fn metadata(&self) -> &ProviderMetadata;
     pub fn into_model(self) -> Arc<dyn tact_agent_api::ModelPort>;
+    pub fn with_session_id(self, session_id: SessionId) -> Self;
 }
 
 impl tact_agent_api::ModelPort for Provider {
@@ -348,6 +367,9 @@ impl tact_agent_api::ModelPort for Provider {
 
 `Provider` has a manually redacted `Debug`. Its state is immutable after build.
 The internal model implementation and adapter selection are not nameable.
+`with_session_id` returns a new provider with the same immutable policy and
+transport configuration but a different session header value; it is used when
+a subagent must not inherit its parent's session identity.
 
 ### Provider metadata
 
@@ -400,6 +422,11 @@ private parser. The canonical endpoint:
 - removes one trailing slash only when the remaining path is non-empty;
 - preserves path case and percent encoding;
 - preserves a non-default port, IPv6 brackets, and an IPv6 port.
+
+Protocol dispatch joins the fixed suffix with exactly one slash. In
+particular, a root endpoint canonicalized as `https://api.example.com/`
+dispatches to `https://api.example.com/messages`, not
+`https://api.example.com//messages`.
 
 `Endpoint` is the sole dispatch base and provider-state binding value. The
 adapter appends only its fixed protocol suffix:
@@ -466,6 +493,12 @@ pub enum Authentication {
 `Credential` validates empty values, ASCII control characters, newline, and
 header-illegal characters before storing a secret. Its `Debug` is redacted and
 it has no `Display` or serde implementation.
+
+The existing compatibility enum named `Credential` is renamed
+`LegacyCredential` and remains reachable only through `legacy-tact`; the
+stable `Credential` name belongs to the new opaque struct. Product code that
+still needs the old enum imports `LegacyCredential` explicitly during the
+migration.
 
 Static credentials are validated at build. Refreshable credentials are not
 resolved at build. If a required source later returns `Credential::none`, the
@@ -713,7 +746,9 @@ Construction stores an auth mode but never calls a refreshable
 1. validates request and cursor;
 2. checks cancellation;
 3. checks auth requirement from policy;
-4. resolves one credential if needed;
+4. polls credential resolution inside a cancellation-first select, so a
+   cancellation that wins while a refresh is in flight drops the resolution
+   future and returns one `Cancelled` terminal outcome without dispatching;
 5. transforms it into adapter-private headers or body fields;
 6. dispatches.
 
@@ -721,7 +756,8 @@ Credential resolution counts are tested:
 
 - `Provider::build` resolves zero credentials;
 - one `stream`, `complete`, or `compact` dispatch resolves exactly one;
-- a cancelled or invalid call resolves zero;
+- a cancelled or invalid call starts no resolution, or drops an in-flight
+  resolution before it completes, and never dispatches;
 - a missing required credential fails before network dispatch.
 
 ### HTTP errors and redaction
@@ -745,6 +781,10 @@ Stable `Provider` builds always set `ModelResponse.request_body = None`.
 usage persistence. `ModelResponse` gets a manual redacted `Debug` so even a
 product capture cannot be printed through derived diagnostics. A later design
 may replace this compatibility carrier with a dedicated opaque type.
+
+`UsageRecord` and the compatibility `LlmResponse` also carry request bytes;
+both receive manual redacted `Debug` implementations in this phase. A body
+marker must not appear in `Debug`, `Display`, error chains, or tracing.
 
 ### Tracing
 
@@ -820,7 +860,9 @@ The stable package default is `core`. Protocol dependencies are opt-in:
 | `openai` | both OpenAI protocols | unrelated provider SDKs |
 | `telemetry` | optional tracing instrumentation | subscriber installation |
 | `test-support` | deterministic mocks and fixtures | production names |
-| `legacy-tact` | legacy globals, `ProviderInfo`, `LlmProvider`, account/discovery | new stable construction |
+| `legacy-tact` | legacy globals, `ProviderInfo`, `LlmProvider` | new stable construction |
+| `account` | account balance/quota compatibility APIs | stable SDK methods |
+| `model-discovery` | model discovery compatibility APIs | stable SDK methods |
 | `product-runtime` | product-only bounded capture | stable body access |
 
 ```toml
@@ -836,17 +878,21 @@ anthropic = [
 openai-chat = [
   "core",
   "dep:reqwest13",
+  "reqwest13/stream",
   "dep:eventsource-stream",
   "dep:secrecy10",
+  "dep:async-openai",
 ]
 openai-responses = [
   "core",
   "dep:reqwest13",
+  "reqwest13/stream",
   "dep:eventsource-stream",
   "dep:secrecy10",
+  "dep:async-openai-responses",
 ]
 openai = ["openai-chat", "openai-responses"]
-telemetry = ["dep:tracing"]
+telemetry = ["core", "dep:tracing"]
 test-support = ["core"]
 legacy-tact = ["anthropic", "openai", "telemetry"]
 product-runtime = ["legacy-tact"]
@@ -877,6 +923,7 @@ The following remain available only under `legacy-tact`:
   `read_provider`, `current_provider_kind`;
 - `ProviderInfo`, `ProviderProfile`, `Client`, `get_llm_client`;
 - `LlmProvider`, `ProviderModel`, `LlmClient`, `LlmResponse`;
+- `LegacyCredential`, `CredentialProvider`, `ApiKeyProvider`;
 - concrete `anthropic`, `openai::compatible`, and `openai::responses` modules;
 - body hooks, request options, wire types, normalization helpers, locking
   helpers, and provider progress conversion;
@@ -903,8 +950,14 @@ The product migrates incrementally:
    routing, and vision gating instead of `LlmProvider` downcasts.
 4. Read the activation snapshot for the whole turn, including subagent
    inheritance.
-5. Build a replacement provider before publishing `/model` settings or status.
-6. Keep account query and model discovery on their existing legacy functions
+5. For a subagent, rebind the parent snapshot with `Provider::with_session_id`
+   and the child session before the child runs; the parent session header must
+   never leak into the child.
+6. Validate the product session id with `SessionId::new` before building the
+   provider. An existing `--session` value that is not header-safe fails at
+   startup with a clear error instead of silently dropping the session header.
+7. Build a replacement provider before publishing `/model` settings or status.
+8. Keep account query and model discovery on their existing legacy functions
    until a later migration.
 
 Provider-state load validation uses the canonical endpoint and wire protocol
@@ -1071,7 +1124,8 @@ Rejected. It exposes enum variants, concrete adapters, mutation, and downcasts.
   credential resolution or network dispatch.
 - Stream tests prove one terminal outcome with cancellation-first arbitration,
   no dispatch before first poll, no dispatch after drop, abort on drop
-  mid-flight, and no item after the terminal item.
+  mid-flight, cancellation during credential refresh, and no item after the
+  terminal item.
 - HTTP error tests prove bounded reads, typed classification, `Retry-After`
   propagation, and absence of request/response bodies and request URLs from
   public errors.
@@ -1083,6 +1137,9 @@ Rejected. It exposes enum variants, concrete adapters, mutation, and downcasts.
 - `ModelCapabilities.context_window` serde round-trips legacy `0` and `null` to
   `None`; all context, prompt, compaction, status, and TUI tests compile and
   pass.
+- Root endpoints join protocol suffixes with one slash, and the Anthropic
+  constructor can build from its documented default endpoint without a
+  base-URL setter call.
 - Product tests prove activation-scoped provider metadata drives Responses
   binding, native compaction, vision gating, and subagent inheritance without
   `LlmProvider` downcasts.
@@ -1103,11 +1160,15 @@ Rejected. It exposes enum variants, concrete adapters, mutation, and downcasts.
   as a sentinel.
 - Stable calls never expose or retain request/response bodies.
 - Cancellation is lazy, single-terminal, and drop-safe.
+- Credential refresh is cancellation-aware and cannot keep a cancelled stream
+  waiting for an OAuth refresh.
 - Wire behavior is unchanged, proven by checked-in goldens and fixtures.
 - Provider dependencies are feature-isolated and recorded in external consumer
   checks.
 - Tact uses provider metadata rather than adapter downcasts for provider-state,
   compaction, and vision decisions.
+- A subagent receives the parent policy with a child session id, and a product
+  `responses_compact_threshold` remains injectable through the builder.
 - Compatibility globals and concrete adapters are unreachable from a stable
   build.
 - The spec and plan pass a balanced Markdown-fence and relative-link check.

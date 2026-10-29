@@ -9,7 +9,7 @@ test-support = []
 [dependencies]
 agent_tui_kit = { path = "../agent_tui_kit" }
 tact = { path = "../tact" }
-tact_llm = { path = "../tact_llm" }
+tact_llm = { path = "../tact_llm", default-features = false, features = ["legacy-tact", "model-discovery"] }
 tact_protocol = { path = "../protocol" }
 anyhow = { workspace = true }
 arboard = { workspace = true }

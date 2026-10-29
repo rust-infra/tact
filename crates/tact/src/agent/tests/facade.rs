@@ -1,6 +1,124 @@
 use super::*;
 
 #[test]
+fn failed_model_build_restores_the_previous_model_and_provider_info() {
+    ensure_config();
+    let mut agent = responses_test_agent("failed_model_commit", "https://api.openai.com/v1")
+        .with_stable_provider()
+        .with_provider_info(tact_llm::ProviderInfo {
+            api_key: "test-key".into(),
+            base_url: "https://api.openai.com/v1".into(),
+            model: "gpt-old".into(),
+            provider: tact_llm::ProviderKind::OpenAi,
+            protocol: tact_llm::OpenAiProtocol::Responses,
+            responses_compact_threshold: None,
+        });
+    let previous_model = agent.model().to_string();
+    let invalid = tact_llm::ProviderInfo {
+        api_key: "test-key".into(),
+        base_url: "http://[::1".into(),
+        model: "gpt-new".into(),
+        provider: tact_llm::ProviderKind::OpenAi,
+        protocol: tact_llm::OpenAiProtocol::Responses,
+        responses_compact_threshold: None,
+    };
+
+    let error = agent
+        .try_set_model_with_provider_info("gpt-new".into(), Some(invalid))
+        .expect_err("an invalid replacement endpoint must fail");
+
+    assert!(error.to_string().contains("replacement provider"));
+    assert_eq!(agent.model(), previous_model);
+    assert_eq!(
+        agent
+            .model_provider_info
+            .as_ref()
+            .map(|info| info.model.as_str()),
+        Some("gpt-old")
+    );
+}
+
+#[tokio::test]
+async fn successful_model_switch_changes_the_next_responses_wire_model() {
+    ensure_config();
+    let server = MockServer::start().await;
+    let completed = serde_json::json!({
+        "type": "response.completed",
+        "sequence_number": 1,
+        "response": {
+            "id": "resp_switch",
+            "object": "response",
+            "created_at": 1,
+            "completed_at": 2,
+            "status": "completed",
+            "model": "gpt-switched",
+            "output": [{
+                "type": "message",
+                "id": "msg_switch",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{
+                    "type": "output_text",
+                    "annotations": [],
+                    "logprobs": null,
+                    "text": "switched"
+                }]
+            }],
+            "usage": {
+                "input_tokens": 1,
+                "input_tokens_details": {"cached_tokens": 0},
+                "output_tokens": 1,
+                "output_tokens_details": {"reasoning_tokens": 0},
+                "total_tokens": 2
+            }
+        }
+    });
+    Mock::given(method("POST"))
+        .and(path("/responses"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/event-stream")
+                .set_body_string(format!("data: {completed}\n\n")),
+        )
+        .expect(1)
+        .mount(&server)
+        .await;
+
+    let mut agent = responses_test_agent("stable_model_switch", &server.uri())
+        .with_stable_provider()
+        .with_provider_info(tact_llm::ProviderInfo {
+            api_key: "test-key".into(),
+            base_url: server.uri(),
+            model: "gpt-old".into(),
+            provider: tact_llm::ProviderKind::OpenAi,
+            protocol: tact_llm::OpenAiProtocol::Responses,
+            responses_compact_threshold: None,
+        });
+    agent
+        .try_set_model_with_provider_info(
+            "gpt-switched".into(),
+            Some(tact_llm::ProviderInfo {
+                api_key: "test-key".into(),
+                base_url: server.uri(),
+                model: "gpt-switched".into(),
+                provider: tact_llm::ProviderKind::OpenAi,
+                protocol: tact_llm::OpenAiProtocol::Responses,
+                responses_compact_threshold: Some(160_000),
+            }),
+        )
+        .unwrap();
+    agent
+        .agent_loop(Some(Message::new_text(Role::User, "switch")))
+        .await
+        .unwrap();
+
+    let requests = server.received_requests().await.unwrap();
+    let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+    assert_eq!(body["model"], "gpt-switched");
+    assert_eq!(body["context_management"][0]["compact_threshold"], 160_000);
+}
+
+#[test]
 fn agent_settings_snapshot_survives_global_config_override() {
     ensure_config();
     let context = test_context("agent_settings_snapshot");

@@ -1,11 +1,20 @@
 //! Tact's `ModelPort` adapter.
 
+use std::sync::Arc;
+
 use async_trait::async_trait;
 use tact_agent_api::{
     CancelToken, ModelCapabilities, ModelCursor, ModelError, ModelPort, ModelRequest,
     ModelResponse, ModelStream,
 };
-use tact_llm::{LlmProvider, ProviderModel};
+use tact_llm::{LlmProvider, ProviderMetadata, ProviderModel};
+
+/// One immutable provider activation used by the product kernel.
+#[derive(Clone)]
+pub(crate) struct ActiveModelSnapshot {
+    pub model: Arc<dyn ModelPort>,
+    pub metadata: ProviderMetadata,
+}
 
 /// Product wrapper around the provider-neutral `tact_llm` model implementation.
 pub(crate) struct TactModelPort {
@@ -65,7 +74,7 @@ mod tests {
         let client = MockClient::new(Vec::new());
         let expected = ModelCapabilities {
             model: "mock".into(),
-            context_window: 1_000,
+            context_window: Some(1_000),
             max_output_tokens: 100,
             supports_streaming: true,
             supports_native_compaction: false,

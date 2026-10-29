@@ -107,7 +107,7 @@ fn model() -> TactModelPort {
         LlmProvider::Mock(MockClient::new(Vec::new())),
         ModelCapabilities {
             model: "mock".into(),
-            context_window: 1_000,
+            context_window: Some(1_000),
             max_output_tokens: 100,
             supports_streaming: true,
             supports_native_compaction: false,
