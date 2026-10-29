@@ -582,7 +582,7 @@ impl ModelPort for Provider {
             }
         };
         let handle = span.handle();
-        let stream = match self
+        let stream = self
             .inner
             .model
             .stream_lazy(
@@ -591,14 +591,7 @@ impl ModelPort for Provider {
                 cancel,
                 crate::telemetry::clone_handle(&handle),
             )
-            .await
-        {
-            Ok(stream) => stream,
-            Err(error) => {
-                crate::telemetry::record_failure(&span, &error);
-                return Err(error);
-            }
-        };
+            .await;
         let capture = self.inner.spec.product_capture;
         let guarded = GuardedStream {
             inner: Box::pin(stream.map(move |event| {
@@ -941,6 +934,36 @@ mod telemetry_tests {
         );
     }
 
+    // `set_default` only covers this thread, so the task must stay on it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn stream_http_failure_records_its_status_class() {
+        let (capture, _guard) = Capture::install(tracing::Level::INFO);
+        // `with_error` flattens to `LlmError::Mock`, which drops the class, so
+        // return the typed error from a responder instead.
+        let provider = provider(MockClient::with_responder(|_request, _index| {
+            Err(crate::error::LlmError::HttpError {
+                status: 401,
+                class: crate::error::HttpErrorClass::Authentication,
+                retry_after: None,
+            })
+        }));
+
+        let mut stream = provider
+            .stream(request(), None, CancelToken::new())
+            .await
+            .unwrap();
+        while stream.next().await.is_some() {}
+
+        let output = capture.text();
+        assert!(
+            output.lines().any(|line| line.contains("tact_llm.call{")
+                && line.contains("request_kind=\"stream\"")
+                && line.contains("status_class=\"authentication\"")
+                && line.contains("outcome=\"failed\"")),
+            "the stream producer lost its HTTP class:\n{output}"
+        );
+    }
+
     // Public helper path used by legacy callers must not invent a span.
     #[tokio::test(flavor = "current_thread")]
     async fn unspanned_stream_params_do_not_emit_a_call_span() {
@@ -977,9 +1000,13 @@ mod telemetry_tests {
         let (capture, _guard) = Capture::install(tracing::Level::INFO);
         // Native compaction on, so `compact` reaches validation instead of
         // short-circuiting at the unsupported check.
+        // The responder panics if reached, which proves validation rejects
+        // the request before anything is dispatched.
         let provider = provider_with(
             spec_with_compaction(WireProtocol::OpenAiChatCompletions, true),
-            MockClient::new(vec![turn()]),
+            MockClient::with_responder(|_request, _index| {
+                panic!("validation must reject before dispatch");
+            }),
         );
         let mut mismatched = request();
         mismatched.model = "other".into();
@@ -1053,7 +1080,9 @@ mod telemetry_tests {
 
         let output = capture.text();
         assert!(
-            output.contains("outcome=\"finished\""),
+            output.lines().any(|line| line.contains("tact_llm.call{")
+                && line.contains("request_kind=\"stream\"")
+                && line.contains("outcome=\"finished\"")),
             "stream did not reach a terminal event:\n{output}"
         );
         assert!(
@@ -1100,10 +1129,9 @@ mod telemetry_tests {
 
         let output = capture.text();
         assert!(
-            output
-                .lines()
-                .any(|line| line.contains("tact_llm.call{")
-                    && line.contains("outcome=\"dropped\"")),
+            output.lines().any(|line| line.contains("tact_llm.call{")
+                && line.contains("request_kind=\"stream\"")
+                && line.contains("outcome=\"dropped\"")),
             "dropping a live stream left no outcome:\n{output}"
         );
     }

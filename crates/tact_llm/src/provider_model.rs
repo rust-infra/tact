@@ -234,13 +234,14 @@ impl ProviderModel {
         provider_state: Option<ProviderConversationState>,
         cancel: CancelToken,
     ) -> Result<ModelStream, ModelError> {
-        self.stream_lazy(
-            request,
-            provider_state,
-            cancel,
-            crate::telemetry::SpanHandle::none(),
-        )
-        .await
+        Ok(self
+            .stream_lazy(
+                request,
+                provider_state,
+                cancel,
+                crate::telemetry::SpanHandle::none(),
+            )
+            .await)
     }
 
     pub(crate) async fn stream_lazy(
@@ -249,8 +250,8 @@ impl ProviderModel {
         provider_state: Option<ProviderConversationState>,
         cancel: CancelToken,
         span: crate::telemetry::SpanHandle,
-    ) -> Result<ModelStream, ModelError> {
-        Ok(Box::pin(LazyModelStream {
+    ) -> ModelStream {
+        Box::pin(LazyModelStream {
             client: self.client.clone(),
             request,
             provider_state,
@@ -261,7 +262,7 @@ impl ProviderModel {
             producer: None,
             started: false,
             finished: false,
-        }))
+        })
     }
 
     pub async fn complete_params(

@@ -819,9 +819,14 @@ Every dispatched call ends with one outcome. Validation failures, unsupported
 compaction, and other pre-dispatch errors emit a failure event under the call
 span, since no adapter code runs to produce one. Dropping a live stream emits
 `outcome = "dropped"`; an unpolled stream emits nothing because it dispatched
-nothing. `ModelError.status_class` carries the HTTP classification
-(authentication, context overflow, transient, permanent) so telemetry can
-report it without exposing a response body.
+nothing. The HTTP classification (authentication, context overflow, transient,
+permanent) is recorded as the `status_class` span field while the adapter
+lowers its error, so telemetry reports it without exposing a response body and
+without widening the public `ModelError`.
+
+`telemetry` must not pull `tracing-attributes`: the crate emits spans with the
+macros only, so the workspace dependency disables `tracing`'s default features
+and `crates/tact` re-adds `attributes` for its `#[instrument]` call sites.
 
 ## Core Contract Changes
 

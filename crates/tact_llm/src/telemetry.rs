@@ -558,4 +558,61 @@ mod tests {
             }
         }
     }
+
+    /// `telemetry` must not pull the `tracing-attributes` proc macro. The
+    /// member inherits `tracing` from the workspace, so both manifests matter.
+    #[test]
+    fn telemetry_does_not_enable_tracing_attributes() {
+        let member: toml::Value = include_str!("../Cargo.toml")
+            .parse()
+            .expect("parse manifest");
+        let member_tracing = member
+            .get("dependencies")
+            .and_then(|deps| deps.get("tracing"))
+            .expect("[dependencies.tracing]");
+        assert!(
+            member_tracing.get("default-features").is_none()
+                || member_tracing
+                    .get("default-features")
+                    .and_then(toml::Value::as_bool)
+                    != Some(true),
+            "tact_llm must not re-enable tracing's default features: {member_tracing}"
+        );
+        assert!(
+            !feature_list(member_tracing)
+                .iter()
+                .any(|f| f == "attributes"),
+            "tact_llm must not request tracing attributes: {member_tracing}"
+        );
+
+        let root: toml::Value = include_str!("../../../Cargo.toml")
+            .parse()
+            .expect("parse workspace manifest");
+        let root_tracing = root
+            .get("workspace")
+            .and_then(|ws| ws.get("dependencies"))
+            .and_then(|deps| deps.get("tracing"))
+            .expect("[workspace.dependencies.tracing]");
+        assert!(
+            root_tracing
+                .get("default-features")
+                .and_then(toml::Value::as_bool)
+                == Some(false),
+            "workspace tracing must disable default features: {root_tracing}"
+        );
+        assert!(
+            !feature_list(root_tracing).iter().any(|f| f == "attributes"),
+            "workspace tracing must not enable attributes: {root_tracing}"
+        );
+    }
+
+    fn feature_list(value: &toml::Value) -> Vec<String> {
+        value
+            .get("features")
+            .and_then(toml::Value::as_array)
+            .into_iter()
+            .flatten()
+            .map(|feature| feature.as_str().expect("feature string").to_owned())
+            .collect()
+    }
 }
