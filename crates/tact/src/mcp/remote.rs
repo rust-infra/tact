@@ -1320,7 +1320,15 @@ mod tests {
         let path = dir.path().join("hosted.json");
         write_credentials(&path, Some(60), Some(epoch_secs_ago(3_600))).await;
 
-        let outcome = stored_access_token_at(&path, "hosted", "https://example.invalid/mcp").await;
+        // Discovery resolves a `.invalid` host. On a slow or proxy-less
+        // resolver that can hang for minutes, so bound it: a timeout means
+        // the request went out, not that the fast path swallowed the refresh.
+        let outcome = tokio::time::timeout(
+            std::time::Duration::from_secs(30),
+            stored_access_token_at(&path, "hosted", "https://example.invalid/mcp"),
+        )
+        .await
+        .expect("discovery must settle instead of hanging");
         assert!(
             outcome.is_err(),
             "an expired token must go through the manager, not be handed back: {outcome:?}"

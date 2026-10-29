@@ -8,8 +8,10 @@ use crate::error::HttpErrorClass;
 /// Upper bound for a provider error body retained for classification.
 pub(crate) const MAX_HTTP_ERROR_BODY_BYTES: usize = 4 * 1024;
 /// Upper bound for a successful account/discovery JSON response.
+#[cfg(feature = "account")]
 pub(crate) const MAX_HTTP_SUCCESS_BODY_BYTES: usize = 256 * 1024;
 
+#[cfg(feature = "account")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum BoundedReadError {
     Transport,
@@ -72,6 +74,7 @@ pub(crate) async fn read_bounded_error_body_13(mut response: reqwest13::Response
     String::from_utf8_lossy(&body).into_owned()
 }
 
+#[cfg(feature = "account")]
 pub(crate) async fn read_bounded_success_body_13(
     mut response: reqwest13::Response,
 ) -> Result<String, BoundedReadError> {

@@ -627,7 +627,7 @@ impl ModelPort for Provider {
             span.handle(),
             self.inner
                 .model
-                .complete_params_in(params, state, cancel, span.handle()),
+                .complete_params_spanned(params, state, cancel, span.handle()),
         )
         .await
         .map_err(Self::stable_error);
@@ -662,7 +662,7 @@ impl ModelPort for Provider {
             span.handle(),
             self.inner
                 .model
-                .compact_params_in(params, state, cancel, span.handle()),
+                .compact_params_spanned(params, state, cancel, span.handle()),
         )
         .await
         .map_err(Self::stable_error);

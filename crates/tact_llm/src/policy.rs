@@ -162,6 +162,7 @@ pub(crate) fn is_account_query_supported(
         || is_kimi_usage_supported(base_url, model)
 }
 
+#[cfg(feature = "account")]
 pub(crate) fn deepseek_balance_url(base_url: &str) -> Option<String> {
     if base_url.is_empty() {
         return Some("https://api.deepseek.com/user/balance".to_string());
@@ -173,6 +174,7 @@ pub(crate) fn deepseek_balance_url(base_url: &str) -> Option<String> {
     Some("https://api.deepseek.com/user/balance".to_string())
 }
 
+#[cfg(feature = "account")]
 pub(crate) fn kimi_balance_url(base_url: &str) -> Option<String> {
     if base_url.is_empty() {
         return Some("https://api.moonshot.cn/v1/users/me/balance".to_string());
@@ -188,6 +190,7 @@ pub(crate) fn kimi_balance_url(base_url: &str) -> Option<String> {
     }
 }
 
+#[cfg(feature = "account")]
 pub(crate) fn kimi_balance_currency(base_url: &str) -> &'static str {
     if url::Url::parse(base_url)
         .ok()
@@ -201,6 +204,7 @@ pub(crate) fn kimi_balance_currency(base_url: &str) -> &'static str {
     }
 }
 
+#[cfg(feature = "account")]
 pub(crate) fn kimi_usage_url(base_url: &str) -> Option<String> {
     let parsed = url::Url::parse(base_url).ok()?;
     if parsed.scheme() != "https" || parsed.host_str() != Some("api.kimi.com") {
@@ -273,6 +277,7 @@ pub(crate) fn routed_kind(provider: &ProviderKind, base_url: &str, model: &str) 
     }
 }
 
+#[cfg(feature = "model-discovery")]
 pub(crate) fn supports_models_query(provider: &ProviderKind) -> bool {
     !matches!(provider, ProviderKind::Anthropic)
 }

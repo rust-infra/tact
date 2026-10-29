@@ -271,7 +271,7 @@ impl ProviderModel {
         provider_state: Option<ProviderConversationState>,
         cancel: CancelToken,
     ) -> Result<ModelResponse, ModelError> {
-        self.complete_params_in(
+        self.complete_params_spanned(
             request,
             provider_state,
             cancel,
@@ -280,7 +280,7 @@ impl ProviderModel {
         .await
     }
 
-    pub(crate) async fn complete_params_in(
+    pub(crate) async fn complete_params_spanned(
         &self,
         request: CreateMessageParams,
         provider_state: Option<ProviderConversationState>,
@@ -308,7 +308,7 @@ impl ProviderModel {
         provider_state: Option<ProviderConversationState>,
         cancel: CancelToken,
     ) -> Result<ModelResponse, ModelError> {
-        self.compact_params_in(
+        self.compact_params_spanned(
             request,
             provider_state,
             cancel,
@@ -317,7 +317,7 @@ impl ProviderModel {
         .await
     }
 
-    pub(crate) async fn compact_params_in(
+    pub(crate) async fn compact_params_spanned(
         &self,
         request: CreateMessageParams,
         provider_state: Option<ProviderConversationState>,
