@@ -26,7 +26,9 @@ arboard = { version = "3", features = ["wayland-data-control"] }
 async-openai = "0.20"
 bytes = "1"
 async-openai-responses = { package = "async-openai", version = "0.42.2", features = ["responses", "byot"] }
-async-trait = "0.1"
+# 0.1.92 stopped emitting `#[must_use]` on the boxed futures it generates;
+# earlier versions trip clippy 1.99's `double_must_use` under `-D warnings`.
+async-trait = "0.1.92"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
