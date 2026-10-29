@@ -589,6 +589,9 @@ Runtime calls return `tact_agent_api::ModelError`:
 - network failures, 408, 429, and 5xx are transient;
 - `Retry-After` populates `ModelError.retry_after` when the direct HTTP path can
   read it;
+- `ModelError.status_class` keeps the HTTP classification
+  (`authentication`, `context_overflow`, `transient`, `permanent`) after the
+  neutral mapping, so it survives into telemetry;
 - cancellation is always `ModelErrorKind::Cancelled`;
 - context overflow maps to `ModelErrorKind::ContextOverflow`;
 - public messages contain only fixed category text, status class, and safe
@@ -732,8 +735,9 @@ state and the next poll returns `None`. Progress events are bounded and
 best-effort; the terminal response is sent with backpressure.
 
 Dropping an unpolled stream dispatches nothing. Dropping a live stream aborts
-its producer and closes the receiver. Drop does not call `cancel()` on the
-caller-owned token because that token may be shared by other work.
+its producer, closes the receiver, and records `outcome = "dropped"` under the
+call span. Drop does not call `cancel()` on the caller-owned token because that
+token may be shared by other work.
 
 `complete` and `compact` check cancellation before polling the adapter future
 and use the same cancellation-first selection.
@@ -810,6 +814,14 @@ the call span. The lazy stream producer task is instrumented with the same
 span before it is spawned, so the producer and any Tokio events the host has
 enabled inherit the LLM call context without changing the stream's
 dispatch-on-first-poll semantics.
+
+Every dispatched call ends with one outcome. Validation failures, unsupported
+compaction, and other pre-dispatch errors emit a failure event under the call
+span, since no adapter code runs to produce one. Dropping a live stream emits
+`outcome = "dropped"`; an unpolled stream emits nothing because it dispatched
+nothing. `ModelError.status_class` carries the HTTP classification
+(authentication, context overflow, transient, permanent) so telemetry can
+report it without exposing a response body.
 
 ## Core Contract Changes
 

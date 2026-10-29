@@ -22,7 +22,7 @@ use crate::client::{LlmClient, LlmProvider};
 use crate::provider_state::ProviderConversationState;
 use crate::{
     CreateMessageParams, ModelCallParams, ProviderProgress, ProviderProgressSink, ThinkingChunk,
-    neutral::{create_message_params, model_error, model_response, provider_state},
+    neutral::{create_message_params, model_error_with, model_response, provider_state},
 };
 
 struct ProgressSink {
@@ -110,6 +110,7 @@ impl LazyModelStream {
         let cancel = self.cancel.clone();
         let message_id = self.message_id.clone();
         let span = crate::telemetry::clone_handle(&self.span);
+        let span_for_error = crate::telemetry::clone_handle(&span);
         let started = Arc::new(AtomicBool::new(false));
         let started_by_sink = started.clone();
         self.rx = Some(rx);
@@ -125,7 +126,7 @@ impl LazyModelStream {
                 let result = tokio::select! {
                     biased;
                     result = client.stream_message(&request, provider_state.as_ref(), &sink) => {
-                        result.map_err(model_error)
+                        result.map_err(|error| model_error_with(error, &span_for_error))
                     }
                     _ = cancel.cancelled() => Err(ModelError::new(
                         ModelErrorKind::Cancelled,
@@ -269,13 +270,29 @@ impl ProviderModel {
         provider_state: Option<ProviderConversationState>,
         cancel: CancelToken,
     ) -> Result<ModelResponse, ModelError> {
+        self.complete_params_in(
+            request,
+            provider_state,
+            cancel,
+            crate::telemetry::SpanHandle::none(),
+        )
+        .await
+    }
+
+    pub(crate) async fn complete_params_in(
+        &self,
+        request: CreateMessageParams,
+        provider_state: Option<ProviderConversationState>,
+        cancel: CancelToken,
+        span: crate::telemetry::SpanHandle,
+    ) -> Result<ModelResponse, ModelError> {
         let message_id = self.next_message_id();
         tokio::select! {
             biased;
             result = self.client.create_message(&request, provider_state.as_ref()) => {
                 result
                     .map(|response| model_response(response, message_id))
-                    .map_err(model_error)
+                    .map_err(|error| model_error_with(error, &span))
             },
             _ = cancel.cancelled() => Err(ModelError::new(
                 ModelErrorKind::Cancelled,
@@ -290,13 +307,29 @@ impl ProviderModel {
         provider_state: Option<ProviderConversationState>,
         cancel: CancelToken,
     ) -> Result<ModelResponse, ModelError> {
+        self.compact_params_in(
+            request,
+            provider_state,
+            cancel,
+            crate::telemetry::SpanHandle::none(),
+        )
+        .await
+    }
+
+    pub(crate) async fn compact_params_in(
+        &self,
+        request: CreateMessageParams,
+        provider_state: Option<ProviderConversationState>,
+        cancel: CancelToken,
+        span: crate::telemetry::SpanHandle,
+    ) -> Result<ModelResponse, ModelError> {
         let message_id = self.next_message_id();
         tokio::select! {
             biased;
             result = self.client.compact(&request, provider_state.as_ref()) => {
                 result
                     .map(|response| model_response(response, message_id))
-                    .map_err(model_error)
+                    .map_err(|error| model_error_with(error, &span))
             },
             _ = cancel.cancelled() => Err(ModelError::new(
                 ModelErrorKind::Cancelled,

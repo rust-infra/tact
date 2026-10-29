@@ -523,6 +523,44 @@ impl Provider {
     }
 }
 
+/// Records an abandoned live stream, so a dispatched call that never reaches
+/// a terminal event still reports an outcome.
+struct GuardedStream {
+    inner: ModelStream,
+    span: crate::telemetry::SpanHandle,
+    started: bool,
+    terminated: bool,
+}
+
+impl futures_util::Stream for GuardedStream {
+    type Item = Result<ModelEvent, ModelError>;
+
+    fn poll_next(
+        mut self: std::pin::Pin<&mut Self>,
+        context: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        self.started = true;
+        let item = self.inner.as_mut().poll_next(context);
+        if matches!(
+            &item,
+            std::task::Poll::Ready(None)
+                | std::task::Poll::Ready(Some(Err(_)))
+                | std::task::Poll::Ready(Some(Ok(ModelEvent::Finished(_))))
+        ) {
+            self.terminated = true;
+        }
+        item
+    }
+}
+
+impl Drop for GuardedStream {
+    fn drop(&mut self) {
+        if self.started && !self.terminated {
+            crate::telemetry::record_dropped(&self.span);
+        }
+    }
+}
+
 #[async_trait]
 impl ModelPort for Provider {
     fn capabilities(&self) -> ModelCapabilities {
@@ -536,26 +574,51 @@ impl ModelPort for Provider {
         cancel: CancelToken,
     ) -> Result<ModelStream, ModelError> {
         let mut span = crate::telemetry::call_span("stream", &self.inner.metadata);
-        let (params, state) = self.validate(request, cursor)?;
-        let stream = self
+        let (params, state) = match self.validate(request, cursor) {
+            Ok(validated) => validated,
+            Err(error) => {
+                crate::telemetry::record_failure(&span, &error);
+                return Err(error);
+            }
+        };
+        let handle = span.handle();
+        let stream = match self
             .inner
             .model
-            .stream_lazy(params, state, cancel, span.handle())
-            .await?;
-        let capture = self.inner.spec.product_capture;
-        Ok(Box::pin(stream.map(move |event| {
-            crate::telemetry::record_event(&mut span, &event);
-            match event {
-                Ok(ModelEvent::Finished(mut response)) => {
-                    if !capture {
-                        Self::strip_body(&mut response);
-                    }
-                    Ok(ModelEvent::Finished(response))
-                }
-                Err(error) => Err(Self::stable_error(error)),
-                other => other,
+            .stream_lazy(
+                params,
+                state,
+                cancel,
+                crate::telemetry::clone_handle(&handle),
+            )
+            .await
+        {
+            Ok(stream) => stream,
+            Err(error) => {
+                crate::telemetry::record_failure(&span, &error);
+                return Err(error);
             }
-        })))
+        };
+        let capture = self.inner.spec.product_capture;
+        let guarded = GuardedStream {
+            inner: Box::pin(stream.map(move |event| {
+                crate::telemetry::record_event(&mut span, &event);
+                match event {
+                    Ok(ModelEvent::Finished(mut response)) => {
+                        if !capture {
+                            Self::strip_body(&mut response);
+                        }
+                        Ok(ModelEvent::Finished(response))
+                    }
+                    Err(error) => Err(Self::stable_error(error)),
+                    other => other,
+                }
+            })),
+            span: handle,
+            started: false,
+            terminated: false,
+        };
+        Ok(Box::pin(guarded))
     }
 
     async fn complete(
@@ -565,10 +628,18 @@ impl ModelPort for Provider {
         cancel: CancelToken,
     ) -> Result<ModelResponse, ModelError> {
         let span = crate::telemetry::call_span("complete", &self.inner.metadata);
-        let (params, state) = self.validate(request, cursor)?;
+        let (params, state) = match self.validate(request, cursor) {
+            Ok(validated) => validated,
+            Err(error) => {
+                crate::telemetry::record_failure(&span, &error);
+                return Err(error);
+            }
+        };
         let result = crate::telemetry::instrument(
             span.handle(),
-            self.inner.model.complete_params(params, state, cancel),
+            self.inner
+                .model
+                .complete_params_in(params, state, cancel, span.handle()),
         )
         .await
         .map_err(Self::stable_error);
@@ -588,12 +659,22 @@ impl ModelPort for Provider {
     ) -> Result<ModelResponse, ModelError> {
         let span = crate::telemetry::call_span("compact", &self.inner.metadata);
         if !self.inner.spec.native_compaction {
-            return Err(ModelError::unsupported("native compaction"));
+            let error = ModelError::unsupported("native compaction");
+            crate::telemetry::record_failure(&span, &error);
+            return Err(error);
         }
-        let (params, state) = self.validate(request, cursor)?;
+        let (params, state) = match self.validate(request, cursor) {
+            Ok(validated) => validated,
+            Err(error) => {
+                crate::telemetry::record_failure(&span, &error);
+                return Err(error);
+            }
+        };
         let result = crate::telemetry::instrument(
             span.handle(),
-            self.inner.model.compact_params(params, state, cancel),
+            self.inner
+                .model
+                .compact_params_in(params, state, cancel, span.handle()),
         )
         .await
         .map_err(Self::stable_error);
@@ -887,6 +968,163 @@ mod telemetry_tests {
         assert!(
             !output.contains("tact_llm.call"),
             "unspanned path emitted a call span:\n{output}"
+        );
+    }
+
+    // `set_default` only covers this thread, so the task must stay on it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn validation_failures_are_recorded_before_dispatch() {
+        let (capture, _guard) = Capture::install(tracing::Level::INFO);
+        // Native compaction on, so `compact` reaches validation instead of
+        // short-circuiting at the unsupported check.
+        let provider = provider_with(
+            spec_with_compaction(WireProtocol::OpenAiChatCompletions, true),
+            MockClient::new(vec![turn()]),
+        );
+        let mut mismatched = request();
+        mismatched.model = "other".into();
+
+        let complete = provider
+            .complete(mismatched.clone(), None, CancelToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(complete.kind, ModelErrorKind::Permanent);
+        let Err(stream) = provider
+            .stream(mismatched.clone(), None, CancelToken::new())
+            .await
+        else {
+            panic!("stream must reject a mismatched model");
+        };
+        assert_eq!(stream.kind, ModelErrorKind::Permanent);
+        let compact = provider
+            .compact(mismatched, None, CancelToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(compact.kind, ModelErrorKind::Permanent);
+
+        let output = capture.text();
+        for kind in ["complete", "stream", "compact"] {
+            assert!(
+                output.lines().any(|line| line.contains("tact_llm.call{")
+                    && line.contains(&format!("request_kind=\"{kind}\""))
+                    && line.contains("outcome=\"failed\"")),
+                "{kind} validation failure left no failure event:\n{output}"
+            );
+        }
+    }
+
+    // `set_default` only covers this thread, so the task must stay on it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn native_compaction_validation_failure_is_recorded() {
+        let (capture, _guard) = Capture::install(tracing::Level::INFO);
+        let provider = provider_with(
+            spec_with_compaction(WireProtocol::OpenAiChatCompletions, true),
+            MockClient::new(vec![turn()]),
+        );
+        let mut mismatched = request();
+        mismatched.model = "other".into();
+
+        provider
+            .compact(mismatched, None, CancelToken::new())
+            .await
+            .unwrap_err();
+
+        let output = capture.text();
+        assert!(
+            output.lines().any(|line| line.contains("tact_llm.call{")
+                && line.contains("request_kind=\"compact\"")
+                && line.contains("outcome=\"failed\"")),
+            "compact validation failure left no failure event:\n{output}"
+        );
+    }
+
+    // `set_default` only covers this thread, so the task must stay on it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn draining_a_stream_to_terminal_records_no_drop() {
+        let (capture, _guard) = Capture::install(tracing::Level::INFO);
+        let provider = provider(MockClient::new(vec![turn()]));
+
+        let mut stream = provider
+            .stream(request(), None, CancelToken::new())
+            .await
+            .unwrap();
+        while stream.next().await.is_some() {}
+        drop(stream);
+
+        let output = capture.text();
+        assert!(
+            output.contains("outcome=\"finished\""),
+            "stream did not reach a terminal event:\n{output}"
+        );
+        assert!(
+            !output.contains("outcome=\"dropped\""),
+            "a completed stream must not report a drop:\n{output}"
+        );
+    }
+
+    // `set_default` only covers this thread, so the task must stay on it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn unsupported_compaction_is_recorded() {
+        let (capture, _guard) = Capture::install(tracing::Level::INFO);
+        let provider = provider(MockClient::new(vec![turn()]));
+
+        let error = provider
+            .compact(request(), None, CancelToken::new())
+            .await
+            .unwrap_err();
+        assert_eq!(error.kind, ModelErrorKind::Unsupported);
+
+        let output = capture.text();
+        assert!(
+            output.lines().any(|line| line.contains("tact_llm.call{")
+                && line.contains("request_kind=\"compact\"")
+                && line.contains("error_kind=Unsupported")
+                && line.contains("outcome=\"failed\"")),
+            "unsupported compaction left no failure event:\n{output}"
+        );
+    }
+
+    // `set_default` only covers this thread, so the task must stay on it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropping_a_live_stream_records_an_outcome() {
+        let (capture, _guard) = Capture::install(tracing::Level::INFO);
+        let provider = provider(MockClient::new(vec![turn()]));
+
+        let mut stream = provider
+            .stream(request(), None, CancelToken::new())
+            .await
+            .unwrap();
+        // Dispatch, then abandon without reading a terminal event.
+        assert!(stream.next().await.is_some());
+        drop(stream);
+
+        let output = capture.text();
+        assert!(
+            output
+                .lines()
+                .any(|line| line.contains("tact_llm.call{")
+                    && line.contains("outcome=\"dropped\"")),
+            "dropping a live stream left no outcome:\n{output}"
+        );
+    }
+
+    // `set_default` only covers this thread, so the task must stay on it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn dropping_an_unpolled_stream_records_nothing() {
+        let (capture, _guard) = Capture::install(tracing::Level::INFO);
+        let provider = provider(MockClient::new(vec![turn()]));
+
+        drop(
+            provider
+                .stream(request(), None, CancelToken::new())
+                .await
+                .unwrap(),
+        );
+
+        let output = capture.text();
+        assert!(
+            !output.contains("outcome=\"dropped\""),
+            "an unpolled stream must dispatch nothing:\n{output}"
         );
     }
 }

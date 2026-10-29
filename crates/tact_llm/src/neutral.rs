@@ -305,6 +305,17 @@ pub fn llm_response(response: ModelResponse) -> Result<LlmResponse, ModelError> 
 }
 
 pub fn model_error(error: LlmError) -> ModelError {
+    model_error_with(error, &crate::telemetry::SpanHandle::none())
+}
+
+/// Lower an adapter error, recording its safe HTTP class on `handle`.
+pub(crate) fn model_error_with(
+    error: LlmError,
+    handle: &crate::telemetry::SpanHandle,
+) -> ModelError {
+    if let LlmError::HttpError { class, .. } = &error {
+        crate::telemetry::record_status_class(handle, *class);
+    }
     let message = error.to_string();
     let retry_after = match &error {
         LlmError::HttpError { retry_after, .. } => *retry_after,

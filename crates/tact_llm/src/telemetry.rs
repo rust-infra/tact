@@ -73,7 +73,8 @@ pub(crate) fn call_span(kind: &'static str, metadata: &ProviderMetadata) -> Call
             provider = %metadata.provider(),
             protocol = metadata.protocol().as_str(),
             model = metadata.model(),
-            endpoint_host = %endpoint_host
+            endpoint_host = %endpoint_host,
+            status_class = tracing::field::Empty
         ),
         started: Instant::now(),
         first_event: false,
@@ -149,6 +150,57 @@ pub(crate) fn record_result(span: &CallSpan, result: &Result<ModelResponse, Mode
     #[cfg(not(feature = "telemetry"))]
     {
         let _ = (span, result);
+    }
+}
+
+/// Record a call that failed before any adapter work was dispatched.
+pub(crate) fn record_failure(span: &CallSpan, error: &ModelError) {
+    #[cfg(feature = "telemetry")]
+    {
+        record_error(&span.span, error);
+    }
+    #[cfg(not(feature = "telemetry"))]
+    {
+        let _ = (span, error);
+    }
+}
+
+/// Record the safe HTTP class on the given call span.
+///
+/// The adapter knows the class before it lowers the error to `ModelError`, so
+/// recording it here avoids widening that public type. A `none` handle makes
+/// this a no-op for the unspanned legacy paths.
+pub(crate) fn record_status_class(handle: &SpanHandle, class: crate::error::HttpErrorClass) {
+    #[cfg(feature = "telemetry")]
+    {
+        let class = match class {
+            crate::error::HttpErrorClass::Authentication => "authentication",
+            crate::error::HttpErrorClass::ContextOverflow => "context_overflow",
+            crate::error::HttpErrorClass::Transient => "transient",
+            crate::error::HttpErrorClass::Permanent => "permanent",
+        };
+        handle.0.record("status_class", class);
+    }
+    #[cfg(not(feature = "telemetry"))]
+    {
+        let _ = (handle, class);
+    }
+}
+
+/// Record a live stream abandoned by its consumer.
+pub(crate) fn record_dropped(handle: &SpanHandle) {
+    #[cfg(feature = "telemetry")]
+    {
+        tracing::event!(
+            parent: &handle.0,
+            tracing::Level::INFO,
+            outcome = "dropped",
+            "model call dropped before a terminal event"
+        );
+    }
+    #[cfg(not(feature = "telemetry"))]
+    {
+        let _ = handle;
     }
 }
 
@@ -339,6 +391,10 @@ mod tests {
             cursor: CursorUpdate::Unchanged,
         };
         record_result(&span, &Ok(response));
+        // The adapter records the class while lowering the error, so it is
+        // present before the failure event is emitted.
+        let handle = span.handle();
+        record_status_class(&handle, crate::error::HttpErrorClass::Transient);
         record_result(
             &span,
             &Err(ModelError {
@@ -359,6 +415,7 @@ mod tests {
         assert!(output.contains("outcome=\"finished\""), "{output}");
         assert!(output.contains("error_kind=Transient"), "{output}");
         assert!(output.contains("retry_after_ms=2000"), "{output}");
+        assert!(output.contains("status_class=\"transient\""), "{output}");
         assert!(!output.contains("SECRET-REQUEST-BODY"), "{output}");
         assert!(!output.contains("SECRET-ERROR-BODY"), "{output}");
         assert!(!output.contains("secret"), "{output}");
@@ -390,6 +447,41 @@ mod tests {
                 && line.contains("request_kind=\"complete\"")
                 && line.contains("inside instrumented task")),
             "spanned line missing from:\n{output}"
+        );
+    }
+
+    /// The class must reach telemetry through the real error conversion, not
+    /// only through a direct `record_status_class` call.
+    #[test]
+    fn adapter_conversion_records_the_http_class_on_the_span() {
+        let (capture, _guard) = Capture::install(tracing::Level::TRACE);
+        let metadata = ProviderMetadata::new(
+            ProviderKind::OpenAi,
+            WireProtocol::OpenAiResponses,
+            "gpt-test".to_string(),
+            Endpoint::parse("https://api.openai.com/v1").unwrap(),
+            ModelCapabilities::new("gpt-test", Some(10_000), 1_000, true, true).unwrap(),
+            true,
+        );
+        let span = call_span("complete", &metadata);
+        let handle = span.handle();
+
+        let error = crate::neutral::model_error_with(
+            crate::error::LlmError::HttpError {
+                status: 401,
+                class: crate::error::HttpErrorClass::Authentication,
+                retry_after: None,
+            },
+            &handle,
+        );
+        record_failure(&span, &error);
+
+        let output = capture.text();
+        assert!(
+            output.lines().any(|line| line.contains("tact_llm.call{")
+                && line.contains("status_class=\"authentication\"")
+                && line.contains("outcome=\"failed\"")),
+            "the conversion did not record its HTTP class:\n{output}"
         );
     }
 

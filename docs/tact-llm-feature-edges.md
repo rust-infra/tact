@@ -9,7 +9,7 @@ Reviewed 2026-10-29.
 | `openai-chat` | `reqwest 0.13`, SSE, `async-openai`, `httpdate` | Chat constructors and `ChatDialect` |
 | `openai-responses` | `reqwest 0.13`, SSE, `async-openai-responses`, `secrecy 0.10`, `httpdate` | Responses constructors |
 | `openai` | both OpenAI protocols | both OpenAI constructor families |
-| `telemetry` | optional `tracing` call spans and events | no subscriber installation, no `tokio/tracing` |
+| `telemetry` | optional `tracing` call spans and events (no `tracing-attributes`) | no subscriber installation, no `tokio/tracing` |
 | `legacy-tact` | compatibility globals, concrete adapters, provider state, mock, profile, account/discovery hooks | no stable additions |
 | `account` | account compatibility APIs (implies `legacy-tact`) | no stable additions |
 | `model-discovery` | model-list compatibility APIs (implies `legacy-tact`) | no stable additions |

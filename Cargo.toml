@@ -75,7 +75,9 @@ tokio-util = { version = "0.7", features = ["rt"] }
 cpal = "0.15"
 toml = "0.8"
 toml_edit = "0.22"
-tracing = "0.1"
+# `attributes` (the proc macro) is opt-in per crate so libraries that only
+# emit spans do not drag `syn` into every consumer's build.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 # tact-ui installs its own file fmt layer; no default features (no ansi /
 # tracing-log) so the `log` bridge cannot leak MCP logs into the TUI.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
