@@ -1340,7 +1340,7 @@ stdio 启动）或远程（<code>url</code>，Streamable HTTP），可选静态
 写入 home 文件，<code>--force</code>
 覆盖）、<code>login</code>/<code>logout</code>（已存凭据）——见 Ch
 8。</p>
-<p>两个入口点均通过 <code>crates/tact-ui/src/permission.rs</code> 中的
+<p>两个入口点均通过 <code>crates/tact_host/src/permission.rs</code> 中的
 <code>permission_mode_from_config()</code> 读取
 <code>permission_mode</code>。</p>
 <p><code>tools.sandbox</code> 在 v1 仅可由 TOML
@@ -1424,7 +1424,7 @@ re-export</td>
 <td>在 <code>main()</code> 中调用 <code>config::init()</code></td>
 </tr>
 <tr>
-<td><code>crates/tact-ui/src/permission.rs</code></td>
+<td><code>crates/tact_host/src/permission.rs</code></td>
 <td>两个入口点读取 resolved <code>permission_mode</code></td>
 </tr>
 </tbody>

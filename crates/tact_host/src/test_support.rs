@@ -1,4 +1,4 @@
-//! Helpers for tact-ui integration tests (mock LLM + channel harness).
+//! Helpers for host and frontend integration tests (mock LLM + channel harness).
 
 use std::{
     path::PathBuf,
@@ -142,7 +142,7 @@ pub fn build_test_agent_with_provider(
 ) -> (Agent, std::path::PathBuf) {
     tact::config::install_or_override(config.clone());
     let agent_settings = config.agent.clone();
-    let context = test_context(&unique_workspace_name("tact-ui-integration"));
+    let context = test_context(&unique_workspace_name("tact-host-integration"));
     let work_dir = context.work_dir.clone();
 
     let mut tool_context = context;
@@ -194,7 +194,7 @@ pub fn build_test_agent_with_mcp(
     let config = default_test_config();
     tact::config::install_or_override(config.clone());
     let agent_settings = config.agent.clone();
-    let context = test_context(&unique_workspace_name("tact-ui-mcp"));
+    let context = test_context(&unique_workspace_name("tact-host-mcp"));
     let work_dir = context.work_dir.clone();
 
     let mut tool_context = context;
@@ -224,7 +224,7 @@ pub async fn build_test_agent_with_session(
     let config = default_test_config();
     tact::config::install_or_override(config.clone());
     let agent_settings = config.agent.clone();
-    let context = test_context(&unique_workspace_name("tact-ui-session"));
+    let context = test_context(&unique_workspace_name("tact-host-session"));
     let work_dir = context.work_dir.clone();
     let db_path = work_dir.join(".tact").join("tact.db");
     if let Some(parent) = db_path.parent() {

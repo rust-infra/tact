@@ -1462,17 +1462,12 @@ impl super::SessionStore for SqliteSessionStore {
             UPDATE sessions
             SET locked_by = ?, lock_epoch = ?
             WHERE id = ?
-              AND (
-                locked_by = 0
-                OR (locked_by = ? AND lock_epoch = ?)
-              )
+              AND locked_by = 0
             "#,
         )
         .bind(pid_i64)
         .bind(&lock_epoch)
         .bind(session_id)
-        .bind(pid_i64)
-        .bind(&lock_epoch)
         .execute(&*self.pool)
         .await
         .context("failed to acquire session lock")?;
@@ -1497,7 +1492,7 @@ impl super::SessionStore for SqliteSessionStore {
 
         if holder != 0 && is_active_lock_holder(holder as u32, &holder_epoch) {
             anyhow::bail!(
-                "session {session_id} is locked by process {holder} (already open in another tact-ui instance)"
+                "session {session_id} is locked by process {holder} (already open in another Tact session)"
             );
         }
 
@@ -3025,6 +3020,23 @@ mod tests {
             .unwrap_err();
         let _ = child.kill();
         let _ = child.wait();
+
+        assert!(err.to_string().contains("locked by process"));
+    }
+
+    #[tokio::test]
+    async fn test_session_lock_rejects_reentrant_holder() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        let pid = std::process::id();
+        store.try_lock_session("session-1", pid).await.unwrap();
+        let err = store.try_lock_session("session-1", pid).await.unwrap_err();
 
         assert!(err.to_string().contains("locked by process"));
     }

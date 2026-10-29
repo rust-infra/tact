@@ -9,7 +9,7 @@ use tact_llm::{ContentBlock, Message, Role::User};
 /// **De-inlined:** image and file references are kept as path text so the
 /// model reads them on demand via `read_image` (image) / `read_file` (text)
 /// rather than base64-inlining or whole-file inlining at attach time.
-pub(crate) async fn build_user_message(task: &str, _work_dir: &Path) -> Message {
+pub async fn build_user_message(task: &str, _work_dir: &Path) -> Message {
     static REF_RE: std::sync::OnceLock<Regex> = std::sync::OnceLock::new();
     let re = REF_RE.get_or_init(|| {
         Regex::new(r#"(?m)(?P<prefix>^|[ \t])(?:(?P<img>!\[(?P<alt>[^\]]*)\]\((?P<img_path>[^)]+)\))|@(?:"(?P<qpath>[^"]+)"|(?P<upath>\S+)))"#).unwrap()

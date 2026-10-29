@@ -7,6 +7,7 @@ members = [
     "crates/agent_core",
     "crates/agent_sdk",
     "crates/tact",
+    "crates/tact_host",
     "crates/tact-ui",
     "crates/tact_llm",
     "crates/tool_refactor_macros",

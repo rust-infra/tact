@@ -3,6 +3,9 @@ name = "tact_protocol"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.91"
+license.workspace = true
+description = "Host/frontend protocol types for Tact"
+repository = "https://github.com/rust-infra/tact"
 
 [dependencies]
 serde = { workspace = true }

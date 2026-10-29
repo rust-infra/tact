@@ -755,7 +755,7 @@ mod tests {
             .await
             .unwrap();
 
-        // A second connection stands in for another tact-ui instance holding
+        // A second connection stands in for another Tact instance holding
         // the write lock for a moment.
         let mut blocker = SqliteConnection::connect(&format!("sqlite:{}", db.display()))
             .await

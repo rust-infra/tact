@@ -13,21 +13,26 @@ This project is a Cargo Workspace containing the following crates:
 | Directory | Package | Version | Responsibility |
 |---|---|---|---|
 | `crates/protocol` | `tact_protocol` | `0.1.0` (local) | Host/TUI wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Its `Agent` module is legacy and is not part of the runtime path. |
-| `crates/agent_api` | `tact_agent_api` | `1.1.42` (workspace) | Provider-neutral contracts for state, model streams, context, tools, gates, transcript/usage persistence, and events. No product or infrastructure implementation lives here. |
-| `crates/agent_core` | `tact_agent_core` | `1.1.42` (workspace) | Bounded, provider-neutral agent kernel. `AgentKernel::run` owns one activation over injected `KernelDeps`; it has no SQLite, MCP transport, provider SDK, or TUI dependency. |
-| `crates/agent_sdk` | `tact_agent_sdk` | `1.1.42` (workspace) | Ergonomic SDK facade over the neutral API and kernel: safe defaults, static tool composition, session state ownership, cancellation, and optional tracing telemetry. It has no product, provider HTTP, MCP, storage, or UI dependency. |
+| `crates/agent_api` | `tact_agent_api` | `2.0.0` (workspace) | Provider-neutral contracts for state, model streams, context, tools, gates, transcript/usage persistence, and events. No product or infrastructure implementation lives here. |
+| `crates/agent_core` | `tact_agent_core` | `2.0.0` (workspace) | Bounded, provider-neutral agent kernel. `AgentKernel::run` owns one activation over injected `KernelDeps`; it has no SQLite, MCP transport, provider SDK, or TUI dependency. |
+| `crates/agent_sdk` | `tact_agent_sdk` | `2.0.0` (workspace) | Ergonomic SDK facade over the neutral API and kernel: safe defaults, static tool composition, session state ownership, cancellation, and optional tracing telemetry. It has no product, provider HTTP, MCP, storage, or UI dependency. |
 | `crates/tui` | `tui` | `0.1.0` (local) | Terminal UI built with `ratatui`. |
 | `crates/agent_tui_kit` | `agent_tui_kit` | `0.1.0` (local) | Reusable host-protocol rendering kit for thinking/tool/log/popup widgets. |
-| `crates/tact` | `tact` | `1.1.42` (workspace) | Product composition root and compatibility facade: tool router, MCP client, hooks, permissions, prompt/compaction policy, persistence adapters, and kernel wiring. |
-| `crates/tact-ui` | `tact-ui` | `1.1.42` (workspace) | CLI/driver: interactive TUI and `headless` subcommand. It owns `TaskComplete`, Goal Runner, session bootstrapping, and host command routing. |
-| `crates/tact_llm` | `tact_llm` | `1.1.42` (workspace) | Stable provider SDK and `tact_agent_api::ModelPort` implementation. `core` exposes the facade, builder, endpoint/limit/auth types, and a lazy stream; protocol adapters are feature-isolated behind `anthropic`, `openai-chat`, and `openai-responses`. |
-| `crates/tool_refactor_macros` | `tool_refactor_macros` | `1.1.42` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions. |
+| `crates/tact` | `tact` | `2.0.0` (workspace) | Product composition root and compatibility facade: tool router, MCP client, hooks, permissions, prompt/compaction policy, persistence adapters, and kernel wiring. |
+| `crates/tact_host` | `tact_host` | `2.0.0` (workspace) | UI-independent host services: session bootstrap/locking, command loop, Goal runner, account polling, permission mapping, and input normalization. |
+| `crates/tact-ui` | `tact-ui` | `2.0.0` (workspace) | TUI adapter and CLI: terminal rendering/input plus headless CLI, consuming `tact_host` for shared orchestration. |
+| `crates/tact_llm` | `tact_llm` | `2.0.0` (workspace) | Stable provider SDK and `tact_agent_api::ModelPort` implementation. `core` exposes the facade, builder, endpoint/limit/auth types, and a lazy stream; protocol adapters are feature-isolated behind `anthropic`, `openai-chat`, and `openai-responses`. |
+| `crates/tool_refactor_macros` | `tool_refactor_macros` | `2.0.0` (workspace) | Proc-macro `#[tool]` that generates `Tool` trait implementations from async functions. |
 
 Dependency graph:
 
 ```mermaid
 flowchart TB
     tact_ui["tact-ui"] --> tact
+    tact_ui --> tact_host["tact_host"]
+    tact_host --> tact
+    tact_host --> tact_llm
+    tact_host --> tact_protocol
     tact_ui --> tui
     tact_ui --> tact_llm
     tact_ui --> tact_protocol
@@ -76,7 +81,10 @@ Binaries produced by `crates/tact-ui`:
 |---|---|---|
 | `tact-ui` | `crates/tact-ui/` | Interactive TUI by default; `headless` subcommand for CI / non-interactive |
 
-`tact-ui` crate layout: `main.rs` (dispatch), `interactive.rs`, `headless.rs`, `user_message.rs`, `permission.rs`, `sessions.rs`.
+`tact-ui` crate layout: `main.rs` (dispatch), `interactive.rs`, `headless.rs`, and
+the terminal-specific `headless_session.rs` test harness and `sessions.rs`
+printer. Shared session, driver, Goal, account, permission, and input logic
+lives in `crates/tact_host`.
 
 ---
 
@@ -86,6 +94,9 @@ Binaries produced by `crates/tact-ui`:
 flowchart TB
     subgraph bins["Binary entry points"]
         B1["tact-ui<br/>crates/tact-ui/"]
+    end
+
+    subgraph host["tact_host — frontend-neutral orchestration"]
         DRV["driver.rs<br/>command routing + TaskComplete"]
     end
 
@@ -238,7 +249,7 @@ kernel, which owns the streaming/tool loop over injected ports.
 sequenceDiagram
     actor U as User
     participant TUI as TUI Module
-    participant Driver as tact-ui driver
+    participant Driver as tact_host driver
     participant Facade as tact::Agent facade
     participant Compose as TactKernelComposition
     participant Kernel as AgentKernel
@@ -665,7 +676,7 @@ flowchart LR
     end
 
     subgraph RuntimeTask["Driver/runtime task"]
-        D["tact-ui driver"]
+        D["tact_host driver"]
         A["Agent facade activation"]
         K["AgentKernel"]
         B["TactEventBridge"]
@@ -803,7 +814,10 @@ If you are reading older branches or notes, the following major evolutions have 
 - `tact_protocol::Agent` is legacy code and is no longer used by the main binaries.
 - The TUI gained streaming output, diff/code/thinking popups, a command palette, mouse support, themes, and internationalization.
 - **Tool log blocks** — 3-tier layout (title + meta + detail card), concurrent active tools, live running elapsed time, and a fixed five-row live tail for active `bash` calls. Progress is keyed by `tool_id`; stderr uses warning styling, active output opens in the detail popup, and updates preserve bottom pinning or an explicit visual scroll position (`log_scroll.visual_top`).
-- **CLI** — `tact-ui` binary in `crates/tact-ui` (depends on `tact` lib + `tui`); default TUI, `headless` subcommand for non-interactive runs.
+- **CLI / host split** — `tact_host` owns UI-independent session, command,
+  Goal, account, permission, and input services. `tact-ui` is a terminal
+  adapter (plus `headless`) over that host; desktop hosts can reuse
+  `tact_host` without depending on `tui`.
 - **Popups / code cards** — modal popups render without drop shadow; code block titles use plain language labels (no emoji icons).
 - **Session store** — SQLite at `<workdir>/.tact/tact.db`; token usage rows optionally store serialized LLM `request_body` for debugging.
 - **Dynamic context** — Project structure snapshot with pruned walk, default 80 items, session-cached for KV stability.

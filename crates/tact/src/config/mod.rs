@@ -472,6 +472,15 @@ pub fn persist_subagent_model_and_reasoning_effort(
 /// the resolved settings for the process.
 pub fn init_config() -> anyhow::Result<CliArgs> {
     let args = CliArgs::parse();
+    init_from_args(&args)?;
+    Ok(args)
+}
+
+/// Install config from options constructed by a non-CLI host.
+///
+/// This uses the same TOML loading and precedence rules as [`init_config`], but
+/// never inspects process argv. Settings are process-global and install once.
+pub fn init_from_args(args: &CliArgs) -> anyhow::Result<()> {
     let (toml_cfg, config_path) = load::load_toml_config(args.config.as_ref())?;
 
     if args.list_sessions
@@ -481,16 +490,16 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
         || matches!(args.command, Some(CliCommand::Upgrade { .. }))
     {
         install_without_llm(resolve::resolve_non_llm_settings(
-            &args,
+            args,
             &toml_cfg,
             config_path,
         )?);
-        return Ok(args);
+        return Ok(());
     }
 
-    let resolved = resolve::resolve_config(&args, &toml_cfg, config_path)?;
+    let resolved = resolve::resolve_config(args, &toml_cfg, config_path)?;
     install(resolved);
-    Ok(args)
+    Ok(())
 }
 
 /// Convenience: initialize config and return CLI args.

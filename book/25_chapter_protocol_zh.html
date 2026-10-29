@@ -415,7 +415,7 @@ href="../docs/state_machines.md">docs/state_machines.md</a>。</p>
 <h2 id="1-channels">1. Channels</h2>
 <pre class="mermaid">graph LR
     Agent[Agent runtime] --&gt;|AgentUpdate| TUI[TUI App]
-    TUI --&gt;|UserCommand| Driver[tact-ui driver]
+    TUI --&gt;|UserCommand| Driver[tact_host driver]
     TUI --&gt;|UiResponse| Driver
     Account[account service] --&gt;|AccountUpdate| TUI</pre>
 <table>
@@ -638,7 +638,7 @@ id 触发等待方（父 agent 或 subagent）。</p>
 <p>余额与配额更新使用专用 channel 上的 <code>AccountUpdate</code>，避免
 provider 特定账户状态泄漏进 <code>AgentUpdate</code>。见
 <code>crates/protocol/src/biz.rs</code> 与
-<code>crates/tact-ui/src/account.rs</code>。</p>
+<code>crates/tact_host/src/account.rs</code>。</p>
 <hr />
 <h2 id="3-plan-step-生命周期">3. Plan Step 生命周期</h2>
 <p>assistant turn 中每次工具调用由
@@ -835,7 +835,7 @@ busy，直到 <code>TaskCancelled</code> 回到 <code>Idle</code>。</li>
 </tbody>
 </table>
 <p><code>TaskComplete</code> 由
-<code>crates/tact-ui/src/driver.rs</code> 在 <code>agent_loop</code>
+<code>crates/tact_host/src/driver.rs</code> 在 <code>agent_loop</code>
 返回 <code>Ok(())</code> 且 <code>agent.is_cancelled()</code> 为 false 时发送（<a
 href="./18_chapter_agent_loop_zh.html#7-tui-集成">Ch 18
 §7</a>）。取消路径改为发送 <code>TaskCancelled</code>。</p>
@@ -1049,7 +1049,7 @@ channel</td>
     autonumber
     actor User
     participant TUI
-    participant Driver as tact-ui driver
+    participant Driver as tact_host driver
     participant Agent as agent_loop
     participant LLM
 

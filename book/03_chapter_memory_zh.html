@@ -466,7 +466,7 @@ href="./07_chapter_tool_zh.html">工具系统</a>。</p>
     sm[save_memory] --&gt; files
     lm[load_memory] --&gt; files</pre>
 <p>启动时，两个前端共用的
-<code>session_bootstrap::bootstrap_session</code>（<code>crates/tact-ui/src/session_bootstrap.rs</code>）调用
+<code>session_bootstrap::bootstrap_session</code>（<code>crates/tact_host/src/session_bootstrap.rs</code>）调用
 <code>tact::memory::memory_root(&amp;work_dir)</code>
 得到本仓库的记忆目录，再把旧的全局目录迁移进来（§6），最后构造
 <code>MemoryManager</code>。</p>
@@ -767,7 +767,7 @@ href="./01_chapter_store_zh.html">存储与持久化</a> 中的 JSON
 <td><code>ToolContext.memory_manager</code></td>
 </tr>
 <tr>
-<td><code>crates/tact-ui/src/session_bootstrap.rs</code></td>
+<td><code>crates/tact_host/src/session_bootstrap.rs</code></td>
 <td>解析 <code>memory_root(&amp;work_dir)</code>、跑迁移、构造
 manager、装配工具集；headless / 交互两个前端共用同一份</td>
 </tr>

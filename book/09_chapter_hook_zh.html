@@ -1301,7 +1301,7 @@ priority 字段可设。</td>
 分发）、<code>run_command_hook</code>、<code>run_mcp_tool_hook</code>、<code>definition_text</code>、<code>build_payload</code></td>
 </tr>
 <tr>
-<td><code>crates/tact-ui/src/session_bootstrap.rs</code></td>
+<td><code>crates/tact_host/src/session_bootstrap.rs</code></td>
 <td><code>apply_plugin_hooks_with_report</code>
 的调用点（两个前端共用），以及 <code>plugin_subagent_start_hooks</code>
 / <code>plugin_subagent_stop_hooks</code> 到 <code>ToolContext</code>
@@ -1318,7 +1318,7 @@ priority 字段可设。</td>
 —— 解析与空闲门控；实际工作由 driver 执行</td>
 </tr>
 <tr>
-<td><code>crates/tact-ui/src/driver.rs</code></td>
+<td><code>crates/tact_host/src/driver.rs</code></td>
 <td><code>UserCommand::Hooks{List,Trust,Forget}</code> →
 <code>survey_hooks</code> / <code>trust_hooks</code> /
 <code>forget_hook_trust</code>，经 <code>Info</code> /

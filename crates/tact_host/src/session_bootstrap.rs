@@ -159,8 +159,14 @@ pub async fn open_session(
         .ensure_session_row(&session_id, &root_dir, "")
         .await?;
     let session_lock = SessionLockGuard::acquire(session_store.clone(), &session_id).await?;
-    lock_registry.register(session_lock.clone()).await;
-    session_store.touch_session(&session_id, &root_dir).await?;
+    if let Err(error) = session_store.touch_session(&session_id, &root_dir).await {
+        let _ = session_lock.release().await;
+        return Err(error);
+    }
+    if let Err(error) = lock_registry.register(session_lock.clone()).await {
+        let _ = session_lock.release().await;
+        return Err(error);
+    }
     Ok((session_id, session_lock))
 }
 

@@ -1,31 +1,56 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
+use std::{
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
 };
 
 use tact::store::DynSessionStore;
 
 /// Process-wide registry; `main` installs the exit-signal listener once.
 pub struct SessionLockRegistry {
-    guard: tokio::sync::Mutex<Option<Arc<SessionLockGuard>>>,
+    guards: tokio::sync::Mutex<HashMap<String, Arc<SessionLockGuard>>>,
 }
 
 impl SessionLockRegistry {
     pub fn new() -> Arc<Self> {
         Arc::new(Self {
-            guard: tokio::sync::Mutex::new(None),
+            guards: tokio::sync::Mutex::new(HashMap::new()),
         })
     }
 
-    pub async fn register(&self, guard: Arc<SessionLockGuard>) {
-        *self.guard.lock().await = Some(guard);
+    pub async fn register(&self, guard: Arc<SessionLockGuard>) -> anyhow::Result<()> {
+        let mut guards = self.guards.lock().await;
+        let session_id = guard.session_id.clone();
+        if guards
+            .get(&session_id)
+            .is_some_and(|existing| !existing.is_released())
+        {
+            anyhow::bail!("session {session_id} already has a live host lock");
+        }
+        guards.insert(session_id, guard);
+        Ok(())
     }
 
     pub async fn release_registered(&self) -> anyhow::Result<()> {
-        if let Some(guard) = self.guard.lock().await.take() {
-            guard.release().await?;
+        let guards: Vec<_> = self
+            .guards
+            .lock()
+            .await
+            .drain()
+            .map(|(_, guard)| guard)
+            .collect();
+        let mut first_error = None;
+        for guard in guards {
+            if let Err(error) = guard.release().await {
+                first_error.get_or_insert(error);
+            }
         }
-        Ok(())
+        match first_error {
+            Some(error) => Err(error),
+            None => Ok(()),
+        }
     }
 
     /// Listen for process exit signals, release any registered session lock, then exit.
@@ -88,13 +113,18 @@ impl SessionLockGuard {
     }
 
     pub async fn release(&self) -> anyhow::Result<()> {
-        if self.released.swap(true, Ordering::SeqCst) {
+        if self.released.load(Ordering::SeqCst) {
             return Ok(());
         }
         self.store
             .release_session_lock(&self.session_id, self.pid, &self.lock_epoch)
             .await?;
+        self.released.store(true, Ordering::SeqCst);
         Ok(())
+    }
+
+    fn is_released(&self) -> bool {
+        self.released.load(Ordering::SeqCst)
     }
 }
 
@@ -129,4 +159,44 @@ fn exit_after_signal(signal: ExitSignal) {
         ExitSignal::Terminate => 143,
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn registry_releases_every_session_and_rejects_duplicates() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db = tmp.path().join("tact.db");
+        let store = tact::store::open_sqlite_session_store(&db)
+            .await
+            .expect("store");
+        for session_id in ["s1", "s2"] {
+            store
+                .ensure_session_row(session_id, "/tmp", "")
+                .await
+                .expect("session row");
+        }
+
+        let registry = SessionLockRegistry::new();
+        let s1 = SessionLockGuard::acquire(store.clone(), "s1")
+            .await
+            .expect("lock s1");
+        registry.register(s1.clone()).await.expect("register s1");
+        assert!(registry.register(s1).await.is_err(), "duplicate must fail");
+
+        let s2 = SessionLockGuard::acquire(store.clone(), "s2")
+            .await
+            .expect("lock s2");
+        registry.register(s2).await.expect("register s2");
+        registry.release_registered().await.expect("release all");
+
+        for session_id in ["s1", "s2"] {
+            let lock = SessionLockGuard::acquire(store.clone(), session_id)
+                .await
+                .expect("reacquire after registry release");
+            lock.release().await.expect("release probe");
+        }
+    }
 }

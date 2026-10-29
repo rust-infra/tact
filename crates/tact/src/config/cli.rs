@@ -5,7 +5,7 @@ use clap::{Parser, Subcommand};
 use crate::permission::PermissionMode;
 
 /// tact — terminal-first AI coding agent
-#[derive(Parser, Debug)]
+#[derive(Parser, Debug, Default)]
 #[command(version, about, long_about = None)]
 pub struct CliArgs {
     #[command(subcommand)]

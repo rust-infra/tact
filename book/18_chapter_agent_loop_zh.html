@@ -627,7 +627,7 @@ href="./17_chapter_notify_zh.html">第 17 章</a>）</li>
 <code>StepFailed</code> 之间发出信息性的
 <code>ToolProgress</code>；它本身不表示完成。</p>
 <p>Goal 不改变 <code>agent_loop</code>
-的单次执行语义。<code>crates/tact-ui/src/goal_runner.rs</code>
+的单次执行语义。<code>crates/tact_host/src/goal_runner.rs</code>
 在外层取得 lease、创建 bounded Run、注入有限 Goal context，并把
 <code>GoalYield</code>、预算耗尽、取消、临时错误和完成提议映射为持久状态。普通
 <code>SubmitTask</code> 仍走原有路径；Goal run 的完成提议必须经过
@@ -676,7 +676,7 @@ pub struct AgentRuntime {
 <hr />
 <h2 id="7-tui-集成">7. TUI 集成</h2>
 <p>在
-<code>crates/tact-ui/src/driver.rs</code>（<code>UserCommand::SubmitTask</code>
+<code>crates/tact_host/src/driver.rs</code>（<code>UserCommand::SubmitTask</code>
 处理器）：</p>
 <pre class="rust"><code>UserCommand::SubmitTask(task) =&gt; {
     agent.tool_use_counter = 0;

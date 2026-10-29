@@ -4,6 +4,8 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
+description = "Tool declaration macros for the Tact agent runtime"
+repository = "https://github.com/rust-infra/tact"
 
 [lib]
 proc-macro = true

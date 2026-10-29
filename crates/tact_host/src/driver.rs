@@ -72,7 +72,7 @@ fn session_goal_runner(
 ) -> GoalRunner {
     let runner = GoalRunner::new(goal_manager.clone(), limits).with_ui(events.ui().cloned());
     match session_id {
-        Some(session_id) => runner.with_owner(format!("tact-ui:{session_id}")),
+        Some(session_id) => runner.with_owner(format!("tact-host:{session_id}")),
         None => runner,
     }
 }
@@ -185,6 +185,8 @@ fn spawn_goal_reconcile(
 ///
 /// `SubmitTask` runs in a background task so `Cancel` can request cancellation
 /// while `agent_loop` is in progress. Integration tests drive this with a fake TUI.
+/// Closing the receiver after the final `SubmitTask` drains that turn; it is
+/// not an interrupt. Frontends tearing down must send [`UserCommand::Cancel`].
 ///
 /// This convenience wrapper does **not** wire an account-update channel; balance
 /// queries initiated through it are dropped. Use
@@ -473,8 +475,12 @@ pub async fn run_command_loop_with_account(
                 } else {
                     active_goal_run = false;
                     active_goal_id = None;
+                    // Start the turn before the task can be scheduled. A
+                    // Cancel received immediately after SubmitTask must not be
+                    // cleared by a late begin_user_turn in the spawned task.
+                    task_agent.begin_user_turn();
                     active = Some(tokio::spawn(async move {
-                        handle_user_command(
+                        handle_user_command_after_begin(
                             &mut task_agent,
                             UserCommand::SubmitTask(task),
                             &work_dir,
@@ -548,6 +554,7 @@ pub async fn run_command_loop_with_account(
                         other,
                         &image_work_dir,
                         account_tx.as_ref(),
+                        true,
                     )
                     .await;
                     agent = Some(a);
@@ -559,7 +566,6 @@ pub async fn run_command_loop_with_account(
     // The UI is gone: unblock any in-flight select waiter so the task can
     // finish instead of deadlocking on an answer that will never arrive.
     ui_responder.shutdown();
-
     // The parent is exiting: request cancellation and persist Cancelled for
     // every live child before detached tasks can be dropped by runtime shutdown.
     if subagent_manager.cancel_all_and_persist().await > 0 {
@@ -1888,7 +1894,15 @@ async fn accept_goal(agent: &mut Agent, goal_id: &str, text: &str) {
 }
 
 pub async fn handle_user_command(agent: &mut Agent, cmd: UserCommand, image_work_dir: &Path) {
-    handle_user_command_with_account(agent, cmd, image_work_dir, None).await;
+    handle_user_command_with_account(agent, cmd, image_work_dir, None, true).await;
+}
+
+async fn handle_user_command_after_begin(
+    agent: &mut Agent,
+    cmd: UserCommand,
+    image_work_dir: &Path,
+) {
+    handle_user_command_with_account(agent, cmd, image_work_dir, None, false).await;
 }
 
 async fn handle_user_command_with_account(
@@ -1896,6 +1910,7 @@ async fn handle_user_command_with_account(
     cmd: UserCommand,
     image_work_dir: &Path,
     account_tx: Option<&UnboundedSender<AccountUpdate>>,
+    begin_turn: bool,
 ) {
     match cmd {
         UserCommand::CreateGoal {
@@ -1978,7 +1993,9 @@ async fn handle_user_command_with_account(
         }
         UserCommand::SubmitTask(task) => {
             agent.tool_use_counter = 0;
-            agent.begin_user_turn();
+            if begin_turn {
+                agent.begin_user_turn();
+            }
 
             let task_message = build_user_message(&task, image_work_dir).await;
 
@@ -2164,7 +2181,7 @@ async fn handle_user_command_with_account(
             // and duplicate remote dials just to print a table.
             match tact::mcp::describe_servers(&agent.mcp_router.server_summaries()) {
                 Ok(views) => agent.emit_update(AgentUpdate::MdInfo(
-                    crate::mcp_cli::render_live_listing(&views),
+                    crate::rendering::render_live_mcp_listing(&views),
                 )),
                 Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
                     format!("MCP list failed: {error:#}"),
@@ -2194,6 +2211,7 @@ async fn handle_user_command_with_account(
                     UserCommand::SubmitTask(messages),
                     image_work_dir,
                     account_tx,
+                    begin_turn,
                 ))
                 .await;
             }
@@ -2202,10 +2220,8 @@ async fn handle_user_command_with_account(
             }
         },
         UserCommand::HooksList => match tact::plugin::survey_hooks(image_work_dir) {
-            // The same wording `tact-ui hooks list` uses: two surfaces naming
-            // the same hooks must not describe them differently.
             Ok(report) => agent.emit_update(AgentUpdate::MdInfo(
-                crate::hooks_cli::render_hooks_listing(&report),
+                crate::rendering::render_hooks_listing(&report),
             )),
             Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
                 "Hooks list failed: {error:#}"

@@ -675,7 +675,7 @@ async；默认实现为 <code>SqliteSessionStore</code>。</p>
 <p>在 <code>main.rs</code> 中通过 <code>open_sqlite_session_store</code>
 于 <code>&lt;workdir&gt;/.tact/tact.db</code>
 打开。此后「这次运行属于哪个会话」由
-<code>crates/tact-ui/src/session_bootstrap.rs</code> 的
+<code>crates/tact_host/src/session_bootstrap.rs</code> 的
 <code>open_session</code> 一次做完，两个前端共用（见 §7）：</p>
 <ol type="1">
 <li>解析 id —— <code>--session</code> 指定，或
@@ -684,15 +684,18 @@ async；默认实现为 <code>SqliteSessionStore</code>。</p>
 UUID。</li>
 <li><code>ensure_session_row(id, root_dir, "")</code> ——
 行必须先存在，锁才有东西可锁。</li>
-<li><code>SessionLockGuard::acquire</code>（<code>crates/tact-ui/src/session_lock.rs</code>）——
+<li><code>SessionLockGuard::acquire</code>（<code>crates/tact_host/src/session_lock.rs</code>）——
 争用时重试 <code>try_lock_session</code>（最多 5 次，退避
 <code>50ms × attempt</code>），写入 <code>locked_by</code> +
 <code>lock_epoch</code>；<code>0</code>/空表示未锁定。</li>
-<li><code>lock_registry.register(...)</code> 与
-<code>touch_session(id, root_dir)</code> ——
-注册后退出信号能释放它；touch 过的会话下次才会被
+<li><code>touch_session(id, root_dir)</code> 与
+<code>lock_registry.register(...)</code> ——
+touch 过的会话下次才会被
 <code>--resume-last</code> 找到。</li>
 </ol>
+<p>锁是 session 级的独占锁：同一进程也只有第一个
+<code>SessionLockGuard</code> 能持有给定 session；registry 会保存所有已登记
+session，并在退出信号时逐个释放，而不是只覆盖最后一个。</p>
 <p><code>lock_epoch</code> 是
 <code>process_identity(pid)</code>（<code>store/process_identity.rs</code>，2026-10-17
 从 <code>store/session_store/</code> 上移为共享模块）：Linux 读
@@ -1054,14 +1057,14 @@ trait（async：create_worktree/find_worktree/list_worktrees/append_event/recent
 <code>replace_persisted_context_and_state</code>、<code>compact_history*</code></td>
 </tr>
 <tr>
-<td><code>crates/tact-ui/src/session_lock.rs</code></td>
+<td><code>crates/tact_host/src/session_lock.rs</code></td>
 <td><code>SessionLockGuard</code>（5 次重试 + 退避）+
-<code>SessionLockRegistry</code>（注册 / 退出信号释放 +
+<code>SessionLockRegistry</code>（多 session 注册 / 全部释放 + 退出信号 +
 <code>130</code>/<code>143</code> 退出）</td>
 </tr>
 <tr>
-<td><code>crates/tact-ui/src/session_bootstrap.rs</code></td>
-<td><code>open_session</code>（解析 id → 建行 → 抢锁 → 注册 → touch）与
+<td><code>crates/tact_host/src/session_bootstrap.rs</code></td>
+<td><code>open_session</code>（解析 id → 建行 → 抢锁 → touch → 注册）与
 <code>bootstrap_session</code>（五个领域 manager +
 agent，两个前端共用）</td>
 </tr>
