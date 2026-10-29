@@ -32,8 +32,28 @@ let model = provider.into_model();
 
 `Provider` implements `tact_agent_api::ModelPort`. It does not resolve
 refreshable credentials during construction, and it does not install a tracing
-subscriber. Use `Provider::with_session_id` when a child agent must carry a
-different session identity from its parent.
+subscriber. The `telemetry` feature emits the `tact_llm.call` spans and events
+under whatever subscriber the host installs. Use `Provider::with_session_id`
+when a child agent must carry a different session identity from its parent.
+
+Tokio task/runtime instrumentation is the host's decision, not this crate's.
+Enabling `tact_llm/telemetry` does not turn it on and does not modify the
+consumer's tokio features. A host that wants it enables `tokio/tracing` in its
+own dependency declaration and builds with `--cfg tokio_unstable`, for example:
+
+```toml
+[dependencies]
+tokio = { version = "1", features = ["tracing"] }
+```
+
+```toml
+[build]
+rustflags = ["--cfg", "tokio_unstable"]
+```
+
+Both are required: with the feature but without the cfg, Tokio compiles its
+instrumentation out. The cfg also unlocks other unstable Tokio behavior
+build-wide.
 
 ## Stable and compatibility surfaces
 

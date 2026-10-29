@@ -89,6 +89,7 @@ struct LazyModelStream {
     provider_state: Option<ProviderConversationState>,
     cancel: CancelToken,
     message_id: MessageId,
+    span: crate::telemetry::SpanHandle,
     rx: Option<mpsc::Receiver<Result<ModelEvent, ModelError>>>,
     producer: Option<JoinHandle<()>>,
     started: bool,
@@ -108,44 +109,48 @@ impl LazyModelStream {
         let provider_state = self.provider_state.clone();
         let cancel = self.cancel.clone();
         let message_id = self.message_id.clone();
+        let span = crate::telemetry::clone_handle(&self.span);
         let started = Arc::new(AtomicBool::new(false));
         let started_by_sink = started.clone();
         self.rx = Some(rx);
-        self.producer = Some(tokio::spawn(async move {
-            let sink = ProgressSink {
-                tx: tx.clone(),
-                message_id: message_id.clone(),
-                cancel: cancel.clone(),
-                started: started_by_sink,
-            };
-            let result = tokio::select! {
-                biased;
-                result = client.stream_message(&request, provider_state.as_ref(), &sink) => {
-                    result.map_err(model_error)
-                }
-                _ = cancel.cancelled() => Err(ModelError::new(
-                    ModelErrorKind::Cancelled,
-                    "model call cancelled",
-                )),
-            };
-            match result {
-                Ok(response) => {
-                    if !started.load(Ordering::Acquire) {
-                        let _ = tx
-                            .send(Ok(ModelEvent::MessageStarted {
-                                message_id: message_id.clone(),
-                                role: tact_agent_api::AgentRole::Assistant,
-                            }))
-                            .await;
+        self.producer = Some(tokio::spawn(crate::telemetry::instrument(
+            span,
+            async move {
+                let sink = ProgressSink {
+                    tx: tx.clone(),
+                    message_id: message_id.clone(),
+                    cancel: cancel.clone(),
+                    started: started_by_sink,
+                };
+                let result = tokio::select! {
+                    biased;
+                    result = client.stream_message(&request, provider_state.as_ref(), &sink) => {
+                        result.map_err(model_error)
                     }
-                    let terminal = model_response(response, message_id);
-                    let _ = tx.send(Ok(ModelEvent::Finished(terminal))).await;
+                    _ = cancel.cancelled() => Err(ModelError::new(
+                        ModelErrorKind::Cancelled,
+                        "model call cancelled",
+                    )),
+                };
+                match result {
+                    Ok(response) => {
+                        if !started.load(Ordering::Acquire) {
+                            let _ = tx
+                                .send(Ok(ModelEvent::MessageStarted {
+                                    message_id: message_id.clone(),
+                                    role: tact_agent_api::AgentRole::Assistant,
+                                }))
+                                .await;
+                        }
+                        let terminal = model_response(response, message_id);
+                        let _ = tx.send(Ok(ModelEvent::Finished(terminal))).await;
+                    }
+                    Err(error) => {
+                        let _ = tx.send(Err(error)).await;
+                    }
                 }
-                Err(error) => {
-                    let _ = tx.send(Err(error)).await;
-                }
-            }
-        }));
+            },
+        )));
     }
 }
 
@@ -228,7 +233,13 @@ impl ProviderModel {
         provider_state: Option<ProviderConversationState>,
         cancel: CancelToken,
     ) -> Result<ModelStream, ModelError> {
-        self.stream_lazy(request, provider_state, cancel).await
+        self.stream_lazy(
+            request,
+            provider_state,
+            cancel,
+            crate::telemetry::SpanHandle::none(),
+        )
+        .await
     }
 
     pub(crate) async fn stream_lazy(
@@ -236,6 +247,7 @@ impl ProviderModel {
         request: CreateMessageParams,
         provider_state: Option<ProviderConversationState>,
         cancel: CancelToken,
+        span: crate::telemetry::SpanHandle,
     ) -> Result<ModelStream, ModelError> {
         Ok(Box::pin(LazyModelStream {
             client: self.client.clone(),
@@ -243,6 +255,7 @@ impl ProviderModel {
             provider_state,
             cancel,
             message_id: self.next_message_id(),
+            span,
             rx: None,
             producer: None,
             started: false,

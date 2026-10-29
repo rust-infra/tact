@@ -401,6 +401,10 @@ impl std::fmt::Debug for Provider {
 impl Provider {
     fn from_spec(spec: ProviderSpec) -> Result<Self, BuildError> {
         let client = build_client(&spec)?;
+        Ok(Self::from_parts(spec, client))
+    }
+
+    fn from_parts(spec: ProviderSpec, client: LlmProvider) -> Self {
         let model = ProviderModel::new(client, spec.capabilities.clone());
         let metadata = ProviderMetadata::new(
             spec.kind.clone(),
@@ -410,13 +414,13 @@ impl Provider {
             spec.capabilities.clone(),
             spec.supports_vision,
         );
-        Ok(Self {
+        Self {
             inner: Arc::new(ProviderInner {
                 spec,
                 model,
                 metadata,
             }),
-        })
+        }
     }
 
     pub fn metadata(&self) -> &ProviderMetadata {
@@ -533,7 +537,11 @@ impl ModelPort for Provider {
     ) -> Result<ModelStream, ModelError> {
         let mut span = crate::telemetry::call_span("stream", &self.inner.metadata);
         let (params, state) = self.validate(request, cursor)?;
-        let stream = self.inner.model.stream_lazy(params, state, cancel).await?;
+        let stream = self
+            .inner
+            .model
+            .stream_lazy(params, state, cancel, span.handle())
+            .await?;
         let capture = self.inner.spec.product_capture;
         Ok(Box::pin(stream.map(move |event| {
             crate::telemetry::record_event(&mut span, &event);
@@ -558,12 +566,12 @@ impl ModelPort for Provider {
     ) -> Result<ModelResponse, ModelError> {
         let span = crate::telemetry::call_span("complete", &self.inner.metadata);
         let (params, state) = self.validate(request, cursor)?;
-        let result = self
-            .inner
-            .model
-            .complete_params(params, state, cancel)
-            .await
-            .map_err(Self::stable_error);
+        let result = crate::telemetry::instrument(
+            span.handle(),
+            self.inner.model.complete_params(params, state, cancel),
+        )
+        .await
+        .map_err(Self::stable_error);
         crate::telemetry::record_result(&span, &result);
         let mut response = result?;
         if !self.inner.spec.product_capture {
@@ -583,12 +591,12 @@ impl ModelPort for Provider {
             return Err(ModelError::unsupported("native compaction"));
         }
         let (params, state) = self.validate(request, cursor)?;
-        let result = self
-            .inner
-            .model
-            .compact_params(params, state, cancel)
-            .await
-            .map_err(Self::stable_error);
+        let result = crate::telemetry::instrument(
+            span.handle(),
+            self.inner.model.compact_params(params, state, cancel),
+        )
+        .await
+        .map_err(Self::stable_error);
         crate::telemetry::record_result(&span, &result);
         let mut response = result?;
         if !self.inner.spec.product_capture {
@@ -693,6 +701,193 @@ fn legacy_credential(credential: &Credential) -> LegacyCredential {
             credential.secret().unwrap_or_default().to_string(),
         )),
         CredentialKind::None => LegacyCredential::None,
+    }
+}
+
+/// Telemetry contract tests that go through the real `Provider` path.
+#[cfg(all(test, feature = "telemetry"))]
+mod telemetry_tests {
+    use futures_util::StreamExt;
+    use tact_agent_api::{
+        AgentContentBlock, AgentRole, CancelToken, ModelMessage, ModelPort, ModelRequest,
+    };
+
+    use super::*;
+    use crate::mock::MockClient;
+    use crate::{ContentBlock, StopReason, telemetry::testing::Capture};
+
+    fn spec(protocol: WireProtocol) -> ProviderSpec {
+        spec_with_compaction(protocol, false)
+    }
+
+    fn spec_with_compaction(protocol: WireProtocol, native_compaction: bool) -> ProviderSpec {
+        ProviderSpec {
+            kind: ProviderKind::Custom("telemetry-test".into()),
+            protocol,
+            model: "mock".into(),
+            endpoint: Endpoint::parse("http://127.0.0.1:1").unwrap(),
+            auth: Authentication::None,
+            session_id: None,
+            limits: ModelLimits::new(Some(1_000), 100).unwrap(),
+            #[cfg(feature = "openai-chat")]
+            chat_dialect: None,
+            native_compaction,
+            responses_compact_threshold: None,
+            supports_vision: false,
+            replay_prior_reasoning: None,
+            product_capture: false,
+            capabilities: ModelCapabilities::new("mock", Some(1_000), 100, true, false).unwrap(),
+        }
+    }
+
+    fn provider(client: MockClient) -> Provider {
+        provider_with(spec(WireProtocol::OpenAiChatCompletions), client)
+    }
+
+    fn provider_with(spec: ProviderSpec, client: MockClient) -> Provider {
+        Provider::from_parts(spec, LlmProvider::Mock(client))
+    }
+
+    fn turn() -> (Vec<ContentBlock>, Option<StopReason>) {
+        (
+            vec![ContentBlock::Text {
+                text: "hello".into(),
+            }],
+            Some(StopReason::EndTurn),
+        )
+    }
+
+    fn request() -> ModelRequest {
+        ModelRequest {
+            model: "mock".into(),
+            system: String::new(),
+            messages: vec![ModelMessage {
+                role: AgentRole::User,
+                content: vec![AgentContentBlock::Text { text: "hi".into() }],
+            }],
+            tools: Vec::new(),
+            max_output_tokens: 10,
+            options: Default::default(),
+        }
+    }
+
+    // `set_default` only covers this thread, so the task must stay on it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn complete_runs_the_model_future_inside_the_call_span() {
+        let (capture, _guard) = Capture::install(tracing::Level::INFO);
+        // The responder runs inside the awaited model future, so its event
+        // only carries the call span if `complete` instruments that future.
+        let provider = provider(MockClient::with_responder(|_request, _index| {
+            tracing::info!("inside complete future");
+            Ok((turn().0, turn().1, None))
+        }));
+
+        provider
+            .complete(request(), None, CancelToken::new())
+            .await
+            .unwrap();
+
+        let output = capture.text();
+        assert!(
+            output.lines().any(|line| line.contains("tact_llm.call{")
+                && line.contains("request_kind=\"complete\"")
+                && line.contains("inside complete future")),
+            "complete did not record under its call span:\n{output}"
+        );
+    }
+
+    // `set_default` only covers this thread, so the task must stay on it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn compact_runs_the_model_future_inside_the_call_span() {
+        let (capture, _guard) = Capture::install(tracing::Level::INFO);
+        let provider = provider_with(
+            spec_with_compaction(WireProtocol::OpenAiChatCompletions, true),
+            MockClient::with_responder(|_request, _index| {
+                tracing::info!("inside compact future");
+                Ok((turn().0, turn().1, None))
+            }),
+        );
+
+        provider
+            .compact(request(), None, CancelToken::new())
+            .await
+            .unwrap();
+
+        let output = capture.text();
+        assert!(
+            output.lines().any(|line| line.contains("tact_llm.call{")
+                && line.contains("request_kind=\"compact\"")
+                && line.contains("inside compact future")),
+            "compact did not run inside its call span:\n{output}"
+        );
+    }
+
+    // `set_default` only covers this thread, so the task must stay on it.
+    #[tokio::test(flavor = "current_thread")]
+    async fn lazy_stream_producer_runs_inside_the_call_span() {
+        let (capture, _guard) = Capture::install(tracing::Level::INFO);
+        // The responder runs inside the spawned producer task, so its event
+        // only carries the call span if the spawn is instrumented.
+        let provider = provider(MockClient::with_responder(|_request, _index| {
+            tracing::info!("inside lazy stream producer");
+            Ok((turn().0, turn().1, None))
+        }));
+
+        let mut stream = provider
+            .stream(request(), None, CancelToken::new())
+            .await
+            .unwrap();
+        while stream.next().await.is_some() {}
+
+        let output = capture.text();
+        assert!(
+            output.lines().any(|line| line.contains("tact_llm.call{")
+                && line.contains("request_kind=\"stream\"")
+                && line.contains("inside lazy stream producer")),
+            "lazy stream producer lost the call span:\n{output}"
+        );
+        // Matching text is not enough: a second span with the same fields
+        // formats identically. Exactly one call span may exist.
+        assert_eq!(
+            capture.call_span_ids().len(),
+            1,
+            "stream opened more than one call span, so the producer and the \
+             stream events are not on the same span:\n{output}"
+        );
+        assert!(
+            output.contains("stream first event"),
+            "stream events did not reach the call span:\n{output}"
+        );
+    }
+
+    // Public helper path used by legacy callers must not invent a span.
+    #[tokio::test(flavor = "current_thread")]
+    async fn unspanned_stream_params_do_not_emit_a_call_span() {
+        let (capture, _guard) = Capture::install(tracing::Level::INFO);
+        let provider = ProviderModel::new(
+            LlmProvider::Mock(MockClient::with_responder(|_request, _index| {
+                tracing::info!("inside unspanned producer");
+                Ok((turn().0, turn().1, None))
+            })),
+            spec(WireProtocol::OpenAiChatCompletions).capabilities,
+        );
+        let params =
+            crate::neutral::create_message_params(&request()).expect("request converts to params");
+        let mut stream = provider
+            .stream_params(params, None, CancelToken::new())
+            .await
+            .unwrap();
+        while stream.next().await.is_some() {}
+
+        let output = capture.text();
+        assert!(
+            output.contains("inside unspanned producer"),
+            "producer did not run:\n{output}"
+        );
+        assert!(
+            !output.contains("tact_llm.call"),
+            "unspanned path emitted a call span:\n{output}"
+        );
     }
 }
 

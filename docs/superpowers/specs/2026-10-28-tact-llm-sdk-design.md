@@ -788,8 +788,12 @@ marker must not appear in `Debug`, `Display`, error chains, or tracing.
 
 ### Tracing
 
-The `telemetry` feature adds host-owned `tracing` spans and events. Required
-fields:
+The `telemetry` feature adds host-owned `tracing` spans and events. It does not
+enable `tokio/tracing`, because that feature only takes effect under a
+consumer-side `--cfg tokio_unstable`, and enabling it from a library silently
+changes Tokio instrumentation for the whole binary. Hosts that want Tokio
+task/runtime events enable `tokio/tracing` and `tokio_unstable` themselves.
+Required fields:
 
 - provider kind, wire protocol, model id, and endpoint host;
 - request kind: stream, complete, compact, or legacy account/discovery;
@@ -800,6 +804,12 @@ fields:
 Library telemetry never records prompts, responses, request bodies, response
 bodies, tool arguments, authorization headers, credentials, raw SSE frames, or
 provider-state payloads. The library never installs a subscriber.
+
+`Provider::complete` and `Provider::compact` execute their model futures under
+the call span. The lazy stream producer task is instrumented with the same
+span before it is spawned, so the producer and any Tokio events the host has
+enabled inherit the LLM call context without changing the stream's
+dispatch-on-first-poll semantics.
 
 ## Core Contract Changes
 
@@ -858,7 +868,7 @@ The stable package default is `core`. Protocol dependencies are opt-in:
 | `openai-chat` | Chat Completions adapter | Responses crate |
 | `openai-responses` | Responses adapter and provider state | Chat adapter |
 | `openai` | both OpenAI protocols | unrelated provider SDKs |
-| `telemetry` | optional tracing instrumentation | subscriber installation |
+| `telemetry` | optional `tracing` instrumentation | subscriber installation, `tokio/tracing` |
 | `test-support` | deterministic mocks and fixtures | production names |
 | `legacy-tact` | legacy globals, `ProviderInfo`, `LlmProvider` | new stable construction |
 | `account` | account balance/quota compatibility APIs | stable SDK methods |

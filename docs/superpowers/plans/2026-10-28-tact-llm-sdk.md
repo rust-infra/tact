@@ -617,7 +617,10 @@ default remains broad is a separate, verifiable checkpoint.
 - [x] Add `telemetry.rs` behind the `telemetry` feature. Record provider kind,
   protocol, model id, endpoint host, request kind, elapsed time, time to first
   event, status class, error kind, retry delay, cancellation, outcome, and
-  token counts when available.
+  token counts when available. Tokio task/runtime instrumentation stays a host
+  opt-in: `tokio/tracing` plus `--cfg tokio_unstable`.
+- [x] Instrument `complete`/`compact` futures and the lazy stream producer task
+  with the call span so task events inherit the LLM call context.
 - [x] Never record prompts, responses, tool arguments, request/response bodies,
   credentials, authorization headers, raw SSE, or provider-state payloads.
 - [x] Add recursive error-chain tests and subscriber-capture tests that include

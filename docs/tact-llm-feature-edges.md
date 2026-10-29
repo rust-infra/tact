@@ -9,7 +9,7 @@ Reviewed 2026-10-29.
 | `openai-chat` | `reqwest 0.13`, SSE, `async-openai`, `httpdate` | Chat constructors and `ChatDialect` |
 | `openai-responses` | `reqwest 0.13`, SSE, `async-openai-responses`, `secrecy 0.10`, `httpdate` | Responses constructors |
 | `openai` | both OpenAI protocols | both OpenAI constructor families |
-| `telemetry` | optional `tracing` | no subscriber installation |
+| `telemetry` | optional `tracing` call spans and events | no subscriber installation, no `tokio/tracing` |
 | `legacy-tact` | compatibility globals, concrete adapters, provider state, mock, profile, account/discovery hooks | no stable additions |
 | `account` | account compatibility APIs (implies `legacy-tact`) | no stable additions |
 | `model-discovery` | model-list compatibility APIs (implies `legacy-tact`) | no stable additions |
@@ -24,3 +24,7 @@ cargo tree -p tact_llm --no-default-features --features core -e normal
 
 The command must not contain an HTTP client, provider SDK, SSE parser, or
 tracing subscriber. Protocol-only builds add exactly the dependency row above.
+Tokio task instrumentation is opt-in at the host: it needs `tokio/tracing` in
+the consumer's own feature list plus `--cfg tokio_unstable` in the consumer
+build. The Tact workspace sets that cfg in `.cargo/config.toml`, but the crate
+does not enable the feature for its consumers.

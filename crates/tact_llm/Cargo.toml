@@ -50,6 +50,7 @@ dotenvy = { workspace = true }
 tact_agent_sdk = { path = "../agent_sdk" }
 wiremock = "0.6"
 tracing-subscriber = { workspace = true, features = ["fmt"] }
+toml = { workspace = true }
 trybuild = "1"
 
 [[example]]

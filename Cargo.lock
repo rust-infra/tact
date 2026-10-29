@@ -4909,6 +4909,7 @@ dependencies = [
  "tact_agent_sdk",
  "thiserror 2.0.19",
  "tokio",
+ "toml 0.8.23",
  "tracing",
  "tracing-subscriber",
  "trybuild",
