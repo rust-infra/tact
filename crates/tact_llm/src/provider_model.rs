@@ -109,8 +109,8 @@ impl LazyModelStream {
         let provider_state = self.provider_state.clone();
         let cancel = self.cancel.clone();
         let message_id = self.message_id.clone();
-        let span = crate::telemetry::clone_handle(&self.span);
-        let span_for_error = crate::telemetry::clone_handle(&span);
+        let span = self.span.clone();
+        let span_for_error = span.clone();
         let started = Arc::new(AtomicBool::new(false));
         let started_by_sink = started.clone();
         self.rx = Some(rx);

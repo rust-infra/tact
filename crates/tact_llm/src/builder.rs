@@ -585,12 +585,7 @@ impl ModelPort for Provider {
         let stream = self
             .inner
             .model
-            .stream_lazy(
-                params,
-                state,
-                cancel,
-                crate::telemetry::clone_handle(&handle),
-            )
+            .stream_lazy(params, state, cancel, handle.clone())
             .await;
         let capture = self.inner.spec.product_capture;
         let guarded = GuardedStream {

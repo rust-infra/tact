@@ -28,25 +28,7 @@ impl Default for SpanHandle {
 
 impl SpanHandle {
     pub(crate) fn none() -> Self {
-        #[cfg(feature = "telemetry")]
-        {
-            Self::default()
-        }
-        #[cfg(not(feature = "telemetry"))]
-        {
-            Self
-        }
-    }
-}
-
-pub(crate) fn clone_handle(handle: &SpanHandle) -> SpanHandle {
-    #[cfg(feature = "telemetry")]
-    {
-        handle.clone()
-    }
-    #[cfg(not(feature = "telemetry"))]
-    {
-        *handle
+        Self::default()
     }
 }
 
@@ -100,7 +82,7 @@ impl CallSpan {
 }
 
 #[cfg(feature = "telemetry")]
-pub(crate) fn instrument<F>(handle: SpanHandle, future: F) -> tracing::instrument::Instrumented<F>
+pub(crate) fn instrument<F>(handle: SpanHandle, future: F) -> impl Future<Output = F::Output>
 where
     F: Future,
 {
@@ -108,7 +90,10 @@ where
 }
 
 #[cfg(not(feature = "telemetry"))]
-pub(crate) fn instrument<F>(_handle: SpanHandle, future: F) -> F {
+pub(crate) fn instrument<F>(_handle: SpanHandle, future: F) -> impl Future<Output = F::Output>
+where
+    F: Future,
+{
     future
 }
 

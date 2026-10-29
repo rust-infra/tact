@@ -36,6 +36,13 @@ subscriber. The `telemetry` feature emits the `tact_llm.call` spans and events
 under whatever subscriber the host installs. Use `Provider::with_session_id`
 when a child agent must carry a different session identity from its parent.
 
+Every dispatched call reports one `outcome`: `finished`, `failed`, or
+`dropped`. Validation failures and unsupported compaction report `failed` even
+though no adapter ran. A stream abandoned by its consumer reports `dropped`;
+an unpolled stream reports nothing because it dispatched nothing. Failures
+carry `error_kind`, and HTTP failures also carry `status_class`
+(`authentication`, `context_overflow`, `transient`, `permanent`).
+
 Tokio task/runtime instrumentation is the host's decision, not this crate's.
 Enabling `tact_llm/telemetry` does not turn it on and does not modify the
 consumer's tokio features. A host that wants it enables `tokio/tracing` in its
