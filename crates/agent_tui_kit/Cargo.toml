@@ -7,7 +7,7 @@ description = "Reusable agent-TUI component kit: thinking/tool cards, streaming 
 license = "MIT"
 
 [dependencies]
-tact_protocol = { version = "0.1.0", path = "../protocol" }
+tact_protocol = { version = "2.0.0", path = "../protocol" }
 chrono = { workspace = true }
 crossterm = { workspace = true }
 pulldown-cmark = { workspace = true }

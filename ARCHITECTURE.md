@@ -12,7 +12,7 @@ This project is a Cargo Workspace containing the following crates:
 
 | Directory | Package | Version | Responsibility |
 |---|---|---|---|
-| `crates/protocol` | `tact_protocol` | `0.1.0` (local) | Host/TUI wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Its `Agent` module is legacy and is not part of the runtime path. |
+| `crates/protocol` | `tact_protocol` | `2.0.0` (workspace) | Host/TUI wire types: `AgentUpdate`, `UserCommand`, `PlanStep`, `StepResult`, `StepStatus`, `ModelCallParams`, `BalanceInfo`. Its `Agent` module is legacy and is not part of the runtime path. |
 | `crates/agent_api` | `tact_agent_api` | `2.0.0` (workspace) | Provider-neutral contracts for state, model streams, context, tools, gates, transcript/usage persistence, and events. No product or infrastructure implementation lives here. |
 | `crates/agent_core` | `tact_agent_core` | `2.0.0` (workspace) | Bounded, provider-neutral agent kernel. `AgentKernel::run` owns one activation over injected `KernelDeps`; it has no SQLite, MCP transport, provider SDK, or TUI dependency. |
 | `crates/agent_sdk` | `tact_agent_sdk` | `2.0.0` (workspace) | Ergonomic SDK facade over the neutral API and kernel: safe defaults, static tool composition, session state ownership, cancellation, and optional tracing telemetry. It has no product, provider HTTP, MCP, storage, or UI dependency. |

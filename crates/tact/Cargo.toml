@@ -8,7 +8,7 @@ description = "Tact product runtime and composition root"
 repository = "https://github.com/rust-infra/tact"
 
 [dependencies]
-tact_protocol = { version = "0.1.0", path = "../protocol" }
+tact_protocol = { version = "2.0.0", path = "../protocol" }
 tact_llm = { version = "2.0.0", path = "../tact_llm", default-features = false, features = ["legacy-tact", "account", "model-discovery", "product-runtime"] }
 tact_agent_api = { version = "2.0.0", path = "../agent_api" }
 tact_agent_core = { version = "2.0.0", path = "../agent_core" }

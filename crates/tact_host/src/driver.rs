@@ -4239,7 +4239,7 @@ mod tests {
                 rendered = Some(md);
             }
         }
-        // Both wordings come from `hooks_cli::render_hooks_listing`, so the
+        // Both wordings come from `rendering::render_hooks_listing`, so the
         // assertion holds whether or not this machine has hooks configured —
         // what it pins is that `/hooks list` reaches the loader and is shown,
         // rather than being silently dropped by the driver.

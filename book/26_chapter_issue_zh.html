@@ -21413,6 +21413,13 @@ lease owner 与 session-lock 错误不再写死 <code>tact-ui</code>；
 <code>tact_protocol</code> / <code>tool_refactor_macros</code> →
 <code>tact_host</code> 的完整闭包，并由
 <code>fixtures/tact-host-consumer</code> 编译真实 host-only 接线。</p>
+<p><strong>2026-10-30 补记：</strong> 审查又收口了两处。hooks 与 MCP 的列表渲染
+只保留 <code>tact_host::rendering</code> 一份，<code>tact-ui</code> 的
+<code>hooks list</code> 直接复用，删除了 <code>mcp_cli::render_live_listing</code>
+和 <code>hooks_cli::render_hooks_listing</code> 的副本；<code>tact_protocol</code>
+从 <code>0.1.0</code> 提升到 <code>2.0.0</code>，与 <code>tact</code> /
+<code>tact_host</code> 的发布线对齐，避免 <code>2.0.0</code> 依赖
+<code>0.1.x</code> 的 semver 漏洞。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>

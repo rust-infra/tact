@@ -11,7 +11,7 @@ readme = "README.md"
 [dependencies]
 tact = { version = "2.0.0", path = "../tact" }
 tact_llm = { version = "2.0.0", path = "../tact_llm", default-features = false, features = ["legacy-tact", "account"] }
-tact_protocol = { version = "0.1.0", path = "../protocol" }
+tact_protocol = { version = "2.0.0", path = "../protocol" }
 anyhow = { workspace = true }
 chrono = { workspace = true }
 regex = { workspace = true }

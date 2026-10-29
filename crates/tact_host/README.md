@@ -7,7 +7,9 @@ owns the parts that are identical for the terminal and a desktop client:
 - the `UserCommand` -> `Agent` command loop;
 - Goal Runner and Goal recovery;
 - account/quota polling;
-- permission-mode mapping and user-message construction.
+- permission-mode mapping and user-message construction;
+- the shared Markdown listings for `/mcp list` and `/hooks list` (`rendering`),
+  so the TUI and the CLI cannot describe the same state differently.
 
 It doesn't depend on `tui`, Ratatui, Crossterm, or any renderer.
 
