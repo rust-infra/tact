@@ -9,7 +9,7 @@ use async_trait::async_trait;
 use futures_util::Stream;
 use tact_agent_api::{
     CancelToken, ModelCapabilities, ModelCursor, ModelError, ModelEvent, ModelPort, ModelRequest,
-    ModelResponse, ModelStream,
+    ModelResponse, ModelStream, RunContext,
 };
 use tracing::{Instrument, info_span};
 
@@ -24,16 +24,10 @@ impl InstrumentedModelPort {
     pub(crate) fn new(inner: Arc<dyn ModelPort>, config: TelemetryConfig) -> Self {
         Self { inner, config }
     }
-}
 
-#[async_trait]
-impl ModelPort for InstrumentedModelPort {
-    fn capabilities(&self) -> ModelCapabilities {
-        self.inner.capabilities()
-    }
-
-    async fn stream(
+    async fn stream_with(
         &self,
+        context: Option<&RunContext>,
         request: ModelRequest,
         cursor: Option<&ModelCursor>,
         cancel: CancelToken,
@@ -51,11 +45,15 @@ impl ModelPort for InstrumentedModelPort {
             "error.kind" = tracing::field::Empty
         );
         let started = Instant::now();
-        let result = self
-            .inner
-            .stream(request, cursor, cancel)
-            .instrument(span.clone())
-            .await;
+        let result = match context {
+            Some(context) => {
+                self.inner
+                    .stream_with_context(context, request, cursor, cancel)
+                    .instrument(span.clone())
+                    .await
+            }
+            None => self.inner.stream(request, cursor, cancel).await,
+        };
         match result {
             Ok(stream) => Ok(Box::pin(InstrumentedModelStream::new(
                 stream,
@@ -78,8 +76,9 @@ impl ModelPort for InstrumentedModelPort {
         }
     }
 
-    async fn complete(
+    async fn complete_with(
         &self,
+        context: Option<&RunContext>,
         request: ModelRequest,
         cursor: Option<&ModelCursor>,
         cancel: CancelToken,
@@ -96,11 +95,15 @@ impl ModelPort for InstrumentedModelPort {
             "error.kind" = tracing::field::Empty
         );
         let started = Instant::now();
-        let result = self
-            .inner
-            .complete(request, cursor, cancel)
-            .instrument(span.clone())
-            .await;
+        let result = match context {
+            Some(context) => {
+                self.inner
+                    .complete_with_context(context, request, cursor, cancel)
+                    .instrument(span.clone())
+                    .await
+            }
+            None => self.inner.complete(request, cursor, cancel).await,
+        };
         match &result {
             Ok(response) => record_usage(&span, response),
             Err(error) => {
@@ -111,8 +114,9 @@ impl ModelPort for InstrumentedModelPort {
         result
     }
 
-    async fn compact(
+    async fn compact_with(
         &self,
+        context: Option<&RunContext>,
         request: ModelRequest,
         cursor: Option<&ModelCursor>,
         cancel: CancelToken,
@@ -127,11 +131,15 @@ impl ModelPort for InstrumentedModelPort {
             "error.kind" = tracing::field::Empty
         );
         let started = Instant::now();
-        let result = self
-            .inner
-            .compact(request, cursor, cancel)
-            .instrument(span.clone())
-            .await;
+        let result = match context {
+            Some(context) => {
+                self.inner
+                    .compact_with_context(context, request, cursor, cancel)
+                    .instrument(span.clone())
+                    .await
+            }
+            None => self.inner.compact(request, cursor, cancel).await,
+        };
         match &result {
             Ok(response) => record_usage(&span, response),
             Err(error) => {
@@ -140,6 +148,73 @@ impl ModelPort for InstrumentedModelPort {
         }
         span.record("duration_ms", elapsed_ms(started));
         result
+    }
+}
+
+#[async_trait]
+impl ModelPort for InstrumentedModelPort {
+    fn capabilities(&self) -> ModelCapabilities {
+        self.inner.capabilities()
+    }
+
+    async fn stream(
+        &self,
+        request: ModelRequest,
+        cursor: Option<&ModelCursor>,
+        cancel: CancelToken,
+    ) -> Result<ModelStream, ModelError> {
+        self.stream_with(None, request, cursor, cancel).await
+    }
+
+    async fn stream_with_context(
+        &self,
+        context: &RunContext,
+        request: ModelRequest,
+        cursor: Option<&ModelCursor>,
+        cancel: CancelToken,
+    ) -> Result<ModelStream, ModelError> {
+        self.stream_with(Some(context), request, cursor, cancel)
+            .await
+    }
+
+    async fn complete(
+        &self,
+        request: ModelRequest,
+        cursor: Option<&ModelCursor>,
+        cancel: CancelToken,
+    ) -> Result<ModelResponse, ModelError> {
+        self.complete_with(None, request, cursor, cancel).await
+    }
+
+    async fn complete_with_context(
+        &self,
+        context: &RunContext,
+        request: ModelRequest,
+        cursor: Option<&ModelCursor>,
+        cancel: CancelToken,
+    ) -> Result<ModelResponse, ModelError> {
+        self.complete_with(Some(context), request, cursor, cancel)
+            .await
+    }
+
+    async fn compact(
+        &self,
+        request: ModelRequest,
+        cursor: Option<&ModelCursor>,
+        cancel: CancelToken,
+    ) -> Result<ModelResponse, ModelError> {
+        self.compact_with(None, request, cursor, cancel).await
+    }
+
+    async fn compact_with_context(
+        &self,
+        context: &RunContext,
+        request: ModelRequest,
+        cursor: Option<&ModelCursor>,
+        cancel: CancelToken,
+    ) -> Result<ModelResponse, ModelError> {
+        self.compact_with(Some(context), request, cursor, cancel)
+            .await
     }
 }
 

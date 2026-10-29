@@ -7,8 +7,8 @@ use async_trait::async_trait;
 
 use crate::{
     AgentMessage, CursorUpdate, MessageRange, MessageReceipt, ModelCursor, ReplaceReceipt,
-    SessionRef, StoreError, TranscriptSnapshot, TranscriptStore, UsageError, UsageRecord,
-    UsageSink,
+    SessionRef, SessionStateSnapshot, StoreError, TranscriptSnapshot, TranscriptStore, UsageError,
+    UsageRecord, UsageSink,
 };
 
 #[derive(Default)]
@@ -16,6 +16,7 @@ struct InMemoryTranscriptInner {
     transcripts: HashMap<String, Vec<AgentMessage>>,
     cursors: HashMap<String, Option<ModelCursor>>,
     ranges: HashMap<String, MessageRange>,
+    states: HashMap<String, SessionStateSnapshot>,
     next_id: u64,
 }
 
@@ -119,6 +120,32 @@ impl TranscriptStore for InMemoryTranscriptStore {
         Ok(ReplaceReceipt {
             range: inner.ranges.get(session.as_str()).copied(),
         })
+    }
+
+    async fn load_state(
+        &self,
+        session: &SessionRef,
+    ) -> Result<Option<SessionStateSnapshot>, StoreError> {
+        let inner = self
+            .inner
+            .lock()
+            .map_err(|_| StoreError::Load("state lock poisoned".into()))?;
+        Ok(inner.states.get(session.as_str()).cloned())
+    }
+
+    async fn save_state(
+        &self,
+        session: &SessionRef,
+        state: &SessionStateSnapshot,
+    ) -> Result<(), StoreError> {
+        let mut inner = self
+            .inner
+            .lock()
+            .map_err(|_| StoreError::Append("state lock poisoned".into()))?;
+        inner
+            .states
+            .insert(session.as_str().to_owned(), state.clone());
+        Ok(())
     }
 }
 

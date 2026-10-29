@@ -1,7 +1,8 @@
 use std::sync::Arc;
 
 use tact_agent_api::{
-    AgentMessage, AgentRole, AgentState, MessageOrigin, RunId, RunInput, RunOutcome, SessionRef,
+    AgentMessage, AgentRole, AgentState, CompactionOutcome, CompactionRequest, MessageOrigin,
+    RunId, RunInput, RunOutcome, SessionRef,
 };
 use tact_agent_core::KernelError;
 
@@ -34,9 +35,14 @@ impl AgentSession {
         config: Arc<AgentConfig>,
         control: SessionControl,
     ) -> Self {
+        let session = SessionRef::new(session_id);
+        let mut state = state;
+        if state.session.is_none() {
+            state.session = Some(session.clone());
+        }
         Self {
             kernel,
-            session: SessionRef::new(session_id),
+            session,
             state,
             config,
             control,
@@ -53,6 +59,10 @@ impl AgentSession {
 
     pub fn transcript(&self) -> &[AgentMessage] {
         &self.state.transcript
+    }
+
+    pub fn into_state(self) -> AgentState {
+        self.state
     }
 
     pub fn last_assistant_message(&self) -> Option<&AgentMessage> {
@@ -97,6 +107,20 @@ impl AgentSession {
     ) -> Result<RunOutcome, KernelError> {
         self.run_inner(run_id, messages, max_total_turns.into())
             .await
+    }
+
+    pub async fn compact(
+        &mut self,
+        request: CompactionRequest,
+    ) -> Result<CompactionOutcome, KernelError> {
+        let run_id = self.config.run_id_source.next_run_id();
+        let (cancel, guard) = self.control.begin_activation();
+        let result = self
+            .kernel
+            .compact(&mut self.state, &self.session, run_id, request, cancel)
+            .await;
+        drop(guard);
+        result
     }
 
     async fn run_inner(

@@ -2,8 +2,8 @@ use std::sync::{Arc, Mutex};
 
 use async_trait::async_trait;
 use tact_agent_api::{
-    AgentContentBlock, CancelToken, ToolExecutionContext, ToolOutputChunk, ToolProgressSink,
-    ToolResolver,
+    AgentContentBlock, CancelToken, RunContext, RunId, SessionRef, ToolExecutionContext,
+    ToolOutputChunk, ToolProgressSink, ToolResolver,
 };
 use tact_protocol::ToolOutputChunk as HostToolOutputChunk;
 
@@ -110,6 +110,10 @@ async fn resolving_a_write_does_not_execute_it() {
         resolved,
         ToolExecutionContext {
             call_id: call.id,
+            run: RunContext {
+                session: SessionRef::new("test-session"),
+                run_id: RunId::new("test-run"),
+            },
             progress: Arc::new(NoopProgress),
             cancel: CancelToken::new(),
             remaining_turns: None,
@@ -227,6 +231,10 @@ async fn tool_port_redacts_split_live_chunks_and_the_final_result() {
             resolved,
             ToolExecutionContext {
                 call_id: call.id,
+                run: RunContext {
+                    session: SessionRef::new("test-session"),
+                    run_id: RunId::new("test-run"),
+                },
                 progress: progress.clone(),
                 cancel: CancelToken::new(),
                 remaining_turns: None,

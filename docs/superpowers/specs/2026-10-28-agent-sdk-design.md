@@ -73,7 +73,7 @@ rmcp
 reqwest
 ratatui
 async-openai
-async-openai-local
+async-openai
 ```
 
 `tact_agent_core` remains the authority for one bounded activation.
@@ -362,14 +362,14 @@ default no-op store is in use.
 | `ContextPolicy` | `BasicContextPolicy` | system prompt plus transcript conversion |
 | `TranscriptStore` | sessionless `NoopTranscriptStore` | commit barriers exist, no durable rows |
 | `UsageSink` | `NoopUsageSink` | usage is accepted and flushed, not persisted |
-| `EventPort` | `NoopEventPort` | events are discarded |
+| `EventPort` | `NoopEventPort` | events are discarded; `CallbackEventPort` is available for callback-based hosts |
 | `EventObserver` | none | no observers |
 | `RunIdSource` | UUID v4 | unique run ids by default |
 | `max_total_turns` | `Some(32)` | bounded by default |
 | `TelemetryConfig` | enabled | tracing wrappers, no content logging |
 
-`AllowAllGate` is deliberately not a default. Adding tools without configuring
-a gate results in denied calls, not silent tool execution.
+`AllowAllGate` is deliberately not a default. Configuring tools without a gate
+fails at build time with `MissingToolGate`; hosts must opt into a gate.
 
 `EmptyTools` is a zero-sized `ToolPort`, not a mutable empty `ToolSet`.
 `resolve` and `execute` return `ToolErrorKind::UnknownTool`; `refresh` returns
@@ -737,8 +737,14 @@ pub enum AgentBuildError {
     #[error("cannot configure a custom context policy with system_prompt or model_options")]
     ConflictingContextConfig,
 
+    #[error("tools require an explicit tool gate")]
+    MissingToolGate,
+
     #[error("restored session state must be initialized")]
     UninitializedState,
+
+    #[error("restored session state belongs to a different session")]
+    SessionMismatch,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -851,7 +857,10 @@ The SDK tests should verify behavior through the public API:
   tools and duplicate names fail across `add` and `add_provider`.
 - `tool_access_defaults_to_barrier`: a handler that omits `access` is serialized
   by the scheduler.
-- `deny_all_gate_prevents_execution`: adding tools without a gate cannot execute.
+- `deny_all_gate_prevents_execution`: an explicit deny-all gate prevents
+  execution.
+- `tools_without_a_gate_are_rejected_at_build_time`: the builder fails before a
+  session can run.
 - `allow_all_gate_runs_a_tool`: the explicit gate reaches `ToolPort::execute`.
 - `session_control_cancels_only_the_active_run`: cancel before, after, and while
   idle has the documented behavior.

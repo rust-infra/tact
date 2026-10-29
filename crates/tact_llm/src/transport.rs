@@ -26,9 +26,10 @@ fn parse_retry_after(value: &str) -> Option<Duration> {
     when.duration_since(SystemTime::now()).ok()
 }
 
-pub(crate) fn retry_after_13(headers: &reqwest13::header::HeaderMap) -> Option<Duration> {
+#[cfg(any(feature = "anthropic", feature = "openai-chat"))]
+pub(crate) fn retry_after(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
     headers
-        .get(reqwest13::header::RETRY_AFTER)
+        .get(reqwest::header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
         .and_then(parse_retry_after)
 }
@@ -52,14 +53,30 @@ pub(crate) fn classify_http_error(status: u16, body: &str) -> HttpErrorClass {
     HttpErrorClass::Permanent
 }
 
-#[cfg(feature = "anthropic")]
-pub(crate) fn retry_after_12(headers: &reqwest::header::HeaderMap) -> Option<Duration> {
+#[cfg(any(feature = "anthropic", feature = "openai-chat"))]
+pub(crate) async fn read_bounded_error_body(mut response: reqwest::Response) -> String {
+    let mut body = Vec::with_capacity(MAX_HTTP_ERROR_BODY_BYTES);
+    while body.len() < MAX_HTTP_ERROR_BODY_BYTES {
+        match response.chunk().await {
+            Ok(Some(chunk)) => {
+                let remaining = MAX_HTTP_ERROR_BODY_BYTES - body.len();
+                body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
+            }
+            Ok(None) | Err(_) => break,
+        }
+    }
+    String::from_utf8_lossy(&body).into_owned()
+}
+
+#[cfg(feature = "openai-responses")]
+pub(crate) fn retry_after_13(headers: &reqwest13::header::HeaderMap) -> Option<Duration> {
     headers
-        .get(reqwest::header::RETRY_AFTER)
+        .get(reqwest13::header::RETRY_AFTER)
         .and_then(|value| value.to_str().ok())
         .and_then(parse_retry_after)
 }
 
+#[cfg(feature = "openai-responses")]
 pub(crate) async fn read_bounded_error_body_13(mut response: reqwest13::Response) -> String {
     let mut body = Vec::with_capacity(MAX_HTTP_ERROR_BODY_BYTES);
     while body.len() < MAX_HTTP_ERROR_BODY_BYTES {
@@ -75,8 +92,8 @@ pub(crate) async fn read_bounded_error_body_13(mut response: reqwest13::Response
 }
 
 #[cfg(feature = "account")]
-pub(crate) async fn read_bounded_success_body_13(
-    mut response: reqwest13::Response,
+pub(crate) async fn read_bounded_success_body(
+    mut response: reqwest::Response,
 ) -> Result<String, BoundedReadError> {
     let mut body = Vec::with_capacity(MAX_HTTP_SUCCESS_BODY_BYTES);
     while let Some(chunk) = response
@@ -92,31 +109,49 @@ pub(crate) async fn read_bounded_success_body_13(
     String::from_utf8(body).map_err(|_| BoundedReadError::Transport)
 }
 
-#[cfg(feature = "anthropic")]
-pub(crate) async fn read_bounded_error_body_12(mut response: reqwest::Response) -> String {
-    let mut body = Vec::with_capacity(MAX_HTTP_ERROR_BODY_BYTES);
-    while body.len() < MAX_HTTP_ERROR_BODY_BYTES {
-        match response.chunk().await {
-            Ok(Some(chunk)) => {
-                let remaining = MAX_HTTP_ERROR_BODY_BYTES - body.len();
-                body.extend_from_slice(&chunk[..chunk.len().min(remaining)]);
-            }
-            Ok(None) | Err(_) => break,
-        }
-    }
-    String::from_utf8_lossy(&body).into_owned()
-}
-
 /// Shared [`reqwest`] client with the project's standard read timeout.
 ///
 /// Wrapping the client in a newtype keeps connection-pool reuse explicit at
 /// every call site without forcing each adapter to build its own client.
 #[derive(Debug, Clone)]
-pub struct SharedHttpClient(Arc<reqwest13::Client>);
+#[cfg(any(feature = "anthropic", feature = "openai-chat"))]
+pub struct SharedHttpClient(Arc<reqwest::Client>);
 
+#[cfg(any(feature = "anthropic", feature = "openai-chat"))]
 impl SharedHttpClient {
     /// Build a client with a 120-second read timeout (matching the previous
     /// per-adapter defaults).
+    pub fn try_new() -> Result<Self, reqwest::Error> {
+        let client = reqwest::Client::builder()
+            .read_timeout(Duration::from_secs(120))
+            .build()?;
+        Ok(Self(Arc::new(client)))
+    }
+
+    /// Borrow the underlying [`reqwest::Client`].
+    pub fn inner(&self) -> &reqwest::Client {
+        &self.0
+    }
+}
+
+#[cfg(any(feature = "anthropic", feature = "openai-chat"))]
+impl Default for SharedHttpClient {
+    fn default() -> Self {
+        static CLIENT: OnceLock<SharedHttpClient> = OnceLock::new();
+        CLIENT
+            .get_or_init(|| {
+                SharedHttpClient::try_new().expect("failed to build shared reqwest client")
+            })
+            .clone()
+    }
+}
+
+#[cfg(feature = "openai-responses")]
+#[derive(Debug, Clone)]
+pub struct SharedHttpClient13(Arc<reqwest13::Client>);
+
+#[cfg(feature = "openai-responses")]
+impl SharedHttpClient13 {
     pub fn try_new() -> Result<Self, reqwest13::Error> {
         let client = reqwest13::Client::builder()
             .read_timeout(Duration::from_secs(120))
@@ -124,18 +159,18 @@ impl SharedHttpClient {
         Ok(Self(Arc::new(client)))
     }
 
-    /// Borrow the underlying [`reqwest::Client`].
     pub fn inner(&self) -> &reqwest13::Client {
         &self.0
     }
 }
 
-impl Default for SharedHttpClient {
+#[cfg(feature = "openai-responses")]
+impl Default for SharedHttpClient13 {
     fn default() -> Self {
-        static CLIENT: OnceLock<SharedHttpClient> = OnceLock::new();
+        static CLIENT: OnceLock<SharedHttpClient13> = OnceLock::new();
         CLIENT
             .get_or_init(|| {
-                SharedHttpClient::try_new().expect("failed to build shared reqwest client")
+                SharedHttpClient13::try_new().expect("failed to build shared reqwest client")
             })
             .clone()
     }

@@ -5,8 +5,8 @@ use std::sync::{
 
 use serde_json::json;
 use tact_agent_api::{
-    AgentContentBlock, ResourceAccess, SessionRef, ToolCall, ToolDescriptor, ToolDirective,
-    ToolError, ToolExecutionError, ToolExecutionErrorKind, ToolExecutionResult,
+    AgentContentBlock, ResourceAccess, RunContext, RunId, SessionRef, ToolCall, ToolDescriptor,
+    ToolDirective, ToolError, ToolExecutionError, ToolExecutionErrorKind, ToolExecutionResult,
     ToolExecutionStatus, ToolGate, ToolGateContext, ToolOutcome, ToolResolver,
 };
 use tact_llm::{Message, Role};
@@ -182,6 +182,10 @@ fn fixture(mode: PermissionMode, hooks: Vec<Hook>, with_ui: bool) -> Fixture {
 fn context() -> ToolGateContext {
     ToolGateContext {
         session: SessionRef::new("session"),
+        run: RunContext {
+            session: SessionRef::new("session"),
+            run_id: RunId::new("run"),
+        },
         total_turns: 1,
         remaining_turns: Some(2),
         metadata: Value::Null,

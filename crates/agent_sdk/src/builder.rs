@@ -1,15 +1,15 @@
 use std::sync::Arc;
 
 use tact_agent_api::{
-    AgentState, ContextPolicy, EventObserver, EventPort, ModelCallOptions, ModelPort, ToolGate,
-    ToolPort, TranscriptStore, UsageSink,
+    AgentState, ContextPolicy, EventObserver, EventPort, ModelCallOptions, ModelPort, SessionRef,
+    ToolGate, ToolPort, TranscriptStore, UsageSink,
 };
 use tact_agent_core::{AgentKernel, KernelDeps, KernelExtensions};
 
 use crate::{
-    Agent, AgentBuildError, AgentConfig, AgentSession, BasicContextPolicy, DenyAllGate, EmptyTools,
-    NoopEventPort, NoopTranscriptStore, NoopUsageSink, RunIdSource, SessionControl,
-    TelemetryConfig,
+    Agent, AgentBuildError, AgentConfig, AgentSession, BasicContextPolicy, CallbackEventPort,
+    ContextCallbackEventPort, DenyAllGate, EmptyTools, NoopEventPort, NoopTranscriptStore,
+    NoopUsageSink, RunIdSource, SessionControl, TelemetryConfig,
 };
 
 /// Composes a reusable agent or a ready-to-run session.
@@ -89,6 +89,17 @@ impl AgentBuilder {
         self
     }
 
+    pub fn on_event(self, callback: impl Fn(tact_agent_api::AgentEvent) + Send + 'static) -> Self {
+        self.events(Arc::new(CallbackEventPort::new(callback)))
+    }
+
+    pub fn on_event_with_context(
+        self,
+        callback: impl Fn(tact_agent_api::RunContext, tact_agent_api::AgentEvent) + Send + 'static,
+    ) -> Self {
+        self.events(Arc::new(ContextCallbackEventPort::new(callback)))
+    }
+
     pub fn observer(mut self, observer: Arc<dyn EventObserver>) -> Self {
         self.observers.push(observer);
         self
@@ -143,11 +154,19 @@ impl AgentBuilder {
         if state.as_ref().is_some_and(|state| !state.initialized) {
             return Err(AgentBuildError::UninitializedState);
         }
+        let session = SessionRef::new(session_id.clone());
+        let mut state = state.unwrap_or_default();
+        if let Some(bound) = &state.session
+            && bound != &session
+        {
+            return Err(AgentBuildError::SessionMismatch);
+        }
+        state.session = Some(session);
         let (kernel, config) = self.compose()?;
         Ok(AgentSession::new(
             Arc::new(kernel),
             session_id,
-            state.unwrap_or_default(),
+            state,
             Arc::new(config),
             SessionControl::new(),
         ))
@@ -157,6 +176,9 @@ impl AgentBuilder {
         if self.context.is_some() && (self.system_prompt.is_some() || self.model_options.is_some())
         {
             return Err(AgentBuildError::ConflictingContextConfig);
+        }
+        if self.tools.is_some() && self.gate.is_none() {
+            return Err(AgentBuildError::MissingToolGate);
         }
 
         let context: Arc<dyn ContextPolicy> = self.context.unwrap_or_else(|| {
@@ -202,17 +224,18 @@ mod tests {
 
     use async_trait::async_trait;
     use tact_agent_api::{
-        AgentMessage, AgentRole, AgentState, CancelToken, ContextError, ContextPolicy,
-        ContextPreparation, ContextView, CursorUpdate, MessageOrigin, ModelCallOptions,
-        ModelMessage, ModelPort, PreparationDecision, ReasoningEffort, RunId, RunInput, RunStop,
-        SessionRef, StoreError, ToolError, ToolExecutionContext, ToolExecutionResult, ToolOutcome,
-        ToolSpec, TranscriptSnapshot, TranscriptStore,
+        AgentEvent, AgentMessage, AgentRole, AgentState, CancelToken, CompactionOutcome,
+        CompactionRequest, ContextError, ContextPolicy, ContextPreparation, ContextView,
+        CursorUpdate, MessageOrigin, ModelCallOptions, ModelMessage, ModelPort,
+        PreparationDecision, ReasoningEffort, RunId, RunInput, RunStop, SessionRef, StoreError,
+        ToolError, ToolExecutionContext, ToolExecutionResult, ToolOutcome, ToolSpec,
+        TranscriptSnapshot, TranscriptStore,
     };
     use tact_agent_core::test_support::{
         ModelScript, ScriptedContext, ScriptedModel, events, text_response,
     };
 
-    use crate::{AgentBuildError, BasicContextPolicy, ToolHandler, ToolSet};
+    use crate::{AgentBuildError, BasicContextPolicy, DenyAllGate, ToolHandler, ToolSet};
 
     use super::AgentBuilder;
 
@@ -343,6 +366,130 @@ mod tests {
         assert_eq!(agent.config.default_max_total_turns, Some(32));
     }
 
+    #[test]
+    fn tools_without_a_gate_are_rejected_at_build_time() {
+        let result = AgentBuilder::new(model("ok"))
+            .tools(Arc::new(ToolSet::new()))
+            .build_session("missing-gate");
+        assert_eq!(result.unwrap_err(), AgentBuildError::MissingToolGate);
+    }
+
+    #[test]
+    fn restored_state_must_match_the_requested_session() {
+        let state = AgentState {
+            session: Some(SessionRef::new("other")),
+            initialized: true,
+            ..AgentState::default()
+        };
+        let result = AgentBuilder::new(model("ok")).build_session_from_state("chat", state);
+        assert_eq!(result.unwrap_err(), AgentBuildError::SessionMismatch);
+    }
+
+    #[tokio::test]
+    async fn callback_event_port_receives_terminal_events() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let mut session = AgentBuilder::new(model("hello"))
+            .on_event(move |event| {
+                captured.lock().expect("event lock").push(event);
+            })
+            .build_session("events")
+            .unwrap();
+
+        session.run_text("hi").await.unwrap();
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            if events
+                .lock()
+                .expect("event lock")
+                .iter()
+                .any(|event| matches!(event, AgentEvent::RunFinished { .. }))
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "callback worker did not deliver RunFinished"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+        let events = events.lock().expect("event lock");
+        assert!(events.iter().any(|event| matches!(
+            event,
+            AgentEvent::RunStarted { session, .. } if session.as_str() == "events"
+        )));
+        assert!(
+            events
+                .iter()
+                .any(|event| matches!(event, AgentEvent::RunFinished { .. }))
+        );
+    }
+
+    #[tokio::test]
+    async fn context_callback_event_port_receives_the_activation_context() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let captured = events.clone();
+        let mut session = AgentBuilder::new(model("hello"))
+            .on_event_with_context(move |context, event| {
+                captured.lock().expect("event lock").push((context, event));
+            })
+            .build_session("scoped-events")
+            .unwrap();
+
+        session.run_text("hi").await.unwrap();
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(1);
+        loop {
+            if events
+                .lock()
+                .expect("event lock")
+                .iter()
+                .any(|(_, event)| matches!(event, AgentEvent::RunFinished { .. }))
+            {
+                break;
+            }
+            assert!(
+                tokio::time::Instant::now() < deadline,
+                "context callback worker did not deliver RunFinished"
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+
+        let events = events.lock().expect("event lock");
+        assert!(events.iter().all(|(context, _)| {
+            context.session.as_str() == "scoped-events" && !context.run_id.as_str().is_empty()
+        }));
+    }
+
+    #[tokio::test]
+    async fn session_state_can_be_exported_after_run() {
+        let mut session = AgentBuilder::new(model("hello"))
+            .build_session("exported")
+            .unwrap();
+        session.run_text("hi").await.unwrap();
+
+        let state = session.into_state();
+        assert_eq!(
+            state.session.as_ref().map(SessionRef::as_str),
+            Some("exported")
+        );
+        assert!(state.initialized);
+        assert_eq!(state.total_turns, 1);
+    }
+
+    #[tokio::test]
+    async fn session_exposes_manual_compaction() {
+        let mut session = AgentBuilder::new(model("hello"))
+            .build_session("compact")
+            .unwrap();
+        let outcome = session
+            .compact(CompactionRequest::Manual { focus: None })
+            .await
+            .unwrap();
+        assert!(matches!(outcome, CompactionOutcome::Skipped { .. }));
+    }
+
     #[tokio::test]
     async fn deny_all_gate_prevents_execution() {
         let executions = Arc::new(AtomicUsize::new(0));
@@ -367,6 +514,7 @@ mod tests {
         ]);
         let mut session = AgentBuilder::new(scripted)
             .tools(tools)
+            .gate(Arc::new(DenyAllGate))
             .build_session("denied")
             .unwrap();
         session.run_text("use it").await.unwrap();

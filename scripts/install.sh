@@ -7,8 +7,8 @@ GIT_REF="${TACT_INSTALL_GIT_REF:-main}"
 BINARY_NAME="tact-ui"
 CRATE_PACKAGE="tact-ui"
 DEFAULT_VERSION="0.19.0"
-# Matches workspace.package.rust-version (edition 2024).
-MIN_RUSTC_VERSION="1.85.0"
+# Matches workspace.package.rust-version (Rust 1.91 / edition 2024).
+MIN_RUSTC_VERSION="1.91.0"
 
 INSTALL_DIR="${TACT_INSTALL_DIR:-}"
 USE_SYSTEM=0
@@ -24,7 +24,7 @@ Usage: install.sh [OPTIONS]
 Install the tact-ui binary on Linux or macOS.
 
 By default the installer downloads a matching GitHub release asset when one
-exists, otherwise it builds from source (Rust 1.85+ / edition 2024 required).
+exists, otherwise it builds from source (Rust 1.91+ / edition 2024 required).
 
 Options:
   --install-dir DIR   Install to DIR (default: ~/.local/bin)

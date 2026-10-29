@@ -3,14 +3,15 @@ name = "tact_llm"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version = "1.88"
 description = "Provider-neutral LLM adapters for Tact and third-party agent hosts"
-repository = "https://github.com/rg/tact"
+repository = "https://github.com/rust-infra/tact"
 readme = "README.md"
 keywords = ["llm", "agent", "openai", "anthropic"]
 categories = ["api-bindings", "asynchronous"]
 
 [dependencies]
-tact_agent_api = { path = "../agent_api" }
+tact_agent_api = { version = "2.0.0", path = "../agent_api" }
 async-trait = { workspace = true }
 anyhow = { workspace = true, optional = true }
 thiserror = "2"
@@ -34,8 +35,8 @@ url = { workspace = true }
 [features]
 default = ["core"]
 core = []
-anthropic = ["core", "dep:reqwest", "dep:reqwest13", "dep:reqwest-eventsource", "dep:httpdate"]
-openai-chat = ["core", "dep:reqwest13", "reqwest13/stream", "dep:eventsource-stream", "dep:async-openai", "dep:httpdate"]
+anthropic = ["core", "dep:reqwest", "dep:reqwest-eventsource", "dep:httpdate"]
+openai-chat = ["core", "dep:reqwest", "reqwest/stream", "dep:eventsource-stream", "dep:async-openai", "dep:httpdate"]
 openai-responses = ["core", "dep:reqwest13", "reqwest13/stream", "dep:eventsource-stream", "dep:async-openai-responses", "dep:secrecy10", "dep:httpdate"]
 openai = ["openai-chat", "openai-responses"]
 telemetry = ["core", "dep:tracing"]
@@ -47,7 +48,6 @@ model-discovery = ["legacy-tact"]
 
 [dev-dependencies]
 dotenvy = { workspace = true }
-tact_agent_sdk = { path = "../agent_sdk" }
 wiremock = "0.6"
 tracing-subscriber = { workspace = true, features = ["fmt"] }
 toml = { workspace = true }
@@ -55,10 +55,6 @@ trybuild = "1"
 
 [[example]]
 name = "direct_stream"
-required-features = ["openai-responses"]
-
-[[example]]
-name = "agent_sdk"
 required-features = ["openai-responses"]
 
 [[example]]

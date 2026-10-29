@@ -3,9 +3,10 @@
 version = 4
 
 [[package]]
-name = "async-openai-local"
-version = "0.41.3"
-source = "git+https://github.com/rust-infra/async-openai.git?rev=12488eb3f6f2dbf35082a1121f2192dd1c2a7c27#12488eb3f6f2dbf35082a1121f2192dd1c2a7c27"
+name = "async-openai"
+version = "0.42.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "174e979f1e2ffe94b88d584740c11fd071f6d829c29120b1ba88bcaeb3374063"
 dependencies = [
  "async-openai-macros",
  "base64 0.22.1",
@@ -32,7 +33,8 @@ dependencies = [
 [[package]]
 name = "async-openai-macros"
 version = "0.3.0"
-source = "git+https://github.com/rust-infra/async-openai.git?rev=12488eb3f6f2dbf35082a1121f2192dd1c2a7c27#12488eb3f6f2dbf35082a1121f2192dd1c2a7c27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "492a944774207eed3acf425214eadbd6ce84a2b89331164ff1c11bae92b26302"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -1447,7 +1449,7 @@ dependencies = [
 
 [[package]]
 name = "tact_agent_api"
-version = "1.1.42"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "futures-core",
@@ -1459,9 +1461,9 @@ dependencies = [
 
 [[package]]
 name = "tact_llm"
-version = "1.1.42"
+version = "2.0.0"
 dependencies = [
- "async-openai-local",
+ "async-openai",
  "async-trait",
  "eventsource-stream",
  "futures-util",

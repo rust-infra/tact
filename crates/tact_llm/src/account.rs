@@ -5,7 +5,7 @@ use std::time::Duration;
 use crate::{
     CredentialProvider, ProviderProfile, SharedHttpClient,
     provider::{active_credential_provider, get_provider},
-    transport::{BoundedReadError, read_bounded_success_body_13},
+    transport::{BoundedReadError, read_bounded_success_body},
 };
 use anyhow::Context;
 
@@ -109,7 +109,7 @@ pub async fn query_deepseek_balance_for(
         anyhow::bail!("DeepSeek balance query returned HTTP {status}");
     }
 
-    let body = read_bounded_success_body_13(resp)
+    let body = read_bounded_success_body(resp)
         .await
         .map_err(|error| match error {
             BoundedReadError::TooLarge => anyhow::anyhow!("DeepSeek balance response is too large"),
@@ -241,7 +241,7 @@ pub async fn query_kimi_balance_for(
         anyhow::bail!("Kimi balance query returned HTTP {status}");
     }
 
-    let body = read_bounded_success_body_13(resp)
+    let body = read_bounded_success_body(resp)
         .await
         .map_err(|error| match error {
             BoundedReadError::TooLarge => anyhow::anyhow!("Kimi balance response is too large"),
@@ -387,7 +387,7 @@ pub async fn query_kimi_code_usage_for(
         anyhow::bail!("Kimi usage query returned HTTP {status}");
     }
 
-    let body = read_bounded_success_body_13(resp)
+    let body = read_bounded_success_body(resp)
         .await
         .map_err(|error| match error {
             BoundedReadError::TooLarge => anyhow::anyhow!("Kimi usage response is too large"),

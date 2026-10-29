@@ -38,7 +38,7 @@ pub use body::{
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 pub use multi_model::ChatCompletionsAdapter;
-use reqwest13::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
 
@@ -351,10 +351,7 @@ impl Config for CompatibleConfig {
         }
         // Kimi's coding endpoint whitelists specific coding agents.
         // Without a matching User-Agent it returns 403 access_terminated_error.
-        headers.insert(
-            reqwest13::header::USER_AGENT,
-            "Claude Code".parse().unwrap(),
-        );
+        headers.insert(reqwest::header::USER_AGENT, "Claude Code".parse().unwrap());
         headers
     }
 
@@ -489,8 +486,8 @@ impl OpenAiAdapter {
         // Read only enough of a non-2xx body to classify it, then discard it.
         if !response.status().is_success() {
             let status = response.status();
-            let retry_after = crate::transport::retry_after_13(response.headers());
-            let resp_body = crate::transport::read_bounded_error_body_13(response).await;
+            let retry_after = crate::transport::retry_after(response.headers());
+            let resp_body = crate::transport::read_bounded_error_body(response).await;
             let class = crate::transport::classify_http_error(status.as_u16(), &resp_body);
             return Err(LlmError::HttpError {
                 status: status.as_u16(),
@@ -669,8 +666,8 @@ impl OpenAiAdapter {
 
         if !response.status().is_success() {
             let status = response.status();
-            let retry_after = crate::transport::retry_after_13(response.headers());
-            let resp_body = crate::transport::read_bounded_error_body_13(response).await;
+            let retry_after = crate::transport::retry_after(response.headers());
+            let resp_body = crate::transport::read_bounded_error_body(response).await;
             let class = crate::transport::classify_http_error(status.as_u16(), &resp_body);
             return Err(LlmError::HttpError {
                 status: status.as_u16(),
@@ -880,7 +877,7 @@ mod tests {
             "no session id → no x-opencode-session"
         );
         let ua = headers
-            .get(reqwest13::header::USER_AGENT)
+            .get(reqwest::header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
         assert!(ua.starts_with("tact/"), "UA identifies tact: {ua}");

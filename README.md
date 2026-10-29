@@ -18,7 +18,7 @@
 <p align="center">
   <img src="https://img.shields.io/badge/language-Rust-orange?style=flat-square&logo=rust" alt="Rust" />
   <img src="https://img.shields.io/badge/license-MIT-green?style=flat-square" alt="MIT License" />
-  <img src="https://img.shields.io/badge/version-1.1.42-blue?style=flat-square" alt="Version" />
+  <img src="https://img.shields.io/badge/version-2.0.0-blue?style=flat-square" alt="Version" />
   <img src="https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20WSL-lightgrey?style=flat-square" alt="Platform" />
   <a href="https://ko-fi.com/00x80">
     <img src="https://img.shields.io/badge/Ko--fi-Buy%20me%20a%20coffee-FF5E5B?style=flat-square&logo=ko-fi&logoColor=white" alt="Support on Ko-fi" />
@@ -73,7 +73,7 @@ Or from a clone:
 ```
 
 The installer prefers a matching GitHub release asset when one exists, otherwise
-builds `tact-ui` from source (requires **Rust 1.85+** / edition 2024; installs
+builds `tact-ui` from source (requires **Rust 1.91+** / edition 2024; installs
 rustup if needed). Pass `--from-source` / `-FromSource` to skip the release
 download, or `--release` / `-Release` to prefer a pre-built binary with source
 fallback:
@@ -99,7 +99,7 @@ Install options:
 **Manual build from source**
 
 Linux: install SQLite build dependencies first (required by `sqlx` / session store).
-Building from source requires **Rust 1.85+** (edition 2024):
+Building from source requires **Rust 1.91+** (edition 2024):
 
 ```bash
 sudo apt-get update
@@ -109,7 +109,7 @@ sudo apt-get install -y libsqlite3-dev pkg-config clang libclang-dev
 ```bash
 git clone https://github.com/rust-infra/tact.git
 cd tact
-rustup toolchain install stable   # if needed; rustc >= 1.85
+rustup toolchain install stable   # if needed; rustc >= 1.91
 cargo build --release --locked -p tact-ui
 ./target/release/tact-ui --help
 ```
@@ -123,8 +123,8 @@ cargo install --path crates/tact-ui   # or: cargo install -p tact-ui from the re
 **Binary releases:** push a version tag to publish pre-built binaries for Linux (x86_64 / ARM64), macOS (x86_64 / ARM64), and Windows (x86_64):
 
 ```bash
-git tag v1.1.42
-git push origin v1.1.42
+git tag v2.0.0
+git push origin v2.0.0
 ```
 
 GitHub Actions (`.github/workflows/release.yml`) uploads `tact-ui-v<version>-<target-triple>.tar.gz` / `.zip` plus `SHA256SUMS`.

@@ -41,6 +41,13 @@ impl SessionRef {
     }
 }
 
+/// Identity shared by every outbound effect of one activation.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RunContext {
+    pub session: SessionRef,
+    pub run_id: RunId,
+}
+
 /// Activation-scoped cancellation signal.
 #[derive(Debug, Clone, Default)]
 pub struct CancelToken {
@@ -89,6 +96,11 @@ pub struct MessageRange {
 /// Host-owned logical agent state.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AgentState {
+    /// Session identity bound to this state when it was created or restored.
+    ///
+    /// `None` is accepted for legacy snapshots and is bound on first use.
+    #[serde(default)]
+    pub session: Option<SessionRef>,
     pub transcript: Vec<AgentMessage>,
     pub cursor: Option<ModelCursor>,
     pub total_turns: u32,
@@ -114,6 +126,13 @@ impl RunInput {
             session,
             inputs: Vec::new(),
             max_total_turns: None,
+        }
+    }
+
+    pub fn context(&self) -> RunContext {
+        RunContext {
+            session: self.session.clone(),
+            run_id: self.run_id.clone(),
         }
     }
 }

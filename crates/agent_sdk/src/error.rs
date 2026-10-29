@@ -6,8 +6,14 @@ pub enum AgentBuildError {
     #[error("cannot configure a custom context policy with system_prompt or model_options")]
     ConflictingContextConfig,
 
+    #[error("tools require an explicit tool gate")]
+    MissingToolGate,
+
     #[error("restored session state must be initialized")]
     UninitializedState,
+
+    #[error("restored session state belongs to a different session")]
+    SessionMismatch,
 }
 
 /// Failure while composing a static tool set.

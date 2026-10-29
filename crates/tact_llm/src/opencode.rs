@@ -16,6 +16,13 @@
 //! - sends `tact/<version>` as the `User-Agent` so OpenCode can identify the
 //!   tool instead of "Unknown client".
 
+#[cfg(feature = "openai-chat")]
+use reqwest as http_client;
+#[cfg(feature = "openai-chat")]
+use reqwest::header::HeaderMap;
+#[cfg(all(feature = "openai-responses", not(feature = "openai-chat")))]
+use reqwest13 as http_client;
+#[cfg(all(feature = "openai-responses", not(feature = "openai-chat")))]
 use reqwest13::header::HeaderMap;
 
 /// Header OpenCode Go uses to correlate a client session.
@@ -28,7 +35,7 @@ pub const USER_AGENT: &str = concat!("tact/", env!("CARGO_PKG_VERSION"));
 /// subdomain such as `app.opencode.ai`). The canonical OpenCode Go base URL
 /// is `https://opencode.ai/zen/go/v1`.
 pub fn is_opencode_base_url(base_url: &str) -> bool {
-    let Some(host) = reqwest13::Url::parse(base_url)
+    let Some(host) = http_client::Url::parse(base_url)
         .ok()
         .and_then(|url| url.host_str().map(str::to_ascii_lowercase))
     else {
@@ -52,7 +59,7 @@ pub fn endpoint_headers(base_url: &str, session_id: Option<&str>) -> HeaderMap {
         return headers;
     }
     if let Ok(ua) = USER_AGENT.parse() {
-        headers.insert(reqwest13::header::USER_AGENT, ua);
+        headers.insert(http_client::header::USER_AGENT, ua);
     }
     if let Some(session) = session_id.filter(|s| !s.is_empty())
         && let Ok(session) = session.parse()
@@ -105,7 +112,7 @@ mod tests {
             "the session id must be used verbatim when supplied"
         );
         let ua = headers
-            .get(reqwest13::header::USER_AGENT)
+            .get(http_client::header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
         assert!(ua.starts_with("tact/"), "user agent identifies tact: {ua}");
@@ -133,7 +140,7 @@ mod tests {
             "no session header without a session id"
         );
         let ua = without_session
-            .get(reqwest13::header::USER_AGENT)
+            .get(http_client::header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
         assert!(

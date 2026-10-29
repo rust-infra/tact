@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use tact_agent_api::{
-    AgentMessage, CursorUpdate, MessageReceipt, ReplaceReceipt, SessionRef, StoreError,
-    TranscriptSnapshot, TranscriptStore,
+    AgentMessage, CursorUpdate, MessageReceipt, ReplaceReceipt, SessionRef, SessionStateSnapshot,
+    StoreError, TranscriptSnapshot, TranscriptStore,
 };
 use tracing::info_span;
 
@@ -54,5 +54,30 @@ impl TranscriptStore for InstrumentedTranscriptStore {
             duration_ms = tracing::field::Empty
         );
         super::timed(span, self.inner.replace(session, transcript, cursor)).await
+    }
+
+    async fn load_state(
+        &self,
+        session: &SessionRef,
+    ) -> Result<Option<SessionStateSnapshot>, StoreError> {
+        let span = info_span!(
+            "agent.store.load_state",
+            session_id = %session.as_str(),
+            duration_ms = tracing::field::Empty
+        );
+        super::timed(span, self.inner.load_state(session)).await
+    }
+
+    async fn save_state(
+        &self,
+        session: &SessionRef,
+        state: &SessionStateSnapshot,
+    ) -> Result<(), StoreError> {
+        let span = info_span!(
+            "agent.store.save_state",
+            session_id = %session.as_str(),
+            duration_ms = tracing::field::Empty
+        );
+        super::timed(span, self.inner.save_state(session, state)).await
     }
 }

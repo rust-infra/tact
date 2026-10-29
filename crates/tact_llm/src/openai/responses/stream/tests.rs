@@ -851,6 +851,26 @@ fn web_search_call_json(status: &str, query: Option<&str>) -> serde_json::Value 
     })
 }
 
+#[test]
+fn terminal_less_recovery_preserves_the_provider_action_shape() {
+    let mut state = ResponsesStreamState::default();
+    state
+        .apply(output_item_done(
+            0,
+            web_search_call_json("completed", Some("Rust async")),
+        ))
+        .unwrap();
+
+    let normalized = state.finish().unwrap();
+    assert!(
+        normalized.output_items[0]["action"]
+            .get("queries")
+            .is_none(),
+        "recovery added a field absent from the provider item: {}",
+        normalized.output_items[0]
+    );
+}
+
 fn web_search_activity(
     progress: &ProviderProgress,
 ) -> (&str, u32, ProviderActivityPhase, Option<&str>, Option<&str>) {

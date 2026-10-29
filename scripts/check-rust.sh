@@ -17,6 +17,12 @@ fi
 echo "==> agent kernel dependency boundaries"
 scripts/check-agent-kernel-deps.sh tact_agent_api tact_agent_core tact_llm tact_agent_sdk
 
+echo "==> packaging manifests"
+python3 scripts/check-packaging.py
+
+echo "==> package and consumer fixtures"
+scripts/check-package.sh
+
 echo "==> cargo fmt -- --check"
 cargo fmt -- --check
 

@@ -55,6 +55,10 @@ async fn ordinary_usage_assigns_last_token_total_from_total_tokens() {
         .unwrap();
 
     assert_eq!(state.last_token_total, Some(37));
+    let record = &h.usage.records()[0];
+    let run = record.run.as_ref().expect("usage keeps the run context");
+    assert_eq!(run.session.as_str(), "test-session");
+    assert_eq!(run.run_id.as_str(), "test-run");
 }
 
 #[tokio::test]

@@ -11,11 +11,25 @@ host should select exactly the protocol it needs:
 
 ```toml
 tact_llm = {
-  path = "crates/tact_llm",
+  version = "2.0.0",
   default-features = false,
   features = ["openai-responses"]
 }
 ```
+
+Until the registry release is available, use the same repository tag:
+
+```toml
+tact_llm = {
+  git = "https://github.com/rust-infra/tact",
+  branch = "codex/agent-kernel-design",
+  default-features = false,
+  features = ["openai-chat"]
+}
+```
+
+Use the `v2.0.0` tag after that release is published; the branch form above is
+the pre-release path for this tree.
 
 ## Build and run
 
@@ -80,13 +94,11 @@ account/discovery helpers, and `MockClient` are compatibility-only under
 | `OpenAiResponsesAdapter` downcast | `ProviderMetadata::protocol` |
 | global `get_provider()` | pass `Provider` or `Arc<dyn ModelPort>` |
 
-## Release blockers
+## Release status
 
-This package is not yet crates.io-ready. `tact_agent_api` is currently a path
-dependency, and the Responses protocol uses the Git-pinned
-`async-openai-local` fork at
-`12488eb3f6f2dbf35082a1121f2192dd1c2a7c27`. Do not claim registry readiness
-until both dependencies have a registry-safe publication plan.
+All dependencies are registry-resolvable. Publish `tact_agent_api` before
+`tact_llm`; the local path in `Cargo.toml` becomes a versioned crates.io
+dependency in the packaged crate.
 
-The workspace is tested with the Rust 2024 toolchain used by Tact
-(`rustc 1.99.0-nightly` in this workspace). No broader MSRV is claimed.
+This crate declares Rust 1.88 as its minimum supported version. CI also checks
+the stable `openai-chat` and `openai-responses` paths on that toolchain.

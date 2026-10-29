@@ -5,7 +5,8 @@ use futures_core::Stream;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    AgentContentBlock, AgentMessage, AgentRole, CancelToken, CursorUpdate, MessageId, ToolSpec,
+    AgentContentBlock, AgentMessage, AgentRole, CancelToken, CursorUpdate, MessageId, RunContext,
+    ToolSpec,
 };
 
 /// Owned model event stream.
@@ -383,6 +384,19 @@ impl ModelError {
 pub trait ModelPort: Send + Sync {
     fn capabilities(&self) -> ModelCapabilities;
 
+    /// Stream with host-visible session/run identity.
+    ///
+    /// Adapters that do not need the identity can leave this default in place.
+    async fn stream_with_context(
+        &self,
+        _context: &RunContext,
+        request: ModelRequest,
+        cursor: Option<&ModelCursor>,
+        cancel: CancelToken,
+    ) -> Result<ModelStream, ModelError> {
+        self.stream(request, cursor, cancel).await
+    }
+
     async fn stream(
         &self,
         request: ModelRequest,
@@ -395,7 +409,20 @@ pub trait ModelPort: Send + Sync {
         request: ModelRequest,
         cursor: Option<&ModelCursor>,
         cancel: CancelToken,
-    ) -> Result<ModelResponse, ModelError>;
+    ) -> Result<ModelResponse, ModelError> {
+        let _ = (request, cursor, cancel);
+        Err(ModelError::unsupported("complete"))
+    }
+
+    async fn complete_with_context(
+        &self,
+        _context: &RunContext,
+        request: ModelRequest,
+        cursor: Option<&ModelCursor>,
+        cancel: CancelToken,
+    ) -> Result<ModelResponse, ModelError> {
+        self.complete(request, cursor, cancel).await
+    }
 
     async fn compact(
         &self,
@@ -405,6 +432,16 @@ pub trait ModelPort: Send + Sync {
     ) -> Result<ModelResponse, ModelError> {
         let _ = (request, cursor, cancel);
         Err(ModelError::unsupported("native compaction"))
+    }
+
+    async fn compact_with_context(
+        &self,
+        _context: &RunContext,
+        request: ModelRequest,
+        cursor: Option<&ModelCursor>,
+        cancel: CancelToken,
+    ) -> Result<ModelResponse, ModelError> {
+        self.compact(request, cursor, cancel).await
     }
 }
 

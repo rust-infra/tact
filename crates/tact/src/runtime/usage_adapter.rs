@@ -104,6 +104,7 @@ mod tests {
         let sink = NoopUsageSink::default();
         sink.record(UsageRecord {
             call_id: "call-1".into(),
+            run: None,
             kind: ModelCallKind::Stream,
             usage: None,
             request_body: None,
@@ -127,6 +128,7 @@ mod tests {
         let sink = SqliteUsageSink::new(store, "session");
         let first = UsageRecord {
             call_id: "call-1".into(),
+            run: None,
             kind: ModelCallKind::Stream,
             usage: Some(TokenUsage {
                 input_tokens: 1,
@@ -140,6 +142,7 @@ mod tests {
         sink.record(first).await.unwrap();
         sink.record(UsageRecord {
             call_id: "call-1".into(),
+            run: None,
             kind: ModelCallKind::Stream,
             usage: Some(TokenUsage {
                 input_tokens: 4,
@@ -183,6 +186,7 @@ mod tests {
 
         sink.record(UsageRecord {
             call_id: "call-visible".into(),
+            run: None,
             kind: ModelCallKind::Complete,
             usage: Some(TokenUsage {
                 input_tokens: 2,
@@ -233,6 +237,7 @@ mod tests {
         let error = sink
             .record(UsageRecord {
                 call_id: "call-fails".into(),
+                run: None,
                 kind: ModelCallKind::NativeCompact,
                 usage: None,
                 request_body: Some(b"{}".to_vec()),

@@ -27,7 +27,7 @@ use crate::error::LlmError;
 use crate::provider_state::{
     ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,
 };
-use crate::transport::SharedHttpClient;
+use crate::transport::SharedHttpClient13;
 use crate::{CreateMessageParams, ProviderProgress, ProviderProgressSink};
 use async_openai_responses::types::responses::ResponseStreamEvent;
 #[cfg(all(test, feature = "legacy-tact"))]
@@ -363,6 +363,8 @@ fn parse_stream_event_with_raw(event: Value) -> Result<Option<ParsedStreamEvent>
         let envelope = wire::parse_response_envelope(response)?;
         event["response"] = serde_json::to_value(envelope.typed)?;
         Some(envelope.output_items)
+    } else if event_type == "response.output_item.done" {
+        event.get("item").cloned().map(|item| vec![item])
     } else {
         None
     };
@@ -416,7 +418,7 @@ fn reasoning_replay_required(request: &CreateMessageParams) -> bool {
 #[derive(Clone)]
 pub struct OpenAiResponsesAdapter {
     credentials: Arc<dyn CredentialProvider>,
-    http: SharedHttpClient,
+    http: SharedHttpClient13,
     base_url: String,
     /// Optional `context_management.compact_threshold` (tokens) sent on
     /// every ordinary `/responses` request. `None` omits `context_management`
@@ -449,7 +451,7 @@ impl OpenAiResponsesAdapter {
             Arc::new(ApiKeyProvider::new(api_key)),
             base_url,
             compact_threshold,
-            SharedHttpClient::default(),
+            SharedHttpClient13::default(),
         )
     }
 
@@ -459,7 +461,7 @@ impl OpenAiResponsesAdapter {
         credentials: Arc<dyn CredentialProvider>,
         base_url: impl Into<String>,
         compact_threshold: Option<u32>,
-        http: SharedHttpClient,
+        http: SharedHttpClient13,
     ) -> Self {
         let base_url = base_url.into().trim_end_matches('/').to_string();
         let replay_prior_reasoning = is_official_openai_base_url(&base_url);

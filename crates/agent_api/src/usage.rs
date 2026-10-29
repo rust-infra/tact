@@ -1,12 +1,14 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::{MessageRange, ModelCallKind, TokenUsage};
+use crate::{MessageRange, ModelCallKind, RunContext, TokenUsage};
 
 /// Idempotent durable usage record keyed by `call_id`.
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UsageRecord {
     pub call_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub run: Option<RunContext>,
     pub kind: ModelCallKind,
     pub usage: Option<TokenUsage>,
     pub request_body: Option<Vec<u8>>,
@@ -18,6 +20,7 @@ impl std::fmt::Debug for UsageRecord {
         formatter
             .debug_struct("UsageRecord")
             .field("call_id", &self.call_id)
+            .field("run", &self.run)
             .field("kind", &self.kind)
             .field("usage", &self.usage)
             .field(
@@ -54,6 +57,7 @@ mod tests {
     fn usage_record_debug_redacts_request_body() {
         let record = UsageRecord {
             call_id: "call".into(),
+            run: None,
             kind: ModelCallKind::Stream,
             usage: None,
             request_body: Some(b"SECRET-BODY".to_vec()),

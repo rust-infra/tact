@@ -17,7 +17,7 @@ impl TelemetryEventObserver {
 
     fn record(&self, event: &AgentEvent) {
         match event {
-            AgentEvent::RunStarted { run_id } => {
+            AgentEvent::RunStarted { run_id, .. } => {
                 info!(target: "tact_agent_sdk", run_id = %run_id, "agent run started");
             }
             AgentEvent::TurnStarted { run_id, turn, .. } => {
@@ -119,7 +119,7 @@ impl TelemetryEventObserver {
             AgentEvent::TurnFinished { turn, .. } => {
                 debug!(target: "tact_agent_sdk", turn, "agent turn finished");
             }
-            AgentEvent::RunFinished { outcome } => {
+            AgentEvent::RunFinished { outcome, .. } => {
                 let status = match &outcome.stop {
                     RunStop::Completed => "completed",
                     RunStop::YieldToHost { .. } => "yielded",
@@ -136,7 +136,7 @@ impl TelemetryEventObserver {
                     "agent run finished"
                 );
             }
-            AgentEvent::RunFailed { error } => record_error(error),
+            AgentEvent::RunFailed { error, .. } => record_error(error),
             AgentEvent::MessageStarted { message_id, role } => {
                 debug!(
                     target: "tact_agent_sdk",

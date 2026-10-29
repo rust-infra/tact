@@ -3,7 +3,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::{AgentContentBlock, CancelToken, HostYieldReason, SessionRef};
+use crate::{AgentContentBlock, CancelToken, HostYieldReason, RunContext, SessionRef};
 
 /// Tool specification exposed to the model.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -132,6 +132,7 @@ pub trait ToolProgressSink: Send + Sync {
 #[derive(Clone)]
 pub struct ToolExecutionContext {
     pub call_id: String,
+    pub run: RunContext,
     pub progress: Arc<dyn ToolProgressSink>,
     pub cancel: CancelToken,
     /// Model calls permitted from the current turn onward, inclusive.
@@ -201,6 +202,10 @@ pub struct ToolExecutionResult {
 }
 
 impl ToolExecutionResult {
+    pub fn text(text: impl Into<String>) -> Self {
+        Self::success(ToolOutcome::text(text))
+    }
+
     pub fn success(outcome: ToolOutcome) -> Self {
         Self {
             status: ToolExecutionStatus::Succeeded,
@@ -266,6 +271,7 @@ pub trait ToolPort: ToolResolver {
 #[derive(Debug, Clone)]
 pub struct ToolGateContext {
     pub session: SessionRef,
+    pub run: RunContext,
     /// Cumulative main-loop request attempts dispatched by this logical agent.
     pub total_turns: u32,
     pub remaining_turns: Option<u32>,

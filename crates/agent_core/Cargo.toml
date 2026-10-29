@@ -3,19 +3,23 @@ name = "tact_agent_core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version = "1.88"
+description = "Bounded, provider-neutral agent runtime kernel for Tact"
+repository = "https://github.com/rust-infra/tact"
 
 [dependencies]
-tact_agent_api = { path = "../agent_api" }
+tact_agent_api = { version = "2.0.0", path = "../agent_api" }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = "2"
-tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["time"] }
 
 [features]
 default = []
 test-support = ["tact_agent_api/test-support"]
 
 [dev-dependencies]
-tact_agent_api = { path = "../agent_api", features = ["test-support"] }
+tact_agent_api = { version = "2.0.0", path = "../agent_api", features = ["test-support"] }
+tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }

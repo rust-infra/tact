@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use async_openai_responses::types::responses::{
-    OutputItem, Response, ResponseStreamEvent, WebSearchToolCall, WebSearchToolCallStatus,
+    OutputItem, Response, ResponseStreamEvent, WebSearchCallStatus, WebSearchToolCall,
 };
 use tact_agent_api::{ProviderActivity, ProviderActivityKind, ProviderActivityPhase};
 
@@ -13,10 +13,17 @@ use crate::{ProviderProgress, ThinkingChunk};
 /// Extracts the search query from a `WebSearchToolCall` (empty when the
 /// provider has not populated the action yet — `output_item.added` events
 /// can precede the action).
+#[allow(deprecated)]
 fn web_search_query(call: &WebSearchToolCall) -> String {
     match &call.action {
         Some(async_openai_responses::types::responses::WebSearchToolCallAction::Search(search)) => {
-            search.query.clone()
+            search
+                .queries
+                .as_ref()
+                .and_then(|queries| queries.first())
+                .cloned()
+                .or_else(|| search.query.clone())
+                .unwrap_or_default()
         }
         _ => String::new(),
     }
@@ -95,7 +102,7 @@ fn web_search_finished(
 ) -> ProviderProgress {
     let query = web_search_query(call);
     match call.status {
-        WebSearchToolCallStatus::Failed => web_search_activity(
+        WebSearchCallStatus::Failed => web_search_activity(
             output_index,
             index,
             call,
@@ -106,20 +113,20 @@ fn web_search_finished(
             )),
             duration_us,
         ),
-        WebSearchToolCallStatus::InProgress | WebSearchToolCallStatus::Searching => {
-            web_search_activity(
-                output_index,
-                index,
-                call,
-                ProviderActivityPhase::Failed,
-                Some(format!(
-                    "web search ended without terminal status ({})",
-                    web_search_failure_detail(call, &query)
-                )),
-                duration_us,
-            )
-        }
-        WebSearchToolCallStatus::Completed => web_search_activity(
+        WebSearchCallStatus::InProgress
+        | WebSearchCallStatus::Searching
+        | WebSearchCallStatus::Incomplete => web_search_activity(
+            output_index,
+            index,
+            call,
+            ProviderActivityPhase::Failed,
+            Some(format!(
+                "web search ended without terminal status ({})",
+                web_search_failure_detail(call, &query)
+            )),
+            duration_us,
+        ),
+        WebSearchCallStatus::Completed => web_search_activity(
             output_index,
             index,
             call,
@@ -148,6 +155,9 @@ pub(crate) struct ResponsesStreamState {
     /// to reconstruct the terminal output when compatible endpoints omit the
     /// `output` array from the terminal event.
     done_items: BTreeMap<u32, OutputItem>,
+    /// Raw JSON for completed items, retained so a terminal-less recovery
+    /// replays the provider's field shape rather than the typed SDK's shape.
+    raw_done_items: BTreeMap<u32, serde_json::Value>,
     /// Output indices announced via `output_item.added` that have not yet been
     /// completed. A non-empty set means the output sequence is incomplete and
     /// must not be reconstructed from `done_items`.
@@ -229,7 +239,15 @@ impl ResponsesStreamState {
         event: ResponseStreamEvent,
         raw_output_items: Option<Vec<serde_json::Value>>,
     ) -> Result<Vec<ProviderProgress>, LlmError> {
-        if raw_output_items.is_some() {
+        let done_index = match &event {
+            ResponseStreamEvent::ResponseOutputItemDone(item) => Some(item.output_index),
+            _ => None,
+        };
+        if let Some(index) = done_index {
+            if let Some(item) = raw_output_items.and_then(|items| items.into_iter().next()) {
+                self.raw_done_items.insert(index, item);
+            }
+        } else if raw_output_items.is_some() {
             self.raw_terminal_output = raw_output_items;
         }
         if let ResponseStreamEvent::ResponseError(_) = event {
@@ -354,6 +372,7 @@ impl ResponsesStreamState {
             reasoning_deltas,
             terminal,
             done_items,
+            raw_done_items,
             pending_added,
             pending_compactions,
             raw_terminal_output,
@@ -430,7 +449,11 @@ impl ResponsesStreamState {
         } else if let Some(output_items) = done_sequence {
             let mut reconstructed = response;
             reconstructed.output = output_items;
-            normalize_response(reconstructed)?
+            let mut normalized = normalize_response(reconstructed)?;
+            if !raw_done_items.is_empty() {
+                normalized.output_items = raw_done_items.into_values().collect();
+            }
+            normalized
         } else if !pending_compactions.is_empty() {
             // Hard protocol error: a compaction item was announced but never
             // completed. Neither the done-sequence reconstruction nor

@@ -14,8 +14,10 @@ use crate::openai::compatible::{ChatCompletionsAdapter, OpenAiAdapter};
 use crate::openai::responses::OpenAiResponsesAdapter;
 #[cfg(feature = "openai-chat")]
 use crate::profile::ProviderProfile;
-#[cfg(any(feature = "openai-chat", feature = "openai-responses"))]
+#[cfg(feature = "openai-chat")]
 use crate::transport::SharedHttpClient;
+#[cfg(feature = "openai-responses")]
+use crate::transport::SharedHttpClient13;
 use crate::{ChatDialect, ProviderKind, TransportSetupStage, WireProtocol};
 
 pub(crate) struct AssemblySpec {
@@ -95,7 +97,7 @@ fn assemble_chat(_spec: &AssemblySpec) -> Result<LlmProvider, AssemblyError> {
 
 #[cfg(feature = "openai-responses")]
 fn assemble_responses(spec: &AssemblySpec) -> Result<LlmProvider, AssemblyError> {
-    let http = SharedHttpClient::try_new()
+    let http = SharedHttpClient13::try_new()
         .map_err(|_| AssemblyError::Transport(TransportSetupStage::ReqwestClient))?;
     let adapter = OpenAiResponsesAdapter::new_with_auth(
         spec.credentials.clone(),

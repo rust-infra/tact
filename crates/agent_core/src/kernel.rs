@@ -1,9 +1,10 @@
 use std::collections::{HashMap, HashSet};
+use std::future::Future;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use futures_util::StreamExt;
-use futures_util::future::BoxFuture;
+use futures_util::future::{BoxFuture, Either, select};
 use futures_util::stream::FuturesUnordered;
 use tact_agent_api::{
     AgentContentBlock, AgentEvent, AgentMessage, AgentNotice, AgentRole, AgentState, CancelToken,
@@ -11,10 +12,11 @@ use tact_agent_api::{
     ContextView, CursorUpdate, GateDecision, HostYieldReason, MessageDelta, MessageOrigin,
     MessageRange, ModelCallKind, ModelCapabilities, ModelCursor, ModelError, ModelErrorKind,
     ModelEvent, ModelPort, ModelRequest, ModelResponse, PreparationDecision, RecoveryStats,
-    RequestPlan, ResolvedToolCall, RunInput, RunOutcome, RunStop, SessionRef, StopReason, ToolCall,
-    ToolDirective, ToolError, ToolExecutionContext, ToolExecutionError, ToolExecutionErrorKind,
-    ToolExecutionResult, ToolExecutionStatus, ToolGateContext, ToolGateError, ToolOutputChunk,
-    ToolProgressSink, ToolSnapshot, UsageRecord,
+    RequestPlan, ResolvedToolCall, RunContext, RunInput, RunOutcome, RunPhase, RunStop, SessionRef,
+    SessionStateSnapshot, StopReason, StoreError, ToolCall, ToolDirective, ToolError,
+    ToolExecutionContext, ToolExecutionError, ToolExecutionErrorKind, ToolExecutionResult,
+    ToolExecutionStatus, ToolGateContext, ToolGateError, ToolOutputChunk, ToolProgressSink,
+    ToolSnapshot, UsageError, UsageRecord,
 };
 
 use crate::deps::{AgentKernel, KernelError};
@@ -95,30 +97,67 @@ impl AgentKernel {
         input: RunInput,
         cancel: CancelToken,
     ) -> Result<RunOutcome, KernelError> {
+        let context = input.context();
         let run_id = input.run_id.clone();
-        self.events.emit(AgentEvent::RunStarted {
+        let flush_cancel = cancel.clone();
+        let run_kernel = self.with_context(context.clone());
+        run_kernel.events.emit(AgentEvent::RunStarted {
             run_id: run_id.clone(),
+            session: context.session.clone(),
         });
-        let result = self.run_inner(state, input, cancel, run_id).await;
+        let result = run_kernel.run_inner(state, input, cancel, run_id).await;
         match result {
             Ok(outcome) => {
-                if let Err(error) = self.deps.usage.flush().await {
-                    let error = KernelError::Usage(error.to_string());
-                    self.events.emit(AgentEvent::RunFailed {
+                if let Err(error) = run_kernel
+                    .persist_state(state, &context.session, &flush_cancel)
+                    .await
+                {
+                    run_kernel.events.emit(AgentEvent::RunFailed {
                         error: error.info(),
+                        run: context,
+                    });
+                    return Err(error);
+                }
+                if let Err(error) = run_kernel
+                    .wait_usage(run_kernel.deps.usage.flush(), &flush_cancel)
+                    .await
+                {
+                    run_kernel.events.emit(AgentEvent::RunFailed {
+                        error: error.info(),
+                        run: context,
                     });
                     Err(error)
                 } else {
-                    self.events.emit(AgentEvent::RunFinished {
+                    run_kernel.events.emit(AgentEvent::RunFinished {
                         outcome: outcome.clone(),
+                        run: context,
                     });
                     Ok(outcome)
                 }
             }
+            Err(KernelError::Cancelled) => {
+                let cleanup_cancel = CancelToken::new();
+                let _ = run_kernel
+                    .persist_state(state, &context.session, &cleanup_cancel)
+                    .await;
+                let _ = run_kernel
+                    .wait_usage(run_kernel.deps.usage.flush(), &cleanup_cancel)
+                    .await;
+                let outcome =
+                    run_kernel.outcome(state, 0, 0, RunStop::Cancelled, &RecoveryStats::default());
+                run_kernel.events.emit(AgentEvent::RunFinished {
+                    outcome: outcome.clone(),
+                    run: context,
+                });
+                Ok(outcome)
+            }
             Err(error) => {
-                let _ = self.deps.usage.flush().await;
-                self.events.emit(AgentEvent::RunFailed {
+                let _ = run_kernel
+                    .wait_usage(run_kernel.deps.usage.flush(), &flush_cancel)
+                    .await;
+                run_kernel.events.emit(AgentEvent::RunFailed {
                     error: error.info(),
+                    run: context,
                 });
                 Err(error)
             }
@@ -133,16 +172,119 @@ impl AgentKernel {
         request: CompactionRequest,
         cancel: CancelToken,
     ) -> Result<CompactionOutcome, KernelError> {
-        let observed = ObservedModelPort::new(self.deps.model.clone(), self.events.clone(), run_id);
-        let outcome = self
-            .compact_state(state, session, request, cancel, &observed)
+        let context = RunContext {
+            session: session.clone(),
+            run_id,
+        };
+        let run_kernel = self.with_context(context.clone());
+        let flush_cancel = cancel.clone();
+        run_kernel.events.emit(AgentEvent::RunStarted {
+            run_id: context.run_id.clone(),
+            session: context.session.clone(),
+        });
+        let result = async {
+            run_kernel.ensure_state(state, session, &cancel).await?;
+            let observed = ObservedModelPort::new(
+                run_kernel.deps.model.clone(),
+                run_kernel.events.clone(),
+                context.clone(),
+            );
+            let outcome = run_kernel
+                .compact_state(state, session, request, cancel, &observed)
+                .await?;
+            run_kernel
+                .persist_state(state, session, &flush_cancel)
+                .await?;
+            run_kernel
+                .wait_usage(run_kernel.deps.usage.flush(), &flush_cancel)
+                .await?;
+            Ok::<_, KernelError>(outcome)
+        }
+        .await;
+
+        match result {
+            Ok(outcome) => {
+                let run_outcome =
+                    run_kernel.outcome(state, 0, 0, RunStop::Completed, &RecoveryStats::default());
+                run_kernel.events.emit(AgentEvent::RunFinished {
+                    outcome: run_outcome,
+                    run: context,
+                });
+                Ok(outcome)
+            }
+            Err(error) => {
+                let _ = run_kernel
+                    .wait_usage(run_kernel.deps.usage.flush(), &flush_cancel)
+                    .await;
+                run_kernel.events.emit(AgentEvent::RunFailed {
+                    error: error.info(),
+                    run: context,
+                });
+                Err(error)
+            }
+        }
+    }
+
+    async fn ensure_state(
+        &self,
+        state: &mut AgentState,
+        session: &SessionRef,
+        cancel: &CancelToken,
+    ) -> Result<(), KernelError> {
+        if let Some(bound) = &state.session
+            && bound != session
+        {
+            return Err(KernelError::Contract(
+                "agent state belongs to a different session".into(),
+            ));
+        }
+        state.session = Some(session.clone());
+        if !state.initialized {
+            let snapshot = self
+                .wait_store(self.deps.transcript.load(session), cancel, RunPhase::Load)
+                .await?;
+            state.transcript = snapshot.transcript;
+            state.cursor = snapshot.cursor;
+            if let Some(runtime) = self
+                .wait_store(
+                    self.deps.transcript.load_state(session),
+                    cancel,
+                    RunPhase::Load,
+                )
+                .await?
+            {
+                if runtime.session != *session {
+                    return Err(KernelError::Contract(
+                        "stored runtime state belongs to a different session".into(),
+                    ));
+                }
+                state.total_turns = runtime.total_turns;
+                state.last_token_total = runtime.last_token_total;
+            }
+            state.initialized = true;
+        }
+        self.reconcile_interrupted_tools(state, session, cancel)
             .await?;
-        self.deps
-            .usage
-            .flush()
-            .await
-            .map_err(|error| KernelError::Usage(error.to_string()))?;
-        Ok(outcome)
+        Ok(())
+    }
+
+    async fn persist_state(
+        &self,
+        state: &AgentState,
+        session: &SessionRef,
+        cancel: &CancelToken,
+    ) -> Result<(), KernelError> {
+        let snapshot = SessionStateSnapshot {
+            session: session.clone(),
+            total_turns: state.total_turns,
+            last_token_total: state.last_token_total,
+        };
+        self.wait_store(
+            self.deps.transcript.save_state(session, &snapshot),
+            cancel,
+            RunPhase::Commit,
+        )
+        .await
     }
 
     async fn run_inner(
@@ -152,27 +294,18 @@ impl AgentKernel {
         cancel: CancelToken,
         run_id: tact_agent_api::RunId,
     ) -> Result<RunOutcome, KernelError> {
-        if !state.initialized {
-            let snapshot = self
-                .deps
-                .transcript
-                .load(&input.session)
-                .await
-                .map_err(|error| KernelError::Load(error.to_string()))?;
-            state.transcript = snapshot.transcript;
-            state.cursor = snapshot.cursor;
-            state.initialized = true;
-        }
-
-        self.reconcile_interrupted_tools(state, &input.session)
-            .await?;
+        self.ensure_state(state, &input.session, &cancel).await?;
 
         if cancel.is_cancelled() {
             return Ok(self.outcome(state, 0, 0, RunStop::Cancelled, &RecoveryStats::default()));
         }
 
-        let model =
-            ObservedModelPort::new(self.deps.model.clone(), self.events.clone(), run_id.clone());
+        let run_context = input.context();
+        let model = ObservedModelPort::new(
+            self.deps.model.clone(),
+            self.events.clone(),
+            run_context.clone(),
+        );
         let mut activation_turns = 0;
         let mut tool_calls = 0;
         let mut recovery = RecoveryStats::default();
@@ -199,7 +332,7 @@ impl AgentKernel {
                     cancel: &cancel,
                 };
                 let decision = self.prepare_run_loop(state, &context).await?;
-                self.record_context_model_calls(&model).await?;
+                self.record_context_model_calls(&model, &cancel).await?;
                 decision
             };
 
@@ -213,7 +346,7 @@ impl AgentKernel {
                     ));
                 }
                 PreparationDecision::Continue(preparation) => {
-                    self.apply_context_preparation(state, &input.session, preparation)
+                    self.apply_context_preparation(state, &input.session, preparation, &cancel)
                         .await?;
                 }
             }
@@ -246,7 +379,7 @@ impl AgentKernel {
                         &cancel,
                     )
                     .await?;
-                self.record_context_model_calls(&model).await?;
+                self.record_context_model_calls(&model, &cancel).await?;
                 decision
             };
 
@@ -262,8 +395,13 @@ impl AgentKernel {
                 PreparationDecision::Continue(plan) => plan,
             };
 
-            self.append_messages(state, &input.session, &request_plan.appended_messages)
-                .await?;
+            self.append_messages(
+                state,
+                &input.session,
+                &request_plan.appended_messages,
+                &cancel,
+            )
+            .await?;
 
             if cancel.is_cancelled() {
                 return Ok(self.outcome(
@@ -351,18 +489,23 @@ impl AgentKernel {
             };
 
             let receipt = self
-                .deps
-                .transcript
-                .append(&input.session, &response.message, response.cursor.clone())
-                .await
-                .map_err(|error| KernelError::Store(error.to_string()))?;
+                .wait_store(
+                    self.deps.transcript.append(
+                        &input.session,
+                        &response.message,
+                        response.cursor.clone(),
+                    ),
+                    &CancelToken::new(),
+                    RunPhase::Commit,
+                )
+                .await?;
             apply_cursor(&mut state.cursor, response.cursor.clone());
             state.transcript.push(response.message.clone());
             self.events.emit(AgentEvent::MessageFinished {
                 message_id: response.message_id.clone(),
                 message: response.message.clone(),
             });
-            self.record_usage(observed_call, Some(receipt.range), &response)
+            self.record_usage(observed_call, Some(receipt.range), &CancelToken::new())
                 .await?;
             state.last_token_total = response
                 .usage
@@ -371,9 +514,13 @@ impl AgentKernel {
 
             if cancel.is_cancelled() {
                 let calls = tool_calls_from_message(&response.message);
-                self.persist_synthetic_results(state, &input.session, &calls, |_| {
-                    CANCELLED_RESULT.to_owned()
-                })
+                self.persist_synthetic_results(
+                    state,
+                    &input.session,
+                    &calls,
+                    &CancelToken::new(),
+                    |_| CANCELLED_RESULT.to_owned(),
+                )
                 .await?;
                 self.events.emit(AgentEvent::TurnFinished {
                     turn: state.total_turns,
@@ -400,7 +547,7 @@ impl AgentKernel {
                     .execute_tool_calls(
                         state,
                         calls.clone(),
-                        &input.session,
+                        &run_context,
                         remaining_turns,
                         cancel.clone(),
                         !max_tokens,
@@ -438,8 +585,13 @@ impl AgentKernel {
                             max_attempts: MAX_CONTINUATION_ATTEMPTS,
                         },
                     });
-                    self.append_continuation(state, &input.session, recovery.continuation_attempts)
-                        .await?;
+                    self.append_continuation(
+                        state,
+                        &input.session,
+                        recovery.continuation_attempts,
+                        &cancel,
+                    )
+                    .await?;
                     continue;
                 }
 
@@ -453,9 +605,13 @@ impl AgentKernel {
                     StopReason::Unknown { .. } => UNKNOWN_STOP_RESULT,
                     _ => TURN_ENDED_RESULT,
                 };
-                self.persist_synthetic_results(state, &input.session, &calls, |_| {
-                    reason.to_owned()
-                })
+                self.persist_synthetic_results(
+                    state,
+                    &input.session,
+                    &calls,
+                    &CancelToken::new(),
+                    |_| reason.to_owned(),
+                )
                 .await?;
             }
 
@@ -483,8 +639,13 @@ impl AgentKernel {
                             max_attempts: MAX_CONTINUATION_ATTEMPTS,
                         },
                     });
-                    self.append_continuation(state, &input.session, recovery.continuation_attempts)
-                        .await?;
+                    self.append_continuation(
+                        state,
+                        &input.session,
+                        recovery.continuation_attempts,
+                        &cancel,
+                    )
+                    .await?;
                 }
                 StopReason::Refusal => {
                     return Err(KernelError::Model(
@@ -635,10 +796,11 @@ impl AgentKernel {
         state: &mut AgentState,
         session: &SessionRef,
         preparation: ContextPreparation,
+        cancel: &CancelToken,
     ) -> Result<(), KernelError> {
-        self.append_messages(state, session, &preparation.inputs)
+        self.append_messages(state, session, &preparation.inputs, cancel)
             .await?;
-        self.append_messages(state, session, &preparation.appended_messages)
+        self.append_messages(state, session, &preparation.appended_messages, cancel)
             .await
     }
 
@@ -647,13 +809,17 @@ impl AgentKernel {
         state: &mut AgentState,
         session: &SessionRef,
         messages: &[AgentMessage],
+        cancel: &CancelToken,
     ) -> Result<(), KernelError> {
         for message in messages {
-            self.deps
-                .transcript
-                .append(session, message, CursorUpdate::Unchanged)
-                .await
-                .map_err(|error| KernelError::Store(error.to_string()))?;
+            self.wait_store(
+                self.deps
+                    .transcript
+                    .append(session, message, CursorUpdate::Unchanged),
+                cancel,
+                RunPhase::Commit,
+            )
+            .await?;
             state.transcript.push(message.clone());
         }
         Ok(())
@@ -664,13 +830,15 @@ impl AgentKernel {
         state: &mut AgentState,
         session: &SessionRef,
         attempt: u32,
+        cancel: &CancelToken,
     ) -> Result<(), KernelError> {
         let message = AgentMessage::text(
             AgentRole::User,
             MessageOrigin::Continuation,
             continuation_message(attempt),
         );
-        self.append_messages(state, session, &[message]).await
+        self.append_messages(state, session, &[message], cancel)
+            .await
     }
 
     fn build_model_request(&self, request: &RequestPlan, tools: &ToolSnapshot) -> ModelRequest {
@@ -936,9 +1104,38 @@ impl AgentKernel {
     }
 
     async fn wait_or_cancel(&self, delay: Duration, cancel: &CancelToken) -> bool {
-        tokio::select! {
-            _ = tokio::time::sleep(delay) => false,
-            _ = cancel.cancelled() => true,
+        let sleep = Box::pin(tokio::time::sleep(delay));
+        let cancelled = Box::pin(cancel.cancelled());
+        matches!(select(sleep, cancelled).await, Either::Right(_))
+    }
+
+    async fn wait_store<T, F>(
+        &self,
+        future: F,
+        cancel: &CancelToken,
+        phase: RunPhase,
+    ) -> Result<T, KernelError>
+    where
+        F: Future<Output = Result<T, StoreError>>,
+    {
+        match select(Box::pin(future), Box::pin(cancel.cancelled())).await {
+            Either::Left((result, _)) => result.map_err(|error| match phase {
+                RunPhase::Load | RunPhase::Reconcile => KernelError::Load(error.to_string()),
+                _ => KernelError::Store(error.to_string()),
+            }),
+            Either::Right(_) => Err(KernelError::Cancelled),
+        }
+    }
+
+    async fn wait_usage<T, F>(&self, future: F, cancel: &CancelToken) -> Result<T, KernelError>
+    where
+        F: Future<Output = Result<T, UsageError>>,
+    {
+        match select(Box::pin(future), Box::pin(cancel.cancelled())).await {
+            Either::Left((result, _)) => {
+                result.map_err(|error| KernelError::Usage(error.to_string()))
+            }
+            Either::Right(_) => Err(KernelError::Cancelled),
         }
     }
 
@@ -946,23 +1143,25 @@ impl AgentKernel {
         &self,
         call: ObservedCall,
         message_range: Option<MessageRange>,
-        response: &ModelResponse,
+        cancel: &CancelToken,
     ) -> Result<(), KernelError> {
-        self.deps
-            .usage
-            .record(UsageRecord {
+        self.wait_usage(
+            self.deps.usage.record(UsageRecord {
                 call_id: call.call_id.clone(),
+                run: Some(call.run.clone()),
                 kind: call.kind,
-                usage: response.usage,
-                request_body: response.request_body.clone(),
+                usage: call.usage,
+                request_body: call.request_body,
                 message_range,
-            })
-            .await
-            .map_err(|error| KernelError::Usage(error.to_string()))?;
+            }),
+            cancel,
+        )
+        .await?;
         self.events.emit(AgentEvent::Usage {
             call_id: call.call_id,
+            run: Some(call.run.clone()),
             kind: call.kind,
-            usage: response.usage,
+            usage: call.usage,
             message_range,
         });
         Ok(())
@@ -971,10 +1170,10 @@ impl AgentKernel {
     async fn record_context_model_calls(
         &self,
         model: &ObservedModelPort,
+        cancel: &CancelToken,
     ) -> Result<(), KernelError> {
         for call in model.drain_calls() {
-            let response = call.response.clone();
-            self.record_usage(call, None, &response).await?;
+            self.record_usage(call, None, cancel).await?;
         }
         Ok(())
     }
@@ -1013,25 +1212,27 @@ impl AgentKernel {
         let outcome = self
             .deps
             .context
-            .compact(&view, request, model, cancel)
+            .compact(&view, request, model, cancel.clone())
             .await
             .map_err(context_error)?;
 
         for call in model.drain_calls() {
-            let response = call.response.clone();
-            self.record_usage(call, None, &response).await?;
-            state.last_token_total = response
+            state.last_token_total = call
                 .usage
                 .map(|usage| usage.total_tokens)
                 .or(state.last_token_total);
+            self.record_usage(call, None, &cancel).await?;
         }
 
         if let CompactionOutcome::Replaced(ContextReplacement { transcript, cursor }) = &outcome {
-            self.deps
-                .transcript
-                .replace(session, transcript.as_deref(), cursor.clone())
-                .await
-                .map_err(|error| KernelError::Store(error.to_string()))?;
+            self.wait_store(
+                self.deps
+                    .transcript
+                    .replace(session, transcript.as_deref(), cursor.clone()),
+                &cancel,
+                RunPhase::Commit,
+            )
+            .await?;
             if let Some(transcript) = transcript {
                 state.transcript = transcript.clone();
             }
@@ -1062,6 +1263,7 @@ impl AgentKernel {
         &self,
         state: &mut AgentState,
         session: &SessionRef,
+        cancel: &CancelToken,
     ) -> Result<(), KernelError> {
         let mut transcript = state.transcript.clone();
         let mut index = 0;
@@ -1132,11 +1334,14 @@ impl AgentKernel {
         }
 
         if changed {
-            self.deps
-                .transcript
-                .replace(session, Some(&transcript), CursorUpdate::Unchanged)
-                .await
-                .map_err(|error| KernelError::Load(error.to_string()))?;
+            self.wait_store(
+                self.deps
+                    .transcript
+                    .replace(session, Some(&transcript), CursorUpdate::Unchanged),
+                cancel,
+                RunPhase::Reconcile,
+            )
+            .await?;
             state.transcript = transcript;
         }
         Ok(())
@@ -1146,7 +1351,7 @@ impl AgentKernel {
         &self,
         state: &mut AgentState,
         calls: Vec<ToolCall>,
-        session: &SessionRef,
+        context: &RunContext,
         remaining_turns: Option<u32>,
         cancel: CancelToken,
         allow_complete: bool,
@@ -1182,7 +1387,8 @@ impl AgentKernel {
         }
 
         let gate_context = ToolGateContext {
-            session: session.clone(),
+            session: context.session.clone(),
+            run: context.clone(),
             total_turns: state.total_turns,
             remaining_turns,
             metadata: serde_json::json!({}),
@@ -1223,7 +1429,8 @@ impl AgentKernel {
         if cancel.is_cancelled() {
             self.fill_unexecuted(&mut slots, CANCELLED_RESULT);
             let terminal = Some(DispatchTerminal::Cancelled);
-            self.persist_tool_results(state, session, &slots).await?;
+            self.persist_tool_results(state, &context.session, &slots, &CancelToken::new())
+                .await?;
             return Ok(ToolDispatchOutcome {
                 terminal,
                 compaction: None,
@@ -1270,6 +1477,7 @@ impl AgentKernel {
                 });
                 let execution_context = ToolExecutionContext {
                     call_id: resolved.call_id.clone(),
+                    run: context.clone(),
                     progress,
                     cancel: cancel.clone(),
                     remaining_turns,
@@ -1341,7 +1549,8 @@ impl AgentKernel {
             None => TURN_ENDED_RESULT,
         };
         self.fill_unexecuted(&mut slots, unexecuted_reason);
-        self.persist_tool_results(state, session, &slots).await?;
+        self.persist_tool_results(state, &context.session, &slots, &CancelToken::new())
+            .await?;
 
         Ok(ToolDispatchOutcome {
             terminal,
@@ -1380,6 +1589,7 @@ impl AgentKernel {
         state: &mut AgentState,
         session: &SessionRef,
         slots: &[ToolSlot],
+        cancel: &CancelToken,
     ) -> Result<(), KernelError> {
         if slots.is_empty() {
             return Ok(());
@@ -1389,11 +1599,14 @@ impl AgentKernel {
             MessageOrigin::ToolResult,
             slots.iter().flat_map(tool_result_blocks).collect(),
         );
-        self.deps
-            .transcript
-            .append(session, &message, CursorUpdate::Unchanged)
-            .await
-            .map_err(|error| KernelError::Store(error.to_string()))?;
+        self.wait_store(
+            self.deps
+                .transcript
+                .append(session, &message, CursorUpdate::Unchanged),
+            cancel,
+            RunPhase::Commit,
+        )
+        .await?;
         state.transcript.push(message);
         Ok(())
     }
@@ -1403,6 +1616,7 @@ impl AgentKernel {
         state: &mut AgentState,
         session: &SessionRef,
         calls: &[ToolCall],
+        cancel: &CancelToken,
         reason: impl Fn(&ToolCall) -> String,
     ) -> Result<(), KernelError> {
         if calls.is_empty() {
@@ -1419,11 +1633,14 @@ impl AgentKernel {
                 })
                 .collect(),
         );
-        self.deps
-            .transcript
-            .append(session, &message, CursorUpdate::Unchanged)
-            .await
-            .map_err(|error| KernelError::Store(error.to_string()))?;
+        self.wait_store(
+            self.deps
+                .transcript
+                .append(session, &message, CursorUpdate::Unchanged),
+            cancel,
+            RunPhase::Commit,
+        )
+        .await?;
         state.transcript.push(message);
         Ok(())
     }

@@ -494,8 +494,8 @@ impl LlmClient for AnthropicAdapter {
 
         if !response.status().is_success() {
             let status = response.status();
-            let retry_after = crate::transport::retry_after_12(response.headers());
-            let body_text = crate::transport::read_bounded_error_body_12(response).await;
+            let retry_after = crate::transport::retry_after(response.headers());
+            let body_text = crate::transport::read_bounded_error_body(response).await;
             let class = crate::transport::classify_http_error(status.as_u16(), &body_text);
             return Err(LlmError::HttpError {
                 status: status.as_u16(),

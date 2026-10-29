@@ -200,9 +200,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "async-openai-local"
-version = "0.41.3"
-source = "git+https://github.com/rust-infra/async-openai.git?rev=12488eb3f6f2dbf35082a1121f2192dd1c2a7c27#12488eb3f6f2dbf35082a1121f2192dd1c2a7c27"
+name = "async-openai"
+version = "0.42.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "174e979f1e2ffe94b88d584740c11fd071f6d829c29120b1ba88bcaeb3374063"
 dependencies = [
  "async-openai-macros",
  "base64",
@@ -229,7 +230,8 @@ dependencies = [
 [[package]]
 name = "async-openai-macros"
 version = "0.3.0"
-source = "git+https://github.com/rust-infra/async-openai.git?rev=12488eb3f6f2dbf35082a1121f2192dd1c2a7c27#12488eb3f6f2dbf35082a1121f2192dd1c2a7c27"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "492a944774207eed3acf425214eadbd6ce84a2b89331164ff1c11bae92b26302"
 dependencies = [
  "proc-macro2",
  "quote",
@@ -546,9 +548,9 @@ checksum = "f079e83a288787bcd14a6aea84cee5c87a67c5a3e660c30f557a3d24761b3527"
 
 [[package]]
 name = "chacha20"
-version = "0.10.1"
+version = "0.10.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d524456ba66e72eb8b115ff89e01e497f8e6d11d78b70b1aa13c0fbd97540a81"
+checksum = "65c35e4b699c7e15ccbe7ee35c005e4fc0a278d22238a2857e6ce2dadeda1b06"
 dependencies = [
  "cfg-if",
  "cpufeatures 0.3.0",
@@ -4769,10 +4771,10 @@ dependencies = [
 
 [[package]]
 name = "tact"
-version = "1.1.42"
+version = "2.0.0"
 dependencies = [
  "anyhow",
- "async-openai",
+ "async-openai 0.20.0",
  "async-trait",
  "base64",
  "bytes",
@@ -4822,7 +4824,7 @@ dependencies = [
 
 [[package]]
 name = "tact-ui"
-version = "1.1.42"
+version = "2.0.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4846,7 +4848,7 @@ dependencies = [
 
 [[package]]
 name = "tact_agent_api"
-version = "1.1.42"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "futures-core",
@@ -4858,7 +4860,7 @@ dependencies = [
 
 [[package]]
 name = "tact_agent_core"
-version = "1.1.42"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -4871,7 +4873,7 @@ dependencies = [
 
 [[package]]
 name = "tact_agent_sdk"
-version = "1.1.42"
+version = "2.0.0"
 dependencies = [
  "async-trait",
  "futures-util",
@@ -4887,11 +4889,11 @@ dependencies = [
 
 [[package]]
 name = "tact_llm"
-version = "1.1.42"
+version = "2.0.0"
 dependencies = [
  "anyhow",
- "async-openai",
- "async-openai-local",
+ "async-openai 0.20.0",
+ "async-openai 0.42.2",
  "async-trait",
  "dotenvy",
  "eventsource-stream",
@@ -4906,7 +4908,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "tact_agent_api",
- "tact_agent_sdk",
  "thiserror 2.0.19",
  "tokio",
  "toml 0.8.23",
@@ -5383,7 +5384,7 @@ dependencies = [
 
 [[package]]
 name = "tool_refactor_macros"
-version = "1.1.42"
+version = "2.0.0"
 dependencies = [
  "proc-macro2",
  "quote",

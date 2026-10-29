@@ -18,17 +18,38 @@ mod toolset;
 mod telemetry;
 
 pub use agent::Agent;
+pub use async_trait::async_trait;
 pub use builder::AgentBuilder;
 pub(crate) use config::AgentConfig;
 pub use control::SessionControl;
 pub use defaults::{
-    AllowAllGate, BasicContextPolicy, DenyAllGate, EmptyTools, NoopEventPort, NoopTranscriptStore,
-    NoopUsageSink,
+    AllowAllGate, BasicContextPolicy, CallbackEventPort, ContextCallbackEventPort, DenyAllGate,
+    EmptyTools, NoopEventPort, NoopTranscriptStore, NoopUsageSink,
 };
 pub use error::{AgentBuildError, ToolSetError};
+pub use futures_util;
 pub use run_id::{RunIdSource, UuidRunIdSource};
+pub use serde_json;
 pub use session::AgentSession;
+pub use tact_agent_api;
+pub use tact_agent_core::KernelError;
 pub use toolset::{ToolHandler, ToolProvider, ToolSet};
+
+/// Common imports for hosts implementing model and tool adapters.
+pub mod prelude {
+    pub use async_trait::async_trait;
+    pub use futures_util;
+    pub use serde_json;
+    pub use tact_agent_api::*;
+    pub use tact_agent_core::KernelError;
+
+    pub use crate::{
+        Agent, AgentBuildError, AgentBuilder, AgentSession, AllowAllGate, BasicContextPolicy,
+        CallbackEventPort, ContextCallbackEventPort, DenyAllGate, EmptyTools, NoopEventPort,
+        NoopTranscriptStore, NoopUsageSink, RunIdSource, SessionControl, ToolHandler, ToolProvider,
+        ToolSet, ToolSetError, UuidRunIdSource,
+    };
+}
 
 #[cfg(feature = "telemetry")]
 pub use telemetry::TelemetryConfig;

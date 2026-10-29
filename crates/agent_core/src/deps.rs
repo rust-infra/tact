@@ -1,8 +1,8 @@
 use std::sync::Arc;
 
 use tact_agent_api::{
-    AgentEvent, ContextPolicy, EventObserver, EventPort, ModelPort, RunPhase, RuntimeErrorInfo,
-    ToolGate, ToolPort, TranscriptStore, UsageSink,
+    AgentEvent, ContextPolicy, EventObserver, EventPort, ModelPort, RunContext, RunPhase,
+    RuntimeErrorInfo, ToolGate, ToolPort, TranscriptStore, UsageSink,
 };
 
 /// Required kernel dependencies. Every capability is mandatory and injected.
@@ -28,18 +28,40 @@ pub struct KernelExtensions {
 pub(crate) struct EventBus {
     port: Arc<dyn EventPort>,
     observers: Vec<Arc<dyn EventObserver>>,
+    context: Option<RunContext>,
 }
 
 impl EventBus {
     pub(crate) fn new(port: Arc<dyn EventPort>, observers: Vec<Arc<dyn EventObserver>>) -> Self {
-        Self { port, observers }
+        Self {
+            port,
+            observers,
+            context: None,
+        }
+    }
+
+    pub(crate) fn with_context(&self, context: RunContext) -> Self {
+        Self {
+            port: self.port.clone(),
+            observers: self.observers.clone(),
+            context: Some(context),
+        }
     }
 
     pub(crate) fn emit(&self, event: AgentEvent) {
         let delivery = event.delivery();
-        self.port.emit_with_delivery(event.clone(), delivery);
-        for observer in &self.observers {
-            observer.observe_with_delivery(&event, delivery);
+        let event = Arc::new(event);
+        if let Some(context) = &self.context {
+            self.port
+                .emit_shared_with_context(context, event.clone(), delivery);
+            for observer in &self.observers {
+                observer.observe_with_context(context, &event, delivery);
+            }
+        } else {
+            self.port.emit_shared(event.clone(), delivery);
+            for observer in &self.observers {
+                observer.observe_with_delivery(&event, delivery);
+            }
         }
     }
 }
@@ -59,11 +81,20 @@ impl AgentKernel {
         let events = EventBus::new(deps.events.clone(), extensions.observers);
         Self { deps, events }
     }
+
+    pub(crate) fn with_context(&self, context: RunContext) -> Self {
+        Self {
+            deps: self.deps.clone(),
+            events: self.events.with_context(context),
+        }
+    }
 }
 
 /// Typed kernel failure.
 #[derive(Debug, thiserror::Error)]
 pub enum KernelError {
+    #[error("run cancelled")]
+    Cancelled,
     #[error("kernel contract failure: {0}")]
     Contract(String),
     #[error("transcript load failed: {0}")]
@@ -91,6 +122,7 @@ pub enum KernelError {
 impl KernelError {
     pub fn phase(&self) -> RunPhase {
         match self {
+            Self::Cancelled => RunPhase::Stream,
             Self::Load(_) => RunPhase::Load,
             Self::Context(_) => RunPhase::PrepareRun,
             Self::Model(_) => RunPhase::Stream,

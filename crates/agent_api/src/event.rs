@@ -4,8 +4,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AgentMessage, AgentRole, CompactionKind, MessageDelta, MessageId, MessageRange, ModelCallKind,
-    ModelCallOptions, ProviderActivity, RunId, RunOutcome, RuntimeErrorInfo, TokenUsage, ToolCall,
-    ToolDescriptor, ToolExecutionResult, ToolOutputChunk,
+    ModelCallOptions, ProviderActivity, RunContext, RunId, RunOutcome, RuntimeErrorInfo,
+    TokenUsage, ToolCall, ToolDescriptor, ToolExecutionResult, ToolOutputChunk,
 };
 
 /// Ordered kernel event with no presentation-specific fields.
@@ -14,6 +14,7 @@ use crate::{
 pub enum AgentEvent {
     RunStarted {
         run_id: RunId,
+        session: crate::SessionRef,
     },
     TurnStarted {
         run_id: RunId,
@@ -59,6 +60,8 @@ pub enum AgentEvent {
     },
     Usage {
         call_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        run: Option<RunContext>,
         kind: ModelCallKind,
         usage: Option<TokenUsage>,
         message_range: Option<MessageRange>,
@@ -75,9 +78,11 @@ pub enum AgentEvent {
     },
     RunFinished {
         outcome: RunOutcome,
+        run: RunContext,
     },
     RunFailed {
         error: RuntimeErrorInfo,
+        run: RunContext,
     },
 }
 

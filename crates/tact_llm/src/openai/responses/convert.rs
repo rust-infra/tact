@@ -1,9 +1,10 @@
 use async_openai_responses::types::responses::{
-    ContextManagementParam, CreateResponseArgs, EasyInputContent, EasyInputMessage,
-    FunctionCallOutput, FunctionCallOutputItemParam, FunctionTool, FunctionToolCall, IncludeEnum,
-    InputContent, InputImageContent, InputItem, InputParam, InputTextContent, Item, MessageType,
-    OutputStatus, Reasoning, ReasoningSummary, Role as ResponsesRole, Tool as ResponsesTool,
-    ToolChoiceFunction, ToolChoiceOptions, ToolChoiceParam, WebSearchTool,
+    ContextManagementParam, ContextManagementParamType, CreateResponseArgs, EasyInputContent,
+    EasyInputMessage, FunctionCallOutput, FunctionCallOutputItemParam, FunctionTool,
+    FunctionToolCall, IncludeEnum, InputContent, InputImageContent, InputItem, InputParam,
+    InputTextContent, Item, MessageType, OutputStatus, Reasoning, ReasoningSummary,
+    Role as ResponsesRole, Tool as ResponsesTool, ToolChoiceFunction, ToolChoiceOptions,
+    ToolChoiceParam, WebSearchTool,
 };
 
 use super::{history, wire};
@@ -102,6 +103,7 @@ fn message_to_input(
             ContentBlock::Text { text } => {
                 message_content.push(InputContent::InputText(InputTextContent {
                     text: text.clone(),
+                    prompt_cache_breakpoint: None,
                 }));
             }
             ContentBlock::Image { source } => {
@@ -109,6 +111,7 @@ fn message_to_input(
                     detail: Default::default(),
                     file_id: None,
                     image_url: Some(format!("data:{};base64,{}", source.media_type, source.data)),
+                    prompt_cache_breakpoint: None,
                 }));
             }
             ContentBlock::Thinking { signature, .. } => {
@@ -141,6 +144,8 @@ fn message_to_input(
                     name: name.clone(),
                     id: function_call_item_ids.get(id).cloned(),
                     status: Some(OutputStatus::Completed),
+                    caller: None,
+                    r#async: None,
                 })));
             }
             ContentBlock::ToolResult {
@@ -150,10 +155,13 @@ fn message_to_input(
                 flush_message_content(*role, &mut message_content, &mut input);
                 input.push(InputItem::Item(Item::FunctionCallOutput(
                     FunctionCallOutputItemParam {
-                        call_id: tool_use_id.clone(),
+                        call_id: Some(tool_use_id.clone()),
                         output: FunctionCallOutput::Text(content.clone()),
                         id: None,
                         status: Some(OutputStatus::Completed),
+                        name: None,
+                        namespace: None,
+                        caller: None,
                     },
                 )));
             }
@@ -165,9 +173,9 @@ fn message_to_input(
 
 fn tool_choice(tool_choice: &ToolChoice) -> ToolChoiceParam {
     match tool_choice {
-        ToolChoice::Auto => ToolChoiceParam::Mode(ToolChoiceOptions::Auto),
-        ToolChoice::Any => ToolChoiceParam::Mode(ToolChoiceOptions::Required),
-        ToolChoice::None => ToolChoiceParam::Mode(ToolChoiceOptions::None),
+        ToolChoice::Auto => ToolChoiceParam::Option(ToolChoiceOptions::Auto),
+        ToolChoice::Any => ToolChoiceParam::Option(ToolChoiceOptions::Required),
+        ToolChoice::None => ToolChoiceParam::Option(ToolChoiceOptions::None),
         ToolChoice::Tool { name } => {
             ToolChoiceParam::Function(ToolChoiceFunction { name: name.clone() })
         }
@@ -335,10 +343,10 @@ pub(crate) fn create_response_with_policy(
         .include(vec![IncludeEnum::ReasoningEncryptedContent])
         .store(false);
     // Server-side compaction: `context_management` is a typed builder field
-    // on the local async-openai fork (`ContextManagementParam`).
+    // in upstream async-openai (`ContextManagementParam`).
     if let Some(threshold) = compact_threshold {
         builder.context_management(vec![ContextManagementParam {
-            type_: "compaction".to_string(),
+            r#type: ContextManagementParamType::Compaction,
             compact_threshold: Some(threshold),
         }]);
     }
@@ -369,6 +377,9 @@ pub(crate) fn create_response_with_policy(
                         strict: None,
                         description: tool.description.clone(),
                         defer_loading: None,
+                        r#async: None,
+                        output_schema: None,
+                        allowed_callers: None,
                     })
                 })
                 .collect::<Vec<_>>()
@@ -380,6 +391,7 @@ pub(crate) fn create_response_with_policy(
             search_context_size: None,
             filters: None,
             search_content_types: None,
+            external_web_access: None,
         }));
     }
     let has_tools = !response_tools.is_empty();
@@ -395,6 +407,8 @@ pub(crate) fn create_response_with_policy(
         builder.reasoning(Reasoning {
             effort: request.reasoning_effort.map(Into::into),
             summary: Some(ReasoningSummary::Detailed),
+            mode: None,
+            context: None,
         });
     }
 

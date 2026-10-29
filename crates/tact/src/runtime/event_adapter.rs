@@ -504,6 +504,7 @@ mod tests {
         });
         bridge.emit(AgentEvent::Usage {
             call_id: "call-1".into(),
+            run: None,
             kind: ModelCallKind::Stream,
             usage: Some(TokenUsage {
                 input_tokens: 2,

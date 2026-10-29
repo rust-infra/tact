@@ -191,6 +191,7 @@ fn an_opaque_api_error_keeps_its_text_and_gains_the_shape() {
             r#type: Some("invalid_request_error".to_string()),
             param: None,
             code: Some(String::new()),
+            misalignment: None,
         },
     };
     let error = super::with_request_shape(
@@ -303,6 +304,7 @@ fn parses_output_item_added_and_done_events() {
 }
 
 #[test]
+#[allow(deprecated)]
 fn parses_web_search_call_item_with_queries_array() {
     // Compatible endpoints emit the search action with a `queries` array
     // instead of the singular `query`; the stream parser must normalize
@@ -335,7 +337,7 @@ fn parses_web_search_call_item_with_queries_array() {
                             .and_then(|action| match action {
                                 async_openai_responses::types::responses::WebSearchToolCallAction::Search(
                                     search,
-                                ) => Some(search.query.as_str()),
+                                ) => search.query.as_deref(),
                                 _ => None,
                             }),
                         Some("Tokyo weather")
@@ -353,7 +355,7 @@ fn parses_web_search_call_item_with_queries_array() {
                             .and_then(|action| match action {
                                 async_openai_responses::types::responses::WebSearchToolCallAction::Search(
                                     search,
-                                ) => Some(search.query.as_str()),
+                                ) => search.query.as_deref(),
                                 _ => None,
                             }),
                         Some("Tokyo weather")

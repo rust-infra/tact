@@ -3,6 +3,7 @@ name = "tact_agent_sdk"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version = "1.88"
 description = "Lightweight SDK facade over the Tact provider-neutral agent kernel"
 repository = "https://github.com/rust-infra/tact"
 readme = "README.md"
@@ -10,8 +11,8 @@ keywords = ["agent", "llm", "sdk", "runtime"]
 categories = ["api-bindings", "asynchronous"]
 
 [dependencies]
-tact_agent_api = { path = "../agent_api" }
-tact_agent_core = { path = "../agent_core" }
+tact_agent_api = { version = "2.0.0", path = "../agent_api" }
+tact_agent_core = { version = "2.0.0", path = "../agent_core" }
 async-trait = { workspace = true }
 futures-util = { workspace = true }
 serde_json = { workspace = true }
@@ -24,7 +25,7 @@ default = ["telemetry"]
 telemetry = ["dep:tracing"]
 
 [dev-dependencies]
-tact_agent_api = { path = "../agent_api", features = ["test-support"] }
-tact_agent_core = { path = "../agent_core", features = ["test-support"] }
+tact_agent_api = { version = "2.0.0", path = "../agent_api", features = ["test-support"] }
+tact_agent_core = { version = "2.0.0", path = "../agent_core", features = ["test-support"] }
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "time"] }
 tracing-subscriber = { workspace = true, features = ["fmt", "env-filter"] }

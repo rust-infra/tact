@@ -2,11 +2,12 @@
 name = "tact_protocol"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.91"
 
 [dependencies]
 serde = { workspace = true }
 serde_json = { workspace = true }
-tact_agent_api = { path = "../agent_api" }
+tact_agent_api = { version = "2.0.0", path = "../agent_api" }
 tokio = { workspace = true, features = ["macros", "sync"] }
 
 [dev-dependencies]

@@ -5,7 +5,7 @@ mod store;
 mod usage;
 
 pub use context::BasicContextPolicy;
-pub use events::NoopEventPort;
+pub use events::{CallbackEventPort, ContextCallbackEventPort, NoopEventPort};
 pub use gate::{AllowAllGate, DenyAllGate};
 pub use store::NoopTranscriptStore;
 pub use usage::NoopUsageSink;

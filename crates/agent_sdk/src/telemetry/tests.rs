@@ -13,7 +13,8 @@ use serde_json::json;
 use tact_agent_api::{
     CancelToken, ContextError, ContextPolicy, ContextPreparation, ContextView, ModelCapabilities,
     ModelCursor, ModelError, ModelMessage, ModelPort, ModelRequest, ModelResponse, ModelStream,
-    PreparationDecision, PreparedRequest, RequestPlan, RunInput, StopReason, TokenUsage,
+    PreparationDecision, PreparedRequest, RequestPlan, RunContext, RunId, RunInput, SessionRef,
+    StopReason, TokenUsage,
 };
 use tact_agent_core::test_support::{ScriptedModel, events, text_response};
 use tracing_subscriber::fmt::MakeWriter;
@@ -555,6 +556,65 @@ impl ModelPort for EmptyStream {
     ) -> Result<ModelResponse, ModelError> {
         Err(ModelError::unsupported("test"))
     }
+}
+
+#[derive(Default)]
+struct ContextStream {
+    calls: AtomicUsize,
+}
+
+#[async_trait]
+impl ModelPort for ContextStream {
+    fn capabilities(&self) -> ModelCapabilities {
+        tact_agent_core::test_support::default_capabilities()
+    }
+
+    async fn stream(
+        &self,
+        _request: ModelRequest,
+        _cursor: Option<&ModelCursor>,
+        _cancel: CancelToken,
+    ) -> Result<ModelStream, ModelError> {
+        Err(ModelError::unsupported("legacy stream"))
+    }
+
+    async fn stream_with_context(
+        &self,
+        _context: &RunContext,
+        _request: ModelRequest,
+        _cursor: Option<&ModelCursor>,
+        _cancel: CancelToken,
+    ) -> Result<ModelStream, ModelError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(Box::pin(futures_util::stream::empty()))
+    }
+}
+
+#[tokio::test]
+async fn instrumented_model_forwards_context_aware_streams() {
+    let inner = Arc::new(ContextStream::default());
+    let port = super::model::InstrumentedModelPort::new(inner.clone(), TelemetryConfig::default());
+    let request = ModelRequest {
+        model: "test".into(),
+        system: String::new(),
+        messages: Vec::new(),
+        tools: Vec::new(),
+        max_output_tokens: 10,
+        options: tact_agent_api::ModelCallOptions::default(),
+    };
+    let _stream = port
+        .stream_with_context(
+            &RunContext {
+                session: SessionRef::new("session"),
+                run_id: RunId::new("run"),
+            },
+            request,
+            None,
+            CancelToken::new(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(inner.calls.load(Ordering::SeqCst), 1);
 }
 
 #[tokio::test]

@@ -80,8 +80,8 @@ The SDK must:
 - `ProviderModel::stream_params` eagerly spawns a producer, so dropping an
   unpolled stream can still dispatch work.
 - Chat Completions and Anthropic already use direct HTTP paths. Responses uses
-  a Git-pinned provider SDK whose error and tracing paths can retain or log
-  response bodies.
+  the registry-backed `async-openai` SDK whose error and tracing paths can
+  retain or log response bodies.
 - `tact_agent_api::ModelCapabilities.context_window` is currently `usize`.
   Tact uses `0` as an unknown sentinel in several paths.
 - `ModelResponse.request_body` and `UsageRecord.request_body` are currently
@@ -904,16 +904,16 @@ anthropic = [
 ]
 openai-chat = [
   "core",
-  "dep:reqwest13",
-  "reqwest13/stream",
+  "dep:reqwest",
+  "reqwest/stream",
   "dep:eventsource-stream",
   "dep:secrecy10",
   "dep:async-openai",
 ]
 openai-responses = [
   "core",
-  "dep:reqwest13",
-  "reqwest13/stream",
+  "dep:reqwest",
+  "reqwest/stream",
   "dep:eventsource-stream",
   "dep:secrecy10",
   "dep:async-openai-responses",

@@ -35,11 +35,12 @@ pub use model::{
     ReasoningEffort, StopReason, ThinkingDelta, TokenUsage,
 };
 pub use state::{
-    AgentState, CancelToken, HostYieldReason, MessageRange, RecoveryStats, RunId, RunInput,
-    RunOutcome, RunPhase, RunStop, RuntimeErrorInfo, SessionRef,
+    AgentState, CancelToken, HostYieldReason, MessageRange, RecoveryStats, RunContext, RunId,
+    RunInput, RunOutcome, RunPhase, RunStop, RuntimeErrorInfo, SessionRef,
 };
 pub use store::{
-    CursorUpdate, MessageReceipt, ReplaceReceipt, StoreError, TranscriptSnapshot, TranscriptStore,
+    CursorUpdate, MessageReceipt, ReplaceReceipt, SessionStateSnapshot, StoreError,
+    TranscriptSnapshot, TranscriptStore,
 };
 pub use tool::{
     GateDecision, ResolvedToolCall, ResourceAccess, ResourceKey, ResourceScope, ToolCall,

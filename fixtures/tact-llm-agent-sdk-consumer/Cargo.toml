@@ -6,5 +6,5 @@ edition = "2024"
 [workspace]
 
 [dependencies]
-tact_llm = { path = "../../crates/tact_llm", default-features = false, features = ["openai-responses"] }
-tact_agent_sdk = { path = "../../crates/agent_sdk" }
+tact_llm = { version = "2.0.0", path = "../../crates/tact_llm", default-features = false, features = ["openai-responses"] }
+tact_agent_sdk = { version = "2.0.0", path = "../../crates/agent_sdk" }

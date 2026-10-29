@@ -318,6 +318,7 @@ mod tests {
     }
 
     #[test]
+    #[allow(deprecated)]
     fn web_search_call_with_queries_is_normalized_for_typed_parse() {
         let parsed = parse_response_envelope(response_with_queries_web_search_call()).unwrap();
         // The typed envelope parses (query filled from `queries`), so the
@@ -331,7 +332,7 @@ mod tests {
             call.action.as_ref().and_then(|action| match action {
                 async_openai_responses::types::responses::WebSearchToolCallAction::Search(
                     search,
-                ) => Some(search.query.as_str()),
+                ) => search.query.as_deref(),
                 _ => None,
             }),
             Some("Tokyo weather")

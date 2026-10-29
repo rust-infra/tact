@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use tact_agent_api::AgentState;
+use tact_agent_api::{AgentState, SessionRef};
 
 use crate::{AgentBuildError, AgentConfig, AgentSession, SessionControl};
 
@@ -36,9 +36,17 @@ impl Agent {
         if !state.initialized {
             return Err(AgentBuildError::UninitializedState);
         }
+        let session = SessionRef::new(session_id.into());
+        let mut state = state;
+        if let Some(bound) = &state.session
+            && bound != &session
+        {
+            return Err(AgentBuildError::SessionMismatch);
+        }
+        state.session = Some(session.clone());
         Ok(AgentSession::new(
             self.kernel.clone(),
-            session_id.into(),
+            session.as_str().to_owned(),
             state,
             self.config.clone(),
             SessionControl::new(),

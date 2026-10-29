@@ -3,6 +3,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::{AgentMessage, MessageRange, ModelCursor, SessionRef};
 
+/// Durable, non-transcript state needed to resume an activation safely.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SessionStateSnapshot {
+    pub session: SessionRef,
+    pub total_turns: u32,
+    pub last_token_total: Option<u32>,
+}
+
 /// Cursor mutation committed atomically with a transcript write.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
@@ -62,6 +70,21 @@ pub trait TranscriptStore: Send + Sync {
         transcript: Option<&[AgentMessage]>,
         cursor: CursorUpdate,
     ) -> Result<ReplaceReceipt, StoreError>;
+
+    async fn load_state(
+        &self,
+        _session: &SessionRef,
+    ) -> Result<Option<SessionStateSnapshot>, StoreError> {
+        Ok(None)
+    }
+
+    async fn save_state(
+        &self,
+        _session: &SessionRef,
+        _state: &SessionStateSnapshot,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

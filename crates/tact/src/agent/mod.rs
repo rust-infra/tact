@@ -1197,6 +1197,7 @@ impl Agent {
     fn take_facade_state(&mut self) -> FacadeActivationState {
         let original_context = self.runtime.context.clone();
         let state = AgentState {
+            session: self.runtime.session_id.clone().map(SessionRef::new),
             transcript: self
                 .runtime
                 .context

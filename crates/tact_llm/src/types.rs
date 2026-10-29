@@ -115,7 +115,7 @@ impl fmt::Display for OpenAiReasoningEffort {
 }
 
 /// Convert Tact's provider-agnostic effort into the SDK's typed
-/// `ReasoningEffort` (vendored `async-openai-local`), so the Responses
+/// `ReasoningEffort` (upstream `async-openai`), so the Responses
 /// adapter can build the request with the typed builder instead of injecting
 /// `reasoning.effort` through JSON. The vendor adds `Max` so every variant
 /// maps one-to-one; the wire strings match `as_str()`.
