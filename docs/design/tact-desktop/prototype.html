@@ -1,0 +1,1169 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Tact Desktop PRD prototype: a native control room for long-running coding agents."
+    />
+    <title>Tact Desktop - Run Control Room</title>
+    <link rel="stylesheet" href="./prototype.css?v=20261030-27" />
+  </head>
+  <body data-theme="light">
+    <a class="skip-link" href="#timeline">Skip to transcript</a>
+    <svg class="svg-sprite" aria-hidden="true">
+      <symbol id="i-plus" viewBox="0 0 24 24">
+        <path d="M12 5v14M5 12h14" />
+      </symbol>
+      <symbol id="i-search" viewBox="0 0 24 24">
+        <circle cx="11" cy="11" r="6.5" />
+        <path d="m16 16 4 4" />
+      </symbol>
+      <symbol id="i-branch" viewBox="0 0 24 24">
+        <circle cx="6" cy="5" r="2" />
+        <circle cx="18" cy="7" r="2" />
+        <circle cx="6" cy="19" r="2" />
+        <path d="M6 7v10M8 10h4a6 6 0 0 0 6-6" />
+      </symbol>
+      <symbol id="i-target" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="8" />
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+      </symbol>
+      <symbol id="i-users" viewBox="0 0 24 24">
+        <circle cx="9" cy="8" r="3" />
+        <path d="M3.5 19c.6-3 2.4-5 5.5-5s4.9 2 5.5 5" />
+        <path d="M15 6.5a3 3 0 0 1 0 5.8M16.5 14c2.3.4 3.6 2 4 4.5" />
+      </symbol>
+      <symbol id="i-plug" viewBox="0 0 24 24">
+        <path d="M9 3v5M15 3v5M7 8h10v2a5 5 0 0 1-10 0V8ZM12 15v6" />
+      </symbol>
+      <symbol id="i-puzzle" viewBox="0 0 24 24">
+        <path d="M10 4h4v3a2 2 0 1 0 4 0h2v5h-3a2 2 0 1 0 0 4h3v4h-5v-3a2 2 0 1 0-4 0v3H7v-4H4v-4h3a2 2 0 1 0 0-4H4V5h6V4Z" />
+      </symbol>
+      <symbol id="i-settings" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="3" />
+        <path d="M19 13.5v-3l-2-.7-.7-1.7.9-1.9-2.1-2.1-1.9.9-1.7-.7L10.8 2h-3l-.7 2-1.7.7-1.9-.9-2.1 2.1.9 1.9-.7 1.7-2 .7v3l2 .7.7 1.7-.9 1.9 2.1 2.1 1.9-.9 1.7.7.7 2h3l.7-2 1.7-.7 1.9.9 2.1-2.1-.9-1.9.7-1.7 2-.7Z" />
+      </symbol>
+      <symbol id="i-chevron" viewBox="0 0 24 24">
+        <path d="m8 10 4 4 4-4" />
+      </symbol>
+      <symbol id="i-command" viewBox="0 0 24 24">
+        <path d="M9 7V5a3 3 0 1 0-3 3h12a3 3 0 1 0-3-3v14a3 3 0 1 0 3-3H6a3 3 0 1 0 3 3V5" />
+      </symbol>
+      <symbol id="i-terminal" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <path d="m7 9 3 3-3 3M13 15h4" />
+      </symbol>
+      <symbol id="i-file" viewBox="0 0 24 24">
+        <path d="M6 3h8l4 4v14H6V3Z" />
+        <path d="M14 3v5h5M9 13h6M9 17h4" />
+      </symbol>
+      <symbol id="i-check" viewBox="0 0 24 24">
+        <path d="m5 12 4 4 10-10" />
+      </symbol>
+      <symbol id="i-x" viewBox="0 0 24 24">
+        <path d="m6 6 12 12M18 6 6 18" />
+      </symbol>
+      <symbol id="i-play" viewBox="0 0 24 24">
+        <path d="m8 5 11 7-11 7V5Z" />
+      </symbol>
+      <symbol id="i-pause" viewBox="0 0 24 24">
+        <path d="M9 5v14M15 5v14" />
+      </symbol>
+      <symbol id="i-paperclip" viewBox="0 0 24 24">
+        <path d="m8 12 6.5-6.5a4 4 0 0 1 5.6 5.6L11 20.2a5 5 0 0 1-7-7l8.5-8.5" />
+      </symbol>
+      <symbol id="i-at" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M16 12v1.5a2.5 2.5 0 0 0 5 0V12a9 9 0 1 0-3.1 6.9" />
+      </symbol>
+      <symbol id="i-slash" viewBox="0 0 24 24">
+        <path d="M16 4 8 20" />
+      </symbol>
+      <symbol id="i-send" viewBox="0 0 24 24">
+        <path d="m4 12 16-8-5 16-3-6-8-2Z" />
+      </symbol>
+      <symbol id="i-stop" viewBox="0 0 24 24">
+        <rect x="7" y="7" width="10" height="10" rx="1" />
+      </symbol>
+      <symbol id="i-clock" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="8" />
+        <path d="M12 7v5l3 2" />
+      </symbol>
+      <symbol id="i-cpu" viewBox="0 0 24 24">
+        <rect x="6" y="6" width="12" height="12" rx="2" />
+        <path d="M9 1v3M15 1v3M9 20v3M15 20v3M1 9h3M1 15h3M20 9h3M20 15h3" />
+      </symbol>
+      <symbol id="i-external" viewBox="0 0 24 24">
+        <path d="M14 4h6v6M20 4 11 13M9 5H5v14h14v-4" />
+      </symbol>
+      <symbol id="i-arrow-up" viewBox="0 0 24 24">
+        <path d="m6 14 6-6 6 6" />
+      </symbol>
+      <symbol id="i-sun" viewBox="0 0 24 24">
+        <circle cx="12" cy="12" r="4" />
+        <path d="M12 2v3M12 19v3M2 12h3M19 12h3M4.9 4.9 7 7M17 17l2.1 2.1M19.1 4.9 17 7M7 17l-2.1 2.1" />
+      </symbol>
+      <symbol id="i-moon" viewBox="0 0 24 24">
+        <path d="M20 15.1A8.5 8.5 0 0 1 8.9 4a8.5 8.5 0 1 0 11.1 11.1Z" />
+      </symbol>
+      <symbol id="i-grid" viewBox="0 0 24 24">
+        <rect x="4" y="4" width="6" height="6" />
+        <rect x="14" y="4" width="6" height="6" />
+        <rect x="4" y="14" width="6" height="6" />
+        <rect x="14" y="14" width="6" height="6" />
+      </symbol>
+      <symbol id="i-panel-left" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <path d="M9 4v16" />
+      </symbol>
+      <symbol id="i-panel-right" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <path d="M15 4v16" />
+      </symbol>
+      <symbol id="i-more" viewBox="0 0 24 24">
+        <circle cx="5" cy="12" r="1.2" fill="currentColor" stroke="none" />
+        <circle cx="12" cy="12" r="1.2" fill="currentColor" stroke="none" />
+        <circle cx="19" cy="12" r="1.2" fill="currentColor" stroke="none" />
+      </symbol>
+      <symbol id="i-copy" viewBox="0 0 24 24">
+        <rect x="8" y="8" width="11" height="11" rx="2" />
+        <path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2" />
+      </symbol>
+      <symbol id="i-archive" viewBox="0 0 24 24">
+        <path d="M4 7h16v13H4V7ZM3 4h18v3H3V4Z" />
+        <path d="M9 12h6" />
+      </symbol>
+      <symbol id="i-bell" viewBox="0 0 24 24">
+        <path d="M18 9a6 6 0 0 0-12 0c0 7-3 7-3 9h18c0-2-3-2-3-9Z" />
+        <path d="M10 21h4" />
+      </symbol>
+      <symbol id="i-image" viewBox="0 0 24 24">
+        <rect x="3" y="4" width="18" height="16" rx="2" />
+        <circle cx="8.5" cy="9" r="1.5" />
+        <path d="m4 17 5-5 4 4 3-3 4 4" />
+      </symbol>
+      <symbol id="i-mic" viewBox="0 0 24 24">
+        <rect x="9" y="3" width="6" height="11" rx="3" />
+        <path d="M5.5 11a6.5 6.5 0 0 0 13 0M12 17.5V21M9 21h6" />
+      </symbol>
+    </svg>
+
+    <div class="page-grain" aria-hidden="true"></div>
+    <div class="app-frame">
+      <header class="titlebar">
+        <div class="brand-lockup">
+          <span class="window-lights" aria-hidden="true"><i></i><i></i><i></i></span>
+          <button class="icon-button panel-toggle panel-toggle-left is-active" id="rail-toggle" type="button" aria-label="Hide session sidebar" aria-pressed="true" aria-controls="session-rail" title="Toggle sidebar · ⌘B">
+            <svg class="icon" aria-hidden="true"><use href="#i-panel-left"></use></svg>
+          </button>
+          <div class="brand-mark">T</div>
+          <div>
+            <div class="brand-word">tact</div>
+            <div class="brand-sub">desktop preview</div>
+          </div>
+        </div>
+
+        <div class="workspace-switcher" aria-label="Current workspace">
+          <span class="repo-name">rust-infra/tact</span>
+          <span class="workspace-divider"></span>
+          <svg class="icon small" aria-hidden="true"><use href="#i-branch"></use></svg>
+          <span class="mono">feat/desktop</span>
+          <span class="workspace-divider"></span>
+          <span class="session-id" id="session-id-label">session 8f2a</span>
+          <svg class="icon tiny" aria-hidden="true"><use href="#i-chevron"></use></svg>
+        </div>
+
+        <div class="titlebar-actions">
+          <button class="icon-button" id="theme-toggle" type="button" aria-label="Switch appearance">
+            <svg class="icon" aria-hidden="true"><use id="theme-icon" href="#i-moon"></use></svg>
+            <span id="theme-label">Light</span>
+          </button>
+          <button class="command-trigger" id="command-trigger" type="button">
+            <svg class="icon small" aria-hidden="true"><use href="#i-command"></use></svg>
+            <span>Commands</span>
+            <kbd>⌘ K</kbd>
+          </button>
+          <button class="avatar-button" type="button" aria-label="Open account menu">RG</button>
+          <button class="icon-button panel-toggle panel-toggle-right is-active" id="inspector-toggle" type="button" aria-label="Hide inspector" aria-pressed="true" aria-controls="run-inspector" title="Toggle inspector · ⌘⌥B">
+            <svg class="icon" aria-hidden="true"><use href="#i-panel-right"></use></svg>
+          </button>
+        </div>
+      </header>
+
+      <div class="workbench is-initializing" id="workbench">
+        <aside class="rail" id="session-rail" aria-label="Sessions and durable work">
+          <button class="project-switcher" id="project-switcher" type="button" aria-label="Switch project">
+            <span class="project-avatar">RT</span>
+            <span class="project-copy">
+              <strong>rust-infra/tact</strong>
+              <small>12 sessions · feat/desktop</small>
+            </span>
+            <svg class="icon small" aria-hidden="true"><use href="#i-chevron"></use></svg>
+          </button>
+
+          <button class="new-run" type="button" data-command="new-session">
+            <svg class="icon" aria-hidden="true"><use href="#i-plus"></use></svg>
+            <span>New run</span>
+            <kbd>⌘ N</kbd>
+          </button>
+
+          <button class="rail-search" type="button" data-command="quick-switch">
+            <svg class="icon small" aria-hidden="true"><use href="#i-search"></use></svg>
+            <span>Find a session</span>
+            <kbd>/</kbd>
+          </button>
+
+          <div class="rail-section session-section" data-gpui-ai="TactSessionRail">
+            <div class="rail-heading-row">
+              <span class="rail-heading">Sessions</span>
+              <button class="rail-heading-action" id="manage-sessions" type="button">Manage</button>
+            </div>
+            <div class="session-list" id="session-list">
+              <div class="session-group-label">Today</div>
+              <div class="run-item is-active" data-run="desktop" data-session="session 8f2a" data-project="rust-infra/tact">
+              <button class="run-main" type="button">
+                <span class="run-signal"></span>
+                <span class="run-copy">
+                  <strong>分析 gpui-ai 能否满足 Tact</strong>
+                  <small>2m ago · 46 messages</small>
+                </span>
+                <span class="run-time">18:42</span>
+              </button>
+              <button class="run-more" type="button" aria-label="Session actions">
+                <svg class="icon small" aria-hidden="true"><use href="#i-more"></use></svg>
+              </button>
+              </div>
+              <div class="run-item" data-run="compaction" data-session="session 41c9" data-project="rust-infra/tact">
+              <button class="run-main" type="button">
+                <span class="run-signal is-idle"></span>
+                <span class="run-copy">
+                  <strong>Tool output compaction</strong>
+                  <small>Yesterday · 112 messages</small>
+                </span>
+                <span class="run-time">18:09</span>
+              </button>
+              <button class="run-more" type="button" aria-label="Session actions">
+                <svg class="icon small" aria-hidden="true"><use href="#i-more"></use></svg>
+              </button>
+              </div>
+              <div class="session-group-label">Earlier</div>
+              <div class="run-item" data-run="kernel" data-session="session 6bd2" data-project="rust-infra/tact">
+              <button class="run-main" type="button">
+                <span class="run-signal is-done"></span>
+                <span class="run-copy">
+                  <strong>Agent kernel parity</strong>
+                  <small>Oct 28 · 203 messages</small>
+                </span>
+                <span class="run-time">Oct 28</span>
+              </button>
+              <button class="run-more" type="button" aria-label="Session actions">
+                <svg class="icon small" aria-hidden="true"><use href="#i-more"></use></svg>
+              </button>
+              </div>
+            </div>
+            <button class="view-all-sessions" id="view-all-sessions" type="button">
+              <span>View all sessions</span>
+              <span class="mono">12</span>
+            </button>
+          </div>
+
+          <div class="rail-section archived-section" id="archived-section" hidden>
+            <div class="rail-heading-row">
+              <span class="rail-heading">Archived</span>
+              <span class="rail-count" id="archived-count">0</span>
+            </div>
+            <div id="archived-list"></div>
+          </div>
+
+          <div class="rail-section rail-extensions">
+            <div class="rail-heading">Extensions</div>
+            <button class="rail-link" id="extensions-mcp" type="button">
+              <svg class="icon small" aria-hidden="true"><use href="#i-plug"></use></svg>
+              <span>MCP</span>
+              <span class="rail-status">4 live</span>
+            </button>
+            <button class="rail-link" id="extensions-skills" type="button">
+              <svg class="icon small" aria-hidden="true"><use href="#i-grid"></use></svg>
+              <span>Skills</span>
+              <span class="rail-count">12</span>
+            </button>
+            <button class="rail-link" id="extensions-plugins" type="button">
+              <svg class="icon small" aria-hidden="true"><use href="#i-puzzle"></use></svg>
+              <span>Plugins</span>
+              <span class="rail-count">6</span>
+            </button>
+          </div>
+
+          <div class="rail-bottom">
+            <div class="quota-card">
+              <div class="quota-top">
+                <span>Kimi K2.5</span>
+                <span class="mono">78%</span>
+              </div>
+              <div class="quota-track"><span style="width: 78%"></span></div>
+              <small>Quota resets in 3h 12m</small>
+            </div>
+            <button class="rail-link" type="button">
+              <svg class="icon small" aria-hidden="true"><use href="#i-settings"></use></svg>
+              <span>Settings</span>
+              <kbd>⌘ ,</kbd>
+            </button>
+          </div>
+        </aside>
+
+        <main class="main-pane">
+          <div class="thread-scroll" id="thread-scroll">
+            <article class="thread">
+              <header class="thread-header">
+                <div class="eyebrow">
+                  <span class="live-dot"></span>
+                  <span id="run-label">Run 8F2A</span>
+                  <span class="eyebrow-rule"></span>
+                  <span class="mono">18:42 elapsed</span>
+                  <span class="mono">turn 7</span>
+                </div>
+                <h1 id="thread-title" lang="zh-CN">分析下这个库能否满足当前tact所有的功能，如果要接入desktop的话</h1>
+                <p class="thread-lede" id="thread-lede">
+                  以第2个目标来设计，可以先出prd原型图，用html画原型，采用适合的pstack skill来处理
+                </p>
+              </header>
+
+              <section class="timeline" id="timeline" aria-label="Agent transcript">
+                <article class="row row-user reveal" style="--delay: 40ms">
+                  <div class="avatar">RG</div>
+                  <div class="speech">
+                    <div class="row-label">You <span>10:42</span></div>
+                    <p>
+                      <a href="https://labcoder.github.io/gpui-ai/components" target="_blank" rel="noreferrer">https://labcoder.github.io/gpui-ai/components</a>
+                      分析下这个库能否满足当前tact所有的功能，如果要接入desktop的话
+                    </p>
+                  </div>
+                </article>
+
+                <article class="row row-assistant reveal" style="--delay: 90ms">
+                  <div class="assistant-mark">T</div>
+                  <div class="speech assistant-speech">
+                    <div class="row-label">Tact <span>10:43 · assistant</span></div>
+                    <p>
+                      I’ll keep <code>tact_host</code> as the runtime boundary and give the desktop
+                      one reducer over <code>AgentUpdate</code>. The shell will use gpui-ai leaf
+                      components, with a custom virtualized transcript for mixed rows.
+                    </p>
+                    <section class="plan-card" aria-label="Execution plan" data-gpui-ai="PlanCard">
+                      <div class="plan-card-head">
+                        <div>
+                          <span class="micro-label">PLAN / 4 STEPS</span>
+                          <h3>Desktop kernel first</h3>
+                        </div>
+                        <span class="status-pill status-running"><i></i>Executing</span>
+                      </div>
+                      <ol class="plan-steps">
+                        <li class="is-done"><span class="step-mark"><svg class="icon small" aria-hidden="true"><use href="#i-check"></use></svg></span><span>Define the Tokio → GPUI event bridge</span><span class="step-meta mono">01</span></li>
+                        <li class="is-active"><span class="step-mark"><i></i></span><span>Build the mixed transcript shell</span><span class="step-meta mono">02</span></li>
+                        <li><span class="step-mark"></span><span>Attach permissions, Goals and subagent state</span><span class="step-meta mono">03</span></li>
+                        <li><span class="step-mark"></span><span>Run packaging and accessibility checks</span><span class="step-meta mono">04</span></li>
+                      </ol>
+                    </section>
+                  </div>
+                </article>
+
+                <article class="row row-thinking reveal" style="--delay: 140ms" data-gpui-ai="Thinking">
+                  <div class="assistant-mark muted">∴</div>
+                  <div class="speech">
+                    <button class="thinking-toggle" type="button" data-toggle="thinking" aria-expanded="true">
+                      <span class="thinking-title">Reasoning about the event bridge</span>
+                      <span class="thinking-meta">12s · <span class="mono">markdown</span></span>
+                      <svg class="icon small chevron" aria-hidden="true"><use href="#i-chevron"></use></svg>
+                    </button>
+                    <div class="thinking-body markdown-body" id="thinking">
+                      <h4>Bridge constraints</h4>
+                      <ul>
+                        <li>The host already owns cancellation and pending UI reconciliation.</li>
+                        <li>Updates should be batched into a frame, then reduced in sequence.</li>
+                        <li>A full snapshot replacement on every tool chunk would lose scroll anchors.</li>
+                      </ul>
+                      <blockquote>
+                        Keep the runtime single; the desktop should only project <code>AgentUpdate</code>
+                        into view state.
+                      </blockquote>
+                    </div>
+                  </div>
+                </article>
+
+                <article class="row row-tool reveal" style="--delay: 190ms">
+                  <div class="tool-rail"><span class="tool-line"></span><span class="tool-knot"></span></div>
+                  <div class="speech wide">
+                    <section class="tool-card tool-group is-open" id="loop-7-tools" data-gpui-ai="ToolGroup">
+                      <button class="tool-head tool-group-head" type="button" data-toggle="loop-7-body" aria-expanded="true">
+                        <span class="tool-state is-waiting" id="loop-7-state"></span>
+                        <svg class="icon small" aria-hidden="true"><use href="#i-grid"></use></svg>
+                        <span class="tool-name mono">6 tools</span>
+                        <span class="tool-note">loop 7 · 2 commands, 2 questions, approval, subagent</span>
+                        <span class="tool-duration mono">52s</span>
+                        <svg class="icon small chevron" aria-hidden="true"><use href="#i-chevron"></use></svg>
+                      </button>
+                      <div class="tool-group-body" id="loop-7-body">
+                        <div class="group-tool" id="tool-compile">
+                          <button class="tool-head group-tool-head" type="button" data-toggle="tool-compile-body" aria-expanded="false">
+                            <span class="tool-state is-done"><svg class="icon tiny" aria-hidden="true"><use href="#i-check"></use></svg></span>
+                            <svg class="icon small" aria-hidden="true"><use href="#i-terminal"></use></svg>
+                            <span class="tool-name mono">cargo check</span>
+                            <span class="tool-note">-p tact_desktop</span>
+                            <span class="tool-duration mono">41.03s</span>
+                            <svg class="icon small chevron" aria-hidden="true"><use href="#i-chevron"></use></svg>
+                          </button>
+                          <div class="terminal-output" id="tool-compile-body" data-gpui-ai="CodeBlock" hidden>
+                            <div><span class="term-muted">   Compiling</span> gpui-ai v0.8.0</div>
+                            <div><span class="term-muted">   Compiling</span> gpui-component v0.6.0</div>
+                            <div><span class="term-muted">   Compiling</span> tact_desktop v0.1.0</div>
+                            <div><span class="term-blue">warning:</span> unused import: <span class="term-code">AgentUpdate</span></div>
+                            <div class="term-bright">    --> crates/tact_desktop/src/bridge.rs:14:5</div>
+                            <div><span class="term-muted">     |</span></div>
+                            <div><span class="term-muted">  14 |</span> use tact_protocol::AgentUpdate;</div>
+                            <div><span class="term-muted">     |</span>     <span class="term-blue">^^^^^^^^^^^^^^^^^^^^^^^^^</span></div>
+                            <div><span class="term-green">    Finished</span> dev profile [unoptimized] target(s) in 41.03s</div>
+                          </div>
+                        </div>
+                        <div class="group-tool" id="tool-edit">
+                          <button class="tool-head group-tool-head" type="button" data-toggle="tool-edit-body" aria-expanded="false">
+                            <span class="tool-state is-done"><svg class="icon tiny" aria-hidden="true"><use href="#i-check"></use></svg></span>
+                            <svg class="icon small" aria-hidden="true"><use href="#i-file"></use></svg>
+                            <span class="tool-name mono">edit_file</span>
+                            <span class="tool-note">crates/tact_desktop/src/bridge.rs</span>
+                            <span class="tool-duration mono">+18 −4</span>
+                            <svg class="icon small chevron" aria-hidden="true"><use href="#i-chevron"></use></svg>
+                          </button>
+                          <div class="diff-view" id="tool-edit-body" data-gpui-ai="CodeDiff" hidden>
+                            <div class="diff-filebar">
+                              <span class="mono">bridge.rs</span>
+                              <span class="status-pill status-done">Applied</span>
+                            </div>
+                            <div class="diff-line is-ctx"><span class="line-no">41</span><span class="line-no">41</span><span>pub fn spawn_bridge(</span></div>
+                            <div class="diff-line is-removed"><span class="line-no">42</span><span class="line-no"></span><span>-    let (tx, rx) = unbounded_channel();</span></div>
+                            <div class="diff-line is-added"><span class="line-no"></span><span class="line-no">42</span><span>+    let (tx, rx) = bridge_channel::&lt;AgentUpdate&gt;(256);</span></div>
+                            <div class="diff-line is-added"><span class="line-no"></span><span class="line-no">43</span><span>+    let reducer = cx.new(|cx| DesktopState::new(rx, cx));</span></div>
+                            <div class="diff-line is-ctx"><span class="line-no">43</span><span class="line-no">44</span><span>    schedule_frame_batch(reducer, cx);</span></div>
+                            <div class="diff-line is-ctx"><span class="line-no">44</span><span class="line-no">45</span><span>}</span></div>
+                            <div class="diff-actions">
+                              <button class="text-button" type="button" data-diff="reject">Reject hunk</button>
+                              <button class="small-primary" type="button" data-diff="accept">Accept hunk</button>
+                            </div>
+                          </div>
+                        </div>
+                        <div class="group-tool" id="ask-single-row">
+                          <button class="tool-head group-tool-head" type="button" data-toggle="ask-single-body" aria-expanded="true">
+                            <span class="tool-state is-waiting"></span>
+                            <svg class="icon small" aria-hidden="true"><use href="#i-command"></use></svg>
+                            <span class="tool-name mono">ask_user</span>
+                            <span class="tool-note">single select · migration target</span>
+                            <span class="tool-duration mono" id="ask-single-status">waiting</span>
+                            <svg class="icon small chevron" aria-hidden="true"><use href="#i-chevron"></use></svg>
+                          </button>
+                          <div class="group-tool-body decision-tool-body" id="ask-single-body">
+                            <section class="decision-card" id="single-select-card" data-gpui-ai="QuestionFlow,ChoiceGroup" aria-labelledby="single-select-title">
+                              <header class="decision-head">
+                                <span class="status-pill">ask_user</span>
+                                <span class="decision-kind">SINGLE SELECT</span>
+                                <span class="decision-source">MAIN AGENT</span>
+                              </header>
+                              <h3 id="single-select-title">Choose the migration target</h3>
+                              <p>The selected option becomes the answer returned to the tool.</p>
+                              <div class="decision-options is-single" role="radiogroup" aria-label="Migration target">
+                                <button class="decision-option" type="button" role="radio" aria-checked="false" data-single-option="sqlite">
+                                  <span class="choice-mark is-radio"></span>
+                                  <span><strong>SQLite</strong><small>Keep local-first storage</small></span>
+                                </button>
+                                <button class="decision-option" type="button" role="radio" aria-checked="false" data-single-option="postgres">
+                                  <span class="choice-mark is-radio"></span>
+                                  <span><strong>Postgres</strong><small>Move to a shared service</small></span>
+                                </button>
+                                <button class="decision-option" type="button" role="radio" aria-checked="false" data-single-option="both">
+                                  <span class="choice-mark is-radio"></span>
+                                  <span><strong>Both</strong><small>Abstract both backends</small></span>
+                                </button>
+                              </div>
+                              <footer class="decision-foot">
+                                <span class="decision-state" id="single-select-state">No selection</span>
+                                <button class="text-button" type="button" data-decision-cancel="single">Cancel</button>
+                                <button class="small-primary" type="button" data-decision-confirm="single" disabled>Confirm</button>
+                              </footer>
+                            </section>
+                          </div>
+                        </div>
+                        <div class="group-tool" id="ask-multi-row">
+                          <button class="tool-head group-tool-head" type="button" data-toggle="ask-multi-body" aria-expanded="true">
+                            <span class="tool-state is-waiting"></span>
+                            <svg class="icon small" aria-hidden="true"><use href="#i-users"></use></svg>
+                            <span class="tool-name mono">ask_user</span>
+                            <span class="tool-note">multi select · child verification</span>
+                            <span class="tool-duration mono" id="ask-multi-status">waiting</span>
+                            <svg class="icon small chevron" aria-hidden="true"><use href="#i-chevron"></use></svg>
+                          </button>
+                          <div class="group-tool-body decision-tool-body" id="ask-multi-body">
+                            <section class="decision-card" id="multi-select-card" data-gpui-ai="QuestionFlow,Toggle" aria-labelledby="multi-select-title">
+                              <header class="decision-head">
+                                <span class="status-pill">ask_user</span>
+                                <span class="decision-kind">MULTI SELECT</span>
+                                <span class="decision-source">FROM SUBAGENT</span>
+                              </header>
+                              <h3 id="multi-select-title">Which checks should the child run?</h3>
+                              <p>Choose any number of checks. The tool receives the selected indices.</p>
+                              <div class="decision-options is-multi" role="group" aria-label="Verification checks">
+                                <button class="decision-option" type="button" aria-pressed="false" data-multi-option="unit">
+                                  <span class="choice-mark is-checkbox"><svg class="icon tiny" aria-hidden="true"><use href="#i-check"></use></svg></span>
+                                  <span><strong>Unit tests</strong><small>cargo test</small></span>
+                                </button>
+                                <button class="decision-option" type="button" aria-pressed="false" data-multi-option="clippy">
+                                  <span class="choice-mark is-checkbox"><svg class="icon tiny" aria-hidden="true"><use href="#i-check"></use></svg></span>
+                                  <span><strong>Clippy</strong><small>-D warnings</small></span>
+                                </button>
+                                <button class="decision-option" type="button" aria-pressed="false" data-multi-option="ui">
+                                  <span class="choice-mark is-checkbox"><svg class="icon tiny" aria-hidden="true"><use href="#i-check"></use></svg></span>
+                                  <span><strong>UI smoke</strong><small>Launch and click through</small></span>
+                                </button>
+                                <button class="decision-option" type="button" aria-pressed="false" data-multi-option="a11y">
+                                  <span class="choice-mark is-checkbox"><svg class="icon tiny" aria-hidden="true"><use href="#i-check"></use></svg></span>
+                                  <span><strong>Accessibility</strong><small>Keyboard and focus audit</small></span>
+                                </button>
+                              </div>
+                              <footer class="decision-foot">
+                                <span class="decision-state" id="multi-select-state">0 selected</span>
+                                <button class="text-button" type="button" data-decision-cancel="multi">Cancel</button>
+                                <button class="small-primary" type="button" data-decision-confirm="multi" disabled>Confirm</button>
+                              </footer>
+                            </section>
+                          </div>
+                        </div>
+                        <div class="group-tool" id="approval-row">
+                          <button class="tool-head group-tool-head" type="button" data-toggle="approval-body" aria-expanded="true">
+                            <span class="tool-state is-waiting" id="approval-state"></span>
+                            <svg class="icon small" aria-hidden="true"><use href="#i-target"></use></svg>
+                            <span class="tool-name mono">approval</span>
+                            <span class="tool-note">cargo clippy · all targets</span>
+                            <span class="tool-duration mono" id="approval-status">waiting</span>
+                            <svg class="icon small chevron" aria-hidden="true"><use href="#i-chevron"></use></svg>
+                          </button>
+                          <div class="group-tool-body decision-tool-body" id="approval-body">
+                            <section class="gate-card" id="permission-gate" aria-labelledby="gate-title" data-gpui-ai="ApprovalCard">
+                              <div class="gate-signal" aria-hidden="true">!</div>
+                              <div class="gate-copy">
+                                <div class="gate-kicker">PERMISSION REQUEST · MAIN AGENT</div>
+                                <h3 id="gate-title">Allow <code>cargo clippy</code> to run?</h3>
+                                <p>This command runs in the current worktree and may write compiler output.</p>
+                                <div class="gate-command mono">cargo clippy -p tact_desktop --all-targets -- -D warnings</div>
+                                <div class="gate-actions" id="gate-actions">
+                                  <button class="gate-allow" type="button" data-gate="once">Allow once <kbd>↵</kbd></button>
+                                  <button class="gate-secondary" type="button" data-gate="session">Allow for session</button>
+                                  <button class="gate-deny" type="button" data-gate="deny">Deny <kbd>esc</kbd></button>
+                                </div>
+                              </div>
+                            </section>
+                          </div>
+                        </div>
+                        <div class="group-tool" id="subagent-row">
+                          <button class="tool-head group-tool-head" type="button" data-toggle="subagent-body" aria-expanded="false">
+                            <span class="tool-state is-running" id="subagent-state"></span>
+                            <svg class="icon small" aria-hidden="true"><use href="#i-users"></use></svg>
+                            <span class="tool-name mono">subagent</span>
+                            <span class="tool-note">frontend-mapper</span>
+                            <span class="tool-duration mono" id="subagent-status">64%</span>
+                            <svg class="icon small chevron" aria-hidden="true"><use href="#i-chevron"></use></svg>
+                          </button>
+                          <div class="group-tool-body decision-tool-body" id="subagent-body" hidden>
+                            <section class="subagent-strip" data-gpui-ai="ToolCall,ToolChip,Orbs,StatusBadge">
+                              <div class="subagent-icon"><svg class="icon" aria-hidden="true"><use href="#i-users"></use></svg></div>
+                              <div class="subagent-copy">
+                                <div class="subagent-title">Subagent <code>frontend-mapper</code> is mapping component gaps</div>
+                                <div class="subagent-meta mono">12m 08s · 32.1k ctx · 2 tool calls</div>
+                              </div>
+                              <div class="subagent-progress"><span style="width: 64%"></span></div>
+                              <button class="text-button" type="button" id="open-subagent">Open transcript <svg class="icon tiny" aria-hidden="true"><use href="#i-external"></use></svg></button>
+                            </section>
+                          </div>
+                        </div>
+                      </div>
+                    </section>
+                  </div>
+                </article>
+
+                <article class="row row-assistant streaming-row reveal" id="streaming-answer" style="--delay: 390ms" data-gpui-ai="StreamingText">
+                  <div class="assistant-mark">T</div>
+                  <div class="speech assistant-speech">
+                    <div class="row-label">Tact <span>streaming · 10:47</span></div>
+                    <div class="markdown-body streaming-markdown">
+                      <p>
+                        The bridge is now <strong>frame-aware</strong>: updates arrive in order, but the
+                        list only remeasures rows whose revision changed.
+                        <span class="stream-cursor" aria-hidden="true"></span>
+                      </p>
+                      <h4>Bridge contract</h4>
+                      <ol>
+                        <li>Keep <code>AgentUpdate</code> ordering intact.</li>
+                        <li>Batch delivery to one GPUI frame.</li>
+                        <li>Remeasure only rows whose content revision changed.</li>
+                      </ol>
+                      <blockquote>
+                        The permission gate stays anchored while the compiler tail continues below it.
+                      </blockquote>
+                      <div class="md-code">
+                        <div class="md-code-head">
+                          <span class="mono">rust</span>
+                          <span class="md-code-title">bridge.rs</span>
+                        </div>
+                        <pre><code><span class="tok-comment">// one frame, one ordered reduction pass</span>
+<span class="tok-key">pub fn</span> <span class="tok-fn">drain_updates</span>(
+    rx: <span class="tok-type">AgentUpdateReceiver</span>,
+    state: &amp;<span class="tok-key">mut</span> <span class="tok-type">DesktopState</span>,
+) {
+    <span class="tok-key">for</span> update <span class="tok-key">in</span> rx.try_iter() {
+        state.reduce(update);
+    }
+}</code></pre>
+                      </div>
+                      <div class="md-table-wrap">
+                        <table>
+                          <thead><tr><th>Surface</th><th>Renderer</th></tr></thead>
+                          <tbody>
+                            <tr><td>Thinking</td><td><code>Thinking</code></td></tr>
+                            <tr><td>Assistant answer</td><td><code>StreamingText</code></td></tr>
+                          </tbody>
+                        </table>
+                      </div>
+                    </div>
+                    <div class="stream-evidence">
+                      <span><span class="evidence-dot"></span>3 agents attached</span>
+                      <span><span class="evidence-dot"></span>1 gate waiting</span>
+                      <span><span class="evidence-dot"></span>context stable</span>
+                    </div>
+                    <div class="stream-suggestions" data-gpui-ai="Suggestions">
+                      <button type="button">Show the bridge diff</button>
+                      <button type="button">Explain compaction impact</button>
+                      <button type="button">Open subagent transcript</button>
+                    </div>
+                  </div>
+                </article>
+              </section>
+            </article>
+          </div>
+
+          <button class="back-to-bottom" id="back-to-bottom" type="button" aria-label="Back to bottom" hidden>
+            <span class="back-to-bottom-badge">New activity</span>
+            <span>Back to bottom</span>
+            <svg class="icon small" aria-hidden="true"><use href="#i-chevron"></use></svg>
+          </button>
+
+          <div class="selection-actions" id="selection-actions" data-gpui-ai="SelectionActions" hidden>
+            <button type="button" data-selection-action="ask">Ask</button>
+            <button type="button" data-selection-action="explain">Explain</button>
+            <button type="button" data-selection-action="rewrite">Rewrite</button>
+          </div>
+
+          <section class="sticky-host is-collapsed" id="sticky-host" data-gpui-ai="TaskRow,TodoList,StatusBadge" aria-label="Sticky tasks">
+            <div class="sticky-permission-banner" id="sticky-permission-banner">
+              <span class="sticky-permission-signal" aria-hidden="true">!</span>
+              <span class="sticky-permission-copy">
+                <strong>Permission required</strong>
+                <span class="mono">cargo clippy -p tact_desktop --all-targets -- -D warnings</span>
+              </span>
+              <button class="sticky-permission-review" id="review-permission" type="button">Review</button>
+            </div>
+            <div class="sticky-head">
+              <div class="sticky-summary">
+                <span class="sticky-kicker">TASKS</span>
+                <strong>2 / 4</strong>
+                <span class="sticky-current"><span class="live-dot"></span>Mixed transcript shell</span>
+              </div>
+              <div class="sticky-actions">
+                <button class="sticky-pill" type="button" data-focus-tab="goals">Goals <span>2</span></button>
+                <button class="sticky-pill" type="button" data-focus-tab="agents">Agents <span>3</span></button>
+                <button class="sticky-pill" id="sticky-background-toggle" type="button" aria-expanded="false">Background <span>1</span></button>
+                <button class="sticky-toggle" type="button" data-toggle="sticky-tasks-body" aria-expanded="false" aria-label="Expand tasks">
+                  <svg class="icon small chevron" aria-hidden="true"><use href="#i-chevron"></use></svg>
+                </button>
+              </div>
+            </div>
+            <div class="sticky-progress"><span style="width: 50%"></span></div>
+            <div class="sticky-tasks-body" id="sticky-tasks-body" hidden>
+              <div class="sticky-task is-done">
+                <span class="sticky-task-mark"><svg class="icon tiny" aria-hidden="true"><use href="#i-check"></use></svg></span>
+                <span>Define the Tokio → GPUI event bridge</span>
+                <span class="mono">01</span>
+              </div>
+              <div class="sticky-task is-active">
+                <span class="sticky-task-mark"><i></i></span>
+                <span>Build the mixed transcript shell</span>
+                <span class="mono">02</span>
+              </div>
+              <div class="sticky-task">
+                <span class="sticky-task-mark"></span>
+                <span>Attach permissions, Goals and subagent state</span>
+                <span class="mono">03</span>
+              </div>
+              <div class="sticky-task">
+                <span class="sticky-task-mark"></span>
+                <span>Run packaging and accessibility checks</span>
+                <span class="mono">04</span>
+              </div>
+            </div>
+          </section>
+
+            <div class="sticky-background-popover" id="sticky-background-popover" hidden>
+              <header class="sticky-background-head">
+                <div>
+                  <span class="micro-label">BACKGROUND TASK</span>
+                  <strong class="mono">018f3a2c</strong>
+                </div>
+                <button class="icon-button" id="close-sticky-background" type="button" aria-label="Close background task">
+                  <svg class="icon small" aria-hidden="true"><use href="#i-x"></use></svg>
+                </button>
+              </header>
+              <div class="sticky-background-body">
+                <div class="sticky-background-status"><span class="live-dot"></span>Running · 41s</div>
+                <code>cargo check -p tact_desktop</code>
+                <p>Latest: Finished dev profile in 41.03s</p>
+              </div>
+              <footer class="sticky-background-foot">
+                <button class="text-button" type="button" id="open-background-output">Open output</button>
+                <button class="text-button" type="button">Stop task</button>
+              </footer>
+            </div>
+
+          <div class="extensions-popover" id="extensions-popover" data-gpui-ai="gpui-component.Popover" hidden>
+            <header class="extensions-head">
+              <div>
+                <span class="micro-label">EXTENSIONS</span>
+                <strong id="extensions-popover-title">MCP servers</strong>
+              </div>
+              <button class="icon-button" id="close-extensions-popover" type="button" aria-label="Close extensions">
+                <svg class="icon small" aria-hidden="true"><use href="#i-x"></use></svg>
+              </button>
+            </header>
+            <div class="extensions-tabs" role="tablist" aria-label="Extension type">
+              <button class="is-active" type="button" data-extension-tab="mcp">MCP</button>
+              <button type="button" data-extension-tab="skills">Skills</button>
+              <button type="button" data-extension-tab="plugins">Plugins</button>
+            </div>
+            <label class="extensions-search">
+              <svg class="icon small" aria-hidden="true"><use href="#i-search"></use></svg>
+              <input id="extensions-popover-search" type="search" placeholder="Fuzzy search MCP servers" autocomplete="off" spellcheck="false" aria-label="Fuzzy search extensions" />
+            </label>
+            <div class="extensions-body" id="extensions-popover-body"></div>
+            <footer class="extensions-foot">
+              <span class="mono" id="extensions-popover-count">4 live</span>
+              <button class="text-button" id="extensions-manage" type="button">Manage</button>
+            </footer>
+          </div>
+
+          <div class="composer-zone">
+            <div class="queue-strip" id="queue-strip" data-gpui-ai="MessageQueue">
+              <button class="queue-summary" id="queue-summary" type="button" aria-expanded="false">
+                <span class="queue-label">QUEUED</span>
+                <span class="queue-count" id="queue-count">2</span>
+              </button>
+              <div class="queue-items" id="queue-items">
+                <div class="queue-item" data-queue-id="q1">
+                  <span class="mono">01</span>
+                  <span>Add reduced-motion checks</span>
+                  <button class="queue-action" type="button" data-queue-action="send">Send now</button>
+                  <button class="queue-action" type="button" data-queue-action="remove" aria-label="Remove queued prompt">
+                    <svg class="icon tiny" aria-hidden="true"><use href="#i-x"></use></svg>
+                  </button>
+                </div>
+                <div class="queue-item" data-queue-id="q2">
+                  <span class="mono">02</span>
+                  <span>Wire session switcher</span>
+                  <button class="queue-action" type="button" data-queue-action="send">Send now</button>
+                  <button class="queue-action" type="button" data-queue-action="remove" aria-label="Remove queued prompt">
+                    <svg class="icon tiny" aria-hidden="true"><use href="#i-x"></use></svg>
+                  </button>
+                </div>
+              </div>
+              <button class="text-button" type="button" id="clear-queue">Clear</button>
+            </div>
+            <div class="composer-popover slash-popup" id="slash-popup" data-gpui-ai="PromptBar + TactSlashCommandOverlay" hidden>
+              <header class="composer-popover-head">
+                <span id="slash-popup-title">Slash commands</span>
+                <kbd>↑↓</kbd><kbd>↵</kbd><kbd>esc</kbd>
+              </header>
+              <div class="composer-popover-list" id="slash-list" role="listbox"></div>
+              <footer class="composer-popover-foot" id="slash-popup-foot">Type to filter · Tab to complete</footer>
+            </div>
+            <div class="composer-popover mention-popup" id="mention-popup" data-gpui-ai="PromptBar.mentions" hidden>
+              <header class="composer-popover-head">
+                <span>Mention a file</span>
+                <kbd>↑↓</kbd><kbd>↵</kbd><kbd>esc</kbd>
+              </header>
+              <div class="composer-popover-list" id="mention-list" role="listbox"></div>
+              <footer class="composer-popover-foot">Workspace files · images are sent by path</footer>
+            </div>
+            <div class="composer-popover composer-choice-menu" id="model-menu" data-gpui-ai="gpui-component.Popover" hidden role="menu">
+              <div class="composer-choice-head">Main model</div>
+              <button class="composer-choice is-selected" type="button" data-model="Claude Sonnet 4.5"><span>Claude Sonnet 4.5</span><small>Anthropic · 200K</small></button>
+              <button class="composer-choice" type="button" data-model="Kimi K2.5"><span>Kimi K2.5</span><small>Moonshot · 256K</small></button>
+              <button class="composer-choice" type="button" data-model="DeepSeek V4 Pro"><span>DeepSeek V4 Pro</span><small>DeepSeek · 128K</small></button>
+            </div>
+            <div class="composer-popover composer-choice-menu" id="permission-menu" data-gpui-ai="gpui-component.Popover" hidden role="menu">
+              <div class="composer-choice-head">Permission mode</div>
+              <button class="composer-choice is-selected" type="button" data-permission="default"><span>default</span><small>Ask before writes and shell commands</small></button>
+              <button class="composer-choice" type="button" data-permission="plan"><span>plan</span><small>Read only; propose before acting</small></button>
+              <button class="composer-choice" type="button" data-permission="auto"><span>auto</span><small>Allow every operation, including high risk</small></button>
+            </div>
+            <form class="composer" id="composer" data-gpui-ai="PromptBar">
+              <div class="composer-top">
+                <textarea id="prompt" name="prompt" rows="1" aria-label="Prompt" placeholder="Steer the run or queue a follow-up…"></textarea>
+              </div>
+              <div class="attachment-strip" id="attachment-strip" data-gpui-ai="AttachmentStrip" hidden></div>
+              <div class="composer-bottom">
+                <div class="composer-tools">
+                  <button class="composer-icon" type="button" aria-label="Attach file" id="attach-button"><svg class="icon" aria-hidden="true"><use href="#i-paperclip"></use></svg></button>
+                  <button class="composer-icon" type="button" aria-label="Mention file" id="mention-button"><svg class="icon" aria-hidden="true"><use href="#i-at"></use></svg></button>
+                  <button class="composer-icon" type="button" aria-label="Insert command" id="slash-button"><svg class="icon" aria-hidden="true"><use href="#i-slash"></use></svg></button>
+                  <button class="composer-icon voice-control" type="button" aria-label="Start voice input" id="voice-button" aria-pressed="false"><svg class="icon" aria-hidden="true"><use href="#i-mic"></use></svg></button>
+                  <span class="composer-divider"></span>
+                  <button class="composer-select" type="button" id="model-select"><svg class="icon tiny" aria-hidden="true"><use href="#i-cpu"></use></svg> <span id="model-label">Claude Sonnet 4.5</span> <svg class="icon tiny" aria-hidden="true"><use href="#i-chevron"></use></svg></button>
+                  <button class="composer-select" type="button" id="permission-select"><span class="mode-dot"></span> <span id="permission-label">default</span> <svg class="icon tiny" aria-hidden="true"><use href="#i-chevron"></use></svg></button>
+                </div>
+                <div class="composer-actions">
+                  <span class="composer-hint" id="composer-hint">Running · <kbd>Esc</kbd> interrupts</span>
+                  <button class="stop-button" type="button" id="stop-run" aria-label="Stop run"><svg class="icon" aria-hidden="true"><use href="#i-stop"></use></svg></button>
+                  <button class="send-button" type="submit" aria-label="Send prompt"><svg class="icon" aria-hidden="true"><use href="#i-send"></use></svg></button>
+                </div>
+              </div>
+            </form>
+          </div>
+        </main>
+
+        <aside class="inspector" id="run-inspector" aria-label="Run inspector">
+          <div class="inspector-head">
+            <div>
+              <div class="eyebrow">INSPECTOR</div>
+              <h2>Run map</h2>
+            </div>
+            <button class="icon-button inspector-close" type="button" aria-label="Close inspector">
+              <svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg>
+            </button>
+          </div>
+          <div class="inspector-tabs" role="tablist" aria-label="Inspector sections">
+            <button class="is-active" type="button" role="tab" aria-selected="true" data-tab="run">Run</button>
+            <button type="button" role="tab" aria-selected="false" data-tab="goals">Goals <span>2</span></button>
+            <button type="button" role="tab" aria-selected="false" data-tab="agents">Agents <span>3</span></button>
+            <button type="button" role="tab" aria-selected="false" data-tab="context">Context</button>
+            <span class="inspector-tab-indicator" aria-hidden="true"></span>
+          </div>
+
+          <div class="inspector-body">
+            <section class="inspector-panel is-active" data-panel="run">
+              <div class="run-status-card">
+                <div class="status-ring"><svg viewBox="0 0 44 44"><circle cx="22" cy="22" r="18"></circle><circle class="ring-progress" cx="22" cy="22" r="18"></circle></svg><strong>68</strong><small>%</small></div>
+                <div>
+                  <span class="micro-label">ACTIVE RUN</span>
+                  <h3>Desktop kernel</h3>
+                  <p><span class="live-dot"></span>Waiting on permission</p>
+                </div>
+              </div>
+              <div class="inspector-section">
+                <div class="section-head"><span>Current step</span><span class="mono">02 / 04</span></div>
+                <div class="current-step">
+                  <span class="step-index">02</span>
+                  <div><strong>Mixed transcript</strong><small>building the virtual row list</small></div>
+                </div>
+              </div>
+              <div class="inspector-section">
+                <div class="section-head"><span>Thread signals</span><span class="mono">live</span></div>
+                <div class="signal-list">
+                  <div><span class="signal-icon is-green"><i></i></span><span>Main agent</span><span class="mono">running</span></div>
+                  <div><span class="signal-icon is-orange"><i></i></span><span>Permission gate</span><span class="mono">waiting</span></div>
+                  <div><span class="signal-icon is-blue"><i></i></span><span>frontend-mapper</span><span class="mono">64%</span></div>
+                  <div><span class="signal-icon is-muted"><i></i></span><span>background cargo</span><span class="mono">tail</span></div>
+                </div>
+              </div>
+              <div class="inspector-section latest-activity">
+                <div class="section-head"><span>Latest activity</span><span class="mono">10:47</span></div>
+                <p class="mono activity-line"><span class="term-green">edit_file</span> bridge.rs <span class="term-muted">+18 −4</span></p>
+                <p class="mono activity-line"><span class="term-blue">cargo check</span> finished in 41s</p>
+                <p class="mono activity-line"><span class="term-orange">request</span> cargo clippy</p>
+              </div>
+            </section>
+
+            <section class="inspector-panel" data-panel="goals" hidden>
+              <div class="goal-card">
+                <div class="section-head"><span class="micro-label">ACTIVE GOAL</span><span class="status-pill status-running"><i></i>Running</span></div>
+                <h3>Desktop parity</h3>
+                <p>Ship a native Tact client without forking agent semantics.</p>
+                <div class="goal-progress"><span style="width: 68%"></span></div>
+                <div class="goal-meta"><span>68% complete</span><span class="mono">run 2 of 3</span></div>
+                <div class="criteria-list">
+                  <div class="is-done"><span><svg class="icon tiny" aria-hidden="true"><use href="#i-check"></use></svg></span>Host bridge proven</div>
+                  <div class="is-active"><span><i></i></span>Mixed transcript implemented</div>
+                  <div><span></span>Accessibility matrix</div>
+                </div>
+                <div class="goal-actions"><button class="text-button" type="button" id="goal-pause"><svg class="icon tiny" aria-hidden="true"><use href="#i-pause"></use></svg> Pause</button><button class="text-button" type="button">Steer</button></div>
+              </div>
+              <div class="small-goal"><div><span class="micro-label">NEXT</span><h4>Desktop packaging</h4><p>CI matrix + signed release</p></div><span class="status-pill status-pending">Queued</span></div>
+            </section>
+
+            <section class="inspector-panel" data-panel="agents" hidden>
+              <div class="section-head"><span>Child agents</span><span class="mono">2 running</span></div>
+              <button class="agent-row" type="button" data-open-agent="mapper">
+                <span class="agent-orb is-blue"></span><span><strong>frontend-mapper</strong><small>mapping gpui-ai gaps</small></span><span class="mono">64%</span>
+              </button>
+              <button class="agent-row" type="button" data-open-agent="audit">
+                <span class="agent-orb is-green"></span><span><strong>a11y-audit</strong><small>checking focus paths</small></span><span class="mono">31%</span>
+              </button>
+              <button class="agent-row is-done" type="button">
+                <span class="agent-orb is-muted"></span><span><strong>protocol-reader</strong><small>AgentUpdate inventory</small></span><span class="mono">done</span>
+              </button>
+              <div class="drawer-note"><span class="agent-orb is-orange"></span><p>Permission gates from a child are labelled with that child's ID. They never masquerade as main-agent requests.</p></div>
+            </section>
+
+            <section class="inspector-panel" data-panel="context" data-gpui-ai="ContextMeter" hidden>
+              <div class="context-hero">
+                <div><span class="micro-label">CONTEXT WINDOW</span><strong>74.2k <small>/ 200k</small></strong></div>
+                <svg viewBox="0 0 80 46" aria-label="Context usage sparkline"><path class="spark-base" d="M4 40 16 31 28 34 40 21 52 25 64 12 76 16"></path><path class="spark-line" d="M4 40 16 31 28 34 40 21 52 25 64 12 76 16"></path></svg>
+              </div>
+              <div class="context-bars">
+                <div><span>System + tools</span><span class="mono">18.2k</span><i><b style="width: 54%"></b></i></div>
+                <div><span>Conversation</span><span class="mono">41.4k</span><i><b style="width: 76%"></b></i></div>
+                <div><span>Retained evidence</span><span class="mono">14.6k</span><i><b style="width: 32%"></b></i></div>
+              </div>
+              <div class="context-stats"><div><span>Cache hit</span><strong>61%</strong></div><div><span>Turn tokens</span><strong>8.4k</strong></div><div><span>Compact at</span><strong>160k</strong></div></div>
+              <div class="drawer-note"><span class="agent-orb is-orange"></span><p>Context usage is a system signal, not a task-completion meter. Keep it in the inspector and out of the transcript.</p></div>
+            </section>
+          </div>
+
+          <div class="inspector-footer">
+            <span class="mono">Ctrl 1–4</span>
+            <span class="inspector-footer-rule"></span>
+            <span>Inspect without losing the run</span>
+          </div>
+        </aside>
+        <button class="panel-scrim" id="panel-scrim" type="button" aria-label="Close side panel" hidden></button>
+      </div>
+    </div>
+
+    <div class="modal" id="palette-modal" hidden>
+      <div class="modal-backdrop" data-close="palette"></div>
+      <section class="palette" role="dialog" aria-modal="true" aria-labelledby="palette-title" data-gpui-ai="CommandSearch">
+        <header class="palette-head">
+          <svg class="icon" aria-hidden="true"><use href="#i-search"></use></svg>
+          <input id="command-search" name="command-search" autocomplete="off" spellcheck="false" placeholder="Find a command, session, Goal or extension…" aria-label="Search commands" />
+          <kbd>esc</kbd>
+        </header>
+        <div class="palette-label" id="palette-title">All tact-ui entries</div>
+        <div class="command-list" id="command-list"></div>
+        <footer class="palette-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> run</span><span><kbd>esc</kbd> close</span></footer>
+      </section>
+    </div>
+
+    <div class="modal session-manager-modal" id="session-manager" hidden>
+      <div class="modal-backdrop" data-close="session-manager"></div>
+      <section class="session-manager" role="dialog" aria-modal="true" aria-labelledby="session-manager-title" data-gpui-ai="TactSessionManager">
+        <header class="session-manager-head">
+          <div>
+            <div class="eyebrow">SESSION MANAGER</div>
+            <h2 id="session-manager-title">Sessions by project</h2>
+          </div>
+          <button class="icon-button" id="close-session-manager" type="button" aria-label="Close session manager">
+            <svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg>
+          </button>
+        </header>
+        <div class="session-manager-body">
+          <aside class="project-pane" aria-label="Projects" data-gpui-ai="SidebarNav">
+            <div class="session-manager-label">PROJECTS</div>
+            <button class="project-row is-active" type="button" data-project-id="rust-infra/tact">
+              <span class="project-avatar">RT</span>
+              <span><strong>rust-infra/tact</strong><small>12 sessions</small></span>
+              <span class="mono">12</span>
+            </button>
+            <button class="project-row" type="button" data-project-id="acme/gateway">
+              <span class="project-avatar">AG</span>
+              <span><strong>acme/gateway</strong><small>7 sessions</small></span>
+              <span class="mono">7</span>
+            </button>
+            <button class="project-row" type="button" data-project-id="rg/dotfiles">
+              <span class="project-avatar">RD</span>
+              <span><strong>rg/dotfiles</strong><small>3 sessions</small></span>
+              <span class="mono">3</span>
+            </button>
+            <button class="project-row is-muted" type="button">
+              <span class="project-avatar"><svg class="icon small" aria-hidden="true"><use href="#i-plus"></use></svg></span>
+              <span><strong>Add project</strong><small>Open another workspace</small></span>
+            </button>
+          </aside>
+          <main class="session-pane">
+            <div class="session-toolbar">
+              <label class="session-search">
+                <svg class="icon small" aria-hidden="true"><use href="#i-search"></use></svg>
+                <input id="session-manager-search" name="session-search" type="search" placeholder="Fuzzy search sessions in this project" autocomplete="off" spellcheck="false" aria-label="Fuzzy search sessions in this project" />
+              </label>
+              <div class="session-filters" role="group" aria-label="Session filter">
+                <button class="is-active" type="button" data-session-filter="active">Active</button>
+                <button type="button" data-session-filter="archived">Archived</button>
+                <button type="button" data-session-filter="all">All</button>
+              </div>
+            </div>
+            <div class="session-manager-summary">
+              <span id="session-manager-project">rust-infra/tact</span>
+              <span class="mono" id="session-manager-count">12 sessions</span>
+            </div>
+            <div class="session-manager-list" id="session-manager-list" data-gpui-ai="RecordsTable"></div>
+          </main>
+        </div>
+      </section>
+    </div>
+
+    <div class="modal extensions-manager-modal" id="extensions-manager" hidden>
+      <div class="modal-backdrop" data-close="extensions-manager"></div>
+      <section class="extensions-manager-dialog" role="dialog" aria-modal="true" aria-labelledby="extensions-manager-title" data-gpui-ai="gpui-component.Dialog">
+        <header class="extensions-manager-head">
+          <div>
+            <div class="eyebrow">EXTENSIONS MANAGER</div>
+            <h2 id="extensions-manager-title">Manage extensions</h2>
+          </div>
+          <button class="icon-button" id="close-extensions-manager" type="button" aria-label="Close extensions manager">
+            <svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg>
+          </button>
+        </header>
+        <div class="extensions-manager-tabs" role="tablist" aria-label="Extension manager sections">
+          <button class="is-active" type="button" data-extension-manager-tab="mcp">MCP</button>
+          <button type="button" data-extension-manager-tab="skills">Skills</button>
+          <button type="button" data-extension-manager-tab="plugins">Plugins</button>
+        </div>
+        <div class="extensions-manager-toolbar">
+          <label class="session-search">
+            <svg class="icon small" aria-hidden="true"><use href="#i-search"></use></svg>
+            <input id="extensions-manager-search" name="extension-search" type="search" placeholder="Search extensions" autocomplete="off" spellcheck="false" aria-label="Search extensions" />
+          </label>
+          <span class="mono" id="extensions-manager-count">4 live</span>
+        </div>
+        <div class="extensions-manager-list" id="extensions-manager-list" data-gpui-ai="FilterTable"></div>
+        <footer class="extensions-manager-foot">
+          <span>Changes apply to this workspace immediately.</span>
+          <button class="small-primary" type="button" id="extensions-manager-done">Done</button>
+        </footer>
+      </section>
+    </div>
+
+    <div class="modal command-sheet-modal" id="command-sheet" hidden>
+      <div class="modal-backdrop" data-close="command-sheet"></div>
+      <section class="command-sheet-dialog" role="dialog" aria-modal="true" aria-labelledby="command-sheet-title" data-gpui-ai="gpui-component.Dialog">
+        <header class="command-sheet-head">
+          <div>
+            <div class="eyebrow" id="command-sheet-eyebrow">SLASH COMMAND</div>
+            <h2 id="command-sheet-title">Command result</h2>
+            <p id="command-sheet-description"></p>
+          </div>
+          <button class="icon-button" id="close-command-sheet" type="button" aria-label="Close command result">
+            <svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg>
+          </button>
+        </header>
+        <div class="command-sheet-body" id="command-sheet-body"></div>
+        <footer class="command-sheet-foot">
+          <span id="command-sheet-status">Ready</span>
+          <div class="command-sheet-actions" id="command-sheet-actions">
+            <button class="small-primary" type="button" id="command-sheet-done">Done</button>
+          </div>
+        </footer>
+      </section>
+    </div>
+
+    <div class="drawer-scrim" id="drawer-scrim" hidden></div>
+    <aside class="agent-drawer" id="agent-drawer" aria-label="Subagent transcript" hidden>
+      <header class="agent-drawer-head">
+        <div>
+          <div class="eyebrow"><span class="agent-orb is-blue"></span> SUBAGENT TRANSCRIPT</div>
+          <h2>frontend-mapper</h2>
+          <p>Mapping gpui-ai component coverage into the Tact desktop shell.</p>
+        </div>
+        <button class="icon-button" type="button" id="close-drawer" aria-label="Close subagent transcript"><svg class="icon" aria-hidden="true"><use href="#i-x"></use></svg></button>
+      </header>
+      <div class="agent-drawer-meta"><span class="status-pill status-running"><i></i>Running</span><span class="mono">12m 08s</span><span class="mono">32.1k ctx</span><button class="text-button" type="button">Stop child</button></div>
+      <div class="agent-drawer-body subagent-transcript" data-gpui-ai="StreamingText,Thinking,ToolCall">
+        <article class="row row-user subagent-task-row">
+          <div class="avatar">P</div>
+          <div class="speech">
+            <div class="row-label">Parent task <span>10:31</span></div>
+            <div class="markdown-body">
+              <p>Audit the gpui-ai component surface against Tact's current TUI. Produce a direct / compose / custom map, especially for Goals, subagents, Mermaid and ANSI output.</p>
+            </div>
+          </div>
+        </article>
+
+        <article class="row row-thinking">
+          <div class="assistant-mark muted">∴</div>
+          <div class="speech">
+            <button class="thinking-toggle" type="button" data-toggle="subagent-thinking" aria-expanded="true">
+              <span class="thinking-title">Planning the component audit</span>
+              <span class="thinking-meta">6s · <span class="mono">markdown</span></span>
+              <svg class="icon small chevron" aria-hidden="true"><use href="#i-chevron"></use></svg>
+            </button>
+            <div class="thinking-body markdown-body" id="subagent-thinking">
+              <p><code>ChatMessage</code> only supports streamed text, so the mixed transcript must be a custom virtualized list. That is the largest non-component work item.</p>
+            </div>
+          </div>
+        </article>
+
+        <article class="row row-tool">
+          <div class="tool-rail"><span class="tool-line"></span><span class="tool-knot is-done"></span></div>
+          <div class="speech wide">
+            <section class="tool-card" id="subagent-tool">
+              <button class="tool-head" type="button" data-toggle="subagent-tool-body" aria-expanded="false">
+                <span class="tool-state is-done"><svg class="icon tiny" aria-hidden="true"><use href="#i-check"></use></svg></span>
+                <svg class="icon small" aria-hidden="true"><use href="#i-terminal"></use></svg>
+                <span class="tool-name mono">rg</span>
+                <span class="tool-note">component catalog</span>
+                <span class="tool-duration mono">12 files</span>
+                <svg class="icon small chevron" aria-hidden="true"><use href="#i-chevron"></use></svg>
+              </button>
+              <div class="terminal-output" id="subagent-tool-body" hidden>
+                <div>crates/gpui-ai/src/tool_call.rs</div>
+                <div>crates/gpui-ai/src/prompt_bar.rs</div>
+                <div>crates/gpui-ai/src/thinking.rs</div>
+                <div>crates/gpui-ai/src/streaming_text.rs</div>
+                <div class="term-muted">… 8 more files</div>
+              </div>
+            </section>
+          </div>
+        </article>
+
+        <article class="row row-assistant">
+          <div class="assistant-mark subagent-mark">F</div>
+          <div class="speech">
+            <div class="row-label">frontend-mapper <span>10:34 · assistant</span></div>
+            <div class="markdown-body">
+              <p>I’m checking the permission gate and thread list next.</p>
+              <ul>
+                <li>The gate maps cleanly to <code>ApprovalCard</code>.</li>
+                <li><code>ThreadList</code> needs session title and archive metadata.</li>
+              </ul>
+              <p><span class="stream-cursor" aria-hidden="true"></span></p>
+            </div>
+          </div>
+        </article>
+      </div>
+      <footer class="agent-drawer-foot"><span class="mono">read-only subagent transcript · parent run continues</span><button class="small-primary" type="button" id="close-drawer-foot">Back to run</button></footer>
+    </aside>
+
+    <div class="toast" id="toast" role="status" aria-live="polite" hidden></div>
+
+    <div class="session-menu" id="session-menu" data-gpui-ai="gpui-component.PopupMenu" role="menu" hidden>
+      <div class="session-menu-head">
+        <strong id="session-menu-title">Session</strong>
+        <span class="mono" id="session-menu-id">session</span>
+      </div>
+      <button class="session-menu-item" type="button" role="menuitem" data-session-action="copy">
+        <svg class="icon small" aria-hidden="true"><use href="#i-copy"></use></svg>
+        <span>Copy session ID</span>
+      </button>
+      <button class="session-menu-item" type="button" role="menuitem" data-session-action="archive">
+        <svg class="icon small" aria-hidden="true"><use href="#i-archive"></use></svg>
+        <span>Archive session</span>
+      </button>
+    </div>
+
+    <script src="./prototype.js?v=20261030-27"></script>
+  </body>
+</html>
