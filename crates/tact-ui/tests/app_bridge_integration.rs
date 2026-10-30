@@ -183,9 +183,13 @@ async fn parallel_background_runs_each_get_a_sticky_row() {
 /// one row per running task.
 #[tokio::test]
 async fn background_rows_accumulate_across_turns() {
-    use harness::{background_run_tool_use, run_commands};
+    use harness::{background_run_tool_use, mock_turn, text_block, wire_permission_responder};
     use std::time::Duration;
-    use tact_protocol::UserCommand;
+    use tact::permission::PermissionMode;
+    use tact_protocol::{AgentUpdate, UserCommand};
+    use tact_ui::test_support::{
+        build_test_agent_with_mode, install_test_config, user_command_channels,
+    };
 
     let mock = MockClient::new(vec![
         mock_turn(
@@ -205,15 +209,37 @@ async fn background_rows_accumulate_across_turns() {
         mock_turn(vec![text_block("Four started.")], StopReason::EndTurn),
     ]);
 
-    let (updates, work_dir) = run_commands(mock, PermissionMode::Auto, |tx| {
-        tokio::spawn(async move {
-            tx.send(UserCommand::SubmitTask("one".into())).unwrap();
-            tokio::time::sleep(Duration::from_millis(300)).await;
-            tx.send(UserCommand::SubmitTask("four".into())).unwrap();
-            drop(tx);
-        })
-    })
-    .await;
+    install_test_config();
+    let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (agent, work_dir) = build_test_agent_with_mode(mock, Some(agent_tx), PermissionMode::Auto);
+    let responder = agent.tool_context.ui_responder.clone();
+    let mut collect_rx = wire_permission_responder(agent_rx, None, responder);
+    let (cmd_tx, cmd_rx) = user_command_channels();
+    let driver = tokio::spawn(tact_ui::driver::run_command_loop(
+        agent,
+        cmd_rx,
+        work_dir.clone(),
+    ));
+
+    let mut updates = Vec::new();
+    for (task, expected) in [("one", "First started."), ("four", "Four started.")] {
+        cmd_tx.send(UserCommand::SubmitTask(task.into())).unwrap();
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let update = tokio::time::timeout_at(deadline, collect_rx.recv())
+                .await
+                .expect("turn did not finish")
+                .expect("update channel closed");
+            let complete = matches!(&update, AgentUpdate::TaskComplete(text) if text == expected);
+            updates.push(update);
+            if complete {
+                break;
+            }
+        }
+    }
+    while let Ok(update) = collect_rx.try_recv() {
+        updates.push(update);
+    }
 
     let metas = updates
         .iter()
@@ -250,5 +276,131 @@ async fn background_rows_accumulate_across_turns() {
     assert!(
         screen.contains("[Background] 5"),
         "count in title:\n{screen}"
+    );
+
+    drop(cmd_tx);
+    tokio::time::timeout(Duration::from_secs(5), driver)
+        .await
+        .expect("command loop must finish after teardown")
+        .expect("command loop join failed");
+}
+
+#[tokio::test]
+async fn explicit_cancel_before_close_stops_a_running_background_task() {
+    use harness::{background_run_tool_use, mock_turn, text_block, wire_permission_responder};
+    use std::time::Duration;
+    use tact::permission::PermissionMode;
+    use tact_protocol::{AgentUpdate, UserCommand};
+    use tact_ui::test_support::{
+        build_test_agent_with_mode, install_test_config, user_command_channels,
+    };
+
+    let mock = MockClient::new(vec![
+        mock_turn(
+            vec![background_run_tool_use("bg_cancel", "sleep 10")],
+            StopReason::ToolUse,
+        ),
+        mock_turn(vec![text_block("started")], StopReason::EndTurn),
+    ]);
+
+    install_test_config();
+    let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (agent, work_dir) = build_test_agent_with_mode(mock, Some(agent_tx), PermissionMode::Auto);
+    let responder = agent.tool_context.ui_responder.clone();
+    let mut collect_rx = wire_permission_responder(agent_rx, None, responder);
+    let (cmd_tx, cmd_rx) = user_command_channels();
+    let driver = tokio::spawn(tact_ui::driver::run_command_loop(agent, cmd_rx, work_dir));
+
+    cmd_tx.send(UserCommand::SubmitTask("one".into())).unwrap();
+    let mut updates = Vec::new();
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    loop {
+        let update = tokio::time::timeout_at(deadline, collect_rx.recv())
+            .await
+            .expect("background task never started")
+            .expect("update channel closed");
+        let started = matches!(
+            update,
+            AgentUpdate::ToolMeta {
+                task_id: Some(_),
+                ..
+            }
+        );
+        updates.push(update);
+        if started {
+            break;
+        }
+    }
+
+    cmd_tx.send(UserCommand::Cancel).unwrap();
+    drop(cmd_tx);
+    tokio::time::timeout(Duration::from_secs(5), driver)
+        .await
+        .expect("cancelled command loop must finish")
+        .expect("command loop join failed");
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(2);
+    while let Ok(Some(update)) = tokio::time::timeout_at(deadline, collect_rx.recv()).await {
+        updates.push(update);
+    }
+
+    let cancelled = updates.iter().any(|update| {
+        matches!(
+            update,
+            AgentUpdate::BackgroundTaskFinished {
+                success: false,
+                output,
+                ..
+            } if output.contains("Cancelled by the user")
+        )
+    });
+    assert!(
+        cancelled,
+        "explicit Cancel must terminate background work: {updates:?}"
+    );
+}
+
+#[tokio::test]
+async fn cancel_immediately_after_submit_cannot_be_cleared() {
+    use std::time::Duration;
+    use tact::permission::PermissionMode;
+    use tact_protocol::{AgentUpdate, UserCommand};
+    use tact_ui::test_support::{
+        build_test_agent_with_mode, install_test_config, user_command_channels,
+    };
+
+    let mock = MockClient::new(vec![mock_turn(
+        vec![text_block("must not finish")],
+        StopReason::EndTurn,
+    )]);
+    install_test_config();
+    let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (agent, work_dir) = build_test_agent_with_mode(mock, Some(agent_tx), PermissionMode::Auto);
+    let (cmd_tx, cmd_rx) = user_command_channels();
+    let driver = tokio::spawn(tact_ui::driver::run_command_loop(agent, cmd_rx, work_dir));
+
+    cmd_tx.send(UserCommand::SubmitTask("one".into())).unwrap();
+    cmd_tx.send(UserCommand::Cancel).unwrap();
+    drop(cmd_tx);
+    tokio::time::timeout(Duration::from_secs(5), driver)
+        .await
+        .expect("cancelled command loop must finish")
+        .expect("command loop join failed");
+
+    let mut updates = Vec::new();
+    let mut agent_rx = agent_rx;
+    while let Some(update) = agent_rx.recv().await {
+        updates.push(update);
+    }
+    assert!(
+        updates
+            .iter()
+            .any(|update| matches!(update, AgentUpdate::TaskCancelled)),
+        "immediate Cancel must reach the queued turn: {updates:?}"
+    );
+    assert!(
+        !updates
+            .iter()
+            .any(|update| matches!(update, AgentUpdate::TaskComplete(_))),
+        "cancelled turn must not complete: {updates:?}"
     );
 }

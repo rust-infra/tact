@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use tact_llm::{OpenAiProtocol, OpenAiReasoningEffort, ProviderInfo, ProviderKind};
 
-use crate::permission::CapabilityRisk;
+use crate::permission::{CapabilityRisk, PermissionMode};
 
 /// Top-level TOML config (`.tact/config.toml` or `config.toml`).
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
@@ -151,13 +151,13 @@ pub struct ProviderEntryToml {
 #[serde(default)]
 pub struct PermissionTomlConfig {
     /// Permission mode: "default", "plan", or "auto"
-    pub mode: Option<String>,
+    pub mode: Option<PermissionMode>,
 }
 
 impl Default for PermissionTomlConfig {
     fn default() -> Self {
         Self {
-            mode: Some("default".into()),
+            mode: Some(PermissionMode::Default),
         }
     }
 }
@@ -649,7 +649,7 @@ pub struct ResolvedConfig {
     pub voice: VoiceSettings,
     pub mcp: McpSettings,
     pub goal: GoalSettings,
-    pub permission_mode: Option<String>,
+    pub permission_mode: PermissionMode,
     pub tokio_console: bool,
     /// Path of the TOML file loaded at startup (for optional `/model` persist).
     pub config_path: Option<std::path::PathBuf>,
@@ -667,7 +667,7 @@ provider = "anthropic"
         let cfg: TactTomlConfig = toml::from_str(toml_str).unwrap();
         assert_eq!(cfg.llm.provider.as_deref(), Some("anthropic"));
         assert!(cfg.llm.providers.is_empty());
-        assert_eq!(cfg.permission.mode.as_deref(), Some("default"));
+        assert_eq!(cfg.permission.mode, Some(PermissionMode::Default));
     }
 
     #[test]
@@ -709,7 +709,7 @@ vision_image.jpeg_quality = 75
         assert_eq!(openai.api_key.as_deref(), Some("sk-test"));
         assert!(openai.base_url.is_some());
         assert!(openai.models.is_empty());
-        assert_eq!(cfg.permission.mode.as_deref(), Some("auto"));
+        assert_eq!(cfg.permission.mode, Some(PermissionMode::Auto));
         assert_eq!(cfg.agent.model_context_window, Some(500000));
         assert_eq!(cfg.agent.snapshot_max_items, Some(120));
         assert_eq!(cfg.agent.micro_compact_enabled, Some(false));

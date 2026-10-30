@@ -404,7 +404,8 @@
 resolve。Agent 循环通过 <code>Agent::stream_message</code> 消费
 client（<a href="./18_chapter_agent_loop_zh.html">Ch 18 Agent Main
 Loop</a>）。</p>
-<p>实现：<code>crates/tact_llm/src/</code>（<code>lib.rs</code>、<code>client.rs</code>、<code>provider.rs</code>、<code>profile.rs</code>、<code>auth.rs</code>、<code>transport.rs</code>、<code>types.rs</code>、<code>content.rs</code>、<code>anthropic/</code>、<code>openai/</code>、<code>convert.rs</code>）。</p>
+<p>实现：<code>crates/tact_llm/src/</code>（稳定入口 <code>builder.rs</code>、<code>endpoint.rs</code>、<code>limits.rs</code>、<code>metadata.rs</code>、<code>policy.rs</code>、<code>provider_model.rs</code>、<code>telemetry.rs</code>；兼容入口 <code>client.rs</code>、<code>provider.rs</code>、<code>profile.rs</code>、<code>auth.rs</code>、<code>transport.rs</code>、<code>types.rs</code>、<code>content.rs</code>；协议实现 <code>anthropic/</code>、<code>openai/</code>、<code>convert.rs</code>）。</p>
+<p>稳定 SDK 路径是 <code>provider constructor -&gt; ProviderBuilder -&gt; Provider: ModelPort</code>。构造器带有内置端点默认值；<code>base_url</code> 只改端点，不改变 provider policy。默认 <code>core</code> feature 不包含 HTTP/provider SDK，协议适配器通过 <code>anthropic</code>、<code>openai-chat</code>、<code>openai-responses</code> 显式启用；<code>telemetry</code> 只启用 host-owned <code>tracing</code>，不安装 subscriber，也不替宿主启用 <code>tokio/tracing</code>（它取决于宿主构建的 <code>--cfg tokio_unstable</code>）。构建是同步的，不在构造期解析可刷新凭据或发起网络请求；流是惰性、取消优先且只产生一个终态。</p>
 <hr />
 <h2 id="1-架构概览">1. 架构概览</h2>
 <pre class="mermaid">flowchart TB

@@ -11,6 +11,7 @@ use super::{
         VoiceSettings,
     },
 };
+use crate::permission::PermissionMode;
 
 /// Resolves `[goal]`, rejecting explicit zero budgets: a zero would make every
 /// activation an immediate no-op, which is a config mistake rather than an
@@ -588,7 +589,7 @@ struct NonLlmSettings {
     bash_nice: i32,
     rtk_filter: bool,
     sandbox: bool,
-    permission_mode: Option<String>,
+    permission_mode: PermissionMode,
     mcp: McpSettings,
 }
 
@@ -697,8 +698,8 @@ fn resolve_non_llm(args: &CliArgs, toml_cfg: &TactTomlConfig) -> anyhow::Result<
 
     let permission_mode = args
         .permission_mode
-        .clone()
-        .or_else(|| toml_cfg.permission.mode.clone());
+        .or(toml_cfg.permission.mode)
+        .unwrap_or_default();
 
     Ok(NonLlmSettings {
         notifications_enabled,

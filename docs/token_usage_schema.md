@@ -512,8 +512,9 @@ a mascot on a finished turn would be animation that lies.
 | `crates/tact/src/stats.rs` | `SessionStats` — in-memory accumulation + summary display. |
 | `crates/tact/src/store/session_store/mod.rs` | `SessionStore` trait — `record_token_usage()`, `record_tool_schedule()`. |
 | `crates/tact/src/store/session_store/sqlite.rs` | SQLite `token_usages` table + `record_token_usage()` / `record_tool_schedule()` implementations. |
-| `crates/tact/src/agent/tool_schedule.rs` | Conflict-aware wave scheduler + `ToolScheduleSummary` written to `tool_schedule`. |
-| `crates/tact/src/agent/tool_dispatch.rs` | `Agent::persist_tool_schedule()` — attaches schedule to token row via `llm_call_last_message_id`. |
+| `crates/agent_core/src/scheduling.rs` | Conflict-aware wave scheduler. |
+| `crates/tact/src/agent/tool_schedule.rs` | Product `ToolResources` contract and resource helpers. |
+| `crates/tact/src/store/session_store/` | `record_tool_schedule()` compatibility API; the current kernel path does not call it. |
 | `crates/tact_llm/src/anthropic.rs` | Parse DeepSeek cache/reasoning from Anthropic-format usage JSON. |
 | `crates/tact_llm/src/openai.rs` | Parse cache/reasoning from OpenAI-format chunk usage. |
 | `crates/tact/src/agent/mod.rs` | `Agent::persist_llm_call()` — persists usage + optional `request_body` from `agent_loop()` and `compact_history()`. |

@@ -7,7 +7,7 @@ use tact::{
     plugin::{PluginEvent, PluginRequest},
     skill::SharedSkillRegistry,
 };
-use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{i18n::Language, theme::Theme};
@@ -152,7 +152,7 @@ pub struct App {
     pub(crate) scroll_back_area: ratatui::layout::Rect,
     pub(crate) cmd_line: String,
     /// Model context window in tokens (from agent config `model_context_window`).
-    pub(crate) model_context_window: usize,
+    pub(crate) model_context_window: Option<usize>,
     pub(crate) log: LogCoordinator,
     pub(crate) status: Status,
     /// Component registry (whole-App switch, plan step 9): owns the plan,
@@ -161,7 +161,7 @@ pub struct App {
     /// and routes updates through `dispatch_components` (agent.rs). The shared
     /// `LogCoordinator` stays shell-owned (decision in task #42).
     pub(crate) registry: agent_tui_kit::components::ComponentRegistry,
-    pub(crate) agent_rx: UnboundedReceiver<AgentUpdate>,
+    pub(crate) agent_rx: tact_protocol::UpdateReceiver,
     pub(crate) account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     pub(crate) plugin_rx: UnboundedReceiver<PluginEvent>,
     pub(crate) plugin_tx: UnboundedSender<PluginRequest>,

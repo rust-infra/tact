@@ -118,7 +118,7 @@ Short results stay (high density, low cost). Assistant / thinking / user text ar
 
 | Setting | Default | Effect |
 |---------|---------|--------|
-| `agent.model_context_window` | 200,000 | Token window: auto Tier-3 trigger at 80% + TUI usage meter; nonzero values must exceed `max_tokens` |
+| `agent.model_context_window` | 200,000 | Token window: auto Tier-3 trigger at 80% + TUI usage meter; `0` means the host has no known window and disables window-based triggering; nonzero values must exceed `max_tokens`. The stable `ModelCapabilities` boundary uses `None` for unknown, never a zero sentinel. |
 | `agent.micro_compact_enabled` | `false` | Tier-2 stub pass — **opt-in** (`true` enables it; `--no-micro-compact` only forces it off, which is already the default) |
 
 Breaking rename from `context_limit_chars` / `--context-limit-chars` — **no silent alias**.

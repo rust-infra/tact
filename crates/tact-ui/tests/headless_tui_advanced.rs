@@ -5,8 +5,11 @@ mod harness;
 
 use harness::{bash_tool_use, read_file_tool_use, text_block, write_file_tool_use};
 use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
-use tact_llm::{MockClient, StopReason};
-use tact_ui::headless_session::run_headless_session_with_options;
+use tact_llm::{Message, MockClient, Role, StopReason};
+use tact_ui::{
+    headless_session::run_headless_session_with_options,
+    test_support::{build_test_agent_with_mode, collect_updates},
+};
 use tui::test_support::TestApp;
 
 #[tokio::test]
@@ -185,5 +188,34 @@ async fn test_app_feeds_read_file_then_opens_popup() {
     assert!(
         content.contains("hello popup"),
         "popup should contain file content: {content}"
+    );
+}
+
+#[tokio::test]
+async fn kernel_updates_leave_no_unowned_blank_tui_cells() {
+    let mock = MockClient::new(vec![(
+        vec![text_block("kernel-rendered text")],
+        Some(StopReason::EndTurn),
+    )]);
+    let (updates_tx, mut updates_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (mut agent, work_dir) =
+        build_test_agent_with_mode(mock, Some(updates_tx), PermissionMode::Auto);
+
+    let outcome = agent
+        .agent_loop_detailed(Some(Message::new_text(Role::User, "render through kernel")))
+        .await
+        .expect("kernel activation");
+    assert_eq!(outcome.turns, 1);
+    assert_eq!(agent.kernel_activations_for_test(), 1);
+
+    let updates = collect_updates(&mut updates_rx).await;
+    drop(agent);
+    let mut app = TestApp::new_in_dir(work_dir);
+    app.feed_all(updates);
+    let surfaces = app.intentional_surface_backgrounds();
+    let offenders = app.blank_cells_outside_surfaces(100, 30, &surfaces);
+    assert!(
+        offenders.is_empty(),
+        "blank TUI cells must be painted by an intentional surface after kernel updates: {offenders:?}"
     );
 }

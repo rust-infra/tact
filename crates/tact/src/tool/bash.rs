@@ -1,4 +1,4 @@
-use std::{sync::atomic::Ordering, time::Duration};
+use std::time::Duration;
 
 use crate::tool::{
     ArgumentSummaryPolicy, DetailPolicy, LiveOutputPolicy, OutputPolicy, PermissionPolicy,
@@ -326,7 +326,7 @@ pub async fn bash(ctx: ToolContext, input: BashInput) -> Result<String> {
                 if report_pending(&ctx, &mut pending, &mut progress_tick) {
                     sent_progress = true;
                 }
-                if failure_reason.is_none() && ctx.cancel_flag.load(Ordering::Relaxed) {
+                if failure_reason.is_none() && ctx.cancel_flag.is_cancelled() {
                     // Relaxed ordering is sufficient here: the cancel flag is a
                     // plain boolean signal set by the parent task and consumed
                     // periodically by this select loop — there is no need for
@@ -565,7 +565,7 @@ mod tests {
         ));
 
         tokio::time::sleep(Duration::from_millis(150)).await;
-        cancel_flag.store(true, Ordering::Relaxed);
+        cancel_flag.cancel();
         let result = tokio::time::timeout(Duration::from_millis(500), &mut task).await;
         if result.is_err() {
             task.abort();
@@ -713,8 +713,13 @@ mod sandbox_tests {
         // reach is reachable from inside as well; the variables are forwarded
         // verbatim rather than dropped.
         for variable in ["http_proxy", "https_proxy", "all_proxy", "no_proxy"] {
-            let expected = std::env::var(variable).unwrap_or_else(|_| "unset".to_string());
-            let probe = format!("printf %s \"${{{variable}:-unset}}\"");
+            let expected = std::env::var(variable)
+                .map(|value| format!("set:{value}"))
+                .unwrap_or_else(|_| "unset".to_string());
+            let probe = format!(
+                "if [ \"${{{variable}+x}}\" = x ]; then \
+                 printf 'set:%s' \"${{{variable}}}\"; else printf unset; fi"
+            );
             assert_eq!(
                 run(&context, &probe).await.unwrap(),
                 expected,
@@ -823,7 +828,7 @@ mod sandbox_tests {
         ));
 
         tokio::time::sleep(Duration::from_millis(300)).await;
-        cancel_flag.store(true, Ordering::Relaxed);
+        cancel_flag.cancel();
         let result = tokio::time::timeout(Duration::from_secs(15), &mut task).await;
         if result.is_err() {
             task.abort();

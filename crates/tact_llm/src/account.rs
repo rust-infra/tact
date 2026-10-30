@@ -2,13 +2,54 @@
 
 use std::time::Duration;
 
-use anyhow::Context;
-use secrecy::ExposeSecret;
-
 use crate::{
     CredentialProvider, ProviderProfile, SharedHttpClient,
     provider::{active_credential_provider, get_provider},
+    transport::{BoundedReadError, read_bounded_success_body},
 };
+use anyhow::Context;
+
+/// Provider-neutral account balance.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BalanceInfo {
+    pub is_available: bool,
+    pub balance_infos: Vec<BalanceEntry>,
+}
+
+/// Provider-neutral balance for one currency.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct BalanceEntry {
+    pub currency: String,
+    pub total_balance: f64,
+    pub granted_balance: f64,
+    pub topped_up_balance: f64,
+}
+
+/// Provider-neutral subscription quota.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UsageQuotaInfo {
+    pub is_available: bool,
+    pub windows: Vec<UsageQuotaWindow>,
+    pub membership_level: Option<String>,
+}
+
+/// One usage quota window.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct UsageQuotaWindow {
+    pub label: String,
+    pub limit: Option<f64>,
+    pub remaining: Option<f64>,
+    pub reset_time: Option<String>,
+}
+
+impl UsageQuotaWindow {
+    pub fn has_remaining(&self) -> bool {
+        match (self.limit, self.remaining) {
+            (Some(limit), Some(remaining)) => remaining > 0.0 || limit <= 0.0,
+            _ => true,
+        }
+    }
+}
 
 /// Derive the DeepSeek balance API URL from the configured base URL.
 ///
@@ -18,15 +59,7 @@ use crate::{
 /// OpenAI-compatible proxies / gateways do not implement it. The API key is
 /// therefore never sent anywhere but `https://api.deepseek.com`.
 fn deepseek_balance_url_from_base_url(base_url: &str) -> Option<String> {
-    if base_url.is_empty() {
-        return Some("https://api.deepseek.com/user/balance".to_string());
-    }
-
-    let parsed = reqwest::Url::parse(base_url).ok()?;
-    if parsed.scheme() != "https" || parsed.host_str() != Some("api.deepseek.com") {
-        return None;
-    }
-    Some("https://api.deepseek.com/user/balance".to_string())
+    crate::policy::deepseek_balance_url(base_url)
 }
 
 /// Query DeepSeek account balance.
@@ -36,7 +69,7 @@ fn deepseek_balance_url_from_base_url(base_url: &str) -> Option<String> {
 ///
 /// Only supported when the configured base URL targets the official DeepSeek
 /// API host (`https://api.deepseek.com`, with or without a `/v1` suffix).
-pub async fn query_deepseek_balance() -> anyhow::Result<tact_protocol::BalanceInfo> {
+pub async fn query_deepseek_balance() -> anyhow::Result<BalanceInfo> {
     let provider = get_provider();
     let profile = provider.to_profile();
     let credentials = active_credential_provider();
@@ -52,40 +85,38 @@ pub async fn query_deepseek_balance_for(
     profile: &ProviderProfile,
     credentials: &dyn CredentialProvider,
     http: &SharedHttpClient,
-) -> anyhow::Result<tact_protocol::BalanceInfo> {
+) -> anyhow::Result<BalanceInfo> {
     let balance_url = deepseek_balance_url_from_base_url(&profile.base_url).ok_or_else(|| {
         anyhow::anyhow!(
             "DeepSeek balance API is only available for the official endpoint https://api.deepseek.com"
         )
     })?;
-    let secret = credentials.resolve().await?;
+    let api_key = credentials
+        .static_api_key()
+        .ok_or_else(|| anyhow::anyhow!("account queries require a static API key"))?;
 
     let resp = http
         .inner()
         .get(&balance_url)
-        .header(
-            "Authorization",
-            format!("Bearer {}", secret.expose_secret()),
-        )
+        .header("Authorization", format!("Bearer {api_key}"))
         .timeout(Duration::from_millis(5000))
         .send()
         .await
-        .with_context(|| format!("Failed to query DeepSeek balance at {balance_url}"))?;
+        .map_err(|_| anyhow::anyhow!("DeepSeek balance request failed"))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let error_body = resp.text().await.unwrap_or_default();
-        anyhow::bail!(
-            "DeepSeek balance query returned HTTP {}: {}",
-            status,
-            error_body.trim()
-        );
+        anyhow::bail!("DeepSeek balance query returned HTTP {status}");
     }
 
-    let body = resp
-        .text()
+    let body = read_bounded_success_body(resp)
         .await
-        .context("Failed to read DeepSeek balance response")?;
+        .map_err(|error| match error {
+            BoundedReadError::TooLarge => anyhow::anyhow!("DeepSeek balance response is too large"),
+            BoundedReadError::Transport => {
+                anyhow::anyhow!("failed to read DeepSeek balance response")
+            }
+        })?;
 
     #[derive(serde::Deserialize)]
     struct RawBalanceEntry {
@@ -108,16 +139,16 @@ pub async fn query_deepseek_balance_for(
         value
             .trim()
             .parse::<f64>()
-            .with_context(|| format!("DeepSeek balance field {field} is not numeric: {value:?}"))
+            .with_context(|| format!("DeepSeek balance field {field} is not numeric"))
     }
 
-    Ok(tact_protocol::BalanceInfo {
+    Ok(BalanceInfo {
         is_available: raw.is_available,
         balance_infos: raw
             .balance_infos
             .into_iter()
             .map(|e| {
-                Ok(tact_protocol::BalanceEntry {
+                Ok(BalanceEntry {
                     currency: e.currency,
                     total_balance: parse_amount("total_balance", &e.total_balance)?,
                     granted_balance: parse_amount("granted_balance", &e.granted_balance)?,
@@ -132,38 +163,14 @@ pub async fn query_deepseek_balance_for(
 ///
 /// Returns `None` unless the URL targets an official Moonshot API host.
 fn kimi_balance_url_from_base_url(base_url: &str) -> Option<String> {
-    if base_url.is_empty() {
-        return Some("https://api.moonshot.cn/v1/users/me/balance".to_string());
-    }
-
-    let parsed = reqwest::Url::parse(base_url).ok()?;
-    if parsed.scheme() != "https" {
-        return None;
-    }
-    match parsed.host_str()? {
-        "api.moonshot.cn" => Some("https://api.moonshot.cn/v1/users/me/balance".to_string()),
-        "api.moonshot.ai" => Some("https://api.moonshot.ai/v1/users/me/balance".to_string()),
-        _ => None,
-    }
+    crate::policy::kimi_balance_url(base_url)
 }
 
 fn kimi_balance_currency(base_url: &str) -> &'static str {
-    if reqwest::Url::parse(base_url)
-        .ok()
-        .and_then(|url| url.host_str().map(str::to_owned))
-        .as_deref()
-        == Some("api.moonshot.ai")
-    {
-        "USD"
-    } else {
-        "CNY"
-    }
+    crate::policy::kimi_balance_currency(base_url)
 }
 
-fn parse_kimi_balance_response(
-    body: &str,
-    currency: &str,
-) -> anyhow::Result<tact_protocol::BalanceInfo> {
+fn parse_kimi_balance_response(body: &str, currency: &str) -> anyhow::Result<BalanceInfo> {
     #[derive(serde::Deserialize)]
     struct RawKimiBalanceData {
         available_balance: f64,
@@ -181,9 +188,9 @@ fn parse_kimi_balance_response(
     let raw: RawKimiBalanceResponse =
         serde_json::from_str(body).context("Failed to parse Kimi balance response")?;
 
-    Ok(tact_protocol::BalanceInfo {
+    Ok(BalanceInfo {
         is_available: raw.status && raw.code == 0,
-        balance_infos: vec![tact_protocol::BalanceEntry {
+        balance_infos: vec![BalanceEntry {
             currency: currency.to_string(),
             total_balance: raw.data.available_balance,
             granted_balance: raw.data.voucher_balance,
@@ -196,7 +203,7 @@ fn parse_kimi_balance_response(
 ///
 /// Calls `GET .../v1/users/me/balance` on `api.moonshot.cn` or `api.moonshot.ai`.
 /// Returns `BalanceInfo` on success.
-pub async fn query_kimi_balance() -> anyhow::Result<tact_protocol::BalanceInfo> {
+pub async fn query_kimi_balance() -> anyhow::Result<BalanceInfo> {
     let provider = get_provider();
     let profile = provider.to_profile();
     let credentials = active_credential_provider();
@@ -211,39 +218,35 @@ pub async fn query_kimi_balance_for(
     profile: &ProviderProfile,
     credentials: &dyn CredentialProvider,
     http: &SharedHttpClient,
-) -> anyhow::Result<tact_protocol::BalanceInfo> {
+) -> anyhow::Result<BalanceInfo> {
     let balance_url = kimi_balance_url_from_base_url(&profile.base_url).ok_or_else(|| {
         anyhow::anyhow!("Kimi balance API is only available for official Moonshot API endpoints")
     })?;
     let currency = kimi_balance_currency(&profile.base_url);
-    let secret = credentials.resolve().await?;
+    let api_key = credentials
+        .static_api_key()
+        .ok_or_else(|| anyhow::anyhow!("account queries require a static API key"))?;
 
     let resp = http
         .inner()
         .get(&balance_url)
-        .header(
-            "Authorization",
-            format!("Bearer {}", secret.expose_secret()),
-        )
+        .header("Authorization", format!("Bearer {api_key}"))
         .timeout(Duration::from_millis(5000))
         .send()
         .await
-        .with_context(|| format!("Failed to query Kimi balance at {balance_url}"))?;
+        .map_err(|_| anyhow::anyhow!("Kimi balance request failed"))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let error_body = resp.text().await.unwrap_or_default();
-        anyhow::bail!(
-            "Kimi balance query returned HTTP {}: {}",
-            status,
-            error_body.trim()
-        );
+        anyhow::bail!("Kimi balance query returned HTTP {status}");
     }
 
-    let body = resp
-        .text()
+    let body = read_bounded_success_body(resp)
         .await
-        .context("Failed to read Kimi balance response")?;
+        .map_err(|error| match error {
+            BoundedReadError::TooLarge => anyhow::anyhow!("Kimi balance response is too large"),
+            BoundedReadError::Transport => anyhow::anyhow!("failed to read Kimi balance response"),
+        })?;
 
     parse_kimi_balance_response(&body, currency)
 }
@@ -255,20 +258,7 @@ pub async fn query_kimi_balance_for(
 /// serve the usage quota API; the API key is never sent to `api.kimi.com`
 /// from a proxy configuration.
 fn kimi_usage_url_from_base_url(base_url: &str) -> Option<String> {
-    let parsed = reqwest::Url::parse(base_url).ok()?;
-    if parsed.scheme() != "https" || parsed.host_str() != Some("api.kimi.com") {
-        return None;
-    }
-    if !parsed.path().contains("coding") {
-        return None;
-    }
-    let trimmed = parsed.path().trim_end_matches('/');
-    let api_base = if trimmed.ends_with("/v1") {
-        trimmed.to_string()
-    } else {
-        format!("{trimmed}/v1")
-    };
-    Some(format!("https://api.kimi.com{api_base}/usages"))
+    crate::policy::kimi_usage_url(base_url)
 }
 
 /// Parse a quota number reported as a JSON string.
@@ -279,7 +269,7 @@ fn parse_quota_value(value: &str) -> Option<f64> {
     value.trim().parse::<f64>().ok()
 }
 
-fn parse_kimi_usage_response(body: &str) -> anyhow::Result<tact_protocol::UsageQuotaInfo> {
+fn parse_kimi_usage_response(body: &str) -> anyhow::Result<UsageQuotaInfo> {
     #[derive(serde::Deserialize)]
     struct RawUsageDetail {
         limit: String,
@@ -322,7 +312,7 @@ fn parse_kimi_usage_response(body: &str) -> anyhow::Result<tact_protocol::UsageQ
     let raw: RawKimiUsageResponse =
         serde_json::from_str(body).context("Failed to parse Kimi usage response")?;
 
-    let mut windows = vec![tact_protocol::UsageQuotaWindow {
+    let mut windows = vec![UsageQuotaWindow {
         label: "week".to_string(),
         limit: parse_quota_value(&raw.usage.limit),
         remaining: parse_quota_value(&raw.usage.remaining),
@@ -335,7 +325,7 @@ fn parse_kimi_usage_response(body: &str) -> anyhow::Result<tact_protocol::UsageQ
         } else {
             format!("{}m", entry.window.duration)
         };
-        windows.push(tact_protocol::UsageQuotaWindow {
+        windows.push(UsageQuotaWindow {
             label,
             limit: parse_quota_value(&entry.detail.limit),
             remaining: parse_quota_value(&entry.detail.remaining),
@@ -345,7 +335,7 @@ fn parse_kimi_usage_response(body: &str) -> anyhow::Result<tact_protocol::UsageQ
 
     let is_available = windows.iter().all(|w| w.has_remaining());
 
-    Ok(tact_protocol::UsageQuotaInfo {
+    Ok(UsageQuotaInfo {
         is_available,
         windows,
         membership_level: raw.user.and_then(|u| u.membership).map(|m| m.level),
@@ -356,7 +346,7 @@ fn parse_kimi_usage_response(body: &str) -> anyhow::Result<tact_protocol::UsageQ
 ///
 /// Only supported when the configured base URL targets the official Kimi Code
 /// endpoint (`https://api.kimi.com/coding`).
-pub async fn query_kimi_code_usage() -> anyhow::Result<tact_protocol::UsageQuotaInfo> {
+pub async fn query_kimi_code_usage() -> anyhow::Result<UsageQuotaInfo> {
     let provider = get_provider();
     let profile = provider.to_profile();
     let credentials = active_credential_provider();
@@ -371,42 +361,38 @@ pub async fn query_kimi_code_usage_for(
     profile: &ProviderProfile,
     credentials: &dyn CredentialProvider,
     http: &SharedHttpClient,
-) -> anyhow::Result<tact_protocol::UsageQuotaInfo> {
+) -> anyhow::Result<UsageQuotaInfo> {
     let usage_url = kimi_usage_url_from_base_url(&profile.base_url).ok_or_else(|| {
         anyhow::anyhow!(
             "Kimi Code usage API is only available for the official endpoint https://api.kimi.com/coding"
         )
     })?;
-    let secret = credentials.resolve().await?;
+    let api_key = credentials
+        .static_api_key()
+        .ok_or_else(|| anyhow::anyhow!("account queries require a static API key"))?;
 
     let resp = http
         .inner()
         .get(&usage_url)
-        .header(
-            "Authorization",
-            format!("Bearer {}", secret.expose_secret()),
-        )
+        .header("Authorization", format!("Bearer {api_key}"))
         .header("Accept", "application/json")
         .header("User-Agent", "Claude Code")
         .timeout(Duration::from_millis(5000))
         .send()
         .await
-        .with_context(|| format!("Failed to query Kimi usage at {usage_url}"))?;
+        .map_err(|_| anyhow::anyhow!("Kimi usage request failed"))?;
 
     if !resp.status().is_success() {
         let status = resp.status();
-        let error_body = resp.text().await.unwrap_or_default();
-        anyhow::bail!(
-            "Kimi usage query returned HTTP {}: {}",
-            status,
-            error_body.trim()
-        );
+        anyhow::bail!("Kimi usage query returned HTTP {status}");
     }
 
-    let body = resp
-        .text()
+    let body = read_bounded_success_body(resp)
         .await
-        .context("Failed to read Kimi usage response")?;
+        .map_err(|error| match error {
+            BoundedReadError::TooLarge => anyhow::anyhow!("Kimi usage response is too large"),
+            BoundedReadError::Transport => anyhow::anyhow!("failed to read Kimi usage response"),
+        })?;
 
     parse_kimi_usage_response(&body)
 }
@@ -424,6 +410,19 @@ mod tests {
     impl CredentialProvider for FailingCredential {
         fn resolve(&self) -> BoxFuture<'_, Result<secrecy::SecretString, LlmError>> {
             Box::pin(async { Err(LlmError::Auth("test credential unavailable".to_string())) })
+        }
+
+        fn static_api_key(&self) -> Option<&str> {
+            Some("sk-failing")
+        }
+    }
+
+    #[derive(Debug)]
+    struct RefreshableCredential;
+
+    impl CredentialProvider for RefreshableCredential {
+        fn resolve(&self) -> BoxFuture<'_, Result<secrecy::SecretString, LlmError>> {
+            Box::pin(async { Ok(secrecy::SecretString::from("refreshed".to_string())) })
         }
     }
 
@@ -608,14 +607,17 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn explicit_deepseek_balance_forwards_credential_errors() {
+    async fn explicit_deepseek_balance_rejects_non_static_credentials() {
         let profile = deepseek_profile();
-        let error =
-            query_deepseek_balance_for(&profile, &FailingCredential, &SharedHttpClient::default())
-                .await
-                .unwrap_err();
+        let error = query_deepseek_balance_for(
+            &profile,
+            &RefreshableCredential,
+            &SharedHttpClient::default(),
+        )
+        .await
+        .unwrap_err();
 
-        assert!(error.to_string().contains("test credential unavailable"));
+        assert!(error.to_string().contains("static API key"));
     }
 
     #[tokio::test]

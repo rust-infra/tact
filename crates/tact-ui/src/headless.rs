@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use tact::{config::CliArgs, consts::TactPath, extract_text, store::DynSessionStore};
-use tact_protocol::AgentUpdate;
+use tact_protocol::{UpdateReceiver, update_channel};
 
 use crate::{
     headless_log,
@@ -45,11 +45,10 @@ pub async fn run_headless(
 /// hangs must still show what it last did, and a CI job that is killed must not
 /// lose the log along with the process.
 ///
-/// The channel is unbounded because a sender must never block on a log reader:
-/// the pump only writes to stderr, which the kernel back-pressures rather than
-/// dropping. A reader that stops draining entirely (a suspended terminal) makes
-/// the queue grow; the alternative — a bounded channel — would silently drop
-/// the lines that explain a hang, which is the one thing this log is for.
+/// Progress uses a bounded lane so a suspended stderr reader cannot grow the
+/// queue without limit. Terminal events remain reliable and ordered; a reader
+/// that falls far enough behind may lose intermediate streaming lines, but not
+/// the lifecycle, result, usage, or failure lines that explain a hang.
 ///
 /// **The end of the log is signalled, not inferred from the channel closing.**
 /// Waiting for `rx.recv()` to return `None` waits for the last *sender*, and
@@ -58,7 +57,7 @@ pub async fn run_headless(
 /// task has no time limit — so the pump would block until the background
 /// command finished, and the stats and final answer below it would never print.
 async fn pump_events_to_stderr(
-    mut rx: tokio::sync::mpsc::UnboundedReceiver<AgentUpdate>,
+    mut rx: UpdateReceiver,
     shutdown: tokio::sync::oneshot::Receiver<()>,
 ) {
     use std::io::Write;
@@ -116,7 +115,7 @@ async fn run_headless_locked(
     // is, is the caller's decision and not this module's: the scheduled review
     // passes `--permission-mode auto` because plan mode's classifier refuses
     // the pipelines a review needs.
-    let (observer_tx, observer_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (observer_tx, observer_rx) = update_channel(1024);
     // The pump stops on this signal, not on the channel closing: a detached
     // background task holds a clone of the observer sender and may outlive the
     // turn indefinitely.
@@ -159,8 +158,7 @@ async fn run_headless_locked(
     eprintln!(
         "{}",
         agent
-            .runtime
-            .stats
+            .stats()
             .read()
             .expect("session stats lock poisoned")
             .summary()
@@ -168,7 +166,7 @@ async fn run_headless_locked(
 
     loop_result?;
 
-    match agent.runtime.context.last() {
+    match agent.context().last() {
         Some(final_content) => {
             let text = extract_text(&final_content.content);
             if text.trim().is_empty() {
@@ -203,6 +201,7 @@ async fn run_headless_locked(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tact_protocol::AgentUpdate;
 
     /// The pump returns when told to, even while a sender is still alive.
     ///
@@ -214,7 +213,7 @@ mod tests {
     async fn the_pump_stops_on_the_shutdown_signal_with_a_live_sender() {
         let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
         let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
-        let pump = tokio::spawn(pump_events_to_stderr(rx, shutdown_rx));
+        let pump = tokio::spawn(pump_events_to_stderr(rx.into(), shutdown_rx));
 
         // Stand in for the detached background task's reporter.
         let _detached_sender = tx.clone();
@@ -238,7 +237,7 @@ mod tests {
         // these are exactly the events only the drain loop can recover.
         tx.send(AgentUpdate::Info("queued before the signal".into()))
             .unwrap();
-        let pump = tokio::spawn(pump_events_to_stderr(rx, shutdown_rx));
+        let pump = tokio::spawn(pump_events_to_stderr(rx.into(), shutdown_rx));
         shutdown_tx.send(()).unwrap();
 
         tokio::time::timeout(std::time::Duration::from_secs(5), pump)

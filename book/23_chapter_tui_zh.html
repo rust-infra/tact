@@ -537,7 +537,7 @@ tokio task 上 spawn <code>tui::run_tui(...)</code></strong> ——
 <code>build_agent_for_interactive(...)</code>。构建本身（<code>toolset()</code>、MCP
 router、五个
 manager、<code>ToolContext</code>、<code>with_ui_channel(agent_tx)</code>）与
-headless 共用 <code>crates/tact-ui/src/session_bootstrap.rs</code> 的
+headless 共用 <code>crates/tact_host/src/session_bootstrap.rs</code> 的
 <code>bootstrap_session</code>；两个前端只在两处不同：启动提示的出口（<code>Notices</code>：stderr
 或 <code>AgentUpdate::Info</code>），以及有没有 UI
 通道（<code>UiWiring</code>）。构建期间用户退出（<code>q</code> /
@@ -603,16 +603,16 @@ activation；写操作则在 driver 中与活动 Runner 串行化。</p>
 <td>Insert 模式 Enter、slash 命令、<code>@</code> 文件选择器提交 ——
 <strong>Planning/Executing 期间 Enter 改为排队</strong>（Codex
 风格"当前任务结束后提交"，见 §6.6）</td>
-<td>重置 <code>tool_use_counter</code>、清除
-<code>cancel_flag</code>、<code>build_user_message</code>、<code>agent_loop</code>；仅
+<td>重置 <code>tool_use_counter</code>、调用
+<code>begin_user_turn()</code> 轮换已取消 token、<code>build_user_message</code>、<code>agent_loop</code>；仅
 loop 成功且未取消时发出 <code>TaskComplete</code></td>
 </tr>
 <tr>
 <td><strong><code>Cancel</code></strong></td>
 <td><code>/cancel</code>，或 Planning/Executing 时 Normal 模式
 <code>c</code></td>
-<td>设置 <code>cancel_flag</code>；循环在下次检查时退出；下次
-<code>SubmitTask</code> 清除 flag（<a
+<td>调用 <code>Agent::cancel()</code>；循环在下次检查时退出；下次
+<code>SubmitTask</code> 通过 <code>begin_user_turn()</code> 轮换 token（<a
 href="./18_chapter_agent_loop_zh.html">Ch 18</a>）</td>
 </tr>
 <tr>
@@ -721,7 +721,7 @@ compaction-id 前缀</strong> — 完整 id 只保留在 provider 状态与 SQLi
 <code>Compaction failed: …</code>，并保持之前的 context
 与状态不变；流式中被宣布但从未 完成的压缩（incomplete streamed
 compaction）是硬性协议错误，绝不静默地 从可见文本“恢复”。</p>
-<p><code>build_user_message</code>（<code>crates/tact-ui/src/user_message.rs</code>）将行内
+<p><code>build_user_message</code>（<code>crates/tact_host/src/user_message.rs</code>）将行内
 <code>![alt](path)</code> 图片与 <code>@file</code> 引用解析为多模态
 <code>ContentBlock</code>。栅格图使用 config 中
 <code>[ui.vision_image]</code>：<code>compress</code>（默认
@@ -805,16 +805,17 @@ href="./25_chapter_protocol_zh.html">Ch 25</a>。</p>
 </tbody>
 </table>
 <p>余额与配额使用独立 <code>AccountUpdate</code>
-channel（<code>crates/tact-ui/src/account.rs</code>），非
+channel（<code>crates/tact_host/src/account.rs</code>），非
 <code>AgentUpdate</code>。</p>
 <p><strong>重要：</strong> <code>Agent::agent_loop</code>
 <strong>不</strong>发出
-<code>TaskComplete</code>。<code>interactive.rs</code>
+<code>TaskComplete</code>。<code>driver.rs</code>
 仅在成功、未取消的 loop 返回后发送：</p>
-<pre class="rust"><code>match agent.agent_loop(Some(task_message)).await {
-    Ok(()) if !agent.runtime.cancel_flag.load(Ordering::Relaxed) =&gt; {
-        if let Some(last) = agent.runtime.context.last() {
-            agent.emit_update(AgentUpdate::TaskComplete(extract_text(&amp;last.content)));
+<pre class="rust"><code>agent.begin_user_turn();
+match agent.agent_loop(Some(task_message)).await {
+    Ok(()) if !agent.is_cancelled() =&gt; {
+        if let Some(last) = agent.context().last() {
+            agent.events().send(AgentUpdate::TaskComplete(extract_text(&amp;last.content)));
         }
     }
     Ok(()) =&gt; {}
@@ -1412,10 +1413,10 @@ href="./21_chapter_config_zh.html">第 21 章</a> 与
 <code>Idle</code>/<code>Done</code>
 时自动提交（<code>handlers::skills::flush_pending_when_idle</code>，主循环在
 <code>agent_rx</code> 排空后调用）：每条排队消息按序各自派发为一个
-<code>SubmitTask</code>——命令驱动（<code>tact-ui/src/driver.rs</code>）本就会串行处理在途的
+<code>SubmitTask</code>——命令驱动（<code>tact_host/src/driver.rs</code>）本就会串行处理在途的
 <code>SubmitTask</code>，因此每条排队消息都成为下一个用户回合。<strong>Goal
 activation 结束时会发
-<code>AgentUpdate::TaskIdle</code></strong>（<code>tact-ui/src/driver.rs</code>
+<code>AgentUpdate::TaskIdle</code></strong>（<code>tact_host/src/driver.rs</code>
 在 <code>CreateGoal</code> / <code>ResumeGoal</code> /
 <code>AcceptGoal</code> 的任务收尾处发出），把 TUI 的
 <code>Planning</code>/<code>Executing</code> 复位到
@@ -2692,11 +2693,11 @@ vs interactive）</td>
 <td>非交互单次 agent 运行</td>
 </tr>
 <tr>
-<td><code>crates/tact-ui/src/user_message.rs</code></td>
+<td><code>crates/tact_host/src/user_message.rs</code></td>
 <td>多模态 <code>@file</code> / markdown 图片解析</td>
 </tr>
 <tr>
-<td><code>crates/tact-ui/src/permission.rs</code></td>
+<td><code>crates/tact_host/src/permission.rs</code></td>
 <td><code>permission_mode_from_config()</code></td>
 </tr>
 <tr>

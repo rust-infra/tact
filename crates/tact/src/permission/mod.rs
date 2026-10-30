@@ -12,13 +12,13 @@
 
 pub mod settings;
 
-use std::fmt;
-
 use anyhow::Result;
 use serde_json::Value;
-use strum_macros::{Display, EnumString};
+use strum_macros::Display;
 
 use crate::tool::PermissionPromptPolicy;
+
+pub use tact_protocol::PermissionMode;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Display)]
 #[strum(serialize_all = "snake_case")]
@@ -26,47 +26,6 @@ pub enum CapabilityRisk {
     Read,
     Write,
     High,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, EnumString)]
-#[strum(serialize_all = "snake_case")]
-pub enum PermissionMode {
-    Default,
-    Plan,
-    Auto,
-}
-
-impl PermissionMode {
-    /// The mode's name in the Claude Code / plugin-hook vocabulary.
-    ///
-    /// Hook payloads carry this spelling, not Tact's (`Codex`'s
-    /// `hook_permission_mode` maps its approval policy onto the same set), so a
-    /// plugin that branches on `payload["permission_mode"]` reads a value it
-    /// recognizes. The spelling is a wire contract fixed by `book/09`, so it
-    /// stays `acceptEdits` even though Tact's `Auto` is broader than what that
-    /// Claude Code mode does: `Auto` allows every capability, High included
-    /// (see [`PermissionManager::check_with_auto`]), so a plugin must not read
-    /// `acceptEdits` as "the risky ones still prompt".
-    #[must_use]
-    pub fn hook_name(self) -> &'static str {
-        match self {
-            Self::Default => "default",
-            Self::Plan => "plan",
-            Self::Auto => "acceptEdits",
-        }
-    }
-}
-
-impl fmt::Display for PermissionMode {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let label = match self {
-            PermissionMode::Default => "default - ask for writes",
-            PermissionMode::Plan => "plan - read only",
-            PermissionMode::Auto => "auto - allow all operations (including high risk)",
-        };
-
-        write!(f, "{label}")
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -209,6 +168,11 @@ impl PermissionManager {
 
     pub fn mode(&self) -> PermissionMode {
         self.mode
+    }
+
+    #[cfg(test)]
+    pub(crate) fn consecutive_denials(&self) -> usize {
+        self.consecutive_denials
     }
 
     /// The sensitive-path guard this manager's settings describe.

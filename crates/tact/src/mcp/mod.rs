@@ -120,10 +120,12 @@ use crate::{
     tool::copy_tool_spec,
 };
 
+mod catalog;
 mod edit;
 mod prompt;
 mod remote;
 mod resource;
+pub use catalog::McpCatalogHandle;
 pub use edit::*;
 pub use prompt::*;
 pub use remote::*;
@@ -5640,7 +5642,7 @@ mod tests {
     #[test]
     fn the_router_resolves_a_declared_tier_and_defaults_the_rest_to_high() {
         // End of the wiring: JSON entry → resolved policy → what the permission
-        // layer is handed. `agent::tool_dispatch` delegates to this in one line.
+        // layer is handed. `runtime::tool_adapter` delegates to this in one line.
         let policy = McpServerPolicy::from_config(
             &serde_json::from_str(r#"{"command":"node","tools":{"search_notes":{"risk":"read"}}}"#)
                 .unwrap(),

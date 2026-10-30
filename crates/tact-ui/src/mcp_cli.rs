@@ -18,8 +18,7 @@ use anyhow::{Context, Result, bail};
 use tact::{
     config::McpSubcommand,
     mcp::{
-        self, McpConfigScope, McpDraftTransport, McpLiveStatus, McpLoadReport, McpServerDraft,
-        McpServerStatus,
+        self, McpConfigScope, McpDraftTransport, McpLoadReport, McpServerDraft, McpServerStatus,
     },
 };
 
@@ -638,53 +637,6 @@ pub fn render_report(report: &McpLoadReport) -> String {
     out
 }
 
-/// Renders the TUI `/mcp list` view: a Markdown table of every configured
-/// server with its **live** status.
-///
-/// Unlike [`render_report`], which starts from a fresh load, this consumes
-/// views derived from connections the agent already holds — the caller
-/// (`/mcp list`) must never reconnect.
-#[must_use]
-pub fn render_live_listing(views: &[mcp::McpServerView]) -> String {
-    if views.is_empty() {
-        return "## 🔌 MCP Servers\n\nNo MCP servers configured.\n\n\
-                Declare servers in `~/.tact/.mcp.json` (user) or `.tact/.mcp.json` (project), \
-                then restart or run `/mcp auth <server>` for a remote OAuth server."
-            .to_string();
-    }
-
-    let mut out = String::from(
-        "## 🔌 MCP Servers\n\n| Server | Transport | Source | Status |\n|---|---|---|---|\n",
-    );
-    for view in views {
-        let name = mcp::display_server_name(&view.server.name);
-        let status = match view.status {
-            McpLiveStatus::Connected { tools } => format!("connected ({tools} tools)"),
-            McpLiveStatus::NeedsAuthorization => {
-                format!("needs authorization — run `/mcp auth {name}`")
-            }
-            McpLiveStatus::NotConnected => "not connected".to_string(),
-            McpLiveStatus::Disabled => disabled_text(),
-        };
-        out.push_str(&format!(
-            "| {} | {} | {} | {} |\n",
-            cell(name),
-            cell(&view.server.transport.to_string()),
-            cell(&view.server.source),
-            cell(&status),
-        ));
-    }
-    out
-}
-
-/// Escapes a value for a Markdown table cell.
-///
-/// A raw `|` or newline would split the row into extra cells/rows; both are
-/// reachable from user-controlled fields (a source path, a URL).
-fn cell(value: &str) -> String {
-    value.replace('|', "\\|").replace(['\n', '\r'], " ")
-}
-
 /// The status cell for one server, chosen from the problem lists.
 fn status_for(report: &McpLoadReport, name: &str) -> String {
     if let Some((_, tools)) = report.connected.iter().find(|(n, _)| n == name) {
@@ -1282,21 +1234,6 @@ mod tests {
     }
 
     #[test]
-    fn the_live_listing_marks_a_disabled_server() {
-        let mut view = live_view(
-            "switched-off",
-            mcp::McpTransportKind::Stdio {
-                command: "/bin/off".to_string(),
-            },
-            McpLiveStatus::Disabled,
-        );
-        view.server.disabled = true;
-
-        let text = render_live_listing(&[view]);
-        assert!(text.contains("disabled (enabled: false)"), "{text}");
-    }
-
-    #[test]
     fn a_server_with_no_recorded_outcome_is_not_reported_as_healthy() {
         // Guards against a resolution/connection mismatch silently looking OK.
         let report = McpLoadReport {
@@ -1615,109 +1552,5 @@ mod tests {
         // Neither value may be echoed: a header is where a secret lives.
         assert!(!message.contains("first"), "value leaked: {message}");
         assert!(!message.contains("second"), "value leaked: {message}");
-    }
-
-    fn live_view(
-        name: &str,
-        transport: mcp::McpTransportKind,
-        status: McpLiveStatus,
-    ) -> mcp::McpServerView {
-        mcp::McpServerView {
-            server: mcp::ConfiguredServer {
-                name: name.to_string(),
-                transport,
-                source: "~/.tact/.mcp.json".to_string(),
-                disabled: false,
-            },
-            status,
-        }
-    }
-
-    #[test]
-    fn live_listing_has_a_row_per_server_with_its_status() {
-        let views = vec![
-            live_view(
-                "figma",
-                mcp::McpTransportKind::Remote {
-                    url: "https://mcp.figma.com/mcp".into(),
-                    oauth: true,
-                },
-                McpLiveStatus::NeedsAuthorization,
-            ),
-            live_view(
-                "local",
-                mcp::McpTransportKind::Stdio {
-                    command: "node".into(),
-                },
-                McpLiveStatus::Connected { tools: 4 },
-            ),
-            live_view(
-                "broken",
-                mcp::McpTransportKind::Stdio {
-                    command: "nope".into(),
-                },
-                McpLiveStatus::NotConnected,
-            ),
-        ];
-
-        let text = render_live_listing(&views);
-        assert!(
-            text.contains("| Server | Transport | Source | Status |"),
-            "{text}"
-        );
-        assert!(text.contains("connected (4 tools)"), "{text}");
-        assert!(
-            text.contains("needs authorization — run `/mcp auth figma`"),
-            "{text}"
-        );
-        assert!(text.contains("| broken |"), "{text}");
-        assert!(text.contains("not connected"), "{text}");
-    }
-
-    #[test]
-    fn live_listing_explains_how_to_configure_when_empty() {
-        let text = render_live_listing(&[]);
-        assert!(text.contains("No MCP servers configured."), "{text}");
-        assert!(text.contains("~/.tact/.mcp.json"), "{text}");
-    }
-
-    #[test]
-    fn live_listing_shows_a_plugin_server_under_its_short_name() {
-        // The `plugin__<id>__` prefix is how the loader keeps plugin servers
-        // apart from the user's own; in a listing it is only noise, and the
-        // Source column already says which plugin it came from.
-        let mut view = live_view(
-            "plugin__canva__canva",
-            mcp::McpTransportKind::Remote {
-                url: "https://mcp.canva.com/mcp".into(),
-                oauth: true,
-            },
-            mcp::McpLiveStatus::NeedsAuthorization,
-        );
-        view.server.source = "plugin openai-curated/canva".to_string();
-
-        let text = render_live_listing(&[view]);
-
-        assert!(text.contains("| canva |"), "{text}");
-        assert!(
-            text.contains("needs authorization — run `/mcp auth canva`"),
-            "{text}"
-        );
-        assert!(!text.contains("plugin__canva__canva"), "{text}");
-    }
-
-    #[test]
-    fn live_listing_escapes_pipes_so_a_source_path_cannot_break_the_table() {
-        let mut view = live_view(
-            "weird",
-            mcp::McpTransportKind::Stdio {
-                command: "/bin/echo".into(),
-            },
-            McpLiveStatus::Connected { tools: 1 },
-        );
-        view.server.source = "a|b".to_string();
-
-        let text = render_live_listing(&[view]);
-        assert!(text.contains("a\\|b"), "{text}");
     }
 }

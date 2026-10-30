@@ -1,0 +1,10 @@
+[package]
+name = "tact-llm-agent-sdk-consumer"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+tact_llm = { version = "2.0.0", path = "../../crates/tact_llm", default-features = false, features = ["openai-responses"] }
+tact_agent_sdk = { version = "2.0.0", path = "../../crates/agent_sdk" }

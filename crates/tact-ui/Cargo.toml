@@ -3,6 +3,7 @@ name = "tact-ui"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
 
 [lib]
 name = "tact_ui"
@@ -13,24 +14,22 @@ name = "tact-ui"
 path = "src/main.rs"
 
 [dependencies]
-tact = { path = "../tact", features = ["test-support"] }
-tact_llm = { path = "../tact_llm" }
-tact_protocol = { path = "../protocol" }
-tui = { path = "../tui", features = ["test-support"] }
+tact = { version = "2.0.0", path = "../tact", features = ["test-support"] }
+tact_llm = { version = "2.0.0", path = "../tact_llm", default-features = false, features = ["legacy-tact", "account"] }
+tact_host = { version = "2.0.0", path = "../tact_host", features = ["test-support"] }
+tact_protocol = { version = "2.0.0", path = "../protocol" }
+tui = { version = "0.1.0", path = "../tui", features = ["test-support"] }
 anyhow = { workspace = true }
-base64 = { workspace = true }
 chrono = { workspace = true }
 console-subscriber = { workspace = true }
-regex = { workspace = true }
-serde_json = { workspace = true }
 tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "macros", "rt-multi-thread", "signal"] }
 tracing-subscriber = { workspace = true }
-uuid = { workspace = true }
 
 [dev-dependencies]
 async-trait = { workspace = true }
 clap = { workspace = true }
 rmcp = { workspace = true }
+serde_json = { workspace = true }
 tempfile = { workspace = true }
 tokio = { workspace = true, features = ["fs", "net", "process", "sync", "time", "macros", "rt-multi-thread", "signal"] }
 wiremock = "0.6"

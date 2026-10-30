@@ -3,7 +3,10 @@ use std::path::Path;
 use anyhow::{Context, Result};
 use chrono::{DateTime, NaiveDate, Utc};
 use sqlx::{Row, SqlitePool};
-use tact_llm::{Message, MessageContent, MessageKind, ProviderConversationState, Role};
+use tact_agent_api::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin};
+use tact_llm::{
+    ContentBlock, Message, MessageContent, MessageKind, ProviderConversationState, Role, neutral,
+};
 use tact_protocol::TokenUsageInfo;
 
 use super::{MAX_INPUT_HISTORY, MAX_TOKEN_USAGE_BODIES, MessageCountByPeriod, SessionSummary};
@@ -39,6 +42,32 @@ impl SqliteSessionStore {
         Ok(())
     }
 
+    async fn add_nullable_column(
+        pool: &SqlitePool,
+        table: &str,
+        column: &str,
+        definition: &str,
+    ) -> Result<()> {
+        let rows = sqlx::query(&format!("PRAGMA table_info({table})"))
+            .fetch_all(pool)
+            .await
+            .with_context(|| format!("failed to read {table} table info"))?;
+        let exists = rows.iter().any(|row| {
+            row.try_get::<String, _>("name")
+                .map(|name| name == column)
+                .unwrap_or(false)
+        });
+        if !exists {
+            sqlx::query(&format!(
+                "ALTER TABLE {table} ADD COLUMN {column} {definition}"
+            ))
+            .execute(pool)
+            .await
+            .with_context(|| format!("failed to add {table}.{column} column"))?;
+        }
+        Ok(())
+    }
+
     pub async fn new(path: &Path) -> Result<Self> {
         let pool = open_pool(path).await?;
 
@@ -70,6 +99,7 @@ impl SqliteSessionStore {
                 session_id TEXT NOT NULL,
                 role TEXT NOT NULL,
                 content JSON NOT NULL,
+                origin TEXT,
                 ordinal INTEGER NOT NULL,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -78,6 +108,10 @@ impl SqliteSessionStore {
         .execute(&*pool)
         .await
         .context("failed to create messages table")?;
+
+        Self::add_nullable_column(&pool, "messages", "origin", "TEXT")
+            .await
+            .context("failed to migrate messages.origin")?;
 
         sqlx::query("CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id);")
             .execute(&*pool)
@@ -104,6 +138,7 @@ impl SqliteSessionStore {
                 reasoning_tokens INTEGER NOT NULL DEFAULT 0,
                 first_message_id INTEGER NOT NULL DEFAULT 0,
                 last_message_id INTEGER NOT NULL DEFAULT 0,
+                call_id TEXT,
                 tool_schedule TEXT,
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
             );
@@ -113,12 +148,27 @@ impl SqliteSessionStore {
         .await
         .context("failed to create token_usages table")?;
 
+        Self::add_nullable_column(&pool, "token_usages", "call_id", "TEXT")
+            .await
+            .context("failed to migrate token_usages.call_id")?;
+
         sqlx::query(
             "CREATE INDEX IF NOT EXISTS idx_token_usages_session_id ON token_usages(session_id);",
         )
         .execute(&*pool)
         .await
         .context("failed to create token_usages index")?;
+
+        sqlx::query(
+            r#"
+            CREATE UNIQUE INDEX IF NOT EXISTS idx_token_usages_session_call_id
+            ON token_usages(session_id, call_id)
+            WHERE call_id IS NOT NULL
+            "#,
+        )
+        .execute(&*pool)
+        .await
+        .context("failed to create token_usages session/call_id index")?;
 
         sqlx::query(
             r#"
@@ -285,6 +335,184 @@ fn str_to_role(s: &str) -> Result<Role> {
     }
 }
 
+fn agent_role(role: AgentRole) -> Role {
+    match role {
+        AgentRole::User => Role::User,
+        AgentRole::Assistant => Role::Assistant,
+    }
+}
+
+fn agent_content_blocks(message: &AgentMessage) -> Vec<ContentBlock> {
+    message
+        .content
+        .iter()
+        .map(|block| match block {
+            AgentContentBlock::Text { text } => ContentBlock::Text { text: text.clone() },
+            AgentContentBlock::Image { source } => ContentBlock::Image {
+                source: tact_llm::ImageSource {
+                    type_: source.type_.clone(),
+                    media_type: source.media_type.clone(),
+                    data: source.data.clone(),
+                },
+            },
+            AgentContentBlock::ToolUse { id, name, input } => ContentBlock::ToolUse {
+                id: id.clone(),
+                name: name.clone(),
+                input: input.clone(),
+            },
+            AgentContentBlock::ToolResult {
+                tool_use_id,
+                content,
+            } => ContentBlock::ToolResult {
+                tool_use_id: tool_use_id.clone(),
+                content: content.clone(),
+            },
+            AgentContentBlock::Thinking {
+                thinking,
+                signature,
+            } => ContentBlock::Thinking {
+                thinking: thinking.clone(),
+                signature: signature.clone(),
+            },
+            AgentContentBlock::RedactedThinking { data } => {
+                ContentBlock::RedactedThinking { data: data.clone() }
+            }
+        })
+        .collect()
+}
+
+fn agent_message_content(message: &AgentMessage) -> MessageContent {
+    MessageContent::Blocks {
+        content: agent_content_blocks(message),
+    }
+}
+
+fn decoded_agent_message(
+    role: AgentRole,
+    content: MessageContent,
+    origin: Option<&str>,
+) -> Result<AgentMessage> {
+    let origin = decoded_message_origin(role, &content, origin)?;
+    let blocks = match content {
+        MessageContent::Text { content } => vec![ContentBlock::Text { text: content }],
+        MessageContent::Blocks { content } => content,
+    };
+    let llm_message = Message::new_blocks(agent_role(role), blocks);
+    let mut message = neutral::agent_message(&llm_message);
+    message.origin = origin;
+    Ok(message)
+}
+
+fn decoded_message_origin(
+    role: AgentRole,
+    content: &MessageContent,
+    origin: Option<&str>,
+) -> Result<MessageOrigin> {
+    match origin {
+        Some(origin) => Ok(serde_json::from_str(origin)
+            .with_context(|| format!("failed to decode persisted message origin {origin:?}"))?),
+        None => Ok(infer_legacy_origin_from_content(role, content)),
+    }
+}
+
+fn complete_frame<'a>(text: &'a str, open: &str, close: &str) -> Option<&'a str> {
+    let trimmed = text.trim();
+    trimmed
+        .strip_prefix(open)
+        .and_then(|body| body.strip_suffix(close))
+}
+
+fn infer_legacy_origin_from_content(role: AgentRole, content: &MessageContent) -> MessageOrigin {
+    let (tool_result_only, text) = match content {
+        MessageContent::Text { content } => (false, content.clone()),
+        MessageContent::Blocks { content } => {
+            let mut has_result = false;
+            let tool_result_only = content.iter().all(|block| match block {
+                ContentBlock::ToolResult { .. } => {
+                    has_result = true;
+                    true
+                }
+                ContentBlock::Image { .. } => true,
+                _ => false,
+            }) && has_result;
+            let text = content
+                .iter()
+                .filter_map(|block| match block {
+                    ContentBlock::Text { text } => Some(text.as_str()),
+                    _ => None,
+                })
+                .collect();
+            (tool_result_only, text)
+        }
+    };
+    infer_legacy_origin_from_parts(role, tool_result_only, &text)
+}
+
+fn infer_legacy_origin_from_parts(
+    role: AgentRole,
+    tool_result_only: bool,
+    text: &str,
+) -> MessageOrigin {
+    if role == AgentRole::Assistant {
+        return MessageOrigin::Assistant;
+    }
+    if tool_result_only {
+        return MessageOrigin::ToolResult;
+    }
+
+    let trimmed = text.trim();
+    if complete_frame(
+        trimmed,
+        crate::compact::HANDOFF_OPEN_TAG,
+        crate::compact::HANDOFF_CLOSE_TAG,
+    )
+    .is_some()
+        || trimmed.starts_with(crate::compact::SUMMARY_PREFIX)
+    {
+        return MessageOrigin::CompactionSummary;
+    }
+    if complete_frame(
+        trimmed,
+        crate::goal::GOAL_CONTEXT_OPEN_TAG,
+        crate::goal::GOAL_CONTEXT_CLOSE_TAG,
+    )
+    .is_some()
+    {
+        return MessageOrigin::GoalContext;
+    }
+    if crate::hook::is_hook_context_text(trimmed)
+        && trimmed.ends_with(crate::hook::HOOK_CONTEXT_CLOSE_TAG)
+    {
+        return MessageOrigin::InjectedContext {
+            source: crate::hook::hook_context_source(trimmed)
+                .unwrap_or("hook")
+                .to_string(),
+        };
+    }
+    if trimmed.starts_with("<subagent-finished ") && trimmed.ends_with("</subagent-finished>") {
+        return MessageOrigin::SubagentResult;
+    }
+    if trimmed == crate::recovery::CONTINUATION_MESSAGE
+        || trimmed == crate::recovery::CONVERGENCE_CONTINUATION_MESSAGE
+    {
+        return MessageOrigin::Continuation;
+    }
+    MessageOrigin::User
+}
+
+fn legacy_kind(origin: &MessageOrigin) -> MessageKind {
+    match origin {
+        MessageOrigin::InjectedContext { .. } => MessageKind::HookContext,
+        MessageOrigin::CompactionSummary => MessageKind::Summary,
+        MessageOrigin::GoalContext => MessageKind::GoalContext,
+        MessageOrigin::User
+        | MessageOrigin::Assistant
+        | MessageOrigin::ToolResult
+        | MessageOrigin::SubagentResult
+        | MessageOrigin::Continuation => MessageKind::Normal,
+    }
+}
+
 #[async_trait::async_trait]
 impl super::SessionStore for SqliteSessionStore {
     async fn create_session(&self, id: &str, root_dir: &str, ref_id: &str) -> Result<()> {
@@ -385,6 +613,204 @@ impl super::SessionStore for SqliteSessionStore {
             .context("failed to commit message transaction")?;
 
         Ok(id)
+    }
+
+    async fn append_agent_message(
+        &self,
+        session_id: &str,
+        message: &AgentMessage,
+        ordinal: i64,
+    ) -> Result<i64> {
+        self.append_agent_message_and_provider_state(session_id, message, ordinal, None)
+            .await
+    }
+
+    async fn append_agent_message_and_provider_state(
+        &self,
+        session_id: &str,
+        message: &AgentMessage,
+        ordinal: i64,
+        provider_state: Option<Option<&ProviderConversationState>>,
+    ) -> Result<i64> {
+        let content_json = serde_json::to_string(&agent_message_content(message))
+            .context("failed to serialize logical message content")?;
+        let origin_json = serde_json::to_string(&message.origin)
+            .context("failed to serialize logical message origin")?;
+        let prepared_state = match provider_state {
+            Some(Some(state)) => Some((
+                serde_json::to_string(state).context("failed to serialize provider state")?,
+                provider_state_metadata(state)?,
+            )),
+            Some(None) | None => None,
+        };
+        let replace_provider_state = provider_state.is_some();
+        let now = Self::now();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin logical message transaction")?;
+
+        let id = sqlx::query(
+            "INSERT INTO messages (session_id, role, content, origin, ordinal, created_at) \
+             VALUES (?, ?, ?, ?, ?, ?)",
+        )
+        .bind(session_id)
+        .bind(role_to_str(agent_role(message.role)))
+        .bind(content_json)
+        .bind(origin_json)
+        .bind(ordinal)
+        .bind(now)
+        .execute(&mut *tx)
+        .await
+        .context("failed to insert logical message")?
+        .last_insert_rowid();
+
+        if replace_provider_state {
+            sqlx::query("DELETE FROM responses_states WHERE session_id = ?")
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to clear provider state for message append")?;
+            if let Some((state_json, meta)) = prepared_state.as_ref() {
+                sqlx::query(
+                    r#"
+                    INSERT INTO responses_states
+                        (session_id, schema_version, provider, base_url, model, state_json, compaction_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    "#,
+                )
+                .bind(session_id)
+                .bind(meta.schema_version)
+                .bind(&meta.provider)
+                .bind(&meta.base_url)
+                .bind(&meta.model)
+                .bind(state_json)
+                .bind(&meta.compaction_id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to insert provider state for message append")?;
+            }
+        }
+
+        sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to update session timestamp")?;
+
+        tx.commit()
+            .await
+            .context("failed to commit logical message transaction")?;
+        Ok(id)
+    }
+
+    async fn replace_agent_session_state(
+        &self,
+        session_id: &str,
+        messages: Option<&[AgentMessage]>,
+        provider_state: Option<Option<&ProviderConversationState>>,
+    ) -> Result<(i64, i64)> {
+        let prepared_state = match provider_state {
+            Some(Some(state)) => Some((
+                serde_json::to_string(state).context("failed to serialize provider state")?,
+                provider_state_metadata(state)?,
+            )),
+            Some(None) | None => None,
+        };
+        let replace_provider_state = provider_state.is_some();
+        let mut tx = self
+            .pool
+            .begin()
+            .await
+            .context("failed to begin logical transcript replacement")?;
+        let now = Self::now();
+
+        if let Some(messages) = messages {
+            sqlx::query("DELETE FROM messages WHERE session_id = ?")
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to delete logical transcript")?;
+            for (idx, message) in messages.iter().enumerate() {
+                let ordinal = (idx + 1) as i64;
+                let content_json = serde_json::to_string(&agent_message_content(message))
+                    .context("failed to serialize logical message content")?;
+                let origin_json = serde_json::to_string(&message.origin)
+                    .context("failed to serialize logical message origin")?;
+                sqlx::query(
+                    "INSERT INTO messages (session_id, role, content, origin, ordinal, created_at) \
+                     VALUES (?, ?, ?, ?, ?, ?)",
+                )
+                .bind(session_id)
+                .bind(role_to_str(agent_role(message.role)))
+                .bind(content_json)
+                .bind(origin_json)
+                .bind(ordinal)
+                .bind(now)
+                .execute(&mut *tx)
+                .await
+                .context("failed to insert replaced logical message")?;
+            }
+        }
+
+        if replace_provider_state {
+            sqlx::query("DELETE FROM responses_states WHERE session_id = ?")
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to clear provider state for logical replace")?;
+            if let Some((state_json, meta)) = prepared_state.as_ref() {
+                sqlx::query(
+                    r#"
+                    INSERT INTO responses_states
+                        (session_id, schema_version, provider, base_url, model, state_json, compaction_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    "#,
+                )
+                .bind(session_id)
+                .bind(meta.schema_version)
+                .bind(&meta.provider)
+                .bind(&meta.base_url)
+                .bind(&meta.model)
+                .bind(state_json)
+                .bind(&meta.compaction_id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to insert provider state for logical replace")?;
+            }
+        }
+
+        sqlx::query("UPDATE sessions SET updated_at = ? WHERE id = ?")
+            .bind(now)
+            .bind(session_id)
+            .execute(&mut *tx)
+            .await
+            .context("failed to update session timestamp after logical replace")?;
+        tx.commit()
+            .await
+            .context("failed to commit logical transcript replacement")?;
+
+        let (first_id, last_id) = if let Some(messages) = messages {
+            if messages.is_empty() {
+                (0, 0)
+            } else {
+                let row = sqlx::query(
+                    "SELECT MIN(id) AS first_id, MAX(id) AS last_id FROM messages WHERE session_id = ?",
+                )
+                .bind(session_id)
+                .fetch_one(&*self.pool)
+                .await
+                .context("failed to resolve logical transcript range")?;
+                let first: Option<i64> = row.try_get("first_id")?;
+                let last: Option<i64> = row.try_get("last_id")?;
+                (first.unwrap_or(0), last.unwrap_or(0))
+            }
+        } else {
+            (0, 0)
+        };
+        Ok((first_id, last_id))
     }
 
     async fn replace_session_messages(
@@ -568,7 +994,37 @@ impl super::SessionStore for SqliteSessionStore {
 
     async fn load_session(&self, session_id: &str) -> Result<Vec<Message>> {
         let rows = sqlx::query(
-            "SELECT role, content FROM messages WHERE session_id = ? ORDER BY ordinal ASC, id ASC",
+            "SELECT role, content, origin FROM messages WHERE session_id = ? ORDER BY ordinal ASC, id ASC",
+        )
+        .bind(session_id)
+        .fetch_all(&*self.pool)
+        .await
+        .context("failed to load session messages")?;
+
+        let mut messages = Vec::with_capacity(rows.len());
+        for row in rows {
+            let role = str_to_role(&row.try_get::<String, _>("role")?)?;
+            let content_json: String = row.try_get("content")?;
+            let content: MessageContent = serde_json::from_str(&content_json)
+                .context("failed to deserialize message content")?;
+            let origin: Option<String> = row.try_get("origin")?;
+            let agent_role = match role {
+                Role::User => AgentRole::User,
+                Role::Assistant => AgentRole::Assistant,
+            };
+            let origin = decoded_message_origin(agent_role, &content, origin.as_deref())?;
+            messages.push(Message {
+                role,
+                content,
+                kind: legacy_kind(&origin),
+            });
+        }
+        Ok(messages)
+    }
+
+    async fn load_agent_session(&self, session_id: &str) -> Result<Vec<AgentMessage>> {
+        let rows = sqlx::query(
+            "SELECT role, content, origin FROM messages WHERE session_id = ? ORDER BY ordinal ASC, id ASC",
         )
         .bind(session_id)
         .fetch_all(&*self.pool)
@@ -581,14 +1037,12 @@ impl super::SessionStore for SqliteSessionStore {
             let content_json: String = row.try_get("content")?;
             let content: MessageContent = serde_json::from_str(&content_json)
                 .context("failed to deserialize message content")?;
-            messages.push(Message {
-                role: str_to_role(&role_str)?,
-                content,
-                // The store persists only role + content, so reloaded cells are
-                // Normal; compaction summaries are re-detected by content
-                // (see `is_summary_message` in compact).
-                kind: MessageKind::Normal,
-            });
+            let origin: Option<String> = row.try_get("origin")?;
+            let role = match str_to_role(&role_str)? {
+                Role::User => AgentRole::User,
+                Role::Assistant => AgentRole::Assistant,
+            };
+            messages.push(decoded_agent_message(role, content, origin.as_deref())?);
         }
 
         Ok(messages)
@@ -823,6 +1277,28 @@ impl super::SessionStore for SqliteSessionStore {
         last_message_id: i64,
         request_body: Option<&[u8]>,
     ) -> Result<()> {
+        self.record_token_usage_with_call_id(
+            session_id,
+            None,
+            call_type,
+            usage,
+            first_message_id,
+            last_message_id,
+            request_body,
+        )
+        .await
+    }
+
+    async fn record_token_usage_with_call_id(
+        &self,
+        session_id: &str,
+        call_id: Option<&str>,
+        call_type: &str,
+        usage: Option<&TokenUsageInfo>,
+        first_message_id: i64,
+        last_message_id: i64,
+        request_body: Option<&[u8]>,
+    ) -> Result<()> {
         let (prompt, completion, total, cache_hit, cache_miss, reasoning) = usage
             .map(|u| {
                 (
@@ -836,23 +1312,63 @@ impl super::SessionStore for SqliteSessionStore {
             })
             .unwrap_or((0, 0, 0, 0, 0, 0));
 
-        sqlx::query(
-            "INSERT INTO token_usages (session_id, call_type, prompt_tokens, completion_tokens, total_tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, reasoning_tokens, first_message_id, last_message_id, request_body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        )
-        .bind(session_id)
-        .bind(call_type)
-        .bind(prompt)
-        .bind(completion)
-        .bind(total)
-        .bind(cache_hit)
-        .bind(cache_miss)
-        .bind(reasoning)
-        .bind(first_message_id)
-        .bind(last_message_id)
-        .bind(request_body)
-        .execute(&*self.pool)
-        .await
-        .context("failed to record token usage")?;
+        let call_id = call_id.filter(|id| !id.is_empty());
+        if let Some(call_id) = call_id {
+            sqlx::query(
+                r#"
+                INSERT INTO token_usages
+                    (session_id, call_id, call_type, prompt_tokens, completion_tokens,
+                     total_tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens,
+                     reasoning_tokens, first_message_id, last_message_id, request_body)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, call_id) WHERE call_id IS NOT NULL
+                DO UPDATE SET
+                    call_type = excluded.call_type,
+                    prompt_tokens = excluded.prompt_tokens,
+                    completion_tokens = excluded.completion_tokens,
+                    total_tokens = excluded.total_tokens,
+                    prompt_cache_hit_tokens = excluded.prompt_cache_hit_tokens,
+                    prompt_cache_miss_tokens = excluded.prompt_cache_miss_tokens,
+                    reasoning_tokens = excluded.reasoning_tokens,
+                    first_message_id = excluded.first_message_id,
+                    last_message_id = excluded.last_message_id,
+                    request_body = excluded.request_body
+                "#,
+            )
+            .bind(session_id)
+            .bind(call_id)
+            .bind(call_type)
+            .bind(prompt)
+            .bind(completion)
+            .bind(total)
+            .bind(cache_hit)
+            .bind(cache_miss)
+            .bind(reasoning)
+            .bind(first_message_id)
+            .bind(last_message_id)
+            .bind(request_body)
+            .execute(&*self.pool)
+            .await
+            .context("failed to upsert token usage")?;
+        } else {
+            sqlx::query(
+                "INSERT INTO token_usages (session_id, call_type, prompt_tokens, completion_tokens, total_tokens, prompt_cache_hit_tokens, prompt_cache_miss_tokens, reasoning_tokens, first_message_id, last_message_id, request_body) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(session_id)
+            .bind(call_type)
+            .bind(prompt)
+            .bind(completion)
+            .bind(total)
+            .bind(cache_hit)
+            .bind(cache_miss)
+            .bind(reasoning)
+            .bind(first_message_id)
+            .bind(last_message_id)
+            .bind(request_body)
+            .execute(&*self.pool)
+            .await
+            .context("failed to record token usage")?;
+        }
         self.trim_token_usage_bodies(session_id, Self::token_usage_body_limit())
             .await?;
         Ok(())
@@ -946,17 +1462,12 @@ impl super::SessionStore for SqliteSessionStore {
             UPDATE sessions
             SET locked_by = ?, lock_epoch = ?
             WHERE id = ?
-              AND (
-                locked_by = 0
-                OR (locked_by = ? AND lock_epoch = ?)
-              )
+              AND locked_by = 0
             "#,
         )
         .bind(pid_i64)
         .bind(&lock_epoch)
         .bind(session_id)
-        .bind(pid_i64)
-        .bind(&lock_epoch)
         .execute(&*self.pool)
         .await
         .context("failed to acquire session lock")?;
@@ -981,7 +1492,7 @@ impl super::SessionStore for SqliteSessionStore {
 
         if holder != 0 && is_active_lock_holder(holder as u32, &holder_epoch) {
             anyhow::bail!(
-                "session {session_id} is locked by process {holder} (already open in another tact-ui instance)"
+                "session {session_id} is locked by process {holder} (already open in another Tact session)"
             );
         }
 
@@ -1055,6 +1566,25 @@ impl SqliteSessionStore {
         Ok(())
     }
 
+    /// Test-support: abort a provider-state insertion, simulating a failure
+    /// after a native compaction replaced the cursor but before commit.
+    #[cfg(any(test, feature = "test-support"))]
+    pub async fn inject_provider_state_insert_failure(&self) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TRIGGER IF NOT EXISTS fail_provider_state_insert
+            BEFORE INSERT ON responses_states
+            BEGIN
+                SELECT RAISE(ABORT, 'injected provider state replacement failure');
+            END;
+            "#,
+        )
+        .execute(&*self.pool)
+        .await
+        .context("failed to install provider state failure trigger")?;
+        Ok(())
+    }
+
     /// Test-support: install a SQL trigger that aborts any `token_usages`
     /// insert for the explicit native compact call type, simulating a usage
     /// persistence failure right after the `/responses/compact` endpoint
@@ -1121,10 +1651,294 @@ fn parse_timestamp(row: &sqlx::sqlite::SqliteRow, col: &str, msg: &str) -> Resul
 #[cfg(test)]
 mod tests {
     use sqlx::Row;
+    use tact_agent_api::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin};
     use tact_llm::{MessageContent, Role};
     use tempfile::TempDir;
 
-    use super::{super::SessionStore, SqliteSessionStore};
+    use super::{super::SessionStore, SqliteSessionStore, agent_message_content};
+
+    async fn legacy_database(path: &std::path::Path) -> crate::store::sqlite::PoolRef {
+        let pool = crate::store::sqlite::open_pool(path).await.unwrap();
+        for statement in [
+            r#"
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                root_dir TEXT NOT NULL DEFAULT '',
+                locked_by INTEGER NOT NULL DEFAULT 0,
+                lock_epoch TEXT NOT NULL DEFAULT ''
+            )
+            "#,
+            r#"
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content JSON NOT NULL,
+                ordinal INTEGER NOT NULL,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+            r#"
+            CREATE TABLE token_usages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                call_type TEXT NOT NULL,
+                request_body BLOB NOT NULL,
+                prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                completion_tokens INTEGER NOT NULL DEFAULT 0,
+                total_tokens INTEGER NOT NULL DEFAULT 0,
+                prompt_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+                prompt_cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+                reasoning_tokens INTEGER NOT NULL DEFAULT 0,
+                first_message_id INTEGER NOT NULL DEFAULT 0,
+                last_message_id INTEGER NOT NULL DEFAULT 0,
+                tool_schedule TEXT,
+                created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+            )
+            "#,
+            "INSERT INTO sessions (id, root_dir) VALUES ('legacy', '/workspace')",
+        ] {
+            sqlx::query(statement).execute(&*pool).await.unwrap();
+        }
+        pool
+    }
+
+    async fn insert_legacy_message(pool: &sqlx::SqlitePool, ordinal: i64, message: &AgentMessage) {
+        let role = match message.role {
+            AgentRole::User => "user",
+            AgentRole::Assistant => "assistant",
+        };
+        let content = serde_json::to_string(&agent_message_content(message)).unwrap();
+        sqlx::query(
+            "INSERT INTO messages (session_id, role, content, ordinal) \
+             VALUES ('legacy', ?, ?, ?)",
+        )
+        .bind(role)
+        .bind(content)
+        .bind(ordinal)
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn pre_column_database_migrates_without_losing_rows_or_changing_inference() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("legacy.db");
+        let pool = legacy_database(&db).await;
+        let messages = vec![
+            AgentMessage::text(AgentRole::User, MessageOrigin::User, "plain user"),
+            AgentMessage::text(
+                AgentRole::User,
+                MessageOrigin::InjectedContext {
+                    source: "hook".into(),
+                },
+                crate::hook::frame_hook_context(Some("hook"), "hook context"),
+            ),
+            AgentMessage::text(
+                AgentRole::User,
+                MessageOrigin::GoalContext,
+                format!(
+                    "{}\nactive goal\n{}",
+                    crate::goal::GOAL_CONTEXT_OPEN_TAG,
+                    crate::goal::GOAL_CONTEXT_CLOSE_TAG
+                ),
+            ),
+            AgentMessage::text(
+                AgentRole::User,
+                MessageOrigin::SubagentResult,
+                "<subagent-finished id=\"child\" success=\"true\">\ndone\n</subagent-finished>",
+            ),
+            AgentMessage::text(
+                AgentRole::User,
+                MessageOrigin::Continuation,
+                crate::recovery::CONTINUATION_MESSAGE,
+            ),
+            AgentMessage::text(
+                AgentRole::User,
+                MessageOrigin::CompactionSummary,
+                format!("{}legacy summary", crate::compact::SUMMARY_PREFIX),
+            ),
+            AgentMessage::text(AgentRole::Assistant, MessageOrigin::Assistant, "answer"),
+            AgentMessage::new(
+                AgentRole::User,
+                MessageOrigin::ToolResult,
+                vec![AgentContentBlock::ToolResult {
+                    tool_use_id: "call-1".into(),
+                    content: "tool output".into(),
+                }],
+            ),
+            AgentMessage::text(
+                AgentRole::User,
+                MessageOrigin::User,
+                "<hook-context> this is genuine user text, not a complete frame",
+            ),
+        ];
+        for (idx, message) in messages.iter().enumerate() {
+            insert_legacy_message(&pool, (idx + 1) as i64, message).await;
+        }
+        drop(pool);
+
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        let first_load = store.load_agent_session("legacy").await.unwrap();
+        assert_eq!(first_load, messages);
+        assert_eq!(
+            first_load.last().map(|message| &message.origin),
+            Some(&MessageOrigin::User),
+            "genuine marker-like user text must not be inferred as injected context"
+        );
+
+        let second_load = store.load_agent_session("legacy").await.unwrap();
+        assert_eq!(second_load, first_load);
+        let columns = sqlx::query("PRAGMA table_info(messages)")
+            .fetch_all(&*store.pool)
+            .await
+            .unwrap();
+        assert!(
+            columns
+                .iter()
+                .any(|row| row.try_get::<String, _>("name").unwrap() == "origin")
+        );
+        let usage_columns = sqlx::query("PRAGMA table_info(token_usages)")
+            .fetch_all(&*store.pool)
+            .await
+            .unwrap();
+        assert!(
+            usage_columns
+                .iter()
+                .any(|row| row.try_get::<String, _>("name").unwrap() == "call_id")
+        );
+    }
+
+    #[tokio::test]
+    async fn explicit_origins_survive_replacement_and_reopen() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("legacy.db");
+        let pool = legacy_database(&db).await;
+        insert_legacy_message(
+            &pool,
+            1,
+            &AgentMessage::text(AgentRole::User, MessageOrigin::User, "plain user"),
+        )
+        .await;
+        drop(pool);
+
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        let replacement = AgentMessage::text(
+            AgentRole::User,
+            MessageOrigin::GoalContext,
+            "explicit goal context",
+        );
+        store
+            .replace_agent_session_state("legacy", Some(std::slice::from_ref(&replacement)), None)
+            .await
+            .unwrap();
+        assert_eq!(
+            store.load_agent_session("legacy").await.unwrap(),
+            vec![replacement.clone()]
+        );
+        drop(store);
+
+        let reopened = SqliteSessionStore::new(&db).await.unwrap();
+        assert_eq!(
+            reopened.load_agent_session("legacy").await.unwrap(),
+            vec![replacement]
+        );
+    }
+
+    #[tokio::test]
+    async fn usage_call_ids_upsert_and_legacy_null_rows_remain_readable() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("legacy.db");
+        let pool = legacy_database(&db).await;
+        sqlx::query(
+            "INSERT INTO token_usages \
+                (session_id, call_type, request_body, first_message_id, last_message_id) \
+             VALUES ('legacy', 'stream', X'6f6c64', 1, 2)",
+        )
+        .execute(&*pool)
+        .await
+        .unwrap();
+        drop(pool);
+
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .record_token_usage("legacy", "stream", None, 7, 8, Some(b"null-id"))
+            .await
+            .unwrap();
+        store
+            .record_token_usage_with_call_id(
+                "legacy",
+                Some("call-1"),
+                "stream",
+                None,
+                3,
+                4,
+                Some(b"first"),
+            )
+            .await
+            .unwrap();
+        store
+            .record_token_usage_with_call_id(
+                "legacy",
+                Some("call-1"),
+                "stream",
+                None,
+                5,
+                6,
+                Some(b"second"),
+            )
+            .await
+            .unwrap();
+
+        let rows = sqlx::query(
+            "SELECT call_id, first_message_id, last_message_id, request_body \
+             FROM token_usages WHERE session_id = 'legacy' ORDER BY id",
+        )
+        .fetch_all(&*store.pool)
+        .await
+        .unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            rows.iter()
+                .filter(|row| {
+                    row.try_get::<Option<String>, _>("call_id")
+                        .unwrap()
+                        .is_none()
+                })
+                .count(),
+            2,
+            "the pre-column row and the explicit legacy write both remain readable"
+        );
+        let current = rows
+            .iter()
+            .find(|row| {
+                row.try_get::<Option<String>, _>("call_id")
+                    .unwrap()
+                    .as_deref()
+                    == Some("call-1")
+            })
+            .unwrap();
+        assert_eq!(current.try_get::<i64, _>("first_message_id").unwrap(), 5);
+        assert_eq!(current.try_get::<i64, _>("last_message_id").unwrap(), 6);
+        assert_eq!(
+            current.try_get::<Vec<u8>, _>("request_body").unwrap(),
+            b"second"
+        );
+
+        let duplicate = sqlx::query(
+            "INSERT INTO token_usages (session_id, call_id, call_type, request_body) \
+             VALUES ('legacy', 'call-1', 'stream', X'647570')",
+        )
+        .execute(&*store.pool)
+        .await;
+        assert!(
+            duplicate.is_err(),
+            "the partial unique index must reject duplicate non-NULL call ids"
+        );
+    }
 
     #[tokio::test]
     async fn test_session_round_trip_and_stats() {
@@ -2206,6 +3020,23 @@ mod tests {
             .unwrap_err();
         let _ = child.kill();
         let _ = child.wait();
+
+        assert!(err.to_string().contains("locked by process"));
+    }
+
+    #[tokio::test]
+    async fn test_session_lock_rejects_reentrant_holder() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("session-1", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+
+        let pid = std::process::id();
+        store.try_lock_session("session-1", pid).await.unwrap();
+        let err = store.try_lock_session("session-1", pid).await.unwrap_err();
 
         assert!(err.to_string().contains("locked by process"));
     }

@@ -7,8 +7,8 @@ Spec: [2026-09-30-tui-hooks-command-design.md](../specs/2026-09-30-tui-hooks-com
      state the `--all` / `--source` requirement.
 2. **Kit bridge** (`crates/agent_tui_kit/src/bridge.rs`)
    - Three `Err(())` arms — the kit is generic and has no hook store.
-3. **Driver** (`crates/tact-ui/src/driver.rs`)
-   - `HooksList` → `survey_hooks` → `hooks_cli::render_hooks_listing` as `MdInfo`.
+3. **Driver** (`crates/tact_host/src/driver.rs`)
+   - `HooksList` → `survey_hooks` → `tact_host::rendering::render_hooks_listing` as `MdInfo`.
    - `HooksTrust` → `trust_hooks`; empty result and success get distinct messages, and success
      names the next-session caveat.
    - `HooksForget` → `forget_hook_trust`.

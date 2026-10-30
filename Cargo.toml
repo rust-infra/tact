@@ -3,7 +3,11 @@ members = [
     "crates/protocol",
     "crates/agent_tui_kit",
     "crates/tui",
+    "crates/agent_api",
+    "crates/agent_core",
+    "crates/agent_sdk",
     "crates/tact",
+    "crates/tact_host",
     "crates/tact-ui",
     "crates/tact_llm",
     "crates/tool_refactor_macros",
@@ -11,17 +15,20 @@ members = [
 resolver = "2"
 
 [workspace.package]
-version = "1.1.42"
+version = "2.0.0"
 edition = "2024"
 license = "MIT"
+rust-version = "1.91"
 
 [workspace.dependencies]
 anyhow = "1.0"
 arboard = { version = "3", features = ["wayland-data-control"] }
 async-openai = "0.20"
 bytes = "1"
-async-openai-responses = { package = "async-openai-local", git = "https://github.com/rust-infra/async-openai.git", branch = "feat/tact", version = "0.41.3", features = ["responses", "byot"] }
-async-trait = "0.1"
+async-openai-responses = { package = "async-openai", version = "0.42.2", features = ["responses", "byot"] }
+# 0.1.92 stopped emitting `#[must_use]` on the boxed futures it generates;
+# earlier versions trip clippy 1.99's `double_must_use` under `-D warnings`.
+async-trait = "0.1.92"
 base64 = "0.22"
 chrono = { version = "0.4", features = ["serde"] }
 clap = { version = "4", features = ["derive", "env"] }
@@ -31,6 +38,7 @@ derive_builder = "0.20"
 dotenvy = "0.15"
 eventsource-stream = "0.2"
 futures-util = "0.3"
+httpdate = "1"
 flate2 = "1"
 globset = "0.4"
 git2 = { version = "0.20", features = ["vendored-libgit2", "vendored-openssl"] }
@@ -41,8 +49,8 @@ quote = "1.0"
 ratatui = "0.30"
 regex = "1"
 syntect = "5.3"
-reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
-reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["json", "rustls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "stream"] }
+reqwest13 = { package = "reqwest", version = "0.13", default-features = false, features = ["json", "rustls", "stream"] }
 reqwest-eventsource = "0.6"
 rmcp = { version = "0.17.0", default-features = false, features = [
     "client",
@@ -71,13 +79,16 @@ tokio-util = { version = "0.7", features = ["rt"] }
 cpal = "0.15"
 toml = "0.8"
 toml_edit = "0.22"
-tracing = "0.1"
+# `attributes` (the proc macro) is opt-in per crate so libraries that only
+# emit spans do not drag `syn` into every consumer's build.
+tracing = { version = "0.1", default-features = false, features = ["std"] }
 # tact-ui installs its own file fmt layer; no default features (no ansi /
 # tracing-log) so the `log` bridge cannot leak MCP logs into the TUI.
 tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
 unicode-segmentation = "1"
 unicode-width = "0.2"
 uuid = { version = "1", features = ["v4", "serde"] }
+url = "2"
 walkdir = "2.5"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "gif", "webp", "bmp", "tiff"] }
 ratatui-markdown = { git = "https://github.com/celestia-island/ratatui-markdown", rev = "3a8bcbe", default-features = false, features = ["mermaid"] }

@@ -6,8 +6,10 @@ use harness::{
     bash_tool_use, read_file_tool_use, run_single_task_with_config, task_completed_with, text_block,
 };
 use tact::{permission::PermissionMode, tool::test_support::write_workspace_file};
-use tact_llm::{ContentBlock, LlmError, MessageContent, MockClient, ProviderKind, StopReason};
-use tact_protocol::{AgentUpdate, TokenUsageInfo};
+use tact_llm::{
+    ContentBlock, LlmError, MessageContent, MockClient, ProviderKind, StopReason, TokenUsageInfo,
+};
+use tact_protocol::AgentUpdate;
 
 fn error_contains(updates: &[AgentUpdate], needle: &str) -> bool {
     updates.iter().any(
@@ -66,7 +68,7 @@ fn tiny_context_config() -> tact::config::ResolvedConfig {
         voice: tact::config::VoiceSettings::disabled_defaults(),
         mcp: tact::config::McpSettings::default(),
         goal: tact::config::GoalSettings::default(),
-        permission_mode: None,
+        permission_mode: tact::permission::PermissionMode::Default,
         tokio_console: false,
         config_path: None,
     }
@@ -212,7 +214,11 @@ async fn failed_compact_tool_does_not_trigger_manual_compaction() {
 async fn prompt_too_long_recovery_compacts_and_retries() {
     let mock = MockClient::with_responder(move |request, idx| {
         match idx {
-            0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
+            0 => Err(LlmError::HttpError {
+                status: 400,
+                class: tact_llm::HttpErrorClass::ContextOverflow,
+                retry_after: None,
+            }),
             // compact_history's create_message consumes this turn.
             1 => Ok((
                 vec![text_block("Compacted summary.")],
@@ -259,10 +265,16 @@ async fn prompt_too_long_recovery_compacts_and_retries() {
 #[tokio::test]
 async fn compact_summary_retries_transient_transport_error() {
     let mock = MockClient::with_responder(|_request, idx| match idx {
-        0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
-        1 => Err(LlmError::Unsupported(
-            "service temporarily unavailable".to_string(),
-        )),
+        0 => Err(LlmError::HttpError {
+            status: 400,
+            class: tact_llm::HttpErrorClass::ContextOverflow,
+            retry_after: None,
+        }),
+        1 => Err(LlmError::HttpError {
+            status: 503,
+            class: tact_llm::HttpErrorClass::Transient,
+            retry_after: None,
+        }),
         2 => Ok((
             vec![text_block("Summary after retry.")],
             Some(StopReason::EndTurn),
@@ -291,7 +303,11 @@ async fn compact_summary_retries_transient_transport_error() {
 #[tokio::test]
 async fn compact_summary_rejects_empty_text_response() {
     let mock = MockClient::with_responder(|_request, idx| match idx {
-        0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
+        0 => Err(LlmError::HttpError {
+            status: 400,
+            class: tact_llm::HttpErrorClass::ContextOverflow,
+            retry_after: None,
+        }),
         _ => Ok((Vec::new(), Some(StopReason::EndTurn), None)),
     });
     let mut config = tiny_context_config();
@@ -316,7 +332,11 @@ async fn compact_summary_continues_truncated_response() {
     // when continuations are exhausted the partial summary is accepted as
     // best-effort instead of failing the whole compaction.
     let mock = MockClient::with_responder(|_request, idx| match idx {
-        0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
+        0 => Err(LlmError::HttpError {
+            status: 400,
+            class: tact_llm::HttpErrorClass::ContextOverflow,
+            retry_after: None,
+        }),
         // Summary call plus five continuation calls all hit the output budget.
         1..=6 => Ok((
             vec![text_block("partial summary")],
@@ -355,7 +375,11 @@ async fn compact_summary_continues_truncated_response() {
 async fn compact_summary_request_is_window_aware_for_oversized_turn() {
     let task = "x".repeat(100_000);
     let mock = MockClient::with_responder(|request, idx| match idx {
-        0 => Err(LlmError::Unsupported("prompt is too long".to_string())),
+        0 => Err(LlmError::HttpError {
+            status: 400,
+            class: tact_llm::HttpErrorClass::ContextOverflow,
+            retry_after: None,
+        }),
         1 => {
             let prompt = serde_json::to_string(&request.messages).unwrap();
             assert_eq!(request.max_tokens, 2_000);
@@ -523,6 +547,15 @@ fn messages_json(messages: &[tact_llm::Message]) -> serde_json::Value {
     serde_json::to_value(messages).unwrap()
 }
 
+fn wire_context_hash(messages: &[Message]) -> String {
+    let canonical = messages
+        .iter()
+        .map(tact_llm::neutral::agent_message)
+        .map(|message| tact_llm::neutral::llm_message(&message))
+        .collect::<Vec<_>>();
+    tact_llm::context_hash(&canonical).unwrap()
+}
+
 fn info_messages(updates: &[AgentUpdate]) -> Vec<String> {
     updates
         .iter()
@@ -568,14 +601,8 @@ async fn command_compact_native_responses_success() {
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
     let (mut agent, work_dir) = build_responses_test_agent(&server.uri(), Some(agent_tx));
-    agent
-        .runtime
-        .context
-        .push(Message::new_text(Role::User, "first turn"));
-    agent
-        .runtime
-        .context
-        .push(Message::new_text(Role::Assistant, "second turn"));
+    agent.push_context_for_test(Message::new_text(Role::User, "first turn"));
+    agent.push_context_for_test(Message::new_text(Role::Assistant, "second turn"));
 
     let (agent, updates) = drive_compact_command(agent, work_dir, agent_rx).await;
 
@@ -636,7 +663,7 @@ async fn command_compact_native_responses_success() {
     assert!(state.is_compacted);
     assert_eq!(state.input_items.len(), 2);
     assert_eq!(
-        agent.runtime.context.len(),
+        agent.context().len(),
         2,
         "native compaction keeps the logical context unchanged"
     );
@@ -672,7 +699,7 @@ async fn command_compact_native_responses_failure_keeps_context() {
         Message::new_text(Role::User, "first turn"),
         Message::new_text(Role::Assistant, "second turn"),
     ];
-    agent.runtime.context = original.clone();
+    agent.replace_context_for_test(original.clone());
 
     let (agent, updates) = drive_compact_command(agent, work_dir, agent_rx).await;
 
@@ -690,7 +717,7 @@ async fn command_compact_native_responses_failure_keeps_context() {
         "no success info after failure, got: {updates:?}"
     );
     assert_eq!(
-        messages_json(&agent.runtime.context),
+        messages_json(agent.context()),
         messages_json(&original),
         "failed compaction must leave the logical context unchanged"
     );
@@ -781,7 +808,7 @@ async fn restart_round_trip_preserves_compaction_and_unknown_items() {
         compaction_id: Some("cmp_restart_1".to_string()),
         is_compacted: true,
         logical_message_count: 2,
-        logical_context_hash: tact_llm::context_hash(&messages).unwrap(),
+        logical_context_hash: wire_context_hash(&messages),
     });
     {
         let store = tact::store::open_sqlite_session_store(&db_path)
@@ -826,7 +853,7 @@ async fn restart_round_trip_preserves_compaction_and_unknown_items() {
     let (agent, _) = build_responses_test_agent(&server.uri(), None);
     let mut agent = agent.with_session(session_id.to_string(), store);
     agent.ensure_session().await.unwrap();
-    assert_eq!(agent.runtime.context.len(), 2);
+    assert_eq!(agent.context().len(), 2);
     agent
         .agent_loop(Some(Message::new_text(Role::User, "third turn")))
         .await
@@ -893,7 +920,7 @@ async fn native_compact_failure_rolls_back_runtime_and_database() {
         compaction_id: Some("cmp_old".to_string()),
         is_compacted: true,
         logical_message_count: 2,
-        logical_context_hash: tact_llm::context_hash(&old_messages).unwrap(),
+        logical_context_hash: wire_context_hash(&old_messages),
     });
     store
         .replace_session_messages_and_provider_state(
@@ -904,14 +931,14 @@ async fn native_compact_failure_rolls_back_runtime_and_database() {
         .await
         .unwrap();
 
-    // Force a database insertion failure mid-replacement: the transaction
-    // aborts after deleting old messages and inserting the first new one.
-    store.inject_message_insert_failure().await.unwrap();
+    // Native compaction replaces the provider cursor, not the message list.
+    // Abort the provider-state insert so the transaction has to roll back.
+    store.inject_provider_state_insert_failure().await.unwrap();
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
     let (mut agent, work_dir) = build_responses_test_agent(&server.uri(), Some(agent_tx));
     agent = agent.with_session("rollback-session".to_string(), Arc::new(store));
-    agent.runtime.context = old_messages.clone();
+    agent.replace_context_for_test(old_messages.clone());
     agent.runtime.provider_state = Some(old_state.clone());
 
     let (agent, updates) = drive_compact_command(agent, work_dir, agent_rx).await;
@@ -926,7 +953,7 @@ async fn native_compact_failure_rolls_back_runtime_and_database() {
 
     // Runtime state rolled back: context and provider state are untouched.
     assert_eq!(
-        messages_json(&agent.runtime.context),
+        messages_json(agent.context()),
         messages_json(&old_messages),
         "runtime context must equal the old committed context"
     );

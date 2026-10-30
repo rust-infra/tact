@@ -1,0 +1,21 @@
+error[E0432]: unresolved import `tact_llm::ProviderInfo`
+ --> tests/ui/stable-legacy-provider.rs:1:5
+  |
+1 | use tact_llm::ProviderInfo;
+  |     ^^^^^^^^^^------------
+  |               |
+  |               no `ProviderInfo` in the root
+  |
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | #[cfg(feature = "legacy-tact")]
+  |       ----------------------- the item is gated behind the `legacy-tact` feature
+  | pub use provider::{
+  |     Client, ProviderInfo, current_provider_kind, get_llm_client, get_provider, init_provider,
+  |             ^^^^^^^^^^^^
+help: a similar name exists in the module
+  |
+1 - use tact_llm::ProviderInfo;
+1 + use tact_llm::Provider;
+  |

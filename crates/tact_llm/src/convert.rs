@@ -302,6 +302,7 @@ fn drop_orphaned_tool_messages(
             i += 1;
             continue;
         }
+        #[cfg(feature = "telemetry")]
         tracing::warn!(
             tool_call_id = %tool.tool_call_id,
             "Dropping tool message with no preceding assistant tool_calls \
@@ -373,8 +374,9 @@ fn sanitize_assistant_messages(
             // assistant and remove the consecutive ToolMessages that would
             // otherwise become orphans without a parent tool_calls list.
             if let ChatCompletionRequestMessage::Assistant(ref mut assistant) = messages[i] {
+                #[cfg(feature = "telemetry")]
                 tracing::warn!(
-                    orphaned_tool_calls = ?tool_call_ids,
+                    orphaned_tool_calls = tool_call_ids.len(),
                     matched_tool_messages = matched,
                     "Stripping orphaned tool_calls and following tool messages \
                      (context may have been compacted or continued past MaxTokens)."
@@ -404,6 +406,7 @@ fn stub_empty_assistant_if_needed(message: &mut ChatCompletionRequestMessage) {
         .as_ref()
         .is_some_and(|tcs| !tcs.is_empty());
     if !has_tool_calls && assistant.content.as_deref().unwrap_or("").is_empty() {
+        #[cfg(feature = "telemetry")]
         tracing::warn!("Replacing empty assistant message with stub to keep OpenAI request valid");
         assistant.content =
             Some("[Assistant response was empty or truncated. Continuing...]".to_string());

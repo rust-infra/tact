@@ -21,6 +21,7 @@
 
 pub mod agent;
 pub mod background;
+pub mod cancel;
 pub mod compact;
 pub mod config;
 pub mod consts;
@@ -34,6 +35,7 @@ pub(crate) mod pipe_stream;
 pub mod plugin;
 pub mod prompt;
 pub mod recovery;
+pub mod runtime;
 pub mod sandbox;
 pub(crate) mod security;
 pub(crate) mod shell;
@@ -51,6 +53,7 @@ pub mod voice;
 pub mod worktree;
 
 pub use agent::{Agent, AgentLoopOutcome, AgentLoopStop, AgentRuntime, AgentSystemPrompt};
+pub use cancel::{ActivationCancel, CancelController};
 pub use tact_llm::Tool as ToolSpec;
 use tact_llm::{ContentBlock, LlmProvider, MessageContent};
 
@@ -59,7 +62,10 @@ pub async fn get_llm_client() -> anyhow::Result<LlmProvider> {
     tact_llm::get_llm_client().await
 }
 
-pub type LoopState = Agent;
+pub use runtime::activation_view::TactActivationView;
+
+/// Read-only hook projection for one activation.
+pub type LoopState<'a> = TactActivationView<'a>;
 
 /// Extracts plain text from a [`MessageContent`] block.
 ///

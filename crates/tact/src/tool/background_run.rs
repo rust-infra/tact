@@ -103,6 +103,7 @@ pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Resu
     // a secret without naming it, which is exactly the `python -c …` case.
     let progress = BackgroundProgressSink::from_reporter(ctx.progress_reporter.clone());
     let command = input.command;
+    let cancel = ctx.cancel_flag.session_token();
     let id = ctx
         .background_manager
         .start(
@@ -110,7 +111,7 @@ pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Resu
             &ctx.work_dir,
             ctx.session_id.clone().unwrap_or_default(),
             Some(progress),
-            ctx.cancel_flag.clone(),
+            cancel.clone(),
         )
         .await?;
     let started = format!("Background task {id} started: {command}");
@@ -133,12 +134,7 @@ pub async fn background_run(ctx: ToolContext, input: BackgroundRunInput) -> Resu
 
     let outcome = ctx
         .background_manager
-        .wait(
-            Some(&id),
-            "",
-            Duration::from_millis(wait_ms),
-            &ctx.cancel_flag,
-        )
+        .wait(Some(&id), "", Duration::from_millis(wait_ms), &cancel)
         .await?;
 
     if outcome == WaitOutcome::Finished {
@@ -246,13 +242,14 @@ pub const WAIT_BACKGROUND_METADATA: ToolMetadata = ToolMetadata {
 pub async fn wait_background(ctx: ToolContext, input: WaitBackgroundInput) -> Result<String> {
     let timeout =
         Duration::from_millis(capped_wait_ms(input.timeout_ms.unwrap_or(DEFAULT_WAIT_MS)));
+    let cancel = ctx.cancel_flag.session_token();
     let outcome = ctx
         .background_manager
         .wait(
             input.task_id.as_deref(),
             &ctx.session_id.clone().unwrap_or_default(),
             timeout,
-            &ctx.cancel_flag,
+            &cancel,
         )
         .await?;
     report_waited(
@@ -395,12 +392,11 @@ fn elapsed(record: &BackgroundTaskRecord) -> String {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-    use std::sync::atomic::AtomicBool;
+    use tact_agent_api::CancelToken;
 
     /// A cancellation flag that is never set: the task runs to completion.
-    fn no_cancel() -> Arc<AtomicBool> {
-        Arc::new(AtomicBool::new(false))
+    fn no_cancel() -> CancelToken {
+        CancelToken::new()
     }
 
     use super::*;

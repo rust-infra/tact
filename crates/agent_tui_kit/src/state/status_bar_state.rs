@@ -1,10 +1,12 @@
 /// Bottom status bar data: model info, token stats, etc.
+use tact_protocol::{PermissionMode, ReasoningEffort};
+
 pub struct StatusBarState {
     pub git_branch: String,
     pub model_name: String,
     pub model_max_tokens: u32,
     pub model_thinking_budget: Option<u32>,
-    pub model_reasoning_effort: Option<String>,
+    pub model_reasoning_effort: Option<ReasoningEffort>,
     pub token_prompt: u32,
     pub token_completion: u32,
     pub token_total: u32,
@@ -26,8 +28,8 @@ pub struct StatusBarState {
     /// Completed turns and their summed wall-clock seconds (for the average).
     pub turn_done: u32,
     pub turn_total_secs: u64,
-    /// Active permission mode: "default" | "plan" | "auto".
-    pub permission_mode: String,
+    /// Active permission mode.
+    pub permission_mode: PermissionMode,
 }
 
 impl StatusBarState {
@@ -50,7 +52,7 @@ impl StatusBarState {
             turn_last_secs: None,
             turn_done: 0,
             turn_total_secs: 0,
-            permission_mode: "auto".to_string(),
+            permission_mode: PermissionMode::Default,
         }
     }
 }

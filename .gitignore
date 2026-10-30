@@ -1,4 +1,5 @@
 /target/
+fixtures/*/target/
 /videos/
 # Packaged build output (deb/rpm/appimage from cargo-packager).
 /dist/

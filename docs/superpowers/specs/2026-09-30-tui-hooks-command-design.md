@@ -57,7 +57,7 @@ queue. The confirmation says so out loud — hooks are registered when the agent
 
 ### Reuse, not paraphrase
 
-The listing is `hooks_cli::render_hooks_listing`, the same function the CLI prints, so the two
+The listing is `tact_host::rendering::render_hooks_listing`, the same function the CLI prints, so the two
 surfaces cannot drift into describing the same hooks differently.
 
 ## Non-goals
@@ -75,7 +75,7 @@ surfaces cannot drift into describing the same hooks differently.
 - `crates/tui/src/handlers/hooks.rs`: parsing for every accepted form, usage for bare `trust` /
   bare `forget` / unknown subcommand, `--source` with a space-containing label, and the idle gate
   on `list`.
-- `crates/tact-ui/src/driver.rs`: `HooksList` emits an `MdInfo` listing (read-only), and
+- `crates/tact_host/src/driver.rs`: `HooksList` emits an `MdInfo` listing (read-only), and
   `HooksTrust { all: false, source: None }` reports the refusal — the one trust path that cannot
   write a developer's real review store.
 - `cargo test -p tui --lib` (palette-count-sensitive tests now derive the palette size instead of

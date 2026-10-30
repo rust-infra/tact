@@ -17,6 +17,14 @@ pub mod multi_model;
 
 use std::{collections::HashMap, sync::Arc};
 
+use crate::auth::{ApiKeyProvider, CredentialProvider, LegacyCredential};
+use crate::client::LlmResponse;
+use crate::error::LlmError;
+use crate::provider_state::{ProviderConversationState, ProviderStateUpdate};
+use crate::transport::SharedHttpClient;
+use crate::{
+    ContentBlock, ProviderProgress, ProviderProgressSink, StopReason, ThinkingChunk, TokenUsageInfo,
+};
 use async_openai::{
     config::Config,
     types::{
@@ -30,16 +38,9 @@ pub use body::{
 use eventsource_stream::Eventsource;
 use futures_util::StreamExt;
 pub use multi_model::ChatCompletionsAdapter;
-use reqwest13::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap};
 use secrecy::{ExposeSecret, Secret};
 use serde::{Deserialize, Serialize};
-use tact_protocol::{AgentUpdate, ThinkingChunk, TokenUsageInfo, UpdateSink};
-
-use crate::LlmError;
-use crate::{
-    ApiKeyProvider, ContentBlock, CredentialProvider, LlmResponse, ProviderConversationState,
-    ProviderStateUpdate, SharedHttpClient, StopReason,
-};
 
 /// Build UI events for one OpenAI-compatible stream delta.
 ///
@@ -49,33 +50,33 @@ fn openai_delta_ui_events(
     thinking_open: &mut bool,
     reasoning: Option<&str>,
     content: Option<&str>,
-) -> Vec<AgentUpdate> {
+) -> Vec<ProviderProgress> {
     let mut events = Vec::new();
     if let Some(reasoning) = reasoning.filter(|s| !s.is_empty()) {
         if !*thinking_open {
             *thinking_open = true;
-            events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+            events.push(ProviderProgress::Thinking(ThinkingChunk::Started));
         }
-        events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+        events.push(ProviderProgress::Thinking(ThinkingChunk::Delta(
             reasoning.to_string(),
         )));
     }
     if let Some(content) = content.filter(|s| !s.is_empty()) {
         if *thinking_open {
             *thinking_open = false;
-            events.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+            events.push(ProviderProgress::Thinking(ThinkingChunk::Finished));
         }
-        events.push(AgentUpdate::StreamChunk(content.to_string()));
+        events.push(ProviderProgress::TextDelta(content.to_string()));
     }
     events
 }
 
-fn finish_thinking_event(thinking_open: &mut bool) -> Option<AgentUpdate> {
+fn finish_thinking_event(thinking_open: &mut bool) -> Option<ProviderProgress> {
     if !*thinking_open {
         return None;
     }
     *thinking_open = false;
-    Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+    Some(ProviderProgress::Thinking(ThinkingChunk::Finished))
 }
 
 /// Convert a `u64` token count to `u32`, saturating rather than truncating.
@@ -288,11 +289,11 @@ fn tool_use_block_from_parts(
         Err(error) => {
             // A malformed arguments payload should not kill the whole
             // stream, but silently swallowing it hides provider bugs.
+            #[cfg(feature = "telemetry")]
             tracing::debug!(
                 error = %error,
                 tool = %name,
-                args = %args,
-                "tool call arguments are not valid JSON; using empty object"
+                "tool call arguments are not valid JSON; using an empty object"
             );
             serde_json::Value::Object(Default::default())
         }
@@ -350,15 +351,12 @@ impl Config for CompatibleConfig {
         }
         // Kimi's coding endpoint whitelists specific coding agents.
         // Without a matching User-Agent it returns 403 access_terminated_error.
-        headers.insert(
-            reqwest13::header::USER_AGENT,
-            "Claude Code".parse().unwrap(),
-        );
+        headers.insert(reqwest::header::USER_AGENT, "Claude Code".parse().unwrap());
         headers
     }
 
     fn url(&self, path: &str) -> String {
-        format!("{}{}", self.api_base, path)
+        format!("{}{}", self.api_base.trim_end_matches('/'), path)
     }
 
     fn query(&self) -> Vec<(&str, &str)> {
@@ -433,9 +431,11 @@ impl OpenAiAdapter {
     }
 
     async fn request_headers(&self) -> Result<HeaderMap, LlmError> {
-        let secret = self.credentials.resolve().await?;
+        let credential = self.credentials.resolve_with_kind().await?;
         let mut headers = self.config.headers();
-        if !secret.expose_secret().is_empty() {
+        if let LegacyCredential::ApiKey(secret) | LegacyCredential::Bearer(secret) = credential
+            && !secret.expose_secret().is_empty()
+        {
             headers.insert(
                 AUTHORIZATION,
                 format!("Bearer {}", secret.expose_secret())
@@ -464,7 +464,7 @@ impl OpenAiAdapter {
         &self,
         body: &serde_json::Value,
         _provider_state: Option<&ProviderConversationState>,
-        events: &UpdateSink,
+        events: &dyn ProviderProgressSink,
     ) -> Result<LlmResponse, LlmError> {
         let json_body = serde_json::to_vec(body)?;
 
@@ -483,23 +483,16 @@ impl OpenAiAdapter {
             .await
             .map_err(|e| LlmError::Request(format!("HTTP request failed: {e}")))?;
 
-        // Read the full response body on non-2xx so the actual API error
-        // message is surfaced, not just the HTTP status code.
+        // Read only enough of a non-2xx body to classify it, then discard it.
         if !response.status().is_success() {
             let status = response.status();
-            let resp_body = response
-                .text()
-                .await
-                .unwrap_or_else(|e| format!("<failed to read response body: {e}>"));
-            tracing::debug!(
-                status = %status,
-                response_body = %resp_body,
-                request_body = %String::from_utf8_lossy(&json_body),
-                "LLM HTTP request failed"
-            );
+            let retry_after = crate::transport::retry_after(response.headers());
+            let resp_body = crate::transport::read_bounded_error_body(response).await;
+            let class = crate::transport::classify_http_error(status.as_u16(), &resp_body);
             return Err(LlmError::HttpError {
                 status: status.as_u16(),
-                body: resp_body,
+                class,
+                retry_after,
             });
         }
 
@@ -518,13 +511,8 @@ impl OpenAiAdapter {
 
         while let Some(event) = event_stream.next().await {
             match event {
-                Err(e) => {
-                    tracing::debug!(
-                        error = %e,
-                        request_body = %String::from_utf8_lossy(&json_body),
-                        "SSE stream failed; logging request body for diagnostics"
-                    );
-                    return Err(LlmError::StreamParse(format!("SSE error: {e}")));
+                Err(_) => {
+                    return Err(LlmError::StreamParse("SSE stream error".to_string()));
                 }
                 Ok(msg) => {
                     if msg.data == "[DONE]" {
@@ -534,11 +522,6 @@ impl OpenAiAdapter {
                     let chunk: StreamChunk = match serde_json::from_str(&msg.data) {
                         Ok(chunk) => chunk,
                         Err(error) => {
-                            tracing::debug!(
-                                error = %error,
-                                data = %msg.data,
-                                "OpenAI-compatible SSE chunk failed to deserialize; logging the raw chunk for diagnostics"
-                            );
                             return Err(error.into());
                         }
                     };
@@ -553,10 +536,10 @@ impl OpenAiAdapter {
                             delta.content.as_deref(),
                         ) {
                             match &event {
-                                AgentUpdate::StreamChunk(content) => {
+                                ProviderProgress::TextDelta(content) => {
                                     text_buffer.push_str(content);
                                 }
-                                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(reasoning)) => {
+                                ProviderProgress::Thinking(ThinkingChunk::Delta(reasoning)) => {
                                     reasoning_buffer.push_str(reasoning);
                                 }
                                 _ => {}
@@ -619,7 +602,7 @@ impl OpenAiAdapter {
                                 prompt_cache_miss_tokens: cache_miss,
                                 reasoning_tokens: reasoning,
                             };
-                            events.send(AgentUpdate::TokenUsage(info.clone()));
+                            events.send(ProviderProgress::Usage(info.clone()));
                             token_usage = Some(info);
                         }
                     }
@@ -683,10 +666,13 @@ impl OpenAiAdapter {
 
         if !response.status().is_success() {
             let status = response.status();
-            let resp_body = response.text().await.unwrap_or_default();
+            let retry_after = crate::transport::retry_after(response.headers());
+            let resp_body = crate::transport::read_bounded_error_body(response).await;
+            let class = crate::transport::classify_http_error(status.as_u16(), &resp_body);
             return Err(LlmError::HttpError {
                 status: status.as_u16(),
-                body: resp_body,
+                class,
+                retry_after,
             });
         }
 
@@ -823,10 +809,10 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(r)),
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
-                AgentUpdate::StreamChunk(c),
+                ProviderProgress::Thinking(ThinkingChunk::Started),
+                ProviderProgress::Thinking(ThinkingChunk::Delta(r)),
+                ProviderProgress::Thinking(ThinkingChunk::Finished),
+                ProviderProgress::TextDelta(c),
             ] if r == "reason" && c == "answer"
         ));
         assert!(!open);
@@ -839,15 +825,15 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(r)),
+                ProviderProgress::Thinking(ThinkingChunk::Started),
+                ProviderProgress::Thinking(ThinkingChunk::Delta(r)),
             ] if r == "think"
         ));
         assert!(open);
         let finished = finish_thinking_event(&mut open);
         assert!(matches!(
             finished,
-            Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+            Some(ProviderProgress::Thinking(ThinkingChunk::Finished))
         ));
         assert!(!open);
         assert!(finish_thinking_event(&mut open).is_none());
@@ -860,8 +846,8 @@ mod tests {
         assert!(matches!(
             events.as_slice(),
             [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
-                AgentUpdate::StreamChunk(c),
+                ProviderProgress::Thinking(ThinkingChunk::Finished),
+                ProviderProgress::TextDelta(c),
             ] if c == "done"
         ));
         assert!(!open);
@@ -891,7 +877,7 @@ mod tests {
             "no session id → no x-opencode-session"
         );
         let ua = headers
-            .get(reqwest13::header::USER_AGENT)
+            .get(reqwest::header::USER_AGENT)
             .and_then(|v| v.to_str().ok())
             .unwrap_or_default();
         assert!(ua.starts_with("tact/"), "UA identifies tact: {ua}");

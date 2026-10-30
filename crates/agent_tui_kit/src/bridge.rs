@@ -1,6 +1,6 @@
 //! The in/out contract between the kit and the host project.
 
-use tact_protocol::UserCommand;
+use tact_protocol::{PermissionMode, ReasoningEffort, UserCommand};
 
 /// A user/agent command the kit sends to the host.
 ///
@@ -22,12 +22,12 @@ pub enum Command {
     /// shows a single task as pretty JSON.
     QueryBackground(Option<String>),
     /// Set the active permission mode (Default / Plan / Auto).
-    SetPermissionMode(String),
+    SetPermissionMode(PermissionMode),
     /// Set the active session's thinking budget (tokens).
     SetThinkingBudget(usize),
     /// Set the active session's reasoning effort; `Some(level)` sets it,
     /// `None` clears (wire omits effort).
-    SetReasoningEffort(Option<String>),
+    SetReasoningEffort(Option<ReasoningEffort>),
     /// Set the active agent session's model.
     SetModel(String),
 }
@@ -170,9 +170,9 @@ mod tests {
             Command::QueryStats,
             Command::QueryBackground(Some("id-1".into())),
             Command::QueryBackground(None),
-            Command::SetPermissionMode("plan".into()),
+            Command::SetPermissionMode(PermissionMode::Plan),
             Command::SetThinkingBudget(32_000),
-            Command::SetReasoningEffort(Some("high".into())),
+            Command::SetReasoningEffort(Some(ReasoningEffort::High)),
             Command::SetReasoningEffort(None),
             Command::SetModel("gpt-4o".into()),
         ];

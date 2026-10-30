@@ -61,7 +61,7 @@ pub struct RenderCtx<'a> {
     pub focused_panel: FocusedPanel,
     pub language: Language,
     pub workspace_dir: &'a str,
-    pub model_context_window: usize,
+    pub model_context_window: Option<usize>,
     pub process_start_time: &'a chrono::DateTime<chrono::Local>,
     pub task_start_time: Option<&'a chrono::DateTime<chrono::Local>>,
     /// Transient flash message text (the expiry `Instant` lives in the app).

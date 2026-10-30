@@ -263,8 +263,17 @@ pub fn update_llm_model(model: String) {
         // `tact_llm::supports_vision()` (e.g. `read_image`) see the new model
         // instead of the launch-time one. `/model` otherwise only mutates the
         // in-memory config, leaving the static provider stale.
-        tact_llm::init_provider(cfg.llm.provider_info());
+        tact_llm::update_provider_info(cfg.llm.provider_info());
     }
+}
+
+/// Resolve the provider snapshot a `/model` switch would publish, without
+/// mutating global config or provider state.
+pub fn preview_llm_provider_info(model: &str) -> Option<tact_llm::ProviderInfo> {
+    let mut cfg = try_settings()?;
+    cfg.llm.model = model.to_string();
+    cfg.agent.model = model.to_string();
+    Some(cfg.llm.provider_info())
 }
 
 /// Update the in-memory active model and reasoning effort for this session.
@@ -282,7 +291,7 @@ pub fn update_llm_model_and_reasoning_effort(model: String, effort: Option<OpenA
         cfg.agent.model = model;
         cfg.agent.reasoning_effort = effort;
         cfg.agent.thinking_budget = 0;
-        tact_llm::init_provider(cfg.llm.provider_info());
+        tact_llm::update_provider_info(cfg.llm.provider_info());
     }
 }
 
@@ -305,7 +314,7 @@ pub fn update_llm_model_and_thinking_budget(model: String, thinking_budget: usiz
                 .unwrap_or(u32::MAX)
                 .saturating_add(1);
         }
-        tact_llm::init_provider(cfg.llm.provider_info());
+        tact_llm::update_provider_info(cfg.llm.provider_info());
     }
 }
 
@@ -463,6 +472,15 @@ pub fn persist_subagent_model_and_reasoning_effort(
 /// the resolved settings for the process.
 pub fn init_config() -> anyhow::Result<CliArgs> {
     let args = CliArgs::parse();
+    init_from_args(&args)?;
+    Ok(args)
+}
+
+/// Install config from options constructed by a non-CLI host.
+///
+/// This uses the same TOML loading and precedence rules as [`init_config`], but
+/// never inspects process argv. Settings are process-global and install once.
+pub fn init_from_args(args: &CliArgs) -> anyhow::Result<()> {
     let (toml_cfg, config_path) = load::load_toml_config(args.config.as_ref())?;
 
     if args.list_sessions
@@ -472,16 +490,16 @@ pub fn init_config() -> anyhow::Result<CliArgs> {
         || matches!(args.command, Some(CliCommand::Upgrade { .. }))
     {
         install_without_llm(resolve::resolve_non_llm_settings(
-            &args,
+            args,
             &toml_cfg,
             config_path,
         )?);
-        return Ok(args);
+        return Ok(());
     }
 
-    let resolved = resolve::resolve_config(&args, &toml_cfg, config_path)?;
+    let resolved = resolve::resolve_config(args, &toml_cfg, config_path)?;
     install(resolved);
-    Ok(args)
+    Ok(())
 }
 
 /// Convenience: initialize config and return CLI args.
@@ -567,7 +585,7 @@ pub(crate) mod test_support {
             voice: super::types::VoiceSettings::disabled_defaults(),
             mcp: super::types::McpSettings::default(),
             goal: super::types::GoalSettings::default(),
-            permission_mode: None,
+            permission_mode: crate::permission::PermissionMode::Default,
             tokio_console: false,
             config_path: None,
         }

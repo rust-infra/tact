@@ -2,20 +2,28 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::time::Instant;
 
 use async_openai_responses::types::responses::{
-    OutputItem, Response, ResponseStreamEvent, WebSearchToolCall, WebSearchToolCallStatus,
+    OutputItem, Response, ResponseStreamEvent, WebSearchCallStatus, WebSearchToolCall,
 };
-use tact_protocol::{AgentUpdate, StepResult, StepStatus, ThinkingChunk, ToolPresentationInfo};
+use tact_agent_api::{ProviderActivity, ProviderActivityKind, ProviderActivityPhase};
 
 use super::normalize::{NormalizedResponse, normalize_response};
-use crate::LlmError;
+use crate::error::LlmError;
+use crate::{ProviderProgress, ThinkingChunk};
 
 /// Extracts the search query from a `WebSearchToolCall` (empty when the
 /// provider has not populated the action yet — `output_item.added` events
 /// can precede the action).
+#[allow(deprecated)]
 fn web_search_query(call: &WebSearchToolCall) -> String {
     match &call.action {
         Some(async_openai_responses::types::responses::WebSearchToolCallAction::Search(search)) => {
-            search.query.clone()
+            search
+                .queries
+                .as_ref()
+                .and_then(|queries| queries.first())
+                .cloned()
+                .or_else(|| search.query.clone())
+                .unwrap_or_default()
         }
         _ => String::new(),
     }
@@ -45,66 +53,87 @@ fn web_search_failure_detail(call: &WebSearchToolCall, query: &str) -> String {
 }
 
 /// Builds the `StepStarted` update for an in-progress web search call.
-fn web_search_started(index: u32, call: &WebSearchToolCall) -> AgentUpdate {
-    AgentUpdate::StepStarted {
-        idx: index as usize,
-        tool_id: call.id.clone(),
-        tool_name: "web_search".to_string(),
-        arg_summary: web_search_query(call),
-        arg_full: web_search_query(call),
-        presentation: ToolPresentationInfo::generic("web_search"),
+fn web_search_activity_id(output_index: u32, call: &WebSearchToolCall) -> String {
+    if call.id.is_empty() {
+        format!("web-search-{output_index}")
+    } else {
+        call.id.clone()
     }
 }
 
-/// Builds the terminal update for a completed or failed web search call.
+fn web_search_activity(
+    output_index: u32,
+    index: u32,
+    call: &WebSearchToolCall,
+    phase: ProviderActivityPhase,
+    failure: Option<String>,
+    duration_us: Option<u64>,
+) -> ProviderProgress {
+    let query = web_search_query(call);
+    ProviderProgress::Activity(ProviderActivity {
+        id: web_search_activity_id(output_index, call),
+        step: index,
+        kind: ProviderActivityKind::WebSearch {
+            phase,
+            query: (!query.is_empty()).then_some(query),
+            failure,
+            duration: duration_us.map(std::time::Duration::from_micros),
+        },
+    })
+}
+
+fn web_search_started(output_index: u32, index: u32, call: &WebSearchToolCall) -> ProviderProgress {
+    web_search_activity(
+        output_index,
+        index,
+        call,
+        ProviderActivityPhase::Started,
+        None,
+        None,
+    )
+}
+
+/// Builds the terminal progress for a completed or failed web search call.
 fn web_search_finished(
+    output_index: u32,
     index: u32,
     call: &WebSearchToolCall,
     duration_us: Option<u64>,
-) -> AgentUpdate {
+) -> ProviderProgress {
     let query = web_search_query(call);
-    let presentation = ToolPresentationInfo::generic("web_search");
-    let (idx, tool_id) = (index as usize, call.id.clone());
     match call.status {
-        WebSearchToolCallStatus::Failed => AgentUpdate::StepFailed {
-            idx,
-            tool_id,
-            arg_summary: web_search_query(call),
-            error: format!(
+        WebSearchCallStatus::Failed => web_search_activity(
+            output_index,
+            index,
+            call,
+            ProviderActivityPhase::Failed,
+            Some(format!(
                 "web search failed ({})",
                 web_search_failure_detail(call, &query)
-            ),
-        },
-        // `output_item.done` normally carries a terminal status. If a
-        // compatible endpoint reports `in_progress` / `searching` here, the
-        // item ended without a terminal status: surface it as a failure
-        // rather than silently claiming success.
-        WebSearchToolCallStatus::InProgress | WebSearchToolCallStatus::Searching => {
-            AgentUpdate::StepFailed {
-                idx,
-                tool_id,
-                arg_summary: web_search_query(call),
-                error: format!(
-                    "web search ended without terminal status ({})",
-                    web_search_failure_detail(call, &query)
-                ),
-            }
-        }
-        WebSearchToolCallStatus::Completed => AgentUpdate::StepFinished {
-            idx,
-            tool_id,
-            result: StepResult {
-                tool: "web_search".to_string(),
-                arg_summary: query,
-                arg_full: None,
-                status: StepStatus::Success,
-                message: "web search completed".to_string(),
-                detail: None,
-                duration_us,
-                permission_label: None,
-                presentation,
-            },
-        },
+            )),
+            duration_us,
+        ),
+        WebSearchCallStatus::InProgress
+        | WebSearchCallStatus::Searching
+        | WebSearchCallStatus::Incomplete => web_search_activity(
+            output_index,
+            index,
+            call,
+            ProviderActivityPhase::Failed,
+            Some(format!(
+                "web search ended without terminal status ({})",
+                web_search_failure_detail(call, &query)
+            )),
+            duration_us,
+        ),
+        WebSearchCallStatus::Completed => web_search_activity(
+            output_index,
+            index,
+            call,
+            ProviderActivityPhase::Completed,
+            None,
+            duration_us,
+        ),
     }
 }
 
@@ -126,6 +155,9 @@ pub(crate) struct ResponsesStreamState {
     /// to reconstruct the terminal output when compatible endpoints omit the
     /// `output` array from the terminal event.
     done_items: BTreeMap<u32, OutputItem>,
+    /// Raw JSON for completed items, retained so a terminal-less recovery
+    /// replays the provider's field shape rather than the typed SDK's shape.
+    raw_done_items: BTreeMap<u32, serde_json::Value>,
     /// Output indices announced via `output_item.added` that have not yet been
     /// completed. A non-empty set means the output sequence is incomplete and
     /// must not be reconstructed from `done_items`.
@@ -141,19 +173,20 @@ pub(crate) struct ResponsesStreamState {
     /// so it must not be rendered as the tool step number.
     web_search_step_indices: BTreeMap<u32, usize>,
     web_search_started_at: BTreeMap<u32, Instant>,
+    web_search_announced: BTreeSet<u32>,
 }
 
 impl ResponsesStreamState {
-    pub(crate) fn close_thinking(&mut self) -> Option<AgentUpdate> {
+    pub(crate) fn close_thinking(&mut self) -> Option<ProviderProgress> {
         if self.thinking_open {
             self.thinking_open = false;
-            Some(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished))
+            Some(ProviderProgress::Thinking(ThinkingChunk::Finished))
         } else {
             None
         }
     }
 
-    fn thinking_delta(&mut self, delta: String) -> Vec<AgentUpdate> {
+    fn thinking_delta(&mut self, delta: String) -> Vec<ProviderProgress> {
         if delta.is_empty() {
             return Vec::new();
         }
@@ -163,13 +196,13 @@ impl ResponsesStreamState {
         let mut updates = Vec::with_capacity(2);
         if !self.thinking_open {
             self.thinking_open = true;
-            updates.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Started));
+            updates.push(ProviderProgress::Thinking(ThinkingChunk::Started));
         }
-        updates.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(delta)));
+        updates.push(ProviderProgress::Thinking(ThinkingChunk::Delta(delta)));
         updates
     }
 
-    fn visible_delta(&mut self, delta: String) -> Vec<AgentUpdate> {
+    fn visible_delta(&mut self, delta: String) -> Vec<ProviderProgress> {
         if delta.is_empty() {
             return Vec::new();
         }
@@ -177,13 +210,13 @@ impl ResponsesStreamState {
         let mut updates = Vec::with_capacity(2);
         if self.thinking_open {
             self.thinking_open = false;
-            updates.push(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+            updates.push(ProviderProgress::Thinking(ThinkingChunk::Finished));
         }
-        updates.push(AgentUpdate::StreamChunk(delta));
+        updates.push(ProviderProgress::TextDelta(delta));
         updates
     }
 
-    fn set_terminal(&mut self, response: Response) -> Result<Vec<AgentUpdate>, LlmError> {
+    fn set_terminal(&mut self, response: Response) -> Result<Vec<ProviderProgress>, LlmError> {
         if self.terminal.is_some() {
             return Err(LlmError::Unsupported(
                 "multiple terminal events".to_string(),
@@ -197,7 +230,7 @@ impl ResponsesStreamState {
     pub(crate) fn apply(
         &mut self,
         event: ResponseStreamEvent,
-    ) -> Result<Vec<AgentUpdate>, LlmError> {
+    ) -> Result<Vec<ProviderProgress>, LlmError> {
         self.apply_with_raw(event, None)
     }
 
@@ -205,21 +238,22 @@ impl ResponsesStreamState {
         &mut self,
         event: ResponseStreamEvent,
         raw_output_items: Option<Vec<serde_json::Value>>,
-    ) -> Result<Vec<AgentUpdate>, LlmError> {
-        if raw_output_items.is_some() {
+    ) -> Result<Vec<ProviderProgress>, LlmError> {
+        let done_index = match &event {
+            ResponseStreamEvent::ResponseOutputItemDone(item) => Some(item.output_index),
+            _ => None,
+        };
+        if let Some(index) = done_index {
+            if let Some(item) = raw_output_items.and_then(|items| items.into_iter().next()) {
+                self.raw_done_items.insert(index, item);
+            }
+        } else if raw_output_items.is_some() {
             self.raw_terminal_output = raw_output_items;
         }
-        if let ResponseStreamEvent::ResponseError(event) = event {
-            let code = event.code.as_deref().unwrap_or("unknown_error");
-            let param = event
-                .param
-                .as_deref()
-                .map(|param| format!(" (param: {param})"))
-                .unwrap_or_default();
-            return Err(LlmError::StreamParse(format!(
-                "OpenAI Responses stream error {code}: {}{param}",
-                event.message
-            )));
+        if let ResponseStreamEvent::ResponseError(_) = event {
+            return Err(LlmError::StreamParse(
+                "OpenAI Responses stream error".to_string(),
+            ));
         }
         Ok(match event {
             ResponseStreamEvent::ResponseReasoningSummaryTextDelta(event) => {
@@ -255,7 +289,13 @@ impl ResponsesStreamState {
                             .web_search_step_indices
                             .entry(event.output_index)
                             .or_insert(next_idx);
-                        return Ok(vec![web_search_started(step_idx as u32, call)]);
+                        if self.web_search_announced.insert(event.output_index) {
+                            return Ok(vec![web_search_started(
+                                event.output_index,
+                                step_idx as u32,
+                                call,
+                            )]);
+                        }
                     }
                 }
                 Vec::new()
@@ -282,12 +322,21 @@ impl ResponsesStreamState {
                         .web_search_started_at
                         .remove(&event.output_index)
                         .map(|started| started.elapsed().as_micros() as u64);
-                    // Terminal status for the web search tool card.
-                    return Ok(vec![web_search_finished(
+                    let mut progress = Vec::with_capacity(2);
+                    if self.web_search_announced.insert(event.output_index) {
+                        progress.push(web_search_started(
+                            event.output_index,
+                            step_idx as u32,
+                            call,
+                        ));
+                    }
+                    progress.push(web_search_finished(
+                        event.output_index,
                         step_idx as u32,
                         call,
                         duration_us,
-                    )]);
+                    ));
+                    return Ok(progress);
                 }
                 Vec::new()
             }
@@ -323,6 +372,7 @@ impl ResponsesStreamState {
             reasoning_deltas,
             terminal,
             done_items,
+            raw_done_items,
             pending_added,
             pending_compactions,
             raw_terminal_output,
@@ -399,7 +449,11 @@ impl ResponsesStreamState {
         } else if let Some(output_items) = done_sequence {
             let mut reconstructed = response;
             reconstructed.output = output_items;
-            normalize_response(reconstructed)?
+            let mut normalized = normalize_response(reconstructed)?;
+            if !raw_done_items.is_empty() {
+                normalized.output_items = raw_done_items.into_values().collect();
+            }
+            normalized
         } else if !pending_compactions.is_empty() {
             // Hard protocol error: a compaction item was announced but never
             // completed. Neither the done-sequence reconstruction nor
@@ -444,1138 +498,5 @@ impl ResponsesStreamState {
 }
 
 #[cfg(test)]
-mod tests {
-    use async_openai_responses::types::responses::ResponseStreamEvent;
-    use tact_protocol::{AgentUpdate, StepStatus, ThinkingChunk};
-
-    use super::ResponsesStreamState;
-    use crate::ContentBlock;
-
-    fn event(value: serde_json::Value) -> ResponseStreamEvent {
-        serde_json::from_value(value).unwrap()
-    }
-
-    fn reasoning_delta(delta: &str) -> ResponseStreamEvent {
-        event(serde_json::json!({
-            "type": "response.reasoning_summary_text.delta",
-            "sequence_number": 1,
-            "item_id": "rs_1",
-            "output_index": 0,
-            "summary_index": 0,
-            "delta": delta
-        }))
-    }
-
-    #[test]
-    fn streams_thinking_before_text_and_uses_terminal_response_for_final_blocks() {
-        let mut state = ResponsesStreamState::default();
-        let thinking = state
-            .apply(event(serde_json::json!({
-                "type": "response.reasoning_summary_text.delta",
-                "sequence_number": 1,
-                "item_id": "rs_1",
-                "output_index": 0,
-                "summary_index": 0,
-                "delta": "plan"
-            })))
-            .unwrap();
-        assert!(matches!(
-            thinking.as_slice(),
-            [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Started),
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(delta))
-            ] if delta == "plan"
-        ));
-
-        let text = state
-            .apply(event(serde_json::json!({
-                "type": "response.output_text.delta",
-                "sequence_number": 2,
-                "item_id": "msg_1",
-                "output_index": 1,
-                "content_index": 0,
-                "delta": "answer",
-                "logprobs": []
-            })))
-            .unwrap();
-        assert!(matches!(
-            text.as_slice(),
-            [
-                AgentUpdate::ThinkingChunk(ThinkingChunk::Finished),
-                AgentUpdate::StreamChunk(delta)
-            ] if delta == "answer"
-        ));
-
-        let ignored_arguments = state
-            .apply(event(serde_json::json!({
-                "type": "response.function_call_arguments.delta",
-                "sequence_number": 3,
-                "item_id": "fc_1",
-                "output_index": 2,
-                "delta": "{\"cmd\":"
-            })))
-            .unwrap();
-        assert!(ignored_arguments.is_empty());
-
-        let terminal = state
-            .apply(event(serde_json::json!({
-                "type": "response.completed",
-                "sequence_number": 4,
-                "response": super::super::normalize::tests::completed_response_json()
-            })))
-            .unwrap();
-        assert!(terminal.is_empty());
-
-        let normalized = state.finish().unwrap();
-        assert!(matches!(
-            normalized.blocks.last(),
-            Some(ContentBlock::ToolUse { id, .. }) if id == "call_1"
-        ));
-    }
-
-    #[test]
-    fn ignores_non_rendering_response_events_without_changing_stream_state() {
-        let mut state = ResponsesStreamState::default();
-        let events = [
-            serde_json::json!({
-                "type": "response.created",
-                "sequence_number": 1,
-                "response": super::super::normalize::tests::completed_response_json()
-            }),
-            serde_json::json!({
-                "type": "response.queued",
-                "sequence_number": 2,
-                "response": super::super::normalize::tests::completed_response_json()
-            }),
-            serde_json::json!({
-                "type": "response.in_progress",
-                "sequence_number": 3,
-                "response": super::super::normalize::tests::completed_response_json()
-            }),
-            serde_json::json!({
-                "type": "response.output_text.done",
-                "sequence_number": 4,
-                "item_id": "msg",
-                "output_index": 0,
-                "content_index": 0,
-                "text": "answer",
-                "logprobs": []
-            }),
-            serde_json::json!({
-                "type": "response.refusal.done",
-                "sequence_number": 5,
-                "item_id": "msg",
-                "output_index": 0,
-                "content_index": 0,
-                "refusal": "no"
-            }),
-            serde_json::json!({
-                "type": "response.function_call_arguments.delta",
-                "sequence_number": 6,
-                "item_id": "fc",
-                "output_index": 1,
-                "delta": "{}"
-            }),
-            serde_json::json!({
-                "type": "response.function_call_arguments.done",
-                "sequence_number": 7,
-                "item_id": "fc",
-                "output_index": 1,
-                "name": null,
-                "arguments": "{}"
-            }),
-        ];
-
-        for value in events {
-            assert!(state.apply(event(value)).unwrap().is_empty());
-        }
-    }
-
-    #[test]
-    fn output_text_done_does_not_duplicate_streamed_text() {
-        let mut state = ResponsesStreamState::default();
-        let delta = state
-            .apply(event(serde_json::json!({
-                "type": "response.output_text.delta",
-                "sequence_number": 1,
-                "item_id": "msg",
-                "output_index": 0,
-                "content_index": 0,
-                "delta": "answer",
-                "logprobs": []
-            })))
-            .unwrap();
-        assert!(delta.iter().any(|update| matches!(
-            update,
-            AgentUpdate::StreamChunk(text) if text == "answer"
-        )));
-
-        let done = state
-            .apply(event(serde_json::json!({
-                "type": "response.output_text.done",
-                "sequence_number": 2,
-                "item_id": "msg",
-                "output_index": 0,
-                "content_index": 0,
-                "text": "answer",
-                "logprobs": []
-            })))
-            .unwrap();
-        assert!(done.is_empty());
-    }
-
-    #[test]
-    fn terminal_event_finishes_open_thinking_once() {
-        let mut state = ResponsesStreamState::default();
-        state
-            .apply(event(serde_json::json!({
-                "type": "response.reasoning_text.delta",
-                "sequence_number": 1,
-                "item_id": "rs_1",
-                "output_index": 0,
-                "content_index": 0,
-                "delta": "plan"
-            })))
-            .unwrap();
-        let updates = state
-            .apply(event(serde_json::json!({
-                "type": "response.completed",
-                "sequence_number": 2,
-                "response": super::super::normalize::tests::completed_response_json()
-            })))
-            .unwrap();
-        assert!(matches!(
-            updates.as_slice(),
-            [AgentUpdate::ThinkingChunk(ThinkingChunk::Finished)]
-        ));
-        assert!(state.finish().is_ok());
-    }
-
-    #[test]
-    fn preserves_streamed_text_when_terminal_response_has_no_message_output() {
-        let mut state = ResponsesStreamState::default();
-        state
-            .apply(event(serde_json::json!({
-                "type": "response.output_text.delta",
-                "sequence_number": 1,
-                "item_id": "msg_1",
-                "output_index": 0,
-                "content_index": 0,
-                "delta": "100 - 200 = -100",
-                "logprobs": []
-            })))
-            .unwrap();
-
-        let mut terminal = super::super::normalize::tests::completed_response_json();
-        terminal["output"] = serde_json::json!([]);
-        state
-            .apply(event(serde_json::json!({
-                "type": "response.completed",
-                "sequence_number": 2,
-                "response": terminal
-            })))
-            .unwrap();
-
-        let normalized = state.finish().unwrap();
-        assert!(normalized.blocks.iter().any(|block| {
-            matches!(block, ContentBlock::Text { text } if text == "100 - 200 = -100")
-        }));
-    }
-
-    #[test]
-    fn response_error_event_preserves_api_details() {
-        let mut state = ResponsesStreamState::default();
-        let error = state
-            .apply(event(serde_json::json!({
-                "type": "error",
-                "sequence_number": 1,
-                "code": "rate_limit_exceeded",
-                "message": "slow down",
-                "param": "input"
-            })))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("rate_limit_exceeded"));
-        assert!(error.contains("slow down"));
-        assert!(error.contains("input"));
-    }
-
-    #[test]
-    fn duplicate_terminal_event_is_an_error() {
-        let mut state = ResponsesStreamState::default();
-        state
-            .apply(event(serde_json::json!({
-                "type": "response.completed",
-                "sequence_number": 1,
-                "response": super::super::normalize::tests::completed_response_json()
-            })))
-            .unwrap();
-        let error = state
-            .apply(event(serde_json::json!({
-                "type": "response.completed",
-                "sequence_number": 2,
-                "response": super::super::normalize::tests::completed_response_json()
-            })))
-            .unwrap_err()
-            .to_string();
-        assert!(error.contains("multiple terminal events"));
-    }
-
-    fn fixture_stream_events() -> Vec<serde_json::Value> {
-        include_str!("fixtures/stream_compact_events.jsonl")
-            .lines()
-            .map(|line| serde_json::from_str(line).unwrap())
-            .collect()
-    }
-
-    fn output_item_added(index: u32, item: serde_json::Value) -> ResponseStreamEvent {
-        event(serde_json::json!({
-            "type": "response.output_item.added",
-            "sequence_number": index as u64 * 2 + 1,
-            "output_index": index,
-            "item": item
-        }))
-    }
-
-    fn output_item_done(index: u32, item: serde_json::Value) -> ResponseStreamEvent {
-        event(serde_json::json!({
-            "type": "response.output_item.done",
-            "sequence_number": index as u64 * 2 + 2,
-            "output_index": index,
-            "item": item
-        }))
-    }
-
-    fn completed_with_output(output: serde_json::Value) -> ResponseStreamEvent {
-        let mut response = super::super::normalize::tests::completed_response_json();
-        response["output"] = output;
-        event(serde_json::json!({
-            "type": "response.completed",
-            "sequence_number": 100,
-            "response": response
-        }))
-    }
-
-    fn message_item(text: &str) -> serde_json::Value {
-        serde_json::json!({
-            "type": "message",
-            "id": "msg_1",
-            "role": "assistant",
-            "status": "completed",
-            "content": [{
-                "type": "output_text",
-                "text": text,
-                "annotations": []
-            }]
-        })
-    }
-
-    fn function_call_item() -> serde_json::Value {
-        serde_json::json!({
-            "type": "function_call",
-            "arguments": "{\"cmd\":\"pwd\"}",
-            "call_id": "call_1",
-            "name": "bash",
-            "id": "fc_1",
-            "status": "completed"
-        })
-    }
-
-    #[test]
-    fn collects_done_output_items_from_fixture_without_exposing_encrypted_content() {
-        let mut state = ResponsesStreamState::default();
-        for value in fixture_stream_events() {
-            state.apply(event(value)).unwrap();
-        }
-
-        let normalized = state.finish().unwrap();
-        assert!(matches!(
-            normalized.blocks.as_slice(),
-            [
-                ContentBlock::Thinking { thinking, .. },
-                ContentBlock::Text { text }
-            ] if thinking == "sanitized reasoning summary" && text == "sanitized assistant answer"
-        ));
-        assert!(!normalized.blocks.iter().any(|block| {
-            matches!(block, ContentBlock::Text { text } if text.contains("encrypted"))
-        }));
-
-        let update = normalized
-            .provider_state_update(
-                vec![serde_json::json!({"type": "message", "role": "user", "content": "old"})],
-                "openai_responses",
-                "https://api.openai.com/v1",
-                "gpt-5.4-mini",
-                &[
-                    crate::Message::new_text(crate::Role::User, "old turn"),
-                    crate::Message::new_text(crate::Role::Assistant, "prior answer"),
-                    crate::Message::new_text(crate::Role::User, "current turn"),
-                ],
-            )
-            .unwrap();
-        assert!(matches!(
-            update,
-            crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
-                _
-            ))
-        ));
-        let crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
-            state,
-        )) = update
-        else {
-            unreachable!("asserted above")
-        };
-        // The compaction item is retained as protocol state, never as content.
-        assert_eq!(state.input_items.len(), 3);
-        assert_eq!(state.input_items[0]["type"], "compaction");
-        assert_eq!(state.input_items[0]["id"], "cmp_sanitized_01");
-        assert_eq!(
-            state.input_items[0]["encrypted_content"],
-            "sanitized-encrypted-compaction-content-placeholder"
-        );
-        assert_eq!(state.compaction_id.as_deref(), Some("cmp_sanitized_01"));
-        assert!(state.is_compacted);
-    }
-
-    #[test]
-    fn terminal_output_takes_precedence_over_done_items() {
-        let mut state = ResponsesStreamState::default();
-        state
-            .apply(output_item_added(0, message_item("streamed answer")))
-            .unwrap();
-        state
-            .apply(output_item_done(0, message_item("streamed answer")))
-            .unwrap();
-        state
-            .apply(completed_with_output(serde_json::json!([message_item(
-                "terminal answer"
-            )])))
-            .unwrap();
-
-        let normalized = state.finish().unwrap();
-        assert!(matches!(
-            normalized.blocks.as_slice(),
-            [ContentBlock::Text { text }] if text == "terminal answer"
-        ));
-    }
-
-    #[test]
-    fn duplicate_added_and_done_events_do_not_duplicate_output_items() {
-        let mut state = ResponsesStreamState::default();
-        state
-            .apply(output_item_added(0, message_item("single")))
-            .unwrap();
-        state
-            .apply(output_item_done(0, message_item("single")))
-            .unwrap();
-        // A duplicate added event after the done event is ignored.
-        state
-            .apply(output_item_added(0, message_item("single")))
-            .unwrap();
-        // A duplicate done event is idempotent: it must not duplicate output.
-        state
-            .apply(output_item_done(0, message_item("single")))
-            .unwrap();
-        state
-            .apply(completed_with_output(serde_json::json!([])))
-            .unwrap();
-
-        let normalized = state.finish().unwrap();
-        assert!(matches!(
-            normalized.blocks.as_slice(),
-            [ContentBlock::Text { text }] if text == "single"
-        ));
-        assert_eq!(normalized.output_items.len(), 1);
-    }
-
-    #[test]
-    fn incomplete_done_sequence_with_gap_is_an_error() {
-        let mut state = ResponsesStreamState::default();
-        state
-            .apply(output_item_done(0, message_item("first")))
-            .unwrap();
-        state
-            .apply(output_item_done(2, function_call_item()))
-            .unwrap();
-        state
-            .apply(completed_with_output(serde_json::json!([])))
-            .unwrap();
-
-        let error = state.finish().unwrap_err().to_string();
-        assert!(error.contains("incomplete"));
-    }
-
-    #[test]
-    fn added_output_item_without_done_is_incomplete() {
-        let mut state = ResponsesStreamState::default();
-        state
-            .apply(output_item_added(0, message_item("never done")))
-            .unwrap();
-        state
-            .apply(completed_with_output(serde_json::json!([])))
-            .unwrap();
-
-        let error = state.finish().unwrap_err().to_string();
-        assert!(error.contains("incomplete"));
-    }
-
-    #[test]
-    fn added_item_never_done_marks_the_sequence_incomplete() {
-        let mut state = ResponsesStreamState::default();
-        state
-            .apply(output_item_added(0, message_item("done")))
-            .unwrap();
-        state
-            .apply(output_item_done(0, message_item("done")))
-            .unwrap();
-        // Announced but never completed: the done sequence alone would look
-        // contiguous, but an item is missing.
-        state
-            .apply(output_item_added(1, message_item("never done")))
-            .unwrap();
-        state
-            .apply(completed_with_output(serde_json::json!([])))
-            .unwrap();
-
-        let error = state.finish().unwrap_err().to_string();
-        assert!(error.contains("incomplete"));
-    }
-
-    #[test]
-    fn reconstructs_output_from_done_items_when_terminal_output_is_absent() {
-        let events = fixture_stream_events();
-        let mut state = ResponsesStreamState::default();
-        // added(0), done(0), added(1), done(1), added(2), done(2) then a
-        // terminal event whose output array is empty (compatible endpoints).
-        for value in &events[..6] {
-            state.apply(event(value.clone())).unwrap();
-        }
-        let mut terminal = super::super::normalize::tests::completed_response_json();
-        terminal["output"] = serde_json::json!([]);
-        state
-            .apply(event(serde_json::json!({
-                "type": "response.completed",
-                "sequence_number": 7,
-                "response": terminal
-            })))
-            .unwrap();
-
-        let normalized = state.finish().unwrap();
-        assert!(matches!(
-            normalized.blocks.as_slice(),
-            [
-                ContentBlock::Thinking { thinking, .. },
-                ContentBlock::Text { text }
-            ] if thinking == "sanitized reasoning summary" && text == "sanitized assistant answer"
-        ));
-        assert!(!normalized.blocks.iter().any(|block| {
-            matches!(block, ContentBlock::Text { text } if text.contains("encrypted"))
-        }));
-        // The compaction item is reconstructed from the done sequence.
-        assert_eq!(normalized.output_items.len(), 3);
-        assert_eq!(normalized.output_items[2]["type"], "compaction");
-    }
-
-    #[test]
-    fn does_not_duplicate_streamed_text_when_done_items_carry_text() {
-        let mut state = ResponsesStreamState::default();
-        state
-            .apply(event(serde_json::json!({
-                "type": "response.output_text.delta",
-                "sequence_number": 1,
-                "item_id": "msg_1",
-                "output_index": 0,
-                "content_index": 0,
-                "delta": "streamed",
-                "logprobs": []
-            })))
-            .unwrap();
-        state
-            .apply(output_item_done(0, message_item("done text")))
-            .unwrap();
-        state
-            .apply(completed_with_output(serde_json::json!([])))
-            .unwrap();
-
-        let normalized = state.finish().unwrap();
-        assert!(matches!(
-            normalized.blocks.as_slice(),
-            [ContentBlock::Text { text }] if text == "done text"
-        ));
-    }
-
-    #[test]
-    fn incomplete_added_compaction_never_uses_visible_text_recovery() {
-        let mut state = ResponsesStreamState::default();
-        state
-            .apply(output_item_added(
-                0,
-                serde_json::json!({
-                    "type": "compaction",
-                    "id": "cmp_1",
-                    "encrypted_content": "opaque"
-                }),
-            ))
-            .unwrap();
-        state
-            .apply(event(serde_json::json!({
-                "type": "response.output_text.delta",
-                "sequence_number": 2,
-                "item_id": "msg_1",
-                "output_index": 1,
-                "content_index": 0,
-                "delta": "visible fallback",
-                "logprobs": []
-            })))
-            .unwrap();
-        state
-            .apply(completed_with_output(serde_json::json!([])))
-            .unwrap();
-
-        let error = state.finish().unwrap_err().to_string();
-        assert!(error.contains("compaction") || error.contains("incomplete"));
-        assert!(!error.contains("visible fallback"));
-    }
-
-    #[test]
-    fn compaction_added_with_done_at_other_index_still_fails_on_empty_terminal() {
-        let mut state = ResponsesStreamState::default();
-        // Compaction announced at index 0 but only ever completed at index 1:
-        // the compaction baseline is missing from the done sequence.
-        state
-            .apply(output_item_added(
-                0,
-                serde_json::json!({
-                    "type": "compaction",
-                    "id": "cmp_1",
-                    "encrypted_content": "opaque"
-                }),
-            ))
-            .unwrap();
-        state
-            .apply(output_item_done(1, message_item("answer")))
-            .unwrap();
-        // Visible deltas exist, so without the compaction guard finish()
-        // would recover text and silently drop the missing compaction.
-        state
-            .apply(event(serde_json::json!({
-                "type": "response.output_text.delta",
-                "sequence_number": 2,
-                "item_id": "msg_1",
-                "output_index": 1,
-                "content_index": 0,
-                "delta": "visible fallback",
-                "logprobs": []
-            })))
-            .unwrap();
-        state
-            .apply(completed_with_output(serde_json::json!([])))
-            .unwrap();
-
-        let error = state.finish().unwrap_err().to_string();
-        assert!(error.contains("compaction") || error.contains("incomplete"));
-        // Must not reconstruct a baseline that silently drops the compaction.
-        assert!(!error.contains("visible fallback"));
-    }
-
-    #[test]
-    fn stream_finish_is_equivalent_to_terminal_normalization_for_the_fixture() {
-        let events = fixture_stream_events();
-        let mut state = ResponsesStreamState::default();
-        for value in &events {
-            state.apply(event(value.clone())).unwrap();
-        }
-        let streamed = state.finish().unwrap();
-
-        let terminal: async_openai_responses::types::responses::Response =
-            serde_json::from_value(events.last().unwrap().get("response").unwrap().clone())
-                .unwrap();
-        let direct = super::super::normalize::normalize_response(terminal).unwrap();
-
-        assert_eq!(streamed.blocks, direct.blocks);
-        assert_eq!(streamed.stop_reason, direct.stop_reason);
-        assert_eq!(streamed.output_items, direct.output_items);
-        let streamed_usage = streamed.usage.as_ref().expect("fixture carries usage");
-        let direct_usage = direct.usage.as_ref().expect("fixture carries usage");
-        assert_eq!(streamed_usage.prompt, direct_usage.prompt);
-        assert_eq!(streamed_usage.completion, direct_usage.completion);
-        assert_eq!(streamed_usage.total, direct_usage.total);
-        assert_eq!(
-            streamed_usage.reasoning_tokens,
-            direct_usage.reasoning_tokens
-        );
-
-        let input = vec![serde_json::json!({"type": "message", "role": "user", "content": "old"})];
-        let messages = [
-            crate::Message::new_text(crate::Role::User, "old turn"),
-            crate::Message::new_text(crate::Role::Assistant, "prior answer"),
-            crate::Message::new_text(crate::Role::User, "current turn"),
-        ];
-        let streamed_update = streamed
-            .provider_state_update(
-                input.clone(),
-                "openai_responses",
-                "https://api.openai.com/v1",
-                "gpt-5.4-mini",
-                &messages,
-            )
-            .unwrap();
-        let direct_update = direct
-            .provider_state_update(
-                input,
-                "openai_responses",
-                "https://api.openai.com/v1",
-                "gpt-5.4-mini",
-                &messages,
-            )
-            .unwrap();
-        assert_eq!(streamed_update, direct_update);
-    }
-
-    // ── Stream end without a terminal event (compatible endpoints) ────
-
-    #[test]
-    fn no_terminal_event_recovers_from_complete_done_sequence() {
-        let mut state = ResponsesStreamState::default();
-        state
-            .apply(output_item_added(0, message_item("first")))
-            .unwrap();
-        state
-            .apply(output_item_done(0, message_item("first")))
-            .unwrap();
-        state
-            .apply(output_item_added(1, function_call_item()))
-            .unwrap();
-        state
-            .apply(output_item_done(1, function_call_item()))
-            .unwrap();
-        // The stream ends cleanly (EOF / `[DONE]`) without a terminal event;
-        // the complete done sequence must reconstruct the response.
-        let normalized = state.finish().unwrap();
-        assert!(
-            normalized
-                .blocks
-                .iter()
-                .any(|block| { matches!(block, ContentBlock::Text { text } if text == "first") })
-        );
-        assert!(normalized.blocks.iter().any(|block| {
-            matches!(
-                block,
-                ContentBlock::ToolUse { name, .. } if name == "bash"
-            )
-        }));
-        assert!(matches!(
-            normalized.stop_reason,
-            Some(crate::StopReason::ToolUse)
-        ));
-        assert_eq!(normalized.output_items.len(), 2);
-    }
-
-    #[test]
-    fn no_terminal_event_recovers_visible_text() {
-        let mut state = ResponsesStreamState::default();
-        state
-            .apply(event(serde_json::json!({
-                "type": "response.output_text.delta",
-                "sequence_number": 1,
-                "item_id": "msg_1",
-                "output_index": 0,
-                "content_index": 0,
-                "delta": "streamed answer",
-                "logprobs": []
-            })))
-            .unwrap();
-        // No terminal event, no done sequence: the streamed text is the only
-        // source and must be recovered instead of hard-failing.
-        let normalized = state.finish().unwrap();
-        assert!(matches!(
-            normalized.blocks.as_slice(),
-            [ContentBlock::Text { text }] if text == "streamed answer"
-        ));
-    }
-
-    #[test]
-    fn no_terminal_event_empty_stream_is_error() {
-        let state = ResponsesStreamState::default();
-        let error = state.finish().unwrap_err().to_string();
-        assert!(
-            error.contains("without a terminal event"),
-            "empty stream must keep the terminal-event error, got: {error}"
-        );
-        // A truly empty stream must not claim reasoning arrived.
-        assert!(error.contains("reasoning deltas: 0"), "got: {error}");
-        assert!(
-            error.contains("carried no output at all"),
-            "an empty stream must say so: {error}"
-        );
-        assert!(
-            !error.contains("carried only reasoning"),
-            "an empty stream must not be reported as reasoning-only: {error}"
-        );
-    }
-
-    #[test]
-    fn no_terminal_event_after_reasoning_only_names_the_reasoning() {
-        // Measured against a compatible endpoint (opencode.ai zen, model
-        // deepseek-v4.1-flash, protocol = "responses"): the model thinks, emits
-        // reasoning deltas, and the endpoint closes the SSE stream without a
-        // terminal event. Reasoning never reaches `output_text`, so without the
-        // counter this looked exactly like an empty stream and the error sent
-        // the reader looking for a stream that never arrived.
-        let mut state = ResponsesStreamState::default();
-        state.apply(reasoning_delta("let me think")).unwrap();
-        state.apply(reasoning_delta(" about this")).unwrap();
-
-        let error = state.finish().unwrap_err().to_string();
-        assert!(error.contains("without a terminal event"), "got: {error}");
-        assert!(error.contains("reasoning deltas: 2"), "got: {error}");
-        assert!(
-            error.contains("carried only reasoning"),
-            "the error must name reasoning as the cause: {error}"
-        );
-        assert!(
-            !error.contains("carried no output at all"),
-            "a reasoning-only stream must not be reported as empty: {error}"
-        );
-    }
-
-    #[test]
-    fn no_terminal_event_with_pending_compaction_is_error() {
-        let mut state = ResponsesStreamState::default();
-        state
-            .apply(output_item_added(
-                0,
-                serde_json::json!({
-                    "type": "compaction",
-                    "id": "cmp_1",
-                    "encrypted_content": "opaque"
-                }),
-            ))
-            .unwrap();
-        // Visible text exists but the compaction boundary was never completed:
-        // recovery must not silently drop the compacted baseline.
-        state
-            .apply(event(serde_json::json!({
-                "type": "response.output_text.delta",
-                "sequence_number": 2,
-                "item_id": "msg_1",
-                "output_index": 1,
-                "content_index": 0,
-                "delta": "visible fallback",
-                "logprobs": []
-            })))
-            .unwrap();
-
-        let error = state.finish().unwrap_err().to_string();
-        assert!(
-            error.contains("compaction"),
-            "missing compaction boundary must hard-fail, got: {error}"
-        );
-    }
-
-    // ── Hosted web search tool-card events ────────────────────────────
-
-    fn web_search_call_json(status: &str, query: Option<&str>) -> serde_json::Value {
-        let action = query.map(|q| {
-            serde_json::json!({
-                "type": "search",
-                "query": q,
-                "sources": [
-                    {"type": "url", "url": "https://example.com/a"},
-                    {"type": "url", "url": "https://example.com/b"}
-                ]
-            })
-        });
-        serde_json::json!({
-            "type": "web_search_call",
-            "id": "ws_1",
-            "status": status,
-            "action": action
-        })
-    }
-
-    #[test]
-    fn web_search_added_uses_tool_ordinal_not_output_index() {
-        let mut state = super::ResponsesStreamState::default();
-        let updates = state
-            .apply(output_item_added(
-                1,
-                web_search_call_json("in_progress", None),
-            ))
-            .unwrap();
-
-        match &updates[0] {
-            AgentUpdate::StepStarted { idx, .. } => {
-                assert_eq!(*idx, 0, "the first hosted tool must render as step 1")
-            }
-            other => panic!("expected StepStarted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn web_searches_are_numbered_by_tool_order_within_a_response() {
-        let mut state = super::ResponsesStreamState::default();
-        let first = state
-            .apply(output_item_added(
-                1,
-                web_search_call_json("in_progress", None),
-            ))
-            .unwrap();
-        let second = state
-            .apply(output_item_added(
-                3,
-                web_search_call_json("in_progress", None),
-            ))
-            .unwrap();
-
-        match (&first[0], &second[0]) {
-            (
-                AgentUpdate::StepStarted { idx: first_idx, .. },
-                AgentUpdate::StepStarted {
-                    idx: second_idx, ..
-                },
-            ) => {
-                assert_eq!(*first_idx, 0);
-                assert_eq!(*second_idx, 1);
-            }
-            other => panic!("expected two StepStarted updates, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn web_search_step_numbering_is_scoped_to_each_response_stream() {
-        let mut first_turn = super::ResponsesStreamState::default();
-        let first = first_turn
-            .apply(output_item_added(
-                2,
-                web_search_call_json("in_progress", None),
-            ))
-            .unwrap();
-        let mut second_turn = super::ResponsesStreamState::default();
-        let second = second_turn
-            .apply(output_item_added(
-                4,
-                web_search_call_json("in_progress", None),
-            ))
-            .unwrap();
-
-        match (&first[0], &second[0]) {
-            (
-                AgentUpdate::StepStarted { idx: first_idx, .. },
-                AgentUpdate::StepStarted {
-                    idx: second_idx, ..
-                },
-            ) => {
-                assert_eq!(*first_idx, 0);
-                assert_eq!(*second_idx, 0);
-            }
-            other => panic!("expected two StepStarted updates, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn web_search_added_emits_running_tool_card() {
-        let mut state = super::ResponsesStreamState::default();
-        // added without action → query empty, running card
-        let updates = state
-            .apply(output_item_added(
-                0,
-                web_search_call_json("in_progress", None),
-            ))
-            .unwrap();
-
-        assert_eq!(updates.len(), 1);
-        match &updates[0] {
-            AgentUpdate::StepStarted {
-                idx,
-                tool_id,
-                tool_name,
-                arg_summary,
-                ..
-            } => {
-                assert_eq!(*idx, 0);
-                assert_eq!(tool_id, "ws_1");
-                assert_eq!(tool_name, "web_search");
-                assert!(arg_summary.is_empty(), "no action yet → empty query");
-            }
-            other => panic!("expected StepStarted, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn web_search_added_then_done_emits_started_then_finished() {
-        let mut state = super::ResponsesStreamState::default();
-        let started = state
-            .apply(output_item_added(
-                0,
-                web_search_call_json("searching", None),
-            ))
-            .unwrap();
-        let finished = state
-            .apply(output_item_done(
-                0,
-                web_search_call_json("completed", Some("Rust async")),
-            ))
-            .unwrap();
-
-        assert!(matches!(&started[0], AgentUpdate::StepStarted { .. }));
-        assert_eq!(finished.len(), 1);
-        match &finished[0] {
-            AgentUpdate::StepFinished {
-                tool_id, result, ..
-            } => {
-                assert_eq!(tool_id, "ws_1");
-                assert_eq!(result.tool, "web_search");
-                assert_eq!(result.arg_summary, "Rust async");
-                assert_eq!(result.status, StepStatus::Success);
-                assert!(result.duration_us.is_some());
-                assert!(result.detail.is_none(), "web search output is hidden");
-            }
-            other => panic!("expected StepFinished, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn web_search_finished_hides_output_detail() {
-        let mut state = super::ResponsesStreamState::default();
-        let _ = state
-            .apply(output_item_added(
-                0,
-                web_search_call_json("in_progress", None),
-            ))
-            .unwrap();
-        let updates = state
-            .apply(output_item_done(
-                0,
-                web_search_call_json("completed", Some("S&P 500")),
-            ))
-            .unwrap();
-
-        match &updates[0] {
-            AgentUpdate::StepFinished { result, .. } => {
-                assert!(result.detail.is_none(), "web search output is hidden");
-            }
-            other => panic!("expected StepFinished, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn web_search_failed_emits_step_failed() {
-        let mut state = super::ResponsesStreamState::default();
-        let _ = state
-            .apply(output_item_added(
-                0,
-                web_search_call_json("in_progress", None),
-            ))
-            .unwrap();
-        let failed = state
-            .apply(output_item_done(
-                0,
-                web_search_call_json("failed", Some("Rust async")),
-            ))
-            .unwrap();
-
-        assert_eq!(failed.len(), 1);
-        match &failed[0] {
-            AgentUpdate::StepFailed {
-                tool_id,
-                arg_summary,
-                error,
-                ..
-            } => {
-                assert_eq!(tool_id, "ws_1");
-                assert_eq!(
-                    arg_summary, "Rust async",
-                    "failed card keeps the query in its title"
-                );
-                assert!(error.contains("web search failed"));
-                assert!(
-                    error.contains("status: Failed"),
-                    "failure must report the provider status, got: {error}"
-                );
-                assert!(
-                    error.contains("query: \"Rust async\""),
-                    "failure must report the query, got: {error}"
-                );
-                assert!(
-                    error.contains("action:"),
-                    "failure must include the provider's action detail, got: {error}"
-                );
-            }
-            other => panic!("expected StepFailed, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn web_search_done_with_non_terminal_status_is_a_failure() {
-        // `output_item.done` must carry a terminal status. Compatible
-        // endpoints reporting `searching` / `in_progress` at done are
-        // surfaced as failures, never as silent success.
-        for status in ["in_progress", "searching"] {
-            let mut state = super::ResponsesStreamState::default();
-            let _ = state
-                .apply(output_item_added(0, web_search_call_json(status, None)))
-                .unwrap();
-            let updates = state
-                .apply(output_item_done(0, web_search_call_json(status, Some("q"))))
-                .unwrap();
-
-            assert_eq!(updates.len(), 1);
-            match &updates[0] {
-                AgentUpdate::StepFailed { tool_id, error, .. } => {
-                    assert_eq!(tool_id, "ws_1");
-                    assert!(
-                        error.contains("without terminal status"),
-                        "expected non-terminal-status failure, got: {error}"
-                    );
-                }
-                other => panic!("expected StepFailed for {status}, got {other:?}"),
-            }
-        }
-    }
-
-    #[test]
-    fn non_web_search_items_emit_no_tool_events() {
-        let mut state = super::ResponsesStreamState::default();
-        let updates = state
-            .apply(output_item_added(
-                0,
-                serde_json::json!({"type": "message", "id": "msg_1", "role": "assistant", "status": "in_progress", "content": []}),
-            ))
-            .unwrap();
-        assert!(updates.is_empty());
-    }
-
-    #[test]
-    fn duplicate_web_search_done_emits_finished_only_once() {
-        // A repeated `output_item.done` for the same index overwrites the
-        // slot (last one wins) but must not re-emit `StepFinished`: the
-        // running card was already finalized on the first `done`.
-        let mut state = super::ResponsesStreamState::default();
-        let _ = state
-            .apply(output_item_added(
-                0,
-                web_search_call_json("in_progress", None),
-            ))
-            .unwrap();
-        let first = state
-            .apply(output_item_done(
-                0,
-                web_search_call_json("completed", Some("Rust async")),
-            ))
-            .unwrap();
-        assert_eq!(first.len(), 1);
-        assert!(matches!(&first[0], AgentUpdate::StepFinished { .. }));
-
-        let duplicate = state
-            .apply(output_item_done(
-                0,
-                web_search_call_json("completed", Some("Rust async")),
-            ))
-            .unwrap();
-        assert!(
-            duplicate.is_empty(),
-            "duplicate done must not re-emit StepFinished, got: {duplicate:?}"
-        );
-    }
-}
+#[cfg(test)]
+mod tests;

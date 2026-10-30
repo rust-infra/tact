@@ -1,16 +1,16 @@
 use async_openai_responses::types::responses::{
-    ContextManagementParam, CreateResponseArgs, EasyInputContent, EasyInputMessage,
-    FunctionCallOutput, FunctionCallOutputItemParam, FunctionTool, FunctionToolCall, IncludeEnum,
-    InputContent, InputImageContent, InputItem, InputParam, InputTextContent, Item, MessageType,
-    OutputStatus, Reasoning, ReasoningSummary, Role as ResponsesRole, Tool as ResponsesTool,
-    ToolChoiceFunction, ToolChoiceOptions, ToolChoiceParam, WebSearchTool,
+    ContextManagementParam, ContextManagementParamType, CreateResponseArgs, EasyInputContent,
+    EasyInputMessage, FunctionCallOutput, FunctionCallOutputItemParam, FunctionTool,
+    FunctionToolCall, IncludeEnum, InputContent, InputImageContent, InputItem, InputParam,
+    InputTextContent, Item, MessageType, OutputStatus, Reasoning, ReasoningSummary,
+    Role as ResponsesRole, Tool as ResponsesTool, ToolChoiceFunction, ToolChoiceOptions,
+    ToolChoiceParam, WebSearchTool,
 };
 
 use super::{history, wire};
-use crate::{
-    ContentBlock, CreateMessageParams, LlmError, Message, MessageContent,
-    ProviderConversationState, ResponsesConversationState, Role, ToolChoice, context_hash,
-};
+use crate::error::LlmError;
+use crate::provider_state::{ProviderConversationState, ResponsesConversationState, context_hash};
+use crate::{ContentBlock, CreateMessageParams, Message, MessageContent, Role, ToolChoice};
 
 fn responses_role(role: Role) -> ResponsesRole {
     match role {
@@ -103,6 +103,7 @@ fn message_to_input(
             ContentBlock::Text { text } => {
                 message_content.push(InputContent::InputText(InputTextContent {
                     text: text.clone(),
+                    prompt_cache_breakpoint: None,
                 }));
             }
             ContentBlock::Image { source } => {
@@ -110,6 +111,7 @@ fn message_to_input(
                     detail: Default::default(),
                     file_id: None,
                     image_url: Some(format!("data:{};base64,{}", source.media_type, source.data)),
+                    prompt_cache_breakpoint: None,
                 }));
             }
             ContentBlock::Thinking { signature, .. } => {
@@ -142,6 +144,8 @@ fn message_to_input(
                     name: name.clone(),
                     id: function_call_item_ids.get(id).cloned(),
                     status: Some(OutputStatus::Completed),
+                    caller: None,
+                    r#async: None,
                 })));
             }
             ContentBlock::ToolResult {
@@ -151,10 +155,13 @@ fn message_to_input(
                 flush_message_content(*role, &mut message_content, &mut input);
                 input.push(InputItem::Item(Item::FunctionCallOutput(
                     FunctionCallOutputItemParam {
-                        call_id: tool_use_id.clone(),
+                        call_id: Some(tool_use_id.clone()),
                         output: FunctionCallOutput::Text(content.clone()),
                         id: None,
                         status: Some(OutputStatus::Completed),
+                        name: None,
+                        namespace: None,
+                        caller: None,
                     },
                 )));
             }
@@ -166,9 +173,9 @@ fn message_to_input(
 
 fn tool_choice(tool_choice: &ToolChoice) -> ToolChoiceParam {
     match tool_choice {
-        ToolChoice::Auto => ToolChoiceParam::Mode(ToolChoiceOptions::Auto),
-        ToolChoice::Any => ToolChoiceParam::Mode(ToolChoiceOptions::Required),
-        ToolChoice::None => ToolChoiceParam::Mode(ToolChoiceOptions::None),
+        ToolChoice::Auto => ToolChoiceParam::Option(ToolChoiceOptions::Auto),
+        ToolChoice::Any => ToolChoiceParam::Option(ToolChoiceOptions::Required),
+        ToolChoice::None => ToolChoiceParam::Option(ToolChoiceOptions::None),
         ToolChoice::Tool { name } => {
             ToolChoiceParam::Function(ToolChoiceFunction { name: name.clone() })
         }
@@ -315,7 +322,7 @@ pub(crate) fn create_response_with_policy(
         }
     };
     if model_changed {
-        let shape = if request.model.to_ascii_lowercase().contains("deepseek") {
+        let shape = if crate::policy::web_search_uses_queries_shape(&request.model) {
             wire::WebSearchQueryShape::Queries
         } else {
             wire::WebSearchQueryShape::Query
@@ -336,10 +343,10 @@ pub(crate) fn create_response_with_policy(
         .include(vec![IncludeEnum::ReasoningEncryptedContent])
         .store(false);
     // Server-side compaction: `context_management` is a typed builder field
-    // on the local async-openai fork (`ContextManagementParam`).
+    // in upstream async-openai (`ContextManagementParam`).
     if let Some(threshold) = compact_threshold {
         builder.context_management(vec![ContextManagementParam {
-            type_: "compaction".to_string(),
+            r#type: ContextManagementParamType::Compaction,
             compact_threshold: Some(threshold),
         }]);
     }
@@ -370,6 +377,9 @@ pub(crate) fn create_response_with_policy(
                         strict: None,
                         description: tool.description.clone(),
                         defer_loading: None,
+                        r#async: None,
+                        output_schema: None,
+                        allowed_callers: None,
                     })
                 })
                 .collect::<Vec<_>>()
@@ -381,6 +391,7 @@ pub(crate) fn create_response_with_policy(
             search_context_size: None,
             filters: None,
             search_content_types: None,
+            external_web_access: None,
         }));
     }
     let has_tools = !response_tools.is_empty();
@@ -396,6 +407,8 @@ pub(crate) fn create_response_with_policy(
         builder.reasoning(Reasoning {
             effort: request.reasoning_effort.map(Into::into),
             summary: Some(ReasoningSummary::Detailed),
+            mode: None,
+            context: None,
         });
     }
 
@@ -434,15 +447,15 @@ pub(crate) fn create_response_with_policy(
 
 #[cfg(test)]
 mod tests {
-    use super::super::ResponsesRequestOptions;
     use super::super::normalize::parse_compact_resource;
     use super::{
         ResponsesRequestPolicy, create_response, message_to_input, validate_conversion_state,
     };
+    use crate::provider_state::{ResponsesConversationState, context_hash};
+    use crate::types::ResponsesRequestOptions;
     use crate::{
         ContentBlock, CreateMessageParams, ImageSource, Message, OpenAiReasoningEffort,
-        RequiredMessageParams, ResponsesConversationState, Role, Thinking, ThinkingType, Tool,
-        ToolChoice, context_hash,
+        RequiredMessageParams, Role, Thinking, ThinkingType, Tool, ToolChoice,
     };
 
     fn state_covering_first_message(request: &CreateMessageParams) -> ResponsesConversationState {
@@ -660,6 +673,84 @@ mod tests {
     }
 
     #[test]
+    fn mixed_tool_results_keep_the_image_between_its_companions_outputs() {
+        let request = CreateMessageParams::new(RequiredMessageParams {
+            model: "gpt-5".to_string(),
+            messages: vec![
+                Message::new_text(Role::User, "inspect both"),
+                Message::new_blocks(
+                    Role::Assistant,
+                    vec![
+                        ContentBlock::ToolUse {
+                            id: "call-image".to_string(),
+                            name: "screenshot".to_string(),
+                            input: serde_json::json!({}),
+                        },
+                        ContentBlock::ToolUse {
+                            id: "call-text".to_string(),
+                            name: "lookup".to_string(),
+                            input: serde_json::json!({}),
+                        },
+                    ],
+                ),
+                Message::new_blocks(
+                    Role::User,
+                    vec![
+                        ContentBlock::ToolResult {
+                            tool_use_id: "call-image".to_string(),
+                            content: "preview".to_string(),
+                        },
+                        ContentBlock::Image {
+                            source: ImageSource {
+                                type_: "base64".to_string(),
+                                media_type: "image/png".to_string(),
+                                data: "QkJCQg==".to_string(),
+                            },
+                        },
+                        ContentBlock::ToolResult {
+                            tool_use_id: "call-text".to_string(),
+                            content: "lookup result".to_string(),
+                        },
+                    ],
+                ),
+            ],
+            max_tokens: 4096,
+        });
+
+        let (body, _) = create_response(&request, None, None, false).unwrap();
+        let input = body["input"].as_array().unwrap();
+        let image_output = input
+            .iter()
+            .position(|item| {
+                item["type"] == "function_call_output" && item["call_id"] == "call-image"
+            })
+            .expect("first tool output");
+        let image_message = input
+            .iter()
+            .position(|item| {
+                item["role"] == "user"
+                    && item["content"].as_array().is_some_and(|content| {
+                        content.iter().any(|part| part["type"] == "input_image")
+                    })
+            })
+            .expect("image companion");
+        let text_output = input
+            .iter()
+            .position(|item| {
+                item["type"] == "function_call_output" && item["call_id"] == "call-text"
+            })
+            .expect("second tool output");
+        assert!(
+            image_output < image_message && image_message < text_output,
+            "image companion moved out of its tool-result position: {input:#?}"
+        );
+        assert_eq!(
+            input[image_message]["content"][0]["image_url"],
+            "data:image/png;base64,QkJCQg=="
+        );
+    }
+
+    #[test]
     fn omits_unscoped_signature_from_another_provider() {
         let (body, _) = create_response(&request_with_history(), None, None, false).unwrap();
 
@@ -757,7 +848,7 @@ mod tests {
         );
         let (body, _) = super::create_response_with_policy(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             no_replay_policy(false),
         )
@@ -870,9 +961,7 @@ mod tests {
         let state = state_covering_first_message(&request);
         let (body, sent_items) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(
-                state.clone(),
-            )),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state.clone())),
             Some(160_000),
             false,
         )
@@ -916,7 +1005,7 @@ mod tests {
         request.model = "deepseek-chat".to_string();
         let (body, _) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -942,7 +1031,7 @@ mod tests {
         request.model = "gpt-5".to_string();
         let (body, _) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -965,9 +1054,7 @@ mod tests {
 
         let (body, _) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(
-                state.clone(),
-            )),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state.clone())),
             None,
             false,
         )
@@ -1078,7 +1165,7 @@ mod tests {
         state.model = "other-model".to_string();
         create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -1100,7 +1187,7 @@ mod tests {
 
         let (body, _) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -1127,7 +1214,7 @@ mod tests {
 
         let (body, _) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -1152,7 +1239,7 @@ mod tests {
 
         let (body, _) = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -1172,7 +1259,7 @@ mod tests {
         state.logical_context_hash = "deadbeef".repeat(8);
         let error = create_response(
             &request,
-            Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+            Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
             None,
             false,
         )
@@ -1189,7 +1276,7 @@ mod tests {
         assert!(
             create_response(
                 &request,
-                Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+                Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
                 None,
                 false
             )
@@ -1205,7 +1292,7 @@ mod tests {
         assert!(
             create_response(
                 &request,
-                Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+                Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
                 None,
                 false
             )
@@ -1221,7 +1308,7 @@ mod tests {
         assert!(
             create_response(
                 &request,
-                Some(&crate::ProviderConversationState::OpenAiResponses(state)),
+                Some(&crate::provider_state::ProviderConversationState::OpenAiResponses(state)),
                 None,
                 false,
             )

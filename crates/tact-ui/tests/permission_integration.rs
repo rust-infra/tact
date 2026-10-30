@@ -109,11 +109,8 @@ async fn high_risk_bash_shell_guard_blocks_after_permission_allow() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished { tool_id: id, result, .. }
-                    if id == "bash_sudo"
-                        && matches!(result.status, StepStatus::Failed)
-                        && result.message.contains("Dangerous command blocked")
-                        && result.permission_label.as_deref() == Some("Allow once")
+                AgentUpdate::StepFailed { tool_id: id, error, .. }
+                    if id == "bash_sudo" && error.contains("Dangerous command blocked")
             )
         }),
         "shell guard should block even after user allow, got: {updates:?}"

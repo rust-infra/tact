@@ -6,11 +6,12 @@
 //! the long-lived client.
 
 use super::OpenAiAdapter;
-use crate::{
-    CreateMessageParams, LlmClient, LlmError, LlmResponse, ProviderConversationState,
-    ProviderProfile, hook_select::hook_for_dialect,
-};
-use tact_protocol::UpdateSink;
+use crate::ProviderProgressSink;
+use crate::client::{LlmClient, LlmResponse};
+use crate::error::LlmError;
+use crate::profile::ProviderProfile;
+use crate::provider_state::ProviderConversationState;
+use crate::{CreateMessageParams, hook_select::hook_for_dialect};
 
 use super::{
     body::assemble_chat_completion_body,
@@ -26,6 +27,7 @@ pub struct ChatCompletionsAdapter {
     adapter: OpenAiAdapter,
     profile: ProviderProfile,
     user_id: Option<String>,
+    forced_dialect: Option<crate::ChatCompletionsDialect>,
 }
 
 impl ChatCompletionsAdapter {
@@ -34,7 +36,13 @@ impl ChatCompletionsAdapter {
             adapter,
             profile,
             user_id: None,
+            forced_dialect: None,
         }
+    }
+
+    pub fn with_dialect(mut self, dialect: crate::ChatCompletionsDialect) -> Self {
+        self.forced_dialect = Some(dialect);
+        self
     }
 
     pub fn base_url(&self) -> &str {
@@ -56,7 +64,10 @@ impl ChatCompletionsAdapter {
         // Resolve the dialect from the profile each request so the body shape
         // follows the per-request model (`/model` picks) without rebuilding
         // the long-lived client.
-        let dialect = self.profile.dialect_for(&request.model)?;
+        let dialect = match self.forced_dialect {
+            Some(dialect) => dialect,
+            None => self.profile.dialect_for(&request.model)?,
+        };
         let hook = hook_for_dialect(dialect, self.user_id.as_deref());
         assemble_chat_completion_body(request, stream, &self.profile, hook.as_ref())
     }
@@ -67,7 +78,7 @@ impl LlmClient for ChatCompletionsAdapter {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        events: &UpdateSink,
+        events: &dyn ProviderProgressSink,
     ) -> Result<LlmResponse, LlmError> {
         stream_assembled(&self.adapter, request, provider_state, events, |r, s| {
             self.assemble_body(r, s)

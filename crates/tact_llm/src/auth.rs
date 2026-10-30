@@ -8,13 +8,13 @@
 use std::sync::Arc;
 
 use futures_util::future::BoxFuture;
-use secrecy::SecretString;
+use secrecy::{ExposeSecret, SecretString};
 
-use crate::LlmError;
+use crate::error::LlmError;
 
-/// A resolved credential, kept opaque so HTTP layers decide how to encode it.
+/// Legacy credential shape retained for the product compatibility surface.
 #[derive(Debug, Clone)]
-pub enum Credential {
+pub enum LegacyCredential {
     /// API key sent as `Authorization: Bearer <key>`.
     ApiKey(SecretString),
     /// Arbitrary bearer token (e.g. an OAuth access token).
@@ -38,10 +38,146 @@ pub trait CredentialProvider: Send + Sync + std::fmt::Debug {
     /// secret itself.
     fn resolve(&self) -> BoxFuture<'_, Result<SecretString, LlmError>>;
 
+    /// Resolve the credential while preserving whether it is an API key, a
+    /// bearer token, or an explicit anonymous value. Legacy providers default
+    /// to an API key because that was their only supported shape.
+    fn resolve_with_kind(&self) -> BoxFuture<'_, Result<LegacyCredential, LlmError>> {
+        Box::pin(async move { self.resolve().await.map(LegacyCredential::ApiKey) })
+    }
+
+    /// Return a static API key when this provider is explicitly static.
+    fn static_api_key(&self) -> Option<&str> {
+        None
+    }
+
     /// Short human-readable label used in diagnostics.
     fn describe(&self) -> &'static str {
         "credential"
     }
+}
+
+/// How a resolved stable credential should be encoded by a provider adapter.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CredentialKind {
+    ApiKey,
+    Bearer,
+    None,
+}
+
+/// Stable, opaque credential value. Its debug output never contains the secret.
+#[derive(Clone)]
+pub struct Credential {
+    kind: CredentialKind,
+    value: String,
+}
+
+impl std::fmt::Debug for Credential {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Credential")
+            .field("kind", &self.kind)
+            .field("value", &"<redacted>")
+            .finish()
+    }
+}
+
+impl Credential {
+    pub fn api_key(value: impl Into<String>) -> Result<Self, CredentialError> {
+        Self::validated(CredentialKind::ApiKey, value.into())
+    }
+
+    pub fn bearer(value: impl Into<String>) -> Result<Self, CredentialError> {
+        Self::validated(CredentialKind::Bearer, value.into())
+    }
+
+    pub const fn none() -> Self {
+        Self {
+            kind: CredentialKind::None,
+            value: String::new(),
+        }
+    }
+
+    pub(crate) fn kind(&self) -> CredentialKind {
+        self.kind
+    }
+
+    pub(crate) fn secret(&self) -> Option<&str> {
+        (self.kind != CredentialKind::None).then_some(self.value.as_str())
+    }
+
+    fn validated(kind: CredentialKind, value: String) -> Result<Self, CredentialError> {
+        if value.is_empty() {
+            return Err(CredentialError::Empty);
+        }
+        if value.chars().any(|character| character.is_control()) {
+            return Err(CredentialError::ControlCharacter);
+        }
+        if !value.bytes().all(|byte| (0x21..=0x7e).contains(&byte)) {
+            return Err(CredentialError::InvalidHeaderValue);
+        }
+        Ok(Self { kind, value })
+    }
+}
+
+/// Resolves a stable credential at dispatch time.
+pub trait CredentialSource: Send + Sync + std::fmt::Debug {
+    fn resolve(&self) -> BoxFuture<'_, Result<Credential, CredentialError>>;
+}
+
+/// Adapt the legacy credential provider to the stable source contract.
+#[derive(Debug)]
+pub struct LegacyCredentialSource {
+    provider: Arc<dyn CredentialProvider>,
+}
+
+impl CredentialSource for LegacyCredentialSource {
+    fn resolve(&self) -> BoxFuture<'_, Result<Credential, CredentialError>> {
+        Box::pin(async move {
+            let credential = self
+                .provider
+                .resolve_with_kind()
+                .await
+                .map_err(|_| CredentialError::Unavailable)?;
+            match credential {
+                LegacyCredential::ApiKey(secret) => {
+                    Credential::api_key(secret.expose_secret().clone())
+                }
+                LegacyCredential::Bearer(secret) => {
+                    Credential::bearer(secret.expose_secret().clone())
+                }
+                LegacyCredential::None => Ok(Credential::none()),
+            }
+        })
+    }
+}
+
+pub fn legacy_credential_source(
+    provider: Arc<dyn CredentialProvider>,
+) -> Arc<dyn CredentialSource> {
+    Arc::new(LegacyCredentialSource { provider })
+}
+
+/// Stable authentication configuration.
+#[derive(Clone)]
+pub enum Authentication {
+    Static(Credential),
+    Refreshable(Arc<dyn CredentialSource>),
+    None,
+}
+
+/// Stable credential validation and refresh failures.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum CredentialError {
+    #[error("credential is empty")]
+    Empty,
+    #[error("credential contains a control character")]
+    ControlCharacter,
+    #[error("credential is not a valid HTTP header value")]
+    InvalidHeaderValue,
+    #[error("credential is unavailable")]
+    Unavailable,
+    #[error("credential refresh failed")]
+    RefreshFailed,
 }
 
 /// Static API-key credential provider, the current default implementation.
@@ -62,6 +198,10 @@ impl ApiKeyProvider {
 impl CredentialProvider for ApiKeyProvider {
     fn resolve(&self) -> BoxFuture<'_, Result<SecretString, LlmError>> {
         Box::pin(async move { Ok((*self.api_key).clone()) })
+    }
+
+    fn static_api_key(&self) -> Option<&str> {
+        Some(self.api_key.expose_secret())
     }
 
     fn describe(&self) -> &'static str {

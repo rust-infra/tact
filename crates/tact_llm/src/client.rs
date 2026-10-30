@@ -1,10 +1,14 @@
 //! [`LlmClient`] trait and [`LlmProvider`] enum.
 
-use tact_protocol::{TokenUsageInfo, UpdateSink};
-
+#[cfg(feature = "anthropic")]
+use crate::anthropic;
+use crate::error::LlmError;
+#[cfg(any(feature = "openai-chat", feature = "openai-responses"))]
+use crate::openai;
+use crate::provider_state::{ProviderConversationState, ProviderStateUpdate};
 use crate::{
-    ContentBlock, CreateMessageParams, LlmError, ProviderConversationState, ProviderStateUpdate,
-    StopReason, anthropic, mock::MockClient, openai,
+    ContentBlock, CreateMessageParams, ProviderProgressSink, StopReason, TokenUsageInfo,
+    mock::MockClient,
 };
 
 /// Serialized JSON request body actually sent to the LLM API (for session debugging).
@@ -15,7 +19,7 @@ pub type LlmRequestBody = Vec<u8>;
 /// Replaces the previous 4-tuple `(blocks, stop_reason, usage, request_body)`
 /// with a named struct so provider adapters can carry protocol state
 /// (e.g. OpenAI Responses compaction) alongside the logical content.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct LlmResponse {
     /// Content blocks produced by the model.
     pub blocks: Vec<ContentBlock>,
@@ -29,10 +33,26 @@ pub struct LlmResponse {
     pub state_update: ProviderStateUpdate,
 }
 
+impl std::fmt::Debug for LlmResponse {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("LlmResponse")
+            .field("blocks", &self.blocks)
+            .field("stop_reason", &self.stop_reason)
+            .field("usage", &self.usage)
+            .field(
+                "request_body",
+                &self.request_body.as_ref().map(|_| "<redacted>"),
+            )
+            .field("state_update", &self.state_update)
+            .finish()
+    }
+}
+
 /// Abstract interface for streaming and non-streaming LLM calls.
 #[allow(async_fn_in_trait)]
 pub trait LlmClient: Send + Sync {
-    /// Stream a message request, emitting real-time updates through `events`.
+    /// Stream a message request, emitting neutral progress through `events`.
     ///
     /// The sink is what lets a headless run show a slow model call: deltas go
     /// to every attached destination, while the *answering* channel stays out
@@ -46,7 +66,7 @@ pub trait LlmClient: Send + Sync {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        events: &UpdateSink,
+        events: &dyn ProviderProgressSink,
     ) -> Result<LlmResponse, LlmError>;
 
     /// Non-streaming message request (used for context compaction).
@@ -78,8 +98,11 @@ pub trait LlmClient: Send + Sync {
 /// Supported LLM providers.
 #[derive(Clone)]
 pub enum LlmProvider {
+    #[cfg(feature = "anthropic")]
     Anthropic(anthropic::AnthropicAdapter),
+    #[cfg(feature = "openai-chat")]
     ChatCompletions(openai::compatible::ChatCompletionsAdapter),
+    #[cfg(feature = "openai-responses")]
     OpenAiResponses(openai::responses::OpenAiResponsesAdapter),
     /// Mock provider for integration tests. Returns predetermined responses.
     Mock(MockClient),
@@ -90,13 +113,16 @@ impl LlmClient for LlmProvider {
         &self,
         request: &CreateMessageParams,
         provider_state: Option<&ProviderConversationState>,
-        events: &UpdateSink,
+        events: &dyn ProviderProgressSink,
     ) -> Result<LlmResponse, LlmError> {
         match self {
+            #[cfg(feature = "anthropic")]
             LlmProvider::Anthropic(a) => a.stream_message(request, provider_state, events).await,
+            #[cfg(feature = "openai-chat")]
             LlmProvider::ChatCompletions(c) => {
                 c.stream_message(request, provider_state, events).await
             }
+            #[cfg(feature = "openai-responses")]
             LlmProvider::OpenAiResponses(o) => {
                 o.stream_message(request, provider_state, events).await
             }
@@ -110,8 +136,11 @@ impl LlmClient for LlmProvider {
         provider_state: Option<&ProviderConversationState>,
     ) -> Result<LlmResponse, LlmError> {
         match self {
+            #[cfg(feature = "anthropic")]
             LlmProvider::Anthropic(a) => a.create_message(request, provider_state).await,
+            #[cfg(feature = "openai-chat")]
             LlmProvider::ChatCompletions(c) => c.create_message(request, provider_state).await,
+            #[cfg(feature = "openai-responses")]
             LlmProvider::OpenAiResponses(o) => o.create_message(request, provider_state).await,
             LlmProvider::Mock(m) => m.create_message(request, provider_state).await,
         }
@@ -123,8 +152,11 @@ impl LlmClient for LlmProvider {
         provider_state: Option<&ProviderConversationState>,
     ) -> Result<LlmResponse, LlmError> {
         match self {
+            #[cfg(feature = "anthropic")]
             LlmProvider::Anthropic(a) => a.compact(request, provider_state).await,
+            #[cfg(feature = "openai-chat")]
             LlmProvider::ChatCompletions(c) => c.compact(request, provider_state).await,
+            #[cfg(feature = "openai-responses")]
             LlmProvider::OpenAiResponses(o) => o.compact(request, provider_state).await,
             LlmProvider::Mock(m) => m.compact(request, provider_state).await,
         }
@@ -141,9 +173,13 @@ impl LlmProvider {
     /// endpoint is `opencode.ai`. Anthropic / Mock — no-op.
     pub fn set_user_id(&mut self, user_id: &str) {
         match self {
+            #[cfg(feature = "openai-chat")]
             LlmProvider::ChatCompletions(c) => c.set_user_id(user_id.to_string()),
+            #[cfg(feature = "openai-responses")]
             LlmProvider::OpenAiResponses(o) => o.set_session_id(user_id.to_string()),
-            LlmProvider::Anthropic(_) | LlmProvider::Mock(_) => {}
+            #[cfg(feature = "anthropic")]
+            LlmProvider::Anthropic(_) => {}
+            LlmProvider::Mock(_) => {}
         }
     }
 }
@@ -151,10 +187,9 @@ impl LlmProvider {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        ContentBlock, RequiredMessageParams, StopReason, anthropic::AnthropicAdapter,
-        mock::MockClient,
-    };
+    #[cfg(feature = "anthropic")]
+    use crate::anthropic::AnthropicAdapter;
+    use crate::{ContentBlock, RequiredMessageParams, StopReason, mock::MockClient};
 
     #[test]
     fn unchanged_provider_response_has_explicit_state_update() {
@@ -196,6 +231,7 @@ mod tests {
         ));
     }
 
+    #[cfg(feature = "anthropic")]
     #[tokio::test]
     async fn non_responses_compact_is_unsupported() {
         let client = LlmProvider::Anthropic(AnthropicAdapter::new(
@@ -212,5 +248,19 @@ mod tests {
             .await
             .expect_err("compact must be unsupported for non-Responses providers");
         assert!(matches!(error, LlmError::Unsupported(_)));
+    }
+
+    #[test]
+    fn llm_response_debug_redacts_request_body() {
+        let response = LlmResponse {
+            blocks: Vec::new(),
+            stop_reason: None,
+            usage: None,
+            request_body: Some(b"SECRET-BODY".to_vec()),
+            state_update: ProviderStateUpdate::Unchanged,
+        };
+        let debug = format!("{response:?}");
+        assert!(!debug.contains("SECRET-BODY"));
+        assert!(debug.contains("redacted"));
     }
 }

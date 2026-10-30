@@ -413,7 +413,7 @@ href="./12_chapter_subagent_zh.html">子 Agent</a> 的
                                          │
                                          ▼
                                ┌─────────────────────┐
-│                              │ execute_tool_call() │
+│                              │ execute_tool_calls()│
 │                              └─────────────────────┘
 │                                         │
 │          ┌──────────────────────────────┼──────────────────────────────┐
@@ -431,7 +431,7 @@ href="./12_chapter_subagent_zh.html">子 Agent</a> 的
 <p>循环持续直到模型停止、询问用户，或满足完成条件。</p>
 <hr />
 <h2 id="2-三阶段流水线">2. 三阶段流水线</h2>
-<p><code>Agent::execute_tool_call</code>（<code>crates/tact/src/agent/tool_dispatch.rs</code>）将每轮分为三个阶段。</p>
+<p><code>AgentKernel::execute_tool_calls</code>（<code>crates/agent_core/src/kernel.rs</code>）将每轮分为三个阶段；产品侧的 hook、权限和工具执行由 <code>crates/tact/src/runtime/gate_adapter.rs</code> 与 <code>crates/tact/src/runtime/tool_adapter.rs</code> 提供。</p>
 <h3 id="phase-1--预检串行">Phase 1 — 预检（串行）</h3>
 <p>按模型发出顺序，每个工具各执行一次：</p>
 <ol type="1">
@@ -445,7 +445,8 @@ href="./12_chapter_subagent_zh.html">子 Agent</a> 的
 <code>&amp;mut self</code>。</p>
 <h3 id="phase-2--执行按-wave-并行">Phase 2 — 执行（按 wave 并行）</h3>
 <p>所有通过预检的工具交给
-<code>crates/tact/src/agent/tool_schedule.rs</code> 中的调度器：</p>
+<code>crates/agent_core/src/scheduling.rs</code> 中的调度器；产品资源由
+<code>crates/tact/src/runtime/tool_adapter.rs</code> 映射：</p>
 <ul>
 <li>无依赖的 read 一起运行。</li>
 <li>冲突的 read/write 或 write/write 串行化。</li>
@@ -474,16 +475,15 @@ recent files 都发生在 <strong>Phase 2 的完成循环里</strong>：每有�
 future
 就绪就立即处理，因此波内按<strong>完成顺序</strong>（不是模型顺序）触发；<code>StepFinished</code>
 携带 <code>step_idx</code>，UI 靠它归位。</p>
-<p>所有 wave 结束后，<code>build_tool_results</code> 按
-<code>prepared</code> 数组（模型原始顺序）把输出拼回
+<p>所有 wave 结束后，kernel 按 slot（模型原始顺序）把输出拼回
 <code>ToolResult</code> 块，再追加到
-<code>runtime.context</code>——provider 校验 <code>tool_use</code> /
+<code>AgentState.transcript</code>——provider 校验 <code>tool_use</code> /
 <code>tool_result</code> 的配对与次序，这一步的顺序就是契约。</p>
 <hr />
 <h2 id="3-冲突模型与安全">3. 冲突模型与安全</h2>
-<p><code>tool_schedule.rs</code>
+<p><code>agent_core/src/scheduling.rs</code>
 决定哪些工具可重叠，但它不维护一张工具名表：资源来自<strong>工具自己的元数据</strong>。每个工具在
-<code>ToolMetadata.resources</code>（<code>ResourcePolicy</code>，<code>crates/tact/src/tool/metadata.rs</code>）里声明形状，<code>tool_resources_from_metadata</code>
+<code>ToolMetadata.resources</code>（<code>ResourcePolicy</code>，<code>crates/tact/src/tool/metadata.rs</code>）里声明形状，<code>TactToolPort::access</code>
 调 <code>ResourcePolicy::resolve</code> 把它 +
 本次输入解析成具体的读/写路径集：</p>
 <table>
@@ -594,7 +594,7 @@ toolset 再注册它</strong>——<code>edit_file</code> 恢复后 apply_patch
 <hr />
 <h2 id="4-权限与-hook">4. 权限与 Hook</h2>
 <p>工具进入调度前，预检先按工具<strong>元数据</strong>解析风险（<code>PermissionPolicy::resolve</code>，在
-<code>tool_dispatch.rs</code> 内），再把风险连同工具名与输入交给
+<code>runtime/gate_adapter.rs</code> 内），再把风险连同工具名与输入交给
 <code>PermissionManager</code>：</p>
 <ul>
 <li><strong>只读</strong>：一般允许。</li>
@@ -621,23 +621,12 @@ toolset 再注册它</strong>——<code>edit_file</code> 恢复后 apply_patch
 <hr />
 <h2 id="6-可观测性tool-schedule-summary">6. 可观测性：Tool Schedule
 Summary</h2>
-<p>执行后 <code>persist_tool_schedule</code> 将
-<code>ToolScheduleSummary</code> 写入与 LLM 调用相同的
-<code>token_usages</code> 行。行匹配在
-<strong><code>persist_llm_call</code> 时</strong> 捕获的
-<code>last_message_id</code>（<code>llm_call_last_message_id</code> ——
-发给模型的最后一条消息，在 assistant 响应行追加之前）。</p>
-<pre class="json"><code>{
-  &quot;total_tools&quot;: 5,
-  &quot;wave_count&quot;: 3,
-  &quot;max_parallelism&quot;: 3,
-  &quot;waves&quot;: [
-    { &quot;tools&quot;: [&quot;read_file&quot;, &quot;read_file&quot;, &quot;read_file&quot;], &quot;barrier&quot;: false },
-    { &quot;tools&quot;: [&quot;write_file&quot;], &quot;barrier&quot;: false },
-    { &quot;tools&quot;: [&quot;read_file&quot;], &quot;barrier&quot;: false }
-  ]
-}</code></pre>
-<p>这会将调度策略与 token 成本关联，便于后续分析。</p>
+<p>旧的 <code>persist_tool_schedule</code> /
+<code>ToolScheduleSummary</code> 路径已随 kernel migration 移除。
+<code>token_usages.tool_schedule</code> 列和
+<code>record_tool_schedule</code> API 仍保留用于兼容既有数据库，但当前
+kernel activation 不再生成或写入 schedule summary。调度本身仍可在
+<code>agent_core/src/scheduling.rs</code> 中观察和测试。</p>
 <hr />
 <h2 id="7-自定义调度">7. 自定义调度</h2>
 <p>要使新 native 工具可安全并行：</p>
@@ -669,13 +658,16 @@ barrier。字段名与 <code>permission</code> /
 <td><code>Agent::agent_loop</code>、<code>stream_message</code>、会话辅助</td>
 </tr>
 <tr>
-<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
-<td><code>execute_tool_call</code>、三阶段编排</td>
+<td><code>crates/agent_core/src/kernel.rs</code></td>
+<td><code>execute_tool_calls</code>、三阶段编排</td>
+</tr>
+<tr>
+<td><code>crates/agent_core/src/scheduling.rs</code></td>
+<td>冲突检测与 wave 调度器</td>
 </tr>
 <tr>
 <td><code>crates/tact/src/agent/tool_schedule.rs</code></td>
-<td>资源模型、冲突检测、wave
-调度器、<code>ToolScheduleSummary</code></td>
+<td>产品 <code>ToolResources</code> 契约与 MCP server 资源辅助</td>
 </tr>
 <tr>
 <td><code>crates/tact/src/permission/mod.rs</code></td>
@@ -693,7 +685,7 @@ barrier。字段名与 <code>permission</code> /
 </tr>
 <tr>
 <td><code>crates/tact/src/store/session_store/</code></td>
-<td><code>record_tool_schedule</code> — 持久化 schedule summary</td>
+<td><code>record_tool_schedule</code> — 兼容 API；当前 kernel path 不写入</td>
 </tr>
 </tbody>
 </table>

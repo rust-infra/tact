@@ -1,0 +1,13 @@
+{
+  "anthropic": {
+    "anthropic-version": "2023-06-01",
+    "x-api-key": "sk-ant-secret"
+  },
+  "custom-chat": {},
+  "openai-chat": {
+    "authorization": "Bearer sk-secret"
+  },
+  "openai-responses": {
+    "authorization": "Bearer sk-secret"
+  }
+}

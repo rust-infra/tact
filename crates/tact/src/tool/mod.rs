@@ -85,7 +85,7 @@ use memory::SaveMemoryTool;
 #[cfg(test)]
 use read_file::ReadFileTool;
 pub use registry::{subagent_toolset, toolset, toolset_with_memory};
-// Re-exported so `crate::agent::tool_dispatch` can do per-invocation resource
+// Re-exported so `runtime::tool_adapter` can do per-invocation resource
 // resolution for worktree-isolated `spawn_subagent` calls without naming the
 // private `subagent` module.
 #[cfg(test)]
@@ -119,6 +119,10 @@ pub struct ToolContext {
     pub subagent_stop_hooks: Vec<Arc<dyn crate::hook::SubagentStopFn>>,
     pub memory_manager: Arc<std::sync::Mutex<MemoryManager>>,
     pub work_dir: PathBuf,
+    /// Whether the active model accepts image input. Stamped from the
+    /// activation snapshot so a running turn is not affected by later global
+    /// configuration changes.
+    pub vision: bool,
     pub task_manager: SharedTaskManager,
     pub goal_manager: SharedGoalManager,
     pub active_goal_id: Option<String>,
@@ -137,7 +141,7 @@ pub struct ToolContext {
     /// Cloned into subagents so request ids stay globally unique.
     pub ui_responder: UiResponder,
     pub progress_reporter: ToolProgressReporter,
-    pub cancel_flag: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    pub cancel_flag: std::sync::Arc<crate::cancel::CancelController>,
     pub bash_timeout_secs: u64,
     /// Nice increment applied to the bash sub-process group (macOS/Linux only).
     /// Default 10 so TUI stays responsive during heavy commands like `cargo test`.
@@ -218,8 +222,9 @@ pub trait Tool: Send + Sync {
 }
 
 /// A registered tool: handler + its static metadata.
+#[derive(Clone)]
 struct RegisteredTool {
-    handler: Box<dyn Tool>,
+    handler: Arc<dyn Tool>,
     metadata: &'static ToolMetadata,
 }
 
@@ -244,6 +249,7 @@ impl ResolvedNativeTool<'_> {
 /// Tools are stored as `Box<dyn Tool>` and dispatched by name on every
 /// [`call`](ToolRouter::call).  The router can also emit the full list of
 /// [`ToolSpec`] values for inclusion in the LLM API request.
+#[derive(Clone)]
 pub struct ToolRouter {
     tools: HashMap<String, RegisteredTool>,
     cached_specs: OnceLock<Vec<ToolSpec>>,
@@ -290,7 +296,7 @@ impl ToolRouter {
         self.tools.insert(
             name,
             RegisteredTool {
-                handler: Box::new(tool),
+                handler: Arc::new(tool),
                 metadata,
             },
         );

@@ -1,0 +1,15 @@
+error[E0432]: unresolved import `tact_llm::OpenAiBodyHook`
+ --> tests/ui/stable-hook.rs:1:5
+  |
+1 | use tact_llm::OpenAiBodyHook;
+  |     ^^^^^^^^^^--------------
+  |               |
+  |               no `OpenAiBodyHook` in the root
+  |
+note: found an item that was configured out
+ --> src/lib.rs
+  |
+  | #[cfg(all(feature = "openai-chat", feature = "legacy-tact"))]
+  |           ----------------------- the item is gated behind the `openai-chat` feature
+  | pub use openai::compatible::body::OpenAiBodyHook;
+  |                                   ^^^^^^^^^^^^^^

@@ -21,7 +21,7 @@ pub(crate) use overlay::handle_overlay_key;
 pub(crate) use palette::handle_palette_mode;
 pub(crate) use select::handle_select_mode;
 pub(crate) use skills::flush_pending_when_idle;
-use tact_protocol::UserCommand;
+use tact_protocol::{PermissionMode, UserCommand};
 
 use crate::widgets::state::{App, InputMode, SelectKind, SlashCommand, Status};
 
@@ -838,10 +838,10 @@ pub(crate) fn start_permission_picker(app: &mut App) {
         msgs.permission_option_plan.to_string(),
         msgs.permission_option_auto.to_string(),
     ];
-    let current = match app.status_bar_mut().permission_mode.as_str() {
-        "plan" => 1,
-        "auto" => 2,
-        _ => 0,
+    let current = match app.status_bar_mut().permission_mode {
+        PermissionMode::Default => 0,
+        PermissionMode::Plan => 1,
+        PermissionMode::Auto => 2,
     };
     app.select_kind = crate::widgets::state::SelectKind::PermissionModePick;
     app.select.set_local(

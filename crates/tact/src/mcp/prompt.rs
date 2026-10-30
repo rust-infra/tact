@@ -21,7 +21,7 @@
 //! The two names follow the resource pair's convention (`list_mcp_resources` /
 //! `read_mcp_resource`) rather than inventing a new shape.
 //!
-//! Like the resource tools, these are resolved in `agent::tool_dispatch` against
+//! Like the resource tools, these are resolved in `runtime::tool_adapter` against
 //! the live router and only exist while a server is connected.
 
 use anyhow::{Context as _, Result};

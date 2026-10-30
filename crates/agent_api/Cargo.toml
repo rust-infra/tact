@@ -1,0 +1,20 @@
+[package]
+name = "tact_agent_api"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version = "1.88"
+description = "Provider-neutral contracts for embedding the Tact agent kernel"
+repository = "https://github.com/rust-infra/tact"
+
+[dependencies]
+async-trait = { workspace = true }
+futures-core = "0.3"
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = "2"
+tokio-util = { workspace = true }
+
+[features]
+default = []
+test-support = []

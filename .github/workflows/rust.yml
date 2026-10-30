@@ -10,6 +10,26 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  kernel-deps:
+    name: Kernel dependency boundaries
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - run: scripts/check-agent-kernel-deps.sh tact_agent_api tact_agent_core tact_llm tact_agent_sdk
+      - run: python3 scripts/check-packaging.py
+      - run: scripts/check-package.sh
+
+  msrv:
+    name: Minimum supported Rust version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.88.0
+      - run: cargo check -p tact_agent_sdk --no-default-features
+      - run: cargo check -p tact_llm --no-default-features --features openai-chat
+      - run: cargo check -p tact_llm --no-default-features --features openai-responses
+
   fmt:
     name: Format check
     runs-on: ubuntu-latest
@@ -72,6 +92,16 @@ jobs:
       - name: Build the workspace docs
         run: cargo doc --no-deps
 
+  book:
+    name: Book check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 scripts/book-check.py book
+
   test:
     name: Test
     runs-on: ubuntu-latest
@@ -91,7 +121,5 @@ jobs:
             target
           key: ${{ runner.os }}-cargo-test-${{ hashFiles('Cargo.lock') }}
           restore-keys: ${{ runner.os }}-cargo-test-
-      - name: Run integration tests (tact-ui, tui, tact, tact_llm)
-        run: cargo test -p tact-ui -p tui -p tact -p tact_llm --verbose
       - name: Run full workspace tests
         run: cargo test --verbose

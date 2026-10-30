@@ -17,8 +17,8 @@ $Repo = if ($env:TACT_INSTALL_REPO) { $env:TACT_INSTALL_REPO } else { "rust-infr
 $BinaryName = "tact-ui"
 $CratePackage = "tact-ui"
 $DefaultVersion = "0.19.0"
-# Matches workspace.package.rust-version (edition 2024).
-$MinRustcVersion = "1.85.0"
+# Matches workspace.package.rust-version (Rust 1.91 / edition 2024).
+$MinRustcVersion = "1.91.0"
 
 function Show-Help {
     @"
@@ -27,7 +27,7 @@ Usage: install.ps1 [OPTIONS]
 Install the tact-ui binary on Windows.
 
 By default the installer downloads a matching GitHub release asset when one
-exists, otherwise it builds from source (Rust 1.85+ / edition 2024 required).
+exists, otherwise it builds from source (Rust 1.91+ / edition 2024 required).
 
 Options:
   -InstallDir PATH     Install directory (default: %USERPROFILE%\.local\bin)

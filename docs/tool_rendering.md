@@ -45,7 +45,7 @@ sequenceDiagram
     end
 ```
 
-### Runtime (`crates/tact/src/agent/tool_dispatch.rs`)
+### Runtime (`crates/agent_core/src/kernel.rs` + `crates/tact/src/runtime/event_adapter.rs`)
 
 | Step | What happens |
 |---|---|
@@ -370,7 +370,9 @@ No changes to `ToolCell` are needed unless the visual structure itself changes (
 
 | File | Responsibility |
 |---|---|
-| `crates/tact/src/agent/tool_dispatch.rs` | `execute_tool_call`, `StepResult` assembly, `tool_*_summary/detail` |
+| `crates/agent_core/src/kernel.rs` | Tool dispatch, wave execution, and `AgentEvent` emission |
+| `crates/tact/src/runtime/event_adapter.rs` | `AgentEvent` to `AgentUpdate` translation, including `StepResult` assembly |
+| `crates/tact/src/runtime/tool_presentation.rs` | Argument summaries, presentation metadata, and step detail policy |
 | `crates/protocol/src/lib.rs` | `AgentUpdate`, `StepResult` types |
 | `crates/tui/src/widgets/state/app/agent.rs` | `handle_agent_update` for tool events |
 | `crates/tui/src/widgets/state/app/visibility.rs` | Placeholders, finalize, cancel, phys index shifting |

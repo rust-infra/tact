@@ -7,8 +7,8 @@ use std::sync::{
 };
 
 use tact::permission::PermissionMode;
-use tact_llm::{ContentBlock, MockClient, StopReason};
-use tact_protocol::{AgentUpdate, TokenUsageInfo, UiResponse, UserCommand};
+use tact_llm::{ContentBlock, MockClient, StopReason, TokenUsageInfo};
+use tact_protocol::{AgentUpdate, UiResponse, UserCommand};
 use tact_ui::{
     driver::run_command_loop,
     test_support::{

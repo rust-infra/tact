@@ -5,7 +5,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::Paragraph,
 };
-use tact_protocol::BalanceEntry;
+use tact_protocol::{BalanceEntry, PermissionMode};
 
 use crate::{
     state::{FocusedPanel, InputMode, Status},
@@ -158,7 +158,10 @@ fn format_cache_pct(hit: u64, miss: u64) -> String {
 /// answer "how close am I to auto-compact"; the percentage answers it directly,
 /// and the gauge only restated that same percentage as glyphs. The absolute
 /// `used/window` stays — a ratio cannot replace the two counts it came from.
-fn format_context_meter(label: &str, used: u32, window: usize) -> String {
+fn format_context_meter(label: &str, used: u32, window: Option<usize>) -> String {
+    let Some(window) = window.filter(|window| *window > 0) else {
+        return format!("{label} -- {}/--", format_tokens_compact(used as u64));
+    };
     let pct = context_usage_pct(used, window);
     format!(
         "{label} {pct}% {}/{}",
@@ -275,13 +278,13 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
     let mut row1_groups: Vec<DropGroup> = vec![
         // Permission mode (never dropped — security-critical indicator)
         {
-            let (perm_label, perm_style) = match ctx.status_bar.permission_mode.as_str() {
-                "plan" => (
+            let (perm_label, perm_style) = match ctx.status_bar.permission_mode {
+                PermissionMode::Plan => (
                     msgs.bottom_permission_plan,
                     Style::default().fg(theme.warning),
                 ),
-                "default" => (msgs.bottom_permission_default, secondary),
-                _ => (
+                PermissionMode::Default => (msgs.bottom_permission_default, secondary),
+                PermissionMode::Auto => (
                     msgs.bottom_permission_auto,
                     Style::default().fg(theme.success),
                 ),
@@ -338,7 +341,10 @@ pub fn render_bottom_bar(frame: &mut Frame, area: Rect, ctx: &RenderCtx) {
     let out = format_max_out_tokens(msgs.bottom_out, ctx.status_bar.model_max_tokens);
     let think = format_think_segment(
         msgs.bottom_think,
-        ctx.status_bar.model_reasoning_effort.as_deref(),
+        ctx.status_bar
+            .model_reasoning_effort
+            .as_ref()
+            .map(|effort| effort.as_str()),
         ctx.status_bar.model_thinking_budget,
     );
     let meter = format_context_meter(
@@ -701,7 +707,7 @@ mod render_tests {
 
     #[test]
     fn format_context_meter_leads_with_the_percentage() {
-        let s = super::format_context_meter("ctx", 0, 1_000_000);
+        let s = super::format_context_meter("ctx", 0, Some(1_000_000));
         assert!(s.starts_with("ctx 0%"), "got {s}");
         assert!(s.contains("0/1M"), "got {s}");
         assert!(
@@ -716,8 +722,20 @@ mod render_tests {
 
     #[test]
     fn context_meter_reports_percentage_before_used_and_window() {
-        let s = super::format_context_meter("ctx", 45_000, 1_000_000);
+        let s = super::format_context_meter("ctx", 45_000, Some(1_000_000));
         assert_eq!(s, "ctx 4% 45K/1M");
+    }
+
+    #[test]
+    fn unknown_context_window_is_not_rendered_as_zero_percent() {
+        assert_eq!(
+            super::format_context_meter("ctx", 45_000, None),
+            "ctx -- 45K/--"
+        );
+        assert_eq!(
+            super::format_context_meter("ctx", 45_000, Some(0)),
+            "ctx -- 45K/--"
+        );
     }
 
     #[test]

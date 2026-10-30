@@ -533,14 +533,22 @@ pub fn classify_command_with(command: &str, home: Option<&Path>, extra: &[String
 /// Read by two audiences: the model (which must not retry, and must tell the
 /// user rather than work around it) and the human (who needs the exact escape
 /// hatch).
+#[cfg(test)]
 #[must_use]
 pub fn refusal_text(hit: &Hit) -> String {
+    refusal_text_for(&hit.matched, hit.kind.label())
+}
+
+/// Format a credential refusal from the opaque metadata carried by the tool
+/// adapter. Keeping the wording here prevents the legacy and kernel gates from
+/// drifting apart.
+#[must_use]
+pub fn refusal_text_for(matched: &str, kind: &str) -> String {
     format!(
         "Refused: {} is credential material ({}). Reading it is not something this agent does. \
          If the user asked for this, they can permit the path in .tact/settings.json under \
          permissions.sensitive_paths.allow (or $HOME/.tact/settings.json for a global allowance).",
-        hit.matched,
-        hit.kind.label(),
+        matched, kind,
     )
 }
 

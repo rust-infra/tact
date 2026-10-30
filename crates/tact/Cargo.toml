@@ -3,11 +3,16 @@ name = "tact"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+rust-version.workspace = true
+description = "Tact product runtime and composition root"
+repository = "https://github.com/rust-infra/tact"
 
 [dependencies]
-tact_protocol = { path = "../protocol" }
-tact_llm = { path = "../tact_llm" }
-tool_refactor_macros = { path = "../tool_refactor_macros" }
+tact_protocol = { version = "2.0.0", path = "../protocol" }
+tact_llm = { version = "2.0.0", path = "../tact_llm", default-features = false, features = ["legacy-tact", "account", "model-discovery", "product-runtime"] }
+tact_agent_api = { version = "2.0.0", path = "../agent_api" }
+tact_agent_core = { version = "2.0.0", path = "../agent_core" }
+tool_refactor_macros = { version = "2.0.0", path = "../tool_refactor_macros" }
 anyhow = { workspace = true }
 async-openai = { workspace = true }
 async-trait = { workspace = true }
@@ -47,7 +52,7 @@ tokio-util = { workspace = true }
 cpal = { workspace = true }
 toml = { workspace = true }
 toml_edit = { workspace = true }
-tracing = { workspace = true }
+tracing = { workspace = true, features = ["attributes"] }
 uuid = { workspace = true }
 walkdir = { workspace = true }
 
@@ -55,6 +60,7 @@ walkdir = { workspace = true }
 test-support = []
 
 [dev-dependencies]
+tact_agent_core = { version = "2.0.0", path = "../agent_core", features = ["test-support"] }
 wiremock = "0.6"
 proptest = "1"
 rmcp = { workspace = true, features = ["server"] }

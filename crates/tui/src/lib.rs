@@ -49,7 +49,7 @@ use ratatui::{
     widgets::ScrollbarState,
 };
 use tact::plugin::{PluginEvent, PluginRequest};
-use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, ReasoningEffort, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
 use tokio_stream::StreamExt;
 
@@ -176,7 +176,7 @@ pub(crate) fn on_poll_timeout(app: &mut App) {
 
 /// Configuration for launching the TUI.
 pub struct TuiConfig {
-    pub agent_rx: UnboundedReceiver<AgentUpdate>,
+    pub agent_rx: tact_protocol::UpdateReceiver,
     pub account_rx: Option<UnboundedReceiver<AccountUpdate>>,
     pub plugin_rx: UnboundedReceiver<PluginEvent>,
     pub plugin_tx: UnboundedSender<PluginRequest>,
@@ -202,8 +202,8 @@ pub struct TuiConfig {
     pub model_max_tokens: u32,
     /// Configured thinking budget in tokens (0 = hide).
     pub model_thinking_budget: usize,
-    /// Active permission mode: "default" | "plan" | "auto".
-    pub permission_mode: String,
+    /// Active permission mode.
+    pub permission_mode: tact_protocol::PermissionMode,
     pub skills_description: String,
     pub skills_data: Vec<SkillEntry>,
     /// Shared session store used to inspect persisted request payloads.
@@ -289,7 +289,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     app.set_pending_ui(pending_ui);
     app.skill_registry = skill_registry;
     app.session_store = Some(session_store);
-    app.model_context_window = model_context_window;
+    app.model_context_window = (model_context_window != 0).then_some(model_context_window);
     app.voice_parsed_keybind = voice_parsed_keybind;
     // Seed the bottom bar from config so model/token info renders at startup;
     // the first ModelInfo/TokenUsage updates will overwrite these.
@@ -301,7 +301,7 @@ pub async fn run_tui(cfg: TuiConfig) -> Result<()> {
     }
     app.status_bar_mut().model_reasoning_effort = tact::config::try_settings()
         .and_then(|s| s.agent.reasoning_effort)
-        .map(|effort| effort.as_str().to_string());
+        .map(ReasoningEffort::from);
     app.add_startup_banner();
 
     if voice.enabled {

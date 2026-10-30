@@ -4,17 +4,20 @@
 //! can map new Anthropic `stop_reason` strings into [`crate::StopReason`]
 //! without waiting on upstream SDK enum updates.
 
-use std::{error::Error, time::Duration};
+use std::{error::Error, sync::Arc, time::Duration};
 
+use crate::auth::{ApiKeyProvider, CredentialProvider, LegacyCredential};
+use crate::client::{LlmClient, LlmResponse};
+use crate::error::{LlmError, MessageError};
+use crate::provider_state::{ProviderConversationState, ProviderStateUpdate};
+use crate::{
+    ContentBlock, ContentBlockDelta, CreateMessageParams, ModelCallParams, ProviderProgress,
+    ProviderProgressSink, StopReason, StreamUsage, ThinkingChunk, TokenUsageInfo,
+};
 use futures_util::StreamExt;
 use reqwest_eventsource::{Event, RequestBuilderExt};
+use secrecy::ExposeSecret;
 use serde::Deserialize;
-use tact_protocol::{AgentUpdate, ModelCallParams, ThinkingChunk, TokenUsageInfo, UpdateSink};
-
-use super::{
-    ContentBlock, ContentBlockDelta, CreateMessageParams, LlmClient, LlmError, LlmResponse,
-    MessageError, ProviderConversationState, ProviderStateUpdate, StopReason, StreamUsage,
-};
 
 /// Events emitted when an Anthropic thinking content block starts.
 fn thinking_start_events(initial_thinking: &str) -> Vec<ThinkingChunk> {
@@ -31,7 +34,7 @@ fn is_thinking_content_block(block: Option<&ContentBlock>) -> bool {
 
 #[derive(Clone)]
 pub struct AnthropicAdapter {
-    api_key: String,
+    credentials: Arc<dyn CredentialProvider>,
     base_url: String,
     api_version: String,
     client: reqwest::Client,
@@ -39,12 +42,20 @@ pub struct AnthropicAdapter {
 
 impl AnthropicAdapter {
     pub fn new(api_key: impl Into<String>, base_url: impl Into<String>) -> Self {
+        Self::new_with_auth(Arc::new(ApiKeyProvider::new(api_key)), base_url)
+    }
+
+    /// Build the adapter with request-time credential resolution.
+    pub fn new_with_auth(
+        credentials: Arc<dyn CredentialProvider>,
+        base_url: impl Into<String>,
+    ) -> Self {
         let client = reqwest::Client::builder()
             .read_timeout(Duration::from_secs(120))
             .build()
             .expect("failed to build reqwest client");
         Self {
-            api_key: api_key.into(),
+            credentials,
             base_url: base_url.into(),
             api_version: "2023-06-01".to_string(),
             client,
@@ -67,15 +78,40 @@ impl AnthropicAdapter {
         format!("{}/messages", self.base_url.trim_end_matches('/'))
     }
 
-    fn headers(&self) -> reqwest::header::HeaderMap {
+    async fn headers(&self) -> Result<reqwest::header::HeaderMap, LlmError> {
+        let credential = self.credentials.resolve_with_kind().await?;
         let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert("x-api-key", self.api_key.parse().unwrap());
+        match credential {
+            LegacyCredential::ApiKey(key) => {
+                headers.insert(
+                    "x-api-key",
+                    key.expose_secret().parse().map_err(|_| {
+                        LlmError::Auth("invalid Anthropic API key header value".to_string())
+                    })?,
+                );
+            }
+            LegacyCredential::Bearer(token) => {
+                headers.insert(
+                    reqwest::header::AUTHORIZATION,
+                    format!("Bearer {}", token.expose_secret())
+                        .parse()
+                        .map_err(|_| {
+                            LlmError::Auth("invalid Anthropic bearer header value".to_string())
+                        })?,
+                );
+            }
+            LegacyCredential::None => {
+                return Err(LlmError::Auth(
+                    "Anthropic requires an API key or bearer token".to_string(),
+                ));
+            }
+        }
         headers.insert("anthropic-version", self.api_version.parse().unwrap());
         headers.insert(
             reqwest::header::CONTENT_TYPE,
             "application/json".parse().unwrap(),
         );
-        headers
+        Ok(headers)
     }
 }
 
@@ -196,7 +232,8 @@ struct StreamErrorEvent {
 struct StreamErrorPayload {
     #[serde(rename = "type")]
     type_: String,
-    message: String,
+    #[serde(rename = "message")]
+    _message: String,
 }
 
 impl LlmClient for AnthropicAdapter {
@@ -204,7 +241,7 @@ impl LlmClient for AnthropicAdapter {
         &self,
         request: &CreateMessageParams,
         _provider_state: Option<&ProviderConversationState>,
-        events: &UpdateSink,
+        events: &dyn ProviderProgressSink,
     ) -> Result<LlmResponse, LlmError> {
         let mut response_blocks: Vec<ContentBlock> = Vec::new();
         let mut tool_input_buffers: Vec<String> = Vec::new();
@@ -217,7 +254,7 @@ impl LlmClient for AnthropicAdapter {
         let mut event_source = self
             .client
             .post(self.messages_url())
-            .headers(self.headers())
+            .headers(self.headers().await?)
             .json(&body)
             .eventsource()
             .map_err(|e| LlmError::Anthropic(MessageError::ApiError(format_http_error(&e))))?;
@@ -239,16 +276,14 @@ impl LlmClient for AnthropicAdapter {
                     let value: serde_json::Value =
                         serde_json::from_str(&msg.data).map_err(|e| {
                             LlmError::Anthropic(MessageError::ApiError(format!(
-                                "Failed to parse SSE event JSON: {e}. Data: {}",
-                                msg.data
+                                "Failed to parse SSE event JSON: {e}"
                             )))
                         })?;
 
                     let event_type = value["type"].as_str().ok_or_else(|| {
-                        LlmError::Anthropic(MessageError::ApiError(format!(
-                            "SSE event missing type field: {}",
-                            msg.data
-                        )))
+                        LlmError::Anthropic(MessageError::ApiError(
+                            "SSE event missing type field".to_string(),
+                        ))
                     })?;
 
                     match event_type {
@@ -259,16 +294,14 @@ impl LlmClient for AnthropicAdapter {
                                         "Failed to parse message_start: {e}"
                                     )))
                                 })?;
-                            events.send(AgentUpdate::ModelInfo(ModelCallParams {
+                            events.send(ProviderProgress::ModelInfo(ModelCallParams {
                                 model: start.message.model,
                                 max_tokens: request.max_tokens,
                                 thinking_budget: request
                                     .thinking
                                     .as_ref()
                                     .map(|t| clamp_token_count(t.budget_tokens as u64)),
-                                reasoning_effort: request
-                                    .reasoning_effort
-                                    .map(|effort| effort.as_str().to_string()),
+                                reasoning_effort: request.reasoning_effort.map(Into::into),
                                 extra_body: request
                                     .thinking
                                     .as_ref()
@@ -296,13 +329,13 @@ impl LlmClient for AnthropicAdapter {
                                 ContentBlock::Text { text } => {
                                     tool_input_buffers[index].clear();
                                     if !text.is_empty() {
-                                        events.send(AgentUpdate::StreamChunk(text.clone()));
+                                        events.send(ProviderProgress::TextDelta(text.clone()));
                                     }
                                 }
                                 ContentBlock::Thinking { thinking, .. } => {
                                     tool_input_buffers[index].clear();
                                     for chunk in thinking_start_events(thinking) {
-                                        events.send(AgentUpdate::ThinkingChunk(chunk));
+                                        events.send(ProviderProgress::Thinking(chunk));
                                     }
                                 }
                                 ContentBlock::ToolUse { .. } => {
@@ -326,7 +359,7 @@ impl LlmClient for AnthropicAdapter {
                                         response_blocks.get_mut(index)
                                     {
                                         existing.push_str(&text);
-                                        events.send(AgentUpdate::StreamChunk(text));
+                                        events.send(ProviderProgress::TextDelta(text));
                                     }
                                 }
                                 ContentBlockDelta::ThinkingDelta { thinking } => {
@@ -336,7 +369,7 @@ impl LlmClient for AnthropicAdapter {
                                     {
                                         existing.push_str(&thinking);
                                     }
-                                    events.send(AgentUpdate::ThinkingChunk(ThinkingChunk::Delta(
+                                    events.send(ProviderProgress::Thinking(ThinkingChunk::Delta(
                                         thinking,
                                     )));
                                 }
@@ -364,7 +397,7 @@ impl LlmClient for AnthropicAdapter {
                                     )))
                                 })?;
                             if is_thinking_content_block(response_blocks.get(stop.index)) {
-                                events.send(AgentUpdate::ThinkingChunk(ThinkingChunk::Finished));
+                                events.send(ProviderProgress::Thinking(ThinkingChunk::Finished));
                             }
                             if let Some(ContentBlock::ToolUse {
                                 input: existing, ..
@@ -403,7 +436,7 @@ impl LlmClient for AnthropicAdapter {
                                     ),
                                     reasoning_tokens: usage_reasoning_tokens(usage_json),
                                 };
-                                events.send(AgentUpdate::TokenUsage(info.clone()));
+                                events.send(ProviderProgress::Usage(info.clone()));
                                 token_usage = Some(info);
                             }
                         }
@@ -417,12 +450,15 @@ impl LlmClient for AnthropicAdapter {
                                     )))
                                 })?;
                             return Err(LlmError::Anthropic(MessageError::ApiError(format!(
-                                "stream error: {} - {}",
-                                err.error.type_, err.error.message
+                                "stream error: {}",
+                                err.error.type_
                             ))));
                         }
                         other => {
+                            #[cfg(feature = "telemetry")]
                             tracing::warn!("Unknown Anthropic SSE event type: {}", other);
+                            #[cfg(not(feature = "telemetry"))]
+                            let _ = other;
                         }
                     }
                 }
@@ -450,7 +486,7 @@ impl LlmClient for AnthropicAdapter {
         let response = self
             .client
             .post(self.messages_url())
-            .headers(self.headers())
+            .headers(self.headers().await?)
             .json(&body)
             .send()
             .await
@@ -458,10 +494,14 @@ impl LlmClient for AnthropicAdapter {
 
         if !response.status().is_success() {
             let status = response.status();
-            let body_text = response.text().await.unwrap_or_default();
-            return Err(LlmError::Anthropic(MessageError::ApiError(format!(
-                "HTTP {status}: {body_text}"
-            ))));
+            let retry_after = crate::transport::retry_after(response.headers());
+            let body_text = crate::transport::read_bounded_error_body(response).await;
+            let class = crate::transport::classify_http_error(status.as_u16(), &body_text);
+            return Err(LlmError::HttpError {
+                status: status.as_u16(),
+                class,
+                retry_after,
+            });
         }
 
         #[derive(Deserialize)]

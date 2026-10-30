@@ -14,6 +14,15 @@ if ! command -v cargo >/dev/null 2>&1; then
   exit 1
 fi
 
+echo "==> agent kernel dependency boundaries"
+scripts/check-agent-kernel-deps.sh tact_agent_api tact_agent_core tact_llm tact_agent_sdk
+
+echo "==> packaging manifests"
+python3 scripts/check-packaging.py
+
+echo "==> package and consumer fixtures"
+scripts/check-package.sh
+
 echo "==> cargo fmt -- --check"
 cargo fmt -- --check
 
@@ -25,7 +34,10 @@ cargo clippy --all-targets -- -D warnings
 # which matters because this script's stdout is read by humans *and* pasted into
 # agent transcripts. libtest still prints the full failure block and the
 # `test result:` summary in quiet mode, so a red run stays diagnosable.
-echo "==> cargo test -p tact-ui -p tui -p tact -p tact_llm"
-cargo test -p tact-ui -p tui -p tact -p tact_llm --quiet
+echo "==> cargo test --workspace"
+cargo test --workspace --quiet
+
+echo "==> book checks"
+python3 scripts/book-check.py book
 
 echo "Rust checks passed."

@@ -143,12 +143,18 @@ pub fn render_main_area_terminal(app: &mut App, width: u16, height: u16) -> Term
 
 /// Draw the full UI into a `TestBackend` and return the rendered buffer text.
 pub fn render_app_text(app: &mut App, width: u16, height: u16) -> String {
+    let terminal = render_app_terminal(app, width, height);
+    buffer_text(terminal.backend().buffer())
+}
+
+/// Draw the full UI into a `TestBackend` for buffer-level assertions.
+pub fn render_app_terminal(app: &mut App, width: u16, height: u16) -> Terminal<TestBackend> {
     let backend = TestBackend::new(width, height);
     let mut terminal = Terminal::new(backend).expect("terminal");
     terminal
         .draw(|frame| draw_full_ui(frame, frame.area(), app))
         .expect("draw");
-    buffer_text(terminal.backend().buffer())
+    terminal
 }
 
 /// Open the subagent view on a live `spawn_subagent` card with one transcript

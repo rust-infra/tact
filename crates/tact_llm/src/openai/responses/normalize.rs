@@ -1,14 +1,13 @@
 use std::collections::BTreeMap;
 
+use super::history;
+use crate::error::LlmError;
+use crate::provider_state::{
+    ProviderConversationState, ProviderStateUpdate, ResponsesConversationState, context_hash,
+};
+use crate::{ContentBlock, Message, Role, StopReason, TokenUsageInfo};
 use async_openai_responses::types::responses::{
     OutputItem, OutputMessageContent, OutputStatus, Response, Status, SummaryPart,
-};
-use tact_protocol::TokenUsageInfo;
-
-use super::history;
-use crate::{
-    ContentBlock, LlmError, Message, ProviderConversationState, ProviderStateUpdate,
-    ResponsesConversationState, Role, StopReason, context_hash,
 };
 
 #[derive(Debug)]
@@ -57,7 +56,13 @@ fn terminal_stop_reason(
             let detail = response
                 .error
                 .as_ref()
-                .map(|error| format!("{}: {}", error.code, error.message))
+                .map(|error| {
+                    let code = serde_json::to_value(&error.code)
+                        .ok()
+                        .and_then(|value| value.as_str().map(str::to_owned))
+                        .unwrap_or_else(|| format!("{:?}", error.code));
+                    format!("{code}: {}", error.message)
+                })
                 .unwrap_or_else(|| "response failed without error details".to_string());
             Err(LlmError::Unsupported(format!(
                 "OpenAI Responses failed: {detail}"
@@ -192,7 +197,7 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
     let output_items = response
         .output
         .iter()
-        .map(serde_json::to_value)
+        .map(serialize_output_item)
         .collect::<Result<Vec<_>, _>>()?;
 
     let stop_reason = terminal_stop_reason(&response, has_tools, has_refusal)?;
@@ -213,6 +218,21 @@ pub(crate) fn normalize_response(response: Response) -> Result<NormalizedRespons
         usage,
         output_items,
     })
+}
+
+fn serialize_output_item(item: &OutputItem) -> Result<serde_json::Value, serde_json::Error> {
+    let mut value = serde_json::to_value(item)?;
+    if let Some(action) = value
+        .get_mut("action")
+        .and_then(serde_json::Value::as_object_mut)
+    {
+        for field in ["query", "queries"] {
+            if action.get(field).is_some_and(serde_json::Value::is_null) {
+                action.remove(field);
+            }
+        }
+    }
+    Ok(value)
 }
 
 /// Finds the single compaction item in a protocol output sequence.
@@ -797,9 +817,9 @@ pub(crate) mod tests {
             )
             .unwrap();
 
-        let crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
-            state,
-        )) = update
+        let crate::provider_state::ProviderStateUpdate::Replace(
+            crate::provider_state::ProviderConversationState::OpenAiResponses(state),
+        ) = update
         else {
             panic!("expected a replacement state");
         };
@@ -819,7 +839,7 @@ pub(crate) mod tests {
         assert_eq!(state.logical_message_count, 2);
         assert_eq!(
             state.logical_context_hash,
-            crate::context_hash(&expected_post_assistant).unwrap()
+            crate::provider_state::context_hash(&expected_post_assistant).unwrap()
         );
     }
 
@@ -850,9 +870,9 @@ pub(crate) mod tests {
                 &messages,
             )
             .unwrap();
-        let crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
-            state,
-        )) = update
+        let crate::provider_state::ProviderStateUpdate::Replace(
+            crate::provider_state::ProviderConversationState::OpenAiResponses(state),
+        ) = update
         else {
             panic!("expected a replacement state");
         };
@@ -860,7 +880,7 @@ pub(crate) mod tests {
         assert_eq!(state.logical_message_count, 1);
         assert_eq!(
             state.logical_context_hash,
-            crate::context_hash(&messages).unwrap()
+            crate::provider_state::context_hash(&messages).unwrap()
         );
     }
 
@@ -917,9 +937,9 @@ pub(crate) mod tests {
                 ],
             )
             .unwrap();
-        let crate::ProviderStateUpdate::Replace(crate::ProviderConversationState::OpenAiResponses(
-            state,
-        )) = update
+        let crate::provider_state::ProviderStateUpdate::Replace(
+            crate::provider_state::ProviderConversationState::OpenAiResponses(state),
+        ) = update
         else {
             panic!("expected a replacement state");
         };
@@ -944,7 +964,7 @@ pub(crate) mod tests {
         assert_eq!(state.logical_message_count, 4);
         assert_eq!(
             state.logical_context_hash,
-            crate::context_hash(&expected_post_assistant).unwrap()
+            crate::provider_state::context_hash(&expected_post_assistant).unwrap()
         );
     }
 

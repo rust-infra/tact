@@ -5,7 +5,7 @@ use crate::tool::{
 };
 use std::{
     path::{Path, PathBuf},
-    sync::{Arc, atomic::Ordering},
+    sync::Arc,
 };
 
 use anyhow::{Context, Result, bail};
@@ -433,6 +433,52 @@ fn annotate_spawn_subagent_skill_catalog_with_dir(tools: &mut crate::tool::ToolR
     );
 }
 
+fn permission_manager_for_subagent(ctx: &ToolContext) -> Result<PermissionManager> {
+    // The snapshot is stamped by the parent's dispatch just before this tool
+    // runs. A live parent manager must not leak into the child: child grants
+    // and denial streaks belong to the child session.
+    match ctx.permission_snapshot.clone() {
+        Some(snapshot) => Ok(PermissionManager::from_snapshot(snapshot)),
+        None => Ok(PermissionManager::try_new_with_settings(
+            PermissionMode::Default,
+            PermissionSettings::load(&TactPath::new(&ctx.work_dir)),
+        )?),
+    }
+}
+
+fn session_id_for_subagent(input: &SubagentInput) -> String {
+    input
+        .resume
+        .clone()
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn assemble_subagent_agent(
+    client: tact_llm::LlmProvider,
+    child_context: ToolContext,
+    tools: crate::tool::ToolRouter,
+    permission_manager: PermissionManager,
+    system_prompt: String,
+    settings: crate::config::AgentSettings,
+    max_turns: Option<u32>,
+    child_id: String,
+    store: crate::store::DynSessionStore,
+) -> Agent {
+    Agent::new(
+        client,
+        child_context,
+        tools,
+        MCPToolRouter::new(),
+        permission_manager,
+        AgentSystemPrompt::Static(system_prompt),
+    )
+    .with_agent_settings(settings)
+    .with_max_turns(max_turns)
+    .with_session(child_id, store)
+    .with_stable_provider()
+}
+
 #[tool]
 /// # Errors
 ///
@@ -444,6 +490,11 @@ fn annotate_spawn_subagent_skill_catalog_with_dir(tools: &mut crate::tool::ToolR
 /// - The subagent agent loop encounters an error.
 pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Result<String> {
     let settings = crate::config::settings();
+    let subagent_provider_info = settings
+        .agent
+        .subagent
+        .as_ref()
+        .map(|subagent| subagent.provider.clone());
 
     let (client, agent_overrides) = if let Some(sa) = &settings.agent.subagent {
         let client = Client::new(
@@ -470,19 +521,10 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // the parent's *current* mode / allow-list / settings. Orphan/test
     // contexts without a parent agent fall back to the pre-inheritance
     // behavior: a fresh `Default` manager with settings loaded from disk.
-    let pm = match ctx.permission_snapshot.clone() {
-        Some(snapshot) => PermissionManager::from_snapshot(snapshot),
-        None => PermissionManager::try_new_with_settings(
-            PermissionMode::Default,
-            PermissionSettings::load(&TactPath::new(&ctx.work_dir)),
-        )?,
-    };
+    let pm = permission_manager_for_subagent(&ctx)?;
 
     // Resume an existing child, or mint a fresh session id.
-    let child_id = match input.resume.clone() {
-        Some(id) => id,
-        None => uuid::Uuid::new_v4().to_string(),
-    };
+    let child_id = session_id_for_subagent(&input);
     let resume = input.resume.is_some();
 
     // A resume must target a prior run that has already reached a terminal
@@ -608,17 +650,20 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
     // read-only at best; do not let a child believe it owns the parent's Goal.
     child_ctx.active_goal_id = None;
 
-    let mut subagent = Agent::new(
+    let mut subagent = assemble_subagent_agent(
         client,
         child_ctx,
         subagent_tools,
-        MCPToolRouter::new(),
         pm,
-        AgentSystemPrompt::Static(system_prompt),
-    )
-    .with_agent_settings(agent_overrides)
-    .with_max_turns(input.max_turns)
-    .with_session(child_id.clone(), store.clone());
+        system_prompt,
+        agent_overrides,
+        input.max_turns,
+        child_id.clone(),
+        store.clone(),
+    );
+    if let Some(provider_info) = subagent_provider_info {
+        subagent = subagent.with_provider_info(provider_info);
+    }
 
     // Expose the child's cooperative cancel flag so `cancel_subagent` /
     // `/subagent_cancel` / the TUI button can request cancellation. The
@@ -737,7 +782,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             // A cancellation request flips the child flag; the agent loop
             // exits cooperatively at its next check point. Mark the run as
             // Cancelled instead of Completed so the record tells the truth.
-            let cancelled = cancel_flag.load(Ordering::Relaxed);
+            let cancelled = cancel_flag.is_cancelled();
             let succeeded = terminal_success(success, cancelled);
             let summary = if cancelled {
                 format!("(cancelled by user)\n{summary}")
@@ -795,7 +840,7 @@ pub async fn spawn_subagent(mut ctx: ToolContext, input: SubagentInput) -> Resul
             .agent_loop(Some(Message::new_text(Role::User, input.prompt)))
             .await;
         let success = result.is_ok();
-        let cancelled = cancel_flag.load(Ordering::Relaxed);
+        let cancelled = cancel_flag.is_cancelled();
         let summary = extract_summary(&subagent);
         // Drain the child's forwarder before returning: the dispatcher emits
         // this call's `StepFinished` — which finalizes the card — the moment we
@@ -942,6 +987,8 @@ pub async fn wait_subagent(ctx: ToolContext, input: WaitSubagentInput) -> Result
 mod tests {
     use super::*;
     use crate::tool::test_support::test_context;
+    use crate::{permission::CapabilityRisk, runtime::permission_authority::PermissionAuthority};
+    use tact_llm::{ContentBlock, MockClient, StopReason};
     use tempfile::TempDir;
 
     #[test]
@@ -1418,6 +1465,127 @@ mod tests {
         let json = serde_json::json!({ "prompt": "p" });
         let input: SubagentInput = serde_json::from_value(json).unwrap();
         assert_eq!(input.worktree, None);
+    }
+
+    #[test]
+    fn subagent_permissions_are_snapshot_derived_and_session_scoped() {
+        let parent =
+            PermissionAuthority::new(PermissionManager::try_new(PermissionMode::Default).unwrap());
+        parent.set_mode(PermissionMode::Plan);
+        parent.allow_tool_with_input(
+            "write_file",
+            PermissionPromptPolicy::Path { field: "path" },
+            &serde_json::json!({"path": "notes.txt"}),
+        );
+        assert!(!parent.ask_user("high_risk", CapabilityRisk::High).unwrap());
+        assert!(!parent.ask_user("high_risk", CapabilityRisk::High).unwrap());
+
+        let mut ctx = test_context("parent-session");
+        ctx.permission_snapshot = Some(parent.snapshot());
+        let child = PermissionAuthority::new(permission_manager_for_subagent(&ctx).unwrap());
+
+        assert!(!parent.shares_manager_with(&child));
+        assert_eq!(child.mode(), PermissionMode::Plan);
+        assert_eq!(child.rules(), parent.rules());
+        assert_eq!(child.consecutive_denials(), 0);
+
+        child.set_mode(PermissionMode::Auto);
+        assert_eq!(parent.mode(), PermissionMode::Plan);
+        assert_eq!(child.mode(), PermissionMode::Auto);
+
+        let fresh = SubagentInput {
+            prompt: "work".into(),
+            description: None,
+            run_in_background: None,
+            max_turns: None,
+            resume: None,
+            worktree: None,
+            skill: None,
+        };
+        let child_id = session_id_for_subagent(&fresh);
+        assert_ne!(ctx.session_id.as_deref(), Some(child_id.as_str()));
+
+        let resumed = SubagentInput {
+            resume: Some("child-existing".into()),
+            ..fresh
+        };
+        assert_eq!(session_id_for_subagent(&resumed), "child-existing");
+    }
+
+    #[tokio::test]
+    async fn nested_subagent_uses_the_kernel_with_child_owned_services() {
+        crate::config::test_support::install_default();
+        let mut ctx = test_context("nested-subagent-kernel");
+        ctx.session_id = Some("parent-session".to_string());
+
+        let parent_cancel = ctx.cancel_flag.clone();
+        let parent_permissions =
+            PermissionAuthority::new(PermissionManager::try_new(PermissionMode::Default).unwrap());
+        parent_permissions.set_mode(PermissionMode::Plan);
+        ctx.permission_snapshot = Some(parent_permissions.snapshot());
+        let child_permission_manager = permission_manager_for_subagent(&ctx).unwrap();
+
+        let db = ctx.work_dir.join(".tact").join("nested-subagent.db");
+        let store = open_sqlite_session_store(&db).await.unwrap();
+        let child_id = "nested-child".to_string();
+        let mock = MockClient::new(vec![(
+            vec![ContentBlock::Text {
+                text: "child finished".to_string(),
+            }],
+            Some(StopReason::EndTurn),
+        )]);
+        let settings = crate::config::test_support::resolved_config().agent;
+        let mut child = assemble_subagent_agent(
+            tact_llm::LlmProvider::Mock(mock),
+            ctx.clone(),
+            crate::tool::registry::subagent_toolset(),
+            child_permission_manager,
+            "You are a child agent.".to_string(),
+            settings,
+            Some(1),
+            child_id.clone(),
+            store.clone(),
+        );
+
+        assert_eq!(child.runtime.session_id.as_deref(), Some(child_id.as_str()));
+        assert_ne!(
+            child.runtime.session_id.as_deref(),
+            ctx.session_id.as_deref()
+        );
+        assert!(!std::sync::Arc::ptr_eq(
+            &child.runtime.cancel_flag,
+            &parent_cancel
+        ));
+        assert!(
+            !child
+                .runtime
+                .permission_manager
+                .shares_manager_with(&parent_permissions)
+        );
+        assert_eq!(
+            child.runtime.permission_manager.mode(),
+            PermissionMode::Plan
+        );
+
+        let outcome = child
+            .agent_loop_detailed(Some(Message::new_text(Role::User, "do the task")))
+            .await
+            .unwrap();
+        assert_eq!(outcome.stop, crate::AgentLoopStop::Completed);
+        assert_eq!(outcome.turns, 1, "the child cap must bound one activation");
+        assert_eq!(child.kernel_activations_for_test(), 1);
+
+        let rows = store.load_session(&child_id).await.unwrap();
+        assert!(
+            rows.iter().any(|row| matches!(row.role, Role::Assistant)),
+            "the child must persist through its own session: {rows:?}"
+        );
+
+        child
+            .runtime
+            .permission_manager
+            .set_mode(PermissionMode::Auto);
+        assert_eq!(parent_permissions.mode(), PermissionMode::Plan);
     }
 
     #[test]

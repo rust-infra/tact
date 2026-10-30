@@ -994,12 +994,13 @@ invoke_hooks!(PostToolUse, self, &amp;tool_use, &amp;mut tool_result)</code></pr
 <li>首个 <code>Block</code> 时停止并返回该控制值。</li>
 <li>用 <code>?</code> 传播错误。</li>
 </ol>
-<p>调用点在 <code>crates/tact/src/agent/tool_dispatch.rs</code> 的
-<code>Agent::execute_tool_call</code> 内。</p>
+<p>调用点在 <code>crates/tact/src/runtime/gate_adapter.rs</code> 的
+<code>TactToolGate::before</code> / <code>after</code> 内；kernel
+只负责在工具预检和完成阶段调用 gate。</p>
 <hr />
 <h2 id="8-pretooluse-详解">8. PreToolUse 详解</h2>
-<p><strong>时机：</strong> <code>execute_tool_call</code> 的 Phase
-1，每个 <code>ContentBlock::ToolUse</code> 一次。</p>
+<p><strong>时机：</strong> kernel 工具流水线的 Phase 1，每个
+<code>ToolCall</code> 一次。</p>
 <p><strong>相对其他预检工作的顺序：</strong></p>
 <pre class="text"><code>stats.tool_counts += 1
 cancel 检查
@@ -1282,8 +1283,8 @@ priority 字段可设。</td>
 <td><code>pre_tool</code>、<code>post_tool</code>、<code>session_start</code>、<code>hooks_by_type</code></td>
 </tr>
 <tr>
-<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
-<td><code>execute_tool_call</code> 中的 PreToolUse / PostToolUse
+<td><code>crates/tact/src/runtime/gate_adapter.rs</code></td>
+<td><code>TactToolGate::before</code> / <code>after</code> 中的 PreToolUse / PostToolUse
 调用</td>
 </tr>
 <tr>
@@ -1300,7 +1301,7 @@ priority 字段可设。</td>
 分发）、<code>run_command_hook</code>、<code>run_mcp_tool_hook</code>、<code>definition_text</code>、<code>build_payload</code></td>
 </tr>
 <tr>
-<td><code>crates/tact-ui/src/session_bootstrap.rs</code></td>
+<td><code>crates/tact_host/src/session_bootstrap.rs</code></td>
 <td><code>apply_plugin_hooks_with_report</code>
 的调用点（两个前端共用），以及 <code>plugin_subagent_start_hooks</code>
 / <code>plugin_subagent_stop_hooks</code> 到 <code>ToolContext</code>
@@ -1317,7 +1318,7 @@ priority 字段可设。</td>
 —— 解析与空闲门控；实际工作由 driver 执行</td>
 </tr>
 <tr>
-<td><code>crates/tact-ui/src/driver.rs</code></td>
+<td><code>crates/tact_host/src/driver.rs</code></td>
 <td><code>UserCommand::Hooks{List,Trust,Forget}</code> →
 <code>survey_hooks</code> / <code>trust_hooks</code> /
 <code>forget_hook_trust</code>，经 <code>Info</code> /

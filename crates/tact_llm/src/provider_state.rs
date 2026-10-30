@@ -52,6 +52,9 @@ pub enum ProviderStateUpdate {
     /// The call produced a replacement provider conversation state (for
     /// example, after a native compaction boundary).
     Replace(ProviderConversationState),
+    /// The call invalidated the provider conversation state and the next
+    /// request must start from logical messages only.
+    Clear,
 }
 
 /// Computes the stable SHA-256 context hash for a prefix of Tact's logical

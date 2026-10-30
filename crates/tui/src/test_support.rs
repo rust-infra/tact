@@ -2,12 +2,14 @@
 
 use std::{path::PathBuf, time::Duration};
 
-use tact_protocol::AgentUpdate;
-use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender, unbounded_channel};
+use ratatui::style::Color;
+use tact_protocol::{AgentUpdate, UpdateReceiver};
+use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+use unicode_width::UnicodeWidthStr;
 
 use crate::{
     headless_loop::{build_auto_confirm_response, make_headless_app},
-    render::test_harness::{make_app, render_app_text, render_main_area_text},
+    render::test_harness::{make_app, render_app_terminal, render_app_text, render_main_area_text},
     widgets::state::{App, InputMode, Status},
 };
 
@@ -63,6 +65,51 @@ impl TestApp {
 
     pub fn render_main(&mut self, width: u16, height: u16) -> String {
         render_main_area_text(&mut self.0, width, height)
+    }
+
+    /// Backgrounds owned by the full UI's intentional surfaces.
+    pub fn intentional_surface_backgrounds(&self) -> Vec<Color> {
+        let theme = &self.0.theme;
+        vec![
+            theme.bg,
+            theme.status_bar_bg,
+            theme.input_box_bg,
+            theme.bottom_bar_bg,
+            theme.success,
+            theme.warning,
+            theme.code_block_bg(),
+        ]
+    }
+
+    /// Blank cells in the full UI whose background no render surface owns.
+    ///
+    /// Blank cells may legitimately use a bar, input, status, or code surface;
+    /// the invariant is that every one was painted by a surface, not that they
+    /// all share `theme.bg`.
+    pub fn blank_cells_outside_surfaces(
+        &mut self,
+        width: u16,
+        height: u16,
+        surfaces: &[Color],
+    ) -> Vec<(u16, u16, Color)> {
+        let terminal = render_app_terminal(&mut self.0, width, height);
+        let buffer = terminal.backend().buffer();
+        let mut offenders = Vec::new();
+        for y in 0..height {
+            let mut continuation = false;
+            for x in 0..width {
+                let cell = &buffer[(x, y)];
+                let is_continuation = std::mem::take(&mut continuation);
+                continuation = !is_continuation && cell.symbol().width() > 1;
+                if is_continuation || cell.symbol() != " " {
+                    continue;
+                }
+                if !surfaces.contains(&cell.bg) {
+                    offenders.push((x, y, cell.bg));
+                }
+            }
+        }
+        offenders
     }
 
     pub fn is_done(&self) -> bool {
@@ -168,7 +215,7 @@ pub struct HeadlessApp {
 }
 
 impl HeadlessApp {
-    pub fn new(agent_rx: UnboundedReceiver<AgentUpdate>, work_dir: PathBuf) -> Self {
+    pub fn new(agent_rx: impl Into<UpdateReceiver>, work_dir: PathBuf) -> Self {
         Self {
             inner: make_headless_app(agent_rx, work_dir),
             auto_select: None,

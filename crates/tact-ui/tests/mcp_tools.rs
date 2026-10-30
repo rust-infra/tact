@@ -279,9 +279,8 @@ async fn agent_recovers_when_mcp_tool_returns_error() {
     // The failed MCP tool should be recorded as a failed step.
     assert!(updates.iter().any(|u| matches!(
         u,
-        AgentUpdate::StepFinished { result, .. }
-            if matches!(result.status, StepStatus::Failed)
-                && result.message.contains("Error invoking MCP tool mcp__demo__echo")
+        AgentUpdate::StepFailed { error, .. }
+            if error.contains("Error invoking MCP tool mcp__demo__echo")
     )));
 
     // The agent should still finish the task after the error.

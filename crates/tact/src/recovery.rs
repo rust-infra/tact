@@ -152,23 +152,36 @@ fn classify_text(error_text: &str) -> FailureKind {
 /// 400/401/403/404 fails fast instead of burning the user's quota. Other
 /// variants carry no status and fall back to message matching.
 pub fn classify_llm_error(error: &tact_llm::LlmError) -> FailureKind {
-    if let tact_llm::LlmError::HttpError { status, .. } = error {
-        if is_transient_http_status(*status) {
-            return FailureKind::Transient;
-        }
-        // A non-transient status can still be recoverable: an over-long prompt
-        // is usually reported as a 400.
-        return match classify_text(&error.to_string()) {
-            FailureKind::PromptTooLong => FailureKind::PromptTooLong,
-            _ => FailureKind::Permanent,
+    if let tact_llm::LlmError::HttpError { class, .. } = error {
+        return match class {
+            tact_llm::HttpErrorClass::ContextOverflow => FailureKind::PromptTooLong,
+            tact_llm::HttpErrorClass::Transient => FailureKind::Transient,
+            tact_llm::HttpErrorClass::Authentication | tact_llm::HttpErrorClass::Permanent => {
+                FailureKind::Permanent
+            }
         };
     }
     classify_text(&error.to_string())
 }
 
+/// Classifies the provider-neutral adapter error without converting it back
+/// into a provider-specific `LlmError` just to recover its retry class.
+pub fn classify_model_error(error: &tact_agent_api::ModelError) -> FailureKind {
+    match error.kind {
+        tact_agent_api::ModelErrorKind::ContextOverflow => FailureKind::PromptTooLong,
+        tact_agent_api::ModelErrorKind::Transient => FailureKind::Transient,
+        tact_agent_api::ModelErrorKind::Permanent
+        | tact_agent_api::ModelErrorKind::Cancelled
+        | tact_agent_api::ModelErrorKind::Unsupported => FailureKind::Permanent,
+    }
+}
+
 /// Classifies a boxed error, downcasting to [`tact_llm::LlmError`] when the
 /// typed cause survived (see `Agent::stream_message`).
 pub fn classify_error(error: &anyhow::Error) -> FailureKind {
+    if let Some(model_error) = error.downcast_ref::<tact_agent_api::ModelError>() {
+        return classify_model_error(model_error);
+    }
     match error.downcast_ref::<tact_llm::LlmError>() {
         Some(llm_error) => classify_llm_error(llm_error),
         None => classify_text(&error.to_string()),
@@ -209,9 +222,19 @@ mod tests {
     use super::*;
 
     fn http_error(status: u16, body: &str) -> tact_llm::LlmError {
+        let class = if body.contains("context length") || body.contains("prompt is too long") {
+            tact_llm::HttpErrorClass::ContextOverflow
+        } else if status == 401 || status == 403 {
+            tact_llm::HttpErrorClass::Authentication
+        } else if is_transient_http_status(status) {
+            tact_llm::HttpErrorClass::Transient
+        } else {
+            tact_llm::HttpErrorClass::Permanent
+        };
         tact_llm::LlmError::HttpError {
             status,
-            body: body.to_string(),
+            class,
+            retry_after: None,
         }
     }
 
@@ -260,6 +283,28 @@ mod tests {
             classify_llm_error(&tact_llm::LlmError::Auth("bad key".into())),
             FailureKind::Permanent
         );
+    }
+
+    #[test]
+    fn neutral_model_error_kinds_survive_classification() {
+        use tact_agent_api::{ModelError, ModelErrorKind};
+
+        let overflow = anyhow::Error::from(ModelError::new(
+            ModelErrorKind::ContextOverflow,
+            "neutral overflow",
+        ));
+        let transient = anyhow::Error::from(ModelError::new(
+            ModelErrorKind::Transient,
+            "neutral transport",
+        ));
+        let permanent = anyhow::Error::from(ModelError::new(
+            ModelErrorKind::Permanent,
+            "rate limit wording must not override the type",
+        ));
+
+        assert_eq!(classify_error(&overflow), FailureKind::PromptTooLong);
+        assert_eq!(classify_error(&transient), FailureKind::Transient);
+        assert_eq!(classify_error(&permanent), FailureKind::Permanent);
     }
 
     /// `Agent::stream_message` preserves the typed error, so the downcast path

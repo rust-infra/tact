@@ -1,0 +1,10 @@
+[package]
+name = "tact-host-consumer"
+version = "0.1.0"
+edition = "2024"
+
+[workspace]
+
+[dependencies]
+tact_host = { version = "2.0.0", path = "../../crates/tact_host" }
+tokio = { version = "1", features = ["rt"] }

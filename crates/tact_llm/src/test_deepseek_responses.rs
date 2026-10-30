@@ -17,12 +17,12 @@
 //!
 //!   cargo test -p tact_llm test_deepseek_responses -- --ignored --nocapture
 
+use crate::NoopProgressSink;
 use crate::{
     ContentBlock, CreateMessageParams, LlmClient, LlmResponse, Message, OpenAiProtocol,
     ProviderConversationState, ProviderInfo, ProviderKind, ProviderStateUpdate,
     RequiredMessageParams, Role, Thinking, ThinkingType,
 };
-use tact_protocol::UpdateSink;
 
 /// Reads `DEEPSEEK_API_KEY` / `DEEPSEEK_BASE_URL` / `DEEPSEEK_MODEL` and
 /// returns `(api_key, base_url, model)`, or `None` to skip the test.
@@ -132,7 +132,7 @@ async fn deepseek_responses_stream_smoke() {
         .expect("build DeepSeek Responses client");
 
     let response = client
-        .stream_message(&simple_request(model), None, &UpdateSink::default())
+        .stream_message(&simple_request(model), None, &NoopProgressSink)
         .await
         .expect("DeepSeek /responses streaming request succeeded");
 

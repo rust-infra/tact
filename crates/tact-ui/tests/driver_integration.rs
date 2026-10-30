@@ -85,10 +85,7 @@ async fn submit_task_clears_stale_cancel_flag() {
 
     let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
     let (agent, work_dir) = build_test_agent(mock, Some(agent_tx));
-    agent
-        .runtime
-        .cancel_flag
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    agent.cancel();
 
     let (user_cmd_tx, user_cmd_rx) = user_command_channels();
     let driver = tokio::spawn(run_command_loop(agent, user_cmd_rx, work_dir));
@@ -370,12 +367,11 @@ async fn read_missing_file_emits_failed_step() {
         updates.iter().any(|u| {
             matches!(
                 u,
-                AgentUpdate::StepFinished { tool_id: id, result, .. }
-                    if id == "tool_read_1"
-                        && matches!(result.status, StepStatus::Failed)
+                AgentUpdate::StepFailed { tool_id: id, error, .. }
+                    if id == "tool_read_1" && error.contains("No such file")
             )
         }),
-        "missing file should produce failed StepFinished, got: {updates:?}"
+        "missing file should produce StepFailed, got: {updates:?}"
     );
     assert!(
         updates

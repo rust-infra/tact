@@ -820,7 +820,7 @@ mod tests {
         // Input length guard must not use model_context_window as a char limit.
         let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
-        app.model_context_window = 5;
+        app.model_context_window = Some(5);
         app.input = "hello world".to_string();
         app.input_cursor = app.input.chars().count();
 
@@ -844,7 +844,7 @@ mod tests {
         // model_context_window must NOT control the insert-path char limit.
         let (mut app, mut user_cmd_rx) = TestApp::new().into_commands();
         let user_cmd_tx = app.user_cmd_tx.clone();
-        app.model_context_window = 200_000;
+        app.model_context_window = Some(200_000);
         app.input = "x".repeat(tact::consts::MAX_INPUT_CHARS + 1);
         app.input_cursor = app.input.chars().count();
 

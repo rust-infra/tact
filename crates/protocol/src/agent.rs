@@ -9,8 +9,67 @@
 use std::fmt;
 
 use serde::{Deserialize, Serialize};
+use tact_agent_api::ReasoningEffort;
 
 use crate::tool_output::ToolOutputChunk;
+
+/// The active permission policy for one agent session.
+///
+/// This is a closed wire and configuration set. Unknown values are rejected at
+/// the boundary rather than being interpreted as the permissive `Auto` mode.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PermissionMode {
+    #[default]
+    Default,
+    Plan,
+    Auto,
+}
+
+impl PermissionMode {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Plan => "plan",
+            Self::Auto => "auto",
+        }
+    }
+
+    /// The mode's name in the Claude Code / plugin-hook vocabulary.
+    pub const fn hook_name(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Plan => "plan",
+            Self::Auto => "acceptEdits",
+        }
+    }
+}
+
+impl std::fmt::Display for PermissionMode {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let label = match self {
+            Self::Default => "default - ask for writes",
+            Self::Plan => "plan - read only",
+            Self::Auto => "auto - allow all operations (including high risk)",
+        };
+        formatter.write_str(label)
+    }
+}
+
+impl std::str::FromStr for PermissionMode {
+    type Err = String;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "default" => Ok(Self::Default),
+            "plan" => Ok(Self::Plan),
+            "auto" => Ok(Self::Auto),
+            other => Err(format!(
+                "invalid permission mode {other:?}; expected default, plan, or auto"
+            )),
+        }
+    }
+}
 
 /// Execution status of a step.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -101,7 +160,7 @@ pub struct ModelCallParams {
     pub model: String,
     pub max_tokens: u32,
     pub thinking_budget: Option<u32>,
-    pub reasoning_effort: Option<String>,
+    pub reasoning_effort: Option<ReasoningEffort>,
     pub extra_body: Option<String>,
 }
 
@@ -407,7 +466,7 @@ pub enum AgentUpdate {
     /// The in-flight task was cancelled by the user. TUI must leave
     /// `Planning` / `Executing` so a new prompt can be submitted.
     /// Emitted by the command driver after `agent_loop` returns with
-    /// `cancel_flag` set — not by `agent_loop` itself.
+    /// cancellation requested — not by `agent_loop` itself.
     TaskCancelled,
     /// An out-of-band turn (a Goal activation) finished without a completion
     /// payload. TUI must leave `Planning` / `Executing` so queued messages are
@@ -629,7 +688,8 @@ impl UiResponse {
 pub enum UserCommand {
     /// Submit a new natural-language task
     SubmitTask(String),
-    /// Cancel the current in-flight task by setting `cancel_flag`.
+    /// Cancel the current in-flight task through the session cancellation
+    /// controller.
     /// The agent loop exits cooperatively at the next check point and does not
     /// emit `TaskComplete`. The command driver emits [`AgentUpdate::TaskCancelled`]
     /// so the TUI can leave the busy state. The next `SubmitTask` clears the flag.
@@ -685,7 +745,7 @@ pub enum UserCommand {
     /// Set the active permission mode.
     /// The TUI sends this after the user picks through the `/permission` popup.
     /// Only affects the in-memory session; config is never written.
-    SetPermissionMode(String),
+    SetPermissionMode(PermissionMode),
     /// Set the active session's thinking budget for subsequent LLM requests.
     /// The TUI sends this after `/model` budget confirmation; config persistence
     /// is a separate optional local flow.
@@ -694,7 +754,7 @@ pub enum UserCommand {
     /// `Some("low"|"medium"|...)` sets it; `None` clears (wire omits effort).
     /// The TUI sends this after `/model` effort confirmation; config persistence
     /// is a separate optional local flow.
-    SetReasoningEffort(Option<String>),
+    SetReasoningEffort(Option<ReasoningEffort>),
     /// Set the active agent session's model (per-agent, not global).
     /// The TUI sends this after `/model` model confirmation.
     SetModel(String),

@@ -16,11 +16,24 @@ use crate::security::{RedactionLevel, redact::StreamRedactor};
 /// `&ToolContext`, and a per-invocation buffer cannot be `&mut` through it. The
 /// reporter is cloned per invocation, and the `Arc` keeps those clones on one
 /// buffer — which is the behaviour we want, since they are one stream.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Default)]
 pub struct ToolProgressReporter {
     tool_id: String,
     events: UpdateSink,
     stream: Option<Arc<Mutex<StreamState>>>,
+    forwarding: Option<Arc<dyn tact_agent_api::ToolProgressSink>>,
+}
+
+impl std::fmt::Debug for ToolProgressReporter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ToolProgressReporter")
+            .field("tool_id", &self.tool_id)
+            .field("events", &self.events)
+            .field("stream", &self.stream)
+            .field("forwarding", &self.forwarding.is_some())
+            .finish()
+    }
 }
 
 /// The per-invocation streaming state: what is held back, and where the last
@@ -47,6 +60,7 @@ impl ToolProgressReporter {
             tool_id: tool_id.into(),
             events,
             stream: None,
+            forwarding: None,
         }
     }
 
@@ -66,6 +80,16 @@ impl ToolProgressReporter {
         self
     }
 
+    /// Forward live chunks to the kernel instead of the host update sink.
+    ///
+    /// The host sink remains attached for product-owned updates, but tool
+    /// output now has exactly one kernel-facing path.
+    #[must_use]
+    pub(crate) fn forwarding(mut self, sink: Arc<dyn tact_agent_api::ToolProgressSink>) -> Self {
+        self.forwarding = Some(sink);
+        self
+    }
+
     pub fn report(&self, chunks: Vec<ToolOutputChunk>) {
         if chunks.is_empty() {
             return;
@@ -76,10 +100,14 @@ impl ToolProgressReporter {
             // empty batch would just churn the renderer.
             return;
         }
-        self.events.send(AgentUpdate::ToolProgress {
-            tool_id: self.tool_id.clone(),
-            chunks,
-        });
+        if let Some(sink) = &self.forwarding {
+            sink.emit(chunks.into_iter().map(neutral_chunk).collect::<Vec<_>>());
+        } else {
+            self.events.send(AgentUpdate::ToolProgress {
+                tool_id: self.tool_id.clone(),
+                chunks,
+            });
+        }
     }
 
     /// Emit whatever the redactor is still holding back.
@@ -100,10 +128,15 @@ impl ToolProgressReporter {
         let Some(text) = tail.filter(|t| !t.is_empty()) else {
             return;
         };
-        self.events.send(AgentUpdate::ToolProgress {
-            tool_id: self.tool_id.clone(),
-            chunks: vec![ToolOutputChunk { stream, text }],
-        });
+        let chunks = vec![ToolOutputChunk { stream, text }];
+        if let Some(sink) = &self.forwarding {
+            sink.emit(chunks.into_iter().map(neutral_chunk).collect());
+        } else {
+            self.events.send(AgentUpdate::ToolProgress {
+                tool_id: self.tool_id.clone(),
+                chunks,
+            });
+        }
     }
 
     fn redact(&self, chunks: Vec<ToolOutputChunk>) -> Vec<ToolOutputChunk> {
@@ -183,6 +216,18 @@ impl ToolProgressReporter {
     /// The tool-invocation id this reporter is bound to.
     pub fn tool_id(&self) -> &str {
         &self.tool_id
+    }
+}
+
+fn neutral_chunk(chunk: ToolOutputChunk) -> tact_agent_api::ToolOutputChunk {
+    let stream = match chunk.stream {
+        ToolOutputStream::Stdout => tact_agent_api::ToolOutputStream::Stdout,
+        ToolOutputStream::Stderr => tact_agent_api::ToolOutputStream::Stderr,
+        ToolOutputStream::Other => tact_agent_api::ToolOutputStream::Other,
+    };
+    tact_agent_api::ToolOutputChunk {
+        stream,
+        text: chunk.text,
     }
 }
 

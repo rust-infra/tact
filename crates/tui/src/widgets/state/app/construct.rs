@@ -7,7 +7,7 @@ use std::{
 };
 
 use tact::plugin::{PluginEvent, PluginRequest};
-use tact_protocol::{AccountUpdate, AgentUpdate, UserCommand};
+use tact_protocol::{AccountUpdate, UpdateReceiver, UserCommand};
 use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 use crate::{
@@ -30,7 +30,7 @@ impl App {
     /// Create an initialized App instance, defaulting to Insert mode with the Retro theme.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn new(
-        agent_rx: UnboundedReceiver<AgentUpdate>,
+        agent_rx: impl Into<UpdateReceiver>,
         account_rx: Option<UnboundedReceiver<AccountUpdate>>,
         plugin_rx: UnboundedReceiver<PluginEvent>,
         plugin_tx: UnboundedSender<PluginRequest>,
@@ -93,10 +93,10 @@ impl App {
             pending_cancel_btn_area: ratatui::layout::Rect::default(),
             scroll_back_area: ratatui::layout::Rect::default(),
             cmd_line: String::new(),
-            model_context_window: 200_000,
+            model_context_window: Some(200_000),
             log: LogCoordinator::default(),
             status: Status::Idle,
-            agent_rx,
+            agent_rx: agent_rx.into(),
             account_rx,
             plugin_rx,
             plugin_tx,

@@ -53,7 +53,7 @@ async fn run_interactive_locked(
     // the driver has not started yet are buffered by the unbounded channel
     // and processed once the driver task is spawned — the UI never blocks on
     // MCP readiness, and nothing is dropped.
-    let (agent_tx, agent_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (agent_tx, agent_rx) = tact_protocol::update_channel(256);
     let (account_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
     let (plugin_tx, plugin_request_rx) = tokio::sync::mpsc::unbounded_channel();
     let (plugin_event_tx, plugin_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -122,12 +122,7 @@ async fn run_interactive_locked(
             model_name,
             model_max_tokens,
             model_thinking_budget,
-            permission_mode: match tact::config::settings().permission_mode.as_deref() {
-                Some("plan") => "plan",
-                Some("default") => "default",
-                _ => "auto",
-            }
-            .to_string(),
+            permission_mode: tact::config::settings().permission_mode,
             skills_description: {
                 let reg = tact::skill::lock_skills(&skill_registry);
                 reg.describe_available()
@@ -239,15 +234,14 @@ async fn run_interactive_locked(
     if let Some(driver) = driver {
         let agent = driver.await.expect("command driver task panicked");
 
-        if let Some(sid) = agent.runtime.session_id.as_ref() {
+        if let Some(sid) = agent.session_id() {
             eprintln!("[session id: {sid}]");
         }
 
         eprintln!(
             "{}",
             agent
-                .runtime
-                .stats
+                .stats()
                 .read()
                 .expect("session stats lock poisoned")
                 .summary()
@@ -266,7 +260,7 @@ async fn run_interactive_locked(
 /// which channel the agent may talk back on.
 async fn build_agent_for_interactive(
     tact_path: TactPath,
-    agent_tx: tokio::sync::mpsc::UnboundedSender<AgentUpdate>,
+    agent_tx: tact_protocol::UpdateSender,
     skill_registry: tact::skill::SharedSkillRegistry,
     session_id: String,
     session_store: DynSessionStore,

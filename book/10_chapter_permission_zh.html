@@ -421,7 +421,7 @@
 <p>本章说明 Tact
 如何决定每个工具调用能不能执行：先按风险给这次调用定级，再看当前的权限模式、会话内的允许清单，必要时弹出
 TUI 交互式审批。每个 native 与 MCP 工具都要在
-<code>Agent::execute_tool_call</code> 的 Phase 1 过同一道关卡——位置在
+<code>TactToolGate::before</code> 在 kernel 工具流水线的 Phase 1 过同一道关卡——位置在
 <code>PreToolUse</code> hook 之后、并行执行之前。Hook 顺序见 <a
 href="./09_chapter_hook_zh.html">Agent 生命周期 Hook</a>。</p>
 <hr />
@@ -434,8 +434,8 @@ href="./09_chapter_hook_zh.html">Agent 生命周期 Hook</a>。</p>
 </blockquote>
 <p>它 <strong>不</strong>
 执行工具。它只做两件事：给这次调用定级，再套用当前模式与允许清单，然后返回
-<code>PermissionDecision</code>。<code>crates/tact/src/agent/tool_dispatch.rs</code>
-中的 agent 将其转为调度工具，或合成一条被拦截的
+<code>PermissionDecision</code>。<code>crates/tact/src/runtime/gate_adapter.rs</code>
+中的 gate 将其转为调度工具，或合成一条被拦截的
 <code>ToolResult</code>。</p>
 <table>
 <thead>
@@ -455,7 +455,7 @@ href="./09_chapter_hook_zh.html">Agent 生命周期 Hook</a>。</p>
 <code>PermissionBehavior</code></td>
 </tr>
 <tr>
-<td><code>tool_dispatch.rs</code></td>
+<td><code>runtime/gate_adapter.rs</code></td>
 <td>通过 TUI <code>RequestSelect</code> 或 headless
 <code>ask_user(risk)</code> 处理 <code>Ask</code></td>
 </tr>
@@ -489,7 +489,7 @@ home——沙箱约束的是文件系统， 不是网络（网络与宿主共享
 表。风险是每个工具<strong>自己在元数据里声明</strong>出来的：<code>ToolMetadata.permission</code>
 是一份 <code>PermissionPolicy</code>，由它读这次调用的输入算出风险：</p>
 <pre class="rust"><code>metadata.permission.resolve(&amp;tool_use.input)   // → CapabilityRisk</code></pre>
-<p>预检对每个已解析调用取风险的来源（<code>crates/tact/src/agent/tool_dispatch.rs</code>）：</p>
+<p>预检对每个已解析调用取风险的来源（<code>crates/tact/src/runtime/gate_adapter.rs</code>）：</p>
 <table>
 <thead>
 <tr>
@@ -588,7 +588,7 @@ pub struct PermissionDecision {
 <thead>
 <tr>
 <th>Behavior</th>
-<th>在 <code>tool_dispatch.rs</code> 中的含义</th>
+<th>在 <code>gate_adapter.rs</code> 中的含义</th>
 </tr>
 </thead>
 <tbody>
@@ -651,7 +651,7 @@ allowlist 已覆盖该确切工具与输入</strong></td>
 <h3
 id="permissionmanagercheck-中的决策顺序"><code>PermissionManager::check()</code>
 中的决策顺序</h3>
-<p>在这之前，<code>tool_dispatch</code>
+<p>在这之前，<code>gate_adapter</code>
 会先跑<strong>敏感目标守卫</strong>（§12）。命中 <code>Credential</code>
 档的调用会在那里直接被拒，根本走不到下面这套判断顺序；命中
 <code>Secret</code> 档的则被升级成 <code>High</code>，从第 2
@@ -705,7 +705,7 @@ allowlist。</p>
 的<strong>任意</strong>输入，<code>.env</code>
 也不例外——因为列表里的裸名匹配所有输入。没人点过"允许"的条目，不该有本事越过这道守卫，所以那行预置已经删掉了。</p>
 <p>用户在 TUI 选择 <strong>「Always allow this tool」</strong>
-时，<code>tool_dispatch</code> 调用的是
+时，<code>gate_adapter</code> 调用的是
 <code>allow_tool_with_input(name, policy, input)</code>——针对那次确切调用的<strong>输入感知</strong>规则，而不是裸工具名。有
 settings 存储时它被持久化进项目的
 <code>.tact/settings.json</code>；没有则落进内存列表。两种情况都会让此后匹配该工具<strong>且</strong>输入的调用跳过询问，且<strong>任何</strong>风险都适用，包括
@@ -773,7 +773,7 @@ session」，是精确档的<strong>内存版</strong>：同一条规则、只�
 <code>bash</code>
 命令（<code>git commit -m "fix: thing"</code>）都会走到那条路，于是点一次就授权了此后所有
 shell 命令、且跨会话。现在这次点击只批准当前调用，并由
-<code>AllowOutcome::NotNarrowable</code> 让 <code>tool_dispatch</code>
+<code>AllowOutcome::NotNarrowable</code> 让 <code>gate_adapter</code>
 明确告诉用户"这条记不住"——否则一个点了没反应的按钮，用户会以为它已经生效了。</p>
 <p>allowlist <strong>仅内存</strong>——不会持久化到 SQLite 或 TOML
 跨会话。只有 settings 规则那种形式能跨重启存活。</p>
@@ -788,7 +788,7 @@ shell 命令、且跨会话。现在这次点击只批准当前调用，并由
 <hr />
 <h2 id="6-tui-requestselect-流程">6. TUI RequestSelect 流程</h2>
 <p>当 <code>check()</code> 返回 <code>Ask</code> 且 agent 有 UI
-通道（<code>runtime.events.ui()</code>）时，<code>tool_dispatch.rs</code>
+通道（<code>runtime.events.ui()</code>）时，<code>gate_adapter.rs</code>
 发送：</p>
 <pre class="rust"><code>AgentUpdate::RequestSelect {
     prompt,      // 例如 &quot;Allow bash: {\&quot;command\&quot;:\&quot;npm test\&quot;}&quot;
@@ -990,7 +990,7 @@ plan mode 下静默执行变更——因此任何含糊输入一律归为
 <hr />
 <h2 id="8-工具流水线中的集成">8. 工具流水线中的集成</h2>
 <p>权限阶梯在
-<code>execute_tool_call</code>（<code>crates/tact/src/agent/tool_dispatch.rs</code>）的
+<code>TactToolGate::before</code>（<code>crates/tact/src/runtime/gate_adapter.rs</code>）的
 <strong>Phase 1</strong> 运行，严格在 hook
 之后；而<strong>风险分类与敏感目标守卫在 hook
 之前</strong>——<code>Credential</code> 命中在那个位置就被拒绝，碰不到
@@ -1136,7 +1136,7 @@ CLI；未知值回退 <strong>Auto</strong></td>
 拦截</td>
 </tr>
 <tr>
-<td><code>crates/tact/src/agent/tool_dispatch.rs</code></td>
+<td><code>crates/tact/src/runtime/gate_adapter.rs</code></td>
 <td>预检权限；<code>RequestSelect</code> 处理；<code>StepFinished</code>
 上的 <code>permission_label</code></td>
 </tr>
@@ -1175,11 +1175,11 @@ CLI；未知值回退 <strong>Auto</strong></td>
 <td>子 agent 用 <code>Default</code> 模式；继承父级的 <code>UpdateSink</code></td>
 </tr>
 <tr>
-<td><code>crates/tact-ui/src/permission.rs</code></td>
+<td><code>crates/tact_host/src/permission.rs</code></td>
 <td><code>permission_mode_from_config()</code></td>
 </tr>
 <tr>
-<td><code>crates/tact-ui/src/session_bootstrap.rs</code></td>
+<td><code>crates/tact_host/src/session_bootstrap.rs</code></td>
 <td><code>bootstrap_session</code> 里构造
 <code>PermissionManager</code>（<code>try_new_with_settings</code>）；headless
 / 交互共用</td>
@@ -1557,7 +1557,7 @@ Linux</strong>——macOS 上会返回
 <code>allow</code>、但位置和效果完全不同的配置。</p>
 <h3 id="131-固定检查点">13.1 固定检查点</h3>
 <p>每个 native
-调用都按这个顺序走（<code>crates/tact/src/agent/tool_dispatch.rs</code>
+调用都按这个顺序走（<code>crates/tact/src/runtime/gate_adapter.rs</code>
 的预检）：</p>
 <table>
 <thead>

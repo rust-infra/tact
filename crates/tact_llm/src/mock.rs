@@ -5,11 +5,12 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 
-use tact_protocol::{AgentUpdate, TokenUsageInfo, UpdateSink};
-
+use crate::client::{LlmClient, LlmResponse};
+use crate::error::LlmError;
+use crate::provider_state::{ProviderConversationState, ProviderStateUpdate};
 use crate::{
-    ContentBlock, CreateMessageParams, LlmClient, LlmError, LlmResponse, ProviderConversationState,
-    ProviderStateUpdate, StopReason,
+    ContentBlock, CreateMessageParams, ProviderProgress, ProviderProgressSink, StopReason,
+    ThinkingChunk, TokenUsageInfo,
 };
 
 /// A single canned LLM turn for [`MockClient`].
@@ -139,7 +140,7 @@ impl MockClient {
     }
 
     /// Like [`Self::new`], but attaches token usage to each turn (and emits
-    /// [`AgentUpdate::TokenUsage`] on `stream_message` when a sink is attached).
+    /// [`ProviderProgress::Usage`] on `stream_message` when a sink is attached).
     pub fn with_usage(
         responses: Vec<(Vec<ContentBlock>, Option<StopReason>, TokenUsageInfo)>,
     ) -> Self {
@@ -196,7 +197,7 @@ impl MockClient {
         })
     }
 
-    /// Enable emission of [`AgentUpdate::StreamChunk`] events during
+    /// Enable emission of [`ProviderProgress::TextDelta`] events during
     /// `stream_message` by splitting text blocks into word-sized chunks.
     pub fn with_streaming_chunks(self) -> Self {
         Self {
@@ -218,27 +219,36 @@ impl MockClient {
         self.inner.next_turn(request, idx)
     }
 
-    fn emit_token_usage(events: &UpdateSink, usage: &TokenUsageInfo) {
-        events.send(AgentUpdate::TokenUsage(usage.clone()));
+    fn emit_token_usage(events: &dyn ProviderProgressSink, usage: &TokenUsageInfo) {
+        events.send(ProviderProgress::Usage(usage.clone()));
     }
 
-    fn emit_stream_chunks(events: &UpdateSink, blocks: &[ContentBlock]) {
-        if events.is_empty() {
-            return;
-        }
+    fn emit_stream_chunks(events: &dyn ProviderProgressSink, blocks: &[ContentBlock]) {
         for block in blocks {
-            if let ContentBlock::Text { text } = block {
-                // Emit word-by-word to simulate streaming without overloading the channel.
-                let words: Vec<&str> = text.split_whitespace().collect();
-                let n = words.len();
-                for (i, word) in words.into_iter().enumerate() {
-                    let chunk = if i + 1 == n {
-                        word.to_string()
-                    } else {
-                        format!("{word} ")
-                    };
-                    events.send(AgentUpdate::StreamChunk(chunk));
+            match block {
+                ContentBlock::Thinking { thinking, .. } => {
+                    events.send(ProviderProgress::Thinking(ThinkingChunk::Started));
+                    if !thinking.is_empty() {
+                        events.send(ProviderProgress::Thinking(ThinkingChunk::Delta(
+                            thinking.clone(),
+                        )));
+                    }
+                    events.send(ProviderProgress::Thinking(ThinkingChunk::Finished));
                 }
+                ContentBlock::Text { text } => {
+                    // Emit word-by-word to simulate streaming without overloading the channel.
+                    let words: Vec<&str> = text.split_whitespace().collect();
+                    let n = words.len();
+                    for (i, word) in words.into_iter().enumerate() {
+                        let chunk = if i + 1 == n {
+                            word.to_string()
+                        } else {
+                            format!("{word} ")
+                        };
+                        events.send(ProviderProgress::TextDelta(chunk));
+                    }
+                }
+                _ => {}
             }
         }
     }
@@ -249,7 +259,7 @@ impl LlmClient for MockClient {
         &self,
         request: &CreateMessageParams,
         _provider_state: Option<&ProviderConversationState>,
-        events: &UpdateSink,
+        events: &dyn ProviderProgressSink,
     ) -> Result<LlmResponse, LlmError> {
         let (blocks, stop_reason, usage) = self.next_turn(request)?;
         if let Some(ref u) = usage {

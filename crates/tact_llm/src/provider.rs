@@ -2,14 +2,13 @@
 
 use std::sync::{Arc, RwLock};
 
-use async_openai::config::Config;
 use secrecy::ExposeSecret;
 
+use crate::assembly::{AssemblySpec, assemble};
 use crate::lock::RwLockExt;
 use crate::{
-    ApiKeyProvider, CredentialProvider, ProviderProfile, SharedHttpClient, anthropic,
+    ApiKeyProvider, CredentialProvider, ProviderProfile,
     client::LlmProvider,
-    openai,
     types::{OpenAiProtocol, ProviderKind},
 };
 
@@ -60,134 +59,46 @@ impl ProviderInfo {
     }
 
     /// Returns the conservative capabilities for the configured Responses endpoint.
-    pub fn responses_capabilities(&self) -> Option<openai::responses::ResponsesCapabilities> {
-        if self.protocol != OpenAiProtocol::Responses {
-            return None;
-        }
-        Some(match self.provider {
-            ProviderKind::OpenAi => openai::responses::ResponsesCapabilities::official_openai(),
-            ProviderKind::Anthropic => return None,
-            ProviderKind::DeepSeek | ProviderKind::Kimi | ProviderKind::Custom(_) => {
-                openai::responses::ResponsesCapabilities::custom_provider()
-            }
-        })
+    pub fn responses_capabilities(
+        &self,
+    ) -> Option<crate::openai::responses::ResponsesCapabilities> {
+        self.to_profile().responses_capabilities()
     }
 
     /// Build an LLM client for this provider configuration.
     pub fn build_client(&self) -> anyhow::Result<LlmProvider> {
-        match self.provider {
-            ProviderKind::Anthropic => self.build_anthropic(),
-            ProviderKind::DeepSeek | ProviderKind::Kimi => match self.protocol {
-                OpenAiProtocol::ChatCompletions => self.build_openai_compatible(),
-                OpenAiProtocol::Responses => self.build_openai_responses(),
-            },
-            ProviderKind::OpenAi => match self.protocol {
-                OpenAiProtocol::ChatCompletions => self.build_openai_compatible(),
-                OpenAiProtocol::Responses => self.build_openai_responses(),
-            },
-            // Custom providers reuse the OpenAI protocol end to end.
-            ProviderKind::Custom(_) => match self.protocol {
-                OpenAiProtocol::ChatCompletions => self.build_openai_compatible(),
-                OpenAiProtocol::Responses => self.build_openai_responses(),
-            },
-        }
-    }
-
-    /// Build an Anthropic Messages API client.
-    fn build_anthropic(&self) -> anyhow::Result<LlmProvider> {
         if self.api_key.is_empty() {
             anyhow::bail!("api_key not configured for provider '{}'", self.provider);
         }
-        if self.base_url.is_empty() {
-            anyhow::bail!("base_url not configured for provider '{}'", self.provider);
-        }
-        Ok(LlmProvider::Anthropic(anthropic::AnthropicAdapter::new(
-            self.api_key.clone(),
-            self.base_url.clone(),
-        )))
-    }
-
-    /// Build a unified Chat Completions client for OpenAI-compatible endpoints.
-    ///
-    /// DeepSeek and Kimi are wire dialects selected per request, so all three
-    /// share one adapter and transport.
-    fn build_openai_compatible(&self) -> anyhow::Result<LlmProvider> {
-        let config = self.openai_compatible_config()?;
-        let profile = self.profile_for_base_url(config.api_base())?;
-        let adapter = openai::compatible::OpenAiAdapter::new(config);
-        Ok(LlmProvider::ChatCompletions(
-            openai::compatible::ChatCompletionsAdapter::new(profile, adapter),
-        ))
-    }
-
-    fn profile_for_base_url(&self, base_url: &str) -> anyhow::Result<ProviderProfile> {
-        Ok(ProviderProfile {
-            provider: self.provider.clone(),
-            base_url: base_url.to_string(),
+        let base_url = if self.base_url.is_empty() {
+            self.provider
+                .default_base_url()
+                .map(str::to_string)
+                .ok_or_else(|| {
+                    anyhow::anyhow!("no default base_url for provider '{}'", self.provider)
+                })?
+        } else {
+            self.base_url.clone()
+        };
+        let protocol = crate::policy::wire_protocol(&self.provider, self.protocol);
+        assemble(AssemblySpec {
+            kind: self.provider.clone(),
+            protocol,
             model: self.model.clone(),
-            protocol: self.protocol,
-            responses_compact_threshold: self.responses_compact_threshold,
-        })
-    }
-
-    /// Build the official OpenAI Responses API client.
-    fn build_openai_responses(&self) -> anyhow::Result<LlmProvider> {
-        if self.api_key.is_empty() {
-            anyhow::bail!("api_key not configured for provider '{}'", self.provider);
-        }
-        let base_url = if self.base_url.is_empty() {
-            self.provider
-                .default_base_url()
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("no default base_url for provider '{}'", self.provider)
-                })?
-        } else {
-            self.base_url.clone()
-        };
-        // Hosted web search is a Responses-protocol capability, independent of
-        // the endpoint/provider: the adapter injects `Tool::WebSearch` on
-        // every ordinary request for OpenAI, DeepSeek, and custom
-        // OpenAI-compatible endpoints alike (the `/responses/compact` path
-        // never sends tools).
-        Ok(LlmProvider::OpenAiResponses(
-            openai::responses::OpenAiResponsesAdapter::new(
-                self.api_key.clone(),
-                base_url,
-                self.responses_compact_threshold,
-            ),
-        ))
-    }
-
-    fn openai_compatible_config(&self) -> anyhow::Result<openai::compatible::CompatibleConfig> {
-        if self.api_key.is_empty() {
-            anyhow::bail!("api_key not configured for provider '{}'", self.provider);
-        }
-        let base_url = if self.base_url.is_empty() {
-            self.provider
-                .default_base_url()
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    anyhow::anyhow!("no default base_url for provider '{}'", self.provider)
-                })?
-        } else {
-            self.base_url.clone()
-        };
-        Ok(openai::compatible::CompatibleConfig::new(
-            self.api_key.clone(),
             base_url,
-        ))
+            credentials: Arc::new(ApiKeyProvider::new(self.api_key.clone())),
+            compact_threshold: self.responses_compact_threshold,
+            replay_prior_reasoning: None,
+            chat_dialect: None,
+            session_id: None,
+        })
+        .map_err(|error| anyhow::anyhow!("provider assembly failed: {error:?}"))
     }
 
     /// Returns true if the active target is a Kimi/Moonshot endpoint
     /// (config-level: uses the static configured model).
     pub fn is_kimi(&self) -> bool {
         self.to_profile().is_kimi()
-    }
-
-    /// Kimi endpoint check for an arbitrary model id (per-request wire shape).
-    pub(crate) fn is_kimi_with(&self, model: &str) -> bool {
-        self.to_profile().is_kimi_with(model)
     }
 
     /// Returns true for the Kimi K2.x family (K2.5, K2.6, K2.7-code, ...).
@@ -255,7 +166,6 @@ impl Client {
         profile: ProviderProfile,
         credentials: Arc<dyn CredentialProvider>,
     ) -> anyhow::Result<LlmProvider> {
-        let credentials_for_responses = credentials.clone();
         let secret = credentials.resolve().await.map_err(anyhow::Error::from)?;
         if secret.expose_secret().is_empty() {
             anyhow::bail!("api_key not configured for provider '{}'", profile.provider);
@@ -270,40 +180,19 @@ impl Client {
         } else {
             profile.base_url.clone()
         };
-
-        match profile.provider {
-            ProviderKind::Anthropic => Ok(LlmProvider::Anthropic(
-                anthropic::AnthropicAdapter::new(secret.expose_secret().clone(), base_url),
-            )),
-            ProviderKind::DeepSeek
-            | ProviderKind::Kimi
-            | ProviderKind::OpenAi
-            | ProviderKind::Custom(_)
-                if profile.protocol == OpenAiProtocol::Responses =>
-            {
-                Ok(LlmProvider::OpenAiResponses(
-                    openai::responses::OpenAiResponsesAdapter::new_with_auth(
-                        credentials_for_responses,
-                        base_url,
-                        profile.responses_compact_threshold,
-                        SharedHttpClient::default(),
-                    ),
-                ))
-            }
-            ProviderKind::DeepSeek
-            | ProviderKind::Kimi
-            | ProviderKind::OpenAi
-            | ProviderKind::Custom(_) => {
-                let adapter = openai::compatible::OpenAiAdapter::with_auth(
-                    base_url,
-                    SharedHttpClient::default(),
-                    credentials,
-                );
-                Ok(LlmProvider::ChatCompletions(
-                    openai::compatible::ChatCompletionsAdapter::new(profile, adapter),
-                ))
-            }
-        }
+        let protocol = crate::policy::wire_protocol(&profile.provider, profile.protocol);
+        assemble(AssemblySpec {
+            kind: profile.provider,
+            protocol,
+            model: profile.model,
+            base_url,
+            credentials,
+            compact_threshold: profile.responses_compact_threshold,
+            replay_prior_reasoning: None,
+            chat_dialect: None,
+            session_id: None,
+        })
+        .map_err(|error| anyhow::anyhow!("provider assembly failed: {error:?}"))
     }
 }
 
@@ -352,12 +241,18 @@ pub fn init_provider_with_credentials(
     *guard = Some(credentials);
 }
 
+/// Publish a new provider snapshot without replacing the installed credential
+/// source. Used by the product's commit step after a successful model switch.
+pub fn update_provider_info(info: ProviderInfo) {
+    *PROVIDER.write_recover() = Some(info);
+}
+
 pub(crate) fn active_credential_provider() -> Arc<dyn CredentialProvider> {
     try_active_credential_provider()
         .expect("LLM credentials not initialized; call tact_llm::init_provider first")
 }
 
-pub(crate) fn try_active_credential_provider() -> Option<Arc<dyn CredentialProvider>> {
+pub fn try_active_credential_provider() -> Option<Arc<dyn CredentialProvider>> {
     CREDENTIALS.read_recover().clone()
 }
 
@@ -367,6 +262,10 @@ pub fn get_provider() -> ProviderInfo {
         .read_recover()
         .clone()
         .expect("LLM provider not initialized; call tact_llm::init_provider first")
+}
+
+pub fn try_get_provider() -> Option<ProviderInfo> {
+    PROVIDER.read_recover().clone()
 }
 
 /// Read-only access to the global provider via a closure.
@@ -401,16 +300,10 @@ pub async fn get_llm_client() -> anyhow::Result<LlmProvider> {
 /// default. A generic OpenAI-compatible endpoint pointed at DeepSeek is
 /// reported as [`ProviderKind::DeepSeek`], matching [`is_deepseek`].
 pub fn current_provider_kind() -> Option<ProviderKind> {
-    PROVIDER.read_recover().as_ref().map(|info| {
-        if info.provider == ProviderKind::DeepSeek
-            || info.base_url.contains("deepseek")
-            || info.model.contains("deepseek")
-        {
-            ProviderKind::DeepSeek
-        } else {
-            info.provider.clone()
-        }
-    })
+    PROVIDER
+        .read_recover()
+        .as_ref()
+        .map(|info| crate::policy::routed_kind(&info.provider, &info.base_url, &info.model))
 }
 
 /// Returns `true` if the configured provider is DeepSeek.
@@ -419,11 +312,7 @@ pub fn current_provider_kind() -> Option<ProviderKind> {
 /// provider or as an OpenAI-compatible endpoint that targets DeepSeek
 /// (e.g. `provider = "openai"` with a `deepseek.com` base URL).
 pub fn is_deepseek() -> bool {
-    read_provider(|p| {
-        p.provider == ProviderKind::DeepSeek
-            || p.base_url.contains("deepseek")
-            || p.model.contains("deepseek")
-    })
+    read_provider(|p| crate::policy::is_deepseekish(&p.provider, &p.base_url, &p.model))
 }
 
 /// Returns true if the active provider/target is Kimi/Moonshot.
@@ -494,24 +383,39 @@ pub fn model_uses_effort(model: &str, info: &ProviderInfo) -> bool {
 /// True for the Kimi K3 family (`k3`, `k3-256k`) which exposes
 /// `reasoning_effort: low/high/max` (default high).
 pub fn is_kimi_k3(model: &str) -> bool {
-    model == "k3" || model == "k3-256k"
+    crate::policy::is_kimi_k3(model)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::atomic::{AtomicUsize, Ordering};
-
-    use futures_util::future::BoxFuture;
-    use secrecy::SecretString;
-    use tact_protocol::{AgentUpdate, TokenUsageInfo, UpdateSink};
+    use std::sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    };
 
     use super::*;
     use crate::{
-        ApiKeyProvider, LlmError,
+        ApiKeyProvider, LlmError, ProviderProgress, ProviderProgressSink, TokenUsageInfo,
         client::{LlmClient, LlmProvider},
         mock::MockClient,
         types::{CreateMessageParams, RequiredMessageParams, StopReason},
     };
+    use futures_util::future::BoxFuture;
+    use secrecy::SecretString;
+
+    #[derive(Default)]
+    struct RecordingProgress {
+        events: Mutex<Vec<ProviderProgress>>,
+    }
+
+    impl ProviderProgressSink for RecordingProgress {
+        fn send(&self, progress: ProviderProgress) {
+            self.events
+                .lock()
+                .expect("progress events lock")
+                .push(progress);
+        }
+    }
 
     #[derive(Debug, Clone)]
     struct CountingCredential {
@@ -935,8 +839,6 @@ mod tests {
 
     #[tokio::test]
     async fn mock_stream_emits_token_usage_when_configured() {
-        use tokio::sync::mpsc::unbounded_channel;
-
         use crate::ContentBlock;
 
         let usage = TokenUsageInfo {
@@ -955,7 +857,7 @@ mod tests {
             usage.clone(),
         )]);
 
-        let (tx, mut rx) = unbounded_channel();
+        let progress = RecordingProgress::default();
         let response = client
             .stream_message(
                 &CreateMessageParams::new(RequiredMessageParams {
@@ -964,7 +866,7 @@ mod tests {
                     max_tokens: 100,
                 }),
                 None,
-                &UpdateSink::for_ui(tx),
+                &progress,
             )
             .await
             .expect("stream");
@@ -974,10 +876,16 @@ mod tests {
         assert_eq!(blocks.len(), 1);
         assert_eq!(returned.as_ref().map(|u| u.total), Some(15));
 
-        let update = rx.try_recv().expect("TokenUsage event");
+        let update = progress
+            .events
+            .lock()
+            .expect("progress events lock")
+            .first()
+            .cloned()
+            .expect("TokenUsage event");
         assert!(matches!(
             update,
-            AgentUpdate::TokenUsage(u) if u.total == usage.total
+            ProviderProgress::Usage(u) if u.total == usage.total
         ));
     }
 
