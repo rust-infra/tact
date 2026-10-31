@@ -21,24 +21,31 @@ path = "examples/ui_capture.rs"
 required-features = ["ui-capture"]
 
 [features]
-# Offscreen render harness used to verify the real shell's pixels on a
-# developer machine or in CI without Screen Recording permission.
-ui-capture = ["dep:image"]
+# Offscreen render harness used to verify the real shell's pixels without
+# Screen Recording permission.
+ui-capture = [
+    "dep:anyhow",
+    "dep:image",
+    "tact_desktop_core/ui-capture",
+    "gpui/test-support",
+    "gpui_platform/test-support",
+]
 
 [dependencies]
-anyhow = { workspace = true }
+anyhow = { workspace = true, optional = true }
 chrono = { workspace = true }
 image = { workspace = true, optional = true }
 tact_catalog = { version = "2.0.0", path = "../catalog" }
 tact_desktop_core = { version = "2.0.0", path = "../desktop_core" }
-gpui = { workspace = true, features = ["test-support"] }
+gpui = { workspace = true }
 gpui_ai = { package = "gpui-ai", version = "=0.8.0" }
 gpui_base = { workspace = true }
 gpui_component = { workspace = true }
 gpui_component_assets = { workspace = true }
 gpui-component-macros = { workspace = true }
-gpui_platform = { workspace = true, features = ["test-support"] }
+gpui_platform = { workspace = true }
 
 [dev-dependencies]
 gpui = { workspace = true, features = ["test-support"] }
+tact_desktop_core = { version = "2.0.0", path = "../desktop_core", features = ["ui-capture"] }
 tact_protocol = { version = "2.0.0", path = "../protocol" }

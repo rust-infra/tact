@@ -30,6 +30,7 @@ actions!(
     ]
 );
 
+#[cfg(test)]
 pub const SHORTCUTS: &[&str] = &[
     "secondary-k",
     "secondary-b",
@@ -114,6 +115,14 @@ pub const fn command_center_hint() -> &'static str {
         "⌘K"
     } else {
         "Ctrl+K"
+    }
+}
+
+pub const fn settings_hint() -> &'static str {
+    if cfg!(target_os = "macos") {
+        "⌘,"
+    } else {
+        "Ctrl+,"
     }
 }
 

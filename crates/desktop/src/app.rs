@@ -113,65 +113,31 @@ fn run_inner(smoke: bool) -> Result<(), DesktopStartError> {
                 window_options.window_decorations = Some(gpui::WindowDecorations::Client);
             }
             window_options.window_bounds = Some(WindowBounds::Windowed(bounds));
-            let window_handle = cx
-                .open_window(window_options, move |window, cx| {
-                    crate::theme::apply(initial.appearance, Some(window), cx);
-                    window.on_window_should_close(cx, move |_, cx| {
-                        match shutdown_for_close.shutdown(&controller_for_close) {
-                            Ok(()) => true,
-                            Err(error) => {
-                                cx.show_system_notification(gpui::SystemNotification {
-                                    tag: "tact-desktop-close-blocked".into(),
-                                    title: match close_language {
-                                        tact_catalog::CatalogLocale::En => "Tact is still stopping",
-                                        tact_catalog::CatalogLocale::Zh => "Tact 正在停止",
-                                    }
-                                    .into(),
-                                    body: error.into(),
-                                    actions: Vec::new(),
-                                });
-                                false
-                            }
-                        }
-                    });
-                    let root =
-                        cx.new(|cx| DesktopRoot::new(controller_for_root, events, window, cx));
-                    cx.new(|cx| Root::new(root, window, cx))
-                })
-                .expect("failed to open Tact Desktop window");
-            cx.activate(true);
-            if let Ok(dir) = std::env::var("TACT_CAPTURE_DIR") {
-                cx.spawn(async move |cx| {
-                    let mut frame = 0u32;
-                    loop {
-                        cx.background_executor()
-                            .timer(std::time::Duration::from_millis(1500))
-                            .await;
-                        let image = window_handle
-                            .update(cx, |_, window, _| window.render_to_image())
-                            .ok()
-                            .and_then(|result| match result {
-                                Ok(image) => Some(image),
-                                Err(error) => {
-                                    eprintln!("capture error: {error:#}");
-                                    None
+            cx.open_window(window_options, move |window, cx| {
+                crate::theme::apply(initial.appearance, Some(window), cx);
+                window.on_window_should_close(cx, move |_, cx| {
+                    match shutdown_for_close.shutdown(&controller_for_close) {
+                        Ok(()) => true,
+                        Err(error) => {
+                            cx.show_system_notification(gpui::SystemNotification {
+                                tag: "tact-desktop-close-blocked".into(),
+                                title: match close_language {
+                                    tact_catalog::CatalogLocale::En => "Tact is still stopping",
+                                    tact_catalog::CatalogLocale::Zh => "Tact 正在停止",
                                 }
+                                .into(),
+                                body: error.into(),
+                                actions: Vec::new(),
                             });
-                        if let Some(image) = image {
-                            let path = format!("{dir}/frame-{frame:03}.png");
-                            let _ = image.save(&path);
-                            eprintln!("captured {path}");
-                        } else {
-                            eprintln!("capture failed");
-                        }
-                        frame += 1;
-                        if frame > 120 {
-                            break;
+                            false
                         }
                     }
-                })
-                .detach();
-            }
+                });
+                let root = cx.new(|cx| DesktopRoot::new(controller_for_root, events, window, cx));
+                cx.new(|cx| Root::new(root, window, cx))
+            })
+            .expect("failed to open Tact Desktop window");
+            cx.activate(true);
             if smoke {
                 cx.spawn(async move |cx| {
                     cx.background_executor()

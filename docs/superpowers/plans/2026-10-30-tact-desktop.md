@@ -556,7 +556,9 @@ Expected: PASS. (The gate attribution tests live in `tact`, not `tact_host`.)
 - Modify: `crates/tact_host/src/host_session.rs`
 - Create: `crates/desktop_core/src/project.rs`
 - Create: `crates/desktop_core/src/session.rs`
-- Create: `crates/desktop_core/src/settings.rs`
+- (Removed) `crates/desktop_core/src/settings.rs`: settings live in
+  `config.rs` (persisted desktop settings) and `state.rs` (live/session
+  application), so a separate module would split one owner.
 
 **Interfaces:**
 
@@ -670,8 +672,10 @@ Expected: PASS.
 - Create: `crates/desktop_core/src/transcript/mod.rs`
 - Create: `crates/desktop_core/src/transcript/row.rs`
 - Create: `crates/desktop_core/src/transcript/reducer.rs`
-- Create: `crates/desktop_core/src/transcript/history.rs`
-- Create: `crates/desktop_core/src/transcript/tool_group.rs`
+- Create: `crates/desktop_core/src/transcript/history.rs` (module doc; history
+  seeding is `TranscriptReducer::seed_persisted`)
+- Create: `crates/desktop_core/src/transcript/tool_group.rs` (module doc; the
+  grouping algorithm lives in `reducer.rs`)
 - Create: `crates/desktop_core/src/transcript/output.rs`
 - Create: `crates/desktop_core/src/gates.rs`
 - Create: `crates/desktop_core/src/state.rs`
@@ -783,8 +787,9 @@ fn persisted_injected_context_is_not_a_user_turn() {}
 Run: `cargo test -p tact_desktop_core transcript`
 Expected: PASS.
 
-Run: `cargo test -p tact_desktop_core gates`
-Expected: PASS.
+Run: `cargo test -p tact_desktop_core gate`
+Expected: PASS. (The filter is `gate`, not `gates`; the reconciliation tests live
+in `transcript/reducer.rs` and every name contains `gate`.)
 
 ### Task 6: Build the desktop controller and runtime actor
 
@@ -858,8 +863,9 @@ Expected: FAIL because the controller does not exist.
 
 - [x] **Step 3: Install process-global Tact config once**
 
-Call `DesktopConfig::install_process_config()` in `crates/desktop/src/main.rs`
-before `DesktopController::start`, and install
+Call `DesktopConfig::install_process_config()` in the launcher path
+(`crates/desktop/src/app.rs::run_inner`, reached from `main.rs`) before
+`DesktopController::start`, and install
 `SessionLockRegistry::spawn_exit_listener` there as well. Implement the config
 method in `tact_desktop_core`, delegating to the existing host/config facade.
 Also implement `DesktopConfig::save` and `persist_subagent_model` (delegating
@@ -1106,7 +1112,8 @@ Run: `cargo test -p tact-desktop --lib session_manager`
 Expected: PASS with a non-zero test count.
 
 Run: `cargo test -p tact-desktop --lib goals_and_subagents_use_the_shared_row_grammar`
-Expected: PASS. (There is no test named `inspector`; do not use that filter.)
+Expected: PASS. (`cargo test -p tact-desktop --lib inspector` also selects the
+inspector module tests and is a useful secondary filter.)
 
 ### Task 9: Add Command Center, slash overlay, and settings
 
@@ -1282,7 +1289,10 @@ Build the release binary on macOS, Windows, and Linux, verify each starts from a
 clean app-data directory, and verify the release workflow packages the macOS
 `.app`, Linux `tar.gz`, and Windows `zip` assets. The GitHub Actions matrices in
 `.github/workflows/rust.yml` and `.github/workflows/release.yml` are the
-executable acceptance for all three targets.
+executable acceptance for all three targets. The off-screen render walk in
+`crates/desktop/examples/ui_capture.rs` and the runtime accessibility walk in
+`docs/design/tact-desktop/visual-verification.md` cover the visual and
+interaction checks on the host platform.
 
 - [x] **Step 5: Run the full verification gate**
 

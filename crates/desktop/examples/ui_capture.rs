@@ -11,8 +11,6 @@
 
 use std::path::PathBuf;
 
-use tact_desktop_core::Appearance;
-
 fn main() -> anyhow::Result<()> {
     let out = std::env::args()
         .nth(1)
@@ -20,8 +18,18 @@ fn main() -> anyhow::Result<()> {
         .unwrap_or_else(|| PathBuf::from("target/ui-capture"));
     std::fs::create_dir_all(&out)?;
 
-    let mut harness = tact_desktop::capture::Harness::open(Appearance::Light, 1.0)?;
-    let path = harness.capture(&out, "shell-light")?;
-    println!("{}", path.display());
-    Ok(())
+    match tact_desktop::capture::capture_all(&out) {
+        Ok(paths) => {
+            for path in paths {
+                println!("{}", path.display());
+            }
+            Ok(())
+        }
+        Err(error) => {
+            eprintln!("ui capture failed: {error:#}");
+            // Skip destructors so the visual-test leak detector cannot mask
+            // the capture failure with its own panic.
+            std::process::exit(1);
+        }
+    }
 }

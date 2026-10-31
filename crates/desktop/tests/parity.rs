@@ -2,19 +2,15 @@ use tact_catalog::{
     BuiltinCommand, CliEntry, CommandId, ComposerAction, SettingId, Subcommand, builtins,
 };
 use tact_desktop_core::{
-    CliRouteClass, CommandTarget, cli_catalog_parity_errors, cli_entry_has_setting_route,
-    cli_route_class, plan_command, search_commands,
+    CliRouteClass, cli_catalog_parity_errors, cli_entry_has_setting_route, cli_route_class,
+    command_is_executable, search_commands,
 };
 
 const TUI_SUBCOMMAND_TREE: &str = include_str!("fixtures/tui-subcommands.txt");
 
 fn assert_routed(id: CommandId) {
-    let plan = plan_command(&id);
     assert!(
-        matches!(
-            plan.target,
-            CommandTarget::Controller | CommandTarget::Shell | CommandTarget::Window
-        ),
+        command_is_executable(&id),
         "desktop route missing for {id:?}"
     );
 }
@@ -139,15 +135,29 @@ fn goal_list_exposes_the_archived_scope_verb() {
 fn tui_tree_and_catalog_agree_without_sharing_the_oracle() {
     use std::collections::BTreeSet;
 
+    // The fixture is a checked-in snapshot of the TUI completion tree taken
+    // before the catalog migration. It is not generated from the catalog, so a
+    // catalog-only rename or addition cannot silently rewrite the oracle. The
+    // TUI's own `tui_subcommand_completion_matches_catalog_tree` test closes
+    // the other half of the chain (TUI tree == catalog).
+
     let catalog = builtins()
         .entries()
         .filter(|entry| matches!(entry.id, CommandId::BuiltinPath { .. }))
         .map(|entry| entry.path.join(" "))
         .collect::<BTreeSet<_>>();
-    let tui = TUI_SUBCOMMAND_TREE
+    let tui_lines = TUI_SUBCOMMAND_TREE
         .lines()
         .map(str::trim)
         .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    assert_eq!(
+        tui_lines.len(),
+        tui_lines.iter().collect::<BTreeSet<_>>().len(),
+        "the TUI fixture contains a duplicate subcommand path"
+    );
+    let tui = tui_lines
+        .into_iter()
         .map(str::to_string)
         .collect::<BTreeSet<_>>();
     assert_eq!(catalog, tui);

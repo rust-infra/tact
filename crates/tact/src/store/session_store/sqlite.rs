@@ -2070,6 +2070,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn archived_session_is_hidden_from_active_filter() {
+        let (_tmp, store) = new_store_with_session("active").await;
+        store
+            .ensure_session_row("archived", "/workspace", "")
+            .await
+            .unwrap();
+        store.set_session_archived("archived", true).await.unwrap();
+        let active = store
+            .list_sessions_filtered(SessionListQuery {
+                archive: ArchiveFilter::Active,
+                ..SessionListQuery::default()
+            })
+            .await
+            .unwrap();
+        assert!(active.iter().all(|session| session.id != "archived"));
+        assert!(active.iter().any(|session| session.id == "active"));
+        let archived = store
+            .list_sessions_filtered(SessionListQuery {
+                archive: ArchiveFilter::Archived,
+                ..SessionListQuery::default()
+            })
+            .await
+            .unwrap();
+        assert_eq!(archived.len(), 1);
+        assert_eq!(archived[0].id, "archived");
+    }
+
+    #[tokio::test]
     async fn archive_and_restore_are_idempotent() {
         let (_tmp, store) = new_store_with_session("session").await;
         store.set_session_archived("session", true).await.unwrap();

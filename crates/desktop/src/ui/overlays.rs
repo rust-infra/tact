@@ -31,6 +31,18 @@ mod tests {
 
     #[gpui::test]
     fn p2_components_are_explicitly_deferred(_cx: &mut TestAppContext) {
-        assert_eq!(DEFERRED_P2_COMPONENTS.len(), 4);
+        let shell = [
+            include_str!("../root.rs"),
+            include_str!("../app.rs"),
+            include_str!("transcript_row.rs"),
+            include_str!("transcript.rs"),
+        ]
+        .join("\n");
+        for deferred in DEFERRED_P2_COMPONENTS {
+            assert!(
+                !shell.contains(deferred),
+                "deferred P2 component {deferred} must not be mounted by the shell"
+            );
+        }
     }
 }

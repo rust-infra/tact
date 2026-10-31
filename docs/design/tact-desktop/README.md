@@ -10,8 +10,9 @@ project-scoped Session Manager, nested slash overlay, Mermaid/ANSI renderers and
 session persistence are Tact-owned. AI-specific surfaces instantiate real
 `gpui-ai` components: `PlanCard`, `Thinking`, `ToolGroup`, `ApprovalCard`,
 `StreamingText`, `PromptBar`, `CommandSearch`, `ContextMeter`, `MessageQueue`,
-`AttachmentStrip`, `VoiceControls` and the `gpui-component` popovers they
-compose. `PromptBar` is composed with a Tact-owned slash overlay because its
+`AttachmentStrip` and the `gpui-component` popovers they compose. Voice is a P2
+capability (recording plus a transcription pipeline); the P1 composer does not
+mount `VoiceControls` or a dead microphone. `PromptBar` is composed with a Tact-owned slash overlay because its
 upstream commands are flat. HTML nodes carry `data-gpui-ai` attributes naming
 the actual mapping.
 
@@ -49,8 +50,8 @@ the actual mapping.
 - Typing `@` opens the workspace mention popup with files and images.
 - The composer model and permission controls open native-style selection menus.
 - Composer attachments render as removable `AttachmentStrip` chips; the queue
-  exposes send-now, remove and clear actions; voice input toggles a live
-  recording state and inserts its transcript.
+  exposes send-now, remove and clear actions. Voice input is P2 and is not part
+  of the P1 desktop composer.
 - Consecutive tools from one loop render as one compact ToolGroup; expand the
   group for the tool list, then expand one row for terminal output or diff.
 - ToolGroup membership is by agent-loop iteration, not tool kind: commands,

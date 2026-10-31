@@ -218,9 +218,10 @@ Two alternatives were evaluated:
 - Turn count, token usage, context meter, cache rate, and session budget.
 - Sticky Goal/task/subagent summary while scrolling.
 - Sticky Tasks is a persistent strip between transcript and composer. It shows
-  completion, the active task and all task rows by default; collapsing keeps the
-  active task visible. Goals and Agents remain one-click inspector shortcuts;
-  Background opens the current background-task summary and output/stop actions.
+  the plan counter and the active task at rest (the focus-first default in
+  section 12); expanding reveals every task row. Goals and Agents remain
+  one-click inspector shortcuts; Background opens the current background-task
+  summary and output/stop actions.
 - Background task list with open-output action.
 
 ### P1: Tact Feature Parity

@@ -13,8 +13,19 @@ pub fn manage(view: &ExtensionsView) -> ExtensionDialogState {
     }
 }
 
+pub fn score_extension(query: &str, values: &[&str]) -> i32 {
+    if query.trim().is_empty() {
+        return 0;
+    }
+    values
+        .iter()
+        .filter_map(|value| tact_catalog::fuzzy_score(query, value))
+        .max()
+        .unwrap_or(-1)
+}
+
 pub fn matches_extension(query: &str, value: &str) -> bool {
-    query.trim().is_empty() || tact_catalog::fuzzy_score(query, value).is_some()
+    score_extension(query, &[value]) >= 0
 }
 
 #[cfg(test)]
@@ -43,5 +54,12 @@ mod tests {
     fn extension_search_uses_the_shared_fuzzy_matcher() {
         assert!(matches_extension("gthb", "GitHub Marketplace"));
         assert!(!matches_extension("zzzz", "GitHub Marketplace"));
+    }
+
+    #[test]
+    fn extension_scores_rank_prefixes_above_subsequences() {
+        let prefix = score_extension("git", &["GitHub Marketplace", "git"]);
+        let subsequence = score_extension("gthb", &["GitHub Marketplace"]);
+        assert!(prefix > subsequence);
     }
 }

@@ -174,4 +174,85 @@ mod tests {
         assert_eq!(found.len(), 1);
         assert_eq!(found[0].id, "session-a");
     }
+
+    #[tokio::test]
+    async fn project_session_databases_stay_isolated() {
+        let app_data = tempfile::tempdir().unwrap();
+        let project_a = tempfile::tempdir().unwrap();
+        let project_b = tempfile::tempdir().unwrap();
+        for project in [&project_a, &project_b] {
+            std::fs::create_dir_all(project.path().join(".tact")).unwrap();
+        }
+        for (project, id) in [(&project_a, "only-a"), (&project_b, "only-b")] {
+            let store = open_sqlite_session_store(&project.path().join(".tact/tact.db"))
+                .await
+                .unwrap();
+            let root = std::fs::canonicalize(project.path()).unwrap();
+            store
+                .ensure_session_row(id, &root.display().to_string(), "")
+                .await
+                .unwrap();
+        }
+
+        let mut registry = ProjectRegistry::open(app_data.path()).unwrap();
+        let a = registry.register(project_a.path()).unwrap();
+        let b = registry.register(project_b.path()).unwrap();
+        let ids = |sessions: Vec<SessionSummaryView>| {
+            let mut ids = sessions
+                .into_iter()
+                .map(|session| session.id)
+                .collect::<Vec<_>>();
+            ids.sort();
+            ids
+        };
+        let list_a = SessionCatalog::new(a)
+            .list(ArchiveFilter::All, "")
+            .await
+            .unwrap();
+        let list_b = SessionCatalog::new(b)
+            .list(ArchiveFilter::All, "")
+            .await
+            .unwrap();
+        assert_eq!(ids(list_a), vec!["only-a"]);
+        assert_eq!(ids(list_b), vec!["only-b"]);
+    }
+
+    #[tokio::test]
+    async fn session_search_uses_shared_fuzzy_matcher() {
+        let app_data = tempfile::tempdir().unwrap();
+        let project = tempfile::tempdir().unwrap();
+        std::fs::create_dir_all(project.path().join(".tact")).unwrap();
+        let store = open_sqlite_session_store(&project.path().join(".tact/tact.db"))
+            .await
+            .unwrap();
+        let canonical_root = std::fs::canonicalize(project.path()).unwrap();
+        for (id, title) in [
+            ("session-a", "Fix authentication retry"),
+            ("session-b", "Update dashboard"),
+        ] {
+            store
+                .ensure_session_row(id, &canonical_root.display().to_string(), "")
+                .await
+                .unwrap();
+            store
+                .append_agent_message(
+                    id,
+                    &AgentMessage::text(AgentRole::User, MessageOrigin::User, title),
+                    1,
+                )
+                .await
+                .unwrap();
+        }
+        let mut registry = ProjectRegistry::open(app_data.path()).unwrap();
+        let project = registry.register(project.path()).unwrap();
+        let catalog = SessionCatalog::new(project);
+
+        // "dsh" only matches "Update dashboard" as an acronym subsequence, so a
+        // plain substring search would return nothing. The catalog must use the
+        // same matcher the Command Center uses.
+        assert!(tact_catalog::fuzzy_score("dsh", "Update dashboard").is_some());
+        let found = catalog.list(ArchiveFilter::Active, "dsh").await.unwrap();
+        assert_eq!(found.len(), 1);
+        assert_eq!(found[0].id, "session-b");
+    }
 }

@@ -17,7 +17,7 @@ use crate::{
     DesktopSnapshot, InitialSession, PermissionModeView, ProjectRecord, ProjectRegistry, RequestId,
     RunPhase, SectionMask, SessionCatalog, SessionId, SessionPhase, StateCommit,
     commands::{CommandRoute, route_command, route_setting},
-    error::{DesktopClosed, DesktopShutdownError, DesktopStartError, FailureView},
+    error::{DesktopClosed, DesktopShutdownError, DesktopStartError, FailureKind, FailureView},
     intent::{DesktopIntent, GateResponse, ReaderRef, ReaderRequest, SettingValue, Submission},
     runtime::{HostBackend, HostFactory, RealHostFactory},
     state::DesktopState,
@@ -411,13 +411,13 @@ impl DesktopActor {
                 _ = poll.tick() => {}
             }
         }
-        self.close_host().await;
+        let _ = self.close_host().await;
     }
 
     async fn handle_message(&mut self, message: ControllerMessage) -> bool {
         match message {
             ControllerMessage::Intent(DesktopIntent::Shutdown) => {
-                if self.close_host().await {
+                if self.close_host().await.is_ok() {
                     let _ = self
                         .events
                         .urgent
@@ -437,12 +437,8 @@ impl DesktopActor {
                 false
             }
             ControllerMessage::Shutdown(ack) => {
-                let closed = self.close_host().await;
-                let result = if closed {
-                    Ok(())
-                } else {
-                    Err(DesktopShutdownError::Host(HostCloseError::DrainTimedOut))
-                };
+                let result = self.close_host().await.map_err(DesktopShutdownError::Host);
+                let closed = result.is_ok();
                 let _ = ack.send(result);
                 closed
             }
@@ -458,7 +454,7 @@ impl DesktopActor {
             }
             DesktopIntent::CloseProject { project_id } => {
                 if self.project.as_ref().map(|project| &project.id) == Some(&project_id)
-                    && self.close_host().await
+                    && self.close_host().await.is_ok()
                 {
                     let epoch = self.state.begin_session_switch();
                     self.project = None;
@@ -696,10 +692,12 @@ impl DesktopActor {
         root: PathBuf,
         initial: InitialSession,
     ) -> Result<(), DesktopStartError> {
-        if self.host.is_some() && !self.close_host().await {
-            return Err(DesktopStartError::Runtime(
-                "active session did not close".into(),
-            ));
+        if self.host.is_some()
+            && let Err(error) = self.close_host().await
+        {
+            return Err(DesktopStartError::Runtime(format!(
+                "active session did not close: {error}"
+            )));
         }
         let project = self
             .registry
@@ -722,6 +720,7 @@ impl DesktopActor {
             };
             self.state.runtime.current_phase = RunPhase::Failed;
             self.state.failure = Some(FailureView {
+                kind: FailureKind::SessionOpen,
                 message: Arc::from(localized(
                     self.state.language,
                     "Project folder is unavailable",
@@ -743,9 +742,9 @@ impl DesktopActor {
             .project
             .clone()
             .ok_or_else(|| "no project open".to_string())?;
-        if !self.close_host().await {
-            return Err("active session did not close".into());
-        }
+        self.close_host()
+            .await
+            .map_err(|error| format!("active session did not close: {error}"))?;
         self.state.begin_session_switch();
         self.clear_queue();
         self.start_host(&project, initial)
@@ -776,6 +775,7 @@ impl DesktopActor {
         self.restore_failure = None;
         let Some(store) = self.catalog.as_ref().and_then(SessionCatalog::store_handle) else {
             let failure = FailureView {
+                kind: FailureKind::Store,
                 message: Arc::from(localized(
                     self.state.language,
                     "Session store is unavailable; the transcript cannot be restored.",
@@ -803,9 +803,18 @@ impl DesktopActor {
                         session_epoch: self.state.session.epoch,
                     },
                 );
+                if let Ok(history) = store.load_input_history(&session_id).await {
+                    self.state.composer.history = history
+                        .into_iter()
+                        .rev()
+                        .map(Arc::from)
+                        .collect::<Vec<_>>()
+                        .into();
+                }
             }
             Err(error) => {
                 let failure = FailureView {
+                    kind: FailureKind::Store,
                     message: Arc::from(format!(
                         "{}: {error}",
                         localized(
@@ -881,6 +890,7 @@ impl DesktopActor {
             Err(error) => {
                 self.state.sessions.loading = false;
                 self.state.sessions.error = Some(FailureView {
+                    kind: FailureKind::Store,
                     message: Arc::from(error.to_string()),
                     retryable: true,
                     retry_label: Some(Arc::from(localized(self.state.language, "Refresh", "刷新"))),
@@ -937,6 +947,30 @@ impl DesktopActor {
             text.push_str(&format!(" @{}", attachment.display()));
         }
         self.send_command(UserCommand::SubmitTask(text.clone()))?;
+        // Input history is per session and persisted by the same store as the
+        // transcript. A failed write must not block the submitted turn.
+        if let Some(store) = self.catalog.as_ref().and_then(SessionCatalog::store_handle)
+            && let Some(session_id) = self.state.session.id.as_ref().map(|id| id.0.clone())
+        {
+            let text_for_history = text.clone();
+            tokio::spawn(async move {
+                let _ = store
+                    .append_input_history(&session_id, &text_for_history)
+                    .await;
+            });
+        }
+        let mut history = Vec::with_capacity(self.state.composer.history.len() + 1);
+        history.push(Arc::<str>::from(text.as_str()));
+        history.extend(
+            self.state
+                .composer
+                .history
+                .iter()
+                .filter(|entry| entry.as_ref() != text)
+                .cloned(),
+        );
+        history.truncate(100);
+        self.state.composer.history = history.into();
         let row = self
             .state
             .reducer
@@ -1226,7 +1260,15 @@ impl DesktopActor {
                         .map_err(|error| format!("{error:?}"))?;
                     self.publish(false);
                 }
-                _ => {}
+                (root, path) => {
+                    return Err(format!(
+                        "builtin path `{}` has no executable desktop route",
+                        std::iter::once(root.name())
+                            .chain(path.iter().copied())
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    ));
+                }
             },
             CommandId::Setting(id) => {
                 let _ = self
@@ -1241,7 +1283,11 @@ impl DesktopActor {
                         ),
                     }));
             }
-            _ => {}
+            other => {
+                return Err(format!(
+                    "command `{other:?}` has no executable desktop route"
+                ));
+            }
         }
         Ok(())
     }
@@ -1285,6 +1331,9 @@ impl DesktopActor {
             }
             (SettingId::ReasoningEffort, SettingValue::Choice(effort)) => {
                 self.state.composer.effort = Some(Arc::from(effort.as_str()));
+            }
+            (SettingId::ThinkingBudget, SettingValue::Text(budget)) => {
+                self.state.composer.thinking_budget = budget.parse().ok();
             }
             (SettingId::Provider, SettingValue::Text(value)) => {
                 self.config.host.provider = Some(value.clone());
@@ -1983,9 +2032,9 @@ impl DesktopActor {
         }
     }
 
-    async fn close_host(&mut self) -> bool {
+    async fn close_host(&mut self) -> Result<(), HostCloseError> {
         if self.host.is_none() {
-            return true;
+            return Ok(());
         }
         self.state.session.phase = SessionPhase::Closing;
         self.publish(false);
@@ -2000,10 +2049,11 @@ impl DesktopActor {
                 self.host = None;
                 self.state.session.phase = SessionPhase::Empty;
                 self.publish(false);
-                true
+                Ok(())
             }
             Err(HostCloseError::DrainTimedOut) => {
                 self.state.failure = Some(FailureView {
+                    kind: FailureKind::DriverClosed,
                     message: Arc::from(localized(
                         self.state.language,
                         "Waiting for session to stop",
@@ -2014,16 +2064,17 @@ impl DesktopActor {
                 });
                 self.state.session.phase = SessionPhase::Closing;
                 self.publish(true);
-                false
+                Err(HostCloseError::DrainTimedOut)
             }
             Err(error) => {
                 self.state.failure = Some(FailureView {
+                    kind: FailureKind::DriverClosed,
                     message: Arc::from(error.to_string()),
                     retryable: true,
                     retry_label: Some(Arc::from(localized(self.state.language, "Retry", "重试"))),
                 });
                 self.publish(true);
-                false
+                Err(error)
             }
         }
     }
@@ -2073,6 +2124,7 @@ impl DesktopActor {
             self.state.runtime.current_phase = RunPhase::Failed;
         }
         self.state.failure = Some(FailureView {
+            kind: FailureKind::Other,
             message,
             retryable,
             retry_label: retryable
@@ -2087,6 +2139,7 @@ impl DesktopActor {
         };
         self.state.runtime.current_phase = RunPhase::Failed;
         self.state.failure = Some(FailureView {
+            kind: FailureKind::RuntimeDisconnected,
             message: Arc::from(reason),
             retryable: true,
             retry_label: Some(Arc::from(localized(self.state.language, "Retry", "重试"))),
@@ -2524,6 +2577,13 @@ mod tests {
         let (controller, _events) =
             DesktopController::start_with_factory(config(tmp.path()), factory).unwrap();
         wait_ready(&controller).await;
+        for root in [tmp.path().join("second"), tmp.path().join("project")] {
+            controller
+                .dispatch(DesktopIntent::OpenProject { root })
+                .unwrap();
+            controller.when_idle().await.unwrap();
+            wait_ready(&controller).await;
+        }
         controller.dispatch(DesktopIntent::NewSession).unwrap();
         controller.when_idle().await.unwrap();
         wait_ready(&controller).await;

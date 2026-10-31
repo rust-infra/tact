@@ -126,14 +126,7 @@ fn route_builtin_path(
         (B::Plugin, ["reload"]) => CommandRoute::Extension(PluginAction::Reload),
         (B::Plugin, ["install", ..]) => {
             let spec = args.tokens.first().cloned().unwrap_or_default();
-            let (plugin, marketplace) = spec
-                .split_once('@')
-                .map(|(plugin, marketplace)| (plugin.to_string(), marketplace.to_string()))
-                .unwrap_or((spec, String::new()));
-            CommandRoute::Extension(PluginAction::Install {
-                plugin,
-                marketplace,
-            })
+            CommandRoute::Extension(PluginAction::Install { spec })
         }
         (B::Plugin, ["uninstall", ..]) => CommandRoute::Extension(PluginAction::Uninstall {
             name: args.tokens.first().cloned().unwrap_or_default(),
@@ -394,14 +387,7 @@ pub(crate) fn route_cli(entry: CliEntry, args: &CommandArguments) -> CommandRout
         CliEntry::PluginReload => CommandRoute::Extension(PluginAction::Reload),
         CliEntry::PluginInstall => {
             let spec = args.tokens.first().cloned().unwrap_or_default();
-            let (plugin, marketplace) = spec
-                .split_once('@')
-                .map(|(plugin, marketplace)| (plugin.to_string(), marketplace.to_string()))
-                .unwrap_or((spec, String::new()));
-            CommandRoute::Extension(PluginAction::Install {
-                plugin,
-                marketplace,
-            })
+            CommandRoute::Extension(PluginAction::Install { spec })
         }
         CliEntry::PluginUninstall => CommandRoute::Extension(PluginAction::Uninstall {
             name: args.tokens.first().cloned().unwrap_or_default(),

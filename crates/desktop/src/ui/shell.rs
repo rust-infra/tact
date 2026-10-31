@@ -4,7 +4,7 @@ use std::collections::VecDeque;
 
 use tact_desktop_core::{Appearance, ReducedMotion};
 
-use crate::{keymap, ui::layout};
+use crate::ui::layout;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TranscriptRowKind {
@@ -100,10 +100,6 @@ pub fn alt_up_down_keeps_queue_selection(index: usize, len: usize, direction: is
     candidate.clamp(0, len.saturating_sub(1) as isize) as usize
 }
 
-pub fn shortcut_strings() -> Vec<&'static str> {
-    keymap::SHORTCUTS.to_vec()
-}
-
 pub fn narrow_overlay_count(width: f32) -> usize {
     let layout = layout::layout(width, 1.0, true, true);
     usize::from(layout.rail_overlay) + usize::from(layout.inspector_overlay)
@@ -156,13 +152,36 @@ mod tests {
 
     #[gpui::test]
     fn keymap_matches_prd_interaction_table(_cx: &mut TestAppContext) {
-        let shortcuts = shortcut_strings();
-        for expected in keymap::SHORTCUTS {
+        // Copied from PRD section 12, independent of the keymap module so a
+        // dropped binding fails this test instead of comparing a list to itself.
+        const PRD_BINDINGS: &[&str] = &[
+            "secondary-k",
+            "secondary-b",
+            "secondary-alt-b",
+            "secondary-enter",
+            "escape",
+            "secondary-.",
+            "secondary-1",
+            "secondary-2",
+            "secondary-3",
+            "secondary-4",
+            "alt-up",
+            "alt-down",
+            "space",
+            "enter",
+            "tab",
+            "shift-tab",
+        ];
+        for expected in PRD_BINDINGS {
             assert!(
-                shortcuts.iter().any(|shortcut| shortcut == expected),
-                "missing {expected}"
+                crate::keymap::SHORTCUTS.contains(expected),
+                "PRD binding {expected} is missing from keymap::SHORTCUTS"
             );
         }
+        assert!(
+            crate::keymap::bindings().len() >= PRD_BINDINGS.len(),
+            "keymap registers fewer bindings than the PRD interaction table"
+        );
     }
 
     #[gpui::test]

@@ -571,7 +571,7 @@ impl Render for SelectionActions {
         let root_id = self.id.clone();
         let text_surface = div()
             .id((ElementId::from(root_id.clone()), "text"))
-            .size_full()
+            .w_full()
             .track_focus(&self.text_focus_scope)
             .on_mouse_down(
                 MouseButton::Left,
@@ -613,7 +613,7 @@ impl Render for SelectionActions {
             .role(Role::Group)
             .aria_label("Selectable content with actions")
             .relative()
-            .size_full()
+            .w_full()
             .min_h(tokens.spacing.xxl * 3.)
             .border_1()
             .border_color(tokens.colors.border)
@@ -646,7 +646,7 @@ impl Render for SelectionActions {
             .child(
                 div()
                     .id((ElementId::from(self.id.clone()), "content-scroll"))
-                    .size_full()
+                    .w_full()
                     .overflow_y_scroll()
                     .track_scroll(&self.content_scroll)
                     .p(tokens.spacing.md)

@@ -18,6 +18,7 @@ pub mod rendering;
 pub mod session_bootstrap;
 pub mod session_lock;
 pub mod sessions;
+mod surface;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test_support;
 pub mod user_message;

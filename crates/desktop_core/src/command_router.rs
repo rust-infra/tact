@@ -81,6 +81,22 @@ pub fn plan(command: &CommandId) -> CommandPlan {
     }
 }
 
+/// Whether the catalog action reaches executable desktop behavior.
+///
+/// A route that needs arguments is executable because the shell opens its
+/// declared form; a route that returns `Noop` without a form is the
+/// visible-but-inert case the parity suite must reject.
+pub fn command_is_executable(id: &CommandId) -> bool {
+    let route = crate::commands::route_command(id, &CommandArguments::default());
+    match route {
+        crate::commands::CommandRoute::Noop => false,
+        // `Error` here means the action needs arguments the shell supplies
+        // through its declared form or slash path; it is not inert.
+        crate::commands::CommandRoute::Error(_) => true,
+        _ => true,
+    }
+}
+
 /// Returns whether a catalog entry can run in the current shell.
 pub fn is_enabled(descriptor: &CommandDescriptor, state: CommandAvailability) -> bool {
     match descriptor.availability {
@@ -342,13 +358,21 @@ mod tests {
     #[test]
     fn every_catalog_entry_has_a_desktop_route() {
         for descriptor in catalog_entries(builtins()) {
+            // `CommandTarget` has exactly these three variants, so matching on
+            // them is a tautology. Ask the router instead: a `Noop` is the
+            // visible-but-inert entry this test must reject.
+            assert!(
+                command_is_executable(&descriptor.id),
+                "no executable desktop route for {:?}",
+                descriptor.path
+            );
             let plan = plan(&descriptor.id);
             assert!(
                 matches!(
                     plan.target,
                     CommandTarget::Controller | CommandTarget::Shell | CommandTarget::Window
                 ),
-                "no route for {:?}",
+                "plan for {:?} has no target",
                 descriptor.path
             );
         }
@@ -539,11 +563,8 @@ mod tests {
         assert!(matches!(
             plugin,
             crate::commands::CommandRoute::Extension(
-                tact_host::PluginAction::Install {
-                    plugin,
-                    marketplace,
-                }
-            ) if plugin == "demo" && marketplace == "official"
+                tact_host::PluginAction::Install { spec }
+            ) if spec == "demo@official"
         ));
         let hooks = route_cli(
             CliEntry::HooksTrust,

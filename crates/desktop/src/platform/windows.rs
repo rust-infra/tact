@@ -8,7 +8,7 @@ mod tests {
     #[test]
     fn windows_target_is_explicit() {
         if cfg!(target_os = "windows") {
-            assert_eq!(TARGET, PackagingTarget::Windows);
+            assert_eq!(TARGET, Some(PackagingTarget::Windows));
         }
     }
 }

@@ -237,6 +237,11 @@ needed to supply it:
 - `prompt_bar*`, `command_search.rs`, `message_queue.rs`, `todo_list.rs`,
   `filter_table.rs`, `records_table*`, `approval*`: application-supplied labels
   and empty-state/accessibility text.
+- `selection_actions.rs`: the surface and its scroll body size to their content
+  (`w_full` instead of `size_full`). Tact mounts one per settled assistant
+  message inside a virtualized transcript row, where `size_full` resolved
+  against the row's estimated height and clipped the Markdown after the first
+  paragraph. The toolbar, selection, and natural-height layout are unchanged.
 
 ## Updating upstream
 

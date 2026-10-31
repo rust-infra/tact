@@ -26,3 +26,7 @@ uuid = { workspace = true }
 
 [dev-dependencies]
 tempfile = { workspace = true }
+
+[features]
+# Representative runtime data for the desktop UI capture harness.
+ui-capture = []

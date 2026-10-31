@@ -75,7 +75,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
           - os: ubuntu-24.04-arm
@@ -237,7 +237,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: ubuntu-latest
+          - os: ubuntu-24.04
             target: x86_64-unknown-linux-gnu
             archive: tar.gz
           - os: ubuntu-24.04-arm
@@ -296,7 +296,8 @@ jobs:
             libasound2-dev libfontconfig1-dev libfreetype6-dev libsqlite3-dev \
             libwayland-dev libx11-dev libxcb1-dev libxcb-render0-dev \
             libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
-            libxkbcommon-x11-dev pkg-config xvfb
+            libxkbcommon-x11-dev pkg-config xvfb mesa-vulkan-drivers \
+            vulkan-tools
 
       - name: Build desktop release binary
         run: cargo build --release -p tact-desktop -p tact-ui --target "${{ matrix.target }}"
@@ -314,6 +315,14 @@ jobs:
             APPDATA="$clean_app" TACT_DESKTOP_SMOKE=1 "${bin}.exe" \
               >"$smoke_log" 2>&1
           elif [[ "${{ runner.os }}" == "Linux" ]]; then
+            # GitHub's Linux runners have no GPU. GPUI's Linux backend renders
+            # through Vulkan, so point it at Mesa's lavapipe CPU device before
+            # falling back to a plain Xvfb surface.
+            lvp_icd="$(ls /usr/share/vulkan/icd.d/lvp_icd.*.json 2>/dev/null | head -n 1 || true)"
+            if [[ -n "$lvp_icd" ]]; then
+              export VK_ICD_FILENAMES="$lvp_icd"
+            fi
+            export LIBGL_ALWAYS_SOFTWARE=1
             HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
               TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 \
               xvfb-run -a "$bin" >"$smoke_log" 2>&1
@@ -460,10 +469,12 @@ jobs:
           cp "$ASSET_PATH" "$verify/"
           cd "$verify"
 
-          if [[ "${{ matrix.archive }}" == "zip" ]]; then
-            7z x "$ASSET_PATH" -oextracted >/dev/null
-          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            # `ditto` round-trips the bundle's symlinks, modes, and metadata;
+            # 7-Zip is only needed for the Windows zip.
             ditto -x -k "$ASSET_PATH" extracted
+          elif [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z x "$ASSET_PATH" -oextracted >/dev/null
           else
             tar -xzf "$ASSET_PATH" -C extracted
           fi
@@ -486,13 +497,25 @@ jobs:
             test -f "$verify/extracted/Cargo.lock"
           fi
 
-          test -x "$bin" || test -f "$bin"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            test -f "$bin"
+          else
+            test -x "$bin"
+          fi
           test -f "$sidecar"
           if [[ "${{ runner.os }}" == "Windows" ]]; then
             APPDATA="$clean_app" LOCALAPPDATA="$clean_app" \
               TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 "$bin" \
               >"$smoke_log" 2>&1
           elif [[ "${{ runner.os }}" == "Linux" ]]; then
+            # GitHub's Linux runners have no GPU. GPUI's Linux backend renders
+            # through Vulkan, so point it at Mesa's lavapipe CPU device before
+            # falling back to a plain Xvfb surface.
+            lvp_icd="$(ls /usr/share/vulkan/icd.d/lvp_icd.*.json 2>/dev/null | head -n 1 || true)"
+            if [[ -n "$lvp_icd" ]]; then
+              export VK_ICD_FILENAMES="$lvp_icd"
+            fi
+            export LIBGL_ALWAYS_SOFTWARE=1
             HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
               TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 \
               xvfb-run -a "$bin" >"$smoke_log" 2>&1

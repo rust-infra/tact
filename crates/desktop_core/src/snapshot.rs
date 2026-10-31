@@ -136,6 +136,9 @@ pub struct ComposerView {
     pub subagent_models: Arc<[Arc<str>]>,
     pub effort: Option<Arc<str>>,
     pub permission_mode: crate::PermissionModeView,
+    pub thinking_budget: Option<u32>,
+    /// Recent submitted prompts for this session, newest first.
+    pub history: Arc<[Arc<str>]>,
     pub slash_catalog: Arc<CommandCatalogView>,
 }
 
@@ -149,6 +152,8 @@ impl Default for ComposerView {
             subagent_models: Arc::from([]),
             effort: None,
             permission_mode: crate::PermissionModeView::Default,
+            thinking_budget: None,
+            history: Arc::from([]),
             slash_catalog: Arc::new(CommandCatalogView::default()),
         }
     }
@@ -269,6 +274,47 @@ pub struct DesktopSnapshot {
     pub language: CatalogLocale,
     pub tail_following: bool,
     pub surface: Option<SurfaceSnapshot>,
+    pub settings: SettingsView,
+}
+
+/// Startup-global settings shown in the Settings surface. Live session
+/// settings live in `ComposerView`/`SessionView`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SettingsView {
+    pub provider: Arc<str>,
+    pub api_key_set: bool,
+    pub base_url: Arc<str>,
+    pub max_tokens: Option<u32>,
+    pub context_window: Option<usize>,
+    pub snapshot_max_items: Option<usize>,
+    pub micro_compact: bool,
+    pub tokio_console: bool,
+    pub skill_body_auto_inject: bool,
+    pub config_path: Option<String>,
+}
+
+/// Build the startup-global settings view from the desktop configuration.
+pub fn settings_from(config: &crate::DesktopConfig) -> SettingsView {
+    SettingsView {
+        provider: Arc::from(config.host.provider.clone().unwrap_or_default()),
+        api_key_set: config
+            .host
+            .api_key
+            .as_deref()
+            .is_some_and(|key| !key.is_empty()),
+        base_url: Arc::from(config.host.base_url.clone().unwrap_or_default()),
+        max_tokens: config.host.max_tokens,
+        context_window: config.host.model_context_window,
+        snapshot_max_items: config.host.snapshot_max_items,
+        micro_compact: config.host.micro_compact.unwrap_or(true),
+        tokio_console: config.host.tokio_console,
+        skill_body_auto_inject: config.host.skill_body_auto_inject,
+        config_path: config
+            .host
+            .config_path
+            .as_ref()
+            .map(|path| path.display().to_string()),
+    }
 }
 
 impl DesktopSnapshot {
@@ -297,6 +343,7 @@ impl DesktopSnapshot {
             language: config.language,
             tail_following: true,
             surface: None,
+            settings: settings_from(config),
         }
     }
 }

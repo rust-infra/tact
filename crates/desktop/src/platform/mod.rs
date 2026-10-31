@@ -11,16 +11,20 @@ pub enum PackagingTarget {
     Linux,
 }
 
-pub const TARGET: PackagingTarget = if cfg!(target_os = "macos") {
-    PackagingTarget::MacOs
+/// The packaging target this binary was built for, or `None` on an OS the
+/// release matrix does not build. Never claim a platform the matrix skips.
+pub const TARGET: Option<PackagingTarget> = if cfg!(target_os = "macos") {
+    Some(PackagingTarget::MacOs)
 } else if cfg!(target_os = "windows") {
-    PackagingTarget::Windows
+    Some(PackagingTarget::Windows)
+} else if cfg!(target_os = "linux") {
+    Some(PackagingTarget::Linux)
 } else {
-    PackagingTarget::Linux
+    None
 };
 
 pub fn supported_platform() -> bool {
-    cfg!(target_os = "macos") || cfg!(target_os = "windows") || cfg!(target_os = "linux")
+    TARGET.is_some()
 }
 
 pub fn app_data_is_clean(path: &std::path::Path) -> bool {

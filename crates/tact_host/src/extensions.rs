@@ -40,7 +40,7 @@ pub struct MarketplaceSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PluginAction {
     Reload,
-    Install { plugin: String, marketplace: String },
+    Install { spec: String },
     Uninstall { name: String },
     Update { name: String },
     MarketplaceAdd { source: String },
@@ -184,13 +184,16 @@ impl HostExtensionService {
         );
         let request = match action {
             PluginAction::Reload => PluginRequest::Reload,
-            PluginAction::Install {
-                plugin,
-                marketplace,
-            } => PluginRequest::Install {
-                plugin,
-                marketplace,
-            },
+            PluginAction::Install { spec } => {
+                let (plugin, marketplace) = spec
+                    .split_once('@')
+                    .map(|(plugin, marketplace)| (plugin.to_string(), marketplace.to_string()))
+                    .unwrap_or((spec, String::new()));
+                PluginRequest::Install {
+                    plugin,
+                    marketplace,
+                }
+            }
             PluginAction::Uninstall { name } => PluginRequest::Uninstall { plugin: name },
             PluginAction::Update { name } => PluginRequest::Update { plugin: name },
             PluginAction::MarketplaceAdd { source } => PluginRequest::MarketplaceAdd { source },

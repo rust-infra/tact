@@ -43,6 +43,13 @@ pub struct DesktopState {
     pub surface: Option<tact_protocol::SurfaceSnapshot>,
     pub revision: Revision,
     next_epoch: u64,
+    settings: crate::SettingsView,
+    /// A kernel activation that has not produced a turn yet. Compaction and
+    /// Goal activations emit `RunStarted`; only a following `TurnStats`
+    /// promotes it into a visible run.
+    pending_run: Option<String>,
+    /// The activation that owns the current `RuntimeView` timer.
+    active_run: Option<String>,
 }
 
 impl DesktopState {
@@ -107,6 +114,9 @@ impl DesktopState {
             runtime: RuntimeView::default(),
             reducer: TranscriptReducer::new(),
             composer: ComposerView {
+                thinking_budget: settings
+                    .as_ref()
+                    .map(|settings| settings.agent.thinking_budget as u32),
                 model: config.host.model.clone().map(Arc::from).unwrap_or_default(),
                 models: models.into(),
                 subagent_model: Arc::from(subagent_model),
@@ -138,6 +148,9 @@ impl DesktopState {
             surface: None,
             revision: 0,
             next_epoch: 0,
+            settings: crate::snapshot::settings_from(config),
+            pending_run: None,
+            active_run: None,
         }
     }
 
@@ -172,6 +185,8 @@ impl DesktopState {
             ..SessionView::default()
         };
         self.runtime = RuntimeView::default();
+        self.pending_run = None;
+        self.active_run = None;
         self.reducer.reset_for_session();
         self.sessions.items.clear();
         self.sessions.selected = None;
@@ -185,6 +200,10 @@ impl DesktopState {
         self.surface = None;
         self.failure = None;
         next
+    }
+
+    pub fn refresh_settings(&mut self, config: &crate::DesktopConfig) {
+        self.settings = crate::snapshot::settings_from(config);
     }
 
     pub fn set_sessions(&mut self, items: Vec<SessionSummaryView>) {
@@ -259,9 +278,11 @@ impl DesktopState {
 
     fn observe_agent_update(&mut self, update: &AgentUpdate) {
         match update {
-            AgentUpdate::RunStarted { .. } => {
-                self.runtime.current_phase = RunPhase::Waiting;
-                self.runtime.run_started_at = Some(Utc::now());
+            AgentUpdate::RunStarted { run_id } => {
+                // Pending boundary: compaction and Goal activations emit this
+                // too. Do not start the visible run or its timer until a turn
+                // follows.
+                self.pending_run = Some(run_id.clone());
             }
             AgentUpdate::MessageStarted { .. } | AgentUpdate::StreamChunk(_) => {
                 self.runtime.current_phase = RunPhase::Streaming;
@@ -271,6 +292,12 @@ impl DesktopState {
                 self.runtime.current_phase = RunPhase::Thinking;
             }
             AgentUpdate::TurnStats { turns_taken, .. } => {
+                if self.runtime.run_started_at.is_none() {
+                    self.runtime.run_started_at = Some(Utc::now());
+                }
+                if let Some(run_id) = self.pending_run.take() {
+                    self.active_run = Some(run_id);
+                }
                 self.runtime.turns_taken = *turns_taken;
                 self.runtime.current_phase = RunPhase::RunningTools;
             }
@@ -288,10 +315,20 @@ impl DesktopState {
             AgentUpdate::TaskCancelled => {
                 self.runtime.current_phase = RunPhase::Cancelling;
             }
-            AgentUpdate::RunFinished { .. } => {
-                if self.runtime.current_phase != RunPhase::Cancelling {
-                    self.runtime.current_phase = RunPhase::Complete;
+            AgentUpdate::RunFinished { run_id } => {
+                let finished_pending = self.pending_run.as_deref() == Some(run_id.as_str());
+                let finished_active = self.active_run.as_deref() == Some(run_id.as_str());
+                if finished_pending {
+                    self.pending_run = None;
                 }
+                if finished_active {
+                    self.active_run = None;
+                    if self.runtime.current_phase != RunPhase::Cancelling {
+                        self.runtime.current_phase = RunPhase::Complete;
+                    }
+                }
+                // A compaction activation that never saw `TurnStats` leaves the
+                // previous phase and timer untouched.
             }
             AgentUpdate::TasksChanged { tasks, .. } => {
                 self.tasks = tasks.iter().map(task_view).collect();
@@ -424,6 +461,7 @@ impl DesktopState {
             language: self.language,
             tail_following: self.tail_following,
             surface: self.surface.clone(),
+            settings: self.settings.clone(),
         })
     }
 
@@ -526,5 +564,49 @@ impl From<GoalSnapshot> for GoalView {
         Self {
             snapshot: Some(snapshot),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn state() -> (DesktopState, tempfile::TempDir) {
+        let tmp = tempfile::tempdir().unwrap();
+        let config = DesktopConfig::load(tmp.path().to_path_buf()).unwrap();
+        (DesktopState::new(&config), tmp)
+    }
+
+    #[test]
+    fn compaction_run_does_not_open_an_activation_in_the_runtime_view() {
+        let (mut state, _tmp) = state();
+        state.apply_agent_update(AgentUpdate::RunStarted {
+            run_id: "compact-1".into(),
+        });
+        state.apply_agent_update(AgentUpdate::RunFinished {
+            run_id: "compact-1".into(),
+        });
+        assert_eq!(state.runtime.current_phase, RunPhase::Idle);
+        assert!(state.runtime.run_started_at.is_none());
+        assert_eq!(state.runtime.turns_taken, 0);
+    }
+
+    #[test]
+    fn turn_stats_opens_the_run_and_finish_closes_it() {
+        let (mut state, _tmp) = state();
+        state.apply_agent_update(AgentUpdate::RunStarted {
+            run_id: "run-1".into(),
+        });
+        assert_eq!(state.runtime.current_phase, RunPhase::Idle);
+        state.apply_agent_update(AgentUpdate::TurnStats {
+            turns_taken: 2,
+            max_turns: None,
+        });
+        assert!(state.runtime.run_started_at.is_some());
+        assert_eq!(state.runtime.turns_taken, 2);
+        state.apply_agent_update(AgentUpdate::RunFinished {
+            run_id: "run-1".into(),
+        });
+        assert_eq!(state.runtime.current_phase, RunPhase::Complete);
     }
 }

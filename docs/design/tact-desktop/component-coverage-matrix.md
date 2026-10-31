@@ -46,7 +46,7 @@ Status values:
 | `RecommendationCard` | Deferred | No current recommendation decision workflow. |
 | `ContextCard` | Deferred | Could render retained evidence in a future compact evidence panel. |
 | `InsightCard` | Compose | Stats and balance summaries. |
-| `ChoiceGroup` | Direct | Single-choice clarification. |
+| `ChoiceGroup` | Deferred | Single-choice gates use `QuestionFlow`'s option grammar; `ChoiceGroup` is the compact inline candidate once gates lose their confirm step. |
 | `QuestionFlow` | Direct | Multi-question clarification sequence; multi-select uses `Toggle`. |
 
 ## Unused Components That Reveal Product Gaps
