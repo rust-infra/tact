@@ -1,0 +1,224 @@
+name: Desktop package
+
+# Builds and packages the desktop for every release target without signing or
+# publishing. The release workflow owns the signed/notarized macOS path; this
+# workflow exists so a feature branch can prove that Linux, Windows, and macOS
+# all produce the expected assets before a tag is cut.
+#
+#   gh workflow run desktop-package.yml --ref <branch>
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  package-desktop:
+    name: package desktop (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+          - os: macos-15
+            target: aarch64-apple-darwin
+            archive: zip
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: zip
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Set up macOS cross-compilation env
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: |
+          echo "CC_x86_64_apple_darwin=clang -arch x86_64" >> "${GITHUB_ENV}"
+
+      - name: Install Linux desktop development libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libfontconfig1-dev libfreetype6-dev libsqlite3-dev \
+            libwayland-dev libx11-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev pkg-config xvfb mesa-vulkan-drivers \
+            vulkan-tools
+
+      - name: Build desktop release binary
+        run: cargo build --release -p tact-desktop -p tact-ui --target "${{ matrix.target }}"
+        shell: bash
+
+      - name: Collect third-party license texts
+        shell: bash
+        run: |
+          python3 scripts/collect-licenses.py \
+            --target "${{ matrix.target }}" \
+            --output THIRD-PARTY-LICENSES.txt
+
+      - name: Package desktop asset
+        shell: bash
+        env:
+          ARCHIVE: ${{ matrix.archive }}
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}"
+          version="$(python3 - <<'PY'
+          import re, pathlib
+          text = pathlib.Path("Cargo.toml").read_text(encoding="utf-8")
+          section = re.search(r'^\[workspace\.package\]\s*$(.*?)(?=^\[|\Z)', text, re.M | re.S).group(1)
+          print(re.search(r'^version\s*=\s*"([^"]+)"', section, re.M).group(1))
+          PY
+          )"
+          asset="tact-desktop-v${version}-${TARGET}.${ARCHIVE}"
+          bin="target/${TARGET}/release/tact-desktop"
+          cli_bin="target/${TARGET}/release/tact-ui"
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "${bin}.exe" tact-desktop.exe
+            cp "${cli_bin}.exe" tact-ui.exe
+            cp LICENSE LICENSE.tact-ui
+            cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
+            cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
+            cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
+            python3 scripts/normalize-mtime.py tact-desktop.exe tact-ui.exe LICENSE \
+              LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
+              THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
+              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+            python3 scripts/package-zip.py --output "${asset}" tact-desktop.exe \
+              tact-ui.exe LICENSE LICENSE.tact-ui IBM-Plex-LICENSE.txt \
+              Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
+              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            app="Tact Desktop.app"
+            mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Resources"
+            cp "${bin}" "${app}/Contents/MacOS/tact-desktop"
+            cp "${cli_bin}" "${app}/Contents/MacOS/tact-ui"
+            cp LICENSE "${app}/Contents/Resources/LICENSE"
+            cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt "${app}/Contents/Resources/"
+            cp crates/desktop/assets/fonts/Lilex-LICENSE.txt "${app}/Contents/Resources/"
+            cp THIRD-PARTY-NOTICES.md "${app}/Contents/Resources/"
+            cp THIRD-PARTY-APACHE-2.0.txt "${app}/Contents/Resources/"
+            cp THIRD-PARTY-LICENSES.txt "${app}/Contents/Resources/"
+            cp Cargo.lock "${app}/Contents/Resources/"
+            cp vendor/gpui-ai/LICENSE "${app}/Contents/Resources/gpui-ai-LICENSE-MIT.txt"
+            cat > "${app}/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>tact-desktop</string>
+            <key>CFBundleIdentifier</key><string>dev.tact.desktop</string>
+            <key>CFBundleName</key><string>Tact Desktop</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSMinimumSystemVersion</key><string>13.0</string>
+          </dict>
+          </plist>
+          PLIST
+            /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${version}" "${app}/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${version}" "${app}/Contents/Info.plist"
+            python3 scripts/normalize-mtime.py "${app}"
+            python3 scripts/package-zip.py --output "${asset}" "${app}"
+          else
+            cp "${bin}" tact-desktop
+            cp "${cli_bin}" tact-ui
+            cp LICENSE LICENSE.tact-ui
+            cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
+            cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
+            cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
+            strip tact-desktop || true
+            strip tact-ui || true
+            python3 scripts/normalize-mtime.py tact-desktop tact-ui LICENSE \
+              LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
+              THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
+              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+            tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 \
+              --numeric-owner -cf - tact-desktop tact-ui LICENSE LICENSE.tact-ui \
+              IBM-Plex-LICENSE.txt Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md \
+              THIRD-PARTY-APACHE-2.0.txt THIRD-PARTY-LICENSES.txt Cargo.lock \
+              gpui-ai-LICENSE-MIT.txt | gzip -n > "${asset}"
+          fi
+
+          echo "ASSET_PATH=${asset}" >> "${GITHUB_ENV}"
+
+      - name: Smoke-test the packaged asset
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify="$RUNNER_TEMP/tact-package-$RANDOM"
+          clean_app="$RUNNER_TEMP/tact-clean-$RANDOM"
+          smoke_log="$RUNNER_TEMP/tact-package-smoke.log"
+          mkdir -p "$verify/extracted" "$clean_app"
+          cp "$ASSET_PATH" "$verify/"
+          cd "$verify"
+
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
+            ditto -x -k "$ASSET_PATH" extracted
+          elif [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z x "$ASSET_PATH" -oextracted >/dev/null
+          else
+            tar -xzf "$ASSET_PATH" -C extracted
+          fi
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            bin="$verify/extracted/tact-desktop.exe"
+            test -f "$bin"
+            test -f "$verify/extracted/THIRD-PARTY-LICENSES.txt"
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            plutil -lint "$verify/extracted/Tact Desktop.app/Contents/Info.plist"
+            bin="$verify/extracted/Tact Desktop.app/Contents/MacOS/tact-desktop"
+            test -x "$bin"
+            test -f "$verify/extracted/Tact Desktop.app/Contents/Resources/THIRD-PARTY-LICENSES.txt"
+          else
+            bin="$verify/extracted/tact-desktop"
+            test -x "$bin"
+            test -f "$verify/extracted/THIRD-PARTY-LICENSES.txt"
+          fi
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            APPDATA="$clean_app" LOCALAPPDATA="$clean_app" \
+              TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 "$bin" \
+              >"$smoke_log" 2>&1
+          elif [[ "${{ runner.os }}" == "Linux" ]]; then
+            lvp_icd="$(ls /usr/share/vulkan/icd.d/lvp_icd.*.json 2>/dev/null | head -n 1 || true)"
+            if [[ -n "$lvp_icd" ]]; then
+              export VK_ICD_FILENAMES="$lvp_icd"
+            fi
+            export LIBGL_ALWAYS_SOFTWARE=1
+            HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
+              TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 \
+              xvfb-run -a "$bin" >"$smoke_log" 2>&1
+          else
+            HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
+              TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 "$bin" \
+              >"$smoke_log" 2>&1
+          fi
+          cat "$smoke_log"
+          if grep -Eq 'Tact shutdown (failed|timed out)|panicked at' "$smoke_log"; then
+            echo "::error::desktop smoke test reported a failure"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: ${{ env.ASSET_PATH }}
+          if-no-files-found: error
