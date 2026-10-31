@@ -726,6 +726,7 @@
 <li class="toc-l2"><a href="#20-2026-10-29--%E6%8A%BD%E7%A6%BB-ui-%E6%97%A0%E5%85%B3%E7%9A%84-host-service" title="20. 2026-10-29 — 抽离 UI 无关的 host service"><span class="toc-label">20. 2026-10-29 — 抽离 UI 无关的 host service</span></a></li>
 <li class="toc-l2"><a href="#21-2026-10-31--desktop-%E9%97%B8%E9%97%A8%E4%B8%8E%E5%8F%91%E5%B8%83%E4%BA%A4%E4%BB%98%E6%94%B6%E5%8F%A3" title="21. 2026-10-31 — Desktop 闸门与发布交付收口"><span class="toc-label">21. 2026-10-31 — Desktop 闸门与发布交付收口</span></a></li>
 <li class="toc-l2"><a href="#22-2026-10-31--%E5%90%8E%E5%8F%B0%E5%AD%90%E4%BB%A3%E7%90%86%E7%9A%84%E5%83%B5%E5%B0%B8-run-%E4%B8%8E%E6%B0%B8%E4%B8%8D%E6%8E%A5%E7%BA%BF%E7%9A%84%E7%BB%93%E6%9E%9C%E9%98%9F%E5%88%97" title="22. 2026-10-31 — 后台子代理的僵尸 run 与永不接线的结果队列"><span class="toc-label">22. 2026-10-31 — 后台子代理的僵尸 run 与永不接线的结果队列</span></a></li>
+<li class="toc-l2"><a href="#23-2026-10-31--%E5%83%B5%E5%B0%B8-run-%E7%9A%84%E8%BF%90%E8%A1%8C%E6%97%B6%E8%87%AA%E6%84%88%E4%B8%8E-fd-%E4%B8%8A%E9%99%90" title="23. 2026-10-31 — 僵尸 run 的运行时自愈与 fd 上限"><span class="toc-label">23. 2026-10-31 — 僵尸 run 的运行时自愈与 fd 上限</span></a></li>
 <li class="toc-l2"><a href="#related-docs" title="Related Docs"><span class="toc-label">Related Docs</span></a></li>
 </ol>
 </div>
@@ -21475,6 +21476,37 @@ gpui-ai 组件的附件/上下文标签完成本地化；Back to bottom 作为 t
 拒绝的派发不留记录（撤销修复即失败并打印
 <code>…: Running (no summary)</code>），一条用
 <code>Arc::ptr_eq</code> 证明工具侧与父代理侧是同一个队列。</p>
+<hr />
+<h2 id="23-2026-10-31--僵尸-run-的运行时自愈与-fd-上限">23. 2026-10-31 —
+僵尸 run 的运行时自愈与 fd 上限</h2>
+<p><strong>现象：</strong> 第 22 节修掉了写入
+<code>Running</code> 行的那条路径，但运行时的自愈仍然缺席：
+<code>SubagentManager::new</code> 只在<strong>启动时</strong>把
+<code>running</code> 行改写为 <code>failed</code>，而那针对的是上一个进程留下的
+孤儿。本进程自己写下又放弃的行，因为进程还活着，没有任何代码会再看它一眼——
+<code>finish</code> 在放弃它的那个任务里，而 <code>cancel_subagent</code> 需要
+取消句柄。于是 <code>check_subagent</code> 报告一个永远不会结束的 run，
+<code>wait_subagent</code> 则白等满超时。</p>
+<p>另一个独立问题：macOS 每个进程的 <code>ulimit -n</code> 是 256，而
+<code>cargo test --workspace</code> 里每个 desktop-core 用例都要开 SQLite 连接池、
+tokio runtime 与 skill registry。预算中途耗尽后，libtest 把
+<code>Too many open files (os error 24)</code> 报成一堆互不相关的失败，
+门禁会随机变红，看起来像真实回归。</p>
+<p><strong>改后行为：</strong> 新增
+<code>SubagentManager::repair_abandoned_runs</code>，判定条件刻意收窄——只有
+「本进程登记过（<code>known</code>）＋ 仍是 <code>Running</code> ＋ 没有取消
+句柄」才算僵尸，因为 run 表与其他 Tact 进程共享，误改别进程正在驱动的子代理会把
+健康 run 报成失败。它接入 <code>check_subagent</code> 与
+<code>wait_subagent</code>：父代理一来看就自愈，并广播 sticky 快照。写入的摘要
+与启动时孤儿修复的文案区分开，前者描述上一个进程，后者描述本进程放弃。
+<code>scripts/check-rust.sh</code> 则在开头把软 fd 上限抬到硬上限（或 8192），
+只作用于本次脚本，因此红了的门禁一定是真缺陷。</p>
+<p><strong>没有做的事：</strong> 曾计划给
+<code>SessionLock</code> 加 <code>Drop</code>。核实后发现第 22 节已把
+<code>acquire</code> 之后的失败路径收敛到「只剩 <code>release</code> 自身的
+<code>?</code> 和更靠后的 <code>result?</code>」，没有残余泄漏点；在异步上下文里
+引入 <code>Drop</code> 只会新增一条无测试覆盖、失败也无人观察的路径。按
+「先减法」的原则不做。</p>
 <hr />
 <h2 id="related-docs">Related Docs</h2>
 <ul>
