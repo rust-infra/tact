@@ -69,10 +69,10 @@ jobs:
           print(version.group(1))
           PY
           )"
-          case "$version" in
-            [0-9]*.[0-9]*.[0-9]*) ;;
-            *) echo "::error::workspace version '$version' is not semver"; exit 1 ;;
-          esac
+          if [[ ! "$version" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::workspace version '$version' is not a stable MAJOR.MINOR.PATCH release version (prerelease/build suffixes are not published)"
+            exit 1
+          fi
           echo "tag=v$version" >> "$GITHUB_OUTPUT"
           echo "Workspace version: $version"
 
@@ -172,5 +172,6 @@ jobs:
     permissions:
       contents: write
     uses: ./.github/workflows/release.yml
+    secrets: inherit
     with:
       tag: ${{ needs.tag.outputs.tag }}

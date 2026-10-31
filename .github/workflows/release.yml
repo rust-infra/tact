@@ -33,6 +33,19 @@ on:
         description: "Tag to build and publish, e.g. v1.1.42"
         required: true
         type: string
+    secrets:
+      MACOS_CERTIFICATE:
+        required: false
+      MACOS_CERTIFICATE_PASSWORD:
+        required: false
+      MACOS_SIGNING_IDENTITY:
+        required: false
+      APPLE_ID:
+        required: false
+      APPLE_TEAM_ID:
+        required: false
+      APPLE_APP_PASSWORD:
+        required: false
   push:
     tags:
       - "v*"
@@ -68,12 +81,12 @@ jobs:
           - os: ubuntu-24.04-arm
             target: aarch64-unknown-linux-gnu
             archive: tar.gz
-          - os: macos-latest
+          - os: macos-15
             target: aarch64-apple-darwin
-            archive: tar.gz
-          - os: macos-latest
+            archive: zip
+          - os: macos-15-intel
             target: x86_64-apple-darwin
-            archive: tar.gz
+            archive: zip
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             archive: zip
@@ -104,11 +117,11 @@ jobs:
             exit 1
           fi
           # The asset names and the release itself are keyed on this string, so
-          # a tag that is not `v<semver>` is rejected here rather than producing
+          # a tag that is not stable `vMAJOR.MINOR.PATCH` is rejected here rather than producing
           # oddly named files. This also rejects a branch name, which is what a
           # dispatch that forgot `-f tag=` would otherwise publish.
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-            echo "::error::'$tag' is not a v<semver> tag"
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::'$tag' is not a stable vMAJOR.MINOR.PATCH release tag (prerelease/build suffixes are not published)"
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -123,7 +136,13 @@ jobs:
           # explicit ref is a no-op there. Either way the tag is authoritative.
           ref: ${{ steps.resolve.outputs.tag }}
 
-      - uses: dtolnay/rust-toolchain@stable
+      - name: Verify tag matches workspace version
+        shell: bash
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: python3 scripts/check-release-tag.py "$TAG"
+
+      - uses: dtolnay/rust-toolchain@1.91.0
         with:
           targets: ${{ matrix.target }}
 
@@ -143,12 +162,20 @@ jobs:
         run: cargo build --release -p "${CRATE_PACKAGE}" --target "${{ matrix.target }}"
         shell: bash
 
+      - name: Collect third-party license texts
+        shell: bash
+        run: |
+          python3 scripts/collect-licenses.py \
+            --target "${{ matrix.target }}" \
+            --output THIRD-PARTY-LICENSES.txt
+
       - name: Package release asset
         shell: bash
         env:
           TAG: ${{ steps.resolve.outputs.tag }}
         run: |
           set -euo pipefail
+          export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}"
 
           # The version comes from the tag being released, not from the tree: a
           # rebuild of an older tag must not be labelled with today's workspace
@@ -160,16 +187,38 @@ jobs:
           asset="${BINARY_NAME}-v${version}-${target}.${archive}"
           bin_path="target/${target}/release/${BINARY_NAME}"
 
-          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
             bin_path="${bin_path}.exe"
             cp "${bin_path}" "${BINARY_NAME}.exe"
-            7z a -tzip "${asset}" "${BINARY_NAME}.exe"
+            cp LICENSE LICENSE.txt
+            cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
+            python3 scripts/normalize-mtime.py "${BINARY_NAME}.exe" LICENSE.txt \
+              THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
+              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+            python3 scripts/package-zip.py --output "${asset}" "${BINARY_NAME}.exe" \
+              LICENSE.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
+              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
           else
             cp "${bin_path}" "${BINARY_NAME}"
+            cp LICENSE LICENSE.tact-ui
+            cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
             if command -v strip >/dev/null 2>&1; then
               strip "${BINARY_NAME}" || true
             fi
-            tar -czf "${asset}" "${BINARY_NAME}"
+            python3 scripts/normalize-mtime.py "${BINARY_NAME}" LICENSE.tact-ui \
+              THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
+              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+            if [[ "${{ matrix.archive }}" == "zip" ]]; then
+              python3 scripts/package-zip.py --output "${asset}" "${BINARY_NAME}" \
+                LICENSE.tact-ui THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
+                THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+            else
+              tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 \
+                --numeric-owner -cf - "${BINARY_NAME}" LICENSE.tact-ui \
+                THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
+                THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt \
+                | gzip -n > "${asset}"
+            fi
           fi
 
           echo "ASSET_PATH=${asset}" >> "${GITHUB_ENV}"
@@ -181,9 +230,292 @@ jobs:
           path: ${{ env.ASSET_PATH }}
           if-no-files-found: error
 
+  build-desktop:
+    name: build desktop (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            archive: tar.gz
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            archive: tar.gz
+          - os: macos-15
+            target: aarch64-apple-darwin
+            archive: zip
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            archive: zip
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            archive: zip
+    steps:
+      - name: Resolve and validate the tag
+        id: resolve
+        shell: bash
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          tag="${INPUT_TAG:-$REF_NAME}"
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::'$tag' is not a stable vMAJOR.MINOR.PATCH release tag (prerelease/build suffixes are not published)"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.resolve.outputs.tag }}
+
+      - name: Verify tag matches workspace version
+        shell: bash
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+        run: python3 scripts/check-release-tag.py "$TAG"
+
+      - uses: dtolnay/rust-toolchain@1.91.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Set up macOS cross-compilation env
+        if: matrix.target == 'x86_64-apple-darwin'
+        run: |
+          echo "CC_x86_64_apple_darwin=clang -arch x86_64" >> "${GITHUB_ENV}"
+          echo "AR_x86_64_apple_darwin=ar" >> "${GITHUB_ENV}"
+
+      - name: Install Linux desktop development libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libfontconfig1-dev libfreetype6-dev libsqlite3-dev \
+            libwayland-dev libx11-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev pkg-config xvfb
+
+      - name: Build desktop release binary
+        run: cargo build --release -p tact-desktop -p tact-ui --target "${{ matrix.target }}"
+        shell: bash
+
+      - name: Smoke-test desktop startup from clean app data
+        shell: bash
+        run: |
+          set -euo pipefail
+          clean_app="$RUNNER_TEMP/tact-desktop-clean-$RANDOM"
+          mkdir -p "$clean_app"
+          bin="target/${{ matrix.target }}/release/tact-desktop"
+          smoke_log="$RUNNER_TEMP/tact-desktop-smoke.log"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            APPDATA="$clean_app" TACT_DESKTOP_SMOKE=1 "${bin}.exe" \
+              >"$smoke_log" 2>&1
+          elif [[ "${{ runner.os }}" == "Linux" ]]; then
+            HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
+              TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 \
+              xvfb-run -a "$bin" >"$smoke_log" 2>&1
+          else
+            HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
+              TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 "$bin" \
+              >"$smoke_log" 2>&1
+          fi
+          cat "$smoke_log"
+          if grep -Eq 'Tact shutdown (failed|timed out)|panicked at' "$smoke_log"; then
+            echo "::error::desktop smoke test reported a shutdown failure"
+            exit 1
+          fi
+
+      - name: Collect third-party license texts
+        shell: bash
+        run: |
+          python3 scripts/collect-licenses.py \
+            --target "${{ matrix.target }}" \
+            --output THIRD-PARTY-LICENSES.txt
+
+      - name: Package desktop release asset
+        shell: bash
+        env:
+          TAG: ${{ steps.resolve.outputs.tag }}
+          MACOS_CERTIFICATE: ${{ secrets.MACOS_CERTIFICATE }}
+          MACOS_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_CERTIFICATE_PASSWORD }}
+          MACOS_SIGNING_IDENTITY: ${{ secrets.MACOS_SIGNING_IDENTITY }}
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          APPLE_APP_PASSWORD: ${{ secrets.APPLE_APP_PASSWORD }}
+        run: |
+          set -euo pipefail
+          export SOURCE_DATE_EPOCH="${SOURCE_DATE_EPOCH:-$(git log -1 --format=%ct)}"
+          version="${TAG#v}"
+          target="${{ matrix.target }}"
+          asset="tact-desktop-v${version}-${target}.${{ matrix.archive }}"
+          bin="target/${target}/release/tact-desktop"
+          cli_bin="target/${target}/release/tact-ui"
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            cp "${bin}.exe" tact-desktop.exe
+            cp "${cli_bin}.exe" tact-ui.exe
+            cp LICENSE LICENSE.tact-ui
+            cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
+            cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
+            cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
+            python3 scripts/normalize-mtime.py tact-desktop.exe tact-ui.exe LICENSE \
+              LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
+              THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
+              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+            python3 scripts/package-zip.py --output "${asset}" tact-desktop.exe \
+              tact-ui.exe LICENSE LICENSE.tact-ui IBM-Plex-LICENSE.txt \
+              Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
+              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            app="Tact Desktop.app"
+            mkdir -p "${app}/Contents/MacOS" "${app}/Contents/Resources"
+            cp "${bin}" "${app}/Contents/MacOS/tact-desktop"
+            cp "${cli_bin}" "${app}/Contents/MacOS/tact-ui"
+            cp LICENSE "${app}/Contents/Resources/LICENSE"
+            cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt "${app}/Contents/Resources/"
+            cp crates/desktop/assets/fonts/Lilex-LICENSE.txt "${app}/Contents/Resources/"
+            cp THIRD-PARTY-NOTICES.md "${app}/Contents/Resources/"
+            cp THIRD-PARTY-APACHE-2.0.txt "${app}/Contents/Resources/"
+            cp THIRD-PARTY-LICENSES.txt "${app}/Contents/Resources/"
+            cp Cargo.lock "${app}/Contents/Resources/"
+            cp vendor/gpui-ai/LICENSE "${app}/Contents/Resources/gpui-ai-LICENSE-MIT.txt"
+            cat > "${app}/Contents/Info.plist" <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>tact-desktop</string>
+            <key>CFBundleIdentifier</key><string>dev.tact.desktop</string>
+            <key>CFBundleName</key><string>Tact Desktop</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>LSMinimumSystemVersion</key><string>13.0</string>
+          </dict>
+          </plist>
+          PLIST
+            /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${version}" "${app}/Contents/Info.plist"
+            /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${version}" "${app}/Contents/Info.plist"
+            : "${MACOS_CERTIFICATE:?macOS signing certificate secret is required}"
+            : "${MACOS_CERTIFICATE_PASSWORD:?macOS signing certificate password secret is required}"
+            : "${MACOS_SIGNING_IDENTITY:?macOS signing identity secret is required}"
+            : "${APPLE_ID:?Apple notarization account secret is required}"
+            : "${APPLE_TEAM_ID:?Apple team id secret is required}"
+            : "${APPLE_APP_PASSWORD:?Apple app password secret is required}"
+            keychain="$RUNNER_TEMP/tact-signing.keychain-db"
+            cert="$RUNNER_TEMP/tact-signing.p12"
+            printf '%s' "${MACOS_CERTIFICATE}" | base64 --decode > "${cert}"
+            security create-keychain -p tact-signing "${keychain}"
+            security set-keychain-settings -lut 21600 "${keychain}"
+            security unlock-keychain -p tact-signing "${keychain}"
+            security import "${cert}" -k "${keychain}" -P "${MACOS_CERTIFICATE_PASSWORD}" \
+              -T /usr/bin/codesign
+            security set-key-partition-list -S apple-tool:,apple: \
+              -s -k tact-signing "${keychain}" >/dev/null
+            security list-keychains -d user -s "${keychain}" $(security list-keychains -d user | tr -d '"')
+            codesign --force --deep --options runtime --timestamp \
+              --sign "${MACOS_SIGNING_IDENTITY}" "${app}"
+            codesign --verify --deep --strict --verbose=2 "${app}"
+            notarize_zip="$RUNNER_TEMP/tact-notarize.zip"
+            ditto -c -k --sequesterRsrc --keepParent "${app}" "${notarize_zip}"
+            xcrun notarytool submit "${notarize_zip}" \
+              --apple-id "${APPLE_ID}" --team-id "${APPLE_TEAM_ID}" \
+              --password "${APPLE_APP_PASSWORD}" --wait
+            xcrun stapler staple "${app}"
+            xcrun stapler validate "${app}"
+            spctl --assess --type execute --verbose=4 "${app}"
+            python3 scripts/normalize-mtime.py "${app}"
+            python3 scripts/package-zip.py --output "${asset}" "${app}"
+          else
+            cp "${bin}" tact-desktop
+            cp "${cli_bin}" tact-ui
+            cp LICENSE LICENSE.tact-ui
+            cp crates/desktop/assets/fonts/IBM-Plex-LICENSE.txt .
+            cp crates/desktop/assets/fonts/Lilex-LICENSE.txt .
+            cp vendor/gpui-ai/LICENSE gpui-ai-LICENSE-MIT.txt
+            strip tact-desktop || true
+            strip tact-ui || true
+            python3 scripts/normalize-mtime.py tact-desktop tact-ui LICENSE \
+              LICENSE.tact-ui IBM-Plex-LICENSE.txt Lilex-LICENSE.txt \
+              THIRD-PARTY-NOTICES.md THIRD-PARTY-APACHE-2.0.txt \
+              THIRD-PARTY-LICENSES.txt Cargo.lock gpui-ai-LICENSE-MIT.txt
+            tar --sort=name --mtime="@${SOURCE_DATE_EPOCH}" --owner=0 --group=0 \
+              --numeric-owner -cf - tact-desktop tact-ui LICENSE LICENSE.tact-ui \
+              IBM-Plex-LICENSE.txt Lilex-LICENSE.txt THIRD-PARTY-NOTICES.md \
+              THIRD-PARTY-APACHE-2.0.txt THIRD-PARTY-LICENSES.txt Cargo.lock \
+              gpui-ai-LICENSE-MIT.txt | gzip -n > "${asset}"
+          fi
+
+          echo "ASSET_PATH=${asset}" >> "${GITHUB_ENV}"
+
+      - name: Verify packaged desktop archive from clean app data
+        shell: bash
+        run: |
+          set -euo pipefail
+          verify="$RUNNER_TEMP/tact-desktop-package-$RANDOM"
+          clean_app="$RUNNER_TEMP/tact-desktop-clean-package-$RANDOM"
+          smoke_log="$RUNNER_TEMP/tact-desktop-package-smoke.log"
+          mkdir -p "$verify/extracted" "$clean_app"
+          cp "$ASSET_PATH" "$verify/"
+          cd "$verify"
+
+          if [[ "${{ matrix.archive }}" == "zip" ]]; then
+            7z x "$ASSET_PATH" -oextracted >/dev/null
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            ditto -x -k "$ASSET_PATH" extracted
+          else
+            tar -xzf "$ASSET_PATH" -C extracted
+          fi
+
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            bin="$verify/extracted/tact-desktop.exe"
+            sidecar="$verify/extracted/tact-ui.exe"
+            test -f "$verify/extracted/THIRD-PARTY-LICENSES.txt"
+            test -f "$verify/extracted/Cargo.lock"
+          elif [[ "${{ runner.os }}" == "macOS" ]]; then
+            plutil -lint "$verify/extracted/Tact Desktop.app/Contents/Info.plist"
+            bin="$verify/extracted/Tact Desktop.app/Contents/MacOS/tact-desktop"
+            sidecar="$verify/extracted/Tact Desktop.app/Contents/MacOS/tact-ui"
+            test -f "$verify/extracted/Tact Desktop.app/Contents/Resources/THIRD-PARTY-LICENSES.txt"
+            test -f "$verify/extracted/Tact Desktop.app/Contents/Resources/Cargo.lock"
+          else
+            bin="$verify/extracted/tact-desktop"
+            sidecar="$verify/extracted/tact-ui"
+            test -f "$verify/extracted/THIRD-PARTY-LICENSES.txt"
+            test -f "$verify/extracted/Cargo.lock"
+          fi
+
+          test -x "$bin" || test -f "$bin"
+          test -f "$sidecar"
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            APPDATA="$clean_app" LOCALAPPDATA="$clean_app" \
+              TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 "$bin" \
+              >"$smoke_log" 2>&1
+          elif [[ "${{ runner.os }}" == "Linux" ]]; then
+            HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
+              TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 \
+              xvfb-run -a "$bin" >"$smoke_log" 2>&1
+          else
+            HOME="$clean_app" XDG_DATA_HOME="$clean_app/data" \
+              TACT_REDUCED_MOTION=1 TACT_DESKTOP_SMOKE=1 "$bin" \
+              >"$smoke_log" 2>&1
+          fi
+          cat "$smoke_log"
+          if grep -Eq 'Tact shutdown (failed|timed out)|panicked at' "$smoke_log"; then
+            echo "::error::packaged desktop smoke test reported a shutdown failure"
+            exit 1
+          fi
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.target }}
+          path: ${{ env.ASSET_PATH }}
+          if-no-files-found: error
+
   release:
     name: publish GitHub release
-    needs: build
+    needs: [build, build-desktop]
     runs-on: ubuntu-latest
     # No `if:` guard. Every way into this workflow now names a tag, so
     # publishing is always the point. The old `startsWith(github.ref,
@@ -202,8 +534,8 @@ jobs:
         run: |
           set -euo pipefail
           tag="${INPUT_TAG:-$REF_NAME}"
-          if [[ ! "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+ ]]; then
-            echo "::error::'$tag' is not a v<semver> tag"
+          if [[ ! "$tag" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "::error::'$tag' is not a stable vMAJOR.MINOR.PATCH release tag (prerelease/build suffixes are not published)"
             exit 1
           fi
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
@@ -216,7 +548,7 @@ jobs:
       - name: Generate SHA256 checksums
         run: |
           cd dist
-          sha256sum ${BINARY_NAME}-v* > SHA256SUMS
+          sha256sum * > SHA256SUMS
           cat SHA256SUMS
 
       - uses: softprops/action-gh-release@v2

@@ -51,7 +51,11 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev libasound2-dev pkg-config clang libclang-dev
+          sudo apt-get install -y \
+            libasound2-dev libfontconfig1-dev libfreetype6-dev libsqlite3-dev \
+            libwayland-dev libx11-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev pkg-config clang libclang-dev
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
@@ -72,7 +76,11 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev libasound2-dev pkg-config clang libclang-dev
+          sudo apt-get install -y \
+            libasound2-dev libfontconfig1-dev libfreetype6-dev libsqlite3-dev \
+            libwayland-dev libx11-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev pkg-config clang libclang-dev
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
@@ -111,7 +119,11 @@ jobs:
       - name: Install build dependencies
         run: |
           sudo apt-get update
-          sudo apt-get install -y libsqlite3-dev libasound2-dev pkg-config clang libclang-dev
+          sudo apt-get install -y \
+            libasound2-dev libfontconfig1-dev libfreetype6-dev libsqlite3-dev \
+            libwayland-dev libx11-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev pkg-config clang libclang-dev
       - name: Cache Cargo
         uses: actions/cache@v4
         with:
@@ -123,3 +135,34 @@ jobs:
           restore-keys: ${{ runner.os }}-cargo-test-
       - name: Run full workspace tests
         run: cargo test --verbose
+
+  desktop:
+    name: Desktop (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Install Linux desktop development libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libasound2-dev libfontconfig1-dev libfreetype6-dev libsqlite3-dev \
+            libwayland-dev libx11-dev libxcb1-dev libxcb-render0-dev \
+            libxcb-shape0-dev libxcb-xfixes0-dev libxkbcommon-dev \
+            libxkbcommon-x11-dev pkg-config
+      - name: Check desktop crates
+        run: cargo check -p tact_catalog -p tact_desktop_core -p tact-desktop
+      - name: Check desktop dependency boundaries
+        shell: bash
+        run: scripts/check-desktop-deps.sh
+      - name: Run desktop core tests
+        run: cargo test -p tact_desktop_core --lib
+      - name: Run desktop smoke tests
+        run: cargo test -p tact-desktop --lib
+      - name: Run desktop parity tests
+        run: cargo test -p tact-desktop --test parity
