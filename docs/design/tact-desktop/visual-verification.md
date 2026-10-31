@@ -98,3 +98,31 @@ The signed release remains blocked on repository secrets the workflow requires:
 `MACOS_CERTIFICATE`, `MACOS_CERTIFICATE_PASSWORD`, `MACOS_SIGNING_IDENTITY`,
 `APPLE_ID`, `APPLE_TEAM_ID`, and `APPLE_APP_PASSWORD`. Only
 `CARGO_PACKAGER_SIGN_PRIVATE_KEY` is configured today.
+
+## 5. Live entry walkthrough
+
+Commands were typed into the Command Center (`Cmd+K`, type, Down, Enter) and
+the resulting accessibility surface was recorded on 2026-10-31:
+
+| Entry | Observed surface |
+|---|---|
+| `permission` | `Permission mode` dialog (Default/Plan/Auto) |
+| `model-subagent` | `Subagent model` dialog with model choices |
+| `view-system-prompt` | `System prompt` reader |
+| `stats` | `Session statistics` reader |
+| `tasks-dag` | `Task DAG` reader |
+| `help` | `Keyboard Shortcuts` reader |
+| `background` | `Background task` reader |
+| `skill`, `plugin`, `hooks` | `Extensions` manager on its tab |
+| `mcp` | `mcp get` argument form |
+| `goal` | Run inspector with Run/Goals/Subagents/Context tabs |
+| Settings → Model | `Model` picker |
+| Manage sessions | `Session Manager` with rename/archive rows |
+
+The Command Center itself exposes an `AXTextField` named `Search commands`, and
+every transcript row, tab, gate, and reader carries an AccessKit role and label.
+
+Session-dependent readers (`history`, `stats` payload, `balance`) and run
+controls (`compact`, `cancel`, `save`, `subagent_cancel`) still show their
+loading/disabled state because the walkthrough host has no configured model
+provider; they are covered by the seeded off-screen captures in section 1.
