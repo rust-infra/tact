@@ -286,6 +286,11 @@ impl App {
     /// id) so switching between concurrent subagents preserves each one's
     /// scroll / selection / cached layout. Re-opening a popup re-activates its
     /// existing entry rather than resetting it.
+    ///
+    /// The click path resolves the card's `OpenTarget::Subagent` action to the
+    /// tool id directly (`open_subagent_popup_by_id`); this index-based entry
+    /// point now only serves the popup tests.
+    #[cfg(test)]
     pub(crate) fn open_subagent_popup_at_physical_index(&mut self, phys_idx: usize) {
         let tool_id = self
             .tools()

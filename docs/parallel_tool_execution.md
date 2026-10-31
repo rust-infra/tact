@@ -69,8 +69,8 @@ tool-name table.
 | `ReadPath { field }` | `reads = [work_dir/input[field]]` | `read_file` (`path`), `read_image` (`file_path`) |
 | `WritePath { field }` | `writes = [work_dir/input[field]]` | `write_file`, `edit_file` (`path`) |
 | `SharedState { scope }` | `writes = ["__tact_<scope>__"]` (synthetic marker) | `task_create` / `task_update` (`task`); `spawn_teammate` / `send_message` / `broadcast` / `plan_approval` / `shutdown_request` / `shutdown_response` (`team`) |
-| `Independent` | empty set — never conflicts | `sleep`, `save_memory`, `check_background`, `wait_background`, `check_subagent`, `wait_subagent`, `cancel_subagent`, `load_skill`, `task_get`, `task_list`, `list_teammates`, `read_inbox`, `worktree_list` / `worktree_status` / `worktree_events` |
-| `Barrier` | `barrier = true` | `bash`, `ask_user`, `compact`, `background_run`, `worktree_run`, `worktree_create` / `worktree_remove`, `spawn_subagent` (without `worktree`) |
+| `Independent` | empty set — never conflicts | `sleep`, `save_memory`, `check_background`, `wait_background`, `check_subagent`, `wait_subagent`, `cancel_subagent`, `load_skill`, `task_get`, `task_list`, `list_teammates`, `read_inbox`, `worktree_list` / `worktree_status` / `worktree_events`, `spawn_subagent` |
+| `Barrier` | `barrier = true` | `bash`, `ask_user`, `compact`, `background_run`, `worktree_run`, `worktree_create` / `worktree_remove` |
 | `PatchFiles { … }` | target paths parsed from the patch headers | `apply_patch` (no toolset registers it today) |
 
 MCP tools bypass the metadata path entirely: `mcp_server_resources(server)`
@@ -80,9 +80,10 @@ same server serialize while different servers run in parallel. `read_mcp_resourc
 (`list_mcp_resources`, `list_mcp_prompts`, templates) are barriers because a
 listing may touch every server.
 
-The one input-aware exception lives in `tool_resources_for`:
-`spawn_subagent { worktree: true }` resolves to `Independent` (the child gets its
-own worktree lane, so its file effects are scoped) instead of the static `Barrier`.
+`spawn_subagent` is always `Independent`: one assistant turn routinely fans out
+several spawns, and each call still blocks only itself, so they share a wave and
+their children run concurrently. `worktree: true` is the isolation lane for
+parallel *edits*; the default spawn shares the parent's workspace.
 
 Paths are normalised to absolute (lexically, rooted at `work_dir`). Two paths
 **overlap** when they are equal or one is an ancestor of the other (so a write
@@ -100,8 +101,8 @@ wave[i] = max( wave[j] + 1  for every j < i that conflicts with i ),  else 0
 ```
 
 Tools sharing a wave run concurrently; waves run in ascending order. A barrier
-always lands alone in its own wave (so `bash` / subagents / worktree lanes never
-run concurrently with anything), which is also why MCP's stateful `&mut self`
+always lands alone in its own wave (so `bash` and the worktree tools never run
+concurrently with anything), which is also why MCP's stateful `&mut self`
 router fits cleanly — same-server MCP calls serialize through a shared write
 marker.
 

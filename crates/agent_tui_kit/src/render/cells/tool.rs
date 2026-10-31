@@ -411,13 +411,12 @@ impl ToolCell {
         })
     }
 
-    /// Returns `None` when the footer is clipped or the card is not a subagent.
+    /// The card footer is the subagent popup's click target in every phase:
+    /// `Click for buffered output` while the child streams, `[Open]` once it
+    /// finished, `Click for full error` when it failed. Returns `None` when the
+    /// footer is clipped or the card is not a subagent.
     pub fn subagent_open_button_rect(&self, area: Rect, skip_lines: usize) -> Option<Rect> {
-        if self.card_only
-            || !self.is_subagent
-            || !self.has_detail_card
-            || self.phase != ToolPhase::Success
-        {
+        if self.card_only || !self.is_subagent || !self.has_detail_card {
             return None;
         }
         let card_total = 1 + self.card_inner_rows() + 1;
@@ -1169,6 +1168,33 @@ mod tests {
             .collect();
         assert!(!row.contains("[Cancel]"), "meta row: {row:?}");
         assert!(cell.subagent_cancel_button_rect(area, 0).is_none());
+    }
+
+    /// The footer is the subagent popup's click target for a live card too —
+    /// its label is literally "Click for buffered output", so the rect must not
+    /// be limited to a finished card.
+    #[test]
+    fn live_subagent_card_footer_is_the_open_target() {
+        let mut output = make_output(true, 2, 2);
+        output.phase = ToolPhase::Running;
+        output.live_detail = true;
+        output.visual_kind = tact_protocol::ToolVisualKind::Subagent;
+        let cell = tool_cell(output);
+        let area = Rect::new(0, 0, 60, (TOOL_HEADER_ROWS + 4) as u16);
+        let rect = cell
+            .subagent_open_button_rect(area, 0)
+            .expect("the live footer is clickable");
+        assert_eq!(rect.y, (TOOL_HEADER_ROWS + 3) as u16);
+
+        // A non-subagent card has no such target, live or finished.
+        let mut plain = make_output(true, 2, 2);
+        plain.phase = ToolPhase::Running;
+        plain.live_detail = true;
+        assert!(
+            tool_cell(plain)
+                .subagent_open_button_rect(area, 0)
+                .is_none()
+        );
     }
 
     #[test]

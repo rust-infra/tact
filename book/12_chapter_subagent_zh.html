@@ -758,7 +758,10 @@ settings。这也修复了只读逃逸：<code>Plan</code> 父级不再能 spawn
 自己广播，见 §8；与 sticky 总览同一把柄），运行中的后台卡片右端还有
 <code>[Cancel]</code> 按钮——2026-10-16 起它画在 <strong>meta
 行</strong>并随同一份切片几何记录命中矩形（此前是渲染循环的标题行
-overlay，会被长标题写掉）。点击该卡进入<strong>子代理视图</strong>（<code>ToolPopupKind::SubagentTranscript</code>）：主区域整块换成子会话，顶部一行面包屑
+overlay，会被长标题写掉）。点击卡片<strong>页脚</strong>（运行中
+<code>Click for buffered output</code>、成功后 <code>[Open]</code>、失败
+<code>Click for full error</code>；2026-11-01 起三种相位都可点）进入<strong>子代理视图</strong>（<code>ToolPopupKind::SubagentTranscript</code>）。卡片正文本身不再响应单击：单击只起手一次拖选、双击才选中文字，与
+Thinking 卡片一致。视图内主区域整块换成子会话，顶部一行面包屑
 <code>‹ N. Subagent · 标题</code>，<code>Esc</code>
 或点击面包屑退回主日志；子会话的工具调用渲染成<strong>自包含块</strong>（<code>▎ N. ⚡ Bash args</code>
 / <code>✓ Success · 133ms · 42 lines</code> / code band 输出 /
@@ -780,22 +783,26 @@ href="./23_chapter_tui_zh.html">TUI</a>。</p>
 <hr />
 <h2 id="7-调度交互">7. 调度交互</h2>
 <p><code>spawn_subagent</code> 的 <code>ToolMetadata.resources</code>
-声明
-<code>ResourcePolicy::Barrier</code>。普通的（共享文件系统）<code>spawn_subagent</code>
-调用绝不与同一 wave 中任何其他工具并行 —— 见 <a
-href="./11_chapter_task_zh.html">任务与工具调度</a>。该场景的后台并行来自
-<code>tokio::spawn</code>（<code>run_in_background</code>），而非放宽
-wave 调度。</p>
-<p><strong>worktree 隔离的 spawn 是例外。</strong>
-<code>AgentKernel::execute_tool_calls</code>
-按调用解析资源（<code>crates/tact/src/runtime/tool_adapter.rs</code> 的
-<code>TactToolPort::access</code>）：<code>worktree: true</code> 的
-<code>spawn_subagent</code> 映射为
-<code>ToolResources::independent()</code> ——
-其文件影响被限定在泳道内，因此可与同一 wave 中其他工具（包括其他隔离子
-agent）并行 fan-out，而不会与主树竞争。这正是 2026-08-26 异步子 agent
-设计评审中的 "worktree follow-up"：一旦每个子 agent
-拥有作用域化文件系统，阻塞型子 agent 的同一 wave fan-out
+声明 <code>ResourcePolicy::Independent</code>：同一 assistant
+回合里的多个 spawn 调用落在<strong>同一个 wave</strong> 中并发执行 —— 见
+<a href="./11_chapter_task_zh.html">任务与工具调度</a>。每个调用仍然阻塞到
+<em>自己</em> 的子 agent 结束才返回，因此若干 spawn 天然的语义就是
+「一次性 fan out N 个子 agent，收齐全部摘要后再继续」。改成 Independent
+之前它是 <code>Barrier</code>，内核会把每个 spawn 切成独立 wave
+串行执行，而工具卡在解析时就已全部显示「运行中」，于是 sticky
+总览（按真实 <code>subagent_runs</code> 行计数）只能看到 1 个
+Running，与卡片状态对不上。后台并行仍可来自
+<code>tokio::spawn</code>（<code>run_in_background</code>），与本条 wave
+规则互不影响。</p>
+<p><strong>并发 spawn 共享工作区。</strong> 默认 spawn 与父级同一
+<code>work_dir</code>，所以同波并发运行的是<em>多个</em>子 agent
+的文件操作；需要并行编辑时用 <code>worktree: true</code> 给每个子
+agent 一条独立泳道。资源解析对所有原生工具统一走
+<code>metadata.resources</code>（<code>crates/tact/src/runtime/tool_adapter.rs</code>
+的 <code>TactToolPort::access</code>）—— worktree 的隔离不再靠入口处的特判，
+而是「每个子 agent 的文件影响限定在泳道内」这一事实让并发编辑互不碰撞。
+这正是 2026-08-26 异步子 agent 设计评审中的 "worktree follow-up"：一旦每个
+子 agent 拥有作用域化文件系统，阻塞型子 agent 的同一 wave fan-out
 就安全了。注意：worktree
 是<strong>组织边界</strong>，<strong>不是</strong> OS 沙箱 —— 子 agent
 的 <code>bash</code>
@@ -957,7 +964,7 @@ max_turns）、<code>ensure_session</code>、<code>pending_subagent_results</cod
 </tr>
 <tr>
 <td><code>crates/tact/src/agent/tool_schedule.rs</code></td>
-<td><code>spawn_subagent</code> 作为调度 barrier</td>
+<td><code>spawn_subagent</code> 的 <code>Independent</code> 资源策略</td>
 </tr>
 <tr>
 <td><code>ARCHITECTURE.md</code></td>

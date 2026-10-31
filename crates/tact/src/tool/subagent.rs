@@ -163,10 +163,15 @@ async fn run_subagent_stop_hooks(
 
 pub const SPAWN_SUBAGENT_METADATA: ToolMetadata = ToolMetadata {
     name: "spawn_subagent",
-    description: "Spawn a subagent with its own fresh session that cannot see this conversation, so make the prompt self-contained. By default it runs in the current working directory, blocks until it finishes, and returns the subagent's final summary. Set run_in_background: true to return immediately as async_launched { id } and have the summary re-injected on a later turn; use it to fan out several independent subagents in parallel, then wait_subagent on each (only honored in interactive sessions, otherwise the call degrades to blocking). Set worktree: true to run in an isolated git worktree lane subagent-<id> (requires a git repo), safe for parallel edits; the lane path is appended to the returned summary. Set skill: <name> to attach an isolated subagent skill card from ~/.tact/subagent/<name>.md; its body is appended to the child system prompt as the role.",
+    description: "Spawn a subagent with its own fresh session that cannot see this conversation, so make the prompt self-contained. By default it runs in the current working directory, blocks until it finishes, and returns the subagent's final summary. Several spawn_subagent calls in one message run concurrently, each blocking only its own call — use that to fan out independent subagents; they share this workspace. Set run_in_background: true to return immediately as async_launched { id } and have the summary re-injected on a later turn, then wait_subagent on each (only honored in interactive sessions, otherwise the call degrades to blocking). Set worktree: true to run in an isolated git worktree lane subagent-<id> (requires a git repo), safe for parallel edits; the lane path is appended to the returned summary. Set skill: <name> to attach an isolated subagent skill card from ~/.tact/subagent/<name>.md; its body is appended to the child system prompt as the role.",
     permission: PermissionPolicy::High,
     permission_prompt: PermissionPromptPolicy::Json,
-    resources: ResourcePolicy::Barrier,
+    // Not a barrier: one assistant turn routinely fans out several spawns, and
+    // a barrier would put them in separate waves — one child executing while
+    // every other card already showed "running". The wave scheduler runs
+    // same-wave calls concurrently; `worktree: true` is the isolation lane for
+    // parallel edits, while the default shares the parent's workspace.
+    resources: ResourcePolicy::Independent,
     domain: ToolDomain::Subagent,
     presentation: ToolPresentation {
         visual_kind: ToolVisualKind::Subagent,
