@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+
 use super::*;
 
 #[tokio::test]
@@ -129,9 +131,16 @@ async fn kernel_composition_uses_current_facade_model_and_sink_each_activation()
         .await
         .expect("first activation");
     assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+    let first_updates = std::iter::from_fn(|| first_rx.try_recv().ok()).collect::<Vec<_>>();
     assert!(matches!(
-        first_rx.try_recv(),
-        Ok(AgentUpdate::TurnStats { .. })
+        first_updates.first(),
+        Some(AgentUpdate::RunStarted { .. })
+    ));
+    assert!(matches!(
+        first_updates
+            .iter()
+            .find(|update| matches!(update, AgentUpdate::TurnStats { .. })),
+        Some(AgentUpdate::TurnStats { .. })
     ));
 
     let (second_tx, mut second_rx) = tokio::sync::mpsc::unbounded_channel();
@@ -154,10 +163,12 @@ async fn kernel_composition_uses_current_facade_model_and_sink_each_activation()
             .iter()
             .any(|message| crate::extract_text(&message.content) == "second model")
     );
-    assert!(matches!(
-        second_rx.try_recv(),
-        Ok(AgentUpdate::TurnStats { .. })
-    ));
+    let second_updates = std::iter::from_fn(|| second_rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        second_updates
+            .iter()
+            .any(|update| matches!(update, AgentUpdate::TurnStats { .. }))
+    );
     assert!(
         agent.runtime.events.has_ui(),
         "the replacement answering sink must remain available"

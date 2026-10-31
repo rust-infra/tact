@@ -36,9 +36,29 @@ pub const MAX_TOKEN_USAGE_BODIES: usize = 1;
 pub struct SessionSummary {
     pub id: String,
     pub root_dir: String,
+    pub title: Option<String>,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+    pub archived_at: Option<DateTime<Utc>>,
+    pub locked: bool,
     pub message_count: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArchiveFilter {
+    #[default]
+    Active,
+    Archived,
+    All,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct SessionListQuery {
+    pub root_dir: Option<String>,
+    pub archive: ArchiveFilter,
+    /// Case-insensitive title/id substring. Frontends may apply fuzzy ranking
+    /// after this coarse filter.
+    pub search: Option<String>,
 }
 
 #[derive(Debug, Clone)]
@@ -126,6 +146,12 @@ pub trait SessionStore: Send + Sync {
     async fn load_agent_session(&self, session_id: &str) -> Result<Vec<AgentMessage>>;
 
     async fn list_sessions(&self, root_dir: Option<&str>) -> Result<Vec<SessionSummary>>;
+
+    async fn list_sessions_filtered(&self, query: SessionListQuery) -> Result<Vec<SessionSummary>>;
+
+    async fn set_session_title(&self, session_id: &str, title: &str) -> Result<()>;
+
+    async fn set_session_archived(&self, session_id: &str, archived: bool) -> Result<()>;
 
     async fn delete_session(&self, session_id: &str) -> Result<()>;
 

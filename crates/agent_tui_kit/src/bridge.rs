@@ -109,7 +109,10 @@ impl TryFrom<UserCommand> for Command {
             | UserCommand::SetGoalArchived { .. } => Err(()),
             // Responses to agent-originated selects flow on the reverse command
             // channel; they are not host commands and never map to `Command`.
-            UserCommand::UiResponse(_) => Err(()),
+            UserCommand::UiResponse(_)
+            | UserCommand::QuerySurface { .. }
+            | UserCommand::SyncBackgroundTasks
+            | UserCommand::CancelBackgroundTask { .. } => Err(()),
         }
     }
 }

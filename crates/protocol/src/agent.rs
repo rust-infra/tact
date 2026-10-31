@@ -394,6 +394,153 @@ pub struct SubagentRunSnapshot {
     pub finished_at: Option<i64>,
 }
 
+/// Semantic reason a frontend is being asked for a response.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum UiRequestPurpose {
+    Permission,
+    Question,
+    PlanApproval,
+    #[default]
+    Other,
+}
+
+/// Agent that raised a UI request.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum UiAgentRef {
+    #[default]
+    Main,
+    Subagent {
+        child_id: String,
+    },
+}
+
+/// Typed attribution for a gate, independent of prompt text.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct UiRequestOrigin {
+    pub agent: UiAgentRef,
+    pub tool_id: Option<String>,
+}
+
+impl UiRequestOrigin {
+    pub fn main() -> Self {
+        Self::default()
+    }
+
+    pub fn subagent(child_id: impl Into<String>, tool_id: Option<String>) -> Self {
+        Self {
+            agent: UiAgentRef::Subagent {
+                child_id: child_id.into(),
+            },
+            tool_id,
+        }
+    }
+}
+
+/// Typed read-only surface requested by desktop readers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceQuery {
+    McpServers,
+    McpPrompts { server: Option<String> },
+    Hooks,
+    Stats,
+    SystemPrompt { assembled: bool },
+    History,
+}
+
+/// Typed response for one [`SurfaceQuery`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SurfaceSnapshot {
+    McpServers(Vec<McpServerSnapshot>),
+    McpPrompts(Vec<McpPromptSnapshot>),
+    Hooks(HookSnapshot),
+    Stats(StatsSnapshot),
+    SystemPrompt(String),
+    History(Vec<HistoryEntrySnapshot>),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpServerSnapshot {
+    pub name: String,
+    pub transport: String,
+    pub source: String,
+    pub status: McpServerStatusSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum McpServerStatusSnapshot {
+    Connected { tools: usize },
+    NeedsAuthorization,
+    NotConnected,
+    Disabled,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpPromptSnapshot {
+    pub server: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub arguments: Vec<McpPromptArgumentSnapshot>,
+    pub error: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct McpPromptArgumentSnapshot {
+    pub name: String,
+    pub description: Option<String>,
+    pub required: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct HookSnapshot {
+    pub trusted: Vec<HookItemSnapshot>,
+    pub pending: Vec<HookItemSnapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HookItemSnapshot {
+    pub source: String,
+    pub event: String,
+    pub matcher: Option<String>,
+    pub command: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct StatsSnapshot {
+    pub turns_taken: u32,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub total_tokens: u32,
+    pub cache_hit_tokens: u32,
+    pub reasoning_tokens: u32,
+    pub elapsed_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct HistoryEntrySnapshot {
+    pub task: String,
+    pub timestamp: String,
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BackgroundTaskSnapshot {
+    pub id: String,
+    pub command: String,
+    pub status: BackgroundTaskStatusSnapshot,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub output_tail: String,
+    pub output_path: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum BackgroundTaskStatusSnapshot {
+    #[default]
+    Running,
+    Completed,
+    Error,
+}
+
 /// Status update messages sent from the Agent to the TUI.
 ///
 /// `Clone` because an event can have more than one destination: the interactive
@@ -419,12 +566,14 @@ pub enum AgentUpdate {
     /// A step succeeded, with structured result.
     StepFinished {
         idx: usize,
+        run_id: Option<String>,
         tool_id: String,
         result: StepResult,
     },
     /// A step failed, with error message.
     StepFailed {
         idx: usize,
+        run_id: Option<String>,
         tool_id: String,
         /// Tool argument summary (e.g. the web-search query) so a failed
         /// card keeps a distinguishable title even when the failure arrives
@@ -435,6 +584,7 @@ pub enum AgentUpdate {
     },
     /// Incremental text produced while a tool invocation is still running.
     ToolProgress {
+        run_id: Option<String>,
         tool_id: String,
         chunks: Vec<ToolOutputChunk>,
     },
@@ -487,6 +637,17 @@ pub enum AgentUpdate {
     },
     /// Model call parameters (name, max_tokens, thinking budget, etc.)
     ModelInfo(ModelCallParams),
+    /// One kernel activation started. This is a pending boundary: compaction
+    /// and Goal activations also emit it, so consumers promote it only when a
+    /// turn follows.
+    RunStarted { run_id: String },
+    /// The matching kernel activation completed or failed.
+    RunFinished { run_id: String },
+    /// A model response started. It precedes that response's first delta when
+    /// the provider emits an identity hint.
+    MessageStarted { message_id: String },
+    /// A UI response arrived after its request was answered or withdrawn.
+    UiResponseRejected { request_id: u64 },
     /// Informational notice (does not change state)
     Info(String),
     /// Markdown-formatted informational notice, delivered whole (one shot).
@@ -554,6 +715,8 @@ pub enum AgentUpdate {
         /// ("Select from subagent"); the prompt body stays clean, so the marker
         /// is a title and not a line the model's own text could imitate.
         from_subagent: bool,
+        purpose: UiRequestPurpose,
+        origin: UiRequestOrigin,
     },
     /// Request user to choose **zero or more** options (Space toggles, Enter confirms).
     /// Used by `ask_user` when `multi_select` is true. Does not affect [`RequestSelect`].
@@ -563,6 +726,8 @@ pub enum AgentUpdate {
         options: Vec<String>,
         /// See [`Self::RequestSelect`]'s `from_subagent`.
         from_subagent: bool,
+        purpose: UiRequestPurpose,
+        origin: UiRequestOrigin,
     },
     /// Streaming output text fragment (appended to Log in real time)
     StreamChunk(String),
@@ -635,6 +800,13 @@ pub enum AgentUpdate {
     /// strip (Running first, then newest-finished, capped). The subagent
     /// analog of [`Self::TasksChanged`]; read-only tools do not emit.
     SubagentsChanged { runs: Vec<SubagentRunSnapshot> },
+    /// Typed response to [`UserCommand::QuerySurface`].
+    SurfaceSnapshot {
+        request_id: u64,
+        snapshot: SurfaceSnapshot,
+    },
+    /// Full replacement snapshot for the desktop background-task list.
+    BackgroundTasksChanged { tasks: Vec<BackgroundTaskSnapshot> },
 }
 
 /// Lifecycle of a streaming thinking / reasoning block.
@@ -807,6 +979,15 @@ pub enum UserCommand {
     /// Answer a pending [`AgentUpdate::RequestSelect`] / [`RequestMultiSelect`]
     /// (see [`UiResponse`]). Routed by the driver to the shared responder.
     UiResponse(UiResponse),
+    /// Query a read-only runtime surface without parsing TUI Markdown.
+    QuerySurface {
+        request_id: u64,
+        query: SurfaceQuery,
+    },
+    /// Ask the host to re-publish the current background task collection.
+    SyncBackgroundTasks,
+    /// Cancel exactly one background task.
+    CancelBackgroundTask { task_id: String },
 }
 
 /// A single step in the execution plan.

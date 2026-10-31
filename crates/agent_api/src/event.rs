@@ -49,10 +49,12 @@ pub enum AgentEvent {
         descriptor: Option<ToolDescriptor>,
     },
     ToolProgress {
+        run_id: RunId,
         call_id: String,
         chunks: Vec<ToolOutputChunk>,
     },
     ToolFinished {
+        run_id: RunId,
         call_id: String,
         result: ToolExecutionResult,
         permission_label: Option<String>,

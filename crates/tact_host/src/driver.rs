@@ -29,7 +29,9 @@ use tact_llm::{Message, Role};
 use tact_protocol::{
     AccountUpdate, AgentErrorKind, AgentUpdate, GoalAcceptanceSnapshot, GoalCriterionSnapshot,
     GoalCriterionStatusSnapshot, GoalPhaseSnapshot, GoalRunBudgetSnapshot, GoalSnapshot,
-    GoalStatusSnapshot, UpdateSink, UserCommand,
+    GoalStatusSnapshot, HistoryEntrySnapshot, HookItemSnapshot, HookSnapshot, McpPromptSnapshot,
+    McpServerSnapshot, McpServerStatusSnapshot, StatsSnapshot, SurfaceQuery, SurfaceSnapshot,
+    UpdateSink, UserCommand,
 };
 use tokio::{
     sync::mpsc::{UnboundedReceiver, UnboundedSender},
@@ -320,7 +322,10 @@ pub async fn run_command_loop_with_account(
                 // waiting for exactly this answer. A stale response (already
                 // answered/withdrawn) is harmless; `respond` returns false and
                 // must not affect any other pending request.
-                ui_responder.respond(response);
+                let request_id = response.request_id();
+                if !ui_responder.respond(response) {
+                    events.send(AgentUpdate::UiResponseRejected { request_id });
+                }
             }
             UserCommand::Cancel => {
                 cancel_flag.cancel();
@@ -362,6 +367,25 @@ pub async fn run_command_loop_with_account(
                     &events,
                 )
                 .await;
+            }
+            UserCommand::SyncBackgroundTasks => {
+                if let Ok(tasks) = background_manager
+                    .snapshot(background_session_id.as_deref())
+                    .await
+                {
+                    events.send(AgentUpdate::BackgroundTasksChanged { tasks });
+                }
+            }
+            UserCommand::CancelBackgroundTask { task_id } => {
+                if background_manager.cancel(&task_id) {
+                    events.send(AgentUpdate::Info(format!(
+                        "Cancelling background task {task_id}..."
+                    )));
+                } else {
+                    events.send(AgentUpdate::Info(format!(
+                        "No running background task {task_id}"
+                    )));
+                }
             }
             UserCommand::ListGoals { include_archived } => {
                 list_goals(
@@ -612,9 +636,7 @@ async fn query_background(
             });
         }
         Err(err) => {
-            events.send(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                "Background check failed: {err}"
-            ))));
+            events.send(AgentUpdate::Info(format!("Background check failed: {err}")));
         }
     }
 }
@@ -2113,6 +2135,27 @@ async fn handle_user_command_with_account(
             )
             .await;
         }
+        UserCommand::SyncBackgroundTasks => {
+            if let Ok(tasks) = agent
+                .tool_context
+                .background_manager
+                .snapshot(agent.session_id())
+                .await
+            {
+                agent.emit_update(AgentUpdate::BackgroundTasksChanged { tasks });
+            }
+        }
+        UserCommand::CancelBackgroundTask { task_id } => {
+            if agent.tool_context.background_manager.cancel(&task_id) {
+                agent.emit_update(AgentUpdate::Info(format!(
+                    "Cancelling background task {task_id}..."
+                )));
+            } else {
+                agent.emit_update(AgentUpdate::Info(format!(
+                    "No running background task {task_id}"
+                )));
+            }
+        }
         UserCommand::SetPermissionMode(mode) => {
             // TUI already shows the localized confirmation; do not emit Info here.
             agent.set_permission_mode(mode);
@@ -2183,18 +2226,18 @@ async fn handle_user_command_with_account(
                 Ok(views) => agent.emit_update(AgentUpdate::MdInfo(
                     crate::rendering::render_live_mcp_listing(&views),
                 )),
-                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
-                    format!("MCP list failed: {error:#}"),
-                ))),
+                Err(error) => {
+                    agent.emit_update(AgentUpdate::Info(format!("MCP list failed: {error:#}")));
+                }
             }
         }
         UserCommand::McpPrompts { server } => {
             // Live view, like `McpList`: the router the agent already holds.
             match agent.mcp_router.list_prompts(server.as_deref()).await {
                 Ok(listing) => agent.emit_update(AgentUpdate::MdInfo(listing)),
-                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
-                    format!("MCP prompts failed: {error:#}"),
-                ))),
+                Err(error) => {
+                    agent.emit_update(AgentUpdate::Info(format!("MCP prompts failed: {error:#}")));
+                }
             }
         }
         UserCommand::RunMcpPrompt {
@@ -2223,9 +2266,9 @@ async fn handle_user_command_with_account(
             Ok(report) => agent.emit_update(AgentUpdate::MdInfo(
                 crate::rendering::render_hooks_listing(&report),
             )),
-            Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                "Hooks list failed: {error:#}"
-            )))),
+            Err(error) => {
+                agent.emit_update(AgentUpdate::Info(format!("Hooks list failed: {error:#}")));
+            }
         },
         UserCommand::HooksTrust { all, source } => {
             match tact::plugin::trust_hooks(image_work_dir, all, source.as_deref()) {
@@ -2244,9 +2287,9 @@ async fn handle_user_command_with_account(
                     );
                     agent.emit_update(AgentUpdate::Info(lines.join("\n")));
                 }
-                Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(
-                    format!("Hooks trust failed: {error:#}"),
-                ))),
+                Err(error) => {
+                    agent.emit_update(AgentUpdate::Info(format!("Hooks trust failed: {error:#}")));
+                }
             }
         }
         UserCommand::HooksForget => match tact::plugin::forget_hook_trust() {
@@ -2255,12 +2298,124 @@ async fn handle_user_command_with_account(
                  /hooks trust --all."
                     .to_string(),
             )),
-            Err(error) => agent.emit_update(AgentUpdate::Error(AgentErrorKind::Other(format!(
-                "Hooks forget failed: {error:#}"
-            )))),
+            Err(error) => {
+                agent.emit_update(AgentUpdate::Info(format!("Hooks forget failed: {error:#}")));
+            }
         },
+        UserCommand::QuerySurface { request_id, query } => {
+            query_surface(agent, request_id, query).await;
+        }
         _ => {}
     }
+}
+
+async fn query_surface(agent: &mut Agent, request_id: u64, query: SurfaceQuery) {
+    let snapshot = match query {
+        SurfaceQuery::McpServers => SurfaceSnapshot::McpServers(
+            agent
+                .mcp_router
+                .server_summaries()
+                .into_iter()
+                .map(|(name, tools)| McpServerSnapshot {
+                    name,
+                    transport: "runtime".to_string(),
+                    source: "connected".to_string(),
+                    status: McpServerStatusSnapshot::Connected { tools },
+                })
+                .collect(),
+        ),
+        SurfaceQuery::McpPrompts { server } => {
+            match agent.mcp_router.list_prompt_infos(server.as_deref()).await {
+                Ok(prompts) => SurfaceSnapshot::McpPrompts(
+                    prompts
+                        .into_iter()
+                        .map(|prompt| McpPromptSnapshot {
+                            server: prompt.server,
+                            name: prompt.name,
+                            description: prompt.description,
+                            arguments: prompt
+                                .arguments
+                                .into_iter()
+                                .map(|argument| tact_protocol::McpPromptArgumentSnapshot {
+                                    name: argument.name,
+                                    description: argument.description,
+                                    required: argument.required,
+                                })
+                                .collect(),
+                            error: prompt.error,
+                        })
+                        .collect(),
+                ),
+                Err(error) => {
+                    agent.emit_update(AgentUpdate::Info(format!("MCP prompts failed: {error:#}")));
+                    return;
+                }
+            }
+        }
+        SurfaceQuery::Hooks => match tact::plugin::survey_hooks(&agent.tool_context.work_dir) {
+            Ok(report) => {
+                let map = |hook: tact::plugin::HookSummary| HookItemSnapshot {
+                    source: hook.source,
+                    event: hook.event,
+                    matcher: hook.matcher,
+                    command: hook.command,
+                };
+                SurfaceSnapshot::Hooks(HookSnapshot {
+                    trusted: report.trusted.into_iter().map(map).collect(),
+                    pending: report.pending.into_iter().map(map).collect(),
+                })
+            }
+            Err(error) => {
+                agent.emit_update(AgentUpdate::Info(format!("Hooks list failed: {error:#}")));
+                return;
+            }
+        },
+        SurfaceQuery::Stats => {
+            let stats = agent.stats();
+            let stats = stats.read_recover();
+            SurfaceSnapshot::Stats(StatsSnapshot {
+                turns_taken: stats.prompt_count.min(u32::MAX as u64) as u32,
+                prompt_tokens: stats.prompt_tokens.min(u32::MAX as u64) as u32,
+                completion_tokens: stats.completion_tokens.min(u32::MAX as u64) as u32,
+                total_tokens: stats.total_tokens.min(u32::MAX as u64) as u32,
+                cache_hit_tokens: stats.cache_hit_tokens.min(u32::MAX as u64) as u32,
+                reasoning_tokens: stats.reasoning_tokens.min(u32::MAX as u64) as u32,
+                elapsed_ms: stats.start_time.elapsed().as_millis().min(u64::MAX as u128) as u64,
+            })
+        }
+        SurfaceQuery::SystemPrompt { assembled } => match agent.preview_system_prompt(assembled) {
+            Ok(prompt) => SurfaceSnapshot::SystemPrompt(prompt),
+            Err(error) => {
+                agent.emit_update(AgentUpdate::Info(format!(
+                    "System prompt failed: {error:#}"
+                )));
+                return;
+            }
+        },
+        SurfaceQuery::History => {
+            let mut entries = Vec::new();
+            for message in agent.context().iter().rev().take(50).rev() {
+                let text = extract_text(&message.content);
+                if text.trim().is_empty() {
+                    continue;
+                }
+                let (task, summary) = match message.role {
+                    Role::User => (text, String::new()),
+                    Role::Assistant => (String::new(), text),
+                };
+                entries.push(HistoryEntrySnapshot {
+                    task,
+                    timestamp: String::new(),
+                    summary,
+                });
+            }
+            SurfaceSnapshot::History(entries)
+        }
+    };
+    agent.emit_update(AgentUpdate::SurfaceSnapshot {
+        request_id,
+        snapshot,
+    });
 }
 
 /// Awaits `auth` while forwarding its progress lines to `emit` as they arrive.
@@ -2295,17 +2450,51 @@ where
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::result_large_err)]
+
     use std::sync::atomic::{AtomicBool, Ordering};
 
     use tact::goal::GoalEventKind;
     use tact_llm::{ContentBlock, MockClient, StopReason};
-    use tact_protocol::{AgentUpdate, UpdateSink, UserCommand};
+    use tact_protocol::{AgentUpdate, SurfaceQuery, SurfaceSnapshot, UpdateSink, UserCommand};
 
+    use super::handle_user_command;
     use crate::test_support::{build_test_agent, install_test_config};
 
     fn text_block(content: &str) -> ContentBlock {
         ContentBlock::Text {
             text: content.to_string(),
+        }
+    }
+
+    #[tokio::test]
+    async fn typed_surface_query_preserves_request_id() {
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        let (mut agent, work_dir) = build_test_agent(MockClient::new(vec![]), Some(tx));
+
+        handle_user_command(
+            &mut agent,
+            UserCommand::QuerySurface {
+                request_id: 42,
+                query: SurfaceQuery::Stats,
+            },
+            &work_dir,
+        )
+        .await;
+
+        let update = tokio::time::timeout(std::time::Duration::from_secs(1), rx.recv())
+            .await
+            .expect("surface response timed out")
+            .expect("surface response");
+        match update {
+            AgentUpdate::SurfaceSnapshot {
+                request_id,
+                snapshot,
+            } => {
+                assert_eq!(request_id, 42);
+                assert!(matches!(snapshot, SurfaceSnapshot::Stats(_)));
+            }
+            other => panic!("expected SurfaceSnapshot, got {other:?}"),
         }
     }
 
@@ -4194,17 +4383,20 @@ mod tests {
         )
         .await;
 
-        let mut saw_error = false;
+        let mut saw_notice = false;
         while let Ok(update) = agent_rx.try_recv() {
-            if let AgentUpdate::Error(err) = update {
+            if let AgentUpdate::Info(message) = update {
                 assert!(
-                    err.to_string().contains("Unknown background task"),
-                    "err: {err}"
+                    message.contains("Unknown background task"),
+                    "message: {message}"
                 );
-                saw_error = true;
+                saw_notice = true;
             }
         }
-        assert!(saw_error, "QueryBackground with unknown id must emit Error");
+        assert!(
+            saw_notice,
+            "QueryBackground with unknown id must emit a notice"
+        );
     }
 
     #[tokio::test]
@@ -4271,8 +4463,8 @@ mod tests {
 
         let mut message = None;
         while let Ok(update) = agent_rx.try_recv() {
-            if let AgentUpdate::Error(kind) = update {
-                message = Some(kind.to_string());
+            if let AgentUpdate::Info(text) = update {
+                message = Some(text);
             }
         }
         let message = message.expect("a refusal must be reported, not swallowed");

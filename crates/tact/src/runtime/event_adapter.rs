@@ -147,6 +147,7 @@ impl TactEventBridge {
             )),
             ProviderActivityPhase::Failed => self.events.send(AgentUpdate::StepFailed {
                 idx: activity.step as usize,
+                run_id: None,
                 tool_id: activity.id.clone(),
                 arg_summary: query.clone().unwrap_or_default(),
                 error: failure
@@ -176,10 +177,27 @@ impl EventPort for TactEventBridge {
 impl TactEventBridge {
     fn emit_inner(&self, state: &mut BridgeState, event: AgentEvent) {
         match event {
-            AgentEvent::RunStarted { .. }
-            | AgentEvent::MessageFinished { .. }
-            | AgentEvent::RunFinished { .. }
-            | AgentEvent::RunFailed { .. } => {}
+            AgentEvent::RunStarted { run_id, .. } => {
+                self.events.send(AgentUpdate::RunStarted {
+                    run_id: run_id.to_string(),
+                });
+            }
+            AgentEvent::RunFinished { run, .. } => {
+                self.events.send(AgentUpdate::RunFinished {
+                    run_id: run.run_id.to_string(),
+                });
+            }
+            AgentEvent::RunFailed { run, .. } => {
+                self.events.send(AgentUpdate::RunFinished {
+                    run_id: run.run_id.to_string(),
+                });
+            }
+            AgentEvent::MessageStarted { message_id, .. } => {
+                self.events.send(AgentUpdate::MessageStarted {
+                    message_id: message_id.to_string(),
+                });
+            }
+            AgentEvent::MessageFinished { .. } => {}
             AgentEvent::TurnStarted {
                 turn,
                 max_total_turns,
@@ -212,7 +230,6 @@ impl TactEventBridge {
                 }));
             }
             AgentEvent::ModelCallStarted { .. } => {}
-            AgentEvent::MessageStarted { .. } => {}
             AgentEvent::MessageDelta { delta, .. } => match delta {
                 MessageDelta::Text { delta } => {
                     self.events.send_progress(AgentUpdate::StreamChunk(delta));
@@ -238,13 +255,19 @@ impl TactEventBridge {
                     descriptor.as_ref(),
                 );
             }
-            AgentEvent::ToolProgress { call_id, chunks } => {
+            AgentEvent::ToolProgress {
+                run_id,
+                call_id,
+                chunks,
+            } => {
                 self.events.send_progress(AgentUpdate::ToolProgress {
+                    run_id: Some(run_id.to_string()),
                     tool_id: call_id,
                     chunks: chunks.into_iter().map(host_chunk).collect(),
                 });
             }
             AgentEvent::ToolFinished {
+                run_id,
                 call_id,
                 result,
                 permission_label,
@@ -272,6 +295,7 @@ impl TactEventBridge {
                         );
                         self.events.send(AgentUpdate::StepFinished {
                             idx: tracked.idx,
+                            run_id: Some(run_id.to_string()),
                             tool_id: call_id,
                             result: StepResult {
                                 tool: tracked.tool_name,
@@ -294,6 +318,7 @@ impl TactEventBridge {
                             .unwrap_or_else(|| result_text(&result));
                         self.events.send(AgentUpdate::StepFailed {
                             idx: tracked.idx,
+                            run_id: Some(run_id.to_string()),
                             tool_id: call_id,
                             arg_summary: tracked.arg_summary,
                             error,
@@ -421,6 +446,7 @@ fn web_search_finished(
 ) -> AgentUpdate {
     AgentUpdate::StepFinished {
         idx: step as usize,
+        run_id: None,
         tool_id: id.to_string(),
         result: StepResult {
             tool: "web_search".to_string(),
@@ -467,6 +493,133 @@ mod tests {
             updates.push(update);
         }
         updates
+    }
+
+    fn run_context(run_id: &str) -> tact_agent_api::RunContext {
+        tact_agent_api::RunContext {
+            session: tact_agent_api::SessionRef::new("session-1"),
+            run_id: tact_agent_api::RunId::new(run_id),
+        }
+    }
+
+    #[test]
+    fn run_started_precedes_first_turn_stats() {
+        let (bridge, mut rx) = bridge();
+        bridge.emit(AgentEvent::RunStarted {
+            run_id: tact_agent_api::RunId::new("run-1"),
+            session: tact_agent_api::SessionRef::new("session-1"),
+        });
+        bridge.emit(AgentEvent::TurnStarted {
+            run_id: tact_agent_api::RunId::new("run-1"),
+            turn: 1,
+            activation_turn: 1,
+            max_total_turns: None,
+        });
+
+        let updates = drain(&mut rx);
+        assert!(matches!(
+            &updates[0],
+            AgentUpdate::RunStarted { run_id } if run_id == "run-1"
+        ));
+        assert!(matches!(
+            &updates[1],
+            AgentUpdate::TurnStats { turns_taken: 1, .. }
+        ));
+    }
+
+    #[test]
+    fn run_finished_closes_the_run_cursor() {
+        let (bridge, mut rx) = bridge();
+        bridge.emit(AgentEvent::RunFinished {
+            outcome: tact_agent_api::RunOutcome {
+                stop: tact_agent_api::RunStop::Completed,
+                turns: 1,
+                total_turns: 1,
+                tool_calls: 0,
+                recovery: Default::default(),
+            },
+            run: run_context("run-1"),
+        });
+        bridge.emit(AgentEvent::RunFailed {
+            error: tact_agent_api::RuntimeErrorInfo::new(
+                tact_agent_api::RunPhase::Commit,
+                "failed",
+            ),
+            run: run_context("run-2"),
+        });
+
+        let updates = drain(&mut rx);
+        assert!(matches!(
+            &updates[0],
+            AgentUpdate::RunFinished { run_id } if run_id == "run-1"
+        ));
+        assert!(matches!(
+            &updates[1],
+            AgentUpdate::RunFinished { run_id } if run_id == "run-2"
+        ));
+    }
+
+    #[test]
+    fn compaction_run_does_not_open_an_activation() {
+        let (bridge, mut rx) = bridge();
+        bridge.emit(AgentEvent::RunStarted {
+            run_id: tact_agent_api::RunId::new("compact-1"),
+            session: tact_agent_api::SessionRef::new("session-1"),
+        });
+        bridge.emit(AgentEvent::ContextCompacted {
+            kind: tact_agent_api::CompactionKind::Command,
+        });
+        bridge.emit(AgentEvent::RunFinished {
+            outcome: tact_agent_api::RunOutcome {
+                stop: tact_agent_api::RunStop::Completed,
+                turns: 0,
+                total_turns: 0,
+                tool_calls: 0,
+                recovery: Default::default(),
+            },
+            run: run_context("compact-1"),
+        });
+
+        let updates = drain(&mut rx);
+        assert!(!updates.iter().any(|update| {
+            matches!(
+                update,
+                AgentUpdate::TurnStats { .. } | AgentUpdate::StreamChunk(_)
+            )
+        }));
+        assert!(matches!(
+            &updates[0],
+            AgentUpdate::RunStarted { run_id } if run_id == "compact-1"
+        ));
+        assert!(matches!(
+            updates.last(),
+            Some(AgentUpdate::RunFinished { run_id }) if run_id == "compact-1"
+        ));
+    }
+
+    #[test]
+    fn message_started_precedes_first_stream_chunk_when_provided() {
+        let (bridge, mut rx) = bridge();
+        bridge.emit(AgentEvent::MessageStarted {
+            message_id: MessageId::new("message-1"),
+            role: AgentRole::Assistant,
+        });
+        bridge.emit(AgentEvent::MessageDelta {
+            message_id: MessageId::new("message-1"),
+            delta: MessageDelta::Text {
+                delta: "hello".into(),
+            },
+        });
+
+        let updates = drain(&mut rx);
+        assert!(matches!(
+            &updates[0],
+            AgentUpdate::MessageStarted { message_id } if message_id == "message-1"
+        ));
+        assert!(matches!(
+            &updates[1],
+            AgentUpdate::StreamChunk(text) if text == "hello"
+        ));
     }
 
     #[test]
@@ -584,6 +737,7 @@ mod tests {
             }),
         });
         bridge.emit(AgentEvent::ToolProgress {
+            run_id: tact_agent_api::RunId::new("run-1"),
             call_id: call.id.clone(),
             chunks: vec![NeutralChunk {
                 stream: NeutralStream::Stdout,
@@ -591,6 +745,7 @@ mod tests {
             }],
         });
         bridge.emit(AgentEvent::ToolFinished {
+            run_id: tact_agent_api::RunId::new("run-1"),
             call_id: call.id.clone(),
             result: ToolExecutionResult::success(ToolOutcome::text("done")),
             permission_label: Some("Allow once".into()),
@@ -605,6 +760,7 @@ mod tests {
             descriptor: None,
         });
         bridge.emit(AgentEvent::ToolFinished {
+            run_id: tact_agent_api::RunId::new("run-1"),
             call_id: "call-fail".into(),
             result: ToolExecutionResult {
                 status: ToolExecutionStatus::Failed,
@@ -681,6 +837,7 @@ mod tests {
     fn a_synthetic_tool_finish_without_start_still_produces_a_terminal_update() {
         let (bridge, mut rx) = bridge();
         bridge.emit(AgentEvent::ToolFinished {
+            run_id: tact_agent_api::RunId::new("run-1"),
             call_id: "orphan".into(),
             result: ToolExecutionResult::success(ToolOutcome::text("ok")),
             permission_label: None,
@@ -866,6 +1023,8 @@ mod tests {
             options: vec!["a".into(), "b".into()],
             log_confirm: false,
             from_subagent: false,
+            purpose: tact_protocol::UiRequestPurpose::Question,
+            origin: tact_protocol::UiRequestOrigin::main(),
         });
         adapter.send(AgentUpdate::TasksChanged {
             tasks: Vec::new(),

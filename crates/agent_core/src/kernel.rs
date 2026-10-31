@@ -37,7 +37,7 @@ const INTERRUPTED_RESULT: &str = "Activation interrupted before result commit";
 
 enum ModelAttempt {
     Complete {
-        response: ModelResponse,
+        response: Box<ModelResponse>,
         call: Box<ObservedCall>,
     },
     Overflow(ModelError),
@@ -66,6 +66,7 @@ struct ToolSlot {
 }
 
 struct KernelProgressSink {
+    run_id: tact_agent_api::RunId,
     call_id: String,
     events: crate::deps::EventBus,
 }
@@ -83,6 +84,7 @@ impl ToolProgressSink for KernelProgressSink {
     fn emit(&self, chunks: Vec<ToolOutputChunk>) {
         if !chunks.is_empty() {
             self.events.emit(AgentEvent::ToolProgress {
+                run_id: self.run_id.clone(),
                 call_id: self.call_id.clone(),
                 chunks,
             });
@@ -485,7 +487,7 @@ impl AgentKernel {
                 ModelAttempt::Error(error) => {
                     return Err(KernelError::Model(error.to_string()));
                 }
-                ModelAttempt::Complete { response, call } => (response, *call),
+                ModelAttempt::Complete { response, call } => (*response, *call),
             };
 
             let receipt = self
@@ -876,7 +878,7 @@ impl AgentKernel {
                         Ok(response) => {
                             return match model.take_latest() {
                                 Some(call) => ModelAttempt::Complete {
-                                    response,
+                                    response: Box::new(response),
                                     call: Box::new(call),
                                 },
                                 None => ModelAttempt::Error(ModelError::new(
@@ -1411,7 +1413,13 @@ impl AgentKernel {
                 }
                 Ok(GateDecision::Deny { reason }) => {
                     let result = failed_result(ToolExecutionErrorKind::Tool, reason);
-                    self.emit_tool_finished(index, &slots, &result, Duration::ZERO);
+                    self.emit_tool_finished(
+                        index,
+                        &slots,
+                        &result,
+                        Duration::ZERO,
+                        &context.run_id,
+                    );
                     slots[index].result = Some(result);
                 }
                 Err(ToolGateError::Cancelled) => {
@@ -1420,14 +1428,20 @@ impl AgentKernel {
                 }
                 Err(error) => {
                     let result = failed_result(ToolExecutionErrorKind::Adapter, error.to_string());
-                    self.emit_tool_finished(index, &slots, &result, Duration::ZERO);
+                    self.emit_tool_finished(
+                        index,
+                        &slots,
+                        &result,
+                        Duration::ZERO,
+                        &context.run_id,
+                    );
                     slots[index].result = Some(result);
                 }
             }
         }
 
         if cancel.is_cancelled() {
-            self.fill_unexecuted(&mut slots, CANCELLED_RESULT);
+            self.fill_unexecuted(&mut slots, CANCELLED_RESULT, &context.run_id);
             let terminal = Some(DispatchTerminal::Cancelled);
             self.persist_tool_results(state, &context.session, &slots, &CancelToken::new())
                 .await?;
@@ -1472,6 +1486,7 @@ impl AgentKernel {
                     .clone();
                 let call_id = resolved.call_id.clone();
                 let progress = Arc::new(KernelProgressSink {
+                    run_id: context.run_id.clone(),
                     call_id,
                     events: self.events.clone(),
                 });
@@ -1525,7 +1540,7 @@ impl AgentKernel {
 
             while let Some((slot_index, duration, result)) = futures.next().await {
                 slots[slot_index].result = Some(result.clone());
-                self.emit_tool_finished(slot_index, &slots, &result, duration);
+                self.emit_tool_finished(slot_index, &slots, &result, duration, &context.run_id);
                 executed = executed.saturating_add(1);
             }
 
@@ -1548,7 +1563,7 @@ impl AgentKernel {
             Some(DispatchTerminal::YieldToHost) => "Not executed: the run yielded to the host",
             None => TURN_ENDED_RESULT,
         };
-        self.fill_unexecuted(&mut slots, unexecuted_reason);
+        self.fill_unexecuted(&mut slots, unexecuted_reason, &context.run_id);
         self.persist_tool_results(state, &context.session, &slots, &CancelToken::new())
             .await?;
 
@@ -1565,8 +1580,10 @@ impl AgentKernel {
         slots: &[ToolSlot],
         result: &ToolExecutionResult,
         duration: Duration,
+        run_id: &tact_agent_api::RunId,
     ) {
         self.events.emit(AgentEvent::ToolFinished {
+            run_id: run_id.clone(),
             call_id: slots[slot_index].raw.id.clone(),
             result: result.clone(),
             permission_label: slots[slot_index].permission_label.clone(),
@@ -1574,11 +1591,16 @@ impl AgentKernel {
         });
     }
 
-    fn fill_unexecuted(&self, slots: &mut [ToolSlot], reason: &str) {
+    fn fill_unexecuted(
+        &self,
+        slots: &mut [ToolSlot],
+        reason: &str,
+        run_id: &tact_agent_api::RunId,
+    ) {
         for index in 0..slots.len() {
             if slots[index].result.is_none() {
                 let result = failed_result(ToolExecutionErrorKind::Tool, reason);
-                self.emit_tool_finished(index, slots, &result, Duration::ZERO);
+                self.emit_tool_finished(index, slots, &result, Duration::ZERO, run_id);
                 slots[index].result = Some(result);
             }
         }

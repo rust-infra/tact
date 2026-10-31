@@ -59,9 +59,10 @@ use crate::{
     tool::{GoalYieldReason, ToolContext, ToolRouter},
 };
 
+use crate::compact::estimate_context_tokens;
 #[cfg(test)]
+use crate::compact::should_auto_compact;
 use crate::{
-    compact::{estimate_context_tokens, should_auto_compact},
     memory::MEMORY_GUIDANCE,
     prompt::{SystemPrompt, responses_prompt_template},
 };
@@ -695,7 +696,6 @@ impl Agent {
     /// serialized-context estimate before the first response of a session.
     /// Returns 0 when neither is available, which callers must read as
     /// "unknown" rather than "empty".
-    #[cfg(test)]
     fn current_context_tokens(&self) -> usize {
         if self.runtime.last_token_total > 0 {
             return self.runtime.last_token_total as usize;
@@ -718,7 +718,6 @@ impl Agent {
     /// the model to distrust the prompt. Today the main toolset always registers
     /// it; the guard is here so a future gate (a restricted toolset, a config
     /// switch) cannot leave the two out of step.
-    #[cfg(test)]
     fn context_advisory(&self) -> Option<String> {
         if !self.has_tool("spawn_subagent") {
             return None;
@@ -1930,7 +1929,6 @@ impl Agent {
     ///
     /// Reads the same cache the request is built from, so guidance that names a
     /// tool cannot outlive the tool itself.
-    #[cfg(test)]
     fn has_tool(&self, name: &str) -> bool {
         self.cached_tool_specs.iter().any(|spec| spec.name == name)
     }
@@ -1963,6 +1961,10 @@ impl Agent {
 
     #[cfg(test)]
     fn build_system_prompt(&mut self) -> Result<String> {
+        self.build_system_prompt_for_preview(true)
+    }
+
+    fn build_system_prompt_for_preview(&mut self, assembled: bool) -> Result<String> {
         if let AgentSystemPrompt::Static(system_prompt) = &self.system_prompt {
             return Ok(system_prompt.clone());
         }
@@ -1971,6 +1973,32 @@ impl Agent {
         let mut prompt_builder = SystemPrompt::builder();
         if matches!(&self.runtime.client, LlmProvider::OpenAiResponses(_)) {
             prompt_builder.template(responses_prompt_template());
+        }
+        if !assembled {
+            return prompt_builder
+                .role(format!(
+                    "You are a coding agent operating in {}.",
+                    workdir.display()
+                ))
+                .guidelines([
+                    "Try to understand how to complete the task well before completing it.",
+                ])
+                .constraints([
+                    "Think step by step",
+                    "Think before you act; respond with your thoughts before calling tools",
+                    "Do not make up any assumptions, use tools to get the information you need",
+                    "Use the provided tools to interact with the system and accomplish the task",
+                    "If you are stuck, or otherwise cannot complete the task, respond with your thoughts and stop",
+                    "If the task is completed, or otherwise cannot continue, like requiring user feedback, stop.",
+                    "Always end your response with a visible text conclusion; never exit after thinking alone without a text block — even a single-sentence summary of your reasoning result is enough.",
+                    "When editing files, always re-read the file first if its content may have changed since you last read it",
+                    "If a tool result was truncated and you need the details, re-run the relevant tool (e.g., read_file)",
+                    "For small edits to existing files, prefer edit_file over write_file; use write_file only for new files or complete rewrites",
+                ])
+                .build()?
+                .to_prompt()
+                .render()
+                .context("failed to render system prompt");
         }
         let memory_enabled = self.agent_settings.memory_enabled;
         let memory = if memory_enabled {
@@ -2038,11 +2066,16 @@ impl Agent {
             .context("failed to render system prompt")
     }
 
+    /// Typed read-only preview for desktop readers. `assembled = false` shows
+    /// the static/dynamic source before project context is injected.
+    pub fn preview_system_prompt(&mut self, assembled: bool) -> Result<String> {
+        self.build_system_prompt_for_preview(assembled)
+    }
+
     /// The injected memory block: the repository's `MEMORY.md` index.
     ///
     /// Only the index is injected; topic bodies are fetched on demand with the
     /// `load_memory` tool. See `crate::memory` for why.
-    #[cfg(test)]
     fn load_memory_prompt(&self) -> Result<String> {
         self.tool_context
             .memory_manager

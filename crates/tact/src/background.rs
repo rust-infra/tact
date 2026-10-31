@@ -24,6 +24,7 @@
 //! `bash` tool instead of pulling a 50k JSON blob into context.
 
 use std::{
+    collections::HashMap,
     path::Path,
     sync::{
         Arc,
@@ -36,7 +37,10 @@ use anyhow::{Context, Result};
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use tact_agent_api::CancelToken;
-use tact_protocol::{AgentUpdate, ToolOutputChunk, ToolOutputStream, UpdateSink};
+use tact_protocol::{
+    AgentUpdate, BackgroundTaskSnapshot, BackgroundTaskStatusSnapshot, ToolOutputChunk,
+    ToolOutputStream, UpdateSink,
+};
 use tokio::{
     io::AsyncWriteExt,
     process::{Child, Command},
@@ -161,12 +165,15 @@ pub struct BackgroundTaskRecord {
 pub struct BackgroundManager {
     records: Arc<dyn BackgroundStore>,
     next_id: AtomicU64,
+    updates: Arc<std::sync::Mutex<Option<UpdateSink>>>,
+    cancel_tokens: Arc<std::sync::Mutex<HashMap<String, CancelToken>>>,
 }
 
 impl std::fmt::Debug for BackgroundManager {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("BackgroundManager")
             .field("next_id", &self.next_id)
+            .field("has_update_sink", &self.has_update_sink())
             .finish_non_exhaustive()
     }
 }
@@ -197,6 +204,8 @@ impl BackgroundManager {
         Ok(Self {
             records,
             next_id: AtomicU64::new(Utc::now().timestamp_millis().max(0) as u64),
+            updates: Arc::new(std::sync::Mutex::new(None)),
+            cancel_tokens: Arc::new(std::sync::Mutex::new(HashMap::new())),
         })
     }
 
@@ -239,18 +248,27 @@ impl BackgroundManager {
             output_path: Some(log_path.to_string_lossy().into_owned()),
         };
         self.save_record(record.clone()).await?;
+        let task_cancel = cancel.child_token();
+        self.cancel_tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .insert(id.clone(), task_cancel.clone());
+        self.emit_snapshot(Some(&record.session_id)).await;
 
         let manager = self.records.clone();
+        let updates = self.updates.clone();
+        let cancel_tokens = self.cancel_tokens.clone();
         let command_for_task = command.clone();
         let work_dir = work_dir.to_path_buf();
         let task_id = id.clone();
+        let task_session = record.session_id.clone();
         tokio::spawn(async move {
             let (status, output) = run_background_process(
                 &command_for_task,
                 &work_dir,
                 &progress,
                 Some(&log_path),
-                cancel,
+                task_cancel,
             )
             .await;
             let mut record = record;
@@ -270,6 +288,11 @@ impl BackgroundManager {
                 progress.send_finished(success, &message, &record.output);
             }
             let _ = manager.upsert(&record).await;
+            cancel_tokens
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .remove(&task_id);
+            emit_snapshot_from(&manager, &updates, Some(&task_session)).await;
         });
 
         Ok(id)
@@ -356,6 +379,49 @@ impl BackgroundManager {
     /// Fails when the store cannot be read.
     pub async fn records(&self) -> Result<Vec<BackgroundTaskRecord>> {
         self.records.list().await
+    }
+
+    /// Install the UI sink used for desktop background-task snapshots.
+    pub fn set_update_sink(&self, sink: UpdateSink) {
+        *self
+            .updates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(sink);
+    }
+
+    /// Full replacement snapshot for one session.
+    pub async fn snapshot(&self, session_id: Option<&str>) -> Result<Vec<BackgroundTaskSnapshot>> {
+        let mut records = self.records.list().await?;
+        records.retain(|record| record_in_session(record, session_id));
+        records.sort_by_key(|record| record.started_at);
+        Ok(records.into_iter().map(task_snapshot).collect())
+    }
+
+    /// Cancel one task's token without touching the session token.
+    pub fn cancel(&self, task_id: &str) -> bool {
+        let token = self
+            .cancel_tokens
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .get(task_id)
+            .cloned();
+        if let Some(token) = token {
+            token.cancel();
+            true
+        } else {
+            false
+        }
+    }
+
+    async fn emit_snapshot(&self, session_id: Option<&str>) {
+        emit_snapshot_from(&self.records, &self.updates, session_id).await;
+    }
+
+    fn has_update_sink(&self) -> bool {
+        self.updates
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .is_some()
     }
 
     /// Whether a task (or any task of the session) is still running.
@@ -478,6 +544,56 @@ impl SharedBackgroundManager {
     pub async fn records(&self) -> Result<Vec<BackgroundTaskRecord>> {
         self.inner.records().await
     }
+
+    pub fn set_update_sink(&self, sink: UpdateSink) {
+        self.inner.set_update_sink(sink);
+    }
+
+    pub async fn snapshot(&self, session_id: Option<&str>) -> Result<Vec<BackgroundTaskSnapshot>> {
+        self.inner.snapshot(session_id).await
+    }
+
+    pub fn cancel(&self, task_id: &str) -> bool {
+        self.inner.cancel(task_id)
+    }
+}
+
+fn task_snapshot(record: BackgroundTaskRecord) -> BackgroundTaskSnapshot {
+    BackgroundTaskSnapshot {
+        id: record.id,
+        command: record.command,
+        status: match record.status {
+            BackgroundTaskStatus::Running => BackgroundTaskStatusSnapshot::Running,
+            BackgroundTaskStatus::Completed => BackgroundTaskStatusSnapshot::Completed,
+            BackgroundTaskStatus::Error => BackgroundTaskStatusSnapshot::Error,
+        },
+        started_at: record.started_at.timestamp_millis(),
+        finished_at: record.finished_at.map(|time| time.timestamp_millis()),
+        output_tail: output_tail(&record.output),
+        output_path: record.output_path,
+    }
+}
+
+async fn emit_snapshot_from(
+    records: &Arc<dyn BackgroundStore>,
+    updates: &Arc<std::sync::Mutex<Option<UpdateSink>>>,
+    session_id: Option<&str>,
+) {
+    let sink = updates
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    let Some(sink) = sink else {
+        return;
+    };
+    let Ok(mut records) = records.list().await else {
+        return;
+    };
+    records.retain(|record| record_in_session(record, session_id));
+    records.sort_by_key(|record| record.started_at);
+    sink.send(AgentUpdate::BackgroundTasksChanged {
+        tasks: records.into_iter().map(task_snapshot).collect(),
+    });
 }
 
 /// Handle for a `background_run` invocation to stream live output into the
@@ -943,6 +1059,61 @@ mod tests {
             })
             .await
             .unwrap();
+    }
+
+    #[tokio::test]
+    async fn background_snapshot_replaces_previous_collection() {
+        let (manager, tmp) = temp_manager("snapshot_replace");
+        let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel();
+        manager.set_update_sink(UpdateSink::for_ui(tx));
+
+        let id = start_task(&manager, tmp.path(), "sleep 0.1 && echo done", "sess-1").await;
+        let first = rx.recv().await.expect("start snapshot");
+        let first_tasks = match first {
+            AgentUpdate::BackgroundTasksChanged { tasks } => tasks,
+            other => panic!("expected snapshot, got {other:?}"),
+        };
+        assert_eq!(first_tasks.len(), 1);
+        assert_eq!(first_tasks[0].id, id);
+        assert_eq!(first_tasks[0].status, BackgroundTaskStatusSnapshot::Running);
+
+        let second = tokio::time::timeout(Duration::from_secs(5), rx.recv())
+            .await
+            .expect("terminal snapshot timed out")
+            .expect("terminal snapshot");
+        let second_tasks = match second {
+            AgentUpdate::BackgroundTasksChanged { tasks } => tasks,
+            other => panic!("expected snapshot, got {other:?}"),
+        };
+        assert_eq!(second_tasks.len(), 1, "snapshot is a full replacement");
+        assert_eq!(
+            second_tasks[0].status,
+            BackgroundTaskStatusSnapshot::Completed
+        );
+    }
+
+    #[tokio::test]
+    async fn cancel_background_task_cancels_only_that_task() {
+        let (manager, tmp) = temp_manager("cancel_one");
+        let first = start_task(&manager, tmp.path(), "sleep 30", "sess-1").await;
+        let second = start_task(&manager, tmp.path(), "sleep 30", "sess-1").await;
+
+        assert!(manager.cancel(&first));
+        for _ in 0..100 {
+            let first_record = manager.record(&first).await.unwrap().unwrap();
+            let second_record = manager.record(&second).await.unwrap().unwrap();
+            if first_record.status == BackgroundTaskStatus::Error {
+                assert_eq!(
+                    second_record.status,
+                    BackgroundTaskStatus::Running,
+                    "cancelling one task must not touch another"
+                );
+                assert!(manager.cancel(&second));
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        panic!("cancelled task never reached terminal status");
     }
 
     #[test]
@@ -1438,7 +1609,9 @@ mod tests {
                 panic!("timed out waiting for background task events");
             };
             match update {
-                Some(AgentUpdate::ToolProgress { tool_id, chunks }) => {
+                Some(AgentUpdate::ToolProgress {
+                    tool_id, chunks, ..
+                }) => {
                     assert_eq!(tool_id, "bg-test");
                     let text: String = chunks.iter().map(|c| c.text.as_str()).collect();
                     assert!(text.contains("hello-world"), "progress text: {text:?}");
@@ -1498,7 +1671,9 @@ mod tests {
                 panic!("timed out waiting for background task events");
             };
             match update {
-                Some(AgentUpdate::ToolProgress { tool_id, chunks }) => {
+                Some(AgentUpdate::ToolProgress {
+                    tool_id, chunks, ..
+                }) => {
                     assert_eq!(tool_id, "bg-fail");
                     let text: String = chunks.iter().map(|c| c.text.as_str()).collect();
                     assert!(text.contains("before-fail"), "progress text: {text:?}");

@@ -31,7 +31,10 @@ pub mod team_store;
 #[cfg(test)]
 mod test_support;
 pub mod worktree_store;
-pub use session_store::{DynSessionStore, SessionLock, SessionStore, open_sqlite_session_store};
+pub use session_store::{
+    ArchiveFilter, DynSessionStore, SessionListQuery, SessionLock, SessionStore, SessionSummary,
+    open_sqlite_session_store,
+};
 
 /// Outcome of a successful write.
 #[derive(Debug, Clone, PartialEq, Eq)]

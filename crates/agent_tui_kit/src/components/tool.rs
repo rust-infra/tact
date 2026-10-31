@@ -559,6 +559,7 @@ impl Component for ToolComponent {
                 idx,
                 tool_id,
                 result,
+                ..
             } => {
                 self.on_step_finished(*idx, tool_id, result, ctx.tool_events);
                 true
@@ -568,11 +569,14 @@ impl Component for ToolComponent {
                 tool_id,
                 arg_summary,
                 error,
+                ..
             } => {
                 self.on_step_failed(*idx, tool_id, arg_summary, error, ctx.tool_events);
                 true
             }
-            AgentUpdate::ToolProgress { tool_id, chunks } => {
+            AgentUpdate::ToolProgress {
+                tool_id, chunks, ..
+            } => {
                 if let Some(pos) = self.state.active.iter().position(|a| a.tool_id == *tool_id) {
                     self.state.active[pos].live_output.push_chunks(chunks);
                 }
@@ -775,6 +779,7 @@ mod tests {
         );
         c.on_update(
             &AgentUpdate::ToolProgress {
+                run_id: None,
                 tool_id: tool_id.into(),
                 chunks: vec![ToolOutputChunk {
                     stream: ToolOutputStream::Stdout,
@@ -916,6 +921,7 @@ mod tests {
         c.on_update(
             &AgentUpdate::StepFinished {
                 idx: 0,
+                run_id: None,
                 tool_id: "t1".into(),
                 result,
             },
@@ -954,6 +960,7 @@ mod tests {
         c.on_update(
             &AgentUpdate::StepFinished {
                 idx: 0,
+                run_id: None,
                 tool_id: "t1".into(),
                 result,
             },
@@ -990,6 +997,7 @@ mod tests {
         c.on_update(
             &AgentUpdate::StepFinished {
                 idx: 0,
+                run_id: None,
                 tool_id: "t1".into(),
                 result,
             },
@@ -1082,6 +1090,7 @@ mod tests {
         c.on_update(
             &AgentUpdate::StepFailed {
                 idx: 0,
+                run_id: None,
                 tool_id: "t1".into(),
                 arg_summary: String::new(),
                 error: "boom".into(),
@@ -1122,6 +1131,7 @@ mod tests {
         c.on_update(
             &AgentUpdate::StepFailed {
                 idx: 2,
+                run_id: None,
                 tool_id: "ghost".into(),
                 arg_summary: String::new(),
                 error: "nope".into(),
@@ -1148,6 +1158,7 @@ mod tests {
         c.on_update(
             &AgentUpdate::StepFailed {
                 idx: 7,
+                run_id: None,
                 tool_id: "t1".into(),
                 arg_summary: String::new(),
                 error: "boom".into(),
@@ -1186,6 +1197,7 @@ mod tests {
         c.on_update(
             &AgentUpdate::StepFinished {
                 idx: 0,
+                run_id: None,
                 tool_id: "ghost".into(),
                 result,
             },

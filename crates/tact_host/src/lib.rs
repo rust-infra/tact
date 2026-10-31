@@ -10,7 +10,9 @@ use tokio::sync::mpsc::{UnboundedReceiver, UnboundedSender};
 
 pub mod account;
 pub mod driver;
+pub mod extensions;
 pub mod goal_runner;
+pub mod host_session;
 pub mod permission;
 pub mod rendering;
 pub mod session_bootstrap;
@@ -22,8 +24,19 @@ pub mod user_message;
 
 pub use anyhow::{self, Result};
 pub use driver::{run_command_loop, run_command_loop_with_account};
+pub use extensions::{
+    ExtensionSnapshot, HostExtensionError, HostExtensionService, MarketplaceSnapshot, PluginAction,
+    PluginSnapshot, SkillSnapshot,
+};
 pub use goal_runner::{GoalLimits, GoalRunner};
-pub use session_bootstrap::{Frontend, Notices, UiWiring, bootstrap_session, open_session};
+pub use host_session::{
+    HostCloseError, HostEvent, HostExit, HostFailure, HostFrontendChannels, HostSendError,
+    HostSession, HostSessionConfig, HostStartError, TryHostEvent,
+};
+pub use session_bootstrap::{
+    Frontend, Notices, SessionSelection, UiWiring, bootstrap_session, open_session,
+    open_session_selected,
+};
 pub use session_lock::{SessionLockGuard, SessionLockRegistry};
 pub use tact::{
     Agent,

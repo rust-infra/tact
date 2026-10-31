@@ -52,7 +52,12 @@ pub fn format_event(update: &AgentUpdate) -> Option<String> {
         // wedged, unless its output reaches the log. One line per chunk keeps
         // the one-event-per-line shape; the final `StepFinished` line still
         // carries the verdict and duration.
-        AgentUpdate::ToolProgress { tool_id, chunks } => {
+        AgentUpdate::ToolProgress {
+            run_id: None,
+            tool_id,
+            chunks,
+            ..
+        } => {
             let text: String = chunks.iter().map(|chunk| chunk.text.as_str()).collect();
             let text = text.trim_end();
             if text.is_empty() {
@@ -189,6 +194,7 @@ mod tests {
     fn a_finished_step_reports_status_duration_and_message() {
         let ok = AgentUpdate::StepFinished {
             idx: 0,
+            run_id: None,
             tool_id: "t1".into(),
             result: step_result("read_file", StepStatus::Success, "12 lines"),
         };
@@ -199,6 +205,7 @@ mod tests {
 
         let failed = AgentUpdate::StepFinished {
             idx: 0,
+            run_id: None,
             tool_id: "t1".into(),
             result: step_result("bash", StepStatus::Failed, "exit 1"),
         };
@@ -214,6 +221,7 @@ mod tests {
         result.duration_us = None;
         let update = AgentUpdate::StepFinished {
             idx: 0,
+            run_id: None,
             tool_id: "t".into(),
             result,
         };
@@ -263,6 +271,8 @@ mod tests {
             options: vec!["Allow".into()],
             log_confirm: false,
             from_subagent: false,
+            purpose: tact_protocol::UiRequestPurpose::Permission,
+            origin: tact_protocol::UiRequestOrigin::main(),
         };
         assert!(format_event(&update).is_none());
     }
@@ -349,6 +359,7 @@ mod tests {
     #[test]
     fn live_tool_output_is_logged_so_a_slow_command_stays_visible() {
         let update = AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "bash-7".into(),
             chunks: vec![
                 ToolOutputChunk::stdout("alpha\n"),
@@ -361,6 +372,7 @@ mod tests {
         );
 
         let empty = AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "bash-7".into(),
             chunks: vec![ToolOutputChunk::stdout("\n")],
         };

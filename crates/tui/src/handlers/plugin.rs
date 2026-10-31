@@ -11,6 +11,16 @@ pub(crate) fn parse_plugin_command(input: &str) -> Result<PluginRequest, PluginU
     match parts.as_slice() {
         ["/plugin", "list"] => Ok(PluginRequest::List),
         ["/plugin", "reload"] => Ok(PluginRequest::Reload),
+        ["/plugin", "install", spec] => {
+            let (plugin, marketplace) = spec
+                .split_once('@')
+                .map(|(plugin, marketplace)| (plugin.to_owned(), marketplace.to_owned()))
+                .unwrap_or_else(|| ((*spec).to_owned(), String::new()));
+            Ok(PluginRequest::Install {
+                plugin,
+                marketplace,
+            })
+        }
         ["/plugin", "uninstall", name] => Ok(PluginRequest::Uninstall {
             plugin: (*name).to_owned(),
         }),
@@ -18,6 +28,15 @@ pub(crate) fn parse_plugin_command(input: &str) -> Result<PluginRequest, PluginU
             plugin: (*name).to_owned(),
         }),
         ["/plugin", "marketplace", "list"] => Ok(PluginRequest::MarketplaceList),
+        ["/plugin", "marketplace", "add", source] => Ok(PluginRequest::MarketplaceAdd {
+            source: (*source).to_owned(),
+        }),
+        ["/plugin", "marketplace", "update", name] => Ok(PluginRequest::MarketplaceUpdate {
+            name: (*name).to_owned(),
+        }),
+        ["/plugin", "marketplace", "remove", name] => Ok(PluginRequest::MarketplaceRemove {
+            name: (*name).to_owned(),
+        }),
         _ => Err(PluginUsageError),
     }
 }
@@ -68,6 +87,11 @@ mod tests {
         assert!(matches!(
             parse_plugin_command("/plugin reload"),
             Ok(PluginRequest::Reload)
+        ));
+        assert!(matches!(
+            parse_plugin_command("/plugin install demo@market"),
+            Ok(PluginRequest::Install { plugin, marketplace })
+                if plugin == "demo" && marketplace == "market"
         ));
         assert!(matches!(
             parse_plugin_command("/plugin uninstall demo"),
@@ -140,7 +164,7 @@ mod tests {
     #[test]
     fn invalid_plugin_command_reports_usage_without_queueing() {
         let (mut app, mut requests) = TestApp::new().into_plugin_requests();
-        app.input = "/plugin install demo".into();
+        app.input = "/plugin install demo extra".into();
 
         handle_plugin_command(&mut app);
 

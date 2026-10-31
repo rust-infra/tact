@@ -30,7 +30,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::utils::LockExt;
-use tact_protocol::{AgentUpdate, UiResponse, UpdateDispatch};
+use tact_protocol::{
+    AgentUpdate, UiAgentRef, UiRequestOrigin, UiRequestPurpose, UiResponse, UpdateDispatch,
+};
 use tokio::sync::oneshot;
 
 /// Why a UI select request failed to complete.
@@ -73,6 +75,8 @@ pub struct PendingUiRequest {
     /// The request came from a `spawn_subagent` child, not the main agent. The
     /// popup titles itself accordingly; the prompt itself stays clean.
     pub from_subagent: bool,
+    pub purpose: UiRequestPurpose,
+    pub origin: UiRequestOrigin,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -130,14 +134,16 @@ impl UiResponder {
         prompt: String,
         options: Vec<String>,
         log_confirm: bool,
-        from_subagent: bool,
+        purpose: UiRequestPurpose,
+        origin: UiRequestOrigin,
     ) -> (u64, oneshot::Receiver<UiResponse>) {
         self.register(
             PendingUiRequestKind::Select,
             prompt,
             options,
             log_confirm,
-            from_subagent,
+            purpose,
+            origin,
         )
     }
 
@@ -146,14 +152,16 @@ impl UiResponder {
         &self,
         prompt: String,
         options: Vec<String>,
-        from_subagent: bool,
+        purpose: UiRequestPurpose,
+        origin: UiRequestOrigin,
     ) -> (u64, oneshot::Receiver<UiResponse>) {
         self.register(
             PendingUiRequestKind::MultiSelect,
             prompt,
             options,
             false,
-            from_subagent,
+            purpose,
+            origin,
         )
     }
 
@@ -208,10 +216,17 @@ impl UiResponder {
         prompt: String,
         options: Vec<String>,
         log_confirm: bool,
-        from_subagent: bool,
+        purpose: UiRequestPurpose,
+        origin: UiRequestOrigin,
     ) -> Result<Option<usize>, UiRequestError> {
-        let (request_id, rx) =
-            self.register_select(prompt.clone(), options.clone(), log_confirm, from_subagent);
+        let from_subagent = matches!(origin.agent, UiAgentRef::Subagent { .. });
+        let (request_id, rx) = self.register_select(
+            prompt.clone(),
+            options.clone(),
+            log_confirm,
+            purpose,
+            origin.clone(),
+        );
         let _guard = PendingRequestGuard {
             responder: self.clone(),
             request_id,
@@ -223,6 +238,8 @@ impl UiResponder {
                 options,
                 log_confirm,
                 from_subagent,
+                purpose,
+                origin,
             })
             .is_err()
         {
@@ -248,9 +265,12 @@ impl UiResponder {
         ui_tx: &impl UpdateDispatch,
         prompt: String,
         options: Vec<String>,
-        from_subagent: bool,
+        purpose: UiRequestPurpose,
+        origin: UiRequestOrigin,
     ) -> Result<Option<Vec<usize>>, UiRequestError> {
-        let (request_id, rx) = self.register_multi(prompt.clone(), options.clone(), from_subagent);
+        let from_subagent = matches!(origin.agent, UiAgentRef::Subagent { .. });
+        let (request_id, rx) =
+            self.register_multi(prompt.clone(), options.clone(), purpose, origin.clone());
         let _guard = PendingRequestGuard {
             responder: self.clone(),
             request_id,
@@ -261,6 +281,8 @@ impl UiResponder {
                 prompt,
                 options,
                 from_subagent,
+                purpose,
+                origin,
             })
             .is_err()
         {
@@ -293,10 +315,12 @@ impl UiResponder {
         prompt: String,
         options: Vec<String>,
         log_confirm: bool,
-        from_subagent: bool,
+        purpose: UiRequestPurpose,
+        origin: UiRequestOrigin,
     ) -> (u64, oneshot::Receiver<UiResponse>) {
         let request_id = self.inner.next_id.fetch_add(1, Ordering::Relaxed);
         let (tx, rx) = oneshot::channel();
+        let from_subagent = matches!(origin.agent, UiAgentRef::Subagent { .. });
         let request = PendingUiRequest {
             request_id,
             prompt,
@@ -304,6 +328,8 @@ impl UiResponder {
             kind,
             log_confirm,
             from_subagent,
+            purpose,
+            origin,
         };
         self.inner
             .pending
@@ -319,6 +345,70 @@ mod tests {
     use tact_protocol::UserCommand;
     use tokio::sync::mpsc::unbounded_channel;
 
+    #[test]
+    fn pending_gate_preserves_purpose_and_origin() {
+        let responder = UiResponder::new();
+        let (request_id, _rx) = responder.register_select(
+            "Pick one".into(),
+            vec!["a".into()],
+            false,
+            UiRequestPurpose::Question,
+            UiRequestOrigin {
+                agent: UiAgentRef::Main,
+                tool_id: Some("call-1".into()),
+            },
+        );
+
+        let pending = responder.snapshot();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].request_id, request_id);
+        assert_eq!(pending[0].purpose, UiRequestPurpose::Question);
+        assert!(matches!(pending[0].origin.agent, UiAgentRef::Main));
+        assert_eq!(pending[0].origin.tool_id.as_deref(), Some("call-1"));
+    }
+
+    #[test]
+    fn subagent_gate_names_the_child_and_tool() {
+        let responder = UiResponder::new();
+        responder.register_select(
+            "Allow write?".into(),
+            vec!["allow".into()],
+            false,
+            UiRequestPurpose::Permission,
+            UiRequestOrigin::subagent("child-7", Some("call-9".into())),
+        );
+
+        let pending = responder.snapshot();
+        assert!(pending[0].from_subagent);
+        assert_eq!(pending[0].purpose, UiRequestPurpose::Permission);
+        assert_eq!(
+            pending[0].origin.agent,
+            UiAgentRef::Subagent {
+                child_id: "child-7".into()
+            }
+        );
+        assert_eq!(pending[0].origin.tool_id.as_deref(), Some("call-9"));
+    }
+
+    #[test]
+    fn stale_gate_response_is_a_noop() {
+        let responder = UiResponder::new();
+        responder.register_select(
+            "still pending".into(),
+            vec!["a".into()],
+            false,
+            UiRequestPurpose::Question,
+            UiRequestOrigin::main(),
+        );
+
+        assert!(!responder.respond(UiResponse::Select {
+            request_id: 999,
+            choice: Some(0),
+        }));
+        assert_eq!(responder.snapshot().len(), 1);
+        assert_eq!(responder.snapshot()[0].prompt, "still pending");
+    }
+
     #[tokio::test]
     async fn multi_select_routes_response_by_request_id() {
         let responder = UiResponder::new();
@@ -332,7 +422,8 @@ mod tests {
                         &tx,
                         "Pick toppings".into(),
                         vec!["a".into(), "b".into()],
-                        false,
+                        UiRequestPurpose::Question,
+                        UiRequestOrigin::main(),
                     )
                     .await
             }
@@ -344,6 +435,8 @@ mod tests {
             prompt,
             options,
             from_subagent,
+            purpose,
+            ..
         } = rx.recv().await.unwrap()
         else {
             panic!("expected RequestMultiSelect");
@@ -351,6 +444,7 @@ mod tests {
         assert_eq!(prompt, "Pick toppings");
         assert_eq!(options, vec!["a", "b"]);
         assert!(!from_subagent, "a main-agent ask_user is not a child's");
+        assert_eq!(purpose, UiRequestPurpose::Question);
 
         responder.handle_response(UiResponse::MultiSelect {
             request_id,
@@ -368,7 +462,14 @@ mod tests {
             let responder = responder.clone();
             async move {
                 responder
-                    .request_select(&tx, "Allow?".into(), vec!["Yes".into()], false, false)
+                    .request_select(
+                        &tx,
+                        "Allow?".into(),
+                        vec!["Yes".into()],
+                        false,
+                        UiRequestPurpose::Permission,
+                        UiRequestOrigin::main(),
+                    )
                     .await
             }
         });
@@ -392,7 +493,14 @@ mod tests {
             let responder = responder.clone();
             async move {
                 responder
-                    .request_select(&tx, "stale".into(), vec!["x".into()], false, false)
+                    .request_select(
+                        &tx,
+                        "stale".into(),
+                        vec!["x".into()],
+                        false,
+                        UiRequestPurpose::Question,
+                        UiRequestOrigin::main(),
+                    )
                     .await
             }
         });
@@ -411,7 +519,14 @@ mod tests {
 
         let result = tokio::time::timeout(
             std::time::Duration::from_millis(100),
-            responder.request_select(&tx, "q".into(), vec!["a".into()], false, false),
+            responder.request_select(
+                &tx,
+                "q".into(),
+                vec!["a".into()],
+                false,
+                UiRequestPurpose::Question,
+                UiRequestOrigin::main(),
+            ),
         )
         .await;
 
@@ -427,7 +542,14 @@ mod tests {
             let responder = responder.clone();
             async move {
                 responder
-                    .request_select(&tx, "Allow?".into(), vec!["Yes".into()], false, false)
+                    .request_select(
+                        &tx,
+                        "Allow?".into(),
+                        vec!["Yes".into()],
+                        false,
+                        UiRequestPurpose::Permission,
+                        UiRequestOrigin::main(),
+                    )
                     .await
             }
         });
@@ -453,16 +575,30 @@ mod tests {
             let a = a.clone();
             let tx = tx.clone();
             async move {
-                a.request_select(&tx, "one".into(), vec!["x".into()], false, false)
-                    .await
+                a.request_select(
+                    &tx,
+                    "one".into(),
+                    vec!["x".into()],
+                    false,
+                    UiRequestPurpose::Question,
+                    UiRequestOrigin::main(),
+                )
+                .await
             }
         });
         let h2 = tokio::spawn({
             let b = b.clone();
             let tx = tx.clone();
             async move {
-                b.request_select(&tx, "two".into(), vec!["y".into()], false, false)
-                    .await
+                b.request_select(
+                    &tx,
+                    "two".into(),
+                    vec!["y".into()],
+                    false,
+                    UiRequestPurpose::Question,
+                    UiRequestOrigin::main(),
+                )
+                .await
             }
         });
 
@@ -503,9 +639,19 @@ mod tests {
     #[test]
     fn snapshot_orders_pending_requests_and_clears_on_respond() {
         let responder = UiResponder::new();
-        let (id1, _rx1) =
-            responder.register_select("first".into(), vec!["a".into(), "b".into()], false, false);
-        let (id2, _rx2) = responder.register_multi("second".into(), vec!["x".into()], false);
+        let (id1, _rx1) = responder.register_select(
+            "first".into(),
+            vec!["a".into(), "b".into()],
+            false,
+            UiRequestPurpose::Question,
+            UiRequestOrigin::main(),
+        );
+        let (id2, _rx2) = responder.register_multi(
+            "second".into(),
+            vec!["x".into()],
+            UiRequestPurpose::Question,
+            UiRequestOrigin::main(),
+        );
 
         let snapshot = responder.snapshot();
         assert_eq!(
@@ -533,8 +679,13 @@ mod tests {
     #[tokio::test]
     async fn withdraw_removes_snapshot_and_unblocks_waiter() {
         let responder = UiResponder::new();
-        let (request_id, rx) =
-            responder.register_select("gone".into(), vec!["x".into()], false, false);
+        let (request_id, rx) = responder.register_select(
+            "gone".into(),
+            vec!["x".into()],
+            false,
+            UiRequestPurpose::Question,
+            UiRequestOrigin::main(),
+        );
         assert_eq!(responder.snapshot().len(), 1);
 
         assert!(responder.withdraw(request_id));
@@ -551,7 +702,14 @@ mod tests {
             let responder = responder.clone();
             async move {
                 responder
-                    .request_select(&tx, "Allow?".into(), vec!["Yes".into()], false, false)
+                    .request_select(
+                        &tx,
+                        "Allow?".into(),
+                        vec!["Yes".into()],
+                        false,
+                        UiRequestPurpose::Permission,
+                        UiRequestOrigin::main(),
+                    )
                     .await
             }
         });
@@ -582,7 +740,8 @@ mod tests {
                         "Allow write_file on a.rs?".into(),
                         vec!["Allow once".into()],
                         false,
-                        true,
+                        UiRequestPurpose::Permission,
+                        UiRequestOrigin::subagent("child-1", Some("tool-1".into())),
                     )
                     .await
             }
@@ -616,7 +775,14 @@ mod tests {
             let responder = responder.clone();
             async move {
                 responder
-                    .request_select(&tx, "gone".into(), vec!["x".into()], false, false)
+                    .request_select(
+                        &tx,
+                        "gone".into(),
+                        vec!["x".into()],
+                        false,
+                        UiRequestPurpose::Question,
+                        UiRequestOrigin::main(),
+                    )
                     .await
             }
         });

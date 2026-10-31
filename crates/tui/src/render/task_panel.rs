@@ -411,6 +411,7 @@ mod sticky_host_tests {
         // that rebuild, or the strip empties the moment the task prints
         // anything (the live report: it flashed for well under a second).
         app.handle_agent_update(tact_protocol::AgentUpdate::ToolProgress {
+            run_id: None,
             tool_id: "bg1".into(),
             chunks: vec![tact_protocol::ToolOutputChunk::stdout("Compiling ...\n")],
         });

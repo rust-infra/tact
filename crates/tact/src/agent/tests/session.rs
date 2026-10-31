@@ -1,3 +1,5 @@
+#![allow(clippy::result_large_err)]
+
 use super::*;
 
 async fn seed_unmatched_assistant_tool_calls(

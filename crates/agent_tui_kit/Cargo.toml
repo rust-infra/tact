@@ -8,6 +8,7 @@ license = "MIT"
 
 [dependencies]
 tact_protocol = { version = "2.0.0", path = "../protocol" }
+tact_catalog = { version = "2.0.0", path = "../catalog" }
 chrono = { workspace = true }
 crossterm = { workspace = true }
 pulldown-cmark = { workspace = true }

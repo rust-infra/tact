@@ -16,8 +16,8 @@ use crate::tool::{
 use anyhow::Result;
 use schemars::JsonSchema;
 use serde::Deserialize;
-use tact_protocol::AgentUpdate;
 use tact_protocol::ToolVisualKind;
+use tact_protocol::{AgentUpdate, UiAgentRef, UiRequestOrigin, UiRequestPurpose};
 use tool_refactor_macros::tool;
 use tracing::debug;
 
@@ -78,10 +78,32 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
             let responder = ctx.ui_responder.clone();
             // A subagent's question is the child's, not the parent's; the popup
             // names the origin so the user knows who is asking.
-            let from_subagent = ctx.is_subagent;
+            let tool_id = ctx.progress_reporter.tool_id();
+            let origin = if ctx.is_subagent {
+                UiRequestOrigin {
+                    agent: UiAgentRef::Subagent {
+                        child_id: ctx
+                            .session_id
+                            .clone()
+                            .unwrap_or_else(|| "unknown-subagent".to_string()),
+                    },
+                    tool_id: (!tool_id.is_empty()).then(|| tool_id.to_string()),
+                }
+            } else {
+                UiRequestOrigin {
+                    agent: UiAgentRef::Main,
+                    tool_id: (!tool_id.is_empty()).then(|| tool_id.to_string()),
+                }
+            };
             if multi {
                 return match responder
-                    .request_multi(tx, question.clone(), options.clone(), from_subagent)
+                    .request_multi(
+                        tx,
+                        question.clone(),
+                        options.clone(),
+                        UiRequestPurpose::Question,
+                        origin,
+                    )
                     .await
                 {
                     Ok(Some(idxs)) => Ok(format_multi_selection(&options, &idxs)),
@@ -93,7 +115,14 @@ pub async fn ask_user(ctx: ToolContext, input: AskUserInput) -> Result<String> {
             }
 
             return match responder
-                .request_select(tx, question.clone(), options.clone(), false, from_subagent)
+                .request_select(
+                    tx,
+                    question.clone(),
+                    options.clone(),
+                    false,
+                    UiRequestPurpose::Question,
+                    origin,
+                )
                 .await
             {
                 Ok(Some(idx)) => {
@@ -265,6 +294,7 @@ mod tests {
                 request_id,
                 log_confirm,
                 from_subagent,
+                ..
             } => {
                 assert_eq!(prompt, "Pick a color");
                 assert_eq!(options, vec!["red", "blue"]);

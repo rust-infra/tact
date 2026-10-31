@@ -255,7 +255,9 @@ async fn bash_streams_progress_before_step_finished() {
     let progress_text = updates
         .iter()
         .filter_map(|update| match update {
-            AgentUpdate::ToolProgress { tool_id, chunks } if tool_id == "bash_stream" => Some(
+            AgentUpdate::ToolProgress {
+                tool_id, chunks, ..
+            } if tool_id == "bash_stream" => Some(
                 chunks
                     .iter()
                     .map(|chunk| chunk.text.as_str())

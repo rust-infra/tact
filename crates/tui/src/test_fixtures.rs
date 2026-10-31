@@ -191,6 +191,7 @@ impl StepCall {
     pub fn finished(&self) -> AgentUpdate {
         AgentUpdate::StepFinished {
             idx: self.idx,
+            run_id: None,
             tool_id: self.tool_id.clone(),
             result: StepResult {
                 tool: self.tool.clone(),

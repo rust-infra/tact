@@ -147,6 +147,22 @@ impl TactToolGate {
         )
     }
 
+    fn permission_origin(
+        &self,
+        context: &ToolGateContext,
+        tool_id: &str,
+    ) -> tact_protocol::UiRequestOrigin {
+        let tool_id = (!tool_id.is_empty()).then(|| tool_id.to_string());
+        if self.is_subagent {
+            tact_protocol::UiRequestOrigin::subagent(context.session.as_str(), tool_id)
+        } else {
+            tact_protocol::UiRequestOrigin {
+                agent: tact_protocol::UiAgentRef::Main,
+                tool_id,
+            }
+        }
+    }
+
     fn permissions(&self) -> &PermissionAuthority {
         self.services.permissions()
     }
@@ -299,6 +315,7 @@ impl TactToolGate {
         risk: CapabilityRisk,
         prompt_policy: PermissionPromptPolicy,
         input: &Value,
+        origin: tact_protocol::UiRequestOrigin,
         cancel: &CancelToken,
     ) -> Result<PermissionChoice, ToolGateError> {
         let prefix_rule = PermissionManager::prefix_rule_for(stable_name, prompt_policy, input);
@@ -328,7 +345,8 @@ impl TactToolGate {
                 prompt,
                 permission_options(prefix_rule.is_some()),
                 false,
-                self.is_subagent,
+                tact_protocol::UiRequestPurpose::Permission,
+                origin,
             ),
         )
         .await?;
@@ -524,6 +542,7 @@ impl ToolGate for TactToolGate {
                 prompt_risk,
                 prompt_policy,
                 &tool.input,
+                self.permission_origin(context, &original_id),
                 &cancel,
             )
             .await?;

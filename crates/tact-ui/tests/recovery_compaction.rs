@@ -1,5 +1,7 @@
 //! Recovery and context-compaction scenarios for the agent harness.
 
+#![allow(clippy::result_large_err)]
+
 mod harness;
 
 use harness::{

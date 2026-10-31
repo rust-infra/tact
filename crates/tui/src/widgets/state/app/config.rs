@@ -17,11 +17,17 @@ impl App {
     /// one directly for anyone who types it.
     pub(crate) fn palette_commands(&self) -> Vec<(String, String)> {
         let account_enabled = self.account_rx.is_some();
-        let msgs = self.msgs();
         SlashCommand::ALL
             .iter()
             .filter(|cmd| account_enabled || !cmd.needs_account())
-            .map(|cmd| (cmd.name().to_string(), cmd.desc(msgs).to_string()))
+            .map(|cmd| {
+                (
+                    cmd.name().to_string(),
+                    cmd.description()
+                        .get(catalog_locale(self.language))
+                        .to_string(),
+                )
+            })
             .collect()
     }
 

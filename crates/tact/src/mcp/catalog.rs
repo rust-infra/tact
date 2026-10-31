@@ -146,6 +146,11 @@ impl McpCatalogHandle {
         router.list_prompts(server).await
     }
 
+    pub async fn list_prompt_infos(&self, server: Option<&str>) -> Result<Vec<super::PromptInfo>> {
+        let router = self.state.router.read().await;
+        router.list_prompt_infos(server).await
+    }
+
     pub async fn get_prompt(
         &self,
         server: &str,

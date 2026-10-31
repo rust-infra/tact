@@ -337,6 +337,7 @@ fn full_sequence() -> Vec<AgentUpdate> {
         },
         AgentUpdate::StepFinished {
             idx: 0,
+            run_id: None,
             tool_id: "tool_read_1".into(),
             result: StepResult {
                 tool: "read_file".into(),

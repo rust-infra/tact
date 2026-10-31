@@ -617,7 +617,9 @@ async fn tool_progress_is_forwarded_in_order() {
         .events()
         .into_iter()
         .find_map(|event| match event {
-            AgentEvent::ToolProgress { call_id, chunks } => Some((call_id, chunks)),
+            AgentEvent::ToolProgress {
+                call_id, chunks, ..
+            } => Some((call_id, chunks)),
             _ => None,
         })
         .expect("progress event");

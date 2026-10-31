@@ -261,7 +261,9 @@ impl UpdateNormalizer {
                     format!("kernel:tool_failed:{tool}:{error}")
                 }
             }
-            AgentUpdate::ToolProgress { tool_id, chunks } => {
+            AgentUpdate::ToolProgress {
+                tool_id, chunks, ..
+            } => {
                 format!("kernel:tool_progress:{tool_id}:{}", chunks.len())
             }
             AgentUpdate::TokenUsage(usage) => {
@@ -270,6 +272,11 @@ impl UpdateNormalizer {
             AgentUpdate::TurnStats { turns_taken, .. } => {
                 format!("kernel:turn_stats:turn-{turns_taken}")
             }
+            AgentUpdate::RunStarted { .. }
+            | AgentUpdate::RunFinished { .. }
+            | AgentUpdate::MessageStarted { .. }
+            | AgentUpdate::BackgroundTasksChanged { .. }
+            | AgentUpdate::SurfaceSnapshot { .. } => String::new(),
             AgentUpdate::ModelInfo(_) => "kernel:model_info:stream".into(),
             AgentUpdate::StreamChunk(text) => format!("kernel:stream_chunk:{text}"),
             AgentUpdate::ThinkingChunk(chunk) => match chunk {
@@ -328,7 +335,10 @@ fn normalize_updates(updates: &[AgentUpdate]) -> Vec<String> {
     let mut normalizer = UpdateNormalizer::default();
     updates
         .iter()
-        .map(|update| normalizer.normalize(update))
+        .filter_map(|update| {
+            let normalized = normalizer.normalize(update);
+            (!normalized.is_empty()).then_some(normalized)
+        })
         .collect()
 }
 

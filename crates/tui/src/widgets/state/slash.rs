@@ -1,307 +1,20 @@
-//! The built-in slash commands, as one enum.
+//! Terminal adapter for the shared Tact command catalog.
 //!
-//! Before this module the same 22 names were listed in five parallel places,
-//! and two of them had already drifted:
-//!
-//! | Where | What it held | State |
-//! |---|---|---|
-//! | `PALETTE_COMMANDS` | 22 × (name, English description) | the description column was **dead** — no caller read it |
-//! | `localize_cmd_desc` | the live description, per language | **6 commands missing**, so they displayed their own name as the description in *both* languages |
-//! | `execute_palette_command` | the handler | complete, but a missing arm fell into `_ => handled: false` silently |
-//! | `command_needs_args` | 4 names | a fourth list |
-//! | `i18n::Messages` | the descriptions themselves | 17 `cmd_*` fields for 22 commands |
-//!
-//! The enum removes the drift by making each of those an exhaustive match over
-//! the variants. Adding a command now fails to compile until it has a name, a
-//! description in both languages, and a handler.
-//!
-//! Deliberately **not** here: argument and subcommand parsing. `/mcp auth <server>`,
-//! `/plugin marketplace list` and `/hooks trust --all` still parse strings in
-//! their own handler modules; that is a separate abstraction with an
-//! independent payoff.
+//! Command names, ordering, subcommand trees, argument requirements, and
+//! localized descriptions live in `tact_catalog`. This module only maps the
+//! terminal message bundle onto that shared metadata.
 
-use agent_tui_kit::i18n::Messages;
-use strum::{EnumIter, EnumString, IntoStaticStr};
+pub(crate) use tact_catalog::{BuiltinCommand as SlashCommand, Subcommand};
 
-/// A built-in slash command.
-///
-/// The `serialize` string is the name the user types and the popup shows — it
-/// is spelled out per variant rather than derived, because the set is not
-/// uniform: `model-subagent` uses hyphens and `subagent_cancel` uses an
-/// underscore, and deriving either from the variant name would silently rename
-/// a command.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, EnumIter, EnumString, IntoStaticStr)]
-pub(crate) enum SlashCommand {
-    #[strum(serialize = "theme")]
-    Theme,
-    #[strum(serialize = "model")]
-    Model,
-    #[strum(serialize = "model-subagent")]
-    ModelSubagent,
-    #[strum(serialize = "permission")]
-    Permission,
-    #[strum(serialize = "view-system-prompt")]
-    ViewSystemPrompt,
-    #[strum(serialize = "save")]
-    Save,
-    #[strum(serialize = "compact")]
-    Compact,
-    #[strum(serialize = "cancel")]
-    Cancel,
-    #[strum(serialize = "subagent_cancel")]
-    SubagentCancel,
-    #[strum(serialize = "quit")]
-    Quit,
-    #[strum(serialize = "help")]
-    Help,
-    #[strum(serialize = "history")]
-    History,
-    #[strum(serialize = "skill")]
-    Skill,
-    #[strum(serialize = "plugin")]
-    Plugin,
-    #[strum(serialize = "mcp")]
-    Mcp,
-    #[strum(serialize = "hooks")]
-    Hooks,
-    /// Display switch, not a hook-management verb: `/hooks` reviews and trusts
-    /// hooks, this one only decides whether the log draws what they produce.
-    #[strum(serialize = "hook-output")]
-    HookOutput,
-    #[strum(serialize = "balance")]
-    Balance,
-    #[strum(serialize = "lang")]
-    Lang,
-    #[strum(serialize = "stats")]
-    Stats,
-    #[strum(serialize = "tasks-dag")]
-    TasksDag,
-    #[strum(serialize = "background")]
-    Background,
-    #[strum(serialize = "goal")]
-    Goal,
-}
-
-impl SlashCommand {
-    /// Popup order, which is the order the user sees and the tie-break order
-    /// for equal fuzzy scores. `every_variant_is_listed_in_all` keeps it
-    /// complete; dispatch does not depend on it (a name resolves through
-    /// `from_name` whether or not it is listed), so a forgotten entry costs
-    /// discoverability rather than function — which is exactly the kind of
-    /// quiet failure the test is there to prevent.
-    pub(crate) const ALL: &'static [Self] = &[
-        Self::Theme,
-        Self::Model,
-        Self::ModelSubagent,
-        Self::Permission,
-        Self::ViewSystemPrompt,
-        Self::Save,
-        Self::Compact,
-        Self::Cancel,
-        Self::SubagentCancel,
-        Self::Quit,
-        Self::Help,
-        Self::History,
-        Self::Skill,
-        Self::Plugin,
-        Self::Mcp,
-        Self::Hooks,
-        Self::HookOutput,
-        Self::Balance,
-        Self::Lang,
-        Self::Stats,
-        Self::TasksDag,
-        Self::Background,
-        Self::Goal,
-    ];
-
-    /// The name the user types, without the leading `/`.
-    #[must_use]
-    pub(crate) fn name(self) -> &'static str {
-        self.into()
-    }
-
-    /// The subcommands this built-in takes, in the order the popup offers them.
-    ///
-    /// This is what `/mcp ` completes to — the handlers still parse the tokens
-    /// themselves (that is a separate abstraction), but they parse *these*
-    /// strings: `every_declared_subcommand_has_a_handler` runs each declared
-    /// path through its handler and fails if one lands on the usage hint, so a
-    /// subcommand can never be completable and unrunnable at the same time.
-    #[must_use]
-    pub(crate) fn subcommands(self) -> &'static [Subcommand] {
-        match self {
-            Self::Skill => SKILL_SUBCOMMANDS,
-            Self::Mcp => MCP_SUBCOMMANDS,
-            Self::Plugin => PLUGIN_SUBCOMMANDS,
-            Self::Hooks => HOOKS_SUBCOMMANDS,
-            Self::Goal => GOAL_SUBCOMMANDS,
-            _ => &[],
-        }
-    }
-
-    /// Resolve a user-typed name (no leading `/`).
-    ///
-    /// Case-sensitive and exact, which is what the input box produces; it is
-    /// the same comparison `is_builtin_palette_command` used to do against the
-    /// table.
-    #[must_use]
-    pub(crate) fn from_name(name: &str) -> Option<Self> {
-        name.parse().ok()
-    }
-
-    /// Whether Enter should autocomplete `/{name} ` instead of executing, for
-    /// commands that take a subcommand or an argument.
-    #[must_use]
-    pub(crate) fn needs_args(self) -> bool {
-        matches!(
-            self,
-            Self::Skill
-                | Self::Plugin
-                | Self::Mcp
-                | Self::Hooks
-                | Self::Goal
-                | Self::SubagentCancel
-        )
-    }
-
-    /// Whether the command is only useful with an account channel — `/balance`
-    /// queries the provider's balance endpoint and is hidden without one.
-    #[must_use]
-    pub(crate) fn needs_account(self) -> bool {
-        matches!(self, Self::Balance)
-    }
-
-    /// The localized one-line description shown in the popup and the help panel.
-    ///
-    /// Exhaustive on purpose: this match had a `_ =>` arm before, and that is
-    /// how six commands came to display their own name as their description in
-    /// both languages.
-    #[must_use]
-    pub(crate) fn desc(self, msgs: Messages) -> &'static str {
-        match self {
-            Self::Theme => msgs.cmd_theme,
-            Self::Model => msgs.cmd_model,
-            Self::ModelSubagent => msgs.cmd_model_subagent,
-            Self::Permission => msgs.cmd_permission,
-            Self::ViewSystemPrompt => msgs.cmd_view_system_prompt,
-            Self::Save => msgs.cmd_save,
-            Self::Compact => msgs.cmd_compact,
-            Self::Cancel => msgs.cmd_cancel,
-            Self::SubagentCancel => msgs.cmd_subagent_cancel,
-            Self::Quit => msgs.cmd_quit,
-            Self::Help => msgs.cmd_help,
-            Self::History => msgs.cmd_history,
-            Self::Skill => msgs.cmd_skill,
-            Self::Plugin => msgs.cmd_plugin,
-            Self::Mcp => msgs.cmd_mcp,
-            Self::Hooks => msgs.cmd_hooks,
-            Self::HookOutput => msgs.cmd_hook_output,
-            Self::Balance => msgs.cmd_balance,
-            Self::Lang => msgs.cmd_lang,
-            Self::Stats => msgs.cmd_stats,
-            Self::TasksDag => msgs.cmd_tasks_dag,
-            Self::Background => msgs.cmd_background,
-            Self::Goal => msgs.cmd_goal,
-        }
+/// Map the terminal locale vocabulary to the frontend-neutral catalog locale.
+pub(crate) fn catalog_locale(
+    language: agent_tui_kit::i18n::Language,
+) -> tact_catalog::CatalogLocale {
+    match language {
+        agent_tui_kit::i18n::Language::English => tact_catalog::CatalogLocale::En,
+        agent_tui_kit::i18n::Language::Chinese => tact_catalog::CatalogLocale::Zh,
     }
 }
-
-/// One subcommand of a built-in command, as the slash popup completes it.
-///
-/// `hint` is what the popup shows to the right of the completion: the syntax
-/// that follows (`<server>`, `--all | --source <label>`). It is deliberately
-/// not localized — it is syntax rather than prose, and it is literally what the
-/// user has to type next.
-pub(crate) struct Subcommand {
-    /// The token, as the handler matches it (`list`, `trust`, `--all`).
-    pub name: &'static str,
-    /// Placeholder for what follows, shown in the popup and never inserted.
-    pub hint: &'static str,
-    /// Deeper tokens this one takes (`/plugin marketplace list`).
-    pub children: &'static [Subcommand],
-    /// A free-form value follows (`/mcp auth <server>`): there is nothing left
-    /// to complete, and Enter completes rather than runs.
-    pub takes_value: bool,
-}
-
-const fn sub(
-    name: &'static str,
-    hint: &'static str,
-    children: &'static [Subcommand],
-    takes_value: bool,
-) -> Subcommand {
-    Subcommand {
-        name,
-        hint,
-        children,
-        takes_value,
-    }
-}
-
-const SKILL_SUBCOMMANDS: &[Subcommand] = &[
-    sub("list", "", &[], false),
-    sub("reload", "", &[], false),
-    // Hide or show a skill in the system prompt's catalog, writing
-    // `[agent].skill_disable`. Declared here so `/skill ` completes them and
-    // `every_declared_subcommand_has_a_handler` holds them to a handler.
-    sub("disable", "<name>", &[], true),
-    sub("enable", "<name>", &[], true),
-];
-
-const MCP_SUBCOMMANDS: &[Subcommand] = &[
-    sub("auth", "<server>", &[], true),
-    // `login` is the CLI spelling and an accepted alias; both are listed so
-    // neither has to be remembered.
-    sub("login", "<server>", &[], true),
-    sub("list", "", &[], false),
-    // Prompts are the one primitive the MCP spec calls *user*-controlled, so
-    // they get a user-facing surface — here rather than at the top level, for
-    // the reason skills live under `/skill`: a server's names must not bury the
-    // built-ins.
-    sub("prompts", "[server]", &[], false),
-    sub("prompt", "<server> <name> [key=value ...]", &[], true),
-];
-
-const PLUGIN_MARKETPLACE_SUBCOMMANDS: &[Subcommand] = &[sub("list", "", &[], false)];
-
-const PLUGIN_SUBCOMMANDS: &[Subcommand] = &[
-    sub("list", "", &[], false),
-    sub("reload", "", &[], false),
-    sub("uninstall", "<name>", &[], true),
-    sub("update", "<name>", &[], true),
-    sub("marketplace", "", PLUGIN_MARKETPLACE_SUBCOMMANDS, false),
-];
-
-const HOOK_TRUST_SUBCOMMANDS: &[Subcommand] = &[
-    sub("--all", "", &[], false),
-    sub("--source", "<label>", &[], true),
-];
-
-/// `forget` has no `--source`: the handler accepts only `--all`, and offering a
-/// flag that reaches the usage hint would be worse than offering nothing.
-const HOOK_FORGET_SUBCOMMANDS: &[Subcommand] = &[sub("--all", "", &[], false)];
-
-const HOOKS_SUBCOMMANDS: &[Subcommand] = &[
-    sub("list", "", &[], false),
-    sub("trust", "", HOOK_TRUST_SUBCOMMANDS, false),
-    sub("forget", "", HOOK_FORGET_SUBCOMMANDS, false),
-];
-
-const GOAL_SUBCOMMANDS: &[Subcommand] = &[
-    sub("create", "<objective>", &[], true),
-    // `[--all]` rather than a declared child: declaring one would make Enter on
-    // `/goal list` complete instead of run, and listing is the common case.
-    sub("list", "[--all]", &[], false),
-    sub("show", "<goal-id>", &[], true),
-    sub("steer", "<goal-id> <text>", &[], true),
-    sub("pause", "<goal-id>", &[], true),
-    sub("resume", "<goal-id>", &[], true),
-    sub("cancel", "<goal-id>", &[], true),
-    sub("accept", "<goal-id> <text>", &[], true),
-    sub("archive", "<goal-id>", &[], true),
-    sub("unarchive", "<goal-id>", &[], true),
-];
 
 #[cfg(test)]
 mod tests {
@@ -310,6 +23,9 @@ mod tests {
     use strum::IntoEnumIterator;
 
     use super::*;
+    use crate::handlers::execute_palette_command;
+    use crate::test_fixtures::TestApp;
+    use crate::widgets::state::Status;
 
     /// The wire names are user-facing and some are irregular, so pin the ones a
     /// derived-name refactor would silently change.
@@ -345,36 +61,33 @@ mod tests {
     fn from_name_rejects_a_non_command() {
         assert_eq!(SlashCommand::from_name("nope"), None);
         assert_eq!(SlashCommand::from_name(""), None);
-        // Not a skill name, not a builtin.
         assert_eq!(SlashCommand::from_name("code-reviewer"), None);
     }
 
-    /// The bug this refactor came from: `localize_cmd_desc` had a `_ =>` arm
-    /// that returned the command name, so six commands displayed `permission`
-    /// as the description of `/permission` — in *both* languages, with nothing
-    /// to catch it. An exhaustive `desc` makes a missing translation a compile
-    /// error instead; this asserts the shape that survived.
     #[test]
     fn every_command_has_a_real_description_in_both_languages() {
         use agent_tui_kit::i18n::{Language, Messages};
 
         for lang in Language::all() {
             let msgs = Messages::by_language(*lang);
+            let locale = catalog_locale(*lang);
             for cmd in SlashCommand::iter() {
-                let desc = cmd.desc(msgs);
+                let desc = cmd.description().get(locale);
                 assert!(!desc.trim().is_empty(), "{cmd:?} has an empty description");
                 assert_ne!(
                     desc,
                     cmd.name(),
                     "{cmd:?} falls back to its own name in {lang:?}"
                 );
+                assert_eq!(
+                    desc,
+                    terminal_cmd_desc(cmd, msgs),
+                    "{cmd:?} drifted from the terminal message bundle in {lang:?}"
+                );
             }
         }
     }
 
-    /// The descriptions are the popup's second column, so a Chinese and an
-    /// English description being identical means one of them was never
-    /// translated for the commands whose words differ.
     #[test]
     fn descriptions_are_not_shared_between_languages() {
         use agent_tui_kit::i18n::{Language, Messages};
@@ -382,11 +95,44 @@ mod tests {
         let en = Messages::by_language(Language::English);
         let zh = Messages::by_language(Language::Chinese);
         for cmd in SlashCommand::iter() {
-            let (en, zh) = (cmd.desc(en), cmd.desc(zh));
-            assert_ne!(
-                en, zh,
-                "{cmd:?} has the same description in both languages: {en:?}"
+            let (en_desc, zh_desc) = (
+                cmd.description().get(tact_catalog::CatalogLocale::En),
+                cmd.description().get(tact_catalog::CatalogLocale::Zh),
             );
+            assert_ne!(
+                en_desc, zh_desc,
+                "{cmd:?} has the same description in both languages: {en_desc:?}"
+            );
+            assert_eq!(en_desc, terminal_cmd_desc(cmd, en));
+            assert_eq!(zh_desc, terminal_cmd_desc(cmd, zh));
+        }
+    }
+
+    fn terminal_cmd_desc(cmd: SlashCommand, msgs: agent_tui_kit::i18n::Messages) -> &'static str {
+        match cmd {
+            SlashCommand::Theme => msgs.cmd_theme,
+            SlashCommand::Model => msgs.cmd_model,
+            SlashCommand::ModelSubagent => msgs.cmd_model_subagent,
+            SlashCommand::Permission => msgs.cmd_permission,
+            SlashCommand::ViewSystemPrompt => msgs.cmd_view_system_prompt,
+            SlashCommand::Save => msgs.cmd_save,
+            SlashCommand::Compact => msgs.cmd_compact,
+            SlashCommand::Cancel => msgs.cmd_cancel,
+            SlashCommand::SubagentCancel => msgs.cmd_subagent_cancel,
+            SlashCommand::Quit => msgs.cmd_quit,
+            SlashCommand::Help => msgs.cmd_help,
+            SlashCommand::History => msgs.cmd_history,
+            SlashCommand::Skill => msgs.cmd_skill,
+            SlashCommand::Plugin => msgs.cmd_plugin,
+            SlashCommand::Mcp => msgs.cmd_mcp,
+            SlashCommand::Hooks => msgs.cmd_hooks,
+            SlashCommand::HookOutput => msgs.cmd_hook_output,
+            SlashCommand::Balance => msgs.cmd_balance,
+            SlashCommand::Lang => msgs.cmd_lang,
+            SlashCommand::Stats => msgs.cmd_stats,
+            SlashCommand::TasksDag => msgs.cmd_tasks_dag,
+            SlashCommand::Background => msgs.cmd_background,
+            SlashCommand::Goal => msgs.cmd_goal,
         }
     }
 
@@ -402,8 +148,6 @@ mod tests {
         );
     }
 
-    /// `/balance` is the only command gated on the account channel; it was a
-    /// string comparison inside `palette_commands` before.
     #[test]
     fn only_balance_needs_an_account() {
         let gated: Vec<&str> = SlashCommand::iter()
@@ -411,5 +155,62 @@ mod tests {
             .map(SlashCommand::name)
             .collect();
         assert_eq!(gated, vec!["balance"]);
+    }
+
+    #[test]
+    fn language_maps_to_catalog_locale() {
+        use agent_tui_kit::i18n::Language;
+
+        assert_eq!(
+            catalog_locale(Language::English),
+            tact_catalog::CatalogLocale::En
+        );
+        assert_eq!(
+            catalog_locale(Language::Chinese),
+            tact_catalog::CatalogLocale::Zh
+        );
+    }
+
+    #[test]
+    fn tui_dispatch_is_exhaustive_over_builtin_catalog() {
+        for command in SlashCommand::iter() {
+            let (mut app, _rx) = TestApp::new().into_commands();
+            let (_tx, account_rx) = tokio::sync::mpsc::unbounded_channel();
+            app.account_rx = Some(account_rx);
+            if command == SlashCommand::Cancel {
+                app.status = Status::Planning;
+            }
+            let outcome = execute_palette_command(&mut app, command.name());
+            assert!(
+                outcome.handled,
+                "catalog command `{}` has no TUI dispatch",
+                command.name()
+            );
+        }
+    }
+
+    #[test]
+    fn tui_subcommand_completion_matches_catalog_tree() {
+        fn walk(
+            catalog: &tact_catalog::CommandCatalog,
+            parent: &tact_catalog::CommandId,
+            declared: &[Subcommand],
+        ) {
+            let actual: Vec<_> = catalog.children(parent).collect();
+            assert_eq!(actual.len(), declared.len());
+            for (descriptor, child) in actual.into_iter().zip(declared) {
+                assert_eq!(descriptor.path.last().map(String::as_str), Some(child.name));
+                walk(catalog, &descriptor.id, child.children);
+            }
+        }
+
+        let catalog = tact_catalog::builtins();
+        for command in SlashCommand::iter() {
+            walk(
+                catalog,
+                &tact_catalog::CommandId::Builtin(command),
+                command.subcommands(),
+            );
+        }
     }
 }

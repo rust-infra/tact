@@ -1622,6 +1622,8 @@ fn one_line(text: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #![allow(clippy::result_large_err)]
+
     use std::path::Path;
     use std::sync::Arc;
     use std::sync::atomic::{AtomicUsize, Ordering};

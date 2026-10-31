@@ -39,6 +39,24 @@ pub const LIST_PROMPTS_TOOL: &str = "list_mcp_prompts";
 /// Fetch one prompt, with its arguments filled in.
 pub const GET_PROMPT_TOOL: &str = "get_mcp_prompt";
 
+/// Frontend-neutral prompt metadata for typed desktop readers.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptInfo {
+    pub server: String,
+    pub name: String,
+    pub description: Option<String>,
+    pub arguments: Vec<PromptArgumentInfo>,
+    pub error: Option<String>,
+}
+
+/// One argument declared by an MCP prompt template.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PromptArgumentInfo {
+    pub name: String,
+    pub description: Option<String>,
+    pub required: bool,
+}
+
 /// Which prompt tool a resolved tool call is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum McpPromptTool {
@@ -195,6 +213,45 @@ impl McpClient {
 }
 
 impl MCPToolRouter {
+    /// Structured prompt metadata for connected servers.
+    pub async fn list_prompt_infos(&self, server: Option<&str>) -> Result<Vec<PromptInfo>> {
+        let selected = self.selected_servers(server)?;
+        let mut prompts = Vec::new();
+        for name in selected {
+            let client = &self.clients[&name];
+            match client.list_prompts().await {
+                Ok(items) => {
+                    for prompt in items {
+                        prompts.push(PromptInfo {
+                            server: name.clone(),
+                            name: prompt.name,
+                            description: prompt.description,
+                            arguments: prompt
+                                .arguments
+                                .unwrap_or_default()
+                                .into_iter()
+                                .map(|argument| PromptArgumentInfo {
+                                    name: argument.name,
+                                    description: argument.description,
+                                    required: argument.required.unwrap_or(false),
+                                })
+                                .collect(),
+                            error: None,
+                        });
+                    }
+                }
+                Err(error) => prompts.push(PromptInfo {
+                    server: name.clone(),
+                    name: "(prompts unavailable)".into(),
+                    description: None,
+                    arguments: Vec::new(),
+                    error: Some(error.to_string()),
+                }),
+            }
+        }
+        Ok(prompts)
+    }
+
     /// The prompt tools, or none when no server is connected.
     ///
     /// Same rule as [`Self::resource_tool_specs`]: advertising them with an

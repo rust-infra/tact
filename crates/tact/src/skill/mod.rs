@@ -76,6 +76,70 @@ pub struct SkillDocument {
     pub dir: PathBuf,
 }
 
+fn is_bare_arguments_placeholder(after: &str) -> bool {
+    match after.chars().next() {
+        None => true,
+        Some('[') => false,
+        Some(c) if c.is_ascii_alphanumeric() || c == '_' => false,
+        Some(_) => true,
+    }
+}
+
+/// Render a skill body for an explicit invocation.
+///
+/// Bare `$ARGUMENTS` is substituted once; indexed forms are preserved. When
+/// the body has no placeholder, arguments are appended so the model still
+/// receives them.
+#[must_use]
+pub fn render_skill_body(body: &str, args: &str) -> String {
+    let body = body.trim();
+    let mut out = String::with_capacity(body.len() + args.len());
+    let mut rest = body;
+    let mut substituted = false;
+    while let Some(index) = rest.find("$ARGUMENTS") {
+        out.push_str(&rest[..index]);
+        let after = &rest[index + "$ARGUMENTS".len()..];
+        if is_bare_arguments_placeholder(after) {
+            out.push_str(args);
+            substituted = true;
+            rest = after;
+        } else {
+            out.push_str("$ARGUMENTS");
+            rest = after;
+        }
+    }
+    out.push_str(rest);
+    if !substituted && !args.is_empty() {
+        out.push_str("\n\nARGUMENTS: ");
+        out.push_str(args);
+    }
+    out
+}
+
+fn escape_xml_attribute(value: &str) -> String {
+    value
+        .replace('&', "&amp;")
+        .replace('"', "&quot;")
+        .replace('<', "&lt;")
+}
+
+/// Build the agent-facing task text from a loaded skill's parts.
+#[must_use]
+pub fn format_skill_task(name: &str, dir: &std::path::Path, body: &str, args: &str) -> String {
+    format!(
+        "<skill name=\"{}\" dir=\"{}\">\n{}\n</skill>",
+        escape_xml_attribute(name),
+        escape_xml_attribute(&dir.display().to_string()),
+        render_skill_body(body, args)
+    )
+}
+
+/// Build the agent-facing task text for an explicitly invoked skill.
+#[must_use]
+pub fn format_skill_agent_task(skill: &SkillDocument, args: &str) -> String {
+    format_skill_task(&skill.manifest.name, &skill.dir, &skill.body, args)
+}
+
 /// Default cap on a catalog description, in characters.
 ///
 /// A catalog line is a routing hint; the whole description is what `load_skill`

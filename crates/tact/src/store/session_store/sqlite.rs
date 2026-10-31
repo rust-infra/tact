@@ -1,7 +1,7 @@
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, NaiveDate, NaiveDateTime, Utc};
 use sqlx::{Row, SqlitePool};
 use tact_agent_api::{AgentContentBlock, AgentMessage, AgentRole, MessageOrigin};
 use tact_llm::{
@@ -9,7 +9,10 @@ use tact_llm::{
 };
 use tact_protocol::TokenUsageInfo;
 
-use super::{MAX_INPUT_HISTORY, MAX_TOKEN_USAGE_BODIES, MessageCountByPeriod, SessionSummary};
+use super::{
+    ArchiveFilter, MAX_INPUT_HISTORY, MAX_TOKEN_USAGE_BODIES, MessageCountByPeriod,
+    SessionListQuery, SessionSummary,
+};
 use crate::store::process_identity::{is_process_alive, process_identity};
 use crate::store::sqlite::{PoolRef, begin_write, open_pool};
 
@@ -78,6 +81,8 @@ impl SqliteSessionStore {
                 created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 root_dir TEXT NOT NULL DEFAULT '',
+                title TEXT,
+                archived_at TIMESTAMP,
                 locked_by INTEGER NOT NULL DEFAULT 0,
                 lock_epoch TEXT NOT NULL DEFAULT '',
                 ref_id TEXT NOT NULL DEFAULT ''
@@ -91,6 +96,19 @@ impl SqliteSessionStore {
         Self::migrate_sessions_ref_id(&pool)
             .await
             .context("failed to migrate sessions.ref_id")?;
+        Self::add_nullable_column(&pool, "sessions", "title", "TEXT")
+            .await
+            .context("failed to migrate sessions.title")?;
+        Self::add_nullable_column(&pool, "sessions", "archived_at", "TIMESTAMP")
+            .await
+            .context("failed to migrate sessions.archived_at")?;
+        sqlx::query(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_root_archived_updated \
+             ON sessions(root_dir, archived_at, updated_at DESC)",
+        )
+        .execute(&*pool)
+        .await
+        .context("failed to create sessions archive index")?;
 
         sqlx::query(
             r#"
@@ -122,6 +140,10 @@ impl SqliteSessionStore {
             .execute(&*pool)
             .await
             .context("failed to create messages created_at index")?;
+
+        Self::backfill_session_titles(&pool)
+            .await
+            .context("failed to backfill session titles")?;
 
         sqlx::query(
             r#"
@@ -210,6 +232,55 @@ impl SqliteSessionStore {
         .context("failed to create responses_states table")?;
 
         Ok(Self { pool })
+    }
+
+    async fn backfill_session_titles(pool: &SqlitePool) -> Result<()> {
+        let sessions = sqlx::query("SELECT id FROM sessions WHERE title IS NULL OR title = ''")
+            .fetch_all(pool)
+            .await
+            .context("failed to list sessions needing titles")?;
+        for session in sessions {
+            let id: String = session.try_get("id")?;
+            let rows = sqlx::query(
+                "SELECT role, content, origin FROM messages \
+                 WHERE session_id = ? ORDER BY ordinal ASC, id ASC",
+            )
+            .bind(&id)
+            .fetch_all(pool)
+            .await
+            .context("failed to inspect messages for title backfill")?;
+            let mut title = None;
+            for row in rows {
+                let role_str: String = row.try_get("role")?;
+                let content_json: String = row.try_get("content")?;
+                let content: MessageContent = serde_json::from_str(&content_json)
+                    .context("failed to deserialize title backfill message")?;
+                let origin: Option<String> = row.try_get("origin")?;
+                let role = match str_to_role(&role_str)? {
+                    Role::User => AgentRole::User,
+                    Role::Assistant => continue,
+                };
+                let message = decoded_agent_message(role, content, origin.as_deref())?;
+                if !message.origin.is_user_turn() {
+                    continue;
+                }
+                title = derive_session_title(&agent_message_text(&message));
+                if title.is_some() {
+                    break;
+                }
+            }
+            if let Some(title) = title {
+                sqlx::query(
+                    "UPDATE sessions SET title = ? WHERE id = ? AND (title IS NULL OR title = '')",
+                )
+                .bind(title)
+                .bind(&id)
+                .execute(pool)
+                .await
+                .context("failed to backfill session title")?;
+            }
+        }
+        Ok(())
     }
 
     fn now() -> DateTime<Utc> {
@@ -384,6 +455,35 @@ fn agent_content_blocks(message: &AgentMessage) -> Vec<ContentBlock> {
 fn agent_message_content(message: &AgentMessage) -> MessageContent {
     MessageContent::Blocks {
         content: agent_content_blocks(message),
+    }
+}
+
+fn agent_message_text(message: &AgentMessage) -> String {
+    message
+        .content
+        .iter()
+        .filter_map(|block| match block {
+            AgentContentBlock::Text { text } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn derive_session_title(text: &str) -> Option<String> {
+    let first_line = text.lines().map(str::trim).find(|line| !line.is_empty())?;
+    let normalized = first_line.split_whitespace().collect::<Vec<_>>().join(" ");
+    if normalized.is_empty() {
+        return None;
+    }
+    const MAX_CHARS: usize = 80;
+    if normalized.chars().count() <= MAX_CHARS {
+        Some(normalized)
+    } else {
+        Some(format!(
+            "{}...",
+            normalized.chars().take(MAX_CHARS).collect::<String>()
+        ))
     }
 }
 
@@ -644,6 +744,11 @@ impl super::SessionStore for SqliteSessionStore {
             Some(None) | None => None,
         };
         let replace_provider_state = provider_state.is_some();
+        let derived_title = message
+            .origin
+            .is_user_turn()
+            .then(|| agent_message_text(message))
+            .and_then(|text| derive_session_title(&text));
         let now = Self::now();
         let mut tx = self
             .pool
@@ -699,6 +804,14 @@ impl super::SessionStore for SqliteSessionStore {
             .execute(&mut *tx)
             .await
             .context("failed to update session timestamp")?;
+        if let Some(title) = derived_title {
+            sqlx::query("UPDATE sessions SET title = COALESCE(NULLIF(title, ''), ?) WHERE id = ?")
+                .bind(title)
+                .bind(session_id)
+                .execute(&mut *tx)
+                .await
+                .context("failed to derive session title")?;
+        }
 
         tx.commit()
             .await
@@ -1049,53 +1162,71 @@ impl super::SessionStore for SqliteSessionStore {
     }
 
     async fn list_sessions(&self, root_dir: Option<&str>) -> Result<Vec<SessionSummary>> {
-        let rows = if let Some(root) = root_dir {
-            sqlx::query(
-                r#"
-                SELECT
-                    s.id,
-                    s.root_dir,
-                    s.created_at,
-                    s.updated_at,
-                    COUNT(m.id) as message_count
-                FROM sessions s
-                LEFT JOIN messages m ON m.session_id = s.id
-                WHERE s.root_dir = ?
-                  AND s.ref_id = ''
-                GROUP BY s.id
-                ORDER BY s.updated_at DESC
-                "#,
-            )
-            .bind(root)
-            .fetch_all(&*self.pool)
-            .await
-            .context("failed to list sessions")?
-        } else {
-            sqlx::query(
-                r#"
-                SELECT
-                    s.id,
-                    s.root_dir,
-                    s.created_at,
-                    s.updated_at,
-                    COUNT(m.id) as message_count
-                FROM sessions s
-                LEFT JOIN messages m ON m.session_id = s.id
-                WHERE s.ref_id = ''
-                GROUP BY s.id
-                ORDER BY s.updated_at DESC
-                "#,
-            )
-            .fetch_all(&*self.pool)
-            .await
-            .context("failed to list sessions")?
-        };
+        self.list_sessions_filtered(SessionListQuery {
+            root_dir: root_dir.map(str::to_string),
+            ..SessionListQuery::default()
+        })
+        .await
+    }
 
+    async fn list_sessions_filtered(&self, query: SessionListQuery) -> Result<Vec<SessionSummary>> {
+        let archive = match query.archive {
+            ArchiveFilter::Active => "s.archived_at IS NULL",
+            ArchiveFilter::Archived => "s.archived_at IS NOT NULL",
+            ArchiveFilter::All => "1 = 1",
+        };
+        let root_filter = query.root_dir.is_some().then_some("AND s.root_dir = ?");
+        let sql = format!(
+            r#"
+            SELECT
+                s.id,
+                s.root_dir,
+                s.title,
+                s.created_at,
+                s.updated_at,
+                s.archived_at,
+                s.locked_by,
+                s.lock_epoch,
+                COUNT(m.id) as message_count
+            FROM sessions s
+            LEFT JOIN messages m ON m.session_id = s.id
+            WHERE s.ref_id = ''
+              AND {archive}
+              {root_filter}
+            GROUP BY s.id
+            ORDER BY s.updated_at DESC
+            "#,
+            root_filter = root_filter.unwrap_or("")
+        );
+        let mut statement = sqlx::query(&sql);
+        if let Some(root) = query.root_dir.as_deref() {
+            statement = statement.bind(root);
+        }
+        let rows = statement
+            .fetch_all(&*self.pool)
+            .await
+            .context("failed to list sessions")?;
+
+        let search = query.search.map(|search| search.to_lowercase());
         let mut sessions = Vec::with_capacity(rows.len());
         for row in rows {
+            let id: String = row.try_get("id")?;
+            let title: Option<String> = row.try_get("title")?;
+            if let Some(search) = &search
+                && !id.to_lowercase().contains(search)
+                && !title
+                    .as_deref()
+                    .is_some_and(|title| title.to_lowercase().contains(search))
+            {
+                continue;
+            }
+            let archived_at: Option<String> = row.try_get("archived_at")?;
+            let locked_by: i64 = row.try_get("locked_by")?;
+            let lock_epoch: String = row.try_get("lock_epoch")?;
             sessions.push(SessionSummary {
-                id: row.try_get("id")?,
+                id,
                 root_dir: row.try_get("root_dir")?,
+                title,
                 created_at: parse_timestamp(
                     &row,
                     "created_at",
@@ -1106,11 +1237,48 @@ impl super::SessionStore for SqliteSessionStore {
                     "updated_at",
                     "failed to parse session updated_at",
                 )?,
+                archived_at: archived_at
+                    .map(|value| parse_timestamp_value(&value, "failed to parse archived_at"))
+                    .transpose()?,
+                locked: is_active_lock_holder(u32::try_from(locked_by).unwrap_or(0), &lock_epoch),
                 message_count: row.try_get("message_count")?,
             });
         }
-
         Ok(sessions)
+    }
+
+    async fn set_session_title(&self, session_id: &str, title: &str) -> Result<()> {
+        let title = title.trim();
+        if title.is_empty() {
+            anyhow::bail!("session title cannot be empty");
+        }
+        let result = sqlx::query("UPDATE sessions SET title = ? WHERE id = ?")
+            .bind(title)
+            .bind(session_id)
+            .execute(&*self.pool)
+            .await
+            .context("failed to set session title")?;
+        if result.rows_affected() == 0 {
+            anyhow::bail!("unknown session {session_id}");
+        }
+        Ok(())
+    }
+
+    async fn set_session_archived(&self, session_id: &str, archived: bool) -> Result<()> {
+        let result = sqlx::query(
+            "UPDATE sessions SET archived_at = CASE WHEN ? THEN COALESCE(archived_at, ?) ELSE NULL END \
+             WHERE id = ?",
+        )
+        .bind(archived)
+        .bind(Self::now())
+        .bind(session_id)
+        .execute(&*self.pool)
+        .await
+        .context("failed to update session archive state")?;
+        if result.rows_affected() == 0 {
+            anyhow::bail!("unknown session {session_id}");
+        }
+        Ok(())
     }
 
     async fn delete_session(&self, session_id: &str) -> Result<()> {
@@ -1635,17 +1803,24 @@ fn is_active_lock_holder(holder: u32, holder_epoch: &str) -> bool {
 
 fn parse_timestamp(row: &sqlx::sqlite::SqliteRow, col: &str, msg: &str) -> Result<DateTime<Utc>> {
     let s: String = row.try_get(col)?;
+    parse_timestamp_value(&s, msg)
+}
+
+fn parse_timestamp_value(value: &str, msg: &str) -> Result<DateTime<Utc>> {
     // Try full timestamp first, then date-only fallback.
-    if let Ok(dt) = s.parse::<DateTime<Utc>>() {
+    if let Ok(dt) = value.parse::<DateTime<Utc>>() {
         return Ok(dt);
     }
-    if let Ok(date) = NaiveDate::parse_from_str(&s, "%Y-%m-%d") {
+    if let Ok(date) = NaiveDate::parse_from_str(value, "%Y-%m-%d") {
         return Ok(DateTime::from_naive_utc_and_offset(
             date.and_hms_opt(0, 0, 0).unwrap_or_default(),
             Utc,
         ));
     }
-    Err(anyhow::anyhow!("{}: {}", msg, s))
+    if let Ok(timestamp) = NaiveDateTime::parse_from_str(value, "%Y-%m-%d %H:%M:%S") {
+        return Ok(DateTime::from_naive_utc_and_offset(timestamp, Utc));
+    }
+    Err(anyhow::anyhow!("{}: {}", msg, value))
 }
 
 #[cfg(test)]
@@ -1655,7 +1830,10 @@ mod tests {
     use tact_llm::{MessageContent, Role};
     use tempfile::TempDir;
 
-    use super::{super::SessionStore, SqliteSessionStore, agent_message_content};
+    use super::{
+        super::{ArchiveFilter, SessionListQuery, SessionStore},
+        SqliteSessionStore, agent_message_content,
+    };
 
     async fn legacy_database(path: &std::path::Path) -> crate::store::sqlite::PoolRef {
         let pool = crate::store::sqlite::open_pool(path).await.unwrap();
@@ -1721,6 +1899,205 @@ mod tests {
         .execute(pool)
         .await
         .unwrap();
+    }
+
+    async fn new_store_with_session(name: &str) -> (TempDir, SqliteSessionStore) {
+        let tmp = TempDir::new().unwrap();
+        let store = SqliteSessionStore::new(&tmp.path().join("tact.db"))
+            .await
+            .unwrap();
+        store
+            .ensure_session_row(name, "/workspace", "")
+            .await
+            .unwrap();
+        (tmp, store)
+    }
+
+    #[tokio::test]
+    async fn migration_adds_title_and_archived_at_to_existing_sessions() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("legacy.db");
+        let pool = legacy_database(&path).await;
+        insert_legacy_message(
+            &pool,
+            1,
+            &AgentMessage::text(AgentRole::User, MessageOrigin::User, "Fix the retry test"),
+        )
+        .await;
+        drop(pool);
+
+        let store = SqliteSessionStore::new(&path).await.unwrap();
+        let columns = sqlx::query("PRAGMA table_info(sessions)")
+            .fetch_all(&*store.pool)
+            .await
+            .unwrap();
+        let names: Vec<String> = columns
+            .iter()
+            .map(|row| row.try_get("name").unwrap())
+            .collect();
+        assert!(names.iter().any(|name| name == "title"));
+        assert!(names.iter().any(|name| name == "archived_at"));
+        let listed = store
+            .list_sessions_filtered(SessionListQuery::default())
+            .await
+            .unwrap();
+        assert_eq!(listed[0].title.as_deref(), Some("Fix the retry test"));
+    }
+
+    #[tokio::test]
+    async fn migration_is_idempotent_across_two_store_opens() {
+        let tmp = TempDir::new().unwrap();
+        let path = tmp.path().join("legacy.db");
+        drop(legacy_database(&path).await);
+
+        drop(SqliteSessionStore::new(&path).await.unwrap());
+        let reopened = SqliteSessionStore::new(&path).await.unwrap();
+        let listed = reopened.list_sessions(None).await.unwrap();
+        assert_eq!(listed.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn first_real_user_prompt_derives_title() {
+        let (_tmp, store) = new_store_with_session("session").await;
+        store
+            .append_agent_message(
+                "session",
+                &AgentMessage::text(
+                    AgentRole::User,
+                    MessageOrigin::InjectedContext {
+                        source: "hook".into(),
+                    },
+                    "injected briefing",
+                ),
+                1,
+            )
+            .await
+            .unwrap();
+        store
+            .append_agent_message(
+                "session",
+                &AgentMessage::text(AgentRole::User, MessageOrigin::User, "Fix flaky auth retry"),
+                2,
+            )
+            .await
+            .unwrap();
+        let listed = store.list_sessions(None).await.unwrap();
+        assert_eq!(listed[0].title.as_deref(), Some("Fix flaky auth retry"));
+    }
+
+    #[tokio::test]
+    async fn injected_context_does_not_derive_title() {
+        let (_tmp, store) = new_store_with_session("session").await;
+        store
+            .append_agent_message(
+                "session",
+                &AgentMessage::text(
+                    AgentRole::User,
+                    MessageOrigin::InjectedContext {
+                        source: "hook".into(),
+                    },
+                    "injected briefing",
+                ),
+                1,
+            )
+            .await
+            .unwrap();
+        assert!(store.list_sessions(None).await.unwrap()[0].title.is_none());
+    }
+
+    #[tokio::test]
+    async fn tool_result_does_not_derive_title() {
+        let (_tmp, store) = new_store_with_session("session").await;
+        store
+            .append_agent_message(
+                "session",
+                &AgentMessage::text(AgentRole::User, MessageOrigin::ToolResult, "tool output"),
+                1,
+            )
+            .await
+            .unwrap();
+        assert!(store.list_sessions(None).await.unwrap()[0].title.is_none());
+    }
+
+    #[tokio::test]
+    async fn manual_title_is_not_overwritten() {
+        let (_tmp, store) = new_store_with_session("session").await;
+        store.set_session_title("session", "Manual").await.unwrap();
+        store
+            .append_agent_message(
+                "session",
+                &AgentMessage::text(AgentRole::User, MessageOrigin::User, "Derived"),
+                1,
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            store.list_sessions(None).await.unwrap()[0].title.as_deref(),
+            Some("Manual")
+        );
+    }
+
+    #[tokio::test]
+    async fn archive_filter_returns_active_archived_and_all() {
+        let (_tmp, store) = new_store_with_session("active").await;
+        store
+            .ensure_session_row("archived", "/workspace", "")
+            .await
+            .unwrap();
+        store.set_session_archived("archived", true).await.unwrap();
+
+        let ids = |filter| {
+            let store = &store;
+            async move {
+                store
+                    .list_sessions_filtered(SessionListQuery {
+                        root_dir: Some("/workspace".into()),
+                        archive: filter,
+                        search: None,
+                    })
+                    .await
+                    .unwrap()
+                    .into_iter()
+                    .map(|session| session.id)
+                    .collect::<Vec<_>>()
+            }
+        };
+        assert_eq!(ids(ArchiveFilter::Active).await, vec!["active"]);
+        assert_eq!(ids(ArchiveFilter::Archived).await, vec!["archived"]);
+        let mut all = ids(ArchiveFilter::All).await;
+        all.sort();
+        assert_eq!(all, vec!["active", "archived"]);
+    }
+
+    #[tokio::test]
+    async fn archive_and_restore_are_idempotent() {
+        let (_tmp, store) = new_store_with_session("session").await;
+        store.set_session_archived("session", true).await.unwrap();
+        store.set_session_archived("session", true).await.unwrap();
+        assert!(
+            store
+                .list_sessions_filtered(SessionListQuery {
+                    archive: ArchiveFilter::Archived,
+                    ..SessionListQuery::default()
+                })
+                .await
+                .unwrap()
+                .len()
+                == 1
+        );
+        store.set_session_archived("session", false).await.unwrap();
+        store.set_session_archived("session", false).await.unwrap();
+        assert!(
+            store
+                .list_sessions_filtered(SessionListQuery {
+                    archive: ArchiveFilter::Active,
+                    ..SessionListQuery::default()
+                })
+                .await
+                .unwrap()
+                .len()
+                == 1
+        );
     }
 
     #[tokio::test]
@@ -3066,6 +3443,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(row.try_get::<i64, _>("locked_by").unwrap(), i64::from(pid));
+    }
+
+    #[tokio::test]
+    async fn stale_session_lock_is_not_projected_as_locked() {
+        let tmp = TempDir::new().unwrap();
+        let db = tmp.path().join("test.db");
+        let store = SqliteSessionStore::new(&db).await.unwrap();
+        store
+            .create_session("stale-lock", "/tmp/tact-test", "")
+            .await
+            .unwrap();
+        sqlx::query("UPDATE sessions SET locked_by = ?, lock_epoch = ? WHERE id = 'stale-lock'")
+            .bind(999_999_i64)
+            .bind("stale-epoch")
+            .execute(&*store.pool)
+            .await
+            .unwrap();
+        let sessions = store
+            .list_sessions_filtered(SessionListQuery::default())
+            .await
+            .unwrap();
+        assert!(!sessions[0].locked);
     }
 
     #[tokio::test]
